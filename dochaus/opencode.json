@@ -49,6 +49,7 @@
     "task": "allow",
     "skill": "allow",
     "search-document": "allow",
+    "word-integration": "ask",
     "edit": "deny",
     "bash": "deny",
     "webfetch": "deny",
