@@ -1,29 +1,13 @@
 import { tool } from "@opencode-ai/plugin"
-import { fileURLToPath } from "node:url"
 import { existsSync } from "node:fs"
 import path from "node:path"
+import { docxodus } from "../lib/docxodus"
 
 // doc.haus word-integration tool. Reads and edits the matter's canonical Word
 // (.docx) document in place via Docxodus, so edits round-trip through Microsoft
 // Word. `services/ingest` writes that canonical .docx into the matter directory;
 // this tool operates on the same file. Edits here are plain (non-tracked);
 // tracked changes are a separate tool.
-
-// Docxodus ships its .NET/OOXML WASM runtime alongside its entrypoint
-// (dist/index.js → dist/wasm); resolve it from node_modules so initialize() can
-// load it headless under Bun. The package's exports map hides package.json, so
-// resolve the main entry (dist/index.js) and walk to its sibling wasm dir.
-const wasmBase = path.join(path.dirname(fileURLToPath(import.meta.resolve("docxodus"))), "wasm")
-
-let engine: Promise<typeof import("docxodus")> | undefined
-function docxodus() {
-  if (!engine)
-    engine = import("docxodus").then(async (dx) => {
-      if (!dx.isInitialized()) await dx.initialize(wasmBase)
-      return dx
-    })
-  return engine
-}
 
 export default tool({
   description:
