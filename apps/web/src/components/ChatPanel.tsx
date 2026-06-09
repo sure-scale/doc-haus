@@ -14,7 +14,12 @@ import Markdown from "./Markdown"
 import ModelSelector from "./ModelSelector"
 import WorkflowLauncher from "./WorkflowLauncher"
 
-type Turn = { role: "user" | "assistant"; text: string; citations: Citation[] }
+// One row in the assistant's reasoning timeline: a thinking block or a tool call.
+type Step =
+  | { kind: "reasoning"; text: string; done: boolean }
+  | { kind: "tool"; label: string; status: "running" | "done" | "error" }
+
+type Turn = { role: "user" | "assistant"; text: string; citations: Citation[]; steps: Step[] }
 
 // Quiet starter prompts so a fresh matter is not a blank box — mirrors how Harvey
 // and Legora seat the lawyer with ready questions about the documents in scope.
@@ -37,13 +42,53 @@ function contentOf(parts: Part[]) {
   return { text, citations }
 }
 
+// Turn the ordered parts into the visible reasoning timeline: each thinking
+// block and each tool call becomes a step, in arrival order. The final answer
+// text and citations are handled by contentOf — these are the intermediate work.
+function partsToSteps(parts: Part[]): Step[] {
+  return parts.flatMap((p): Step[] => {
+    if (p.type === "reasoning")
+      return p.text.trim() ? [{ kind: "reasoning", text: p.text, done: Boolean(p.time.end) }] : []
+    if (p.type === "tool") {
+      const status = p.state.status === "completed" ? "done" : p.state.status === "error" ? "error" : "running"
+      const titled = p.state.status === "completed" || p.state.status === "running" ? p.state.title : undefined
+      return [{ kind: "tool", label: titled ?? humanizeTool(p.tool), status }]
+    }
+    return []
+  })
+}
+
+function humanizeTool(tool: string) {
+  return tool.charAt(0).toUpperCase() + tool.slice(1).replace(/-/g, " ")
+}
+
 // Aggregate every assistant part received this turn. A tool-using turn produces
 // several assistant messages (one per model step), so tracking only the latest
 // id would blank the preview to "Thinking..." between steps and drop earlier
 // steps on finalize. Reading all assistant-role parts keeps the live view and
 // the saved turn whole.
 function readTurn(parts: Map<string, Part>, roles: Map<string, string>) {
-  return contentOf([...parts.values()].filter((p) => roles.get(p.messageID) === "assistant"))
+  const assistant = [...parts.values()].filter((p) => roles.get(p.messageID) === "assistant")
+  return { ...contentOf(assistant), steps: partsToSteps(assistant) }
+}
+
+// Group stored messages into turns. A tool-using turn spans several consecutive
+// assistant messages (one per model step); merging their parts reconstructs the
+// whole reasoning timeline instead of showing only the final answer bubble.
+function toTurns(msgs: { info: { role: "user" | "assistant" }; parts: Part[] }[]): Turn[] {
+  const groups: { role: "user" | "assistant"; parts: Part[] }[] = []
+  for (const m of msgs) {
+    const last = groups[groups.length - 1]
+    if (last && last.role === "assistant" && m.info.role === "assistant") last.parts.push(...m.parts)
+    else groups.push({ role: m.info.role, parts: [...m.parts] })
+  }
+  return groups
+    .map((g) => ({
+      role: g.role,
+      ...contentOf(g.parts),
+      steps: g.role === "assistant" ? partsToSteps(g.parts) : [],
+    }))
+    .filter((t) => t.text || t.citations.length || t.steps.length)
 }
 
 // A session title from the first message: trimmed to a word boundary with an
@@ -85,13 +130,7 @@ export default function ChatPanel({
     const controller = new AbortController()
     if (sessionID) {
       sessionRef.current = sessionID
-      getMessages(client, sessionID).then((msgs) =>
-        setTurns(
-          msgs
-            .map((m) => ({ role: m.info.role, ...contentOf(m.parts) }))
-            .filter((t) => t.text || t.citations.length),
-        ),
-      )
+      getMessages(client, sessionID).then((msgs) => setTurns(toTurns(msgs)))
     }
     // No session until the first send (see onSend) — mounting the panel must not
     // mint an empty throwaway session that would clutter the conversation list.
@@ -125,8 +164,9 @@ export default function ChatPanel({
   }
 
   function finalize() {
-    const { text, citations } = readTurn(partsRef.current, rolesRef.current)
-    if (text || citations.length) setTurns((prev) => [...prev, { role: "assistant", text, citations }])
+    const { text, citations, steps } = readTurn(partsRef.current, rolesRef.current)
+    if (text || citations.length || steps.length)
+      setTurns((prev) => [...prev, { role: "assistant", text, citations, steps }])
     partsRef.current.clear()
     rolesRef.current.clear()
     setBusy(false)
@@ -135,7 +175,7 @@ export default function ChatPanel({
   async function onSend() {
     const text = input.trim()
     if (!text || busy) return
-    setTurns((prev) => [...prev, { role: "user", text, citations: [] }])
+    setTurns((prev) => [...prev, { role: "user", text, citations: [], steps: [] }])
     setInput("")
     setBusy(true)
     partsRef.current.clear()
@@ -169,13 +209,25 @@ export default function ChatPanel({
         )}
         {turns.map((t, i) => (
           <div key={i} className={`msg ${t.role}`}>
-            {t.role === "assistant" ? <Markdown>{t.text}</Markdown> : t.text}
+            {t.role === "assistant" ? (
+              <>
+                <StepsPanel steps={t.steps} busy={false} />
+                {t.text && <Markdown>{t.text}</Markdown>}
+              </>
+            ) : (
+              t.text
+            )}
             <CitationView citations={t.citations} />
           </div>
         ))}
         {busy && (
           <div className="msg assistant">
-            {live.text ? <Markdown>{live.text}</Markdown> : <span className="muted">Thinking...</span>}
+            <StepsPanel steps={live.steps} busy />
+            {live.text ? (
+              <Markdown>{live.text}</Markdown>
+            ) : (
+              live.steps.length === 0 && <span className="muted">Thinking...</span>
+            )}
             <CitationView citations={live.citations} />
           </div>
         )}
@@ -202,5 +254,34 @@ export default function ChatPanel({
         Cmd/Ctrl + Enter to send. Answers cite [Document § section] from indexed documents.
       </p>
     </div>
+  )
+}
+
+// The reasoning timeline: a collapsible panel of thinking blocks and tool calls,
+// each on a dotted timeline. Open while the turn runs; collapsed once answered.
+function StepsPanel({ steps, busy }: { steps: Step[]; busy: boolean }) {
+  if (steps.length === 0) return null
+  return (
+    <details className="steps" open={busy}>
+      <summary>{busy ? "Working..." : "Steps"}</summary>
+      <ol className="step-list">
+        {steps.map((s, i) =>
+          s.kind === "tool" ? (
+            <li key={i} className="step">
+              <span className={`dot ${s.status}`} />
+              <span className="step-label">{s.label}</span>
+            </li>
+          ) : (
+            <li key={i} className="step">
+              <span className="dot reasoning" />
+              <details className="thinking" open={busy && i === steps.length - 1 && !s.done}>
+                <summary>Thought process</summary>
+                <Markdown>{s.text}</Markdown>
+              </details>
+            </li>
+          ),
+        )}
+      </ol>
+    </details>
   )
 }

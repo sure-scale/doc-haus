@@ -630,6 +630,98 @@ textarea {
   border: 1px solid var(--border);
 }
 
+/* Reasoning timeline: a collapsible panel of thinking blocks and tool calls,
+   each marked by a status dot on a vertical rail. */
+.steps {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  padding: 8px 12px;
+  margin-bottom: 8px;
+}
+
+.steps > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 13px;
+  list-style: none;
+}
+
+.steps > summary::-webkit-details-marker {
+  display: none;
+}
+
+.step-list {
+  list-style: none;
+  margin: 10px 0 2px;
+  padding: 0 0 0 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border-left: 1px solid var(--border);
+}
+
+.step {
+  position: relative;
+  padding-left: 16px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.dot {
+  position: absolute;
+  left: -5px;
+  top: 4px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--panel);
+  border: 1px solid var(--muted);
+}
+
+.dot.done {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.dot.error {
+  background: var(--danger);
+  border-color: var(--danger);
+}
+
+.dot.running {
+  border-color: var(--warn);
+  animation: step-pulse 1s ease-in-out infinite;
+}
+
+@keyframes step-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+
+.thinking {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.thinking > summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+.thinking > summary::-webkit-details-marker {
+  display: none;
+}
+
+.thinking[open] > summary {
+  margin-bottom: 4px;
+}
+
 .citation {
   border-left: 3px solid var(--accent);
   background: var(--accent-soft);
