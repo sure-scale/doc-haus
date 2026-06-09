@@ -18,6 +18,11 @@ export default function MatterDetail() {
   const [agent, setAgent] = useState("qa")
   const [viewing, setViewing] = useState<string>()
   const [workflow, setWorkflow] = useState<string>()
+  const [docsOpen, setDocsOpen] = useState(() => localStorage.getItem("dh.docs") !== "0")
+
+  useEffect(() => {
+    localStorage.setItem("dh.docs", docsOpen ? "1" : "0")
+  }, [docsOpen])
 
   function refresh() {
     if (id) getMatter(id).then(setMatter)
@@ -47,26 +52,34 @@ export default function MatterDetail() {
         </h2>
       </div>
 
-      <DocumentUpload matterId={matter.id} documents={matter.documents} onUploaded={refresh} onView={setViewing} />
-
-      <div className={`workspace${workflow ? " with-artifact" : ""}`}>
-        <ChatPanel
-          key={session ?? "new"}
-          directory={matter.dir}
-          sessionID={session}
-          agent={agent}
-          available={new Set(agents.map((a) => a.name))}
-          onAgentChange={setAgent}
-          onLaunchWorkflow={setWorkflow}
-        />
-        {workflow && (
-          <WorkflowArtifact
-            key={workflow}
+      <div className={`matter-body${docsOpen ? "" : " docs-collapsed"}`}>
+        <div className={`workspace${workflow ? " with-artifact" : ""}`}>
+          <ChatPanel
+            key={session ?? "new"}
             directory={matter.dir}
-            workflow={workflow}
-            onClose={() => setWorkflow(undefined)}
+            sessionID={session}
+            agent={agent}
+            available={new Set(agents.map((a) => a.name))}
+            onAgentChange={setAgent}
+            onLaunchWorkflow={setWorkflow}
           />
-        )}
+          {workflow && (
+            <WorkflowArtifact
+              key={workflow}
+              directory={matter.dir}
+              workflow={workflow}
+              onClose={() => setWorkflow(undefined)}
+            />
+          )}
+        </div>
+        <DocumentUpload
+          matterId={matter.id}
+          documents={matter.documents}
+          onUploaded={refresh}
+          onView={setViewing}
+          collapsed={!docsOpen}
+          onToggle={() => setDocsOpen((o) => !o)}
+        />
       </div>
 
       {viewing && <DocumentViewer matterId={matter.id} name={viewing} onClose={() => setViewing(undefined)} />}

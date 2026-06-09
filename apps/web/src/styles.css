@@ -356,6 +356,78 @@ textarea {
   grid-template-columns: 1.5fr 1fr;
 }
 
+/* Matter body: the chat workspace beside a collapsible documents rail. The rail
+   keeps the matter's files out of the chat's way; collapsed it shrinks to a thin
+   tab so the conversation reclaims the full width. */
+.matter-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 16px;
+  align-items: start;
+}
+
+.matter-body.docs-collapsed {
+  grid-template-columns: minmax(0, 1fr) 40px;
+}
+
+/* Rail tracks the chat scroll so the document list stays in reach. */
+.docs-rail {
+  position: sticky;
+  top: 24px;
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  margin-bottom: 0;
+}
+
+.docs-rail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.docs-rail-head h2 {
+  margin: 0;
+}
+
+/* Collapsed rail: a slim vertical tab that reopens the documents panel. */
+.docs-tab {
+  position: sticky;
+  top: 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  width: 40px;
+  padding: 12px 0;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.docs-tab:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.docs-tab-count {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: 10px;
+  padding: 1px 7px;
+}
+
+.docs-tab-label {
+  writing-mode: vertical-rl;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 11px;
+}
+
 /* Artifact panel sticks in view while the chat scrolls, so a long review report
    stays readable next to the conversation. */
 .artifact {
