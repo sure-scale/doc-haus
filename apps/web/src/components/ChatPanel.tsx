@@ -37,9 +37,13 @@ function contentOf(parts: Part[]) {
   return { text, citations }
 }
 
-// Same, over the live part map keyed by id, for one streaming message.
-function readMessage(parts: Map<string, Part>, messageID: string) {
-  return contentOf([...parts.values()].filter((p) => p.messageID === messageID))
+// Aggregate every assistant part received this turn. A tool-using turn produces
+// several assistant messages (one per model step), so tracking only the latest
+// id would blank the preview to "Thinking..." between steps and drop earlier
+// steps on finalize. Reading all assistant-role parts keeps the live view and
+// the saved turn whole.
+function readTurn(parts: Map<string, Part>, roles: Map<string, string>) {
+  return contentOf([...parts.values()].filter((p) => roles.get(p.messageID) === "assistant"))
 }
 
 // A session title from the first message: trimmed to a word boundary with an
@@ -75,7 +79,6 @@ export default function ChatPanel({
   const sessionRef = useRef<string>("")
   const partsRef = useRef<Map<string, Part>>(new Map())
   const rolesRef = useRef<Map<string, string>>(new Map())
-  const assistantRef = useRef<string>("")
   const logRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -106,7 +109,6 @@ export default function ChatPanel({
       const info = event.properties.info
       if (info.sessionID !== sessionRef.current) return
       rolesRef.current.set(info.id, info.role)
-      if (info.role === "assistant") assistantRef.current = info.id
       bump((n) => n + 1)
       return
     }
@@ -123,13 +125,10 @@ export default function ChatPanel({
   }
 
   function finalize() {
-    const id = assistantRef.current
-    if (id) {
-      const { text, citations } = readMessage(partsRef.current, id)
-      if (text || citations.length) setTurns((prev) => [...prev, { role: "assistant", text, citations }])
-    }
+    const { text, citations } = readTurn(partsRef.current, rolesRef.current)
+    if (text || citations.length) setTurns((prev) => [...prev, { role: "assistant", text, citations }])
     partsRef.current.clear()
-    assistantRef.current = ""
+    rolesRef.current.clear()
     setBusy(false)
   }
 
@@ -140,14 +139,14 @@ export default function ChatPanel({
     setInput("")
     setBusy(true)
     partsRef.current.clear()
-    assistantRef.current = ""
+    rolesRef.current.clear()
     // Create the session lazily, titled from this first message so it reads as a
     // distinct conversation in the rail rather than an interchangeable "Q&A".
     if (!sessionRef.current) sessionRef.current = (await createSession(client, titleFrom(text))).id
     await sendPrompt(client, sessionRef.current, agent, text)
   }
 
-  const live = assistantRef.current ? readMessage(partsRef.current, assistantRef.current) : null
+  const live = readTurn(partsRef.current, rolesRef.current)
 
   return (
     <div className="card">
@@ -176,8 +175,8 @@ export default function ChatPanel({
         ))}
         {busy && (
           <div className="msg assistant">
-            {live?.text ? <Markdown>{live.text}</Markdown> : <span className="muted">Thinking...</span>}
-            {live && <CitationView citations={live.citations} />}
+            {live.text ? <Markdown>{live.text}</Markdown> : <span className="muted">Thinking...</span>}
+            <CitationView citations={live.citations} />
           </div>
         )}
       </div>
