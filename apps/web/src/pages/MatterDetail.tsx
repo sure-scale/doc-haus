@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { Link, useParams } from "react-router-dom"
+import { Link, useParams, useSearchParams } from "react-router-dom"
 import { getMatter, type MatterDetail as Detail } from "../api/ingest"
 import { listAgents, matterClient } from "../api/opencode"
 import DocumentUpload from "../components/DocumentUpload"
@@ -11,6 +11,8 @@ type Agent = { name: string; description?: string; mode?: string }
 
 export default function MatterDetail() {
   const { id } = useParams<{ id: string }>()
+  const [params] = useSearchParams()
+  const session = params.get("session") ?? undefined
   const [matter, setMatter] = useState<Detail>()
   const [agents, setAgents] = useState<Agent[]>([])
   const [agent, setAgent] = useState("qa")
@@ -49,7 +51,9 @@ export default function MatterDetail() {
 
       <div className={`workspace${workflow ? " with-artifact" : ""}`}>
         <ChatPanel
+          key={session ?? "new"}
           directory={matter.dir}
+          sessionID={session}
           agent={agent}
           available={new Set(agents.map((a) => a.name))}
           onAgentChange={setAgent}

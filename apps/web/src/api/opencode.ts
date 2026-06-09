@@ -98,6 +98,20 @@ export async function createSession(client: Client, title: string) {
   return res.data
 }
 
+// Every session the engine holds for this matter (scoped by the client's
+// directory header). Subagent runs carry a parentID; top-level chats do not.
+export async function listSessions(client: Client) {
+  const res = await client.session.list()
+  return res.data ?? []
+}
+
+// Settled messages for one session, each as { info, parts }, used to replay a
+// past conversation back into the chat panel.
+export async function getMessages(client: Client, sessionID: string) {
+  const res = await client.session.messages({ path: { id: sessionID } })
+  return res.data ?? []
+}
+
 // Fire a prompt to a named agent. Resolves when the assistant turn completes;
 // live progress arrives separately through subscribeEvents.
 export async function sendPrompt(client: Client, sessionID: string, agent: string, text: string) {

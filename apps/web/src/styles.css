@@ -60,25 +60,139 @@ textarea {
   color: var(--text);
 }
 
-.app-header {
+/* App shell: a collapsible left rail beside the scrolling content column. */
+.shell {
+  display: flex;
+  min-height: 100vh;
+}
+
+.content {
+  flex: 1;
+  min-width: 0;
+}
+
+.sidebar {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  width: 220px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px 10px;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+}
+
+.sidebar.collapsed {
+  width: 56px;
+}
+
+.sidebar-brand a {
   display: flex;
   align-items: center;
-  gap: 16px;
-  padding: 14px 24px;
-  border-bottom: 1px solid var(--border);
-  background: var(--panel);
+  gap: 10px;
+  padding: 4px 6px 10px;
 }
 
-.app-header h1 {
-  font-size: 18px;
-  margin: 0;
-  letter-spacing: -0.01em;
-}
-
-.app-header h1 a {
-  display: inline-flex;
+/* Primary nav + Settings/collapse share one row style; active picks up accent. */
+.nav-item {
+  display: flex;
   align-items: center;
   gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  background: none;
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 14px;
+  text-align: left;
+}
+
+.nav-item:hover {
+  background: var(--accent-soft);
+}
+
+.nav-item.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.sidebar.collapsed .nav-item {
+  justify-content: center;
+}
+
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* The open matter's conversation history; scrolls if it runs long. */
+.sidebar-convos {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  margin-top: 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.sidebar-section-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 6px 6px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.sidebar-empty {
+  font-size: 12px;
+  padding: 4px 6px;
+}
+
+.convo-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.convo-item {
+  display: block;
+  padding: 7px 10px;
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.convo-item:hover {
+  background: var(--accent-soft);
+}
+
+.convo-item.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.sidebar-foot {
+  margin-top: auto;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .app-logo {
@@ -93,16 +207,6 @@ textarea {
   font-size: 20px;
   letter-spacing: -0.02em;
   color: var(--text);
-}
-
-/* Push the tagline to the far right of the header. */
-.app-header .tag {
-  margin-left: auto;
-}
-
-.app-header .tag {
-  color: var(--muted);
-  font-size: 12px;
 }
 
 .container {
@@ -550,23 +654,8 @@ button.linklike:hover {
   color: var(--text);
 }
 
-/* Settings: a gear in the header opens an engine-wide modal for credentials,
+/* Settings: opened from the sidebar as an engine-wide modal for credentials,
    local providers, and the default model. Reuses the picker modal shell. */
-.settings-gear {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 6px;
-  color: var(--muted);
-  border-color: transparent;
-  background: transparent;
-}
-
-.settings-gear:hover {
-  color: var(--text);
-  border-color: var(--border);
-}
-
 .settings-panel {
   max-width: 600px;
 }
