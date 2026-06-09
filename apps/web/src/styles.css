@@ -227,3 +227,79 @@ textarea {
   text-align: center;
   color: var(--muted);
 }
+
+button.linklike {
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--accent);
+  text-align: left;
+}
+
+button.linklike:hover {
+  text-decoration: underline;
+}
+
+.viewer-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(26, 26, 24, 0.45);
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 32px;
+  z-index: 50;
+}
+
+.viewer-panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  width: 100%;
+  max-width: 920px;
+  max-height: calc(100vh - 64px);
+  display: flex;
+  flex-direction: column;
+}
+
+.viewer-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.viewer-title {
+  font-weight: 600;
+}
+
+.viewer-body {
+  overflow: auto;
+  padding: 24px 28px;
+}
+
+.docx-render {
+  font-family: Georgia, "Times New Roman", serif;
+  color: var(--text);
+  line-height: 1.6;
+}
+
+/* Tracked changes: insertions underlined green, deletions struck red. Docxodus
+   emits <ins>/<del> for revisions; the class forms cover prefixed output. */
+.docx-render ins,
+.docx-render .docx-insertion {
+  color: var(--accent);
+  text-decoration: underline;
+  background: var(--accent-soft);
+}
+
+.docx-render del,
+.docx-render .docx-deletion {
+  color: var(--danger);
+  text-decoration: line-through;
+}
+
+.docx-render [class*="comment"] {
+  color: var(--warn);
+}

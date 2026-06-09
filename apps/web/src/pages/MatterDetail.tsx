@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom"
 import { getMatter, type MatterDetail as Detail } from "../api/ingest"
 import { listAgents, matterClient } from "../api/opencode"
 import DocumentUpload from "../components/DocumentUpload"
+import DocumentViewer from "../components/DocumentViewer"
 import ChatPanel from "../components/ChatPanel"
 import AgentPanel from "../components/AgentPanel"
 import ModelSelector from "../components/ModelSelector"
@@ -14,6 +15,7 @@ export default function MatterDetail() {
   const [matter, setMatter] = useState<Detail>()
   const [agents, setAgents] = useState<Agent[]>([])
   const [agent, setAgent] = useState("qa")
+  const [viewing, setViewing] = useState<string>()
 
   function refresh() {
     if (id) getMatter(id).then(setMatter)
@@ -43,12 +45,14 @@ export default function MatterDetail() {
         <ModelSelector agents={agents} value={agent} onChange={setAgent} />
       </div>
 
-      <DocumentUpload matterId={matter.id} documents={matter.documents} onUploaded={refresh} />
+      <DocumentUpload matterId={matter.id} documents={matter.documents} onUploaded={refresh} onView={setViewing} />
 
       <div className="grid">
         <ChatPanel directory={matter.dir} agent={agent} />
         <AgentPanel directory={matter.dir} />
       </div>
+
+      {viewing && <DocumentViewer matterId={matter.id} name={viewing} onClose={() => setViewing(undefined)} />}
     </>
   )
 }

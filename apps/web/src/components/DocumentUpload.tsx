@@ -5,10 +5,12 @@ export default function DocumentUpload({
   matterId,
   documents,
   onUploaded,
+  onView,
 }: {
   matterId: string
   documents: Document[]
   onUploaded: () => void
+  onView: (name: string) => void
 }) {
   const input = useRef<HTMLInputElement>(null)
   const [busy, setBusy] = useState(false)
@@ -32,7 +34,9 @@ export default function DocumentUpload({
         <ul className="matter-list">
           {documents.map((d) => (
             <li key={d.id}>
-              <span>{d.name}</span>
+              <button className="linklike" onClick={() => onView(d.name)}>
+                {d.name}
+              </button>
               <span className="muted">{new Date(d.created_at).toLocaleDateString()}</span>
             </li>
           ))}

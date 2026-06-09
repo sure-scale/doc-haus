@@ -34,3 +34,12 @@ export async function uploadDocument(id: string, file: File): Promise<IngestResu
   const res = await fetch(`${INGEST_URL}/matters/${id}/documents`, { method: "POST", body: form })
   return res.json()
 }
+
+// Raw .docx bytes for a matter document. The viewer renders these client-side
+// via WASM, so the file is fetched from our own ingest service and converted in
+// the browser — it never leaves for any third-party service.
+export async function fetchDocumentBytes(id: string, name: string): Promise<Uint8Array> {
+  const res = await fetch(`${INGEST_URL}/matters/${id}/documents/content?name=${encodeURIComponent(name)}`)
+  if (!res.ok) throw new Error(`Could not load ${name} (${res.status})`)
+  return new Uint8Array(await res.arrayBuffer())
+}
