@@ -18,8 +18,10 @@ export default function DocumentUpload({
   documents: Document[]
   onUploaded: () => void
   onView: (name: string) => void
-  collapsed: boolean
-  onToggle: () => void
+  // Rail mode (chat surface) is collapsible; the Documents surface omits these
+  // and renders the full-width manager with no collapse affordance.
+  collapsed?: boolean
+  onToggle?: () => void
 }) {
   const input = useRef<HTMLInputElement>(null)
   const [busy, setBusy] = useState(false)
@@ -53,12 +55,14 @@ export default function DocumentUpload({
   }
 
   return (
-    <aside className="card docs-rail">
+    <aside className={onToggle ? "card docs-rail" : "card docs-surface"}>
       <div className="docs-rail-head">
         <h2>Documents</h2>
-        <button className="icon-btn" onClick={onToggle} title="Hide documents">
-          <IconChevron />
-        </button>
+        {onToggle && (
+          <button className="icon-btn" onClick={onToggle} title="Hide documents">
+            <IconChevron />
+          </button>
+        )}
       </div>
       {documents.length === 0 ? (
         <p className="muted">No documents indexed yet.</p>

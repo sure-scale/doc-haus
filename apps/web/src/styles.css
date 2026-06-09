@@ -438,6 +438,154 @@ textarea {
   border-left: 3px solid var(--accent);
 }
 
+/* Matter surface nav in the left rail: the open matter's title above its four
+   surfaces (Chat / Review / Documents / Workflows). One navigation plane. */
+.sidebar-surfaces {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.sidebar-matter {
+  padding: 4px 10px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Tabular review: a full-width grid of documents (rows) x questions (columns). */
+.review-toolbar {
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.review-scroll {
+  overflow: auto;
+  max-height: calc(100vh - 160px);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.review-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 13px;
+}
+
+.review-table th,
+.review-table td {
+  border: 1px solid var(--border);
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: top;
+  min-width: 160px;
+}
+
+.review-table thead th {
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+  z-index: 1;
+}
+
+.review-doc-col {
+  position: sticky;
+  left: 0;
+  background: var(--panel);
+  font-weight: 600;
+  min-width: 200px;
+  z-index: 1;
+}
+
+.review-table thead .review-doc-col {
+  z-index: 2;
+}
+
+.review-col-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.review-col-q {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.review-col-q:hover {
+  color: var(--accent);
+}
+
+.review-cell.reviewed {
+  background: var(--accent-soft);
+}
+
+.review-cell-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.review-answer {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.review-answer:hover {
+  color: var(--accent);
+}
+
+.review-cite {
+  color: var(--accent);
+  font-size: 12px;
+}
+
+.review-cell-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.review-stale {
+  color: #b8860b;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.review-cell-fill {
+  font-size: 12px;
+  color: var(--accent);
+  border-color: var(--border);
+}
+
+.review-detail-answer {
+  font-size: 15px;
+  margin: 0 0 12px;
+}
+
 /* Tool strip above the composer holding the Workflows launcher. */
 .composer-tools {
   display: flex;

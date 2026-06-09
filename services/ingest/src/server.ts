@@ -3,6 +3,7 @@ import { cors } from "hono/cors"
 import { openDb, listDocuments, deleteDocument } from "./db"
 import { ingestDocx } from "./ingest"
 import { listMatters, createMatter, getMatter, deleteMatter, matterDir } from "./matter"
+import { readGrid, writeGrid, type Grid } from "./grid"
 import { existsSync, rmSync } from "node:fs"
 import path from "node:path"
 
@@ -44,6 +45,15 @@ app.delete("/matters/:id/documents", (c) => {
   const file = path.join(dir, path.basename(c.req.query("name") ?? ""))
   rmSync(file, { force: true })
   if (existsSync(path.join(dir, ".dochaus", "legal.db"))) deleteDocument(openDb(dir), file)
+  return c.json({ ok: true })
+})
+
+// The tabular-review grid for a matter: its question-columns and computed cells.
+// Rows are the matter's documents, fetched separately, so they are not stored.
+app.get("/matters/:id/grid", (c) => c.json(readGrid(matterDir(c.req.param("id")))))
+
+app.put("/matters/:id/grid", async (c) => {
+  writeGrid(matterDir(c.req.param("id")), await c.req.json<Grid>())
   return c.json({ ok: true })
 })
 

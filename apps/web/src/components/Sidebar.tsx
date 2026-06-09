@@ -6,6 +6,15 @@ import logo from "../assets/dochaus-logo.svg"
 
 type Convo = { id: string; title: string; updated: number }
 
+// The open matter's surfaces, switched by the `view` query param. This rail is
+// the single navigation plane: the content area is one canvas per surface.
+const SURFACES = [
+  { view: "chat", label: "Chat", Icon: IconChat },
+  { view: "review", label: "Review", Icon: IconReview },
+  { view: "documents", label: "Documents", Icon: IconDocsNav },
+  { view: "workflows", label: "Workflows", Icon: IconFlow },
+] as const
+
 // Left rail. Holds the brand, primary nav, the open matter's conversation
 // history, and Settings. Collapses to an icons-only strip; the choice persists
 // per browser in localStorage (a single UI preference — no datastore needed).
@@ -14,7 +23,9 @@ export default function Sidebar({ onOpenSettings }: { onOpenSettings: () => void
   const matterId = useMatch("/matter/:id")?.params.id
   const [params] = useSearchParams()
   const activeSession = params.get("session")
+  const view = params.get("view") ?? "chat"
   const [convos, setConvos] = useState<Convo[]>([])
+  const [matterTitle, setMatterTitle] = useState("")
 
   useEffect(() => {
     localStorage.setItem("dh.sidebar", collapsed ? "1" : "0")
@@ -26,7 +37,10 @@ export default function Sidebar({ onOpenSettings }: { onOpenSettings: () => void
     if (!matterId) return setConvos([])
     let live = true
     getMatter(matterId)
-      .then((m) => listSessions(matterClient(m.dir)))
+      .then((m) => {
+        setMatterTitle(m.title)
+        return listSessions(matterClient(m.dir))
+      })
       .then((list) => {
         if (!live) return
         setConvos(
@@ -60,11 +74,28 @@ export default function Sidebar({ onOpenSettings }: { onOpenSettings: () => void
         </NavLink>
       </nav>
 
-      {matterId && !collapsed && (
+      {matterId && (
+        <div className="sidebar-surfaces">
+          {!collapsed && matterTitle && <div className="sidebar-matter">{matterTitle}</div>}
+          {SURFACES.map((s) => (
+            <Link
+              key={s.view}
+              to={`/matter/${matterId}?view=${s.view}`}
+              className={`nav-item${view === s.view ? " active" : ""}`}
+              title={s.label}
+            >
+              <s.Icon />
+              {!collapsed && <span>{s.label}</span>}
+            </Link>
+          ))}
+        </div>
+      )}
+
+      {matterId && !collapsed && view === "chat" && (
         <div className="sidebar-convos">
           <div className="sidebar-section-head">
             <span>Conversations</span>
-            <Link to={`/matter/${matterId}`} className="icon-btn" title="New chat">
+            <Link to={`/matter/${matterId}?view=chat`} className="icon-btn" title="New chat">
               New
             </Link>
           </div>
@@ -102,6 +133,42 @@ export default function Sidebar({ onOpenSettings }: { onOpenSettings: () => void
         </button>
       </div>
     </aside>
+  )
+}
+
+function IconChat() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+    </svg>
+  )
+}
+
+function IconReview() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <rect x="3" y="3" width="18" height="18" rx="2" />
+      <path d="M3 9h18M3 15h18M9 3v18" />
+    </svg>
+  )
+}
+
+function IconDocsNav() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <polyline points="14 2 14 8 20 8" />
+    </svg>
+  )
+}
+
+function IconFlow() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <rect x="3" y="3" width="6" height="6" rx="1" />
+      <rect x="15" y="15" width="6" height="6" rx="1" />
+      <path d="M9 6h6a3 3 0 0 1 3 3v6" />
+    </svg>
   )
 }
 

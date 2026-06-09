@@ -68,7 +68,7 @@ export default function ChatPanel({
   agent: string
   available: Set<string>
   onAgentChange: (name: string) => void
-  onLaunchWorkflow: (name: string) => void
+  onLaunchWorkflow?: (name: string) => void
 }) {
   const client = useMemo<Client>(() => matterClient(directory), [directory])
   const [turns, setTurns] = useState<Turn[]>([])
@@ -180,9 +180,11 @@ export default function ChatPanel({
           </div>
         )}
       </div>
-      <div className="composer-tools">
-        <WorkflowLauncher available={available} onLaunch={onLaunchWorkflow} />
-      </div>
+      {onLaunchWorkflow && (
+        <div className="composer-tools">
+          <WorkflowLauncher available={available} onLaunch={onLaunchWorkflow} />
+        </div>
+      )}
       <div className="composer">
         <textarea
           placeholder="e.g. What termination rights does each party have?"

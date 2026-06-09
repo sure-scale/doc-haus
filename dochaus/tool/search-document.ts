@@ -37,6 +37,10 @@ export default tool({
   args: {
     query: tool.schema.string().describe("What to search for, in natural language"),
     k: tool.schema.number().int().min(1).max(20).optional().describe("Number of passages to return (default 5)"),
+    document: tool.schema
+      .string()
+      .optional()
+      .describe("Restrict the search to a single document by its exact name. Omit to search the whole matter."),
   },
   async execute(args, ctx) {
     const dbPath = path.join(ctx.directory, ".dochaus", "legal.db")
@@ -48,9 +52,10 @@ export default tool({
     const k = args.k ?? 5
 
     const db = new Database(dbPath, { readonly: true })
-    const rows = db
-      .query("SELECT doc_name, doc_path, section, text, char_start, char_end, embedding FROM chunks")
-      .all() as Array<{
+    const sql =
+      "SELECT doc_name, doc_path, section, text, char_start, char_end, embedding FROM chunks" +
+      (args.document ? " WHERE doc_name = ?" : "")
+    const rows = (args.document ? db.query(sql).all(args.document) : db.query(sql).all()) as Array<{
       doc_name: string
       doc_path: string
       section: string

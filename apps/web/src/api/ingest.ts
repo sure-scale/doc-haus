@@ -9,6 +9,24 @@ export type Document = { id: number; name: string; doc_path: string; created_at:
 export type MatterDetail = Matter & { documents: Document[] }
 export type IngestResult = { name: string; docPath: string; sections: number; chunks: number }
 
+// Tabular-review grid. Columns are questions; cells are keyed `<docName>::<colId>`.
+// Rows are the matter's documents, so they are not stored here.
+export type GridColumn = { id: string; question: string }
+export type GridCellData = {
+  answer: string
+  citation?: {
+    documentName: string
+    docPath: string
+    section: string
+    excerpt: string
+    charStart: number
+    charEnd: number
+  }
+  status: "filled" | "reviewed"
+  questionHash: string
+}
+export type Grid = { columns: GridColumn[]; cells: Record<string, GridCellData> }
+
 export async function listMatters(): Promise<Matter[]> {
   const res = await fetch(`${INGEST_URL}/matters`)
   return res.json()
@@ -41,6 +59,19 @@ export async function uploadDocument(id: string, file: File): Promise<IngestResu
 
 export async function deleteDocument(id: string, name: string): Promise<void> {
   await fetch(`${INGEST_URL}/matters/${id}/documents?name=${encodeURIComponent(name)}`, { method: "DELETE" })
+}
+
+export async function getGrid(id: string): Promise<Grid> {
+  const res = await fetch(`${INGEST_URL}/matters/${id}/grid`)
+  return res.json()
+}
+
+export async function saveGrid(id: string, grid: Grid): Promise<void> {
+  await fetch(`${INGEST_URL}/matters/${id}/grid`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(grid),
+  })
 }
 
 // Raw .docx bytes for a matter document. The viewer renders these client-side
