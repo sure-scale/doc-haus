@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react"
 import { Link } from "react-router-dom"
 import { createMatter, deleteMatter, listMatters, type Matter } from "../api/ingest"
+import { useToast } from "../components/Toast"
 
 export default function Matters() {
   const [matters, setMatters] = useState<Matter[]>([])
@@ -9,6 +10,7 @@ export default function Matters() {
   const [reference, setReference] = useState("")
   const [filter, setFilter] = useState("")
   const [busy, setBusy] = useState(false)
+  const toast = useToast()
 
   useEffect(() => {
     listMatters()
@@ -24,12 +26,14 @@ export default function Matters() {
     setTitle("")
     setReference("")
     setBusy(false)
+    toast("success", `Created matter "${matter.title}".`)
   }
 
   async function onDelete(m: Matter) {
     if (!confirm(`Delete matter "${m.title}"? This removes its documents and cannot be undone.`)) return
     await deleteMatter(m.id)
     setMatters((prev) => prev.filter((x) => x.id !== m.id))
+    toast("success", `Deleted matter "${m.title}".`)
   }
 
   const term = filter.trim().toLowerCase()

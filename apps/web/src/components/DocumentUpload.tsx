@@ -1,5 +1,6 @@
 import { useRef, useState } from "react"
 import { deleteDocument, uploadDocument, type Document } from "../api/ingest"
+import { useToast } from "./Toast"
 
 // The matter's documents, as a collapsible right rail beside the chat. Chat is
 // the primary surface, so documents sit out of its way: expanded the rail shows
@@ -22,25 +23,23 @@ export default function DocumentUpload({
 }) {
   const input = useRef<HTMLInputElement>(null)
   const [busy, setBusy] = useState(false)
-  const [status, setStatus] = useState("")
+  const toast = useToast()
 
   async function onFile(file: File) {
     setBusy(true)
-    setStatus(`Ingesting ${file.name}...`)
     const result = await uploadDocument(matterId, file)
-    setStatus(`Indexed ${result.name}: ${result.sections} sections, ${result.chunks} chunks.`)
     setBusy(false)
     onUploaded()
+    toast("success", `Indexed ${result.name}: ${result.sections} sections, ${result.chunks} chunks.`)
   }
 
   async function onRemove(name: string) {
     if (!confirm(`Remove ${name} from this matter? Its indexed text is deleted and answers can no longer cite it.`)) return
     setBusy(true)
-    setStatus(`Removing ${name}...`)
     await deleteDocument(matterId, name)
-    setStatus(`Removed ${name}.`)
     setBusy(false)
     onUploaded()
+    toast("success", `Removed ${name}.`)
   }
 
   if (collapsed) {
@@ -89,13 +88,8 @@ export default function DocumentUpload({
           if (file) onFile(file)
         }}
       >
-        {busy ? status : "Drop a .docx contract here, or click to choose a file."}
+        {busy ? "Working..." : "Drop a .docx contract here, or click to choose a file."}
       </div>
-      {!busy && status && (
-        <p className="muted" style={{ marginTop: 8 }}>
-          {status}
-        </p>
-      )}
       <input
         ref={input}
         type="file"

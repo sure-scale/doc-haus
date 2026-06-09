@@ -858,3 +858,78 @@ button.linklike:hover {
   background: var(--accent-soft);
   font-size: 12.5px;
 }
+
+/* Toasts: transient notifications stacked bottom-right, above the doc viewer
+   overlay. White card, soft shadow, a colored left border keyed to the type. */
+.toast-stack {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 360px;
+}
+
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--muted);
+  border-radius: 6px;
+  padding: 12px 14px;
+  box-shadow: 0 6px 20px rgba(26, 26, 24, 0.14);
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--text);
+  animation: toast-in 160ms ease-out;
+}
+
+.toast-success {
+  border-left-color: var(--accent);
+}
+
+.toast-warning {
+  border-left-color: var(--warn);
+}
+
+.toast-error {
+  border-left-color: var(--danger);
+}
+
+.toast-info {
+  border-left-color: #2a5a8a;
+}
+
+.toast-msg {
+  flex: 1;
+}
+
+.toast-close {
+  flex-shrink: 0;
+  display: inline-flex;
+  border: none;
+  background: none;
+  padding: 0;
+  margin-top: 1px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.toast-close:hover {
+  color: var(--text);
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
