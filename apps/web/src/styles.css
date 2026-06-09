@@ -586,6 +586,26 @@ button.linklike:hover {
   text-decoration: underline;
 }
 
+/* Remove control on a document row — floats right, reddens on hover. */
+.doc-remove {
+  margin-left: auto;
+  display: inline-flex;
+  border: none;
+  background: none;
+  padding: 4px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.doc-remove:hover {
+  color: var(--danger);
+}
+
+.doc-remove:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 .viewer-overlay {
   position: fixed;
   inset: 0;

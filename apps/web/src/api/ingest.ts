@@ -39,6 +39,10 @@ export async function uploadDocument(id: string, file: File): Promise<IngestResu
   return res.json()
 }
 
+export async function deleteDocument(id: string, name: string): Promise<void> {
+  await fetch(`${INGEST_URL}/matters/${id}/documents?name=${encodeURIComponent(name)}`, { method: "DELETE" })
+}
+
 // Raw .docx bytes for a matter document. The viewer renders these client-side
 // via WASM, so the file is fetched from our own ingest service and converted in
 // the browser — it never leaves for any third-party service.

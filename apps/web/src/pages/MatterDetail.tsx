@@ -52,7 +52,7 @@ export default function MatterDetail() {
         </h2>
       </div>
 
-      <div className={`matter-body${docsOpen ? "" : " docs-collapsed"}`}>
+      <div className={`matter-body${docsOpen && !workflow ? "" : " docs-collapsed"}`}>
         <div className={`workspace${workflow ? " with-artifact" : ""}`}>
           <ChatPanel
             key={session ?? "new"}
@@ -77,7 +77,7 @@ export default function MatterDetail() {
           documents={matter.documents}
           onUploaded={refresh}
           onView={setViewing}
-          collapsed={!docsOpen}
+          collapsed={!docsOpen || !!workflow}
           onToggle={() => setDocsOpen((o) => !o)}
         />
       </div>

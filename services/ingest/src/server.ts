@@ -1,9 +1,9 @@
 import { Hono } from "hono"
 import { cors } from "hono/cors"
-import { openDb, listDocuments } from "./db"
+import { openDb, listDocuments, deleteDocument } from "./db"
 import { ingestDocx } from "./ingest"
 import { listMatters, createMatter, getMatter, deleteMatter, matterDir } from "./matter"
-import { existsSync } from "node:fs"
+import { existsSync, rmSync } from "node:fs"
 import path from "node:path"
 
 const app = new Hono()
@@ -35,6 +35,16 @@ app.post("/matters/:id/documents", async (c) => {
   const buffer = Buffer.from(await file.arrayBuffer())
   const result = await ingestDocx(dir, file.name, buffer)
   return c.json(result)
+})
+
+// Remove a document: delete the source .docx and its index rows. basename()
+// keeps the lookup inside the matter directory, matching the content route.
+app.delete("/matters/:id/documents", (c) => {
+  const dir = matterDir(c.req.param("id"))
+  const file = path.join(dir, path.basename(c.req.query("name") ?? ""))
+  rmSync(file, { force: true })
+  if (existsSync(path.join(dir, ".dochaus", "legal.db"))) deleteDocument(openDb(dir), file)
+  return c.json({ ok: true })
 })
 
 // Serve a matter's .docx bytes so the web app can render the redline in-browser

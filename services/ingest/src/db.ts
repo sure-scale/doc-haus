@@ -39,6 +39,13 @@ export function listDocuments(db: Database) {
   return db.query("SELECT id, doc_path, name, created_at FROM documents ORDER BY created_at").all()
 }
 
+// Drop a document and its chunks from the index. Pairs with removing the source
+// .docx so the matter holds no orphaned embeddings.
+export function deleteDocument(db: Database, docPath: string) {
+  db.run("DELETE FROM chunks WHERE doc_path = ?", [docPath])
+  db.run("DELETE FROM documents WHERE doc_path = ?", [docPath])
+}
+
 // Re-ingesting a document replaces its rows so the index never holds stale chunks.
 export function upsertDocument(db: Database, docPath: string, name: string, createdAt: number): number {
   db.run("DELETE FROM chunks WHERE doc_path = ?", [docPath])

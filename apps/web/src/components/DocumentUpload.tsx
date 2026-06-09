@@ -1,5 +1,5 @@
 import { useRef, useState } from "react"
-import { uploadDocument, type Document } from "../api/ingest"
+import { deleteDocument, uploadDocument, type Document } from "../api/ingest"
 
 // The matter's documents, as a collapsible right rail beside the chat. Chat is
 // the primary surface, so documents sit out of its way: expanded the rail shows
@@ -33,6 +33,16 @@ export default function DocumentUpload({
     onUploaded()
   }
 
+  async function onRemove(name: string) {
+    if (!confirm(`Remove ${name} from this matter? Its indexed text is deleted and answers can no longer cite it.`)) return
+    setBusy(true)
+    setStatus(`Removing ${name}...`)
+    await deleteDocument(matterId, name)
+    setStatus(`Removed ${name}.`)
+    setBusy(false)
+    onUploaded()
+  }
+
   if (collapsed) {
     return (
       <button className="docs-tab" onClick={onToggle} title="Show documents">
@@ -61,6 +71,9 @@ export default function DocumentUpload({
                 {d.name}
               </button>
               <span className="muted">{new Date(d.created_at).toLocaleDateString()}</span>
+              <button className="doc-remove" onClick={() => onRemove(d.name)} title={`Remove ${d.name}`} disabled={busy}>
+                <IconTrash />
+              </button>
             </li>
           ))}
         </ul>
@@ -111,6 +124,15 @@ function IconChevron() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
       <polyline points="9 18 15 12 9 6" />
+    </svg>
+  )
+}
+
+function IconTrash() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <polyline points="3 6 5 6 21 6" />
+      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
     </svg>
   )
 }
