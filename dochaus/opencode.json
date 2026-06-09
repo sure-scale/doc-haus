@@ -51,6 +51,7 @@
     "search-document": "allow",
     "word-integration": "ask",
     "tracked-changes": "ask",
+    "redline": "ask",
     "edit": "deny",
     "bash": "deny",
     "webfetch": "deny",
