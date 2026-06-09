@@ -42,6 +42,15 @@ function readMessage(parts: Map<string, Part>, messageID: string) {
   return contentOf([...parts.values()].filter((p) => p.messageID === messageID))
 }
 
+// A session title from the first message: trimmed to a word boundary with an
+// ellipsis, so the rail reads cleanly instead of cutting mid-word.
+function titleFrom(text: string) {
+  if (text.length <= 60) return text
+  const cut = text.slice(0, 60)
+  const space = cut.lastIndexOf(" ")
+  return (space > 30 ? cut.slice(0, space) : cut).trimEnd() + "…"
+}
+
 export default function ChatPanel({
   directory,
   sessionID,
@@ -134,7 +143,7 @@ export default function ChatPanel({
     assistantRef.current = ""
     // Create the session lazily, titled from this first message so it reads as a
     // distinct conversation in the rail rather than an interchangeable "Q&A".
-    if (!sessionRef.current) sessionRef.current = (await createSession(client, text.slice(0, 60))).id
+    if (!sessionRef.current) sessionRef.current = (await createSession(client, titleFrom(text))).id
     await sendPrompt(client, sessionRef.current, agent, text)
   }
 
