@@ -31,8 +31,11 @@ export default function Sidebar({ onOpenSettings }: { onOpenSettings: () => void
         if (!live) return
         setConvos(
           list
-            .filter((s) => !s.parentID)
-            .map((s) => ({ id: s.id, title: s.title.replace(/^doc\.haus\s+/, ""), updated: s.time.updated }))
+            // Chats only: drop subagent runs (parentID) and our system-titled
+            // sessions — workflow runs and legacy chats carry a "doc.haus" title;
+            // real chats are titled from the user's first message.
+            .filter((s) => !s.parentID && s.title.trim() && !/^doc\.haus/i.test(s.title))
+            .map((s) => ({ id: s.id, title: s.title, updated: s.time.updated }))
             .sort((a, b) => b.updated - a.updated),
         )
       })

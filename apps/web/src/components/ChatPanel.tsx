@@ -80,9 +80,9 @@ export default function ChatPanel({
             .filter((t) => t.text || t.citations.length),
         ),
       )
-    } else {
-      createSession(client, "doc.haus Q&A").then((s) => (sessionRef.current = s.id))
     }
+    // No session until the first send (see onSend) — mounting the panel must not
+    // mint an empty throwaway session that would clutter the conversation list.
     subscribeEvents(client, onEvent, controller.signal).catch(() => {})
     return () => controller.abort()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -126,12 +126,15 @@ export default function ChatPanel({
 
   async function onSend() {
     const text = input.trim()
-    if (!text || busy || !sessionRef.current) return
+    if (!text || busy) return
     setTurns((prev) => [...prev, { role: "user", text, citations: [] }])
     setInput("")
     setBusy(true)
     partsRef.current.clear()
     assistantRef.current = ""
+    // Create the session lazily, titled from this first message so it reads as a
+    // distinct conversation in the rail rather than an interchangeable "Q&A".
+    if (!sessionRef.current) sessionRef.current = (await createSession(client, text.slice(0, 60))).id
     await sendPrompt(client, sessionRef.current, agent, text)
   }
 
