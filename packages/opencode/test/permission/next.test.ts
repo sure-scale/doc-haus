@@ -794,7 +794,7 @@ it.instance(
       yield* Fiber.join(fiber)
 
       const result = yield* ask({
-        sessionID: SessionID.make("session_test2"),
+        sessionID: SessionID.make("session_test"),
         permission: "bash",
         patterns: ["ls"],
         metadata: {},
@@ -802,6 +802,42 @@ it.instance(
         ruleset: [],
       })
       expect(result).toBeUndefined()
+    }),
+  { git: true },
+)
+
+it.instance(
+  "reply - always approval does not leak to other sessions",
+  () =>
+    Effect.gen(function* () {
+      const fiber = yield* ask({
+        id: PermissionV1.ID.make("per_test3b"),
+        sessionID: SessionID.make("session_test"),
+        permission: "bash",
+        patterns: ["ls"],
+        metadata: {},
+        always: ["ls"],
+        ruleset: [],
+      }).pipe(Effect.forkScoped)
+
+      yield* waitForPending(1)
+      yield* reply({ requestID: PermissionV1.ID.make("per_test3b"), reply: "always" })
+      yield* Fiber.join(fiber)
+
+      const other = yield* ask({
+        id: PermissionV1.ID.make("per_test3c"),
+        sessionID: SessionID.make("session_test2"),
+        permission: "bash",
+        patterns: ["ls"],
+        metadata: {},
+        always: [],
+        ruleset: [],
+      }).pipe(Effect.forkScoped)
+
+      yield* waitForPending(1)
+      yield* rejectAll()
+      const exit = yield* Fiber.await(other)
+      expect(Exit.isFailure(exit)).toBe(true)
     }),
   { git: true },
 )

@@ -35,7 +35,7 @@ interface PendingEntry {
 
 interface State {
   pending: Map<PermissionV1.ID, PendingEntry>
-  approved: PermissionV1.Rule[]
+  approved: Map<string, PermissionV1.Rule[]>
 }
 
 export function evaluate(permission: string, pattern: string, ...rulesets: PermissionV1.Ruleset[]): PermissionV1.Rule {
@@ -61,7 +61,7 @@ export const layer = Layer.effect(
         void ctx
         const state = {
           pending: new Map<PermissionV1.ID, PendingEntry>(),
-          approved: [],
+          approved: new Map<string, PermissionV1.Rule[]>(),
         }
 
         yield* Effect.addFinalizer(() =>
@@ -83,7 +83,7 @@ export const layer = Layer.effect(
       let needsAsk = false
 
       for (const pattern of request.patterns) {
-        const rule = evaluate(request.permission, pattern, ruleset, approved)
+        const rule = evaluate(request.permission, pattern, ruleset, approved.get(request.sessionID) ?? [])
         log.info("evaluated", { permission: request.permission, pattern, action: rule })
         if (rule.action === "deny") {
           return yield* new PermissionV1.DeniedError({
@@ -155,8 +155,10 @@ export const layer = Layer.effect(
       yield* Deferred.succeed(existing.deferred, undefined)
       if (input.reply === "once") return
 
+      const rules = approved.get(existing.info.sessionID) ?? []
+      approved.set(existing.info.sessionID, rules)
       for (const pattern of existing.info.always) {
-        approved.push({
+        rules.push({
           permission: existing.info.permission,
           pattern,
           action: "allow",
@@ -166,7 +168,7 @@ export const layer = Layer.effect(
       for (const [id, item] of pending.entries()) {
         if (item.info.sessionID !== existing.info.sessionID) continue
         const ok = item.info.patterns.every(
-          (pattern) => evaluate(item.info.permission, pattern, approved).action === "allow",
+          (pattern) => evaluate(item.info.permission, pattern, rules).action === "allow",
         )
         if (!ok) continue
         pending.delete(id)
