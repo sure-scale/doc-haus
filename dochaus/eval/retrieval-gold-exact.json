@@ -1,0 +1,152 @@
+[
+  {
+    "query": "Section 1.1",
+    "needle": "1.1",
+    "kind": "section"
+  },
+  {
+    "query": "Section 1.11",
+    "needle": "1.11",
+    "kind": "section"
+  },
+  {
+    "query": "Section 2.3",
+    "needle": "2.3",
+    "kind": "section"
+  },
+  {
+    "query": "Section 4.3",
+    "needle": "4.3",
+    "kind": "section"
+  },
+  {
+    "query": "Section 6.2",
+    "needle": "6.2",
+    "kind": "section"
+  },
+  {
+    "query": "Section 8.1",
+    "needle": "8.1",
+    "kind": "section"
+  },
+  {
+    "query": "Section 11.1",
+    "needle": "11.1",
+    "kind": "section"
+  },
+  {
+    "query": "Section 11.11",
+    "needle": "11.11",
+    "kind": "section"
+  },
+  {
+    "query": "Section 13.6",
+    "needle": "13.6",
+    "kind": "section"
+  },
+  {
+    "query": "Section 16.3",
+    "needle": "16.3",
+    "kind": "section"
+  },
+  {
+    "query": "Section 23.2",
+    "needle": "23.2",
+    "kind": "section"
+  },
+  {
+    "query": "Section 29.2",
+    "needle": "29.2",
+    "kind": "section"
+  },
+  {
+    "query": "Acquisition Agreement",
+    "needle": "Acquisition Agreement",
+    "kind": "term"
+  },
+  {
+    "query": "Availability Target",
+    "needle": "Availability Target",
+    "kind": "term"
+  },
+  {
+    "query": "Cure Period",
+    "needle": "Cure Period",
+    "kind": "term"
+  },
+  {
+    "query": "EU GDPR",
+    "needle": "EU GDPR",
+    "kind": "term"
+  },
+  {
+    "query": "Garden Leave Period",
+    "needle": "Garden Leave Period",
+    "kind": "term"
+  },
+  {
+    "query": "Minimum Royalty",
+    "needle": "Minimum Royalty",
+    "kind": "term"
+  },
+  {
+    "query": "Original Agreement",
+    "needle": "Original Agreement",
+    "kind": "term"
+  },
+  {
+    "query": "RSU Award",
+    "needle": "RSU Award",
+    "kind": "term"
+  },
+  {
+    "query": "Revolving Credit Facility",
+    "needle": "Revolving Credit Facility",
+    "kind": "term"
+  },
+  {
+    "query": "Term Loan",
+    "needle": "Term Loan",
+    "kind": "term"
+  },
+  {
+    "query": "ABC Automotive Manufacturing, Inc.",
+    "needle": "ABC Automotive Manufacturing, Inc.",
+    "kind": "party"
+  },
+  {
+    "query": "Borrower, Holdings",
+    "needle": "Borrower, Holdings",
+    "kind": "party"
+  },
+  {
+    "query": "Cascade Waste Management, Inc.",
+    "needle": "Cascade Waste Management, Inc.",
+    "kind": "party"
+  },
+  {
+    "query": "First Saxonbrook Leasing Corp.",
+    "needle": "First Saxonbrook Leasing Corp.",
+    "kind": "party"
+  },
+  {
+    "query": "Locke LLP",
+    "needle": "Locke LLP",
+    "kind": "party"
+  },
+  {
+    "query": "Orion Logistics Corp.",
+    "needle": "Orion Logistics Corp.",
+    "kind": "party"
+  },
+  {
+    "query": "Ridgeline Consumer Products Inc.",
+    "needle": "Ridgeline Consumer Products Inc.",
+    "kind": "party"
+  },
+  {
+    "query": "TerraVerde Real Estate Holdings LLC",
+    "needle": "TerraVerde Real Estate Holdings LLC",
+    "kind": "party"
+  }
+]

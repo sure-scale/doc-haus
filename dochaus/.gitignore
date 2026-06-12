@@ -1,6 +1,11 @@
 node_modules
 package-lock.json
 
+# Retrieval benchmark artifacts (eval/retrieval-eval.ts): the ingested corpus is
+# rebuildable from harvey-labs, results are per-run measurements.
+eval/.retrieval-corpus/
+eval/results/
+
 # Runtime-mutable firm registries (written by services/ingest) — present on disk,
 # never tracked. Readers tolerate the files being absent.
 agents.json

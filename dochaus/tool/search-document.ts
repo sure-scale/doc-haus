@@ -6,8 +6,9 @@ import { formatCitations } from "../lib/citations"
 import { pendingRedlinesForDoc } from "../lib/redlines"
 
 // doc.haus retrieval tool. Reads the per-matter legal.db that
-// `services/ingest` populates, embeds the query with the same local MiniLM model
-// used at ingest time, and returns the closest document chunks as citations.
+// `services/ingest` populates and runs the query through two channels — the
+// same local MiniLM embedding used at ingest time, and the BM25-ranked FTS5
+// index ingest maintains over the same chunks — fused into one citation list.
 //
 // The database lives inside the matter directory (`<matter>/.dochaus/legal.db`)
 // so retrieval is naturally scoped to the active matter and never crosses into
@@ -31,6 +32,86 @@ function dot(a: Float32Array, b: Float32Array) {
   let sum = 0
   for (let i = 0; i < DIM; i++) sum += a[i] * b[i]
   return sum
+}
+
+// Hybrid retrieval (issue #67): two channels over the same chunks — embedding
+// cosine for meaning, FTS5/BM25 for exact tokens (section numbers, defined
+// terms, party names) — fused with reciprocal-rank fusion. RRF works on ranks
+// alone, so the channels' incomparable score scales never need normalizing.
+const CANDIDATES = 20
+const RRF_K = 60
+
+type ChunkRow = {
+  id: number
+  doc_name: string
+  doc_path: string
+  section: string
+  text: string
+  char_start: number
+  char_end: number
+  flagged: number
+}
+
+function vectorChannel(db: Database, queryVec: Float32Array, document?: string): ChunkRow[] {
+  const sql =
+    "SELECT id, doc_name, doc_path, section, text, char_start, char_end, embedding, flagged FROM chunks" +
+    (document ? " WHERE doc_name = ?" : "")
+  const rows = (document ? db.query(sql).all(document) : db.query(sql).all()) as Array<
+    ChunkRow & { embedding: Uint8Array }
+  >
+  return rows
+    .map((row) => ({
+      row,
+      score: dot(queryVec, new Float32Array(row.embedding.buffer, row.embedding.byteOffset, DIM)),
+    }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, CANDIDATES)
+    .map((scored) => scored.row)
+}
+
+// FTS5 MATCH has its own query syntax that throws on raw punctuation, so every
+// whitespace token is wrapped in double quotes (a phrase). Quoting also makes
+// dotted identifiers work: unicode61 splits "8.3" into adjacent tokens, and the
+// quoted phrase matches exactly that sequence. Tokens are OR'd — BM25's IDF
+// weighting lets a rare token (a section number, a party name) dominate the
+// ranking while near-stopwords contribute almost nothing.
+function lexicalChannel(db: Database, query: string, document?: string): ChunkRow[] {
+  const match = query
+    .split(/\s+/)
+    .filter((token) => /[\p{L}\p{N}]/u.test(token))
+    .map((token) => `"${token.replaceAll('"', '""')}"`)
+    .join(" OR ")
+  if (!match) return []
+  const sql =
+    "SELECT c.id, c.doc_name, c.doc_path, c.section, c.text, c.char_start, c.char_end, c.flagged" +
+    " FROM chunks_fts f JOIN chunks c ON c.id = f.rowid WHERE chunks_fts MATCH ?" +
+    (document ? " AND c.doc_name = ?" : "") +
+    // bm25() is best-first ascending; weight the section label above body text so
+    // a query naming a clause ranks the clause's own chunks before passing mentions.
+    " ORDER BY bm25(chunks_fts, 1.0, 2.0) LIMIT ?"
+  const params = document ? [match, document, CANDIDATES] : [match, CANDIDATES]
+  return db.query(sql).all(...params) as ChunkRow[]
+}
+
+// Third channel: the whole query as one FTS5 phrase. It only matches chunks
+// containing the query's tokens as a literal sequence — an exact section
+// reference, defined term, or party name — and is empty for paraphrased
+// semantic queries. Without it, a chunk that uniquely contains the full literal
+// can be outscored in fusion by chunks the fuzzy channels both like; the extra
+// rank contribution here keeps the literal hit on top, which is the point of
+// hybrid retrieval. Single-token queries are already covered by the OR channel,
+// and a phrase needs two tokens to add ordering signal.
+function phraseChannel(db: Database, query: string, document?: string): ChunkRow[] {
+  const tokens = query.split(/\s+/).filter((token) => /[\p{L}\p{N}]/u.test(token))
+  if (tokens.length < 2) return []
+  const phrase = `"${tokens.map((token) => token.replaceAll('"', '""')).join(" ")}"`
+  const sql =
+    "SELECT c.id, c.doc_name, c.doc_path, c.section, c.text, c.char_start, c.char_end, c.flagged" +
+    " FROM chunks_fts f JOIN chunks c ON c.id = f.rowid WHERE chunks_fts MATCH ?" +
+    (document ? " AND c.doc_name = ?" : "") +
+    " ORDER BY bm25(chunks_fts, 1.0, 2.0) LIMIT ?"
+  const params = document ? [phrase, document, CANDIDATES] : [phrase, CANDIDATES]
+  return db.query(sql).all(...params) as ChunkRow[]
 }
 
 // Per-session memory of the most recent result-sets. A model in a search loop
@@ -67,29 +148,28 @@ export default tool({
     const k = args.k ?? 5
 
     const db = new Database(dbPath, { readonly: true })
-    const sql =
-      "SELECT doc_name, doc_path, section, text, char_start, char_end, embedding, flagged FROM chunks" +
-      (args.document ? " WHERE doc_name = ?" : "")
-    const rows = (args.document ? db.query(sql).all(args.document) : db.query(sql).all()) as Array<{
-      doc_name: string
-      doc_path: string
-      section: string
-      text: string
-      char_start: number
-      char_end: number
-      embedding: Uint8Array
-      flagged: number
-    }>
+    const channels = [
+      vectorChannel(db, queryVec, args.document),
+      lexicalChannel(db, args.query, args.document),
+      phraseChannel(db, args.query, args.document),
+    ]
     db.close()
 
-    const ranked = rows
-      .map((row) => {
-        const buf = row.embedding
-        const vec = new Float32Array(buf.buffer, buf.byteOffset, DIM)
-        return { row, score: dot(queryVec, vec) }
+    // score = Σ 1/(RRF_K + rank) over the channels a chunk appears in, divided
+    // by the best possible sum (rank 1 in every channel) to cap it at 1. A hit
+    // from a single channel therefore tops out near 1/3 — the scale ranks
+    // results against each other, it is not a calibrated relevance probability.
+    const fused = new Map<number, { row: ChunkRow; score: number }>()
+    for (const channel of channels)
+      channel.forEach((row, i) => {
+        const entry = fused.get(row.id) ?? { row, score: 0 }
+        entry.score += 1 / (RRF_K + 1 + i)
+        fused.set(row.id, entry)
       })
+    const ranked = [...fused.values()]
       .sort((a, b) => b.score - a.score)
       .slice(0, k)
+      .map(({ row, score }) => ({ row, score: score / (channels.length / (RRF_K + 1)) }))
 
     const signature = ranked.map(({ row }) => `${row.doc_name}§${row.section}`).join("|")
     const recent = recentBySession.get(ctx.sessionID) ?? []

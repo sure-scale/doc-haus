@@ -1,0 +1,62 @@
+[
+  {
+    "query": "at what point does responsibility for damage to shipped goods transfer to the buyer",
+    "doc": "analyze-change-of-contro--apex-distribution-agreement.docx",
+    "substring": "risk of loss of Company Products shall pass"
+  },
+  {
+    "query": "can the employer keep a departing worker out of the building and barred from contacting clients during their notice period",
+    "doc": "offer-letter-to-employme--employment-agreement-template.docx",
+    "substring": "remain away from the Company's offices"
+  },
+  {
+    "query": "what happens if the tenant stays in the space after the lease ends without permission",
+    "doc": "analyze-change-of-contro--terraverde-lease-agreement.docx",
+    "substring": "remains in possession of the Premises beyond"
+  },
+  {
+    "query": "can the company reclaim bonus money already paid to an executive under a later-adopted recovery rule",
+    "doc": "analyze-change-of-contro--webb-employment-agreement.docx",
+    "substring": "any clawback, forfeiture, or recoupment policy"
+  },
+  {
+    "query": "must downstream vendors handling personal records be held to the same privacy standards as the main processor",
+    "doc": "analyze-change-of-contro--meridian-dpa.docx",
+    "substring": "data protection obligations no less protective"
+  },
+  {
+    "query": "are an employee's own elective salary deferrals always fully vested and not subject to forfeiture",
+    "doc": "analyze-change-of-contro--solara-deferred-comp-plan.docx",
+    "substring": "such amounts shall be nonforfeitable at all times"
+  },
+  {
+    "query": "in which city must the parties bring any lawsuit arising under the agreement",
+    "doc": "analyze-change-of-contro--apex-msa.docx",
+    "substring": "exclusive jurisdiction of the state and federal courts located in Wilmington"
+  },
+  {
+    "query": "does the buyer get the lowest available pricing if the supplier is acquired",
+    "doc": "analyze-change-of-contro--novabridge-supply-agreement.docx",
+    "substring": "be reset to the lower of"
+  },
+  {
+    "query": "must the borrower use payouts received when property is destroyed or taken by the government to pay down the loan",
+    "doc": "compare-credit-agreement--draft-credit-agreement.docx",
+    "substring": "from insurance recoveries or condemnation awards"
+  },
+  {
+    "query": "are the parties barred from recovering lost profits or downstream ripple-effect losses",
+    "doc": "analyze-change-of-contro--meridian-license-agreement.docx",
+    "substring": "INDIRECT, INCIDENTAL, CONSEQUENTIAL, SPECIAL, PUNITIVE"
+  },
+  {
+    "query": "is information that has entered the public domain still protected as confidential",
+    "doc": "analyze-change-of-contro--novabridge-partnership.docx",
+    "substring": "is or becomes publicly available through no fault"
+  },
+  {
+    "query": "what categories of business assets does the lender take a security interest in as collateral",
+    "doc": "analyze-change-of-contro--great-lakes-credit-agreement.docx",
+    "substring": "trade secrets), letter-of-credit rights"
+  }
+]

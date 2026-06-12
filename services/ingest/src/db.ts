@@ -43,6 +43,44 @@ export function openDb(matterDir: string): Database {
   // gain them here; their documents read as clean until re-ingested.
   if (!hasColumn(db, "documents", "injection_report")) db.run("ALTER TABLE documents ADD COLUMN injection_report TEXT")
   if (!hasColumn(db, "chunks", "flagged")) db.run("ALTER TABLE chunks ADD COLUMN flagged INTEGER NOT NULL DEFAULT 0")
+  // Lexical channel for hybrid retrieval (issue #67): a BM25-ranked FTS5 index
+  // over the same chunks the vector channel scans. external-content mode stores
+  // only the index and reads row text back from chunks, so chunk text is never
+  // duplicated. The section label is indexed alongside the body so a query
+  // naming a clause ("Section 8.3") matches the clause's own chunks directly.
+  db.run(`
+    CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
+      text, section,
+      content='chunks', content_rowid='id',
+      tokenize='unicode61 remove_diacritics 2'
+    )
+  `)
+  // Triggers keep the index in sync with every write path (insertChunk,
+  // upsertDocument's delete-then-reinsert, deleteDocument). External-content
+  // FTS5 requires the special 'delete' insert form to unindex a row.
+  db.run(`
+    CREATE TRIGGER IF NOT EXISTS chunks_fts_ai AFTER INSERT ON chunks BEGIN
+      INSERT INTO chunks_fts(rowid, text, section) VALUES (new.id, new.text, new.section);
+    END
+  `)
+  db.run(`
+    CREATE TRIGGER IF NOT EXISTS chunks_fts_ad AFTER DELETE ON chunks BEGIN
+      INSERT INTO chunks_fts(chunks_fts, rowid, text, section) VALUES ('delete', old.id, old.text, old.section);
+    END
+  `)
+  db.run(`
+    CREATE TRIGGER IF NOT EXISTS chunks_fts_au AFTER UPDATE ON chunks BEGIN
+      INSERT INTO chunks_fts(chunks_fts, rowid, text, section) VALUES ('delete', old.id, old.text, old.section);
+      INSERT INTO chunks_fts(rowid, text, section) VALUES (new.id, new.text, new.section);
+    END
+  `)
+  // Backfill databases that predate the FTS table, and self-heal any drift (a
+  // crash between table creation and indexing, or chunks written while the
+  // triggers did not exist yet) — a row-count mismatch is the one observable
+  // symptom of every such state, and 'rebuild' atomically reindexes from chunks.
+  const chunkCount = (db.query("SELECT COUNT(*) AS n FROM chunks").get() as { n: number }).n
+  const ftsCount = (db.query("SELECT COUNT(*) AS n FROM chunks_fts").get() as { n: number }).n
+  if (ftsCount !== chunkCount) db.run("INSERT INTO chunks_fts(chunks_fts) VALUES ('rebuild')")
   // Pending redline proposals. The canonical .docx stays clean (the accepted
   // state); each redline a tool proposes is a row here until a reviewer accepts
   // it (baked into the doc) or rejects it. scope drives how the edit is replayed:

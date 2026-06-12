@@ -498,6 +498,21 @@ app.post("/matters/:id/redlines/reject-all", (c) => {
 const { seedPlaybooks } = await import("./seed")
 seedPlaybooks()
 
+// Matters indexed before the lexical FTS channel existed (issue #67) get their
+// chunks_fts table built and backfilled by openDb's migration here, so the
+// search-document tool never opens a legal.db without it. Matters created from
+// now on carry the table from first ingest.
+for (const matter of listMatters()) {
+  if (!existsSync(path.join(matter.dir, ".dochaus", "legal.db"))) continue
+  // One corrupt or externally-locked matter DB must not abort the whole
+  // service; that matter just stays un-migrated until its next ingest.
+  try {
+    openDb(matter.dir).close()
+  } catch (e) {
+    console.error(`failed to migrate ${matter.dir}: ${e instanceof Error ? e.message : e}`)
+  }
+}
+
 // Bind loopback by default like opencode (packages/opencode/src/cli/network.ts):
 // the service is self-hosted alongside the engine and web app, not exposed
 // directly. Front it with a reverse proxy to serve beyond localhost.
