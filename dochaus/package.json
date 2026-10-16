@@ -1,16 +1,35 @@
 {
   "name": "@dochaus/config",
   "private": true,
+  "license": "GPL-3.0-only",
   "type": "module",
+  "scripts": {
+    "typecheck": "tsgo -p tsconfig.v2.json --noEmit",
+    "test:retrieval-contracts": "bun test test/search-document.test.ts test/search-document-filters.test.ts test/search-document-containment.test.ts --timeout 120000"
+  },
   "dependencies": {
     "@huggingface/transformers": "4.2.0",
-    "@opencode-ai/plugin": "1.16.0",
+    "@xmldom/xmldom": "0.8.13",
     "docxodus": "^6.4.0",
     "fflate": "0.8.3",
+    "htmlparser2": "8.0.2",
     "mammoth": "^1.8.0",
-    "unpdf": "^1.6.2"
+    "micromark": "4.0.2",
+    "micromark-util-decode-string": "2.0.1",
+    "playwright": "1.59.1",
+    "postal-mime": "2.7.4",
+    "unpdf": "^1.6.2",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
+    "@opencode/plugin": "workspace:*",
+    "@opencode/client": "workspace:*",
+    "zod": "catalog:",
+    "@opencode/core": "workspace:*",
+    "@opencode/schema": "workspace:*"
   },
-  "patchedDependencies": {
-    "docxodus@6.4.0": "patches/docxodus@6.4.0.patch"
+  "devDependencies": {
+    "@types/bun": "catalog:",
+    "@typescript/native-preview": "catalog:",
+    "@opencode-ai/sdk": "1.16.0",
+    "@opencode-ai/plugin": "1.16.0"
   }
 }

@@ -1,12 +1,15 @@
-export * as ConfigMCPV1 from "./mcp"
+export * as ConfigMCPV1 from "./mcp.js"
 
 import { Schema } from "effect"
-import { PositiveInt } from "../../schema"
+import { PositiveInt } from "../../schema.js"
 
 export const Local = Schema.Struct({
   type: Schema.Literal("local").annotate({ description: "Type of MCP server connection" }),
   command: Schema.mutable(Schema.Array(Schema.String)).annotate({
     description: "Command and arguments to run the MCP server",
+  }),
+  cwd: Schema.optional(Schema.String).annotate({
+    description: "Working directory for the MCP server process. Relative paths resolve from the workspace directory.",
   }),
   environment: Schema.optional(Schema.Record(Schema.String, Schema.String)).annotate({
     description: "Environment variables to set when running the MCP server",

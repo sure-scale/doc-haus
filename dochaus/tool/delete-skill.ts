@@ -1,4 +1,4 @@
-import { tool } from "@opencode-ai/plugin"
+import { tool } from "./legacy-definition"
 
 // doc.haus delete-skill tool. Removes a custom firm skill from
 // WORKSPACE_ROOT/.skills. Built-in skills cannot be deleted.

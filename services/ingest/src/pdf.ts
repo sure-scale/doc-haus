@@ -7,14 +7,14 @@ import path from "node:path"
 // through OCR.
 const SCANNED_CHARS_PER_PAGE = 100
 
-// PDF -> text for indexing. markitdown (Python) is the primary extractor because
-// it emits structural Markdown whose headings survive into sectionize(); unpdf is
-// the floor when no Python tooling is on the host. Flat scans yield a near-empty
-// text layer either way, so those fall through to OCR.
+// PDF -> text for indexing. LiteParse is the primary born-digital extractor
+// because it emits structured Markdown without Python startup overhead; markitdown
+// remains the compatible fallback, and unpdf is the no-Python floor. Flat scans
+// yield a near-empty text layer either way, so those fall through to OCR.
 export async function pdfToText(pdfBytes: Buffer): Promise<string> {
   const { extractText, getDocumentProxy } = await import("unpdf")
   const pdf = await getDocumentProxy(new Uint8Array(pdfBytes))
-  const text = (await markitdownText(pdfBytes)) ?? (await extractText(pdf, { mergePages: true })).text
+  const text = (await liteparseText(pdfBytes)) ?? (await markitdownText(pdfBytes)) ?? (await extractText(pdf, { mergePages: true })).text
   if (!looksScanned(text, pdf.numPages)) return text
   return (await ocrPdfText(pdfBytes)) ?? text
 }
@@ -53,6 +53,21 @@ export async function ocrPdfText(pdfBytes: Buffer): Promise<string | null> {
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+}
+
+async function liteparseText(pdfBytes: Buffer): Promise<string | null> {
+  return import("@llamaindex/liteparse")
+    .then(async ({ LiteParse }) => {
+      const result = await new LiteParse({
+        outputFormat: "markdown",
+        imageMode: "off",
+        extractLinks: false,
+        ocrEnabled: false,
+        quiet: true,
+      }).parse(pdfBytes)
+      return result.text
+    })
+    .catch(() => null)
 }
 
 async function markitdownText(pdfBytes: Buffer): Promise<string | null> {

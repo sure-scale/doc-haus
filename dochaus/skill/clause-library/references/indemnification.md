@@ -1,9 +1,13 @@
 # Indemnification
 
-US commercial-market reference points; verify against the matter's
-jurisdiction pack.
+**Topic:** Indemnification — scope, triggers, defense control.
+**Contract type:** All commercial agreements; IP indemnity weighted to
+technology deals.
+**Jurisdiction:** US commercial market; verify against the matter's
+jurisdiction pack. Positions are firm-configurable defaults overridable via
+`.dochaus/profile.md`.
 
-## Balanced position
+## Preferred
 
 Mutual indemnities limited to third-party claims, each tied to a specific
 trigger: the provider indemnifies for third-party claims that the service
@@ -25,37 +29,40 @@ of, or imposes any obligation on, the indemnified party without that party's
 prior written consent, not to be unreasonably withheld.
 ```
 
-## Common one-sided variants
+**Off-market variants to watch.** Tilted to the indemnified party: trigger of
+"any breach of this Agreement," converting every contract claim into an
+indemnified (often uncapped) claim; coverage of first-party losses, not just
+third-party claims; indemnified party controls and settles at the indemnitor's
+cost without consent. Tilted to the indemnifying party: no IP-infringement
+indemnity at all in a technology deal, or one gutted by exclusions (any
+combination, any configuration, any customer data); indemnity conditioned on
+requirements that defeat it (notice within days as a strict condition
+precedent, sole-discretion settlement, remedy limited to service modification).
 
-**Tilted toward the indemnified party (often the customer):**
-- Trigger of "any breach of this Agreement," converting every contract claim
-  into an indemnified — and often uncapped — claim.
-- Coverage of first-party (direct) losses, not just third-party claims.
-- Indemnified party controls the defense and settles at the indemnitor's cost
-  without consent.
+## Fallbacks (ordered)
 
-**Tilted toward the indemnifying party (often the provider):**
-- No IP-infringement indemnity at all in a technology deal, or one gutted by
-  exclusions (any combination, any configuration, any customer data).
-- Indemnity conditioned on requirements that defeat it in practice — notice
-  within days as a strict condition precedent, sole-discretion settlement
-  rights, or exclusive remedies limited to service modification.
-
-## Fallback ladder
-
-1. Mutual, trigger-specific, third-party-only indemnities with standard
-   defense-control and consent-to-settle terms (preferred).
-2. Provider-only IP indemnity plus mutual indemnity for gross negligence,
+1. **Offer when** the counterparty resists mutual trigger-specific indemnities:
+   provider-only IP indemnity plus mutual indemnity for gross negligence,
    willful misconduct, and violation of law.
-3. IP indemnity with customary exclusions (combinations not provided by the
-   provider, use in breach, customer-provided materials) and the usual
-   mitigation options: procure the right, modify, replace, or refund prepaid
-   fees as last resort.
-4. Notice as a condition only to the extent the indemnitor is actually
-   prejudiced by late notice.
+2. **Offer when** the provider needs IP-indemnity carve-outs for risk it does
+   not control: IP indemnity with customary exclusions (combinations not
+   provided by the provider, use in breach, customer-provided materials) and
+   the usual mitigation options — procure the right, modify, replace, or refund
+   prepaid fees as last resort.
+3. **Offer when** the counterparty insists notice be a hard condition: notice
+   as a condition only to the extent the indemnitor is actually prejudiced by
+   late notice.
 
-Below rung 4 — indemnity for "any breach," first-party losses, or settlement
-without consent — escalate.
+## Walk-away floor
+
+Indemnity for "any breach," coverage of first-party losses, or a right to
+settle without the indemnified party's consent.
+
+## Escalation trigger
+
+At or below the floor, do not concede. Route to the **supervising lawyer** for
+the matter (or the `.dochaus/profile.md` Escalation Rules contact) — indemnity
+scope is where hidden uncapped exposure lives and warrants a partner sign-off.
 
 **Rationale:** Indemnity scope and its interaction with the liability cap is
 where most hidden uncapped exposure lives; the trigger list matters more than

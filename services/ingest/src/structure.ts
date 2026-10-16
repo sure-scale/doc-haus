@@ -1,16 +1,16 @@
 import { Database } from "bun:sqlite"
 import { getMeta, setMeta } from "./db"
+import type { Section } from "./ingest"
 
-// Deterministic contract-structure extraction. Contracts are self-describing
-// graphs: defined terms are typographically marked, cross-references are
-// numbered, parties sit in the preamble, and amendments name their base
-// agreement in formulaic recitals. Everything here is regex over the document's
-// extracted text — no model in the loop — so every row carries verbatim text
-// plus offsets and a miss is an absent row, never a wrong fact. Bump VERSION
-// whenever a pattern changes so existing matters re-extract at next boot
-// (server.ts) or ingest (ingest.ts).
+// Deterministic legal-document structure extraction. Each extractor is
+// signal-driven and optional: it records marked definitions, numbered
+// cross-references, opening entity labels, or formulaic amendment operations
+// only when the source text contains that structure. No document family is
+// presumed, and a miss is an absent row rather than an inferred fact. Every row
+// carries verbatim text plus offsets. Bump VERSION whenever a pattern changes so
+// existing matters re-extract at next boot (server.ts) or ingest (ingest.ts).
 
-export const VERSION = "2"
+export const VERSION = "3"
 
 // Quoted defined term: starts uppercase, single line, sane length. Straight or
 // curly quotes — extracted text carries both.
@@ -29,18 +29,15 @@ const MEANS_TERM_RE = new RegExp(`${TERM}\\s+(?:shall\\s+)?(?:means?\\b|shall\\s
 const REF_RE =
   /\b(Section|Sections|Article|Articles|Clause|Clauses|Exhibit|Exhibits|Schedule|Schedules|Annex|Appendix)\s+(\d+(?:\.\d+)*(?:\([a-z]+\))*|[A-Z](?![A-Za-z])|[IVXLC]+(?![A-Za-z]))/g
 
-// Corporate-suffix party names, preamble only. Same family as the eval gold
-// derivation, widened with common suffixes. Name words carry no internal
+// Corporate-suffix entity names in the opening text. Name words carry no internal
 // periods — a period would let a match run across a sentence boundary
-// ("...Marcus Webb. The Company") — so dotted lead-ins like "U.S." drop off the
-// front of a name rather than corrupt it. "Holdings" terminates a name only
-// when no real suffix follows ("Cascade Holdings LLC" stays whole), a leading
-// article never glues onto a name ("The Company Castellan ..."), and a
-// standalone ampersand is a valid connector ("Solara Health & Wellness LLC").
-const PARTY_RE =
+// and dotted lead-ins drop off rather than corrupting the match. A standalone
+// holding-company suffix terminates the name only when no entity suffix follows;
+// a leading article never glues onto a name; and an ampersand is a valid connector.
+const ENTITY_RE =
   /\b((?!The\b)[A-Z][A-Za-z&'\-]+(?: (?:[A-Z][A-Za-z&'\-]+|&)){0,4},? (?:(?:Holdings\s+)?(?:LLC|LLP|L\.P\.|Inc\.|Ltd\.|Limited|Corporation|Corp\.|Company|GmbH|N\.A\.|plc|S\.A\.)|Holdings))(?=[\s,.;)])/g
-// A short-name parenthetical following the entity: ... Inc. (the "Borrower").
-const ROLE_RE = new RegExp(`^[^\\n]{0,120}?\\(\\s*(?:the\\s+|an?\\s+)?${TERM}\\s*\\)`)
+// A short label parenthetical following the entity.
+const ENTITY_LABEL_RE = new RegExp(`^[^\\n]{0,120}?\\(\\s*(?:the\\s+|an?\\s+)?${TERM}\\s*\\)`)
 
 // Amendment recitals are formulaic and live at the top of the document.
 const AMENDS_RES = [
@@ -48,7 +45,82 @@ const AMENDS_RES = [
   /\bamends?\s+and\s+restates?\s+(?:in\s+its\s+entirety\s+)?(?:the\s+|that\s+certain\s+)?([A-Z][^\n,(;]{4,100}?)(?=\s*[,(;\n]|\s+dated\b)/g,
 ]
 
-const PREAMBLE_CHARS = 4000
+// Section-label shape, shared with REF_RE above. One identifier: dotted
+// numeric with optional letter parentheticals ("7.2(a)"), a single capital
+// letter ("Exhibit A"), or roman numerals ("Article IV").
+const OP_LABEL = `(?:\\d+(?:\\.\\d+)*(?:\\([a-z]+\\))*|[A-Z](?![A-Za-z])|[IVXLC]+(?![A-Za-z]))`
+// One or more labels separated by comma / "and" / "&" — captured as group 1 so
+// "Sections 4, 5, and 7" expands to one row per label below. The separator also
+// accepts the Oxford-comma form (", and" / ", &") so "4, 5, and 7" matches the
+// full list rather than stopping at the conjunction.
+const OP_LABEL_LIST = `(${OP_LABEL}(?:\\s*(?:,|and|&|,\\s*(?:and|&))\\s*${OP_LABEL}){0,9})`
+// "of the Agreement"-style qualifier, optional, discarded so the captured label
+// is bare. Capped to avoid running past a sentence boundary.
+const OP_OF_BASE = `(?:\\s+of\\s+(?:the\\s+|that\\s+certain\\s+)?[A-Z][^\\n,.]{0,80}?)?`
+
+// Operative-verb patterns. AMENDED's negative lookahead stops "amended" from
+// also matching the "amended and restated" verb phrase that belongs to RESTATED.
+// Each pattern's trailing `[^\\n.]{0,300}` (or the explicit optional groups for
+// RESTATED) captures the full amendment statement up to the next period or
+// newline so the stored span covers the text needed to verify the operation.
+const OP_RESTATED_RE = new RegExp(
+  `\\b(?:Section|Sections|Article|Articles)\\s+${OP_LABEL_LIST}${OP_OF_BASE}\\s+(?:is|are)\\s+hereby\\s+amended\\s+and\\s+restated[^\\n.]{0,300}`,
+  "g",
+)
+const OP_AMENDED_RE = new RegExp(
+  `\\b(?:Section|Sections|Article|Articles)\\s+${OP_LABEL_LIST}${OP_OF_BASE}\\s+(?:is|are)\\s+hereby\\s+amended(?!\\s+and\\s+restated)[^\\n.]{0,300}`,
+  "g",
+)
+const OP_DELETED_RE = new RegExp(
+  `\\b(?:Section|Sections|Article|Articles)\\s+${OP_LABEL_LIST}${OP_OF_BASE}\\s+(?:is|are)\\s+hereby\\s+(?:deleted|stricken)[^\\n.]{0,300}`,
+  "g",
+)
+const OP_ADDED_RE = new RegExp(
+  `\\b(?:(?:a|A)\\s+new\\s+)?(?:Section|Sections|Article|Articles)\\s+${OP_LABEL_LIST}(?:\\s+of\\s+(?:the\\s+|that\\s+certain\\s+)?[A-Z][^\\n,.]{0,80}?)?\\s+(?:is|are)\\s+hereby\\s+(?:added|inserted)[^\\n.]{0,300}`,
+  "g",
+)
+
+// Conservative comma-list split: only well-formed separators (comma / "and" / "&")
+// expand. A label fragment that does not match the bare shape drops out rather
+// than guess; the resolver then has no row for it and falls back honestly.
+const OP_LABEL_PIECE_RE = new RegExp(`^${OP_LABEL}$`)
+function splitLabelList(list: string): string[] {
+  return list
+    .split(/,|\s+and\s+|\s+&\s+/)
+    .map((piece) => piece.trim())
+    .filter((piece) => OP_LABEL_PIECE_RE.test(piece))
+}
+
+export type SectionOp = {
+  sectionLabel: string
+  operation: "amend" | "restate" | "delete" | "add"
+  charStart: number
+  charEnd: number
+}
+
+export function extractSectionOps(text: string): SectionOp[] {
+  const ops: SectionOp[] = []
+  const push = (re: RegExp, operation: SectionOp["operation"]) => {
+    re.lastIndex = 0
+    for (const m of text.matchAll(re)) {
+      const list = m[1]!
+      const start = m.index!
+      for (const label of splitLabelList(list)) {
+        // Dedupe within the same operative sentence: a comma-list that
+        // double-captures a label does not record the same op twice.
+        if (ops.some((o) => o.sectionLabel === label && o.operation === operation && o.charStart === start)) continue
+        ops.push({ sectionLabel: label, operation, charStart: start, charEnd: start + m[0].length })
+      }
+    }
+  }
+  push(OP_RESTATED_RE, "restate")
+  push(OP_AMENDED_RE, "amend")
+  push(OP_DELETED_RE, "delete")
+  push(OP_ADDED_RE, "add")
+  return ops
+}
+
+const OPENING_CHARS = 4000
 const RECITAL_CHARS = 2000
 const DEFINITION_CAP = 1500
 
@@ -92,11 +164,13 @@ export function extractSectionRefs(text: string) {
 }
 
 export function extractParties(text: string) {
-  const preamble = text.slice(0, PREAMBLE_CHARS)
+  // Keep the public name and storage schema for compatibility. This is an
+  // optional opening-entity signal, not a complete participant roster.
+  const opening = text.slice(0, OPENING_CHARS)
   const byName = new Map<string, { name: string; role: string | null; charStart: number; charEnd: number }>()
-  for (const m of preamble.matchAll(PARTY_RE)) {
+  for (const m of opening.matchAll(ENTITY_RE)) {
     const name = m[1]!.replace(/,$/, "")
-    const role = preamble.slice(m.index + m[0].length).match(ROLE_RE)?.[1] ?? null
+    const role = opening.slice(m.index + m[0].length).match(ENTITY_LABEL_RE)?.[1] ?? null
     const existing = byName.get(name)
     // First mention wins for position; a later mention may still supply the role.
     if (existing) {
@@ -123,7 +197,7 @@ export function extractAmendments(text: string) {
 }
 
 export function clearStructure(db: Database, docPath: string) {
-  for (const table of ["defined_terms", "section_refs", "parties", "doc_relations"])
+  for (const table of ["defined_terms", "section_refs", "parties", "doc_relations", "section_ops"])
     db.run(`DELETE FROM ${table} WHERE doc_path = ?`, [docPath])
 }
 
@@ -153,11 +227,19 @@ export function extractStructure(db: Database, docPath: string, docName: string,
       "INSERT INTO doc_relations (doc_path, doc_name, relation, target_name, char_start, char_end) VALUES (?, ?, 'amends', ?, ?, ?)",
       [docPath, docName, a.targetName, a.charStart, a.charEnd],
     )
+  for (const op of extractSectionOps(text))
+    db.run(
+      "INSERT INTO section_ops (doc_path, doc_name, section_label, operation, char_start, char_end) VALUES (?, ?, ?, ?, ?, ?)",
+      [docPath, docName, op.sectionLabel, op.operation, op.charStart, op.charEnd],
+    )
 }
 
 // Rebuild a document's extracted text from its chunks. Chunk offsets index into
-// the original extraction; whitespace-only slices were skipped at ingest, so pad
-// any gaps to keep every stored offset valid against the rebuilt string.
+// the original extraction; each chunk is written at its own char_start, padding
+// gaps from skipped whitespace-only slices and letting overlapping chunks (the
+// structure-aware chunker carries a trailing overlap) write the same region
+// twice without duplicating it. Anchoring on char_start keeps every stored
+// offset valid against the rebuilt string.
 export function reconstructText(db: Database, docPath: string) {
   const rows = db
     .query("SELECT text, char_start FROM chunks WHERE doc_path = ? ORDER BY char_start")
@@ -165,9 +247,116 @@ export function reconstructText(db: Database, docPath: string) {
   let out = ""
   for (const row of rows) {
     if (row.char_start > out.length) out += " ".repeat(row.char_start - out.length)
-    out += row.text
+    out = out.slice(0, row.char_start) + row.text
   }
   return out
+}
+
+// Build a human structural path per section from its heading numbering. Sections
+// arrive in document order; a dotted
+// number nests under whichever earlier section is its numeric prefix ("7.2"
+// under "7"), so the path carries the full ancestry. Unnumbered headings
+// (ALL-CAPS titles, the preamble) stand alone — they have no numeric parent to
+// hang under and pollute the ancestry if guessed. The result is keyed by the
+// Section object so the caller looks each one up while iterating the same list.
+export function buildSectionPaths(docName: string, sections: Section[]) {
+  const paths = new Map<Section, string>()
+  const root = `Doc(${docName})`
+  // Ancestors with a number, in document order, used to find a section's parent.
+  const numbered: Section[] = []
+  for (const section of sections) {
+    const crumb = section.number ? `§${section.number} ${section.title}`.trim() : section.title
+    if (!section.number) {
+      paths.set(section, `${root} › ${crumb}`)
+      numbered.length = 0
+      continue
+    }
+    // Parent = the most recent earlier numbered section whose number is a strict
+    // dotted prefix ("7" of "7.2", "7.2" of "7.2.1").
+    const parent = [...numbered].reverse().find((s) => section.number!.startsWith(s.number + "."))
+    const prefix = parent ? paths.get(parent)! : root
+    paths.set(section, `${prefix} › ${crumb}`)
+    numbered.push(section)
+  }
+  return paths
+}
+
+// Structure-aware chunking. A section is the atomic unit; it is emitted whole
+// when it fits the token budget so a coherent component is not split across
+// chunks. An over-long section is split on blank-line paragraph boundaries (and
+// never inside a table — consecutive pipe/grid rows are held together) with a
+// trailing-paragraph overlap so content that straddles a boundary still shows
+// up whole in one chunk. Offsets stay anchored to the original extracted text.
+const CHUNK_TOKENS = 512
+const CHARS_PER_TOKEN = 4
+const MAX_CHARS = CHUNK_TOKENS * CHARS_PER_TOKEN
+const OVERLAP_RATIO = 0.12
+
+// A table row in extracted/markdown text: a pipe-delimited row or a markdown
+// header-separator border ("|---|---|").
+function isTableLine(line: string) {
+  const t = line.trim()
+  return t.startsWith("|") || /^\|?[-+| :]+\|[-+| :]*$/.test(t)
+}
+
+export function chunkSection(section: { text: string; charStart: number }) {
+  if (section.text.length <= MAX_CHARS) {
+    if (!section.text.trim()) return []
+    return [{ text: section.text, charStart: section.charStart, charEnd: section.charStart + section.text.length }]
+  }
+
+  // Group lines into blocks that must stay whole: a run of table rows is one
+  // block, every other line is its own block. Blocks are then packed into
+  // chunks up to the budget, keeping each block (and so each table) atomic.
+  const lines = section.text.split("\n")
+  const blocks: { text: string; start: number }[] = []
+  let offset = 0
+  let i = 0
+  while (i < lines.length) {
+    const start = offset
+    if (isTableLine(lines[i]!)) {
+      let text = ""
+      while (i < lines.length && isTableLine(lines[i]!)) {
+        text += lines[i] + "\n"
+        offset += lines[i]!.length + 1
+        i++
+      }
+      blocks.push({ text, start })
+      continue
+    }
+    blocks.push({ text: lines[i] + "\n", start })
+    offset += lines[i]!.length + 1
+    i++
+  }
+
+  const chunks: { text: string; charStart: number; charEnd: number }[] = []
+  let buffer: { text: string; start: number }[] = []
+  let bufferChars = 0
+  const flush = () => {
+    if (!buffer.length) return
+    const text = buffer.map((b) => b.text).join("")
+    const charStart = section.charStart + buffer[0]!.start
+    if (text.trim()) chunks.push({ text, charStart, charEnd: charStart + text.length })
+    // Carry the trailing blocks (~OVERLAP_RATIO of the budget) into the next
+    // chunk so content spanning the boundary appears whole somewhere.
+    const overlap: { text: string; start: number }[] = []
+    let overlapChars = 0
+    for (let j = buffer.length - 1; j >= 0 && overlapChars < MAX_CHARS * OVERLAP_RATIO; j--) {
+      overlap.unshift(buffer[j]!)
+      overlapChars += buffer[j]!.text.length
+    }
+    buffer = overlap
+    bufferChars = overlapChars
+  }
+  for (const block of blocks) {
+    // A single block over budget (a giant table) is emitted on its own rather
+    // than dropped — atomicity wins over the soft size cap.
+    if (bufferChars && bufferChars + block.text.length > MAX_CHARS) flush()
+    buffer.push(block)
+    bufferChars += block.text.length
+  }
+  flush()
+  return chunks
 }
 
 // Backfill matters indexed before structure extraction existed (or before the
@@ -175,7 +364,10 @@ export function reconstructText(db: Database, docPath: string) {
 // re-parse of the source file is needed.
 export function migrateStructure(db: Database) {
   if (getMeta(db, "structure_version") === VERSION) return 0
-  const docs = db.query("SELECT doc_path, name FROM documents").all() as Array<{ doc_path: string; name: string }>
+  const docs = db.query("SELECT doc_path, name FROM documents WHERE role = 'source'").all() as Array<{
+    doc_path: string
+    name: string
+  }>
   for (const doc of docs) extractStructure(db, doc.doc_path, doc.name, reconstructText(db, doc.doc_path))
   setMeta(db, "structure_version", VERSION)
   return docs.length

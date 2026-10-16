@@ -1,9 +1,13 @@
 # Termination
 
-US commercial-market reference points; verify against the matter's
-jurisdiction pack.
+**Topic:** Termination — cause, convenience, renewal, wind-down.
+**Contract type:** All term commercial agreements (services, subscription,
+supply).
+**Jurisdiction:** US commercial market; verify against the matter's
+jurisdiction pack. Positions are firm-configurable defaults overridable via
+`.dochaus/profile.md`.
 
-## Balanced position
+## Preferred
 
 Either party may terminate for material breach uncured within thirty days of
 written notice, and for the other party's insolvency. Termination for
@@ -24,37 +28,38 @@ termination and any prepaid fees for the period after termination shall be
 refunded.
 ```
 
-## Common one-sided variants
+**Off-market variants to watch.** Provider-favorable: evergreen auto-renewal
+with a non-renewal window opening and closing far in advance (90+ days),
+easily missed; customer termination — even for the provider's breach —
+accelerates all remaining committed fees, or prepaids forfeited in all cases;
+provider may terminate or suspend for convenience while the customer is locked
+in. Customer-favorable: customer terminates for convenience at any time with no
+notice and full refund while the provider has no exit; cure period for customer
+breaches only; open-ended post-termination transition at the provider's cost.
 
-**Tilted toward the provider:**
-- Evergreen auto-renewal with a non-renewal window opening and closing far in
-  advance (notice due 90+ days before renewal), easily missed.
-- Customer termination — even for the provider's breach — accelerates all
-  remaining committed fees, or prepaid fees are forfeited in all cases.
-- Provider may terminate or suspend for convenience or on short notice while
-  the customer is locked in for the full term.
+## Fallbacks (ordered)
 
-**Tilted toward the customer:**
-- Customer terminates for convenience at any time with no notice and full
-  refund of prepaids while the provider has no exit at all.
-- Cure period for customer breaches only; provider breaches terminate
-  immediately.
-- Open-ended post-termination transition assistance at the provider's cost.
-
-## Fallback ladder
-
-1. Mutual 30-day-cure breach termination, mutual convenience termination on
-   30-60 days' notice, 30-day non-renewal window (preferred).
-2. Drop convenience termination for both sides; keep mutual breach
-   termination and pro-rata refund where the customer terminates for the
-   provider's breach.
-3. Accept a longer non-renewal window (up to 60 days before renewal) paired
+1. **Offer when** the counterparty resists mutual convenience termination: drop
+   convenience termination for both sides; keep mutual breach termination and
+   pro-rata refund where the customer terminates for the provider's breach.
+2. **Offer when** the counterparty needs a longer renewal-decision runway:
+   accept a longer non-renewal window (up to 60 days before renewal) paired
    with a renewal-reminder notice obligation.
-4. Accept fee commitment surviving customer convenience termination, but
-   never surviving termination for the provider's breach.
+3. **Offer when** the provider needs committed-fee certainty: accept fee
+   commitment surviving customer convenience termination, but never surviving
+   termination for the provider's breach.
 
-Below rung 4 — acceleration of all fees on any termination, or no cure right
-— escalate.
+## Walk-away floor
+
+Acceleration of all fees on any termination (including for the provider's
+breach), or no cure right for material breach.
+
+## Escalation trigger
+
+At or below the floor, do not concede. Route to the **supervising lawyer** for
+the matter (or the `.dochaus/profile.md` Escalation Rules contact) before
+accepting any term that forfeits the client's exit on the counterparty's
+breach.
 
 **Rationale:** Termination mechanics determine the real length and cost of
 the deal; the renewal window and the fee consequences of exit are where the

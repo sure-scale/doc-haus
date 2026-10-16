@@ -1,37 +1,62 @@
 import { useEffect, useRef, useState } from "react"
 import { useParams, useSearchParams } from "react-router-dom"
-import { getMatter, listJurisdictions, listPlaybooks, listWorkflows, renameMatter, type CustomWorkflow, type Jurisdiction, type MatterDetail as Detail, type Playbook } from "../api/ingest"
-import { disposeInstance, listAgents, matterClient } from "../api/opencode"
+import { humanizeError } from "../api/ingest/errors"
+import { getMatter, listJurisdictions, listPlaybooks, MatterNotFound, renameMatter, type Jurisdiction, type MatterDetail as Detail, type Playbook } from "../api/ingest/matters"
+import { listWorkflows, type CustomWorkflow } from "../api/ingest/library"
+import { disposeInstance, listAgents } from "../api/opencode/sessions"
+import { matterClient } from "../api/opencode/client"
 import { AUTO, WORKFLOWS } from "../agents"
-import DocumentUpload from "../components/DocumentUpload"
+import DocumentsDrawer from "../components/matter/DocumentsDrawer"
+import { setDocumentsCount, setDocumentsDrawer, useDocumentsDrawer } from "../components/matter/documents-drawer"
 import DocumentViewer from "../components/DocumentViewer"
 import ChatPanel from "../components/ChatPanel"
 import ReviewGrid from "../components/ReviewGrid"
-import JurisdictionSelect from "../components/JurisdictionSelect"
+import MatterHeader from "../components/matter/MatterHeader"
+import MatterRail from "../components/matter/MatterRail"
+import useDraftingStatus from "../components/drafting/useDraftingStatus"
+import useNeedsYouTitle from "../components/drafting/useNeedsYouTitle"
+import { useToast } from "../components/Toast"
+import NotFound from "./NotFound"
 
 type Agent = { name: string; description?: string; mode?: string; hidden?: boolean }
 
-// One matter, three surfaces, switched by the `view` query param from the
-// sidebar: chat | review | documents. The content is a single canvas whose width
-// flexes to the surface — the grid and the documents manager run full-width,
-// while chat keeps a documents rail for reference. Default surface is chat.
-// Workflows are not a surface: they run as seeded chat sessions in the chat view.
+// One matter conversation with a documents drawer and a review-table modal.
+// The view query opens the review over the current conversation; closing it
+// preserves that session. Workflows run as seeded conversations.
 export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged: () => void }) {
   const { id } = useParams<{ id: string }>()
   const [params, setParams] = useSearchParams()
-  const view = params.get("view") ?? "chat"
+  // Documents is a drawer beside the rail, not a surface; the old
+  // `view=documents` links open it over the chat.
+  const view = params.get("view") === "review" ? "review" : "chat"
+  const drawer = useDocumentsDrawer()
+  // Files dropped on the composer, waiting for the drawer's upload list.
+  const [incoming, setIncoming] = useState<File[]>()
+
+  useEffect(() => {
+    if (params.get("view") !== "documents") return
+    setDocumentsDrawer(true)
+    const next = new URLSearchParams(params)
+    next.set("view", "chat")
+    setParams(next, { replace: true })
+  }, [params])
   const session = params.get("session") ?? undefined
   const [matter, setMatter] = useState<Detail>()
-  const [playbooks, setPlaybooks] = useState<Playbook[]>([])
+  // Why the matter could not be loaded: "missing" when ingest has no such matter
+  // (deleted, or a mistyped link), otherwise the readable error.
+  const [loadError, setLoadError] = useState<string>()
+  const toast = useToast()
+  // Playbooks and agents stay undefined until they first load, so the composer
+  // can hold their controls' places rather than popping them in late.
+  const [playbooks, setPlaybooks] = useState<Playbook[]>()
   const [jurisdictions, setJurisdictions] = useState<Jurisdiction[]>([])
   const [custom, setCustom] = useState<CustomWorkflow[]>([])
-  const [agents, setAgents] = useState<Agent[]>([])
+  const [agents, setAgents] = useState<Agent[]>()
   const [agent, setAgent] = useState(AUTO)
   const [viewing, setViewing] = useState<string>()
   // The redline proposal to scroll to when the viewer opens, set when the user
   // follows a chat redline preview's "View in document" link (undefined otherwise).
   const [focusRedline, setFocusRedline] = useState<number>()
-  const [docsOpen, setDocsOpen] = useState(() => localStorage.getItem("dh.docs") !== "0")
   // The title-area fields are inline-click-editable: clicking one swaps its label
   // for an input (or, for jurisdictions, the shared multi-select) seeded with the
   // current value. Each commit persists the whole matter via the ingest service
@@ -44,21 +69,46 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
   // param, remounting ChatPanel under the new id; this lets that remount know it
   // is the same composer (not a rail reopen) so it keeps the cursor seated.
   const createdRef = useRef<string | undefined>(undefined)
+  const drafting = useDraftingStatus(id)
+  useNeedsYouTitle(drafting.status)
+  const runStatus = drafting.status?.status
 
   useEffect(() => {
-    localStorage.setItem("dh.docs", docsOpen ? "1" : "0")
-  }, [docsOpen])
-
-  useEffect(() => {
-    listPlaybooks().then(setPlaybooks)
+    listPlaybooks()
+      .then(setPlaybooks)
+      .catch(() => setPlaybooks([]))
     listJurisdictions().then(setJurisdictions)
   }, [])
 
   function refresh() {
-    if (id) getMatter(id).then(setMatter)
+    if (!id) return
+    getMatter(id)
+      .then((next) => {
+        setMatter(next)
+        setLoadError(undefined)
+      })
+      .catch((e) => setLoadError(e instanceof MatterNotFound ? "missing" : humanizeError(e, "Could not load this matter.")))
   }
 
-  useEffect(refresh, [id])
+  useEffect(() => {
+    setLoadError(undefined)
+    refresh()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id])
+
+  // A run that completes registers its Word files in the matter folder; reload
+  // the matter so they appear in Documents without a page refresh.
+  useEffect(() => {
+    if (runStatus === "completed") refresh()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runStatus])
+
+  // The rail's Documents badge follows this matter's live document list.
+  const documentCount = matter?.documents.length
+  useEffect(() => {
+    setDocumentsCount(documentCount)
+  }, [documentCount])
+  useEffect(() => () => setDocumentsCount(undefined), [])
 
   useEffect(() => {
     if (!matter) return
@@ -96,7 +146,7 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
           // availability check); an existing session restores the agent it last
           // used (see ChatPanel's load effect), so don't force Auto here. When a
           // surface deep-links in with an `agent` param (e.g. "Save as template"
-          // pinning the drafter), honour it if it is a real assistant — this must
+          // pinning draft mode), honour it if it is a real assistant — this must
           // live in this effect or the unconditional setAgent(AUTO) clobbers it.
           if (!session) {
             const pinned = params.get("agent")
@@ -112,10 +162,24 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
       cancelled = true
     }
     // Re-run when the deep-linked agent param changes (e.g. "Save as template"
-    // pins the drafter while already in the matter) so the pin is honoured even
+    // pins draft mode while already in the matter) so the pin is honoured even
     // though `matter` is unchanged.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [matter, params.get("agent")])
+
+  if (loadError === "missing")
+    return <NotFound title="Matter not found" detail="This matter may have been deleted, or the link may be wrong." />
+
+  if (!matter && loadError)
+    return (
+      <div className="not-found">
+        <h1>Could not open this matter</h1>
+        <p>{loadError}</p>
+        <button type="button" className="primary" onClick={refresh}>
+          Try again
+        </button>
+      </div>
+    )
 
   if (!matter)
     return (
@@ -125,7 +189,7 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
       </div>
     )
 
-  const available = new Set(agents.map((a) => a.name))
+  const available = new Set((agents ?? []).map((a) => a.name))
   const workflows = [...WORKFLOWS, ...custom]
 
   // One persist path for every title-area field: merge the changed fields over the
@@ -134,7 +198,11 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
   async function patch(fields: Partial<Pick<Detail, "title" | "reference" | "jurisdictions" | "playbook">>) {
     if (!matter) return
     const next = { ...matter, ...fields }
-    const updated = await renameMatter(matter.id, next.title, next.reference, next.jurisdictions, next.playbook)
+    const updated = await renameMatter(matter.id, next.title, next.reference, next.jurisdictions, next.playbook).catch((e) => {
+      toast("error", humanizeError(e, "Could not save the matter. Try again."))
+      return undefined
+    })
+    if (!updated) return
     setMatter((m) => m && { ...m, title: updated.title, reference: updated.reference, jurisdictions: updated.jurisdictions, playbook: updated.playbook })
     onSessionsChanged()
   }
@@ -159,136 +227,79 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
 
   return (
     <>
-      <header className="page-head">
-        <div className="matter-head">
-          {editingRef ? (
-            <input
-              className="matter-ref-input"
-              autoFocus
-              placeholder="Reference"
-              value={draftRef}
-              onChange={(e) => setDraftRef(e.target.value)}
-              onBlur={commitRef}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") commitRef()
-                if (e.key === "Escape") setEditingRef(false)
-              }}
-            />
-          ) : (
-            <button
-              type="button"
-              className={`matter-ref matter-field${matter.reference ? "" : " empty"}`}
-              title="Click to edit reference"
-              onClick={() => {
-                setDraftRef(matter.reference ?? "")
-                setEditingRef(true)
-              }}
-            >
-              {matter.reference || "Add reference"}
-            </button>
-          )}
+      <MatterHeader
+        matter={matter}
+        jurisdictions={jurisdictions}
+        editingRef={editingRef}
+        setEditingRef={setEditingRef}
+        draftRef={draftRef}
+        setDraftRef={setDraftRef}
+        commitRef={commitRef}
+        renaming={renaming}
+        setRenaming={setRenaming}
+        draftTitle={draftTitle}
+        setDraftTitle={setDraftTitle}
+        commitRename={commitRename}
+        patch={patch}
+      />
 
-          <h1>
-            {renaming ? (
-              <input
-                className="matter-title-input"
-                autoFocus
-                value={draftTitle}
-                onChange={(e) => setDraftTitle(e.target.value)}
-                onBlur={commitRename}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") commitRename()
-                  if (e.key === "Escape") setRenaming(false)
-                }}
-              />
-            ) : (
-              <span
-                className="matter-title"
-                title="Click to rename"
-                onClick={() => {
-                  setDraftTitle(matter.title)
-                  setRenaming(true)
-                }}
-              >
-                {matter.title}
-              </span>
-            )}
-          </h1>
-        </div>
-
-        <div className="matter-head-jx">
-          <JurisdictionSelect
-            jurisdictions={jurisdictions}
-            selected={matter.jurisdictions ?? []}
-            onChange={(codes) => patch({ jurisdictions: codes })}
-            align="right"
-            trigger={
-              (matter.jurisdictions?.length ?? 0) === 0 ? (
-                <span className="matter-jx-add">Add jurisdiction</span>
-              ) : (
-                <span className="matter-jx-badges">
-                  {matter.jurisdictions?.map((code) => (
-                    <span key={code} className="matter-badge">
-                      {jurisdictions.find((j) => j.code === code)?.name ?? code}
-                    </span>
-                  ))}
-                </span>
-              )
-            }
-          />
-        </div>
-      </header>
-
-      {view === "chat" && (
-        <div className={`matter-body${docsOpen ? "" : " docs-collapsed"}`}>
-          <div className="workspace">
-            <ChatPanel
-              key={session ?? "new"}
-              directory={matter.dir}
-              sessionID={session}
-              created={createdRef.current === session}
-              initialPrompt={params.get("prompt") ?? undefined}
-              agent={agent}
-              available={available}
-              workflows={workflows}
-              playbooks={playbooks}
-              playbook={matter.playbook}
-              onPlaybookChange={changePlaybook}
-              onAgentChange={setAgent}
-              onSessionCreated={(sid) => {
-                createdRef.current = sid
-                setParams({ view: "chat", session: sid }, { replace: true })
-              }}
-              onSessionStarted={onSessionsChanged}
-              onViewDocument={(name, redlineId) => {
-                setFocusRedline(redlineId)
-                setViewing(name)
-              }}
-              onDocumentsChanged={refresh}
-            />
-          </div>
-          <DocumentUpload
+      <div className="matter-body">
+        <div className="workspace">
+          <ChatPanel
+            key={session ?? "new"}
+            directory={matter.dir}
             matterId={matter.id}
+            sessionID={session}
+            created={createdRef.current === session}
+            initialPrompt={params.get("prompt") ?? undefined}
+            agent={agent}
+            available={available}
+            workflows={workflows}
+            playbooks={playbooks ?? []}
+            playbook={matter.playbook}
+            toolsLoading={!agents || !playbooks}
             documents={matter.documents}
-            onUploaded={refresh}
-            onView={(name) => {
-              setFocusRedline(undefined)
+            onAddFiles={(files) => {
+              setIncoming(files)
+              setDocumentsDrawer(true)
+            }}
+            onPlaybookChange={changePlaybook}
+            onAgentChange={setAgent}
+            onSessionCreated={(sid) => {
+              createdRef.current = sid
+              setParams({ view: "chat", session: sid }, { replace: true })
+            }}
+            onSessionPersisted={(sid) => {
+              const url = new URL(window.location.href)
+              url.search = new URLSearchParams({ view: "chat", session: sid }).toString()
+              window.history.replaceState(window.history.state, "", url)
+            }}
+            onSessionStarted={onSessionsChanged}
+            onViewDocument={(name, redlineId) => {
+              setFocusRedline(redlineId)
               setViewing(name)
             }}
-            collapsed={!docsOpen}
-            onToggle={() => setDocsOpen((o) => !o)}
+            onDocumentsChanged={refresh}
+            feed={drafting}
           />
         </div>
-      )}
+      </div>
 
       {view === "review" && (
-        <ReviewGrid matterId={matter.id} title={matter.title} directory={matter.dir} documents={matter.documents} />
+        <ReviewGrid matterId={matter.id} title={matter.title} directory={matter.dir} documents={matter.documents} onClose={() => {
+          const next = new URLSearchParams(params)
+          next.delete("view")
+          setParams(next, { replace: true })
+        }} />
       )}
 
-      {view === "documents" && (
-        <DocumentUpload
+      {drawer.open && (
+        <DocumentsDrawer
           matterId={matter.id}
           documents={matter.documents}
+          drafting={drafting.status}
+          incoming={incoming}
+          onIncoming={() => setIncoming(undefined)}
           onUploaded={refresh}
           onView={(name) => {
             setFocusRedline(undefined)
@@ -296,6 +307,8 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
           }}
         />
       )}
+
+      <MatterRail matter={matter} session={session} drafting={drafting.status} showStatusbar />
 
       {viewing && (
         <DocumentViewer
@@ -312,8 +325,8 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
                   setViewing(undefined)
                   setParams({
                     view: "chat",
-                    agent: "drafter",
-                    prompt: `Save "${doc}" as a reusable template. Read the document and replace every party name, date, amount, address, and other client-specific detail with a unique [insert ...] placeholder, then save it to the template library.`,
+                    agent: "draft",
+                    prompt: `Save "${doc}" as a reusable template. Read the document and replace every person or entity name, date, amount, address, and other matter-specific detail with a unique [insert ...] placeholder, then save it to the template library.`,
                   })
                 }
               : undefined

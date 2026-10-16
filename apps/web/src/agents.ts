@@ -1,15 +1,17 @@
-// The legal agents this web app surfaces to lawyers. OpenCode also ships upstream
+// The legal assistants this web app surfaces to lawyers. OpenCode also ships upstream
 // built-ins (build, plan, general, title, compaction, triage, ...) and the engine
-// uses some of them internally — we never expose those. We filter the agent list
+// uses some of them internally — we never expose those. We filter the assistant list
 // to this registry rather than disabling core agents, so upstream merges stay
-// clean. Names must match the agent ids defined in dochaus/agent/*.md.
+// clean. Names must match primary ids defined in dochaus/agent/*.md or
+// dochaus/mode/*.md.
 
 export type AssistantMeta = { name: string; label: string; description: string }
 // `scope` decides which conversation a workflow runs in: "matter" routines span
 // every document and open as their own new chat; "document" routines act on the
 // thread you are already in and run in the current chat.
 // `steps` is the pipeline shown in the workflow View panel; for built-ins it
-// mirrors the orchestrator agent's pipeline in dochaus/agent/<name>.md.
+// mirrors the orchestrator pipeline in dochaus/agent/<name>.md or
+// dochaus/mode/<name>.md.
 export type WorkflowMeta = AssistantMeta & {
   prompt: string
   scope: "matter" | "document"
@@ -18,7 +20,8 @@ export type WorkflowMeta = AssistantMeta & {
 }
 
 // Conversational assistants offered in the chat picker. Every name here MUST be a
-// real agent id in dochaus/agent/*.md — these are sent to the engine verbatim.
+// real primary assistant id loaded from dochaus/agent/*.md or dochaus/mode/*.md
+// — these are sent to the engine verbatim.
 export const CHAT_ASSISTANTS: AssistantMeta[] = [
   {
     name: "qa",
@@ -43,7 +46,7 @@ export const CHAT_ASSISTANTS: AssistantMeta[] = [
       "Researches legal questions across the matter's documents and U.S. case law, always with citations to real sources.",
   },
   {
-    name: "drafter",
+    name: "draft",
     label: "Draft",
     description: "Drafts new documents into this matter — from a firm template or from scratch.",
   },
@@ -66,6 +69,12 @@ export const CHAT_ASSISTANTS: AssistantMeta[] = [
       "Imports a firm playbook DOCX uploaded to this matter into the firm playbook library.",
   },
 ]
+
+export const PLAYBOOK_BUILDER: AssistantMeta = {
+  name: "playbook-importer",
+  label: "Playbook Builder",
+  description: "Imports, creates and updates firm positions and approved clause text.",
+}
 
 // The Templates page's pinned assistant. Kept out of CHAT_ASSISTANTS on purpose:
 // it runs in the template library directory rather than a matter, so the matter
@@ -106,7 +115,7 @@ export const AGENT_BUILDER: AssistantMeta = {
 // "Auto" is a pseudo-assistant, not a real agent: when it is selected each message
 // is first routed by a cheap model to one of the CHAT_ASSISTANTS, and only that
 // resolved real agent is ever sent to the engine. AUTO stays out of CHAT_ASSISTANTS
-// so the "names match dochaus/agent ids" invariant above holds, and is surfaced at
+// so the "names match assistant ids" invariant above holds, and is surfaced at
 // the top of the picker separately. isAuto guards the one place that matters — the
 // send path — so AUTO can never leak to the engine as an agent.
 export const AUTO = "auto"
@@ -129,7 +138,7 @@ export const WORKFLOWS: WorkflowMeta[] = [
       "Run a complete legal review of the documents in this matter: run the full review pipeline defined in your instructions, every step in order, and return the combined report.",
     steps: [
       {
-        agent: "legal-reviewer",
+        agent: "document-reviewer",
         instructions: "Reads every document in the matter and reports findings with citations.",
       },
       {

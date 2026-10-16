@@ -1,0 +1,352 @@
+/* Drafting narration in the matter chat (components/narration). Calm, on the
+   existing palette: new entries fade and rise in, the in-progress dot breathes,
+   step groups open smoothly, and everything holds still under
+   prefers-reduced-motion. */
+
+.msg.assistant.narration {
+  white-space: normal;
+}
+
+.narration-timeline,
+.narration-timeline ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.narration-timeline > li {
+  animation: narration-in var(--duration-slow) var(--ease-out) both;
+}
+
+.narration-timeline > .narration-note {
+  margin: 10px 0;
+  padding: 2px 0 2px 12px;
+  border-left: 2px solid var(--accent-border);
+  animation: narration-in 150ms var(--ease-out) both;
+}
+
+/* Long updates show three lines, then More. */
+.narration-note-body.is-clamped {
+  max-height: 4.65em;
+  overflow: hidden;
+}
+
+.narration-note-body.is-long {
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 1.55em), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 1.55em), transparent);
+}
+
+button.narration-more {
+  margin-top: 2px;
+  padding: 2px 0;
+  border: none;
+  background: none;
+  font-size: 12.5px;
+  color: var(--accent);
+}
+
+button.narration-more:hover:not(:disabled) {
+  background: none;
+  text-decoration: underline;
+}
+
+.narration-note .markdown > :first-child {
+  margin-top: 0;
+}
+
+.narration-note .markdown > :last-child {
+  margin-bottom: 0;
+}
+
+/* A document's stages sit under its title when a run drafts several. */
+.narration-timeline > .narration-heading {
+  margin: 14px 0 2px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.narration-timeline > .narration-heading:first-child {
+  margin-top: 0;
+}
+
+/* One row per stage run: its state icon, what it did, and how long it took. */
+.narration-stage {
+  padding: 3px 0;
+}
+
+.narration-stage-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 22px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.narration-stage-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.narration-stage.is-error .narration-stage-text {
+  color: var(--danger);
+}
+
+.narration-duration {
+  flex: none;
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.narration-icon {
+  flex: none;
+  width: 16px;
+  height: 16px;
+}
+
+.narration-icon.is-done {
+  color: var(--accent);
+}
+
+.narration-icon.is-paused {
+  color: var(--warn);
+}
+
+.narration-icon.is-error {
+  color: var(--danger);
+}
+
+.narration-icon.is-running {
+  box-sizing: border-box;
+  border: 2px solid var(--accent-border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: narration-spin 0.9s linear infinite;
+}
+
+/* The stage's activity hangs from its icon on a thin rule. */
+.narration-stage-body {
+  margin-left: 7.5px;
+  padding-left: 15.5px;
+  border-left: 1px solid var(--border-soft);
+}
+
+.narration-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 0;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+/* A result to notice, such as a quotation not found word for word. */
+.narration-line.flagged {
+  font-weight: 500;
+  color: var(--warn);
+}
+
+.narration-suffix {
+  font-weight: 400;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.narration-line.thought {
+  font-style: italic;
+}
+
+.narration-line.error {
+  color: var(--warn);
+}
+
+.narration-steps {
+  margin: 2px 0 2px 2px;
+  padding-left: 12px;
+  border-left: 1px dashed var(--border);
+}
+
+button.narration-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 24px;
+  margin: 1px 0;
+  padding: 2px 8px 2px 0;
+  border: none;
+  background: none;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+button.narration-toggle::before {
+  content: "";
+  flex: none;
+  width: 5px;
+  height: 5px;
+  margin: 0 5px 0 1px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform var(--duration-fast) var(--ease-out);
+}
+
+button.narration-toggle[aria-expanded="true"]::before {
+  transform: rotate(45deg);
+}
+
+/* A finished stage's activity in one line; it opens to the full list. */
+button.narration-toggle.is-rollup {
+  font-weight: 400;
+  text-align: left;
+}
+
+.narration-flagged {
+  font-weight: 500;
+  color: var(--warn);
+}
+
+button.narration-toggle:hover:not(:disabled) {
+  background: none;
+  color: var(--accent);
+}
+
+/* Always mounted so the group can open and close smoothly; inert while closed. */
+.narration-collapse {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows var(--duration-base) var(--ease-out),
+    opacity var(--duration-base) var(--ease-out);
+}
+
+.narration-collapse.is-open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+.narration-collapse > ol {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.narration-steps > ol > li {
+  animation: narration-in var(--duration-slow) var(--ease-out) both;
+}
+
+.narration-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  border: 1.5px solid var(--accent-muted);
+  background: var(--panel);
+  transform: translateY(-1px);
+}
+
+.narration-dot.small {
+  width: 5px;
+  height: 5px;
+  border-width: 1px;
+}
+
+.narration-dot.done {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.narration-dot.error {
+  background: var(--danger);
+  border-color: var(--danger);
+}
+
+.narration-dot.paused,
+.narration-dot.flagged {
+  background: var(--warn);
+  border-color: var(--warn);
+}
+
+.narration-dot.small.flagged {
+  width: 6px;
+  height: 6px;
+}
+
+.narration-dot.running {
+  border-color: var(--accent);
+  animation: narration-breathe 2.4s ease-in-out infinite;
+}
+
+/* Where a stopped or paused run stands, in one line. */
+.narration-outcome-note {
+  margin: 10px 0 4px;
+  padding: 7px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  background: var(--bg-sunken);
+  color: var(--text-secondary);
+  font-size: 13px;
+  animation: narration-in var(--duration-slow) var(--ease-out) both;
+}
+
+.narration-outcome-note.is-attention {
+  border-color: var(--warn-border);
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.narration-muted {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--faint);
+}
+
+@keyframes narration-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes narration-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes narration-breathe {
+  0%,
+  100% {
+    opacity: 0.6;
+    box-shadow: 0 0 0 0 var(--accent-soft);
+  }
+  50% {
+    opacity: 1;
+    box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .narration-timeline > li,
+  .narration-timeline > .narration-note,
+  .narration-steps > ol > li,
+  .narration-outcome-note,
+  .narration-icon.is-running,
+  .narration-dot.running,
+  .narration-collapse,
+  button.narration-toggle::before {
+    animation: none;
+    transition: none;
+  }
+}

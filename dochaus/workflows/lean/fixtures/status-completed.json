@@ -1,0 +1,162 @@
+{
+  "schema": "dochaus.lean.state/2",
+  "profile": "lean",
+  "revision": 25,
+  "status": "completed",
+  "stop_reason": null,
+  "owner_session_id": "ses_child1",
+  "model": {
+    "providerID": "test",
+    "modelID": "scripted"
+  },
+  "created_at": "2026-10-11T09:05:27.706Z",
+  "updated_at": "2026-10-11T09:05:28.436Z",
+  "stages": {
+    "d1.draft": {
+      "status": "done",
+      "input_sha": "96e87cd13f662f394c148f5e0ea4adda533cb740d1e05067c534fd3542891394",
+      "outputs": [
+        "plan.json",
+        "d1/draft.md",
+        "d1/body.docx",
+        "d1/paragraphs.json"
+      ],
+      "session_id": "ses_child2",
+      "attempts": 1,
+      "calls": 3,
+      "feedback": [],
+      "started_at": "2026-10-11T09:05:27.711Z",
+      "finished_at": "2026-10-11T09:05:28.009Z"
+    },
+    "d1.review": {
+      "status": "done",
+      "input_sha": "0a9b7026bf2457cff6061f04d2d0536b4691b83e0c7aa2f69002e926dbd83559",
+      "outputs": [
+        "d1/review.md"
+      ],
+      "session_id": "ses_child3",
+      "attempts": 1,
+      "calls": 1,
+      "feedback": [],
+      "started_at": "2026-10-11T09:05:28.010Z",
+      "finished_at": "2026-10-11T09:05:28.013Z"
+    },
+    "d1.changes": {
+      "status": "done",
+      "input_sha": "b47f0ccde80d13fc35b7baf1c54dcfae46cc8b2483686cf335d5762e0d8efef9",
+      "outputs": [
+        "d1/changes.json"
+      ],
+      "session_id": "ses_child4",
+      "attempts": 1,
+      "calls": 1,
+      "feedback": [],
+      "started_at": "2026-10-11T09:05:28.013Z",
+      "finished_at": "2026-10-11T09:05:28.018Z"
+    },
+    "d1.apply": {
+      "status": "done",
+      "input_sha": "e74ea16edebe0973f32219356b95cd5f5aaec0e9a9bdf449bbbf50a9f27ec3c6",
+      "outputs": [
+        "d1/apply.json",
+        "d1/body-applied.docx",
+        "d1/paragraphs-applied.json"
+      ],
+      "session_id": null,
+      "attempts": 0,
+      "calls": 0,
+      "feedback": [],
+      "started_at": "2026-10-11T09:05:28.018Z",
+      "finished_at": "2026-10-11T09:05:28.110Z"
+    },
+    "finalize": {
+      "status": "done",
+      "input_sha": "6bac9e421a3ffae77055051c421c6ad3b6a52539cd2d0d660827688bedfbbad1",
+      "outputs": [
+        "drafting-notes.md",
+        "drafting-notes.docx",
+        "redline.docx"
+      ],
+      "session_id": "ses_child5",
+      "attempts": 1,
+      "calls": 1,
+      "feedback": [],
+      "started_at": "2026-10-11T09:05:28.111Z",
+      "finished_at": "2026-10-11T09:05:28.415Z"
+    },
+    "gate": {
+      "status": "done",
+      "input_sha": "edcfcfcbdfe9a19c81af22a68c4838f2391facdb155f096a6322c5b17c6cf035",
+      "outputs": [
+        "gate.json",
+        "drafting-notes-coverage.md"
+      ],
+      "session_id": null,
+      "attempts": 0,
+      "calls": 0,
+      "feedback": [],
+      "started_at": "2026-10-11T09:05:28.416Z",
+      "finished_at": "2026-10-11T09:05:28.418Z"
+    }
+  },
+  "in_flight": false,
+  "pending_requests": 0,
+  "open_items": [],
+  "questions": [],
+  "request": "Draft a short supply note.",
+  "gate": {
+    "status": "pass",
+    "delivery": "execution_ready",
+    "blocking": [],
+    "disclosed": [],
+    "items": [],
+    "checked_at": "2026-10-11T09:05:28.417Z"
+  },
+  "documents": {
+    "schema": "dochaus.lean.documents/2",
+    "status": "completed",
+    "documents": [
+      {
+        "kind": "body",
+        "document": "d1",
+        "title": "Supply note",
+        "path": ".dochaus/lean/d1/body-applied.docx",
+        "sha256": "64adab1345910fad2e01c25a1eeddffb7c0f9c368bea8a7f9ae4af54a59a2245",
+        "deliverable": "Supply note.docx"
+      },
+      {
+        "kind": "redline",
+        "document": "d1",
+        "title": "Supply note",
+        "path": ".dochaus/lean/d1/redline.docx",
+        "sha256": "8471bce264c98fe2f6ea153d3f3dc3bc5c123a5271c96a4f72fbffccb640e01f",
+        "deliverable": "Supply note - redline.docx"
+      },
+      {
+        "kind": "drafting_notes",
+        "document": null,
+        "title": null,
+        "path": ".dochaus/lean/drafting-notes.docx",
+        "sha256": "3587e25da99e3c2e08ef88bc3b7b4ade8c90688db981cc8c3c1cf6cbdb30500a",
+        "deliverable": "Supply note - drafting notes.docx"
+      },
+      {
+        "kind": "drafting_notes_markdown",
+        "document": null,
+        "title": null,
+        "path": ".dochaus/lean/drafting-notes.md",
+        "sha256": "166b844aabf195af3edb359d684c40b0f4410625b63d45ccce0039b414afafba",
+        "deliverable": null
+      }
+    ]
+  },
+  "plan": {
+    "documents": [
+      {
+        "id": "d1",
+        "title": "Supply note",
+        "purpose": ""
+      }
+    ]
+  }
+}

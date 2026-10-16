@@ -1,0 +1,7 @@
+{
+  "nodeModulesDir": "auto",
+  "lock": { "path": "deno.lock", "frozen": true },
+  "imports": {
+    "@modelcontextprotocol/sdk": "npm:@modelcontextprotocol/sdk@1.31.0"
+  }
+}

@@ -1,21 +1,27 @@
-// Optional-clause mechanics against the built nda.docx — exactly the operations
+// Optional-clause mechanics against an authored in-memory fixture — the operations
 // draft-document runs (omit via deleteSection, keep via the marker-strip fill),
 // exercised directly on a Docxodus session so no tool ctx is needed.
 // Run from dochaus/: bun test templates/optional.test.ts
 import { describe, expect, test } from "bun:test"
-import { fileURLToPath } from "node:url"
-import path from "node:path"
 import { docxodus } from "../lib/docxodus"
 import { renumberHeadings } from "../lib/markdown"
+import { renderMarkdownToDocx } from "../lib/render"
 
-const ndaBytes = await Bun.file(
-  path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "demo", "templates", "nda.docx"),
-).bytes()
+// No generated demo document or client template is required on a fresh checkout.
+// This minimal synthetic text exercises section/placeholder mechanics only.
+const fixtureMarkdown = [
+  "# Synthetic optional-clause example",
+  ...Array.from({ length: 7 }, (_, index) => `## ${index + 1}. Example clause\n\nSynthetic clause text.`),
+  "## 8. Governing Law\n\n[insert governing jurisdiction]",
+  "## 9. Non-Solicitation [optional: non-solicitation]\n\nDo not solicit for employment for [insert non-solicit period in months] months.",
+  "## 10. Entire Agreement\n\nSynthetic closing clause.",
+].join("\n\n")
+const { bytes: fixtureBytes } = await renderMarkdownToDocx(fixtureMarkdown)
 const dx = await docxodus()
 
 describe("optional clause markers", () => {
-  test("nda exposes the marker as an alternative_clause placeholder and its fill as an instruction", () => {
-    const session = dx.openDocxSession(ndaBytes, {})
+  test("template exposes the marker as an alternative_clause placeholder and its fill as an instruction", () => {
+    const session = dx.openDocxSession(fixtureBytes, {})
     const placeholders = session.findPlaceholders()
     session.close()
     expect(
@@ -27,7 +33,7 @@ describe("optional clause markers", () => {
   })
 
   test("omit removes the whole clause and leaves the rest intact", () => {
-    const session = dx.openDocxSession(ndaBytes, {})
+    const session = dx.openDocxSession(fixtureBytes, {})
     const anchor = session.findByText("[optional: non-solicitation]", { ignoreWhitespace: true })!
     expect(anchor.kind).toBe("h")
     session.deleteSection(anchor.id)
@@ -43,7 +49,7 @@ describe("optional clause markers", () => {
   })
 
   test("omit then renumber closes the heading-number hole", () => {
-    const session = dx.openDocxSession(ndaBytes, {})
+    const session = dx.openDocxSession(fixtureBytes, {})
     const anchor = session.findByText("[optional: non-solicitation]", { ignoreWhitespace: true })!
     session.deleteSection(anchor.id)
     renumberHeadings(session)
@@ -55,7 +61,7 @@ describe("optional clause markers", () => {
   })
 
   test("keep strips the marker but leaves the clause", () => {
-    const session = dx.openDocxSession(ndaBytes, {})
+    const session = dx.openDocxSession(fixtureBytes, {})
     session.fillPlaceholders((p) => (p.match.text.startsWith("[optional:") ? "" : null), {
       kinds: dx.PlaceholderKinds.AlternativeClause,
       coalesceWhitespaceAroundEmptyFill: true,

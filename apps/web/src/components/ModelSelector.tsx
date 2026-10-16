@@ -7,7 +7,7 @@ import { AUTO_ASSISTANT, CHAT_ASSISTANTS, isAuto } from "../agents"
 // selected, `resolvedLabel` carries which real assistant the last message routed
 // to so the chip reads "Auto · Redline". Workflows are one-shot actions, not
 // modes, so they live in their own launcher rather than this list. `available` is
-// the set of agent ids the engine actually has, so we never offer one missing.
+// the set of assistant ids the engine actually has, so we never offer one missing.
 export default function ModelSelector({
   available,
   value,

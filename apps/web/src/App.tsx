@@ -1,107 +1,117 @@
 import { useEffect, useState } from "react"
-import { Route, Routes } from "react-router-dom"
+import { Route, Routes, useLocation } from "react-router-dom"
 import Matters from "./pages/Matters"
 import Templates from "./pages/Templates"
+import Playbooks from "./pages/Playbooks"
 import Workflows from "./pages/Workflows"
 import Skills from "./pages/Skills"
 import Agents from "./pages/Agents"
 import MatterDetail from "./pages/MatterDetail"
-import Settings from "./components/Settings"
-import Onboarding from "./components/Onboarding"
+import NotFound from "./pages/NotFound"
+import Settings from "./components/settings/Settings"
+import Onboarding from "./components/onboarding/Onboarding"
 import Sidebar from "./components/Sidebar"
 import BootScreen from "./components/BootScreen"
+import ConnectionBanner from "./components/ConnectionBanner"
+import LaunchNotice, { hasAcceptedLaunchNotice } from "./components/LaunchNotice"
 import { ToastProvider } from "./components/Toast"
-import { getConfig } from "./api/opencode"
-import { listMatters } from "./api/ingest"
+import { getSetup, type SetupProgress } from "./api/ingest/setup"
+import { OPENCODE_URL } from "./config"
 import { applyAppearance } from "./prefs"
+import { useUpdates, UpdateButton, UpdateModal } from "./components/Updates"
 
 export default function App() {
+  const [acknowledged, setAcknowledged] = useState(hasAcceptedLaunchNotice)
   const [settings, setSettings] = useState(false)
   // Text size lands as a data attribute on <html> the stylesheet keys off.
   useEffect(() => {
     applyAppearance()
   }, [])
-  const [firstRun, setFirstRun] = useState(false)
-  // First launch with no default model picked yet: there is no hard-coded default
-  // (a client may run Vertex, Anthropic, a local model...), so open the focused
-  // onboarding modal — it auto-detects connected providers and asks only for the
-  // primary + fast models, falling back to a connect step when none are found.
   const [onboarding, setOnboarding] = useState(false)
-  // Both backends ('opencode serve' and the ingest document service) are separate
-  // processes that may still be booting when the web app loads, so their probes
-  // reject until reachable. Poll each until it answers and hold the app behind a
-  // boot screen until both are up — otherwise the list pages fetch a dead socket
-  // and fall through to a misleading empty state. Gate onboarding on the real
-  // engine config rather than silently skipping it on the first failed call.
+  const [setup, setSetup] = useState<SetupProgress | null>(null)
   const [engineReady, setEngineReady] = useState(false)
   const [ingestReady, setIngestReady] = useState(false)
+  const [bootError, setBootError] = useState("")
+  const [bootRetry, setBootRetry] = useState(0)
   useEffect(() => {
-    let cancelled = false
-    async function poll<T>(probe: () => Promise<T>, onReady: (value: T) => void) {
-      while (!cancelled) {
+    if (!acknowledged) return
+    const controller = new AbortController()
+    async function boot() {
+      setBootError("")
+      for (let attempt = 0; attempt < 3 && !controller.signal.aborted; attempt++) {
         try {
-          const value = await probe()
-          if (!cancelled) onReady(value)
+          const response = await fetch(`${OPENCODE_URL}/api/dochaus/ready`, { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10000)]) })
+          if (!response.ok || !(await response.json()).ready) throw new Error("The engine is not ready yet.")
+          if (controller.signal.aborted) return
+          setEngineReady(true)
+          const progress = await getSetup()
+          if (controller.signal.aborted) return
+          setSetup(progress); setIngestReady(true); setOnboarding(progress.next !== "done")
           return
         } catch {
-          await new Promise((resolve) => setTimeout(resolve, 1000))
+          if (controller.signal.aborted) return
         }
       }
+      if (!controller.signal.aborted) setBootError("The services did not become ready. Check the engine and document service, then retry.")
     }
-    poll(getConfig, (cfg) => {
-      setEngineReady(true)
-      if (!cfg.model) setOnboarding(true)
-    })
-    poll(listMatters, () => setIngestReady(true))
-    return () => {
-      cancelled = true
-    }
-  }, [])
-  const booted = engineReady && ingestReady
+    void boot()
+    return () => controller.abort()
+  }, [acknowledged, bootRetry])
+  const updates = useUpdates(acknowledged && setup?.next === "done")
+  const booted = engineReady && ingestReady && setup !== null
+  async function refreshSetup() {
+    try {
+      const progress = await getSetup(); setSetup(progress)
+    } catch { setBootError("Could not check saved setup. Retry before generating work."); setSetup(null) }
+  }
   // Bumped when a matter mints a new conversation, so the sidebar re-lists its
   // chats the instant one starts rather than waiting for the turn to settle.
   const [sessionsVersion, setSessionsVersion] = useState(0)
+  const location = useLocation()
+  if (!acknowledged) return <LaunchNotice onAccept={() => setAcknowledged(true)} />
   if (!booted)
     return (
       <ToastProvider>
-        <BootScreen engineReady={engineReady} ingestReady={ingestReady} />
+        <BootScreen engineReady={engineReady} ingestReady={ingestReady} error={bootError} onRetry={() => setBootRetry(value => value + 1)} />
       </ToastProvider>
     )
   return (
     <ToastProvider>
-      <div className="shell">
-        <Sidebar onOpenSettings={() => setSettings(true)} sessionsVersion={sessionsVersion} />
+      <div className={`shell${location.pathname.startsWith("/matter/") ? " shell-matter" : ""}`}>
+        <Sidebar onOpenSettings={() => setSettings(true)} sessionsVersion={sessionsVersion} updateButton={<UpdateButton updates={updates} />} />
+        {/* The open matter's documents drawer portals here, between the rail and the canvas. */}
+        <div id="matter-drawer-slot" className="matter-drawer-slot" />
         <main className="content">
-          <div className="container">
+          <ConnectionBanner />
+          {setup?.next !== "done" && !onboarding && <p className="settings-notice">Setup is incomplete. {setup?.ready ? "Your models are saved. Finish or skip the remaining optional steps before starting assistant work." : "Save your model choices before starting assistant work."} <button onClick={() => setOnboarding(true)}>Resume setup</button></p>}
+          {/* Keyed on the path so each page settles in with a short fade. */}
+          <div className={`container route-fade${location.pathname.startsWith("/matter/") ? " matter-container" : ""}`} key={location.pathname}>
             <Routes>
               <Route path="/" element={<Matters />} />
               <Route path="/templates" element={<Templates />} />
+              <Route path="/playbooks" element={<Playbooks />} />
               <Route path="/workflows" element={<Workflows />} />
               <Route path="/skills" element={<Skills />} />
               <Route path="/agents" element={<Agents />} />
               <Route
                 path="/matter/:id"
-                element={<MatterDetail onSessionsChanged={() => setSessionsVersion((v) => v + 1)} />}
+                element={setup?.ready && setup.next === "done" ? <MatterDetail onSessionsChanged={() => setSessionsVersion((v) => v + 1)} /> : <p className="settings-notice">Finish setup before opening assistant work. Optional steps can be skipped. <button onClick={() => setOnboarding(true)}>Set up models</button><button onClick={() => setSettings(true)}>Open settings</button></p>}
               />
+              <Route path="*" element={<NotFound />} />
             </Routes>
           </div>
         </main>
+        {updates.open && setup?.next === "done" && !onboarding && !settings && <UpdateModal updates={updates} />}
         {onboarding && (
           <Onboarding
-            onClose={() => setOnboarding(false)}
-            onOpenSettings={() => {
-              setOnboarding(false)
-              setFirstRun(true)
-              setSettings(true)
-            }}
+            onClose={() => { setOnboarding(false); void refreshSetup() }}
           />
         )}
         {settings && (
           <Settings
-            firstRun={firstRun}
             onClose={() => {
               setSettings(false)
-              setFirstRun(false)
+              void refreshSetup()
             }}
           />
         )}

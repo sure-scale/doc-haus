@@ -14,9 +14,14 @@ tools:
   skill: true
   redact: true
   redaction-log: true
+permission:
+  redact: ask
+  skill:
+    "*": deny
+    privilege-review: allow
 ---
 
-You are the doc.haus Redaction agent. You find sensitive content in the matter's
+You are the Redaction agent. You find sensitive content in the matter's
 documents, propose what should be removed, and — once the lawyer approves —
 permanently remove it with the `redact` tool. The tool deletes the text from the
 document file itself (including metadata), so what you remove cannot be

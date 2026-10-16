@@ -1,15 +1,18 @@
 import { Database } from "bun:sqlite"
 import { mkdirSync } from "node:fs"
 import path from "node:path"
+import { documentRegistryIdentity } from "./document-identity"
 
-// Per-matter retrieval index. Lives inside the matter directory so it is scoped
-// to that matter and rebuildable from the source .docx files at any time.
+// Per-matter document registry and retrieval index. Lives inside the matter
+// directory so it is scoped to that matter. Source rows own searchable chunks;
+// deliverable rows exist only so generated files remain listable and viewable.
 
 export function openDb(matterDir: string): Database {
   const dir = path.join(matterDir, ".dochaus")
   mkdirSync(dir, { recursive: true })
   const db = new Database(path.join(dir, "legal.db"))
   db.run("PRAGMA journal_mode = WAL")
+  db.run("CREATE TABLE IF NOT EXISTS answer_drafts (scope TEXT PRIMARY KEY, answers TEXT NOT NULL, revision INTEGER NOT NULL)")
   // injection_report: JSON-encoded prompt-injection findings from ingest-time
   // scanning (see sanitize.ts), NULL when the document came up clean.
   db.run(`
@@ -18,12 +21,21 @@ export function openDb(matterDir: string): Database {
       doc_path TEXT NOT NULL UNIQUE,
       name TEXT NOT NULL,
       created_at INTEGER NOT NULL,
-      injection_report TEXT
+      injection_report TEXT,
+      role TEXT NOT NULL DEFAULT 'source' CHECK (role IN ('source', 'deliverable'))
     )
   `)
   // flagged: 1 when the chunk overlaps an ingest-time injection finding, so the
   // search-document tool can mark the passage as adversarial when handing it to
   // the model.
+  // structural_path: the document's hierarchy down to this chunk's clause
+  // ("Doc › §7 Indemnification › §7.2 Cap"), built deterministically from the
+  // clause numbering at ingest (see structure.ts buildSectionPaths). It doubles
+  // as a near-zero-cost contextual prefix for the vector channel and is surfaced
+  // verbatim in search-document citations.
+  // party: the document's named participants as a single line,
+  // attached to every chunk so a passage carries its matter/party context even
+  // when the names sit pages away in the preamble.
   db.run(`
     CREATE TABLE IF NOT EXISTS chunks (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -31,6 +43,8 @@ export function openDb(matterDir: string): Database {
       doc_path TEXT NOT NULL,
       doc_name TEXT NOT NULL,
       section TEXT NOT NULL,
+      structural_path TEXT NOT NULL DEFAULT '',
+      party TEXT NOT NULL DEFAULT '',
       chunk_index INTEGER NOT NULL,
       text TEXT NOT NULL,
       char_start INTEGER NOT NULL,
@@ -42,10 +56,58 @@ export function openDb(matterDir: string): Database {
   // Databases created before the injection-defense columns existed (issue #17)
   // gain them here; their documents read as clean until re-ingested.
   if (!hasColumn(db, "documents", "injection_report")) db.run("ALTER TABLE documents ADD COLUMN injection_report TEXT")
+  // Existing matter databases predate the source/deliverable boundary. Their
+  // registered documents were all user-ingested sources, so the migration-safe
+  // default preserves their current meaning.
+  if (!hasColumn(db, "documents", "role"))
+    db.run("ALTER TABLE documents ADD COLUMN role TEXT NOT NULL DEFAULT 'source'")
+  if (!hasColumn(db, "documents", "label")) db.run("ALTER TABLE documents ADD COLUMN label TEXT")
   if (!hasColumn(db, "chunks", "flagged")) db.run("ALTER TABLE chunks ADD COLUMN flagged INTEGER NOT NULL DEFAULT 0")
+  // Structure-aware chunking (issue R2): older databases carry chunks without a
+  // structural path or party line. The columns are added empty; the rows fill in
+  // on the next re-ingest of each document.
+  if (!hasColumn(db, "chunks", "structural_path"))
+    db.run("ALTER TABLE chunks ADD COLUMN structural_path TEXT NOT NULL DEFAULT ''")
+  if (!hasColumn(db, "chunks", "party")) db.run("ALTER TABLE chunks ADD COLUMN party TEXT NOT NULL DEFAULT ''")
   // Small key-value table for index-level facts that aren't rows — currently
   // which embedding model wrote the chunk vectors (see embed.ts migration).
   db.run("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+  // A source mutation installs filesystem bytes and projections before its
+  // SQLite transaction commits. The transaction id is recorded here in that
+  // same commit so startup recovery can distinguish a committed mutation from
+  // one SQLite rolled back after process termination.
+  db.run(`
+    CREATE TABLE IF NOT EXISTS source_mutation_commits (
+      mutation_id TEXT PRIMARY KEY,
+      target_name TEXT NOT NULL,
+      committed_at INTEGER NOT NULL
+    )
+  `)
+  db.run(`
+    CREATE TABLE IF NOT EXISTS document_mutation_commits (
+      mutation_id TEXT PRIMARY KEY,
+      target_name TEXT NOT NULL,
+      committed_at INTEGER NOT NULL
+    )
+  `)
+  // Chat continuations after an interrupted model turn. Keep the claim beside
+  // the matter so two browsers or devices cannot dispatch the same
+  // server-issued message ID concurrently. The engine response is reconciled
+  // separately; this table is the durable idempotency boundary.
+  db.run(`
+    CREATE TABLE IF NOT EXISTS continuation_dispatches (
+      message_id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      run_id TEXT NOT NULL,
+      progress_token TEXT NOT NULL,
+      payload_hash TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('claimed', 'accepted', 'observed', 'uncertain')),
+      attempts INTEGER NOT NULL DEFAULT 1,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )
+  `)
   // Lexical channel for hybrid retrieval (issue #67): a BM25-ranked FTS5 index
   // over the same chunks the vector channel scans. external-content mode stores
   // only the index and reads row text back from chunks, so chunk text is never
@@ -149,8 +211,24 @@ export function openDb(matterDir: string): Database {
       char_end INTEGER NOT NULL
     )
   `)
+  // Per-section amendment operations (issue #69). Each row is one operative
+  // sentence in an amending document that names a section of its base agreement
+  // and the verb (amend/restate/delete/add) applied to it. Spans index into the
+  // amender's extracted text — same contract as doc_relations recital spans.
+  db.run(`
+    CREATE TABLE IF NOT EXISTS section_ops (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      doc_path TEXT NOT NULL,
+      doc_name TEXT NOT NULL,
+      section_label TEXT NOT NULL,
+      operation TEXT NOT NULL,
+      char_start INTEGER NOT NULL,
+      char_end INTEGER NOT NULL
+    )
+  `)
   db.run("CREATE INDEX IF NOT EXISTS defined_terms_term ON defined_terms(term)")
   db.run("CREATE INDEX IF NOT EXISTS section_refs_doc ON section_refs(doc_path)")
+  db.run("CREATE INDEX IF NOT EXISTS section_ops_doc ON section_ops(doc_path)")
   // Pending redline proposals. The canonical .docx stays clean (the accepted
   // state); each redline a tool proposes is a row here until a reviewer accepts
   // it (baked into the doc) or rejects it. scope drives how the edit is replayed:
@@ -167,11 +245,16 @@ export function openDb(matterDir: string): Database {
       old_text TEXT NOT NULL,
       new_text TEXT NOT NULL,
       author TEXT NOT NULL,
+      review_comment TEXT NOT NULL DEFAULT '',
       anchor_id TEXT,
       status TEXT NOT NULL DEFAULT 'pending',
       created_at INTEGER NOT NULL
     )
   `)
+  if (!hasColumn(db, "redlines", "review_comment"))
+    db.run("ALTER TABLE redlines ADD COLUMN review_comment TEXT NOT NULL DEFAULT ''")
+  if (!hasColumn(db, "redlines", "target_json"))
+    db.run("ALTER TABLE redlines ADD COLUMN target_json TEXT")
   return db
 }
 
@@ -211,7 +294,9 @@ export type RedlineRow = {
   old_text: string
   new_text: string
   author: string
+  review_comment: string
   anchor_id: string | null
+  target_json?: string | null
   // 'superseded': a later proposal on the same paragraph replaced this one before
   // review (set by the redline tools), so it never reaches the pending queue.
   status: "pending" | "accepted" | "rejected" | "superseded"
@@ -221,9 +306,9 @@ export type RedlineRow = {
 // Pending redlines for one document, oldest first — the order they are replayed
 // when building the redlined view and when accepting in bulk.
 export function listPendingRedlines(db: Database, docPath: string): RedlineRow[] {
-  return db
-    .query("SELECT * FROM redlines WHERE doc_path = ? AND status = 'pending' ORDER BY created_at, id")
-    .all(docPath) as RedlineRow[]
+  const identity = documentRegistryIdentity(docPath)
+  return (db.query("SELECT * FROM redlines WHERE status = 'pending' ORDER BY created_at, id").all() as RedlineRow[])
+    .filter((row) => documentRegistryIdentity(row.doc_path) === identity)
 }
 
 export function getRedline(db: Database, id: number): RedlineRow | null {
@@ -234,24 +319,49 @@ export function setRedlineStatus(db: Database, id: number, status: "accepted" | 
   db.run("UPDATE redlines SET status = ? WHERE id = ?", [status, id])
 }
 
-// Per-document pending counts, keyed by absolute doc_path, for the docs-rail badge.
+// Per-document pending counts, keyed by canonical document identity. Historical
+// aliases stay in the database; the docs rail resolves its registry paths alike.
 export function pendingRedlineCounts(db: Database): Record<string, number> {
   const rows = db
     .query("SELECT doc_path, COUNT(*) AS n FROM redlines WHERE status = 'pending' GROUP BY doc_path")
     .all() as { doc_path: string; n: number }[]
-  return Object.fromEntries(rows.map((r) => [r.doc_path, r.n]))
+  return rows.reduce<Record<string, number>>((counts, row) => {
+    const identity = documentRegistryIdentity(row.doc_path)
+    counts[identity] = (counts[identity] ?? 0) + row.n
+    return counts
+  }, {})
 }
 
 export function listDocuments(db: Database) {
-  return db.query("SELECT id, doc_path, name, created_at FROM documents ORDER BY created_at").all()
+  return db.query("SELECT id, doc_path, name, created_at, role, label FROM documents ORDER BY created_at").all()
+}
+
+export function listSourceDocuments(db: Database) {
+  return db
+    .query("SELECT id, doc_path, name, created_at, role FROM documents WHERE role = 'source' ORDER BY created_at")
+    .all()
+}
+
+export function getDocumentRole(db: Database, docPath: string): "source" | "deliverable" | null {
+  const roles = [...new Set(matchingDocumentRows(db, docPath).map((row) => row.role))]
+  if (roles.length > 1)
+    throw new Error(`One physical matter document has conflicting source and deliverable registry roles.`)
+  return roles[0] ?? null
 }
 
 // Drop a document and its chunks from the index. Pairs with removing the source
 // .docx so the matter holds no orphaned embeddings.
 export function deleteDocument(db: Database, docPath: string) {
+  matchingDocumentRows(db, docPath).forEach((row) => {
+    deleteDocumentIndexData(db, row.doc_path)
+    db.run("DELETE FROM redlines WHERE doc_path = ?", [row.doc_path])
+    db.run("DELETE FROM documents WHERE id = ?", [row.id])
+  })
+}
+
+function deleteDocumentIndexData(db: Database, docPath: string) {
   db.run("DELETE FROM chunks WHERE doc_path = ?", [docPath])
-  db.run("DELETE FROM documents WHERE doc_path = ?", [docPath])
-  for (const table of ["defined_terms", "section_refs", "parties", "doc_relations"])
+  for (const table of ["defined_terms", "section_refs", "parties", "doc_relations", "section_ops"])
     db.run(`DELETE FROM ${table} WHERE doc_path = ?`, [docPath])
 }
 
@@ -263,24 +373,82 @@ export function upsertDocument(
   createdAt: number,
   injectionReport: string | null,
 ): number {
-  db.run("DELETE FROM chunks WHERE doc_path = ?", [docPath])
-  db.run("DELETE FROM documents WHERE doc_path = ?", [docPath])
-  const result = db.run("INSERT INTO documents (doc_path, name, created_at, injection_report) VALUES (?, ?, ?, ?)", [
+  if (getDocumentRole(db, docPath) === "deliverable")
+    throw new Error(`Cannot replace generated deliverable ${name} with a source document.`)
+  const previous = matchingDocumentRows(db, docPath)
+  const label = (db.query("SELECT label FROM documents WHERE name = ?").get(name) as { label: string | null } | null)?.label ?? null
+  previous.forEach((row) => {
+    deleteDocumentIndexData(db, row.doc_path)
+    db.run("UPDATE redlines SET doc_path = ?, doc_name = ? WHERE doc_path = ?", [docPath, name, row.doc_path])
+    db.run("DELETE FROM documents WHERE id = ?", [row.id])
+  })
+  const result = db.run("INSERT INTO documents (doc_path, name, created_at, injection_report, role, label) VALUES (?, ?, ?, ?, 'source', ?)", [
     docPath,
     name,
     createdAt,
     injectionReport,
+    label,
   ])
+  return Number(result.lastInsertRowid)
+}
+
+// Register generated output for the Documents rail without admitting it to the
+// retrieval index. A deliverable path may only replace an earlier deliverable;
+// replacing a user-ingested source would silently destroy the source boundary.
+export function upsertDeliverable(db: Database, docPath: string, name: string, createdAt: number): number {
+  if (getDocumentRole(db, docPath) === "source")
+    throw new Error(`Cannot replace source document ${name} with a generated deliverable.`)
+  const label = (db.query("SELECT label FROM documents WHERE name = ?").get(name) as { label: string | null } | null)?.label ?? null
+  deleteDocument(db, docPath)
+  const result = db.run(
+    "INSERT INTO documents (doc_path, name, created_at, injection_report, role, label) VALUES (?, ?, ?, NULL, 'deliverable', ?)",
+    [docPath, name, createdAt, label],
+  )
+  return Number(result.lastInsertRowid)
+}
+
+// Refresh an existing deliverable while preserving pending redline rows. Alias
+// rows from older versions are collapsed onto the canonical physical path so a
+// later source upload cannot observe a different role through casing or a
+// symlink spelling.
+export function refreshDeliverable(db: Database, docPath: string, name: string, createdAt: number) {
+  if (getDocumentRole(db, docPath) !== "deliverable")
+    throw new Error(`${name} is not a generated deliverable.`)
+  const previous = matchingDocumentRows(db, docPath)
+  const label = (db.query("SELECT label FROM documents WHERE name = ?").get(name) as { label: string | null } | null)?.label ?? null
+  previous.forEach((row) => {
+    deleteDocumentIndexData(db, row.doc_path)
+    db.run("UPDATE redlines SET doc_path = ?, doc_name = ? WHERE doc_path = ?", [docPath, name, row.doc_path])
+    db.run("DELETE FROM documents WHERE id = ?", [row.id])
+  })
+  const result = db.run(
+    "INSERT INTO documents (doc_path, name, created_at, injection_report, role, label) VALUES (?, ?, ?, NULL, 'deliverable', ?)",
+    [docPath, name, createdAt, label],
+  )
   return Number(result.lastInsertRowid)
 }
 
 // The ingest-time injection findings for one document, for the document text route
 // (so read-document can warn the model alongside the full text). NULL means clean.
 export function getInjectionReport(db: Database, docPath: string) {
-  const row = db.query("SELECT injection_report FROM documents WHERE doc_path = ?").get(docPath) as {
-    injection_report: string | null
-  } | null
+  getDocumentRole(db, docPath)
+  const row = matchingDocumentRows(db, docPath)[0]
   return row?.injection_report ? (JSON.parse(row.injection_report) as { findings: unknown[] }) : null
+}
+
+type DocumentRegistryRow = {
+  id: number
+  doc_path: string
+  name: string
+  role: "source" | "deliverable"
+  injection_report: string | null
+}
+
+function matchingDocumentRows(db: Database, docPath: string) {
+  const identity = documentRegistryIdentity(docPath)
+  return (db
+    .query("SELECT id, doc_path, name, role, injection_report FROM documents")
+    .all() as DocumentRegistryRow[]).filter((row) => documentRegistryIdentity(row.doc_path) === identity)
 }
 
 export function insertChunk(
@@ -290,6 +458,8 @@ export function insertChunk(
     docPath: string
     docName: string
     section: string
+    structuralPath: string
+    party: string
     chunkIndex: number
     text: string
     charStart: number
@@ -299,12 +469,14 @@ export function insertChunk(
   },
 ) {
   db.run(
-    "INSERT INTO chunks (document_id, doc_path, doc_name, section, chunk_index, text, char_start, char_end, embedding, flagged) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    "INSERT INTO chunks (document_id, doc_path, doc_name, section, structural_path, party, chunk_index, text, char_start, char_end, embedding, flagged) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     [
       chunk.documentId,
       chunk.docPath,
       chunk.docName,
       chunk.section,
+      chunk.structuralPath,
+      chunk.party,
       chunk.chunkIndex,
       chunk.text,
       chunk.charStart,

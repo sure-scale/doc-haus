@@ -1,37 +1,22 @@
-# doc.haus self-host — `docker compose up` runs the whole stack (engine, ingest,
-# web) in one container, the same three processes ./start.sh launches locally.
-# Open http://localhost:5173 and connect a model provider in Settings on first
-# run; no credentials are needed just to boot.
+# Local self-hosting. Only the web proxy is published, on host loopback.
 services:
   dochaus:
     build: .
     image: dochaus
-    init: true # reap the process tree start.sh spawns on stop
+    init: true
     ports:
-      - "5173:5173" # web UI
-      - "4096:4096" # opencode engine
-      - "4500:4500" # ingest service
+      - "127.0.0.1:5173:5173"
     environment:
-      # Expose each process beyond loopback so the published ports reach the host
-      # browser (start.sh / vite / ingest all default to 127.0.0.1).
-      OPENCODE_HOSTNAME: "0.0.0.0"
+      OPENCODE_HOSTNAME: "127.0.0.1"
+      INGEST_HOST: "127.0.0.1"
       WEB_HOST: "0.0.0.0"
-      INGEST_HOST: "0.0.0.0"
-      WORKSPACE_ROOT: /data/workspace
-      # The container is deliberately isolated from the host: no provider
-      # credentials are passed in, so a bare `docker compose up` connects nothing
-      # and you choose a provider in Settings on first run. Google Vertex is opt-in
-      # — uncomment BOTH the project/location here AND the ADC mount under volumes.
-      # They must travel together: a project without credentials makes the engine
-      # autoload Vertex (project presence alone) while every call fails with
-      # "Could not load the default credentials". Run the gcloud login on the host
-      # first: gcloud auth application-default login
-      # GOOGLE_VERTEX_PROJECT: "${GOOGLE_VERTEX_PROJECT:-}"
-      # GOOGLE_VERTEX_LOCATION: "${GOOGLE_VERTEX_LOCATION:-global}"
+      DOCHAUS_DATA_ROOT: /data
+      VITE_OPENCODE_URL: /engine
+      VITE_INGEST_URL: /ingest
     volumes:
-      # Matters (documents, conversations, indexes) persist across restarts.
       - dochaus-workspace:/data/workspace
-      # - ${HOME}/.config/gcloud:/root/.config/gcloud:ro
+      - dochaus-runtime:/data/runtime
 
 volumes:
   dochaus-workspace:
+  dochaus-runtime:

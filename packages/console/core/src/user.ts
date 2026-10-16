@@ -11,6 +11,7 @@ import { Key } from "./key"
 import { KeyTable } from "./schema/key.sql"
 import { WorkspaceTable } from "./schema/workspace.sql"
 import { AuthTable } from "./schema/auth.sql"
+import { AccountTable } from "./schema/account.sql"
 
 export namespace User {
   const assertNotSelf = (id: string) => {
@@ -138,7 +139,7 @@ export namespace User {
             .then((rows) => rows[0]),
         )
 
-        const { InviteEmail } = await import("@opencode-ai/console-mail/InviteEmail.jsx")
+        const { InviteEmail } = await import("@opencode/console-mail/InviteEmail.jsx")
         await AWS.sendEmail({
           to: email,
           subject: `You've been invited to join the ${emailInfo.workspaceName} workspace on OpenCode`,
@@ -161,6 +162,13 @@ export namespace User {
   export const joinInvitedWorkspaces = fn(z.void(), async () => {
     const account = Actor.assert("account")
     const invitations = await Database.use(async (tx) => {
+      const active = await tx
+        .select({ id: AccountTable.id })
+        .from(AccountTable)
+        .where(and(eq(AccountTable.id, account.properties.accountID), isNull(AccountTable.timeDeleted)))
+        .then((rows) => rows[0])
+      if (!active) throw new Error("Account is not active")
+
       const invitations = await tx
         .select({
           id: UserTable.id,

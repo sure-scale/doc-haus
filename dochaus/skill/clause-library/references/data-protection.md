@@ -1,12 +1,16 @@
 # Data protection
 
-US commercial-market reference points; verify against the matter's
-jurisdiction pack. This family is the most regime-dependent of the twelve —
-the required terms differ materially between the EU/UK regimes, US state
-privacy laws, and sectoral rules. Identify which regimes apply to the data in
-the deal before judging any clause.
+**Topic:** Data protection — roles, breach notice, subprocessors, transfers.
+**Contract type:** Any agreement under which one party processes personal data
+for the other.
+**Jurisdiction:** US commercial market scope, but this family is the most
+regime-dependent of the twelve — required terms differ materially between the
+EU/UK regimes, US state privacy laws, and sectoral rules. Identify which
+regimes apply before judging any clause; for GDPR/UK GDPR work use the DPA
+playbook. Positions are firm-configurable defaults overridable via
+`.dochaus/profile.md`.
 
-## Balanced position
+## Preferred
 
 Roles are expressly assigned (who determines purposes and means, who
 processes on instructions). The processing party processes personal data only
@@ -30,42 +34,42 @@ additions with a right to object; and, at Customer's election on termination,
 delete or return all Personal Data except as retention is required by law.
 ```
 
-## Common one-sided variants
+**Off-market variants to watch.** Processor-favorable: rights to use personal
+data for its own purposes (analytics, product improvement on identifiable data,
+marketing) outside instructions; breach notice diluted to a long fixed window,
+conditioned on confirmed impact, or omitted; no subprocessor list, flow-down,
+or objection right; security stated as "industry standard" with no annex,
+certification, or audit mechanism. Controller-favorable: unlimited on-site
+audit rights at any time at the provider's cost where a recognized audit report
+would serve; breach-notice windows operationally impossible, paired with
+uncapped liability for any incident regardless of fault; instructions defined so
+broadly any request becomes a contractual processing obligation.
 
-**Tilted toward the processing party (often the provider):**
-- Rights to use personal data for its own purposes — analytics, product
-  improvement on identifiable data, or marketing — outside the customer's
-  instructions.
-- Breach notice diluted to a long fixed window, conditioned on confirmed
-  impact, or omitted; no subprocessor list, flow-down, or objection right.
-- Security obligations stated as "industry standard" with no annex,
-  certification, or audit mechanism behind them.
+## Fallbacks (ordered)
 
-**Tilted toward the controller/customer:**
-- Unlimited on-site audit rights at any time at the provider's cost, where a
-  recognized third-party audit report would serve.
-- Breach-notice windows so short they are operationally impossible, paired
-  with uncapped liability for any security incident regardless of fault.
-- Instructions defined so broadly that any customer request, however far
-  outside the service, becomes a contractual processing obligation.
+1. **Offer when** the provider resists on-demand on-site audits: accept audit
+   rights satisfied by recognized third-party reports, with on-site audit
+   reserved for cause (after a breach or regulator inquiry).
+2. **Offer when** the provider needs subprocessor flexibility: accept a general
+   subprocessor authorization with a published list, change notice, and an
+   objection right whose remedy is termination of the affected service with a
+   pro-rata refund.
+3. **Offer when** the provider wants usage analytics: accept
+   aggregated/de-identified usage-data rights only where re-identification is
+   contractually prohibited and the de-identified definition meets the
+   applicable regime's standard.
 
-## Fallback ladder
+## Walk-away floor
 
-1. Full balanced position: instructions-only processing, security annex,
-   undue-delay breach notice, subprocessor controls, deletion/return, lawful
-   transfer mechanism (preferred).
-2. Accept audit rights satisfied by recognized third-party reports (with
-   on-site audit reserved for cause, e.g., after a breach or regulator
-   inquiry).
-3. Accept a general subprocessor authorization with a published list, change
-   notice, and an objection right whose remedy is termination of the
-   affected service with a pro-rata refund.
-4. Accept aggregated/de-identified usage data rights only where
-   re-identification is contractually prohibited and the definition of
-   de-identified meets the applicable regime's standard.
+Own-purpose use of identifiable personal data, or no breach-notice obligation
+of any kind.
 
-Below rung 4 — own-purpose use of identifiable personal data, or no breach
-notice obligation — escalate.
+## Escalation trigger
+
+At or below the floor, do not concede. Route to the **supervising lawyer** (or
+the firm's privacy/data-protection lead, or the `.dochaus/profile.md`
+Escalation Rules contact) — data-protection terms carry regulatory exposure the
+liability clause may not cap.
 
 **Rationale:** Data-protection terms carry regulatory exposure that the
 liability clause may not cap; roles, breach notice, and transfers are the

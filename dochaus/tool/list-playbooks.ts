@@ -1,4 +1,4 @@
-import { tool } from "@opencode-ai/plugin"
+import { tool } from "./legacy-definition"
 
 // doc.haus list-playbooks tool. Returns the firm's playbook library — the
 // repo-shipped playbook skills (read-only) plus the imported ones in

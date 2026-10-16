@@ -1,0 +1,213 @@
+{
+  "profile": "lean",
+  "mode": "queued",
+  "request_id": "001791709528721-000000-f85e00be",
+  "status": {
+    "schema": "dochaus.lean.state/2",
+    "profile": "lean",
+    "revision": 27,
+    "status": "running",
+    "stop_reason": null,
+    "owner_session_id": "ses_child1",
+    "model": {
+      "providerID": "test",
+      "modelID": "scripted"
+    },
+    "created_at": "2026-10-11T09:05:28.463Z",
+    "updated_at": "2026-10-11T09:05:28.725Z",
+    "stages": {
+      "d1.draft": {
+        "status": "done",
+        "input_sha": "96e87cd13f662f394c148f5e0ea4adda533cb740d1e05067c534fd3542891394",
+        "outputs": [
+          "plan.json",
+          "d1/draft.md",
+          "d1/body.docx",
+          "d1/paragraphs.json"
+        ],
+        "session_id": "ses_child2",
+        "attempts": 1,
+        "calls": 3,
+        "feedback": [],
+        "started_at": "2026-10-11T09:05:28.464Z",
+        "finished_at": "2026-10-11T09:05:28.500Z"
+      },
+      "d1.review": {
+        "status": "done",
+        "input_sha": "2da91cc10dd23b96b5f397801a5fd1b947bc963994e4b22254cd291c3a5ca52c",
+        "outputs": [
+          "d1/review.md"
+        ],
+        "session_id": "ses_child3",
+        "attempts": 1,
+        "calls": 1,
+        "feedback": [],
+        "started_at": "2026-10-11T09:05:28.501Z",
+        "finished_at": "2026-10-11T09:05:28.504Z"
+      },
+      "d1.changes": {
+        "status": "running",
+        "input_sha": null,
+        "outputs": [],
+        "session_id": null,
+        "attempts": 0,
+        "calls": 0,
+        "feedback": [],
+        "started_at": "2026-10-11T09:05:28.725Z",
+        "finished_at": null
+      },
+      "d1.apply": {
+        "status": "done",
+        "input_sha": "b8abced96495842152ea5a10e0513102d9177f06b74acb6934d7d131a3a97f78",
+        "outputs": [
+          "d1/apply.json",
+          "d1/body-applied.docx",
+          "d1/paragraphs-applied.json"
+        ],
+        "session_id": null,
+        "attempts": 0,
+        "calls": 0,
+        "feedback": [],
+        "started_at": "2026-10-11T09:05:28.509Z",
+        "finished_at": "2026-10-11T09:05:28.559Z"
+      },
+      "finalize": {
+        "status": "done",
+        "input_sha": "392ddca7d88a310455ee6196e05d05c6c6d2dab035d68eb421fb6e36ae6e4c33",
+        "outputs": [
+          "drafting-notes.md",
+          "drafting-notes.docx",
+          "redline.docx"
+        ],
+        "session_id": "ses_child5",
+        "attempts": 1,
+        "calls": 1,
+        "feedback": [],
+        "started_at": "2026-10-11T09:05:28.560Z",
+        "finished_at": "2026-10-11T09:05:28.718Z"
+      },
+      "gate": {
+        "status": "blocked",
+        "input_sha": "fd05ded736126abde3b4b4804aaa3cb6e173b5e200905da637eb31c205864ba7",
+        "outputs": [
+          "gate.json",
+          "drafting-notes-coverage.md"
+        ],
+        "session_id": null,
+        "attempts": 0,
+        "calls": 0,
+        "feedback": [],
+        "started_at": "2026-10-11T09:05:28.719Z",
+        "finished_at": "2026-10-11T09:05:28.720Z"
+      }
+    },
+    "in_flight": true,
+    "pending_requests": 0,
+    "open_items": [
+      {
+        "id": "changes:question:e59da0fbb9",
+        "stage": "changes",
+        "kind": "question",
+        "detail": "Question for the lawyer: Should late delivery carry a remedy?",
+        "ref": {
+          "question_id": "q-4cc92c7c73",
+          "document": "d1"
+        },
+        "status": "open"
+      }
+    ],
+    "questions": [
+      {
+        "id": "q-4cc92c7c73",
+        "stage": "changes",
+        "question": "Should late delivery carry a remedy?",
+        "context": "The terms are silent.",
+        "status": "answered",
+        "answer": "No remedy; leave the terms silent.",
+        "answered_at": "2026-10-11T09:05:28.723Z",
+        "document": "d1"
+      }
+    ],
+    "gate": {
+      "status": "blocked",
+      "delivery": null,
+      "blocking": [
+        {
+          "id": "changes:question:e59da0fbb9",
+          "stage": "changes",
+          "kind": "question",
+          "detail": "Question for the lawyer: Should late delivery carry a remedy?",
+          "ref": {
+            "question_id": "q-4cc92c7c73",
+            "document": "d1"
+          },
+          "status": "open",
+          "resolution": "unanswered and tied to no paragraph; needs an answer, or a marker in the paragraph it affects"
+        }
+      ],
+      "disclosed": [],
+      "items": [
+        {
+          "id": "changes:question:e59da0fbb9",
+          "stage": "changes",
+          "kind": "question",
+          "detail": "Question for the lawyer: Should late delivery carry a remedy?",
+          "ref": {
+            "question_id": "q-4cc92c7c73",
+            "document": "d1"
+          },
+          "status": "open",
+          "resolution": "unanswered and tied to no paragraph; needs an answer, or a marker in the paragraph it affects"
+        }
+      ],
+      "checked_at": "2026-10-11T09:05:28.719Z"
+    },
+    "documents": {
+      "schema": "dochaus.lean.documents/2",
+      "status": "blocked",
+      "documents": [
+        {
+          "kind": "body",
+          "document": "d1",
+          "title": "Supply note",
+          "path": ".dochaus/lean/d1/body-applied.docx",
+          "sha256": "acb22fb3df905de4e341dd9c8e452d199b511176e16cc5e1f36b12f894251428",
+          "deliverable": null
+        },
+        {
+          "kind": "redline",
+          "document": "d1",
+          "title": "Supply note",
+          "path": ".dochaus/lean/d1/redline.docx",
+          "sha256": "f2aad8a01dfd808b83971cd7131c0546ce03bbf6a877728a4b3832db8ead4218",
+          "deliverable": null
+        },
+        {
+          "kind": "drafting_notes",
+          "document": null,
+          "title": null,
+          "path": ".dochaus/lean/drafting-notes.docx",
+          "sha256": "c9b996f63b89e73f56d2a8ba3122a04c8c51a2b4aaa0db810fbaf24477a8b374",
+          "deliverable": null
+        },
+        {
+          "kind": "drafting_notes_markdown",
+          "document": null,
+          "title": null,
+          "path": ".dochaus/lean/drafting-notes.md",
+          "sha256": "8ae76c34f8f52ee551b2822fc06a671e9e004bfe0bc87138f2ea471aaac2f05e",
+          "deliverable": null
+        }
+      ]
+    },
+    "plan": {
+      "documents": [
+        {
+          "id": "d1",
+          "title": "Supply note",
+          "purpose": ""
+        }
+      ]
+    }
+  }
+}

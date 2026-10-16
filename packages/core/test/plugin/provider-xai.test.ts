@@ -1,116 +1,92 @@
 import { describe, expect } from "bun:test"
-import { Effect, Layer } from "effect"
-import { EventV2 } from "@opencode-ai/core/event"
-import { ModelV2 } from "@opencode-ai/core/model"
-import { PluginV2 } from "@opencode-ai/core/plugin"
-import { XAIPlugin } from "@opencode-ai/core/plugin/provider/xai"
-import { ProviderV2 } from "@opencode-ai/core/provider"
+import { Effect } from "effect"
+import { Credential } from "@opencode/core/credential"
+import { Integration } from "@opencode/core/integration"
+import { Plugin } from "@opencode/core/plugin"
+import { PluginHost } from "@opencode/core/plugin/host"
+import { XAIPlugin } from "@opencode/core/plugin/provider/xai"
+import { Model } from "@opencode/core/model"
+import { Provider } from "@opencode/core/provider"
 import { testEffect } from "../lib/effect"
-import { fakeSelectorSdk } from "./provider-helper"
+import { PluginTestLayer } from "./fixture"
 
-const it = testEffect(PluginV2.locationLayer.pipe(Layer.provide(EventV2.defaultLayer)))
+const it = testEffect(PluginTestLayer)
 
-const model = new ModelV2.Info({
-  ...ModelV2.Info.empty(ProviderV2.ID.make("xai"), ModelV2.ID.make("grok-4")),
-  api: {
-    id: ModelV2.ID.make("grok-4"),
-    type: "aisdk",
-    package: "@ai-sdk/xai",
-  },
+const addPlugin = Effect.fn(function* () {
+  const plugin = yield* Plugin.Service
+  const host = yield* PluginHost.make(plugin)
+  yield* XAIPlugin.effect(host)
 })
 
 describe("XAIPlugin", () => {
-  it.effect("creates an xAI SDK only for @ai-sdk/xai", () =>
+  it.effect("registers device OAuth and API key methods", () =>
     Effect.gen(function* () {
-      const plugin = yield* PluginV2.Service
-      yield* plugin.add(XAIPlugin)
-
-      const ignored = yield* plugin.trigger(
-        "aisdk.sdk",
-        { model, package: "@ai-sdk/openai-compatible", options: {} },
-        {},
-      )
-
-      const result = yield* plugin.trigger("aisdk.sdk", { model, package: "@ai-sdk/xai", options: {} }, {})
-
-      expect(ignored.sdk).toBeUndefined()
-      expect(typeof result.sdk?.responses).toBe("function")
+      yield* addPlugin()
+      const integrations = yield* Integration.Service
+      const integration = yield* integrations.get(Integration.ID.make("xai"))
+      expect(integration?.name).toBe("xAI")
+      expect(integration?.methods).toEqual([
+        {
+          id: Integration.MethodID.make("device"),
+          type: "oauth",
+          label: "SuperGrok Subscription",
+        },
+        { type: "key", label: "Manually enter API Key" },
+      ])
     }),
   )
 
-  it.effect("creates xAI SDKs for custom provider IDs", () =>
+  it.effect("migrates browser OAuth credentials to the device method", () =>
     Effect.gen(function* () {
-      const plugin = yield* PluginV2.Service
-      const providers: string[] = []
-
-      yield* plugin.add(XAIPlugin)
-      yield* plugin.add(
-        PluginV2.define({
-          id: PluginV2.ID.make("xai-sdk-name-observer"),
-          effect: Effect.gen(function* () {
-            return {
-              "aisdk.sdk": Effect.fn(function* (evt) {
-                if (!evt.sdk) return
-                providers.push(evt.sdk.responses("grok-4").provider)
-              }),
-            }
-          }),
+      const credentials = yield* Credential.Service
+      const original = yield* credentials.create({
+        integrationID: Integration.ID.make("xai"),
+        label: "personal",
+        value: Credential.OAuth.make({
+          type: "oauth",
+          methodID: Integration.MethodID.make("browser"),
+          access: "access",
+          refresh: "refresh",
+          expires: 123,
+          metadata: { account: "account" },
         }),
-      )
+      })
 
-      yield* plugin.trigger(
-        "aisdk.sdk",
-        {
-          model: new ModelV2.Info({ ...model, providerID: ProviderV2.ID.make("custom-xai") }),
-          package: "@ai-sdk/xai",
-          options: {},
-        },
-        {},
-      )
+      yield* addPlugin()
 
-      expect(providers).toEqual(["xai.responses"])
+      expect(yield* credentials.get(original.id)).toEqual({
+        ...original,
+        value: Credential.OAuth.make({
+          type: "oauth",
+          methodID: Integration.MethodID.make("device"),
+          access: "access",
+          refresh: "refresh",
+          expires: 123,
+          metadata: { account: "account" },
+        }),
+      })
     }),
   )
 
-  it.effect("uses responses with the model api.id for xAI language models", () =>
+  it.effect("enables xAI Responses WebSockets", () =>
     Effect.gen(function* () {
-      const plugin = yield* PluginV2.Service
-      const calls: string[] = []
+      const providers = yield* Provider.Service
+      const models = yield* Model.Service
+      const providerID = Provider.ID.make("xai")
+      yield* providers.transform((editor) => {
+        editor.update(providerID, (provider) => {
+          provider.package = "@opencode/ai/providers/xai"
+          provider.activation = "enabled"
+        })
+        editor.models.update(providerID, Model.ID.make("grok-4.6"), () => {})
+      })
 
-      yield* plugin.add(XAIPlugin)
-      const result = yield* plugin.trigger(
-        "aisdk.language",
-        {
-          model: new ModelV2.Info({ ...model, id: ModelV2.ID.make("alias") }),
-          sdk: fakeSelectorSdk(calls),
-          options: {},
-        },
-        {},
-      )
+      yield* addPlugin()
 
-      expect(calls).toEqual(["responses:grok-4"])
-      expect(result.language).toBeDefined()
-    }),
-  )
-
-  it.effect("ignores non-xAI providers", () =>
-    Effect.gen(function* () {
-      const plugin = yield* PluginV2.Service
-      const calls: string[] = []
-
-      yield* plugin.add(XAIPlugin)
-      const result = yield* plugin.trigger(
-        "aisdk.language",
-        {
-          model: new ModelV2.Info({ ...model, providerID: ProviderV2.ID.openai }),
-          sdk: fakeSelectorSdk(calls),
-          options: {},
-        },
-        {},
-      )
-
-      expect(calls).toEqual([])
-      expect(result.language).toBeUndefined()
+      const provider = yield* providers.get(providerID)
+      const model = yield* models.get(providerID, Model.ID.make("grok-4.6"))
+      expect(provider?.settings?.transport).toBe("websocket")
+      expect(model?.settings?.transport).toBeUndefined()
     }),
   )
 })

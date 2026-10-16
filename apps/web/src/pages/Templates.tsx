@@ -5,22 +5,25 @@ import {
   listTemplates,
   updateTemplateDescription,
   uploadTemplate,
-  type Matter,
   type Template,
-} from "../api/ingest"
+} from "../api/ingest/library"
+import type { Matter } from "../api/ingest/matters"
 import { useToast } from "../components/Toast"
+import Dropzone from "../components/Dropzone"
+import { humanizeError } from "../api/ingest/errors"
 import TemplateViewer from "../components/TemplateViewer"
 import MatterPicker from "../components/MatterPicker"
 import ChatPanel from "../components/ChatPanel"
+import LibraryLayout from "../components/LibraryLayout"
 import { TEMPLATE_BUILDER } from "../agents"
 
 // The firm's global template library: the drafting bases shared across every
-// matter. A card lists the templates with an editable one-line description and a
+// matter. The library lists templates with an editable one-line description and a
 // placeholder count, a View button that opens the template in a read-only viewer,
 // an inline Confirm delete, and a .docx-only dropzone to add one. Beside it the
 // Template Builder chat composes and maintains templates conversationally — it
 // runs in the library directory (there is no matter to scope to), pinned to the
-// template-builder agent. Templates are also created by the matter drafter; this
+// template-builder agent. Templates are also created by draft mode; this
 // page manages the uploaded and seeded ones directly.
 export default function Templates() {
   const [params, setParams] = useSearchParams()
@@ -35,7 +38,6 @@ export default function Templates() {
   // "Use" flow: the template being assembled into a matter the lawyer picks.
   const [using, setUsing] = useState<Template>()
   const navigate = useNavigate()
-  const input = useRef<HTMLInputElement>(null)
   // The session id the composer just minted, so the remount that follows the first
   // send keeps the cursor seated (same pattern as MatterDetail).
   const createdRef = useRef<string | undefined>(undefined)
@@ -49,7 +51,9 @@ export default function Templates() {
   }
 
   useEffect(() => {
-    refresh().finally(() => setLoading(false))
+    refresh()
+      .catch((e) => toast("error", humanizeError(e)))
+      .finally(() => setLoading(false))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -68,18 +72,26 @@ export default function Templates() {
     }
     setBusy(true)
     for (const file of docx) {
-      const template = await uploadTemplate(file)
-      setTemplates((prev) => [...prev.filter((t) => t.name !== template.name), template])
-      toast("success", `Added template "${template.name}".`)
+      try {
+        const template = await uploadTemplate(file)
+        setTemplates((prev) => [...prev.filter((t) => t.name !== template.name), template])
+        toast("success", `Added template "${template.name}".`)
+      } catch (e) {
+        toast("error", humanizeError(e, `Could not add ${file.name}.`))
+      }
     }
     setBusy(false)
   }
 
   async function onDelete(t: Template) {
     setConfirmName(null)
-    await deleteTemplate(t.name)
-    setTemplates((prev) => prev.filter((x) => x.name !== t.name))
-    toast("success", `Deleted template "${t.name}".`)
+    try {
+      await deleteTemplate(t.name)
+      setTemplates((prev) => prev.filter((x) => x.name !== t.name))
+      toast("success", `Deleted template "${t.name}".`)
+    } catch (e) {
+      toast("error", humanizeError(e, `Could not delete "${t.name}".`))
+    }
   }
 
   async function saveDescription(t: Template, description: string) {
@@ -94,54 +106,62 @@ export default function Templates() {
     }
   }
 
-  // Picking a matter lands in its chat with the drafter pinned and the assembly
+  // Picking a matter lands in its chat with draft mode pinned and the assembly
   // prompt prefilled — the lawyer reviews and sends; nothing auto-runs.
   function useTemplate(t: Template, m: Matter) {
     setUsing(undefined)
     const prompt = `Draft a new document from the template "${t.name}". Gather what you can from this matter's documents and our conversation first, then interview me for the remaining terms and any optional clauses before assembling it.`
-    navigate(`/matter/${m.id}?view=chat&agent=drafter&prompt=${encodeURIComponent(prompt)}`)
+    navigate(`/matter/${m.id}?view=chat&agent=draft&prompt=${encodeURIComponent(prompt)}`)
   }
 
   const visible = [...templates].sort((a, b) => a.name.localeCompare(b.name))
 
   return (
     <>
-      <header className="page-head">
-        <div>
-          <h1>Templates</h1>
-          <p className="page-sub">Drafting bases shared across every matter.</p>
-        </div>
-      </header>
-
-      <div className="card">
-        <h2>Add template</h2>
-        <div
-          className="dropzone"
-          onClick={() => input.current?.click()}
-          onDragOver={(e) => e.preventDefault()}
-          onDrop={(e) => {
-            e.preventDefault()
-            const files = Array.from(e.dataTransfer.files)
-            if (files.length) onFiles(files)
-          }}
-        >
-          {busy ? "Working..." : "Drop a .docx template here, or click to choose a file."}
-        </div>
-        <input
-          ref={input}
-          type="file"
-          accept=".docx"
-          multiple
-          hidden
-          onChange={(e) => {
-            const files = Array.from(e.target.files ?? [])
-            if (files.length) onFiles(files)
-            e.target.value = ""
-          }}
-        />
-      </div>
-
-      <div className="card">
+      <LibraryLayout
+        title="Templates"
+        description="Drafting bases shared across every matter."
+        libraryTitle="Saved templates"
+        count={loading ? undefined : templates.length}
+        active={Boolean(session)}
+        upload={
+          <Dropzone
+            accept=".docx"
+            busy={busy}
+            onFiles={onFiles}
+            title={busy ? "Adding template…" : "Upload a template"}
+            hint="Drop a Word file (.docx) or browse files."
+          />
+        }
+        assistant={
+          dir && (
+            <ChatPanel
+              key={session ?? "new"}
+              directory={dir}
+              sessionID={session}
+              created={createdRef.current === session}
+              agent={TEMPLATE_BUILDER.name}
+              available={new Set([TEMPLATE_BUILDER.name])}
+              pinned={TEMPLATE_BUILDER}
+              title="Create or edit a template"
+              emptyHint="Describe what you need, or ask about your saved templates."
+              starters={[
+                "What templates do we have?",
+                "Create a template for a consulting agreement.",
+                "Create a template for an employment offer letter.",
+              ]}
+              composerPlaceholder="e.g. Create a template for a mutual NDA"
+              onAgentChange={() => {}}
+              onSessionCreated={(sid) => {
+                createdRef.current = sid
+                setParams({ session: sid }, { replace: true })
+              }}
+              onViewDocument={() => {}}
+              onDocumentsChanged={refresh}
+            />
+          )
+        }
+      >
         {loading ? (
           <div className="skeleton-list">
             <div className="skeleton-row" />
@@ -149,15 +169,7 @@ export default function Templates() {
             <div className="skeleton-row" />
           </div>
         ) : templates.length === 0 ? (
-          <div className="empty-state">
-            <svg className="empty-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-              <polyline points="14 2 14 8 20 8" />
-              <path d="M8 13h8M8 17h5" />
-            </svg>
-            <h3>No templates yet</h3>
-            <p>Upload a DOCX to use as a drafting base.</p>
-          </div>
+          <p className="library-empty">Your saved templates will appear here.</p>
         ) : (
           <ul className="matter-list">
             {visible.map((t) => {
@@ -206,7 +218,7 @@ export default function Templates() {
                   </div>
                   <div className="list-row-actions">
                     <button
-                      className="icon-btn"
+                      className="icon-btn is-primary"
                       title="Draft a document from this template into a matter"
                       onClick={(e) => {
                         e.stopPropagation()
@@ -254,34 +266,7 @@ export default function Templates() {
             })}
           </ul>
         )}
-      </div>
-
-      {dir && (
-        <ChatPanel
-          key={session ?? "new"}
-          directory={dir}
-          sessionID={session}
-          created={createdRef.current === session}
-          agent={TEMPLATE_BUILDER.name}
-          available={new Set([TEMPLATE_BUILDER.name])}
-          pinned={TEMPLATE_BUILDER}
-          title="Ask the template library"
-          emptyHint="Describe a template to add to the firm's library, or ask what already exists. Templates carry [insert ...] placeholders instead of client details."
-          starters={[
-            "What templates do we have?",
-            "Create a template for a consulting agreement.",
-            "Create a template for an employment offer letter.",
-          ]}
-          composerPlaceholder="e.g. Create a template for a mutual NDA"
-          onAgentChange={() => {}}
-          onSessionCreated={(sid) => {
-            createdRef.current = sid
-            setParams({ session: sid }, { replace: true })
-          }}
-          onViewDocument={() => {}}
-          onDocumentsChanged={refresh}
-        />
-      )}
+      </LibraryLayout>
 
       {viewing && (
         <TemplateViewer name={viewing.name} placeholders={viewing.placeholders} onClose={() => setViewing(undefined)} />

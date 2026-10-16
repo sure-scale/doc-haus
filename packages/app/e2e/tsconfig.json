@@ -1,9 +1,11 @@
 {
   "extends": "../tsconfig.json",
   "compilerOptions": {
+    "composite": false,
+    "emitDeclarationOnly": false,
     "noEmit": true,
     "rootDir": "..",
     "types": ["node", "bun"]
   },
-  "include": ["./**/*.ts"]
+  "include": ["./**/*.ts", "./**/*.tsx", "../component-tests/**/*.ts", "../src/types.ts"]
 }

@@ -2,22 +2,33 @@ import fs from "fs/promises"
 import path from "path"
 import { describe, expect } from "bun:test"
 import { Effect, Layer } from "effect"
-import { FSUtil } from "@opencode-ai/core/fs-util"
-import { PermissionV2 } from "@opencode-ai/core/permission"
-import { PluginBoot } from "@opencode-ai/core/plugin/boot"
-import { AbsolutePath } from "@opencode-ai/core/schema"
-import { SessionV2 } from "@opencode-ai/core/session"
-import { SkillV2 } from "@opencode-ai/core/skill"
-import { SkillTool } from "@opencode-ai/core/tool/skill"
-import { ToolOutputStore } from "@opencode-ai/core/tool-output-store"
-import { ToolRegistry } from "@opencode-ai/core/tool-registry"
+import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
+import { LayerNode } from "@opencode/util/effect/layer-node"
+import { Permission } from "@opencode/core/permission"
+import { AbsolutePath } from "@opencode/core/schema"
+import { Session } from "@opencode/core/session"
+import { Skill } from "@opencode/core/skill"
+import { SkillTool } from "@opencode/core/tool/plugin/skill"
+import { Tool } from "@opencode/core/tool"
 import { tmpdir } from "./fixture/tmpdir"
+import { Image } from "@opencode/core/image"
 import { it } from "./lib/effect"
+import { imagePassthrough } from "./lib/image"
+import { permissionLayer } from "./lib/permission"
+import { makeLocationNode } from "@opencode/util/effect/app-node"
+import { FSUtil } from "@opencode/util/fs-util"
+import { toolIdentity, executeTool, registerToolPlugin, toolDefinitions } from "./lib/tool"
 
-const sessionID = SessionV2.ID.make("ses_skill_tool_test")
+const skillToolNode = makeLocationNode({
+  name: "test/skill-tool-plugin",
+  layer: Layer.effectDiscard(registerToolPlugin(SkillTool.Plugin)),
+  deps: [Tool.node, FSUtil.node, Skill.node, Permission.node],
+})
+
+const sessionID = Session.ID.make("ses_skill_tool_test")
 
 describe("SkillTool", () => {
-  it.live("lists available skills, authorizes the selected name, and loads model-facing content", () =>
+  it.live("lists available skills, authorizes the selected ID, and loads model-facing content", () =>
     Effect.acquireRelease(
       Effect.promise(() => tmpdir()),
       (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
@@ -32,117 +43,122 @@ describe("SkillTool", () => {
             Promise.all([fs.writeFile(location, "unused"), fs.writeFile(reference, "reference")]),
           )
 
-          const info: SkillV2.Info = {
-            name: "effect",
+          const info: Skill.Info = {
+            id: Skill.ID.make("effect"),
+            name: Skill.Name.make("Effect"),
             description: "Use Effect",
-            location: AbsolutePath.make(location),
+            path: AbsolutePath.make(location),
             content: "# Effect\n\nGuidance",
           }
-          const assertions: PermissionV2.AssertInput[] = []
-          const truncations: ToolOutputStore.TruncateInput[] = []
-          let truncate = (input: ToolOutputStore.TruncateInput): Effect.Effect<ToolOutputStore.TruncateResult> =>
-            Effect.succeed({ content: input.content, truncated: false })
-          let bootWaited = false
-          const boot = Layer.succeed(
-            PluginBoot.Service,
-            PluginBoot.Service.of({
-              wait: () =>
-                Effect.sync(() => {
-                  bootWaited = true
-                }),
-            }),
-          )
-          const permission = Layer.succeed(
-            PermissionV2.Service,
-            PermissionV2.Service.of({
-              assert: (input) => Effect.sync(() => assertions.push(input)),
-              ask: () => Effect.die("unused"),
-              reply: () => Effect.die("unused"),
-              get: () => Effect.die("unused"),
-              forSession: () => Effect.die("unused"),
-              list: () => Effect.die("unused"),
-            }),
-          )
-          const skills = Layer.succeed(
-            SkillV2.Service,
-            SkillV2.Service.of({
-              transform: () => Effect.die("unused"),
-              sources: () => Effect.die("unused"),
-              list: () => Effect.succeed([info]),
-              forAgent: () => Effect.die("unused"),
-            }),
-          )
-          const registry = ToolRegistry.layer.pipe(Layer.provide(permission))
-          const resources = Layer.succeed(
-            ToolOutputStore.Service,
-            ToolOutputStore.Service.of({
-              limits: () => Effect.die("unused"),
-              write: () => Effect.die("unused"),
-              truncate: (input) => Effect.sync(() => truncations.push(input)).pipe(Effect.andThen(truncate(input))),
-              read: () => Effect.die("unused"),
-              cleanup: () => Effect.die("unused"),
-            }),
-          )
-          const tool = SkillTool.layer.pipe(
-            Layer.provide(registry),
-            Layer.provide(FSUtil.defaultLayer),
-            Layer.provide(boot),
-            Layer.provide(skills),
-            Layer.provide(resources),
-          )
-          const layer = Layer.mergeAll(permission, skills, registry, boot, resources, tool)
+          let current = [info]
+          const assertions: Permission.AssertInput[] = []
+          let deny = false
+          const permission = permissionLayer({
+            assert: (input) =>
+              Effect.sync(() => assertions.push(input)).pipe(
+                Effect.andThen(
+                  deny
+                    ? Effect.fail(
+                        new Permission.BlockedError({
+                          rules: [],
+                          permission: input.action,
+                          resources: input.resources,
+                        }),
+                      )
+                    : Effect.void,
+                ),
+              ),
+          })
+          const skills = Layer.mock(Skill.Service, {
+            get: (id) => Effect.succeed(current.find((skill) => skill.id === id)),
+            list: () => Effect.succeed(current),
+          })
+          const skillToolLayer = AppNodeBuilder.build(LayerNode.group([Tool.node, skillToolNode]), [
+            Permission.node.replace(permission),
+            Skill.node.replace(skills),
+            Image.node.replace(imagePassthrough),
+          ])
 
           return yield* Effect.gen(function* () {
-            const registry = yield* ToolRegistry.Service
-            expect(bootWaited).toBe(true)
-            expect((yield* registry.definitions())[0]).toMatchObject({
+            const registry = yield* Tool.Service
+            expect((yield* toolDefinitions(registry))[0]).toMatchObject({
               name: "skill",
-              description: expect.stringContaining("**effect**: Use Effect"),
+              description: SkillTool.description,
             })
             expect(
-              yield* registry.execute({
+              yield* executeTool(registry, {
                 sessionID,
-                call: { type: "tool-call", id: "call-skill", name: "skill", input: { name: "effect" } },
-              }),
-            ).toEqual({
-              type: "text",
-              value: SkillTool.toModelOutput(info, [reference]),
-            })
-            expect(truncations).toEqual([
-              { sessionID, toolCallID: "call-skill", content: SkillTool.toModelOutput(info, [reference]) },
-            ])
-            truncate = (input) =>
-              Effect.succeed({
-                content: "HEAD\n\n... output truncated; full content available as tool-output://opaque ...\n\nTAIL",
-                truncated: true,
-                resource: new ToolOutputStore.Resource({
-                  uri: "tool-output://opaque",
-                  mime: "text/plain",
-                  size: input.content.length,
-                }),
-              })
-            expect(
-              yield* registry.settle({
-                sessionID,
-                call: { type: "tool-call", id: "call-skill-overflow", name: "skill", input: { name: "effect" } },
+                ...toolIdentity,
+                call: { type: "tool-call", id: "call-skill", name: "skill", input: { id: "effect" } },
               }),
             ).toMatchObject({
-              result: { type: "text", value: expect.stringContaining("tool-output://opaque") },
-              output: {
-                structured: { truncated: true, resource: { uri: "tool-output://opaque" } },
-              },
+              status: "completed",
+              content: [{ type: "text", text: Skill.toModelOutput(info, [reference]) }],
             })
-            expect(assertions).toEqual([
+            expect(Skill.toModelOutput(info, [reference])).toContain(`Base directory for this skill: ${directory}`)
+            expect(
+              yield* executeTool(registry, {
+                sessionID,
+                ...toolIdentity,
+                call: { type: "tool-call", id: "call-skill-overflow", name: "skill", input: { id: "effect" } },
+              }),
+            ).toEqual({
+              status: "completed",
+              output: { name: "Effect", directory, output: Skill.toModelOutput(info, [reference]) },
+              content: [{ type: "text", text: Skill.toModelOutput(info, [reference]) }],
+              metadata: { name: "Effect", directory },
+            })
+            expect(assertions).toMatchObject([
               { sessionID, action: "skill", resources: ["effect"], save: ["effect"] },
               { sessionID, action: "skill", resources: ["effect"], save: ["effect"] },
             ])
             expect(
-              yield* registry.execute({
+              yield* executeTool(registry, {
                 sessionID,
-                call: { type: "tool-call", id: "call-missing-skill", name: "skill", input: { name: "missing" } },
+                ...toolIdentity,
+                call: { type: "tool-call", id: "call-missing-skill", name: "skill", input: { id: "missing" } },
               }),
-            ).toEqual({ type: "error", value: 'Skill "missing" not found. Available skills: effect' })
-          }).pipe(Effect.provide(layer))
+            ).toEqual({
+              status: "error",
+              error: { type: "tool.execution", message: "Unable to load skill missing" },
+            })
+            deny = true
+            expect(
+              yield* executeTool(registry, {
+                sessionID,
+                ...toolIdentity,
+                call: { type: "tool-call", id: "call-denied-skill", name: "skill", input: { id: "effect" } },
+              }),
+            ).toEqual({
+              status: "error",
+              error: { type: "permission.rejected", message: "Permission denied: skill" },
+            })
+            deny = false
+            const flat = Skill.Info.make({
+              id: Skill.ID.make("public"),
+              name: Skill.Name.make("Public"),
+              description: "Public guidance",
+              path: AbsolutePath.make(path.join(tmp.path, "public.md")),
+              content: "Public",
+            })
+            yield* Effect.promise(() =>
+              Promise.all([
+                fs.writeFile(flat.path, "public"),
+                fs.writeFile(path.join(tmp.path, "secret.md"), "secret"),
+              ]),
+            )
+            current = [flat]
+            expect(
+              yield* executeTool(registry, {
+                sessionID,
+                ...toolIdentity,
+                call: { type: "tool-call", id: "call-flat-skill", name: "skill", input: { id: "public" } },
+              }),
+            ).toMatchObject({
+              status: "completed",
+              content: [{ type: "text", text: Skill.toModelOutput(flat, []) }],
+            })
+          }).pipe(Effect.provide(skillToolLayer))
         }),
       ),
     ),

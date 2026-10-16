@@ -1,194 +1,300 @@
-export * as PluginV2 from "./plugin"
+export * as Plugin from "./plugin.js"
+export { Event, ID, Info, Source, State } from "@opencode/schema/plugin"
 
-import { createDraft, finishDraft, type Draft } from "immer"
-import type { LanguageModelV3 } from "@ai-sdk/provider"
-import { Context, Effect, Exit, Layer, Schema, Scope } from "effect"
-import type { ModelV2 } from "./model"
-import type { Catalog } from "./catalog"
-import { EventV2 } from "./event"
-import { KeyedMutex } from "./effect/keyed-mutex"
+import { Plugin } from "@opencode/schema/plugin"
+import { Node } from "@opencode/util/effect/app-node"
+import { LayerNode } from "@opencode/util/effect/layer-node"
+import type { PersistentPty } from "./persistent-pty.js"
+import { Cause, Context, Effect, Exit, Latch, Layer, Logger, Queue, References, Scope, Semaphore } from "effect"
+import { Bus } from "./bus.js"
+import { KV } from "./kv.js"
+import { PluginHost } from "./plugin/host.js"
+import { type Failure, type Generation, Service } from "./plugin/service.js"
+import { State } from "./state.js"
 
-export const ID = Schema.String.pipe(Schema.brand("Plugin.ID"))
-export type ID = typeof ID.Type
+export { awaitActivation, type Generation, type Interface, Service } from "./plugin/service.js"
 
-export const Event = {
-  Added: EventV2.define({
-    type: "plugin.added",
-    schema: {
-      id: ID,
-    },
-  }),
-}
-
-type HookSpec = {
-  "catalog.transform": {
-    input: Catalog.Editor
-    output: {}
-  }
-  "account.switched": {
-    input: {
-      serviceID: import("./auth").Auth.ServiceID
-      from?: import("./auth").Auth.ID
-      to?: import("./auth").Auth.ID
-    }
-    output: {}
-  }
-  "aisdk.language": {
-    input: {
-      model: ModelV2.Info
-      sdk: any
-      options: Record<string, any>
-    }
-    output: {
-      language?: LanguageModelV3
-    }
-  }
-  "aisdk.sdk": {
-    input: {
-      model: ModelV2.Info
-      package: string
-      options: Record<string, any>
-    }
-    output: {
-      sdk?: any
-    }
-  }
-}
-
-export type Hooks = {
-  [Name in keyof HookSpec]: Readonly<HookSpec[Name]["input"]> & {
-    -readonly [Field in keyof HookSpec[Name]["output"]]: HookSpec[Name]["output"][Field] extends object
-      ? Draft<HookSpec[Name]["output"][Field]>
-      : HookSpec[Name]["output"][Field]
-  }
-}
-
-export type HookFunctions = {
-  [key in keyof Hooks]?: (input: Hooks[key]) => Effect.Effect<void>
-}
-
-export type HookInput<Name extends keyof Hooks> = HookSpec[Name]["input"]
-export type HookOutput<Name extends keyof Hooks> = HookSpec[Name]["output"]
-
-export type Effect<R = never> = Effect.Effect<HookFunctions | void, never, R | Scope.Scope>
-
-export function define<R>(input: { id: ID; effect: Effect.Effect<HookFunctions | void, never, R> }) {
-  return input
-}
-
-export interface Interface {
-  readonly add: (input: {
-    id: ID
-    effect: Effect.Effect<void | HookFunctions, never, Scope.Scope>
-  }) => Effect.Effect<void, never, never>
-  readonly remove: (id: ID) => Effect.Effect<void>
-  readonly triggerFor: <Name extends keyof Hooks>(
-    id: ID,
-    name: Name,
-    input: HookInput<Name>,
-    output: HookOutput<Name>,
-  ) => Effect.Effect<HookInput<Name> & HookOutput<Name>>
-  readonly trigger: <Name extends keyof Hooks>(
-    name: Name,
-    input: HookInput<Name>,
-    output: HookOutput<Name>,
-  ) => Effect.Effect<HookInput<Name> & HookOutput<Name>>
-}
-
-export class Service extends Context.Service<Service, Interface>()("@opencode/v2/Plugin") {}
-
-export const layer = Layer.effect(
+const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
-    let hooks: {
-      id: ID
-      hooks: HookFunctions
-      scope: Scope.Closeable
-    }[] = []
-    const events = yield* EventV2.Service
-    const scope = yield* Scope.Scope
-    const locks = KeyedMutex.makeUnsafe<ID>()
-
-    const svc = Service.of({
-      add: Effect.fn("Plugin.add")(function* (input) {
-        yield* locks.withLock(input.id)(
-          Effect.gen(function* () {
-            const existing = hooks.find((item) => item.id === input.id)
-            if (existing) yield* Scope.close(existing.scope, Exit.void).pipe(Effect.ignore)
-            const childScope = yield* Scope.fork(scope)
-            const result = yield* input.effect.pipe(
-              Scope.provide(childScope),
-              Effect.withSpan("Plugin.load", {
-                attributes: {
-                  "plugin.id": input.id,
-                },
-              }),
-              Effect.onExit((exit) => (Exit.isFailure(exit) ? Scope.close(childScope, exit) : Effect.void)),
-            )
-            hooks = [
-              ...hooks.filter((item) => item.id !== input.id),
-              {
-                id: input.id,
-                hooks: result ?? {},
-                scope: childScope,
-              },
-            ]
-            yield* events.publish(Event.Added, { id: input.id })
-          }),
-        )
-      }),
-      trigger: Effect.fn("Plugin.trigger")(function* (name, input, output) {
-        return yield* svc.triggerFor(ID.make("*"), name, input, output)
-      }),
-      triggerFor: Effect.fn("Plugin.triggerFor")(function* (id, name, input, output) {
-        const draftEntries = new Map<string, ReturnType<typeof createDraft>>()
-        const event = {
-          ...input,
-          ...output,
-        } as Record<string, unknown>
-
-        for (const [field, value] of Object.entries(output)) {
-          if (value && typeof value === "object") {
-            draftEntries.set(field, createDraft(value))
-            event[field] = draftEntries.get(field)
-          }
+    const bus = yield* Bus.Service
+    const kv = yield* KV.Service
+    const scope = yield* Scope.make()
+    // One slot per requested definition in activation order, including ones whose setup failed, so
+    // the prefix diff below stays index-aligned and a failed revision is not retried until it changes.
+    const active = new Map<Plugin.ID, Slot>()
+    const lock = Semaphore.makeUnsafe(1)
+    const ready = yield* Latch.make(true)
+    const pending = new Set<object>()
+    let closed = false
+    const holdUnsafe = () => {
+      if (closed) return Effect.void
+      const token = {}
+      pending.add(token)
+      ready.closeUnsafe()
+      return Effect.sync(() => {
+        if (pending.delete(token) && pending.size === 0) ready.openUnsafe()
+      })
+    }
+    const hold = () => Effect.sync(holdUnsafe)
+    const pendingFailures = yield* Queue.unbounded<PendingFailure>()
+    let discovered: readonly Failure[] = []
+    let inventory: Plugin.Info[] = []
+    const list = Effect.fn("Plugin.list")(function* () {
+      return inventory
+    })
+    const host = yield* PluginHost.make({ list })
+    const load = Effect.fnUntraced(function* (plugin: Generation) {
+      const activation: Activation = { plugin, scope: yield* Scope.fork(scope) }
+      const inherit = yield* State.inherit()
+      const grouped = State.group((failure, refresh) => {
+        activation.failure = {
+          error: `Plugin disabled after ${failure.state}.transform failed. Check server logs for details.`,
+          ref: `err_${crypto.randomUUID().slice(0, 8)}`,
         }
+        Queue.offerUnsafe(pendingFailures, {
+          plugin,
+          scope: activation.scope,
+          failure,
+          refresh,
+          ref: activation.failure.ref,
+          release: holdUnsafe(),
+        })
+      })
+      const exit = yield* Effect.suspend(() =>
+        plugin.effect({ ...host, storage: PluginHost.storage(kv, plugin.id) }),
+      ).pipe(
+        grouped,
+        inherit,
+        Effect.updateContext((context: Context.Context<never>) =>
+          Context.make(Scope.Scope, activation.scope).pipe(
+            Context.add(Logger.CurrentLoggers, Context.get(context, Logger.CurrentLoggers)),
+            Context.add(References.MinimumLogLevel, Context.get(context, References.MinimumLogLevel)),
+          ),
+        ),
+        Effect.withSpan("Plugin.load", { attributes: { "plugin.id": plugin.id } }),
+        Effect.onExit((exit) =>
+          Exit.isFailure(exit) && !activation.failure ? Scope.close(activation.scope, exit) : Effect.void,
+        ),
+        Effect.exit,
+      )
+      if (activation.failure || Exit.isSuccess(exit)) return { activation } as const
+      yield* Effect.logWarning("failed to load plugin", {
+        "plugin.id": plugin.id,
+        cause: exit.cause,
+      })
+      return { error: Cause.pretty(exit.cause) } as const
+    })
 
-        for (const item of hooks) {
-          if (id !== ID.make("*") && item.id !== id) continue
-          const match = item.hooks[name]
-          if (!match) continue
-          yield* match(event as any).pipe(
-            Effect.withSpan(`Plugin.hook.${name}`, {
-              attributes: {
-                plugin: item.id,
-                hook: name,
-              },
+    const activate = Effect.fn("Plugin.activate")(function* (
+      plugins: readonly Generation[],
+      failures: readonly Failure[] = [],
+    ) {
+      const definitions = plugins.map((plugin) => ({ ...plugin, id: Plugin.ID.make(plugin.id) }))
+      const ids = new Set<Plugin.ID>()
+      for (const definition of definitions) {
+        if (ids.has(definition.id)) yield* Effect.die(new Error(`Duplicate plugin ID: ${definition.id}`))
+        ids.add(definition.id)
+      }
+
+      yield* Effect.acquireUseRelease(
+        hold(),
+        () =>
+          lock.withPermit(
+            Effect.gen(function* () {
+              if (closed) return
+              discovered = failures
+              const current = Array.from(active.values())
+              const changed = definitions.findIndex((definition, index) => {
+                const entry = current[index]
+                return entry?.plugin.id !== definition.id || entry.plugin.revision !== definition.revision
+              })
+              const prefix = changed === -1 ? definitions.length : changed
+              for (const definition of definitions.slice(0, prefix)) {
+                const entry = active.get(definition.id)
+                if (entry) active.set(definition.id, { ...entry, plugin: definition })
+              }
+              if (prefix === definitions.length && active.size === definitions.length) {
+                const nextInventory = [...Array.from(active.values()).map(slotInfo), ...failures]
+                if (JSON.stringify(inventory) === JSON.stringify(nextInventory)) return
+                inventory = nextInventory
+                yield* bus.publish(Plugin.Event.Updated, {})
+                return
+              }
+
+              yield* State.batch(
+                Effect.gen(function* () {
+                  // Registrations are ordered by setup, so only the unchanged prefix can stay alive.
+                  const previous = new Map(Array.from(active.entries()).slice(prefix))
+                  yield* Effect.forEach(
+                    Array.from(previous.entries()).toReversed(),
+                    ([id, slot]) =>
+                      Effect.gen(function* () {
+                        active.delete(id)
+                        if (slot.activation && !slot.activation.failure)
+                          yield* Scope.close(slot.activation.scope, Exit.void)
+                      }),
+                    { discard: true },
+                  )
+                  for (const definition of definitions.slice(prefix)) {
+                    const slot = previous.get(definition.id)
+                    // Reordering healthy registrations does not authorize retrying a failed revision.
+                    if (slot?.activation?.failure && slot.plugin.revision === definition.revision) {
+                      active.set(definition.id, { ...slot, plugin: definition })
+                      continue
+                    }
+                    const result = yield* load(definition)
+                    if (result.activation !== undefined) {
+                      active.set(definition.id, {
+                        plugin: definition,
+                        activation: result.activation,
+                      })
+                      continue
+                    }
+                    active.set(definition.id, { plugin: definition, error: result.error })
+
+                    const fallback = slot?.activation
+                    if (!fallback || fallback.failure) continue
+                    const restored = yield* load(fallback.plugin)
+                    if (restored.activation !== undefined) {
+                      active.set(definition.id, {
+                        plugin: definition,
+                        activation: restored.activation,
+                        error: result.error,
+                      })
+                      continue
+                    }
+                    yield* Effect.logError("failed to restore plugin; deactivating", {
+                      "plugin.id": definition.id,
+                    })
+                  }
+
+                  inventory = [...Array.from(active.values()).map(slotInfo), ...failures]
+                }),
+              )
+              yield* bus.publish(Plugin.Event.Updated, {})
+            }),
+          ),
+        (release) => release,
+      )
+    })
+
+    yield* Queue.take(pendingFailures).pipe(
+      Effect.flatMap((item) =>
+        Effect.gen(function* () {
+          yield* Effect.logWarning("disabled plugin after transform failure", {
+            "plugin.id": item.plugin.id,
+            state: item.failure.state,
+            ref: item.ref,
+            cause: Cause.die(item.failure.cause),
+          })
+          yield* lock.withPermit(
+            Effect.gen(function* () {
+              if (closed) return
+              // Failure is already recorded on its exact activation, so an old queued item
+              // cannot disable a replacement and teardown need not wait for this worker.
+              inventory = [...Array.from(active.values()).map(slotInfo), ...discovered]
+              const refreshed = yield* State.batch(item.refresh).pipe(Effect.exit)
+              yield* bus.publish(Plugin.Event.Updated, {})
+              if (Exit.isFailure(refreshed))
+                yield* Effect.logWarning("failed to refresh state after disabling plugin", {
+                  "plugin.id": item.plugin.id,
+                  ref: item.ref,
+                  cause: refreshed.cause,
+                })
             }),
           )
-        }
+        }).pipe(
+          // Cleanup must also be scheduled if an inventory observer fails. User finalizers
+          // may await readiness, so never join them under the activation lock or readiness hold.
+          Effect.ensuring(
+            Scope.close(item.scope, Exit.void).pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("failed to clean up disabled plugin", {
+                  "plugin.id": item.plugin.id,
+                  ref: item.ref,
+                  cause,
+                }),
+              ),
+              Effect.forkScoped({ startImmediately: true }),
+            ),
+          ),
+          Effect.catchCauseIf(
+            (cause) => !Cause.hasInterrupts(cause),
+            (cause) =>
+              Effect.logError("failed to report disabled plugin", {
+                "plugin.id": item.plugin.id,
+                ref: item.ref,
+                cause,
+              }),
+          ),
+          Effect.ensuring(item.release),
+        ),
+      ),
+      Effect.forever,
+      Effect.forkScoped,
+    )
 
-        for (const [field, draft] of draftEntries) {
-          event[field] = finishDraft(draft)
-        }
+    const close = (exit: Exit.Exit<unknown, unknown>) =>
+      lock.withPermit(
+        Effect.gen(function* () {
+          closed = true
+          pending.clear()
+          ready.openUnsafe()
+          active.clear()
+          yield* State.shutdown(Scope.close(scope, exit))
+        }),
+      )
+    yield* Effect.addFinalizer(close)
 
-        return event as any
-      }),
-      remove: Effect.fn("Plugin.remove")(function* (id) {
-        yield* locks.withLock(id)(
-          Effect.gen(function* () {
-            const existing = hooks.find((item) => item.id === id)
-            hooks = hooks.filter((item) => item.id !== id)
-            if (existing) yield* Scope.close(existing.scope, Exit.void).pipe(Effect.ignore)
-          }),
-        )
-      }),
+    return Service.of({
+      activate,
+      close,
+      awaitActivation: ready.await,
+      hold,
+      list,
     })
-    return svc
   }),
 )
 
-export const locationLayer = layer
+// `plugin` is the requested definition; `activation` is its last activation, which may have
+// failed or be an older fallback while the requested revision keeps failing setup.
+type Slot = {
+  readonly plugin: Generation
+  readonly activation?: Activation
+  readonly error?: string
+}
 
-// opencode
-// sdcok
+// Share the activation across slot snapshots so teardown sees failures synchronously,
+// including failures discovered after activate() has captured its previous slots.
+type Activation = {
+  readonly plugin: Generation
+  readonly scope: Scope.Closeable
+  failure?: { readonly error: string; readonly ref: string }
+}
+
+type PendingFailure = {
+  readonly plugin: Generation
+  readonly scope: Scope.Closeable
+  readonly failure: State.Failure
+  readonly refresh: Effect.Effect<void>
+  readonly ref: string
+  readonly release: Effect.Effect<void>
+}
+
+function slotInfo(slot: Slot): Plugin.Info {
+  const failure = slot.activation?.failure ?? (slot.error === undefined ? undefined : { error: slot.error })
+  return {
+    id: Plugin.ID.make(slot.plugin.id),
+    source: slot.plugin.source ?? { type: "builtin" },
+    state: failure === undefined ? { status: "active" } : { status: "failed", ...failure },
+    features: { server: true, ...slot.plugin.features },
+  }
+}
+
+export const node: LayerNode.Provider<Service, PersistentPty.UnavailableError, typeof Node.tags.values.location> =
+  Node.makeLocationNode({
+    service: Service,
+    layer,
+    deps: [PluginHost.requirements],
+  })

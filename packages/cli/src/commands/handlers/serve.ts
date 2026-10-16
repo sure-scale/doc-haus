@@ -1,39 +1,17 @@
-import { NodeHttpServer } from "@effect/platform-node"
-import { Context, Layer, Option } from "effect"
-import * as Effect from "effect/Effect"
-import { HttpRouter, HttpServer } from "effect/unstable/http"
-import { createServer } from "node:http"
-import { createRoutes } from "@opencode-ai/server/routes"
+import { Effect, Option } from "effect"
 import { Commands } from "../commands"
 import { Runtime } from "../../framework/runtime"
-import { Daemon } from "../../services/daemon"
+import { ServerProcess } from "../../server-process"
 
 export default Runtime.handler(
   Commands.commands.serve,
-  Effect.fn("cli.serve")(function* (input) {
-    return yield* Effect.scoped(
-      Effect.gen(function* () {
-        const daemon = yield* Daemon.Service
-        const address = yield* listen(input.hostname, input.port, yield* daemon.password())
-        if (input.register) yield* daemon.register(address)
-        console.log(`server listening on ${HttpServer.formatAddress(address)}`)
-        return yield* Effect.never
-      }),
-    )
+  Effect.fnUntraced(function* (input) {
+    if (input.service && input.stdio) return yield* Effect.fail(new Error("--service and --stdio cannot be combined"))
+    return yield* ServerProcess.run({
+      mode: input.service ? "service" : input.stdio ? "stdio" : "default",
+      hostname: Option.getOrUndefined(input.hostname),
+      port: Option.getOrUndefined(input.port),
+      cors: input.cors.length > 0 ? input.cors : undefined,
+    })
   }),
 )
-
-function listen(hostname: string, port: Option.Option<number>, password: string) {
-  if (Option.isSome(port)) return bind(hostname, port.value, password)
-  // Preserve the familiar default when available, but let the OS choose a free
-  // port when another local server already owns 4096.
-  return bind(hostname, 4096, password).pipe(Effect.catch(() => bind(hostname, 0, password)))
-}
-
-function bind(hostname: string, port: number, password: string) {
-  return Layer.build(
-    HttpRouter.serve(createRoutes(password), { disableListenLog: true, disableLogger: true }).pipe(
-      Layer.provideMerge(NodeHttpServer.layer(() => createServer(), { port, host: hostname })),
-    ),
-  ).pipe(Effect.map((context) => Context.get(context, HttpServer.HttpServer).address))
-}

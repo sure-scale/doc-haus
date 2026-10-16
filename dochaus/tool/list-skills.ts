@@ -1,4 +1,4 @@
-import { tool } from "@opencode-ai/plugin"
+import { tool } from "./legacy-definition"
 
 // doc.haus list-skills tool. Returns the firm's skill library — repo-shipped
 // reference skills (read-only) plus the custom ones in WORKSPACE_ROOT/.skills —

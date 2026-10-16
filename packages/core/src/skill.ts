@@ -1,170 +1,133 @@
-export * as SkillV2 from "./skill"
+export * as Skill from "./skill.js"
 
+import { makeLocationNode } from "@opencode/util/effect/app-node"
+import type { FSUtil } from "@opencode/util/fs-util"
 import path from "path"
-import { Context, Effect, Layer, Schema } from "effect"
-import { castDraft } from "immer"
-import { AgentV2 } from "./agent"
-import { ConfigMarkdown } from "./config/markdown"
-import { FSUtil } from "./fs-util"
-import { PermissionV2 } from "./permission"
-import { AbsolutePath, withStatics } from "./schema"
-import { SkillDiscovery } from "./skill/discovery"
-import { State } from "./state"
+import { Context, Effect, Layer, Types } from "effect"
+import { Skill } from "@opencode/schema/skill"
+import { Bus } from "./bus.js"
+import { Permission } from "./permission.js"
+import { State } from "./state.js"
 
-export class DirectorySource extends Schema.Class<DirectorySource>("SkillV2.DirectorySource")({
-  type: Schema.Literal("directory"),
-  path: AbsolutePath,
-}) {}
+export const DirectorySource = Skill.DirectorySource
+export type DirectorySource = Skill.DirectorySource
 
-export class UrlSource extends Schema.Class<UrlSource>("SkillV2.UrlSource")({
-  type: Schema.Literal("url"),
-  url: Schema.String,
-}) {}
+export const UrlSource = Skill.UrlSource
+export type UrlSource = Skill.UrlSource
 
-export class EmbeddedSource extends Schema.Class<EmbeddedSource>("SkillV2.EmbeddedSource")({
-  type: Schema.Literal("embedded"),
-  skill: Schema.suspend(() => Info),
-}) {}
+export const EmbeddedSource = Skill.EmbeddedSource
+export type EmbeddedSource = Skill.EmbeddedSource
 
-export const Source = Schema.Union([DirectorySource, UrlSource, EmbeddedSource]).pipe(
-  Schema.toTaggedUnion("type"),
-  withStatics(() => ({
-    equals: (a: DirectorySource | UrlSource | EmbeddedSource, b: DirectorySource | UrlSource | EmbeddedSource) => {
-      if (a.type !== b.type) return false
-      if (a.type === "directory" && b.type === "directory") return a.path === b.path
-      if (a.type === "url" && b.type === "url") return a.url === b.url
-      if (a.type === "embedded" && b.type === "embedded") return a.skill.name === b.skill.name
-      return false
-    },
-    key: (source: DirectorySource | UrlSource | EmbeddedSource) =>
-      source.type === "directory"
-        ? `directory:${source.path}`
-        : source.type === "url"
-          ? `url:${source.url}`
-          : `embedded:${source.skill.name}`,
-  })),
-)
-export type Source = typeof Source.Type
+export const Source = Skill.Source
+export type Source = Skill.Source
 
-export class Info extends Schema.Class<Info>("SkillV2.Info")({
-  name: Schema.String,
-  description: Schema.String.pipe(Schema.optional),
-  slash: Schema.Boolean.pipe(Schema.optional),
-  location: AbsolutePath,
-  content: Schema.String,
-}) {}
+export const Info = Skill.Info
+export type Info = Skill.Info
+export const ID = Skill.ID
+export type ID = Skill.ID
+export const Name = Skill.Name
+export type Name = Skill.Name
 
-const Frontmatter = Schema.Struct({
-  name: Schema.String.pipe(Schema.optional),
-  description: Schema.String.pipe(Schema.optional),
-  slash: Schema.Boolean.pipe(Schema.optional),
+export { Event } from "@opencode/schema/skill"
+
+export const available = (skills: ReadonlyArray<Info>, permissions: Permission.Ruleset) =>
+  skills.filter((skill) => Permission.evaluate("skill", skill.id, permissions).effect !== "deny")
+
+export const toModelOutput = (skill: Info, files: ReadonlyArray<string>) => {
+  const directory = path.dirname(skill.path)
+  return [
+    `<skill_content name="${skill.name}">`,
+    `# Skill: ${skill.name}`,
+    "",
+    skill.content.trim(),
+    "",
+    `Base directory for this skill: ${directory}`,
+    "Relative paths in this skill (e.g., scripts/, reference/) are relative to this base directory.",
+    "Note: file list is sampled.",
+    "",
+    "<skill_files>",
+    ...files.map((file) => `<file>${file}</file>`),
+    "</skill_files>",
+    "</skill_content>",
+  ].join("\n")
+}
+
+export const prepare = Effect.fn("Skill.prepare")(function* (fs: FSUtil.Interface, skill: Info) {
+  const directory = path.dirname(skill.path)
+  const files =
+    path.basename(skill.path) === "SKILL.md"
+      ? (yield* fs.scan("**/*", { cwd: directory, absolute: true, include: "file", dot: true }))
+          .filter((file) => path.basename(file) !== "SKILL.md")
+          .toSorted()
+          .slice(0, 10)
+      : []
+  return {
+    directory,
+    output: toModelOutput(skill, files),
+  }
 })
-const decodeFrontmatter = Schema.decodeUnknownOption(Frontmatter)
 
 export type Data = {
-  sources: Source[]
+  skills: Map<ID, Types.DeepMutable<Info>>
 }
 
 export type Editor = {
-  source: (source: Source) => void
-  list: () => readonly Source[]
+  list: () => readonly Types.DeepMutable<Info>[]
+  get: (id: string) => Types.DeepMutable<Info> | undefined
+  add: (skill: Info) => void
+  update: (id: string, update: (skill: Types.DeepMutable<Info>) => void) => void
+  remove: (id: string) => void
 }
 
-export interface Interface {
-  readonly transform: State.Interface<Data, Editor>["transform"]
-  readonly sources: () => Effect.Effect<Source[]>
+export interface Interface extends State.Transformable<Editor> {
+  readonly get: (id: ID) => Effect.Effect<Info | undefined>
   readonly list: () => Effect.Effect<Info[]>
-  readonly forAgent: (agent: AgentV2.ID) => Effect.Effect<Info[]>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/v2/Skill") {}
+export class Service extends Context.Service<Service, Interface>()("@opencode/Skill") {}
 
-export const layer = Layer.effect(
+const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
-    const agent = yield* AgentV2.Service
-    const discovery = yield* SkillDiscovery.Service
-    const fs = yield* FSUtil.Service
+    const bus = yield* Bus.Service
 
     const state = State.create<Data, Editor>({
-      initial: () => ({ sources: [] }),
-      editor: (draft) => ({
-        source: (source) => {
-          if (draft.sources.some((item) => Source.equals(item, source))) return
-          draft.sources.push(castDraft(source))
+      name: "skill",
+      initial: () => ({ skills: new Map() }),
+      editor: (editor) => ({
+        list: () => Array.from(editor.skills.values()),
+        get: (id) => editor.skills.get(ID.make(id)),
+        add: (skill) => {
+          editor.skills.set(skill.id, { ...skill } as Types.DeepMutable<Info>)
         },
-        list: () => draft.sources as Source[],
+        update: (id, update) => {
+          const current = editor.skills.get(ID.make(id))
+          if (!current) return
+          update(current)
+          current.id = ID.make(id)
+        },
+        remove: (id) => {
+          editor.skills.delete(ID.make(id))
+        },
       }),
-    })
-
-    const load = Effect.fn("SkillV2.load")(function* (source: Source) {
-      const skills: Info[] = []
-      if (source.type === "embedded") return [source.skill]
-      const directories = source.type === "directory" ? [source.path] : yield* discovery.pull(source.url)
-      for (const directory of directories) {
-        const files = yield* fs
-          .glob("{*.md,**/SKILL.md}", { cwd: directory, absolute: true, include: "file", symlink: true, dot: true })
-          .pipe(Effect.catch(() => Effect.succeed([] as string[])))
-        for (const filepath of files.toSorted()) {
-          const content = yield* fs.readFileStringSafe(filepath).pipe(Effect.catch(() => Effect.succeed(undefined)))
-          if (!content) continue
-          const markdown = ConfigMarkdown.parseOption(content)
-          if (!markdown) continue
-          const frontmatter = decodeFrontmatter(markdown.data).valueOrUndefined
-          if (!frontmatter) continue
-          const name =
-            frontmatter.name !== undefined
-              ? frontmatter.name
-              : path.dirname(filepath) === directory
-                ? path.basename(filepath, ".md")
-                : undefined
-          if (!name) continue
-          skills.push(
-            new Info({
-              name,
-              description: frontmatter.description,
-              slash: frontmatter.slash,
-              location: AbsolutePath.make(filepath),
-              content: markdown.content,
-            }),
-          )
-        }
-      }
-      return skills
-    })
-
-    // QUESTION(Dax): Should local skill sources invalidate on filesystem watch
-    // events, following the reload policy chosen for other context sources?
-    const cache = new Map<string, Info[]>()
-    const list = Effect.fn("SkillV2.list")(function* () {
-      const skills = new Map<string, Info>()
-      for (const source of state.get().sources) {
-        const key = Source.key(source)
-        const loaded = cache.get(key) ?? (yield* load(source))
-        cache.set(key, loaded)
-        for (const skill of loaded) skills.set(skill.name, skill)
-      }
-      return Array.from(skills.values())
+      notify: () => bus.publish(Skill.Event.Updated, {}).pipe(Effect.asVoid),
     })
 
     return Service.of({
       transform: state.transform,
-      sources: Effect.fn("SkillV2.sources")(function* () {
-        return state.get().sources
+      reload: state.reload,
+      get: Effect.fn("Skill.get")(function* (id) {
+        return state.get().skills.get(id)
       }),
-      list,
-      forAgent: Effect.fn("SkillV2.forAgent")(function* (id) {
-        const current = yield* agent.get(id)
-        if (!current) return []
-        return (yield* list()).filter(
-          (skill) => PermissionV2.evaluate("skill", skill.name, current.permissions).effect !== "deny",
-        )
+      list: Effect.fn("Skill.list")(function* () {
+        return Array.from(state.get().skills.values())
       }),
     })
   }),
 )
 
-export const locationLayer = layer.pipe(
-  Layer.provide(SkillDiscovery.defaultLayer),
-  Layer.provideMerge(AgentV2.locationLayer),
-)
+export const node = makeLocationNode({
+  service: Service,
+  layer,
+  deps: [Bus.node],
+})

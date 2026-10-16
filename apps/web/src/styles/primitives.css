@@ -1,0 +1,95 @@
+/* ---------- Shared primitives: card headings, row actions, dialogs ---------- */
+
+/* Card headings read as headings, in sentence case, not as tiny caps labels. */
+.card h2 {
+  font-size: 15px;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: -0.005em;
+  color: var(--text);
+  margin: 0 0 14px;
+}
+
+/* Row buttons: a comfortable target, with the row's main verb as a quiet green
+   outline so the eye finds it first. */
+.icon-btn {
+  min-height: 28px;
+  padding: 4px 11px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.icon-btn.is-primary {
+  color: var(--accent);
+  border-color: var(--accent-border);
+  background: var(--panel);
+}
+
+.icon-btn.is-primary:hover:not(:disabled) {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.icon-btn:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+
+/* Secondary row actions (view, edit, delete) appear with the row's hover or
+   keyboard focus; the armed Confirm and the primary verb always show. Touch
+   screens have no hover, so they always show there. */
+.list-row-actions .icon-btn:not(.is-primary):not(.danger) {
+  opacity: 0;
+  transition:
+    opacity var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out),
+    background var(--duration-fast) var(--ease-out);
+}
+
+.list-row:hover .list-row-actions .icon-btn,
+.list-row:focus-within .list-row-actions .icon-btn {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .list-row-actions .icon-btn:not(.is-primary):not(.danger) {
+    opacity: 1;
+  }
+}
+
+/* Page-head filter box, sized by the stylesheet instead of inline. */
+.page-filter {
+  width: min(240px, 100%);
+}
+
+/* Inline failure inside a card, with its retry. */
+.load-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 6px;
+  padding: 36px 24px;
+}
+
+.load-error h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.load-error p {
+  margin: 0 0 8px;
+  max-width: 420px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+/* Modal title bar: the × sits flush right after any actions. */
+.viewer-bar .viewer-bar-actions:only-child {
+  margin-left: auto;
+}

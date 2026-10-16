@@ -1,0 +1,124 @@
+import { boundPlaybook } from "../../lib/playbook-source"
+import { approvedResearch, researchSource } from "./research"
+import { Database } from "bun:sqlite"
+import { existsSync } from "node:fs"
+import path from "node:path"
+import { normalize, verifyQuote } from "../../lib/quote-verify"
+import type { DocID } from "./plan"
+import { leanUserUpdates } from "./requests"
+import { readLeanText, readQuestions, shortHash, type OpenItem, type StageID } from "./state"
+
+// Source-quote helpers shared by the lean stage checks and the final gate. A
+// quote passes when lib/quote-verify finds it in the named matter document
+// (verbatim, after folding curly quotes, whitespace and Markdown escapes in the
+// source). A miss names the quote so the authoring model can correct it.
+
+const SOURCE_QUOTE = /["“]([^"“”\n]{1,2000})["”]\s*[[(]\s*source\s*:\s*([^\])\n]+?)\s*[\])]/gi
+const EXCERPT = 240
+
+export type SourceQuote = { quote: string; source_id: string }
+
+/** The source name under which the lawyer's own words are quoted: the request
+ * and the lawyer's answers. A matter document of the same name takes precedence. */
+export const REQUEST_SOURCE = "request"
+
+export function openItem(stage: StageID, kind: OpenItem["kind"], detail: string, ref: OpenItem["ref"]): OpenItem {
+  return { id: `${stage}:${kind}:${shortHash(`${detail}\0${JSON.stringify(ref)}`)}`, stage, kind, detail, ref, status: "open" }
+}
+
+/** The item as found in one planned document's body. The document is part of
+ * the reference and so of the id: the same finding in two documents is two
+ * items, each disclosed and settled against its own body. */
+export function inDocument(item: OpenItem, document: DocID): OpenItem {
+  const ref = { ...item.ref, document }
+  return { ...item, ...openItem(item.stage, item.kind, item.detail, ref), status: item.status }
+}
+
+/** Canonical source ids include indexed document names and the selected library
+ * playbook. read-document retrieves either; search-document addresses the index. */
+export function matterSourceIDs(directory: string): string[] {
+  const file = path.join(directory, ".dochaus", "legal.db")
+  const playbook = boundPlaybook(directory)
+  const policy = playbook?.text ? [playbook.source_id] : []
+  if (!existsSync(file)) return policy
+  const db = new Database(file, { readonly: true })
+  try {
+    return (db.query("SELECT DISTINCT doc_name FROM chunks ORDER BY doc_name").all() as { doc_name: string }[])
+      .map(row => row.doc_name).concat(policy)
+  } catch {
+    return policy
+  } finally {
+    db.close()
+  }
+}
+
+/** Content-keyed resume notices revised canonical text even when its source name stays the same. */
+export function matterSourceBasis(directory: string) {
+  const file = path.join(directory, ".dochaus", "legal.db")
+  const playbook = boundPlaybook(directory)
+  if (!existsSync(file)) return playbook ? shortHash(JSON.stringify(playbook), 40) : ""
+  const db = new Database(file, { readonly: true })
+  try {
+    const sources = db.query("SELECT doc_name, text FROM chunks ORDER BY doc_name, rowid").all()
+    // Creating an empty index during delivery introduces no new evidence.
+    return sources.length || playbook ? shortHash(JSON.stringify([sources, playbook]), 40) : ""
+  } finally { db.close() }
+}
+
+/** Quotations written as "exact words" [source: document name]. */
+export function sourceQuotes(text: string): SourceQuote[] {
+  return [...text.matchAll(SOURCE_QUOTE)].map(match => ({ quote: match[1]!.trim(), source_id: match[2]!.trim() }))
+}
+
+export function quoteFound(directory: string, quote: SourceQuote) {
+  if (/^https?:\/\//.test(quote.source_id)) return approvedResearch(directory).some(row => row.url === quote.source_id &&
+    normalize(researchSource(directory, row.snapshot)?.text ?? "").includes(normalize(quote.quote)))
+  if (quote.source_id === REQUEST_SOURCE && !matterSourceIDs(directory).includes(REQUEST_SOURCE)) {
+    return instructionFound(directory, quote.quote)
+  }
+  return verifyQuote({ directory, quote: quote.quote, document: quote.source_id }).found
+}
+
+/** User instructions have their own provenance: a matter source named
+ * "request" must not substitute for what the lawyer actually asked. */
+export function instructionFound(directory: string, quote: string) {
+  const words = normalize(quote).toLowerCase()
+  return words.length > 0 && lawyerWords(directory).some(text => normalize(text).toLowerCase().includes(words))
+}
+
+/** The request and each answer, quoted one at a time so a quotation never runs
+ * across two of them. The questions are the model's words and are not included. */
+function lawyerWords(directory: string) {
+  return [readLeanText(directory, "request.md") ?? "", ...leanUserUpdates(directory).filter(update => update.status === "included").map(update => update.text), ...readQuestions(directory).flatMap(question =>
+    question.status === "answered" && question.answer ? [question.answer] : [])]
+}
+
+/** Actionable retry feedback for one unverified quote. When the words are in a
+ * different matter document, that document is named. */
+export function quoteMissIssue(directory: string, where: string, quote: SourceQuote, format: "prose" | "json" = "prose") {
+  const elsewhere = [...new Set(verifyQuote({ directory, quote: quote.quote }).hits.map(hit => hit.doc))]
+    .filter(doc => doc !== quote.source_id)
+  return [
+    quote.source_id === REQUEST_SOURCE && !matterSourceIDs(directory).includes(REQUEST_SOURCE)
+      ? `${where} quotes "${excerpt(quote.quote)}" as from "${REQUEST_SOURCE}", but those words are not in the request, user updates or any one of the lawyer's answers.`
+      : `${where} quotes "${excerpt(quote.quote)}" as from "${quote.source_id}", but those words are not in that document.`,
+    elsewhere.length
+      ? `They do appear in ${elsewhere.map(doc => `"${doc}"`).join(", ")}; cite that document if it is the source you meant.`
+      : format === "json"
+        ? "The JSON quote field requires verbatim source words. Copy them with read-document or check them with verify-quote. Record paraphrases outside source-quote entries; removing JSON string delimiters does not make a paraphrase a valid quote."
+        : "Copy the exact words with read-document (or check them with verify-quote), or drop the quotation marks and paraphrase.",
+  ].join(" ")
+}
+
+/** Open items for quotations in `text` that the named source does not contain. */
+export function quoteMissItems(directory: string, stage: StageID, text: string, ref: OpenItem["ref"] = {}) {
+  return sourceQuotes(text)
+    .filter(quote => !quoteFound(directory, quote))
+    .map(quote => openItem(stage, "quote_miss", `Quoted text was not found verbatim in source "${quote.source_id}".`,
+      { ...ref, source_id: quote.source_id, quote: quote.quote }))
+}
+
+export function excerpt(text: string, length = EXCERPT) {
+  const flat = text.replace(/\s+/g, " ").trim()
+  return flat.length > length ? `${flat.slice(0, length - 1)}…` : flat
+}

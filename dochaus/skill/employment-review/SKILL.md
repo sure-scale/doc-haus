@@ -104,3 +104,31 @@ These are the places employment documents fail, not statements of any
 jurisdiction's law. Every jurisdiction-sensitive conclusion must rest on
 retrieved current law (legal-research skill) or the matter's jurisdiction pack,
 never on this checklist alone.
+
+<jurisdiction-risk>
+Employment law is the worst case for jurisdiction error — a clause that is
+market-standard in one place is void in another, the rules are state/national
+and frequently amended, and confidence is no guide to correctness. Calibrate by
+structural signal, not certainty.
+
+- **Name the assumed governing law first.** Before judging any
+  jurisdiction-sensitive area above (restrictive covenants, invention
+  assignment, dispute resolution, wage forfeiture, choice of law/forum), state
+  the employee's work jurisdiction and the document's governing law, and where
+  each comes from. If the question implies a jurisdiction without naming one, do
+  not assume it — surface the gap and state what you assumed.
+- **Grade confidence down — qualify, then escalate** — when the governing law is
+  state/local, non-US, lower-court-driven or unsettled, multi-jurisdiction, or
+  recently changed. Restrictive-covenant and wage-forfeiture rules in particular
+  shift by state and over time; confirm the rule is current.
+- **Governing law vs work location.** Employee-protection statutes of the work
+  jurisdiction are frequently mandatory and override a contrary chosen law or
+  forum; flag a governing-law or forum clause that points away from where the
+  employee works, and treat the work jurisdiction's mandatory protections as a
+  potential override (see area 6).
+- **Multi-jurisdiction workforce.** When employees sit in more than one
+  jurisdiction, run all six areas separately and completely for each work
+  jurisdiction — do not let a conclusion for one carry over — then reconcile:
+  note where the jurisdictions agree, where a clause is enforceable in one but
+  void in another, and route divergences that need a decision to escalation.
+</jurisdiction-risk>

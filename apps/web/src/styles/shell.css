@@ -1,0 +1,189 @@
+/* ---------- App-wide connection banner ---------- */
+
+.conn-banner {
+  position: sticky;
+  top: env(safe-area-inset-top, 0px);
+  z-index: var(--z-sticky);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 24px;
+  font-size: 13px;
+  color: var(--warn);
+  background: var(--warn-soft);
+  border-bottom: 1px solid var(--warn-border);
+  animation: banner-in var(--duration-base) var(--ease-out);
+}
+
+.conn-banner strong {
+  font-weight: 600;
+}
+
+.conn-banner-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: run-pulse 1.6s ease-in-out infinite;
+}
+
+/* ---------- Not found ---------- */
+
+.not-found {
+  max-width: 440px;
+  margin: 12vh auto 0;
+  text-align: center;
+}
+
+.not-found h1 {
+  margin: 0 0 8px;
+  font-family: var(--font-display);
+  font-size: 22px;
+}
+
+.not-found p {
+  margin: 0 0 20px;
+  color: var(--text-secondary);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .conn-banner,
+  .conn-banner-dot {
+    animation: none;
+  }
+}
+
+/* Library builders (Templates, Skills, Agents, Workflows): an empty chat sizes to
+   its intro instead of holding a viewport of blank space under the list, and
+   its starters wrap as a row of chips. The matter chat keeps its full height. */
+.chat-card:has(.chat-empty):not(.workspace *) .chat-log {
+  height: auto;
+}
+
+.chat-card:not(.workspace *) .chat-empty {
+  padding: 8px 0;
+}
+
+.chat-card:not(.workspace *) .chat-empty .starters {
+  flex-direction: row;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+/* ---------- Matter chat fits one screen ---------- */
+
+/* On a desktop window the matter chat is one screen: the header keeps its
+   height, the chat card and the rail share the rest, and only the chat log and
+   the rail scroll, so the composer never falls below the fold.
+   Stacked or very short windows keep the page scroll and the log's own clamp. */
+@media (min-width: 701px) and (min-height: 600px) {
+  .content:has(> .container > .matter-body) {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    height: 100dvh;
+  }
+
+  .content > .container:has(> .matter-body) {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    width: 100%;
+  }
+
+  .container > .matter-body {
+    flex: 1;
+    min-height: 0;
+    grid-template-rows: minmax(0, 1fr);
+  }
+
+  .matter-body > .workspace {
+    align-self: stretch;
+    min-height: 0;
+    grid-template-rows: minmax(0, 1fr);
+  }
+
+  .matter-body > .workspace > .chat-card {
+    align-self: stretch;
+    min-height: 0;
+    margin-bottom: 0;
+  }
+
+  /* The conversation keeps a few lines however far Details open. */
+  .matter-body > .workspace .chat-log-wrap {
+    display: flex;
+    flex: 1 1 0;
+    flex-direction: column;
+    min-height: 96px;
+  }
+
+  .matter-body > .workspace .chat-log {
+    flex: 1 1 0;
+    height: auto;
+  }
+}
+
+/* ---------- Chat empty state before any documents ---------- */
+
+.chat-empty.is-upload-first {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.chat-empty-icon {
+  color: var(--accent-muted);
+  margin-bottom: 4px;
+}
+
+.chat-empty-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.chat-empty.is-upload-first .muted {
+  margin: 0;
+  max-width: 440px;
+}
+
+.chat-empty-action {
+  margin-top: 12px;
+  height: var(--ctl-h);
+}
+
+/* ---------- Composer tools while their choices load ---------- */
+
+/* Placeholder chips sized like the real Auto, Workflows and Playbook controls,
+   so the row keeps its shape when they arrive. */
+.composer-tool-skeleton {
+  display: inline-block;
+  height: 32px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  background: linear-gradient(90deg, var(--bg-sunken) 25%, var(--bg) 50%, var(--bg-sunken) 75%);
+  background-size: 200% 100%;
+  animation: sk-shimmer 1.4s ease-in-out infinite;
+}
+
+.composer-tool-skeleton.is-assistant {
+  width: 92px;
+}
+
+.composer-tool-skeleton.is-workflows {
+  width: 108px;
+}
+
+.composer-tool-skeleton.is-playbook {
+  width: 100px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composer-tool-skeleton {
+    animation: none;
+  }
+}

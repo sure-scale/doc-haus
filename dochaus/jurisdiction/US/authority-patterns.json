@@ -1,0 +1,16 @@
+{
+  "patterns": [
+    {
+      "id": "usc-citation",
+      "description": "United States Code citations written without a section symbol, e.g. 15 U.S.C. 80b-5 or 15 USC 80b-5",
+      "regex": "\\b\\d+\\s+U\\.?S\\.?C\\.?\\s+\\d+[\\w.-]*(?:\\([^)]+\\))*",
+      "flags": "g"
+    },
+    {
+      "id": "cfr-citation",
+      "description": "Code of Federal Regulations citations written without a section symbol, e.g. 17 CFR 275.204-2 or 17 C.F.R. Part 248",
+      "regex": "\\b\\d+\\s+C\\.?F\\.?R\\.?\\s+(?:[Pp]art\\s+)?\\d+[\\w.-]*(?:\\([^)]+\\))*",
+      "flags": "g"
+    }
+  ]
+}

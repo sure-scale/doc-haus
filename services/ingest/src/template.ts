@@ -37,6 +37,8 @@ export function seedTemplates() {
   if (existsSync(TEMPLATES_DIR)) return
   mkdirSync(TEMPLATES_DIR, { recursive: true })
   const demoTemplates = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "demo", "templates")
+  // Curated optional demo templates may be absent from a source distribution.
+  if (!existsSync(demoTemplates)) return
   readdirSync(demoTemplates)
     .filter((name) => name.endsWith(".docx"))
     .forEach((name) => copyFileSync(path.join(demoTemplates, name), templatePath(name)))

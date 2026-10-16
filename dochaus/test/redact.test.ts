@@ -1,5 +1,5 @@
 // True-redaction guarantees, exercised through the real redact tool against
-// documents built from the checked-in nda.docx template — no mocks beyond the
+// authored synthetic documents rendered by the product helper — no mocks beyond the
 // tool ctx. Run from dochaus/: bun test test/redact.test.ts
 //
 // Lives in test/, not tool/: the engine's ToolRegistry imports every .ts under
@@ -9,10 +9,10 @@ import { describe, expect, test } from "bun:test"
 import { Database } from "bun:sqlite"
 import { mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { fileURLToPath } from "node:url"
 import path from "node:path"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { docxodus } from "../lib/docxodus"
+import { renderMarkdownToDocx } from "../lib/render"
 import { scrubDocxPackage, docxPackageResidue, listRedactions } from "../lib/redactions"
 import { recordRedline, pendingRedlinesForDoc } from "../lib/redlines"
 
@@ -22,8 +22,14 @@ process.env.INGEST_URL = "http://127.0.0.1:1"
 const redact = (await import("../tool/redact")).default
 
 const SSN = "123-45-6789"
-const here = path.dirname(fileURLToPath(import.meta.url))
-const ndaBytes = await Bun.file(path.join(here, "..", "templates", "nda.docx")).bytes()
+// Authored test content; the renderer supplies the shipped, source-built DOCX seed.
+const fixtureBytes = (await renderMarkdownToDocx([
+  "# Synthetic workshop record",
+  "## Confidential Information",
+  "The sample inventory lists blue paper labels and wooden counters.",
+  "## Entire Agreement",
+  "These invented instructions group the sample inventory details in one record.",
+].join("\n\n"))).bytes
 const dx = await docxodus()
 
 function ctxFor(directory: string, ask: () => Promise<void> = async () => {}) {
@@ -39,10 +45,10 @@ function ctxFor(directory: string, ask: () => Promise<void> = async () => {}) {
   }
 }
 
-// nda.docx with the SSN planted three times (twice in one heading, once in a
+// Synthetic content with the SSN planted three times (twice in one heading, once in a
 // new paragraph) and a creator metadata entry carrying it too.
 function buildFixture() {
-  const session = dx.openDocxSession(ndaBytes, {})
+  const session = dx.openDocxSession(fixtureBytes, {})
   const heading = session.findByText("Confidential Information")!
   session.replaceTextRange(heading.id, "Confidential Information", `SSN ${SSN} and again ${SSN}`)
   const tail = session.findByText("Entire Agreement")!
@@ -86,6 +92,7 @@ describe("redact tool", () => {
       oldText: `SSN: ${SSN}`,
       newText: "SSN: [on file]",
       author: "test",
+      reviewComment: "Replace personal data with a non-sensitive label.",
       anchorId: "x",
     })
 
@@ -137,12 +144,12 @@ describe("redact tool", () => {
   })
 
   test("refuses a document with unresolved tracked changes", async () => {
-    const session = dx.openDocxSession(ndaBytes, {})
+    const session = dx.openDocxSession(fixtureBytes, {})
     const target = session.findByText("Confidential Information")!
     session.replaceTextRange(target.id, "Confidential Information", `Secret ${SSN}`)
     const modified = session.save()
     session.close()
-    const tracked = await dx.compareDocuments(ndaBytes, modified, { authorName: "test" })
+    const tracked = await dx.compareDocuments(fixtureBytes, modified, { authorName: "test" })
 
     const { dir } = await matterWith(tracked)
     const result = await redact.execute(
@@ -154,7 +161,7 @@ describe("redact tool", () => {
   })
 
   test("refuses when the text spans a paragraph boundary", async () => {
-    const session = dx.openDocxSession(ndaBytes, {})
+    const session = dx.openDocxSession(fixtureBytes, {})
     const tail = session.findByText("Entire Agreement")!
     session.insertParagraph(tail.id, "after", "ends with alpha")
     const first = session.findByText("ends with alpha")!
@@ -172,7 +179,7 @@ describe("redact tool", () => {
   })
 
   test("reports when the text is nowhere in the document", async () => {
-    const { dir } = await matterWith(ndaBytes)
+    const { dir } = await matterWith(fixtureBytes)
     const result = await redact.execute(
       { document: "personnel.docx", text: "not in this document", reason: "test", author: undefined, label: undefined },
       ctxFor(dir),

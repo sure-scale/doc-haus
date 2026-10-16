@@ -1,40 +1,45 @@
-import { useEffect, useState } from "react"
+import { readBrowserValue, writeBrowserValue } from "../browser-storage"
+import { useEffect, useState, type ReactNode } from "react"
 import { Link, NavLink, useMatch, useNavigate, useSearchParams } from "react-router-dom"
-import { getMatter } from "../api/ingest"
-import { deleteSession, listSessions, matterClient } from "../api/opencode"
+import { deleteMatterSession, getMatter } from "../api/ingest/matters"
+import { listSessions } from "../api/opencode/sessions"
+import { matterClient } from "../api/opencode/client"
 import logo from "../assets/dochaus-logo.svg"
+import { toggleDocumentsDrawer, useDocumentsDrawer } from "./matter/documents-drawer"
 import { useToast } from "./Toast"
 import { Tooltip } from "./Tooltip"
 
 type Convo = { id: string; title: string; updated: number }
 
-// The open matter's surfaces, switched by the `view` query param. This rail is
-// the single navigation plane: the content area is one canvas per surface.
-const SURFACES = [
-  { view: "chat", label: "Chat", Icon: IconChat },
-  { view: "review", label: "Review", Icon: IconReview },
-  { view: "documents", label: "Documents", Icon: IconDocsNav },
-] as const
-
-// Left rail. Holds the brand, primary nav, the open matter's conversation
-// history, and Settings. Collapses to an icons-only strip; the choice persists
-// per browser in localStorage (a single UI preference — no datastore needed).
+// Left rail. Global library navigation gives way to the active matter when one
+// is open: Documents (the slide-out drawer), Review table, then the
+// conversation list.
+// Collapses to an icons-only strip; the choice persists per browser in
+// localStorage.
 export default function Sidebar({
   onOpenSettings,
   sessionsVersion,
+  updateButton,
 }: {
   onOpenSettings: () => void
   sessionsVersion: number
+  updateButton?: ReactNode
 }) {
-  const [collapsed, setCollapsed] = useState(() => localStorage.getItem("dh.sidebar") === "1")
+  const [collapsed, setCollapsed] = useState(() => {
+    const saved = readBrowserValue("dh.sidebar")
+    return saved === null ? window.matchMedia("(max-width: 960px)").matches : saved === "1"
+  })
   const matterId = useMatch("/matter/:id")?.params.id
   const [params] = useSearchParams()
   const navigate = useNavigate()
   const notify = useToast()
   const activeSession = params.get("session")
   const view = params.get("view") ?? "chat"
-  const [convos, setConvos] = useState<Convo[]>([])
+  // Undefined until the matter's conversations have loaded, so the list shows a
+  // placeholder rather than a false "No conversations yet".
+  const [convos, setConvos] = useState<Convo[]>()
   const [matterTitle, setMatterTitle] = useState("")
+  const drawer = useDocumentsDrawer()
   const [matterDir, setMatterDir] = useState("")
   // The conversation whose delete is armed. Clicking the trash slides out an
   // inline Confirm pill instead of blocking on window.confirm; any click
@@ -42,7 +47,7 @@ export default function Sidebar({
   const [confirmId, setConfirmId] = useState<string | null>(null)
 
   useEffect(() => {
-    localStorage.setItem("dh.sidebar", collapsed ? "1" : "0")
+    writeBrowserValue("dh.sidebar", collapsed ? "1" : "0")
   }, [collapsed])
 
   useEffect(() => {
@@ -51,6 +56,8 @@ export default function Sidebar({
     window.addEventListener("click", dismiss)
     return () => window.removeEventListener("click", dismiss)
   }, [confirmId])
+
+  useEffect(() => setConvos(undefined), [matterId])
 
   // When a matter is open, list its top-level chats (engine-persisted; we only
   // read them). Refetch when the active session changes so a new chat shows up.
@@ -67,14 +74,24 @@ export default function Sidebar({
         if (!live) return
         setConvos(
           list
-            // Chats only: drop subagent runs (parentID) and our system-titled
-            // sessions — workflow runs and legacy chats carry a "doc.haus" title;
-            // real chats are titled from the user's first message.
-            .filter((s) => !s.parentID && s.title.trim() && !/^doc\.haus/i.test(s.title))
-            .map((s) => ({ id: s.id, title: s.title, updated: s.time.updated }))
+            // Chats only: drop subagent runs (parentID), sessions the runtime
+            // owns (drafting stages and the narrator carry metadata.dochaus_role
+            // and have no chat to show), and our system-titled sessions —
+            // workflow runs and legacy chats carry a "doc.haus" title; real chats
+            // are titled from the user's first message. A drafting run's own
+            // conversation stays: it shows the request and the run's narration.
+            .filter((s) => !s.parentID && (draftingRun(s.metadata) || !runtimeOwned(s.metadata)) && !/^doc\.haus/i.test(s.title ?? ""))
+            .map((s) => ({
+              id: s.id,
+              title: draftingRun(s.metadata) ? "Drafting run" : s.title?.trim() || "Untitled conversation",
+              updated: s.time.updated,
+            }))
             .sort((a, b) => b.updated - a.updated),
         )
       })
+      // A matter that is gone or unreachable lists no conversations; the matter
+      // page and the connection banner say why.
+      .catch(() => live && setConvos([]))
     return () => {
       live = false
     }
@@ -83,176 +100,239 @@ export default function Sidebar({
   // Delete a conversation from the engine, then drop it from the list. If it was
   // the open one, fall back to a fresh chat so the canvas isn't left on a dead id.
   async function removeConvo(c: Convo) {
-    if (!matterDir) return
+    if (!matterDir || !matterId) return
     setConfirmId(null)
     try {
-      await deleteSession(matterClient(matterDir), c.id)
-      setConvos((list) => list.filter((x) => x.id !== c.id))
+      await deleteMatterSession(matterId, c.id)
+      setConvos((list) => list?.filter((x) => x.id !== c.id))
       if (c.id === activeSession) navigate(`/matter/${matterId}?view=chat`)
       notify("success", "Conversation deleted")
-    } catch {
-      notify("error", "Could not delete conversation")
+    } catch (error) {
+      notify("error", error instanceof Error ? error.message : "Could not delete conversation")
     }
   }
 
   return (
-    <aside className={`sidebar${collapsed ? " collapsed" : ""}`}>
+    <aside className={`sidebar${collapsed ? " collapsed" : ""}${matterId ? " sidebar-in-matter" : ""}`}>
       <div className="sidebar-brand">
         <Link to="/" title="doc.haus">
           <img src={logo} className="app-logo" alt="" />
-          {!collapsed && <span className="wordmark">Doc.Haus</span>}
+          <span className="wordmark">Doc.Haus</span>
         </Link>
       </div>
+      <button
+        className="sidebar-icon-button sidebar-collapse"
+        onClick={() => setCollapsed((c) => !c)}
+        title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+        aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+        aria-expanded={!collapsed}
+      >
+        <IconChevron right={false} />
+      </button>
 
-      <div className="sidebar-label">Workspace</div>
-      <nav className="sidebar-nav">
-        <NavLink
-          to="/"
-          end
-          className={({ isActive }) => `nav-item${isActive ? " active" : ""}`}
-          title="Matters"
-          aria-label="Matters"
-        >
-          <IconMatters />
-          {!collapsed && <span>Matters</span>}
-        </NavLink>
-        <NavLink
-          to="/templates"
-          className={({ isActive }) => `nav-item${isActive ? " active" : ""}`}
-          title="Templates"
-          aria-label="Templates"
-        >
-          <IconTemplates />
-          {!collapsed && <span>Templates</span>}
-        </NavLink>
-        <NavLink
-          to="/workflows"
-          className={({ isActive }) => `nav-item${isActive ? " active" : ""}`}
-          title="Workflows"
-          aria-label="Workflows"
-        >
-          <IconWorkflows />
-          {!collapsed && <span>Workflows</span>}
-        </NavLink>
-        <NavLink
-          to="/skills"
-          className={({ isActive }) => `nav-item${isActive ? " active" : ""}`}
-          title="Skills"
-          aria-label="Skills"
-        >
-          <IconSkills />
-          {!collapsed && <span>Skills</span>}
-        </NavLink>
-        <NavLink
-          to="/agents"
-          className={({ isActive }) => `nav-item${isActive ? " active" : ""}`}
-          title="Agents"
-          aria-label="Agents"
-        >
-          <IconAgents />
-          {!collapsed && <span>Agents</span>}
-        </NavLink>
-      </nav>
+      {matterId ? (
+        <nav className="sidebar-nav sidebar-primary sidebar-back" aria-label="Main navigation">
+          <Link to="/" className="nav-item" title="All matters" aria-label="All matters">
+            <IconChevron right={false} />
+            <span>All matters</span>
+          </Link>
+        </nav>
+      ) : (
+        <>
+          <nav className="sidebar-nav sidebar-primary" aria-label="Main navigation">
+            <NavLink
+              to="/"
+              end
+              className={({ isActive }) => `nav-item${isActive ? " active" : ""}`}
+              title="Matters"
+              aria-label="Matters"
+            >
+              <IconMatters />
+              <span>Matters</span>
+            </NavLink>
+          </nav>
+          <nav className="sidebar-nav sidebar-library" aria-label="Library">
+            <div className="sidebar-library-label">Library</div>
+            <NavLink
+              to="/templates"
+              className={({ isActive }) => `nav-item${isActive ? " active" : ""}`}
+              title="Templates"
+              aria-label="Templates"
+            >
+              <IconTemplates />
+              <span>Templates</span>
+            </NavLink>
+            <NavLink
+              to="/playbooks"
+              className={({ isActive }) => `nav-item${isActive ? " active" : ""}`}
+              title="Playbooks"
+              aria-label="Playbooks"
+            >
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+                <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+              </svg>
+              <span>Playbooks</span>
+            </NavLink>
+            <NavLink
+              to="/workflows"
+              className={({ isActive }) => `nav-item${isActive ? " active" : ""}`}
+              title="Workflows"
+              aria-label="Workflows"
+            >
+              <IconWorkflows />
+              <span>Workflows</span>
+            </NavLink>
+            <NavLink
+              to="/skills"
+              className={({ isActive }) => `nav-item${isActive ? " active" : ""}`}
+              title="Skills"
+              aria-label="Skills"
+            >
+              <IconSkills />
+              <span>Skills</span>
+            </NavLink>
+            <NavLink
+              to="/agents"
+              className={({ isActive }) => `nav-item${isActive ? " active" : ""}`}
+              title="Agents"
+              aria-label="Agents"
+            >
+              <IconAgents />
+              <span>Agents</span>
+            </NavLink>
+          </nav>
+        </>
+      )}
+
+      {matterId && matterTitle && (
+        <div className="sidebar-matter-card">
+          <div className="sidebar-matter" title={matterTitle}>{matterTitle}</div>
+        </div>
+      )}
 
       {matterId && (
-        <div className="sidebar-surfaces">
-          {!collapsed && matterTitle && (
-            <Tooltip label={matterTitle}>
-              <div className="sidebar-matter">{matterTitle}</div>
-            </Tooltip>
-          )}
-          {SURFACES.map((s) => (
-            <Link
-              key={s.view}
-              to={`/matter/${matterId}?view=${s.view}`}
-              className={`nav-item${view === s.view ? " active" : ""}`}
-              title={s.label}
-            >
-              <s.Icon />
-              {!collapsed && <span>{s.label}</span>}
-            </Link>
-          ))}
-        </div>
+        <nav className="sidebar-surfaces" aria-label="Matter">
+          <button
+            type="button"
+            className={`nav-item${drawer.open ? " active" : ""}`}
+            onClick={toggleDocumentsDrawer}
+            title="Documents"
+            aria-label="Documents"
+            aria-expanded={drawer.open}
+            aria-controls="documents-drawer"
+          >
+            <IconDocsNav />
+            <span>Documents</span>
+            {drawer.count !== undefined && <span className="sidebar-nav-count">{drawer.count}</span>}
+          </button>
+          <Link
+            to={`/matter/${matterId}?${new URLSearchParams({ ...Object.fromEntries(params), view: "review" })}`}
+            className={`nav-item${view === "review" ? " active" : ""}`}
+            title="Review table"
+            aria-label="Review table"
+            aria-current={view === "review" ? "page" : undefined}
+          >
+            <IconReview />
+            <span>Review table</span>
+          </Link>
+        </nav>
       )}
 
-      {matterId && !collapsed && view === "chat" && (
-        <div className="sidebar-convos">
-          <div className="sidebar-section-head">
-            <span>Conversations</span>
-            <Link to={`/matter/${matterId}?view=chat`} className="sidebar-new" title="New chat">
-              <svg
-                width="12"
-                height="12"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-              >
-                <path d="M12 5v14M5 12h14" />
-              </svg>
-              New
-            </Link>
-          </div>
-          {convos.length === 0 ? (
-            <p className="muted sidebar-empty">No conversations yet.</p>
-          ) : (
-            <ul className="convo-list">
-              {convos.map((c) => (
-                <li key={c.id} className="convo-row">
-                  <Tooltip label={c.title}>
-                    <Link
-                      to={`/matter/${matterId}?session=${c.id}`}
-                      className={`convo-item${c.id === activeSession ? " active" : ""}`}
-                    >
-                      {c.title}
-                    </Link>
-                  </Tooltip>
-                  {confirmId === c.id ? (
-                    <button
-                      className="convo-confirm"
-                      title="Confirm delete"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        removeConvo(c)
-                      }}
-                    >
-                      Confirm
-                    </button>
-                  ) : (
-                    <button
-                      className="convo-del"
-                      title="Delete conversation"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        setConfirmId(c.id)
-                      }}
-                    >
-                      <IconTrash />
-                    </button>
-                  )}
-                </li>
-              ))}
-            </ul>
-          )}
+      {matterId && (
+        <div className="sidebar-matter-sections">
+          <section className="sidebar-conversations" aria-labelledby="sidebar-conversations-title">
+            <div className="sidebar-section-head">
+              <h2 id="sidebar-conversations-title">
+                <Link to={`/matter/${matterId}?view=chat`} className={`sidebar-section-link${view === "chat" ? " active" : ""}`} aria-current={view === "chat" ? "page" : undefined}>
+                  <IconChat />
+                  <span>Conversations</span>
+                </Link>
+              </h2>
+              <span className="sidebar-history-count">{convos?.length ?? ""}</span>
+              <Link to={`/matter/${matterId}?view=chat`} className="sidebar-icon-button sidebar-new" title="New conversation" aria-label="New conversation">
+                <IconPlus />
+              </Link>
+            </div>
+            <div className="sidebar-history-body" tabIndex={0} role="region" aria-label="Conversations">
+              {!convos ? (
+                <div className="skeleton-list sidebar-skeleton" aria-label="Loading conversations">
+                  <div className="skeleton-line" />
+                  <div className="skeleton-line w-40" />
+                </div>
+              ) : convos.length === 0 ? (
+                <p className="muted sidebar-empty">No conversations yet.</p>
+              ) : (
+                <ul className="convo-list">
+                  {convos.map((c) => (
+                    <li key={c.id} className="convo-row">
+                      <Tooltip label={c.title}>
+                        <Link
+                          to={`/matter/${matterId}?session=${c.id}`}
+                          className={`convo-item${c.id === activeSession ? " active" : ""}`}
+                        >
+                          {c.title}
+                        </Link>
+                      </Tooltip>
+                      {confirmId === c.id ? (
+                        <button
+                          className="convo-confirm"
+                          title="Confirm delete"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            removeConvo(c)
+                          }}
+                        >
+                          Confirm
+                        </button>
+                      ) : (
+                        <button
+                          className="convo-del"
+                          title="Delete conversation"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            setConfirmId(c.id)
+                          }}
+                        >
+                          <IconTrash />
+                        </button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </section>
         </div>
       )}
-
-      <div className="sidebar-foot">
-        <button className="nav-item" onClick={onOpenSettings} title="Settings">
+      <div className="sidebar-footer">
+        {updateButton}
+        {matterId && (
+          <Link to={`/matter/${matterId}?view=chat`} className="sidebar-icon-button sidebar-compact-new" title="New conversation" aria-label="New conversation">
+            <IconPlus />
+          </Link>
+        )}
+        <button className="nav-item sidebar-settings" onClick={onOpenSettings} title="Settings" aria-label="Settings">
           <IconSettings />
-          {!collapsed && <span>Settings</span>}
-        </button>
-        <button
-          className="nav-item"
-          onClick={() => setCollapsed((c) => !c)}
-          title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-        >
-          <IconChevron right={collapsed} />
-          {!collapsed && <span>Collapse</span>}
+          <span>Settings</span>
         </button>
       </div>
     </aside>
+  )
+}
+
+function runtimeOwned(metadata: unknown) {
+  return typeof metadata === "object" && metadata !== null && "dochaus_role" in metadata
+}
+
+function draftingRun(metadata: unknown) {
+  return typeof metadata === "object" && metadata !== null && "dochaus_role" in metadata && metadata.dochaus_role === "lean-drafting-owner"
+}
+
+function IconPlus() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" aria-hidden>
+      <path d="M12 5v14M5 12h14" />
+    </svg>
   )
 }
 

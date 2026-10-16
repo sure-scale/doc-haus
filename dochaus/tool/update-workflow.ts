@@ -1,4 +1,4 @@
-import { tool } from "@opencode-ai/plugin"
+import { tool } from "./legacy-definition"
 
 // doc.haus update-workflow tool. Replaces the definition of an existing custom
 // workflow — its label, description, scope, prompt, and steps. The name is the

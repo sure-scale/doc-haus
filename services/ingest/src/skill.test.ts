@@ -1,3 +1,4 @@
+import { readEngineConfig as awaitConfig } from "./engine-config"
 import { test, expect, afterAll } from "bun:test"
 import { mkdtempSync, rmSync, existsSync, mkdirSync, writeFileSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -7,6 +8,7 @@ import path from "node:path"
 const dochaus = mkdtempSync(path.join(tmpdir(), "dochaus-skill-config-"))
 const workspace = mkdtempSync(path.join(tmpdir(), "dochaus-skill-workspace-"))
 process.env.DOCHAUS_DIR = dochaus
+process.env.DOCHAUS_RUNTIME_DIR = path.join(dochaus, "runtime")
 process.env.WORKSPACE_ROOT = workspace
 
 // Seed a repo-shipped (builtin) skill and a playbook that must stay excluded.
@@ -132,13 +134,13 @@ test("setSkillEnabled: deny rule round-trips through opencode.json, bare-action 
   const off = sk.setSkillEnabled("clause-library", false)
   expect(off.enabled).toBe(false)
   expect(sk.listSkills().find((s) => s.name === "clause-library")!.enabled).toBe(false)
-  const config = JSON.parse(readFileSync(path.join(dochaus, "opencode.json"), "utf8"))
-  expect(config.permission.skill).toEqual({ "*": "allow", "clause-library": "deny" })
+  const config = (awaitConfig())
+  expect(config.permission!.skill).toEqual({ "*": "allow", "clause-library": "deny" })
 
   const on = sk.setSkillEnabled("clause-library", true)
   expect(on.enabled).toBe(true)
-  const restored = JSON.parse(readFileSync(path.join(dochaus, "opencode.json"), "utf8"))
-  expect(restored.permission.skill).toEqual({ "*": "allow" })
+  const restored = (awaitConfig())
+  expect(restored.permission!.skill).toEqual({ "*": "allow" })
 })
 
 test("setSkillEnabled: unknown skill → 404; deleteSkill drops the deny rule", () => {
@@ -153,8 +155,8 @@ test("setSkillEnabled: unknown skill → 404; deleteSkill drops the deny rule", 
   sk.createSkill({ name: "toggle-me", description: "", content: "body" })
   sk.setSkillEnabled("toggle-me", false)
   sk.deleteSkill("toggle-me")
-  const config = JSON.parse(readFileSync(path.join(dochaus, "opencode.json"), "utf8"))
-  expect(config.permission.skill["toggle-me"]).toBeUndefined()
+  const config = (awaitConfig())
+  expect((config.permission!.skill as Record<string, unknown>)["toggle-me"]).toBeUndefined()
 })
 
 test("importSkill: .md keeps its frontmatter name and description", async () => {

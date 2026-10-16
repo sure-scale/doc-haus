@@ -1,0 +1,233 @@
+{
+  "profile": "lean",
+  "mode": "queued",
+  "request_id": "001791709529110-000001-e21ccc63",
+  "status": {
+    "schema": "dochaus.lean.state/2",
+    "profile": "lean",
+    "revision": 27,
+    "status": "running",
+    "stop_reason": null,
+    "owner_session_id": "ses_child1",
+    "model": {
+      "providerID": "test",
+      "modelID": "scripted"
+    },
+    "created_at": "2026-10-11T09:05:28.924Z",
+    "updated_at": "2026-10-11T09:05:29.113Z",
+    "stages": {
+      "d1.draft": {
+        "status": "done",
+        "input_sha": "96e87cd13f662f394c148f5e0ea4adda533cb740d1e05067c534fd3542891394",
+        "outputs": [
+          "plan.json",
+          "d1/draft.md",
+          "d1/body.docx",
+          "d1/paragraphs.json"
+        ],
+        "session_id": "ses_child2",
+        "attempts": 1,
+        "calls": 3,
+        "feedback": [],
+        "started_at": "2026-10-11T09:05:28.925Z",
+        "finished_at": "2026-10-11T09:05:28.956Z"
+      },
+      "d1.review": {
+        "status": "done",
+        "input_sha": "4c6e6b3cc7a9f53c02785e68dfb6f3d167cc8cc1a12044ff85e7795c96e140dc",
+        "outputs": [
+          "d1/review.md"
+        ],
+        "session_id": "ses_child3",
+        "attempts": 1,
+        "calls": 1,
+        "feedback": [],
+        "started_at": "2026-10-11T09:05:28.957Z",
+        "finished_at": "2026-10-11T09:05:28.959Z"
+      },
+      "d1.changes": {
+        "status": "running",
+        "input_sha": null,
+        "outputs": [],
+        "session_id": null,
+        "attempts": 0,
+        "calls": 0,
+        "feedback": [],
+        "started_at": "2026-10-11T09:05:29.113Z",
+        "finished_at": null
+      },
+      "d1.apply": {
+        "status": "done",
+        "input_sha": "ce4650daeef93d444302f696383120880557b7c36bd00e5095f3e7e2bb6f559b",
+        "outputs": [
+          "d1/apply.json",
+          "d1/body-applied.docx",
+          "d1/paragraphs-applied.json"
+        ],
+        "session_id": null,
+        "attempts": 0,
+        "calls": 0,
+        "feedback": [],
+        "started_at": "2026-10-11T09:05:28.963Z",
+        "finished_at": "2026-10-11T09:05:28.983Z"
+      },
+      "finalize": {
+        "status": "done",
+        "input_sha": "4893c96eb4ebf330d69fb688c598e817e01a967fb68cb4b4022efef766cdfe11",
+        "outputs": [
+          "drafting-notes.md",
+          "drafting-notes.docx",
+          "redline.docx"
+        ],
+        "session_id": "ses_child5",
+        "attempts": 1,
+        "calls": 1,
+        "feedback": [],
+        "started_at": "2026-10-11T09:05:28.984Z",
+        "finished_at": "2026-10-11T09:05:29.106Z"
+      },
+      "gate": {
+        "status": "blocked",
+        "input_sha": "7b948a4e706eb9edc74565861cbf81282ec0de9c8c95abeea51731a24351677e",
+        "outputs": [
+          "gate.json",
+          "drafting-notes-coverage.md"
+        ],
+        "session_id": null,
+        "attempts": 0,
+        "calls": 0,
+        "feedback": [],
+        "started_at": "2026-10-11T09:05:29.107Z",
+        "finished_at": "2026-10-11T09:05:29.109Z"
+      }
+    },
+    "in_flight": true,
+    "pending_requests": 0,
+    "open_items": [
+      {
+        "id": "draft:quote_miss:2567388968",
+        "stage": "draft",
+        "kind": "quote_miss",
+        "detail": "Quoted text was not found verbatim in source \"supply-terms.docx\".",
+        "ref": {
+          "source_id": "supply-terms.docx",
+          "quote": "within ten days",
+          "document": "d1"
+        },
+        "status": "open"
+      },
+      {
+        "id": "apply:quote_miss:d1e06df823",
+        "stage": "apply",
+        "kind": "quote_miss",
+        "detail": "Quoted text was not found verbatim in source \"supply-terms.docx\".",
+        "ref": {
+          "source_id": "supply-terms.docx",
+          "quote": "within ten days",
+          "pid": "p2299aafe546a",
+          "document": "d1"
+        },
+        "status": "open"
+      }
+    ],
+    "questions": [],
+    "gate": {
+      "status": "blocked",
+      "delivery": null,
+      "blocking": [
+        {
+          "id": "apply:quote_miss:d1e06df823",
+          "stage": "apply",
+          "kind": "quote_miss",
+          "detail": "Quoted text was not found verbatim in source \"supply-terms.docx\".",
+          "ref": {
+            "source_id": "supply-terms.docx",
+            "quote": "within ten days",
+            "pid": "p2299aafe546a",
+            "document": "d1"
+          },
+          "status": "open",
+          "resolution": "named in the notes, but its paragraph has no visible open-item marker"
+        }
+      ],
+      "disclosed": [],
+      "items": [
+        {
+          "id": "draft:quote_miss:2567388968",
+          "stage": "draft",
+          "kind": "quote_miss",
+          "detail": "Quoted text was not found verbatim in source \"supply-terms.docx\".",
+          "ref": {
+            "source_id": "supply-terms.docx",
+            "quote": "within ten days",
+            "document": "d1"
+          },
+          "status": "resolved",
+          "resolution": "superseded by the check of the final body"
+        },
+        {
+          "id": "apply:quote_miss:d1e06df823",
+          "stage": "apply",
+          "kind": "quote_miss",
+          "detail": "Quoted text was not found verbatim in source \"supply-terms.docx\".",
+          "ref": {
+            "source_id": "supply-terms.docx",
+            "quote": "within ten days",
+            "pid": "p2299aafe546a",
+            "document": "d1"
+          },
+          "status": "open",
+          "resolution": "named in the notes, but its paragraph has no visible open-item marker"
+        }
+      ],
+      "checked_at": "2026-10-11T09:05:29.108Z"
+    },
+    "documents": {
+      "schema": "dochaus.lean.documents/2",
+      "status": "blocked",
+      "documents": [
+        {
+          "kind": "body",
+          "document": "d1",
+          "title": "Supply note",
+          "path": ".dochaus/lean/d1/body-applied.docx",
+          "sha256": "b6786ee984110a86ceddaa8d185654f2e9bca1ea99d4087c1c077eecac93f971",
+          "deliverable": null
+        },
+        {
+          "kind": "redline",
+          "document": "d1",
+          "title": "Supply note",
+          "path": ".dochaus/lean/d1/redline.docx",
+          "sha256": "ca0cabe57569cec802a9fb6cf1e08d4d77262659ebd17157bb6761d3f934a48a",
+          "deliverable": null
+        },
+        {
+          "kind": "drafting_notes",
+          "document": null,
+          "title": null,
+          "path": ".dochaus/lean/drafting-notes.docx",
+          "sha256": "277c212d4f15c74551cf533bc3622dda20b88c47415cf2aabce2afeba5027645",
+          "deliverable": null
+        },
+        {
+          "kind": "drafting_notes_markdown",
+          "document": null,
+          "title": null,
+          "path": ".dochaus/lean/drafting-notes.md",
+          "sha256": "78aec9b4eec3a683cfca74654b0f6368d79796f791a40a4aa0d1b3fc369751c5",
+          "deliverable": null
+        }
+      ]
+    },
+    "plan": {
+      "documents": [
+        {
+          "id": "d1",
+          "title": "Supply note",
+          "purpose": ""
+        }
+      ]
+    }
+  }
+}

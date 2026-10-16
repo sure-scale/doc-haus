@@ -1,0 +1,97 @@
+/* The live part of a drafting run in the chat: the pill held at the foot of
+   the log that names what the run is doing now. */
+
+/* The live pill: the last thing in the narration, held at the foot of the
+   chat log while the lawyer reads further up. */
+.narration-thinking {
+  position: sticky;
+  bottom: 10px;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  max-width: 100%;
+  margin: 10px 0 4px;
+  padding: 6px 14px 6px 12px;
+  border-radius: var(--radius-pill);
+  background: var(--accent-tint);
+  border: 1px solid var(--accent-border);
+  box-shadow: var(--shadow-xs);
+  font-size: 13px;
+}
+
+.narration-pulse {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: narration-pulse 1.6s ease-in-out infinite;
+}
+
+.narration-thinking-label {
+  display: flex;
+  min-width: 0;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.narration-thinking-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.narration-dots > span {
+  animation: narration-dot 1.4s ease-in-out infinite both;
+}
+
+.narration-dots > span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.narration-dots > span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+.narration-meta {
+  flex: none;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+@keyframes narration-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+    box-shadow: 0 0 0 0 var(--accent-soft);
+  }
+  50% {
+    opacity: 1;
+    box-shadow: 0 0 0 4px var(--accent-soft);
+  }
+}
+
+@keyframes narration-dot {
+  0%,
+  80%,
+  100% {
+    opacity: 0.25;
+  }
+  40% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .narration-pulse,
+  .narration-dots > span {
+    animation: none;
+  }
+
+  .narration-dots > span {
+    opacity: 1;
+  }
+}

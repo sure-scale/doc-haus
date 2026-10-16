@@ -1,9 +1,12 @@
 # Liability
 
-US commercial-market reference points; verify against the matter's
-jurisdiction pack.
+**Topic:** Limitation of liability — caps, carve-outs, super-caps.
+**Contract type:** All commercial agreements.
+**Jurisdiction:** US commercial market; verify against the matter's
+jurisdiction pack. Positions are firm-configurable defaults overridable via
+`.dochaus/profile.md`.
 
-## Balanced position
+## Preferred
 
 Total liability capped at the fees paid or payable in the twelve months
 preceding the claim, applied mutually, with a short list of carve-outs that
@@ -21,36 +24,37 @@ giving rise to the claim. "Excluded Claims" means a party's breach of Section
 and its gross negligence, fraud, or willful misconduct.
 ```
 
-## Common one-sided variants
+**Off-market variants to watch.** Provider-favorable: cap at one to three
+months' fees or a low fixed dollar amount unrelated to exposure; customer
+payment obligations carved out of the cap while every provider obligation sits
+inside it; no super-cap for data or confidentiality breaches in a deal whose
+whole point is handling sensitive data. Customer-favorable: provider liability
+uncapped while the customer's is capped; carve-outs that swallow the cap ("any
+breach," all indemnities, all confidentiality breaches uncapped); cap measured
+over total committed value rather than a trailing period.
 
-**Tilted toward the provider:**
-- Cap set at one to three months' fees, or a low fixed dollar amount
-  unrelated to exposure.
-- Customer's payment obligations carved out of the cap while every provider
-  obligation sits inside it.
-- No super-cap for data or confidentiality breaches in a deal whose whole
-  point is handling sensitive data.
+## Fallbacks (ordered)
 
-**Tilted toward the customer:**
-- Provider liability uncapped while the customer's is capped.
-- Carve-outs that swallow the cap: "any breach of this Agreement," all
-  indemnification obligations, or all confidentiality breaches uncapped.
-- Cap measured over the life of the contract's total committed value rather
-  than a trailing period.
+1. **Offer when** the counterparty resists the standard carve-out set: mutual
+   cap with carve-outs narrowed to gross negligence/willful misconduct and IP
+   indemnity; confidentiality and data moved under a super-cap of 2-3x the
+   general cap.
+2. **Offer when** the counterparty rejects any uncapped exposure: mutual cap at
+   total fees paid under the agreement, all carve-outs under a defined
+   super-cap, none uncapped except fraud and willful misconduct.
+3. **Offer when** the risk is genuinely asymmetric (and only then): asymmetric
+   caps, documented in the rationale — never silently.
 
-## Fallback ladder
+## Walk-away floor
 
-1. Mutual 12-month-fees cap with the standard carve-out set (preferred).
-2. Mutual cap with carve-outs narrowed to gross negligence/willful misconduct
-   and IP indemnity; confidentiality and data moved under a super-cap of 2-3x
-   the general cap.
-3. Mutual cap at total fees paid under the agreement, all carve-outs under a
-   defined super-cap, none uncapped except fraud and willful misconduct.
-4. Asymmetric caps only where the risk is genuinely asymmetric, documented in
-   the rationale — never silently.
+An uncapped general liability position for one side only, or a cap whose
+carve-outs swallow it entirely so the negotiated cap is illusory.
 
-Below rung 4 — an uncapped general liability position for one side only —
-escalate rather than concede.
+## Escalation trigger
+
+At or below the floor, do not concede. Route to the **supervising lawyer** for
+the matter (or the contact named in the firm's `.dochaus/profile.md` Escalation
+Rules) for a written exposure decision before any sign-off.
 
 **Rationale:** The cap is the deal's core risk-allocation term; carve-outs are
 where caps die. Most negotiations resolve at the carve-out list and the

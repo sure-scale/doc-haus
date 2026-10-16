@@ -3,6 +3,7 @@ import react from "@vitejs/plugin-react"
 import path from "node:path"
 import fs from "node:fs"
 import { fileURLToPath } from "node:url"
+import { backendProxy } from "./backend-proxy"
 
 // Docxodus ships its ~16MB WASM runtime under the package's dist/wasm. The React
 // hooks fetch it from a base path, so we host that directory at /wasm/ — streamed
@@ -32,22 +33,13 @@ function docxodusWasm(): Plugin {
   }
 }
 
-// The OpenCode SDK client is pure, self-contained TypeScript (no runtime npm
-// deps on the client path), so we alias straight to its source instead of
-// installing it. This keeps apps/web a standalone package — no root workspace
-// edit, no `file:` dep that would drag in the SDK's server-side deps — which
-// keeps upstream merges clean.
 export default defineConfig({
   plugins: [react(), docxodusWasm()],
-  resolve: {
-    alias: {
-      "@opencode-ai/sdk": path.resolve(__dirname, "../../packages/sdk/js/src/client.ts"),
-    },
-  },
   server: {
     // Bind localhost by default; set WEB_HOST=0.0.0.0 to expose the dev server
     // (Docker, reverse proxy), matching the engine and ingest loopback default.
     host: process.env.WEB_HOST || undefined,
     port: 5173,
+    proxy: backendProxy(),
   },
 })

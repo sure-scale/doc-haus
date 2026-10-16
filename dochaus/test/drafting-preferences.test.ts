@@ -1,0 +1,138 @@
+import { afterAll, beforeEach, expect, test } from "bun:test"
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import path from "node:path"
+import { LegalPlugin } from "../plugin/legal/policy"
+import { recordSessionAgent } from "../plugin/legal/session"
+import { DEFAULT_DRAFTING, normalizePreferences, renderInstructions } from "../lib/drafting-preferences"
+
+const previous = process.env.WORKSPACE_ROOT
+const workspace = mkdtempSync(path.join(tmpdir(), "drafting-preferences-"))
+const directory = path.join(workspace, "matter")
+const preferences = path.join(workspace, ".preferences")
+mkdirSync(directory)
+process.env.WORKSPACE_ROOT = workspace
+
+beforeEach(() => rmSync(preferences, { recursive: true, force: true }))
+afterAll(() => {
+  if (previous === undefined) delete process.env.WORKSPACE_ROOT
+  else process.env.WORKSPACE_ROOT = previous
+  rmSync(workspace, { recursive: true, force: true })
+})
+
+async function systemFor() {
+  const hooks = await LegalPlugin({ directory } as Parameters<typeof LegalPlugin>[0])
+  const sessionID = "drafting-preferences"
+  recordSessionAgent(sessionID, "lean-body")
+  const output = { system: [] as string[] }
+  await hooks["experimental.chat.system.transform"]!({ sessionID } as never, output)
+  return output.system.join("\n")
+}
+
+function save(input: Record<string, unknown>) {
+  mkdirSync(preferences, { recursive: true })
+  writeFileSync(path.join(preferences, "preferences.json"), JSON.stringify(input))
+}
+
+test("fresh workspaces apply displayed defaults without creating preference files", async () => {
+  const system = await systemFor()
+  expect(system).toContain("<drafting_preferences>")
+  expect(system).toContain("Use formal legal drafting style throughout.")
+  expect(system).toContain("Keep explanations concise")
+  expect(system).not.toContain("<plan_first_drafting>")
+  expect(existsSync(preferences)).toBe(false)
+})
+
+test("research defaults to the entire web and preserves explicit saved scope", () => {
+  expect(DEFAULT_DRAFTING.webResearch).toBe("open")
+  expect(normalizePreferences({}).webResearch).toBe("open")
+  expect(normalizePreferences({ firm: "Existing firm" }).webResearch).toBe("open")
+  for (const webResearch of ["official", "open"] as const) {
+    expect(normalizePreferences({ webResearch }).webResearch).toBe(webResearch)
+  }
+  for (const webResearch of [null, false, 42, [], {}, "unsupported", undefined]) {
+    expect(normalizePreferences({ webResearch }).webResearch).toBe("official")
+  }
+})
+
+test("saved JSON is effective without generated markdown and is reread on the next turn", async () => {
+  save({ detail: "detailed", houseStyle: "Use active voice.", process: "standard" })
+  const first = await systemFor()
+  expect(first).toContain("Explain your reasoning in detail")
+  expect(first).toContain("Use active voice.")
+  expect(first).not.toContain("<plan_first_drafting>")
+  save({ detail: "concise", houseStyle: "Use short headings.", process: "plan-first" })
+  const next = await systemFor()
+  expect(next).toContain("Keep explanations concise")
+  expect(next).toContain("Use short headings.")
+  expect(next).not.toContain("Use active voice.")
+  expect(next).not.toContain("<plan_first_drafting>")
+})
+
+test("stale markdown and operational preferences cannot enter model instructions", async () => {
+  save({
+    detail: "detailed",
+    searchApiKey: "synthetic-search-secret",
+    caseLawApiKey: "synthetic-case-law-secret",
+    telemetry: { retention_days: 13, rate_overrides: { "synthetic-model": { input_per_mtok: 7 } } },
+  })
+  writeFileSync(path.join(preferences, "drafting.md"), "Synthetic stale instructions.")
+  const system = await systemFor()
+  expect(system).toContain("Explain your reasoning in detail")
+  expect(system).toContain("Use formal legal drafting style throughout.")
+  expect(system).not.toContain("Synthetic stale instructions.")
+  expect(system).not.toContain("synthetic-search-secret")
+  expect(system).not.toContain("synthetic-case-law-secret")
+  expect(system).not.toContain("synthetic-model")
+  expect(system).not.toContain("retention_days")
+})
+
+
+test("retired process values do not alter standing drafting instructions", async () => {
+  save({ process: "plan-first" })
+  const legacyPlan = await systemFor()
+  save({ process: "standard" })
+  expect(await systemFor()).toBe(legacyPlan)
+  expect(legacyPlan).not.toContain("<plan_first_drafting>")
+})
+
+test("invalid drafting field types and choices fall back to the same valid defaults", () => {
+  const baseline = renderInstructions(normalizePreferences(DEFAULT_DRAFTING))
+  expect(baseline).toContain("Use formal legal drafting style throughout.")
+  for (const invalid of [null, false, 42, [], {}, "unsupported", "toString", "__proto__"]) {
+    const preferences = normalizePreferences({
+      attorney: typeof invalid === "string" ? "" : invalid,
+      firm: typeof invalid === "string" ? "" : invalid,
+      houseStyle: typeof invalid === "string" ? "" : invalid,
+      posture: invalid, formality: invalid, detail: invalid, dateFormat: invalid, numberStyle: invalid,
+    })
+    expect(renderInstructions(preferences)).toBe(baseline)
+    expect(renderInstructions(preferences, "explanation")).not.toContain("undefined")
+  }
+  for (const invalid of [null, false, 42, [], "unsupported"]) {
+    expect(normalizePreferences(invalid)).toEqual(DEFAULT_DRAFTING)
+  }
+})
+
+test("normalization retains every supported drafting choice and exact valid text", () => {
+  const choices = {
+    posture: ["client-favorable", "balanced", "conservative"],
+    formality: ["formal", "plain"], detail: ["concise", "detailed"],
+    dateFormat: ["month-day-year", "day-month-year", "iso"],
+    numberStyle: ["words-and-numerals", "numerals"],
+  }
+  for (const [field, values] of Object.entries(choices)) for (const value of values) {
+    expect(normalizePreferences({ [field]: value })[field as keyof typeof choices]).toBe(value)
+  }
+  const text = { attorney: "A. Counsel", firm: "Counsel Practice", houseStyle: "  Keep active voice.\nPreserve meaningful qualifications.  " }
+  expect(normalizePreferences(text)).toMatchObject(text)
+})
+
+test("an existing invalid saved drafting value cannot block the model context hook", async () => {
+  save({ houseStyle: null, formality: "unsupported", detail: false, searchApiKey: "synthetic-secret" })
+  const system = await systemFor()
+  expect(system).toContain("Use formal legal drafting style throughout.")
+  expect(system).toContain("Keep explanations concise")
+  expect(system).not.toContain("undefined")
+  expect(system).not.toContain("synthetic-secret")
+})

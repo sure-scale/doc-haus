@@ -1,8 +1,9 @@
-import { tool } from "@opencode-ai/plugin"
+import { tool } from "./legacy-definition"
 import { fileURLToPath } from "node:url"
 import path from "node:path"
 import { docxodus } from "../lib/docxodus"
-import { lintTemplateBody, splitHeadingBlocks } from "../lib/markdown"
+import { withParagraphPointers } from "../lib/drafting-amendment"
+import { lintTemplateBody, splitBlocks } from "../lib/markdown"
 
 // doc.haus create-template tool. Adds a new reusable drafting template to the
 // firm's global library. A template carries NO real client data: every variable
@@ -17,7 +18,7 @@ const ingestUrl = process.env.INGEST_URL ?? "http://127.0.0.1:4500"
 
 export default tool({
   description:
-    'Create a new reusable drafting template in the firm template library. Pass "name" (the template file name, e.g. "consulting-agreement.docx"), "content" (the full template body as markdown — # title, ## numbered clause headings, one blank line between blocks), and "description" (a one-line summary of what the template is for). A good description helps future template selection — list-templates surfaces it so the right base is picked by purpose, not filename. A template contains NO real client data: replace every party name, individual, date, monetary amount, address, email/phone, and reference number with a UNIQUE descriptive placeholder like "[insert consultant name]" or "[insert effective date]" — never a bare "[___]", and never an identical placeholder twice. A template is drafted from many times, so it must be right BEFORE it enters the library: have the legal-reviewer subagent (task tool) review the proposed body once before calling this tool — structure must match the stated document type and title (a mutual NDA defines both parties\' obligations, not one side\'s), the standard clauses for the type must be present, and jurisdiction-specific language must not be baked in unless the template is for that jurisdiction. Apply its Must-fix findings to the body first; one review round, do not loop. Returns the placeholders the new template exposes.',
+    'Create a new reusable drafting template in the firm template library. Pass "name" (the template file name, e.g. "consulting-agreement.docx"), "content" (the full template body as markdown — # title, ## numbered clause headings, one blank line between blocks), and "description" (a one-line summary of what the template is for). A good description helps future template selection — list-templates surfaces it so the right base is picked by purpose, not filename. A template contains NO real client data: replace every party name, individual, date, monetary amount, address, email/phone, and reference number with a UNIQUE descriptive placeholder like "[insert consultant name]" or "[insert effective date]" — never a bare "[___]", and never an identical placeholder twice. A template is drafted from many times, so it must be right BEFORE it enters the library: have the document-reviewer subagent (task tool) review the proposed body once before calling this tool — structure must match the stated document type and title (a mutual NDA defines both parties\' obligations, not one side\'s), the standard clauses for the type must be present, and jurisdiction-specific language must not be baked in unless the template is for that jurisdiction. Apply its Must-fix findings to the body first; one review round, do not loop. Returns the placeholders the new template exposes.',
   args: {
     name: tool.schema
       .string()
@@ -48,7 +49,7 @@ export default tool({
     // The seed's single empty paragraph is the insertion anchor; the whole markdown
     // body goes in as one multi-block insert, then the seed paragraph is dropped.
     const anchor = Object.keys(session.project().anchorIndex).find((id) => id.startsWith("p:"))!
-    const inserted = session.insertParagraph(anchor, "after", splitHeadingBlocks(args.content))
+    const inserted = session.insertParagraph(anchor, "after", splitBlocks(args.content))
     if (!inserted.success) {
       session.close()
       return `Template build failed: ${inserted.error?.message ?? JSON.stringify(inserted.error)}`
@@ -56,11 +57,11 @@ export default tool({
     session.deleteBlock(anchor)
 
     const placeholders = session.findPlaceholders().map((p) => p.match.text)
-    const bytes = session.save()
+    const bytes = withParagraphPointers(session.save())
     session.close()
 
     const form = new FormData()
-    form.append("file", new File([bytes], name))
+    form.append("file", new File([new Uint8Array(bytes)], name))
     form.append("description", args.description)
     const res = await fetch(`${ingestUrl}/templates`, { method: "POST", body: form })
     if (!res.ok) return `Template composed but upload failed (${res.status}): ${await res.text()}`

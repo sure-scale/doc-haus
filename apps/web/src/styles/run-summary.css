@@ -1,0 +1,76 @@
+/* ---------- Result card of a completed drafting run ----------
+   "Ready for review", the checks behind it as chips, and the drafted files. */
+
+.narration-result {
+  margin: 12px 0 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-md);
+  background: var(--panel);
+  box-shadow: var(--shadow-xs);
+  animation: narration-in var(--duration-slow) var(--ease-out) both;
+}
+
+.narration-result-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.narration-result-title svg {
+  flex: none;
+  color: var(--accent);
+}
+
+.result-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 10px;
+  padding: 0;
+  list-style: none;
+}
+
+.result-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 9px;
+  border-radius: var(--radius-pill);
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.result-chip svg {
+  flex: none;
+}
+
+.result-chip.is-pass {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.result-chip.is-warn {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.result-chip.is-neutral {
+  background: var(--bg-sunken);
+  color: var(--text-secondary);
+}
+
+.narration-result .drafted-list {
+  margin-bottom: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .narration-result {
+    animation: none;
+  }
+}

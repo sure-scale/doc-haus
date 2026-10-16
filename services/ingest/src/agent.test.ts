@@ -1,3 +1,4 @@
+import { readEngineConfig as awaitConfig } from "./engine-config"
 import { test, expect, afterAll } from "bun:test"
 import { mkdtempSync, rmSync, existsSync, mkdirSync, writeFileSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -8,6 +9,7 @@ import path from "node:path"
 const dochaus = mkdtempSync(path.join(tmpdir(), "dochaus-agent-config-"))
 const workspace = mkdtempSync(path.join(tmpdir(), "dochaus-agent-workspace-"))
 process.env.DOCHAUS_DIR = dochaus
+process.env.DOCHAUS_RUNTIME_DIR = path.join(dochaus, "runtime")
 process.env.WORKSPACE_ROOT = workspace
 
 // Seed a repo-shipped specialist (mode: subagent), a primary agent that must stay
@@ -53,12 +55,12 @@ test("setAgentEnabled: disable flag round-trips through opencode.json, other age
   const off = ag.setAgentEnabled("legal-reviewer", false)
   expect(off.enabled).toBe(false)
   expect(ag.listAgents().find((a) => a.name === "legal-reviewer")!.enabled).toBe(false)
-  const config = JSON.parse(readFileSync(path.join(dochaus, "opencode.json"), "utf8"))
+  const config = (awaitConfig())
   expect(config.agent).toEqual({ explore: { disable: true }, "legal-reviewer": { disable: true } })
 
   const on = ag.setAgentEnabled("legal-reviewer", true)
   expect(on.enabled).toBe(true)
-  const restored = JSON.parse(readFileSync(path.join(dochaus, "opencode.json"), "utf8"))
+  const restored = (awaitConfig())
   expect(restored.agent).toEqual({ explore: { disable: true } })
 })
 
@@ -87,7 +89,8 @@ test("renderCustomAgentMarkdown: frontmatter, task body, citation discipline", (
   expect(md).toContain("cite: true")
   expect(md).toContain("<task>\nTrace every IP assignment.\n</task>")
   expect(md).toContain("Anchor every quoted excerpt with the `cite` tool")
-  expect(md).toContain("No edge case handling, ever.")
+  // The cross-pasted engineering mantra was deliberately removed from render output.
+  expect(md).not.toContain("No edge case handling")
 })
 
 test("createAgent writes .md and registry; appears in listAgents once", () => {

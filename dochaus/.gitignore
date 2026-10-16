@@ -1,10 +1,8 @@
 node_modules
 package-lock.json
 
-# Retrieval benchmark artifacts (eval/retrieval-eval.ts): the ingested corpus is
-# rebuildable from harvey-labs, results are per-run measurements.
-eval/.retrieval-corpus/
-eval/results/
+# Generated Python bytecode.
+__pycache__/
 
 # Runtime-mutable firm registries (written by services/ingest) — present on disk,
 # never tracked. Readers tolerate the files being absent.
@@ -17,11 +15,32 @@ workflows.json
 agent/*.md
 !agent/agent-builder.md
 !agent/assumption-challenger.md
+!agent/chronology.md
 !agent/compare.md
-!agent/drafter.md
+!agent/document-reviewer.md
 !agent/extract.md
+!agent/lean-change-plan.md
+!agent/lean-change-prepare.md
+!agent/lean-change-review.md
+!agent/lean-changes.md
+!agent/lean-checklist-extract.md
+!agent/lean-checklist-check.md
+!agent/lean-discrepancy.md
+!agent/lean-draft.md
+!agent/lean-drafting-notes.md
+!agent/lean-intake.md
+!agent/lean-merge.md
+!agent/lean-package-review.md
+!agent/lean-research.md
+!agent/lean-research-review.md
+!agent/lean-review-playbook.md
+!agent/lean-review.md
+!agent/lean-review-independent.md
+!agent/lean-review-wording.md
+!agent/lean-review-client-disadvantage.md
+!agent/lean-spine.md
+!agent/narrator.md
 !agent/legal-review.md
-!agent/legal-reviewer.md
 !agent/obligations.md
 !agent/playbook-importer.md
 !agent/playbook-reviewer.md

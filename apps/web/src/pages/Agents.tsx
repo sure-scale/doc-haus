@@ -1,10 +1,13 @@
 import { useEffect, useRef, useState } from "react"
 import { useSearchParams } from "react-router-dom"
-import { deleteAgent, listAgents, setAgentEnabled, type AgentRecord } from "../api/ingest"
+import { deleteAgent, listAgents, setAgentEnabled, type AgentRecord } from "../api/ingest/library"
 import { useToast } from "../components/Toast"
+import { humanizeError } from "../api/ingest/errors"
 import ChatPanel from "../components/ChatPanel"
-import { DocMarkdown } from "../components/Markdown"
+import LibraryLayout from "../components/LibraryLayout"
+import { DocMarkdown } from "../components/markdown/Markdown"
 import { AGENT_BUILDER } from "../agents"
+import ModalHeader from "../components/ModalHeader"
 
 // The firm's specialist subagents: the repo-shipped reviewers (read-only) plus
 // the custom ones composed conversationally by the agent-builder. A custom
@@ -33,7 +36,9 @@ export default function Agents() {
   }
 
   useEffect(() => {
-    refresh().finally(() => setLoading(false))
+    refresh()
+      .catch((e) => toast("error", humanizeError(e)))
+      .finally(() => setLoading(false))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -71,17 +76,41 @@ export default function Agents() {
 
   return (
     <>
-      <header className="page-head">
-        <div>
-          <h1>Agents</h1>
-          <p className="page-sub">
-            Specialist reviewers that analyze a matter's documents for one concern. Compose them into pipelines from
-            the Workflows page.
-          </p>
-        </div>
-      </header>
-
-      <div className="card">
+      <LibraryLayout
+        title="Agents"
+        description="Specialist reviewers you can use in workflows."
+        libraryTitle="Available agents"
+        count={loading ? undefined : agents.length}
+        active={Boolean(session)}
+        assistant={
+          dir && (
+            <ChatPanel
+              key={session ?? "new"}
+              directory={dir}
+              sessionID={session}
+              created={createdRef.current === session}
+              agent={AGENT_BUILDER.name}
+              available={new Set([AGENT_BUILDER.name])}
+              pinned={AGENT_BUILDER}
+              title="Create or edit a agent"
+              emptyHint="Describe a specialist reviewer, or ask about your agents."
+              starters={[
+                "What agents do we have?",
+                "Create a specialist that reviews IP ownership and assignment clauses.",
+                "Create a specialist that checks data privacy and GDPR exposure.",
+              ]}
+              composerPlaceholder="e.g. Create a specialist for change-of-control provisions"
+              onAgentChange={() => {}}
+              onSessionCreated={(sid) => {
+                createdRef.current = sid
+                setParams({ session: sid }, { replace: true })
+              }}
+              onViewDocument={() => {}}
+              onDocumentsChanged={refresh}
+            />
+          )
+        }
+      >
         {loading ? (
           <div className="skeleton-list">
             <div className="skeleton-row" />
@@ -89,17 +118,7 @@ export default function Agents() {
             <div className="skeleton-row" />
           </div>
         ) : visible.length === 0 ? (
-          <div className="empty-state">
-            <svg className="empty-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-              <rect x="5" y="8" width="14" height="11" rx="2" />
-              <path d="M12 8V5" />
-              <circle cx="12" cy="4" r="1" />
-              <path d="M9 13h.01M15 13h.01" />
-              <path d="M5 12H3M21 12h-2" />
-            </svg>
-            <h3>No agents yet</h3>
-            <p>Describe a specialist reviewer to the agent builder to add one.</p>
-          </div>
+          <p className="library-empty">Describe a specialist reviewer to add your first agent.</p>
         ) : (
           <ul className="matter-list">
             {visible.map((a) => (
@@ -169,45 +188,15 @@ export default function Agents() {
             ))}
           </ul>
         )}
-      </div>
-
-      {dir && (
-        <ChatPanel
-          key={session ?? "new"}
-          directory={dir}
-          sessionID={session}
-          created={createdRef.current === session}
-          agent={AGENT_BUILDER.name}
-          available={new Set([AGENT_BUILDER.name])}
-          pinned={AGENT_BUILDER}
-          title="Ask the agent builder"
-          emptyHint="Describe a specialist reviewer to add to the firm's agents, or ask what already exists. New specialists become workflow steps immediately."
-          starters={[
-            "What agents do we have?",
-            "Create a specialist that reviews IP ownership and assignment clauses.",
-            "Create a specialist that checks data privacy and GDPR exposure.",
-          ]}
-          composerPlaceholder="e.g. Create a specialist for change-of-control provisions"
-          onAgentChange={() => {}}
-          onSessionCreated={(sid) => {
-            createdRef.current = sid
-            setParams({ session: sid }, { replace: true })
-          }}
-          onViewDocument={() => {}}
-          onDocumentsChanged={refresh}
-        />
-      )}
+      </LibraryLayout>
 
       {viewing && (
         <div className="viewer-overlay" onClick={() => setViewing(undefined)}>
           <div className="picker-panel doc-panel" onClick={(e) => e.stopPropagation()}>
-            <div className="viewer-bar">
-              <span className="viewer-title">
-                {viewing.label}
-                {viewing.builtin ? " (built-in)" : ""}
-              </span>
-              <button onClick={() => setViewing(undefined)}>Close</button>
-            </div>
+            <ModalHeader
+              title={`${viewing.label}${viewing.builtin ? " (built-in)" : ""}`}
+              onClose={() => setViewing(undefined)}
+            />
             <div className="picker-body">
               {viewing.description && <p className="muted">{viewing.description}</p>}
               <DocMarkdown>{viewing.instructions}</DocMarkdown>

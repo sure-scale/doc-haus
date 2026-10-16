@@ -1,0 +1,436 @@
+import { runFocusedChangeReview } from "./focused-change-review"
+import { readFirmDraftingPreferences } from "../../lib/drafting-preferences"
+import { runChangeReconciliation } from "./change-reconciliation"
+import { focusedChecklistRepairs, runFocusedRepairAdjudication } from "./checklist-repair-adjudication"
+import { checklistFindingRecovery } from "./checklist-contract"
+import { buildChecklistRefinementContext } from "./checklist-refinement-context"
+import { runChecklistRefinementFlow, readEffectiveChecklistItems, runChecklistExtractionFlow, runChecklistCheckFlow } from "./checklist-flow"
+import { selectedDeliveryPlan } from "./delivery-selection"
+import { changePlanPrompt, changeReviewPrompt, readChangeReview, runChangePreparation } from "./change-pipeline"
+import { packageReviewPrompt, readPackageReview } from "./package-review"
+import { LEAN_MAX_SUBSTANTIVE_REPAIRS, readRepairRound, startRepairRound } from "./repairs"
+import { acceptEvidenceReply, evidencePrompt } from "./evidence"
+import { researchPermissions, acceptResearchReply, researchPrompt } from "./research"
+import { runApply } from "./apply-stage"
+import { forgetUnplannedDocuments, recordLeanDocuments } from "./deliverables"
+import { runDraftStage } from "./draft-sections"
+import { appendLeanEvent } from "./events"
+import { finalGate, notesCoverageReport } from "./gate"
+import { readLeanPlan, reviewStages, leanSteps, stepDocument, stepStage, type StepID } from "./plan"
+import { retryPrompt, stagePrompt } from "./prompts"
+import { inDocument, openItem } from "./quotes"
+import { checklistRefinementSelections, drainLeanRequests, pendingLeanRequests } from "./requests"
+import {
+  LEAN_CHILD_PERMISSIONS,
+  LEAN_MAX_RETRIES,
+  LEAN_PROMPT_VERSION,
+  LEAN_STAGE_AGENTS,
+  acceptStageReply,
+  stageInputs,
+  stageOutputValid,
+  stepOutputs,
+  stepSessionTitle,
+  type LeanDeps,
+  type ModelStageID,
+} from "./stages"
+import {
+  isReviewStage,
+  hashStageInputs,
+  keepAskedQuestions,
+  matterRelative,
+  readLeanState,
+  readLeanJson,
+  readOpenItems,
+  readQuestions,
+  replaceStageOpenItems,
+  replaceStageQuestions,
+  snapshotStage,
+  syncLeanSteps,
+  updateLeanStage,
+  writeOpenItems,
+  writeQuestions,
+  writeLeanState,
+  writeLeanText,
+  type LeanStageState,
+  type LeanState,
+  type OpenItem,
+  type Question,
+} from "./state"
+
+// Lean drafting coordinator. It walks the run's steps in order (each planned
+// document's draft, review, changes and apply, then finalize and the gate),
+// skips a step whose inputs are unchanged since it last completed, and
+// otherwise runs it: one native child session per model step, a deterministic
+// check of its output, and up to three retries that hand the checker's issues
+// back to the same session. The first document's draft saves the plan, which
+// fixes the remaining steps. The coordinator knows where each draft docx is,
+// where the applier is and which changes to apply; it never reads or judges
+// their legal content. Open items are recorded, tagged with their document, as
+// they arise. Unanswered questions pause the walk before any further step.
+//
+// The coordinator is the only writer of the run's files. Lawyer requests
+// (Continue, answers) wait in the request queue: answers are drained at every
+// stage boundary, and a Continue once the pass has settled. Before it returns,
+// the coordinator checks the queue again and runs another pass for anything
+// that arrived, so no request is left behind.
+
+type StageRun =
+  | { status: "restart" }
+  | { status: "done" | "blocked"; outputs: string[]; openItems: OpenItem[]; questions?: Question[]; reason?: string }
+  | { status: "failed"; reason: string }
+
+type PreparedReview = { inputSha: string; sessionID: string; reply: Promise<string> }
+
+type Progress = (patch: Partial<LeanStageState>) => void
+
+// Substantive repairs share a run-wide allowance; checker retries remain separate.
+export { LEAN_MAX_SUBSTANTIVE_REPAIRS } from "./repairs"
+
+export async function runLean(directory: string, deps: LeanDeps): Promise<LeanState> {
+  const initial = readLeanState(directory)
+  if (!initial) throw new Error("This matter has no lean drafting run.")
+  // Completed legacy runs keep their original accepted package until the
+  // lawyer supplies an update or answer; installing new stages is not a repair.
+  if (initial.status === "completed" && !initial.stages.research) {
+    const changes = drainLeanRequests(directory, initial)
+    if (!changes.answered && !changes.updated) return initial
+  }
+  // The state as last settled; a Continue is applied against it.
+  const pass = { state: initial, settled: initial as LeanState | undefined, reinspectChecklist: false }
+  for (;;) {
+    pass.reinspectChecklist ||= pass.settled?.status === "blocked" && pass.settled.stages["checklist-check"]?.status === "blocked" &&
+      pendingLeanRequests(directory).some(name => (readLeanJson(directory, `requests/${name}`) as { kind?: string } | undefined)?.kind === "continue")
+    drainLeanRequests(directory, pass.settled)
+    const result = await runPass(directory, writeLeanState(directory, { ...pass.state, status: "running", stop_reason: null }), deps, pass.reinspectChecklist)
+      .catch((error: unknown) => ({ state: writeLeanState(directory, { ...(readLeanState(directory) ?? pass.state), status: "failed", stop_reason: `Drafting stopped by a runtime error: ${message(directory, error)}` }), restart: false }))
+    pass.state = readLeanState(directory) ?? result.state
+    pass.settled = result.restart ? undefined : pass.state
+    if (!result.restart) pass.reinspectChecklist = false
+    if (!result.restart && !pendingLeanRequests(directory).length) return pass.state
+  }
+}
+
+/** One walk over the steps. An answer drained at a step boundary that changes
+ * the inputs of a step this pass already settled restarts the walk, so the
+ * earliest step that consumes the answer runs next. The step list is read
+ * again at every boundary because the first draft writes the plan. */
+async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDeps, reinspectChecklist = false): Promise<{ state: LeanState; restart?: boolean }> {
+  const preferences = readFirmDraftingPreferences()
+  const preferenceChange = { observed: false }
+  const preferencesChanged = () => preferenceChange.observed ||= readFirmDraftingPreferences() !== preferences
+  // Every model exchange, including focused helpers, shares this pass's guard.
+  // A later return to the original value must not clear an observed change.
+  const deps: LeanDeps = { ...sourceDeps, sessions: { ...sourceDeps.sessions, async prompt(input) {
+    if (preferencesChanged()) throw new ChecklistRefreshRestart()
+    try {
+      return await sourceDeps.sessions.prompt(input)
+    } finally {
+      if (preferencesChanged()) throw new ChecklistRefreshRestart()
+    }
+  } } }
+  let state = followPlan(directory, initial)
+  const settled: StepID[] = []
+  const prepared = new Map<StepID, PreparedReview>()
+  try {
+  for (let index = 0; index < leanSteps(directory).length; index += 1) {
+    // Settings saves are outside the matter queue. At safe stage boundaries,
+    // restart the content-keyed walk before accepting work from mixed settings.
+    if (preferencesChanged()) return { state, restart: true }
+    const step = leanSteps(directory)[index]!
+    const stage = stepStage(step)
+    const document = stepDocument(step) ?? undefined
+    const changes = drainLeanRequests(directory)
+    const unanswered = readQuestions(directory).filter(question => question.status === "open")
+    if (unanswered.length)
+      return { state: writeLeanState(directory, { ...state, status: "blocked", stop_reason: `Waiting for your answers: ${unanswered.map(question => question.id).join(", ")}` }) }
+    if ((changes.answered || changes.updated) &&
+      settled.some(done => stageInputSha(directory, done) !== state.stages[done]?.input_sha))
+      return { state, restart: true }
+    // A resumed draft may be skipped, but source/target changes must still
+    // refresh extraction before any body is consumed or checking begins.
+    if (stage === "draft" && readLeanPlan(directory)) {
+      await ensureChecklistExtraction(directory, state, deps)
+      if (preferencesChanged()) return { state, restart: true }
+      const queued = drainLeanRequests(directory)
+      if (queued.answered || queued.updated) return { state, restart: true }
+    }
+    // Package review may take time; do not classify or register a package
+    // against checklist results for Word bytes that have since changed.
+    if (stage === "gate" && state.stages["checklist-check"]?.input_sha !== stageInputSha(directory, "checklist-check"))
+      return { state, restart: true }
+    // The first draft can write the plan its own key reads; its key is then
+    // taken again once the plan is saved.
+    let inputSha = stageInputSha(directory, step)
+    const recorded = state.stages[step]
+    settled.push(step)
+    if (recorded?.status === "done" && recorded.input_sha === inputSha && stageOutputValid(directory, step) && (step !== "package-review" || readPackageReview(directory)?.status === "pass") && (stage !== "change-review" || !document || readChangeReview(directory, document)?.status === "pass")) {
+      // A durable accepted review may have preceded a crash before its
+      // delivery selection was applied. Reconcile it before any registration.
+      if (step === "package-review") {
+        const repair = await reconcilePackageReview(directory, state, deps)
+        if (repair) return repair
+      }
+      appendLeanEvent(directory, { stage, document, event: "skipped" })
+      continue
+    }
+    const prefetched = prepared.get(step)
+    const currentPrefetch = prefetched?.inputSha === inputSha
+    if (!currentPrefetch) appendLeanEvent(directory, { stage, document, event: "started" })
+    state = updateLeanStage(directory, state, step, {
+      status: "running", input_sha: null, outputs: [], session_ids: [], session_id: currentPrefetch ? prefetched.sessionID : null, attempts: 0, calls: 0, feedback: [], started_at: currentPrefetch ? state.stages[step]?.started_at ?? now() : now(), finished_at: null,
+    })
+    const progress: Progress = patch => {
+      state = updateLeanStage(directory, state, step, patch)
+    }
+    const planned = async () => {
+      state = followPlan(directory, state)
+      await ensureChecklistExtraction(directory, state, deps)
+      const queued = drainLeanRequests(directory)
+      if (queued.answered || queued.updated || preferencesChanged()) throw new ChecklistRefreshRestart()
+      inputSha = stageInputSha(directory, step)
+    }
+    // Fan out the remaining reviews before accepting any reply. Only this
+    // writer saves replies in stage order; every review feeds the one changes
+    // stage. Queued updates invalidate prefetched replies by their input keys.
+    if (isReviewStage(stage) && document) {
+      for (const review of reviewStages(directory, document).slice(reviewStages(directory, document).indexOf(stage) + 1)) {
+        const independent: StepID = `${document}.${review}`
+        if (prepared.has(independent)) continue
+        const key = stageInputSha(directory, independent)
+        if (state.stages[independent]?.status === "done" && state.stages[independent]?.input_sha === key && stageOutputValid(directory, independent)) continue
+        const agent = LEAN_STAGE_AGENTS[review]
+        const creation = await deps.sessions.createSession({ directory, parentID: state.owner_session_id, agent, title: stepSessionTitle(directory, independent), model: state.model, permissions: LEAN_CHILD_PERMISSIONS })
+          .then(sessionID => ({ sessionID }), (error: unknown) => ({ error }))
+        if ("error" in creation) {
+          if (preferencesChanged()) return { state, restart: true }
+          const reason = `${independent}: stopped by a runtime error: ${message(directory, creation.error)}`
+          state = updateLeanStage(directory, state, step, { status: "pending", input_sha: null, outputs: [], finished_at: null })
+          state = updateLeanStage(directory, state, independent, { status: "failed", finished_at: now() })
+          appendLeanEvent(directory, { stage: review, document, event: "failed", reason })
+          return { state: writeLeanState(directory, { ...state, status: "failed", stop_reason: reason }) }
+        }
+        const sessionID = creation.sessionID
+        state = updateLeanStage(directory, state, independent, { status: "running", session_id: sessionID, input_sha: null, outputs: [], attempts: 0, calls: 1, feedback: [], started_at: now(), finished_at: null })
+        appendLeanEvent(directory, { stage: review, document, event: "started", session_id: sessionID })
+        const reply = deps.sessions.prompt({ directory, sessionID, agent, text: stagePrompt(directory, independent) })
+        // Consume native errors when accepting this stage, without an unhandled
+        // rejection while another independent review is running.
+        void reply.catch(() => undefined)
+        prepared.set(independent, { inputSha: key, sessionID, reply })
+      }
+    }
+    if (prefetched && prefetched.inputSha !== inputSha) await prefetched.reply.catch(() => undefined)
+    prepared.delete(step)
+    const result = await runStep(directory, state, step, deps, progress, planned, prefetched?.inputSha === inputSha ? prefetched : undefined, reinspectChecklist)
+      .catch((error: unknown): StageRun => error instanceof ChecklistRefreshRestart ? { status: "restart" } : ({ status: "failed", reason: `${step}: stopped by a runtime error: ${message(directory, error)}` }))
+    if (result.status === "restart" || preferencesChanged()) {
+      state = updateLeanStage(directory, state, step, { status: "pending", input_sha: null, outputs: [], finished_at: null })
+      return { state, restart: true }
+    }
+    appendLeanEvent(directory, result.status === "failed"
+      ? { stage, document, event: "failed", reason: result.reason }
+      : { stage, document, event: result.status, outputs: result.outputs, reason: result.reason })
+    if (result.status === "failed") {
+      state = updateLeanStage(directory, state, step, { status: "failed", finished_at: now() })
+      return { state: writeLeanState(directory, { ...state, status: "failed", stop_reason: result.reason }) }
+    }
+    replaceStageOpenItems(directory, stage, document ?? null, document ? result.openItems.map(item => inDocument(item, document)) : result.openItems)
+    if (result.questions)
+      replaceStageQuestions(directory, stage, document ?? null, result.questions.map(question => document ? { ...question, document } : question))
+    snapshotStage(directory, state.revision, step, result.outputs)
+    state = updateLeanStage(directory, state, step, { status: result.status, input_sha: step === "checklist-check" ? stageInputSha(directory, step) : inputSha, outputs: result.outputs, finished_at: now() })
+    if (stage === "change-review" && document && readChangeReview(directory, document)?.status === "changes-required") {
+      const review = readChangeReview(directory, document)!
+      if ((readRepairRound(directory)?.substantive_attempts ?? 0) >= LEAN_MAX_SUBSTANTIVE_REPAIRS)
+        return { state: writeLeanState(directory, { ...state, status: "blocked", stop_reason: `${step}: material corrections remain after ${LEAN_MAX_SUBSTANTIVE_REPAIRS} substantive repair rounds: ${review.findings.map(row => row.detail).join(" ")}` }) }
+      startRepairRound(directory, review.findings.map(row => openItem("change-review", "omission", row.detail,
+        { repair_target: row.target ?? "body", document: row.document ?? document, ...(row.pid ? { pid: row.pid } : {}) })), true)
+      return { state, restart: true }
+    }
+    if (stage === "package-review") {
+      const repair = await reconcilePackageReview(directory, state, deps)
+      if (repair) return repair
+    }
+    if (result.status === "blocked") {
+      await recordLeanDocuments(directory, deps, false)
+      if (preferencesChanged()) return { state, restart: true }
+      return { state: writeLeanState(directory, { ...state, status: "blocked", stop_reason: result.reason ?? null }) }
+    }
+  }
+  if (preferencesChanged()) return { state, restart: true }
+  const delivered = await recordLeanDocuments(directory, deps, true).then(() => undefined, (error: unknown) => message(directory, error))
+  if (preferencesChanged()) return { state, restart: true }
+  if (delivered) return { state: writeLeanState(directory, { ...state, status: "failed", stop_reason: `deliverables: ${delivered}` }) }
+  return { state: writeLeanState(directory, { ...state, status: "completed", stop_reason: null }) }
+  } catch (error) {
+    // Helpers may translate a rejected prompt into their own failure result.
+    // Preference invalidation still takes precedence over accepting that work.
+    if (preferencesChanged()) return { state, restart: true }
+    throw error
+  } finally {
+    // Read-only native reviews must settle even when the other review fails or
+    // a later update restarts the pass. Their session history remains durable;
+    // stale replies are never saved as accepted outputs.
+    await Promise.all([...prepared.values()].map(row => row.reply.catch(() => undefined)))
+    const latest = readLeanState(directory)
+    if (latest && prepared.size) {
+      // A settled but unaccepted reply has no output to resume from. Retain its
+      // native session for inspection and show the stage as pending, not live.
+      writeLeanState(directory, { ...latest, stages: { ...latest.stages,
+        ...Object.fromEntries([...prepared].flatMap(([step, row]) => latest.stages[step]?.status === "running" && latest.stages[step]?.session_id === row.sessionID
+          ? [[step, { ...latest.stages[step], status: "pending", input_sha: null, outputs: [], finished_at: null }]] : [])),
+      } })
+    }
+  }
+}
+
+/** The existing semantic review selects the requested artifact. The sole
+ * writer applies that selection atomically, then refreshes notes/review with
+ * the corrected delivery context. Content stages consume operative inputs. */
+async function reconcilePackageReview(directory: string, state: LeanState, deps: LeanDeps) {
+  const review = readPackageReview(directory)
+  if (!review) return
+  const plan = selectedDeliveryPlan(directory, review.delivery)
+  if (review.status === "pass" && !plan) return
+  const prior = readRepairRound(directory)
+  if ((prior?.substantive_attempts ?? 0) >= LEAN_MAX_SUBSTANTIVE_REPAIRS) {
+    await recordLeanDocuments(directory, deps, false)
+    return { state: writeLeanState(directory, { ...state, status: "blocked", stop_reason: `package-review: material corrections remain after ${LEAN_MAX_SUBSTANTIVE_REPAIRS} substantive repair rounds: ${review.findings.map(row => row.detail).join(" ")}${plan ? " Requested delivery selection remains unapplied." : ""}` }) }
+  }
+  const findings = review.findings.map(row => openItem("package-review", "omission", row.detail,
+    // A separately planned advice/note document has its own editing stages.
+    // Its explicit owner takes precedence over the reviewer's prose label.
+    { repair_target: row.target === "memo" && row.document ? "body" : row.target ?? (row.document ? "body" : "memo"), ...(row.document ? { document: row.document } : {}), ...(row.pid ? { pid: row.pid } : {}) }))
+  // Delivery and notes-only corrections charge the allowance without replacing
+  // accepted operative/research repair context or changing its generation key.
+  if (prior && findings.every(item => item.ref.repair_target === "memo"))
+    writeLeanText(directory, "repairs.json", `${JSON.stringify({ ...prior,
+      items: [...prior.items.filter(item => item.ref.repair_target !== "memo"), ...findings],
+      substantive_attempts: (prior.substantive_attempts ?? 0) + 1,
+    }, null, 2)}\n`)
+  else startRepairRound(directory, findings, true)
+  if (plan) writeLeanText(directory, "plan.json", `${JSON.stringify(plan, null, 2)}\n`)
+  return { state, restart: true }
+}
+
+class ChecklistRefreshRestart extends Error {}
+
+async function ensureChecklistExtraction(directory: string, state: LeanState, deps: LeanDeps) {
+  const result = await runChecklistExtractionFlow(directory, { sessions: deps.sessions, model: state.model, parentID: state.owner_session_id })
+  if (result.status !== "succeeded") throw new Error(`Source checklist extraction is incomplete: ${result.sources.filter(row => row.status !== "succeeded").map(row => `${row.key}: ${row.issues.join(" ")}`).join("; ")}. See checklist/extraction.json.`)
+}
+
+async function runChecklistStage(directory: string, state: LeanState, deps: LeanDeps, reinspectAdverse = false): Promise<StageRun> {
+  const refinementOutputs: string[] = []
+  for (const selection of checklistRefinementSelections(directory)) {
+    const refined = await runChecklistRefinementFlow(directory, { sessions: deps.sessions, model: state.model, parentID: state.owner_session_id }, buildChecklistRefinementContext(directory, selection))
+    refinementOutputs.push(...refined.outputs)
+  }
+  const key = stageInputSha(directory, "checklist-check")
+  const result = await runChecklistCheckFlow(directory, { sessions: deps.sessions, model: state.model, parentID: state.owner_session_id }, { reinspectAdverse })
+  // An answer is queued while read-only jobs run; it cannot become accepted
+  // evidence for the snapshot they inspected. Refresh before proceeding.
+  const queued = drainLeanRequests(directory)
+  if (queued.answered || queued.updated || stageInputSha(directory, "checklist-check") !== key) return { status: "restart" }
+  const itemMap = new Map(readEffectiveChecklistItems(directory).items.map(record => [record.id, record.item] as const))
+  const blocking = result.checks.filter(row => row.status !== "succeeded" || row.reinspection?.status === "failed" || !row.finding || !itemMap.has(row.item_id) || checklistFindingRecovery(itemMap.get(row.item_id)!, row.finding) !== "none")
+  const details = blocking.map(row => `${row.item_id}: ${row.finding?.status ?? row.status}: ${row.finding?.reason ?? row.issues.join(" ")}${row.reinspection ? " One reinspection has been used for this evidence; a remaining defect or inspection gap requires changed evidence or a focused substantive fix, not another unchanged Continue." : ""}`)
+  for (const parent of result.parent_coverage) if (["unsatisfied", "indeterminate"].includes(parent.status)) details.push(`${parent.parent_id}: ${parent.status}: ${parent.issues.join(" ") || "A refined child remains adverse."}`)
+  if (!result.refinement_complete) details.push(...readEffectiveChecklistItems(directory).issues)
+  if (!result.extraction_complete) details.unshift("Source extraction is incomplete or stale; not every current source item was checked.")
+  const report = ["# Checklist handoff findings", "", "Each result addresses its unchanged source item and declared target. Open findings remain unresolved; they are not satisfied findings. Comments, deleted text and layout may be uninspected; see each finding's scope and limitation.", "", ...result.checks.flatMap(row => [`## ${row.item_id}`, `Target: ${itemMap.get(row.item_id)?.target.document ?? "unresolved"}; treatment: ${itemMap.get(row.item_id)?.target.treatment ?? "unresolved"}`, itemMap.get(row.item_id)?.check ?? "", ...(row.reinspection ? [`Original finding: ${row.reinspection.original_finding.status}: ${row.reinspection.original_finding.reason}`, `Reinspection: ${row.reinspection.status}; ${row.reinspection.issues.join(" ")}`] : []), `Status: ${row.finding?.status ?? row.status}`, row.finding?.reason ?? row.issues.join(" "), ...(row.finding ? [`Inspection: ${row.finding.inspection_scope}`, `Limitation: ${row.finding.limitation}`] : []), ""]), ...result.parent_coverage.flatMap(parent => [`Parent: ${parent.parent_id}; coverage: ${parent.scope}; status: ${parent.status}`, `Children: ${parent.children.join(", ")}`, ...parent.issues, ""]), ...details.map(detail => `Delivery blocked: ${detail}`)].join("\n")
+  writeLeanText(directory, "checklist/report.md", `${report}\n`)
+  const openItems = details.map(detail => openItem("checklist-check", "omission", detail, {}))
+  // Informational `open` remains in the authoritative report, rather than being
+  // coerced to satisfied or to a delivery-blocking generic omission.
+  return { status: details.length ? "blocked" : "done", outputs: [...new Set(["checklist/extraction.json", ...refinementOutputs, ...result.outputs, "checklist/report.md"])], openItems,
+    ...(details.length ? { reason: `Checklist handoff blocked: ${details.join("; ")}. See checklist/report.md.` } : {}) }
+}
+
+export function stageInputSha(directory: string, step: StepID) {
+  return hashStageInputs(step, LEAN_PROMPT_VERSION, stageInputs(directory, step))
+}
+
+function runStep(directory: string, state: LeanState, step: StepID, deps: LeanDeps, progress: Progress, planned: () => void | Promise<void>, prepared?: PreparedReview, reinspectChecklist = false): Promise<StageRun> {
+  const stage = stepStage(step)
+  const document = stepDocument(step)
+  if (stage === "apply" && document) return runApply(directory, state, deps, document)
+  if (stage === "gate") return Promise.resolve(runGate(directory))
+  if (stage === "checklist-check") return runChecklistStage(directory, state, deps, reinspectChecklist)
+  if (stage === "change-plan" && document && focusedChecklistRepairs(directory, document)) return runFocusedRepairAdjudication(directory, state, deps, document, progress)
+  if (stage === "change-review" && document && focusedChecklistRepairs(directory, document)) return runFocusedChangeReview(directory, state, deps, document, progress)
+  if (stage === "changes" && document && focusedChecklistRepairs(directory, document)) return runChangeReconciliation(directory, state, deps, document, progress)
+  if (stage === "change-prepare" && document) return runChangePreparation(directory, state, deps, document, progress)
+  if (stage === "draft" && document) return runDraftStage(directory, state, deps, progress, document, planned)
+  return runModelStage(directory, state, step, deps, progress, prepared)
+}
+
+/** One child session; the first prompt carries the step's inputs, each retry the
+ * checker's issues. On the last attempt the changes step withholds amendments
+ * whose quotations still fail (they become open items); any other fourth failed
+ * check stops the run with those issues. */
+async function runModelStage(directory: string, state: LeanState, step: StepID, deps: LeanDeps, progress: Progress, prepared?: PreparedReview): Promise<StageRun> {
+  const stage = stepStage(step) as ModelStageID
+  const document = stepDocument(step) ?? undefined
+  const agent = LEAN_STAGE_AGENTS[stage]
+  const sessionID = prepared?.sessionID ?? await deps.sessions.createSession({
+    directory, parentID: state.owner_session_id, agent, title: stepSessionTitle(directory, step), model: state.model, permissions: stage === "research" ? researchPermissions : LEAN_CHILD_PERMISSIONS,
+  })
+  progress({ session_id: sessionID })
+  const attempt = async (index: number, text: string): Promise<StageRun> => {
+    appendLeanEvent(directory, { stage, document, event: index ? "retry" : "model_call", attempt: index, session_id: sessionID })
+    const reply = await (index === 0 && prepared ? prepared.reply : deps.sessions.prompt({ directory, sessionID, agent, text }))
+    const accepted = stage === "discrepancy" || stage === "spine"
+      ? acceptEvidenceReply(directory, stage, reply)
+      : stage === "intake" || stage === "research" || stage === "research-review"
+      ? acceptResearchReply(directory, stage, reply)
+      : await acceptStageReply(directory, step, reply, { final: index >= LEAN_MAX_RETRIES })
+    progress({ attempts: index + 1, calls: index + 1, feedback: accepted.issues })
+    appendLeanEvent(directory, { stage, document, event: "checker", attempt: index, issues: accepted.issues })
+    if (!accepted.issues.length)
+      return { status: (stage === "intake" || stage === "change-plan") && accepted.questions?.length ? "blocked" : "done", outputs: accepted.outputs, openItems: accepted.openItems, questions: accepted.questions,
+        ...((stage === "intake" || stage === "change-plan") && accepted.questions?.length ? { reason: stage === "intake" ? "Waiting for your answers before legal research and drafting." : "Waiting for your answers before drafting amendments." } : {}) }
+    if (index >= LEAN_MAX_RETRIES)
+      return { status: "failed", reason: `${step}: checker failed after ${LEAN_MAX_RETRIES} retries: ${accepted.issues.join(" ")}` }
+    return attempt(index + 1, retryPrompt(stage, accepted.issues))
+  }
+  return attempt(0, stage === "change-plan" && document ? changePlanPrompt(directory, document) : stage === "change-review" && document ? changeReviewPrompt(directory, document) : stage === "package-review" ? `${packageReviewPrompt(directory)}\n\nFocused checklist findings are saved at .dochaus/lean/checklist/report.md and checklist/checks.json; use targeted read-record lookup when relevant. Open findings remain unresolved, not satisfied. Do not re-run every checklist item in this package review.` : stage === "discrepancy" || stage === "spine" ? evidencePrompt(directory, stage) : stage === "intake" || stage === "research" || stage === "research-review" ? researchPrompt(directory, stage) : stagePrompt(directory, step))
+}
+
+/** The state's step rows follow the plan, whether the first draft wrote it or
+ * a lawyer edited it. Summary rows of a title no longer planned are dropped.
+ * When the planned documents differ from the rows, the open items and open
+ * questions of a document no longer planned go with its steps; a question
+ * another document's item still asks stays with it. */
+function followPlan(directory: string, state: LeanState) {
+  const steps = leanSteps(directory)
+  forgetUnplannedDocuments(directory)
+  const documents = (rows: string[]) => [...new Set(rows.flatMap(step => stepDocument(step as StepID) ?? []))].join(" ")
+  if (documents(Object.keys(state.stages)) === documents(steps)) return syncLeanSteps(directory, state, steps)
+  const planned = new Set<string>(steps.flatMap(step => stepDocument(step) ?? []))
+  const kept = (document: string | undefined) => !document || planned.has(document)
+  writeOpenItems(directory, readOpenItems(directory).filter(item => kept(item.ref.document)))
+  writeQuestions(directory, keepAskedQuestions(readQuestions(directory), readOpenItems(directory), question => kept(question.document)))
+  return syncLeanSteps(directory, state, steps)
+}
+
+function runGate(directory: string): StageRun {
+  const gate = finalGate(directory)
+  writeLeanText(directory, "gate.json", `${JSON.stringify(gate, null, 2)}\n`)
+  writeLeanText(directory, "drafting-notes-coverage.md", notesCoverageReport(gate))
+  if (gate.status === "pass") return { status: "done", outputs: stepOutputs("gate"), openItems: [] }
+  return {
+    status: "blocked",
+    outputs: stepOutputs("gate"),
+    openItems: [],
+    reason: `gate: blocked by open items ${gate.blocking.map(item => item.id).join(", ")}`,
+  }
+}
+
+function now() {
+  return new Date().toISOString()
+}
+
+function message(directory: string, error: unknown) {
+  return matterRelative(directory, error instanceof Error ? error.message : String(error))
+}

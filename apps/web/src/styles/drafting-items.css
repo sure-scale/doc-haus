@@ -1,0 +1,458 @@
+/* ---------- Drafting run: open items, questions and drafted outputs ----------
+   Split from drafting.css; same tokens, same motion rules. */
+
+/* Open items: one expander, grouped by kind, capped with "Show all". */
+.open-items {
+  margin: 0 0 8px;
+  padding: 2px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+}
+
+.open-items-list {
+  padding: 2px 0 8px;
+  animation: row-in var(--duration-base) var(--ease-out);
+}
+
+.open-items-group h4 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0 4px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.open-items-count {
+  color: var(--faint);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.open-items-group ul {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.open-items-group li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 6px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.open-item-tag,
+.open-item-doc {
+  padding: 0 6px;
+  border-radius: var(--radius-pill);
+  font-size: 11px;
+  background: var(--bg-sunken);
+  color: var(--text-secondary);
+}
+
+.open-items-more {
+  margin-top: 8px;
+  font-size: 12px;
+}
+
+/* Open questions dock above the composer: an amber strip with one Answer
+   button, the one place the lawyer answers from. */
+/* On a narrow chat the Answer button wraps beneath the text, right-aligned. */
+.question-dock {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  margin: 0 0 8px;
+  padding: 8px 8px 8px 10px;
+  border: 1px solid var(--warn-border);
+  border-radius: var(--radius-lg);
+  background: var(--warn-soft);
+  animation:
+    row-in var(--duration-base) var(--ease-out),
+    question-ring 1.2s var(--ease-out) var(--duration-base) 1;
+}
+
+.question-dock-icon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--warn);
+  color: var(--text-on-accent);
+}
+
+.question-dock-text {
+  display: flex;
+  flex: 1 1 200px;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.question-dock-title {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.question-dock-preview {
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+button.question-dock-cta {
+  flex: none;
+  margin-left: auto;
+  padding: 6px 16px;
+  border-color: var(--warn);
+  background: var(--warn);
+  color: var(--text-on-accent);
+  font-weight: 600;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 1px 2px rgba(26, 30, 28, 0.12);
+}
+
+button.question-dock-cta:hover:not(:disabled) {
+  border-color: #74490f;
+  background: #74490f;
+}
+
+button.question-dock-cta:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 1px var(--warn), 0 0 0 4px rgba(138, 90, 26, 0.2);
+}
+
+/* The questions open over the page, which frosts to white behind them. */
+.question-dialog {
+  width: min(560px, calc(100vw - 32px));
+  max-height: calc(100dvh - 64px);
+  padding: 0;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: var(--shadow-xl);
+}
+
+.question-dialog[open] {
+  animation: panel-in 220ms var(--ease-out);
+}
+
+.question-dialog::backdrop {
+  background: rgba(255, 255, 255, 0.6);
+  backdrop-filter: blur(12px) saturate(1.15);
+  -webkit-backdrop-filter: blur(12px) saturate(1.15);
+  animation: overlay-in 160ms ease-out;
+}
+
+/* One question at a time, with its own labelled answer field. */
+.question-card {
+  padding: 18px 20px 16px;
+}
+
+.question-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.question-head h2 {
+  margin: 0;
+  color: var(--warn);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.question-head .modal-close {
+  margin-left: auto;
+}
+
+.question-nav {
+  display: inline-flex;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.question-nav + .modal-close {
+  margin-left: 4px;
+}
+
+/* 32px targets with a border that holds 3:1 against the card. */
+.question-nav .question-nav-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  color: var(--text-secondary);
+  border-color: color-mix(in srgb, var(--muted) 80%, var(--panel));
+}
+
+.question-nav .question-nav-btn:disabled {
+  color: var(--faint);
+  border-color: var(--border);
+  opacity: 1;
+}
+
+/* Answered and left: a dot per question, filled once answered. */
+.question-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.question-dots {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.question-dot {
+  width: 7px;
+  height: 7px;
+  border: 1.5px solid var(--warn);
+  border-radius: 50%;
+}
+
+.question-dot.is-answered {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.question-dot.is-current {
+  background: var(--warn);
+}
+
+.question-about,
+.question-context {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.question-text {
+  margin: 12px 0 0;
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.question-label {
+  display: block;
+  margin: 16px 0 4px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.question-answer {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 6em;
+  max-height: 18em;
+  resize: none;
+  field-sizing: content;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.question-answer:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+
+.question-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.question-keys {
+  color: var(--faint);
+  font-size: 12px;
+}
+
+/* Touch keyboards have no shortcut to hint at. */
+@media (hover: none) {
+  .question-keys {
+    display: none;
+  }
+}
+
+.question-card .msg-error {
+  margin-top: 10px;
+}
+
+.question-actions button.primary {
+  flex: none;
+  white-space: nowrap;
+}
+
+/* Disabled reads as "not yet", in plain grey, rather than a faded accent. */
+.question-actions button.primary:disabled {
+  background: var(--bg-sunken);
+  border-color: var(--border);
+  color: var(--muted);
+  box-shadow: none;
+  opacity: 1;
+}
+
+/* Drafted outputs: each draft with its redline and notes tagged beneath it. */
+.drafted-list,
+.drafted-extras {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.drafted-list {
+  margin-bottom: 8px;
+}
+
+.drafted-group {
+  padding: 8px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  background: var(--panel);
+}
+
+.drafted-extras {
+  margin-top: 6px;
+  margin-left: 4px;
+  padding-left: 12px;
+  border-left: 1px solid var(--border);
+}
+
+.drafted-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
+.drafted-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: left;
+}
+
+.drafted-row .redline-badge {
+  margin-top: 1px;
+}
+
+/* Names hold at most two lines; the full name is in the title. */
+.drafted-name-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.drafted-row:not(.is-main) .drafted-name {
+  color: var(--text-secondary);
+}
+
+/* One fixed width so every name starts at the same x. */
+.drafted-tag {
+  flex: none;
+  box-sizing: border-box;
+  width: 56px;
+  margin-top: 1px;
+  padding: 0 4px;
+  text-align: center;
+  border-radius: var(--radius-pill);
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: var(--bg-sunken);
+}
+
+.drafted-tag.is-draft {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+a.drafted-download {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  text-decoration: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .open-items > summary::after,
+  button.run-head-toggle::after,
+  .run-head-details,
+  .run-segment {
+    transition: none;
+  }
+
+  .question-dialog[open],
+  .question-dialog::backdrop {
+    animation: none;
+  }
+}
+
+/* Documents: drafted outputs apart from the lawyer's own documents. */
+.docs-add {
+  margin-top: 12px;
+}
+
+/* Once there are documents, adding more is a one-line secondary action. */
+.dropzone.is-compact {
+  flex-direction: row;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px 12px;
+}
+
+.dropzone.is-compact svg {
+  width: 16px;
+  height: 16px;
+  margin-bottom: 0;
+}
+
+.dropzone.is-compact .dropzone-title {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.dropzone.is-compact .dropzone-hint {
+  display: none;
+}

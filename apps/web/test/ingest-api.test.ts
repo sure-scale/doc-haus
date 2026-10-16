@@ -1,0 +1,117 @@
+import { afterEach, expect, test } from "bun:test"
+import status from "../../../dochaus/workflows/lean/fixtures/status-completed.json"
+import { deleteMatterSession } from "../src/api/ingest/matters"
+import { dispatchMatterContinuation } from "../src/api/ingest/drafting-run"
+import { uploadDocument } from "../src/api/ingest/documents"
+import { getDraftingStatus } from "../src/api/ingest/drafting-status"
+
+const originalFetch = globalThis.fetch
+const originalXhr = globalThis.XMLHttpRequest
+
+afterEach(() => {
+  globalThis.fetch = originalFetch
+  globalThis.XMLHttpRequest = originalXhr
+})
+
+test("slow status polls share one in-flight read per matter and release it on success or failure", async () => {
+  const pending: Array<{ resolve: (response: Response) => void; reject: (error: Error) => void }> = []
+  globalThis.fetch = (() => new Promise<Response>((resolve, reject) => pending.push({ resolve, reject }))) as typeof fetch
+  const first = getDraftingStatus("slow-matter")
+  const same = getDraftingStatus("slow-matter")
+  const other = getDraftingStatus("other-matter")
+  expect(same === first).toBe(true)
+  expect(pending).toHaveLength(2)
+  pending[0]!.resolve(Response.json(status))
+  expect(await first).toEqual(status)
+  expect(await same).toEqual(status)
+  pending[1]!.resolve(Response.json(status))
+  await other
+  const failed = getDraftingStatus("slow-matter")
+  expect(pending).toHaveLength(3)
+  pending[2]!.reject(new Error("Network unavailable"))
+  await expect(failed).rejects.toThrow("Network unavailable")
+  const retry = getDraftingStatus("slow-matter")
+  expect(pending).toHaveLength(4)
+  pending[3]!.resolve(Response.json(status))
+  expect(await retry).toEqual(status)
+})
+
+test("conversation deletion goes through the matter service", async () => {
+  const calls: Array<{ url: string; init?: RequestInit }> = []
+  globalThis.fetch = (async (input, init) => {
+    calls.push({ url: String(input), init })
+    return Response.json({ ok: true, deleted: true })
+  }) as typeof fetch
+
+  await deleteMatterSession("matter-a", "ses_owner/with space")
+
+  expect(calls).toEqual([
+    {
+      url: expect.stringContaining("/matters/matter-a/sessions/ses_owner%2Fwith%20space"),
+      init: { method: "DELETE" },
+    },
+  ])
+
+  globalThis.fetch = (async () => Response.json(
+    { error: "This conversation owns an unfinished drafting run and cannot be deleted." },
+    { status: 409 },
+  )) as typeof fetch
+  await expect(deleteMatterSession("matter-a", "ses_owner")).rejects.toThrow("unfinished drafting run")
+})
+
+test("continuation dispatch goes through the matter backend and validates its claim response", async () => {
+  const calls: Array<{ url: string; init?: RequestInit }> = []
+  globalThis.fetch = (async (input, init) => {
+    calls.push({ url: String(input), init })
+    return Response.json({
+      accepted: true,
+      attempted: true,
+      existing: false,
+      executing: true,
+      persisted: true,
+      uncertain: false,
+    })
+  }) as typeof fetch
+  const input = { kind: "malformed-tool" as const, progressToken: "malformed:msg_failed", sessionID: "ses_owner" }
+  expect(await dispatchMatterContinuation("matter-a", input)).toMatchObject({ accepted: true, persisted: true })
+  expect(calls).toHaveLength(1)
+  expect(calls[0]).toMatchObject({
+    url: expect.stringContaining("/matters/matter-a/continuations/dispatch"),
+    init: { method: "POST" },
+  })
+  expect(JSON.parse(String(calls[0]?.init?.body))).toEqual(input)
+
+  globalThis.fetch = (async () => Response.json({ accepted: true }, { status: 200 })) as typeof fetch
+  await expect(dispatchMatterContinuation("matter-a", input)).rejects.toThrow(
+    "Workflow continuation dispatch response is invalid",
+  )
+})
+
+// Uploads go through XMLHttpRequest for progress events; the stub answers each
+// request with one scripted status and body, like the ingest service would.
+function scriptXhr(status: number, body: string) {
+  globalThis.XMLHttpRequest = class {
+    status = 0
+    responseText = ""
+    timeout = 0
+    upload: { onload?: () => void } = {}
+    onload?: () => void
+    onerror?: () => void
+    ontimeout?: () => void
+    open() {}
+    send() {
+      this.status = status
+      this.responseText = body
+      queueMicrotask(() => this.onload?.())
+    }
+  } as unknown as typeof XMLHttpRequest
+}
+
+test("a failed upload rejects with the ingest service's message instead of resolving its error body", async () => {
+  scriptXhr(503, JSON.stringify({ error: "The embedding model could not be loaded.", code: "embedding_model_unavailable" }))
+  await expect(uploadDocument("matter", new File(["x"], "source.docx"))).rejects.toThrow(
+    "The embedding model could not be loaded.",
+  )
+  scriptXhr(500, "Internal Server Error")
+  await expect(uploadDocument("matter", new File(["x"], "source.docx"))).rejects.toThrow("Could not read source.docx (500)")
+})

@@ -1,0 +1,502 @@
+/* ---------- Drafting run: header, progress, steps ----------
+   Existing tokens only. Working and ready use the green accent; a run that
+   needs the lawyer or stopped short is amber, never red. */
+
+/* The run's header at the top of its conversation. */
+.run-head {
+  margin: 0 0 12px;
+  padding: 12px 14px 10px;
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-md);
+  background: var(--accent-tint);
+  animation: row-in var(--duration-base) var(--ease-out);
+}
+
+.run-head.is-input,
+.run-head.is-paused {
+  border-color: var(--warn-border);
+  background: var(--warn-soft);
+}
+
+.run-head-main,
+.run-head.is-compact {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 12px;
+}
+
+.run-head.is-compact {
+  padding: 8px 12px;
+}
+
+.run-head-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  color: var(--text-on-accent);
+  background: var(--accent);
+}
+
+/* Level with the title however far the meta wraps. */
+.run-head-main > .run-head-icon {
+  align-self: flex-start;
+  margin-top: 6px;
+}
+
+.run-head.is-compact .run-head-icon {
+  width: 22px;
+  height: 22px;
+}
+
+.run-head-icon.is-input,
+.run-head-icon.is-paused {
+  background: var(--warn);
+}
+
+/* Working: a ring with a pulsing centre, as on the running step. */
+.run-head-icon.is-running {
+  border: 2px solid var(--accent);
+  background: var(--panel);
+  animation: run-ring 2s ease-out infinite;
+}
+
+.run-head-icon.is-running::after {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: run-pulse 1.8s ease-in-out infinite;
+}
+
+.run-head-text {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.run-head-title {
+  margin: 0;
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.run-head.is-compact .run-head-title {
+  font-size: 13px;
+}
+
+/* Each part carries its leading dot outside its own box; the row clips the dot
+   of whichever part starts a line, so a wrap never leaves a stray dot. */
+.run-head-meta {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 15px;
+  overflow: hidden;
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+}
+
+.run-head-meta > span {
+  position: relative;
+}
+
+.run-head-meta > span::before {
+  content: "·";
+  position: absolute;
+  left: -10px;
+  color: var(--faint);
+}
+
+.run-head-asks {
+  color: var(--warn);
+  font-weight: 600;
+}
+
+.run-head-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.run-head-actions:empty {
+  display: none;
+}
+
+.run-head-cta {
+  white-space: nowrap;
+}
+
+/* "Open run" is a link that reads as a secondary button. */
+a.run-head-cta {
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+  text-decoration: none;
+}
+
+a.run-head-cta:hover {
+  border-color: var(--border-strong);
+  background: var(--panel-hover);
+}
+
+.run-head .msg-error {
+  margin: 10px 0 0;
+}
+
+/* Segmented progress: one segment per step, a wider gap between documents. */
+.run-head-progress {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.run-segments {
+  display: flex;
+  flex: 1 1 auto;
+  gap: 6px;
+  min-width: 0;
+}
+
+.run-segment-group {
+  display: flex;
+  flex: 1 1 0;
+  gap: 2px;
+  min-width: 0;
+}
+
+.run-segment {
+  flex: 1 1 0;
+  height: 4px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--border-strong) 55%, transparent);
+  transition: background var(--duration-base) var(--ease-out);
+}
+
+.run-segment.is-done {
+  background: var(--accent);
+}
+
+.run-segment.is-live {
+  background: var(--accent-border);
+  animation: run-pulse 1.8s ease-in-out infinite;
+}
+
+.run-segment.is-stopped {
+  background: var(--warn);
+}
+
+button.run-head-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  padding: 2px 4px;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+button.run-head-toggle:hover:not(:disabled) {
+  background: none;
+  color: var(--text);
+}
+
+button.run-head-toggle::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  margin-top: -3px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg);
+  transition: transform var(--duration-fast) var(--ease-out);
+}
+
+button.run-head-toggle[aria-expanded="true"]::after {
+  margin-top: 3px;
+  transform: rotate(-135deg);
+}
+
+/* Details fold open in place. */
+.run-head-details {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows var(--duration-base) var(--ease-out);
+}
+
+.run-head-details.is-open {
+  grid-template-rows: 1fr;
+}
+
+.run-head-details-body {
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Open Details scroll on their own, so the conversation and the composer keep
+   their place in a card that fits the window. */
+.run-head-details.is-open .run-head-details-body {
+  max-height: min(30dvh, 320px);
+  padding-top: 12px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.run-note {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.run-head-details .run-note:first-of-type {
+  margin-top: 10px;
+}
+
+.open-items > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  list-style: none;
+}
+
+.open-items > summary::-webkit-details-marker {
+  display: none;
+}
+
+.open-items > summary::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  margin-left: auto;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg);
+  transition: transform var(--duration-fast) var(--ease-out);
+}
+
+.open-items[open] > summary::after {
+  transform: rotate(-135deg);
+}
+
+.open-items > summary:hover {
+  color: var(--text);
+}
+
+.open-items > summary:focus-visible {
+  outline: none;
+  border-radius: var(--radius-sm);
+  box-shadow: var(--focus-ring);
+}
+
+/* Vertical stepper, one group per document. */
+.stepper-group + .stepper-group {
+  margin-top: 10px;
+}
+
+.stepper-group-title {
+  margin: 4px 0 6px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.stepper-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.stepper-step {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 3px 0 9px;
+  animation: row-in var(--duration-base) var(--ease-out);
+}
+
+.stepper-step:last-child {
+  padding-bottom: 2px;
+}
+
+/* The connector between markers. */
+.stepper-step:not(:last-child)::before {
+  content: "";
+  position: absolute;
+  left: 7.5px;
+  top: 21px;
+  bottom: 0;
+  width: 1px;
+  background: var(--border);
+}
+
+.stepper-step.is-done:not(:last-child)::before {
+  background: var(--accent-border);
+}
+
+.step-icon {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+  border: 1.5px solid var(--border-strong);
+  border-radius: 50%;
+  background: var(--panel);
+  color: var(--text-on-accent);
+}
+
+.step-icon.is-done {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.step-icon.is-running {
+  border-color: var(--accent);
+  animation: run-ring 2s ease-out infinite;
+}
+
+.step-icon.is-running::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: run-pulse 1.8s ease-in-out infinite;
+}
+
+.step-icon.is-paused {
+  border-color: var(--warn);
+}
+
+.step-icon.is-failed,
+.step-icon.is-blocked {
+  border-color: var(--warn);
+  background: var(--warn);
+}
+
+.step-text {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  min-width: 0;
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
+.step-name {
+  color: var(--text-secondary);
+}
+
+.stepper-step.is-pending .step-name {
+  color: var(--muted);
+}
+
+.stepper-step.is-current .step-name {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.stepper-step.is-live .step-name {
+  color: var(--accent);
+}
+
+.step-tries,
+.step-time {
+  color: var(--faint);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.step-time {
+  margin-left: auto;
+}
+
+.step-cause {
+  flex-basis: 100%;
+  color: var(--warn);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.run-checklist-refinement {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--warn-border);
+}
+
+.run-checklist-refinement fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.run-checklist-refinement legend {
+  margin-bottom: 6px;
+  padding: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.run-checklist-choices {
+  max-height: min(30dvh, 280px);
+  margin-bottom: 10px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.run-checklist-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 4px;
+  cursor: pointer;
+}
+
+.run-checklist-choice input {
+  flex: 0 0 auto;
+  margin: 3px 0 0;
+}
+
+.run-checklist-choice > span {
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.run-checklist-choice .run-note {
+  display: block;
+  margin: 3px 0 0;
+}

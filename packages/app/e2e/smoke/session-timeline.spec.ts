@@ -1,8 +1,9 @@
 import { expect, test, type Page } from "@playwright/test"
-import { base64Encode } from "@opencode-ai/core/util/encode"
+import { base64Encode } from "@opencode/util/encode"
 import { fixture, pageMessages } from "./session-timeline.fixture"
 import { trackPageErrors, expectNoSmokeErrors } from "../utils/errors"
 import { mockOpenCodeServer } from "../utils/mock-server"
+import { APP_READY_TIMEOUT, expectAppVisible, expectSessionTitle } from "../utils/waits"
 
 const forbiddenText = ["Load details", "Show earlier steps"]
 
@@ -29,6 +30,310 @@ type SmokeWindow = Window & {
 test.describe("smoke: session timeline", () => {
   test.setTimeout(240_000)
 
+  test("keeps the visible message fixed while prepending history", async ({ page }) => {
+    const requests: { before?: string; phase: "start" | "end"; at: number }[] = []
+    await mockOpenCodeServer(page, {
+      sessions: fixture.sessions,
+      provider: fixture.provider,
+      directory: fixture.directory,
+      project: fixture.project,
+      pageMessages,
+      messageDelay: 3_000,
+      onMessages: (input) => requests.push({ before: input.before, phase: input.phase, at: performance.now() }),
+    })
+    await configureSmokePage(page, fixture.directory)
+
+    await navigateToSession(page, fixture.targetID, fixture.expected.targetTitle)
+    await waitForTimelineStable(page)
+    const scroller = timelineScroller(page)
+    await pointAtTimeline(page)
+    const deadline = Date.now() + 120_000
+    while (!requests.some((request) => request.before && request.phase === "start")) {
+      if (Date.now() >= deadline) throw new Error("Timed out scrolling to the history boundary")
+      await page.mouse.wheel(0, -240)
+      await page.waitForTimeout(20)
+    }
+    expect(requests.some((request) => request.before && request.phase === "end")).toBe(false)
+    for (let index = 0; index < 12; index++) {
+      await page.mouse.wheel(0, -120)
+      await page.waitForTimeout(20)
+    }
+    const keys = await scroller.evaluate((element) => {
+      const view = element.getBoundingClientRect()
+      return [...element.querySelectorAll<HTMLElement>("[data-timeline-part-id]")]
+        .filter((row) => {
+          const rect = row.getBoundingClientRect()
+          return rect.bottom > view.top && rect.top < view.bottom
+        })
+        .map((row) => row.dataset.timelinePartId)
+        .filter((id): id is string => !!id)
+        .slice(0, 3)
+    })
+    expect(keys.length).toBeGreaterThan(0)
+    const positions = () =>
+      scroller.evaluate((element, keys) => {
+        const top = element.getBoundingClientRect().top
+        return Object.fromEntries(
+          keys.map((key) => {
+            const row = element.querySelector<HTMLElement>(`[data-timeline-part-id="${key}"]`)
+            if (!row) throw new Error(`Missing stable timeline key: ${key}`)
+            return [key, Math.round((row.getBoundingClientRect().top - top) * devicePixelRatio) / devicePixelRatio]
+          }),
+        )
+      }, keys)
+    const before = await positions()
+    expect(requests.some((request) => request.before && request.phase === "end")).toBe(false)
+
+    await expect.poll(() => requests.some((request) => request.before && request.phase === "end")).toBe(true)
+    await waitForTimelineStable(page)
+    await expect.poll(positions).toEqual(before)
+  })
+
+  test("preserves the timeline gap above the composer", async ({ page }) => {
+    await mockOpenCodeServer(page, {
+      sessions: fixture.sessions,
+      provider: fixture.provider,
+      directory: fixture.directory,
+      project: fixture.project,
+      pageMessages,
+    })
+    await configureSmokePage(page, fixture.directory)
+
+    await navigateToSession(page, fixture.targetID, fixture.expected.targetTitle)
+    await waitForTimelineStable(page)
+    const scroller = timelineScroller(page)
+    await scroller.evaluate((element) => {
+      element.scrollTop = element.scrollHeight
+    })
+    await waitForTimelineStable(page)
+
+    const spacer = scroller.locator('[data-timeline-row="bottom-spacer"]')
+    await expect(spacer).toBeVisible()
+    expect(await spacer.evaluate((element) => element.getBoundingClientRect().height)).toBe(64)
+    await expect
+      .poll(() => scroller.evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop))
+      .toBeLessThanOrEqual(1)
+  })
+
+  test("paints cached session tabs at the latest message", async ({ page }) => {
+    await mockOpenCodeServer(page, {
+      sessions: fixture.sessions,
+      provider: fixture.provider,
+      directory: fixture.directory,
+      project: fixture.project,
+      pageMessages: (sessionID) => ({ items: fixture.messages[sessionID] ?? [] }),
+    })
+    await configureSmokePage(page, fixture.directory)
+    await page.addInitScript(
+      ({ server, sourceID, targetID }) => {
+        localStorage.setItem(
+          "opencode.window.browser.dat:tabs",
+          JSON.stringify(
+            [sourceID, targetID].map((sessionId) => ({
+              type: "session",
+              server,
+              sessionId,
+            })),
+          ),
+        )
+      },
+      { server: fixture.serverKey, sourceID: fixture.sourceID, targetID: fixture.targetID },
+    )
+
+    await page.goto(`/server/${base64Encode(fixture.serverKey)}/session/${fixture.targetID}`)
+    await expectSessionTitle(page, fixture.expected.targetTitle)
+    await switchTitlebarSession(page, fixture.sourceID, fixture.expected.sourceTitle)
+
+    const destination = fixture.messages[fixture.targetID].map((message) => message.id)
+    const last = fixture.expected.targetMessageIDs.at(-1)!
+    await page.evaluate(
+      ({ destination, last }) => {
+        const ids = new Set(destination)
+        const samples: Array<{ ids: string[]; last: boolean; bottomError?: number }> = []
+        const firstPaintNodes = new WeakSet<Node>()
+        let firstPaint = false
+        let removedFirstPaintNodes = 0
+        let running = true
+        new MutationObserver((records) => {
+          if (!firstPaint || !running) return
+          records.forEach((record) =>
+            record.removedNodes.forEach((node) => {
+              if (firstPaintNodes.has(node)) removedFirstPaintNodes += 1
+              if (!(node instanceof Element)) return
+              node.querySelectorAll("*").forEach((element) => {
+                if (firstPaintNodes.has(element)) removedFirstPaintNodes += 1
+              })
+            }),
+          )
+        }).observe(document.documentElement, { childList: true, subtree: true })
+        const sample = () => {
+          if (!running) return
+          setTimeout(() => {
+            if (!running) return
+            const root = [...document.querySelectorAll<HTMLElement>(".scroll-view__viewport")].find((element) =>
+              element.querySelector("[data-timeline-row]"),
+            )
+            if (root) {
+              const view = root.getBoundingClientRect()
+              const visible = [...root.querySelectorAll<HTMLElement>("[data-message-id]")]
+                .filter((element) => {
+                  const rect = element.getBoundingClientRect()
+                  return rect.bottom > view.top && rect.top < view.bottom
+                })
+                .map((element) => element.dataset.messageId!)
+                .filter((id) => ids.has(id))
+              const bottom = root
+                .querySelector<HTMLElement>('[data-timeline-row="bottom-spacer"]')
+                ?.getBoundingClientRect()
+              samples.push({
+                ids: visible,
+                last: visible.includes(last),
+                bottomError: bottom ? bottom.bottom - view.bottom : undefined,
+              })
+              if (
+                !firstPaint &&
+                visible.includes(last) &&
+                Math.abs((bottom?.bottom ?? Infinity) - view.bottom) <= 1 &&
+                !root.querySelector('[data-markdown-key="initial"]')
+              ) {
+                firstPaint = true
+                root.querySelectorAll<HTMLElement>("[data-timeline-key]").forEach((row) => {
+                  const rect = row.getBoundingClientRect()
+                  if (rect.bottom <= view.top || rect.top >= view.bottom) return
+                  firstPaintNodes.add(row)
+                  row.querySelectorAll("*").forEach((element) => firstPaintNodes.add(element))
+                })
+              }
+            }
+            requestAnimationFrame(sample)
+          }, 0)
+        }
+        ;(
+          window as Window & {
+            __sessionTabPaint?: {
+              samples: typeof samples
+              painted: () => boolean
+              removed: () => number
+              stop: () => void
+            }
+          }
+        ).__sessionTabPaint = {
+          samples,
+          painted: () => firstPaint,
+          removed: () => removedFirstPaintNodes,
+          stop: () => {
+            running = false
+          },
+        }
+        requestAnimationFrame(sample)
+      },
+      { destination, last },
+    )
+
+    await switchTitlebarSession(page, fixture.targetID, fixture.expected.targetTitle)
+    await page.waitForFunction(() => {
+      const probe = (
+        window as Window & { __sessionTabPaint?: { samples: Array<{ ids: string[] }>; painted: () => boolean } }
+      ).__sessionTabPaint
+      return probe?.painted() && probe.samples.some((sample) => sample.ids.length > 0)
+    })
+    await page.waitForTimeout(200)
+    const first = await page.evaluate(() => {
+      const probe = (
+        window as Window & {
+          __sessionTabPaint?: {
+            samples: Array<{ ids: string[]; last: boolean; bottomError?: number }>
+            painted: () => boolean
+            removed: () => number
+            stop: () => void
+          }
+        }
+      ).__sessionTabPaint!
+      probe.stop()
+      return { first: probe.samples.find((sample) => sample.ids.length > 0), removed: probe.removed() }
+    })
+    expect(first.first?.last).toBe(true)
+    expect(Math.abs(first.first?.bottomError ?? Infinity)).toBeLessThanOrEqual(1)
+    expect(first.removed).toBe(0)
+  })
+
+  test("paints a cold session tab at the latest message", async ({ page }) => {
+    await mockOpenCodeServer(page, {
+      sessions: fixture.sessions,
+      provider: fixture.provider,
+      directory: fixture.directory,
+      project: fixture.project,
+      pageMessages: (sessionID) => ({ items: fixture.messages[sessionID] ?? [] }),
+    })
+    await configureSmokePage(page, fixture.directory)
+    await page.addInitScript(
+      ({ server, sourceID, targetID }) => {
+        localStorage.setItem(
+          "opencode.window.browser.dat:tabs",
+          JSON.stringify(
+            [sourceID, targetID].map((sessionId) => ({
+              type: "session",
+              server,
+              sessionId,
+            })),
+          ),
+        )
+      },
+      { server: fixture.serverKey, sourceID: fixture.sourceID, targetID: fixture.targetID },
+    )
+    await page.goto(`/server/${base64Encode(fixture.serverKey)}/session/${fixture.sourceID}`)
+    await expectSessionTitle(page, fixture.expected.sourceTitle)
+    const last = fixture.expected.targetMessageIDs.at(-1)!
+    const destination = fixture.messages[fixture.targetID].map((message) => message.id)
+    await page.evaluate(
+      ({ destination, last }) => {
+        const ids = new Set(destination)
+        const samples: Array<{ destination: boolean; last: boolean; bottomError?: number }> = []
+        const sample = () => {
+          const root = [...document.querySelectorAll<HTMLElement>(".scroll-view__viewport")].find((element) =>
+            element.querySelector("[data-timeline-row]"),
+          )
+          if (root) {
+            const view = root.getBoundingClientRect()
+            const spacer = root
+              .querySelector<HTMLElement>('[data-timeline-row="bottom-spacer"]')
+              ?.getBoundingClientRect()
+            const messages = [...root.querySelectorAll<HTMLElement>("[data-message-id]")].filter((element) => {
+              const rect = element.getBoundingClientRect()
+              return rect.bottom > view.top && rect.top < view.bottom
+            })
+            samples.push({
+              destination: messages.some((element) => ids.has(element.dataset.messageId!)),
+              last: messages.some((element) => element.dataset.messageId === last),
+              bottomError: spacer ? spacer.bottom - view.bottom : undefined,
+            })
+          }
+          requestAnimationFrame(() => setTimeout(sample, 0))
+        }
+        ;(window as Window & { __coldTabSamples?: typeof samples }).__coldTabSamples = samples
+        requestAnimationFrame(() => setTimeout(sample, 0))
+      },
+      { destination, last },
+    )
+
+    await switchTitlebarSession(page, fixture.targetID, fixture.expected.targetTitle)
+    await page.waitForFunction(() =>
+      (window as Window & { __coldTabSamples?: Array<{ destination: boolean }> }).__coldTabSamples?.some(
+        (sample) => sample.destination,
+      ),
+    )
+    const result = await page.evaluate(() => {
+      const samples = (
+        window as Window & {
+          __coldTabSamples?: Array<{ destination: boolean; last: boolean; bottomError?: number }>
+        }
+      ).__coldTabSamples!
+      return samples.find((sample) => sample.destination)!
+    })
+    expect(result.last).toBe(true)
+    expect(Math.abs(result.bottomError ?? Infinity)).toBeLessThanOrEqual(1)
+  })
+
   test("renders seeded timeline in order while paging through history", async ({ page }) => {
     const errors = trackPageErrors(page)
     await mockOpenCodeServer(page, {
@@ -41,13 +346,34 @@ test.describe("smoke: session timeline", () => {
     await configureSmokePage(page, fixture.directory)
 
     await selectHomeProject(page, fixture.project.name)
-    await navigateToSession(page, fixture.directory, fixture.sourceID, fixture.expected.sourceTitle)
+    await navigateToSession(page, fixture.sourceID, fixture.expected.sourceTitle)
     await expectSessionReady(page)
-    await navigateToSession(page, fixture.directory, fixture.targetID, fixture.expected.targetTitle)
+    await navigateToSession(page, fixture.targetID, fixture.expected.targetTitle)
     const expectedPartIDs = fixture.expected.targetPartIDs
     const expectedMessageIDs = fixture.expected.targetMessageIDs
     await expectSessionTimelineReady(page, expectedPartIDs, expectedMessageIDs, errors)
     await expectCanScrollToStart(page, expectedPartIDs, expectedMessageIDs, errors)
+
+    const shell = page.locator(`[data-timeline-part-id="${fixture.expected.expandedShellPartID}"]`)
+    // The shell is below a long diff; reveal it rather than depending on offscreen overscan.
+    while ((await shell.count()) === 0) {
+      const before = await timelineState(page)
+      await timelineScroller(page).press("PageDown")
+      await expect.poll(async () => (await timelineState(page)).signature).not.toBe(before.signature)
+    }
+    await shell.scrollIntoViewIfNeeded()
+    await expect(shell).toBeInViewport()
+    const shellTrigger = shell.locator('[data-slot="collapsible-trigger"]')
+    const shellSubtitle = shell.locator('[data-slot="basic-tool-tool-subtitle"]')
+    await expect(shellSubtitle).toHaveCount(0)
+    await expect(shell.locator('[data-slot="bash-command"]')).toHaveText("bun typecheck")
+    await expect(shell.locator('[data-slot="bash-result"]')).not.toContainText("bun typecheck")
+    await shellTrigger.click()
+    await expect(shellTrigger).toHaveAttribute("aria-expanded", "false")
+    await expect(shellSubtitle).toHaveText("bun typecheck")
+    await shellTrigger.click()
+    await expect(shellTrigger).toHaveAttribute("aria-expanded", "true")
+    await expect(shellSubtitle).toHaveCount(0)
   })
 })
 
@@ -60,7 +386,6 @@ async function configureSmokePage(page: Page, directory: string) {
           editToolPartsExpanded: true,
           shellToolPartsExpanded: true,
           showReasoningSummaries: true,
-          showSessionProgressBar: true,
         },
       }),
     )
@@ -161,7 +486,7 @@ async function configureSmokePage(page: Page, directory: string) {
     }
     let recordFrame: number | undefined
     const record = () => {
-      for (const toast of document.querySelectorAll<HTMLElement>('[data-component="toast"][data-variant="error"]')) {
+      for (const toast of document.querySelectorAll<HTMLElement>(".toast-v2--error")) {
         const text = toast.textContent?.trim()
         if (text && !smoke.__timelineSmokeErrorToasts!.includes(text)) smoke.__timelineSmokeErrorToasts!.push(text)
       }
@@ -202,7 +527,7 @@ async function expectCanScrollToStart(
   let current = await timelineState(page)
   let unchangedAtTop = 0
 
-  for (let attempt = 0; attempt < 600; attempt++) {
+  for (let attempt = 0; attempt < 800; attempt++) {
     collectSeen(current, seenParts, seenMessages)
     samples.push(sampleTraversal(current, seenParts.size, seenMessages.size))
     expectNoSmokeErrors(errors, current.errorToasts, current.forbiddenText)
@@ -377,6 +702,7 @@ async function expectSessionTimelineReady(
   expectedMessageIDs: string[],
   errors: string[],
 ) {
+  await expect(page.locator("[data-timeline-virtual-content]")).toHaveCSS("visibility", "visible")
   await waitForTimelineStable(page)
   for (const text of forbiddenText) await expect(page.getByText(text)).toHaveCount(0)
   const currentState = await timelineState(page)
@@ -406,23 +732,34 @@ function expectCompleteScroll(
   ).toEqual([])
   expect(new Set(expectedPartIDs).size).toBe(expectedPartIDs.length)
   expect(new Set(expectedMessageIDs).size).toBe(expectedMessageIDs.length)
-  expect(expectedPartIDs.length).toBe(331)
+  expect(expectedPartIDs.length).toBe(465)
 }
 
 async function selectHomeProject(page: Page, projectName: string) {
   await page.goto("/")
-  await page
+  const row = page
     .locator('[data-component="home-project-row"]')
     .filter({ hasText: new RegExp(projectName, "i") })
-    .click()
+    .first()
+  await expectAppVisible(row)
+  await row.click()
+  await expect(row).toHaveAttribute("data-selected", "", { timeout: APP_READY_TIMEOUT })
   await expect(page).toHaveURL(/\/$/)
 }
 
-async function navigateToSession(page: Page, directory: string, sessionId: string, expectedTitle: string) {
-  await page.goto(`/${base64Encode(directory)}/session/${sessionId}`)
-  await expect(page.getByRole("heading", { name: expectedTitle })).toBeVisible()
+async function navigateToSession(page: Page, sessionId: string, expectedTitle: string) {
+  await page.goto(`/server/${base64Encode(fixture.serverKey)}/session/${sessionId}`)
+  await expectSessionTitle(page, expectedTitle)
+}
+
+async function switchTitlebarSession(page: Page, sessionID: string, title: string) {
+  const href = `/server/${base64Encode(fixture.serverKey)}/session/${sessionID}`
+  const tab = page.locator(`[data-slot="titlebar-tabs"] a[href="${href}"]`).first()
+  await expect(tab).toBeVisible()
+  await tab.click()
+  await expectSessionTitle(page, title)
 }
 
 async function expectSessionReady(page: Page) {
-  await expect(page.getByRole("textbox", { name: /Ask anything/i })).toBeVisible()
+  await expectAppVisible(page.getByRole("textbox", { name: "Prompt" }))
 }

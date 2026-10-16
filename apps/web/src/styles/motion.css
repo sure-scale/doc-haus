@@ -1,0 +1,124 @@
+/* ---------- Motion: quiet entrances and the run heartbeat ----------
+   Every animation here is short (120-280ms) or a slow, low-contrast pulse,
+   and all of it switches off under prefers-reduced-motion. */
+
+@keyframes row-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Opacity only: a transform on the page container would become the containing
+   block for fixed overlays (modals, viewers) opened while it runs. */
+@keyframes page-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes run-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+@keyframes run-ring {
+  0% {
+    box-shadow: 0 0 0 0 var(--accent-border);
+  }
+  70%,
+  100% {
+    box-shadow: 0 0 0 6px transparent;
+  }
+}
+
+@keyframes banner-in {
+  from {
+    opacity: 0;
+    transform: translateY(-100%);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* A step finished while watched draws its check in. */
+@keyframes check-draw {
+  from {
+    stroke-dashoffset: 1;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+.step-icon.is-fresh polyline {
+  stroke-dasharray: 1;
+  animation: check-draw var(--duration-slow) var(--ease-out) both;
+}
+
+/* Documents the run produced while watched glow once, then settle. */
+@keyframes row-new {
+  from {
+    background: var(--accent-soft);
+    box-shadow: 0 0 0 4px var(--accent-soft);
+  }
+  to {
+    background: transparent;
+    box-shadow: 0 0 0 4px transparent;
+  }
+}
+
+.drafted-list.is-fresh .drafted-row {
+  border-radius: var(--radius-sm);
+  animation: row-new 1.6s var(--ease-out) both;
+}
+
+/* Questions arriving ring the dock once in amber. */
+@keyframes question-ring {
+  0% {
+    box-shadow: 0 0 0 0 var(--warn-border);
+  }
+  100% {
+    box-shadow: 0 0 0 8px transparent;
+  }
+}
+
+/* Route change: the page settles in rather than snapping. */
+.route-fade {
+  animation: page-in var(--duration-base) var(--ease-out);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .route-fade,
+  .matter-list li.upload-row,
+  .upload-spinner,
+  .run-head,
+  .run-head-icon.is-running,
+  .run-head-icon.is-running::after,
+  .run-segment.is-live,
+  .step-icon.is-running,
+  .step-icon.is-running::after,
+  .open-items-list,
+  .question-dock,
+  .step-icon.is-fresh polyline,
+  .drafted-list.is-fresh .drafted-row,
+  .rail-section-body,
+  .stepper-step {
+    animation: none !important;
+    transition: none !important;
+  }
+}

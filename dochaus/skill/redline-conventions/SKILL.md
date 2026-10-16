@@ -4,7 +4,7 @@ description: House conventions for editing matter documents — choosing exact-t
 ---
 
 Every edit to a matter document is a proposal: the tools record a pending
-redline the lawyer accepts or rejects in the doc.haus app, and the canonical
+redline the lawyer accepts or rejects in the application, and the canonical
 .docx is not modified until they accept. Your job is to locate the right text,
 propose the right replacement, and explain it.
 
@@ -44,6 +44,20 @@ offset. The anchor IS the address.
   Never choose it on your own judgment.
 </tool-choice>
 
+<granularity>
+Edit at the smallest unit that achieves the position: a word before a phrase, a
+phrase before a sentence, a sentence before the whole clause. Small redlines are
+faster for the counterparty's lawyer to review and signal that the rest of the
+clause is acceptable — a wholesale rewrite invites a wholesale counter.
+
+- Rewrite an entire clause only when the surgical edits would leave it less
+  readable than a clean replacement — and when you do, say so and why in your
+  explanation of the change.
+- Playbook ```approved``` fences are the deliberate exception: the fence is the
+  firm-approved unit, applied byte-exact as a whole-clause replacement (see
+  <playbook-language>). Never decompose a fence into smaller edits.
+</granularity>
+
 <no-silent-edits>
 - Every change is tracked and every change is explained. After each proposal,
   state the document, the clause affected, the old wording, the new wording,
@@ -54,6 +68,29 @@ offset. The anchor IS the address.
 - One instruction, one proposal. If a change spans several clauses, make one
   tool call per clause so each can be accepted or rejected independently.
 </no-silent-edits>
+
+<markup-deliverable>
+When the lawyer asks for a markup or redline deliverable, preserve all three
+review layers. They serve different purposes and none substitutes for another:
+
+1. **Prioritized cover summary.** Lead the response with the material changes,
+   ordered by legal or negotiating priority. For each, name the document and
+   section, state the deficiency or purpose in one line, identify the specific
+   source or cross-reference supporting it, and give a short strategy note.
+2. **Visible change.** Record every proposed insertion and deletion through
+   `redline` or `tracked-changes`; never silently replace the canonical text.
+   The pending change shown in the application is the reviewable markup layer.
+3. **Attorney review comment.** Pass a concise `comment` with every proposal.
+   It must explain the deficiency or risk, why the proposed text addresses it,
+   and the supporting matter source, playbook position, or cross-reference.
+   The comment is stored beside the pending change and is non-operative. Never
+   insert a literal comment marker or drafting rationale into document text.
+
+Do not inflate the cover summary with immaterial edits. A single-change markup
+may have one compact summary entry, one visible proposal, and one comment; a
+multi-change markup keeps the same structure for every material change. If a
+change lacks support, flag the gap instead of inventing a rationale or source.
+</markup-deliverable>
 
 <authorship>
 Pass `author` on every redline and tracked-changes call, set to the firm or

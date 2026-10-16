@@ -1,10 +1,14 @@
 import { useEffect, useRef, useState } from "react"
 import { useSearchParams } from "react-router-dom"
-import { deleteSkill, importSkill, listSkills, setSkillEnabled, type Skill } from "../api/ingest"
+import { deleteSkill, importSkill, listSkills, setSkillEnabled, type Skill } from "../api/ingest/library"
 import { useToast } from "../components/Toast"
+import Dropzone from "../components/Dropzone"
+import { humanizeError } from "../api/ingest/errors"
 import ChatPanel from "../components/ChatPanel"
-import { DocMarkdown } from "../components/Markdown"
+import LibraryLayout from "../components/LibraryLayout"
+import { DocMarkdown } from "../components/markdown/Markdown"
 import { SKILL_BUILDER } from "../agents"
+import ModalHeader from "../components/ModalHeader"
 
 // The firm's skill library: reference knowledge (clause standards, checklists,
 // drafting guidance) the specialist agents load on demand. Repo-shipped skills
@@ -23,7 +27,6 @@ export default function Skills() {
   const [busy, setBusy] = useState(false)
   const [confirmName, setConfirmName] = useState<string | null>(null)
   const [viewing, setViewing] = useState<Skill>()
-  const input = useRef<HTMLInputElement>(null)
   const createdRef = useRef<string | undefined>(undefined)
   const toast = useToast()
 
@@ -35,7 +38,9 @@ export default function Skills() {
   }
 
   useEffect(() => {
-    refresh().finally(() => setLoading(false))
+    refresh()
+      .catch((e) => toast("error", humanizeError(e)))
+      .finally(() => setLoading(false))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -59,7 +64,7 @@ export default function Skills() {
         setSkills((prev) => [...prev.filter((s) => s.name !== skill.name), skill])
         toast("success", `Imported skill "${skill.name}". Ask the skill builder to refine it.`)
       } catch (e) {
-        toast("error", e instanceof Error ? e.message : `Could not import ${file.name}.`)
+        toast("error", humanizeError(e, `Could not import ${file.name}.`))
       }
     }
     setBusy(false)
@@ -72,7 +77,7 @@ export default function Skills() {
       setSkills((prev) => prev.filter((x) => x.name !== s.name))
       toast("success", `Deleted skill "${s.name}".`)
     } catch (e) {
-      toast("error", e instanceof Error ? e.message : `Could not delete ${s.name}.`)
+      toast("error", humanizeError(e, `Could not delete ${s.name}.`))
     }
   }
 
@@ -84,7 +89,7 @@ export default function Skills() {
       await setSkillEnabled(s.name, enabled)
     } catch (e) {
       setSkills((prev) => prev.map((x) => (x.name === s.name ? { ...x, enabled: s.enabled } : x)))
-      toast("error", e instanceof Error ? e.message : `Could not update ${s.name}.`)
+      toast("error", humanizeError(e, `Could not update ${s.name}.`))
     }
   }
 
@@ -92,44 +97,50 @@ export default function Skills() {
 
   return (
     <>
-      <header className="page-head">
-        <div>
-          <h1>Skills</h1>
-          <p className="page-sub">Reference playbooks the assistants can load.</p>
-        </div>
-      </header>
-
-      <div className="card">
-        <h2>Import skill</h2>
-        <div
-          className="dropzone"
-          onClick={() => input.current?.click()}
-          onDragOver={(e) => e.preventDefault()}
-          onDrop={(e) => {
-            e.preventDefault()
-            const files = Array.from(e.dataTransfer.files)
-            if (files.length) onFiles(files)
-          }}
-        >
-          {busy
-            ? "Working..."
-            : "Drop a firm checklist or guide here (.md, .txt, .docx, .pdf), or click to choose a file."}
-        </div>
-        <input
-          ref={input}
-          type="file"
-          accept=".md,.txt,.docx,.pdf"
-          multiple
-          hidden
-          onChange={(e) => {
-            const files = Array.from(e.target.files ?? [])
-            if (files.length) onFiles(files)
-            e.target.value = ""
-          }}
-        />
-      </div>
-
-      <div className="card">
+      <LibraryLayout
+        title="Skills"
+        description="Reusable guidance and checklists for your assistants."
+        libraryTitle="Available skills"
+        count={loading ? undefined : skills.length}
+        active={Boolean(session)}
+        upload={
+          <Dropzone
+            accept=".md,.txt,.docx,.pdf"
+            busy={busy}
+            onFiles={onFiles}
+            title={busy ? "Importing…" : "Import a skill"}
+            hint="Drop a guide (.md, .txt, .docx, .pdf) or browse files."
+          />
+        }
+        assistant={
+          dir && (
+            <ChatPanel
+              key={session ?? "new"}
+              directory={dir}
+              sessionID={session}
+              created={createdRef.current === session}
+              agent={SKILL_BUILDER.name}
+              available={new Set([SKILL_BUILDER.name])}
+              pinned={SKILL_BUILDER}
+              title="Create or edit a skill"
+              emptyHint="Describe your firm’s guidance, or ask about your skills."
+              starters={[
+                "What skills do we have?",
+                "Create a skill with our positions on limitation of liability.",
+                "Refine the skill I just imported.",
+              ]}
+              composerPlaceholder="e.g. Create a skill for our standard confidentiality positions"
+              onAgentChange={() => {}}
+              onSessionCreated={(sid) => {
+                createdRef.current = sid
+                setParams({ session: sid }, { replace: true })
+              }}
+              onViewDocument={() => {}}
+              onDocumentsChanged={refresh}
+            />
+          )
+        }
+      >
         {loading ? (
           <div className="skeleton-list">
             <div className="skeleton-row" />
@@ -137,14 +148,7 @@ export default function Skills() {
             <div className="skeleton-row" />
           </div>
         ) : visible.length === 0 ? (
-          <div className="empty-state">
-            <svg className="empty-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-              <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
-              <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
-            </svg>
-            <h3>No skills yet</h3>
-            <p>Import one above, or describe one to the skill builder.</p>
-          </div>
+          <p className="library-empty">Import a guide or describe a skill to get started.</p>
         ) : (
           <ul className="matter-list">
             {visible.map((s) => (
@@ -214,45 +218,15 @@ export default function Skills() {
             ))}
           </ul>
         )}
-      </div>
-
-      {dir && (
-        <ChatPanel
-          key={session ?? "new"}
-          directory={dir}
-          sessionID={session}
-          created={createdRef.current === session}
-          agent={SKILL_BUILDER.name}
-          available={new Set([SKILL_BUILDER.name])}
-          pinned={SKILL_BUILDER}
-          title="Ask the skill builder"
-          emptyHint="Describe firm knowledge to turn into a skill, or ask what already exists. The specialist agents load skills automatically when relevant."
-          starters={[
-            "What skills do we have?",
-            "Create a skill with our positions on limitation of liability.",
-            "Refine the skill I just imported.",
-          ]}
-          composerPlaceholder="e.g. Create a skill for our standard confidentiality positions"
-          onAgentChange={() => {}}
-          onSessionCreated={(sid) => {
-            createdRef.current = sid
-            setParams({ session: sid }, { replace: true })
-          }}
-          onViewDocument={() => {}}
-          onDocumentsChanged={refresh}
-        />
-      )}
+      </LibraryLayout>
 
       {viewing && (
         <div className="viewer-overlay" onClick={() => setViewing(undefined)}>
           <div className="picker-panel doc-panel" onClick={(e) => e.stopPropagation()}>
-            <div className="viewer-bar">
-              <span className="viewer-title">
-                {viewing.name}
-                {viewing.builtin ? " (built-in)" : ""}
-              </span>
-              <button onClick={() => setViewing(undefined)}>Close</button>
-            </div>
+            <ModalHeader
+              title={`${viewing.name}${viewing.builtin ? " (built-in)" : ""}`}
+              onClose={() => setViewing(undefined)}
+            />
             <div className="picker-body">
               {viewing.description && <p className="muted">{viewing.description}</p>}
               <DocMarkdown>{viewing.content}</DocMarkdown>

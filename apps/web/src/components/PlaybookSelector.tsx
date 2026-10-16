@@ -1,4 +1,5 @@
 import { useState } from "react"
+import { Link } from "react-router-dom"
 
 // "Playbook" control by the composer. Binds one firm playbook to this matter:
 // the review checks documents against its positions and approved clause text.
@@ -15,7 +16,6 @@ export default function PlaybookSelector({
   onChange: (name?: string) => void
 }) {
   const [open, setOpen] = useState(false)
-  if (playbooks.length === 0) return null
 
   // The bound playbook's readable name (the "playbook-" prefix stripped and
   // upper-cased) — surfaced on the trigger so the binding is visible at a glance.
@@ -47,6 +47,11 @@ export default function PlaybookSelector({
                 A firm playbook is your standard positions and approved clause text. The review checks this matter's
                 documents against it.
               </p>
+              {playbooks.length === 0 && <p className="muted">No playbooks yet. Import or create one in the library.</p>}
+              <Link to="/playbooks" className="assistant-option" onClick={() => setOpen(false)}>
+                <span className="assistant-name">Manage playbooks</span>
+                <span className="assistant-desc muted">View, import and edit your firm playbooks</span>
+              </Link>
               {playbooks.map((p) => (
                 <button
                   key={p.name}

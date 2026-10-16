@@ -1,0 +1,7 @@
+[
+  "\\bbenchmark\\b",
+  "\\bevaluation[-_ ](?:dataset|fixture|rubric)\\b",
+  "\\b(?:fixture|test)[-_ ](?:answer|oracle)\\b",
+  "\\b(?:golden|expected)[-_ ]answer\\b",
+  "\\banswer[-_ ]key\\b"
+]

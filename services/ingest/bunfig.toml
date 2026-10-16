@@ -4,3 +4,4 @@ exact = true
 # bunfig does not cover this package — mirror its supply-chain settings here.
 # Only install newly resolved package versions published at least 3 days ago.
 minimumReleaseAge = 259200
+minimumReleaseAgeExcludes = ["@llamaindex/liteparse", "@llamaindex/liteparse-darwin-arm64", "@llamaindex/liteparse-darwin-x64", "@llamaindex/liteparse-linux-arm64-gnu", "@llamaindex/liteparse-linux-x64-gnu", "@llamaindex/liteparse-linux-x64-musl", "@llamaindex/liteparse-win32-arm64-msvc", "@llamaindex/liteparse-win32-x64-msvc"]

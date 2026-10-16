@@ -1,0 +1,64 @@
+/* The chat log is the chat's one scroller. An edge with more content beyond it
+   fades over 12px, so a line cut by the edge reads as intentional, and a Jump
+   to latest chip appears once the lawyer has scrolled away from the bottom. */
+
+.chat-log-wrap {
+  position: relative;
+  flex: none;
+}
+
+.chat-log {
+  --fade-top: 0px;
+  --fade-bottom: 0px;
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 var(--fade-top),
+    #000 calc(100% - var(--fade-bottom)),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 var(--fade-top),
+    #000 calc(100% - var(--fade-bottom)),
+    transparent 100%
+  );
+}
+
+.chat-log.fade-top {
+  --fade-top: 12px;
+}
+
+.chat-log.fade-bottom {
+  --fade-bottom: 12px;
+}
+
+button.chat-jump {
+  position: absolute;
+  right: 22px;
+  bottom: 14px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-pill);
+  background: var(--panel);
+  box-shadow: var(--shadow-sm);
+  color: var(--accent);
+  font-size: 12.5px;
+  animation: row-in var(--duration-base) var(--ease-out) both;
+}
+
+button.chat-jump:hover:not(:disabled) {
+  border-color: var(--accent-muted);
+  background: var(--accent-tint);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  button.chat-jump {
+    animation: none;
+  }
+}

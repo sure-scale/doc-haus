@@ -1,7 +1,8 @@
-import { tool } from "@opencode-ai/plugin"
+import { tool } from "./legacy-definition"
 import { fileURLToPath } from "node:url"
 import path from "node:path"
 import { docxodus } from "../lib/docxodus"
+import { withParagraphPointers } from "../lib/drafting-amendment"
 
 // doc.haus update-template tool. Revises an existing template in the firm's
 // global library: a new body (recomposed onto the styled blank seed exactly like
@@ -73,13 +74,13 @@ export default tool({
     session.deleteBlock(anchor)
 
     const placeholders = session.findPlaceholders().map((p) => p.match.text)
-    const bytes = session.save()
+    const bytes = withParagraphPointers(session.save())
     session.close()
 
     // The library POST overwrites the existing .docx under the same name and sets
     // the description from the form, so the current one is re-sent when omitted.
     const form = new FormData()
-    form.append("file", new File([bytes], name))
+    form.append("file", new File([new Uint8Array(bytes)], name))
     form.append("description", args.description ?? current.description)
     const res = await fetch(`${ingestUrl}/templates`, { method: "POST", body: form })
     if (!res.ok) return `Template composed but upload failed (${res.status}): ${await res.text()}`

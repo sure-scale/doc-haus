@@ -1,8 +1,8 @@
-export * as ConfigAgentV1 from "./agent"
+export * as ConfigAgentV1 from "./agent.js"
 
 import { Schema, SchemaGetter } from "effect"
-import { PositiveInt } from "../../schema"
-import { ConfigPermissionV1 } from "./permission"
+import { PositiveInt } from "../../schema.js"
+import { ConfigPermissionV1 } from "./permission.js"
 
 const Color = Schema.Union([
   Schema.String.check(Schema.isPattern(/^#[0-9a-fA-F]{6}$/)),
@@ -40,24 +40,7 @@ const AgentSchema = Schema.StructWithRest(
   [Schema.Record(Schema.String, Schema.Any)],
 )
 
-const KNOWN_KEYS = new Set([
-  "name",
-  "model",
-  "variant",
-  "prompt",
-  "description",
-  "temperature",
-  "top_p",
-  "mode",
-  "hidden",
-  "color",
-  "steps",
-  "maxSteps",
-  "options",
-  "permission",
-  "disable",
-  "tools",
-])
+const KNOWN_KEYS = new Set(["name", ...Object.keys(AgentSchema.schema.fields)])
 
 const normalize = (agent: Schema.Schema.Type<typeof AgentSchema>): Schema.Schema.Type<typeof AgentSchema> => {
   const options: Record<string, unknown> = { ...agent.options }

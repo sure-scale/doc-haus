@@ -1,0 +1,25 @@
+{
+  "name": "@dochaus/engine",
+  "license": "GPL-3.0-only",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun run src/server.ts",
+    "typecheck": "tsgo -b",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@effect/platform-node": "catalog:",
+    "@opencode/ai": "workspace:*",
+    "@opencode/core": "workspace:*",
+    "@opencode/schema": "workspace:*",
+    "@opencode/server": "workspace:*",
+    "@opencode/util": "workspace:*",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@tsconfig/bun": "catalog:",
+    "@types/bun": "catalog:",
+    "@typescript/native-preview": "catalog:"
+  }
+}

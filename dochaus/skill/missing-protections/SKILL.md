@@ -13,8 +13,12 @@ what is "expected" varies by jurisdiction, deal size, and bargaining position.
 Establish the governing law and which party the firm represents first, and
 qualify any finding that depends on either.
 
-Method: for each item, search the whole document — protections hide in
-schedules, definitions, and annexes, not just the obvious section. Report an
+Method: build the checklist for the contract's type as an explicit list with
+the `todowrite` tool — one item per expected protection — so the absence sweep
+is exhaustive and no expected protection is skipped (recall is what this sweep
+exists to protect). For each item, search the whole document — protections hide
+in schedules, definitions, and annexes, not just the obvious section — then mark
+the item `completed` with its verdict (present / partial / missing). Report an
 item as missing only when no provision anywhere covers it; if a provision
 partially covers it, that is a weak-clause finding for the clause review, not
 a gap. Cite the absence as `[<Document> — no provision found]` and cite

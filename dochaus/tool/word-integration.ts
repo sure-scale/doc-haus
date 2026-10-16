@@ -1,7 +1,9 @@
-import { tool } from "@opencode-ai/plugin"
+import { tool } from "./legacy-definition"
 import { existsSync } from "node:fs"
 import path from "node:path"
 import { docxodus } from "../lib/docxodus"
+import { assertDirectWorkingDocxWriteAllowed } from "../lib/working-docx"
+import { withArtifactMutationLocksAsync } from "../capabilities/artifacts/mutation-lock"
 
 // doc.haus word-integration tool. Reads and edits the matter's canonical Word
 // (.docx) document in place via Docxodus, so edits round-trip through Microsoft
@@ -37,34 +39,23 @@ export default tool({
       })
     }
 
-    const dx = await docxodus()
-    const session = dx.openDocxSession(await Bun.file(file).bytes(), {})
-
-    if (args.action === "read") {
-      const markdown = session.project().markdown
-      session.close()
-      return { title: `Read ${path.basename(file)}`, output: markdown }
+    const operate = async () => {
+      if (args.action !== "read") assertDirectWorkingDocxWriteAllowed(ctx.directory,file)
+      const dx = await docxodus()
+      const session = dx.openDocxSession(await Bun.file(file).bytes(),{})
+      try {
+        if (args.action === "read") return {title:`Read ${path.basename(file)}`,output:session.project().markdown}
+        const targets = session.findAllByText(args.find!)
+        if (!targets.length) return `Text not found in ${path.basename(file)}: ${JSON.stringify(args.find)}`
+        const results = targets.flatMap((target) => session.replaceTextRange(target.id,args.find!,args.replace!))
+        const failed = results.find((result) => !result.success)
+        if (failed) return `Edit failed: ${failed.error?.message ?? JSON.stringify(failed.error)}`
+        await Bun.write(file,session.save())
+        return {title:`Edited ${path.basename(file)}`,
+          output:`Replaced ${results.length} occurrence(s) of ${JSON.stringify(args.find)} with ${JSON.stringify(args.replace)} in ${path.basename(file)}.`,
+          metadata:{document:file,find:args.find,replace:args.replace,edits:results.length}}
+      } finally {session.close()}
     }
-
-    const targets = session.findAllByText(args.find!)
-    if (!targets.length) {
-      session.close()
-      return `Text not found in ${path.basename(file)}: ${JSON.stringify(args.find)}`
-    }
-
-    const results = targets.flatMap((t) => session.replaceTextRange(t.id, args.find!, args.replace!))
-    const failed = results.find((r) => !r.success)
-    if (failed) {
-      session.close()
-      return `Edit failed: ${failed.error?.message ?? JSON.stringify(failed.error)}`
-    }
-
-    await Bun.write(file, session.save())
-    session.close()
-    return {
-      title: `Edited ${path.basename(file)}`,
-      output: `Replaced ${results.length} occurrence(s) of ${JSON.stringify(args.find)} with ${JSON.stringify(args.replace)} in ${path.basename(file)}.`,
-      metadata: { document: file, find: args.find, replace: args.replace, edits: results.length },
-    }
+    return args.action === "read" ? operate() : withArtifactMutationLocksAsync(ctx.directory,[file],operate)
   },
 })

@@ -35,8 +35,8 @@ function packDir(code: string) {
 
 export async function loadJurisdiction(code: string): Promise<JurisdictionPack | undefined> {
   const dir = packDir(code)
-  if (!dir || !existsSync(path.join(dir, "profile.json"))) return undefined
-  const profile = (await Bun.file(path.join(dir, "profile.json")).json()) as JurisdictionProfile
+  const profile = readJurisdictionProfile(code)
+  if (!dir || !profile) return undefined
   const promptPath = path.join(dir, "prompt.md")
   if (!existsSync(promptPath)) {
     // A pack without a prompt fragment still loads (profile fields keep working),
@@ -48,6 +48,12 @@ export async function loadJurisdiction(code: string): Promise<JurisdictionPack |
   return { ...profile, prompt: await Bun.file(promptPath).text() }
 }
 
+export function readMatterJurisdictionCodes(directory: string) {
+  return readMatterJurisdictions(directory)
+    .filter((code, index, codes) => codes.indexOf(code) === index)
+    .flatMap((code) => readJurisdictionProfile(code) ? [code] : [])
+}
+
 // The jurisdiction codes a matter carries, read from its matter.json. A matter
 // can span several (a cross-border deal), so this is a list. The ingest service
 // owns that file; the engine only reads it to steer reasoning.
@@ -55,4 +61,15 @@ export function readMatterJurisdictions(directory: string) {
   const file = path.join(directory, "matter.json")
   if (!existsSync(file)) return []
   return (JSON.parse(readFileSync(file, "utf8")) as { jurisdictions?: string[] }).jurisdictions ?? []
+}
+
+function readJurisdictionProfile(code: string): JurisdictionProfile | undefined {
+  const dir = packDir(code)
+  if (!dir || !existsSync(path.join(dir, "profile.json"))) return undefined
+  const profile = JSON.parse(readFileSync(path.join(dir, "profile.json"), "utf8")) as JurisdictionProfile
+  if (profile.code !== code) {
+    console.warn(`[jurisdiction] pack directory "${code}" declares profile code "${profile.code}"; ignoring it`)
+    return undefined
+  }
+  return profile
 }

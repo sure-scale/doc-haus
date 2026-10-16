@@ -1,0 +1,84 @@
+import { describe, expect, test } from "bun:test"
+import {
+  cycleNewSessionWorktree,
+  resolveNewSessionBranch,
+  resolveNewSessionGit,
+  resolveNewSessionWorktree,
+} from "./controller"
+
+describe("new session workspace selection", () => {
+  test("uses main when the workspace bar is unavailable", () => {
+    expect(
+      resolveNewSessionWorktree({
+        enabled: false,
+        selected: "/project/feature",
+      }),
+    ).toBe("main")
+  })
+
+  test("uses the saved destination instead of the current worktree", () => {
+    expect(
+      resolveNewSessionWorktree({
+        enabled: true,
+        fallback: "create",
+      }),
+    ).toBe("create")
+    expect(
+      resolveNewSessionWorktree({
+        enabled: true,
+        fallback: "main",
+      }),
+    ).toBe("main")
+  })
+
+  test("keeps local selection when the cached project path is stale", () => {
+    const input = { enabled: true, directory: "C:/Projects/repo", projectWorktree: "D:/Projects/repo" }
+    expect(resolveNewSessionWorktree(input)).toBe("main")
+    expect(resolveNewSessionWorktree({ ...input, selected: "/worktree" })).toBe("/worktree")
+  })
+
+  test("resolves the branch from the active location", () => {
+    const branch = (worktree: string) => (worktree === "/project/feature" ? "feature" : undefined)
+    expect(resolveNewSessionBranch({ worktree: "main", directory: "/project/feature", worktreeBranch: branch })).toBe(
+      "feature",
+    )
+    expect(resolveNewSessionBranch({ worktree: "create", directory: "/project/feature", worktreeBranch: branch })).toBe(
+      "feature",
+    )
+    expect(
+      resolveNewSessionBranch({ worktree: "/project/feature", directory: "/project", worktreeBranch: branch }),
+    ).toBe("feature")
+    expect(
+      resolveNewSessionBranch({ worktree: "/missing", directory: "/project/feature", worktreeBranch: branch }),
+    ).toBe(undefined)
+  })
+
+  test("uses a selected branch for a new workspace", () => {
+    expect(
+      resolveNewSessionBranch({
+        worktree: "create",
+        directory: "/project/feature",
+        createBranch: "release",
+        worktreeBranch: () => "feature",
+      }),
+    ).toBe("release")
+  })
+
+  test("uses location VCS state when the project inventory is stale", () => {
+    expect(resolveNewSessionGit({ branch: "dev" })).toBe(true)
+    expect(resolveNewSessionGit({ projectVcs: "git" })).toBe(true)
+    expect(resolveNewSessionGit({})).toBe(false)
+  })
+
+  test("cycles between local and a new worktree", () => {
+    expect(cycleNewSessionWorktree({ current: "main" })).toBe("create")
+    expect(cycleNewSessionWorktree({ current: "create" })).toBe("main")
+  })
+
+  test("includes the selected existing worktree in the cycle", () => {
+    const existing = "/project/feature"
+    expect(cycleNewSessionWorktree({ current: existing, existing })).toBe("main")
+    expect(cycleNewSessionWorktree({ current: "main", existing })).toBe("create")
+    expect(cycleNewSessionWorktree({ current: "create", existing })).toBe(existing)
+  })
+})

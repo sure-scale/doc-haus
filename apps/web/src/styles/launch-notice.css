@@ -1,0 +1,30 @@
+.launch-gate { min-height: 100dvh; padding: 28px 32px; background: var(--bg); }
+.launch-brand { display: flex; align-items: center; gap: 10px; font-size: 22px; font-weight: 650; letter-spacing: -.6px; }
+.launch-brand img { width: 28px; height: 28px; }
+.launch-paused { max-width: 480px; margin: 20dvh auto 0; text-align: center; }
+.launch-paused h1 { font-size: 24px; letter-spacing: -.6px; }
+.launch-paused p { color: var(--muted); margin: 12px 0 24px; }
+.launch-notice { width: min(560px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); padding: 0; overflow: auto; border: 1px solid var(--border); border-radius: 16px; background: var(--panel); color: var(--text); box-shadow: 0 24px 80px rgb(24 47 36 / 14%); }
+.launch-notice::backdrop { background: rgb(242 246 241 / 70%); backdrop-filter: blur(8px); }
+.launch-notice-body { padding: 32px 32px 24px; }
+.launch-notice-eyebrow { color: var(--accent); font-size: 11px; font-weight: 650; text-transform: uppercase; letter-spacing: 1.3px; }
+.launch-notice h1 { margin: 8px 0 12px; font-size: 28px; font-weight: 600; letter-spacing: -.8px; outline: none; }
+.launch-notice p { font-size: 14px; line-height: 1.6; color: var(--text-secondary); }
+.launch-notice-points { display: grid; gap: 20px; list-style: none; padding: 0; margin: 28px 0; }
+.launch-notice-points li { position: relative; padding-left: 18px; }
+.launch-notice-points li::before { content: ""; position: absolute; left: 0; top: 7px; width: 5px; height: 5px; border-radius: 50%; background: var(--accent); }
+.launch-notice-points strong { display: block; margin-bottom: 4px; font-size: 14px; font-weight: 600; }
+.launch-notice-points span { display: block; font-size: 13px; line-height: 1.6; color: var(--text-secondary); }
+.launch-notice p.launch-notice-acknowledgement { margin: 0; font-size: 12px; color: var(--muted); }
+.launch-notice-actions { position: sticky; bottom: 0; display: flex; justify-content: flex-end; gap: 10px; padding: 18px 32px; border-top: 1px solid var(--border-soft); background: var(--panel); }
+.launch-notice-actions button { min-height: 40px; padding-inline: 18px; }
+.update-release { margin: 24px 0; padding: 16px; border: 1px solid var(--border-soft); border-radius: 8px; }
+.update-release p { margin-bottom: 0; }
+.launch-notice .update-error { color: var(--danger, #b42318); }
+@media (max-width: 480px) {
+  .launch-gate { padding: 20px; }
+  .launch-notice-body { padding: 24px 20px; }
+  .launch-notice-actions { padding: 16px 20px; }
+  .launch-notice-actions button { flex: 1; }
+  .launch-notice h1 { font-size: 25px; }
+}

@@ -1,4 +1,4 @@
-import { tool } from "@opencode-ai/plugin"
+import { tool } from "./legacy-definition"
 import { readFileSync, readdirSync, existsSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import path from "node:path"

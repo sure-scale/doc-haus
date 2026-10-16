@@ -1,5 +1,5 @@
-import { type ComponentProps, splitProps } from "solid-js"
-import { Icon, type IconProps } from "./icon"
+import { type ComponentProps, Show, splitProps } from "solid-js"
+import { Icon, type IconProps } from "@opencode/ui/icon"
 
 type Variant = "normal" | "error" | "warning" | "success" | "info"
 
@@ -40,7 +40,7 @@ export function Card(props: CardProps) {
   const variant = () => split.variant ?? "normal"
   const accent = () => {
     const v = variant()
-    if (v === "error") return "var(--icon-critical-base)"
+    if (v === "error") return "var(--v2-state-fg-danger)"
     if (v === "warning") return "var(--icon-warning-active)"
     if (v === "success") return "var(--icon-success-active)"
     if (v === "info") return "var(--icon-info-active)"
@@ -80,11 +80,11 @@ export function CardTitle(props: CardTitleProps) {
         [split.class ?? ""]: !!split.class,
       }}
     >
-      {show() ? (
+      <Show when={show()}>
         <span data-slot="card-title-icon" data-placeholder={placeholder() || undefined}>
           <Icon name={name() ?? "dash"} size="small" />
         </span>
-      ) : null}
+      </Show>
       {split.children}
     </div>
   )

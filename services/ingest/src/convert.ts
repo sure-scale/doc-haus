@@ -1,8 +1,9 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { Document, Packer, Paragraph } from "docx"
 import { looksScanned, ocrPdfText } from "./pdf"
+import { withParagraphPointers } from "../../../dochaus/lib/drafting-amendment"
 
 // Best-effort PDF -> DOCX. There is no MIT pure-JS engine that preserves PDF
 // layout, so the reliable floor is text-only: pull the text with unpdf and rebuild
@@ -11,8 +12,7 @@ import { looksScanned, ocrPdfText } from "./pdf"
 // bundle or download it, only call `soffice` if it happens to be on PATH.
 export async function pdfToDocx(pdfBytes: Buffer): Promise<Buffer> {
   const viaSoffice = await sofficeConvert(pdfBytes)
-  if (viaSoffice) return viaSoffice
-  return textOnlyConvert(pdfBytes)
+  return Buffer.from(withParagraphPointers(viaSoffice ?? await textOnlyConvert(pdfBytes)))
 }
 
 // Lossless-ish path: shell out to a pre-installed LibreOffice. Returns null when
@@ -29,7 +29,9 @@ async function sofficeConvert(pdfBytes: Buffer): Promise<Buffer | null> {
       stderr: "ignore",
     })
     if ((await proc.exited) !== 0) return null
-    return readFileSync(path.join(dir, "in.docx"))
+    const output = path.join(dir, "in.docx")
+    if (!existsSync(output)) return null
+    return readFileSync(output)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

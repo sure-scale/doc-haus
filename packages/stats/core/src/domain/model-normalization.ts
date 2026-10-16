@@ -6,6 +6,7 @@ export const MODEL_AUTHOR_RULES = [
   { match: "gpt", author: "openai" },
   { match: "grok", author: "xai" },
   { match: "hy3", author: "tencent" },
+  { match: "hy4", author: "tencent" },
   { match: "kimi", author: "moonshot" },
   { match: "mimo", author: "xiaomi" },
   { match: "minimax", author: "minimax" },
@@ -13,7 +14,15 @@ export const MODEL_AUTHOR_RULES = [
   { match: "qwen", author: "qwen" },
 ] as const
 export const EXCLUDED_MODELS = new Set(["alpha-gpt-next"])
-export const RETIRED_STAT_MODELS = ["big-pickle"]
+export const STEALTH_MODELS = new Set(["omen-alpha", "union-alpha"])
+export const MODEL_NAME_ALIASES: Record<string, string> = {
+  "deepseek-flash": "deepseek-v4.1-flash",
+  "opencode-go/union-alpha": "union-alpha",
+  "opencode/union-alpha": "union-alpha",
+  "x-preview-f": "ox-alpha",
+  "xiaomi/mimo-v2.5": "mimo-v2.5",
+}
+export const RETIRED_STAT_MODELS = ["big-pickle", ...Object.keys(MODEL_NAME_ALIASES)]
 export const RETIRED_STAT_PROVIDERS = ["opencode"]
 
 export function normalizeInferenceModel(value: string | undefined) {
@@ -29,6 +38,8 @@ export function modelAuthor(value: string | undefined) {
 
 export function statModel(model: string | undefined, providerModel: string | undefined) {
   const normalized = normalizeInferenceModel(model)
+  const alias = MODEL_NAME_ALIASES[normalized.toLowerCase()]
+  if (alias) return alias
   if (RETIRED_STAT_MODELS.includes(normalized.toLowerCase())) return normalizeInferenceModel(providerModel)
   return normalized
 }
@@ -38,7 +49,10 @@ export function statProvider(
   providerModel: string | undefined,
   provider: string | undefined,
 ) {
-  const modelAuthorValue = modelAuthor(statModel(model, providerModel))
+  const normalized = statModel(model, providerModel)
+  if (STEALTH_MODELS.has(normalized.toLowerCase())) return "unknown"
+
+  const modelAuthorValue = modelAuthor(normalized)
   if (!modelAuthorValue) return undefined
 
   const providerModelAuthor = modelAuthor(providerModel)

@@ -1,13 +1,17 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, statSync, rmSync } from "node:fs"
+import { createHash, randomUUID } from "node:crypto"
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync, statSync, rmSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import path from "node:path"
 import type { ContentfulStatusCode } from "hono/utils/http-status"
+import { withArtifactMutationLocks } from "../../../dochaus/capabilities/artifacts/mutation-lock"
+import { commitDocumentWrite } from "./atomic-document-write"
+import { dataPaths } from "../../engine/src/data-paths"
 
 // A matter is a directory under WORKSPACE_ROOT holding a matter.json plus the
 // uploaded documents. This is the same directory the opencode server scopes a
 // session to via the x-opencode-directory header.
 
-export const WORKSPACE_ROOT = process.env.WORKSPACE_ROOT ?? path.join(process.cwd(), "workspace")
+export const WORKSPACE_ROOT = dataPaths(path.resolve(import.meta.dir, "../../.."), process.env, path.join(process.cwd(), "workspace")).workspace
 
 // reference is the firm's own client-matter number (e.g. "2026-0042"), shown in
 // the UI. It is display metadata only — the directory id stays the auto slug+uuid.
@@ -22,12 +26,47 @@ export type Matter = {
   reference?: string
   jurisdictions?: string[]
   playbook?: string
+  conflicts?: Conflicts
   dir: string
   created_at: number
 }
 
+// The conflicts intake record: proof that a conflicts check happened and how it
+// exited — never a judgement about the conflicts themselves. Exactly three
+// recordable states: cleared (by whom), pending (owned by whom, optionally due),
+// or bypassed (by whom and why — a permanent structured override, never
+// auto-removed). Absent means the matter predates the field; downstream behavior
+// keys off this record deterministically (dochaus/plugin/legal/policy.ts).
+export type Conflicts = {
+  status: "cleared" | "pending" | "bypassed"
+  by?: string
+  owner?: string
+  due?: string
+  reason?: string
+  recorded_at: number
+}
+
 function matterFile(dir: string) {
   return path.join(dir, "matter.json")
+}
+
+const MATTER_LINEAGE_ARTIFACT = ".dochaus/lineage.jsonl"
+const MATTER_ORIGIN_INTENT_ARTIFACT = ".dochaus/matter-origin-mutation.json"
+const MATTER_MUTATION_ARTIFACTS = ["matter.json", MATTER_LINEAGE_ARTIFACT, MATTER_ORIGIN_INTENT_ARTIFACT]
+
+type MatterMutationKind = "create" | "rename" | "conflicts"
+
+type MatterOriginIntent = {
+  version: 1
+  artifact: "matter.json"
+  mutation_id: string
+  correlation_id: string
+  mutation_kind: MatterMutationKind
+  entry_id: string
+  ts: string
+  content_sha256: string
+  bytes: number
+  supersedes: string | null
 }
 
 // A matter id is the auto-generated slug+uuid from createMatter, so it is always
@@ -44,9 +83,37 @@ export function listMatters(): Matter[] {
   mkdirSync(WORKSPACE_ROOT, { recursive: true })
   return readdirSync(WORKSPACE_ROOT)
     .map((name) => path.join(WORKSPACE_ROOT, name))
-    .filter((dir) => statSync(dir).isDirectory() && existsSync(matterFile(dir)))
-    .map((dir) => JSON.parse(readFileSync(matterFile(dir), "utf8")) as Matter)
+    // One hand-edited or partially written metadata file must not take down the
+    // matter list, startup maintenance, or the drafting recovery sweep for
+    // every other matter. Invalid records stay isolated to their directory.
+    .flatMap((dir) => {
+      const current = readListedMatter(dir)
+      return current ? [current] : []
+    })
     .sort((a, b) => a.created_at - b.created_at)
+}
+
+function readListedMatter(dir: string): Matter | undefined {
+  try {
+    recoverMatterOriginMutation(dir)
+    if (!statSync(dir).isDirectory() || !existsSync(matterFile(dir))) return
+    const parsed = JSON.parse(readFileSync(matterFile(dir), "utf8")) as unknown
+    if (!isRecord(parsed)) return
+    if (
+      typeof parsed.id !== "string" ||
+      parsed.id !== path.basename(dir) ||
+      typeof parsed.title !== "string" ||
+      typeof parsed.created_at !== "number" ||
+      !Number.isFinite(parsed.created_at)
+    ) return
+    return { ...parsed, dir } as Matter
+  } catch {
+    return
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
 export function createMatter(title: string, reference?: string, jurisdictions?: string[], playbook?: string): Matter {
@@ -55,17 +122,44 @@ export function createMatter(title: string, reference?: string, jurisdictions?: 
   const dir = matterDir(id)
   mkdirSync(dir, { recursive: true })
   const matter: Matter = { id, title, reference, jurisdictions, playbook, dir, created_at: Date.now() }
-  writeFileSync(matterFile(dir), JSON.stringify(matter, null, 2))
-  return matter
+  return withMatterMutationLocks(dir, () => persistMatterLocked(matter, "create"))
 }
 
 // Rename keeps the directory id stable (it backs every session and document
 // path); only the display title/reference/jurisdictions/playbook in matter.json change.
 export function renameMatter(id: string, title: string, reference?: string, jurisdictions?: string[], playbook?: string): Matter {
-  const dir = matterDir(id)
-  const matter = { ...getMatter(id), title, reference, jurisdictions, playbook }
-  writeFileSync(matterFile(dir), JSON.stringify(matter, null, 2))
-  return matter
+  return mutateMatter(id, "rename", (matter) => ({ ...matter, title, reference, jurisdictions, playbook }))
+}
+
+// Records a conflicts-check outcome on the matter. Each exit carries the fields
+// that make the record auditable: cleared names who ran the check, pending names
+// who owns finishing it, bypassed names who decided and why. Anything else is
+// rejected so matter.json never holds a half-recorded check.
+export function recordConflicts(
+  id: string,
+  input: { status: Conflicts["status"]; by?: string; owner?: string; due?: string; reason?: string },
+): Matter {
+  if (!["cleared", "pending", "bypassed"].includes(input.status))
+    throw new Error(`conflicts status must be "cleared", "pending", or "bypassed", got "${input.status}"`)
+  if (input.status === "cleared" && !input.by)
+    throw new Error('conflicts "cleared" requires "by" — who performed the check')
+  if (input.status === "pending" && !input.owner)
+    throw new Error('conflicts "pending" requires "owner" — who is responsible for completing the check')
+  if (input.status === "pending" && input.due !== undefined && Number.isNaN(Date.parse(input.due)))
+    throw new Error(`conflicts "due" must be an ISO date, got "${input.due}"`)
+  if (input.status === "bypassed" && (!input.by || !input.reason))
+    throw new Error('conflicts "bypassed" requires "by" and "reason" — a documented bypass names who decided and why')
+  return mutateMatter(id, "conflicts", (matter) => ({
+    ...matter,
+    conflicts: {
+      status: input.status,
+      by: input.by,
+      owner: input.owner,
+      due: input.due,
+      reason: input.reason,
+      recorded_at: Date.now(),
+    },
+  }))
 }
 
 export function deleteMatter(id: string) {
@@ -73,7 +167,198 @@ export function deleteMatter(id: string) {
 }
 
 export function getMatter(id: string): Matter {
-  return JSON.parse(readFileSync(matterFile(matterDir(id)), "utf8")) as Matter
+  const dir = matterDir(id)
+  recoverMatterOriginMutation(dir)
+  return JSON.parse(readFileSync(matterFile(dir), "utf8")) as Matter
+}
+
+function mutateMatter(id: string, kind: Exclude<MatterMutationKind, "create">, update: (matter: Matter) => Matter) {
+  const dir = matterDir(id)
+  return withMatterMutationLocks(dir, () => {
+    recoverMatterOriginMutationLocked(dir)
+    return persistMatterLocked(update(JSON.parse(readFileSync(matterFile(dir), "utf8")) as Matter), kind)
+  })
+}
+
+function persistMatterLocked(matter: Matter, kind: MatterMutationKind) {
+  recoverMatterOriginMutationLocked(matter.dir)
+  const content = Buffer.from(JSON.stringify(matter, null, 2))
+  const state = contentState(content)
+  const intent: MatterOriginIntent = {
+    version: 1,
+    artifact: "matter.json",
+    mutation_id: randomUUID(),
+    correlation_id: `matter-${kind}-${randomUUID()}`,
+    mutation_kind: kind,
+    entry_id: randomUUID(),
+    ts: new Date().toISOString(),
+    content_sha256: state.sha256,
+    bytes: state.bytes,
+    supersedes: lastMatterLineageEntryID(matter.dir),
+  }
+  writeMatterOriginIntent(matter.dir, intent)
+  commitDocumentWrite(matterFile(matter.dir), content, () => appendMatterOriginReceiptLocked(matter.dir, intent))
+  rmSync(matterOriginIntentFile(matter.dir), { force: true })
+  return matter
+}
+
+// A fixed, hash-only intent closes the process-crash gap between replacing
+// matter.json and appending its receipt. Existing matters without this intent
+// are deliberately left alone: recovery is not a metadata backfill.
+function recoverMatterOriginMutation(dir: string) {
+  if (!existsSync(matterOriginIntentFile(dir))) return false
+  return withMatterMutationLocks(dir, () => recoverMatterOriginMutationLocked(dir))
+}
+
+function recoverMatterOriginMutationLocked(dir: string) {
+  const file = matterOriginIntentFile(dir)
+  if (!existsSync(file)) return false
+  const intent = readMatterOriginIntent(file)
+  const current = fileState(matterFile(dir))
+  if (!current || current.sha256 !== intent.content_sha256 || current.bytes !== intent.bytes) {
+    rmSync(file, { force: true })
+    return false
+  }
+  appendMatterOriginReceiptLocked(dir, intent)
+  rmSync(file, { force: true })
+  return true
+}
+
+function appendMatterOriginReceiptLocked(dir: string, intent: MatterOriginIntent) {
+  const current = fileState(matterFile(dir))
+  if (!current || current.sha256 !== intent.content_sha256 || current.bytes !== intent.bytes)
+    throw new Error(`Matter mutation ${intent.mutation_id} does not match the current matter.json bytes.`)
+  const expected = matterOriginReceipt(intent)
+  const existing = lineageRows(dir).find(
+    (row) => isRecord(row.provenance) && row.provenance.matter_mutation_id === intent.mutation_id,
+  )
+  if (existing) {
+    if (!sameMatterOriginReceipt(existing, expected))
+      throw new Error(`Matter mutation ${intent.mutation_id} has conflicting lineage evidence.`)
+    return
+  }
+  const file = path.join(dir, MATTER_LINEAGE_ARTIFACT)
+  mkdirSync(path.dirname(file), { recursive: true })
+  const prior = existsSync(file) ? readFileSync(file, "utf8") : ""
+  appendFileSync(file, `${prior.length && !prior.endsWith("\n") ? "\n" : ""}${JSON.stringify(expected)}\n`)
+}
+
+function matterOriginReceipt(intent: MatterOriginIntent) {
+  return {
+    entry_id: intent.entry_id,
+    ts: intent.ts,
+    tier: "PERMANENT",
+    artifact: "matter.json",
+    op: intent.mutation_kind === "create" ? "write" : "edit",
+    run: `ingest:${intent.correlation_id}`,
+    stage: null,
+    subagent: "ingest",
+    content_sha256: intent.content_sha256,
+    bytes: intent.bytes,
+    supersedes: intent.supersedes,
+    provenance: {
+      origin: "matter-metadata",
+      matter_mutation_id: intent.mutation_id,
+      correlation_id: intent.correlation_id,
+      mutation_kind: intent.mutation_kind,
+    },
+  }
+}
+
+function sameMatterOriginReceipt(current: Record<string, unknown>, expected: ReturnType<typeof matterOriginReceipt>) {
+  return (
+    current.entry_id === expected.entry_id &&
+    current.ts === expected.ts &&
+    current.tier === expected.tier &&
+    current.artifact === expected.artifact &&
+    current.op === expected.op &&
+    current.run === expected.run &&
+    current.stage === expected.stage &&
+    current.subagent === expected.subagent &&
+    current.content_sha256 === expected.content_sha256 &&
+    current.bytes === expected.bytes &&
+    current.supersedes === expected.supersedes &&
+    isRecord(current.provenance) &&
+    current.provenance.origin === expected.provenance.origin &&
+    current.provenance.matter_mutation_id === expected.provenance.matter_mutation_id &&
+    current.provenance.correlation_id === expected.provenance.correlation_id &&
+    current.provenance.mutation_kind === expected.provenance.mutation_kind
+  )
+}
+
+function lastMatterLineageEntryID(dir: string) {
+  return lineageRows(dir).reduce<string | null>(
+    (entry, row) => row.artifact === "matter.json" && typeof row.entry_id === "string" ? row.entry_id : entry,
+    null,
+  )
+}
+
+function lineageRows(dir: string) {
+  const file = path.join(dir, MATTER_LINEAGE_ARTIFACT)
+  if (!existsSync(file)) return []
+  return readFileSync(file, "utf8")
+    .split(/\r?\n/)
+    .flatMap((line) => {
+      if (!line.trim()) return []
+      try {
+        const parsed = JSON.parse(line) as unknown
+        return isRecord(parsed) ? [parsed] : []
+      } catch {
+        return []
+      }
+    })
+}
+
+function writeMatterOriginIntent(dir: string, intent: MatterOriginIntent) {
+  const file = matterOriginIntentFile(dir)
+  const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`
+  mkdirSync(path.dirname(file), { recursive: true })
+  writeFileSync(temporary, `${JSON.stringify(intent, null, 2)}\n`, { flag: "wx" })
+  try {
+    renameSync(temporary, file)
+  } finally {
+    rmSync(temporary, { force: true })
+  }
+}
+
+function readMatterOriginIntent(file: string): MatterOriginIntent {
+  const parsed = JSON.parse(readFileSync(file, "utf8")) as unknown
+  if (
+    !isRecord(parsed) ||
+    parsed.version !== 1 ||
+    parsed.artifact !== "matter.json" ||
+    typeof parsed.mutation_id !== "string" ||
+    !parsed.mutation_id ||
+    typeof parsed.correlation_id !== "string" ||
+    !parsed.correlation_id ||
+    !["create", "rename", "conflicts"].includes(String(parsed.mutation_kind)) ||
+    typeof parsed.entry_id !== "string" ||
+    !parsed.entry_id ||
+    typeof parsed.ts !== "string" ||
+    !/^[a-f0-9]{64}$/.test(String(parsed.content_sha256)) ||
+    typeof parsed.bytes !== "number" ||
+    !Number.isSafeInteger(parsed.bytes) ||
+    parsed.bytes < 0 ||
+    !(parsed.supersedes === null || typeof parsed.supersedes === "string")
+  ) throw new Error(`Invalid matter origin mutation intent at ${file}.`)
+  return parsed as MatterOriginIntent
+}
+
+function matterOriginIntentFile(dir: string) {
+  return path.join(dir, MATTER_ORIGIN_INTENT_ARTIFACT)
+}
+
+function withMatterMutationLocks<T>(dir: string, fn: () => T) {
+  return withArtifactMutationLocks(dir, MATTER_MUTATION_ARTIFACTS, fn)
+}
+
+function fileState(file: string) {
+  if (!existsSync(file)) return null
+  return contentState(readFileSync(file))
+}
+
+function contentState(content: Buffer) {
+  return { sha256: createHash("sha256").update(content).digest("hex"), bytes: content.byteLength }
 }
 
 // The jurisdiction packs available to assign to a matter, read from the dochaus
