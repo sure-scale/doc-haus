@@ -1,15 +1,10 @@
-import { Effect } from "effect"
-import { PluginV2 } from "../../plugin"
+import { createProviderPlugin } from "./factory.js"
 
-export const GatewayPlugin = PluginV2.define({
-  id: PluginV2.ID.make("gateway"),
-  effect: Effect.gen(function* () {
-    return {
-      "aisdk.sdk": Effect.fn(function* (evt) {
-        if (evt.package !== "@ai-sdk/gateway") return
-        const mod = yield* Effect.promise(() => import("@ai-sdk/gateway"))
-        evt.sdk = mod.createGateway(evt.options)
-      }),
-    }
-  }),
+export const GatewayPlugin = createProviderPlugin({
+  id: "opencode.provider.gateway",
+  package: "@ai-sdk/gateway",
+  load: async (options) => {
+    const { createGateway } = await import("@ai-sdk/gateway")
+    return createGateway(options)
+  },
 })

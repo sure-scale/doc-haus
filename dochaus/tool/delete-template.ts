@@ -1,4 +1,4 @@
-import { tool } from "@opencode-ai/plugin"
+import { tool } from "./legacy-definition"
 import path from "node:path"
 
 // doc.haus delete-template tool. Removes a template from the firm's global

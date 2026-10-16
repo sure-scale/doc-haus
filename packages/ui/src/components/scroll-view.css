@@ -1,14 +1,27 @@
 .scroll-view {
   position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
   overflow: hidden;
 }
 
 .scroll-view__viewport {
-  height: 100%;
+  flex: 1 1 auto;
+  min-height: 0;
   width: 100%;
   overflow-y: auto;
   scrollbar-width: none;
   outline: none;
+}
+
+.scroll-view[data-orientation="horizontal"] .scroll-view__viewport {
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.scroll-view[data-orientation="both"] .scroll-view__viewport {
+  overflow: auto;
 }
 
 .scroll-view__viewport::-webkit-scrollbar {
@@ -17,16 +30,26 @@
 
 .scroll-view__thumb {
   position: absolute;
-  right: 0;
-  top: 0;
-  width: 12px;
   transition: opacity 200ms ease;
   cursor: default;
   user-select: none;
+  pointer-events: auto;
   opacity: 0;
 }
 
-.scroll-view__thumb::after {
+.scroll-view__thumb[data-orientation="vertical"] {
+  inset-inline-end: 0;
+  top: 0;
+  width: 12px;
+}
+
+.scroll-view__thumb[data-orientation="horizontal"] {
+  left: 0;
+  bottom: 0;
+  height: 12px;
+}
+
+.scroll-view__thumb[data-orientation="vertical"]::after {
   content: "";
   position: absolute;
   left: 50%;
@@ -34,6 +57,20 @@
   top: 0;
   bottom: 0;
   width: 4px;
+  border-radius: 9999px;
+  background-color: var(--border-weak-base);
+  backdrop-filter: blur(4px);
+  transition: background-color 150ms ease;
+}
+
+.scroll-view__thumb[data-orientation="horizontal"]::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 4px;
+  transform: translateY(-50%);
   border-radius: 9999px;
   background-color: var(--border-weak-base);
   backdrop-filter: blur(4px);

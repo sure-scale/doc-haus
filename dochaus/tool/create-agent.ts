@@ -1,4 +1,4 @@
-import { tool } from "@opencode-ai/plugin"
+import { tool } from "./legacy-definition"
 
 // doc.haus create-agent tool. Registers a new custom specialist subagent in the
 // firm's agent registry (dochaus/agents.json) and generates its .md in

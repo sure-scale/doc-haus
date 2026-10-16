@@ -1,0 +1,67 @@
+/* Shared library pages: saved items and their assistant in the same view. */
+.page-head.library-head { border-bottom: 0; padding-bottom: 0; margin-bottom: 24px; }
+.library-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 32px; align-items: start; border-top: 1px solid var(--border-soft); padding-top: 24px; }
+.library-collection, .library-builder { min-width: 0; }
+.library-heading { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
+.library-heading h2 { margin: 0; font-size: 18px; font-weight: 550; letter-spacing: -.35px; }
+.library-heading > span { font-size: 12px; }
+.library-collection .dropzone { display: grid; grid-template-columns: 22px minmax(0, 1fr); column-gap: 12px; row-gap: 4px; padding: 16px; text-align: left; border-width: 1px; }
+.library-collection .dropzone > svg { grid-row: 1 / 3; align-self: center; color: var(--accent-muted); }
+.library-collection .dropzone-title, .library-collection .dropzone-hint { margin: 0; }
+.library-collection .dropzone-title { color: var(--accent); font-size: 14px; }
+.library-collection .dropzone-hint { font-size: 12px; }
+.library-upload + .library-items { margin-top: 16px; }
+.library-empty { margin: 0; padding: 12px 0; color: var(--muted); font-size: 13px; }
+/* Give content the full row width; controls have their own stable, visible lane. */
+.library-collection .list-row { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; margin-inline: 0; padding: 16px; }
+.library-collection .list-row-title { white-space: normal; overflow-wrap: anywhere; }
+.library-collection .list-row-meta { flex-wrap: wrap; gap: 4px 10px; }
+.library-collection .list-row-desc { flex-basis: 100%; white-space: normal; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.library-collection .list-row-date { white-space: normal; }
+.library-collection .list-row-desc + .list-row-date::before { content: none; }
+.library-collection .list-row-actions { justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-left: 0; }
+.library-collection .list-row-actions .icon-btn { min-height: 34px; padding: 6px 12px; opacity: 1; }
+.library-collection .list-row-actions .icon-btn:not(.is-primary):not(.danger) { opacity: 1; }
+.library-collection .list-row-actions .switch { margin-right: auto; }
+@media (hover: none), (pointer: coarse) {
+  .library-collection .list-row-actions .icon-btn { min-height: 40px; }
+}
+.library-builder { padding-left: 32px; border-left: 1px solid var(--border-soft); }
+.library-builder .design-conversation.chat-card { margin: 0; padding: 0; }
+.library-builder .design-conversation .chat-heading { padding-bottom: 12px; }
+.library-builder .design-conversation .chat-heading h2 { font-size: 18px; }
+.library-builder .design-conversation .chat-log { height: auto; padding: 0 0 16px; }
+.library-builder .design-conversation:has(.chat-empty) .chat-log { height: auto; }
+.library-builder .design-conversation .chat-empty { max-width: none; width: 100%; padding: 0; margin: 0; }
+.library-builder .design-conversation .chat-empty-intro { font-size: 14px; line-height: 1.5; letter-spacing: 0; margin-bottom: 12px; }
+.library-builder .design-conversation .chat-empty .starters { flex-direction: column; align-items: stretch; }
+.library-builder .design-conversation .starter { min-height: 38px; padding: 9px 0; text-align: left; }
+.library-builder .design-conversation .composer textarea { min-height: 72px; }
+
+/* The first message starts the full-height layout immediately. A new session
+   reaches the URL only after its first turn settles, so .is-active alone is late.
+   Keep the composer and pending questions outside the scrolling transcript. */
+.content:has(.library-layout.is-active, .library-layout .msg) { display: flex; flex-direction: column; height: 100dvh; }
+.container:has(> .library-layout.is-active, > .library-layout .msg) { display: flex; flex-direction: column; flex: 1; min-height: 0; width: 100%; }
+.container:has(> .library-layout.is-active, > .library-layout .msg) > .library-head { flex: none; }
+.library-layout:is(.is-active, :has(.msg)) { flex: 1; min-height: 0; grid-template-rows: minmax(0, 1fr); align-items: stretch; }
+.library-layout:is(.is-active, :has(.msg)) .library-collection { min-height: 0; overflow-y: auto; }
+.library-layout:is(.is-active, :has(.msg)) .library-builder { display: flex; min-height: 0; }
+.library-layout:is(.is-active, :has(.msg)) .chat-card { flex: 1; min-height: 0; }
+.library-layout:is(.is-active, :has(.msg)) .chat-card > * { flex-shrink: 0; }
+.library-layout:is(.is-active, :has(.msg)) .chat-log-wrap { display: flex; flex-direction: column; flex: 1 1 0; min-height: 96px; }
+.library-layout:is(.is-active, :has(.msg)) .design-conversation .chat-log { flex: 1 1 0; height: auto; }
+
+@media (max-width: 1100px) {
+  .library-layout { gap: 24px; }
+  .library-builder { padding-left: 24px; }
+}
+@media (max-width: 760px) {
+  .library-layout { grid-template-columns: minmax(0, 1fr); }
+  .library-builder { padding: 24px 0 0; border-left: 0; border-top: 1px solid var(--border-soft); }
+  /* The active conversation fills the first screen; the library follows in
+     normal page scrolling, without competing for the transcript's height. */
+  .library-layout:is(.is-active, :has(.msg)) { grid-template-rows: 100% max-content; }
+  .library-layout:is(.is-active, :has(.msg)) .library-builder { grid-row: 1; padding-top: 0; border-top: 0; }
+  .library-layout:is(.is-active, :has(.msg)) .library-collection { overflow: visible; border-top: 1px solid var(--border-soft); padding-block: 24px; }
+}

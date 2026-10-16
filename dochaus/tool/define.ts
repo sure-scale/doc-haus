@@ -1,4 +1,4 @@
-import { tool } from "@opencode-ai/plugin"
+import { tool } from "./legacy-definition"
 import { Database } from "bun:sqlite"
 import { existsSync } from "node:fs"
 import path from "node:path"

@@ -1,4 +1,4 @@
-import { tool } from "@opencode-ai/plugin"
+import { tool } from "./legacy-definition"
 
 // doc.haus update-playbook tool. Revises an imported playbook in
 // WORKSPACE_ROOT/.playbooks: its description, its full body, or both. The server

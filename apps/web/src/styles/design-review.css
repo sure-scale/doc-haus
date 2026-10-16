@@ -1,0 +1,94 @@
+/* Use the document preview's chrome on a wide, independently scrolling table. */
+.review-modal {
+  position: fixed;
+  inset: 0;
+  width: calc(100vw - 64px);
+  max-width: 1440px;
+  height: calc(100dvh - 64px);
+  max-height: calc(100dvh - 64px);
+  margin: 32px auto;
+  padding: 0;
+}
+
+.review-modal:not([open]) { display: none; }
+.review-modal::backdrop {
+  background: var(--overlay-scrim);
+  backdrop-filter: blur(4px) saturate(1.05);
+  -webkit-backdrop-filter: blur(4px) saturate(1.05);
+}
+.review-modal > .viewer-bar { flex-shrink: 0; }
+.review-modal .viewer-title { overflow-wrap: anywhere; }
+.review-modal .viewer-bar-actions > .modal-close { width: 36px; flex: 0 0 36px; padding: 8px; }
+.review-modal .modal-close svg { flex-shrink: 0; }
+
+.review-modal > .card.review {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  margin: 0;
+  padding: 24px;
+  overflow: hidden;
+}
+
+.review .review-toolbar {
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-bottom: 20px;
+  padding-bottom: 0;
+}
+
+.review-toolbar > .row { flex-wrap: wrap; }
+.review-hint { margin: 0 0 16px; color: var(--muted); font-size: 13px; }
+.review .review-scroll { min-height: 0; max-height: none; }
+.review > .review-toolbar,
+.review > .review-hint,
+.review > [role="alert"] { flex-shrink: 0; }
+.review-scroll:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.review-table .review-doc-col {
+  width: 260px;
+  min-width: 220px;
+  max-width: 320px;
+  overflow-wrap: anywhere;
+}
+
+.review-table tbody tr:last-child th { border-bottom: none; }
+.review-table .review-add-col {
+  width: 64px;
+  min-width: 64px;
+  padding: 8px 12px;
+  text-align: center;
+}
+
+.review-table.is-empty .review-add-col { width: auto; }
+.review-table.is-empty .review-doc-col { width: 30%; }
+.review-table.is-empty tbody .review-add-col { background: var(--accent-tint); }
+.review-table .review-empty-documents { padding: 28px 16px; color: var(--muted); }
+
+.review-add-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  color: var(--accent);
+}
+
+.review-add-button:hover { background: var(--accent-soft); border-color: var(--accent); }
+
+@media (max-width: 700px) {
+  .review-modal {
+    width: calc(100vw - 24px);
+    height: calc(100dvh - 24px);
+    max-height: calc(100dvh - 24px);
+    margin: 12px auto;
+  }
+  .review-modal > .card.review { padding: 16px; }
+  .review-table .review-doc-col { min-width: 180px; }
+}

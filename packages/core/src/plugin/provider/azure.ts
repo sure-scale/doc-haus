@@ -1,76 +1,249 @@
-import { Effect } from "effect"
-import { PluginV2 } from "../../plugin"
-import { ProviderV2 } from "../../provider"
+import { Clock, Effect, Schema, Semaphore, Stream } from "effect"
+import { ChildProcess } from "effect/unstable/process"
+import { define } from "@opencode/plugin/effect/plugin"
+import { Form } from "@opencode/schema/form"
+import { AppProcess } from "@opencode/util/process"
+import { App } from "../../app.js"
+import { Bus } from "../../bus.js"
+import { Credential } from "../../credential.js"
+import { Integration } from "../../integration.js"
+import { Provider } from "../../provider.js"
+import { iife } from "../../util/iife.js"
+import { which } from "../../util/which.js"
+import { configuredSettings } from "./configured.js"
 
-function selectLanguage(sdk: any, modelID: string, useChat: boolean) {
-  if (useChat && sdk.chat) return sdk.chat(modelID)
-  if (sdk.responses) return sdk.responses(modelID)
-  if (sdk.messages) return sdk.messages(modelID)
-  if (sdk.chat) return sdk.chat(modelID)
-  return sdk.languageModel(modelID)
+const cognitiveScope = "https://cognitiveservices.azure.com/.default"
+const foundryScope = "https://ai.azure.com/.default"
+const methodID = Integration.MethodID.make("azure-cli")
+const decodeJSON = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))
+const decodeToken = Schema.decodeUnknownEffect(
+  Schema.Struct({
+    accessToken: Schema.NonEmptyString,
+    expires_on: Schema.optional(Schema.Number),
+    expiresOn: Schema.optional(Schema.NonEmptyString),
+  }),
+)
+export const AzurePlugin = define({
+  id: "opencode.provider.azure",
+  effect: Effect.fn(function* (ctx) {
+    const configured = yield* configuredSettings(Provider.ID.azure)
+    const processes = yield* AppProcess.Service
+    const bus = yield* Bus.Service
+    const tokens = new Map<string, { access: string; expires: number }>()
+    const loading = Semaphore.makeUnsafe(1)
+    const loaded: { resource?: string } = {}
+
+    const command = (args: string[]) =>
+      processes
+        .run(ChildProcess.make("az", args, { extendEnv: true, stdin: "ignore" }), { timeout: "10 seconds" })
+        .pipe(
+          Effect.flatMap(AppProcess.requireSuccess),
+          Effect.flatMap((result) => decodeJSON(result.stdout.toString("utf8"))),
+        )
+
+    const token = Effect.fn("AzurePlugin.token")(function* (scope: string) {
+      const now = yield* Clock.currentTimeMillis
+      const cached = tokens.get(scope)
+      if (cached && cached.expires - now > 5 * 60_000) return cached
+      const result = yield* command(["account", "get-access-token", "--scope", scope, "--output", "json"]).pipe(
+        Effect.flatMap(decodeToken),
+      )
+      const expires = result.expires_on !== undefined ? result.expires_on * 1000 : Date.parse(result.expiresOn ?? "")
+      if (!Number.isFinite(expires))
+        return yield* Effect.fail(new Error("Azure CLI returned an invalid token expiration"))
+      const refreshed = { access: result.accessToken, expires }
+      tokens.set(scope, refreshed)
+      return refreshed
+    })
+
+    const available = Boolean(which("az"))
+    const form = () =>
+      iife(() => {
+        if (resolveResourceName(configured) || typeof configured?.baseURL === "string") return
+        return Form.Fields.make([
+          {
+            type: "string",
+            key: "resourceName",
+            title: "Enter Azure Resource Name",
+            placeholder: "e.g. my-models",
+            required: true,
+          },
+        ])
+      })
+
+    yield* ctx.integration.transform((editor) => {
+      editor.method.update({
+        integrationID: Provider.ID.azure,
+        method: { type: "key", label: "API key", form: form() },
+      })
+      if (!available) return
+      editor.method.update({
+        integrationID: Provider.ID.azure,
+        method: {
+          id: methodID,
+          type: "oauth",
+          label: "Microsoft Entra ID (Azure CLI)",
+          form: form(),
+        },
+        authorize: (answer) =>
+          Effect.succeed({
+            mode: "auto" as const,
+            url: "",
+            instructions: "Sign in with `az login` before continuing.",
+            callback: Effect.gen(function* () {
+              const resourceName =
+                typeof answer.resourceName === "string" ? answer.resourceName : resolveResourceName(configured)
+              if (!resourceName) return yield* Effect.fail(new Error("Azure resource name is required"))
+              const current = yield* token(cognitiveScope)
+              loaded.resource = resourceName
+              yield* ctx.provider.reload()
+              return Credential.OAuth.make({
+                type: "oauth",
+                methodID,
+                access: current.access,
+                refresh: "azure-cli",
+                expires: current.expires,
+                metadata: { resourceName },
+              })
+            }),
+          }),
+        refresh: (credential) =>
+          token(cognitiveScope).pipe(
+            Effect.map((current) =>
+              Credential.OAuth.make({ ...credential, access: current.access, expires: current.expires }),
+            ),
+          ),
+      })
+    })
+
+    const load = Effect.fn("AzurePlugin.load")(function* () {
+      const connection = yield* ctx.integration.connection.active(Provider.ID.azure)
+      const credential = connection
+        ? yield* ctx.integration.connection.resolve(connection).pipe(Effect.orElseSucceed(() => undefined))
+        : undefined
+      if (credential?.type !== "oauth" || credential.methodID !== methodID) {
+        loaded.resource = undefined
+        return
+      }
+      const resource =
+        typeof credential.metadata?.resourceName === "string" ? credential.metadata.resourceName : undefined
+      loaded.resource = resource
+    })
+
+    yield* load()
+    yield* ctx.provider.transform((evt) => {
+      for (const item of evt.list()) {
+        if (
+          item.provider.id !== Provider.ID.azure &&
+          !item.provider.package.startsWith("@opencode/ai/providers/azure/")
+        )
+          continue
+        const resourceName = resolveResourceName(item.provider.settings, loaded.resource)
+        const websocket = responsesWebSocketCapable(item.provider)
+        if (!resourceName && !websocket) continue
+        evt.update(item.provider.id, (provider) => {
+          provider.settings = {
+            ...provider.settings,
+            ...(resourceName === undefined ? {} : { resourceName }),
+            ...(websocket ? { transport: provider.settings?.transport ?? "websocket" } : {}),
+            ...(resourceName !== undefined && typeof provider.settings?.baseURL === "string"
+              ? { baseURL: expandResourceName(provider.settings.baseURL, resourceName) }
+              : {}),
+          }
+        })
+      }
+    })
+    yield* ctx.model.transform((models) => {
+      for (const item of models.provider.list()) {
+        if (
+          item.provider.id !== Provider.ID.azure &&
+          !item.provider.package.startsWith("@opencode/ai/providers/azure/")
+        )
+          continue
+        const resourceName = resolveResourceName(item.provider.settings, loaded.resource)
+        for (const model of models.list(item.provider.id)) {
+          models.update(item.provider.id, model.id, (draft) => {
+            if (resourceName && typeof draft.settings?.baseURL === "string")
+              draft.settings.baseURL = expandResourceName(
+                draft.settings.baseURL,
+                resolveResourceName(draft.settings, resourceName) ?? resourceName,
+              )
+          })
+        }
+      }
+    })
+
+    const reload = () => loading.withPermit(load().pipe(Effect.andThen(ctx.provider.reload())))
+    yield* bus.subscribe(Credential.Event.Switched).pipe(
+      Stream.filter((event) => event.data.integrationID === Integration.ID.make("azure")),
+      Stream.runForEach(reload),
+      Effect.forkScoped({ startImmediately: true }),
+    )
+
+    // Entra bearer tokens are minted per request from the target URL's scope, so they are injected
+    // at the transport hooks rather than stored as a credential.
+    const bearer = Effect.fn("AzurePlugin.bearer")(function* (url: string) {
+      const connection = yield* ctx.integration.connection.active(Provider.ID.azure)
+      const credential = connection
+        ? yield* ctx.integration.connection.resolve(connection).pipe(Effect.orElseSucceed(() => undefined))
+        : undefined
+      if (credential?.type !== "oauth" || credential.methodID !== methodID) return
+      const target = new URL(url)
+      const scope =
+        target.hostname.endsWith(".services.ai.azure.com") && !target.pathname.startsWith("/models")
+          ? foundryScope
+          : cognitiveScope
+      const current = yield* token(scope).pipe(Effect.orDie)
+      return `Bearer ${current.access}`
+    })
+    yield* ctx.session.hook(
+      "http.request",
+      (evt) =>
+        Effect.gen(function* () {
+          if (evt.model.providerID !== Provider.ID.azure) return
+          const authorization = yield* bearer(evt.request.url)
+          if (!authorization) return
+          evt.request.headers.delete("api-key")
+          evt.request.headers.delete("x-api-key")
+          evt.request.headers.set("authorization", authorization)
+          evt.request.headers.set("user-agent", App.useragent(ctx.app))
+        }),
+      { providerID: Provider.ID.azure },
+    )
+    yield* ctx.session.hook(
+      "experimental.ws.handshake",
+      (evt) =>
+        Effect.gen(function* () {
+          if (evt.model.providerID !== Provider.ID.azure) return
+          const authorization = yield* bearer(evt.url)
+          if (!authorization) return
+          delete evt.headers["api-key"]
+          delete evt.headers["x-api-key"]
+          evt.headers.authorization = authorization
+          evt.headers["user-agent"] = App.useragent(ctx.app)
+        }),
+      { providerID: Provider.ID.azure },
+    )
+  }),
+})
+
+function resolveResourceName(settings: Readonly<Record<string, unknown>> | undefined, fallback?: string) {
+  const configured = settings?.resourceName
+  if (typeof configured === "string" && configured.trim() !== "") return configured
+  return fallback ?? process.env.AZURE_RESOURCE_NAME ?? process.env.AZURE_COGNITIVE_SERVICES_RESOURCE_NAME
 }
 
-export const AzurePlugin = PluginV2.define({
-  id: PluginV2.ID.make("azure"),
-  effect: Effect.gen(function* () {
-    return {
-      "catalog.transform": Effect.fn(function* (evt) {
-        for (const item of evt.provider.list()) {
-          if (item.provider.api.type !== "aisdk") continue
-          if (item.provider.api.package !== "@ai-sdk/azure") continue
-          const configured = item.provider.request.body.resourceName
-          const resourceName =
-            typeof configured === "string" && configured.trim() !== "" ? configured : process.env.AZURE_RESOURCE_NAME
-          if (!resourceName) continue
-          evt.provider.update(item.provider.id, (provider) => {
-            provider.request.body.resourceName = resourceName
-          })
-        }
-      }),
-      "aisdk.sdk": Effect.fn(function* (evt) {
-        if (evt.package !== "@ai-sdk/azure") return
-        if (evt.model.providerID === ProviderV2.ID.azure) {
-          if (
-            !evt.options.resourceName &&
-            !evt.options.baseURL &&
-            (evt.model.api.type !== "aisdk" || !evt.model.api.url)
-          ) {
-            throw new Error(
-              "AZURE_RESOURCE_NAME is missing, set it using env var or reconnecting the azure provider and setting it",
-            )
-          }
-        }
-        const mod = yield* Effect.promise(() => import("@ai-sdk/azure"))
-        evt.sdk = mod.createAzure(evt.options)
-      }),
-      "aisdk.language": Effect.fn(function* (evt) {
-        if (evt.model.providerID !== ProviderV2.ID.azure) return
-        evt.language = selectLanguage(evt.sdk, evt.model.api.id, Boolean(evt.options.useCompletionUrls))
-      }),
-    }
-  }),
-})
+function expandResourceName(baseURL: string, resourceName: string) {
+  return baseURL
+    .replaceAll("${AZURE_RESOURCE_NAME}", resourceName)
+    .replaceAll("${AZURE_COGNITIVE_SERVICES_RESOURCE_NAME}", resourceName)
+}
 
-export const AzureCognitiveServicesPlugin = PluginV2.define({
-  id: PluginV2.ID.make("azure-cognitive-services"),
-  effect: Effect.gen(function* () {
-    return {
-      "catalog.transform": Effect.fn(function* (evt) {
-        const resourceName = process.env.AZURE_COGNITIVE_SERVICES_RESOURCE_NAME
-        if (!resourceName) return
-        for (const item of evt.provider.list()) {
-          if (item.provider.api.type !== "aisdk") continue
-          if (item.provider.api.package !== "@ai-sdk/openai-compatible") continue
-          if (!item.provider.id.includes("azure-cognitive-services")) continue
-          evt.provider.update(item.provider.id, (provider) => {
-            provider.request.body.baseURL = `https://${resourceName}.cognitiveservices.azure.com/openai`
-          })
-        }
-      }),
-      "aisdk.language": Effect.fn(function* (evt) {
-        if (evt.model.providerID !== ProviderV2.ID.make("azure-cognitive-services")) return
-        evt.language = selectLanguage(evt.sdk, evt.model.api.id, Boolean(evt.options.useCompletionUrls))
-      }),
-    }
-  }),
-})
+function responsesWebSocketCapable(provider: Provider.Info) {
+  if (provider.package !== "@opencode/ai/providers/azure/responses") return false
+  const settings = provider.settings
+  if (settings?.useDeploymentBasedUrls === true) return false
+  if (settings?.apiVersion !== undefined && settings.apiVersion !== "v1") return false
+  if (typeof settings?.baseURL !== "string") return true
+  return /^https:\/\/[^/]+\.openai\.azure\.com(?:\/|$)/i.test(settings.baseURL)
+}

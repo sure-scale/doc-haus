@@ -4,11 +4,33 @@ description: "Firm playbook: positions, fallbacks, and approved clause text for 
 ---
 
 This is an executable firm playbook for SaaS and cloud master subscription
-agreements governed by US law. Each `##` section is one clause type. Text inside
-an ```approved fence is the firm-approved replacement text — copy it byte-exact
-into the redline tool's `replacement` arg. Text inside an ```approved-fallback
-fence is the firm's fallback text, to be used only when its stated "when"
-condition is met.
+agreements governed by US law. The contract-type and jurisdiction tags for
+every position below come from this header (SaaS/cloud master subscription
+agreement; US governing law).
+
+Each `##` section is one clause type, stated on a fixed schema so the redline
+tool can paste the firm text byte-exact, the deterministic lint can detect
+deviation, and `document-reviewer` can band each clause:
+
+- **Preferred** — the firm's default opening position. Text inside an
+  ```approved fence is the firm-approved replacement text — copy it byte-exact
+  into the redline tool's `replacement` arg.
+- **Fallbacks** — acceptable rungs below Preferred, each introduced by the
+  "when" condition that justifies offering it (the "offer when" trigger). Text
+  inside an ```approved-fallback fence is the firm's fallback text, to be used
+  only when its stated condition is met.
+- **Unacceptable** — the walk-away floor: the position the firm does not concede
+  below without a human decision.
+- **Rationale** — why the position sits where it does.
+
+These positions are firm-configurable **defaults**, calibrated to be
+market-balanced rather than aspirational. The matter's `.dochaus/profile.md`
+(see the `firm-profile` skill) overrides any Preferred, fallback, or floor here;
+where it is silent, these defaults apply. When a counterparty term sits at or
+below the Unacceptable floor, do not concede: escalate to the **supervising
+lawyer** for the matter, or to the contact named in the profile's Escalation
+Rules. The escalation is addressed to that role, not a named person, so the
+position outlasts any individual assignment.
 
 **Jurisdiction guard:** This playbook states US commercial-market positions. Do
 not apply it to a matter whose governing law is outside the United States
@@ -333,8 +355,14 @@ most common subscription trap.
 
 ---
 
-Attribution: market-norm baselines in this playbook are drawn from the Common
-Paper Cloud Service Agreement standards (https://commonpaper.com/standards/,
-CC BY 4.0) and the Bonterms Cloud Terms, Version 1.0
-(https://github.com/Bonterms/Cloud-Terms, CC BY 4.0). Bonterms Cloud Terms
-section numbers cited in the position notes above refer to Version 1.0.
+Attribution: market-norm baselines are adapted from the
+[Common Paper Cloud Service Agreement](https://commonpaper.com/standards/cloud-service-agreement/)
+by Common Paper and the
+[Bonterms Cloud Terms, Version 1.0](https://github.com/Bonterms/Cloud-Terms) by
+Bonterms. Both sources are licensed under
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). doc.haus changes these
+baselines into preferred terms, fallbacks, unacceptable terms and rationale,
+with adapted clause wording and customer-side and vendor-side review guidance.
+This is a modified playbook, not an unchanged copy of either agreement. The
+source material retains its CC BY 4.0 licence. No endorsement by either publisher
+is implied. Bonterms section references above refer to Version 1.0.

@@ -1,3 +1,4 @@
+import { withParagraphPointers } from "../../../dochaus/lib/drafting-amendment"
 import {
   Document,
   Packer,
@@ -33,7 +34,7 @@ import { seedTemplates } from "./template"
 //
 // seedDemo also writes the generated .docx to repo `demo/` so the same file can
 // be dropped into a new matter through the web UI. Everything in it is invented;
-// Aldgate & Crane LLP and Aldgate Mills Limited do not exist.
+// names and scenarios are fictional examples, not representations about real firms.
 
 // dochaus/playbooks/ holds the repo-shipped starter playbooks — kept out of
 // dochaus/skill/ so the engine and listPlaybooks() never auto-discover them from
@@ -220,7 +221,7 @@ export async function seedDemo() {
                 spacing: { before: 60 },
                 children: [
                   new TextRun({
-                    text: "Aldgate & Crane LLP — a limited liability partnership registered in England and Wales (OC384726).  ",
+                    text: "Aldgate & Crane LLP — fictional demonstration firm; not a registered practice.  ",
                     size: 14,
                     color: "888888",
                   }),
@@ -256,7 +257,7 @@ export async function seedDemo() {
             spacing: { after: 240 },
             children: [
               new TextRun({ text: "14 Saffron Court, London EC3N 4QX", size: 18, color: "555555" }),
-              new TextRun({ text: "   ·   +44 (0)20 7946 0042   ·   law@aldgatecrane.co.uk", size: 18, color: "555555" }),
+              new TextRun({ text: "   ·   +44 (0)20 7946 0042   ·   law@aldgatecrane.example", size: 18, color: "555555" }),
             ],
           }),
           new Table({
@@ -308,7 +309,7 @@ export async function seedDemo() {
     ],
   })
 
-  const buffer = await Packer.toBuffer(doc)
+  const buffer = Buffer.from(withParagraphPointers(await Packer.toBuffer(doc)))
 
   // Keep a copy in repo demo/ so the same .docx can be uploaded through the UI.
   const demoDir = path.join(import.meta.dir, "..", "..", "..", "demo")

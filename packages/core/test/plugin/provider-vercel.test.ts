@@ -1,29 +1,34 @@
+import { AISDK } from "@opencode/core/aisdk"
 import { describe, expect } from "bun:test"
 import { Effect } from "effect"
-import { Catalog } from "@opencode-ai/core/catalog"
-import { PluginV2 } from "@opencode-ai/core/plugin"
-import { VercelPlugin } from "@opencode-ai/core/plugin/provider/vercel"
-import { ProviderV2 } from "@opencode-ai/core/provider"
-import { it, model, provider } from "./provider-helper"
+import { Model } from "@opencode/core/model"
+import { Plugin } from "@opencode/core/plugin"
+import { PluginHost } from "@opencode/core/plugin/host"
+import { VercelPlugin } from "@opencode/core/plugin/provider/vercel"
+import { Provider } from "@opencode/core/provider"
+import { testEffect } from "../lib/effect"
+import { PluginTestLayer } from "./fixture"
+
+const it = testEffect(PluginTestLayer)
+
+const addPlugin = Effect.fn(function* () {
+  const plugin = yield* Plugin.Service
+  const host = yield* PluginHost.make(plugin)
+  yield* VercelPlugin.effect(host)
+})
 
 describe("VercelPlugin", () => {
   it.effect("applies legacy lower-case referer headers", () =>
     Effect.gen(function* () {
-      const plugin = yield* PluginV2.Service
-      const catalog = yield* Catalog.Service
-      yield* plugin.add(VercelPlugin)
-      const transform = yield* catalog.transform()
-      yield* transform((catalog) => {
-        const item = provider("vercel", {
-          api: { type: "aisdk", package: "@ai-sdk/vercel" },
-          request: { headers: { Existing: "1" }, body: {} },
-        })
-        catalog.provider.update(item.id, (draft) => {
-          draft.api = item.api
-          draft.request = item.request
+      const catalog = yield* Provider.Service
+      yield* catalog.transform((catalog) => {
+        catalog.update(Provider.ID.make("vercel"), (provider) => {
+          provider.package = Provider.aisdk("@ai-sdk/vercel")
+          provider.headers = { ...provider.headers, Existing: "1" }
         })
       })
-      expect((yield* catalog.provider.get(ProviderV2.ID.make("vercel"))).request.headers).toEqual({
+      yield* addPlugin()
+      expect((yield* catalog.get(Provider.ID.make("vercel")))?.headers).toEqual({
         Existing: "1",
         "http-referer": "https://opencode.ai/",
         "x-title": "opencode",
@@ -33,32 +38,31 @@ describe("VercelPlugin", () => {
 
   it.effect("does not add legacy upper-case referer headers", () =>
     Effect.gen(function* () {
-      const plugin = yield* PluginV2.Service
-      const catalog = yield* Catalog.Service
-      yield* plugin.add(VercelPlugin)
-      const transform = yield* catalog.transform()
-      yield* transform((catalog) => {
-        const item = provider("vercel", { api: { type: "aisdk", package: "@ai-sdk/vercel" } })
-        catalog.provider.update(item.id, (draft) => {
-          draft.api = item.api
-        })
-      })
-      expect((yield* catalog.provider.get(ProviderV2.ID.make("vercel"))).request.headers).not.toHaveProperty(
-        "HTTP-Referer",
+      const catalog = yield* Provider.Service
+      yield* catalog.transform((catalog) =>
+        catalog.update(Provider.ID.make("vercel"), (provider) => {
+          provider.package = Provider.aisdk("@ai-sdk/vercel")
+        }),
       )
-      expect((yield* catalog.provider.get(ProviderV2.ID.make("vercel"))).request.headers).not.toHaveProperty("X-Title")
+      yield* addPlugin()
+      expect((yield* catalog.get(Provider.ID.make("vercel")))?.headers).not.toHaveProperty("HTTP-Referer")
+      expect((yield* catalog.get(Provider.ID.make("vercel")))?.headers).not.toHaveProperty("X-Title")
     }),
   )
 
   it.effect("creates @ai-sdk/vercel SDKs for custom provider IDs", () =>
     Effect.gen(function* () {
-      const plugin = yield* PluginV2.Service
-      yield* plugin.add(VercelPlugin)
-      const event = yield* plugin.trigger(
-        "aisdk.sdk",
-        { model: model("custom-vercel", "v0-1.0-md"), package: "@ai-sdk/vercel", options: { name: "custom-vercel" } },
-        {},
-      )
+      const aisdk = yield* AISDK.Service
+      yield* addPlugin()
+      const event = yield* aisdk.runSDK({
+        model: Model.Info.make({
+          ...Model.Info.default(Provider.ID.make("custom-vercel"), Model.ID.make("v0-1.0-md")),
+          modelID: Model.ID.make("v0-1.0-md"),
+          package: "aisdk:@ai-sdk/vercel",
+        }),
+        package: "@ai-sdk/vercel",
+        options: { name: "custom-vercel" },
+      })
       expect(event.sdk).toBeDefined()
       expect(event.sdk.languageModel("v0-1.0-md").provider).toBe("vercel.chat")
     }),
@@ -66,12 +70,10 @@ describe("VercelPlugin", () => {
 
   it.effect("ignores non-Vercel providers", () =>
     Effect.gen(function* () {
-      const plugin = yield* PluginV2.Service
-      const catalog = yield* Catalog.Service
-      yield* plugin.add(VercelPlugin)
-      const transform = yield* catalog.transform()
-      yield* transform((catalog) => catalog.provider.update(provider("gateway").id, () => {}))
-      expect((yield* catalog.provider.get(ProviderV2.ID.make("gateway"))).request.headers).toEqual({})
+      const catalog = yield* Provider.Service
+      yield* catalog.transform((catalog) => catalog.update(Provider.ID.make("gateway"), () => {}))
+      yield* addPlugin()
+      expect((yield* catalog.get(Provider.ID.make("gateway")))?.headers).toBeUndefined()
     }),
   )
 })

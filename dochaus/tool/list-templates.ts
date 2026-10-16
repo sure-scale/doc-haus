@@ -1,4 +1,4 @@
-import { tool } from "@opencode-ai/plugin"
+import { tool } from "./legacy-definition"
 
 // doc.haus list-templates tool. Enumerates the firm's drafting templates and, for
 // each, the placeholders Docxodus finds in it — so the model knows exactly which

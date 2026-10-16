@@ -1,6 +1,7 @@
 {
   "name": "@dochaus/ingest",
   "private": true,
+  "license": "GPL-3.0-only",
   "type": "module",
   "scripts": {
     "dev": "bun run --watch src/server.ts",
@@ -10,11 +11,25 @@
   },
   "dependencies": {
     "@huggingface/transformers": "4.2.0",
+    "@ladybugdb/core": "0.19.1",
+    "@llamaindex/liteparse": "2.1.1",
+    "compromise": "^14.15.1",
     "docx": "^9.7.1",
     "docxodus": "^6.4.0",
     "hono": "^4.10.7",
     "mammoth": "^1.8.0",
-    "unpdf": "^1.6.2"
+    "postal-mime": "2.7.4",
+    "unpdf": "^1.6.2",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
+  },
+  "optionalDependencies": {
+    "@llamaindex/liteparse-darwin-arm64": "2.1.1",
+    "@llamaindex/liteparse-darwin-x64": "2.1.1",
+    "@llamaindex/liteparse-linux-arm64-gnu": "2.1.1",
+    "@llamaindex/liteparse-linux-x64-gnu": "2.1.1",
+    "@llamaindex/liteparse-linux-x64-musl": "2.1.1",
+    "@llamaindex/liteparse-win32-arm64-msvc": "2.1.1",
+    "@llamaindex/liteparse-win32-x64-msvc": "2.1.1"
   },
   "devDependencies": {
     "@tsconfig/bun": "1.0.10",
@@ -23,5 +38,8 @@
   },
   "patchedDependencies": {
     "docxodus@6.4.0": "patches/docxodus@6.4.0.patch"
-  }
+  },
+  "trustedDependencies": [
+    "@ladybugdb/core"
+  ]
 }

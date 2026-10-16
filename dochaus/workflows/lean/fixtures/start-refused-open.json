@@ -1,0 +1,4 @@
+{
+  "error": "This matter's lean drafting run has not finished; continue it or answer its questions instead of starting another.",
+  "code": "lean_run_awaiting_continue"
+}

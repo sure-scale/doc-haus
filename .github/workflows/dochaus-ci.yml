@@ -1,16 +1,12 @@
-# doc.haus fork CI. Runs on GitHub-hosted runners (the upstream `test` /
-# `pr-management` / `pr-standards` workflows pin self-hosted Blacksmith runners
-# this fork does not have, and pr-standards reads a `dev` branch that does not
-# exist here, so they are disabled at the repo level). This file is fork-only —
+# doc.haus fork CI. Runs on GitHub-hosted runners; upstream checks use Blacksmith
+# runners and their own branch/event filters. This file is fork-only —
 # upstream has no workflow by this name, so it never conflicts on `git merge
 # upstream/dev`.
 #
-# It exercises the tracked, installable doc.haus surface. apps/web is the only
-# such piece: dochaus/ ships a gitignored package.json (its docxodus dep is
-# installed at deploy time, not committed) and services/ingest has no build or
-# typecheck target, so neither can be checked in a clean clone.
+# It checks the launcher with real shell processes and builds the web app from
+# a clean checkout. Launcher tests need no workspace package dependencies.
 #
-# apps/web imports the OpenCode SDK from packages/sdk/js by source, so its vite
+# apps/web imports the OpenCode client from packages/client by source, so its vite
 # build resolves that package's tsconfig-extends chain (@tsconfig/node22, etc.).
 # That requires a workspace-root install, not an apps/web-local one.
 name: dochaus-ci
@@ -18,7 +14,7 @@ name: dochaus-ci
 on:
   pull_request:
   push:
-    branches: [dochaus]
+    branches: [dochaus, v2-release-prep]
   workflow_dispatch:
 
 concurrency:
@@ -29,9 +25,13 @@ permissions:
   contents: read
 
 jobs:
-  web-build:
-    name: web build
+  launcher-tests:
+    name: launcher tests
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        bun: ["1.4.0", latest]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -39,12 +39,44 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version-file: package.json
+          bun-version: ${{ matrix.bun }}
+
+      - name: Install process inspection tool
+        run: sudo apt-get update && sudo apt-get install --yes lsof
+
+      - name: Check launcher shell syntax
+        run: bash -n start.sh scripts/start-runtime.sh
+
+      - name: Test launcher ownership and restart prompts
+        working-directory: scripts
+        run: bun test test/start-runtime.test.ts --timeout 30000
+
+      - name: Test Bun selection and launcher compatibility
+        working-directory: scripts
+        run: bun test test/bun-runtime.test.ts --timeout 30000
+
+      - name: Test dependency installation cache
+        working-directory: scripts
+        run: bun test test/install-dependencies.test.ts --timeout 30000
+
+  web-build:
+    name: web build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        bun: ["1.4.0", latest]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ matrix.bun }}
 
       # Root install provides the workspace packages apps/web imports by source
-      # (packages/sdk/js) and the @tsconfig/* bases their tsconfigs extend.
-      # apps/web is not a workspace member, so its own deps (vite, react) need a
-      # separate install.
+      # and the @tsconfig/* bases their tsconfigs extend.
       # --frozen-lockfile installs the committed, already-resolved versions and
       # skips re-resolution. That avoids bunfig's minimumReleaseAge filter, which
       # on a cold CI cache drops valid pins ("No version matching X (but package
@@ -57,3 +89,44 @@ jobs:
 
       - name: Build web app
         run: bun run --cwd apps/web build
+
+      - name: Install updater route dependencies
+        run: bun install --cwd services/ingest --frozen-lockfile
+
+      - name: Install process inspection tool for update restart tests
+        run: sudo apt-get update && sudo apt-get install --yes lsof
+
+      - name: Test in-app updates and managed restart
+        working-directory: scripts
+        run: bun test test/updater.test.ts --timeout 30000
+
+      - name: Typecheck legal packages
+        run: |
+          bun run --cwd dochaus typecheck
+          bun run --cwd services/engine typecheck
+          bun run --cwd services/ingest typecheck
+          bun run --cwd apps/web typecheck
+      - name: Lint
+        run: bun run lint
+      - name: Test provider response limits and streaming errors
+        working-directory: packages/core
+        run: bun test test/provider-response-size.test.ts --timeout 30000
+      - name: Test ordinary settings and setup
+        working-directory: services/ingest
+        # This suite sets WORKSPACE_ROOT before loading the installation singleton.
+        # A separate process prevents another test file's imports from caching it first.
+        run: |
+          bun test src/preferences.test.ts --timeout 30000
+          bun test src/engine-config.test.ts src/setup.test.ts src/research-connections.test.ts src/auth-reuse.test.ts src/identifiers.test.ts src/source-artifacts.test.ts --timeout 30000
+      - name: Test native discovery and selected sign-in reuse
+        working-directory: services/engine
+        run: bun test src/credential-reuse.test.ts test/provider-catalog.test.ts --timeout 30000
+      - name: Test public regression support
+        working-directory: dochaus
+        run: bun test templates/optional.test.ts test/product-boundary-guard.test.ts test/product-boundary.test.ts test/native-trace.test.ts test/lean-observation.test.ts test/prompt-assets.test.ts test/research-source-snippets.test.ts test/legal-tool-approval.test.ts plugin/legal/provider-capture.test.ts
+      - name: Test research scope and connector consent
+        working-directory: dochaus
+        run: bun test test/drafting-preferences.test.ts test/research-scope.test.ts test/research-source-fetch.test.ts test/research-mcp.test.ts
+      - name: Test web model selection and proxy
+        working-directory: apps/web
+        run: bun test test --timeout 30000

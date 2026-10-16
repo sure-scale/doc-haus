@@ -1,22 +1,17 @@
 # Jurisdiction packs
 
-Each matter carries a **jurisdiction** that steers how the agents reason and
-cite. A jurisdiction is a config-only **pack** in this directory — no code change
-and no fork is needed to add one (issue #18).
+A matter can carry several jurisdiction codes. Packs supply the legal reasoning
+and citation context for substantive model stages. Add a directory beneath
+`dochaus/jurisdiction/` with these files:
 
-## Layout
-
-```
-dochaus/jurisdiction/<CODE>/
-  profile.json   # machine fields, read by the ingest service + engine
-  prompt.md      # system-prompt fragment injected for matters in this jurisdiction
+```text
+<CODE>/
+  profile.json
+  prompt.md
 ```
 
-`<CODE>` is the pack code stored on a matter (e.g. `EW`). Keep it to
-`[A-Za-z0-9_-]` — it becomes a directory name and is matched against
-`matter.json`'s `jurisdiction` field.
-
-### `profile.json`
+Codes must start with a letter or digit and contain only letters, digits,
+underscores or hyphens. The profile's `code` must match the directory name.
 
 ```json
 {
@@ -27,24 +22,21 @@ dochaus/jurisdiction/<CODE>/
 }
 ```
 
-- `code` — must equal the directory name.
-- `name` — shown in the matter-creation dropdown.
-- `citationStyle` — surfaced to the model in the injected `<jurisdiction>` tag.
-- `preferredModel` — the model a matter in this jurisdiction should run on once
-  sovereign routing (issues #11/#15) lands. Declarative today: recorded, not yet
-  enforced. Leave `null` until then.
+`name` identifies the pack in the interface. `citationStyle` describes the
+citation convention. `preferredModel` is currently descriptive metadata; it does
+not select a provider, model or inference region. Model selection comes from
+this installation's explicitly saved primary and fast settings.
 
-### `prompt.md`
+Write `prompt.md` as concise guidance on governing law, the authority hierarchy,
+citation conventions and any jurisdiction-specific reasoning limits. Ground the
+guidance in general legal practice and preserve relevant provenance.
 
-Plain markdown appended to the system prompt for every turn on a matter in this
-jurisdiction. State the governing law, the authority hierarchy (what is binding
-versus persuasive), the citation convention, and any house style. See `EW/` for
-a worked example. Keep it tight — it rides on every request.
-
-## How it is wired
-
-- The ingest service lists packs (`GET /jurisdictions`) so the web app can offer
-  them; it stores the chosen `code` in the matter's `matter.json`.
-- The engine's legal plugin (`dochaus/plugin/legal.ts`) reads that code per turn
-  and appends the pack's `prompt.md` as a `<jurisdiction>` system block, so the
-  matter reasons under its jurisdiction with no per-jurisdiction agent.
+The ingest service exposes packs through `GET /jurisdictions` and stores the
+user's selected codes in the matter's `matter.json` `jurisdictions` array.
+[The pack loader](../lib/jurisdiction.ts) validates codes and loads their profiles
+and prompt fragments. [Stage context](../plugin/legal/stage-context.ts) supplies
+the selected packs to substantive stages; draft orchestration, routing and
+narration receive no jurisdiction packs. [Legal policy](../plugin/legal/policy.ts)
+adds each applicable pack as a `<jurisdiction>` system block. Missing prompt
+files produce a warning and profile-only context; unknown or mismatched profiles
+are not loaded.

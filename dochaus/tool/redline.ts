@@ -1,8 +1,9 @@
-import { tool } from "@opencode-ai/plugin"
+import { tool } from "./legacy-definition"
 import { existsSync } from "node:fs"
 import path from "node:path"
 import { docxodus } from "../lib/docxodus"
-import { recordRedline, pendingRedlinesForDoc, conflictingRedlines, supersedeRedlines } from "../lib/redlines"
+import { recordRedlineProposal, withRedlineDocumentLock } from "../lib/redlines"
+import { draftingAttribution } from "../lib/docx-attribution"
 
 // doc.haus redline tool. Proposes rewriting a whole clause — the paragraph a
 // search-document citation points at — as a tracked change a reviewer accepts or
@@ -32,7 +33,12 @@ export default tool({
     replacement: tool.schema
       .string()
       .describe("The new clause text. Replaces the whole located paragraph; markdown is supported."),
-    author: tool.schema.string().optional().describe("Name to attribute the tracked change to (default: doc.haus)"),
+    comment: tool.schema
+      .string()
+      .min(1)
+      .max(2000)
+      .describe("Lawyer-facing review comment explaining the deficiency or risk, the reason for the change, and its source or cross-reference. Stored with the pending change, never inserted into operative text."),
+    author: tool.schema.string().optional().describe("Name to attribute the tracked change to (default: saved attorney, then firm, then doc.haus)"),
   },
   async execute(args, ctx) {
     const file = path.isAbsolute(args.document) ? args.document : path.join(ctx.directory, args.document)
@@ -46,25 +52,9 @@ export default tool({
       session.close()
       return `Clause not found in ${path.basename(file)}: ${JSON.stringify(args.clause)}`
     }
-    // projectAnchor emits the block's addressing token (`{#p:body:UNID}`) ahead of
-    // its text and takes no setting to suppress it — strip every `{#…}` marker so
-    // the captured clause is the human-readable text the reviewer sees struck
-    // through, not the engine's internal anchor.
-    const oldText = session.projectAnchor(target.id).markdown.replace(/\{#[^}]*\}/g, "").trim()
     session.close()
 
-    // A clause rewrite replaces the whole paragraph, so any pending proposal on
-    // the same paragraph would be replayed against text this one erases — the
-    // collision that 500s the redlined view. The newest edit wins: record this
-    // one, retire the ones it supersedes. The model sees what it replaced so it
-    // can reason about the running state of the negotiation.
-    const conflicts = conflictingRedlines(pendingRedlinesForDoc(ctx.directory, file), {
-      anchorId: target.id,
-      scope: "clause",
-      findText: args.clause,
-    })
-
-    const author = args.author ?? "doc.haus"
+    const author = args.author ?? draftingAttribution().author
     // Recording the proposal is gated on the matter owner's approval (permission
     // "redline" in opencode.json) — the redline review queue is itself a work
     // product, so the assistant must not stack proposals into it unasked.
@@ -74,27 +64,44 @@ export default tool({
       permission: "redline",
       patterns: [file],
       always: [file],
-      metadata: { document: path.basename(file), clause: args.clause, replacement: args.replacement, author },
+      metadata: { document: path.basename(file), clause: args.clause, replacement: args.replacement, comment: args.comment, author },
     })
-    const id = recordRedline(ctx.directory, {
-      docPath: file,
-      docName: path.basename(file),
-      scope: "clause",
-      findText: args.clause,
-      oldText,
-      newText: args.replacement,
-      author,
-      anchorId: target.id,
-    })
-    supersedeRedlines(ctx.directory, conflicts.map((c) => c.id))
 
-    const superseded = conflicts.length
-      ? ` Supersedes pending redline${conflicts.length === 1 ? "" : "s"} ${conflicts.map((c) => `#${c.id}`).join(", ")} on the same clause — only this latest rewrite stays pending.`
+    const proposal = await withRedlineDocumentLock(ctx.directory, file, async () => {
+      if (!existsSync(file)) return { error: `Document not found in this matter: ${args.document}` }
+      const current = dx.openDocxSession(await Bun.file(file).bytes(), {})
+      const anchored = current.findByText(args.clause, { ignoreWhitespace: true })
+      if (!anchored) {
+        current.close()
+        return { error: `Clause changed before approval and is no longer present in ${path.basename(file)}.` }
+      }
+      // projectAnchor emits the block's addressing token (`{#p:body:UNID}`)
+      // ahead of its text. Strip those internal markers from reviewer-facing
+      // old text while the document lock still protects the anchor bytes.
+      const oldText = current.projectAnchor(anchored.id).markdown.replace(/\{#[^}]*\}/g, "").trim()
+      current.close()
+      const recorded = recordRedlineProposal(ctx.directory, {
+        docPath: file,
+        docName: path.basename(file),
+        scope: "clause",
+        findText: args.clause,
+        oldText,
+        newText: args.replacement,
+        author,
+        reviewComment: args.comment,
+        anchorId: anchored.id,
+      })
+      return { ...recorded, oldText, anchor: anchored.id }
+    })
+    if ("error" in proposal) return proposal.error
+
+    const superseded = proposal.superseded.length
+      ? ` Supersedes pending redline${proposal.superseded.length === 1 ? "" : "s"} ${proposal.superseded.map((candidate) => `#${candidate.id}`).join(", ")} on the same clause — only this latest rewrite stays pending.`
       : ""
     return {
       title: `Proposed redline in ${path.basename(file)}`,
-      output: `Proposed rewriting the clause matching ${JSON.stringify(args.clause)} in ${path.basename(file)}, attributed to ${author}. Recorded as pending redline #${id} — the user reviews and accepts or rejects it in the doc.haus app.${superseded}`,
-      metadata: { document: file, clause: args.clause, oldText, replacement: args.replacement, anchor: target.id, author, redline: id, superseded: conflicts.map((c) => c.id) },
+      output: `Proposed rewriting the clause matching ${JSON.stringify(args.clause)} in ${path.basename(file)}, attributed to ${author}. Recorded as pending redline #${proposal.id} with its lawyer-facing review comment — the user reviews and accepts or rejects it in the doc.haus app.${superseded}`,
+      metadata: { document: file, clause: args.clause, oldText: proposal.oldText, replacement: args.replacement, comment: args.comment, anchor: proposal.anchor, author, redline: proposal.id, superseded: proposal.superseded.map((candidate) => candidate.id) },
     }
   },
 })

@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useState, type ReactNode } from "react"
 
-// App-wide toasts: transient notifications stacked bottom-right. Type sets the
+// App-wide toasts: transient notifications stacked top-centre. Type sets the
 // left-border color — success/green, warning/amber, info/blue, error/red — over
 // a white card with a soft shadow. Any component calls useToast() and fires one.
 type ToastType = "success" | "warning" | "info" | "error"
@@ -43,7 +43,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
               <ToastIcon type={t.type} />
             </span>
             <span className="toast-msg">{t.message}</span>
-            <button className="toast-close" onClick={() => dismiss(t.id)} title="Dismiss">
+            <button type="button" className="toast-close" onClick={() => dismiss(t.id)} title="Dismiss" aria-label="Dismiss notification">
               <IconClose />
             </button>
           </div>

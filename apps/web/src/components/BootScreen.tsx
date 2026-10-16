@@ -17,7 +17,7 @@ const BOOT_PHRASES = [
   "Untangling the red tape...",
 ]
 
-export default function BootScreen({ engineReady, ingestReady }: { engineReady: boolean; ingestReady: boolean }) {
+export default function BootScreen({ engineReady, ingestReady, error, onRetry }: { engineReady: boolean; ingestReady: boolean; error?: string; onRetry?: () => void }) {
   const [phrase, setPhrase] = useState(0)
   useEffect(() => {
     const t = setInterval(() => setPhrase((p) => (p + 1) % BOOT_PHRASES.length), 2200)
@@ -43,6 +43,7 @@ export default function BootScreen({ engineReady, ingestReady }: { engineReady: 
           {BOOT_PHRASES[phrase]}
         </p>
       </div>
+      {error && <div role="alert"><p>{error}</p><button onClick={onRetry}>Retry connection</button></div>}
       <ul className="boot-steps">
         {steps.map((s) => (
           <li key={s.label} className={s.ready ? "boot-step done" : "boot-step"}>

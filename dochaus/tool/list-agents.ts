@@ -1,4 +1,4 @@
-import { tool } from "@opencode-ai/plugin"
+import { tool } from "./legacy-definition"
 
 // doc.haus list-agents tool. Returns the firm's specialist subagents — the
 // repo-shipped ones (read-only) plus the custom ones in dochaus/agents.json —

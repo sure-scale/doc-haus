@@ -2,7 +2,7 @@
   "compilerOptions": {
     "target": "ES2022",
     "useDefineForClassFields": true,
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "lib": ["ES2024", "DOM", "DOM.Iterable"],
     "module": "ESNext",
     "skipLibCheck": true,
     "moduleResolution": "bundler",
@@ -13,10 +13,7 @@
     "jsx": "react-jsx",
     "strict": true,
     "noUnusedLocals": true,
-    "noUnusedParameters": true,
-    "paths": {
-      "@opencode-ai/sdk": ["../../packages/sdk/js/src/client.ts"]
-    }
+    "noUnusedParameters": true
   },
   "include": ["src", "vite.config.ts"]
 }

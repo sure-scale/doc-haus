@@ -1,11 +1,50 @@
 #!/usr/bin/env bash
 # doc.haus launcher — starts the three processes the stack needs as one command:
-#   1. the unmodified opencode engine, pointed at the dochaus/ legal config layer
+#   1. the native OpenCode server graph with the isolated doc.haus config layer
 #   2. the ingest service (matters + DOCX embedding + redlines)
 #   3. the web app
 # This is additive (upstream has no start.sh) so it never affects `git merge upstream/dev`.
 set -euo pipefail
 cd "$(dirname "$0")"
+# Prefer the installed runtime. Build/CI pins remain a reproducible baseline,
+# rather than a reason to reject a user's working newer Bun.
+BUN_BIN="${BUN_BIN:-$(command -v bun || true)}"
+BUN_BIN="${BUN_BIN:-$HOME/.bun/bin/bun}"
+if [[ "$BUN_BIN" != */* ]]; then
+  BUN_BIN="$(command -v "$BUN_BIN" || true)"
+fi
+BUN_FOUND=
+if [ -n "$BUN_BIN" ] && [ -x "$BUN_BIN" ] && [ ! -d "$BUN_BIN" ]; then
+  if [[ "$BUN_BIN" != /* ]]; then
+    BUN_BIN="$(cd "$(dirname "$BUN_BIN")" && pwd -P)/$(basename "$BUN_BIN")"
+  fi
+  BUN_FOUND="$("$BUN_BIN" --version 2>/dev/null)" || BUN_FOUND=
+fi
+if ! [[ "$BUN_FOUND" =~ ^([0-9]+)\.([0-9]+)\.[0-9]+(-[a-zA-Z0-9.-]+)?(\+[a-zA-Z0-9.-]+)?$ ]]; then
+  echo "doc.haus could not run Bun (${BUN_BIN:-not found on PATH})." >&2
+  echo "Install Bun or set BUN_BIN to a working Bun executable, then run ./start.sh again." >&2
+  exit 1
+fi
+if [ "${BASH_REMATCH[1]}" -lt 1 ] || { [ "${BASH_REMATCH[1]}" -eq 1 ] && [ "${BASH_REMATCH[2]}" -lt 4 ]; }; then
+  echo "doc.haus requires Bun 1.4.0 or newer (found: $BUN_FOUND)." >&2
+  echo "Update Bun or set BUN_BIN to a Bun 1.4.0+ executable, then run ./start.sh again." >&2
+  exit 1
+fi
+export BUN_BIN
+if [ "$(basename "$BUN_BIN")" = "bun" ]; then
+  export PATH="$(dirname "$BUN_BIN"):$PATH"
+fi
+
+# Load provider credentials from dochaus/.env.local if present so all three
+# processes inherit them. The engine runs with cwd = repo root, so Bun's
+# auto-.env loading (which only reads the cwd) never picks up dochaus/.env.local;
+# sourcing it here with auto-export covers the engine, ingest, and web alike.
+# Gitignored, so real keys never enter version control.
+if [ -f dochaus/.env.local ]; then
+  set -a
+  . dochaus/.env.local
+  set +a
+fi
 
 # --demo seeds the fictional Aldgate Mills letter of engagement before launch, so a
 # first run lands on a matter with cited Q&A and a legal review without uploading
@@ -18,36 +57,46 @@ done
 # WORKSPACE_ROOT is where matters live. Defaults to ./workspace at the repo root
 # (gitignored) like opencode defaults its project dir to process.cwd() — set it to
 # an absolute path to keep matters outside the repo.
-export WORKSPACE_ROOT="${WORKSPACE_ROOT:-$PWD/workspace}"
-mkdir -p "$WORKSPACE_ROOT"
+# DOCHAUS_DATA_ROOT opts into a common workspace/runtime backup boundary.
+. "$PWD/scripts/data-paths.sh"
+configure_data_paths "$PWD"
+# The engine scans these optional firm-library paths at startup. Create the
+# empty libraries before it starts so a new workspace is valid without first
+# importing a skill or playbook.
+mkdir -p "$WORKSPACE_ROOT" "$WORKSPACE_ROOT/.skills" "$WORKSPACE_ROOT/.playbooks"
+
+# The web product owns a dedicated OpenCode runtime boundary under
+# .dochaus-runtime. This is always on: arbitrary global OpenCode plugins, MCPs,
+# agents, instructions, skills, conversations, and provider accounts must never
+# become part of a legal-matter model request. The data directory is durable, so
+# a restart resumes the same legal sessions and provider connections.
+mkdir -p \
+  "$DOCHAUS_RUNTIME_DIR/data" \
+  "$DOCHAUS_RUNTIME_DIR/config" \
+  "$DOCHAUS_RUNTIME_DIR/state" \
+  "$DOCHAUS_RUNTIME_DIR/cache"
 
 # No provider env is required to launch: the engine reads provider credentials
 # lazily, and you connect a provider + pick a model in the web UI (Settings) on
 # first run. These two are only consumed if you choose the bundled Google Vertex
 # provider — set GOOGLE_VERTEX_PROJECT then, or leave them unset for any other.
-export GOOGLE_VERTEX_LOCATION="${GOOGLE_VERTEX_LOCATION:-global}"
+# Provider region/location choices are saved explicitly through Settings.
 
-# Install dependencies before launch so a fresh clone just works. The engine runs
-# from the repo-root workspace; dochaus (its config-layer tools), the ingest
-# service, and the web app each carry their own lockfile, so each needs its own
-# install. --frozen-lockfile keeps boot supply-chain-safe: it only ever installs
-# the hash-verified versions committed in bun.lock and fails loudly if a
-# package.json has drifted — dependency changes must go through a deliberate
-# `bun install` whose bun.lock diff gets reviewed, never a routine launch.
-# Set SKIP_INSTALL=1 to skip it on quick restarts.
-if [ -z "${SKIP_INSTALL:-}" ]; then
-  for dir in . dochaus services/ingest apps/web; do
-    echo "doc.haus: installing dependencies ($dir)"
-    (cd "$dir" && bun install --frozen-lockfile)
-  done
-fi
+# The stack ports are configurable to support parallel copies. Defaults are set to
+# non-standard values to avoid clashing with a separate default-opencode stack.
+ENGINE_PORT="${DOC_HAUS_ENGINE_PORT:-4097}"
+INGEST_PORT="${DOC_HAUS_INGEST_PORT:-4501}"
+WEB_PORT="${DOC_HAUS_WEB_PORT:-5174}"
+OPENCODE_HOST="${OPENCODE_HOSTNAME:-127.0.0.1}"
+INGEST_HOST="${INGEST_HOST:-127.0.0.1}"
+WEB_HOST="${WEB_HOST:-$OPENCODE_HOST}"
+VITE_OPENCODE_URL="${VITE_OPENCODE_URL:-http://localhost:${ENGINE_PORT}}"
+VITE_INGEST_URL="${VITE_INGEST_URL:-http://localhost:${INGEST_PORT}}"
+PORTS=("$ENGINE_PORT" "$INGEST_PORT" "$WEB_PORT")
 
-# The three fixed ports the stack binds: engine (web hardcodes :4096), ingest
-# (services/ingest defaults :4500), web (vite :5173). The engine prefers 4096 but
-# silently falls back to a random port when 4096 is taken — the web app can only
-# reach 4096, so a stale listener there produces a "ghost engine" the UI talks to
-# while the fresh engine sits unreachable. Pin and reap to make that impossible.
-PORTS=(4096 4500 5173)
+# Provider retry timing and attempts belong to OpenCode. Do not impose a
+# launcher ceiling that converts a brief transport throttle into a workflow STOP.
+# Drafting checkpoints, cancellation and substantive retry budgets remain separate.
 
 # pids holds our direct children. `bun run dev`/`bun run start` fork grandchildren
 # (vite, the ingest server) that a plain `kill $pids` would orphan — those orphans
@@ -58,23 +107,86 @@ kill_tree() {
   for child in $(pgrep -P "$pid" 2>/dev/null); do kill_tree "$child"; done
   kill "$pid" 2>/dev/null || true
 }
-cleanup() { for pid in "${pids[@]}"; do kill_tree "$pid"; done; }
-trap cleanup EXIT INT TERM
+cleanup() { for pid in ${pids[@]+"${pids[@]}"}; do kill_tree "$pid"; done; }
+# Ctrl-C and TERM exit the launcher; the EXIT trap then tears every process down.
+# Exiting (rather than resuming) keeps the child monitor at the bottom from
+# reporting the processes cleanup just stopped as unexpected exits.
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+update_requested=
+trap 'update_requested=1' USR1
+export DOCHAUS_LAUNCHER_PID=$$
 
-# Reboot semantics: before launching, evict anything already holding our ports —
-# a previous run whose grandchildren outlived their parent, or a second start.sh.
+# A second stack must never open the same durable session database. The engine's
+# native restart sweep assumes sole ownership after its previous process exits.
+ENGINE_LOCK="$DOCHAUS_RUNTIME_DIR/engine.lock"
+. scripts/start-runtime.sh
+claim_status=0
+claim_engine_runtime "$DOCHAUS_RUNTIME_DIR" || claim_status=$?
+if [ "$claim_status" = 2 ]; then exit 0; fi
+if [ "$claim_status" != 0 ]; then exit "$claim_status"; fi
+cleanup() {
+  for pid in ${pids[@]+"${pids[@]}"}; do kill_tree "$pid"; done
+  if [ -n "${BUN_PATH_DIR:-}" ]; then
+    rm -f "$BUN_PATH_DIR/bun"
+    rmdir "$BUN_PATH_DIR"
+  fi
+  if [ "$(cat "$ENGINE_LOCK/pid" 2>/dev/null || true)" = "$$" ]; then
+    rm -f "$ENGINE_LOCK/pid"
+    rmdir "$ENGINE_LOCK" 2>/dev/null || true
+  fi
+}
+
+# Refuse occupied ports instead of terminating another process.
 for port in "${PORTS[@]}"; do
-  stale=$(lsof -ti tcp:"$port" 2>/dev/null || true)
+  stale=$(lsof -nP -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)
   if [ -n "$stale" ]; then
-    echo "doc.haus: reaping stale process on port $port (pid $stale)"
-    kill $stale 2>/dev/null || true
+    echo "doc.haus: port $port is already in use (pid $stale)" >&2
+    exit 1
   fi
 done
-# Give TERM a moment to land, then hard-kill any survivor still on a port.
-sleep 1
-for port in "${PORTS[@]}"; do
-  stale=$(lsof -ti tcp:"$port" 2>/dev/null || true)
-  [ -n "$stale" ] && kill -9 $stale 2>/dev/null || true
+
+# A custom executable name needs a bun alias for children that look it up on
+# PATH. Keep that alias private to this launcher, and clean it up on exit.
+if [ "$(basename "$BUN_BIN")" != "bun" ]; then
+  BUN_PATH_DIR="$(mktemp -d "$DOCHAUS_RUNTIME_DIR/bun-path.XXXXXX")"
+  ln -s "$BUN_BIN" "$BUN_PATH_DIR/bun"
+  export PATH="$BUN_PATH_DIR:$PATH"
+fi
+
+# Check ownership and ports before installing, so an already-running stack can
+# be left alone without changing dependencies underneath it.
+if [ -z "${SKIP_INSTALL:-}" ]; then
+  for dir in . services/ingest; do
+    "$BUN_BIN" run scripts/install-dependencies.ts "$dir"
+  done
+fi
+
+# Make sure the local embedding model loads before anything is declared ready:
+# every upload and every document search needs it, and its first download comes
+# from huggingface.co. The model is cached once per user, outside node_modules,
+# in ~/.cache/doc-haus/models (set DOCHAUS_MODEL_CACHE_DIR to move it, for
+# example onto a persistent volume); ingest and the engine share that cache, so
+# after the first launch this check is a fast local load. A transient network
+# failure gets two more attempts before the launch stops.
+export DOCHAUS_MODEL_CACHE_DIR="${DOCHAUS_MODEL_CACHE_DIR:-$HOME/.cache/doc-haus/models}"
+echo "doc.haus: checking the embedding model ($DOCHAUS_MODEL_CACHE_DIR)"
+model_attempt=1
+until (cd services/ingest && "$BUN_BIN" run src/warm-embedding-model.ts); do
+  if [ "$model_attempt" -ge 3 ]; then
+    cat >&2 <<EOF
+doc.haus: the embedding model could not be loaded after $model_attempt attempts.
+  It downloads once (about 50 MB) from https://huggingface.co into
+  $DOCHAUS_MODEL_CACHE_DIR. Check that this machine can reach huggingface.co
+  (HTTPS_PROXY is honoured) and that the directory is writable, then run
+  ./start.sh again. Set DOCHAUS_MODEL_CACHE_DIR to use a different directory.
+EOF
+    exit 1
+  fi
+  echo "doc.haus: retrying the embedding model in $((model_attempt * 5))s" >&2
+  sleep $((model_attempt * 5))
+  model_attempt=$((model_attempt + 1))
 done
 
 # Seed the demo matter before the stack comes up so it is already selectable on the
@@ -82,28 +194,62 @@ done
 # imports — no server needed — and inherits the WORKSPACE_ROOT exported above.
 if [ -n "$DEMO" ]; then
   echo "doc.haus: seeding demo matter"
-  (cd services/ingest && bun run seed)
+  (cd services/ingest && "$BUN_BIN" run src/seed.ts)
 fi
 
-WEB_URL="http://localhost:5173"
+WEB_URL="http://localhost:${WEB_PORT}"
 echo "doc.haus: starting engine, ingest, web (workspace: $WORKSPACE_ROOT)"
+echo "doc.haus: ports engine=$ENGINE_PORT ingest=$INGEST_PORT web=$WEB_PORT"
 echo "doc.haus: web UI will be at $WEB_URL"
 
-# Pin the engine to 4096 so it fails loudly if the port is still taken rather than
-# silently drifting to a random port the web app cannot reach. Bind loopback by
-# default; set OPENCODE_HOSTNAME=0.0.0.0 to expose it (Docker, reverse proxy) — the
-# same loopback-default the engine, ingest, and vite all keep.
-# --print-logs surfaces engine warnings/errors (failed requests, provider/model
-# errors) in this console instead of only the log file; WARN keeps the local-dev
-# DEBUG default from flooding the terminal. Override with OPENCODE_LOG_LEVEL.
-OPENCODE_CONFIG_DIR="$PWD/dochaus" bun run packages/opencode/src/index.ts serve --port 4096 --hostname "${OPENCODE_HOSTNAME:-127.0.0.1}" --print-logs --log-level "${OPENCODE_LOG_LEVEL:-WARN}" &
-pids+=($!)
+# Pin the engine to the configured port so it fails loudly if the port is still
+# taken rather than silently drifting to a random port the web app cannot reach.
+# Bind loopback by default; set OPENCODE_HOSTNAME=0.0.0.0 to expose it (Docker,
+# reverse proxy) — the same loopback-default the engine, ingest, and vite all keep.
+# Export the ingest URL and ports so the engine and any tools can dynamically
+# target the correct port start.sh is configured to use, instead of falling back
+# to stale defaults.
+export INGEST_URL="http://127.0.0.1:${INGEST_PORT}"
+export DOC_HAUS_INGEST_PORT="${INGEST_PORT}"
+export DOC_HAUS_ENGINE_PORT="${ENGINE_PORT}"
 
-(cd services/ingest && bun run start) &
-pids+=($!)
+(
+  # Preserve only the native credential source for explicit, selected reuse.
+  export DOCHAUS_NATIVE_OPENCODE_DATA_DIR="${DOCHAUS_NATIVE_OPENCODE_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/opencode}"
+  export XDG_DATA_HOME="$DOCHAUS_RUNTIME_DIR/data"
+  export XDG_CONFIG_HOME="$DOCHAUS_RUNTIME_DIR/config"
+  export XDG_STATE_HOME="$DOCHAUS_RUNTIME_DIR/state"
+  export XDG_CACHE_HOME="$DOCHAUS_RUNTIME_DIR/cache"
+  # The legal engine accepts configuration only from its isolated runtime and
+  # the repository-shipped doc.haus config directory. Do not let a developer's
+  # shell inject an alternate config body or permission map.
+  unset OPENCODE_CONFIG OPENCODE_CONFIG_CONTENT OPENCODE_PERMISSION
+  export DOCHAUS_MANAGED_RESTART=1
+  exec "$BUN_BIN" run services/engine/src/server.ts
+) &
+engine_pid=$!
+pids+=("$engine_pid")
 
-(cd apps/web && bun run dev) &
-pids+=($!)
+# Native inventories populate asynchronously after HTTP starts listening. Wait
+# for the legal plugin before exposing the rest of this stack.
+"$BUN_BIN" run services/engine/script/wait-ready.ts
+
+(cd services/ingest && INGEST_HOST="$INGEST_HOST" INGEST_PORT="$INGEST_PORT" "$BUN_BIN" run src/server.ts) &
+ingest_pid=$!
+pids+=("$ingest_pid")
+
+(cd apps/web && VITE_OPENCODE_URL="$VITE_OPENCODE_URL" VITE_INGEST_URL="$VITE_INGEST_URL" "$BUN_BIN" run dev -- --host "$WEB_HOST" --port "$WEB_PORT") &
+web_pid=$!
+pids+=("$web_pid")
+
+# Retained native work starts only after the whole managed stack can serve it.
+# The exec-owned PID is our direct child; no durable release marker is needed.
+"$BUN_BIN" run services/engine/script/wait-stack-ready.ts
+if [ "$(cat "$DOCHAUS_RUNTIME_DIR/engine-process.lock")" != "$engine_pid" ]; then
+  echo "doc.haus: managed restart release lost its exact engine process owner" >&2
+  exit 1
+fi
+kill -USR2 "$engine_pid"
 
 # Open the web UI once vite is actually serving (poll the port via bash's /dev/tcp
 # so it works without curl). Vite binds IPv6 localhost (::1) by default, so probe
@@ -111,7 +257,7 @@ pids+=($!)
 if [ -z "${NO_OPEN:-}" ]; then
   (
     for _ in $(seq 1 60); do
-      if (exec 3<>/dev/tcp/127.0.0.1/5173) 2>/dev/null || (exec 3<>/dev/tcp/::1/5173) 2>/dev/null; then
+      if (exec 3<>/dev/tcp/127.0.0.1/"$WEB_PORT") 2>/dev/null || (exec 3<>/dev/tcp/::1/"$WEB_PORT") 2>/dev/null; then
         break
       fi
       sleep 0.5
@@ -124,6 +270,36 @@ if [ -z "${NO_OPEN:-}" ]; then
   pids+=($!)
 fi
 
-# Block until interrupted (Ctrl-C), then the trap tears every process down. Plain
-# `wait` keeps this portable to the bash 3.2 that ships on macOS (`wait -n` is 4.0+).
-wait
+# Run until interrupted (Ctrl-C) or until a managed process exits on its own. The
+# stack cannot serve without all three, so one exiting stops the launch with a
+# non-zero status and the EXIT trap tears the rest down. Polling with kill -0
+# keeps this portable to the bash 3.2 that ships on macOS (`wait -n` is 4.0+).
+while true; do
+  if [ -n "$update_requested" ]; then
+    echo "doc.haus: installing the requested update..."
+    # Keep the launcher lock until its updater finishes. No second stack may
+    # start against the session database during installation.
+    for pid in ${pids[@]+"${pids[@]}"}; do kill_tree "$pid"; done
+    for pid in ${pids[@]+"${pids[@]}"}; do wait "$pid" 2>/dev/null || true; done
+    pids=()
+    "$BUN_BIN" run scripts/updater.ts --apply || true
+    cleanup
+    trap - EXIT
+    export NO_OPEN=1
+    exec bash ./start.sh "$@"
+  fi
+  for name in engine ingest web; do
+    case "$name" in
+      engine) pid=$engine_pid ;;
+      ingest) pid=$ingest_pid ;;
+      web) pid=$web_pid ;;
+    esac
+    if ! kill -0 "$pid" 2>/dev/null; then
+      status=0
+      wait "$pid" || status=$?
+      echo "doc.haus: $name exited (status $status); stopping the stack" >&2
+      exit 1
+    fi
+  done
+  sleep 1
+done

@@ -1,57 +1,65 @@
-import { SessionV2 } from "@opencode-ai/core/session"
-import { LocationServiceMap } from "@opencode-ai/core/location-layer"
-import { PermissionSaved } from "@opencode-ai/core/permission/saved"
 import { Layer } from "effect"
-import { layer as v2LocationLayer } from "./groups/v2/location"
-import { messageHandlers } from "./handlers/v2/message"
-import { modelHandlers } from "./handlers/v2/model"
-import { providerHandlers } from "./handlers/v2/provider"
-import { sessionHandlers } from "./handlers/v2/session"
-import { permissionHandlers, savedPermissionHandlers, sessionPermissionHandlers } from "./handlers/v2/permission"
-import { fileSystemHandlers } from "./handlers/v2/fs"
-import { commandHandlers } from "./handlers/v2/command"
-import { skillHandlers } from "./handlers/v2/skill"
-import { eventHandlers } from "./handlers/v2/event"
-import { agentHandlers } from "./handlers/v2/agent"
-import { healthHandlers } from "./handlers/v2/health"
-import { questionHandlers, sessionQuestionHandlers } from "./handlers/v2/question"
-import { Database } from "@opencode-ai/core/database/database"
-import { EventV2 } from "@opencode-ai/core/event"
-import { ProjectV2 } from "@opencode-ai/core/project"
-import * as SessionExecutionLocal from "@opencode-ai/core/session/execution/local"
-import { SessionProjector } from "@opencode-ai/core/session/projector"
-import { SessionStore } from "@opencode-ai/core/session/store"
+import { GenerateHandler } from "./handlers/generate"
+import { MessageHandler } from "./handlers/message"
+import { ModelHandler } from "./handlers/model"
+import { ProviderHandler } from "./handlers/provider"
+import { SessionHandler } from "./handlers/session"
+import { PermissionHandler } from "./handlers/permission"
+import { FileSystemHandler } from "./handlers/fs"
+import { FormHandler } from "./handlers/form"
+import { CommandHandler } from "./handlers/command"
+import { SkillHandler } from "./handlers/skill"
+import { RpcHandler } from "./handlers/rpc"
+import { EventHandler } from "./handlers/event"
+import { AgentHandler } from "./handlers/agent"
+import { PluginHandler } from "./handlers/plugin"
+import { ServerHandler } from "./handlers/server"
+import { DebugHandler } from "./handlers/debug"
+import { PtyHandler } from "./handlers/pty"
+import { PersistentPtyHandler } from "./handlers/persistent-pty"
+import { ShellHandler } from "./handlers/shell"
+import { ReferenceHandler } from "./handlers/reference"
+import { LocationHandler } from "./handlers/location"
+import { IntegrationHandler } from "./handlers/integration"
+import { WebSearchHandler } from "./handlers/websearch"
+import { McpHandler } from "./handlers/mcp"
+import { CredentialHandler } from "./handlers/credential"
+import { ProjectHandler } from "./handlers/project"
+import { WorktreeHandler } from "./handlers/worktree"
+import { VcsHandler } from "./handlers/vcs"
+import { EventFeed } from "./event-feed"
+import { MigrationHandler } from "./handlers/migration"
+import { ConfigHandler } from "./handlers/config"
 
-const routedSessions = SessionV2.layer.pipe(
-  Layer.provide(SessionProjector.layer),
-  Layer.provide(SessionExecutionLocal.layer),
-  Layer.provide(LocationServiceMap.layer),
-  Layer.provide(SessionStore.layer),
-  Layer.provide(EventV2.layer),
-  Layer.provide(Database.defaultLayer),
-  Layer.provide(ProjectV2.defaultLayer),
-  Layer.orDie,
-)
-
-export const v2Handlers = Layer.mergeAll(
-  healthHandlers,
-  agentHandlers,
-  sessionHandlers,
-  messageHandlers,
-  modelHandlers,
-  providerHandlers,
-  permissionHandlers,
-  sessionPermissionHandlers,
-  savedPermissionHandlers,
-  fileSystemHandlers,
-  commandHandlers,
-  skillHandlers,
-  eventHandlers,
-  questionHandlers,
-  sessionQuestionHandlers,
-).pipe(
-  Layer.provide(v2LocationLayer),
-  Layer.provide(LocationServiceMap.layer),
-  Layer.provide(PermissionSaved.layer),
-  Layer.provide(routedSessions),
+export const handlers = Layer.mergeAll(
+  ServerHandler,
+  DebugHandler,
+  MigrationHandler,
+  LocationHandler,
+  AgentHandler,
+  PluginHandler,
+  SessionHandler,
+  MessageHandler,
+  ModelHandler,
+  GenerateHandler,
+  ProviderHandler,
+  IntegrationHandler,
+  WebSearchHandler,
+  McpHandler,
+  CredentialHandler,
+  ProjectHandler,
+  FormHandler,
+  PermissionHandler,
+  FileSystemHandler,
+  CommandHandler,
+  SkillHandler,
+  RpcHandler,
+  EventHandler.pipe(Layer.provide(EventFeed.layer)),
+  PtyHandler,
+  PersistentPtyHandler,
+  ShellHandler,
+  ReferenceHandler,
+  WorktreeHandler,
+  VcsHandler,
+  ConfigHandler,
 )

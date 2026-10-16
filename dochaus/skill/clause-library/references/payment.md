@@ -1,9 +1,12 @@
 # Payment
 
-US commercial-market reference points; verify against the matter's
-jurisdiction pack.
+**Topic:** Payment — escalation, set-off, refunds, taxes.
+**Contract type:** All commercial agreements with recurring or staged fees.
+**Jurisdiction:** US commercial market; verify against the matter's
+jurisdiction pack. Positions are firm-configurable defaults overridable via
+`.dochaus/profile.md`.
 
-## Balanced position
+## Preferred
 
 Fees fixed for the initial term and invoiced on a stated schedule, payable
 net thirty days. Price increases apply only at renewal, on advance written
@@ -24,36 +27,36 @@ all undisputed amounts and the parties work in good faith to resolve the
 dispute promptly.
 ```
 
-## Common one-sided variants
+**Off-market variants to watch.** Provider-favorable: unilateral mid-term
+price escalation with no cap and no exit right; all fees non-refundable in all
+circumstances including the provider's own breach; suspension of service for
+any unpaid amount including good-faith-disputed ones; one-way set-off ban.
+Customer-favorable: net-90+ terms with no late interest; unlimited withholding
+for any "disputed" amount with no good-faith or undisputed-portion qualifier;
+all taxes including the provider's income taxes shifted via a one-way gross-up.
 
-**Tilted toward the provider:**
-- Unilateral price escalation: fees change on notice, mid-term, with no cap
-  and no corresponding exit right.
-- All fees non-refundable in all circumstances, including the provider's own
-  breach; payment obligations survive termination regardless of cause.
-- Suspension of service for any unpaid amount, including amounts disputed in
-  good faith; set-off prohibited for the customer only.
+## Fallbacks (ordered)
 
-**Tilted toward the customer:**
-- Net-90 or longer payment terms with no interest on late amounts.
-- Unlimited withholding rights for any "disputed" amount with no good-faith
-  or undisputed-portion qualifier.
-- All taxes, including the provider's income taxes, shifted to the provider
-  via a one-way gross-up.
-
-## Fallback ladder
-
-1. Fixed fees for the term; renewal-only increases capped at a stated
-   percentage or index, noticed before the non-renewal deadline (preferred).
-2. Accept an index-linked annual increase (e.g., CPI-based) with a hard
-   ceiling, in exchange for a termination right if exceeded.
-3. Accept non-refundability for convenience termination only — refunds always
+1. **Offer when** the counterparty needs inflation protection: accept an
+   index-linked annual increase (e.g., CPI-based) with a hard ceiling, in
+   exchange for a termination right if exceeded.
+2. **Offer when** the counterparty resists full refundability: accept
+   non-refundability for convenience termination only — refunds always
    preserved where the customer exits for the provider's breach.
-4. Accept suspension for non-payment limited to undisputed amounts, after
-   notice and a cure window.
+3. **Offer when** the provider needs a non-payment remedy: accept suspension
+   for non-payment limited to undisputed amounts, after notice and a cure
+   window.
 
-Below rung 4 — uncapped mid-term escalation or forfeiture of prepaids on the
-provider's breach — escalate.
+## Walk-away floor
+
+Uncapped mid-term escalation, or forfeiture of prepaids on the provider's own
+breach.
+
+## Escalation trigger
+
+At or below the floor, do not concede. Route to the **supervising lawyer** for
+the matter (or the `.dochaus/profile.md` Escalation Rules contact) before
+accepting an open-ended price-change or no-refund-on-breach term.
 
 **Rationale:** Payment terms convert directly into deal economics; the
 escalation mechanism and the dispute/suspension interaction are the two

@@ -1,9 +1,9 @@
 import type { APIEvent } from "@solidjs/start/server"
 import { z } from "zod"
-import { Resource } from "@opencode-ai/console-resource"
-import { safeEqual } from "@opencode-ai/console-core/util/crypto.js"
+import { Resource } from "@opencode/console-resource"
+import { safeEqual } from "@opencode/console-core/util/crypto.js"
 
-const DISCORD_ALERT_ROLE_ID = "1501447160175136838"
+const DISCORD_ALERT_ROLE_ID = "1520924666359713863"
 
 const basePayload = z.object({
   name: z.string().optional(),

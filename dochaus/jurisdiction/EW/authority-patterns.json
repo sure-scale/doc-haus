@@ -1,0 +1,16 @@
+{
+  "patterns": [
+    {
+      "id": "act-with-year",
+      "description": "A named Act of Parliament with its year, e.g. the <Name> Act 2010",
+      "regex": "\\b(?:[A-Z][\\w'()-]*\\s+){1,7}Act\\s+\\d{4}\\b",
+      "flags": "g"
+    },
+    {
+      "id": "statutory-instrument",
+      "description": "Statutory instrument numbers, e.g. SI 2010/1234",
+      "regex": "\\bS\\.?I\\.?\\s*\\d{4}/\\d+\\b",
+      "flags": "g"
+    }
+  ]
+}

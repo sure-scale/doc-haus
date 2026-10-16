@@ -1,4 +1,4 @@
-import { tool } from "@opencode-ai/plugin"
+import { tool } from "./legacy-definition"
 
 // doc.haus delete-agent tool. Removes a custom specialist subagent. The registry
 // refuses while any workflow still references the agent as a step.

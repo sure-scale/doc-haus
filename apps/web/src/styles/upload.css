@@ -1,0 +1,94 @@
+/* ---------- Shared dropzone and per-file upload rows ---------- */
+
+.dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.dropzone:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+
+.dropzone.is-busy {
+  border-style: solid;
+  border-color: var(--accent-border);
+  background: var(--accent-tint);
+}
+
+.dropzone.is-busy svg {
+  color: var(--accent);
+}
+
+.dropzone .dropzone-title,
+.dropzone .dropzone-hint {
+  margin-top: 0;
+}
+
+.dropzone svg {
+  margin-bottom: 4px;
+}
+
+.matter-list li.upload-row {
+  animation: row-in var(--duration-base) var(--ease-out);
+}
+
+.upload-row:hover {
+  background: none;
+}
+
+.upload-icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+  width: 14px;
+  height: 14px;
+  margin-top: 3px;
+  color: var(--accent);
+}
+
+.upload-name {
+  flex: 1;
+  min-width: 0;
+  word-break: break-word;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.upload-status {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.upload-row.is-ready .upload-status {
+  color: var(--accent);
+}
+
+.upload-row.is-failed .upload-icon,
+.upload-row.is-failed .upload-status {
+  color: var(--danger);
+}
+
+.upload-row.is-failed .doc-row-meta {
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.upload-actions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.upload-spinner {
+  width: 12px;
+  height: 12px;
+  margin: 1px;
+  border-radius: 50%;
+  border: 2px solid var(--accent-border);
+  border-top-color: var(--accent);
+  animation: btn-spin 0.9s linear infinite;
+}

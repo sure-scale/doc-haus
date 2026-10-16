@@ -1,9 +1,10 @@
-import { tool } from "@opencode-ai/plugin"
+import { tool } from "./legacy-definition"
 import { existsSync } from "node:fs"
 import path from "node:path"
 import { docxodus } from "../lib/docxodus"
+import { assertDirectWorkingDocxWriteAllowed } from "../lib/working-docx"
 import { recordRedaction, scrubDocxPackage, docxPackageResidue } from "../lib/redactions"
-import { pendingRedlinesForDoc, supersedeRedlines } from "../lib/redlines"
+import { supersedeMatchingRedlines, withRedlineDocumentLock } from "../lib/redlines"
 
 // doc.haus redact tool. TRUE redaction: removes the sensitive text from the
 // .docx itself — every body/header/footer/footnote/endnote/comment occurrence
@@ -78,6 +79,7 @@ export default tool({
       session.close()
       return `Text not found in ${path.basename(file)} (content or metadata): ${JSON.stringify(args.text)}`
     }
+    session.close()
 
     const author = args.author ?? "doc.haus"
     // Removal is irreversible, so it is gated on the matter owner's approval
@@ -99,84 +101,103 @@ export default tool({
       },
     })
 
-    // Replace span-addressed matches in reverse span order within each anchor so
-    // earlier spans stay valid as later ones shrink the text.
-    const ordered = [...matches].sort((a, b) =>
-      a.enclosingAnchor.id === b.enclosingAnchor.id ? b.span.start - a.span.start : 0,
-    )
-    for (const match of ordered) {
-      const result = session.replaceMatch(match, label)
-      if (!result.success) {
-        session.close()
-        return `Redaction aborted, document unchanged: replacing an occurrence in ${path.basename(file)} failed (${result.error?.message ?? "unknown error"}).`
+    const redaction = await withRedlineDocumentLock(ctx.directory, file, async () => {
+      if (!existsSync(file)) return { error: `Document not found in this matter: ${args.document}` }
+      const currentBytes = await Bun.file(file).bytes()
+      const currentMeta = await dx.getDocumentMetadata(currentBytes)
+      if (currentMeta.hasTrackedChanges)
+        return { error: `${path.basename(file)} gained unresolved tracked changes before approval. Resolve them and try again.` }
+
+      const currentSession = dx.openDocxSession(currentBytes, {})
+      const currentMatches = currentSession.grep(pattern, { scope: dx.ProjectionScopes.All })
+      const currentCrossBlock = currentSession
+        .grepCrossBlock(pattern, { scope: dx.ProjectionScopes.All })
+        .filter((match) => match.slices.length > 1)
+      if (currentCrossBlock.length) {
+        currentSession.close()
+        return { error: `Redaction aborted, document unchanged: ${currentCrossBlock.length} occurrence(s) now span a paragraph boundary.` }
       }
-    }
-    const replaced = session.save()
-    session.close()
+      const currentParts = docxPackageResidue(currentBytes, args.text)
+      if (!currentMatches.length && !currentParts.length) {
+        currentSession.close()
+        return { error: `Text is no longer present in ${path.basename(file)} after approval.` }
+      }
 
-    // Raw OOXML scrub for everything Docxodus cannot address, then verify the
-    // whole package is clean — only a zero-residue document is ever written.
-    const scrub = scrubDocxPackage(replaced, args.text, label)
-    const residue = docxPackageResidue(scrub.bytes, args.text)
-    if (residue.length)
-      return `Redaction aborted, document unchanged: the text still appears in ${residue.join(", ")} after removal. The document needs manual review.`
+      // Replace span-addressed matches in reverse span order within each anchor
+      // so earlier spans stay valid as later ones shrink the text.
+      const ordered = [...currentMatches].sort((a, b) =>
+        a.enclosingAnchor.id === b.enclosingAnchor.id ? b.span.start - a.span.start : 0,
+      )
+      for (const match of ordered) {
+        const result = currentSession.replaceMatch(match, label)
+        if (!result.success) {
+          currentSession.close()
+          return { error: `Redaction aborted, document unchanged: replacing an occurrence in ${path.basename(file)} failed (${result.error?.message ?? "unknown error"}).` }
+        }
+      }
+      const replaced = currentSession.save()
+      currentSession.close()
+      const scrub = scrubDocxPackage(replaced, args.text, label)
+      const residue = docxPackageResidue(scrub.bytes, args.text)
+      if (residue.length)
+        return { error: `Redaction aborted, document unchanged: the text still appears in ${residue.join(", ")} after removal. The document needs manual review.` }
 
-    await Bun.write(file, scrub.bytes)
+      assertDirectWorkingDocxWriteAllowed(ctx.directory, file)
+      await Bun.write(file, scrub.bytes)
+      const stale = supersedeMatchingRedlines(
+        ctx.directory,
+        file,
+        (row) => row.find_text.includes(args.text) || row.new_text.includes(args.text),
+      )
+      const id = recordRedaction(ctx.directory, {
+        docPath: file,
+        docName: path.basename(file),
+        redactedText: args.text,
+        label,
+        reason: args.reason,
+        author,
+        occurrences: currentMatches.length,
+        metadataHits: Object.values(scrub.hits).reduce((a, b) => a + b, 0),
+      })
+      return { scrub, stale, id, occurrences: currentMatches.length }
+    })
+    if ("error" in redaction) return redaction.error
 
-    // The matter's search index still embeds the original text; re-ingest the
-    // redacted file so search-document can no longer return what was removed.
-    const reingest = await fetch(`${ingestUrl}/matters/${path.basename(ctx.directory)}/documents`, {
+    // Persist through the role-preserving revision route. Uploaded sources are
+    // re-indexed so removed text cannot be returned; generated deliverables stay
+    // outside source retrieval.
+    const reingest = await fetch(`${ingestUrl}/matters/${path.basename(ctx.directory)}/documents/revisions`, {
       method: "POST",
       body: (() => {
         const form = new FormData()
-        form.append("file", new File([scrub.bytes], path.basename(file)))
+        form.append("file", new File([redaction.scrub.bytes], path.basename(file)))
         return form
       })(),
     }).catch(() => null)
 
-    // Pending redlines that anchor to or would re-insert the removed text would
-    // leak it back through the review queue — retire them.
-    const stale = pendingRedlinesForDoc(ctx.directory, file).filter(
-      (r) => r.find_text.includes(args.text) || r.new_text.includes(args.text),
-    )
-    supersedeRedlines(ctx.directory, stale.map((r) => r.id))
-
-    const id = recordRedaction(ctx.directory, {
-      docPath: file,
-      docName: path.basename(file),
-      redactedText: args.text,
-      label,
-      reason: args.reason,
-      author,
-      occurrences: matches.length,
-      // The Docxodus pass already replaced the projected text, so every raw-scrub
-      // hit is metadata or unprojected content.
-      metadataHits: Object.values(scrub.hits).reduce((a, b) => a + b, 0),
-    })
-
     const warnings = [
       !reingest?.ok &&
         "WARNING: re-indexing failed — the matter's search index may still contain the removed text until the document is re-ingested.",
-      scrub.unreachable.length &&
-        `NOTE: the document embeds ${scrub.unreachable.length} image/object part(s) (${scrub.unreachable.join(", ")}) this tool cannot inspect — review them manually if they could depict the redacted content.`,
-      stale.length && `Retired ${stale.length} pending redline(s) that referenced the removed text.`,
+      redaction.scrub.unreachable.length &&
+        `NOTE: the document embeds ${redaction.scrub.unreachable.length} image/object part(s) (${redaction.scrub.unreachable.join(", ")}) this tool cannot inspect — review them manually if they could depict the redacted content.`,
+      redaction.stale.length && `Retired ${redaction.stale.length} pending redline(s) that referenced the removed text.`,
     ].filter(Boolean)
 
     return {
       title: `Redacted ${path.basename(file)}`,
       output: [
-        `Permanently removed ${JSON.stringify(args.text)} from ${path.basename(file)}: ${matches.length} text occurrence(s) replaced with ${JSON.stringify(label)}, ${Object.keys(scrub.hits).length} package part(s) scrubbed. Verified zero residue. Recorded as redaction log entry #${id} (reason: ${args.reason}, by ${author}).`,
+        `Permanently removed ${JSON.stringify(args.text)} from ${path.basename(file)}: ${redaction.occurrences} text occurrence(s) replaced with ${JSON.stringify(label)}, ${Object.keys(redaction.scrub.hits).length} package part(s) scrubbed. Verified zero residue. Recorded as redaction log entry #${redaction.id} (reason: ${args.reason}, by ${author}).`,
         ...warnings,
       ].join("\n"),
       metadata: {
         document: file,
-        occurrences: matches.length,
-        scrubbedParts: scrub.hits,
-        redaction: id,
+        occurrences: redaction.occurrences,
+        scrubbedParts: redaction.scrub.hits,
+        redaction: redaction.id,
         reason: args.reason,
         author,
         reingested: reingest?.ok ?? false,
-        supersededRedlines: stale.map((r) => r.id),
+        supersededRedlines: redaction.stale.map((row) => row.id),
       },
     }
   },

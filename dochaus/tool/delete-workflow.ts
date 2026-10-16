@@ -1,4 +1,4 @@
-import { tool } from "@opencode-ai/plugin"
+import { tool } from "./legacy-definition"
 
 // doc.haus delete-workflow tool. Removes a custom workflow from the registry and
 // deletes its generated orchestrator agent .md. Built-in workflows (shipped in

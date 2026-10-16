@@ -7,12 +7,16 @@ node_modules
 .idea
 .vscode
 .codex
+.dochaus-runtime/
+.dochaus-data/
 *~
 playground
 tmp
 dist
+dist-node
 ts-dist
 .turbo
+.typecheck-profiles
 **/.serena
 .serena/
 **/.omo
@@ -24,12 +28,14 @@ Session.vim
 a.out
 target
 .scripts
+.cache
 .direnv/
 
 # Local dev files
 CLAUDE.local.md
 opencode-dev
 UPCOMING_CHANGELOG.md
+RELEASE_REVIEW.md
 logs/
 *.bun-build
 tsconfig.tsbuildinfo
@@ -39,3 +45,55 @@ services/ingest/workspace/
 /workspace/
 .playwright-mcp/
 /.claude
+.dochaus/
+
+# Generated demo letter: services/ingest seed.ts rebuilds it on every run and
+# the docx library stamps core.xml with the current time, so a tracked copy
+# only churns. Regenerate with `cd services/ingest && bun run seed`.
+demo/Letter-of-Engagement-Aldgate-Mills.docx
+
+# Installation secrets and durable/generated state at any depth.
+.env*
+**/.env*
+!.env.example
+!**/.env.example
+**/.dochaus-runtime/
+**/.dochaus-data/
+**/captures/
+**/logs/
+**/*.db
+**/*.db-wal
+**/*.db-shm
+**/worktrees/
+**/.worktrees/
+
+# Native sign-in exports and host credential directories are never source.
+**/auth.json
+**/application_default_credentials.json
+**/.aws/
+**/.config/gcloud/
+**/*.sqlite*
+**/.claude/
+**/.opencode/
+**/.superpowers/
+/documents
+
+# Private keys and credential exports at any depth.
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+credentials-*.json
+*-credentials.json
+*service-account*.json
+*service_account*.json
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+
+# Local archives and internal working notes.
+/sandbox/*.tar
+**/private-notes/
+**/internal-notes/

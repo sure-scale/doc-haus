@@ -1,130 +1,125 @@
-import fs from "fs/promises"
-import path from "path"
 import { describe, expect } from "bun:test"
-import { Effect, Layer } from "effect"
-import { AgentV2 } from "@opencode-ai/core/agent"
-import { FSUtil } from "@opencode-ai/core/fs-util"
-import { AbsolutePath } from "@opencode-ai/core/schema"
-import { SkillV2 } from "@opencode-ai/core/skill"
-import { SkillDiscovery } from "@opencode-ai/core/skill/discovery"
-import { tmpdir } from "./fixture/tmpdir"
+import { Deferred, Effect, Fiber, Stream } from "effect"
+import { Agent } from "@opencode/core/agent"
+import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
+import { LayerNode } from "@opencode/util/effect/layer-node"
+import { Bus } from "@opencode/core/bus"
+import { AbsolutePath } from "@opencode/core/schema"
+import { Skill } from "@opencode/core/skill"
 import { testEffect } from "./lib/effect"
 
-const urls = new Map<string, AbsolutePath[]>()
-let pulls = 0
-const discovery = Layer.succeed(
-  SkillDiscovery.Service,
-  SkillDiscovery.Service.of({
-    pull: (url) => {
-      pulls++
-      return Effect.succeed(urls.get(url) ?? [])
-    },
-  }),
-)
-const it = testEffect(
-  SkillV2.layer.pipe(
-    Layer.provide(discovery),
-    Layer.provide(FSUtil.defaultLayer),
-    Layer.provideMerge(AgentV2.locationLayer),
-  ),
-)
+const it = testEffect(AppNodeBuilder.build(LayerNode.group([Skill.node, Agent.node, Bus.node])))
 
-function write(directory: string, name: string, description: string) {
-  return fs.writeFile(
-    path.join(directory, name, "SKILL.md"),
-    `---
-name: ${name}
-description: ${description}
----
-# ${name}`,
-  )
-}
+const info = (id: string, description: string) =>
+  Skill.Info.make({
+    id: Skill.ID.make(id),
+    name: Skill.Name.make(id),
+    description,
+    path: AbsolutePath.make(`/skills/${id}/SKILL.md`),
+    content: `# ${id}`,
+  })
 
-describe("SkillV2", () => {
-  it.live("registers sources and resolves later source precedence", () =>
-    Effect.acquireRelease(
-      Effect.promise(() => tmpdir()),
-      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
-    ).pipe(
-      Effect.flatMap((tmp) =>
-        Effect.gen(function* () {
-          const first = path.join(tmp.path, "first")
-          const second = path.join(tmp.path, "second")
-          yield* Effect.promise(async () => {
-            await fs.mkdir(path.join(first, "review"), { recursive: true })
-            await fs.mkdir(path.join(second, "review"), { recursive: true })
-            await write(first, "review", "First")
-            await write(second, "review", "Second")
-            await fs.writeFile(path.join(first, "foo.md"), "---\nslash: true\n---\n# foo")
-          })
+describe("Skill", () => {
+  it.effect("reads the current editor entry by ID", () =>
+    Effect.gen(function* () {
+      const skill = yield* Skill.Service
+      yield* skill.transform((editor) => editor.add(info("review", "Initial")))
+      yield* skill.transform((editor) => {
+        expect(editor.get("review")).toBe(editor.list()[0])
+        expect(editor.get("missing")).toBeUndefined()
+        editor.update("review", (value) => {
+          value.description = "Updated"
+        })
+        expect(editor.get("review")?.description).toBe("Updated")
+        editor.remove("review")
+        expect(editor.get("review")).toBeUndefined()
+      })
 
-          const skill = yield* SkillV2.Service
-          const register = yield* skill.transform()
-          yield* register((editor) => {
-            editor.source({ type: "directory", path: AbsolutePath.make(first) })
-            editor.source({ type: "directory", path: AbsolutePath.make(first) })
-            editor.source({ type: "directory", path: AbsolutePath.make(second) })
-            expect(editor.list()).toEqual([
-              { type: "directory", path: AbsolutePath.make(first) },
-              { type: "directory", path: AbsolutePath.make(second) },
-            ])
-          })
-
-          expect(yield* skill.sources()).toEqual([
-            { type: "directory", path: AbsolutePath.make(first) },
-            { type: "directory", path: AbsolutePath.make(second) },
-          ])
-          expect(yield* skill.list()).toEqual([
-            new SkillV2.Info({
-              name: "foo",
-              slash: true,
-              location: AbsolutePath.make(path.join(first, "foo.md")),
-              content: "# foo",
-            }),
-            {
-              name: "review",
-              description: "Second",
-              location: AbsolutePath.make(path.join(second, "review", "SKILL.md")),
-              content: "# review",
-            },
-          ])
-        }),
-      ),
-    ),
+      expect(yield* skill.list()).toEqual([])
+    }),
   )
 
-  it.live("loads URL sources and filters skills for agents", () =>
-    Effect.acquireRelease(
-      Effect.promise(() => tmpdir()),
-      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
-    ).pipe(
-      Effect.flatMap((tmp) =>
-        Effect.gen(function* () {
-          yield* Effect.promise(async () => {
-            await fs.mkdir(path.join(tmp.path, "deploy"), { recursive: true })
-            await write(tmp.path, "deploy", "Deploy production")
-          })
-          pulls = 0
-          urls.set("https://example.test/skills/", [AbsolutePath.make(tmp.path)])
+  it.effect("registers values with last-write-wins precedence", () =>
+    Effect.gen(function* () {
+      const skill = yield* Skill.Service
+      yield* skill.transform((editor) => {
+        editor.add(info("review", "First"))
+        editor.add(info("deploy", "Deploy"))
+        editor.add(info("review", "Second"))
+        expect(editor.list().map((item) => item.id)).toEqual([Skill.ID.make("review"), Skill.ID.make("deploy")])
+      })
 
-          const agents = yield* AgentV2.Service
-          yield* agents.update((editor) =>
-            editor.update(AgentV2.ID.make("reviewer"), (agent) => {
-              agent.permissions.push({ action: "skill", resource: "deploy", effect: "deny" })
-            }),
-          )
+      expect(yield* skill.list()).toEqual([info("review", "Second"), info("deploy", "Deploy")])
+      expect(yield* skill.get(Skill.ID.make("review"))).toEqual(info("review", "Second"))
+      expect(yield* skill.get(Skill.ID.make("missing"))).toBeUndefined()
+    }),
+  )
 
-          const skill = yield* SkillV2.Service
-          const register = yield* skill.transform()
-          yield* register((editor) => editor.source({ type: "url", url: "https://example.test/skills/" }))
+  it.effect("updates and removes registered values", () =>
+    Effect.gen(function* () {
+      const skill = yield* Skill.Service
+      yield* skill.transform((editor) => {
+        editor.add(info("review", "Initial"))
+        editor.update("review", (value) => {
+          value.description = "Updated"
+          value.id = Skill.ID.make("ignored")
+        })
+        editor.update("missing", () => {
+          throw new Error("unreachable")
+        })
+        editor.add(info("deploy", "Deploy"))
+        editor.remove("deploy")
+      })
 
-          expect((yield* skill.list()).map((item) => item.name)).toEqual(["deploy"])
-          expect((yield* skill.list()).map((item) => item.name)).toEqual(["deploy"])
-          expect(pulls).toBe(1)
-          expect(yield* skill.forAgent(AgentV2.ID.make("reviewer"))).toEqual([])
-          expect(yield* skill.forAgent(AgentV2.ID.make("missing"))).toEqual([])
+      expect(yield* skill.list()).toEqual([info("review", "Updated")])
+    }),
+  )
+
+  it.effect("restores earlier values when an updating transform is disposed", () =>
+    Effect.gen(function* () {
+      const skill = yield* Skill.Service
+      const original = info("review", "Initial")
+      yield* skill.transform((editor) => editor.add(original))
+      const updated = yield* skill.transform((editor) =>
+        editor.update("review", (value) => {
+          value.description = "Updated"
         }),
-      ),
-    ),
+      )
+
+      expect((yield* skill.list())[0]?.description).toBe("Updated")
+      yield* updated.dispose
+      expect((yield* skill.list())[0]?.description).toBe("Initial")
+      expect(original.description).toBe("Initial")
+    }),
+  )
+
+  it.live("publishes updates after committed values are visible", () =>
+    Effect.gen(function* () {
+      const skill = yield* Skill.Service
+      const bus = yield* Bus.Service
+      const updated = yield* Deferred.make<Skill.Info[]>()
+      const fiber = yield* bus.subscribe(Skill.Event.Updated).pipe(
+        Stream.runForEach(() => skill.list().pipe(Effect.flatMap((values) => Deferred.succeed(updated, values)))),
+        Effect.forkScoped,
+      )
+      yield* Effect.yieldNow
+
+      yield* skill.transform((editor) => editor.add(info("review", "Visible")))
+      expect(yield* Deferred.await(updated).pipe(Effect.timeout("1 second"))).toEqual([info("review", "Visible")])
+      yield* Fiber.interrupt(fiber)
+    }),
+  )
+
+  it.effect("filters values by agent permissions", () =>
+    Effect.gen(function* () {
+      const agents = yield* Agent.Service
+      yield* agents.transform((editor) =>
+        editor.update(Agent.ID.make("reviewer"), (agent) => {
+          agent.permissions.push({ action: "skill", resource: "deploy", effect: "deny" })
+        }),
+      )
+      const agent = yield* agents.get(Agent.ID.make("reviewer"))
+      expect(Skill.available([info("deploy", "Deploy")], agent!.permissions)).toEqual([])
+    }),
   )
 })

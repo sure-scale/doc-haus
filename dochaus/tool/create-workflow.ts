@@ -1,4 +1,4 @@
-import { tool } from "@opencode-ai/plugin"
+import { tool } from "./legacy-definition"
 
 // doc.haus create-workflow tool. Registers a new custom workflow in the firm's
 // workflow registry (dochaus/workflows.json) and generates its orchestrator agent

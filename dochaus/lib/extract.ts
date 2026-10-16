@@ -39,11 +39,15 @@ export async function liveText(docPath: string) {
 // almost certainly the same passage; otherwise the first match wins.
 export function findQuote(text: string, quote: string, near?: number) {
   const matches = [...text.matchAll(quoteRegExp(quote))]
-  if (!matches.length) return undefined
+  const first = matches[0]
+  if (!first) return undefined
   const best =
     near === undefined
-      ? matches[0]
-      : matches.reduce((a, b) => (Math.abs(b.index - near) < Math.abs(a.index - near) ? b : a))
+      ? first
+      : matches.slice(1).reduce(
+          (a, b) => (Math.abs(b.index - near) < Math.abs(a.index - near) ? b : a),
+          first,
+        )
   return { start: best.index, end: best.index + best[0].length, excerpt: best[0] }
 }
 
@@ -55,13 +59,64 @@ function quoteRegExp(quote: string) {
 }
 
 // Must stay in lockstep with extractDocumentText in services/ingest/src/ingest.ts:
-// same extractors, same options, or offsets stop lining up.
+// same extractors, same options, or offsets stop lining up. Every branch ingest
+// accepts must appear here too — the citation verifier (verifyCitation via
+// liveText) re-extracts whatever document a search-document citation points at,
+// so a missing branch (e.g. .eml routed to mammoth) throws "Can't find end of
+// central directory" inside the tool.execute.after hook and the whole
+// search-document call surfaces as failed to the model.
 async function extract(docPath: string, buffer: Buffer) {
-  if (docPath.toLowerCase().endsWith(".pdf")) {
-    const { extractText, getDocumentProxy } = await import("unpdf")
-    const { text } = await extractText(await getDocumentProxy(new Uint8Array(buffer)), { mergePages: true })
-    return text
+  const name = docPath.toLowerCase()
+  if (name.endsWith(".pdf")) {
+    // Citation verification must use the exact extractor chain used at ingest.
+    // Ingest now prefers LiteParse/MarkItDown before unpdf; using unpdf alone
+    // here made every indexed LiteParse span look stale in the unchanged PDF.
+    const { pdfToText } = await import("../../services/ingest/src/pdf")
+    return pdfToText(buffer)
   }
+  if (name.endsWith(".eml")) return emlToText(buffer)
+  if (name.endsWith(".xlsx")) return xlsxToText(buffer)
   const { default: mammoth } = await import("mammoth")
   return (await mammoth.extractRawText({ buffer })).value
+}
+
+// Email sources (.eml) are MIME documents, not zip-based Office files. Mirrors
+// emlToText in services/ingest/src/ingest.ts — headers carry legal meaning in a
+// chain (who/when/about what) and sit above the body so the same chunker that
+// indexed the document at ingest time produces matching offsets here.
+async function emlToText(buffer: Buffer) {
+  const { default: PostalMime } = await import("postal-mime")
+  const email = await PostalMime.parse(buffer)
+  const header = [
+    email.subject && `Subject: ${email.subject}`,
+    email.from && `From: ${formatAddress(email.from)}`,
+    email.to?.length && `To: ${email.to.map(formatAddress).join(", ")}`,
+    email.cc?.length && `Cc: ${email.cc.map(formatAddress).join(", ")}`,
+    email.date && `Date: ${email.date}`,
+  ]
+    .filter(Boolean)
+    .join("\n")
+  const body = email.text ?? (email.html ? email.html.replace(/<[^>]+>/g, " ") : "")
+  return header ? `${header}\n\n${body}` : body
+}
+
+function formatAddress(addr: { name?: string; address?: string }) {
+  if (addr.name && addr.address) return `${addr.name} <${addr.address}>`
+  return addr.address ?? addr.name ?? ""
+}
+
+// Spreadsheet sources (.xlsx) — same tolerant reader as ingest, one labeled CSV
+// block per sheet so tabular relationships survive as text the same way the
+// indexer saw them.
+async function xlsxToText(buffer: Buffer) {
+  const { read, utils } = await import("xlsx")
+  const workbook = read(buffer, { type: "buffer" })
+  return workbook.SheetNames.map((name: string) => {
+    const sheet = workbook.Sheets[name]
+    if (!sheet) return ""
+    const csv = utils.sheet_to_csv(sheet).trim()
+    return csv ? `## ${name}\n${csv}` : ""
+  })
+    .filter(Boolean)
+    .join("\n\n")
 }

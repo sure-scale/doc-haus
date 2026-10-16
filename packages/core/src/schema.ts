@@ -1,47 +1,15 @@
-import { Option, Schema, SchemaGetter } from "effect"
-import { Hash } from "./util/hash"
+import { Schema } from "effect"
+import {
+  AbsolutePath,
+  DateTimeUtcFromMillis,
+  NonNegativeInt,
+  optional,
+  PositiveInt,
+  RelativePath,
+  statics,
+} from "@opencode/schema/schema"
 
-export type ExternalID = {
-  readonly namespace: string
-  readonly key: string
-}
-
-export const externalID = (prefix: string, input: ExternalID) =>
-  `${prefix}_${Hash.sha256(JSON.stringify([input.namespace, input.key]))}`
-
-/**
- * Integer greater than zero.
- */
-export const PositiveInt = Schema.Int.check(Schema.isGreaterThan(0))
-
-/**
- * Integer greater than or equal to zero.
- */
-export const NonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))
-
-/**
- * Relative file path (e.g., `src/components/Button.tsx`).
- */
-export const RelativePath = Schema.String.pipe(Schema.brand("RelativePath"))
-export type RelativePath = Schema.Schema.Type<typeof RelativePath>
-
-/**
- * Absolute file path (e.g., `/home/user/projects/myapp/src/main.ts`).
- */
-export const AbsolutePath = Schema.String.pipe(Schema.brand("AbsolutePath"))
-export type AbsolutePath = Schema.Schema.Type<typeof AbsolutePath>
-
-/**
- * Optional public JSON field that can hold explicit `undefined` on the type
- * side but encodes it as an omitted key, matching legacy `JSON.stringify`.
- */
-export const optionalOmitUndefined = <S extends Schema.Top>(schema: S) =>
-  Schema.optionalKey(schema).pipe(
-    Schema.decodeTo(Schema.optional(schema), {
-      decode: SchemaGetter.passthrough({ strict: false }),
-      encode: SchemaGetter.transformOptional(Option.filter((value) => value !== undefined)),
-    }),
-  )
+export { AbsolutePath, DateTimeUtcFromMillis, NonNegativeInt, optional, PositiveInt, RelativePath, statics }
 
 /**
  * Strip `readonly` from a nested type. Stand-in for `effect`'s `Types.DeepMutable`
@@ -72,56 +40,50 @@ export type DeepMutable<T> = T extends string | number | boolean | bigint | symb
         : T
 
 /**
- * Attach static methods to a schema object. Designed to be used with `.pipe()`:
- *
- * @example
- *   export const Foo = fooSchema.pipe(
- *     withStatics((schema) => ({
- *       zero: schema.make(0),
- *       from: Schema.decodeUnknownOption(schema),
- *     }))
- *   )
- */
-export const withStatics =
-  <S extends object, M extends Record<string, unknown>>(methods: (schema: S) => M) =>
-  (schema: S): S & M =>
-    Object.assign(schema, methods(schema))
-
-/**
  * Nominal wrapper for scalar types. The class itself is a valid schema —
- * pass it directly to `Schema.decode`, `Schema.decodeEffect`, etc.
+ * pass it directly to `Schema.decodeUnknownSync`, `Schema.decodeEffect`, etc.
  *
- * Overrides `~type.make` on the derived `Schema.Opaque` so `Schema.Schema.Type`
- * of a field using this newtype resolves to `Self` rather than the underlying
- * branded phantom. Without that override, passing a class instance to code
- * typed against `Schema.Schema.Type<FieldSchema>` would require a cast even
- * though the values are structurally equivalent at runtime.
+ * The runtime value remains an unwrapped primitive. `Schema.brand` supplies
+ * the primitive schema behavior and constructor validation, while the class
+ * supplies the nominal TypeScript identity.
+ * Apply checks and annotations to the underlying schema before wrapping it;
+ * schema rebuild operations intentionally return the underlying schema shape.
  *
  * @example
- *   class QuestionID extends Newtype<QuestionID>()("QuestionID", Schema.String) {
- *     static make(id: string): QuestionID {
- *       return this.make(id)
- *     }
- *   }
+ *   class QuestionID extends Newtype<QuestionID>()("QuestionID", Schema.String) {}
  *
- *   Schema.decodeEffect(QuestionID)(input)
+ *   const id = QuestionID.make("question-1")
+ *   Schema.decodeUnknownEffect(QuestionID)(input)
  */
+type NewtypeSchema<Self, Tag extends string, S extends Schema.Top> = (abstract new (_: never) => {
+  readonly _newtype: Tag
+}) &
+  Schema.BottomWithoutNew<
+    Self,
+    S["Encoded"],
+    S["DecodingServices"],
+    S["EncodingServices"],
+    S["ast"],
+    S["Rebuild"],
+    S["~type.make.in"],
+    Self,
+    S["~type.parameters"],
+    Self,
+    S["~type.mutability"],
+    S["~type.optionality"],
+    S["~type.constructor.default"],
+    S["~encoded.mutability"],
+    S["~encoded.optionality"]
+  > &
+  Omit<S, keyof Schema.Top>
+
 export function Newtype<Self>() {
-  return <const Tag extends string, S extends Schema.Top>(tag: Tag, schema: S) => {
+  return <const Tag extends string, S extends Schema.Top>(tag: Tag, schema: S): NewtypeSchema<Self, Tag, S> => {
     abstract class Base {
       declare readonly _newtype: Tag
-
-      static make(value: Schema.Schema.Type<S>): Self {
-        return value as unknown as Self
-      }
     }
 
-    Object.setPrototypeOf(Base, schema)
-
-    return Base as unknown as (abstract new (_: never) => { readonly _newtype: Tag }) & {
-      readonly make: (value: Schema.Schema.Type<S>) => Self
-    } & Omit<Schema.Opaque<Self, S, {}>, "make" | "~type.make"> & {
-        readonly "~type.make": Self
-      }
+    Object.setPrototypeOf(Base, schema.pipe(Schema.brand(tag)))
+    return Base as unknown as NewtypeSchema<Self, Tag, S>
   }
 }

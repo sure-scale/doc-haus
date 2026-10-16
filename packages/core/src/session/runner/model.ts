@@ -1,141 +1,96 @@
-export * as SessionRunnerModel from "./model"
+export * as SessionRunnerModel from "./model.js"
 
-import { type Model } from "@opencode-ai/llm"
-import * as AnthropicMessages from "@opencode-ai/llm/protocols/anthropic-messages"
-import * as OpenAICompatibleChat from "@opencode-ai/llm/protocols/openai-compatible-chat"
-import * as OpenAIResponses from "@opencode-ai/llm/protocols/openai-responses"
-import { Auth, type AnyRoute } from "@opencode-ai/llm/route"
-import { Context, Effect, Layer, Option, Schema } from "effect"
-import { produce } from "immer"
-import { Catalog } from "../../catalog"
-import { ModelV2 } from "../../model"
-import { PluginBoot } from "../../plugin/boot"
-import { ProviderV2 } from "../../provider"
-import { SessionSchema } from "../schema"
+import { makeLocationNode } from "@opencode/util/effect/app-node"
+import { LanguageModel } from "@opencode/ai"
+import { Model } from "@opencode/schema/model"
+import { Provider } from "@opencode/schema/provider"
+import { Context, Effect, Layer, Schema } from "effect"
+import { ModelResolver } from "../../model-resolver.js"
+import { SessionSchema } from "../schema.js"
 
-export class ModelNotSelectedError extends Schema.TaggedErrorClass<ModelNotSelectedError>()(
+export class ModelNotSelectedError extends Schema.TaggedError<ModelNotSelectedError>()(
   "SessionRunnerModel.ModelNotSelectedError",
-  {
-    sessionID: SessionSchema.ID,
-  },
-) {}
+  { sessionID: SessionSchema.ID },
+) {
+  override get message() {
+    return `No model is available for session ${this.sessionID}`
+  }
+}
 
-export class UnsupportedApiError extends Schema.TaggedErrorClass<UnsupportedApiError>()(
-  "SessionRunnerModel.UnsupportedApiError",
-  {
-    providerID: ProviderV2.ID,
-    modelID: ModelV2.ID,
-    api: Schema.String,
-  },
-) {}
-
-export type Error =
-  | Catalog.ProviderNotFoundError
-  | Catalog.ModelNotFoundError
-  | ModelNotSelectedError
-  | UnsupportedApiError
+export class ModelUnavailableError extends Schema.TaggedError<ModelUnavailableError>()(
+  "SessionRunnerModel.ModelUnavailableError",
+  { providerID: Provider.ID, modelID: Model.ID },
+) {
+  override get message() {
+    if (this.providerID === "azure-cognitive-services")
+      return `Model unavailable: ${this.providerID}/${this.modelID}. This provider has been deprecated; use azure/${this.modelID} instead.`
+    if (this.providerID === "google-vertex-anthropic")
+      return `Model unavailable: ${this.providerID}/${this.modelID}. This provider has been deprecated; use google-vertex/${this.modelID} instead.`
+    return `Model unavailable: ${this.providerID}/${this.modelID}`
+  }
+}
+export type Error = ModelNotSelectedError | ModelUnavailableError | ModelResolver.Error
+export type Resolved = ModelResolver.Resolved
 
 export interface Interface {
-  readonly resolve: (session: SessionSchema.Info) => Effect.Effect<Model, Error>
+  /** Availability is sampled lazily for each explicitly selected model resolution. */
+  readonly resolve: (
+    session: SessionSchema.Info,
+    available: () => Effect.Effect<ReadonlyArray<Model.Info>>,
+  ) => Effect.Effect<Resolved, Error>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/v2/SessionRunnerModel") {}
+export class Service extends Context.Service<Service, Interface>()("@opencode/SessionRunnerModel") {}
 
-/** Test or embedding seam for supplying a model resolver directly. */
-export const layerWith = (resolve: Interface["resolve"]) => Layer.succeed(Service, Service.of({ resolve }))
+/** Builds a Resolved whose catalog identity mirrors the route model. Test or embedding seam. */
+export const resolved = (
+  model: LanguageModel,
+  options: {
+    readonly capabilities: Model.Capabilities
+    readonly variant?: Model.VariantID
+    readonly cost: Model.Info["cost"]
+    readonly limit: Model.Info["limit"]
+    readonly compaction?: Provider.Compaction
+    readonly transport?: Provider.Transport
+  },
+): Resolved => ({
+  model,
+  ref: Model.Ref.make({
+    id: Model.ID.make(model.id),
+    providerID: Provider.ID.make(model.provider),
+    ...(options.variant === undefined ? {} : { variant: options.variant }),
+  }),
+  capabilities: options.capabilities,
+  cost: options.cost,
+  limit: options.limit,
+  compaction: options.compaction,
+  transport: options.transport,
+})
 
-const apiKey = (model: ModelV2.Info, provider?: ProviderV2.Info) => {
-  const value = model.request.body.apiKey ?? model.api.settings?.apiKey
-  if (typeof value === "string") return Auth.value(value)
-  return provider?.enabled !== false && provider?.enabled.via === "env" ? Auth.config(provider.enabled.name) : undefined
-}
-
-const withDefaults = (model: ModelV2.Info, route: AnyRoute) =>
-  route.with({
-    provider: model.providerID,
-    endpoint: model.api.url === undefined ? undefined : { baseURL: model.api.url },
-    headers: model.request.headers,
-    http: {
-      body: Object.fromEntries(Object.entries(model.request.body).filter(([key]) => key !== "apiKey")),
-    },
-    limits: { context: model.limit.context, output: model.limit.output },
-  })
-
-const withVariant = (model: ModelV2.Info, variantID: ModelV2.VariantID | undefined) => {
-  const id = variantID === "default" || variantID === undefined ? model.request.variant : variantID
-  const variant = model.variants.find((item) => item.id === id)
-  if (!variant) return model
-  return produce(model, (draft) => {
-    Object.assign(draft.request.headers, variant.headers)
-    Object.assign(draft.request.body, variant.body)
-  })
-}
-
-const apiName = (model: ModelV2.Info) =>
-  model.api.type === "aisdk" ? `${model.api.type}:${model.api.package}` : model.api.type
-
-export const fromCatalogModel = (
-  model: ModelV2.Info,
-  provider?: ProviderV2.Info,
-): Effect.Effect<Model, UnsupportedApiError> => {
-  const key = apiKey(model, provider)
-  if (model.api.type === "aisdk" && model.api.package === "@ai-sdk/openai") {
-    return Effect.succeed(
-      withDefaults(model, OpenAIResponses.route)
-        .with({ auth: key === undefined ? Auth.none : Auth.bearer(key) })
-        .model({ id: model.api.id }),
-    )
-  }
-  if (model.api.type === "aisdk" && model.api.package === "@ai-sdk/anthropic") {
-    return Effect.succeed(
-      withDefaults(model, AnthropicMessages.route)
-        .with({ auth: key === undefined ? Auth.none : Auth.header("x-api-key", key) })
-        .model({ id: model.api.id }),
-    )
-  }
-  if (model.api.type === "aisdk" && model.api.package === "@ai-sdk/openai-compatible" && model.api.url) {
-    return Effect.succeed(
-      withDefaults(model, OpenAICompatibleChat.route)
-        .with({ auth: key === undefined ? Auth.none : Auth.bearer(key) })
-        .model({ id: model.api.id }),
-    )
-  }
-  return Effect.fail(
-    new UnsupportedApiError({
-      providerID: model.providerID,
-      modelID: model.id,
-      api: apiName(model),
-    }),
-  )
-}
-
-export const resolve = (session: SessionSchema.Info, model: ModelV2.Info, provider?: ProviderV2.Info) =>
-  fromCatalogModel(withVariant(model, session.model?.variant), provider)
-
-export const supported = (model: ModelV2.Info) =>
-  model.api.type === "aisdk" &&
-  (model.api.package === "@ai-sdk/openai" ||
-    model.api.package === "@ai-sdk/anthropic" ||
-    (model.api.package === "@ai-sdk/openai-compatible" && model.api.url !== undefined))
-
-/** Resolves models from the catalog belonging to the current Location runtime. */
-export const locationLayer = Layer.effect(
+const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
-    const catalog = yield* Catalog.Service
-    const boot = yield* PluginBoot.Service
+    const resolver = yield* ModelResolver.Service
     return Service.of({
-      resolve: Effect.fn("SessionRunnerModel.resolve")(function* (session) {
+      resolve: Effect.fn("SessionRunnerModel.resolve")(function* (session, available) {
         // Location plugins populate and filter the catalog asynchronously during layer startup.
-        yield* boot.wait()
-        const preferred = yield* catalog.model.default()
-        const selected = session.model
-          ? yield* catalog.model.get(session.model.providerID, session.model.id)
-          : (Option.getOrUndefined(preferred.pipe(Option.filter(supported))) ??
-            (yield* catalog.model.available()).find(supported))
-        if (!selected) return yield* new ModelNotSelectedError({ sessionID: session.id })
-        return yield* resolve(session, selected, yield* catalog.provider.get(selected.providerID))
+        if (!session.model) {
+          const resolved = yield* resolver.resolve()
+          if (resolved) return resolved
+          return yield* new ModelNotSelectedError({ sessionID: session.id })
+        }
+        const selected = (yield* available()).find(
+          (model) => model.providerID === session.model?.providerID && model.id === session.model.id,
+        )
+        if (!selected)
+          return yield* new ModelUnavailableError({
+            providerID: session.model.providerID,
+            modelID: session.model.id,
+          })
+        return yield* resolver.resolveModel(selected, session.model.variant)
       }),
     })
   }),
 )
+
+export const node = makeLocationNode({ service: Service, layer, deps: [ModelResolver.node] })

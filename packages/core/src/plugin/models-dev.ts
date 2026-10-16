@@ -1,122 +1,111 @@
-import { DateTime, Effect, Scope, Stream } from "effect"
-import { Catalog } from "../catalog"
-import { EventV2 } from "../event"
-import { ModelV2 } from "../model"
-import { ModelsDev } from "../models-dev"
-import { PluginV2 } from "../plugin"
-import { ProviderV2 } from "../provider"
+import { define } from "@opencode/plugin/effect/plugin"
+import { Integration } from "@opencode/schema/integration"
+import { Provider } from "@opencode/schema/provider"
+import { Effect, Stream } from "effect"
+import { Bus } from "../bus.js"
+import { ModelsDev } from "../models-dev.js"
 
-function released(date: string) {
-  const time = Date.parse(date)
-  return DateTime.makeUnsafe(Number.isFinite(time) ? time : 0)
-}
+// These catalog entries require inference profiles on Bedrock Runtime.
+// Opus/Sonnet 4.6 support in-region calls in eu-west-2 and must remain available.
+const BEDROCK_PROFILE_ONLY_IDS = [
+  "amazon.nova-2-lite-v1:0",
+  "anthropic.claude-fable-5",
+  "anthropic.claude-fable-5-1",
+  "anthropic.claude-haiku-4-5-20251001-v1:0",
+  "anthropic.claude-opus-4-1-20250805-v1:0",
+  "anthropic.claude-opus-4-5-20251101-v1:0",
+  "anthropic.claude-opus-4-7",
+  "anthropic.claude-opus-4-8",
+  "anthropic.claude-opus-5",
+  "anthropic.claude-sonnet-4-5-20250929-v1:0",
+  "anthropic.claude-sonnet-5",
+  "deepseek.r1-v1:0",
+  "mistral.pixtral-large-2502-v1:0",
+]
 
-function cost(input: ModelsDev.Model["cost"]) {
-  const base = {
-    input: input?.input ?? 0,
-    output: input?.output ?? 0,
-    cache: {
-      read: input?.cache_read ?? 0,
-      write: input?.cache_write ?? 0,
-    },
-  }
-  if (!input?.context_over_200k) return [base]
-  return [
-    base,
-    {
-      tier: {
-        type: "context" as const,
-        size: 200_000,
-      },
-      input: input.context_over_200k.input,
-      output: input.context_over_200k.output,
-      cache: {
-        read: input.context_over_200k.cache_read ?? 0,
-        write: input.context_over_200k.cache_write ?? 0,
-      },
-    },
-  ]
-}
-
-function variants(model: ModelsDev.Model) {
-  return Object.entries(model.experimental?.modes ?? {}).map(([id, item]) => ({
-    id: ModelV2.VariantID.make(id),
-    headers: { ...(item.provider?.headers ?? {}) },
-    body: { ...(item.provider?.body ?? {}) },
-  }))
-}
-
-export const ModelsDevPlugin = PluginV2.define({
-  id: PluginV2.ID.make("models-dev"),
-  effect: Effect.gen(function* () {
-    const catalog = yield* Catalog.Service
+export const ModelsDevPlugin = define({
+  id: "opencode.models.dev",
+  effect: Effect.fn(function* (ctx) {
     const modelsDev = yield* ModelsDev.Service
-    const events = yield* EventV2.Service
-    const scope = yield* Scope.Scope
-    const transform = yield* catalog.transform()
-    const refresh = Effect.fn("ModelsDevPlugin.refresh")(function* () {
-      const data = yield* modelsDev.get()
-      yield* transform((catalog) => {
-        for (const item of Object.values(data)) {
-          const providerID = ProviderV2.ID.make(item.id)
-          catalog.provider.update(providerID, (provider) => {
-            provider.name = item.name
-            provider.env = [...item.env]
-            provider.api = item.npm
-              ? {
-                  type: "aisdk",
-                  package: item.npm,
-                  url: item.api,
-                }
-              : {
-                  type: "native",
-                  url: item.api,
-                  settings: {},
-                }
-          })
-
-          for (const model of Object.values(item.models)) {
-            const modelID = ModelV2.ID.make(model.id)
-            catalog.model.update(providerID, modelID, (draft) => {
-              draft.name = model.name
-              draft.family = model.family ? ModelV2.Family.make(model.family) : undefined
-              draft.api = model.provider?.npm
-                ? {
-                    id: draft.api.id,
-                    type: "aisdk",
-                    package: model.provider?.npm,
-                    url: model.provider.api,
-                  }
-                : {
-                    id: draft.api.id,
-                    type: "native",
-                    url: model.provider?.api,
-                    settings: {},
-                  }
-              draft.capabilities = {
-                tools: model.tool_call,
-                input: [...(model.modalities?.input ?? [])],
-                output: [...(model.modalities?.output ?? [])],
-              }
-              draft.variants = variants(model)
-              draft.time.released = released(model.release_date)
-              draft.cost = cost(model.cost)
-              draft.status = model.status ?? "active"
-              draft.enabled = true
-              draft.limit = {
-                context: model.limit.context,
-                input: model.limit.input,
-                output: model.limit.output,
-              }
-            })
-          }
-        }
-      })
+    const bus = yield* Bus.Service
+    // Filtering and definition indexes are shared across Locations. Only Model materialization
+    // makes mutable copies, after provider configuration and access have been resolved.
+    const loaded = { data: snapshots(yield* modelsDev.get()) }
+    yield* ctx.integration.transform((integrations) => {
+      for (const provider of loaded.data) {
+        if (provider.environment.length === 0) continue
+        const integrationID = provider.info.id
+        integrations.update(integrationID, (integration) => (integration.name = provider.info.name))
+        integrations.method.update({
+          integrationID,
+          method: { type: "key" },
+        })
+        integrations.method.update({
+          integrationID,
+          method: {
+            type: "env",
+            names: environmentNames(provider),
+          },
+        })
+      }
     })
-    yield* refresh()
-    yield* events.subscribe(ModelsDev.Event.Refreshed).pipe(
-      Stream.runForEach(() => refresh()),
+    yield* ctx.provider.transform((providers) => {
+      for (const provider of loaded.data) {
+        providers.add({
+          info: { ...provider.info, integrationID: Integration.ID.make(provider.info.id) },
+          models: provider.models,
+        })
+      }
+    })
+    const apply = (data: readonly ModelsDev.Snapshot[]) => {
+      loaded.data = snapshots(data)
+      return ctx.integration.reload().pipe(Effect.andThen(ctx.provider.reload()))
+    }
+    yield* bus.subscribe(ModelsDev.Event.Refreshed).pipe(
+      Stream.runForEach(() => modelsDev.get().pipe(Effect.flatMap(apply))),
       Effect.forkScoped({ startImmediately: true }),
     )
+    // A refresh that landed between the initial read and the subscription above published
+    // Refreshed to nobody here. On a cold cache that read served the bundled snapshot, so
+    // re-read now instead of waiting for the next TTL refresh.
+    const latest = yield* modelsDev.get()
+    if (snapshots(latest) !== loaded.data) yield* apply(latest)
   }),
 })
+
+function environmentNames(provider: ModelsDev.Snapshot) {
+  if (provider.info.id === Provider.ID.azure)
+    return [...provider.environment.filter((name) => name.endsWith("_API_KEY")), "AZURE_COGNITIVE_SERVICES_API_KEY"]
+  // models.dev advertises project, location, and the ADC credentials file path for
+  // Vertex. Those configure Google auth rather than carrying a key, so only the
+  // Express Mode key may become a credential; GoogleVertexPlugin handles activation.
+  if (provider.info.id === Provider.ID.googleVertex) return ["GOOGLE_VERTEX_API_KEY"]
+  if (provider.info.id === "cloudflare-workers-ai")
+    return ["CLOUDFLARE_API_KEY", "CLOUDFLARE_WORKERS_AI_TOKEN", "CLOUDFLARE_API_TOKEN"]
+  return [...provider.environment]
+}
+
+const prepared = new WeakMap<readonly ModelsDev.Snapshot[], readonly ModelsDev.Snapshot[]>()
+
+function snapshots(data: readonly ModelsDev.Snapshot[]) {
+  const cached = prepared.get(data)
+  if (cached) return cached
+  const result = data
+    .filter(
+      // These deprecated aliases are replaced by the canonical Azure and Google Vertex providers.
+      (provider) => provider.info.id !== "azure-cognitive-services" && provider.info.id !== "google-vertex-anthropic",
+    )
+    .map((provider) => ({
+      ...provider,
+      models: provider.models.filter(
+        (model) =>
+          model.status !== "deprecated" &&
+          !(
+            provider.info.id === Provider.ID.amazonBedrock &&
+            BEDROCK_PROFILE_ONLY_IDS.includes(model.modelID ?? model.id)
+          ),
+      ),
+    }))
+  prepared.set(data, result)
+  return result
+}

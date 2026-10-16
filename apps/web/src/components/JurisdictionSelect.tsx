@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react"
 import { createPortal } from "react-dom"
-import type { Jurisdiction } from "../api/ingest"
+import type { Jurisdiction } from "../api/ingest/matters"
 
 // A matter can be governed by more than one jurisdiction (a cross-border deal
 // touches each party's law), so the picker is a multi-select: a trigger that
@@ -12,6 +12,8 @@ export default function JurisdictionSelect({
   onChange,
   align = "left",
   trigger,
+  id,
+  "aria-describedby": ariaDescribedBy,
 }: {
   jurisdictions: Jurisdiction[]
   selected: string[]
@@ -20,12 +22,14 @@ export default function JurisdictionSelect({
   // When given, replaces the default dropdown trigger with custom content (e.g.
   // jurisdiction badges) wrapped in a bare button that still opens the popover.
   trigger?: ReactNode
+  id?: string
+  "aria-describedby"?: string
 }) {
   const [open, setOpen] = useState(false)
   const [filter, setFilter] = useState("")
   // Anchor position captured when the popover opens. The popover renders in a
-  // body portal with position: fixed so scroll containers (the onboarding and
-  // settings modals use overflow: auto bodies) can't clip it.
+  // fixed portal so scrolling bodies can't clip it. Inside a native modal,
+  // keep the portal in that dialog's top layer so it remains interactive.
   const [pos, setPos] = useState({ top: 0, left: 0, right: 0 })
   const ref = useRef<HTMLDivElement>(null)
   const popRef = useRef<HTMLDivElement>(null)
@@ -70,7 +74,7 @@ export default function JurisdictionSelect({
   )
   const label =
     selected.length === 0
-      ? "No jurisdiction"
+      ? "Jurisdiction (optional)"
       : selected.length === 1
         ? jurisdictions.find((j) => j.code === selected[0])?.name ?? selected[0]
         : `${selected.length} jurisdictions`
@@ -78,11 +82,11 @@ export default function JurisdictionSelect({
   return (
     <div className="jx-select" ref={ref}>
       {trigger ? (
-        <button type="button" className="jx-trigger-bare" onClick={toggleOpen} title="Click to edit jurisdiction">
+        <button id={id} aria-describedby={ariaDescribedBy} type="button" className="jx-trigger-bare" onClick={toggleOpen} title="Click to edit jurisdiction">
           {trigger}
         </button>
       ) : (
-        <button type="button" className="assistant-trigger jx-trigger" onClick={toggleOpen} title="Jurisdiction — steers reasoning and citation style">
+        <button id={id} aria-describedby={ariaDescribedBy} type="button" className={`assistant-trigger jx-trigger${selected.length === 0 ? " is-empty" : ""}`} onClick={toggleOpen} title="Jurisdiction — steers reasoning and citation style">
           <span className="assistant-trigger-label">{label}</span>
           <svg className={`assistant-caret${open ? " open" : ""}`} width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
         </button>
@@ -92,6 +96,13 @@ export default function JurisdictionSelect({
           <div
             ref={popRef}
             className="jx-popover"
+            onKeyDown={(event) => {
+              if (event.key !== "Escape") return
+              event.preventDefault()
+              event.stopPropagation()
+              setOpen(false)
+              ref.current?.querySelector("button")?.focus({ preventScroll: true })
+            }}
             style={align === "right" ? { top: pos.top, right: pos.right } : { top: pos.top, left: pos.left }}
           >
             <input
@@ -109,13 +120,13 @@ export default function JurisdictionSelect({
                   <label key={j.code} className={`jx-option${selected.includes(j.code) ? " selected" : ""}`}>
                     <input type="checkbox" checked={selected.includes(j.code)} onChange={() => toggle(j.code)} />
                     <span className="jx-name">{j.name}</span>
-                    <span className="matter-ref">{j.code}</span>
+                    <span className="jx-code">{j.code}</span>
                   </label>
                 ))
               )}
             </div>
           </div>,
-          document.body,
+          ref.current?.closest("dialog") ?? document.body,
         )}
     </div>
   )

@@ -4,11 +4,35 @@ description: "Firm playbook: positions, fallbacks, and approved clause text for 
 ---
 
 This is an executable firm playbook for data processing agreements under the
-GDPR and UK GDPR, reviewed from the controller (customer) side. Each `##`
-section is one clause type. Text inside an ```approved fence is the
-firm-approved replacement text — copy it byte-exact into the redline tool's
-`replacement` arg. Text inside an ```approved-fallback fence is the firm's
-fallback text, to be used only when its stated "when" condition is met.
+GDPR and UK GDPR, reviewed from the controller (customer) side. The
+contract-type and jurisdiction tags for every position below come from this
+header (GDPR/UK GDPR data processing agreement; EU/UK scope).
+
+Each `##` section is one clause type, stated on a fixed schema so the redline
+tool can paste the firm text byte-exact, the deterministic lint can detect
+deviation, and `document-reviewer` can band each clause:
+
+- **Preferred** — the firm's default opening position. Text inside an
+  ```approved fence is the firm-approved replacement text — copy it byte-exact
+  into the redline tool's `replacement` arg.
+- **Fallbacks** — acceptable rungs below Preferred, each introduced by the
+  "when" condition that justifies offering it (the "offer when" trigger). Text
+  inside an ```approved-fallback fence is the firm's fallback text, to be used
+  only when its stated condition is met.
+- **Unacceptable** — the walk-away floor: the position the firm does not concede
+  below without a human decision.
+- **Rationale** — why the position sits where it does.
+
+These positions are firm-configurable **defaults**, calibrated to be
+market-balanced rather than aspirational, and bounded by the Article 28 GDPR
+minimums (a statutory floor cannot be overridden downward). The matter's
+`.dochaus/profile.md` (see the `firm-profile` skill) overrides any Preferred,
+fallback, or above-statutory floor here; where it is silent, these defaults
+apply. When a counterparty term sits at or below the Unacceptable floor, do not
+concede: escalate to the firm's **privacy / data-protection lead** (or the
+contact named in the profile's Escalation Rules). The escalation is addressed to
+that role, not a named person, so the position outlasts any individual
+assignment.
 
 **Jurisdiction guard:** This playbook applies only to processing subject to the
 GDPR or UK GDPR. It pairs with the EU pack and the UK packs (EW, SCT, NIR). Do not apply
@@ -372,5 +396,10 @@ the one that should govern DPA claims.
 
 ---
 
-Attribution: positions and mechanics in this playbook are seeded from the
-Common Paper DPA (https://github.com/CommonPaper/DPA, CC BY 4.0).
+Attribution: positions and mechanics are adapted from the
+[Common Paper DPA](https://github.com/CommonPaper/DPA) by Common Paper, licensed
+under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). doc.haus changes
+the source into preferred terms, fallbacks, unacceptable terms and rationale,
+with adapted clause wording and controller-side GDPR/UK GDPR review guidance.
+This is a modified playbook, not the unchanged DPA. The source material retains
+its CC BY 4.0 licence. No Common Paper endorsement is implied.

@@ -1,4 +1,5 @@
-import { tool } from "@opencode-ai/plugin"
+import { tool } from "./legacy-definition"
+import { readCaseLawKey } from "../lib/research"
 
 // doc.haus case-law research tool. Searches CourtListener's free legal-opinion
 // database (https://www.courtlistener.com) — the same public corpus the major
@@ -10,9 +11,11 @@ import { tool } from "@opencode-ai/plugin"
 // indexing it. It is read-only — it never writes to the matter — and returns only
 // what CourtListener returns, with no fabricated citations.
 //
-// CourtListener works unauthenticated at a lower rate limit. Set
-// COURTLISTENER_API_TOKEN (a free token from a courtlistener.com account) to raise
-// it; the tool sends it as an Authorization header when present.
+// CourtListener works unauthenticated at a lower rate limit. A free token from a
+// courtlistener.com account raises it; the firm pastes one in Settings > Research
+// (read per-call from preferences.json), or it falls back to the
+// COURTLISTENER_API_TOKEN env var. The tool sends it as an Authorization header
+// when present, and never fails for lack of one.
 
 const SEARCH_URL = "https://www.courtlistener.com/api/rest/v4/search/"
 const SITE = "https://www.courtlistener.com"
@@ -46,7 +49,7 @@ export default tool({
     const params = new URLSearchParams({ q: args.query, type: "o", order_by: "score desc" })
     if (args.court) params.set("court", args.court)
 
-    const token = process.env.COURTLISTENER_API_TOKEN
+    const token = readCaseLawKey() ?? process.env.COURTLISTENER_API_TOKEN
     const res = await fetch(`${SEARCH_URL}?${params}`, {
       headers: token ? { Authorization: `Token ${token}` } : {},
     })

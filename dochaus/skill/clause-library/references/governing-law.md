@@ -1,11 +1,16 @@
 # Governing law and dispute resolution
 
-US commercial-market reference points; verify against the matter's
-jurisdiction pack. This family is inherently jurisdiction-specific — never
-present a forum or law choice as correct without checking the matter's
-jurisdictions and where the parties and assets actually are.
+**Topic:** Governing law and dispute resolution — law, venue, arbitration,
+equitable relief.
+**Contract type:** All commercial agreements.
+**Jurisdiction:** US commercial market; this family is inherently
+jurisdiction-specific — never present a forum or law choice as correct without
+checking the matter's jurisdictions and where the parties and assets actually
+are. Positions are firm-configurable defaults overridable via
+`.dochaus/profile.md` (which carries the firm's default governing law and
+venue).
 
-## Balanced position
+## Preferred
 
 A named, neutral governing law without regard to conflict-of-laws principles,
 with exclusive venue in that jurisdiction's courts (or institutional
@@ -24,40 +29,37 @@ jurisdiction for breach of Section [Confidentiality] or infringement of its
 intellectual property rights.
 ```
 
-## Common one-sided variants
+**Off-market variants to watch.** Drafter-favorable: the home-court stack
+(drafter's home law, exclusive home venue, and a jury waiver together);
+mandatory arbitration with no equitable-relief carve-out; one-way fee shifting.
+Non-drafter-favorable: floating venue ("courts of the plaintiff's choosing") or
+no exclusive forum at all; carve-outs so broad the agreed forum becomes
+optional; refusal of any jury or class waiver where those are ordinary for the
+deal type (availability and validity of such waivers varies by jurisdiction;
+qualify).
 
-**Tilted toward the drafting party:**
-- The home-court stack: drafter's home law, exclusive venue in its home
-  forum, and a jury waiver, all together.
-- Mandatory arbitration with no equitable-relief carve-out, delaying any
-  injunction for a confidentiality or IP breach behind the arbitral process.
-- One-way fee shifting: the drafter recovers fees when it wins; the
-  counterparty never does.
+## Fallbacks (ordered)
 
-**Tilted toward the non-drafting party:**
-- Floating venue ("courts of the plaintiff's choosing") or no exclusive
-  forum at all, inviting parallel proceedings.
-- Carve-outs so broad (all claims "relating to payment" or "relating to IP")
-  that the agreed forum becomes optional.
-- Refusal of any jury waiver or escalation step where those are ordinary for
-  the deal type — note that the availability and validity of jury waivers
-  and class waivers varies by jurisdiction; qualify.
+1. **Offer when** the counterparty rejects a fully neutral stack: accept the
+   counterparty's home law with venue in a neutral forum, or vice versa — split
+   the stack rather than conceding all of it.
+2. **Offer when** the counterparty prefers arbitration: accept institutional
+   arbitration (named rules, named seat, English language, one or three
+   arbitrators) provided the equitable-relief carve-out survives.
+3. **Offer when** the client has minimal litigation exposure under the deal:
+   accept the counterparty's home law and forum, documented in the rationale.
 
-## Fallback ladder
+## Walk-away floor
 
-1. Neutral named law and exclusive forum, equitable-relief carve-out
-   preserved (preferred).
-2. Accept the counterparty's home law with venue in a neutral forum, or vice
-   versa — split the stack rather than conceding all of it.
-3. Accept institutional arbitration (named rules, named seat, English
-   language, one or three arbitrators) provided the equitable-relief
-   carve-out survives.
-4. Accept the counterparty's home law and forum only where the firm's client
-   has minimal litigation exposure under the deal, documented in the
-   rationale.
+Arbitration with no equitable-relief exception, or one-way fee shifting. The
+equitable-relief carve-out should survive every trade.
 
-Below rung 4 — arbitration with no equitable-relief exception, or one-way
-fee shifting — escalate.
+## Escalation trigger
+
+At or below the floor, do not concede. Route to the **supervising lawyer** for
+the matter (or the `.dochaus/profile.md` Escalation Rules contact). A non-US
+governing law, or a law outside the jurisdictions the firm advises in, is
+always escalated rather than improvised.
 
 **Rationale:** The dispute clause prices every other clause: a strong
 position in an unreachable forum is worth little. The equitable-relief

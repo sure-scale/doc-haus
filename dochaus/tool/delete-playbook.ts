@@ -1,4 +1,4 @@
-import { tool } from "@opencode-ai/plugin"
+import { tool } from "./legacy-definition"
 
 // doc.haus delete-playbook tool. Removes an imported playbook from
 // WORKSPACE_ROOT/.playbooks. The server refuses while any matter is still bound

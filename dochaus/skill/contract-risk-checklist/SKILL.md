@@ -3,10 +3,15 @@ name: contract-risk-checklist
 description: The canonical 12-area risk checklist for commercial contract review, with the red-flag patterns that mark each area as one-sided or dangerous. Use when reviewing any contract for risk — an NDA, MSA, SaaS agreement, services or consulting agreement, license, vendor terms, or order form — or when asked to spot issues, find red flags, assess a draft, mark up a counterparty's paper, or answer "what's wrong with this contract."
 ---
 
-Review every contract against all twelve areas below. For each area: state what
-the contract says, cite the governing clause as `[<Document> § <section>]` (or
-note its absence — a missing clause is a finding, not a pass), and flag
-anything matching the red-flag patterns. Establish the governing-law clause
+Review every contract against all twelve areas below. Before you start, turn the
+twelve areas into an explicit checklist with the `todowrite` tool — one item per
+area — and answer each item present / absent / deviating rather than reviewing
+from memory, because a single skipped area can let an off-market term through.
+Mark an area `completed` only once you have located its governing clause (or
+confirmed it has none); an unresolved area stays `in_progress`. For each area:
+state what the contract says, cite the governing clause as
+`[<Document> § <section>]` (or note its absence — a missing clause is a finding,
+not a pass), and flag anything matching the red-flag patterns. Establish the governing-law clause
 first and qualify jurisdiction-sensitive findings against the matter's
 jurisdiction pack. For balanced market positions and fallback ladders per
 area, load the clause-library skill. A mapping of CUAD's 41-category clause
@@ -182,3 +187,26 @@ What bad looks like:
 These red-flag patterns are US commercial-market reference points, not legal
 standards; verify jurisdiction-sensitive items against the matter's
 jurisdiction pack before presenting them as findings.
+
+<severity>
+Grade each area with one of four severities so the review reads as a triaged
+register, not a flat list. Use the same ladder for every area; the area's
+red-flag patterns above tell you what "off-market" looks like, this tells you how
+hard to push:
+- **critical** — off-market or missing in a way that exposes the client to
+  uncapped, unrecoverable, or deal-breaking risk (a cap-swallowing carve-out, a
+  one-way uncapped indemnity, no IP-infringement indemnity in a technology deal).
+  Must be fixed before signing.
+- **high** — a materially unfavorable term, or a protection a contract of this
+  type should always carry but does not (no termination-for-cause cure right, no
+  data-return on exit). Fix, or record an explicit business decision to accept it.
+- **medium** — a negotiable deviation worth raising that the client can live with
+  if traded for something else.
+- **low** — cosmetic, market-standard with a minor wrinkle, or favorable to the
+  client; logged so coverage of the area is auditable.
+
+When a term sits between two severities, take the higher one — an over-graded
+term costs the lawyer seconds to dismiss; an under-graded one goes unread into the
+signed agreement. An entirely-absent protection is graded on the exposure its
+absence creates, not downgraded for being a gap rather than bad language.
+</severity>

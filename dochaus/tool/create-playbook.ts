@@ -1,4 +1,4 @@
-import { tool } from "@opencode-ai/plugin"
+import { tool } from "./legacy-definition"
 
 // doc.haus create-playbook tool. Imports a firm playbook skill into the
 // per-deployment library (WORKSPACE_ROOT/.playbooks), owned by the ingest

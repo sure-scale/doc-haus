@@ -1,8 +1,14 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
+import { createPortal } from "react-dom"
 import { utils, write } from "xlsx"
-import type { Part } from "@opencode-ai/sdk"
-import { getGrid, saveGrid, type Document, type Grid, type GridCellData } from "../api/ingest"
-import { createSession, getMessages, matterClient, sendPrompt, type Citation, type Client } from "../api/opencode"
+import { readReviewAnswer } from "../api/review-answer"
+import { getGrid, saveGrid, type Grid, type GridCellData } from "../api/ingest/grid"
+import { humanizeError } from "../api/ingest/errors"
+import type { Document } from "../api/ingest/documents"
+import { createSession, getMessages, sendPrompt } from "../api/opencode/sessions"
+import { matterClient, type Client } from "../api/opencode/client"
+import ModalHeader from "./ModalHeader"
+import { formatDate, formatDateTime } from "../lib/format"
 
 // Tabular review: rows are the matter's documents, columns are natural-language
 // questions, each cell is an extracted answer with a source citation. The grid is
@@ -24,32 +30,12 @@ function cellKey(docName: string, columnId: string) {
   return `${docName}::${columnId}`
 }
 
-// Reduce one extraction session's assistant parts to its answer text and the
-// source citation. The agent ends with a `Source: §<section>` line naming the
-// passage it used; we match that to the search-document result so the cited
-// clause is the one the answer came from, not merely the top-ranked hit. A real
-// answer without a declared source gets no citation rather than a wrong one.
-function readAnswer(parts: Part[]) {
-  const raw = parts
-    .filter((p): p is Extract<Part, { type: "text" }> => p.type === "text")
-    .map((p) => p.text)
-    .join("")
-    .trim()
-  const citations = parts
-    .filter((p): p is Extract<Part, { type: "tool" }> => p.type === "tool")
-    .filter((p) => p.tool === "search-document" && p.state.status === "completed")
-    .flatMap((p) => ((p.state as { metadata?: { citations?: Citation[] } }).metadata?.citations ?? []))
-  const source = raw.match(/\n\s*Source:\s*§?\s*(.+?)\s*$/i)
-  const text = source ? raw.slice(0, source.index).trim() : raw
-  const section = source?.[1]?.trim()
-  const citation = section ? (citations.find((c) => c.section === section) ?? citations[0]) : undefined
-  return { text, citation }
-}
-
-export default function ReviewGrid({ matterId, title, directory, documents }: { matterId: string; title: string; directory: string; documents: Document[] }) {
+export default function ReviewGrid({ matterId, title, directory, documents, onClose }: { matterId: string; title: string; directory: string; documents: Document[]; onClose: () => void }) {
+  const dialog = useRef<HTMLDialogElement>(null)
   const client = useMemo<Client>(() => matterClient(directory), [directory])
   const [grid, setGrid] = useState<Grid>({ columns: [], cells: {} })
   const gridRef = useRef<Grid>(grid)
+  const [error, setError] = useState<string>()
   const [running, setRunning] = useState(0) // cells currently extracting
   // The detail overlay identifies its cell by key and reads it live from `grid`,
   // so the comment thread updates in place as comments are added or removed.
@@ -57,8 +43,14 @@ export default function ReviewGrid({ matterId, title, directory, documents }: { 
   const [draft, setDraft] = useState("") // comment being composed in the overlay
   const detailCell = detail ? grid.cells[cellKey(detail.docName, detail.columnId)] : undefined
 
+  useLayoutEffect(() => {
+    const modal = dialog.current
+    modal?.showModal()
+    return () => modal?.close()
+  }, [])
+
   useEffect(() => {
-    getGrid(matterId).then((g) => commit(g))
+    getGrid(matterId).then((g) => commit(g)).catch((e) => setError(humanizeError(e)))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [matterId])
 
@@ -67,7 +59,7 @@ export default function ReviewGrid({ matterId, title, directory, documents }: { 
   function commit(next: Grid) {
     gridRef.current = next
     setGrid(next)
-    saveGrid(matterId, next)
+    saveGrid(matterId, next).catch((e) => setError(humanizeError(e)))
   }
 
   function commitCell(key: string, data: GridCellData) {
@@ -91,6 +83,7 @@ export default function ReviewGrid({ matterId, title, directory, documents }: { 
     const cells = { ...gridRef.current.cells }
     for (const doc of documents) delete cells[cellKey(doc.name, id)]
     commit({ columns: gridRef.current.columns.filter((c) => c.id !== id), cells })
+    dialog.current?.querySelector<HTMLButtonElement>(".review-add-button")?.focus()
   }
 
   function toggleReviewed(key: string) {
@@ -127,7 +120,7 @@ export default function ReviewGrid({ matterId, title, directory, documents }: { 
     // A tool-using turn emits several assistant messages (one per model step): the
     // search-document call lands on an earlier one, the final answer text on the
     // last. Read every assistant part so the citation is not dropped.
-    const { text, citation } = readAnswer(messages.filter((m) => m.info.role === "assistant").flatMap((m) => m.parts))
+    const { text, citation } = readReviewAnswer(messages.filter((m) => m.info.role === "assistant"))
     return {
       answer: text || "Not addressed",
       citation: citation && {
@@ -147,16 +140,21 @@ export default function ReviewGrid({ matterId, title, directory, documents }: { 
   // large grid does not open hundreds of sessions at once.
   async function fill(targets: Array<{ docName: string; column: { id: string; question: string } }>) {
     if (targets.length === 0) return
+    setError(undefined)
     setRunning((n) => n + targets.length)
     let next = 0
     const worker = async () => {
       while (next < targets.length) {
         const t = targets[next++]
-        const data = await extract(t.docName, t.column.question)
-        const key = cellKey(t.docName, t.column.id)
-        // Recomputing an answer keeps the reviewer's comment thread on the cell.
-        commitCell(key, { ...data, comments: gridRef.current.cells[key]?.comments })
-        setRunning((n) => n - 1)
+        try {
+          const data = await extract(t.docName, t.column.question)
+          const key = cellKey(t.docName, t.column.id)
+          commitCell(key, { ...data, comments: gridRef.current.cells[key]?.comments })
+        } catch (error) {
+          setError(humanizeError(error, "Extraction failed. Try the unfinished cells again."))
+        } finally {
+          setRunning((n) => n - 1)
+        }
       }
     }
     await Promise.all(Array.from({ length: Math.min(POOL, targets.length) }, worker))
@@ -189,7 +187,7 @@ export default function ReviewGrid({ matterId, title, directory, documents }: { 
         const cell = grid.cells[cellKey(doc.name, col.id)]
         const note = [
           cell?.citation && `Source: ${cell.citation.documentName} § ${cell.citation.section}`,
-          ...(cell?.comments ?? []).map((m) => `Comment (${new Date(m.at).toLocaleDateString()}): ${m.text}`),
+          ...(cell?.comments ?? []).map((m) => `Comment (${formatDate(m.at)}): ${m.text}`),
         ]
           .filter((line): line is string => Boolean(line))
           .join("\n")
@@ -210,40 +208,49 @@ export default function ReviewGrid({ matterId, title, directory, documents }: { 
     URL.revokeObjectURL(url)
   }
 
-  if (documents.length === 0)
-    return <div className="empty-inline">Add documents to this matter to build a review grid.</div>
-
-  return (
-    <div className="card review">
-      <div className="row review-toolbar">
-        <div>
-          <h2>Tabular review</h2>
-          <span className="review-summary">
-            {documents.length} document{documents.length === 1 ? "" : "s"} · {grid.columns.length} question{grid.columns.length === 1 ? "" : "s"}
-          </span>
+  return createPortal(
+    <dialog
+      ref={dialog}
+      className="viewer-panel review-modal"
+      aria-label={`Review table — ${title}`}
+      onCancel={(event) => { event.preventDefault(); detail ? setDetail(undefined) : onClose() }}
+      onClick={(event) => {
+        if (event.target !== event.currentTarget) return
+        const bounds = event.currentTarget.getBoundingClientRect()
+        if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) onClose()
+      }}
+    >
+      <ModalHeader title={`Review table — ${title}`} onClose={() => detail ? setDetail(undefined) : onClose()} />
+      <div className="card review">
+        <div className="row review-toolbar">
+          <div>
+            <span className="review-summary">
+              {documents.length} document{documents.length === 1 ? "" : "s"} · {grid.columns.length} question{grid.columns.length === 1 ? "" : "s"}
+            </span>
+          </div>
+          <div className="row" style={{ gap: 8 }}>
+            {running > 0 && <span className="review-running">Extracting {running}</span>}
+            <button onClick={fillEmpty} disabled={documents.length === 0 || grid.columns.length === 0 || running > 0}>
+              Fill empty
+            </button>
+            <button onClick={exportXlsx} disabled={documents.length === 0 || grid.columns.length === 0}>
+              Export Excel
+            </button>
+          </div>
         </div>
-        <div className="row" style={{ gap: 8 }}>
-          {running > 0 && <span className="review-running">Extracting {running}</span>}
-          <button onClick={addColumn}>Add column</button>
-          <button onClick={fillEmpty} disabled={grid.columns.length === 0 || running > 0}>
-            Fill empty
-          </button>
-          <button onClick={exportXlsx} disabled={grid.columns.length === 0}>
-            Export Excel
-          </button>
-        </div>
-      </div>
 
-      {grid.columns.length === 0 ? (
-        <div className="empty-inline">Add a column — a question asked of every document, e.g. "What is the governing law?"</div>
-      ) : (
-        <div className="review-scroll">
-          <table className="review-table">
+        {error && <p role="alert">{error}</p>}
+
+        {grid.columns.length === 0 && (
+          <p className="review-hint">Use + to add a question for every document.</p>
+        )}
+        <div className="review-scroll" role="region" aria-label="Review table" tabIndex={0}>
+          <table className={`review-table${grid.columns.length === 0 ? " is-empty" : ""}`} aria-label="Document review">
             <thead>
               <tr>
-                <th className="review-doc-col">Document</th>
+                <th className="review-doc-col" scope="col">Document</th>
                 {grid.columns.map((col) => (
-                  <th key={col.id}>
+                  <th key={col.id} scope="col">
                     <div className="review-col-head">
                       <button className="review-col-q" onClick={() => renameColumn(col.id)} title="Edit question">
                         {col.question}
@@ -254,12 +261,19 @@ export default function ReviewGrid({ matterId, title, directory, documents }: { 
                     </div>
                   </th>
                 ))}
+                <th className="review-add-col" scope="col">
+                  <button className="review-add-button" type="button" onClick={addColumn} aria-label="Add column" title="Add column">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
+                      <path d="M12 5v14M5 12h14" />
+                    </svg>
+                  </button>
+                </th>
               </tr>
             </thead>
             <tbody>
               {documents.map((doc) => (
                 <tr key={doc.id}>
-                  <td className="review-doc-col">{doc.name}</td>
+                  <th className="review-doc-col" scope="row">{doc.name}</th>
                   {grid.columns.map((col) => {
                     const key = cellKey(doc.name, col.id)
                     const cell = grid.cells[key]
@@ -321,61 +335,65 @@ export default function ReviewGrid({ matterId, title, directory, documents }: { 
                       </td>
                     )
                   })}
+                  <td className="review-add-col" aria-hidden="true" />
                 </tr>
               ))}
+              {documents.length === 0 && (
+                <tr>
+                  <td className="review-empty-documents" colSpan={grid.columns.length + 2}>Add documents to this matter to start reviewing.</td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
-      )}
 
-      {detail && detailCell && (
-        <div className="viewer-overlay" onClick={() => setDetail(undefined)}>
-          <div className="picker-panel" onClick={(e) => e.stopPropagation()}>
-            <div className="viewer-bar">
-              <span className="viewer-title">{detail.question}</span>
-              <button onClick={() => setDetail(undefined)}>Close</button>
-            </div>
-            <div className="picker-body">
-              <p className="review-detail-answer">{detailCell.answer}</p>
-              {detailCell.citation && (
-                <div className="citation">
-                  <div className="ref">[{detailCell.citation.documentName} § {detailCell.citation.section}]</div>
-                  <div className="excerpt">{detailCell.citation.excerpt}</div>
-                </div>
-              )}
-              <div className="review-comments">
-                {(detailCell.comments ?? []).map((c) => (
-                  <div key={c.id} className="review-comment">
-                    <div className="review-comment-meta">
-                      <span className="muted">{new Date(c.at).toLocaleString()}</span>
-                      <button className="icon-btn" title="Delete comment" onClick={() => deleteComment(c.id)}>
-                        ×
-                      </button>
-                    </div>
-                    <div className="review-comment-text">{c.text}</div>
+        {detail && detailCell && (
+          <div className="viewer-overlay" onClick={() => setDetail(undefined)}>
+            <div className="picker-panel" onClick={(e) => e.stopPropagation()}>
+              <ModalHeader title={detail.question} onClose={() => setDetail(undefined)} />
+              <div className="picker-body">
+                <p className="review-detail-answer">{detailCell.answer}</p>
+                {detailCell.citation && (
+                  <div className="citation">
+                    <div className="ref">[{detailCell.citation.documentName} § {detailCell.citation.section}]</div>
+                    <div className="excerpt">{detailCell.citation.excerpt}</div>
                   </div>
-                ))}
-                <div className="review-comment-compose">
-                  <textarea
-                    value={draft}
-                    placeholder="Add a comment..."
-                    onChange={(e) => setDraft(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && !e.shiftKey) {
-                        e.preventDefault()
-                        addComment()
-                      }
-                    }}
-                  />
-                  <button onClick={addComment} disabled={!draft.trim()}>
-                    Send
-                  </button>
+                )}
+                <div className="review-comments">
+                  {(detailCell.comments ?? []).map((c) => (
+                    <div key={c.id} className="review-comment">
+                      <div className="review-comment-meta">
+                        <span className="muted">{formatDateTime(c.at)}</span>
+                        <button className="icon-btn" title="Delete comment" onClick={() => deleteComment(c.id)}>
+                          ×
+                        </button>
+                      </div>
+                      <div className="review-comment-text">{c.text}</div>
+                    </div>
+                  ))}
+                  <div className="review-comment-compose">
+                    <textarea
+                      value={draft}
+                      placeholder="Add a comment..."
+                      onChange={(e) => setDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && !e.shiftKey) {
+                          e.preventDefault()
+                          addComment()
+                        }
+                      }}
+                    />
+                    <button onClick={addComment} disabled={!draft.trim()}>
+                      Send
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
           </div>
-        </div>
-      )}
-    </div>
+        )}
+      </div>
+    </dialog>,
+    document.body,
   )
 }

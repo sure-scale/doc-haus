@@ -235,6 +235,7 @@ const bucketNew = new sst.cloudflare.Bucket("ZenDataNew")
 const DISCORD_INCIDENT_WEBHOOK_URL = new sst.Secret("DISCORD_INCIDENT_WEBHOOK_URL")
 const AWS_SES_ACCESS_KEY_ID = new sst.Secret("AWS_SES_ACCESS_KEY_ID")
 const AWS_SES_SECRET_ACCESS_KEY = new sst.Secret("AWS_SES_SECRET_ACCESS_KEY")
+const ENTERPRISE_SALES_INBOX_EMAIL = new sst.Secret("ENTERPRISE_SALES_INBOX_EMAIL")
 
 const SALESFORCE_CLIENT_ID = new sst.Secret("SALESFORCE_CLIENT_ID")
 const SALESFORCE_CLIENT_SECRET = new sst.Secret("SALESFORCE_CLIENT_SECRET")
@@ -256,12 +257,14 @@ new sst.cloudflare.x.SolidStart("Console", {
     SECRET.UpstashRedisRestToken,
     AUTH_API_URL,
     STRIPE_WEBHOOK_SECRET,
+    SECRET.SupportApiKey,
     DISCORD_INCIDENT_WEBHOOK_URL,
     SECRET.HoneycombWebhookSecret,
     STRIPE_SECRET_KEY,
     EMAILOCTOPUS_API_KEY,
     AWS_SES_ACCESS_KEY_ID,
     AWS_SES_SECRET_ACCESS_KEY,
+    ENTERPRISE_SALES_INBOX_EMAIL,
     SALESFORCE_CLIENT_ID,
     SALESFORCE_CLIENT_SECRET,
     SALESFORCE_INSTANCE_URL,
@@ -287,8 +290,12 @@ new sst.cloudflare.x.SolidStart("Console", {
     server: {
       placement: { region: "aws:us-east-2" },
       transform: {
-        worker: {
-          tailConsumers: [{ service: logProcessor.nodes.worker.scriptName }],
+        worker: (args) => {
+          args.compatibilityFlags = $resolve(args.compatibilityFlags).apply((flags) => [
+            ...(flags ?? []),
+            "global_fetch_strictly_public",
+          ])
+          args.tailConsumers = [{ service: logProcessor.nodes.worker.scriptName }]
         },
       },
     },

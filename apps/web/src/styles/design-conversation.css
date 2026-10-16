@@ -1,0 +1,599 @@
+/* Conversation is an open reading surface. All runtime controls remain in
+   their existing positions; only secondary generated-file links collapse. */
+.design-conversation.chat-card {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: var(--panel);
+  min-width: 0;
+  padding: 24px clamp(20px, 3vw, 52px) 16px;
+}
+
+.design-conversation .chat-heading {
+  flex: none;
+  padding-bottom: 20px;
+}
+
+.design-conversation .chat-heading h2 {
+  margin: 0;
+  color: var(--text);
+  font-size: 20px;
+  font-weight: 550;
+  letter-spacing: -0.025em;
+}
+
+.design-conversation .chat-log {
+  gap: 14px;
+  padding-top: 12px;
+  padding-bottom: 24px;
+  scroll-padding-block: 24px;
+}
+
+.design-conversation .msg {
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.design-conversation .msg.user {
+  background: var(--bg);
+  border-radius: 12px 12px 3px 12px;
+  padding: 12px 16px;
+}
+
+.design-conversation .msg-agent {
+  font-size: 11px;
+  color: var(--muted);
+  letter-spacing: 0.07em;
+}
+
+.design-conversation .chat-empty {
+  max-width: 600px;
+  padding: 36px 8px;
+  text-align: left;
+}
+
+.design-conversation .chat-empty-intro {
+  margin: 0 0 24px;
+  font-size: clamp(18px, 1.7vw, 24px);
+  line-height: 1.5;
+  letter-spacing: -0.025em;
+  color: var(--text-secondary);
+  text-wrap: pretty;
+}
+
+.design-conversation .chat-empty .starters {
+  gap: 0;
+}
+
+.design-conversation .starter {
+  min-height: 48px;
+  padding: 13px 0;
+  border: 0;
+  border-bottom: 1px solid var(--border-soft);
+  border-radius: 0;
+  background: transparent;
+  font-size: 13px;
+  box-shadow: none;
+  transform: none;
+}
+
+.design-conversation .starter:hover {
+  background: transparent;
+  color: var(--accent);
+  border-color: var(--accent-border);
+  box-shadow: none;
+  transform: none;
+}
+
+.design-conversation .starter .starter-arrow {
+  opacity: 1;
+  transform: none;
+  color: var(--muted);
+}
+
+.design-conversation .starter:hover .starter-arrow,
+.design-conversation .starter:focus-visible .starter-arrow {
+  color: var(--accent);
+}
+
+.design-conversation .chat-empty.is-upload-first {
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.design-conversation .chat-empty-icon {
+  width: 36px;
+  height: 36px;
+  padding: 7px;
+  border-radius: 10px;
+  background: var(--accent-soft);
+}
+
+.design-conversation .chat-empty-title {
+  font-size: 24px;
+  font-weight: 550;
+  letter-spacing: -0.035em;
+}
+
+.design-conversation .chat-empty-action {
+  min-height: 42px;
+  padding-inline: 18px;
+}
+
+.design-conversation .composer-tools {
+  flex: none;
+  margin-top: 16px;
+  gap: 6px;
+}
+
+.design-conversation .composer {
+  flex: none;
+  margin-top: 12px;
+  border: 0;
+  border-top: 1px solid var(--border-strong);
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+}
+
+.design-conversation .composer:focus-within {
+  border-top-color: var(--accent);
+  box-shadow: none;
+}
+
+.design-conversation .composer textarea {
+  width: 100%;
+  min-height: 52px;
+  padding: 16px 0 6px;
+  border-radius: 0;
+  font-size: 14px;
+}
+
+.design-conversation .composer-footer {
+  justify-content: flex-end;
+  padding: 6px 0 0;
+}
+
+.design-conversation .composer-hint {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.design-conversation .composer-hint > span { white-space: nowrap; }
+.design-conversation .composer-hint-sep { margin: 0; }
+.design-conversation .composer-hint kbd {
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: var(--bg);
+  box-shadow: 0 1px 0 var(--border);
+  font: inherit;
+}
+
+@media (hover: none), (pointer: coarse) {
+  .design-conversation .composer-hint { display: none; }
+}
+
+.design-conversation .send-btn {
+  gap: 8px;
+  width: auto;
+  min-width: 84px;
+  height: 38px;
+  padding-inline: 14px;
+  border-radius: var(--radius-md);
+  font-size: 13px;
+}
+
+.design-conversation .send-btn:disabled {
+  background: var(--bg-sunken);
+  color: var(--muted);
+}
+
+/* Completed work has its main action in the result itself. Keep the run's
+   existing controls and reconnect/question metadata in a quiet compact header. */
+.design-conversation .run-head.is-done:not(.is-compact) {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0 16px;
+  flex: none;
+  margin-bottom: 8px;
+  padding: 0 0 12px;
+  border: 0;
+  border-bottom: 1px solid var(--border-soft);
+  border-radius: 0;
+  background: transparent;
+  animation: none;
+}
+
+.design-conversation .run-head.is-done .run-head-main {
+  gap: 8px 12px;
+}
+
+.design-conversation .run-head.is-done .run-head-icon {
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+  color: var(--accent);
+  background: transparent;
+}
+
+.design-conversation .run-head.is-done .run-head-text {
+  flex: 1 1 160px;
+}
+
+.design-conversation .run-head.is-done .run-head-title {
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+.design-conversation .run-head.is-done .run-head-meta {
+  font-size: 10.5px;
+}
+
+.design-conversation .run-head.is-done .run-head-cta {
+  min-height: 32px;
+  padding: 5px 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  box-shadow: none;
+  font-size: 12px;
+  font-weight: 500;
+  text-underline-offset: 4px;
+}
+
+.design-conversation .run-head.is-done .run-head-cta:hover {
+  background: transparent;
+  color: var(--accent-hover);
+  text-decoration: underline;
+}
+
+.design-conversation .run-head.is-done .run-head-cta:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.design-conversation .run-head.is-done .run-head-progress {
+  margin-top: 0;
+  gap: 10px;
+}
+
+.design-conversation .run-head.is-done .run-segments {
+  width: 52px;
+}
+
+.design-conversation .run-head.is-done .run-segment {
+  height: 2px;
+}
+
+.design-conversation .run-head.is-done .run-head-toggle {
+  min-height: 32px;
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.design-conversation .run-head.is-done > .msg-error,
+.design-conversation .run-head.is-done > .run-head-details {
+  grid-column: 1 / -1;
+}
+
+/* A file representation, not a fabricated preview: the only text on this
+   decorative paper is the real output filename and its existing draft role. */
+.design-conversation .narration-result {
+  margin: 22px 0 8px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+}
+
+.design-conversation .narration-result-title {
+  font-size: clamp(21px, 2vw, 28px);
+  letter-spacing: -0.035em;
+  font-weight: 550;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.design-conversation .narration-result-title > svg {
+  width: 18px;
+  height: 18px;
+}
+
+.design-conversation .result-chips {
+  gap: 7px 12px;
+  margin-bottom: 12px;
+}
+
+.design-conversation .result-chip {
+  border-radius: 4px;
+  padding: 3px 7px;
+  font-weight: 400;
+}
+
+.design-conversation .result-chip.is-pass {
+  background: transparent;
+  padding-left: 0;
+}
+
+.design-conversation .result-document {
+  display: grid;
+  grid-template-columns: 144px minmax(0, 1fr);
+  gap: 30px;
+  align-items: center;
+  padding: 22px 0 26px;
+  white-space: normal;
+}
+
+.design-conversation .result-paper {
+  display: flex;
+  flex-direction: column;
+  gap: 17px;
+  min-height: 184px;
+  padding: 22px 17px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  box-shadow: 0 8px 18px rgba(26, 30, 28, 0.07), 0 2px 4px rgba(26, 30, 28, 0.03);
+  user-select: none;
+}
+
+.design-conversation .result-paper-label {
+  color: var(--accent-muted);
+  font-size: 8px;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
+
+.design-conversation .result-paper-name {
+  font-family: var(--font-serif);
+  font-size: 13px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  color: var(--text-secondary);
+}
+
+.design-conversation .result-paper-lines {
+  display: block;
+  height: 36px;
+  margin-top: auto;
+  opacity: 0.7;
+  background: repeating-linear-gradient(to bottom, var(--border) 0 1px, transparent 1px 9px);
+}
+
+.design-conversation .result-document-info {
+  min-width: 0;
+}
+
+.design-conversation .result-document-kind {
+  margin: 0 0 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.design-conversation .result-document-info h4 {
+  margin: 0;
+  font-size: clamp(18px, 1.6vw, 23px);
+  line-height: 1.4;
+  font-weight: 500;
+  letter-spacing: -0.025em;
+  overflow-wrap: anywhere;
+}
+
+.design-conversation .result-document-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px 20px;
+  margin-top: 22px;
+}
+
+.design-conversation .result-review {
+  min-height: 44px;
+  padding: 10px 19px;
+  font-size: 14px;
+  white-space: nowrap;
+}
+
+.design-conversation .result-document-actions > a {
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-underline-offset: 4px;
+}
+
+.design-conversation .result-document-actions > a:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.design-conversation .result-files {
+  margin: 0;
+  border-top: 1px solid var(--border-soft);
+  white-space: normal;
+}
+
+.design-conversation .result-files > summary {
+  width: fit-content;
+  padding: 12px 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.design-conversation .result-files > summary:hover {
+  color: var(--accent);
+}
+
+.design-conversation .result-file-count {
+  margin-left: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.design-conversation .result-files .drafted-list {
+  margin: 4px 0 10px;
+}
+
+@media (max-width: 700px) {
+  .design-conversation .run-head.is-done:not(.is-compact) {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+  }
+
+  .design-conversation .run-head.is-done .run-head-progress {
+    justify-content: flex-end;
+  }
+
+  .design-conversation .run-head.is-done .run-segments {
+    flex: 0 0 52px;
+  }
+
+  .design-conversation.chat-card {
+    padding: 20px 20px 14px;
+  }
+
+  .design-conversation .chat-heading {
+    padding-bottom: 12px;
+  }
+
+  .design-conversation .result-document {
+    grid-template-columns: 96px minmax(0, 1fr);
+    gap: 20px;
+  }
+
+  .design-conversation .result-paper {
+    min-height: 140px;
+    padding: 14px 11px;
+    gap: 11px;
+  }
+
+  .design-conversation .result-paper-name {
+    font-size: 10px;
+  }
+
+  .design-conversation .result-document-actions {
+    gap: 10px 14px;
+    margin-top: 16px;
+  }
+
+  .design-conversation .msg-user-wrap {
+    max-width: 92%;
+  }
+
+  .design-conversation .composer-hint {
+    font-size: 10px;
+  }
+}
+
+@media (max-width: 420px) {
+  .design-conversation.chat-card {
+    padding-inline: 16px;
+  }
+
+  .design-conversation .result-document {
+    grid-template-columns: minmax(0, 1fr);
+    padding-top: 16px;
+  }
+
+  .design-conversation .result-paper {
+    display: none;
+  }
+
+  .design-conversation .composer-hint {
+    display: none;
+  }
+
+  .design-conversation .composer-footer {
+    justify-content: flex-end;
+  }
+}
+
+@media (pointer: coarse) {
+  .design-conversation .send-btn,
+  .design-conversation .result-files > summary {
+    min-height: 44px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .design-conversation .narration-result,
+  .design-conversation .result-paper,
+  .design-conversation .starter,
+  .design-conversation .starter-arrow,
+  .design-conversation .composer,
+  .design-conversation .send-btn {
+    animation: none;
+    transition: none;
+  }
+}
+
+/* Successful mechanical chronology is optional reading once the run settles.
+   Notes and any flagged/error stages remain in the surrounding timeline. */
+.design-conversation .narration-completed-activity { padding: 2px 0 6px; }
+.design-conversation .narration-completed-activity summary {
+  width: fit-content;
+  min-height: 32px;
+  padding: 5px 0;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+.design-conversation .narration-completed-activity summary span {
+  margin-left: 8px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.design-conversation .narration-completed-activity summary:hover { color: var(--accent); }
+.design-conversation .narration-completed-activity details > ol { padding: 6px 0 10px; }
+@media (pointer: coarse) {
+  .design-conversation .narration-completed-activity summary { min-height: 44px; }
+}
+
+/* Template tool results use prose and a disclosed field list, not a code dump. */
+.step-template-result { margin-top: 8px; padding: 0 0 4px 12px; border-left: 2px solid var(--border-soft); font-size: 13px; line-height: 1.6; color: var(--text-secondary); overflow-wrap: anywhere; }
+.step-template-result > p { margin: 0 0 8px; }
+.step-template-fields > summary { width: fit-content; color: var(--accent); cursor: pointer; }
+.step-template-fields > ul { margin: 10px 0 0; padding-left: 20px; }
+.step-template-fields li { padding: 3px 0; }
+
+/* ---------- Documents at the composer ---------- */
+/* A Documents control beside the playbook opens the matter's drawer; dropping
+   files anywhere over the composer adds them to the matter. */
+.design-conversation .composer-dock { position: relative; flex: none; }
+.design-conversation .docs-btn { gap: 6px; }
+.design-conversation .docs-btn.is-open { color: var(--accent); border-color: var(--accent-border); background: var(--accent-tint); }
+.design-conversation .docs-btn-count {
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-sunken);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 17px;
+  text-align: center;
+}
+.design-conversation .docs-btn.is-open .docs-btn-count { background: var(--accent-soft); color: var(--accent); }
+.design-conversation .composer-dock.is-dragover > :not(.composer-drop-hint) { opacity: 0.25; pointer-events: none; }
+.design-conversation .composer-drop-hint {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px dashed var(--accent);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--accent-soft) 70%, transparent);
+  color: var(--accent);
+  font-size: 14px;
+  font-weight: 600;
+  pointer-events: none;
+}

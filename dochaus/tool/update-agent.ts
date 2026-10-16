@@ -1,4 +1,4 @@
-import { tool } from "@opencode-ai/plugin"
+import { tool } from "./legacy-definition"
 
 // doc.haus update-agent tool. Rewrites a custom specialist subagent's label,
 // description, and instructions. The name stays immutable.

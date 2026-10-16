@@ -1,0 +1,16 @@
+{
+  "patterns": [
+    {
+      "id": "regulation",
+      "description": "EU regulation citations, e.g. Regulation (EU) 2016/679 or Regulation (EC) No 593/2008",
+      "regex": "\\bRegulation\\s+\\((?:EU|EC|EEC)\\)\\s+(?:No\\.?\\s+)?\\d+/\\d+\\b",
+      "flags": "gi"
+    },
+    {
+      "id": "directive",
+      "description": "EU directive citations, e.g. Directive 2011/83/EU or Directive (EU) 2019/1937",
+      "regex": "\\bDirective\\s+(?:\\((?:EU|EC|EEC)\\)\\s+)?(?:No\\.?\\s+)?\\d+/\\d+(?:/(?:EU|EC|EEC))?\\b",
+      "flags": "gi"
+    }
+  ]
+}

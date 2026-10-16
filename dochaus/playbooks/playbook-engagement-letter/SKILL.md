@@ -4,11 +4,35 @@ description: "Firm playbook: positions, fallbacks, and approved clause text for 
 ---
 
 This is an executable firm playbook for law-firm engagement letters (letters of
-engagement / client care letters) governed by the law of England and Wales. Each
-`##` section is one clause type. Text inside an ```approved fence is the
-firm-approved replacement text — copy it byte-exact into the redline tool's
-`replacement` arg. Text inside an ```approved-fallback fence is the firm's
-fallback text, to be used only when its stated "when" condition is met.
+engagement / client care letters) governed by the law of England and Wales. The
+contract-type and jurisdiction tags for every position below come from this
+header (solicitor engagement letter; England and Wales).
+
+Each `##` section is one clause type, stated on a fixed schema so the redline
+tool can paste the firm text byte-exact, the deterministic lint can detect
+deviation, and `document-reviewer` can band each clause:
+
+- **Preferred** — the firm's default opening position. Text inside an
+  ```approved fence is the firm-approved replacement text — copy it byte-exact
+  into the redline tool's `replacement` arg.
+- **Fallbacks** — acceptable rungs below Preferred, each introduced by the
+  "when" condition that justifies offering it (the "offer when" trigger). Text
+  inside an ```approved-fallback fence is the firm's fallback text, to be used
+  only when its stated condition is met.
+- **Unacceptable** — the walk-away floor: the position the firm does not concede
+  below without a human decision.
+- **Rationale** — why the position sits where it does.
+
+These positions are firm-configurable **defaults**, calibrated to be
+market-balanced rather than aspirational, and bounded by the SRA Standards and
+Regulations (a regulatory floor cannot be overridden downward). The matter's
+`.dochaus/profile.md` (see the `firm-profile` skill) overrides any Preferred,
+fallback, or above-regulatory floor here; where it is silent, these defaults
+apply. When a term sits at or below the Unacceptable floor, do not concede:
+escalate to the **supervising partner** for the engagement (or the firm's COLP
+where the floor is a regulatory one, or the contact named in the profile's
+Escalation Rules). The escalation is addressed to that role, not a named person,
+so the position outlasts any individual assignment.
 
 **Jurisdiction guard:** This playbook assumes a solicitors' practice regulated in
 England and Wales. Solicitor engagement terms — in particular limitation of

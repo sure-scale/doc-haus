@@ -1,21 +1,20 @@
-export * as ConfigV1 from "./config"
+export * as ConfigV1 from "./config.js"
 
 import { Schema } from "effect"
-import { NonNegativeInt, PositiveInt, type DeepMutable } from "../../schema"
-import { ConfigExperimental } from "../../config/experimental"
-import { ConfigAgentV1 } from "./agent"
-import { ConfigAttachmentV1 } from "./attachment"
-import { ConfigCommandV1 } from "./command"
-import { ConfigFormatterV1 } from "./formatter"
-import { ConfigLayoutV1 } from "./layout"
-import { ConfigLSPV1 } from "./lsp"
-import { ConfigMCPV1 } from "./mcp"
-import { ConfigPermissionV1 } from "./permission"
-import { ConfigPluginV1 } from "./plugin"
-import { ConfigProviderV1 } from "./provider"
-import { ConfigReferenceV1 } from "./reference"
-import { ConfigServerV1 } from "./server"
-import { ConfigSkillsV1 } from "./skills"
+import { ConfigReference } from "@opencode/schema/config/reference"
+import { NonNegativeInt, PositiveInt, type DeepMutable } from "../../schema.js"
+import { ConfigAgentV1 } from "./agent.js"
+import { ConfigAttachmentV1 } from "./attachment.js"
+import { ConfigCommandV1 } from "./command.js"
+import { ConfigFormatterV1 } from "./formatter.js"
+import { ConfigLayoutV1 } from "./layout.js"
+import { ConfigLSPV1 } from "./lsp.js"
+import { ConfigMCPV1 } from "./mcp.js"
+import { ConfigPermissionV1 } from "./permission.js"
+import { ConfigPluginV1 } from "./plugin.js"
+import { ConfigProviderV1 } from "./provider.js"
+import { ConfigServerV1 } from "./server.js"
+import { ConfigSkillsV1 } from "./skills.js"
 
 export type Layout = ConfigLayoutV1.Layout
 
@@ -42,8 +41,11 @@ export const Info = Schema.Struct({
     description: "Command configuration, see https://opencode.ai/docs/commands",
   }),
   skills: Schema.optional(ConfigSkillsV1.Info).annotate({ description: "Additional skill folder paths" }),
-  reference: Schema.optional(ConfigReferenceV1.Info).annotate({
-    description: "Named git or local directory references that can be mentioned as @alias or @alias/path",
+  references: Schema.optional(ConfigReference.Info).annotate({
+    description: "Named git or local directory references",
+  }),
+  reference: Schema.optional(ConfigReference.Info).annotate({
+    description: "@deprecated Use 'references' field instead. Named git or local directory references",
   }),
   watcher: Schema.optional(Schema.Struct({ ignore: Schema.optional(Schema.mutable(Schema.Array(Schema.String))) })),
   snapshot: Schema.optional(Schema.Boolean).annotate({
@@ -77,6 +79,9 @@ export const Info = Schema.Struct({
   default_agent: Schema.optional(Schema.String).annotate({
     description:
       "Default agent to use when none is specified. Must be a primary agent. Falls back to 'build' if not set or if the specified agent is invalid.",
+  }),
+  subagent_depth: Schema.optional(NonNegativeInt).annotate({
+    description: "Maximum subagent nesting depth. Defaults to 1, which prevents subagents from launching subagents.",
   }),
   username: Schema.optional(Schema.String).annotate({
     description: "Custom username to display in conversations instead of system username",
@@ -170,14 +175,14 @@ export const Info = Schema.Struct({
       primary_tools: Schema.optional(Schema.mutable(Schema.Array(Schema.String))).annotate({
         description: "Tools that should only be available to primary agents.",
       }),
+      subagent_depth: Schema.optional(NonNegativeInt).annotate({
+        description: "Maximum subagent nesting depth. Defaults to 1.",
+      }),
       continue_loop_on_deny: Schema.optional(Schema.Boolean).annotate({
         description: "Continue the agent loop when a tool call is denied",
       }),
       mcp_timeout: Schema.optional(PositiveInt).annotate({
         description: "Timeout in milliseconds for model context protocol (MCP) requests",
-      }),
-      policies: Schema.optional(Schema.mutable(Schema.Array(ConfigExperimental.Policy))).annotate({
-        description: "Policy statements applied to supported resources, such as provider access",
       }),
     }),
   ),

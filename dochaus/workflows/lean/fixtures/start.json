@@ -1,0 +1,94 @@
+{
+  "profile": "lean",
+  "mode": "started",
+  "ownerSessionID": "ses_child1",
+  "status": {
+    "schema": "dochaus.lean.state/2",
+    "profile": "lean",
+    "revision": 3,
+    "status": "running",
+    "stop_reason": null,
+    "owner_session_id": "ses_child1",
+    "model": {
+      "providerID": "test",
+      "modelID": "scripted"
+    },
+    "created_at": "2026-10-11T09:05:27.706Z",
+    "updated_at": "2026-10-11T09:05:27.711Z",
+    "stages": {
+      "d1.draft": {
+        "status": "running",
+        "input_sha": null,
+        "outputs": [],
+        "session_id": null,
+        "attempts": 0,
+        "calls": 0,
+        "feedback": [],
+        "started_at": "2026-10-11T09:05:27.711Z",
+        "finished_at": null
+      },
+      "d1.review": {
+        "status": "pending",
+        "input_sha": null,
+        "outputs": [],
+        "session_id": null,
+        "attempts": 0,
+        "calls": 0,
+        "feedback": [],
+        "started_at": null,
+        "finished_at": null
+      },
+      "d1.changes": {
+        "status": "pending",
+        "input_sha": null,
+        "outputs": [],
+        "session_id": null,
+        "attempts": 0,
+        "calls": 0,
+        "feedback": [],
+        "started_at": null,
+        "finished_at": null
+      },
+      "d1.apply": {
+        "status": "pending",
+        "input_sha": null,
+        "outputs": [],
+        "session_id": null,
+        "attempts": 0,
+        "calls": 0,
+        "feedback": [],
+        "started_at": null,
+        "finished_at": null
+      },
+      "finalize": {
+        "status": "pending",
+        "input_sha": null,
+        "outputs": [],
+        "session_id": null,
+        "attempts": 0,
+        "calls": 0,
+        "feedback": [],
+        "started_at": null,
+        "finished_at": null
+      },
+      "gate": {
+        "status": "pending",
+        "input_sha": null,
+        "outputs": [],
+        "session_id": null,
+        "attempts": 0,
+        "calls": 0,
+        "feedback": [],
+        "started_at": null,
+        "finished_at": null
+      }
+    },
+    "in_flight": true,
+    "pending_requests": 0,
+    "open_items": [],
+    "questions": [],
+    "gate": null,
+    "documents": null,
+    "plan": null
+  }
+}

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { Link } from "react-router-dom"
+import { Link, useNavigate } from "react-router-dom"
 import {
   createMatter,
   deleteMatter,
@@ -8,15 +8,21 @@ import {
   renameMatter,
   type Matter,
   type Jurisdiction,
-} from "../api/ingest"
+} from "../api/ingest/matters"
 import JurisdictionSelect from "../components/JurisdictionSelect"
 import { useToast } from "../components/Toast"
+import ModalHeader from "../components/ModalHeader"
+import { humanizeError } from "../api/ingest/errors"
+import { formatDate } from "../lib/format"
 import { loadPrefs } from "../prefs"
 
 export default function Matters() {
   const [matters, setMatters] = useState<Matter[]>([])
   const [jurisdictions, setJurisdictions] = useState<Jurisdiction[]>([])
   const [loading, setLoading] = useState(true)
+  // Set when the matter list could not be fetched, so an unreachable service is
+  // never mistaken for an empty practice.
+  const [loadError, setLoadError] = useState<string>()
   const [title, setTitle] = useState("")
   const [reference, setReference] = useState("")
   // New matters start from the firm's default jurisdictions (Settings → Matter
@@ -31,12 +37,22 @@ export default function Matters() {
   const [draftReference, setDraftReference] = useState("")
   const [draftJurisdictions, setDraftJurisdictions] = useState<string[]>([])
   const toast = useToast()
+  const navigate = useNavigate()
 
-  useEffect(() => {
+  function load() {
+    setLoading(true)
+    setLoadError(undefined)
     listMatters()
       .then(setMatters)
+      .catch((e) => setLoadError(humanizeError(e)))
       .finally(() => setLoading(false))
-    listJurisdictions().then(setJurisdictions)
+  }
+
+  useEffect(() => {
+    load()
+    listJurisdictions()
+      .then(setJurisdictions)
+      .catch(() => undefined)
   }, [])
 
   useEffect(() => {
@@ -49,24 +65,31 @@ export default function Matters() {
   async function onCreate() {
     if (!title.trim()) return
     setBusy(true)
-    const matter = await createMatter(
-      title.trim(),
-      reference.trim() || undefined,
-      newJurisdictions.length ? newJurisdictions : undefined,
-    )
-    setMatters((prev) => [...prev, matter])
-    setTitle("")
-    setReference("")
-    setNewJurisdictions(loadPrefs().defaultJurisdictions)
-    setBusy(false)
-    toast("success", `Created matter "${matter.title}".`)
+    try {
+      const matter = await createMatter(
+        title.trim(),
+        reference.trim() || undefined,
+        newJurisdictions.length ? newJurisdictions : undefined,
+      )
+      toast("success", `Created matter "${matter.title}".`)
+      // A new matter is opened straight away: the next step is always adding its
+      // documents or asking a question, and both happen inside it.
+      navigate(`/matter/${matter.id}`)
+    } catch (e) {
+      toast("error", humanizeError(e, "Could not create the matter."))
+      setBusy(false)
+    }
   }
 
   async function onDelete(m: Matter) {
     setConfirmId(null)
-    await deleteMatter(m.id)
-    setMatters((prev) => prev.filter((x) => x.id !== m.id))
-    toast("success", `Deleted matter "${m.title}".`)
+    try {
+      await deleteMatter(m.id)
+      setMatters((prev) => prev.filter((x) => x.id !== m.id))
+      toast("success", `Deleted matter "${m.title}".`)
+    } catch (e) {
+      toast("error", humanizeError(e, `Could not delete "${m.title}".`))
+    }
   }
 
   function openEdit(m: Matter) {
@@ -79,17 +102,22 @@ export default function Matters() {
   async function onSaveEdit() {
     if (!editing || !draftTitle.trim()) return
     setBusy(true)
-    const updated = await renameMatter(
-      editing.id,
-      draftTitle.trim(),
-      draftReference.trim() || undefined,
-      draftJurisdictions.length ? draftJurisdictions : undefined,
-      editing.playbook,
-    )
-    setMatters((prev) => prev.map((m) => (m.id === updated.id ? updated : m)))
-    setEditing(null)
-    setBusy(false)
-    toast("success", `Updated matter "${updated.title}".`)
+    try {
+      const updated = await renameMatter(
+        editing.id,
+        draftTitle.trim(),
+        draftReference.trim() || undefined,
+        draftJurisdictions.length ? draftJurisdictions : undefined,
+        editing.playbook,
+      )
+      setMatters((prev) => prev.map((m) => (m.id === updated.id ? updated : m)))
+      setEditing(null)
+      toast("success", `Updated matter "${updated.title}".`)
+    } catch (e) {
+      toast("error", humanizeError(e, "Could not save the matter."))
+    } finally {
+      setBusy(false)
+    }
   }
 
   const term = filter.trim().toLowerCase()
@@ -99,57 +127,69 @@ export default function Matters() {
 
   return (
     <>
-      <header className="page-head">
+      <header className="page-head matters-head">
         <div>
           <h1>Matters</h1>
           <p className="page-sub">Every engagement, its documents, and its conversations.</p>
-        </div>
-        <div className="page-head-actions">
-          {matters.length > 0 && (
-            <input
-              placeholder="Filter by title or ID"
-              value={filter}
-              onChange={(e) => setFilter(e.target.value)}
-              style={{ width: 220 }}
-            />
-          )}
         </div>
       </header>
 
       <div className="card">
         <h2>New matter</h2>
-        <div className="row">
+        <div className="row matter-create-row">
           <input
             placeholder="Matter title, e.g. Acme MSA review"
+            aria-label="Matter title"
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && onCreate()}
-            style={{ flex: 1 }}
+            className="matter-create-title"
           />
           <input
-            placeholder="Matter ID (optional)"
+            placeholder="Matter no. (optional)"
+            aria-label="Matter number (optional)"
             value={reference}
             onChange={(e) => setReference(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && onCreate()}
-            style={{ width: 160 }}
+            className="matter-create-reference"
           />
           <JurisdictionSelect
             jurisdictions={jurisdictions}
             selected={newJurisdictions}
             onChange={setNewJurisdictions}
           />
-          <button className="primary" onClick={onCreate} disabled={busy || !title.trim()}>
+          <button className={`primary${busy ? " btn-loading" : ""}`} onClick={onCreate} disabled={busy || !title.trim()}>
             Create matter
           </button>
         </div>
       </div>
 
       <div className="card">
+        {matters.length > 0 && (
+          <div className="matters-list-toolbar">
+            <h2>Your matters</h2>
+            <input
+              className="page-filter"
+              placeholder="Search by title or number"
+              aria-label="Filter matters"
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+            />
+          </div>
+        )}
         {loading ? (
           <div className="skeleton-list">
             <div className="skeleton-row" />
             <div className="skeleton-row" />
             <div className="skeleton-row" />
+          </div>
+        ) : loadError ? (
+          <div className="load-error" role="alert">
+            <h3>Couldn&apos;t load your matters</h3>
+            <p>{loadError}</p>
+            <button type="button" onClick={load}>
+              Try again
+            </button>
           </div>
         ) : matters.length === 0 ? (
           <div className="empty-state">
@@ -157,12 +197,12 @@ export default function Matters() {
               <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
             </svg>
             <h3>No matters yet</h3>
-            <p>A matter holds an engagement&apos;s documents, reviews, and conversations.</p>
+            <p>A matter holds an engagement&apos;s documents, reviews, and conversations. Create one above to get started.</p>
           </div>
         ) : visible.length === 0 ? (
           <p className="muted">No matters match "{filter}".</p>
         ) : (
-          <ul className="matter-list">
+          <ul className="matter-list matters-index-list">
             {visible.map((m) => (
               <li key={m.id} className="list-row">
                 <Link to={`/matter/${m.id}`} className="list-row-main">
@@ -171,7 +211,7 @@ export default function Matters() {
                     {m.title}
                   </span>
                   <span className="list-row-meta">
-                    <span className="list-row-date">Opened {new Date(m.created_at).toLocaleDateString()}</span>
+                    <span className="list-row-date">Opened {formatDate(m.created_at)}</span>
                     {m.jurisdictions?.map((code) => (
                       <span key={code} className="matter-jurisdiction">
                         {jurisdictions.find((j) => j.code === code)?.name ?? code}
@@ -180,7 +220,7 @@ export default function Matters() {
                   </span>
                 </Link>
                 <div className="list-row-actions">
-                  <button className="icon-btn" title="Edit matter" onClick={() => openEdit(m)}>
+                  <button className="icon-btn" title={`Edit ${m.title}`} onClick={() => openEdit(m)}>
                     Edit
                   </button>
                   {confirmId === m.id ? (
@@ -197,7 +237,7 @@ export default function Matters() {
                   ) : (
                     <button
                       className="icon-btn"
-                      title="Delete matter"
+                      title={`Delete ${m.title}`}
                       onClick={(e) => {
                         e.stopPropagation()
                         setConfirmId(m.id)
@@ -216,10 +256,7 @@ export default function Matters() {
       {editing && (
         <div className="viewer-overlay" onClick={() => setEditing(null)}>
           <div className="picker-panel matter-edit" onClick={(e) => e.stopPropagation()}>
-            <div className="viewer-bar">
-              <span className="viewer-title">Edit matter</span>
-              <button onClick={() => setEditing(null)}>Close</button>
-            </div>
+            <ModalHeader title="Edit matter" onClose={() => setEditing(null)} />
             <div className="matter-edit-body">
               <label className="matter-edit-field">
                 <span>Title</span>
@@ -231,7 +268,7 @@ export default function Matters() {
                 />
               </label>
               <label className="matter-edit-field">
-                <span>Matter ID</span>
+                <span>Matter number</span>
                 <input
                   value={draftReference}
                   onChange={(e) => setDraftReference(e.target.value)}
@@ -249,7 +286,7 @@ export default function Matters() {
             </div>
             <div className="viewer-bar matter-edit-foot">
               <button onClick={() => setEditing(null)}>Cancel</button>
-              <button className="primary" onClick={onSaveEdit} disabled={busy || !draftTitle.trim()}>
+              <button className={`primary${busy ? " btn-loading" : ""}`} onClick={onSaveEdit} disabled={busy || !draftTitle.trim()}>
                 Save
               </button>
             </div>

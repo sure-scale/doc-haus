@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react"
-import { listJurisdictions, listMatters, type Jurisdiction, type Matter } from "../api/ingest"
+import { listJurisdictions, listMatters, type Jurisdiction, type Matter } from "../api/ingest/matters"
+import ModalHeader from "./ModalHeader"
+import { formatDate } from "../lib/format"
 
 // The "Use in a matter" picker shared by the Templates and Workflows libraries:
 // pick a matter to drop a template draft or workflow run into. Loads its own
@@ -28,10 +30,7 @@ export default function MatterPicker({
   return (
     <div className="viewer-overlay" onClick={onClose}>
       <div className="picker-panel" onClick={(e) => e.stopPropagation()}>
-        <div className="viewer-bar">
-          <span className="viewer-title">{title}</span>
-          <button onClick={onClose}>Close</button>
-        </div>
+        <ModalHeader title={title} onClose={onClose} />
         <div className="picker-body">
           {!sorted ? null : sorted.length === 0 ? (
             <p className="muted">No matters yet. Create one from the sidebar first.</p>
@@ -43,7 +42,7 @@ export default function MatterPicker({
                   {m.title}
                 </span>
                 <span className="list-row-meta">
-                  <span className="list-row-date">Opened {new Date(m.created_at).toLocaleDateString()}</span>
+                  <span className="list-row-date">Opened {formatDate(m.created_at)}</span>
                   {m.jurisdictions?.map((code) => (
                     <span key={code} className="matter-jurisdiction">
                       {jurisdictions.find((j) => j.code === code)?.name ?? code}

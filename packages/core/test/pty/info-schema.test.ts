@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { Schema } from "effect"
-import { Pty } from "@opencode-ai/core/pty"
+import { Pty } from "@opencode/core/pty"
 
 const sample = (pid: number) => ({
   id: "pty_01J5Y5H0AH4Q4NXJ6P4C3P5V2K",
@@ -23,5 +23,10 @@ describe("Pty.Info", () => {
 
   test("rejects a negative pid", () => {
     expect(() => Schema.decodeUnknownSync(Pty.Info)(sample(-1))).toThrow()
+  })
+
+  test("accepts an exit code for retained exited sessions", () => {
+    const info = Schema.decodeUnknownSync(Pty.Info)({ ...sample(48012), status: "exited", exitCode: 4 })
+    expect(info.exitCode).toBe(4)
   })
 })

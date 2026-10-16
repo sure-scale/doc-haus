@@ -1,4 +1,4 @@
-export * as ConfigPermissionV1 from "./permission"
+export * as ConfigPermissionV1 from "./permission.js"
 
 import { Schema, SchemaGetter } from "effect"
 
@@ -24,9 +24,8 @@ const InputObject = Schema.StructWithRest(
     bash: Schema.optional(Rule),
     task: Schema.optional(Rule),
     external_directory: Schema.optional(Rule),
-    todowrite: Schema.optional(Action),
     question: Schema.optional(Action),
-    webfetch: Schema.optional(Action),
+    webfetch: Schema.optional(Rule),
     websearch: Schema.optional(Action),
     lsp: Schema.optional(Rule),
     doom_loop: Schema.optional(Action),

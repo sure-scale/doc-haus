@@ -1,90 +1,35 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "model": "google-vertex/gemini-3.1-pro-preview",
-  "plugin": [
-    "./plugin/legal.ts"
-  ],
+  "default_agent": "draft",
+  "compaction": {
+    "auto": true,
+    "reserved": 32768
+  },
   "skills": {
     "paths": [
       "{env:WORKSPACE_ROOT}/.playbooks",
       "{env:WORKSPACE_ROOT}/.skills"
     ]
   },
-  "instructions": [
-    "{env:WORKSPACE_ROOT}/.preferences/drafting.md"
-  ],
-  "disabled_providers": [
-    "opencode"
-  ],
-  "provider": {
-    "google-vertex": {
-      "npm": "@ai-sdk/google-vertex",
-      "name": "Google Vertex AI",
-      "models": {
-        "gemini-3.1-pro-preview": {
-          "name": "Gemini 3.1 Pro",
-          "family": "gemini",
-          "attachment": true,
-          "reasoning": true,
-          "temperature": true,
-          "tool_call": true,
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          },
-          "modalities": {
-            "input": [
-              "text",
-              "image",
-              "pdf"
-            ],
-            "output": [
-              "text"
-            ]
-          }
-        },
-        "gemini-3.5-flash": {
-          "name": "Gemini 3.5 Flash",
-          "family": "gemini",
-          "attachment": true,
-          "reasoning": true,
-          "temperature": true,
-          "tool_call": true,
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          },
-          "modalities": {
-            "input": [
-              "text",
-              "image",
-              "pdf"
-            ],
-            "output": [
-              "text"
-            ]
-          }
+  "mcp": {
+    "servers": {
+      "python": {
+        "type": "local",
+        "command": [
+          "sh",
+          "-c",
+          "cd \"$OPENCODE_CONFIG_DIR/mcp/python\" && exec deno run --config=deno.json -N=cdn.jsdelivr.net,pypi.org,files.pythonhosted.org -R=node_modules -W=node_modules jsr:@pydantic/mcp-run-python@0.0.18 stdio"
+        ],
+        "timeout": {
+          "startup": 120000,
+          "catalog": 60000,
+          "execution": 60000
         }
       }
     }
   },
-  "mcp": {
-    "python": {
-      "type": "local",
-      "command": [
-        "sh",
-        "-c",
-        "cd \"$OPENCODE_CONFIG_DIR\" && exec deno run -N=cdn.jsdelivr.net,pypi.org,files.pythonhosted.org -R=node_modules -W=node_modules --node-modules-dir=auto jsr:@pydantic/mcp-run-python stdio"
-      ],
-      "timeout": 60000
-    },
-    "courtlistener": {
-      "type": "remote",
-      "url": "https://mcp.courtlistener.com/",
-      "timeout": 30000
-    }
-  },
   "permission": {
+    "doom_loop": "deny",
     "read": "allow",
     "glob": "allow",
     "grep": "allow",
@@ -116,9 +61,11 @@
     "update-agent": "ask",
     "delete-agent": "ask",
     "read-document": "allow",
+    "read-record": "allow",
     "python_run_python_code": "allow",
     "courtlistener_*": "allow",
     "draft-document": "ask",
+    "copy-document": "ask",
     "create-template": "ask",
     "create-playbook": "ask",
     "word-integration": "ask",
@@ -126,6 +73,10 @@
     "redline": "ask",
     "redact": "ask",
     "redaction-log": "allow",
+    "verify-research-sources": "allow",
+    "check-citations": "allow",
+    "verify": "allow",
+    "official-source": "allow",
     "edit": "deny",
     "bash": "deny",
     "webfetch": "allow",
@@ -133,6 +84,42 @@
     "websearch": "deny"
   },
   "agent": {
+    "lean-change-plan": {
+      "mode": "subagent",
+      "hidden": true,
+      "permission": {
+        "*": "deny",
+        "read": "allow",
+        "search-document": "allow",
+        "read-document": "allow",
+        "read-record": "allow",
+        "verify-quote": "allow"
+      }
+    },
+    "lean-change-prepare": {
+      "mode": "subagent",
+      "hidden": true,
+      "permission": {
+        "*": "deny",
+        "read": "allow",
+        "search-document": "allow",
+        "read-document": "allow",
+        "read-record": "allow",
+        "verify-quote": "allow"
+      }
+    },
+    "lean-change-review": {
+      "mode": "subagent",
+      "hidden": true,
+      "permission": {
+        "*": "deny",
+        "read": "allow",
+        "search-document": "allow",
+        "read-document": "allow",
+        "read-record": "allow",
+        "verify-quote": "allow"
+      }
+    },
     "explore": {
       "disable": true
     },
@@ -144,6 +131,15 @@
     },
     "plan": {
       "disable": true
+    },
+    "compaction": {
+      "prompt": "You are the context compaction assistant for legal matter sessions. Produce a concise legal-workflow handoff, not a coding-session summary. Preserve the user's objective, drafting mode constraints, current matter stage, next stage, gate status, blockers, retry or repair counters, and durable artifact filenames. Summarize source, draft, memo, research, and review artifacts by filename and purpose only; do not paste document bodies or long tables. Keep jurisdiction, source posture, open items, and required next actions explicit. Do not frame the work as commits, branches, diffs, pull requests, code files, or implementation progress unless the user is actually maintaining the repository."
+    },
+    "title": {
+      "prompt": "You are a title generator for legal matter conversations. You output ONLY a thread title. Nothing else.\n\n<task>\nGenerate a brief title that would help a lawyer find this conversation later.\n\nYour output must be:\n- A single line\n- 50 characters or fewer\n- No explanations\n</task>\n\n<rules>\n- Use the same language as the user message you are titling.\n- Title must be grammatically correct and read naturally.\n- Never include tool names in the title (e.g. \"search-document\", \"read-document\", \"task\").\n- Focus on the legal work the user wants done: the matter, the document, or the task (drafting, reviewing, redlining, researching, comparing, summarizing).\n- Keep exact: document names, party names, section numbers, jurisdiction codes, dates, dollar amounts.\n- Remove leading articles (the, this, my, a, an) when it keeps the title short.\n- Never assume a software/code context. Do not use coding terms (refactor, debug, commit, build, deploy) unless the user is literally discussing software.\n- Never use tools.\n- Never respond to questions; just generate a title.\n- Always output something meaningful, even if the input is minimal.\n- If the user message is short or conversational (e.g. \"hello\", \"what's up\"): create a title that reflects the user's tone or intent (Greeting, Quick check-in, Matter intake, etc.).\n</rules>\n\n<examples>\n\"draft a mutual NDA for the Acme partnership\" \u2192 Mutual NDA for Acme partnership\n\"review the indemnification clauses in the lease\" \u2192 Lease indemnification review\n\"can you redline section 8.3 of the employment agreement\" \u2192 Redline employment agreement \u00a78.3\n\"research California non-compete enforceability\" \u2192 CA non-compete enforceability research\n\"build a chronology for Smith v. Jones\" \u2192 Smith v. Jones chronology\n\"compare the two term sheets\" \u2192 Term sheet comparison\n\"summarize the acquisition agreement\" \u2192 Acquisition agreement summary\n\"what does the Cure Period mean here\" \u2192 Cure Period definition question\n</examples>"
+    },
+    "summary": {
+      "prompt": "Summarize what was done in this legal matter conversation. Write like a concise work-product note for the file, not a software pull-request description.\n\nRules:\n- 2-3 sentences max.\n- Describe the legal work done: documents drafted, reviewed, redlined, or compared; research performed; findings or open items identified.\n- Do not describe the process or tool calls; describe the outcome and deliverables.\n- Do not explain what the user asked for.\n- Write in first person (I drafted..., I reviewed..., I redlined...).\n- Never ask questions or add new questions.\n- Reference documents by name, not as file paths or code artifacts.\n- Do not use coding terms (commits, branches, diffs, builds, tests) unless the user is literally maintaining software.\n- If the conversation ends with an unanswered question to the user, preserve that exact question.\n- If the conversation ends with an imperative request to the user (e.g. an instruction to clear conflicts or provide a missing document), include that exact request."
     }
   }
 }

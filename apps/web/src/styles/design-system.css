@@ -1,0 +1,144 @@
+/* Product design foundations. Keep existing semantic classes and handlers;
+   the later surface styles compose these shared tokens. */
+:root {
+  --bg: #f8faf7;
+  --bg-sunken: #f0f3ee;
+  --panel: #ffffff;
+  --panel-hover: #f7faf6;
+  --text: #242c28;
+  --text-secondary: #4c5750;
+  --muted: #68746b;
+  --faint: #7d877f;
+  --placeholder: #778279;
+  --border: #dfe5dd;
+  --border-soft: #edf0ea;
+  --border-strong: #bdcbbf;
+  --accent: #17634f;
+  --accent-hover: #104b3c;
+  --accent-active: #0d4033;
+  --accent-soft: #edf4ee;
+  --accent-soft-hover: #e3eee5;
+  --accent-tint: #f8fbf6;
+  --accent-border: #c3d7c9;
+  --accent-muted: #527760;
+  --font-display: var(--font-sans);
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 9px;
+  --ctl-h: 36px;
+}
+
+body { background: var(--panel); }
+
+button.primary {
+  font-weight: 600;
+  box-shadow: none;
+}
+
+button:disabled { cursor: not-allowed; }
+
+button.primary:disabled {
+  color: var(--muted);
+  background: var(--bg-sunken);
+  border-color: var(--border);
+  opacity: 1;
+  box-shadow: none;
+}
+
+input:not([type="checkbox"]):not([type="radio"]), select, textarea {
+  border-radius: var(--radius-md);
+}
+
+.container { max-width: none; padding: 32px clamp(24px, 4vw, 64px); }
+.page-head { margin-bottom: 30px; }
+.page-head h1 {
+  font-family: var(--font-sans);
+  font-size: 27px;
+  line-height: 1.3;
+  font-weight: 600;
+  letter-spacing: -.8px;
+}
+.page-sub { max-width: 640px; margin-top: 8px; color: var(--muted); }
+
+/* Library and matter index pages are open sections, not nested cards. The
+   selector is deliberately shallow so notices and dialogs retain boundaries. */
+.container > .card:not(.chat-card):not(.review) {
+  padding: 24px 0;
+  margin-bottom: 12px;
+  border: 0;
+  border-top: 1px solid var(--border-soft);
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+}
+.container > .card h2 { font-size: 15px; letter-spacing: -.15px; }
+.list-row { padding: 20px 12px; border-color: var(--border-soft); border-radius: 0; }
+.list-row-title { color: var(--text); font-weight: 550; overflow-wrap: anywhere; }
+.list-row-meta { color: var(--muted); gap: 10px; margin-top: 5px; }
+.list-row-actions { gap: 6px; }
+.list-row-actions .icon-btn.is-primary { border-color: transparent; background: var(--accent-soft); }
+.badge-quiet { font-weight: 400; background: transparent; border-color: var(--border); }
+
+/* The section border supplies the Matters divider; keep search with its list. */
+.page-head.matters-head { margin-bottom: 0; border-bottom: 0; }
+.matters-list-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 12px 24px; margin-bottom: 12px; }
+.matters-index-list > .list-row { margin-inline: 0; padding-inline: 0; }
+.matters-list-toolbar h2 { margin: 0; text-transform: none; }
+.matters-list-toolbar .page-filter { width: min(100%, 300px); min-width: 0; }
+
+/* New-matter fields use one control size, including the custom picker. */
+.matter-create-row { flex-wrap: wrap; align-items: stretch; }
+.matter-create-row .matter-create-title { flex: 1 1 260px; min-width: 0; }
+.matter-create-row .matter-create-reference { flex: 0 1 180px; min-width: 0; }
+.matter-create-row .jx-select { flex: 0 1 220px; min-width: 0; }
+.matter-create-row input,
+.matter-create-row button { height: var(--ctl-h); min-height: var(--ctl-h); padding: 0 12px; font-size: 14px; line-height: 20px; border-radius: var(--radius-md); }
+.matter-create-row .jx-trigger { width: 100%; min-width: 0; font-weight: 400; }
+.matter-create-row .jx-trigger.is-empty { color: var(--placeholder); }
+.matter-create-row > button { flex-shrink: 0; }
+
+@media (max-width: 700px) {
+  .matter-create-row > input,
+  .matter-create-row > .jx-select,
+  .matter-create-row > button { flex: 1 1 100%; width: 100%; }
+}
+
+/* Keep the actual extraction/review model; only remove the outer card. */
+.card.review { border: 0; border-radius: 0; padding: 20px 0; box-shadow: none; }
+.review-toolbar { align-items: center; padding-bottom: 20px; gap: 20px; }
+.review-toolbar h2 { font-size: 23px; font-weight: 600; letter-spacing: -.55px; }
+.review-scroll { border-radius: 0; border-color: var(--border-soft); }
+.review-table th, .review-table td { border-color: var(--border-soft); padding: 16px; }
+.review-table thead th { font-size: 12px; font-weight: 500; background: var(--bg); }
+.review-table .review-doc-col { background: var(--panel); }
+.review-table thead .review-doc-col { background: var(--bg); }
+.review-cell-actions { margin-top: 12px; }
+
+.picker-panel { border-radius: 10px; border-color: var(--border); }
+.viewer-bar { border-color: var(--border-soft); }
+.viewer-bar h2 { font-family: var(--font-sans); letter-spacing: -.3px; }
+.empty-state { padding: 46px 24px; }
+.empty-state h3 { letter-spacing: -.3px; }
+.empty-glyph { color: var(--accent-muted); }
+
+@media (max-width: 960px) {
+  .container { padding: 22px 20px; }
+  .page-head h1 { font-size: 24px; }
+  .page-head { margin-bottom: 22px; }
+  .review-toolbar { align-items: stretch; }
+  .review-toolbar > .row { flex-wrap: wrap; }
+}
+@media (max-width: 480px) {
+  .container { padding: 20px 12px; }
+  .container > .card > .row > input { min-width: 0; max-width: 100%; }
+  .list-row { padding: 16px 6px; flex-wrap: wrap; gap: 12px; }
+  .list-row-main { min-width: 0; }
+  .list-row-actions { margin-left: auto; }
+  .review-table th, .review-table td { padding: 12px; }
+}
+@media (hover: none) {
+  .list-row-actions .icon-btn { min-height: 40px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  details, summary { scroll-behavior: auto; }
+}

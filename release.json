@@ -1,0 +1,5 @@
+{
+  "version": 2,
+  "name": "2.0",
+  "notes": "Drafting repairs now continue correctly when revising one document causes a related document to be redrafted."
+}

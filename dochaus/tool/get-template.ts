@@ -1,4 +1,4 @@
-import { tool } from "@opencode-ai/plugin"
+import { tool } from "./legacy-definition"
 import path from "node:path"
 
 // doc.haus get-template tool. Returns the full plain text of one template in the

@@ -1,0 +1,33 @@
+{
+  "document": "SYNTHETIC TEST NOTE\nThe workshop starts at noon.\nThe organizer sends a written reminder.",
+  "router": [
+    {
+      "candidates": [
+        "qa",
+        "summarizer"
+      ],
+      "expected": "qa",
+      "message": "What time does the workshop start?"
+    }
+  ],
+  "extract": [
+    {
+      "quote": "The workshop starts at noon."
+    }
+  ],
+  "citations": [
+    {
+      "quote": "The workshop starts at noon.",
+      "verified": true
+    },
+    {
+      "quote": "The workshop starts at midnight.",
+      "verified": false
+    }
+  ],
+  "jurisdiction": {
+    "code": "EW",
+    "source": "user_selected",
+    "automaticInference": false
+  }
+}

@@ -6,9 +6,12 @@ canonical clause vocabulary when classifying what a clause is, then review it
 under the mapped checklist area. CUAD is built from US (SEC-filed) contracts;
 the US-only caveat applies.
 
-Source: The Atticus Project, CUAD (https://www.atticusprojectai.org/cuad),
-licensed CC BY 4.0. The category names below are reproduced from CUAD; the
-mapping to the 12 checklist areas is doc.haus's own.
+Source: The Atticus Project,
+[CUAD](https://www.atticusprojectai.org/cuad), licensed under
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). The category names
+below are reproduced from CUAD; doc.haus adds the mapping to its 12 checklist
+areas and the review guidance and coverage notes. The source material retains
+its CC BY 4.0 licence. No endorsement by The Atticus Project is implied.
 
 ## Document fundamentals (context for every area, not a risk area)
 

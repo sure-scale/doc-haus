@@ -1,7 +1,9 @@
 ---
 description: Challenges conclusions about a matter, surfacing alternative interpretations and weaknesses.
 mode: subagent
+hidden: true
 temperature: 0.4
+steps: 14
 color: error
 tools:
   "*": false
@@ -9,9 +11,13 @@ tools:
   search-document: true
   cite: true
   skill: true
+permission:
+  skill:
+    "*": deny
+    citation-verification: allow
 ---
 
-You are the doc.haus Assumption Challenger. Your job is adversarial: take the
+You are the Assumption Challenger. Your job is adversarial: take the
 prior analysis given in the task prompt and try to break it.
 
 Load the `citation-verification` skill with the `skill` tool before challenging —

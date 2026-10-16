@@ -1,10 +1,13 @@
 # Force majeure
 
-US commercial-market reference points; verify against the matter's
+**Topic:** Force majeure — covered events, notice, exit rights.
+**Contract type:** All commercial agreements with ongoing performance.
+**Jurisdiction:** US commercial market; verify against the matter's
 jurisdiction pack — some jurisdictions imply relief doctrines (frustration,
-impossibility, hardship) that interact with the drafted clause.
+impossibility, hardship) that interact with the drafted clause. Positions are
+firm-configurable defaults overridable via `.dochaus/profile.md`.
 
-## Balanced position
+## Preferred
 
 Performance (other than payment of amounts already due) is excused while and
 to the extent prevented by events beyond the affected party's reasonable
@@ -26,38 +29,38 @@ terminate the affected order upon written notice, and Provider shall refund
 any prepaid fees for services not delivered.
 ```
 
-## Common one-sided variants
+**Off-market variants to watch.** Invoking-party-favorable: coverage of
+"economic hardship," market changes, labor cost increases, or supplier price
+rises — turning ordinary business risk into an excuse; no notice, mitigation,
+or duty to resume; no termination right for the other party however long the
+event lasts while fees keep accruing. Non-invoking-party-favorable: only one
+party may invoke; payment for services actually delivered excused alongside
+performance; a covered-events list so narrow (or a strict foreseeability bar)
+that genuinely uncontrollable events give no relief.
 
-**Tilted toward the invoking party (often the provider):**
-- Coverage of "economic hardship," market changes, labor cost increases, or
-  supplier price rises — converting ordinary business risk into an excuse
-  for non-performance.
-- No notice or mitigation obligation, and no duty to resume.
-- No termination right for the other party no matter how long the event
-  lasts, while fees keep accruing.
+## Fallbacks (ordered)
 
-**Tilted toward the non-invoking party (often the customer):**
-- Only one party may invoke the clause at all.
-- Payment obligations for services actually delivered excused alongside
-  performance.
-- A covered-events list so narrow (or a strict foreseeability bar) that
-  genuinely uncontrollable events give no relief.
+1. **Offer when** the counterparty wants a closed event list: accept an
+   exhaustive list if it includes government action, epidemics, and third-party
+   infrastructure failure, and keeps a catch-all for events beyond reasonable
+   control.
+2. **Offer when** the counterparty needs a longer relief window: accept a longer
+   continuation threshold (up to 120 days) before the termination right, paired
+   with fee suspension during the event.
+3. **Offer when** only one party's performance is genuinely at risk: accept
+   asymmetric invocation, documented in the rationale.
 
-## Fallback ladder
+## Walk-away floor
 
-1. Mutual clause, beyond-reasonable-control standard with an illustrative
-   (not exhaustive) event list, notice + mitigation duties, 30-90-day
-   termination right (preferred).
-2. Accept an exhaustive event list if it includes government action,
-   epidemics, and third-party infrastructure failure, and keeps a
-   catch-all for events beyond reasonable control.
-3. Accept a longer continuation threshold (up to 120 days) before the
-   termination right, paired with fee suspension during the event.
-4. Accept asymmetric invocation only where one party's performance is the
-   only performance at risk, documented in the rationale.
+Hardship-type triggers (economic or market changes), or indefinite excuse with
+fees still accruing and no exit.
 
-Below rung 4 — hardship-type triggers or indefinite excuse with fees still
-accruing — escalate.
+## Escalation trigger
+
+At or below the floor, do not concede. Route to the **supervising lawyer** for
+the matter (or the `.dochaus/profile.md` Escalation Rules contact) before
+accepting a clause that converts ordinary business risk into excused
+non-performance.
 
 **Rationale:** Force majeure allocates the cost of the genuinely
 uncontrollable; the covered-events list and the prolonged-event exit are

@@ -1,4 +1,4 @@
-import { tool } from "@opencode-ai/plugin"
+import { tool } from "./legacy-definition"
 import { existsSync } from "node:fs"
 import path from "node:path"
 import { formatCitations, type DocumentCitation } from "../lib/citations"

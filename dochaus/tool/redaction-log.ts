@@ -1,4 +1,4 @@
-import { tool } from "@opencode-ai/plugin"
+import { tool } from "./legacy-definition"
 import path from "node:path"
 import { listRedactions } from "../lib/redactions"
 

@@ -1,7 +1,7 @@
-export * as ConfigErrorV1 from "./error"
+export * as ConfigErrorV1 from "./error.js"
 
 import { Schema } from "effect"
-import { NamedError } from "../../util/error"
+import { NamedError } from "../../util/error.js"
 
 const Issue = Schema.StructWithRest(
   Schema.Struct({
@@ -31,4 +31,9 @@ export const DirectoryTypoError = NamedError.create("ConfigDirectoryTypoError", 
   path: Schema.String,
   dir: Schema.String,
   suggestion: Schema.String,
+})
+
+export const RemoteAuthError = NamedError.create("ConfigRemoteAuthError", {
+  url: Schema.String,
+  remote: Schema.String,
 })

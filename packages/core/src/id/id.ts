@@ -1,4 +1,4 @@
-import { randomBytes } from "crypto"
+import { create } from "@opencode/schema/identifier"
 
 const prefixes = {
   job: "job",
@@ -13,12 +13,6 @@ const prefixes = {
   workspace: "wrk",
 } as const
 
-const LENGTH = 26
-
-// State for monotonic ID generation
-let lastTimestamp = 0
-let counter = 0
-
 export function ascending(prefix: keyof typeof prefixes, given?: string) {
   return generateID(prefix, "ascending", given)
 }
@@ -29,7 +23,7 @@ export function descending(prefix: keyof typeof prefixes, given?: string) {
 
 function generateID(prefix: keyof typeof prefixes, direction: "descending" | "ascending", given?: string): string {
   if (!given) {
-    return create(prefixes[prefix], direction)
+    return createID(prefixes[prefix], direction)
   }
 
   if (!given.startsWith(prefixes[prefix])) {
@@ -38,43 +32,17 @@ function generateID(prefix: keyof typeof prefixes, direction: "descending" | "as
   return given
 }
 
-function randomBase62(length: number): string {
-  const chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
-  let result = ""
-  const bytes = randomBytes(length)
-  for (let i = 0; i < length; i++) {
-    result += chars[bytes[i] % 62]
-  }
-  return result
+function createID(prefix: string, direction: "descending" | "ascending", timestamp?: number): string {
+  return prefix + "_" + create(direction === "descending", timestamp)
 }
 
-export function create(prefix: string, direction: "descending" | "ascending", timestamp?: number): string {
-  const currentTimestamp = timestamp ?? Date.now()
-
-  if (currentTimestamp !== lastTimestamp) {
-    lastTimestamp = currentTimestamp
-    counter = 0
-  }
-  counter++
-
-  let now = BigInt(currentTimestamp) * BigInt(0x1000) + BigInt(counter)
-
-  now = direction === "descending" ? ~now : now
-
-  const timeBytes = Buffer.alloc(6)
-  for (let i = 0; i < 6; i++) {
-    timeBytes[i] = Number((now >> BigInt(40 - 8 * i)) & BigInt(0xff))
-  }
-
-  return prefix + "_" + timeBytes.toString("hex") + randomBase62(LENGTH - 12)
-}
+export { createID as create }
 
 /** Extract timestamp from an ascending ID. Does not work with descending IDs. */
 export function timestamp(id: string): number {
   const prefix = id.split("_")[0]
   const hex = id.slice(prefix.length + 1, prefix.length + 13)
-  const encoded = BigInt("0x" + hex)
-  return Number(encoded / BigInt(0x1000))
+  return Number(BigInt(`0x${hex}`) / 0x1000n)
 }
 
-export * as Identifier from "./id"
+export * as Identifier from "./id.js"

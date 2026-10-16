@@ -1,0 +1,901 @@
+import { CliRenderEvents, InputRenderable, RGBA, ScrollBoxRenderable, TextAttributes } from "@opentui/core"
+import { Keymap, type KeymapCommand } from "../context/keymap"
+import { useTheme } from "../context/theme"
+import { entries, filter, flatMap, groupBy, pipe } from "remeda"
+import { batch, createEffect, createMemo, createSignal, For, Show, type JSX, on, onCleanup, onMount } from "solid-js"
+import { createStore } from "solid-js/store"
+import { useRenderer, useTerminalDimensions } from "@opentui/solid"
+import * as fuzzysort from "fuzzysort"
+import { isDeepEqual } from "remeda"
+import { useDialog, type DialogContext } from "./dialog"
+import { Locale } from "../util/locale"
+import { getScrollAcceleration } from "../util/scroll"
+import { useConfig } from "../config"
+import { moveSelection, reconcileSelection } from "./select-controller"
+
+export interface DialogSelectProps<T> {
+  title: string
+  titleView?: JSX.Element
+  placeholder?: string
+  footer?: JSX.Element
+  emptyView?: JSX.Element
+  noMatchView?: JSX.Element
+  options: DialogSelectOption<T>[]
+  flat?: boolean
+  filterThreshold?: number
+  ref?: (ref: DialogSelectRef<T>) => void
+  onMove?: (option: DialogSelectOption<T>) => void
+  onFilter?: (query: string) => void
+  onSelect?: (option: DialogSelectOption<T>) => void
+  onCancel?: () => void
+  skipFilter?: boolean
+  renderFilter?: boolean
+  locked?: boolean
+  preserveSelection?: boolean
+  actions?: DialogSelectAction<T>[]
+  footerHints?: {
+    title: string
+    label: string
+    side?: "left" | "right"
+  }[]
+  bindings?: readonly KeymapCommand[]
+  current?: T
+  focusTarget?: T
+  focusCurrent?: boolean
+  sectionNavigation?: boolean
+}
+
+type DialogSelectActionBase<T> = {
+  command: string
+  title: string
+  side?: "left" | "right"
+  hidden?: boolean
+  disabled?: boolean | ((option: DialogSelectOption<T> | undefined) => boolean)
+}
+
+type DialogSelectAction<T> =
+  | (DialogSelectActionBase<T> & {
+      selection?: "required"
+      onTrigger: (option: DialogSelectOption<T>) => void
+    })
+  | (DialogSelectActionBase<T> & {
+      selection: "none"
+      onTrigger: () => void
+    })
+
+export interface DialogSelectOption<T = any> {
+  title: string
+  titleView?: JSX.Element
+  value: T
+  description?: string
+  searchText?: string
+  searchFooter?: JSX.Element | string
+  details?: string[]
+  detailsColor?: RGBA
+  detailsWrap?: boolean
+  footer?: JSX.Element | string
+  footerColor?: RGBA
+  titleWidth?: number
+  truncateTitle?: boolean | "left"
+  category?: string
+  categoryView?: JSX.Element
+  disabled?: boolean
+  bg?: RGBA
+  fg?: RGBA
+  gutter?: (color: RGBA) => JSX.Element
+  margin?: JSX.Element
+  onSelect?: (ctx: DialogContext) => void
+}
+
+export function dialogSelectContentWidth(dialogWidth: number) {
+  // Scroll padding, row padding, the gutter, title padding, and the separating gap.
+  return dialogWidth - 12
+}
+
+export type DialogSelectRef<T> = {
+  filter: string
+  filtered: DialogSelectOption<T>[]
+  selected: DialogSelectOption<T> | undefined
+  setFilter(value: string): void
+  moveTo(value: T): void
+}
+
+export function DialogSelect<T>(props: DialogSelectProps<T>) {
+  type Action = NonNullable<DialogSelectProps<T>["actions"]>[number]
+  type FooterHint = NonNullable<DialogSelectProps<T>["footerHints"]>[number]
+  type VisibleAction = (Action & { label: string }) | FooterHint
+
+  const dialog = useDialog()
+  const theme = useTheme().surface("dialog")
+  const config = useConfig().data
+  const scrollAcceleration = createMemo(() => getScrollAcceleration(config))
+  const renderer = useRenderer()
+
+  const [store, setStore] = createStore({
+    selected: 0,
+    filter: "",
+  })
+  const [focusedAction, setFocusedAction] = createSignal<number>()
+  const actionFocused = createMemo(() => focusedAction() !== undefined)
+  let selection: { value: T; category?: string } | undefined
+  let resetSelection = false
+  let pendingScroll: (() => void) | undefined
+
+  function scrollAfterLayout(center: boolean, value: T) {
+    if (pendingScroll) renderer.off(CliRenderEvents.FRAME, pendingScroll)
+    pendingScroll = () => {
+      pendingScroll = undefined
+      if (!isDeepEqual(selected()?.value, value)) return
+      scrollToSelection(center)
+    }
+    renderer.once(CliRenderEvents.FRAME, pendingScroll)
+    renderer.requestRender()
+  }
+
+  createEffect(
+    on(
+      [() => props.focusTarget ?? props.current, () => (props.focusTarget === undefined ? undefined : flat())],
+      ([current]) => {
+        if (props.focusCurrent === false) return
+        if (props.focusTarget !== undefined && (props.preserveSelection || store.filter.length > 0)) return
+        if (current !== undefined) {
+          const currentIndex = flat().findIndex((opt) => isDeepEqual(opt.value, current))
+          if (currentIndex >= 0) {
+            setStore("selected", currentIndex)
+            selection = flat()[currentIndex]
+            scrollAfterLayout(true, current)
+          }
+        }
+      },
+    ),
+  )
+
+  let input: InputRenderable | undefined
+
+  const actions = createMemo(() => props.actions ?? [])
+  const shownActions = createMemo(() => actions().filter((item) => !item.hidden))
+  const shortcuts = Keymap.useShortcuts()
+
+  const actionLabels = createMemo(() => {
+    const labels = new Map<string, string>()
+
+    for (const action of shownActions()) {
+      const label = shortcuts.all(action.command)
+      if (label) labels.set(action.command, label)
+    }
+
+    return labels
+  })
+  const visibleActions = createMemo(() => [
+    ...shownActions()
+      .map((item) => ({ ...item, label: actionLabels().get(item.command) ?? "" }))
+      .filter((item) => item.label),
+    ...(props.footerHints ?? []),
+  ])
+  const actionItems = () =>
+    visibleActions()
+      .filter(isActionItem)
+      .filter((item) => !isActionDisabled(item))
+
+  createEffect(() => {
+    const index = focusedAction()
+    if (index !== undefined && index >= actionItems().length) setFocusedAction(undefined)
+  })
+
+  const filtered = createMemo(() => {
+    if (props.skipFilter || props.renderFilter === false) return props.options.filter((x) => x.disabled !== true)
+    const needle = store.filter.toLowerCase()
+    const options = pipe(
+      props.options,
+      filter((x) => x.disabled !== true),
+    )
+    if (!needle) return options
+
+    // prioritize title matches (weight: 2) over category and supplemental search text matches (weight: 1).
+    // users typically search by the item name, and not its category.
+    const result = fuzzysort
+      .go(needle, options, {
+        keys: ["title", "category", "searchText"],
+        scoreFn: (r) => r[0].score * 2 + r[1].score + r[2].score,
+        threshold: props.filterThreshold,
+      })
+      .map((x) => x.obj)
+
+    return result
+  })
+
+  createEffect(() => {
+    filtered()
+    setFocusedAction(undefined)
+  })
+
+  const flatten = createMemo(() => props.flat && store.filter.length > 0)
+
+  const grouped = createMemo<[string, DialogSelectOption<T>[]][]>(() => {
+    if (flatten()) return filtered().length ? [["", filtered()]] : []
+    const result = pipe(
+      filtered(),
+      groupBy((x) => x.category ?? ""),
+      // mapValues((x) => x.sort((a, b) => a.title.localeCompare(b.title))),
+      entries(),
+    )
+    return result
+  })
+
+  const flat = createMemo(() => {
+    return pipe(
+      grouped(),
+      flatMap(([_, options]) => options),
+    )
+  })
+
+  const rows = createMemo(() => {
+    const headers = grouped().reduce((acc, [category], i) => {
+      if (!category) return acc
+      return acc + (i > 0 ? 2 : 1)
+    }, 0)
+    return flat().reduce((acc, option) => acc + 1 + (option.details?.length ?? 0), headers)
+  })
+
+  const dimensions = useTerminalDimensions()
+  const height = createMemo(() => Math.min(rows(), Math.floor(dimensions().height / 2) - 6))
+
+  const selected = createMemo(() => flat()[store.selected])
+
+  createEffect(
+    on(
+      () => props.options,
+      () => {
+        if (
+          !props.preserveSelection &&
+          ((props.focusTarget ?? props.current) === undefined || props.focusCurrent === false)
+        ) {
+          const count = flat().length
+          if (count === 0) return
+          const next = reconcileSelection(store.selected, count)
+          if (next !== store.selected) setStore("selected", next)
+          return
+        }
+        if (resetSelection && store.filter.length > 0) {
+          const option = flat()[0]
+          if (!option) return
+          setStore("selected", 0)
+          selection = option
+          return
+        }
+        if (!selection) {
+          if (props.focusCurrent !== false && (props.focusTarget ?? props.current) !== undefined) {
+            const index = flat().findIndex((option) => isDeepEqual(option.value, props.focusTarget ?? props.current))
+            if (index >= 0) {
+              setStore("selected", index)
+              selection = flat()[index]
+              return
+            }
+          }
+          const option = selected()
+          if (!option) return
+          selection = option
+          return
+        }
+        const previous = selection
+        const index = flat().findIndex((option) => isDeepEqual(option.value, previous.value))
+        if (index >= 0) {
+          const option = flat()[index]
+          const moved = index !== store.selected || option.category !== previous.category
+          setStore("selected", index)
+          selection = option
+          if (!moved) return
+          if (
+            !props.preserveSelection &&
+            ((props.focusTarget ?? props.current) === undefined ||
+              props.focusCurrent === false ||
+              store.filter.length > 0)
+          )
+            return
+          scrollAfterLayout(false, option.value)
+          return
+        }
+        const next = reconcileSelection(store.selected, flat().length)
+        if (flat().length === 0) return
+        setStore("selected", next)
+        selection = flat()[next]
+      },
+    ),
+  )
+  onCleanup(() => {
+    if (!pendingScroll) return
+    renderer.off(CliRenderEvents.FRAME, pendingScroll)
+    pendingScroll = undefined
+  })
+
+  createEffect(
+    on([() => store.filter, () => props.focusTarget ?? props.current], ([filter, current]) => {
+      if (filter.length > 0) resetSelection = true
+      if (filter.length > 0) {
+        const option = flat()[0]
+        if (!option) return
+        moveTo(0, true, false)
+        scrollAfterLayout(true, option.value)
+        return
+      }
+      if (current === undefined || props.focusCurrent === false) return
+      const currentIndex = flat().findIndex((opt) => isDeepEqual(opt.value, current))
+      if (currentIndex < 0) return
+      moveTo(currentIndex, true)
+      scrollAfterLayout(true, current)
+    }),
+  )
+
+  function move(direction: number) {
+    if (props.locked) return
+    if (flat().length === 0) return
+    moveTo(moveSelection(store.selected, { count: flat().length, delta: direction, policy: "wrap" }), true)
+  }
+
+  function moveSection(direction: 1 | -1) {
+    if (props.locked) return
+    const sections = grouped().filter(([_, options]) => options.length > 0)
+    if (sections.length === 0) return
+    const current = sections.findIndex(([category]) => category === selected()?.category)
+    const section = sections[(current + direction + sections.length) % sections.length]
+    moveTo(flat().indexOf(section[1][0]), true)
+  }
+
+  function moveTo(next: number, center = false, preserve = true) {
+    setFocusedAction(undefined)
+    setStore("selected", next)
+    const option = selected()
+    if (option) {
+      selection = option
+      resetSelection = !preserve
+    }
+    if (option) props.onMove?.(option)
+    scrollToSelection(center)
+  }
+
+  function scrollToSelection(center: boolean) {
+    if (!scroll) return
+    let remaining = store.selected
+    let index = 0
+    // Locate the row by position because a unique renderable ID cannot currently be ensured.
+    for (const [category, options] of grouped()) {
+      if (category) index++
+      if (remaining < options.length) {
+        index += remaining
+        break
+      }
+      index += options.length
+      remaining -= options.length
+    }
+    const target = scroll.getChildren()[index]
+    if (!target) return
+    const y = target.y - scroll.y
+    if (center) {
+      const centerOffset = Math.floor(scroll.height / 2)
+      scroll.scrollBy(y - centerOffset)
+    } else {
+      if (y >= scroll.height) {
+        scroll.scrollBy(y - scroll.height + 1)
+      }
+      if (y < 0) {
+        scroll.scrollBy(y)
+        if (isDeepEqual(flat()[0].value, selected()?.value)) {
+          scroll.scrollTo(0)
+        }
+      }
+    }
+  }
+
+  function submit() {
+    if (props.locked) return
+    const index = focusedAction()
+    if (index !== undefined) {
+      trigger(actionItems()[index])
+      return
+    }
+    const option = selected()
+    if (!option) return
+    option.onSelect?.(dialog)
+    props.onSelect?.(option)
+  }
+
+  function moveAction(direction: 1 | -1) {
+    if (props.locked) return
+    const total = actionItems().length
+    if (total === 0) return
+    setFocusedAction((index) => {
+      if (index === undefined) return direction === 1 ? 0 : total - 1
+      const next = index + direction
+      return next < 0 || next >= total ? undefined : next
+    })
+  }
+
+  Keymap.createLayer(() => {
+    const visible = shownActions()
+
+    return {
+      mode: "modal",
+      commands: [
+        {
+          id: "dialog.select.prev",
+          title: "Previous item",
+          group: "Dialog",
+          run() {
+            move(-1)
+          },
+        },
+        {
+          id: "dialog.select.next",
+          title: "Next item",
+          group: "Dialog",
+          run() {
+            move(1)
+          },
+        },
+        {
+          id: "dialog.select.page_up",
+          title: "Page up",
+          group: "Dialog",
+          run() {
+            move(-10)
+          },
+        },
+        {
+          id: "dialog.select.page_down",
+          title: "Page down",
+          group: "Dialog",
+          run() {
+            move(10)
+          },
+        },
+        {
+          id: "dialog.select.home",
+          title: "First item",
+          group: "Dialog",
+          run() {
+            if (props.locked) return
+            moveTo(0)
+          },
+        },
+        {
+          id: "dialog.select.end",
+          title: "Last item",
+          group: "Dialog",
+          run() {
+            if (props.locked) return
+            moveTo(flat().length - 1)
+          },
+        },
+        {
+          id: "dialog.select.submit",
+          title: "Select item",
+          group: "Dialog",
+          run: submit,
+        },
+        ...visible.map((item) => ({
+          id: item.command,
+          title: item.title,
+          group: "Dialog",
+          run: () => trigger(item),
+        })),
+        ...(visible.length
+          ? [
+              {
+                bind: "tab",
+                title: "Next dialog action",
+                group: "Dialog",
+                run: () => moveAction(1),
+              },
+              {
+                bind: "shift+tab",
+                title: "Previous dialog action",
+                group: "Dialog",
+                run: () => moveAction(-1),
+              },
+            ]
+          : []),
+        ...(props.bindings ?? []),
+        ...(props.onCancel
+          ? [
+              {
+                bind: "escape",
+                title: "Back",
+                group: "Dialog",
+                run: () => {
+                  if (renderer.getSelection()) {
+                    renderer.clearSelection()
+                    return
+                  }
+                  props.onCancel?.()
+                },
+              },
+            ]
+          : []),
+        ...(props.sectionNavigation
+          ? [
+              {
+                bind: "alt+up",
+                title: "Previous section",
+                group: "Dialog",
+                run: () => moveSection(-1),
+              },
+              {
+                bind: "alt+down",
+                title: "Next section",
+                group: "Dialog",
+                run: () => moveSection(1),
+              },
+            ]
+          : []),
+      ],
+    }
+  })
+
+  let scroll: ScrollBoxRenderable | undefined
+  const ref: DialogSelectRef<T> = {
+    get filter() {
+      return store.filter
+    },
+    get filtered() {
+      return filtered()
+    },
+    get selected() {
+      return selected()
+    },
+    setFilter(value) {
+      if (input) {
+        input.value = value
+        return
+      }
+      if (value === store.filter) return
+      batch(() => {
+        setStore("filter", value)
+        props.onFilter?.(value)
+      })
+    },
+    moveTo(value) {
+      const index = flat().findIndex((option) => isDeepEqual(option.value, value))
+      if (index >= 0) moveTo(index, true)
+    },
+  }
+  onMount(() => props.ref?.(ref))
+
+  const left = createMemo(() => visibleActions().filter((item) => item.side !== "right"))
+  const right = createMemo(() => visibleActions().filter((item) => item.side === "right"))
+
+  function trigger(item: Action | undefined) {
+    if (props.locked || !item || isActionDisabled(item)) return
+    if (item.selection === "none") {
+      item.onTrigger()
+      return
+    }
+    const option = selected()
+    if (!option) return
+    item.onTrigger(option)
+  }
+
+  function isActionItem(item: VisibleAction): item is Action & { label: string } {
+    return "onTrigger" in item
+  }
+
+  function isActionDisabled(item: Action) {
+    const option = selected()
+    if (item.selection !== "none" && !option) return true
+    return typeof item.disabled === "function" ? item.disabled(option) : item.disabled
+  }
+
+  function isActionFocused(item: VisibleAction) {
+    if (props.locked) return false
+    if (!isActionItem(item)) return false
+    return actionItems().indexOf(item) === focusedAction()
+  }
+
+  function FooterAction(action: { item: VisibleAction }) {
+    if (!isActionItem(action.item))
+      return (
+        <text>
+          <span style={{ fg: theme.text.base }}>
+            <b>{action.item.title}</b>{" "}
+          </span>
+          <span style={{ fg: theme.text.muted }}>{action.item.label}</span>
+        </text>
+      )
+    const item = action.item
+    const active = createMemo(() => isActionFocused(item))
+    const disabled = createMemo(() => isActionDisabled(item))
+    return (
+      <box
+        flexDirection="row"
+        backgroundColor={active() ? theme.background.action.primary.focused : RGBA.fromInts(0, 0, 0, 0)}
+        onMouseUp={() => trigger(item)}
+      >
+        <text
+          fg={
+            disabled()
+              ? theme.text.action.primary.disabled
+              : active()
+                ? theme.text.action.primary.focused
+                : theme.text.base
+          }
+          attributes={active() ? TextAttributes.BOLD : undefined}
+        >
+          {item.title}
+        </text>
+        <text
+          fg={
+            disabled()
+              ? theme.text.action.primary.disabled
+              : active()
+                ? theme.text.action.primary.focused
+                : theme.text.muted
+          }
+        >
+          {" " + item.label}
+        </text>
+      </box>
+    )
+  }
+
+  return (
+    <box gap={1} paddingBottom={1} flexGrow={1}>
+      <box paddingLeft={4} paddingRight={4}>
+        <box flexDirection="row" justifyContent="space-between">
+          {props.titleView ?? (
+            <text fg={theme.text.base} attributes={TextAttributes.BOLD}>
+              {props.title}
+            </text>
+          )}
+          <text fg={theme.text.muted} onMouseUp={() => (props.onCancel ?? dialog.clear)()}>
+            esc
+          </text>
+        </box>
+        <Show when={props.renderFilter !== false}>
+          <box paddingTop={1}>
+            <input
+              onInput={(e) => {
+                if (props.locked) return
+                batch(() => {
+                  setStore("filter", e)
+                  props.onFilter?.(e)
+                })
+              }}
+              focusedBackgroundColor={theme.background.formfield.focused}
+              cursorColor={theme.text.formfield.focused}
+              cursorStyle={config.cursor}
+              focusedTextColor={theme.text.formfield.focused}
+              ref={(r) => {
+                input = r
+                input.traits = { status: "FILTER" }
+                setTimeout(() => {
+                  if (!input) return
+                  if (r.isDestroyed) return
+                  r.focus()
+                }, 1)
+              }}
+              placeholder={props.placeholder ?? "Search"}
+              placeholderColor={theme.text.muted}
+            />
+          </box>
+        </Show>
+      </box>
+      <box flexGrow={1} flexShrink={1}>
+        <Show
+          when={grouped().length > 0}
+          fallback={
+            <Show
+              when={props.renderFilter !== false && store.filter.length > 0}
+              fallback={
+                props.emptyView ?? (
+                  <box paddingLeft={4} paddingRight={4}>
+                    <text fg={theme.text.muted}>No items available</text>
+                  </box>
+                )
+              }
+            >
+              {props.noMatchView ?? (
+                <box paddingLeft={4} paddingRight={4}>
+                  <text fg={theme.text.muted}>No results found</text>
+                </box>
+              )}
+            </Show>
+          }
+        >
+          <scrollbox
+            paddingLeft={1}
+            paddingRight={1}
+            scrollbarOptions={{ visible: false }}
+            scrollAcceleration={scrollAcceleration()}
+            ref={(r: ScrollBoxRenderable) => (scroll = r)}
+            maxHeight={height()}
+          >
+            <For each={grouped()}>
+              {([category, options], index) => (
+                <>
+                  <Show when={category}>
+                    <box paddingTop={index() > 0 ? 1 : 0} paddingLeft={3}>
+                      <Show
+                        when={options[0]?.categoryView}
+                        fallback={
+                          <text fg={theme.hue.accent[200]} attributes={TextAttributes.BOLD}>
+                            {category}
+                          </text>
+                        }
+                      >
+                        {options[0]?.categoryView}
+                      </Show>
+                    </box>
+                  </Show>
+                  <For each={options}>
+                    {(option) => {
+                      const active = createMemo(() => !props.locked && isDeepEqual(option.value, selected()?.value))
+                      const current = createMemo(() => isDeepEqual(option.value, props.current))
+                      return (
+                        <box
+                          flexDirection="column"
+                          position="relative"
+                          onMouseMove={() => {
+                            if (props.locked) return
+                            setFocusedAction(undefined)
+                            const index = flat().findIndex((x) => isDeepEqual(x.value, option.value))
+                            if (index === -1 || index === store.selected) return
+                            moveTo(index)
+                          }}
+                          onMouseUp={() => {
+                            if (props.locked) return
+                            option.onSelect?.(dialog)
+                            props.onSelect?.(option)
+                          }}
+                          onMouseDown={() => {
+                            if (props.locked) return
+                            const index = flat().findIndex((x) => isDeepEqual(x.value, option.value))
+                            if (index === -1) return
+                            moveTo(index)
+                          }}
+                        >
+                          <box
+                            flexDirection="row"
+                            paddingLeft={current() || option.gutter ? 1 : 3}
+                            paddingRight={3}
+                            gap={1}
+                            backgroundColor={
+                              active()
+                                ? actionFocused()
+                                  ? theme.background.raised.high
+                                  : (option.bg ?? theme.background.action.primary.focused)
+                                : RGBA.fromInts(0, 0, 0, 0)
+                            }
+                          >
+                            <Show when={!current() && option.margin}>
+                              <box position="absolute" left={1} flexShrink={0}>
+                                {option.margin}
+                              </box>
+                            </Show>
+                            <Option
+                              title={option.title}
+                              titleView={option.titleView}
+                              footer={
+                                flatten() ? (option.searchFooter ?? option.category ?? option.footer) : option.footer
+                              }
+                              footerColor={option.footerColor}
+                              titleWidth={option.titleWidth}
+                              truncateTitle={option.truncateTitle}
+                              description={option.description !== category ? option.description : undefined}
+                              active={active()}
+                              current={current()}
+                              muted={actionFocused()}
+                              activeColor={option.fg}
+                              gutter={option.gutter}
+                            />
+                          </box>
+                          <For each={option.details}>
+                            {(detail) => (
+                              <box paddingLeft={3} paddingRight={3}>
+                                <text
+                                  fg={option.detailsColor ?? theme.text.muted}
+                                  wrapMode={option.detailsWrap ? "word" : "none"}
+                                >
+                                  {option.detailsWrap
+                                    ? detail
+                                    : Locale.truncateMiddle(detail, Math.max(1, Math.min(76, dimensions().width - 12)))}
+                                </text>
+                              </box>
+                            )}
+                          </For>
+                        </box>
+                      )
+                    }}
+                  </For>
+                </>
+              )}
+            </For>
+          </scrollbox>
+        </Show>
+      </box>
+      <Show when={props.footer || visibleActions().length} fallback={<box flexShrink={0} />}>
+        <box paddingRight={2} paddingLeft={4} flexDirection="row" justifyContent="space-between" flexShrink={0}>
+          <box flexDirection={dimensions().width < 60 ? "column" : "row"} gap={dimensions().width < 60 ? 0 : 2}>
+            {props.footer}
+            <For each={left()}>{(item) => <FooterAction item={item} />}</For>
+          </box>
+          <box flexDirection="row" gap={2}>
+            <For each={right()}>{(item) => <FooterAction item={item} />}</For>
+          </box>
+        </box>
+      </Show>
+    </box>
+  )
+}
+
+function Option(props: {
+  title: string
+  titleView?: JSX.Element
+  description?: string
+  active?: boolean
+  current?: boolean
+  muted?: boolean
+  footer?: JSX.Element | string
+  footerColor?: RGBA
+  titleWidth?: number
+  truncateTitle?: boolean | "left"
+  gutter?: (color: RGBA) => JSX.Element
+  activeColor?: RGBA
+  onMouseOver?: () => void
+}) {
+  const theme = useTheme().surface("dialog")
+  const text = createMemo(() => {
+    if (props.active && !props.muted) return props.activeColor ?? theme.text.action.primary.focused
+    if (props.muted && (props.active || props.current)) return theme.text.muted
+    if (props.current) return theme.text.formfield.selected
+    return theme.text.base
+  })
+
+  return (
+    <>
+      <Show when={props.current && !props.gutter}>
+        <text flexShrink={0} fg={text()} marginRight={0}>
+          ●
+        </text>
+      </Show>
+      <Show when={props.gutter}>
+        <box flexShrink={0} marginRight={0}>
+          {props.gutter?.(text())}
+        </box>
+      </Show>
+      <text
+        flexGrow={1}
+        fg={text()}
+        attributes={props.active && !props.muted ? TextAttributes.BOLD : undefined}
+        overflow="hidden"
+        wrapMode="none"
+        paddingLeft={3}
+      >
+        {props.titleView ??
+          (props.truncateTitle === false
+            ? props.title
+            : props.truncateTitle === "left"
+              ? Locale.truncateLeft(props.title, props.titleWidth ?? 61)
+              : Locale.truncate(props.title, props.titleWidth ?? 61))}
+        <Show when={props.description}>
+          <span style={{ fg: props.active && !props.muted ? text() : theme.text.muted }}>
+            {" " + props.description}
+          </span>
+        </Show>
+      </text>
+      <Show when={props.footer}>
+        <box flexShrink={0}>
+          <text
+            fg={
+              props.active && !props.muted
+                ? text()
+                : props.muted && (props.active || props.current)
+                  ? theme.text.muted
+                  : (props.footerColor ?? theme.text.muted)
+            }
+          >
+            {props.footer}
+          </text>
+        </box>
+      </Show>
+    </>
+  )
+}

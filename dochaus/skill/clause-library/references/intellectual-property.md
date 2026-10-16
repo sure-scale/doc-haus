@@ -1,9 +1,13 @@
 # Intellectual property
 
-US commercial-market reference points; verify against the matter's
-jurisdiction pack.
+**Topic:** Intellectual property — ownership, licenses, work product, feedback.
+**Contract type:** Services and subscription agreements; weighting differs by
+type as noted below.
+**Jurisdiction:** US commercial market; verify against the matter's
+jurisdiction pack (joint-ownership defaults differ by jurisdiction). Positions
+are firm-configurable defaults overridable via `.dochaus/profile.md`.
 
-## Balanced position
+## Preferred
 
 Each party retains its pre-existing IP and anything developed outside the
 engagement. In services deals, deliverables and work product are assigned to
@@ -25,38 +29,37 @@ right, title, and interest in Customer Data and grants Provider a license to
 process Customer Data solely to provide and support the Service.
 ```
 
-## Common one-sided variants
+**Off-market variants to watch.** Provider/licensor-favorable: provider owns
+all work product the customer paid for, with only a terminable license back;
+license to customer data or feedback "for any purpose," perpetual and
+irrevocable; assignment of customer-made improvements to the provider's IP.
+Customer/licensee-favorable: assignment of the provider's pre-existing or
+background IP, not just deliverables; "work made for hire plus assignment"
+sweeping in the provider's reusable tools; joint ownership demanded with no
+exploitation, accounting, or enforcement rules.
 
-**Tilted toward the provider/licensor:**
-- Provider owns all work product the customer paid for, with the customer
-  receiving only a terminable license.
-- License to customer data or feedback for "any purpose," perpetual and
-  irrevocable — far beyond operating the service.
-- Assignment of improvements to the provider's IP made by the customer.
+## Fallbacks (ordered)
 
-**Tilted toward the customer/licensee:**
-- Assignment of the provider's pre-existing or background IP, not just the
-  deliverables.
-- "Work made for hire plus assignment" language sweeping in generalized
-  know-how and tools the provider needs for other clients.
-- Joint ownership demanded without exploitation, accounting, or enforcement
-  rules — which creates disputes rather than resolving them.
+1. **Offer when** the provider reuses substantial components across clients:
+   deliverables licensed (perpetual, irrevocable, paid-up) instead of assigned.
+2. **Offer when** the provider wants product-feedback rights: feedback license
+   accepted if limited to product improvement and stripped of any claim to the
+   customer's underlying confidential information.
+3. **Offer when** the counterparty insists on shared ownership: joint ownership
+   accepted only with express terms — each owner may exploit without
+   accounting, neither may enforce or encumber without the other's consent
+   (note default joint-ownership rules differ by jurisdiction).
 
-## Fallback ladder
+## Walk-away floor
 
-1. Pre-existing IP retained; deliverables assigned on payment; background IP
-   licensed as incorporated; data licensed only to operate the service
-   (preferred).
-2. Deliverables licensed (perpetual, irrevocable, paid-up) instead of
-   assigned, where the provider reuses substantial components across clients.
-3. Feedback license accepted if limited to product improvement and stripped
-   of any claim to the customer's underlying confidential information.
-4. Joint ownership accepted only with express terms: each owner may exploit
-   without accounting, neither may enforce or encumber without the other's
-   consent — note that default joint-ownership rules differ by jurisdiction.
+Assignment of pre-existing or background IP, or an any-purpose perpetual data
+license.
 
-Below rung 4 — assignment of pre-existing IP or an any-purpose perpetual data
-license — escalate.
+## Escalation trigger
+
+At or below the floor, do not concede. Route to the **supervising lawyer** for
+the matter (or the `.dochaus/profile.md` Escalation Rules contact) before
+ceding ownership of background IP or paid-for work product.
 
 **Rationale:** IP clauses misallocate value silently; the ownership default
 for paid-for work and the scope of data/feedback licenses are the terms most

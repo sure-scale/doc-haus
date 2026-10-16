@@ -1,0 +1,49 @@
+.research-source-list {
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.research-source-list > summary {
+  cursor: pointer;
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.6;
+}
+
+.research-source-list > summary:focus-visible {
+  border-radius: var(--radius-sm);
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.research-source-list > .settings-hint {
+  margin: 12px 0;
+}
+
+.research-source-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.research-source-columns h4 {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.research-source-columns ul {
+  margin: 0;
+  padding-left: 16px;
+  font-size: 11.5px;
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 480px) {
+  .research-source-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

@@ -1,22 +1,43 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
-  "name": "@opencode-ai/server",
-  "version": "1.15.13",
-  "private": true,
+  "name": "@opencode/server",
+  "version": "2.0.19",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/anomalyco/opencode.git",
+    "directory": "packages/server"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist"
+  ],
   "exports": {
     "./*": "./src/*.ts"
   },
   "scripts": {
-    "typecheck": "tsgo --noEmit"
+    "build": "bun run script/build.ts",
+    "test": "bun test --only-failures",
+    "typecheck": "tsgo -b",
+    "probe:workerd": "bun run script/workerd-probe.ts"
   },
   "dependencies": {
-    "@opencode-ai/core": "workspace:*",
+    "@effect/platform-node": "catalog:",
+    "@effect/platform-node-shared": "catalog:",
+    "@opencode/core": "workspace:*",
+    "@opencode/protocol": "workspace:*",
+    "@opencode/schema": "workspace:*",
+    "@opencode/simulation": "workspace:*",
+    "@opencode/util": "workspace:*",
     "drizzle-orm": "catalog:",
     "effect": "catalog:"
   },
   "devDependencies": {
+    "@opencode/client": "workspace:*",
+    "@opencode/plugin": "workspace:*",
     "@tsconfig/bun": "catalog:",
     "@types/bun": "catalog:",
     "@typescript/native-preview": "catalog:"

@@ -1,34 +1,26 @@
-export * as PermissionSaved from "./saved"
+export * as PermissionSaved from "./saved.js"
 
 import { eq } from "drizzle-orm"
-import { Context, Effect, Layer, Schema } from "effect"
-import { Database } from "../database/database"
-import { ProjectV2 } from "../project"
-import { withStatics } from "../schema"
-import { Identifier } from "../util/identifier"
-import { PermissionTable } from "./sql"
+import { Context, DateTime, Effect, Layer, Schema } from "effect"
+import { Project } from "@opencode/schema/project"
+import { Database } from "../database/database.js"
+import { makeGlobalNode } from "@opencode/util/effect/app-node"
+import { PermissionTable } from "./sql.js"
+import { PermissionSaved } from "@opencode/schema/permission-saved"
 
-export const ID = Schema.String.pipe(
-  Schema.brand("PermissionSaved.ID"),
-  withStatics((schema) => ({ create: () => schema.make("psv_" + Identifier.ascending()) })),
-)
+export const ID = PermissionSaved.ID
 export type ID = typeof ID.Type
 
-export const Info = Schema.Struct({
-  id: ID,
-  projectID: ProjectV2.ID,
-  action: Schema.String,
-  resource: Schema.String,
-}).annotate({ identifier: "PermissionSaved.Info" })
+export const Info = PermissionSaved.Info
 export type Info = typeof Info.Type
 
 export const ListInput = Schema.Struct({
-  projectID: ProjectV2.ID.pipe(Schema.optional),
+  projectID: Project.ID.pipe(Schema.optional),
 }).annotate({ identifier: "PermissionSaved.ListInput" })
 export type ListInput = typeof ListInput.Type
 
 export const AddInput = Schema.Struct({
-  projectID: ProjectV2.ID,
+  projectID: Project.ID,
   action: Schema.String,
   resources: Schema.Array(Schema.String),
 }).annotate({ identifier: "PermissionSaved.AddInput" })
@@ -40,14 +32,14 @@ export interface Interface {
   readonly remove: (id: ID) => Effect.Effect<void>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/v2/PermissionSaved") {}
+export class Service extends Context.Service<Service, Interface>()("@opencode/PermissionSaved") {}
 
-export const layer = Layer.effect(
+const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
-    const { db } = yield* Database.Service
+    const db = (yield* Database.Service).db
 
-    const list = Effect.fn("PermissionSaved.list")(function* (input?: ListInput) {
+    const list = Effect.fnUntraced(function* (input?: ListInput) {
       const rows = yield* db
         .select()
         .from(PermissionTable)
@@ -55,7 +47,16 @@ export const layer = Layer.effect(
         .all()
         .pipe(Effect.orDie)
       return rows.map(
-        (row): Info => ({ id: row.id, projectID: row.project_id, action: row.action, resource: row.resource }),
+        (row): Info => ({
+          id: row.id,
+          projectID: row.project_id,
+          action: row.action,
+          resource: row.resource,
+          time: {
+            created: DateTime.makeUnsafe(row.time_created),
+            updated: DateTime.makeUnsafe(row.time_updated),
+          },
+        }),
       )
     })
 
@@ -84,4 +85,4 @@ export const layer = Layer.effect(
   }),
 )
 
-export const defaultLayer = layer.pipe(Layer.provide(Database.defaultLayer))
+export const node = makeGlobalNode({ service: Service, layer, deps: [Database.node] })

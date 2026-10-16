@@ -3,7 +3,7 @@
 //   bun templates/build.ts
 //
 // `_base.docx` is the seed every from-scratch draft starts from: an empty body
-// carrying the house style set (Title, Heading 1-3, List Paragraph), so markdown
+// carrying the house style set (Title, Heading 1-3, List Paragraph, Quote), so markdown
 // inserted by Docxodus lands as real Word styles. It is assembled from raw OOXML
 // parts zipped with the system `zip` (Docxodus can edit a .docx but not create
 // one from nothing). `demo/templates/nda.docx` is then drafted from that seed
@@ -20,6 +20,8 @@ import { mkdirSync, rmSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import path from "node:path"
 import { docxodus } from "../lib/docxodus"
+import { withParagraphPointers } from "../lib/drafting-amendment"
+import { splitBlocks } from "../lib/markdown"
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 
@@ -65,7 +67,7 @@ const STYLES = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
   <w:docDefaults>
     <w:rPrDefault><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/><w:sz w:val="22"/></w:rPr></w:rPrDefault>
-    <w:pPrDefault><w:pPr><w:spacing w:after="160" w:line="259" w:lineRule="auto"/></w:pPr></w:pPrDefault>
+    <w:pPrDefault><w:pPr><w:spacing w:after="200" w:line="276" w:lineRule="auto"/></w:pPr></w:pPrDefault>
   </w:docDefaults>
   <w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style>
   <w:style w:type="paragraph" w:styleId="Title">
@@ -75,22 +77,26 @@ const STYLES = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
   </w:style>
   <w:style w:type="paragraph" w:styleId="Heading1">
     <w:name w:val="heading 1"/><w:basedOn w:val="Normal"/>
-    <w:pPr><w:keepNext/><w:spacing w:before="240" w:after="80"/><w:outlineLvl w:val="0"/></w:pPr>
+    <w:pPr><w:keepNext/><w:spacing w:before="320" w:after="160"/><w:outlineLvl w:val="0"/></w:pPr>
     <w:rPr><w:b/><w:sz w:val="32"/></w:rPr>
   </w:style>
   <w:style w:type="paragraph" w:styleId="Heading2">
     <w:name w:val="heading 2"/><w:basedOn w:val="Normal"/>
-    <w:pPr><w:keepNext/><w:spacing w:before="160" w:after="80"/><w:outlineLvl w:val="1"/></w:pPr>
+    <w:pPr><w:keepNext/><w:spacing w:before="280" w:after="140"/><w:outlineLvl w:val="1"/></w:pPr>
     <w:rPr><w:b/><w:sz w:val="26"/></w:rPr>
   </w:style>
   <w:style w:type="paragraph" w:styleId="Heading3">
     <w:name w:val="heading 3"/><w:basedOn w:val="Normal"/>
-    <w:pPr><w:keepNext/><w:spacing w:before="160" w:after="80"/><w:outlineLvl w:val="2"/></w:pPr>
+    <w:pPr><w:keepNext/><w:spacing w:before="220" w:after="120"/><w:outlineLvl w:val="2"/></w:pPr>
     <w:rPr><w:b/><w:i/><w:sz w:val="24"/></w:rPr>
   </w:style>
   <w:style w:type="paragraph" w:styleId="ListParagraph">
     <w:name w:val="List Paragraph"/><w:basedOn w:val="Normal"/>
     <w:pPr><w:ind w:left="720"/><w:contextualSpacing/></w:pPr>
+  </w:style>
+  <w:style w:type="paragraph" w:styleId="Quote">
+    <w:name w:val="Quote"/><w:basedOn w:val="Normal"/>
+    <w:pPr><w:ind w:left="720" w:right="720"/></w:pPr>
   </w:style>
 </w:styles>`
 
@@ -165,11 +171,11 @@ console.log(`built ${base}`)
 const dx = await docxodus()
 const session = dx.openDocxSession(await Bun.file(base).bytes(), {})
 const seed = Object.keys(session.project().anchorIndex).find((id) => id.startsWith("p:"))!
-const inserted = session.insertParagraph(seed, "after", NDA_BODY)
+const inserted = session.insertParagraph(seed, "after", splitBlocks(NDA_BODY))
 if (!inserted.success) throw new Error(`nda insert failed: ${inserted.error?.message}`)
 session.deleteBlock(seed)
 const nda = path.join(here, "..", "..", "demo", "templates", "nda.docx")
 mkdirSync(path.dirname(nda), { recursive: true })
-await Bun.write(nda, session.save())
+await Bun.write(nda, withParagraphPointers(session.save()))
 session.close()
 console.log(`built ${nda}`)

@@ -1,9 +1,13 @@
 # Assignment and change of control
 
-US commercial-market reference points; verify against the matter's
-jurisdiction pack.
+**Topic:** Assignment and change of control — consent, deemed assignment,
+carve-outs.
+**Contract type:** All commercial agreements.
+**Jurisdiction:** US commercial market; verify against the matter's
+jurisdiction pack. Positions are firm-configurable defaults overridable via
+`.dochaus/profile.md`.
 
-## Balanced position
+## Preferred
 
 Neither party may assign without the other's consent, not to be unreasonably
 withheld, with mutual carve-outs permitting assignment without consent to an
@@ -22,39 +26,37 @@ direct competitor of the other party and agrees in writing to be bound by
 this Agreement. Any assignment in violation of this Section is void.
 ```
 
-## Common one-sided variants
+**Off-market variants to watch.** Blocking-party-favorable: consent withholdable
+in sole and absolute discretion with no affiliate or sale-of-business carve-out;
+deemed-assignment language treating any change of control (including internal
+reorganization or a new investor) as an assignment requiring consent — a hidden
+M&A blocker; a change-of-control termination right triggered for one party only.
+Assigning-party-favorable: one side assigns freely (including to competitors)
+while the other needs consent; carve-outs with no assumption requirement;
+assignment permitted without notice.
 
-**Tilted toward the non-assigning party (often the counterparty blocking
-exit):**
-- Consent withholdable in sole and absolute discretion, with no
-  affiliate or sale-of-business carve-out.
-- Deemed-assignment language treating any change of control — including an
-  internal reorganization or new investor — as an assignment requiring
-  consent, creating a hidden M&A blocker.
-- Termination right triggered by a change of control of one party only.
+## Fallbacks (ordered)
 
-**Tilted toward the assigning party:**
-- One side assigns freely (including to competitors of the other) while the
-  other needs consent.
-- Assignment carve-outs with no assumption requirement, leaving the
-  counterparty facing an assignee not bound by the agreement.
-- Assignment permitted without notice, so the counterparty cannot track who
-  holds its data and obligations.
+1. **Offer when** the counterparty fears assignment to a competitor: accept a
+   competitor exclusion on the carve-outs, defined narrowly (named competitors
+   or a tight definition), applied mutually.
+2. **Offer when** the counterparty wants visibility instead of a veto: accept a
+   change-of-control notice obligation (post-closing notice is market;
+   pre-closing can breach deal confidentiality) instead of a consent right.
+3. **Offer when** the counterparty insists on a CoC exit: accept a
+   change-of-control termination right only where it is mutual and limited to
+   acquisition by a direct competitor.
 
-## Fallback ladder
+## Walk-away floor
 
-1. Mutual consent-not-unreasonably-withheld with mutual affiliate and
-   sale-of-business carve-outs (preferred).
-2. Accept a competitor exclusion on the carve-outs, defined narrowly (named
-   competitors or a tight definition), applied mutually.
-3. Accept a change-of-control notice obligation (post-closing notice is
-   market; pre-closing notice can breach deal confidentiality) instead of a
-   consent right.
-4. Accept a change-of-control termination right only where it is mutual and
-   limited to acquisition by a direct competitor.
+Sole-discretion consent combined with deemed assignment on change of control —
+a term that can hold a future financing or sale hostage.
 
-Below rung 4 — sole-discretion consent plus deemed assignment on change of
-control — escalate; this term can hold a future financing or sale hostage.
+## Escalation trigger
+
+At or below the floor, do not concede. Route to the **supervising lawyer** for
+the matter (or the `.dochaus/profile.md` Escalation Rules contact), since this
+term bears directly on the client's exit and financing optionality.
 
 **Rationale:** Assignment clauses are priced at zero at signing and matter
 enormously at exit; the deemed-assignment and change-of-control language is

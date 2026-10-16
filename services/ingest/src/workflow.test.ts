@@ -7,9 +7,12 @@ import path from "node:path"
 const dir = mkdtempSync(path.join(tmpdir(), "dochaus-workflow-"))
 process.env.DOCHAUS_DIR = dir
 
-// Seed a hand-authored agent so collision tests have a real existing .md to hit.
+// Seed hand-authored subagents: validate() only accepts step agents that
+// listAgents() reports as enabled, and collision tests need a real existing .md.
+const handAuthored = '---\ndescription: "Hand-authored reviewer"\nmode: subagent\n---\n\n# hand-authored'
 mkdirSync(path.join(dir, "agent"), { recursive: true })
-writeFileSync(path.join(dir, "agent", "legal-reviewer.md"), "# hand-authored")
+writeFileSync(path.join(dir, "agent", "legal-reviewer.md"), handAuthored)
+writeFileSync(path.join(dir, "agent", "summarizer.md"), '---\ndescription: "Summarizes"\nmode: subagent\n---\n\nSummarize.')
 
 const wf = await import("./workflow")
 
@@ -101,7 +104,8 @@ test("renderAgentMarkdown: output sections per step plus bottom line", () => {
   expect(md).toContain("**Legal Reviewer**")
   expect(md).toContain("**Summarizer**")
   expect(md).toContain("**Bottom line**")
-  expect(md).toContain("No edge case handling, ever.")
+  // The cross-pasted engineering mantra was deliberately removed from render output.
+  expect(md).not.toContain("No edge case handling")
 })
 
 // --- create / update / delete round-trip ---
@@ -165,7 +169,7 @@ test("collision: existing .md file (hand-authored legal-reviewer)", () => {
   ).toThrow()
   // The hand-authored file must survive
   expect(existsSync(path.join(dir, "agent", "legal-reviewer.md"))).toBe(true)
-  expect(readFileSync(path.join(dir, "agent", "legal-reviewer.md"), "utf8")).toBe("# hand-authored")
+  expect(readFileSync(path.join(dir, "agent", "legal-reviewer.md"), "utf8")).toBe(handAuthored)
 })
 
 test("collision: name already in registry", () => {
@@ -223,7 +227,7 @@ test("step agent with invalid name → 400-mapped error", () => {
 test("delete of name not in registry throws, hand-authored .md untouched", () => {
   expect(() => wf.deleteWorkflow("legal-reviewer")).toThrow()
   expect(existsSync(path.join(dir, "agent", "legal-reviewer.md"))).toBe(true)
-  expect(readFileSync(path.join(dir, "agent", "legal-reviewer.md"), "utf8")).toBe("# hand-authored")
+  expect(readFileSync(path.join(dir, "agent", "legal-reviewer.md"), "utf8")).toBe(handAuthored)
 })
 
 test("updateWorkflow throws 404 for unknown name", () => {

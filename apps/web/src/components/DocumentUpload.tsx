@@ -1,33 +1,67 @@
 import { useEffect, useRef, useState } from "react"
-import { deleteDocument, uploadDocument, type Document } from "../api/ingest"
+import { deleteDocument, uploadDocument, type Document } from "../api/ingest/documents"
+import { humanizeError } from "../api/ingest/errors"
+import type { LeanDraftingStatus } from "../api/ingest/lean"
+import { formatDate, formatDateTime, formatTime } from "../lib/format"
+import DocumentLabelBadge from "./DocumentLabel"
+import DraftedList from "./drafting/DraftedList"
+import { deliverableGroups } from "./drafting/model"
+import Dropzone from "./Dropzone"
 import { useToast } from "./Toast"
 
-// The matter's documents, as a collapsible right rail beside the chat. Chat is
-// the primary surface, so documents sit out of its way: expanded the rail shows
-// the indexed list plus a dropzone; collapsed it shrinks to a thin tab carrying
-// the document count, reclaiming the width for the conversation.
+// One row per file the lawyer added in this session, so a slow or failed upload
+// is visible next to its name instead of hiding behind a single spinner.
+type Upload = {
+  key: number
+  file: File
+  status: "queued" | "uploading" | "reading" | "ready" | "failed"
+  error?: string
+  // A wrong file type cannot succeed on retry, so the row offers Remove only.
+  retryable?: boolean
+}
+
+const ACCEPTED = /\.(docx|pdf)$/i
+const READY_LINGER_MS = 3000
+
+// A newest-first document timeline with grouped deliverables and a persistent
+// upload footer. The scrolling timeline also accepts dropped files.
 export default function DocumentUpload({
   matterId,
   documents,
   onUploaded,
   onView,
-  collapsed,
-  onToggle,
+  drafting,
+  onClose,
+  incoming,
+  onIncoming,
 }: {
   matterId: string
   documents: Document[]
   onUploaded: () => void
   onView: (name: string) => void
-  // Rail mode (chat surface) is collapsible; the Documents surface omits these
-  // and renders the full-width manager with no collapse affordance.
-  collapsed?: boolean
-  onToggle?: () => void
+  drafting?: LeanDraftingStatus
+  onClose?: () => void
+  // Files added elsewhere (dropped on the composer) to upload through this list.
+  incoming?: File[]
+  onIncoming?: () => void
 }) {
-  const input = useRef<HTMLInputElement>(null)
-  const [busy, setBusy] = useState(false)
-  const [dragging, setDragging] = useState(false)
+  const [uploads, setUploads] = useState<Upload[]>([])
+  const [removing, setRemoving] = useState<string>()
   const [confirmId, setConfirmId] = useState<number | null>(null)
+  const nextKey = useRef(0)
+  const watched = useRef(false)
+  // Uploads run one at a time so a batch does not swamp the reader.
+  const queue = useRef(Promise.resolve())
   const toast = useToast()
+  // StrictMode re-runs effects on mount; the ref keeps one batch from uploading twice.
+  const taken = useRef<File[]>(undefined)
+
+  useEffect(() => {
+    if (!incoming?.length || taken.current === incoming) return
+    taken.current = incoming
+    onFiles(incoming)
+    onIncoming?.()
+  }, [incoming])
 
   useEffect(() => {
     if (!confirmId) return
@@ -36,10 +70,20 @@ export default function DocumentUpload({
     return () => window.removeEventListener("click", dismiss)
   }, [confirmId])
 
-  async function onFiles(files: File[]) {
-    setBusy(true)
-    for (const file of files) {
-      const result = await uploadDocument(matterId, file)
+  function update(key: number, patch: Partial<Upload>) {
+    setUploads((prev) => prev.map((u) => (u.key === key ? { ...u, ...patch } : u)))
+  }
+
+  function enqueue(upload: Upload) {
+    queue.current = queue.current.then(() => run(upload))
+  }
+
+  async function run(upload: Upload) {
+    update(upload.key, { status: "uploading", error: undefined })
+    try {
+      const result = await uploadDocument(matterId, upload.file, () => update(upload.key, { status: "reading" }))
+      update(upload.key, { status: "ready" })
+      setTimeout(() => setUploads((prev) => prev.filter((u) => u.key !== upload.key)), READY_LINGER_MS)
       onUploaded()
       // A flagged upload is a finding the lawyer needs to see, not a failure: the
       // document is indexed, the assistant treats the flagged text as untrusted,
@@ -47,127 +91,245 @@ export default function DocumentUpload({
       if (result.injection) {
         toast(
           "warning",
-          `Indexed ${result.name} with warnings — possible prompt injection: ${[
+          `${result.name} is ready, with a warning — possible prompt injection: ${[
             ...new Set(result.injection.findings.map((f) => f.detail)),
           ].join("; ")}. The assistant will treat this content as untrusted.`,
         )
-        continue
+        return
       }
-      toast("success", `Indexed ${result.name}: ${result.sections} sections, ${result.chunks} chunks.`)
+      toast("success", `${result.name} is ready (${result.sections} section${result.sections === 1 ? "" : "s"}).`)
+    } catch (e) {
+      update(upload.key, { status: "failed", error: humanizeError(e, `Could not read ${upload.file.name}.`), retryable: true })
     }
-    setBusy(false)
+  }
+
+  function onFiles(files: File[]) {
+    const added = files.map((file): Upload => {
+      const key = nextKey.current++
+      if (ACCEPTED.test(file.name)) return { key, file, status: "queued" }
+      return { key, file, status: "failed", error: "Only Word (.docx) and PDF files can be added." }
+    })
+    setUploads((prev) => [...prev, ...added])
+    added.filter((u) => u.status === "queued").forEach(enqueue)
   }
 
   async function onRemove(name: string) {
     setConfirmId(null)
-    setBusy(true)
-    await deleteDocument(matterId, name)
-    setBusy(false)
-    onUploaded()
-    toast("success", `Removed ${name}.`)
+    setRemoving(name)
+    try {
+      await deleteDocument(matterId, name)
+      onUploaded()
+      toast("success", `Removed ${name}.`)
+    } catch (e) {
+      toast("error", humanizeError(e, `Could not remove ${name}.`))
+    } finally {
+      setRemoving(undefined)
+    }
   }
 
+  if (drafting && drafting.status !== "completed") watched.current = true
+  const sources = documents.filter((d) => d.role !== "deliverable")
+  const generated = documents.filter((d) => d.role === "deliverable")
+  const drafted = deliverableGroups(
+    generated.map((d) => d.name),
+    drafting,
+  )
   const pending = documents.reduce((n, d) => n + (d.pending ?? 0), 0)
+  const draftedPending = new Map(generated.filter((d) => d.pending).map((d) => [d.name, d.pending!]))
+  const working = uploads.filter((u) => u.status === "queued" || u.status === "uploading" || u.status === "reading").length
 
-  if (collapsed) {
-    return (
-      <button className="docs-tab" onClick={onToggle} title={pending ? `${pending} pending changes to review` : "Show documents"}>
-        <IconDocs />
-        <span className="docs-tab-count">{documents.length}</span>
-        <span className="docs-tab-label">Documents</span>
-        {pending > 0 && <span className="redline-badge">{pending}</span>}
-      </button>
-    )
-  }
-
-  return (
-    <aside className={onToggle ? "card docs-rail" : "card docs-surface"}>
-      <div className="docs-rail-head">
-        <h2>Documents</h2>
-        {onToggle && (
-          <button className="icon-btn" onClick={onToggle} title="Hide documents">
-            <IconChevron />
+  const timeline = [
+    ...drafted.flatMap((group) => [group.main, ...group.extras]).map((output) => {
+      const document = generated.find((document) => document.name === output.name)!
+      return {
+        key: `draft:${output.name}`,
+        createdAt: document.created_at,
+        content: <DraftedList matterId={matterId} groups={[{ main: output, extras: [] }]} onView={onView} pending={draftedPending} fresh={watched.current}
+          renderLabel={() => <>
+            <time className="document-time" dateTime={new Date(document.created_at).toISOString()} title={`Saved to matter: ${formatDateTime(document.created_at)}`}>
+              {formatTime(document.created_at)}
+            </time>
+            <DocumentLabelBadge matterId={matterId} name={output.name}
+              label={document.label ?? output.role} onChanged={onUploaded} />
+          </>} />,
+      }
+    }),
+    ...sources.map((d) => ({
+      key: `source:${d.id}`,
+      createdAt: d.created_at,
+      content: (
+      <div className="doc-row is-uploaded">
+        <div className="doc-row-main">
+          <span className={`doc-type is-${d.name.toLowerCase().endsWith(".pdf") ? "pdf" : "docx"}`} aria-hidden>
+            <IconFile />
+          </span>
+          <button className="linklike" onClick={() => onView(d.name)}>
+            {d.name}
           </button>
-        )}
+          {d.pending ? (
+            <span className="redline-badge" title={`${d.pending} pending change${d.pending === 1 ? "" : "s"} to review`}>
+              {d.pending}
+            </span>
+          ) : null}
+        </div>
+        <div className="doc-row-meta">
+          <span className="document-origin">Uploaded</span>
+          <time className="document-time" dateTime={new Date(d.created_at).toISOString()} title={`Added to matter: ${formatDateTime(d.created_at)}`}>
+            {formatTime(d.created_at)}
+          </time>
+          {confirmId === d.id ? (
+            <button
+              className="icon-btn danger"
+              title={`Remove ${d.name} — indexed text is deleted and answers can no longer cite it`}
+              onClick={(e) => {
+                e.stopPropagation()
+                onRemove(d.name)
+              }}
+            >
+              Confirm
+            </button>
+          ) : (
+            <button
+              className="doc-remove"
+              onClick={(e) => {
+                e.stopPropagation()
+                setConfirmId(d.id)
+              }}
+              title={`Remove ${d.name}`}
+              aria-label={`Remove ${d.name}`}
+              disabled={removing === d.name}
+            >
+              <IconTrash />
+            </button>
+          )}
+        </div>
       </div>
-      {documents.length === 0 ? (
-        <div className="empty-inline">No documents indexed yet.</div>
-      ) : (
-        <ul className="matter-list">
-          {documents.map((d) => (
-            <li key={d.id} className="doc-row">
-              <div className="doc-row-main">
-                <button className="linklike" onClick={() => onView(d.name)}>
-                  {d.name}
-                </button>
-                {d.pending ? (
-                  <span className="redline-badge" title={`${d.pending} pending change${d.pending === 1 ? "" : "s"} to review`}>
-                    {d.pending}
-                  </span>
-                ) : null}
-              </div>
-              <div className="doc-row-meta">
-                <span className="muted">{new Date(d.created_at).toLocaleDateString()}</span>
-                {confirmId === d.id ? (
-                  <button
-                    className="icon-btn danger"
-                    title={`Remove ${d.name} — indexed text is deleted and answers can no longer cite it`}
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      onRemove(d.name)
-                    }}
-                  >
-                    Confirm
-                  </button>
-                ) : (
-                  <button
-                    className="doc-remove"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      setConfirmId(d.id)
-                    }}
-                    title={`Remove ${d.name}`}
-                    disabled={busy}
-                  >
-                    <IconTrash />
-                  </button>
-                )}
-              </div>
-            </li>
+      ),
+    })),
+  ].sort((a, b) => b.createdAt - a.createdAt || a.key.localeCompare(b.key))
+
+  const days = [...new Set(timeline.map((entry) => formatDate(entry.createdAt)))].map((date) => ({
+    date,
+    entries: timeline.filter((entry) => formatDate(entry.createdAt) === date),
+  }))
+
+  const files = (
+    <div className="matter-files-collection">
+      {uploads.length > 0 && (
+        <ul className="matter-list uploaded-files" aria-label="Uploads">
+          {uploads.map((u) => (
+            <UploadRow
+              key={u.key}
+              upload={u}
+              onRetry={() => {
+                update(u.key, { status: "queued", error: undefined })
+                enqueue(u)
+              }}
+              onDismiss={() => setUploads((prev) => prev.filter((x) => x.key !== u.key))}
+            />
           ))}
         </ul>
       )}
-      <div
-        className={`dropzone${dragging ? " dragover" : ""}`}
-        style={{ marginTop: 12 }}
-        onClick={() => input.current?.click()}
-        onDragOver={(e) => {
-          e.preventDefault()
-          setDragging(true)
-        }}
-        onDragLeave={() => setDragging(false)}
-        onDrop={(e) => {
-          e.preventDefault()
-          setDragging(false)
-          const files = Array.from(e.dataTransfer.files)
-          if (files.length) onFiles(files)
-        }}
-      >
-        {busy ? "Working..." : "Drop .docx or .pdf documents here (scans OK), or click to choose files."}
+      {documents.length === 0 && uploads.length === 0 && (
+        <div className="rail-empty">
+          <IconDocs />
+          <strong>No documents yet</strong>
+          <span>Upload the matter's documents to read, cite and mark them up here.</span>
+        </div>
+      )}
+      {timeline.length > 0 && (
+        <>
+          <p className="docs-timeline-label">Newest first</p>
+          <ol className="docs-timeline" aria-label="Document timeline, newest first">
+            {days.map((day) => (
+              <li key={day.date} className="docs-timeline-entry">
+                <h3 className="docs-timeline-date">{day.date}</h3>
+                <ol className="docs-timeline-files">
+                  {day.entries.map((entry) => <li key={entry.key}>{entry.content}</li>)}
+                </ol>
+              </li>
+            ))}
+          </ol>
+        </>
+      )}
+    </div>
+  )
+
+  const badge = pending > 0 && (
+    <span className="redline-badge" title={`${pending} pending change${pending === 1 ? "" : "s"} to review`}>
+      {pending}
+    </span>
+  )
+
+  return (
+    <section className="docs-drawer-panel" aria-labelledby="docs-drawer-title">
+      <div className="docs-drawer-head">
+        <h2 id="docs-drawer-title">
+          Documents <span className="matter-files-count">{documents.length}</span>
+        </h2>
+        {badge}
+        {onClose && (
+          <button type="button" className="sidebar-icon-button docs-drawer-close" onClick={onClose} title="Close (Esc)" aria-label="Close documents">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" aria-hidden>
+              <path d="M18 6 6 18M6 6l12 12" />
+            </svg>
+          </button>
+        )}
       </div>
-      <input
-        ref={input}
-        type="file"
-        accept=".docx,.pdf"
-        multiple
-        hidden
-        onChange={(e) => {
-          const files = Array.from(e.target.files ?? [])
-          if (files.length) onFiles(files)
-          e.target.value = ""
-        }}
-      />
-    </aside>
+      <div className="docs-drawer-body" tabIndex={0} role="region" aria-label="Documents" onDragOver={(event) => event.preventDefault()} onDrop={(event) => {
+        event.preventDefault()
+        const added = Array.from(event.dataTransfer.files)
+        if (added.length) onFiles(added)
+      }}>
+        {files}
+      </div>
+      <footer className="docs-drawer-footer">
+        <Dropzone
+          accept=".docx,.pdf"
+          busy={working > 0}
+          compact
+          onFiles={onFiles}
+          title={working > 0 ? `Uploading ${working} document${working === 1 ? "" : "s"}…` : "Upload documents"}
+        />
+        <p>Drop Word or PDF files here, or click to browse.</p>
+      </footer>
+    </section>
+  )
+}
+
+const UPLOAD_LABEL: Record<Upload["status"], string> = {
+  queued: "Waiting…",
+  uploading: "Uploading…",
+  reading: "Reading the document…",
+  ready: "Ready",
+  failed: "Not added",
+}
+
+function UploadRow({ upload, onRetry, onDismiss }: { upload: Upload; onRetry: () => void; onDismiss: () => void }) {
+  return (
+    <li className={`doc-row upload-row is-${upload.status}`} aria-live="polite">
+      <div className="doc-row-main">
+        <span className="upload-icon" aria-hidden>
+          {upload.status === "failed" ? <IconAlert /> : upload.status === "ready" ? <IconCheck /> : <span className="upload-spinner" />}
+        </span>
+        <span className="upload-name">{upload.file.name}</span>
+      </div>
+      <div className="doc-row-meta">
+        <span className="upload-status">{upload.error ?? UPLOAD_LABEL[upload.status]}</span>
+        {upload.status === "failed" && (
+          <span className="upload-actions">
+            {upload.retryable && (
+              <button type="button" className="icon-btn" onClick={onRetry}>
+                Retry
+              </button>
+            )}
+            <button type="button" className="icon-btn" onClick={onDismiss}>
+              Remove
+            </button>
+          </span>
+        )}
+      </div>
+    </li>
   )
 }
 
@@ -180,10 +342,29 @@ function IconDocs() {
   )
 }
 
-function IconChevron() {
+function IconFile() {
   return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-      <polyline points="9 18 15 12 9 6" />
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <polyline points="14 2 14 8 20 8" />
+    </svg>
+  )
+}
+
+function IconCheck() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="20 6 9 17 4 12" />
+    </svg>
+  )
+}
+
+function IconAlert() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="9" />
+      <line x1="12" y1="8" x2="12" y2="12.5" />
+      <line x1="12" y1="16" x2="12" y2="16" />
     </svg>
   )
 }
