@@ -4,6 +4,7 @@ import { createHash, randomUUID } from "node:crypto"
 import { withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
 import { createDocxRevision, createDocxLocalization, applyDocxLocalization } from "../../../dochaus/lib/docx-amendments"
 import { workingDocxKey, readWorkingDocx } from "../../../dochaus/lib/working-docx"
+import { paragraphTargets, resolveParagraphTarget } from "../../../dochaus/lib/drafting-amendment"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
 import { resolveMatterDocumentTarget } from "./document-identity"
 import { getDocumentRole, getMeta, openDb, setMeta } from "./db"
@@ -128,6 +129,20 @@ async function prepare(directory:string,name:string,instructions:string,diagnost
   diagnostic.record("batch_qualification")
   const admitted = await createDocxLocalization(initial.bytes,resolved.map((value) => value.amendment))
   await applyDocxLocalization(initial.bytes,admitted,resolved.map((value) => value.selection))
+  // A selection in a body paragraph with exactly one pointer binds to that
+  // paragraph's exact text, so accepting a change elsewhere leaves it valid.
+  // Any other target keeps the whole-revision binding.
+  const targets = await paragraphTargets(initial.bytes)
+  const bindings = resolved.map(({amendment,selection}) => {
+    const candidates = admitted.candidates.filter((candidate) => candidate.amendment_id === amendment.id)
+    const chosen = candidates.find((candidate) => candidate.target_handle === selection.target_handle)!
+    const handle = chosen.paragraph.paragraph_handle
+    const target = targets.find((row) => row.paragraph_handle === handle)
+    return target?.pid && resolveParagraphTarget(targets,target.pid) === target
+      ? {version:2,amendment_id:amendment.id,pid:target.pid,paragraph_sha256:target.sha256,
+        occurrence:candidates.filter((candidate) => candidate.paragraph.paragraph_handle === handle).indexOf(chosen),base_sha256:revision.source_sha256}
+      : {version:1,source_sha256:revision.source_sha256,amendment_id:amendment.id,target_handle:selection.target_handle}
+  })
   diagnostic.record("proposal_persistence")
   const ids = await withArtifactMutationLocksAsync(directory,[name],async () => {
     const target = resolveMatterDocumentTarget(directory,name)
@@ -138,10 +153,10 @@ async function prepare(directory:string,name:string,instructions:string,diagnost
       if (getDocumentRole(db,target.docPath) !== "deliverable")
         throw new DocumentAmendmentConflictError("The document's registered role changed while preparing changes.")
       const author = draftingAttribution().author
-      return db.transaction(() => resolved.map(({row,amendment,selection}) => {
+      return db.transaction(() => resolved.map(({row},index) => {
         return Number(db.run("INSERT INTO redlines (doc_path,doc_name,scope,find_text,old_text,new_text,author,review_comment,anchor_id,target_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",[
           target.docPath,target.name,"phrase",row.before_quote,row.before_quote,row.replacement,author,row.reason,null,
-          JSON.stringify({version:1,source_sha256:revision.source_sha256,amendment_id:amendment.id,target_handle:selection.target_handle}),Date.now(),
+          JSON.stringify(bindings[index]),Date.now(),
         ]).lastInsertRowid)
       })).immediate()
     } finally {db.close()}

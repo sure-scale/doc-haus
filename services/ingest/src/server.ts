@@ -37,7 +37,7 @@ import {
 import { EmbeddingModelUnavailableError, migrateEmbeddings } from "./embed"
 import { migrateStructure } from "./structure"
 import { pdfToDocx } from "./convert"
-import { buildRedlined, bake, redlineStaleReason, RedlinePreviewConflictError } from "./redline"
+import { buildRedlined, bake, redlineState, redlineStaleReason, RedlinePreviewConflictError } from "./redline"
 import { listMatters, createMatter, getMatter, renameMatter, deleteMatter, recordConflicts, matterDir, listJurisdictions, listPlaybooks, updatePlaybook, deletePlaybook, PlaybookError, WORKSPACE_ROOT, type Conflicts } from "./matter"
 import { listTemplates, templatePath, setTemplateDescription, removeTemplateDescription, TEMPLATES_DIR } from "./template"
 import { listWorkflows, createWorkflow, updateWorkflow, deleteWorkflow, NAME_RE, WORKFLOWS_DIR } from "./workflow"
@@ -798,10 +798,11 @@ app.get("/matters/:id/redlines", async (c) => {
     if (!target) return c.json([])
     const db = openDb(dir)
     try {
-      const current = createHash("sha256").update(await Bun.file(target.docPath).bytes()).digest("hex")
+      const rows = listPendingRedlines(db, target.docPath)
+      const state = await redlineState(await Bun.file(target.docPath).bytes(),rows)
       const protectedWord = Boolean(readWorkingDocx(dir,target.docPath))
-      return c.json(listPendingRedlines(db, target.docPath).map((row) => {
-        const stale_reason = redlineStaleReason(row,current,protectedWord)
+      return c.json(rows.map((row) => {
+        const stale_reason = redlineStaleReason(row,state,protectedWord)
         return {...row,...(stale_reason ? {stale:true,stale_reason} : {})}
       }))
     } finally {
@@ -824,17 +825,18 @@ app.get("/matters/:id/documents/redlined", async (c) => {
     const target = readDocumentTarget(dir, name)
     if (!target || !existsSync(target.docPath)) return c.notFound()
     const original = await Bun.file(target.docPath).bytes()
-    const current = createHash("sha256").update(original).digest("hex")
     const protectedWord = Boolean(readWorkingDocx(dir, target.docPath))
     const db = existsSync(path.join(dir, ".dochaus", "legal.db")) ? openDb(dir) : undefined
-    const rows = (() => {
+    const pending = (() => {
       if (!db) return []
       try {
-        return listPendingRedlines(db, target.docPath).filter((row) => !redlineStaleReason(row, current, protectedWord))
+        return listPendingRedlines(db, target.docPath)
       } finally {
         db.close()
       }
     })()
+    const state = await redlineState(original, pending)
+    const rows = pending.filter((row) => !redlineStaleReason(row, state, protectedWord))
     try {
       const bytes = await buildRedlined(original, rows)
       return new Response(new Uint8Array(bytes), {
@@ -868,7 +870,7 @@ app.post("/matters/:id/redlines/:rid/accept", async (c) => {
       const original = await Bun.file(current.doc_path).bytes()
       const prior = createHash("sha256").update(original).digest("hex")
       const working = readWorkingDocx(dir,current.doc_path)
-      const stale = redlineStaleReason(current,prior,Boolean(working))
+      const stale = redlineStaleReason(current,await redlineState(original,[current]),Boolean(working))
       if (stale || working && working.source_sha256 !== prior) return c.json({error:stale ?? "The working Word revision is inconsistent. Refresh it through the revision API."},409)
       const baked = await bake(original,[current])
       await writeDocumentRevision(dir,current.doc_name,Buffer.from(baked),[current.id],prior,current.target_json != null)
@@ -919,7 +921,8 @@ app.post("/matters/:id/redlines/accept-all", async (c) => {
       const original = await Bun.file(file).bytes()
       const prior = createHash("sha256").update(original).digest("hex")
       const working = readWorkingDocx(dir,file)
-      const stale = rows.map((row) => redlineStaleReason(row,prior,Boolean(working))).find(Boolean)
+      const state = await redlineState(original,rows)
+      const stale = rows.map((row) => redlineStaleReason(row,state,Boolean(working))).find(Boolean)
       if (stale || working && working.source_sha256 !== prior) return c.json({error:stale ?? "The working Word revision is inconsistent. Refresh it through the revision API."},409)
       await writeDocumentRevision(dir,name,Buffer.from(await bake(original,rows)),rows.map((row) => row.id),prior,rows.some((row) => row.target_json != null))
       return c.json({ok:true,accepted:rows.length})

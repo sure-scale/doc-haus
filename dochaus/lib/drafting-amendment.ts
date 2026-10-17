@@ -70,6 +70,34 @@ export function paragraphPointers(node: Element) {
     })
 }
 
+// Review-proposal identity of each body paragraph in this exact revision: its
+// single well-formed pointer (null when it has none or several), every pointer it
+// carries, its projection ordinal and handle, and the sha256 of its exact text.
+// Unlike paragraphSha256 the text is not normalized: this is the per-paragraph
+// content check at apply. Header, footer and note paragraphs carry no pointer.
+export async function paragraphTargets(bytes: Uint8Array) {
+  const opened = await openRevision(new Uint8Array(bytes))
+  try {
+    return opened.paragraphs.flatMap((paragraph, ordinal) => {
+      if (paragraph.part !== BODY) return []
+      const view = opened.revision.paragraphs[ordinal]!
+      const pids = paragraphPointers(paragraph.node).map(row => row.pid)
+      return [{ pid: pids.length === 1 && PID.test(pids[0]!) ? pids[0]! : null, pids, ordinal,
+        paragraph_handle: view.paragraph_handle, sha256: createHash("sha256").update(view.text).digest("hex") }]
+    })
+  } finally {
+    opened.session.close()
+  }
+}
+export type ParagraphTarget = Awaited<ReturnType<typeof paragraphTargets>>[number]
+
+// The one body paragraph a pointer still names: none when the pointer is
+// missing, repeated on another paragraph or one of several on its paragraph.
+export function resolveParagraphTarget(targets: ParagraphTarget[], pid: string) {
+  const matches = targets.filter(target => target.pids.includes(pid))
+  return matches.length === 1 && matches[0]!.pid === pid ? matches[0] : undefined
+}
+
 // Gives every non-empty body paragraph exactly one invisible bookmark pointer.
 // Existing pointers are kept; a pointer seen on an earlier paragraph (copied or
 // split paragraphs) or a second pointer on one paragraph is replaced. The file
