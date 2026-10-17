@@ -366,7 +366,8 @@ async function reconcilePackageReview(directory: string, state: LeanState, deps:
   // accepted operative/research repair context or changing its generation key.
   if (prior && findings.every(item => item.ref.repair_target === "memo"))
     writeLeanText(directory, "repairs.json", `${JSON.stringify({ ...prior,
-      items: [...prior.items.filter(item => item.ref.repair_target !== "memo"), ...findings],
+      // A checklist notes repair stays required beside the new review findings.
+      items: [...prior.items.filter(item => item.stage !== "package-review" || item.ref.repair_target !== "memo"), ...findings],
       substantive_attempts: (prior.substantive_attempts ?? 0) + 1,
     }, null, 2)}\n`)
   else startRepairRound(directory, findings, true)

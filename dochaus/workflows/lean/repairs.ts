@@ -213,6 +213,15 @@ export function checklistRepairItems(directory: string, skip: (item_id: string, 
     if (!parsed.success || parsed.data.item_id !== record.id || checklistFindingRecovery(record.item, parsed.data) !== "repair") return []
     if (!["operative", "advice"].includes(record.item.target.treatment)) return []
     const matches = plan.documents.filter(document => document.id === record.item.target.document || document.file === record.item.target.document)
+    // The run-wide drafting notes have no editing stages: their omission is a
+    // required repair for the notes writer, like the package review's notes findings.
+    if (!matches.length && ["notes", plan.notes_file ?? "drafting-notes.docx"].includes(record.item.target.document)) {
+      if (!existsSync(leanFile(directory, "drafting-notes.md")) || skip(record.id, record.item)) return []
+      return [openItem("checklist-check", "omission", [
+        "Reassess this focused checklist assessment of the drafting notes against actual sources, qualifications and the current notes; its adverse verdict is not authority or an instruction to force a change. Address a supported omission in the notes and record what remains unsupported as uncertain. Do not invent approval, facts or advice from the verdict.",
+        JSON.stringify({ item_id: record.id, item: record.item, finding: parsed.data, current_artifact: ".dochaus/lean/drafting-notes.md" }),
+      ].join("\n"), { repair_target: "memo" })]
+    }
     if (matches.length !== 1) return []
     const document = matches[0]!, finding = parsed.data
     const file = [`${document.id}/body-applied.docx`, `${document.id}/body.docx`].find(file => existsSync(leanFile(directory, file)))

@@ -12,7 +12,7 @@ import { readLeanDocuments } from "./deliverables"
 import { enqueueLeanRequest } from "./requests"
 import { CHECKLIST_JOB_AGENTS } from "./checklist-job"
 import { readRepairRound } from "./repairs"
-import { AGENT, cleanupMatters, happyPath, matter, registering, scriptedModel, drafter, pidOf, DRAFT, SOURCE, SUPPORT } from "./test-support"
+import { AGENT, cleanupMatters, happyPath, matter, registering, scriptedModel, drafter, draftingNotes, pidOf, DRAFT, SOURCE, SUPPORT } from "./test-support"
 import { checklistTextMeasuresMeaning, type ChecklistCheckerInput, type ChecklistProducerInput } from "./checklist-contract"
 
 afterEach(cleanupMatters)
@@ -29,13 +29,23 @@ const deferChecklistRepair = (text: string) => JSON.stringify({ shared_decisions
 // `departure` cites current draft text as a deliberate departure.
 // `review` has the first change review after the checklist round require one
 // body correction, so a change-review round replaces the checklist round.
-function model(directory: string, status: "satisfied" | "open" | "unsatisfied" | "indeterminate" = "satisfied", extra: { open_decisions?: string[]; indeterminate_cause?: "missing_inspection" | "not_inspectable" } = {}, options: { broken?: boolean; second?: boolean; pair?: boolean; departure?: boolean; review?: boolean } = {}) {
+// `notes` targets the requirement at the drafting notes as advice.
+// `notesReview` has the first package review after the checklist round require
+// one notes correction.
+function model(directory: string, status: "satisfied" | "open" | "unsatisfied" | "indeterminate" = "satisfied", extra: { open_decisions?: string[]; indeterminate_cause?: "missing_inspection" | "not_inspectable" } = {}, options: { broken?: boolean; second?: boolean; pair?: boolean; departure?: boolean; review?: boolean; notes?: boolean; notesReview?: boolean } = {}) {
   let extractedBeforeBody = false
   let checkedAfterNotes = false
   let reviewed = false
   const result = scriptedModel({
     ...happyPath,
     [AGENT["change-plan"]]: deferChecklistRepair,
+    ...(options.notesReview ? { [AGENT["package-review"]]: () => {
+      const correction = !reviewed && Boolean(readRepairRound(directory)?.items.some(item => item.stage === "checklist-check"))
+      reviewed ||= correction
+      return JSON.stringify({ status: correction ? "changes-required" : "pass", delivery: [], findings: correction ? [{ target: "memo", detail: "Explain the delivery period accurately." }] : [], limitations: [] })
+    } } : {}),
+    // A notes repair adds a paragraph addressing the supplied assessment.
+    ...(options.notes ? { [AGENT.finalize]: (text: string, index: number) => `${draftingNotes(text, index)}${text.includes("drafting notes against actual sources") ? "\n\nThe notes now address the assessed requirement." : ""}` } : {}),
     ...(options.review ? { [AGENT["change-review"]]: () => {
       const correction = !reviewed && Boolean(readRepairRound(directory)?.items.some(item => item.stage === "checklist-check"))
       reviewed ||= correction
@@ -44,7 +54,8 @@ function model(directory: string, status: "satisfied" | "open" | "unsatisfied" |
     [CHECKLIST_JOB_AGENTS.extract]: text => {
       const input = JSON.parse(text.split("SOURCE_INPUT:\n\n")[1]!) as ChecklistProducerInput
       extractedBeforeBody = !existsSync(leanFile(directory, "d1/body.docx"))
-      const item = { check: "The requested supply note is drafted.", basis: "directive", source_refs: input.passages, qualifications: [], target: { ...input.targets[0], treatment: "operative" } }
+      const item = { check: "The requested supply note is drafted.", basis: "directive", source_refs: input.passages, qualifications: [],
+        target: options.notes ? { ...input.targets.find(target => target.document === "notes")!, treatment: "advice" } : { ...input.targets[0], treatment: "operative" } }
       return JSON.stringify({ items: input.source.document === "request" ? [item, ...(options.broken || options.second || options.pair ? [{ ...item, check: "Payment remains due on delivery." }] : [])] : [] })
     },
     [CHECKLIST_JOB_AGENTS.check]: text => {
@@ -153,6 +164,43 @@ test("a later review round does not re-arm the checklist repair of an omission",
   expect(readRepairRound(directory)).toMatchObject({ round: 2, substantive_attempts: 2, items: [{ stage: "change-review" }], checklist_items: [id] })
   expect(readLeanJson(directory, "gate.json")).toMatchObject({ status: "pass", delivery: "review_draft_with_findings", blocking: [] })
   expect(report(directory)).toContain(`Disclosed, not satisfied: ${id}: omission not fixed by the repair round: Focused result unsatisfied.`)
+}, 120000)
+
+test("an omission in the drafting notes gets its one repair from the notes writer, without redrafting the body", async () => {
+  const directory = matter()
+  const scripted = model(directory, "unsatisfied", {}, { notes: true })
+  expect((await runLean(directory, { sessions: scripted.port })).status).toBe("completed")
+  const [id] = checklistIDs(directory)
+  expect(readRepairRound(directory)).toMatchObject({ round: 1, substantive_attempts: 1, items: [{ stage: "checklist-check", ref: { repair_target: "memo" } }], checklist_items: [id] })
+  // The notes are written again with the assessment as a required repair; the
+  // body's stages and the body adjudicator do not run again.
+  const notes = scripted.prompts.filter(row => row.agent === AGENT.finalize)
+  expect(notes).toHaveLength(2)
+  expect(notes[0]!.text).not.toContain(id)
+  expect(notes[1]!.text.split("<required_repairs>")[1]!.split("</required_repairs>")[0]).toContain(id)
+  expect(readFileSync(leanFile(directory, "drafting-notes.md"), "utf8")).toContain("The notes now address the assessed requirement.")
+  const clean = matter(), baseline = model(clean, "satisfied", {}, { notes: true })
+  expect((await runLean(clean, { sessions: baseline.port })).status).toBe("completed")
+  const [draft, review, changes, finalize] = baseline.counts()
+  expect(scripted.counts()).toEqual([draft, review, changes, finalize! + 1])
+  expect(focusedRepairs(scripted)).toBe(0)
+  expect(scripted.count(CHECKLIST_JOB_AGENTS.check)).toBe(2)
+  expect(readLeanJson(directory, "gate.json")).toMatchObject({ status: "pass", delivery: "review_draft_with_findings", blocking: [] })
+  expect(report(directory)).toContain(`Disclosed, not satisfied: ${id}: omission not fixed by the repair round: Focused result unsatisfied.`)
+}, 120000)
+
+test("a later notes finding of the package review keeps the checklist notes repair required", async () => {
+  const directory = matter()
+  const scripted = model(directory, "unsatisfied", {}, { notes: true, notesReview: true })
+  expect((await runLean(directory, { sessions: scripted.port })).status).toBe("completed")
+  const [id] = checklistIDs(directory)
+  expect(readRepairRound(directory)).toMatchObject({ round: 1, substantive_attempts: 2, checklist_items: [id],
+    items: [{ stage: "checklist-check", ref: { repair_target: "memo" } }, { stage: "package-review", ref: { repair_target: "memo" } }] })
+  const notes = scripted.prompts.filter(row => row.agent === AGENT.finalize)
+  expect(notes).toHaveLength(3)
+  const required = notes[2]!.text.split("<required_repairs>")[1]!.split("</required_repairs>")[0]
+  expect(required).toContain(id)
+  expect(required).toContain("Explain the delivery period accurately.")
 }, 120000)
 
 for (const [label, scripted] of [
