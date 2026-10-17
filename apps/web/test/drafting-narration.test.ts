@@ -216,6 +216,12 @@ test("a completed run claims only the checks its status shows", () => {
     { tone: "neutral", text: "1 other item in the drafting notes" },
   ])
   expect(resultChecks(lean({ ...done, gate: null }))).toEqual([])
+  const changed = lean({ ...done, changed_after_check: { since: "2026-10-11T09:05:28.417Z", documents: ["Supply note.docx"] } })
+  expect(resultChecks(changed)).toEqual([
+    { tone: "warn", text: "Changed after final check: review the draft" },
+    { tone: "pass", text: "Quotes checked against sources" },
+  ])
+  expect(resultChecks(lean({ ...done, changed_after_check: null }))[0]).toEqual({ tone: "pass", text: "Final workflow check passed" })
 })
 
 test("a technical stop reads as a calm pause, and Continue reads as a resume", () => {
