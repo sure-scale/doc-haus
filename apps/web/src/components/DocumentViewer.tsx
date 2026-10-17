@@ -145,22 +145,28 @@ export default function DocumentViewer({
     finally {setBusy(undefined)}
   }
 
-  // Download the redlined .docx — the document with pending changes as native Word
-  // tracked changes — so it can be sent to counsel to accept or reject in Word.
-  // With nothing pending this is simply the current clean document.
-  async function download() {
+  // Download either the redlined .docx — the pending changes that can still be
+  // accepted, as native Word tracked changes, to send to counsel — or the current
+  // accepted Word file exactly as stored. Pending proposals never block the latter.
+  async function download(tracked: boolean) {
+    setError(undefined)
     try {
-    const bytes = await fetchRedlinedBytes(matterId, name)
+    const bytes = tracked ? await fetchRedlinedBytes(matterId, name) : await (async () => {
+      const current = await fetch(documentContentUrl(matterId, name))
+      if (!current.ok) throw new Error(`Could not download ${name} (${current.status})`)
+      return new Uint8Array(await current.arrayBuffer())
+    })()
     const url = URL.createObjectURL(
       new Blob([bytes as BlobPart], { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" }),
     )
     const a = document.createElement("a")
     a.href = url
-    a.download = redlines.length ? `${name.replace(/\.docx$/i, "")} (tracked changes).docx` : name
+    a.download = tracked ? `${name.replace(/\.docx$/i, "")} (tracked changes).docx` : name
     a.click()
     URL.revokeObjectURL(url)
     } catch(cause) {setError(cause instanceof Error ? cause.message : String(cause))}
   }
+  const staleNotice = staleExportNotice(redlines)
 
   // Convert this PDF into an editable .docx sibling, index it, and swap the viewer
   // onto the new document so it can be redlined like any other contract.
@@ -220,9 +226,7 @@ export default function DocumentViewer({
           </span>
           <div className="viewer-bar-actions">
             <button className="primary" onClick={() => setEditing((value) => !value)} disabled={busy !== undefined} aria-expanded={editing} aria-controls="document-edit-request">Request edits</button>
-            <button onClick={download} disabled={!html} title="Download as a Word file with tracked changes">
-              {redlines.length ? "Download redline" : "Download"}
-            </button>
+            <DownloadActions redlines={redlines} preview={Boolean(html)} onDownload={download} />
             {onSaveTemplate && (
               <details className="viewer-more-actions" onKeyDown={(event) => {
                 if (event.key !== "Escape" || !event.currentTarget.open) return
@@ -260,6 +264,7 @@ export default function DocumentViewer({
             </div>}
             {wasmError && <p className="muted">Viewer failed to load: {wasmError.message}</p>}
             {error && <p className="muted">{error}</p>}
+            {staleNotice && <p role="status" className="muted">{staleNotice}</p>}
             {!wasmError && !error && !html && (
               <div className="docx-render docx-skeleton" aria-label="Rendering document">
                 {Array.from({ length: 14 }, (_, i) => <div key={i} className="sk-line" />)}
@@ -325,4 +330,34 @@ export default function DocumentViewer({
       </div>
     </div>
   )
+}
+
+// The current accepted Word file is always downloadable. A redline download is
+// offered only while some pending proposal can still render as tracked changes.
+export function DownloadActions({ redlines, preview, onDownload }: {
+  redlines: Redline[]
+  preview: boolean
+  onDownload: (tracked: boolean) => void
+}) {
+  return (
+    <>
+      {redlines.some((row) => !row.stale) && (
+        <button onClick={() => onDownload(true)} disabled={!preview} title="Download as a Word file with the pending changes as tracked changes">
+          Download redline
+        </button>
+      )}
+      <button onClick={() => onDownload(false)} title="Download the current accepted Word file without pending changes">Download</button>
+    </>
+  )
+}
+
+// Stale proposals stay listed until the reviewer rejects them, but the tracked-
+// changes preview and redline download leave them out: they target an earlier
+// Word revision. Say so, and name the action that actually clears them.
+export function staleExportNotice(redlines: Redline[]) {
+  const stale = redlines.filter((row) => row.stale).length
+  if (!stale) return
+  const one = stale === 1
+  return `${one ? "1 stale proposal is" : `${stale} stale proposals are`} left out of the tracked changes and the redline download. ` +
+    `Reject ${one ? "it" : "them"} to clear ${one ? "it" : "them"}; prepare a fresh change list if the change is still needed.`
 }

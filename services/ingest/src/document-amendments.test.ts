@@ -13,6 +13,8 @@ import wordIntegration from "../../../dochaus/tool/word-integration"
 import { acceptedWorkingDocxUpdate, documentAmendmentRoutes } from "./document-amendments"
 import { writeDeliverable, writeDeliverableRevision } from "./deliverable"
 import { buildRedlined, bake } from "./redline"
+import { docxodus } from "./docxodus"
+import { readDocxComments } from "../../../dochaus/lib/docx-comments"
 
 test("two-pass HTTP proposals require approval, preserve atomic revision metadata and refuse stale or unbound writes", async () => {
   const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-edit-"))
@@ -371,3 +373,99 @@ test("accepting an amendment to a numbered list paragraph preserves numbering, t
     } finally {before.session.close();after.session.close()}
   } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
 })
+test("stale proposals stay pending and visible while plain download and fresh tracked changes remain available", async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-stale-"))
+  const workspace = path.join(temporary,"workspace")
+  const config = path.join(temporary,"config")
+  await mkdir(workspace);await mkdir(config)
+  await mkdir(path.join(workspace,".preferences"))
+  await Bun.write(path.join(workspace,".preferences/preferences.json"),JSON.stringify({attorney:"Saved Reviewing Lawyer",firm:"Saved Reviewing Firm"}))
+  await Bun.write(path.join(config,"opencode.json"),"{}")
+  // Scripted local protocol fixture: one batch of amendments per Prepare request.
+  const batches = [[
+    {before_quote:"five days",replacement:"seven days",target_context:"notice period",reason:"Requested notice update."},
+    {before_quote:"three months",replacement:"six months",target_context:"retention period",reason:"Requested retention update."},
+  ],[
+    {before_quote:"thirty days",replacement:"forty-five days",target_context:"payment period",reason:"Requested payment update."},
+  ]]
+  const engine = Bun.serve({port:0,fetch:async (request) => {
+    const body = await request.json() as {prompt:string}
+    const text = body.prompt.includes("<draft_view") ? JSON.stringify({amendments:batches.shift(),open_items:[]}) : (() => {
+      const candidates = JSON.parse(body.prompt.match(/<candidates>([\s\S]*)<\/candidates>/)![1]) as Array<{amendment_id:string;target_handle:string}>
+      return JSON.stringify({selections:[...new Set(candidates.map((row) => row.amendment_id))].map((id) => ({amendment_id:id,target_handle:candidates.find((row) => row.amendment_id === id)!.target_handle}))})
+    })()
+    return Response.json({data:{text,model:{providerID:"fixture",id:"isolated"},elapsed_ms:1,usage:null}})
+  }})
+  const probe = Bun.serve({port:0,fetch:() => new Response()});const port=probe.port;probe.stop(true)
+  const process = Bun.spawn([globalThis.process.execPath,"run","src/server.ts"],{cwd:path.resolve(import.meta.dir,".."),
+    env:{...globalThis.process.env,WORKSPACE_ROOT:workspace,DOCHAUS_DIR:config,INGEST_PORT:String(port),INGEST_HOST:"127.0.0.1",OPENCODE_URL:`http://127.0.0.1:${engine.port}`,OPENCODE_SERVER_PASSWORD:""},
+    stdout:Bun.file(path.join(temporary,"ingest.log")),stderr:Bun.file(path.join(temporary,"ingest.log"))})
+  const request=(route:string,options?:RequestInit) => fetch(`http://127.0.0.1:${port}${route}`,{...options,signal:AbortSignal.timeout(30000)})
+  const hash=(bytes:Uint8Array) => createHash("sha256").update(bytes).digest("hex")
+  const form=(bytes:Uint8Array) => {const body=new FormData();body.append("file",new File([new Uint8Array(bytes)],"working.docx"));return body}
+  try {
+    const deadline=Date.now()+20000
+    while (!await request("/matters").then((response) => response.ok).catch(() => false)) {
+      if (Date.now()>deadline) throw new Error("Isolated ingest did not start")
+      await Bun.sleep(50)
+    }
+    const matter = await (await request("/matters",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({title:"Stale proposal review"})})).json() as {id:string;dir:string}
+    const route=`/matters/${matter.id}`
+    const file=path.join(matter.dir,"working.docx")
+    const original = Buffer.from(withParagraphPointers(await Packer.toBuffer(new Document({sections:[{children:[
+      new Paragraph("Notice must arrive within five days."),new Paragraph("Retain records for three months."),new Paragraph("Pay each invoice within thirty days."),
+    ]}]}))))
+    expect((await request(`${route}/deliverables`,{method:"POST",body:form(original)})).status).toBe(200)
+    const prepare=async () => {
+      const response=await request(`${route}/documents/amendments`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({name:"working.docx",instructions:"Update the stated periods."})})
+      expect(response.status).toBe(200)
+      return (await response.json() as {redline_ids:number[]}).redline_ids
+    }
+    const [acceptedID,staleID]=await prepare()
+    expect((await request(`${route}/redlines/${acceptedID}/accept`,{method:"POST"})).status).toBe(200)
+    const accepted=await Bun.file(file).bytes()
+    expect(hash(accepted)).not.toBe(hash(original))
+    const staleReason="This proposal targets an earlier Word revision. Prepare a fresh change list."
+    const pending=async () => await (await request(`${route}/redlines?name=working.docx`)).json() as Array<{id:number;status:string;stale?:boolean;stale_reason?:string}>
+    const exported=async () => {
+      const response=await request(`${route}/documents/redlined?name=working.docx`)
+      expect(response.status).toBe(200)
+      return new Uint8Array(await response.arrayBuffer())
+    }
+    const download=async () => {
+      const response=await request(`${route}/documents/content?name=working.docx`)
+      expect(response.status).toBe(200)
+      return new Uint8Array(await response.arrayBuffer())
+    }
+    // Only a stale proposal is pending: the export is the accepted file, unchanged.
+    expect(hash(await exported())).toBe(hash(accepted))
+    expect(hash(await download())).toBe(hash(accepted))
+    const [freshID]=await prepare()
+    expect(await pending()).toMatchObject([
+      {id:staleID,status:"pending",stale:true,stale_reason:staleReason},
+      {id:freshID,status:"pending"},
+    ])
+    expect((await pending())[1].stale).toBeUndefined()
+    expect(hash(await download())).toBe(hash(accepted))
+    // The tracked changes and review notes carry the fresh proposal only.
+    const redline=await exported()
+    const dx=await docxodus()
+    const revised=(await dx.getRevisions(redline)).map((row) => row.text).join(" ")
+    expect(revised).toContain("forty-five")
+    expect(revised).not.toContain("six")
+    expect(revised).not.toContain("three")
+    expect(readDocxComments(redline).map((row) => row.text)).toEqual(["Requested payment update."])
+    // Exporting changes nothing: no proposal is accepted, rejected or dropped.
+    expect(await pending()).toMatchObject([{id:staleID,status:"pending",stale:true},{id:freshID,status:"pending"}])
+    expect(hash(await Bun.file(file).bytes())).toBe(hash(accepted))
+    expect(readWorkingDocx(matter.dir,file)?.source_sha256).toBe(hash(accepted))
+    const db=openDb(matter.dir)
+    try {
+      expect([acceptedID,staleID,freshID].map((id) => getRedline(db,id)?.status)).toEqual(["accepted","pending","pending"])
+    } finally {db.close()}
+    expect((await request(`${route}/redlines/${staleID}/accept`,{method:"POST"})).status).toBe(409)
+    expect(hash(await Bun.file(file).bytes())).toBe(hash(accepted))
+  } finally {
+    process.kill();await process.exited;engine.stop(true);await rm(temporary,{recursive:true,force:true})
+  }
+},120000)
