@@ -1,10 +1,11 @@
 import { expect, test } from "bun:test"
+import { createHash } from "node:crypto"
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { compareDocxWithPointers, ensureParagraphPointers, withParagraphPointers } from "./drafting-amendment"
+import { compareDocxWithPointers, ensureParagraphPointers, paragraphSha256, paragraphTargets, resolveParagraphTarget, withParagraphPointers } from "./drafting-amendment"
 import { docxodus } from "./docxodus"
 import { exportDocxComments, readDocxCommentParagraphs, readDocxRevisionText } from "./docx-comments"
 import { renderMarkdownToDocx } from "./render"
@@ -156,4 +157,41 @@ test("a historical moved or deleted bookmark cannot stand in for an accepted par
     expect(readDocxCommentParagraphs(historicalOnly)).toEqual([])
     expect(withParagraphPointers(historicalOnly)).toBe(historicalOnly)
   }
+})
+
+test("paragraph targets bind one well-formed pointer per body paragraph to its exact text", async () => {
+  const rendered = (await renderMarkdownToDocx("Notice is five days.\n\nRetain the records.\n\nClosing wording.")).bytes
+  const edit = (change: (doc: Document) => void) => {
+    const parts = unzipSync(rendered)
+    const doc = new DOMParser().parseFromString(strFromU8(parts["word/document.xml"]!), "application/xml")
+    change(doc)
+    return zipSync({ ...parts, "word/document.xml": strToU8(new XMLSerializer().serializeToString(doc)) })
+  }
+  const sha = (text: string) => createHash("sha256").update(text).digest("hex")
+  const pids = readDocxCommentParagraphs(rendered).map(row => row.pids[0]!)
+  const targets = await paragraphTargets(rendered)
+  expect(targets.map(row => [row.pid, row.ordinal, row.sha256])).toEqual([
+    [pids[0], 0, sha("Notice is five days.")], [pids[1], 1, sha("Retain the records.")], [pids[2], 2, sha("Closing wording.")]])
+  expect(resolveParagraphTarget(targets, pids[1]!)).toBe(targets[1])
+  // Exact, not normalized: a whitespace-only change is a change to the paragraph.
+  const spaced = edit(doc => {
+    const text = Array.from(doc.getElementsByTagNameNS(W, "t")).find(node => node.textContent?.includes("five"))!
+    text.setAttribute("xml:space", "preserve")
+    text.textContent = text.textContent!.replace("five", " five")
+  })
+  expect((await paragraphTargets(spaced))[0]!.sha256).not.toBe(targets[0]!.sha256)
+  expect(paragraphSha256("Notice is  five days.")).toBe(paragraphSha256("Notice is five days."))
+  // A pointer repeated on another paragraph names neither paragraph.
+  const repeated = await paragraphTargets(edit(doc => {
+    const [first, second] = Array.from(doc.getElementsByTagNameNS(W, "p"))
+    second!.appendChild(first!.getElementsByTagNameNS(W, "bookmarkStart")[0]!.cloneNode(true))
+  }))
+  expect(repeated[1]!.pid).toBeNull()
+  expect(repeated[1]!.pids.toSorted()).toEqual([pids[0]!, pids[1]!].toSorted())
+  expect([pids[0]!, pids[1]!].map(pid => resolveParagraphTarget(repeated, pid))).toEqual([undefined, undefined])
+  expect(resolveParagraphTarget(repeated, pids[2]!)).toMatchObject({ pid: pids[2], sha256: targets[2]!.sha256 })
+  // Without pointers no body paragraph has a binding identity.
+  const bare = edit(doc => ["bookmarkStart", "bookmarkEnd"].forEach(name =>
+    Array.from(doc.getElementsByTagNameNS(W, name)).forEach(node => node.parentNode!.removeChild(node))))
+  expect((await paragraphTargets(bare)).map(row => row.pid)).toEqual([null, null, null])
 })

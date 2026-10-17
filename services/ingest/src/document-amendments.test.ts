@@ -3,16 +3,16 @@ import { createHash } from "node:crypto"
 import { mkdtemp, mkdir, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { AlignmentType, Document, LevelFormat, Packer, Paragraph, Table, TableCell, TableRow, TextRun } from "docx"
-import { withParagraphPointers } from "../../../dochaus/lib/drafting-amendment"
-import { openDb, getRedline, listSourceDocuments } from "./db"
+import { AlignmentType, Document, Footer, Header, LevelFormat, Packer, Paragraph, Table, TableCell, TableRow, TextRun } from "docx"
+import { paragraphTargets, withParagraphPointers } from "../../../dochaus/lib/drafting-amendment"
+import { openDb, getRedline, listSourceDocuments, upsertDocument } from "./db"
 import { readWorkingDocx } from "../../../dochaus/lib/working-docx"
-import { createDocxRevision, openRevision, verifyPreservation } from "../../../dochaus/lib/docx-amendments"
+import { createDocxLocalization, createDocxRevision, openRevision, verifyPreservation } from "../../../dochaus/lib/docx-amendments"
 import { withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
 import wordIntegration from "../../../dochaus/tool/word-integration"
 import { acceptedWorkingDocxUpdate, documentAmendmentRoutes } from "./document-amendments"
 import { writeDeliverable, writeDeliverableRevision } from "./deliverable"
-import { buildRedlined, bake } from "./redline"
+import { buildRedlined, bake, redlineState, redlineStaleReason } from "./redline"
 import { docxodus } from "./docxodus"
 import { readDocxComments } from "../../../dochaus/lib/docx-comments"
 
@@ -84,16 +84,17 @@ test("two-pass HTTP proposals require approval, preserve atomic revision metadat
     expect(readWorkingDocx(matter.dir,file)?.projection_sha256).toBe(revision.projection_sha256)
     expect(getRedline(db,proposed.redline_ids[0])?.status).toBe("accepted")
     expect(listSourceDocuments(db)).toEqual([])
-    const pending=await (await request(`${route}/redlines?name=working.docx`)).json() as Array<{stale:boolean}>
-    expect(pending).toHaveLength(1);expect(pending[0].stale).toBe(true)
-    expect((await request(`${route}/redlines/${proposed.redline_ids[1]}/accept`,{method:"POST"})).status).toBe(409)
-    expect(hash(await Bun.file(file).bytes())).toBe(hash(accepted))
+    // The sibling targets another paragraph, so this acceptance leaves it valid.
+    const pending=async () => (await (await request(`${route}/redlines?name=working.docx`)).json() as Array<{id:number;stale?:boolean}>).map((row) => [row.id,row.stale])
+    expect(await pending()).toEqual([[proposed.redline_ids[1],undefined]])
     expect((await request(`${route}/deliverables`,{method:"POST",body:form(original)})).status).toBe(409)
     expect((await request(`${route}/documents/revisions`,{method:"POST",body:form(original)})).status).toBe(409)
     expect((await request(`${route}/documents/revisions`,{method:"POST",headers:{"x-document-prior-sha256":hash(original)},body:form(original)})).status).toBe(409)
     expect(hash(await Bun.file(file).bytes())).toBe(hash(accepted))
     expect((await request(`${route}/documents/revisions`,{method:"POST",headers:{"x-document-prior-sha256":hash(accepted)},body:form(original)})).status).toBe(200)
     expect(readWorkingDocx(matter.dir,file)?.source_sha256).toBe(hash(original))
+    // Restoring earlier wording elsewhere leaves the sibling's paragraph as prepared.
+    expect(await pending()).toEqual([[proposed.redline_ids[1],undefined]])
     // Malformed new targeting cannot activate legacy text matching.
     db.run("UPDATE redlines SET target_json = ? WHERE id = ?",["{invalid",proposed.redline_ids[1]])
     expect((await request(`${route}/redlines/${proposed.redline_ids[1]}/accept`,{method:"POST"})).status).toBe(409)
@@ -182,27 +183,21 @@ async function withPreparation<T>(directory:string,engine:ReturnType<typeof synt
   }
 }
 
-test("an accepted revision, its stale sibling proposal and fresh revision-bound preparation survive an ingest restart", async () => {
-  const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-restart-"))
+// Isolated ingest child processes sharing one workspace. Each start gets a fresh
+// port and log, so a restart holds no in-memory carry-over.
+async function isolatedIngest(temporary:string,engine:{port?:number}) {
   const workspace = path.join(temporary,"workspace")
   const config = path.join(temporary,"config")
-  await mkdir(workspace);await mkdir(config)
+  await mkdir(workspace,{recursive:true});await mkdir(config,{recursive:true})
   await Bun.write(path.join(config,"opencode.json"),"{}")
-  let fresh = false
-  const engine = syntheticEngine(() => fresh
-    ? {amendments:[{before_quote:"three months",replacement:"six months",target_context:"retention period",reason:"Requested retention update."}],open_items:[]}
-    : {amendments:[
-      {before_quote:"five days",replacement:"seven days",target_context:"current notice period",reason:"Requested notice update."},
-      {before_quote:"three months",replacement:"six months",target_context:"retention period",reason:"Requested retention update."},
-    ],open_items:[]},firstCandidate)
   const services:Array<ReturnType<typeof Bun.spawn>> = []
   let port = 0
-  // Each instance gets a fresh port and log; only the workspace root is shared.
+  const request = (route:string,options?:RequestInit) => fetch(`http://127.0.0.1:${port}${route}`,{...options,signal:AbortSignal.timeout(30000)})
   const start = async (label:string) => {
     const probe = Bun.serve({port:0,fetch:() => new Response()});port=probe.port!;probe.stop(true)
     const log = path.join(temporary,`ingest-${label}.log`)
     const service = Bun.spawn([process.execPath,"run","src/server.ts"],{cwd:path.resolve(import.meta.dir,".."),
-      env:{...process.env,WORKSPACE_ROOT:workspace,DOCHAUS_DIR:config,INGEST_PORT:String(port),INGEST_HOST:"127.0.0.1",OPENCODE_URL:`http://127.0.0.1:${engine.server.port}`,OPENCODE_SERVER_PASSWORD:""},
+      env:{...process.env,WORKSPACE_ROOT:workspace,DOCHAUS_DIR:config,INGEST_PORT:String(port),INGEST_HOST:"127.0.0.1",OPENCODE_URL:`http://127.0.0.1:${engine.port}`,OPENCODE_SERVER_PASSWORD:""},
       stdout:Bun.file(log),stderr:Bun.file(log)})
     services.push(service)
     const deadline = Date.now()+20000
@@ -212,69 +207,366 @@ test("an accepted revision, its stale sibling proposal and fresh revision-bound 
     }
     return service
   }
-  const request = (route:string,options?:RequestInit) => fetch(`http://127.0.0.1:${port}${route}`,{...options,signal:AbortSignal.timeout(30000)})
-  const form = (bytes:Uint8Array) => {const body=new FormData();body.append("file",new File([new Uint8Array(bytes)],"working.docx"));return body}
-  const prepare = () => request(`${route}/documents/amendments`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({name:"working.docx",instructions:"Update the notice period and the retention period."})})
-  const status = (id:number) => {const db=openDb(matter.dir);try {return getRedline(db,id)?.status} finally {db.close()}}
-  let matter!:{id:string;dir:string};let route=""
+  const matter = async (title:string) => {
+    const created = await (await request("/matters",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({title})})).json() as {id:string;dir:string}
+    const route = `/matters/${created.id}`
+    return {...created,route,file:path.join(created.dir,"working.docx"),
+      deliver:async (bytes:Uint8Array) => (await request(`${route}/deliverables`,{method:"POST",body:wordForm(bytes)})).status,
+      prepare:async (instructions:string) => request(`${route}/documents/amendments`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({name:"working.docx",instructions})}),
+      accept:async (id:number) => (await request(`${route}/redlines/${id}/accept`,{method:"POST"})).status,
+      pending:async () => (await (await request(`${route}/redlines?name=working.docx`)).json() as Array<{id:number;stale?:boolean;stale_reason?:string}>)
+        .map((row) => [row.id,row.stale,row.stale_reason]),
+      status:(id:number) => {const db=openDb(created.dir);try {return getRedline(db,id)?.status} finally {db.close()}},
+      bindings:(ids:number[]) => {const db=openDb(created.dir);try {return ids.map((id) => JSON.parse(getRedline(db,id)!.target_json!) as Record<string,unknown>)} finally {db.close()}},
+    }
+  }
+  const stop = async () => {for (const service of services) {service.kill();await service.exited}}
+  return {start,request,matter,stop}
+}
+const wordForm = (bytes:Uint8Array) => {const body=new FormData();body.append("file",new File([new Uint8Array(bytes)],"working.docx"));return body}
+const paragraphChanged = "The paragraph this change targets has changed since it was prepared. Prepare a fresh change list."
+const earlierRevision = "This proposal targets an earlier Word revision. Prepare a fresh change list."
+const periods = [
+  {before_quote:"five days",replacement:"seven days",target_context:"notice period",reason:"Requested notice update."},
+  {before_quote:"three months",replacement:"six months",target_context:"retention period",reason:"Requested retention update."},
+  {before_quote:"thirty days",replacement:"forty-five days",target_context:"payment period",reason:"Requested payment update."},
+  {before_quote:"ten business days",replacement:"fifteen business days",target_context:"cure period",reason:"Requested cure update."},
+]
+const periodParagraphs = ["Notice must arrive within five days.","Retain records for three months.","Pay each invoice within thirty days.","Cure any breach within ten business days."]
+
+test("proposals on separate paragraphs stay valid after one is accepted and across an ingest restart", async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-restart-"))
+  const engine = syntheticEngine(() => ({amendments:periods,open_items:[]}),firstCandidate)
+  const ingest = await isolatedIngest(temporary,engine.server)
   try {
-    const first = await start("first")
-    matter = await (await request("/matters",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({title:"Restart durability review"})})).json() as {id:string;dir:string}
-    route = `/matters/${matter.id}`
+    const first = await ingest.start("first")
+    const matter = await ingest.matter("Restart durability review")
     const original = Buffer.from(withParagraphPointers(await Packer.toBuffer(new Document({sections:[{children:[
-      new Paragraph("Notice must arrive within five days."),new Paragraph("Retain records for three months."),new Paragraph("Unrelated closing wording stays."),
+      ...periodParagraphs.map((text) => new Paragraph(text)),new Paragraph("Unrelated closing wording stays."),
     ]}]}))))
-    expect((await request(`${route}/deliverables`,{method:"POST",body:form(original)})).status).toBe(200)
-    const file = path.join(matter.dir,"working.docx")
-    const proposed = await (await prepare()).json() as {proposed:number;redline_ids:number[];base_sha256:string}
-    expect(proposed.proposed).toBe(2)
-    const [acceptedId,staleId] = proposed.redline_ids
-    expect((await request(`${route}/redlines/${acceptedId}/accept`,{method:"POST"})).status).toBe(200)
-    const accepted = await Bun.file(file).bytes()
+    expect(await matter.deliver(original)).toBe(200)
+    expect(sha256(await Bun.file(matter.file).bytes())).toBe(sha256(original))
+    const proposed = await (await matter.prepare("Update the stated periods.")).json() as {proposed:number;redline_ids:number[];base_sha256:string}
+    expect(proposed.proposed).toBe(4)
+    // Each proposal names its own paragraph's pointer and exact text, not the whole file.
+    const targets = await paragraphTargets(original)
+    expect(matter.bindings(proposed.redline_ids)).toEqual(targets.slice(0,4).map((target,index) => ({version:2,
+      amendment_id:`amendment-${index+1}`,pid:target.pid,paragraph_sha256:sha256(Buffer.from(periodParagraphs[index])),occurrence:0,base_sha256:sha256(original)})))
+    const [acceptedId,...siblings] = proposed.redline_ids
+    expect(await matter.accept(acceptedId)).toBe(200)
+    const accepted = await Bun.file(matter.file).bytes()
     expect(sha256(accepted)).not.toBe(proposed.base_sha256)
-    const record = readWorkingDocx(matter.dir,file)!
+    expect(await matter.pending()).toEqual(siblings.map((id) => [id,undefined,undefined]))
+    const record = readWorkingDocx(matter.dir,matter.file)!
     expect(record.source_sha256).toBe(sha256(accepted))
     expect(record.projection_sha256).toBe((await createDocxRevision(accepted)).projection_sha256)
 
     first.kill();await first.exited
-    await start("second")
+    await ingest.start("second")
     // Durable state only: the respawned service holds no in-memory carry-over.
-    expect(sha256(await Bun.file(file).bytes())).toBe(sha256(accepted))
-    expect(readWorkingDocx(matter.dir,file)).toEqual(record)
-    const pending = await (await request(`${route}/redlines?name=working.docx`)).json() as Array<{id:number;stale?:boolean;stale_reason?:string}>
-    expect(pending.map((row) => [row.id,row.stale])).toEqual([[staleId,true]])
-    expect(pending[0].stale_reason).toContain("earlier Word revision")
-    expect((await request(`${route}/redlines/${staleId}/accept`,{method:"POST"})).status).toBe(409)
-    expect(sha256(await Bun.file(file).bytes())).toBe(sha256(accepted))
-    expect(readWorkingDocx(matter.dir,file)).toEqual(record)
-    expect(status(staleId)).toBe("pending")
-
-    fresh = true
-    const rebound = await (await prepare()).json() as {proposed:number;redline_ids:number[];base_sha256:string}
-    expect(rebound.proposed).toBe(1)
-    expect(rebound.base_sha256).toBe(sha256(accepted))
-    const db = openDb(matter.dir)
-    try {
-      expect(JSON.parse(getRedline(db,rebound.redline_ids[0])!.target_json!).source_sha256).toBe(sha256(accepted))
-    } finally {db.close()}
-    expect((await request(`${route}/redlines/${rebound.redline_ids[0]}/accept`,{method:"POST"})).status).toBe(200)
-    const final = await Bun.file(file).bytes()
+    expect(sha256(await Bun.file(matter.file).bytes())).toBe(sha256(accepted))
+    expect(readWorkingDocx(matter.dir,matter.file)).toEqual(record)
+    expect(await matter.pending()).toEqual(siblings.map((id) => [id,undefined,undefined]))
+    for (const id of siblings.slice(0,2)) expect(await matter.accept(id)).toBe(200)
+    // Batch acceptance applies the same paragraph rule to the remaining proposal.
+    const batch = await ingest.request(`${matter.route}/redlines/accept-all?name=working.docx`,{method:"POST"})
+    expect(batch.status).toBe(200)
+    expect(await batch.json()).toEqual({ok:true,accepted:1})
+    const final = await Bun.file(matter.file).bytes()
     const revision = await createDocxRevision(final)
-    expect(revision.markdown).toContain("Notice must arrive within seven days.")
-    expect(revision.markdown).toContain("Retain records for six months.")
-    expect(revision.markdown).toContain("Unrelated closing wording stays.")
-    expect(readWorkingDocx(matter.dir,file)?.source_sha256).toBe(sha256(final))
-    expect(readWorkingDocx(matter.dir,file)?.projection_sha256).toBe(revision.projection_sha256)
-    expect(status(rebound.redline_ids[0])).toBe("accepted")
-    // The older stale proposal never becomes acceptable against a later revision.
-    expect(status(staleId)).toBe("pending")
-    expect((await request(`${route}/redlines/${staleId}/accept`,{method:"POST"})).status).toBe(409)
-    expect(sha256(await Bun.file(file).bytes())).toBe(sha256(final))
+    expect(revision.paragraphs.map((row) => row.text)).toEqual(["Notice must arrive within seven days.","Retain records for six months.",
+      "Pay each invoice within forty-five days.","Cure any breach within fifteen business days.","Unrelated closing wording stays."])
+    expect(readWorkingDocx(matter.dir,matter.file)?.source_sha256).toBe(sha256(final))
+    expect(readWorkingDocx(matter.dir,matter.file)?.projection_sha256).toBe(revision.projection_sha256)
+    expect(proposed.redline_ids.map(matter.status)).toEqual(["accepted","accepted","accepted","accepted"])
+    // Accepted edits keep every paragraph pointer, so later proposals bind alike.
+    expect((await paragraphTargets(final)).map((row) => row.pid)).toEqual(targets.map((row) => row.pid))
   } finally {
-    for (const service of services) {service.kill();await service.exited}
-    engine.server.stop(true);await rm(temporary,{recursive:true,force:true})
+    await ingest.stop();engine.server.stop(true);await rm(temporary,{recursive:true,force:true})
   }
 },120000)
+
+const periodDocument = async () => Buffer.from(withParagraphPointers(await Packer.toBuffer(new Document({sections:[{children:[
+  ...periodParagraphs.map((text) => new Paragraph(text)),new Paragraph("Unrelated closing wording stays."),
+]}]}))))
+const periodsChanged = ["Notice must arrive within seven days.","Retain records for six months.","Pay each invoice within forty-five days.",
+  "Cure any breach within fifteen business days.","Unrelated closing wording stays."]
+
+test("four proposals on four paragraphs accept one by one or all at once, and an export after one accept keeps the others' notes", async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-four-"))
+  const engine = syntheticEngine(() => ({amendments:periods,open_items:[]}),firstCandidate)
+  const ingest = await isolatedIngest(temporary,engine.server)
+  try {
+    await ingest.start("only")
+    const sequential = await ingest.matter("Sequential Word review")
+    expect(await sequential.deliver(await periodDocument())).toBe(200)
+    const ids = (await (await sequential.prepare("Update the stated periods.")).json() as {redline_ids:number[]}).redline_ids
+    expect(ids).toHaveLength(4)
+    expect(await sequential.accept(ids[0])).toBe(200)
+    expect(await sequential.pending()).toEqual(ids.slice(1).map((id) => [id,undefined,undefined]))
+    // The remaining three export as tracked changes, each with its review note.
+    const exported = await ingest.request(`${sequential.route}/documents/redlined?name=working.docx`)
+    expect(exported.status).toBe(200)
+    const redline = new Uint8Array(await exported.arrayBuffer())
+    const revised = (await (await docxodus()).getRevisions(redline)).map((row) => row.text).join(" ")
+    for (const text of ["six","forty-five","fifteen"]) expect(revised).toContain(text)
+    expect(revised).not.toContain("seven")
+    expect(readDocxComments(redline).map((row) => row.text)).toEqual(periods.slice(1).map((row) => row.reason))
+    for (const [index,id] of ids.slice(1).entries()) {
+      expect(await sequential.accept(id)).toBe(200)
+      expect(await sequential.pending()).toEqual(ids.slice(index+2).map((id) => [id,undefined,undefined]))
+    }
+    expect((await createDocxRevision(await Bun.file(sequential.file).bytes())).paragraphs.map((row) => row.text)).toEqual(periodsChanged)
+    expect(ids.map(sequential.status)).toEqual(["accepted","accepted","accepted","accepted"])
+
+    const batch = await ingest.matter("Batch Word review")
+    expect(await batch.deliver(await periodDocument())).toBe(200)
+    const pointers = (await paragraphTargets(await Bun.file(batch.file).bytes())).map((row) => row.pid)
+    const batchIds = (await (await batch.prepare("Update the stated periods.")).json() as {redline_ids:number[]}).redline_ids
+    const response = await ingest.request(`${batch.route}/redlines/accept-all?name=working.docx`,{method:"POST"})
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ok:true,accepted:4})
+    const final = await Bun.file(batch.file).bytes()
+    expect((await createDocxRevision(final)).paragraphs.map((row) => row.text)).toEqual(periodsChanged)
+    expect(batchIds.map(batch.status)).toEqual(["accepted","accepted","accepted","accepted"])
+    expect(readWorkingDocx(batch.dir,batch.file)?.source_sha256).toBe(sha256(final))
+    expect((await paragraphTargets(final)).map((row) => row.pid)).toEqual(pointers)
+  } finally {
+    await ingest.stop();engine.server.stop(true);await rm(temporary,{recursive:true,force:true})
+  }
+},120000)
+
+test("Accept all applies a same-paragraph pair together and refuses an overlapping pair without changing the file", async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-pair-"))
+  const batches:LegalPass["amendments"][] = [periods.slice(0,2),
+    [{before_quote:"within five days",replacement:"within seven days",target_context:"notice period",reason:"Requested notice update."}],
+    [{before_quote:"five days and records",replacement:"five business days and records",target_context:"notice period",reason:"Requested business days."}]]
+  const engine = syntheticEngine(() => ({amendments:batches.shift()!,open_items:[]}),firstCandidate)
+  const ingest = await isolatedIngest(temporary,engine.server)
+  const shared = async () => Buffer.from(withParagraphPointers(await Packer.toBuffer(new Document({sections:[{children:[
+    new Paragraph("Notice must arrive within five days and records are kept for three months."),new Paragraph("Pay each invoice within thirty days."),
+  ]}]}))))
+  try {
+    await ingest.start("only")
+    const pair = await ingest.matter("Same-paragraph Word review")
+    expect(await pair.deliver(await shared())).toBe(200)
+    const [paragraph] = await paragraphTargets(await Bun.file(pair.file).bytes())
+    const ids = (await (await pair.prepare("Update the notice and retention periods.")).json() as {redline_ids:number[]}).redline_ids
+    expect(pair.bindings(ids).map((row) => [row.version,row.pid,row.occurrence])).toEqual([[2,paragraph.pid,0],[2,paragraph.pid,0]])
+    // Both changes and both notes export on their shared paragraph.
+    const exported = await ingest.request(`${pair.route}/documents/redlined?name=working.docx`)
+    expect(exported.status).toBe(200)
+    expect(readDocxComments(new Uint8Array(await exported.arrayBuffer())).map((row) => row.text)).toEqual(periods.slice(0,2).map((row) => row.reason))
+    const response = await ingest.request(`${pair.route}/redlines/accept-all?name=working.docx`,{method:"POST"})
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ok:true,accepted:2})
+    expect((await createDocxRevision(await Bun.file(pair.file).bytes())).paragraphs.map((row) => row.text))
+      .toEqual(["Notice must arrive within seven days and records are kept for six months.","Pay each invoice within thirty days."])
+
+    const overlap = await ingest.matter("Overlapping Word review")
+    expect(await overlap.deliver(await shared())).toBe(200)
+    const before = await Bun.file(overlap.file).bytes()
+    const [first] = (await (await overlap.prepare("Extend the notice period.")).json() as {redline_ids:number[]}).redline_ids
+    const [second] = (await (await overlap.prepare("Count the notice period in business days.")).json() as {redline_ids:number[]}).redline_ids
+    // Each still reads its unchanged paragraph, but their spans overlap.
+    expect(await overlap.pending()).toEqual([[first,undefined,undefined],[second,undefined,undefined]])
+    expect((await ingest.request(`${overlap.route}/redlines/accept-all?name=working.docx`,{method:"POST"})).status).toBe(409)
+    expect(await Bun.file(overlap.file).bytes()).toEqual(before)
+    expect([first,second].map(overlap.status)).toEqual(["pending","pending"])
+    expect(await overlap.accept(first)).toBe(200)
+    expect(await overlap.pending()).toEqual([[second,true,paragraphChanged]])
+    expect(await overlap.accept(second)).toBe(409)
+    expect((await createDocxRevision(await Bun.file(overlap.file).bytes())).paragraphs[0]!.text)
+      .toBe("Notice must arrive within seven days and records are kept for three months.")
+  } finally {
+    await ingest.stop();engine.server.stop(true);await rm(temporary,{recursive:true,force:true})
+  }
+},120000)
+
+test("a paragraph-bound proposal accepts in a long document whose common phrase exceeds the whole-document candidate limits", async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-long-"))
+  const ingest = await isolatedIngest(temporary,{})
+  const clause = (number:number) => `Clause ${number}. In this clause the Supplier keeps complete records of the services, and the Supplier gives the Customer reasonable access to those records on request during normal business hours, subject to the confidentiality terms of this agreement and to any lawful instruction from the Customer about retention and secure disposal of records.`
+  const clauses = Array.from({length:600},(_,index) => clause(index+1))
+  try {
+    await ingest.start("only")
+    const matter = await ingest.matter("Long Word review")
+    expect(await matter.deliver(await Packer.toBuffer(new Document({sections:[{children:clauses.map((text) => new Paragraph(text))}]})))).toBe(200)
+    const delivered = await Bun.file(matter.file).bytes()
+    expect(clauses.join("").length).toBeGreaterThan(200_000)
+    // The superseded bake rebuilt a whole-document candidate packet for every
+    // proposal; this quote's 1,200 matches exceed both of its limits.
+    const quote = {id:"supplier",before_quote:"the Supplier",replacement:"the Service Provider"}
+    await expect(createDocxLocalization(delivered,[quote])).rejects.toThrow("docx_candidate_limit_exceeded:1200")
+    await expect(createDocxLocalization(delivered,[quote],{maxCandidates:Number.MAX_SAFE_INTEGER})).rejects.toThrow("docx_candidate_context_limit_exceeded")
+    // Stored as Prepare binds a body selection: the second quote in clause 400.
+    const target = (await paragraphTargets(delivered))[399]!
+    const db = openDb(matter.dir)
+    const id = (() => {
+      try {
+        return Number(db.run("INSERT INTO redlines (doc_path,doc_name,scope,find_text,old_text,new_text,author,review_comment,anchor_id,target_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",[
+          matter.file,"working.docx","phrase",quote.before_quote,quote.before_quote,quote.replacement,"Synthetic Reviewer","Requested party label.",null,
+          JSON.stringify({version:2,amendment_id:"amendment-1",pid:target.pid,paragraph_sha256:target.sha256,occurrence:1,base_sha256:sha256(delivered)}),Date.now(),
+        ]).lastInsertRowid)
+      } finally {db.close()}
+    })()
+    expect(await matter.pending()).toEqual([[id,undefined,undefined]])
+    expect(await matter.accept(id)).toBe(200)
+    expect((await createDocxRevision(await Bun.file(matter.file).bytes())).paragraphs.map((row) => row.text))
+      .toEqual(clauses.map((text,index) => index === 399 ? text.replace("and the Supplier gives","and the Service Provider gives") : text))
+    expect(matter.status(id)).toBe("accepted")
+  } finally {
+    await ingest.stop();await rm(temporary,{recursive:true,force:true})
+  }
+},120000)
+
+// An outside Word edit through the native session: each edit rewrites one
+// paragraph's XML, keeping every other paragraph and pointer intact.
+async function outsideRevision(bytes:Uint8Array,edits:Array<{paragraph:string;xml:(xml:string) => string}>) {
+  const session = (await docxodus()).openDocxSession(bytes,{})
+  try {
+    for (const edit of edits) {
+      const block = session.findByText(edit.paragraph)!
+      const result = session.raw.replaceXml(block.id,edit.xml(session.raw.getXml(block.id)))
+      if (!result.success) throw new Error(result.error?.message)
+    }
+    return session.save()
+  } finally {session.close()}
+}
+
+test("a revision-API edit or a removed pointer stales only the proposals on those paragraphs", async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-outside-"))
+  const engine = syntheticEngine(() => ({amendments:periods.slice(0,3),open_items:[]}),firstCandidate)
+  const ingest = await isolatedIngest(temporary,engine.server)
+  try {
+    await ingest.start("only")
+    const matter = await ingest.matter("Outside revision review")
+    const original = Buffer.from(withParagraphPointers(await Packer.toBuffer(new Document({sections:[{children:
+      periodParagraphs.slice(0,3).map((text) => new Paragraph(text))}]}))))
+    expect(await matter.deliver(original)).toBe(200)
+    const [edited,kept,unpointed] = (await (await matter.prepare("Update the stated periods.")).json() as {redline_ids:number[]}).redline_ids
+    const pids = (await paragraphTargets(original)).map((row) => row.pid)
+    expect(matter.bindings([edited,kept,unpointed]).map((row) => [row.version,row.pid])).toEqual(pids.map((pid) => [2,pid]))
+    // The first paragraph's wording changes; the third loses its hidden pointer.
+    const revised = await outsideRevision(original,[
+      {paragraph:periodParagraphs[0],xml:(xml) => xml.replace("five days","four days")},
+      {paragraph:periodParagraphs[2],xml:(xml) => xml.replace(/<w:bookmark(?:Start|End)\b[^>]*\/>/g,"")},
+    ])
+    expect((await ingest.request(`${matter.route}/documents/revisions`,{method:"POST",headers:{"x-document-prior-sha256":sha256(original)},body:wordForm(revised)})).status).toBe(200)
+    const current = await Bun.file(matter.file).bytes()
+    // The revision write mints a fresh pointer; the stored one now names nothing.
+    const after = await paragraphTargets(current)
+    expect(after.map((row,index) => row.pid === pids[index])).toEqual([true,true,false])
+    expect(await matter.pending()).toEqual([[edited,true,paragraphChanged],[kept,undefined,undefined],[unpointed,true,paragraphChanged]])
+    expect(await matter.accept(edited)).toBe(409)
+    expect(await matter.accept(unpointed)).toBe(409)
+    expect(sha256(await Bun.file(matter.file).bytes())).toBe(sha256(current))
+    // Stale proposals are left out of the tracked-changes export; the valid one remains.
+    const exported = await ingest.request(`${matter.route}/documents/redlined?name=working.docx`)
+    expect(exported.status).toBe(200)
+    const revisedText = (await (await docxodus()).getRevisions(new Uint8Array(await exported.arrayBuffer()))).map((row) => row.text).join(" ")
+    expect(revisedText).toContain("six")
+    expect(revisedText).not.toContain("seven")
+    expect(revisedText).not.toContain("forty-five")
+    expect(await matter.accept(kept)).toBe(200)
+    expect((await createDocxRevision(await Bun.file(matter.file).bytes())).paragraphs.map((row) => row.text))
+      .toEqual(["Notice must arrive within four days.","Retain records for six months.","Pay each invoice within thirty days."])
+    expect([edited,kept,unpointed].map(matter.status)).toEqual(["pending","accepted","pending"])
+  } finally {
+    await ingest.stop();engine.server.stop(true);await rm(temporary,{recursive:true,force:true})
+  }
+},120000)
+
+test("a pointerless copied deliverable keeps whole-revision proposals until its first accepted revision mints pointers", async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-pointerless-"))
+  const batches = [periods.slice(0,2),[periods[1]]]
+  const engine = syntheticEngine(() => ({amendments:batches.shift()!,open_items:[]}),firstCandidate)
+  const ingest = await isolatedIngest(temporary,engine.server)
+  try {
+    await ingest.start("only")
+    const matter = await ingest.matter("Copied Word review")
+    // A source file copied exactly into a deliverable carries no paragraph pointers.
+    const bare = await Packer.toBuffer(new Document({sections:[{children:periodParagraphs.slice(0,2).map((text) => new Paragraph(text))}]}))
+    await Bun.write(path.join(matter.dir,"original.docx"),bare)
+    const db = openDb(matter.dir)
+    try {upsertDocument(db,path.join(matter.dir,"original.docx"),"original.docx",Date.now(),null)} finally {db.close()}
+    expect((await ingest.request(`${matter.route}/documents/copy`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({source:"original.docx",name:"working.docx"})})).status).toBe(200)
+    expect(await Bun.file(matter.file).bytes()).toEqual(new Uint8Array(bare))
+    expect((await paragraphTargets(bare)).map((row) => row.pid)).toEqual([null,null])
+    const [acceptedId,legacyId] = (await (await matter.prepare("Update the stated periods.")).json() as {redline_ids:number[]}).redline_ids
+    expect(matter.bindings([acceptedId,legacyId])).toEqual(["amendment-1","amendment-2"].map((amendment_id) => ({version:1,
+      source_sha256:sha256(bare),amendment_id,target_handle:expect.stringMatching(/^target-/)})))
+    expect(await matter.accept(acceptedId)).toBe(200)
+    const accepted = await Bun.file(matter.file).bytes()
+    const minted = await paragraphTargets(accepted)
+    expect(minted.every((row) => row.pid)).toBe(true)
+    // The whole-revision rule still applies to the older binding.
+    expect(await matter.pending()).toEqual([[legacyId,true,earlierRevision]])
+    expect(await matter.accept(legacyId)).toBe(409)
+    const [fresh] = (await (await matter.prepare("Update the retention period.")).json() as {redline_ids:number[]}).redline_ids
+    expect(matter.bindings([fresh])).toEqual([{version:2,amendment_id:"amendment-1",pid:minted[1].pid,
+      paragraph_sha256:minted[1].sha256,occurrence:0,base_sha256:sha256(accepted)}])
+    expect(await matter.accept(fresh)).toBe(200)
+    expect((await createDocxRevision(await Bun.file(matter.file).bytes())).paragraphs.map((row) => row.text))
+      .toEqual(["Notice must arrive within seven days.","Retain records for six months."])
+    expect(await matter.pending()).toEqual([[legacyId,true,earlierRevision]])
+    expect(await matter.accept(legacyId)).toBe(409)
+    expect(matter.status(legacyId)).toBe("pending")
+  } finally {
+    await ingest.stop();engine.server.stop(true);await rm(temporary,{recursive:true,force:true})
+  }
+},120000)
+
+test("header and footer targets keep whole-revision binding; a body target binds its selected occurrence in its paragraph", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(),"dochaus-word-parts-"))
+  const file = path.join(directory,"working.docx")
+  const engine = syntheticEngine(() => ({amendments:[
+    {before_quote:"five days",replacement:"ten days",target_context:"the notice period, not the cure period",reason:"Requested notice update."},
+    {before_quote:"ABC-1",replacement:"ABC-2",target_context:"header reference",reason:"Requested header update."},
+    {before_quote:"XYZ-9",replacement:"XYZ-8",target_context:"footer reference",reason:"Requested footer update."},
+  ],open_items:[]}),(candidates) => firstCandidate(candidates).map((row) => row.amendment_id === "amendment-1"
+    ? {amendment_id:row.amendment_id,target_handle:candidates.filter((candidate) => candidate.amendment_id === "amendment-1")[1].target_handle} : row))
+  try {
+    await writeDeliverable(directory,"working.docx",await Packer.toBuffer(new Document({sections:[{
+      headers:{default:new Header({children:[new Paragraph("Header reference ABC-1.")]})},
+      footers:{default:new Footer({children:[new Paragraph("Footer reference XYZ-9.")]})},
+      children:[new Paragraph("Cure within five days; notice within five days."),new Paragraph("Closing wording stays.")],
+    }]})))
+    const original = await Bun.file(file).bytes()
+    const ids = await withPreparation(directory,engine,async (prepare) => {
+      const response = await prepare("Change the notice period to ten days and update the header and footer references.")
+      expect(response.status).toBe(200)
+      return (await response.json() as {redline_ids:number[]}).redline_ids
+    })
+    const db = openDb(directory)
+    const rows = (() => {try {return ids.map((id) => getRedline(db,id)!)} finally {db.close()}})()
+    // Only body paragraphs carry pointers; header and footer text has no target.
+    const targets = await paragraphTargets(original)
+    expect(targets.map((row) => row.pid === null)).toEqual([false,false])
+    const [body] = targets
+    expect(rows.map((row) => JSON.parse(row.target_json!))).toEqual([
+      {version:2,amendment_id:"amendment-1",pid:body.pid,paragraph_sha256:body.sha256,occurrence:1,base_sha256:sha256(original)},
+      {version:1,source_sha256:sha256(original),amendment_id:"amendment-2",target_handle:expect.stringMatching(/^target-/)},
+      {version:1,source_sha256:sha256(original),amendment_id:"amendment-3",target_handle:expect.stringMatching(/^target-/)},
+    ])
+    const text = async (bytes:Uint8Array) => (await createDocxRevision(bytes)).paragraphs.map((row) => row.text)
+    expect(await text(await bake(original,[rows[0]]))).toEqual(["Cure within five days; notice within ten days.","Closing wording stays.",
+      "Header reference ABC-1.","Footer reference XYZ-9."])
+    const changed = await bake(original,rows)
+    expect(await text(changed)).toEqual(["Cure within five days; notice within ten days.","Closing wording stays.","Header reference ABC-2.","Footer reference XYZ-8."])
+    // After any change the whole-revision rows are stale, as is the body row whose paragraph changed.
+    const state = await redlineState(changed,rows)
+    expect(rows.map((row) => redlineStaleReason(row,state,true))).toEqual([paragraphChanged,earlierRevision,earlierRevision])
+    const unchanged = await redlineState(original,rows)
+    expect(rows.map((row) => redlineStaleReason(row,unchanged,true))).toEqual([undefined,undefined,undefined])
+    // A paragraph-bound row never falls back to whole-file or legacy matching.
+    for (const target_json of [JSON.stringify({...JSON.parse(rows[0].target_json!),occurrence:-1}),JSON.stringify({...JSON.parse(rows[0].target_json!),pid:""})]) {
+      expect(redlineStaleReason({...rows[0],target_json},unchanged,true)).toContain("invalid Word revision binding")
+      await expect(bake(original,[{...rows[0],target_json}])).rejects.toThrow("binding is invalid")
+    }
+    await expect(bake(changed,[rows[0]])).rejects.toThrow(paragraphChanged)
+  } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
+})
 
 test("a locator unresolved_reason becomes a visible open item without a pending proposal or byte change", async () => {
   const directory = await mkdtemp(path.join(tmpdir(),"dochaus-word-unresolved-"))
@@ -315,11 +607,12 @@ test("a locator unresolved_reason becomes a visible open item without a pending 
   } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
 })
 
-test("accepting an amendment to a numbered list paragraph preserves numbering, tables, sibling paragraphs and untouched runs", async () => {
+test("accepting paragraph-bound amendments to a numbered list paragraph and a table paragraph preserves numbering, tables, sibling paragraphs and untouched runs", async () => {
   const directory = await mkdtemp(path.join(tmpdir(),"dochaus-word-numbered-"))
   const file = path.join(directory,"working.docx")
   const engine = syntheticEngine(() => ({amendments:[
     {before_quote:"thirty days",replacement:"ten days",target_context:"first numbered delivery clause",reason:"Requested delivery update."},
+    {before_quote:"In writing",replacement:"In writing or by email",target_context:"notice table value",reason:"Requested notice method."},
   ],open_items:[]}),firstCandidate)
   try {
     await writeDeliverable(directory,"working.docx",await Packer.toBuffer(new Document({
@@ -334,31 +627,39 @@ test("accepting an amendment to a numbered list paragraph preserves numbering, t
     })))
     const original = await Bun.file(file).bytes()
     const ids = await withPreparation(directory,engine,async (prepare) => {
-      const response = await prepare("Shorten the delivery period in the first numbered clause to ten days.")
+      const response = await prepare("Shorten the delivery period in the first numbered clause to ten days and allow notice by email.")
       expect(response.status).toBe(200)
       return (await response.json() as {redline_ids:number[]}).redline_ids
     })
-    expect(ids).toHaveLength(1)
+    expect(ids).toHaveLength(2)
     const db = openDb(directory)
-    const row = (() => {try {return getRedline(db,ids[0])!} finally {db.close()}})()
-    // The accept route's baking step for a revision-bound proposal.
-    const baked = await bake(original,[row])
+    const rows = (() => {try {return ids.map((id) => getRedline(db,id)!)} finally {db.close()}})()
+    const targets = await paragraphTargets(original)
+    const pointed = (text:string) => targets.find((target) => target.sha256 === sha256(Buffer.from(text)))!.pid
+    expect(rows.map((row) => JSON.parse(row.target_json!)).map((row) => [row.version,row.pid,row.occurrence])).toEqual([
+      [2,pointed("The Supplier shall deliver all Goods within thirty days of the order date."),0],[2,pointed("In writing"),0]])
+    // The Accept-all route's baking step, with the state it read for the stale check.
+    const baked = await bake(original,rows,await redlineState(original,rows))
     const before = await openRevision(original)
     const after = await openRevision(baked)
     try {
       const listOrdinal = before.paragraphs.findIndex((paragraph) => paragraph.match.text.includes("thirty days"))
-      expect(before.paragraphs.flatMap((paragraph,index) => paragraph.match.text === after.paragraphs[index].match.text ? [] : [index])).toEqual([listOrdinal])
+      const cellOrdinal = before.paragraphs.findIndex((paragraph) => paragraph.match.text === "In writing")
+      expect(before.paragraphs.flatMap((paragraph,index) => paragraph.match.text === after.paragraphs[index].match.text ? [] : [index])).toEqual([listOrdinal,cellOrdinal])
       expect(after.paragraphs[listOrdinal].match.text).toBe("The Supplier shall deliver all Goods within ten days of the order date.")
-      expect(() => verifyPreservation(before,after,new Set([listOrdinal]))).not.toThrow()
+      expect(after.paragraphs[cellOrdinal].match.text).toBe("In writing or by email")
+      expect(() => verifyPreservation(before,after,new Set([listOrdinal,cellOrdinal]))).not.toThrow()
       // Element markup is compared after one shared XML serializer, so the
       // engine's self-closing tag spelling is not mistaken for a change.
       const markup = (opened:typeof before,name:string) => Array.from(opened.documents["word/document.xml"].getElementsByTagNameNS(W,name)).map(String)
       expect(markup(before,"numPr")).toHaveLength(2)
       expect(markup(before,"numPr")[0]).toContain("numId")
       expect(markup(before,"tc")).toHaveLength(2)
-      for (const name of ["numPr","tbl","tc","sectPr"]) expect(markup(after,name)).toEqual(markup(before,name))
-      expect(after.paragraphs.map((paragraph,index) => index === listOrdinal ? "" : String(paragraph.node)))
-        .toEqual(before.paragraphs.map((paragraph,index) => index === listOrdinal ? "" : String(paragraph.node)))
+      for (const name of ["numPr","tblPr","tblGrid","trPr","tcPr","sectPr"]) expect(markup(after,name)).toEqual(markup(before,name))
+      expect(markup(after,"tc")[0]).toBe(markup(before,"tc")[0])
+      const changed = new Set([listOrdinal,cellOrdinal])
+      expect(after.paragraphs.map((paragraph,index) => changed.has(index) ? "" : String(paragraph.node)))
+        .toEqual(before.paragraphs.map((paragraph,index) => changed.has(index) ? "" : String(paragraph.node)))
       const pPr = (node:Element) => Array.from(node.childNodes).filter((child) => (child as Element).localName === "pPr").map(String)
       expect(pPr(after.paragraphs[listOrdinal].node)).toEqual(pPr(before.paragraphs[listOrdinal].node))
       const runs = (node:Element) => Array.from(node.getElementsByTagNameNS(W,"r")).map((run) => ({
@@ -369,11 +670,15 @@ test("accepting an amendment to a numbered list paragraph preserves numbering, t
       expect(afterRuns.filter((run) => !run.text.includes("ten days")).map((run) => run.markup))
         .toEqual(beforeRuns.filter((run) => !run.text.includes("thirty days")).map((run) => run.markup))
       expect(afterRuns.find((run) => run.text.includes("ten days"))!.rPr).toBe(beforeRuns.find((run) => run.text.includes("thirty days"))!.rPr)
+      // The table cell's added words keep the cell run's underline.
+      const cellRuns = runs(after.paragraphs[cellOrdinal].node)
+      expect(cellRuns.map((run) => run.text).join("")).toBe("In writing or by email")
+      expect(new Set(cellRuns.map((run) => run.rPr))).toEqual(new Set(runs(before.paragraphs[cellOrdinal].node).map((run) => run.rPr)))
       for (const part of ["word/numbering.xml","word/styles.xml"]) expect(after.parts[part]).toEqual(before.parts[part])
     } finally {before.session.close();after.session.close()}
   } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
 })
-test("stale proposals stay pending and visible while plain download and fresh tracked changes remain available", async () => {
+test("a same-paragraph sibling goes stale and stays pending and visible while plain download and fresh tracked changes remain available", async () => {
   const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-stale-"))
   const workspace = path.join(temporary,"workspace")
   const config = path.join(temporary,"config")
@@ -412,8 +717,9 @@ test("stale proposals stay pending and visible while plain download and fresh tr
     const matter = await (await request("/matters",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({title:"Stale proposal review"})})).json() as {id:string;dir:string}
     const route=`/matters/${matter.id}`
     const file=path.join(matter.dir,"working.docx")
+    // Both first-batch proposals target the first paragraph.
     const original = Buffer.from(withParagraphPointers(await Packer.toBuffer(new Document({sections:[{children:[
-      new Paragraph("Notice must arrive within five days."),new Paragraph("Retain records for three months."),new Paragraph("Pay each invoice within thirty days."),
+      new Paragraph("Notice must arrive within five days and records are kept for three months."),new Paragraph("Pay each invoice within thirty days."),
     ]}]}))))
     expect((await request(`${route}/deliverables`,{method:"POST",body:form(original)})).status).toBe(200)
     const prepare=async () => {
@@ -422,10 +728,19 @@ test("stale proposals stay pending and visible while plain download and fresh tr
       return (await response.json() as {redline_ids:number[]}).redline_ids
     }
     const [acceptedID,staleID]=await prepare()
+    const [paragraph]=await paragraphTargets(original)
+    const db=openDb(matter.dir)
+    try {
+      expect([acceptedID,staleID].map((id) => JSON.parse(getRedline(db,id)!.target_json!)).map((row) => [row.version,row.pid,row.paragraph_sha256,row.occurrence]))
+        .toEqual([[2,paragraph.pid,paragraph.sha256,0],[2,paragraph.pid,paragraph.sha256,0]])
+    } finally {db.close()}
     expect((await request(`${route}/redlines/${acceptedID}/accept`,{method:"POST"})).status).toBe(200)
     const accepted=await Bun.file(file).bytes()
     expect(hash(accepted)).not.toBe(hash(original))
-    const staleReason="This proposal targets an earlier Word revision. Prepare a fresh change list."
+    // No rebasing: the sibling's paragraph no longer reads as it was prepared.
+    const staleReason=paragraphChanged
+    expect((await request(`${route}/redlines/${staleID}/accept`,{method:"POST"})).status).toBe(409)
+    expect(hash(await Bun.file(file).bytes())).toBe(hash(accepted))
     const pending=async () => await (await request(`${route}/redlines?name=working.docx`)).json() as Array<{id:number;status:string;stale?:boolean;stale_reason?:string}>
     const exported=async () => {
       const response=await request(`${route}/documents/redlined?name=working.docx`)
@@ -459,11 +774,12 @@ test("stale proposals stay pending and visible while plain download and fresh tr
     expect(await pending()).toMatchObject([{id:staleID,status:"pending",stale:true},{id:freshID,status:"pending"}])
     expect(hash(await Bun.file(file).bytes())).toBe(hash(accepted))
     expect(readWorkingDocx(matter.dir,file)?.source_sha256).toBe(hash(accepted))
-    const db=openDb(matter.dir)
+    const registry=openDb(matter.dir)
     try {
-      expect([acceptedID,staleID,freshID].map((id) => getRedline(db,id)?.status)).toEqual(["accepted","pending","pending"])
-    } finally {db.close()}
+      expect([acceptedID,staleID,freshID].map((id) => getRedline(registry,id)?.status)).toEqual(["accepted","pending","pending"])
+    } finally {registry.close()}
     expect((await request(`${route}/redlines/${staleID}/accept`,{method:"POST"})).status).toBe(409)
+    expect((await request(`${route}/redlines/accept-all?name=working.docx`,{method:"POST"})).status).toBe(409)
     expect(hash(await Bun.file(file).bytes())).toBe(hash(accepted))
   } finally {
     process.kill();await process.exited;engine.stop(true);await rm(temporary,{recursive:true,force:true})

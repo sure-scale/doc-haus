@@ -44,7 +44,7 @@ await mkdir(evidence, { recursive: true })
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 const PT = "http://powertools.codeplex.com/2011"
 const NAME = "synthetic-services-agreement.docx"
-const FIRST = "Extend the delivery period to seven days and raise the service credit to three percent."
+const FIRST = "Extend the delivery period to seven days, raise the service credit to three percent and say the services are performed."
 const SECOND = "Extend the payment period to forty-five days."
 const THIRD = "Raise the liability cap to two hundred thousand pounds."
 // Every legal-pass answer is scripted against the synthetic document below.
@@ -52,6 +52,8 @@ const plans: Record<string, { before_quote: string; replacement: string; target_
   [FIRST]: [
     { before_quote: "within five days", replacement: "within seven days", target_context: "numbered delivery obligation", reason: "Requested delivery period." },
     { before_quote: "Two percent", replacement: "Three percent", target_context: "service credit table value", reason: "Requested service credit." },
+    // Same numbered paragraph as the delivery period: stale once that is accepted.
+    { before_quote: "deliver the services", replacement: "perform the services", target_context: "numbered delivery obligation", reason: "Requested service wording." },
   ],
   [SECOND]: [
     { before_quote: "within thirty days", replacement: "within forty-five days", target_context: "numbered payment obligation", reason: "Requested payment period." },
@@ -281,7 +283,7 @@ try {
   const render = dialog.locator(".docx-render")
   const status = dialog.locator("#document-edit-request").getByRole("status")
   const acceptAll = dialog.getByRole("button", { name: "Accept all", exact: true })
-  const staleReason = "This proposal targets an earlier Word revision. Prepare a fresh change list."
+  const staleReason = "The paragraph this change targets has changed since it was prepared. Prepare a fresh change list."
   const exportRefusal = "A proposal no longer resolves against this Word revision."
   const staleNotice = "1 stale proposal is left out of the tracked changes and the redline download. Reject it to clear it; prepare a fresh change list if the change is still needed."
   const working = () => readWorkingDocx(file.dir, file.path)?.source_sha256
@@ -329,46 +331,62 @@ try {
     await expect(render).toBeVisible()
   }
 
-  await step("3 request edits and prepare two proposals without changing the Word file", async () => {
-    await prepare(FIRST, "2 proposed changes ready for review.")
-    await expect(dialog.locator(".changes-count")).toHaveText("2 pending changes")
-    await expect(cards).toHaveCount(2)
+  await step("3 request edits and prepare three proposals without changing the Word file", async () => {
+    await prepare(FIRST, "3 proposed changes ready for review.")
+    await expect(dialog.locator(".changes-count")).toHaveText("3 pending changes")
+    await expect(cards).toHaveCount(3)
     await expect(cards.nth(0)).toContainText("within seven days")
     await expect(cards.nth(1)).toContainText("Three percent")
+    await expect(cards.nth(2)).toContainText("perform the services")
     await expect(cards.nth(0)).toContainText("Synthetic Reviewing Lawyer")
     await expect(acceptAll).toBeEnabled()
     expect(await current()).toBe(hashes.seeded)
     expect(working()).toBeUndefined()
-    // The tracked-changes export carries both proposals over the intact structure.
+    // The tracked-changes export carries every proposal over the intact structure.
     const [download] = await Promise.all([page.waitForEvent("download"), dialog.getByRole("button", { name: "Download redline", exact: true }).click()])
     expect(download.suggestedFilename()).toBe("synthetic-services-agreement (tracked changes).docx")
     await download.saveAs(path.join(evidence, "03-tracked-changes.docx"))
     const redline = inspect(await Bun.file(path.join(evidence, "03-tracked-changes.docx")).bytes())
     expect(redline.insertions).toBeGreaterThanOrEqual(2)
     expect(redline.deletions).toBeGreaterThanOrEqual(2)
-    expect(redline.paragraphs).toEqual(seeded.paragraphs.map(text => amended(text, ["within five days", "Two percent"])))
+    expect(redline.paragraphs).toEqual(seeded.paragraphs.map(text => amended(text, ["within five days", "Two percent", "deliver the services"])))
     expect(redline.numbered.map(row => row.numPr)).toEqual(seeded.numbered.map(row => row.numPr))
     expect(redline.cells).toEqual(seeded.cells.map(text => amended(text, ["Two percent"])))
     expect(await current()).toBe(hashes.seeded)
     await shot("03-prepared")
   })
 
-  await step("4 accept card 1; the remaining card targets an earlier Word revision and cannot be accepted", async () => {
+  await step("4 accept card 1; the card on another paragraph stays acceptable and the same-paragraph card goes stale", async () => {
     const accepted = resolved("accept")
     await cards.nth(0).getByRole("button", { name: "Accept", exact: true }).click()
     expect((await accepted).status()).toBe(200)
-    await expect(cards).toHaveCount(1)
-    await expect(cards.nth(0)).toContainText("Three percent")
-    await expect(cards.nth(0)).toContainText(staleReason)
-    await expect(cards.nth(0).getByRole("button", { name: "Accept", exact: true })).toBeDisabled()
-    await expect(cards.nth(0).getByRole("button", { name: "Reject", exact: true })).toBeEnabled()
+    await expect(cards).toHaveCount(2)
+    const credit = cards.filter({ hasText: "Three percent" })
+    const sibling = cards.filter({ hasText: "perform the services" })
+    await expect(credit).not.toContainText(staleReason)
+    await expect(credit.getByRole("button", { name: "Accept", exact: true })).toBeEnabled()
+    await expect(sibling).toContainText(staleReason)
+    await expect(sibling.getByRole("button", { name: "Accept", exact: true })).toBeDisabled()
+    await expect(sibling.getByRole("button", { name: "Reject", exact: true })).toBeEnabled()
     await expect(acceptAll).toBeDisabled()
     await expect(render).toContainText("The Supplier shall deliver the services within seven days.")
+    hashes.firstAccepted = await current()
+    expect(hashes.firstAccepted).not.toBe(hashes.seeded)
+    expect(working()).toBe(hashes.firstAccepted)
+    expect((await pending()).map(row => [row.new_text, row.stale])).toEqual([["Three percent", undefined], ["perform the services", true]])
+    await shot("04-stale-card")
+    const second = resolved("accept")
+    await credit.getByRole("button", { name: "Accept", exact: true }).click()
+    expect((await second).status()).toBe(200)
+    await expect(cards).toHaveCount(1)
+    await expect(cards.nth(0)).toContainText("perform the services")
+    await expect(cards.nth(0)).toContainText(staleReason)
+    await expect(render.locator("td, th").filter({ hasText: "Three percent" })).toHaveCount(1)
     hashes.accepted = await current()
-    expect(hashes.accepted).not.toBe(hashes.seeded)
+    expect(hashes.accepted).not.toBe(hashes.firstAccepted)
     expect(working()).toBe(hashes.accepted)
     expect((await pending()).map(row => row.stale)).toEqual([true])
-    await shot("04-stale-card")
+    await shot("04-other-paragraph-accepted")
   })
 
   await step("5 API refuses the stale card, a hashless revision upload and a deliverable overwrite", async () => {
@@ -397,7 +415,7 @@ try {
     const bytes = await Bun.file(path.join(evidence, "06-download.docx")).bytes()
     expect(hash(bytes)).toBe(hashes.accepted)
     expect(hash(bytes)).toBe(working())
-    expectPreserved(seeded, inspect(bytes), ["within five days"])
+    expectPreserved(seeded, inspect(bytes), ["within five days", "Two percent"])
     // The redline export no longer refuses: it omits the stale row, which leaves
     // nothing to track, so it is the accepted file without the stale change.
     const exported = await api(`/matters/${file.matter}/documents/redlined?name=${encodeURIComponent(NAME)}`)
@@ -407,10 +425,10 @@ try {
     const tracked = inspect(redlined)
     expect(tracked.insertions).toBe(0)
     expect(tracked.deletions).toBe(0)
-    expect(strFromU8(unzipSync(redlined)["word/document.xml"])).not.toContain("Three percent")
-    expect(tracked.cells).toContain("Two percent")
+    expect(strFromU8(unzipSync(redlined)["word/document.xml"])).not.toContain("perform the services")
+    expect(tracked.paragraphs).toContain("The Supplier shall deliver the services within seven days.")
     expect(hash(redlined)).toBe(hashes.accepted)
-    expectPreserved(seeded, tracked, ["within five days"])
+    expectPreserved(seeded, tracked, ["within five days", "Two percent"])
     // Downloading resolves nothing: the stale row stays pending and stale.
     expect(await current()).toBe(hashes.accepted)
     expect((await pending()).map(row => row.stale)).toEqual([true])
@@ -442,7 +460,7 @@ try {
     await fresh.getByRole("button", { name: "Accept", exact: true }).click()
     expect((await accepted).status()).toBe(200)
     await expect(cards).toHaveCount(1)
-    await expect(cards.nth(0)).toContainText("Three percent")
+    await expect(cards.nth(0)).toContainText("perform the services")
     await expect(render).toContainText("The Customer shall pay each invoice within forty-five days.")
     hashes.reaccepted = await current()
     expect(hashes.reaccepted).not.toBe(hashes.accepted)
@@ -453,7 +471,7 @@ try {
   await step("8 Reject leaves the bytes unchanged; with nothing pending, Download returns the exact Word file", async () => {
     await prepare(THIRD, "1 proposed change ready for review.")
     await expect(cards).toHaveCount(2)
-    for (const text of ["Two hundred thousand pounds", "Three percent"]) {
+    for (const text of ["Two hundred thousand pounds", "perform the services"]) {
       const rejected = resolved("reject")
       await cards.filter({ hasText: text }).getByRole("button", { name: "Reject", exact: true }).click()
       expect((await rejected).status()).toBe(200)
@@ -469,7 +487,7 @@ try {
     await download.saveAs(path.join(evidence, "08-download.docx"))
     const bytes = await Bun.file(path.join(evidence, "08-download.docx")).bytes()
     expect(hash(bytes)).toBe(hashes.reaccepted)
-    expectPreserved(seeded, inspect(bytes), ["within five days", "within thirty days"])
+    expectPreserved(seeded, inspect(bytes), ["within five days", "Two percent", "within thirty days"])
     await shot("08-rejected-and-downloaded")
   })
 
