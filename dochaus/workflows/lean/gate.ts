@@ -137,7 +137,7 @@ function checklistOpenItem(directory: string, { item_id, item, finding }: Checkl
 }
 
 /** Why an adverse finding remains, in the lawyer's words. */
-const CHECKLIST_CLASS_LABELS: Record<ChecklistFindingClass, string> = {
+export const CHECKLIST_CLASS_LABELS: Record<ChecklistFindingClass, string> = {
   omission: "omission not fixed by the repair round",
   source_conflict: "conflicts with another source requirement",
   not_inspectable: "cannot be established from document text",
