@@ -236,6 +236,21 @@ test("a Word file with tracked changes is refused plainly at import and at Accep
   } finally {await rm(temporary,{recursive:true,force:true})}
 },120000)
 
+test("Prepare on a Word file with tracked changes and no working revision says how to resolve them", async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-tracked-prepare-"))
+  try {
+    const review = await isolatedReview(temporary,[pendingChanges])
+    try {
+      expect(await review.deliver(await retentionEdit(await fixture("synthetic-word-accepted.docx"),true))).toBe(200)
+      expect(review.working()).toBeUndefined()
+      const response = await review.post("/documents/amendments",{headers:{"content-type":"application/json"},body:JSON.stringify({name:"working.docx",instructions:"Update the retention period."})})
+      expect(response.status).toBe(409)
+      expect((await response.json() as {error:string}).error).toBe("This Word file contains tracked changes. Accept or reject them in Word before preparing changes.")
+      expect(await review.pending()).toEqual([])
+    } finally {await review.stop()}
+  } finally {await rm(temporary,{recursive:true,force:true})}
+},120000)
+
 // Live check against the installed LibreOffice; skipped where it is absent.
 test.skipIf(!Bun.which("soffice"))("a live LibreOffice save of the accepted file keeps every pointer and hash, and its proposals import fresh", async () => {
   const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-soffice-"))
