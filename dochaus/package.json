@@ -10,7 +10,7 @@
   "dependencies": {
     "@huggingface/transformers": "4.2.0",
     "@xmldom/xmldom": "0.8.13",
-    "docxodus": "^6.4.0",
+    "docxodus": "^13.0.0",
     "fflate": "0.8.3",
     "htmlparser2": "8.0.2",
     "mammoth": "^1.8.0",
