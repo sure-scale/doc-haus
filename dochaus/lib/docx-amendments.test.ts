@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, test } from "bun:test"
-import { strFromU8, unzipSync } from "fflate"
+import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { createDocxRevision, createDocxLocalization, applyDocxLocalization, applyDocxParagraphEdits } from "./docx-amendments"
 import { renderMarkdownToDocx } from "./render"
 import { docxodus } from "./docxodus"
@@ -238,3 +238,35 @@ test("context localization retains run formatting for insertion, deletion, no-op
     expect((await createDocxRevision(output.bytes)).markdown).toContain(expected)
   }
 })
+
+// Word writes paragraphs whose only content is a break, tab or field code. grep
+// projects w:t text only, so these have no match; they must be skipped, not
+// mapped onto the next text paragraph, and must survive an edit elsewhere.
+for (const [name, content] of [
+  ["page break", '<w:r><w:br w:type="page"/></w:r>'],
+  ["text-wrapping break", "<w:r><w:br/></w:r>"],
+  ["column break", '<w:r><w:br w:type="column"/></w:r>'],
+  ["tab", "<w:r><w:tab/></w:r>"],
+  ["field code without a result", '<w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> PAGE </w:instrText></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r>'],
+]) {
+  test(`a ${name}-only paragraph has no projection text and survives an amendment of the next paragraph`, async () => {
+    const rendered = unzipSync((await renderMarkdownToDocx("First paragraph.\n\nMiddle marker.\n\nThird paragraph.\n\nTail marker.\n")).bytes)
+    const markers = /<w:r><w:t xml:space="preserve">(Middle|Tail) marker\.<\/w:t><\/w:r>/g
+    const xml = strFromU8(rendered["word/document.xml"]!)
+    expect(xml.match(markers)).toHaveLength(2)
+    const source = zipSync({ ...rendered, "word/document.xml": strToU8(xml.replace(markers, content)) })
+    const revision = await createDocxRevision(source)
+    expect(revision.paragraphs.map(row => row.text)).toEqual(["First paragraph.", "Third paragraph."])
+    const output = await applyDocxParagraphEdits(source, [{ id: "next", paragraph_handle: revision.paragraphs[1]!.paragraph_handle,
+      occurrence: 0, before_quote: "Third", replacement: "Final" }])
+    expect((await createDocxRevision(output.bytes)).paragraphs.map(row => row.text)).toEqual(["First paragraph.", "Final paragraph."])
+    expect(output.report.package_structure_verified).toBe(true)
+    const body = (bytes: Uint8Array) => strFromU8(unzipSync(bytes)["word/document.xml"]!)
+      .match(/<w:p>[\s\S]*?<\/w:p>/g)!.map(paragraph => paragraph.replace(/\s+\/>/g, "/>"))
+    const before = body(source)
+    const after = body(output.bytes)
+    expect(after).toHaveLength(4)
+    expect([after[1], after[3]]).toEqual([before[1], before[3]])
+    expect(after[1]).toContain(content)
+  })
+}
