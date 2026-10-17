@@ -54,6 +54,7 @@ import { openTelemetryDb, applyRetentionPolicy, clearTelemetry } from "../../../
 import { documentAmendmentRoutes, acceptedWorkingDocxUpdate } from "./document-amendments"
 import { readWorkingDocx } from "../../../dochaus/lib/working-docx"
 import { withParagraphPointers } from "../../../dochaus/lib/drafting-amendment"
+import { DocxTrackedRevisionsError } from "../../../dochaus/lib/docx-amendments"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
 import { draftingTraceReference } from "../../../dochaus/lib/drafting-trace-identity"
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
@@ -623,6 +624,9 @@ app.post("/matters/:id/documents/revisions", async (c) => {
   } catch (error) {
     if (error instanceof SourceDocumentConflictError || error instanceof DeliverableConflictError)
       return c.json({ error: error.message }, 409)
+    // An accepted working revision must be readable paragraph by paragraph.
+    if (error instanceof DocxTrackedRevisionsError)
+      return c.json({ error: "This Word file contains tracked changes. Accept or reject them in Word, then upload it again." }, 409)
     throw error
   }
 })

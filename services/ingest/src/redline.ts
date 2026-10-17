@@ -2,7 +2,7 @@ import { docxodus } from "./docxodus"
 import { compareDocxWithPointers, paragraphTargets, resolveParagraphTarget, type ParagraphTarget } from "../../../dochaus/lib/drafting-amendment"
 import type { RedlineRow } from "./db"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
-import { createDocxLocalization, applyDocxParagraphEdits } from "../../../dochaus/lib/docx-amendments"
+import { createDocxLocalization, applyDocxParagraphEdits, DocxTrackedRevisionsError } from "../../../dochaus/lib/docx-amendments"
 import { createHash } from "node:crypto"
 import { draftingAttribution } from "../../../dochaus/lib/docx-attribution"
 import { exportDocxComments, preserveDocxComments, readDocxCommentParagraphs } from "../../../dochaus/lib/docx-comments"
@@ -180,15 +180,19 @@ export function binding(row:RedlineRow):RevisionBinding|ParagraphBinding {
 }
 
 const paragraphChanged = "The paragraph this change targets has changed since it was prepared. Prepare a fresh change list."
-export type RedlineState = { sha256:string; targets:ParagraphTarget[]|null }
+const trackedChanges = "This Word file contains tracked changes. Accept or reject them in Word before changes can be applied."
+export type RedlineState = { sha256:string; targets:ParagraphTarget[]|null; tracked?:true }
 // Read once per request from the bytes being reviewed. Paragraph targets are
-// read only when a paragraph-bound proposal needs them; an unreadable revision
-// leaves those proposals stale rather than failing the whole change list.
+// read only when a paragraph-bound proposal needs them, or to explain why a
+// whole-revision proposal is stale; an unreadable revision leaves those
+// proposals stale rather than failing the whole change list.
 export async function redlineState(bytes:Uint8Array,rows:RedlineRow[]):Promise<RedlineState> {
   const sha256 = createHash("sha256").update(bytes).digest("hex")
-  if (!rows.some((row) => {try {return binding(row).version === 2} catch {return false}})) return {sha256,targets:[]}
+  const bindings = rows.flatMap((row) => {try {return [binding(row)]} catch {return []}})
+  if (!bindings.some((value) => value.version === 2 || value.source_sha256 !== sha256)) return {sha256,targets:[]}
   try {return {sha256,targets:await paragraphTargets(bytes)}}
   catch (error) {
+    if (error instanceof DocxTrackedRevisionsError) return {sha256,targets:null,tracked:true}
     console.warn("[redline] paragraph targets unavailable",diagnosticErrorMetadata(error))
     return {sha256,targets:null}
   }
@@ -201,6 +205,8 @@ export function redlineStaleReason(row:RedlineRow,state:RedlineState,protectedWo
   if (row.target_json == null) return protectedWord ? "Prepare this older proposal against the current Word revision." : undefined
   let value:ReturnType<typeof binding>
   try {value = binding(row)} catch {return "This proposal has an invalid Word revision binding. Prepare a fresh change list."}
+  // No bound proposal applies to this revision, and a fresh change list cannot either.
+  if (state.tracked) return trackedChanges
   if (value.version === 1) return value.source_sha256 === state.sha256 ? undefined : "This proposal targets an earlier Word revision. Prepare a fresh change list."
   if (!state.targets) return "This Word revision cannot be read paragraph by paragraph. Prepare a fresh change list."
   // Never rebased: the pointed paragraph must still read exactly as prepared.
