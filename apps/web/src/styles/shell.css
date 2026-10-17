@@ -105,10 +105,58 @@
     grid-template-rows: minmax(0, 1fr);
   }
 
+  /* Nothing spills past the card, so the status bar below never covers the
+     composer. */
   .matter-body > .workspace > .chat-card {
     align-self: stretch;
     min-height: 0;
     margin-bottom: 0;
+    overflow: hidden auto;
+  }
+
+  /* A tall run header keeps its title, actions and progress in view: only the
+     requirement list and open Details give up height, and they scroll. The
+     header itself scrolls only when even those rows cannot fit. */
+  .matter-body > .workspace .run-head:not(.is-compact, .is-done) {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  .matter-body > .workspace .run-head:not(.is-compact, .is-done) > :not(.run-checklist-refinement, .run-head-details) {
+    flex: none;
+  }
+
+  .matter-body > .workspace .run-checklist-refinement,
+  .matter-body > .workspace .run-checklist-refinement > fieldset {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  /* The form keeps its legend, two lines of the list and its button; past
+     that the header scrolls rather than letting the button overlap progress. */
+  .matter-body > .workspace .run-checklist-refinement {
+    min-height: calc(5.25rem + 2.5rem);
+  }
+
+  .matter-body > .workspace .run-checklist-refinement > fieldset {
+    align-items: flex-start;
+  }
+
+  .matter-body > .workspace .run-checklist-refinement > fieldset > :not(.run-checklist-choices) {
+    flex: none;
+  }
+
+  .matter-body > .workspace .run-checklist-choices {
+    align-self: stretch;
+    min-height: 2.5rem;
+  }
+
+  .matter-body > .workspace .run-head-details.is-open {
+    min-height: 0;
   }
 
   /* The conversation keeps a few lines however far Details open. */

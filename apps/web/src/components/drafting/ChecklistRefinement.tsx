@@ -22,8 +22,8 @@ export default function ChecklistRefinement({ status, actions }: { status: LeanD
     }}>
       <fieldset disabled={actions.busy || actions.resuming}>
         <legend>Check a requirement against the full draft</legend>
-        <p className="run-note">Select the requirement to compare with the complete draft and the work recorded for it. The earlier finding stays in the record.</p>
         <div className="run-checklist-choices">
+          <p className="run-note">Select the requirement to compare with the complete draft and the work recorded for it. The earlier finding stays in the record.</p>
           {parents.map((parent, index) => (
             <label className="run-checklist-choice" key={parent.parent_id}>
               <input type="radio" name={id} value={index} checked={selected === parent.parent_id} onChange={() => setSelected(parent.parent_id)} />

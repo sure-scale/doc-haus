@@ -469,11 +469,21 @@ button.run-head-toggle[aria-expanded="true"]::after {
   font-weight: 600;
 }
 
+/* The list scrolls on its own. A shaded edge shows where more of it is out of
+   view: the covers move with the content and hide the shading at either end. */
 .run-checklist-choices {
   max-height: min(30dvh, 280px);
   margin-bottom: 10px;
   overflow-y: auto;
   overscroll-behavior: contain;
+  scroll-padding-block: 20px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--warn-border) transparent;
+  background:
+    linear-gradient(var(--warn-soft) 50%, transparent) top / 100% 32px no-repeat local,
+    linear-gradient(transparent, var(--warn-soft) 50%) bottom / 100% 32px no-repeat local,
+    linear-gradient(color-mix(in srgb, var(--warn) 24%, transparent), transparent) top / 100% 14px no-repeat scroll,
+    linear-gradient(transparent, color-mix(in srgb, var(--warn) 24%, transparent)) bottom / 100% 14px no-repeat scroll;
 }
 
 .run-checklist-choice {
