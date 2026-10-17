@@ -1,5 +1,5 @@
 {
-  "version": 2,
-  "name": "2.0",
-  "notes": "Drafting repairs now continue correctly when revising one document causes a related document to be redrafted."
+  "version": 3,
+  "name": "2.0.1",
+  "notes": "Pause a draft and continue later from the same step. Drafts flag Word edits accepted after their final check, and requirements the checks can't settle become open items for your review instead of stalling the draft. Also a cleaner chat layout and every drafted document under Ready for review."
 }
