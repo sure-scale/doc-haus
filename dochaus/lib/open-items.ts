@@ -19,7 +19,7 @@ export function highlightOpenItemsInDocx(bytes: Uint8Array) {
   const highlighted = highlightOpenItemsInDocumentXml(strFromU8(document))
   if (highlighted === strFromU8(document)) return bytes
   parts["word/document.xml"] = strToU8(highlighted)
-  return zipSync(parts)
+  return zipSync(parts, { mtime: new Date(1980, 0, 1) })
 }
 
 function highlightOpenItemsInDocumentXml(xml: string) {

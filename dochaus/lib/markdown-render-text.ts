@@ -44,7 +44,7 @@ export function prepareMarkdownRenderText(content: string) {
       if (xml.includes(prefix) || [...counts.values()].some(count => count !== 1))
         throw new Error("Markdown render text did not preserve every exact character reference token.")
       parts["word/document.xml"] = strToU8(xml)
-      return zipSync(parts)
+      return zipSync(parts, { mtime: new Date(1980, 0, 1) })
     },
   }
 }
