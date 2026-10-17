@@ -71,7 +71,9 @@ test("each verified disclosure class is carried to the disclosed item", () => {
     expect(checklistOutputState(directory)).toMatchObject({ valid: true, unresolved: [{ item_id: "c1", class: row.class }] })
     const gate = finalGate(directory)
     expect(gate).toMatchObject({ status: "pass", delivery: "review_draft_with_findings", blocking: [] })
-    expect(unresolvedItems(gate)).toEqual([expect.objectContaining({ status: "disclosed", ref: { checklist_item: "c1", checklist_class: row.class, document: "d1" },
+    // A source conflict also refers to the gate's question on it.
+    expect(unresolvedItems(gate)).toEqual([expect.objectContaining({ status: "disclosed", ref: { checklist_item: "c1", checklist_class: row.class, document: "d1",
+      ...(row.class === "source_conflict" ? { question_id: gate.question!.id } : {}) },
       detail: expect.stringContaining(`(${row.label})`) })])
   }
   const conflict = checklistMatter([{ item_id: "c1", finding: cases[2].finding }, { item_id: "c2", finding: finding("c2", "satisfied") }])

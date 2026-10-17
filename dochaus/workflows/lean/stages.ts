@@ -195,6 +195,13 @@ export function stageInputs(directory: string, step: StepID, options: { repairCo
     ...(updates && !inputs.some(part => part.name === "updated-notes.md") ? [{ name: "updated-notes.md", bytes: updates }] : [])]
 }
 
+/** The questions a step's key reads. The gate's open question is asked after
+ * the walk, so it re-keys no step before it; its answer, like any other, keys
+ * every step through "answers". */
+function keyedQuestions(directory: string) {
+  return JSON.stringify(readQuestions(directory).filter(question => question.stage !== "gate" || question.status === "answered"))
+}
+
 function baseStageInputs(directory: string, step: StepID, options: { repairContext?: false }): { name: string; bytes: string | Uint8Array }[] {
   const file = (name: string) => ({ name, bytes: existsSync(leanFile(directory, name)) ? readFileSync(leanFile(directory, name)) : "" })
   const answers = { name: "answers", bytes: answeredQuestionsText(directory) }
@@ -211,7 +218,7 @@ function baseStageInputs(directory: string, step: StepID, options: { repairConte
   if (step === "finalize")
     return [file("repairs.json"),file("request.md"), file("plan.json"), ...planned.flatMap(id => [file(`${id}/paragraphs.json`), file(`${id}/paragraphs-applied.json`), file(`${id}/changes.json`), file(`${id}/apply.json`), file(`${id}/redline.docx`)]),
       { name: "open-items", bytes: JSON.stringify(disclosableItems(directory)) },
-      { name: "questions", bytes: JSON.stringify(readQuestions(directory)) }]
+      { name: "questions", bytes: keyedQuestions(directory) }]
   if (step === "gate")
     return [...planned.flatMap(id => [file(`${id}/paragraphs-applied.json`), file(`${id}/apply.json`), file(`${id}/change-review.json`)]),
       file("package-review.json"), file("checklist/refinements.json"), file("checklist/checks.json"), file("drafting-notes.md"), file("open-items.json"), file("questions.json")]
@@ -227,7 +234,7 @@ function baseStageInputs(directory: string, step: StepID, options: { repairConte
   if (stage === "draft") return [{ name: "outline-contract", bytes: OUTLINE_CONTRACT }, ...outlineInputs(directory), { name: "plan-entry", bytes: JSON.stringify(operativeDocument(plannedDocument(directory, document))) }, acting, ...(planned.indexOf(document) > 0 ? [finished] : [])]
   if (isReviewStage(stage)) return [{ name: "playbook-selection", bytes: JSON.stringify(plannedDocument(directory, document)?.playbook_review ?? null) }, file("request.md"), at("paragraphs.json"), sources, finished, acting, scope]
   if (stage === "change-prepare") return [file("request.md"), entry, at("paragraphs.json"), at("change-plan.json"), answers, sources, finished, acting, scope, { name: "repairs", bytes: JSON.stringify(repairs ?? null) }]
-  if (stage === "change-review") return [...(repairs?.items.every(item => item.stage === "checklist-check") ? [{ name: "focused-review-contract", bytes: "prepared-dependency-component-review-2-proposed-body" }] : []), { name: "review-contract", bytes: "phase-aware-owned-body-review-2" }, file("request.md"), entry, at("paragraphs.json"), at("changes.json"), at("change-plan.json"), at("change-preparation.json"), ...reviewStages(directory, document).map(stage => at(`${stage}.md`)), answers, sources, finished, acting, scope, { name: "questions", bytes: JSON.stringify(readQuestions(directory)) }, { name: "repairs", bytes: JSON.stringify(repairs ?? null) }]
+  if (stage === "change-review") return [...(repairs?.items.every(item => item.stage === "checklist-check") ? [{ name: "focused-review-contract", bytes: "prepared-dependency-component-review-2-proposed-body" }] : []), { name: "review-contract", bytes: "phase-aware-owned-body-review-2" }, file("request.md"), entry, at("paragraphs.json"), at("changes.json"), at("change-plan.json"), at("change-preparation.json"), ...reviewStages(directory, document).map(stage => at(`${stage}.md`)), answers, sources, finished, acting, scope, { name: "questions", bytes: keyedQuestions(directory) }, { name: "repairs", bytes: JSON.stringify(repairs ?? null) }]
   if (stage === "changes" || stage === "change-plan") {
     return [...(stage === "changes" && repairs?.items.every(item => item.stage === "checklist-check") ? [{ name: "focused-reconciliation-contract", bytes: "prepared-operation-components-1" }] : []), ...(stage === "change-plan" && repairs?.items.every(item => item.stage === "checklist-check") ? [{ name: "focused-repair-contract", bytes: "one-assessment-source-adjudication-2" }] : []), file("request.md"), entry, ...(stage === "changes" ? [at("change-plan.json"), at("change-preparation.json")] : []), ...reviewStages(directory, document).map(stage => at(`${stage}.md`)), at("paragraphs.json"), { name: "repairs", bytes: repairs ? JSON.stringify(repairs) : "" }, answers, sources,
       { name: "draft-items", bytes: JSON.stringify(readOpenItems(directory).filter(item =>
@@ -365,8 +372,9 @@ function message(error: unknown) {
 
 export type ChecklistOpenFinding = { item_id: string; item: ChecklistItem; finding: ChecklistFinding }
 /** A completed current finding that remains adverse, with the class its
- * verified fields establish. */
-export type ChecklistUnresolvedFinding = ChecklistOpenFinding & { class: ChecklistFindingClass; conflicting_item_ids?: string[] }
+ * verified fields establish; a source conflict carries the current items it
+ * conflicts with. */
+export type ChecklistUnresolvedFinding = ChecklistOpenFinding & { class: ChecklistFindingClass; conflicting_item_ids?: string[]; conflicting_items?: { id: string; item: ChecklistItem }[] }
 /** A refined parent whose reconciled coverage is unsatisfied or indeterminate. */
 export type ChecklistUnresolvedParent = { parent_id: string; item: ChecklistItem; status: "unsatisfied" | "indeterminate"; issues: string[] }
 export type ChecklistOutputState = { valid: boolean; open: boolean; openFindings: ChecklistOpenFinding[]; unresolved: ChecklistUnresolvedFinding[]; unresolvedParents: ChecklistUnresolvedParent[] }
@@ -412,7 +420,9 @@ export function checklistOutputState(directory: string): ChecklistOutputState {
     if (coverage.some(parent => parent.children.some(id => !completed(id))) || !existsSync(leanFile(directory, "checklist/report.md"))) return invalid
     const unresolved = current.flatMap(row => {
       const classified = classifyChecklistFinding(row.item, row.finding, effective.items)
-      return classified ? [{ ...row, ...classified }] : []
+      if (!classified) return []
+      return [{ ...row, ...classified, ...(classified.class === "source_conflict"
+        ? { conflicting_items: effective.items.filter(other => classified.conflicting_item_ids.includes(other.id)).map(({ id, item }) => ({ id, item })) } : {}) }]
     })
     const unresolvedParents = coverage.flatMap(parent => parent.status === "unsatisfied" || parent.status === "indeterminate"
       ? [{ parent_id: parent.parent_id, item: originals.find(row => row.id === parent.parent_id)!.item, status: parent.status, issues: parent.issues }] : [])
