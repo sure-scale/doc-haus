@@ -35,7 +35,7 @@
       "dependencies": {
         "@fontsource/space-grotesk": "^5.2.10",
         "@opencode/client": "workspace:*",
-        "docxodus": "^6.4.0",
+        "docxodus": "^13.0.0",
         "react": "^19.1.0",
         "react-dom": "^19.1.0",
         "react-markdown": "^10.1.0",
@@ -59,7 +59,7 @@
         "@opencode/plugin": "workspace:*",
         "@opencode/schema": "workspace:*",
         "@xmldom/xmldom": "0.8.13",
-        "docxodus": "^6.4.0",
+        "docxodus": "^13.0.0",
         "fflate": "0.8.3",
         "htmlparser2": "8.0.2",
         "mammoth": "^1.8.0",
@@ -1146,7 +1146,6 @@
     "@tanstack/virtual-core@3.17.8": "patches/@tanstack%2Fvirtual-core@3.17.8.patch",
     "ghostty-web@github:anomalyco/ghostty-web#83c0a07": "patches/ghostty-web@0.3.0.patch",
     "@modelcontextprotocol/client@2.0.0": "patches/@modelcontextprotocol%2Fclient@2.0.0.patch",
-    "docxodus@6.4.0": "patches/docxodus@6.4.0.patch",
     "pacote@21.5.1": "patches/pacote@21.5.1.patch",
     "@standard-community/standard-openapi@0.2.9": "patches/@standard-community%2Fstandard-openapi@0.2.9.patch",
     "@npmcli/agent@4.0.2": "patches/@npmcli%2Fagent@4.0.2.patch",
@@ -3941,7 +3940,7 @@
 
     "dmg-builder": ["dmg-builder@26.15.7", "", { "dependencies": { "app-builder-lib": "26.15.7", "builder-util": "26.15.3", "fs-extra": "^10.1.0", "js-yaml": "^4.1.0" } }, "sha512-rfo1YyAWO0L3cZLKCqKQiLYbW6ZXebRUfK0kWp4oXxO7dDFLrf7alRkWImNuXvZVQhs6Idzy++cwOk8I+xPDhw=="],
 
-    "docxodus": ["docxodus@6.4.0", "", { "peerDependencies": { "react": ">=16.8.0" }, "optionalPeers": ["react"] }, "sha512-8OAM1oyEcwC+BtfeqDZ8e914cTR8OAO0ARU59jyrvSozft2xTqbw0sUij07trt4wMFgpytb2fgqrw41Fvrh7yg=="],
+    "docxodus": ["docxodus@13.0.0", "", { "peerDependencies": { "react": ">=16.8.0" }, "optionalPeers": ["react"] }, "sha512-i46SIeysRh1lieFAlzspl5VcTvOUi3ffEECjp2LDw9ZQTyzHE+Kt2Q53rNi7JNcM+CK+2LVOOEIfr0qtdSghzg=="],
 
     "dom-accessibility-api": ["dom-accessibility-api@0.6.3", "", {}, "sha512-7ZgogeTnjuHbo+ct10G9Ffp0mif17idi0IyWNVA/wcwcm7NPOD/WEHVP3n7n3MhXqxoIYm8d6MuZohYWIZ4T3w=="],
 

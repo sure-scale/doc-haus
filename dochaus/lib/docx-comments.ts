@@ -93,15 +93,16 @@ export function readDocxComments(bytes: Uint8Array) {
   })
 }
 
-/** Comparison can discard native comments. Restore their original paragraphs
- * and package records only where every paragraph in each range is unchanged.
- * Edited, empty or non-body anchors require explicit review, never relocation. */
+/** Comparison can discard native comments or carry them to positions this export
+ * has not verified. Remove any carried copies, then restore the original
+ * paragraphs and package records only where every paragraph in each range is
+ * unchanged. Edited, empty or non-body anchors require explicit review, never
+ * relocation. */
 export function preserveDocxComments(original: Uint8Array, compared: Uint8Array) {
   const comments = readDocxComments(original)
   if (!comments.length) return compared
-  if (readDocxComments(compared).length) throw new Error("comparison_already_has_native_comments")
   const source = unzipSync(original)
-  const output = unzipSync(compared)
+  const output = withoutCarriedComments(unzipSync(compared))
   const before = parse(strFromU8(source[BODY]))
   const after = parse(strFromU8(output[BODY]))
   const from = acceptedParagraphs(before)
@@ -174,6 +175,44 @@ export function preserveDocxComments(original: Uint8Array, compared: Uint8Array)
     output[name] = strToU8(serializer.serializeToString(doc))
   output[part] = source[part]
   return zipSync(output, { mtime: new Date(1980, 0, 1) })
+}
+
+// The comparator (Docxodus 13) carries native comments where it placed them.
+// Drop its comment markers, comment parts and their package records so only the
+// originals verified by preserveDocxComments return.
+function withoutCarriedComments(parts: Record<string, Uint8Array>) {
+  const serializer = new XMLSerializer()
+  const relationships = parts[RELS] ? parse(strFromU8(parts[RELS])) : undefined
+  const links = relationships ? elements(relationships, R, "Relationship").filter(row => /\/(comments[^/]*|people)$/.test(row.getAttribute("Type") ?? "")) : []
+  const removed = links.flatMap(row => {
+    row.parentNode!.removeChild(row)
+    const target = row.getAttribute("Target")
+    return target && row.getAttribute("TargetMode") !== "External" ? [path.posix.resolve("/word", target).slice(1)] : []
+  })
+  for (const part of removed) {
+    delete parts[part]
+    delete parts[path.posix.join(path.posix.dirname(part), "_rels", `${path.posix.basename(part)}.rels`)]
+  }
+  if (links.length) {
+    parts[RELS] = strToU8(serializer.serializeToString(relationships!))
+    const contentTypes = parse(strFromU8(parts["[Content_Types].xml"]))
+    for (const row of elements(contentTypes, CT, "Override"))
+      if (removed.includes((row.getAttribute("PartName") ?? "").slice(1))) row.parentNode!.removeChild(row)
+    parts["[Content_Types].xml"] = strToU8(serializer.serializeToString(contentTypes))
+  }
+  for (const [name, bytes] of Object.entries(parts)) {
+    if (!/^word\/[^/]+\.xml$/.test(name) || !/comment(?:RangeStart|RangeEnd|Reference)\b/.test(strFromU8(bytes))) continue
+    const doc = parse(strFromU8(bytes))
+    for (const marker of ["commentRangeStart", "commentRangeEnd", "commentReference"].flatMap(kind => elements(doc, W, kind))) {
+      const parent = marker.parentNode as Element
+      parent.removeChild(marker)
+      if (marker.localName === "commentReference" && parent.namespaceURI === W && parent.localName === "r"
+        && Array.from(parent.childNodes).every(child => child.nodeType !== 1 || (child as Element).localName === "rPr"))
+        parent.parentNode!.removeChild(parent)
+    }
+    parts[name] = strToU8(serializer.serializeToString(doc))
+  }
+  return parts
 }
 
 /** Adds native Word comments without accepting or rewriting existing revisions.

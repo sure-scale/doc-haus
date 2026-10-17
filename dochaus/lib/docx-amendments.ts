@@ -249,13 +249,19 @@ function localize(opened: Opened, proposed: DocxAmendment[], limits: Limits) {
   return { packet: { schema, revision: opened.revision, amendments, limits: bounded, candidates }, bindings }
 }
 
+// Word writes these elements when Track Changes is on. Such a revision has no
+// single accepted text to project; the user resolves them in Word.
+export class DocxTrackedRevisionsError extends Error {
+  constructor() { super("unsupported_existing_tracked_revisions") }
+}
+
 export async function openRevision(source: Uint8Array) {
   const parts = unzipSync(source)
   const documents = Object.fromEntries(Object.entries(parts).filter(([name]) => name.endsWith(".xml"))
     .map(([name, bytes]) => [name, parse(strFromU8(bytes))]))
   if (!documents["word/document.xml"]) throw new Error("invalid_docx_package")
   if (Object.values(documents).some(doc => ["ins", "del", "moveFrom", "moveTo"].some(name => elements(doc, name).length)))
-    throw new Error("unsupported_existing_tracked_revisions")
+    throw new DocxTrackedRevisionsError()
   const dx = await docxodus()
   const session = dx.openDocxSession(source, { smartQuotes: false, persistAnchorIds: false })
   try {

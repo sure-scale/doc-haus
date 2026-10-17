@@ -9,6 +9,7 @@ import { exportDocxComments, readDocxCommentParagraphs, readDocxComments, readDo
 import { docxodus } from "../../lib/docxodus"
 import { renderMarkdownToDocx } from "../../lib/render"
 import { buildChecklistDocumentContext } from "./checklist-document-context"
+import { assignChecklistTargetContext, checklistTargetAssignments } from "./checklist-target-context"
 import { checklistCheckerInputSchema, checklistTextMeasuresMeaning, type ChecklistItem } from "./checklist-contract"
 import { writeLeanPlan } from "./plan"
 import { leanFile, writeLeanBytes } from "./state"
@@ -102,6 +103,32 @@ test("all records across three documents retain table cells and distinct duplica
       const index = Number(hint.locator.match(/\/paragraphs\/(\d+)$/)![1])
       expect(JSON.parse(readFileSync(path.join(directory, target.path), "utf8")).paragraphs[index].paragraph_text).toBe(hint.text)
     }
+  } finally { rmSync(directory, { recursive: true, force: true }) }
+})
+
+test("whitespace-only accepted paragraphs stay in records but are never emitted as checker evidence", async () => {
+  const directory = matter()
+  try {
+    // A lone no-break space (signature spacer) and a spaces-plus-tab paragraph flank the lexical seed.
+    const rendered = await renderMarkdownToDocx("# Record\n\nAdjacent before.\n\nZqspacerone\n\nThe violet inventory receipt is pending confirmation.\n\nZqspacertwo\n\nDistant unrelated sentence.")
+    const zip = unzipSync(rendered.bytes)
+    zip["word/document.xml"] = strToU8(strFromU8(zip["word/document.xml"]!)
+      .replace("<w:t xml:space=\"preserve\">Zqspacerone</w:t>", "<w:t xml:space=\"preserve\">\u00a0</w:t>")
+      .replace("<w:t xml:space=\"preserve\">Zqspacertwo</w:t>", "<w:t xml:space=\"preserve\">  </w:t><w:tab/><w:t xml:space=\"preserve\"> </w:t>"))
+    writeLeanBytes(directory, "d1/body.docx", zipSync(zip))
+    const result = buildChecklistDocumentContext(directory, { item_id: "blank", item: item() })
+    const record = result.artifacts.find(row => row.value.id === "d1")!
+    expect(record.value.paragraphs.map(row => row.paragraph_text)).toEqual(["Record", "Adjacent before.", "\u00a0", "The violet inventory receipt is pending confirmation.", "  \t ", "Distant unrelated sentence."])
+    expect(checklistCheckerInputSchema.safeParse(result.input).error?.issues.map(issue => `${issue.path.join(".")}: ${issue.message}`) ?? []).toEqual([])
+    // Blank neighbours are dropped, not replaced: the window stays the seed's immediate neighbours.
+    expect(result.input.current_evidence.map(row => row.text)).toEqual(["The violet inventory receipt is pending confirmation."])
+    expect(result.input.current_evidence[0]!.locator).toEndWith(`read-record ${record.path} /paragraphs/3`)
+    // Full-body comparison keeps every assigned range, including blank paragraphs, but emits no blank evidence.
+    const body = checklistTargetAssignments(directory, item()).assignments.find(unit => unit.assignment.kind === "target_body")!.assignment
+    expect(body.ranges.map(range => range.paragraph_index)).toEqual([0, 1, 2, 3, 4, 5])
+    const assigned = assignChecklistTargetContext(result, body)
+    expect(checklistCheckerInputSchema.safeParse(assigned.input).error?.issues.map(issue => `${issue.path.join(".")}: ${issue.message}`) ?? []).toEqual([])
+    expect(assigned.input.current_evidence.map(row => row.text)).toEqual(["Record", "Adjacent before.", "The violet inventory receipt is pending confirmation.", "Distant unrelated sentence."])
   } finally { rmSync(directory, { recursive: true, force: true }) }
 })
 

@@ -17,20 +17,27 @@ afterAll(() => {
 })
 
 const actions = [
-  { call: () => acceptRedline("matter", 7), path: "/matters/matter/redlines/7/accept" },
-  { call: () => rejectRedline("matter", 8), path: "/matters/matter/redlines/8/reject" },
-  { call: () => acceptAllRedlines("matter", "Source file.docx"), path: "/matters/matter/redlines/accept-all?name=Source%20file.docx" },
-  { call: () => rejectAllRedlines("matter", "Source file.docx"), path: "/matters/matter/redlines/reject-all?name=Source%20file.docx" },
+  { call: () => acceptRedline("matter", 7), path: "/matters/matter/redlines/7/accept", resolved: {} },
+  { call: () => rejectRedline("matter", 8), path: "/matters/matter/redlines/8/reject", resolved: undefined },
+  { call: () => acceptAllRedlines("matter", "Source file.docx"), path: "/matters/matter/redlines/accept-all?name=Source%20file.docx", resolved: {} },
+  { call: () => rejectAllRedlines("matter", "Source file.docx"), path: "/matters/matter/redlines/reject-all?name=Source%20file.docx", resolved: undefined },
 ]
 
 test("review resolution wrappers submit exact routes and reject server failures", async () => {
   for (const action of actions) {
     response = Response.json({ ok: true })
-    await expect(action.call()).resolves.toBeUndefined()
+    expect(await action.call()).toEqual(action.resolved)
     expect(requests.at(-1)).toBe(`POST ${action.path}`)
     response = Response.json({ error: "The proposal anchor is no longer current." }, { status: 409 })
     await expect(action.call()).rejects.toThrow("The proposal anchor is no longer current.")
   }
   response = new Response("Service unavailable", { status: 503 })
   await expect(actions[0]!.call()).rejects.toThrow("Could not resolve tracked changes (503)")
+})
+
+test("accept wrappers return only the drafting-notes outcome", async () => {
+  response = Response.json({ ok: true, accepted: 2, notes_updated: false, notes_skip_reason: "write_failed" })
+  expect(await acceptAllRedlines("matter", "Draft.docx")).toEqual({ notes_updated: false, notes_skip_reason: "write_failed" })
+  response = Response.json({ ok: true, notes_updated: true })
+  expect(await acceptRedline("matter", 7)).toEqual({ notes_updated: true })
 })

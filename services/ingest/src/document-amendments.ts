@@ -2,7 +2,7 @@ import { Hono } from "hono"
 import path from "node:path"
 import { createHash, randomUUID } from "node:crypto"
 import { withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
-import { createDocxRevision, createDocxLocalization, applyDocxLocalization } from "../../../dochaus/lib/docx-amendments"
+import { createDocxRevision, createDocxLocalization, applyDocxLocalization, DocxTrackedRevisionsError } from "../../../dochaus/lib/docx-amendments"
 import { workingDocxKey, readWorkingDocx } from "../../../dochaus/lib/working-docx"
 import { paragraphTargets, resolveParagraphTarget } from "../../../dochaus/lib/drafting-amendment"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
@@ -50,7 +50,8 @@ export function documentAmendmentRoutes(options: { directory: (id: string) => st
     } catch(error) {
       console.warn("[document-amendments] preparation failed", diagnosticErrorMetadata(error))
       const reference = error && typeof error === "object" ? preparationReferences.get(error) : undefined
-      return c.json({error:error instanceof DocumentAmendmentConflictError ? error.message : "Preparation could not be confirmed.",
+      return c.json({error:error instanceof DocumentAmendmentConflictError ? error.message :
+        error instanceof DocxTrackedRevisionsError ? "This Word file contains tracked changes. Accept or reject them in Word before preparing changes." : "Preparation could not be confirmed.",
         ...(reference ? {diagnostic_ref:reference,diagnostic_hint:"Inspect the latest private preparation diagnostic in this matter before trying again."} : {})},409)
     }
   })

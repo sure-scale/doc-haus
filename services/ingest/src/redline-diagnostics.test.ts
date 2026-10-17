@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test"
+import { expect, setSystemTime, spyOn, test } from "bun:test"
 import { Document, Packer, Paragraph } from "docx"
 import { draftingTraceReference } from "../../../dochaus/lib/drafting-trace-identity"
 import type { RedlineRow } from "./db"
@@ -74,5 +74,17 @@ test("a skipped redline still allows valid proposals to render without changing 
     expect(original).toEqual(before)
   } finally {
     log.mockRestore()
+  }
+})
+
+test("a tracked-changes export dates its revisions when exported, not with the comparator's fixed date", async () => {
+  setSystemTime(new Date("2026-03-04T05:06:07.890Z"))
+  try {
+    const rendered = await buildRedlined(await originalDocument(), [proposal("phrase", "Original marker", "Updated marker")])
+    const revisions = await (await docxodus()).getRevisions(rendered)
+    expect(revisions.length).toBeGreaterThan(0)
+    expect(revisions.map(revision => revision.date)).toEqual(revisions.map(() => "2026-03-04T05:06:07Z"))
+  } finally {
+    setSystemTime()
   }
 })
