@@ -67,6 +67,12 @@ export const checklistFindingSchema = z.object({
   open_decisions: z.array(text).optional(),
   // Typed range/process deferral: only an affirmative whole-target finding can then pass the parent.
   deferred_to: z.enum(["document_properties"]).optional(),
+  // Disclosure classes, each verified deterministically by the check job:
+  // why an indeterminate finding is indeterminate; source passages contradicting
+  // this item's sources; current draft or notes text declaring a deliberate departure.
+  indeterminate_cause: z.enum(["missing_inspection", "not_inspectable"]).optional(),
+  conflicting_source_refs: z.array(checklistSourceReferenceSchema).optional(),
+  departure_disclosure: z.array(checklistCurrentEvidenceSchema).optional(),
 }).strict()
 
 export type ChecklistTargetDocument = z.infer<typeof checklistTargetDocumentSchema>
@@ -136,6 +142,13 @@ export function buildChecklistProducerPrompt(value: ChecklistProducerInput): str
 const documentPropertiesDeferral = `A document-wide property is one established from the whole target's artifact properties, such as its exact text measures or revision counts, rather than from the wording of any passage. Only the separate document-properties assignment decides it. If the parent concerns only such a property, report not_applicable for this component rather than indeterminate; otherwise decide its other aspects here without treating that property as an inspection gap. Whenever this component defers such a property, also return "deferred_to":"document_properties"; otherwise omit that field.`
 const documentPropertiesAssignment = `Decide ONLY document-wide properties of the named target from its supplied exact artifact properties, including accepted_body_text_measures; separate assignments compare every paragraph and the process records. Report not_applicable when the parent states no document-wide property. Do not assess passage wording here, and do not treat these properties as proof of content, layout or compliance beyond what they state. ${checklistTextMeasuresMeaning} Any other property they cannot establish remains indeterminate.`
 
+// Optional finding fields; the check job verifies each one and its status.
+const disclosureFields = [
+  'Only when status or action_status is indeterminate, add "indeterminate_cause": "missing_inspection" if the needed text was not inspected or is not in the supplied artifacts, or "not_inspectable" if document text cannot establish the property at all; otherwise omit it.',
+  'Only when status is unsatisfied, open or indeterminate, add "conflicting_source_refs" (source_refs shape) for exact source passages that contradict this item\'s sources, so satisfying the item would conflict with them; otherwise omit it.',
+  'Only when status is unsatisfied, open or indeterminate, add "departure_disclosure" (evidence shape) for exact current draft or notes text stating that the draft deliberately departs from this item; otherwise omit it.',
+].join("\n")
+
 export function buildChecklistCheckerPrompt(value: ChecklistCheckerInput): string {
   const input = parseChecklistCheckerInput(value)
   return [
@@ -161,6 +174,7 @@ export function buildChecklistCheckerPrompt(value: ChecklistCheckerInput): strin
     retrieval,
     "Missing excerpts do not prove absence. Inspect the relevant target sufficiently before asserting missing wording; otherwise report indeterminate with the gap. Satisfied means the applicable stated treatment is evidenced; unsatisfied requires an evidenced applicable mismatch; open preserves a substantive unresolved fact or decision, or an unsettled applicability decision; indeterminate means insufficient evidence or inspection; not_applicable needs an evidence-based explanation. State the actual inspection scope and do not claim whole-package coverage.",
     `Return only JSON {"item_id":"supplied ID","status":"satisfied|unsatisfied|open|indeterminate|not_applicable","reason":"...","evidence":[{"document":"...","locator":"...","text":"exact current evidence","kind":"body|comment|deleted_text|artifact"}],"source_refs":[{"document":"...","locator":"...","quote":"exact source or instruction"}],"inspection_scope":"...","limitation":"..."${input.item.required_action ? ',"action_status":"fulfilled|not_fulfilled|indeterminate|not_applicable"' : ""},"open_decisions":[]}. Choose one enum value. Empty evidence arrays preserve gaps; do not invent quotations or locators.`,
+    disclosureFields,
     "CHECK_INPUT:",
     JSON.stringify(input),
   ].join("\n\n")

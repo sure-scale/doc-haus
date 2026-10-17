@@ -51,7 +51,17 @@ export function runChecklistCheckJob(directory: string, deps: ChecklistJobDeps, 
     ...(input.item.required_action && (!value.action_status || !value.open_decisions) ? ["Refined-item findings must include action_status and open_decisions, separately from overall status and source applicability."] : []),
     ...(value.item_id !== input.item_id ? [`item_id must equal the supplied ${JSON.stringify(input.item_id)}; do not replace the item identity.`] : []),
     ...(value.deferred_to && input.assignment?.kind !== "target_body" && input.assignment?.kind !== "process_records" ? ["deferred_to is only for a range or process-records assignment that leaves a document-wide property to the document-properties assignment; omit it here."] : []),
+    ...(value.indeterminate_cause && value.status !== "indeterminate" && value.action_status !== "indeterminate" ? ["indeterminate_cause applies only when status or action_status is indeterminate; otherwise omit it."] : []),
+    ...disclosureIssues(value, "conflicting_source_refs", value.conflicting_source_refs, refs => sourceReferenceIssues(directory, refs, input.settled_instructions, "conflicting_source_refs")),
+    ...disclosureIssues(value, "departure_disclosure", value.departure_disclosure, refs => currentEvidenceIssues(directory, refs, input, "departure_disclosure")),
   ], [...CHECKLIST_JOB_PERMISSIONS, ...checklistWorkflowEvidence(directory, input.item).map(record => ({ action: "read", resource: record.artifact, effect: "allow" as const }))])
+}
+
+/** A conflict or departure explains an adverse finding only; an empty array states none. */
+function disclosureIssues<T>(finding: ChecklistFinding, field: string, refs: T[] | undefined, verify: (refs: T[]) => string[]): string[] {
+  if (!refs?.length) return []
+  if (finding.status === "satisfied" || finding.status === "not_applicable") return [`${field} applies only to an unsatisfied, open or indeterminate status; otherwise omit it.`]
+  return verify(refs)
 }
 
 /** A source-only unit refinement uses the same native read boundary and correction. */
@@ -117,7 +127,7 @@ function sourceReferenceIssues(directory: string, refs: ChecklistSourceReference
 /** Output quotations never establish their own authority. Initial caller-owned
  * hints and freshly read native Word records are independent evidence pools;
  * annotations cannot establish operative body wording. */
-function currentEvidenceIssues(directory: string, refs: ChecklistCurrentEvidence[], input: ChecklistCheckerInput): string[] {
+function currentEvidenceIssues(directory: string, refs: ChecklistCurrentEvidence[], input: ChecklistCheckerInput, where = "evidence"): string[] {
   const supplied = (ref: ChecklistCurrentEvidence) => input.current_evidence.some(evidence =>
     evidence.document === ref.document && evidence.kind === ref.kind && normalize(evidence.text).includes(normalize(ref.text)))
   const unresolved = refs.filter(ref => !supplied(ref))
@@ -144,7 +154,7 @@ function currentEvidenceIssues(directory: string, refs: ChecklistCurrentEvidence
       if (ref.kind === "artifact") texts = [...(bodyIdentity ? [record.artifact, record.sha256] : []), ...annotations.flatMap(annotation => [annotation.artifact, annotation.sha256, annotation.properties, ...annotation.revisions.inserted_text])]
     }
     const found = needle && texts.some(text => ref.kind === "artifact" ? normalize(text) === needle : normalize(text).includes(needle))
-    return found ? [] : [`evidence[${index}] text is not verified in current ${ref.kind} evidence for document ${JSON.stringify(ref.document)}: ${JSON.stringify(ref.text)}. Retrieve exact current evidence from that document and evidence kind; comments, deleted text and artifact properties do not prove operative body wording. Correct the quote/kind/document, or omit unsupported evidence and preserve the uncertainty.`]
+    return found ? [] : [`${where}[${index}] text is not verified in current ${ref.kind} evidence for document ${JSON.stringify(ref.document)}: ${JSON.stringify(ref.text)}. Retrieve exact current evidence from that document and evidence kind; comments, deleted text and artifact properties do not prove operative body wording. Correct the quote/kind/document, or omit unsupported evidence and preserve the uncertainty.`]
   })
 }
 

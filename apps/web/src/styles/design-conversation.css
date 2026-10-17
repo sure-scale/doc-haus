@@ -328,6 +328,11 @@
   background: var(--accent);
 }
 
+/* Delivered with unresolved checklist findings: not a clean completion. */
+.design-conversation .run-head.is-done .run-head-icon.is-findings {
+  background: var(--warn);
+}
+
 .design-conversation .run-head.is-done .run-head-icon > svg {
   width: 13px;
   height: 13px;

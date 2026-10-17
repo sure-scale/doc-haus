@@ -1,41 +1,89 @@
 import { afterEach, expect, setSystemTime, test } from "bun:test"
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import path from "node:path"
 import { strFromU8, unzipSync } from "fflate"
 import { renderMarkdownToDocx } from "../../lib/render"
 import { runLean, stageInputSha } from "./runner"
 import { stageOutputValid, type StageSessionPort } from "./stages"
 import { exportDocxComments, readDocxCommentParagraphs } from "../../lib/docx-comments"
-import { leanFile, readLeanJson, readLeanState, readOpenItems, updateLeanStage, writeLeanBytes, writeLeanText } from "./state"
-import { finalGate } from "./gate"
-import { drainLeanRequests, enqueueLeanRequest } from "./requests"
+import { leanFile, readLeanJson, readLeanState, readOpenItems, updateLeanStage, writeLeanBytes, writeLeanState, writeLeanText } from "./state"
+import { finalGate, type GateResult } from "./gate"
+import { readLeanDocuments } from "./deliverables"
+import { enqueueLeanRequest } from "./requests"
 import { CHECKLIST_JOB_AGENTS } from "./checklist-job"
-import { checklistRepairItems, readRepairRound } from "./repairs"
-import { AGENT, cleanupMatters, happyPath, matter, scriptedModel, drafter, pidOf, DRAFT, SOURCE, SUPPORT } from "./test-support"
+import { readRepairRound } from "./repairs"
+import { AGENT, cleanupMatters, happyPath, matter, registering, scriptedModel, drafter, draftingNotes, pidOf, DRAFT, SOURCE, SUPPORT } from "./test-support"
 import { checklistTextMeasuresMeaning, type ChecklistCheckerInput, type ChecklistProducerInput } from "./checklist-contract"
 
 afterEach(cleanupMatters)
 
-function model(directory: string, status: "satisfied" | "open" | "unsatisfied" | "indeterminate" = "satisfied", extra: { open_decisions?: string[] } = {}) {
+// The focused repair adjudicator defers the supplied assessment without a
+// supported correction; every other change plan proposes nothing.
+const deferChecklistRepair = (text: string) => JSON.stringify({ shared_decisions: [], groups: [], dismissed: [], questions: [],
+  ...(text.includes("ONE supplied checklist assessment") ? { superseded_findings: [], superseded_decisions: [], findings: [{ disposition: "deferred", kind: "information",
+    detail: "The assessed requirement still needs a supported correction.", reason: "No supported correction is identified for this assessment.", documents: ["d1"], sources: [], limitations: ["No supported correction identified."] }] } : {}) })
+
+// `broken` adds a second requirement whose check job always fails: an integrity
+// failure, so the checklist stage blocks. `second` adds it satisfied instead,
+// and `pair` with the same result as the first.
+// `departure` cites current draft text as a deliberate departure.
+// `review` has the first change review after the checklist round require one
+// body correction, so a change-review round replaces the checklist round.
+// `notes` targets the requirement at the drafting notes as advice.
+// `notesReview` has the first package review after the checklist round require
+// one notes correction.
+function model(directory: string, status: "satisfied" | "open" | "unsatisfied" | "indeterminate" = "satisfied", extra: { open_decisions?: string[]; indeterminate_cause?: "missing_inspection" | "not_inspectable" } = {}, options: { broken?: boolean; second?: boolean; pair?: boolean; departure?: boolean; review?: boolean; notes?: boolean; notesReview?: boolean } = {}) {
   let extractedBeforeBody = false
   let checkedAfterNotes = false
+  let reviewed = false
   const result = scriptedModel({
     ...happyPath,
+    [AGENT["change-plan"]]: deferChecklistRepair,
+    ...(options.notesReview ? { [AGENT["package-review"]]: () => {
+      const correction = !reviewed && Boolean(readRepairRound(directory)?.items.some(item => item.stage === "checklist-check"))
+      reviewed ||= correction
+      return JSON.stringify({ status: correction ? "changes-required" : "pass", delivery: [], findings: correction ? [{ target: "memo", detail: "Explain the delivery period accurately." }] : [], limitations: [] })
+    } } : {}),
+    // A notes repair adds a paragraph addressing the supplied assessment.
+    ...(options.notes ? { [AGENT.finalize]: (text: string, index: number) => `${draftingNotes(text, index)}${text.includes("drafting notes against actual sources") ? "\n\nThe notes now address the assessed requirement." : ""}` } : {}),
+    ...(options.review ? { [AGENT["change-review"]]: () => {
+      const correction = !reviewed && Boolean(readRepairRound(directory)?.items.some(item => item.stage === "checklist-check"))
+      reviewed ||= correction
+      return JSON.stringify(correction ? { status: "changes-required", findings: [{ detail: "One material body correction." }], limitations: [] } : { status: "pass", findings: [], limitations: [] })
+    } } : {}),
     [CHECKLIST_JOB_AGENTS.extract]: text => {
       const input = JSON.parse(text.split("SOURCE_INPUT:\n\n")[1]!) as ChecklistProducerInput
       extractedBeforeBody = !existsSync(leanFile(directory, "d1/body.docx"))
-      return JSON.stringify({ items: input.source.document === "request" ? [{
-        check: "The requested supply note is drafted.", basis: "directive", source_refs: input.passages,
-        qualifications: [], target: { ...input.targets[0], treatment: "operative" },
-      }] : [] })
+      const item = { check: "The requested supply note is drafted.", basis: "directive", source_refs: input.passages, qualifications: [],
+        target: options.notes ? { ...input.targets.find(target => target.document === "notes")!, treatment: "advice" } : { ...input.targets[0], treatment: "operative" } }
+      return JSON.stringify({ items: input.source.document === "request" ? [item, ...(options.broken || options.second || options.pair ? [{ ...item, check: "Payment remains due on delivery." }] : [])] : [] })
     },
     [CHECKLIST_JOB_AGENTS.check]: text => {
       const input = JSON.parse(text.split("CHECK_INPUT:\n\n")[1]!) as ChecklistCheckerInput
+      if (options.broken && input.item.check.startsWith("Payment")) throw new Error("Scripted read-only inspection failure")
+      if (options.second && input.item.check.startsWith("Payment")) return JSON.stringify({ item_id: input.item_id, status: "satisfied", reason: "Focused result satisfied.",
+        evidence: input.current_evidence, source_refs: input.item.source_refs, inspection_scope: "Current body paragraphs only.", limitation: "Comments not inspected." })
       checkedAfterNotes = existsSync(leanFile(directory, "drafting-notes.docx")) && existsSync(leanFile(directory, "d1/body-applied.docx"))
       return JSON.stringify({ item_id: input.item_id, status, reason: `Focused result ${status}.`, evidence: input.current_evidence,
-        source_refs: input.item.source_refs, inspection_scope: "Current body paragraphs only.", limitation: "Comments not inspected.", ...extra })
+        source_refs: input.item.source_refs, inspection_scope: "Current body paragraphs only.", limitation: "Comments not inspected.", ...extra,
+        ...(options.departure ? { departure_disclosure: input.current_evidence.slice(0, 1) } : {}) })
     },
   })
   return { ...result, early: () => extractedBeforeBody, late: () => checkedAfterNotes }
+}
+
+const checklistIDs = (directory: string) => (readLeanJson(directory, "checklist/extraction.json") as any).sources.flatMap((row: any) => row.items).map((row: any) => row.id) as string[]
+const focusedRepairs = (scripted: ReturnType<typeof scriptedModel>) => scripted.prompts.filter(row => row.agent === AGENT["change-plan"] && row.text.includes("ONE supplied checklist assessment")).length
+const report = (directory: string) => readFileSync(leanFile(directory, "checklist/report.md"), "utf8")
+const checked = (run: ReturnType<typeof scriptedModel>, id: string) => run.prompts.filter(row => row.agent === CHECKLIST_JOB_AGENTS.check && (JSON.parse(row.text.split("CHECK_INPUT:\n\n")[1]!) as ChecklistCheckerInput).item_id === id).length
+
+// A run settled blocked at the checklist: by an integrity failure, or before
+// adverse findings were disclosed. Continue, refinement and clarification
+// requests are admitted only at such a stop point.
+function settleBlockedChecklist(directory: string) {
+  const state = readLeanState(directory)!
+  writeLeanState(directory, { ...state, status: "blocked", stop_reason: "Checklist handoff blocked. See checklist/report.md.",
+    stages: { ...state.stages, "checklist-check": { ...state.stages["checklist-check"]!, status: "blocked" } } })
 }
 
 test("coordinator extracts before body drafting and checks after body and notes; unchanged resume makes no calls", async () => {
@@ -66,16 +114,255 @@ test("coordinator extracts before body drafting and checks after body and notes;
   expect(existsSync(leanFile(directory, "checklist/report.md"))).toBe(true)
 }, 120000)
 
-for (const status of ["unsatisfied", "indeterminate"] as const) test(`${status} blocks delivery with visible findings rather than omission disclosure`, async () => {
+for (const status of ["unsatisfied", "indeterminate"] as const) test(`${status} is disclosed with the review draft rather than blocking delivery`, async () => {
   const directory = matter()
   const scripted = model(directory, status)
   const state = await runLean(directory, { sessions: scripted.port })
+  expect(state.status).toBe("completed")
+  expect(state.stages["checklist-check"]?.status).toBe("done")
+  expect(readOpenItems(directory).some(item => item.stage === "checklist-check")).toBe(false)
+  expect(scripted.count(AGENT["package-review"])).toBe(1)
+  expect(readLeanJson(directory, "gate.json")).toMatchObject({ status: "pass", delivery: "review_draft_with_findings", blocking: [] })
+  expect(report(directory)).toContain("Target: d1; treatment: operative")
+  expect(report(directory)).toContain(`Disclosed, not satisfied: ${checklistIDs(directory)[0]}: `)
+}, 120000)
+
+test("an omission is repaired once without Continue; an adverse re-check is disclosed with the review draft", async () => {
+  const directory = matter()
+  const scripted = model(directory, "unsatisfied")
+  const state = await runLean(directory, { sessions: scripted.port })
+  expect(state.status).toBe("completed")
+  expect(state.stages["checklist-check"]?.status).toBe("done")
+  const [id] = checklistIDs(directory)
+  // Exactly one checklist repair round, adjudicated once, then one re-check.
+  expect(focusedRepairs(scripted)).toBe(1)
+  expect(readRepairRound(directory)).toMatchObject({ round: 1, substantive_attempts: 1, items: [{ stage: "checklist-check", ref: { document: "d1", repair_target: "body" } }] })
+  expect(scripted.count(CHECKLIST_JOB_AGENTS.check)).toBe(2)
+  expect(scripted.count(AGENT["package-review"])).toBe(1)
+  const gate = readLeanJson(directory, "gate.json") as any
+  expect(gate).toMatchObject({ status: "pass", delivery: "review_draft_with_findings", blocking: [] })
+  expect(gate.disclosed).toContainEqual(expect.objectContaining({ kind: "checklist_unresolved", ref: expect.objectContaining({ checklist_item: id, checklist_class: "omission" }) }))
+  expect(report(directory)).toContain(`Disclosed, not satisfied: ${id}: omission not fixed by the repair round: Focused result unsatisfied.`)
+  expect(report(directory)).not.toContain("Delivery blocked")
+  expect(readOpenItems(directory).some(item => item.stage === "checklist-check")).toBe(false)
+  const round = readLeanJson(directory, "repairs.json")
+  enqueueLeanRequest(directory, { kind: "continue" })
+  const idle = scriptedModel({})
+  expect((await runLean(directory, { sessions: idle.port })).status).toBe("completed")
+  expect(idle.prompts).toHaveLength(0)
+  expect(readLeanJson(directory, "repairs.json")).toEqual(round)
+}, 120000)
+
+test("a later review round does not re-arm the checklist repair of an omission", async () => {
+  const directory = matter()
+  const scripted = model(directory, "unsatisfied", {}, { review: true })
+  expect((await runLean(directory, { sessions: scripted.port })).status).toBe("completed")
+  const [id] = checklistIDs(directory)
+  // The change-review round replaced the checklist round, then the re-check
+  // found the omission again: no second checklist round runs.
+  expect(focusedRepairs(scripted)).toBe(1)
+  expect(readRepairRound(directory)).toMatchObject({ round: 2, substantive_attempts: 2, items: [{ stage: "change-review" }], checklist_items: [id] })
+  expect(readLeanJson(directory, "gate.json")).toMatchObject({ status: "pass", delivery: "review_draft_with_findings", blocking: [] })
+  expect(report(directory)).toContain(`Disclosed, not satisfied: ${id}: omission not fixed by the repair round: Focused result unsatisfied.`)
+}, 120000)
+
+test("an omission in the drafting notes gets its one repair from the notes writer, without redrafting the body", async () => {
+  const directory = matter()
+  const scripted = model(directory, "unsatisfied", {}, { notes: true })
+  expect((await runLean(directory, { sessions: scripted.port })).status).toBe("completed")
+  const [id] = checklistIDs(directory)
+  expect(readRepairRound(directory)).toMatchObject({ round: 1, substantive_attempts: 1, items: [{ stage: "checklist-check", ref: { repair_target: "memo" } }], checklist_items: [id] })
+  // The notes are written again with the assessment as a required repair; the
+  // body's stages and the body adjudicator do not run again.
+  const notes = scripted.prompts.filter(row => row.agent === AGENT.finalize)
+  expect(notes).toHaveLength(2)
+  expect(notes[0]!.text).not.toContain(id)
+  expect(notes[1]!.text.split("<required_repairs>")[1]!.split("</required_repairs>")[0]).toContain(id)
+  expect(readFileSync(leanFile(directory, "drafting-notes.md"), "utf8")).toContain("The notes now address the assessed requirement.")
+  const clean = matter(), baseline = model(clean, "satisfied", {}, { notes: true })
+  expect((await runLean(clean, { sessions: baseline.port })).status).toBe("completed")
+  const [draft, review, changes, finalize] = baseline.counts()
+  expect(scripted.counts()).toEqual([draft, review, changes, finalize! + 1])
+  expect(focusedRepairs(scripted)).toBe(0)
+  expect(scripted.count(CHECKLIST_JOB_AGENTS.check)).toBe(2)
+  expect(readLeanJson(directory, "gate.json")).toMatchObject({ status: "pass", delivery: "review_draft_with_findings", blocking: [] })
+  expect(report(directory)).toContain(`Disclosed, not satisfied: ${id}: omission not fixed by the repair round: Focused result unsatisfied.`)
+}, 120000)
+
+test("a later notes finding of the package review keeps the checklist notes repair required", async () => {
+  const directory = matter()
+  const scripted = model(directory, "unsatisfied", {}, { notes: true, notesReview: true })
+  expect((await runLean(directory, { sessions: scripted.port })).status).toBe("completed")
+  const [id] = checklistIDs(directory)
+  expect(readRepairRound(directory)).toMatchObject({ round: 1, substantive_attempts: 2, checklist_items: [id],
+    items: [{ stage: "checklist-check", ref: { repair_target: "memo" } }, { stage: "package-review", ref: { repair_target: "memo" } }] })
+  const notes = scripted.prompts.filter(row => row.agent === AGENT.finalize)
+  expect(notes).toHaveLength(3)
+  const required = notes[2]!.text.split("<required_repairs>")[1]!.split("</required_repairs>")[0]
+  expect(required).toContain(id)
+  expect(required).toContain("Explain the delivery period accurately.")
+}, 120000)
+
+for (const [label, scripted] of [
+  ["not_inspectable", (directory: string) => model(directory, "indeterminate", { indeterminate_cause: "not_inspectable" })],
+  ["departure", (directory: string) => model(directory, "unsatisfied", {}, { departure: true })],
+] as const) test(`a ${label} finding starts no repair and is disclosed`, async () => {
+  const directory = matter()
+  const run = scripted(directory)
+  const state = await runLean(directory, { sessions: run.port })
+  expect(state.status).toBe("completed")
+  const [id] = checklistIDs(directory)
+  expect(focusedRepairs(run)).toBe(0)
+  expect(readRepairRound(directory)).toBeUndefined()
+  expect(run.count(CHECKLIST_JOB_AGENTS.check)).toBe(1)
+  expect(readLeanJson(directory, "gate.json")).toMatchObject({ status: "pass", delivery: "review_draft_with_findings", blocking: [] })
+  expect(report(directory)).toContain(`Disclosed, not satisfied: ${id}: ${label === "departure" ? "deliberate departure" : "cannot be established from document text"}: Focused result `)
+  expect(report(directory)).not.toContain("Delivery blocked")
+}, 120000)
+
+// Unresolved findings reach the lawyer in the delivered notes: the gate puts
+// them first, then the drafting notes unchanged, and the notes deliverable
+// carries that file under its usual name. With none, the drafting notes are
+// delivered as written.
+const notesRows = (directory: string) => readLeanDocuments(directory)!.documents.filter(row => row.document === null).map(row => [row.kind, row.path, row.deliverable])
+const NOTES_NAME = "Supply note - drafting notes.docx"
+
+test("unresolved findings lead the delivered notes, registered under the notes' own name; a gate re-run changes nothing", async () => {
+  const directory = matter()
+  const deliverables = registering()
+  const run = model(directory, "indeterminate", { indeterminate_cause: "not_inspectable" }, { pair: true })
+  expect((await runLean(directory, { sessions: run.port, registerDeliverable: deliverables.registerDeliverable })).status).toBe("completed")
+  const gate = readLeanJson(directory, "gate.json") as GateResult
+  const findings = gate.items.filter(item => item.kind === "checklist_unresolved")
+  expect(gate.delivery).toBe("review_draft_with_findings")
+  expect(findings.map(item => item.ref.checklist_item)).toEqual(checklistIDs(directory))
+  expect(findings).toHaveLength(2)
+  const notes = readFileSync(leanFile(directory, "drafting-notes.md"), "utf8")
+  const delivered = readFileSync(leanFile(directory, "delivered-notes.md"), "utf8")
+  expect(delivered.endsWith(notes)).toBe(true)
+  const lead = delivered.slice(0, -notes.length)
+  for (const item of findings) expect(lead).toContain(`- ${item.ref.checklist_item}: ${item.detail} Source: `)
+  expect(lead).toContain("(cannot be established from document text)")
+  const docx = readFileSync(leanFile(directory, "delivered-notes.docx"))
+  const text = readDocxCommentParagraphs(docx).map(row => row.paragraph_text)
+  const at = (needle: string) => text.findIndex(line => line.includes(needle))
+  expect(findings.map(item => at(item.detail)).every(index => index >= 0 && index < at("The draft states the delivery period from the supply terms."))).toBe(true)
+  expect(notesRows(directory)).toEqual([["drafting_notes", ".dochaus/lean/delivered-notes.docx", NOTES_NAME], ["drafting_notes_markdown", ".dochaus/lean/delivered-notes.md", null]])
+  expect(readFileSync(path.join(directory, NOTES_NAME))).toEqual(docx)
+  expect(run.prompts.find(row => row.agent === AGENT["package-review"])!.text).toContain('a "Disclosed, not satisfied" line is an unresolved finding')
+  // The same inputs give the same bytes; registration reuses the same name.
+  const summary = readFileSync(leanFile(directory, "documents.json"), "utf8")
+  updateLeanStage(directory, readLeanState(directory)!, "gate", { status: "pending", input_sha: null })
+  const idle = scriptedModel({})
+  expect((await runLean(directory, { sessions: idle.port, registerDeliverable: deliverables.registerDeliverable })).status).toBe("completed")
+  expect(idle.prompts).toHaveLength(0)
+  expect(readLeanState(directory)!.stages.gate?.input_sha).not.toBeNull()
+  expect(readFileSync(leanFile(directory, "delivered-notes.md"), "utf8")).toBe(delivered)
+  expect(readFileSync(leanFile(directory, "delivered-notes.docx"))).toEqual(docx)
+  expect(readFileSync(leanFile(directory, "documents.json"), "utf8")).toBe(summary)
+  expect(readdirSync(directory).filter(name => name.includes("drafting notes"))).toEqual([NOTES_NAME])
+  // Missing delivered notes make the gate's output invalid: it runs again
+  // rather than delivering the drafting notes without the findings.
+  rmSync(leanFile(directory, "delivered-notes.docx"))
+  expect((await runLean(directory, { sessions: scriptedModel({}).port, registerDeliverable: deliverables.registerDeliverable })).status).toBe("completed")
+  expect(notesRows(directory)[0]).toEqual(["drafting_notes", ".dochaus/lean/delivered-notes.docx", NOTES_NAME])
+  expect(readFileSync(path.join(directory, NOTES_NAME))).toEqual(readFileSync(leanFile(directory, "delivered-notes.docx")))
+}, 120000)
+
+test("with no unresolved finding the drafting notes are delivered as written; cleared findings leave no delivered notes", async () => {
+  const directory = matter()
+  const deliverables = registering()
+  const run = model(directory, "indeterminate", { indeterminate_cause: "not_inspectable" })
+  expect((await runLean(directory, { sessions: run.port, registerDeliverable: deliverables.registerDeliverable })).status).toBe("completed")
+  expect(existsSync(leanFile(directory, "delivered-notes.docx"))).toBe(true)
+  // A current Word change to the notes re-runs the check, which now finds the requirement met.
+  writeLeanBytes(directory, "drafting-notes.docx", (await renderMarkdownToDocx("# Current notes\n\nChanged current Word content.")).bytes)
+  const clean = model(directory)
+  expect((await runLean(directory, { sessions: clean.port, registerDeliverable: deliverables.registerDeliverable })).status).toBe("completed")
+  expect(readLeanJson(directory, "gate.json")).toMatchObject({ status: "pass", delivery: "execution_ready" })
+  expect(["delivered-notes.md", "delivered-notes.docx"].some(name => existsSync(leanFile(directory, name)))).toBe(false)
+  expect(notesRows(directory)).toEqual([["drafting_notes", ".dochaus/lean/drafting-notes.docx", NOTES_NAME], ["drafting_notes_markdown", ".dochaus/lean/drafting-notes.md", null]])
+  expect(readFileSync(path.join(directory, NOTES_NAME))).toEqual(readFileSync(leanFile(directory, "drafting-notes.docx")))
+  expect(readdirSync(directory).filter(name => name.includes("drafting notes"))).toEqual([NOTES_NAME])
+}, 120000)
+
+// An indeterminate finding is a missing inspection whether or not the checker
+// recorded that cause: one reinspection in the stage, limited to that item,
+// then disclosure. It is never repaired and needs no Continue.
+for (const [label, extra] of [["missing_inspection", { indeterminate_cause: "missing_inspection" }], ["causeless indeterminate", {}]] as const) test(`a ${label} finding is reinspected once in the stage, then disclosed without a repair round`, async () => {
+  const directory = matter()
+  const run = model(directory, "indeterminate", extra, { second: true })
+  const state = await runLean(directory, { sessions: run.port })
+  expect(state.status).toBe("completed")
+  expect(state.stages["checklist-check"]?.status).toBe("done")
+  const [id, other] = checklistIDs(directory)
+  expect([checked(run, id!), checked(run, other!)]).toEqual([2, 1])
+  const rows = (readLeanJson(directory, "checklist/checks.json") as any).checks
+  expect(rows.find((row: any) => row.item_id === id)).toMatchObject({ finding: { status: "indeterminate" }, reinspection: { original_finding: { status: "indeterminate" }, status: "succeeded" } })
+  expect(rows.find((row: any) => row.item_id === other).reinspection).toBeUndefined()
+  expect(focusedRepairs(run)).toBe(0)
+  expect(readRepairRound(directory)).toBeUndefined()
+  const gate = readLeanJson(directory, "gate.json") as any
+  expect(gate).toMatchObject({ status: "pass", delivery: "review_draft_with_findings", blocking: [] })
+  expect(gate.disclosed).toContainEqual(expect.objectContaining({ kind: "checklist_unresolved", ref: expect.objectContaining({ checklist_item: id, checklist_class: "missing_inspection" }),
+    detail: expect.stringContaining("(not established by the check after reinspection)") }))
+  expect(report(directory)).toContain(`Disclosed, not satisfied: ${id}: not established by the check after reinspection: Focused result indeterminate.`)
+  expect(report(directory)).not.toContain("Delivery blocked")
+  enqueueLeanRequest(directory, { kind: "continue" })
+  const idle = scriptedModel({})
+  expect((await runLean(directory, { sessions: idle.port })).status).toBe("completed")
+  expect(idle.prompts).toHaveLength(0)
+  // The reinspection is spent: even Continue at a blocked checklist inspects nothing again.
+  settleBlockedChecklist(directory)
+  enqueueLeanRequest(directory, { kind: "continue" })
+  const blocked = model(directory, "satisfied", {}, { second: true })
+  expect((await runLean(directory, { sessions: blocked.port })).status).toBe("completed")
+  expect(blocked.count(CHECKLIST_JOB_AGENTS.check)).toBe(0)
+  expect(focusedRepairs(blocked)).toBe(0)
+}, 120000)
+
+test("an omission with the repair allowance used starts no round and is disclosed as such", async () => {
+  const directory = matter()
+  const used = JSON.stringify({ round: 5, substantive_attempts: 5, requested_at: "saved", items: [] })
+  writeLeanText(directory, "repairs.json", used)
+  const run = model(directory, "unsatisfied")
+  expect((await runLean(directory, { sessions: run.port })).status).toBe("completed")
+  const [id] = checklistIDs(directory)
+  expect(focusedRepairs(run)).toBe(0)
+  expect(run.count(CHECKLIST_JOB_AGENTS.check)).toBe(1)
+  expect(readFileSync(leanFile(directory, "repairs.json"), "utf8")).toBe(used)
+  const gate = readLeanJson(directory, "gate.json") as any
+  expect(gate).toMatchObject({ status: "pass", delivery: "review_draft_with_findings", blocking: [] })
+  expect(gate.disclosed).toContainEqual(expect.objectContaining({ kind: "checklist_unresolved", ref: expect.objectContaining({ checklist_item: id, checklist_class: "omission" }),
+    detail: expect.stringContaining("(omission; the repair allowance was used up)") }))
+  expect(report(directory)).toContain(`Disclosed, not satisfied: ${id}: omission; the repair allowance was used up: Focused result unsatisfied.`)
+  expect(report(directory)).not.toContain("not fixed by the repair round")
+}, 120000)
+
+test("an integrity failure still blocks the checklist with its finding and starts no repair", async () => {
+  const directory = matter()
+  const scripted = model(directory, "unsatisfied", {}, { broken: true })
+  const state = await runLean(directory, { sessions: scripted.port })
+  const [adverse, failed] = checklistIDs(directory)
   expect(state.status).toBe("blocked")
   expect(state.stages["checklist-check"]?.status).toBe("blocked")
-  expect(state.stop_reason).toContain(status)
-  expect(readOpenItems(directory).some(item => item.stage === "checklist-check" && item.status === "open")).toBe(true)
+  expect(state.stop_reason).toBe(`Checklist handoff blocked: ${failed}: failed: Scripted read-only inspection failure. See checklist/report.md.`)
+  expect(readOpenItems(directory)).toContainEqual(expect.objectContaining({ stage: "checklist-check", status: "open", detail: `${failed}: failed: Scripted read-only inspection failure` }))
+  expect(report(directory)).toContain(`Delivery blocked: ${failed}: failed: Scripted read-only inspection failure`)
+  expect(report(directory)).toContain(`Disclosed, not satisfied: ${adverse}: omission; no repair round ran: Focused result unsatisfied.`)
+  // The omission waits: no round starts while an integrity failure blocks.
+  expect(focusedRepairs(scripted)).toBe(0)
+  expect(readRepairRound(directory)).toBeUndefined()
   expect(scripted.count(AGENT["package-review"])).toBe(0)
-  expect(readFileSync(leanFile(directory, "checklist/report.md"), "utf8")).toContain("Target: d1; treatment: operative")
+}, 120000)
+
+test("a declined checklist repair is disclosed with the adjudicator's reason, not blocked", async () => {
+  const { directory, state } = await declinedRepairRun()
+  expect(state.status).toBe("completed")
+  const [id] = checklistIDs(directory)
+  expect(readLeanJson(directory, "gate.json")).toMatchObject({ status: "pass", delivery: "review_draft_with_findings", blocking: [] })
+  expect(report(directory)).toContain(`Disclosed, not satisfied: ${id}: omission; source adjudication declined the repair: Focused result unsatisfied. Adjudicator's reason: DECLINED_REASON: the supplied terms already state the delivery period.`)
+  expect(report(directory)).not.toContain("Delivery blocked")
 }, 120000)
 
 test("informational open finding remains open in report while permitting review draft workflow", async () => {
@@ -99,6 +386,8 @@ test("informational open finding remains open in report while permitting review 
 // request's scope covers it goes to the lawyer as a disclosed decision instead
 // of an indeterminate finding that permanently blocks once reinspected.
 const scopeDecision = "Whether the request's scope requires this deliverable to cover the requirement"
+// An indeterminate finding whose one reinspection waits for an explicit Continue.
+const notInspectable = { indeterminate_cause: "not_inspectable" } as const
 
 test("an inspected applicability decision left open completes as a review draft disclosing that decision", async () => {
   const directory = matter()
@@ -121,7 +410,8 @@ test("an inspected applicability decision left open completes as a review draft 
 
 test("the one reinspection of an indeterminate finding may settle on an open applicability decision without redrafting", async () => {
   const directory = matter()
-  expect((await runLean(directory, { sessions: model(directory, "indeterminate").port })).status).toBe("blocked")
+  expect((await runLean(directory, { sessions: model(directory, "indeterminate", notInspectable).port })).status).toBe("completed")
+  settleBlockedChecklist(directory)
   enqueueLeanRequest(directory, { kind: "continue" })
   const review = model(directory, "open", { open_decisions: [scopeDecision] })
   expect((await runLean(directory, { sessions: review.port })).status).toBe("completed")
@@ -175,30 +465,35 @@ test("completed checklist validation uses authoritative extraction IDs and full 
 }, 120000)
 
 
-test("only explicit Continue reinspects blocked findings once without redrafting", async () => {
+test("at an integrity block, only explicit Continue reinspects an adverse finding, once, without redrafting", async () => {
   const directory = matter()
-  expect((await runLean(directory, { sessions: model(directory, "indeterminate").port })).status).toBe("blocked")
-  const idle = model(directory, "satisfied")
+  // The second requirement's check job always fails: the stage stays blocked
+  // and that failed check re-runs on every pass.
+  expect((await runLean(directory, { sessions: model(directory, "indeterminate", {}, { broken: true }).port })).status).toBe("blocked")
+  const [adverse, failed] = checklistIDs(directory)
+  const idle = model(directory, "satisfied", {}, { broken: true })
   expect((await runLean(directory, { sessions: idle.port })).status).toBe("blocked")
-  expect(idle.count(CHECKLIST_JOB_AGENTS.check)).toBe(0)
+  expect([checked(idle, adverse!), checked(idle, failed!)]).toEqual([0, 1])
   enqueueLeanRequest(directory, { kind: "continue" })
-  const review = model(directory, "indeterminate")
+  const review = model(directory, "indeterminate", {}, { broken: true })
   const stillBlocked = await runLean(directory, { sessions: review.port })
   expect(stillBlocked.status).toBe("blocked")
-  expect(stillBlocked.stop_reason).toContain("One reinspection has been used")
-  expect(review.count(CHECKLIST_JOB_AGENTS.check)).toBe(1)
+  expect(stillBlocked.stop_reason).toBe(`Checklist handoff blocked: ${failed}: failed: Scripted read-only inspection failure. See checklist/report.md.`)
+  expect([checked(review, adverse!), checked(review, failed!)]).toEqual([1, 1])
   expect(review.count(AGENT.draft)).toBe(0)
   expect(review.count(CHECKLIST_JOB_AGENTS.extract)).toBe(0)
-  expect(readFileSync(leanFile(directory, "checklist/report.md"), "utf8")).toContain("Original finding: indeterminate")
+  expect(report(directory)).toContain("Original finding: indeterminate")
+  expect(report(directory)).toContain(`Disclosed, not satisfied: ${adverse}: `)
   enqueueLeanRequest(directory, { kind: "continue" })
-  const exhausted = model(directory, "satisfied")
+  const exhausted = model(directory, "satisfied", {}, { broken: true })
   expect((await runLean(directory, { sessions: exhausted.port })).status).toBe("blocked")
-  expect(exhausted.count(CHECKLIST_JOB_AGENTS.check)).toBe(0)
+  expect([checked(exhausted, adverse!), checked(exhausted, failed!)]).toEqual([0, 1])
 }, 120000)
 
 test("a pause during the one reinspection spends nothing: Continue runs it again and uses its finding; the late reply is never recorded", async () => {
   const directory = matter()
-  expect((await runLean(directory, { sessions: model(directory, "indeterminate").port })).status).toBe("blocked")
+  expect((await runLean(directory, { sessions: model(directory, "indeterminate", notInspectable).port })).status).toBe("completed")
+  settleBlockedChecklist(directory)
   const checks = () => readLeanJson(directory, "checklist/checks.json") as { checks: { finding: unknown; reinspection?: { status: string; sessionID?: string } }[] }
   const original = checks().checks[0]!.finding
   enqueueLeanRequest(directory, { kind: "continue" })
@@ -243,7 +538,8 @@ test("a pause during the one reinspection spends nothing: Continue runs it again
 
 test("a focused model review may resolve an adverse assessment without changing its item or Word bytes", async () => {
   const directory = matter()
-  await runLean(directory, { sessions: model(directory, "indeterminate").port })
+  await runLean(directory, { sessions: model(directory, "indeterminate", notInspectable).port })
+  settleBlockedChecklist(directory)
   const original = readLeanJson(directory, "checklist/extraction.json")
   const bytes = readFileSync(leanFile(directory, "d1/body-applied.docx"))
   enqueueLeanRequest(directory, { kind: "continue" })
@@ -259,7 +555,8 @@ test("a focused model review may resolve an adverse assessment without changing 
 
 test("accepted focused refinement reruns late verification only and archived adverse parent does not block", async () => {
   const directory = matter()
-  expect((await runLean(directory, { sessions: model(directory, "indeterminate").port })).status).toBe("blocked")
+  expect((await runLean(directory, { sessions: model(directory, "indeterminate").port })).status).toBe("completed")
+  settleBlockedChecklist(directory)
   const extraction = readLeanJson(directory, "checklist/extraction.json") as any
   const parent = extraction.sources.flatMap((row: any) => row.items)[0]
   const prior = (readLeanJson(directory, "checklist/checks.json") as any).checks[0]
@@ -302,10 +599,12 @@ test("accepted focused refinement reruns late verification only and archived adv
 
 // A document-wide parent split for "Check the full draft": range and process
 // components defer it, and only an affirmative document-properties finding
-// decides it. Unmarked all-not_applicable children keep base semantics.
-for (const [status, marked, outcome] of [["satisfied", true, "completed"], ["indeterminate", true, "blocked"], ["not_applicable", true, "blocked"], ["not_applicable", false, "completed"]] as const) test(`full-draft check of a document-wide requirement: ${marked ? "deferred" : "undeferred"} ranges and ${status} document-properties finding leave the run ${outcome}`, async () => {
+// decides it; an undecided parent is disclosed with the review draft. Unmarked
+// all-not_applicable children keep base semantics.
+for (const [status, marked, disclosed] of [["satisfied", true, false], ["indeterminate", true, true], ["not_applicable", true, true], ["not_applicable", false, false]] as const) test(`full-draft check of a document-wide requirement: ${marked ? "deferred" : "undeferred"} ranges and ${status} document-properties finding ${disclosed ? "disclose the parent" : "complete the run"}`, async () => {
   const directory = matter()
-  expect((await runLean(directory, { sessions: model(directory, "indeterminate").port })).status).toBe("blocked")
+  expect((await runLean(directory, { sessions: model(directory, "indeterminate").port })).status).toBe("completed")
+  settleBlockedChecklist(directory)
   const parent = (readLeanJson(directory, "checklist/extraction.json") as any).sources.flatMap((row: any) => row.items)[0]
   enqueueLeanRequest(directory, { kind: "refine_checklist", parents: [{ parent_id: parent.id, scope: "target_body" }] })
   const inputs: ChecklistCheckerInput[] = []
@@ -321,9 +620,10 @@ for (const [status, marked, outcome] of [["satisfied", true, "completed"], ["ind
     },
   })
   const state = await runLean(directory, { sessions: full.port })
-  expect(state.status).toBe(outcome)
-  expect(state.stages["checklist-check"]?.status).toBe(outcome === "completed" ? "done" : "blocked")
-  expect(inputs.filter(input => input.assignment?.kind === "document_properties")).toHaveLength(1)
+  expect(state.status).toBe("completed")
+  expect(state.stages["checklist-check"]?.status).toBe("done")
+  // A causeless indeterminate finding is a missing inspection: its one reinspection runs in the stage.
+  expect(inputs.filter(input => input.assignment?.kind === "document_properties")).toHaveLength(status === "indeterminate" ? 2 : 1)
   expect(inputs.filter(input => input.assignment?.kind === "process_records")).toHaveLength(1)
   expect(inputs.every(input => input.assignment)).toBe(true)
   const whole = inputs.find(input => input.assignment?.kind === "document_properties")!
@@ -331,17 +631,23 @@ for (const [status, marked, outcome] of [["satisfied", true, "completed"], ["ind
   expect(whole.current_evidence.every(row => row.kind === "artifact" && "accepted_body_text_measures" in JSON.parse(row.text))).toBe(true)
   expect(full.count(CHECKLIST_JOB_AGENTS.extract)).toBe(0)
   expect(full.count(AGENT.draft)).toBe(0)
-  if (outcome === "blocked") expect(state.stop_reason).toContain(`${parent.id}: indeterminate`)
-  else expect(stageOutputValid(directory, "checklist-check")).toBe(true)
-  if (outcome === "blocked" && status === "not_applicable") expect(state.stop_reason).toContain("no document-properties finding decided it")
+  expect(stageOutputValid(directory, "checklist-check")).toBe(true)
+  expect(report(directory)).not.toContain("Delivery blocked")
+  if (disclosed) {
+    expect(report(directory)).toContain(`Disclosed, not satisfied: ${parent.id}: refined checks indeterminate: `)
+    expect(readLeanJson(directory, "gate.json")).toMatchObject({ status: "pass", delivery: "review_draft_with_findings", blocking: [] })
+  } else expect(report(directory)).not.toContain(`Disclosed, not satisfied: ${parent.id}: `)
+  if (disclosed && status === "not_applicable") expect(report(directory)).toContain("no document-properties finding decided it")
 }, 120000)
 
 // Each full-draft component applies the same applicability rule: paragraph
 // components left open on the scope decision with the other components not
-// applicable reconcile the parent open; any indeterminate component still blocks it.
+// applicable reconcile the parent open; any indeterminate component leaves it
+// indeterminate, disclosed with the review draft.
 for (const [other, parentStatus] of [["not_applicable", "open"], ["indeterminate", "indeterminate"]] as const) test(`full-draft components left open on an applicability decision with ${other} other components reconcile the parent ${parentStatus}`, async () => {
   const directory = matter()
-  expect((await runLean(directory, { sessions: model(directory, "indeterminate").port })).status).toBe("blocked")
+  expect((await runLean(directory, { sessions: model(directory, "indeterminate").port })).status).toBe("completed")
+  settleBlockedChecklist(directory)
   const parent = (readLeanJson(directory, "checklist/extraction.json") as any).sources.flatMap((row: any) => row.items)[0]
   enqueueLeanRequest(directory, { kind: "refine_checklist", parents: [{ parent_id: parent.id, scope: "target_body" }] })
   const instructions: string[] = []
@@ -361,16 +667,15 @@ for (const [other, parentStatus] of [["not_applicable", "open"], ["indeterminate
   expect(instructions.every(text => text.includes("Every component applies the applicability rule below exactly as a whole-item check does."))).toBe(true)
   expect(readFileSync(leanFile(directory, "checklist/report.md"), "utf8")).toContain(`coverage: target_body; status: ${parentStatus}`)
   expect(full.count(AGENT.draft)).toBe(0)
-  if (parentStatus === "indeterminate") {
-    expect(state.status).toBe("blocked")
-    expect(state.stages["checklist-check"]?.status).toBe("blocked")
-    expect(state.stop_reason).toContain(`${parent.id}: indeterminate`)
-    return
-  }
   expect(state.status).toBe("completed")
   expect(state.stages["checklist-check"]?.status).toBe("done")
   expect(stageOutputValid(directory, "checklist-check")).toBe(true)
   const gate = readLeanJson(directory, "gate.json") as any
+  if (parentStatus === "indeterminate") {
+    expect(report(directory)).toContain(`Disclosed, not satisfied: ${parent.id}: refined checks indeterminate: `)
+    expect(gate).toMatchObject({ status: "pass", delivery: "review_draft_with_findings", blocking: [] })
+    return
+  }
   expect(gate).toMatchObject({ status: "pass", delivery: "review_draft", blocking: [] })
   const open = gate.disclosed.filter((item: any) => item.kind === "checklist_open")
   expect(open.length).toBeGreaterThan(0)
@@ -379,14 +684,16 @@ for (const [other, parentStatus] of [["not_applicable", "open"], ["indeterminate
 
 // Text measures can disprove but never establish a rendered-length directive:
 // an approximate one stays open (disclosed in the report, review draft); a
-// clearly exceeded one is unsatisfied and takes the existing repair route.
+// clearly exceeded one is unsatisfied and takes the one automatic repair round.
 async function documentPropertiesRun(status: "open" | "unsatisfied") {
   const directory = matter()
-  expect((await runLean(directory, { sessions: model(directory, "indeterminate").port })).status).toBe("blocked")
+  expect((await runLean(directory, { sessions: model(directory, "indeterminate").port })).status).toBe("completed")
+  settleBlockedChecklist(directory)
   const parent = (readLeanJson(directory, "checklist/extraction.json") as any).sources.flatMap((row: any) => row.items)[0]
   enqueueLeanRequest(directory, { kind: "refine_checklist", parents: [{ parent_id: parent.id, scope: "target_body" }] })
   const seen = { measures: "", guided: false }
   const full = scriptedModel({ ...happyPath,
+    [AGENT["change-plan"]]: deferChecklistRepair,
     [CHECKLIST_JOB_AGENTS.check]: text => {
       const input = JSON.parse(text.split("CHECK_INPUT:\n\n")[1]!) as ChecklistCheckerInput
       if (input.assignment?.kind !== "document_properties")
@@ -397,7 +704,7 @@ async function documentPropertiesRun(status: "open" | "unsatisfied") {
         evidence: input.current_evidence, source_refs: input.item.source_refs, inspection_scope: "Exact artifact properties.", limitation: "Rendered pagination was not verified." })
     },
   })
-  return { directory, parent, state: await runLean(directory, { sessions: full.port }), seen }
+  return { directory, parent, state: await runLean(directory, { sessions: full.port }), seen, full }
 }
 
 test("an approximate rendered-length directive left open by text measures completes as a review draft with its measures in the report", async () => {
@@ -433,18 +740,19 @@ test("an approximate rendered-length directive left open by text measures comple
   expect(idle.prompts).toHaveLength(0)
 }, 120000)
 
-test("a rendered-length directive clearly exceeded by text measures blocks and offers the existing focused repair", async () => {
-  const { directory, parent, state, seen } = await documentPropertiesRun("unsatisfied")
-  expect(state.status).toBe("blocked")
-  expect(state.stages["checklist-check"]?.status).toBe("blocked")
-  expect(state.stop_reason).toContain(`${parent.id}: unsatisfied`)
-  const repairs = checklistRepairItems(directory)
-  expect(repairs).toHaveLength(1)
-  expect(repairs[0]).toMatchObject({ stage: "checklist-check", ref: { document: "d1", repair_target: "body" } })
-  expect(repairs[0]!.detail).toContain(seen.measures.replaceAll('"', '\\"'))
-  enqueueLeanRequest(directory, { kind: "continue" })
-  drainLeanRequests(directory, state)
-  expect(readRepairRound(directory)?.items).toEqual(repairs)
+test("a rendered-length directive clearly exceeded by text measures takes the one automatic focused repair, then is disclosed", async () => {
+  const { directory, parent, state, seen, full } = await documentPropertiesRun("unsatisfied")
+  expect(state.status).toBe("completed")
+  expect(state.stages["checklist-check"]?.status).toBe("done")
+  expect(focusedRepairs(full)).toBe(1)
+  const round = readRepairRound(directory)!
+  expect(round).toMatchObject({ round: 1, substantive_attempts: 1 })
+  expect(round.items).toHaveLength(1)
+  expect(round.items[0]).toMatchObject({ stage: "checklist-check", ref: { document: "d1", repair_target: "body" } })
+  expect(round.items[0]!.detail).toContain(seen.measures.replaceAll('"', '\\"'))
+  expect(readLeanJson(directory, "gate.json")).toMatchObject({ status: "pass", delivery: "review_draft_with_findings", blocking: [] })
+  expect(report(directory)).toContain(`Disclosed, not satisfied: ${parent.id}`)
+  expect(report(directory)).not.toContain("Delivery blocked")
 }, 120000)
 
 test("a pending checklist with real extraction remains required at the gate", () => {
@@ -469,17 +777,20 @@ test("actual recorded research context changes invalidate a completed checklist 
 })
 
 
-test("Continue repairs a source-backed omission through cumulative changes while preserving initial drafting", async () => {
+test("a source-backed omission is repaired automatically through cumulative changes while preserving initial drafting", async () => {
   const directory = matter()
   const initialDelivery = "The supplier shall deliver the goods within thirty days of the order date."
   const omitted = "The supplier shall deliver the goods."
   const payment = "Payment shall be due on delivery."
   const initialDraft = DRAFT.replace(omitted, initialDelivery)
+  const keys = ["d1.draft", "d1.review", "research"] as const
   let repairing = false, sawActual = false
+  let initial: { bytes: Buffer<ArrayBuffer>; extraction: unknown; before: string[]; counts: { changes: number; draft: number; research: number } } | undefined
   const scripted = scriptedModel({ ...happyPath,
     [AGENT.draft]: drafter(initialDraft),
     [AGENT.review]: () => "No further findings.",
     [AGENT["change-plan"]]: text => {
+      repairing ||= text.includes("ONE supplied checklist assessment")
       if (repairing) {
         const assessment = JSON.parse(text.split("<assessment>\n")[1]!.split("\n</assessment>")[0]!)
         const actual = assessment.finding.evidence.map((row: { text: string }) => row.text).join("\n")
@@ -502,28 +813,27 @@ test("Continue repairs a source-backed omission through cumulative changes while
     },
     [CHECKLIST_JOB_AGENTS.check]: text => {
       const packet = JSON.parse(text.split("CHECK_INPUT:\n\n")[1]!)
+      // The first check sees the mistaken cumulative change; record the initial
+      // drafting before the automatic repair round starts.
+      if (!repairing && !initial) {
+        initial = { bytes: readFileSync(leanFile(directory, "d1/body.docx")), extraction: readLeanJson(directory, "checklist/extraction.json"),
+          before: keys.map(step => stageInputSha(directory, step)), counts: { changes: scripted.count(AGENT.changes), draft: scripted.count(AGENT.draft), research: scripted.count(AGENT.research) } }
+        // Deliberately stale accepted-text sidecar must not substitute for current Word.
+        const oldRows = readLeanJson(directory, "d1/paragraphs-applied.json") as { text: string }[]
+        writeLeanText(directory, "d1/paragraphs-applied.json", JSON.stringify(oldRows.map(row => ({ ...row, text: row.text === omitted ? initialDelivery : row.text }))))
+      }
       return JSON.stringify({ item_id: packet.item_id, status: repairing ? "satisfied" : "unsatisfied", reason: repairing ? "Current operative timing is present." : "The cumulative amendment removed the supplied timing.", evidence: packet.current_evidence, source_refs: packet.item.source_refs, inspection_scope: "Current native Word target and exact source.", limitation: "No new approval inferred." })
     },
   })
-  expect((await runLean(directory, { sessions: scripted.port })).status).toBe("blocked")
-  const initialBytes = readFileSync(leanFile(directory, "d1/body.docx"))
-  const extraction = readLeanJson(directory, "checklist/extraction.json")
-  const keys = ["d1.draft", "d1.review", "research"] as const
-  const before = keys.map(step => stageInputSha(directory, step))
-  // Deliberately stale accepted-text sidecar must not substitute for current Word.
-  const oldRows = readLeanJson(directory, "d1/paragraphs-applied.json") as { text: string }[]
-  writeLeanText(directory, "d1/paragraphs-applied.json", JSON.stringify(oldRows.map(row => ({ ...row, text: row.text === omitted ? initialDelivery : row.text }))))
-  const counts = { changes: scripted.count(AGENT.changes), draft: scripted.count(AGENT.draft), research: scripted.count(AGENT.research) }
-  repairing = true
-  enqueueLeanRequest(directory, { kind: "continue" })
   expect((await runLean(directory, { sessions: scripted.port })).status).toBe("completed")
+  expect(focusedRepairs(scripted)).toBe(1)
   expect(sawActual).toBe(true)
-  expect(scripted.count(AGENT.changes)).toBe(counts.changes + 1)
-  expect(scripted.count(AGENT.draft)).toBe(counts.draft)
-  expect(scripted.count(AGENT.research)).toBe(counts.research)
-  expect(keys.map(step => stageInputSha(directory, step))).toEqual(before)
-  expect(readFileSync(leanFile(directory, "d1/body.docx"))).toEqual(initialBytes)
-  expect(readLeanJson(directory, "checklist/extraction.json")).toEqual(extraction)
+  expect(scripted.count(AGENT.changes)).toBe(initial!.counts.changes + 1)
+  expect(scripted.count(AGENT.draft)).toBe(initial!.counts.draft)
+  expect(scripted.count(AGENT.research)).toBe(initial!.counts.research)
+  expect(keys.map(step => stageInputSha(directory, step))).toEqual(initial!.before)
+  expect(readFileSync(leanFile(directory, "d1/body.docx"))).toEqual(initial!.bytes)
+  expect(readLeanJson(directory, "checklist/extraction.json")).toEqual(initial!.extraction)
   const current = readDocxCommentParagraphs(readFileSync(leanFile(directory, "d1/body-applied.docx"))).map(row => row.paragraph_text)
   expect(current).toContain(initialDelivery)
   expect(current).toContain(payment)
@@ -531,15 +841,21 @@ test("Continue repairs a source-backed omission through cumulative changes while
   expect(readLeanJson(directory, "repairs.json")).toMatchObject({ substantive_attempts: 1, items: [{ ref: { document: "d1", repair_target: "body" } }] })
 }, 120000)
 
-// A source adjudication that declines a checklist repair is not resubmitted by
-// a later unchanged Continue: the stage's one reinspection weighs it instead.
-async function declinedRepairRun(reinspected: "unsatisfied" | "open") {
+// A source adjudication that declines the one automatic checklist repair is not
+// resubmitted: the re-checked finding is disclosed with the adjudicator's reason.
+async function declinedRepairRun(reinspected: "unsatisfied" | "open" = "unsatisfied") {
   const directory = matter()
   const checks: string[] = []
+  const outputs = () => ["d1/redline.docx", "d1/body-applied.docx", "drafting-notes.docx"].map(file => readFileSync(leanFile(directory, file)))
+  const initial: { delivered?: ReturnType<typeof outputs>; applied?: string } = {}
   const scripted = scriptedModel({ ...happyPath,
-    [AGENT["change-plan"]]: text => JSON.stringify({ shared_decisions: [], groups: [], dismissed: [], questions: [],
-      ...(text.includes("ONE supplied checklist assessment") ? { superseded_findings: [], superseded_decisions: [], findings: [{ disposition: "rejected", kind: "information",
-        detail: "The assessed timing repair is not required.", reason: "DECLINED_REASON: the supplied terms already state the delivery period.", documents: ["d1"], sources: SUPPORT, limitations: [] }] } : {}) }),
+    [AGENT["change-plan"]]: text => {
+      const focused = text.includes("ONE supplied checklist assessment")
+      if (focused) Object.assign(initial, { delivered: outputs(), applied: readLeanState(directory)!.stages["d1.apply"]!.started_at! })
+      return JSON.stringify({ shared_decisions: [], groups: [], dismissed: [], questions: [],
+        ...(focused ? { superseded_findings: [], superseded_decisions: [], findings: [{ disposition: "rejected", kind: "information",
+          detail: "The assessed timing repair is not required.", reason: "DECLINED_REASON: the supplied terms already state the delivery period.", documents: ["d1"], sources: SUPPORT, limitations: [] }] } : {}) })
+    },
     [CHECKLIST_JOB_AGENTS.extract]: text => {
       const input = JSON.parse(text.split("SOURCE_INPUT:\n\n")[1]!) as ChecklistProducerInput
       return JSON.stringify({ items: input.source.document === "request" ? [{ check: "The supplied delivery timing is stated.", basis: "directive",
@@ -553,56 +869,37 @@ async function declinedRepairRun(reinspected: "unsatisfied" | "open") {
         source_refs: input.item.source_refs, inspection_scope: "Current body paragraphs only.", limitation: "Comments not inspected." })
     },
   })
-  const initial = await runLean(directory, { sessions: scripted.port })
-  expect(initial.status).toBe("blocked")
-  const outputs = () => ["d1/redline.docx", "d1/body-applied.docx", "drafting-notes.docx"].map(file => readFileSync(leanFile(directory, file)))
-  const delivered = outputs()
-  // The first Continue submits the adverse assessment; the adjudicator declines
-  // it with a source-cited reason and the ordinary re-check stays unsatisfied.
-  enqueueLeanRequest(directory, { kind: "continue" })
-  expect((await runLean(directory, { sessions: scripted.port })).status).toBe("blocked")
+  // The unsatisfied finding starts the one checklist round without a Continue;
+  // the adjudicator declines it with a source-cited reason and the re-check
+  // stays unsatisfied.
+  const state = await runLean(directory, { sessions: scripted.port })
+  expect(focusedRepairs(scripted)).toBe(1)
   const round = readLeanJson(directory, "repairs.json")
   expect(round).toMatchObject({ round: 1, substantive_attempts: 1 })
   // The declined repair applies nothing; re-applying and re-rendering the
   // unchanged notes keep every Word output byte for byte.
-  expect(outputs()).toEqual(delivered)
+  expect(outputs()).toEqual(initial.delivered!)
   expect(readLeanJson(directory, "d1/repair-adjudications.json")).toMatchObject({ assessments: [{ value: { groups: [], findings: [{ disposition: "rejected" }] } }] })
   expect(checks.some(text => text.includes("GENERATED, UNVERIFIED COUNTEREVIDENCE"))).toBe(false)
-  const before = { prompts: scripted.prompts.length, plans: scripted.count(AGENT["change-plan"]) }
-  enqueueLeanRequest(directory, { kind: "continue" })
-  const state = await runLean(directory, { sessions: scripted.port })
-  // Exactly one reinspection and no repair or drafting work; an open result
-  // then proceeds to the existing package review.
-  const added = scripted.prompts.slice(before.prompts)
-  expect(added.map(row => row.agent)).toEqual([CHECKLIST_JOB_AGENTS.check, ...(reinspected === "open" ? [AGENT["package-review"]] : [])])
-  expect(scripted.count(AGENT["change-plan"])).toBe(before.plans)
-  expect(added[0]!.text).toContain("GENERATED, UNVERIFIED COUNTEREVIDENCE")
-  expect(added[0]!.text).toContain("DECLINED_REASON")
-  expect(readLeanJson(directory, "repairs.json")).toEqual(round)
-  expect(readLeanJson(directory, "checklist/checks.json")).toMatchObject({ checks: [{ reinspection: { original_finding: { status: "unsatisfied" }, status: "succeeded" } }] })
-  return { directory, scripted, state, round, applied: initial.stages["d1.apply"]!.started_at! }
+  return { directory, scripted, state, round, applied: initial.applied! }
 }
 
-test("Continue does not resubmit a declined checklist repair; its one reinspection keeps the evidenced defect blocked and an unchanged Continue does nothing", async () => {
-  const { directory, scripted, state, round } = await declinedRepairRun("unsatisfied")
-  expect(state.status).toBe("blocked")
-  expect(state.stages["checklist-check"]?.status).toBe("blocked")
-  expect(state.stop_reason).toContain("unsatisfied: Focused result unsatisfied. Source adjudication declined the repair: DECLINED_REASON: the supplied terms already state the delivery period.")
-  expect(state.stop_reason).toContain("Continue does not repeat a declined repair after reinspection; a clarification or update decides this item. See checklist/report.md.")
-  expect(readFileSync(leanFile(directory, "checklist/report.md"), "utf8")).toContain("Source adjudication declined the repair: DECLINED_REASON")
-  const done = readdirSync(leanFile(directory, "requests/done")).toSorted().map(name => readLeanJson(directory, `requests/done/${name}`) as { outcome: { status: string; detail?: string } })
-  expect(done.at(-1)!.outcome).toEqual({ status: "resume", detail: "1 item(s) already declined by source adjudication are reinspected instead of resubmitted." })
-  const settled = { prompts: scripted.prompts.length, stop_reason: state.stop_reason, report: readFileSync(leanFile(directory, "checklist/report.md"), "utf8") }
+test("a disclosed declined repair is not resubmitted and an unchanged Continue does nothing", async () => {
+  const { directory, scripted, state, round } = await declinedRepairRun()
+  expect(state.status).toBe("completed")
+  expect(state.stages["checklist-check"]?.status).toBe("done")
+  const settled = { prompts: scripted.prompts.length, report: readFileSync(leanFile(directory, "checklist/report.md"), "utf8"), gate: readLeanJson(directory, "gate.json") }
   enqueueLeanRequest(directory, { kind: "continue" })
   const again = await runLean(directory, { sessions: scripted.port })
   expect(scripted.prompts.length).toBe(settled.prompts)
-  expect(again).toMatchObject({ status: "blocked", stop_reason: settled.stop_reason })
+  expect(again.status).toBe("completed")
   expect(readLeanJson(directory, "repairs.json")).toEqual(round)
   expect(readFileSync(leanFile(directory, "checklist/report.md"), "utf8")).toBe(settled.report)
+  expect(readLeanJson(directory, "gate.json")).toEqual(settled.gate)
 }, 120000)
 
-test("an apply re-run from unchanged inputs keeps the Word outputs, first-applied revision dates, checklist records and spent reinspection without a model call", async () => {
-  const { directory, scripted, state, applied } = await declinedRepairRun("unsatisfied")
+test("an apply re-run from unchanged inputs keeps the Word outputs, first-applied revision dates and checklist records without a model call", async () => {
+  const { directory, scripted, applied } = await declinedRepairRun()
   const files = ["d1/redline.docx", "d1/body-applied.docx", "drafting-notes.docx"]
   const before = Object.fromEntries(files.map(file => [file, readFileSync(leanFile(directory, file))]))
   const checks = readLeanJson(directory, "checklist/checks.json")
@@ -618,7 +915,7 @@ test("an apply re-run from unchanged inputs keeps the Word outputs, first-applie
     enqueueLeanRequest(directory, { kind: "continue" })
     const again = await runLean(directory, { sessions: scripted.port })
     expect(Date.parse(again.stages["d1.apply"]!.started_at!)).toBe(Date.parse(applied) + 86_400_000)
-    expect(again).toMatchObject({ status: "blocked", stop_reason: state.stop_reason })
+    expect(again.status).toBe("completed")
   } finally {
     setSystemTime()
   }
@@ -627,10 +924,33 @@ test("an apply re-run from unchanged inputs keeps the Word outputs, first-applie
   expect(readLeanJson(directory, "checklist/checks.json")).toEqual(checks)
 }, 120000)
 
-test("a reinspection that weighs a declined repair and leaves the item open delivers a review draft disclosing it", async () => {
-  const { directory, state } = await declinedRepairRun("open")
+for (const reinspected of ["unsatisfied", "open"] as const) test(`at a blocked checklist, Continue reinspects a declined repair once instead of resubmitting it: ${reinspected}`, async () => {
+  const { directory, scripted, round } = await declinedRepairRun(reinspected)
+  settleBlockedChecklist(directory)
+  const before = { prompts: scripted.prompts.length, plans: scripted.count(AGENT["change-plan"]) }
+  enqueueLeanRequest(directory, { kind: "continue" })
+  const state = await runLean(directory, { sessions: scripted.port })
+  // Exactly one reinspection and no repair or drafting work.
+  const added = scripted.prompts.slice(before.prompts)
+  expect(added[0]!.agent).toBe(CHECKLIST_JOB_AGENTS.check)
+  expect(added.filter(row => row.agent === CHECKLIST_JOB_AGENTS.check)).toHaveLength(1)
+  expect(scripted.count(AGENT["change-plan"])).toBe(before.plans)
+  expect(added[0]!.text).toContain("GENERATED, UNVERIFIED COUNTEREVIDENCE")
+  expect(added[0]!.text).toContain("DECLINED_REASON")
+  expect(readLeanJson(directory, "repairs.json")).toEqual(round)
+  expect(readLeanJson(directory, "checklist/checks.json")).toMatchObject({ checks: [{ reinspection: { original_finding: { status: "unsatisfied" }, status: "succeeded" } }] })
+  const done = readdirSync(leanFile(directory, "requests/done")).toSorted().map(name => readLeanJson(directory, `requests/done/${name}`) as { outcome: { status: string; detail?: string } })
+  expect(done.at(-1)!.outcome).toEqual({ status: "resume", detail: "1 item(s) already declined by source adjudication are reinspected instead of resubmitted." })
   expect(state.status).toBe("completed")
-  const gate = readLeanJson(directory, "gate.json") as any
-  expect(gate).toMatchObject({ status: "pass", delivery: "review_draft", blocking: [] })
-  expect(gate.disclosed).toContainEqual(expect.objectContaining({ stage: "checklist-check", kind: "checklist_open", status: "disclosed", detail: expect.stringContaining("Finding: Focused result open.") }))
+  expect(readLeanJson(directory, "gate.json")).toMatchObject({ status: "pass", delivery: reinspected === "open" ? "review_draft" : "review_draft_with_findings", blocking: [] })
+  if (reinspected === "unsatisfied")
+    expect(readFileSync(leanFile(directory, "checklist/report.md"), "utf8")).toContain(": omission; source adjudication declined the repair: Focused result unsatisfied. Adjudicator's reason: DECLINED_REASON")
+  else expect((readLeanJson(directory, "gate.json") as any).disclosed).toContainEqual(expect.objectContaining({ stage: "checklist-check", kind: "checklist_open", status: "disclosed", detail: expect.stringContaining("Finding: Focused result open.") }))
+  // The reinspection is spent: a further Continue at a blocked checklist makes no call.
+  settleBlockedChecklist(directory)
+  const spent = scripted.prompts.length
+  enqueueLeanRequest(directory, { kind: "continue" })
+  await runLean(directory, { sessions: scripted.port })
+  expect(scripted.prompts.slice(spent).filter(row => row.agent === CHECKLIST_JOB_AGENTS.check)).toHaveLength(0)
+  expect(readLeanJson(directory, "repairs.json")).toEqual(round)
 }, 120000)

@@ -263,7 +263,8 @@
 .matter-status-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--muted); flex-shrink: 0; }
 .matter-statusbar-label.is-running .matter-status-dot { background: var(--accent); }
 .matter-statusbar-label.is-blocked .matter-status-dot,
-.matter-statusbar-label.is-failed .matter-status-dot { background: var(--warn); }
+.matter-statusbar-label.is-failed .matter-status-dot,
+.matter-statusbar-label.is-findings .matter-status-dot { background: var(--warn); }
 .matter-statusbar-usage { flex: 0 0 auto; }
 .matter-statusbar .rail-strip-btn {
   width: auto;

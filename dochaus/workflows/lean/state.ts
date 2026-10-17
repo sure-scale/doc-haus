@@ -2,6 +2,7 @@ import { createHash } from "node:crypto"
 import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs"
 import path from "node:path"
 import { readDurableJson, writeDurableBytes } from "../../lib/durable-json"
+import type { ChecklistFindingClass } from "./checklist-classify"
 import type { DocID, StepID } from "./plan"
 
 // Lean drafting run state. One JSON file, written whole (tmp + rename) on every
@@ -55,7 +56,7 @@ export type LeanState = {
   stages: Partial<Record<StepID, LeanStageState>>
 }
 
-export type OpenItemKind = "research_gap" | "quote_miss" | "citation_unsupported" | "placeholder" | "unapplied_amendment" | "question" | "omission" | "template_removal" | "checklist_open"
+export type OpenItemKind = "research_gap" | "quote_miss" | "citation_unsupported" | "placeholder" | "unapplied_amendment" | "question" | "omission" | "template_removal" | "checklist_open" | "checklist_unresolved"
 
 export type OpenItem = {
   id: string
@@ -75,8 +76,11 @@ export type OpenItem = {
     template_part?: string
     /** The planned document whose body the item is about. */
     document?: DocID
-    /** The current checklist item a checklist_open item discloses. */
+    /** The current checklist item a checklist_open or checklist_unresolved
+     * item discloses; for a refined parent's coverage, the parent item. */
     checklist_item?: string
+    /** Why a checklist_unresolved finding remains adverse; absent for a parent's coverage. */
+    checklist_class?: ChecklistFindingClass
   }
   status: "open" | "resolved" | "disclosed"
   resolution?: string

@@ -1,22 +1,25 @@
 import { runFocusedChangeReview } from "./focused-change-review"
 import { readFirmDraftingPreferences } from "../../lib/drafting-preferences"
 import { DRAFTING_STOPPED_REASON } from "../../lib/drafting-update-admission"
+import { renderMarkdownToDocx } from "../../lib/render"
+import { existsSync, readFileSync, rmSync } from "node:fs"
 import { runChangeReconciliation } from "./change-reconciliation"
 import { focusedChecklistRepairs, runFocusedRepairAdjudication } from "./checklist-repair-adjudication"
+import { classifyChecklistFinding } from "./checklist-classify"
 import { checklistFindingRecovery } from "./checklist-contract"
 import { buildChecklistRefinementContext } from "./checklist-refinement-context"
-import { runChecklistRefinementFlow, readEffectiveChecklistItems, runChecklistExtractionFlow, runChecklistCheckFlow } from "./checklist-flow"
+import { runChecklistRefinementFlow, readEffectiveChecklistItems, runChecklistExtractionFlow, runChecklistCheckFlow, type ChecklistCheckResult } from "./checklist-flow"
 import { selectedDeliveryPlan } from "./delivery-selection"
 import { changePlanPrompt, changeReviewPrompt, readChangeReview, runChangePreparation } from "./change-pipeline"
 import { packageReviewPrompt, readPackageReview } from "./package-review"
-import { LEAN_MAX_SUBSTANTIVE_REPAIRS, readRepairRound, startRepairRound } from "./repairs"
+import { LEAN_MAX_SUBSTANTIVE_REPAIRS, checklistRepairItems, readRepairRound, repairedChecklistItems, startRepairRound } from "./repairs"
 import { acceptEvidenceReply, evidencePrompt } from "./evidence"
 import { researchPermissions, acceptResearchReply, researchPrompt } from "./research"
 import { runApply } from "./apply-stage"
-import { forgetUnplannedDocuments, recordLeanDocuments } from "./deliverables"
+import { DELIVERED_NOTES, forgetUnplannedDocuments, recordLeanDocuments } from "./deliverables"
 import { runDraftStage } from "./draft-sections"
 import { appendLeanEvent, leanElapsedMs } from "./events"
-import { finalGate, notesCoverageReport } from "./gate"
+import { checklistFindingLabel, deliveredNotes, finalGate, notesCoverageReport } from "./gate"
 import { readLeanPlan, reviewStages, leanSteps, stepDocument, stepStage, type StepID } from "./plan"
 import { retryPrompt, stagePrompt } from "./prompts"
 import { excerpt, inDocument, openItem, withSourceSnapshot } from "./quotes"
@@ -38,9 +41,11 @@ import {
   isReviewStage,
   hashStageInputs,
   keepAskedQuestions,
+  leanFile,
   matterRelative,
   readLeanState,
   readLeanJson,
+  readLeanText,
   readOpenItems,
   readQuestions,
   replaceStageOpenItems,
@@ -50,6 +55,7 @@ import {
   updateLeanStage,
   writeOpenItems,
   writeQuestions,
+  writeLeanBytes,
   writeLeanState,
   writeLeanText,
   type LeanStageState,
@@ -172,7 +178,8 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
     const stage = stepStage(step)
     const document = stepDocument(step) ?? undefined
     const changes = drainLeanRequests(directory)
-    const unanswered = readQuestions(directory).filter(question => question.status === "open")
+    // The gate asks its question after the walk; it holds back no step.
+    const unanswered = readQuestions(directory).filter(question => question.status === "open" && question.stage !== "gate")
     if (unanswered.length)
       return { state: writeLeanState(directory, { ...state, status: "blocked", stop_reason: `Waiting for your answers: ${unanswered.map(question => question.id).join(", ")}` }) }
     if ((changes.answered || changes.updated) &&
@@ -289,7 +296,8 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
     if (result.questions)
       replaceStageQuestions(directory, stage, document ?? null, result.questions.map(question => document ? { ...question, document } : question))
     snapshotStage(directory, state.revision, step, result.outputs)
-    state = updateLeanStage(directory, state, step, { status: result.status, input_sha: step === "checklist-check" ? stageInputSha(directory, step) : inputSha, outputs: result.outputs, finished_at: now() })
+    // These steps write some of their own inputs (the gate its question); their key is taken again.
+    state = updateLeanStage(directory, state, step, { status: result.status, input_sha: step === "checklist-check" || step === "gate" ? stageInputSha(directory, step) : inputSha, outputs: result.outputs, finished_at: now() })
     if (stage === "change-review" && document && readChangeReview(directory, document)?.status === "changes-required") {
       const review = readChangeReview(directory, document)!
       if ((readRepairRound(directory)?.substantive_attempts ?? 0) >= LEAN_MAX_SUBSTANTIVE_REPAIRS)
@@ -358,7 +366,8 @@ async function reconcilePackageReview(directory: string, state: LeanState, deps:
   // accepted operative/research repair context or changing its generation key.
   if (prior && findings.every(item => item.ref.repair_target === "memo"))
     writeLeanText(directory, "repairs.json", `${JSON.stringify({ ...prior,
-      items: [...prior.items.filter(item => item.ref.repair_target !== "memo"), ...findings],
+      // A checklist notes repair stays required beside the new review findings.
+      items: [...prior.items.filter(item => item.stage !== "package-review" || item.ref.repair_target !== "memo"), ...findings],
       substantive_attempts: (prior.substantive_attempts ?? 0) + 1,
     }, null, 2)}\n`)
   else startRepairRound(directory, findings, true)
@@ -427,7 +436,14 @@ async function runChecklistStage(directory: string, state: LeanState, deps: Lean
     refinementOutputs.push(...refined.outputs)
   }
   const key = stageInputSha(directory, "checklist-check")
-  const result = await runChecklistCheckFlow(directory, { sessions: deps.sessions, model: state.model, parentID: state.owner_session_id }, { reinspectAdverse, pause: deps.pause })
+  const checkDeps = { sessions: deps.sessions, model: state.model, parentID: state.owner_session_id }
+  const checked = await runChecklistCheckFlow(directory, checkDeps, { reinspectAdverse, pause: deps.pause })
+  // A finding the check could not establish gets its one reinspection here,
+  // limited to those items and only with no integrity failure; it is then
+  // disclosed, never repaired. A recorded reinspection is never repeated.
+  const uninspected = checked.status === "succeeded" && checked.checks.every(row => row.reinspection?.status !== "failed") && !deps.pause?.aborted
+    ? missingInspections(directory, checked.checks) : new Set<string>()
+  const result = uninspected.size ? await runChecklistCheckFlow(directory, checkDeps, { reinspectItems: uninspected, pause: deps.pause }) : checked
   // An answer is queued while read-only jobs run; it cannot become accepted
   // evidence for the snapshot they inspected. Refresh before proceeding.
   const queued = drainLeanRequests(directory)
@@ -436,28 +452,61 @@ async function runChecklistStage(directory: string, state: LeanState, deps: Lean
   const current = withSourceSnapshot(() => ({ key: stageInputSha(directory, "checklist-check"), effective: readEffectiveChecklistItems(directory) }))
   if (current.key !== key) return { status: "restart" }
   const itemMap = new Map(current.effective.items.map(record => [record.id, record.item] as const))
-  const blocking = result.checks.filter(row => row.status !== "succeeded" || row.reinspection?.status === "failed" || !row.finding || !itemMap.has(row.item_id) || checklistFindingRecovery(itemMap.get(row.item_id)!, row.finding) !== "none")
-  // A defect that survives a declined repair and its reinspection shows the
-  // adjudicator's reason, since Continue does not resubmit that repair.
-  const declined = new Map(blocking.flatMap(row => {
+  // Integrity: a current item without one completed finding. Only these block;
+  // the gate discloses every completed adverse finding with the review draft.
+  const integrity = result.checks.filter(row => row.status !== "succeeded" || row.reinspection?.status === "failed" || !row.finding || !itemMap.has(row.item_id))
+  const adverse = result.checks.flatMap(row => {
     const item = itemMap.get(row.item_id)
-    if (row.reinspection?.status !== "succeeded" || !item || checklistFindingRecovery(item, row.finding) !== "repair") return []
+    if (integrity.includes(row) || !item || !row.finding) return []
+    const classified = classifyChecklistFinding(item, row.finding, current.effective.items)
+    return classified ? [{ row, item, finding: row.finding, recovery: checklistFindingRecovery(item, row.finding), class: classified.class }] : []
+  })
+  // A repair the current source adjudication declined is disclosed with its
+  // reason; neither the runner nor Continue resubmits it unchanged.
+  const declined = new Map(adverse.flatMap(({ row, item, recovery }) => {
+    if (recovery !== "repair") return []
     const adjudication = withheldChecklistRepair(directory, state, row.item_id, item)
     return adjudication ? [[row.item_id, excerpt(adjudication.claims.map(claim => claim.reason).join(" "))] as const] : []
   }))
-  const details = blocking.map(row => `${row.item_id}: ${row.finding?.status ?? row.status}: ${row.finding?.reason ?? row.issues.join(" ")}${declined.has(row.item_id)
-    ? ` Source adjudication declined the repair: ${declined.get(row.item_id)} Continue does not repeat a declined repair after reinspection; a clarification or update decides this item`
-    : row.reinspection ? " One reinspection has been used for this evidence; a remaining defect or inspection gap requires changed evidence or a focused substantive fix, not another unchanged Continue." : ""}`)
-  for (const parent of result.parent_coverage) if (["unsatisfied", "indeterminate"].includes(parent.status)) details.push(`${parent.parent_id}: ${parent.status}: ${parent.issues.join(" ") || "A refined child remains adverse."}`)
+  const details = integrity.map(row => `${row.item_id}: ${row.finding?.status ?? row.status}: ${row.finding?.reason ?? row.issues.join(" ")}${row.reinspection
+    ? " One reinspection has been used for this evidence; a remaining defect or inspection gap requires changed evidence or a focused substantive fix, not another unchanged Continue." : ""}`)
   if (!result.refinement_complete) details.push(...current.effective.issues)
   if (!result.extraction_complete) details.unshift("Source extraction is incomplete or stale; not every current source item was checked.")
-  const report = ["# Checklist handoff findings", "", "Each result addresses its unchanged source item and declared target. Open findings remain unresolved; they are not satisfied findings. Comments, deleted text and layout may be uninspected; see each finding's scope and limitation.", "", ...result.checks.flatMap(row => [`## ${row.item_id}`, `Target: ${itemMap.get(row.item_id)?.target.document ?? "unresolved"}; treatment: ${itemMap.get(row.item_id)?.target.treatment ?? "unresolved"}`, itemMap.get(row.item_id)?.check ?? "", ...(row.reinspection ? [`Original finding: ${row.reinspection.original_finding.status}: ${row.reinspection.original_finding.reason}`, `Reinspection: ${row.reinspection.status}; ${row.reinspection.issues.join(" ")}`] : []), `Status: ${row.finding?.status ?? row.status}`, row.finding?.reason ?? row.issues.join(" "), ...(row.finding ? [`Inspection: ${row.finding.inspection_scope}`, `Limitation: ${row.finding.limitation}`] : []), ""]), ...result.parent_coverage.flatMap(parent => [`Parent: ${parent.parent_id}; coverage: ${parent.scope}; status: ${parent.status}`, `Children: ${parent.children.join(", ")}`, ...parent.issues, ""]), ...details.map(detail => `Delivery blocked: ${detail}`)].join("\n")
+  // An omission gets one checklist repair round, started here without a
+  // Continue: only with no integrity failure, before the run's checklist round
+  // is used (a later review round does not restore it), and within the shared
+  // substantive allowance. The walk restarts and this stage re-runs from the
+  // repaired draft.
+  const omissions = new Set(adverse.filter(row => row.class === "omission" && row.recovery === "repair" && !declined.has(row.row.item_id)).map(row => row.row.item_id))
+  const round = readRepairRound(directory)
+  if (!details.length && omissions.size && !repairedChecklistItems(round).size && (round?.substantive_attempts ?? 0) < LEAN_MAX_SUBSTANTIVE_REPAIRS) {
+    const repairs = checklistRepairItems(directory, item_id => !omissions.has(item_id))
+    if (repairs.length) {
+      startRepairRound(directory, repairs, true)
+      return { status: "restart" }
+    }
+  }
+  const disclosed = [
+    ...adverse.map(({ row, item, finding, class: kind }) => `${row.item_id}: ${checklistFindingLabel(directory, state, { item_id: row.item_id, item, class: kind, reinspected: !!row.reinspection })}: ${finding.reason}${declined.has(row.item_id) ? ` Adjudicator's reason: ${declined.get(row.item_id)}` : ""}`),
+    ...result.parent_coverage.filter(parent => ["unsatisfied", "indeterminate"].includes(parent.status))
+      .map(parent => `${parent.parent_id}: refined checks ${parent.status}: ${parent.issues.join(" ") || "A refined child remains adverse."}`),
+  ]
+  const report = ["# Checklist handoff findings", "", "Each result addresses its unchanged source item and declared target. Open findings remain unresolved; they are not satisfied findings. Comments, deleted text and layout may be uninspected; see each finding's scope and limitation.", "", ...result.checks.flatMap(row => [`## ${row.item_id}`, `Target: ${itemMap.get(row.item_id)?.target.document ?? "unresolved"}; treatment: ${itemMap.get(row.item_id)?.target.treatment ?? "unresolved"}`, itemMap.get(row.item_id)?.check ?? "", ...(row.reinspection ? [`Original finding: ${row.reinspection.original_finding.status}: ${row.reinspection.original_finding.reason}`, `Reinspection: ${row.reinspection.status}; ${row.reinspection.issues.join(" ")}`] : []), `Status: ${row.finding?.status ?? row.status}`, row.finding?.reason ?? row.issues.join(" "), ...(row.finding ? [`Inspection: ${row.finding.inspection_scope}`, `Limitation: ${row.finding.limitation}`] : []), ""]), ...result.parent_coverage.flatMap(parent => [`Parent: ${parent.parent_id}; coverage: ${parent.scope}; status: ${parent.status}`, `Children: ${parent.children.join(", ")}`, ...parent.issues, ""]), ...details.map(detail => `Delivery blocked: ${detail}`), ...disclosed.map(detail => `Disclosed, not satisfied: ${detail}`)].join("\n")
   writeLeanText(directory, "checklist/report.md", `${report}\n`)
   const openItems = details.map(detail => openItem("checklist-check", "omission", detail, {}))
   // Informational `open` remains in the authoritative report, rather than being
   // coerced to satisfied or to a delivery-blocking generic omission.
   return { status: details.length ? "blocked" : "done", outputs: [...new Set(["checklist/extraction.json", ...refinementOutputs, ...result.outputs, "checklist/report.md"])], openItems,
     ...(details.length ? { reason: `Checklist handoff blocked: ${details.join("; ")}. See checklist/report.md.` } : {}) }
+}
+
+/** Completed findings classed as a missing inspection that have not had their one reinspection. */
+function missingInspections(directory: string, checks: ChecklistCheckResult[]) {
+  const items = readEffectiveChecklistItems(directory).items
+  return new Set(checks.flatMap(row => {
+    const item = items.find(record => record.id === row.item_id)?.item
+    return item && row.finding && !row.reinspection && classifyChecklistFinding(item, row.finding, items)?.class === "missing_inspection" ? [row.item_id] : []
+  }))
 }
 
 /** One synchronous read of the matter's sources serves every input of the key. */
@@ -469,7 +518,7 @@ function runStep(directory: string, state: LeanState, step: StepID, deps: LeanDe
   const stage = stepStage(step)
   const document = stepDocument(step)
   if (stage === "apply" && document) return runApply(directory, state, deps, document)
-  if (stage === "gate") return Promise.resolve(runGate(directory))
+  if (stage === "gate") return runGate(directory)
   if (stage === "checklist-check") return runChecklistStage(directory, state, deps, reinspectChecklist)
   if (stage === "change-plan" && document && focusedChecklistRepairs(directory, document)) return runFocusedRepairAdjudication(directory, state, deps, document, progress)
   if (stage === "change-review" && document && focusedChecklistRepairs(directory, document)) return runFocusedChangeReview(directory, state, deps, document, progress)
@@ -511,7 +560,7 @@ async function runModelStage(directory: string, state: LeanState, step: StepID, 
       return { status: "failed", reason: `${step}: checker failed after ${LEAN_MAX_RETRIES} retries: ${accepted.issues.join(" ")}` }
     return attempt(index + 1, retryPrompt(stage, accepted.issues))
   }
-  return attempt(0, stage === "change-plan" && document ? changePlanPrompt(directory, document) : stage === "change-review" && document ? changeReviewPrompt(directory, document) : stage === "package-review" ? `${packageReviewPrompt(directory)}\n\nFocused checklist findings are saved at .dochaus/lean/checklist/report.md and checklist/checks.json; use targeted read-record lookup when relevant. Open findings remain unresolved, not satisfied. Do not re-run every checklist item in this package review.` : stage === "discrepancy" || stage === "spine" ? evidencePrompt(directory, stage) : stage === "intake" || stage === "research" || stage === "research-review" ? researchPrompt(directory, stage) : stagePrompt(directory, step))
+  return attempt(0, stage === "change-plan" && document ? changePlanPrompt(directory, document) : stage === "change-review" && document ? changeReviewPrompt(directory, document) : stage === "package-review" ? `${packageReviewPrompt(directory)}\n\nFocused checklist findings are saved at .dochaus/lean/checklist/report.md and checklist/checks.json; use targeted read-record lookup when relevant. Open findings remain unresolved, not satisfied. In that report, a "Disclosed, not satisfied" line is an unresolved finding: it is disclosed with the review draft, is not a blocker for this review to clear, and is never treated as satisfied. Do not re-run every checklist item in this package review.` : stage === "discrepancy" || stage === "spine" ? evidencePrompt(directory, stage) : stage === "intake" || stage === "research" || stage === "research-review" ? researchPrompt(directory, stage) : stagePrompt(directory, step))
 }
 
 /** The state's step rows follow the plan, whether the first draft wrote it or
@@ -531,16 +580,34 @@ function followPlan(directory: string, state: LeanState) {
   return syncLeanSteps(directory, state, steps)
 }
 
-function runGate(directory: string): StageRun {
-  // The gate's checks are synchronous: they share one source read.
-  const gate = withSourceSnapshot(() => finalGate(directory))
+async function runGate(directory: string): Promise<StageRun> {
+  // The gate's checks are synchronous: they share one source read. Its
+  // question replaces the one it asked before, or withdraws it.
+  const { gate: { question, ...gate }, notes } = withSourceSnapshot(() => {
+    const gate = finalGate(directory)
+    return { gate, notes: deliveredNotes(directory, gate) }
+  })
   writeLeanText(directory, "gate.json", `${JSON.stringify(gate, null, 2)}\n`)
   writeLeanText(directory, "drafting-notes-coverage.md", notesCoverageReport(gate))
-  if (gate.status === "pass") return { status: "done", outputs: stepOutputs("gate"), openItems: [] }
+  // Unresolved checklist findings lead the notes delivered with the draft.
+  // Without them the drafting notes are delivered as written, so earlier
+  // delivered notes are removed. Rendering is not byte-stable (a list gets a
+  // fresh relationship id), so unchanged notes keep their earlier file; the
+  // .docx is written before the .md, so a stop between the two re-renders.
+  const previous = leanFile(directory, DELIVERED_NOTES.docx)
+  if (notes) {
+    if (!existsSync(previous) || readLeanText(directory, DELIVERED_NOTES.markdown) !== notes) {
+      writeLeanBytes(directory, DELIVERED_NOTES.docx, (await renderMarkdownToDocx(notes, existsSync(previous) ? readFileSync(previous) : undefined)).bytes)
+      writeLeanText(directory, DELIVERED_NOTES.markdown, notes)
+    }
+  } else for (const name of [DELIVERED_NOTES.markdown, DELIVERED_NOTES.docx]) rmSync(leanFile(directory, name), { force: true })
+  const questions = question ? [question] : []
+  if (gate.status === "pass") return { status: "done", outputs: stepOutputs("gate"), openItems: [], questions }
   return {
     status: "blocked",
     outputs: stepOutputs("gate"),
     openItems: [],
+    questions,
     reason: `gate: blocked by open items ${gate.blocking.map(item => item.id).join(", ")}`,
   }
 }

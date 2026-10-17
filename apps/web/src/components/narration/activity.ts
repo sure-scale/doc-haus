@@ -1,6 +1,7 @@
 import type { Part } from "../../api/session-view"
 import type { LeanDraftingStatus } from "../../api/ingest/lean"
 import { basename, stepLabel } from "../chat/step-labels"
+import { checklistFindingsCount, unresolvedFindingsPhrase } from "../drafting/model"
 
 // The deterministic half of the drafting narration: plain activity lines read
 // from the stage sessions' streamed parts and from the run's stage rows. No
@@ -188,6 +189,11 @@ export function stageMilestones(status: LeanDraftingStatus): ActivityLine[] {
     if (row.status === "running" || row.status === "pending")
       return [{ ...line, state: "paused" as const, text: `Paused while ${during(step)}`, until: Date.parse(status.updated_at) }]
     const until = row.finished_at ? Date.parse(row.finished_at) : undefined
+    // A final check that delivered unresolved checklist findings did not pass
+    // clean; flagged, it stays outside the folded activity.
+    const findings = step === "gate" && row.status === "done" ? checklistFindingsCount(status) : undefined
+    if (findings !== undefined)
+      return [{ ...line, state: "done" as const, text: `Final check: review draft with ${unresolvedFindingsPhrase(findings)}`, until, flag: true }]
     if (row.status === "done") return [{ ...line, state: "done" as const, text: words(step).done, until }]
     if (row.status === "failed" && !stoppedByTechnicalProblem(status))
       return [{ ...line, state: "error" as const, text: `Stopped while ${during(step)}`, until }]

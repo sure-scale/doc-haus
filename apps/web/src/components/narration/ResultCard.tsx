@@ -1,7 +1,7 @@
 import { documentContentUrl } from "../../api/ingest/documents"
 import type { LeanDraftingStatus } from "../../api/ingest/lean"
 import DraftedList from "../drafting/DraftedList"
-import { draftedGroups, OUTPUT_ROLE, type DraftedOutput } from "../drafting/model"
+import { checklistFindingsCount, draftedGroups, findingsTitle, OUTPUT_ROLE, type DraftedOutput } from "../drafting/model"
 import { resultChecks } from "./outcome"
 
 /** A completed run in brief: what the checks established, what remains for the
@@ -18,6 +18,8 @@ export default function ResultCard({
   onViewDocument: (name: string) => void
 }) {
   const checks = resultChecks(status)
+  // A review draft delivered with unresolved checklist findings is not a clean completion.
+  const findings = checklistFindingsCount(status)
   const groups = draftedGroups(status)
   const outputs = groups.flatMap((group) => [group.main, ...group.extras])
   const drafts = outputs.filter((output) => output.role === "draft")
@@ -26,12 +28,16 @@ export default function ResultCard({
   const rows = [...(lone ? [] : drafts), ...notes]
   return (
     <section id="run-result" className="narration-result" aria-labelledby="run-result-title">
-      <h3 id="run-result-title" className="narration-result-title">
+      <h3 id="run-result-title" className={`narration-result-title${findings === undefined ? "" : " is-findings"}`}>
         <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden>
           <circle cx="8" cy="8" r="7" fill="currentColor" />
-          <path d="m5 8.2 2 2 4-4.2" fill="none" stroke="var(--text-on-accent)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+          {findings === undefined ? (
+            <path d="m5 8.2 2 2 4-4.2" fill="none" stroke="var(--text-on-accent)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+          ) : (
+            <path d="M8 4.5v4.2M8 11.4h.01" fill="none" stroke="var(--text-on-accent)" strokeWidth="1.6" strokeLinecap="round" />
+          )}
         </svg>
-        Ready for review
+        {findings === undefined ? "Ready for review" : findingsTitle(findings)}
       </h3>
       {checks.length > 0 && (
         <ul className="result-chips">

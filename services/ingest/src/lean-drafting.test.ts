@@ -438,6 +438,9 @@ test("amendment status rows preserve stage order, worker-only sessions and the u
 test("idle blocked checklist accepts a clarification while busy, changed-owner and completed late requests conflict", async () => {
   const directory = leanFixtureMatter("lean-held-clarification-")
   directories.push(directory)
+  // An undetermined finding is reinspected once and then disclosed; only a
+  // failed reinspection holds the checklist, so the second check fails.
+  const inspected = new Set<string>()
   const inspect = scriptedModel({ ...happyPath,
     "lean-checklist-extract": text => {
       const input = JSON.parse(text.split("SOURCE_INPUT:\n\n")[1]!)
@@ -445,10 +448,13 @@ test("idle blocked checklist accepts a clarification while busy, changed-owner a
     },
     "lean-checklist-check": text => {
       const input = JSON.parse(text.split("CHECK_INPUT:\n\n")[1]!)
+      if (inspected.has(input.item_id)) return "not a finding"
+      inspected.add(input.item_id)
       return JSON.stringify({ item_id: input.item_id, status: "indeterminate", reason: "Inspect applicability.", evidence: input.current_evidence, source_refs: input.item.source_refs, inspection_scope: "Current target.", limitation: "Applicability needs inspection." })
     },
   })
   expect((await runLean(directory, { sessions: inspect.port })).status).toBe("blocked")
+  expect(readLeanText(directory, "checklist/checks.json")).toContain('"original_finding"')
   const ownerSessionID = readLeanState(directory)!.owner_session_id
   const model = heldModel()
   const routes = leanDraftingRoutes({ directory: () => directory, deps: () => model.deps })
@@ -504,6 +510,29 @@ test("a delivered draft changed after the final check is disclosed; the check's 
   // Disclosure only: nothing re-runs, upgrades or clears the final check.
   expect(status).toMatchObject({ status: "completed", gate, open_items: [open] })
   expect(JSON.parse(readLeanText(directory, "gate.json")!)).toEqual(gate)
+})
+
+test("a review draft delivered with unresolved checklist findings passes through as delivered, with each finding's checklist reference", async () => {
+  const directory = matter()
+  writeLeanState(directory, { ...initLeanState(directory, { request: "Draft a short supply note.", ownerSessionID: "ses_owner", model: MODEL }), status: "completed" })
+  const finding = {
+    id: "checklist-check:checklist_unresolved:item-1",
+    stage: "checklist-check",
+    kind: "checklist_unresolved",
+    detail: "Checklist requirement not satisfied: The note states the delivery period.",
+    ref: { checklist_item: "item-1", checklist_class: "omission", document: "d1" },
+    status: "disclosed",
+  }
+  const gate = { status: "pass", delivery: "review_draft_with_findings", blocking: [], disclosed: [finding], items: [finding], checked_at: "2026-10-11T09:05:28.417Z" }
+  writeLeanText(directory, "gate.json", `${JSON.stringify(gate)}\n`)
+  // Written as JSON: the open item's kind and checklist reference are passed through verbatim.
+  writeLeanText(directory, "open-items.json", `${JSON.stringify({ items: [finding] })}\n`)
+  expect(leanDraftingStatus(directory)).toMatchObject({ status: "completed", gate, open_items: [finding] })
+
+  const routes = leanDraftingRoutes({ directory: () => directory, deps: () => ({ sessions: scriptedModel({}).port }) })
+  const response = await routes.request("/m1/lean/state")
+  expect(response.status).toBe(200)
+  expect(await response.json()).toMatchObject({ status: "completed", gate, open_items: [finding] })
 })
 
 describe("pausing and stopping a lean drafting run", () => {

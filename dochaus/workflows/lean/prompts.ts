@@ -228,7 +228,7 @@ function draftingNotesSections(directory: string, request: string) {
   const questions = readQuestions(directory)
   return [
     "This is a lean drafting run. Write the drafting notes that go to the lawyer with the drafted documents.",
-    tagged("required_repairs", (readRepairRound(directory)?.items ?? []).filter(item => item.stage === "package-review").map(item => `- ${item.detail}`).join("\n") || "None."),
+    tagged("required_repairs", (readRepairRound(directory)?.items ?? []).filter(item => item.stage === "package-review" || item.ref.repair_target === "memo").map(item => `- ${item.detail}`).join("\n") || "None."),
     request, actingForBlock(directory), answeredQuestionsText(directory) ? tagged("answers", answeredQuestionsText(directory)) : "",
     tagged("sources", matterSourceIDs(directory).join("\n")),
     tagged("delivery_artifacts", JSON.stringify(deliveryArtifactEvidence(directory), null, 2)),

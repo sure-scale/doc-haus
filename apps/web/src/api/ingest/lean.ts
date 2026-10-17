@@ -42,7 +42,10 @@ export type LeanOpenItem = {
   kind: string
   detail: string
   status: "open" | "resolved" | "disclosed"
-  ref?: { document?: string }
+  /** A `checklist_unresolved` item names its checklist item and, when known, why
+   * it stayed unresolved (`checklist_class`: departure, source_conflict,
+   * not_inspectable, missing_inspection or omission). */
+  ref?: { document?: string; checklist_item?: string; checklist_class?: string }
 }
 
 export type LeanQuestion = {
@@ -95,8 +98,17 @@ export type LeanDraftingStatus = {
   questions: LeanQuestion[]
   /** The final check's result; `items` holds every open item as the check settled it
    * (open = still blocking, disclosed in the drafting notes, or resolved), and
-   * each checklist finding left open, disclosed as kind `checklist_open`. */
-  gate: { status: "pass" | "blocked"; delivery: string | null; blocking: LeanOpenItem[]; items?: LeanOpenItem[] } | null
+   * each checklist finding left open, disclosed as kind `checklist_open`.
+   * `delivery` is `execution_ready`, `review_draft`, or `review_draft_with_findings`:
+   * a review draft delivered with checklist requirements it does not satisfy,
+   * each disclosed as kind `checklist_unresolved`. */
+  gate: {
+    status: "pass" | "blocked"
+    delivery: string | null
+    blocking: LeanOpenItem[]
+    disclosed?: LeanOpenItem[]
+    items?: LeanOpenItem[]
+  } | null
   documents: { status: "blocked" | "completed"; documents: LeanDocument[] } | null
   /** Delivered drafts whose matter file differs from what the final check saw
    * (`since` is when it ran). The gate's verdict above is not re-evaluated. */

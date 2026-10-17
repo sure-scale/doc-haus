@@ -200,13 +200,14 @@ function questionMarkerIssues(question: Question, index: number, amendments: Ame
 /** A repeated question keeps its id, so rewording it does not raise a new
  * question; a question already answered, by id or by its exact wording, is
  * never asked again (undefined at its index). A repeat that names no paragraph
- * keeps the earlier paragraph only when it was asked about the same document. */
+ * keeps the earlier paragraph only when it was asked about the same document.
+ * The final gate's question stays the gate's: a repeat of its id is dropped. */
 export function askedQuestions(items: Record<string, unknown>[], asked: Map<string, Question>, document: DocID | undefined): (Question | undefined)[] {
   const answered = new Set([...asked.values()].filter(question => question.status === "answered").map(question => normalize(question.question)))
   return items.map(item => {
     const text = String(item.question).trim()
     const prior = given(item.id) ? asked.get(String(item.id).trim()) : undefined
-    if (prior?.status === "answered" || answered.has(normalize(text))) return
+    if (prior?.status === "answered" || prior?.stage === "gate" || answered.has(normalize(text))) return
     const pid = given(item.pid) ? String(item.pid).trim() : prior?.document === document ? prior?.pid : undefined
     return {
       id: prior?.id ?? `q-${shortHash(normalize(text))}`,

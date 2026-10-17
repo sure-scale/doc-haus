@@ -58,6 +58,25 @@
   color: var(--text-secondary);
 }
 
+/* An unresolved checklist finding: a requirement the delivered draft does not satisfy. */
+.open-item-tag.is-unresolved,
+.open-items-unresolved {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.open-items-unresolved {
+  padding: 0 6px;
+  border-radius: var(--radius-pill);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.open-item-class {
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
 .open-items-more {
   margin-top: 8px;
   font-size: 12px;

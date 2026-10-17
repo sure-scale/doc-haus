@@ -180,7 +180,8 @@ test("scope changes retain inactive child findings and consumed budgets in the e
   expect(deps.count()).toBe(count)
   expect(same.checks.find(row => row.item_id === adverse.item_id)).toEqual(adverse)
   expect(same.parent_coverage[0]!.status).toBe("unsatisfied")
-  expect(checklistOutputState(dir).valid).toBe(false)
+  // The reactivated adverse child and its parent are disclosed, not passed.
+  expect(checklistOutputState(dir)).toMatchObject({ valid: true, unresolved: [{ item_id: adverse.item_id }], unresolvedParents: [{ parent_id: parent.id, status: "unsatisfied" }] })
 })
 
 test("missing body scope, missing process result and uninspected dependency cannot certify the parent", async () => {
