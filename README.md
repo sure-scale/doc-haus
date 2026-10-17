@@ -6,7 +6,7 @@ and redlines for lawyer review. Generated work requires professional review.
 
 ## Start locally
 
-Install Git and [Bun 1.4.0 or newer](https://bun.sh), clone this repository, then run:
+Install Git, clone this repository, then run:
 
 ```sh
 git clone https://github.com/sure-scale/doc-haus.git
@@ -14,8 +14,13 @@ cd doc-haus
 ./start.sh
 ```
 
-The launcher installs frozen dependencies and opens the web app at
-http://localhost:5174. It runs engine, ingest and web on separate local ports.
+The launcher checks for Bun 1.4.0 or newer and the document tools (Deno 2,
+Python 3.10+, markitdown, Poppler, Tesseract, LibreOffice Writer and the Carlito
+font). It lists anything missing or out of date and offers to install it; press
+Enter to accept. macOS uses Homebrew (offered first if absent); Linux uses
+apt-get, dnf or pacman. The launcher then installs frozen dependencies and opens
+the web app at http://localhost:5174. It runs engine, ingest and web on separate
+local ports.
 A new installation needs no credentials to boot. Accept the launch notice,
 choose a provider (detected options appear first), connect with its offered sign-in
 method and detected defaults, then confirm primary/fast models in setup. Research and firm
@@ -23,9 +28,9 @@ or jurisdiction details are optional. Opening setup does not make a paid model
 request; connection tests run only when requested. Provider access and quota
 remain subject to the provider's account and organization policies.
 
-Install Deno 2 for the shipped Python tool. For document conversion, install
-Python 3, Poppler, Tesseract and LibreOffice
-Writer as needed. The container includes these tools. See [setup](docs/setup.md).
+Only Bun is required. The stack starts without declined tools, and a declined
+set is not offered again until another tool goes missing. The container
+includes every tool. See [setup](docs/setup.md).
 
 ## Local container
 
