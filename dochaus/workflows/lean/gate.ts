@@ -10,7 +10,7 @@ import { finalBodyParagraphs, type ApplyResult } from "./checks"
 import { FIRST_DOCUMENT, readLeanPlan, type DocID } from "./plan"
 import { readPackageReview } from "./package-review"
 import { quoteFound, openItem } from "./quotes"
-import { readRepairRound } from "./repairs"
+import { LEAN_MAX_SUBSTANTIVE_REPAIRS, readRepairRound } from "./repairs"
 import { withheldChecklistRepair } from "./requests"
 import { isReviewStage, currentOpenItems, readLeanText, readLeanJson, readLeanState, readQuestions, type LeanState, type OpenItem, type Question } from "./state"
 
@@ -148,7 +148,10 @@ export function checklistFindingLabel(directory: string, state: LeanState | unde
   switch (row.class) {
     case "omission":
       if (state && withheldChecklistRepair(directory, state, row.item_id, row.item)) return "omission; source adjudication declined the repair"
-      return checklistRoundItems(directory).has(row.item_id) ? "omission not fixed by the repair round" : "omission; no repair round ran"
+      if (checklistRoundItems(directory).has(row.item_id)) return "omission not fixed by the repair round"
+      // A later round may have replaced the checklist round; the cumulative
+      // allowance still shows that no further round could run.
+      return (readRepairRound(directory)?.substantive_attempts ?? 0) >= LEAN_MAX_SUBSTANTIVE_REPAIRS ? "omission; the repair allowance was used up" : "omission; no repair round ran"
     case "missing_inspection":
       return row.reinspected ? "not established by the check after reinspection" : "not established by the check; not yet reinspected"
     case "source_conflict": return "conflicts with another source requirement"

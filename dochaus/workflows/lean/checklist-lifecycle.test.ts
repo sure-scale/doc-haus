@@ -183,7 +183,7 @@ for (const [label, extra] of [["missing_inspection", { indeterminate_cause: "mis
   expect(focusedRepairs(blocked)).toBe(0)
 }, 120000)
 
-test("an omission with the repair allowance used starts no round and is disclosed as having had none", async () => {
+test("an omission with the repair allowance used starts no round and is disclosed as such", async () => {
   const directory = matter()
   const used = JSON.stringify({ round: 5, substantive_attempts: 5, requested_at: "saved", items: [] })
   writeLeanText(directory, "repairs.json", used)
@@ -196,8 +196,8 @@ test("an omission with the repair allowance used starts no round and is disclose
   const gate = readLeanJson(directory, "gate.json") as any
   expect(gate).toMatchObject({ status: "pass", delivery: "review_draft_with_findings", blocking: [] })
   expect(gate.disclosed).toContainEqual(expect.objectContaining({ kind: "checklist_unresolved", ref: expect.objectContaining({ checklist_item: id, checklist_class: "omission" }),
-    detail: expect.stringContaining("(omission; no repair round ran)") }))
-  expect(report(directory)).toContain(`Disclosed, not satisfied: ${id}: omission; no repair round ran: Focused result unsatisfied.`)
+    detail: expect.stringContaining("(omission; the repair allowance was used up)") }))
+  expect(report(directory)).toContain(`Disclosed, not satisfied: ${id}: omission; the repair allowance was used up: Focused result unsatisfied.`)
   expect(report(directory)).not.toContain("not fixed by the repair round")
 }, 120000)
 
