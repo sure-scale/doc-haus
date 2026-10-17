@@ -11,7 +11,9 @@ const proposal = (id: number, stale?: true): Redline => ({
 })
 const buttons = (redlines: Redline[], preview = true) =>
   [...renderToStaticMarkup(createElement(DownloadActions, { redlines, preview, onDownload: () => {} }))
-    .matchAll(/<button([^>]*)>([^<]*)<\/button>/g)].map(([, attributes, label]) => ({ label, disabled: attributes.includes("disabled") }))
+    .matchAll(/<button([^>]*)>([\s\S]*?)<\/button>/g)].map(([, attributes, content]) => ({
+    label: content.replace(/<[^>]+>/g, "").trim(), disabled: attributes.includes("disabled"),
+  }))
 
 describe("document viewer downloads", () => {
   test("the current Word file stays downloadable whatever is pending", () => {
