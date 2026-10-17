@@ -1,4 +1,4 @@
-import { draftingRunStopped, draftingUpdateAdmission } from "../../../dochaus/lib/drafting-update-admission"
+import { draftingUpdateAdmission } from "../../../dochaus/lib/drafting-update-admission"
 import { afterEach, expect, test } from "bun:test"
 import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
@@ -24,7 +24,7 @@ import {
   type LeanDraftingStatus,
 } from "../src/api/ingest/lean"
 import { draftingTurnRecoveryMode } from "../src/components/chat/drafting-recovery"
-import { leanContinueAvailable, leanRunTakesUpdates, leanSettledItems, leanSettledSummary, runPosition, stepGroups, openQuestions } from "../src/components/drafting/model"
+import { leanContinueAvailable, leanRunStopped, leanRunTakesUpdates, leanSettledItems, leanSettledSummary, runPosition, stepGroups, openQuestions } from "../src/components/drafting/model"
 import Questions from "../src/components/drafting/Questions"
 import { runOutcome } from "../src/components/narration/outcome"
 import RunHeader, { runHeadline } from "../src/components/drafting/RunHeader"
@@ -186,7 +186,7 @@ test("the header offers Pause only while the run is working; a paused run offers
 /** Stopped by the lawyer while a question and a request were still open. */
 function stoppedRun() {
   const { paused_at: _, ...run } = pausedRun()
-  return lean({ ...run, status: "failed", stop_reason: "Stopped at your request.", pending_requests: 1, questions: blockedQuestion.questions })
+  return lean({ ...run, status: "failed", stopped: true, stop_reason: "Stopped at your request.", pending_requests: 1, questions: blockedQuestion.questions })
 }
 
 test("Stop posts the run's owner to the lean stop route and keeps refusals", async () => {
@@ -197,13 +197,13 @@ test("Stop posts the run's owner to the lean stop route and keeps refusals", asy
   expect(calls[0]?.init?.method).toBe("POST")
   expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({ ownerSessionID: "ses_child1" })
 
-  respond({ error: "Only a paused or held drafting run can be stopped. Pause it first, or reload to see where it stands.", code: "lean_run_not_stoppable" }, 409)
-  await expect(stopLeanDraftingRun("matter-a", "ses_child1")).rejects.toThrow("Only a paused or held drafting run can be stopped.")
+  respond({ error: "This drafting run is working. Pause it before stopping it.", code: "lean_run_not_stoppable" }, 409)
+  await expect(stopLeanDraftingRun("matter-a", "ses_child1")).rejects.toThrow("This drafting run is working. Pause it before stopping it.")
   respond({ profile: "lean", mode: "paused", status: pausedRun() })
   await expect(stopLeanDraftingRun("matter-a", "ses_child1")).rejects.toThrow("Drafting run response is invalid.")
 })
 
-test("a paused or held run offers Stop draft; a stopped run says so, asks nothing, offers no Continue and takes a new request", () => {
+test("a run nothing is working on offers Stop draft; a stopped run says so, asks nothing, offers no Continue and takes a new request", () => {
   const now = Date.parse(completed.updated_at)
   let stops = 0
   const actions: RunActions = { busy: false, pausing: false, stopping: false, error: "", resuming: false, resume: async () => true, answer: async () => true, update: async () => true, refine: async () => true, pause: async () => true, stop: async () => (stops++, true) }
@@ -213,8 +213,9 @@ test("a paused or held run offers Stop draft; a stopped run says so, asks nothin
   expect(paused).toMatch(/<button type="button" class="run-head-cta">Stop draft<\/button><button type="button" class="primary run-head-cta">Continue drafting<\/button>/)
   // The question is asked only once Stop is pressed.
   expect(paused).not.toContain("Stop this draft?")
-  for (const fixture of [blockedQuestion, blockedGate]) expect(render(lean(fixture))).toContain(">Stop draft<")
-  for (const fixture of [start.status, completed, failed, orphaned]) expect(render(lean(fixture))).not.toContain("Stop draft")
+  // Held for an answer, at a check, or left running by an ingest restart (nothing in flight).
+  for (const fixture of [blockedQuestion, blockedGate, orphaned]) expect(render(lean(fixture))).toContain(">Stop draft<")
+  for (const fixture of [start.status, completed, failed]) expect(render(lean(fixture))).not.toContain("Stop draft")
   expect(render(pausedRun(), { resuming: true })).not.toContain("Stop draft")
   expect(render(pausedRun(), { busy: true })).toMatch(/<button type="button" class="run-head-cta" disabled="">Stop draft<\/button>/)
   expect(stops).toBe(0)
@@ -230,9 +231,12 @@ test("a paused or held run offers Stop draft; a stopped run says so, asks nothin
   expect(runOutcome(stopped)?.text).toBe("You stopped this draft. Its work so far is kept; a new drafting request starts a new draft.")
   // The composer updates an open run; a completed or stopped run takes a new request.
   expect([pausedRun(), lean(failed), lean(blockedQuestion), stopped, lean(completed)].map(leanRunTakesUpdates)).toEqual([true, true, true, false, false])
-  // Only the lawyer's own stop reads as stopped: any other failed run still offers Continue.
-  expect([lean(failed), stopped].map(draftingRunStopped)).toEqual([false, true])
-  expect(leanContinueAvailable(lean(failed))).toBe(true)
+  // Only ingest's derived flag reads as stopped; the reason is display only, and
+  // any other failed run still offers Continue.
+  const worded = lean({ ...failed, stop_reason: "Stopped at your request." })
+  expect([lean(failed), worded, stopped].map(leanRunStopped)).toEqual([false, false, true])
+  expect(leanContinueAvailable(worded)).toBe(true)
+  expect(isLeanDraftingStatus({ ...stopped, stopped: "yes" })).toBe(false)
 })
 
 test("the conversation recovers only a printed tool call; a new draft request starts after a run finished and is refused while it is open", async () => {

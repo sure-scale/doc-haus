@@ -394,18 +394,25 @@ function untilPaused<T>(work: Promise<T>, pause: AbortSignal | undefined): Promi
 function settlePause(directory: string, fallback: LeanState): LeanState {
   const latest = readLeanState(directory) ?? fallback
   appendLeanEvent(directory, { stage: "run", event: "paused", reason: LEAN_PAUSED_REASON })
-  const stages = Object.fromEntries(Object.entries(latest.stages).map(([step, row]) => [step, row?.status === "running"
-    ? { ...row, status: "pending", input_sha: null, outputs: [], finished_at: null } : row])) as LeanState["stages"]
-  return writeLeanState(directory, { ...latest, status: "blocked", stop_reason: LEAN_PAUSED_REASON, paused_at: now(), stages })
+  return writeLeanState(directory, { ...latest, status: "blocked", stop_reason: LEAN_PAUSED_REASON, paused_at: now(), stages: unfinished(latest.stages) })
 }
 
-/** The lawyer stopped a run no coordinator is working on (the caller checks).
- * It settles as failed, so the next drafting request archives it and starts a
- * new run. Steps, outputs, answers, repair allowances and queued requests stay
- * exactly as they were: nothing is marked done and no budget is reset. */
+/** A step left running, which no coordinator now works on, back to pending; its
+ * session and attempts stay for inspection. Other steps are returned as they are. */
+function unfinished(stages: LeanState["stages"]) {
+  return Object.fromEntries(Object.entries(stages).map(([step, row]) => [step, row?.status === "running"
+    ? { ...row, status: "pending", input_sha: null, outputs: [], finished_at: null } : row])) as LeanState["stages"]
+}
+
+/** The lawyer stopped a run no coordinator is working on (the caller checks):
+ * paused, held, or left running by an ingest restart. It settles as failed, so
+ * the next drafting request archives it and starts a new run. As on a pause, a
+ * step left running returns to pending; every other step, output, answer,
+ * repair allowance and queued request stays exactly as it was: nothing is
+ * marked done and no budget is reset. */
 export function stopLeanRun(directory: string, state: LeanState): LeanState {
   appendLeanEvent(directory, { stage: "run", event: "stopped", reason: DRAFTING_STOPPED_REASON })
-  return writeLeanState(directory, { ...state, status: "failed", stop_reason: DRAFTING_STOPPED_REASON, paused_at: undefined })
+  return writeLeanState(directory, { ...state, status: "failed", stop_reason: DRAFTING_STOPPED_REASON, paused_at: undefined, stages: unfinished(state.stages) })
 }
 
 async function ensureChecklistExtraction(directory: string, state: LeanState, deps: LeanDeps) {

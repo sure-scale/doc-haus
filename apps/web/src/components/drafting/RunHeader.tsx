@@ -36,7 +36,7 @@ import type { RunActions } from "./useRunActions"
 // one thing to do next, and a segmented bar of its steps. The step list, open
 // items and other detail stay behind Details. Questions are answered from the
 // dock above the composer, so the header only counts them. Stop asks once, in
-// place, before it ends a paused or held run. In any other conversation it is a
+// place, before it ends a run that nothing is working on. In any other conversation it is a
 // single line that leads back to the run's own conversation.
 export default function RunHeader({
   status,

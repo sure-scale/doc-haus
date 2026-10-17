@@ -639,7 +639,9 @@ describe("pausing and stopping a lean drafting run", () => {
 
     expect((await routes.request("/m1/lean/resume", { method: "POST" })).status).toBe(202)
     await model.waiting
-    // A working run is paused first; Stop never interrupts work itself.
+    // A working run is paused first; Stop never interrupts work itself. Stop
+    // refuses exactly when the status reports the run in flight.
+    expect(leanDraftingStatus(directory)).toMatchObject({ status: "running", in_flight: true, stopped: false })
     const working = await post(routes, "stop", { ownerSessionID: "ses_owner" })
     expect(working.status).toBe(409)
     expect(await working.json()).toMatchObject({ code: "lean_run_not_stoppable" })
@@ -649,6 +651,7 @@ describe("pausing and stopping a lean drafting run", () => {
     writeQuestions(directory, [{ id: "q1", stage: "changes", question: "Which party bears the cost?", context: "", status: "open" }])
     const paused = readLeanState(directory)!
     expect(paused).toMatchObject({ status: "blocked", stop_reason: "Paused at your request.", paused_at: expect.any(String) })
+    expect(leanDraftingStatus(directory)).toMatchObject({ in_flight: false, stopped: false })
     const before = matterFiles(directory)
     expect([...before.keys()].filter((name) => name.startsWith(path.join(".dochaus", "lean", "d1"))).length).toBeGreaterThan(0)
     const asked = model.asked.length
@@ -660,9 +663,11 @@ describe("pausing and stopping a lean drafting run", () => {
     const body = await stopped.json()
     expect(body).toMatchObject({
       profile: "lean", mode: "stopped",
-      status: { status: "failed", stop_reason: "Stopped at your request.", in_flight: false, pending_requests: 0, questions: [{ id: "q1", status: "open" }] },
+      status: { status: "failed", stopped: true, stop_reason: "Stopped at your request.", in_flight: false, pending_requests: 0, questions: [{ id: "q1", status: "open" }] },
     })
     expect(body.status.paused_at).toBeUndefined()
+    // The flag is derived when the status is read, never stored with the run.
+    expect(readLeanState(directory)).not.toHaveProperty("stopped")
     const settled = readLeanState(directory)!
     // Nothing is marked done, retried or reset: the steps are exactly as the pause left them.
     expect(settled.stages).toEqual(paused.stages)
@@ -704,15 +709,14 @@ describe("pausing and stopping a lean drafting run", () => {
     expect(readLeanState(directory)).toMatchObject({ owner_session_id: "ses_1" })
   }, 120_000)
 
-  test("a run held for an answer can be stopped; an unknown, working-state, completed or failed run cannot", async () => {
+  test("a run nothing is working on can be stopped, held for an answer or left running by a restart; an unknown or finished run cannot", async () => {
     const empty = matter()
     const none = leanDraftingRoutes({ directory: () => empty, deps: () => heldModel().deps })
     const unknown = await post(none, "stop", { ownerSessionID: "ses_owner" })
     expect(unknown.status).toBe(409)
     expect(await unknown.json()).toMatchObject({ code: "lean_run_changed" })
 
-    // "running" without a coordinator is a run an ingest restart left; Continue picks it up.
-    for (const status of ["running", "completed", "failed"] as const) {
+    for (const status of ["completed", "failed"] as const) {
       const directory = matter()
       const state = initLeanState(directory, { request: "Draft the agreement.", ownerSessionID: "ses_owner", model: MODEL })
       writeLeanState(directory, { ...state, status, stop_reason: status === "failed" ? "d1.draft: checker failed after 3 retries" : null })
@@ -723,6 +727,28 @@ describe("pausing and stopping a lean drafting run", () => {
       expect(readLeanState(directory)).toMatchObject({ status, owner_session_id: "ses_owner" })
     }
 
+    // "running" with no coordinator is a run an ingest restart left: nothing is in
+    // flight, so it stops; its step in progress returns to pending as on a pause.
+    const orphan = matter()
+    const initial = initLeanState(orphan, { request: "Draft the agreement.", ownerSessionID: "ses_owner", model: MODEL })
+    writeLeanState(orphan, { ...initial, stages: { ...initial.stages, discrepancy: { ...initial.stages.discrepancy!, status: "running", session_id: "ses_stage", attempts: 2, calls: 2, started_at: initial.created_at } } })
+    writeLeanText(orphan, "discrepancy.md", "Partial synthetic notes.\n")
+    writeFileSync(path.join(orphan, "Supply terms.docx"), "source bytes")
+    const restarted = heldModel()
+    const orphanRoutes = leanDraftingRoutes({ directory: () => orphan, deps: () => restarted.deps })
+    expect(leanDraftingStatus(orphan)).toMatchObject({ status: "running", in_flight: false, stopped: false })
+    const kept = matterFiles(orphan)
+    const ended = await post(orphanRoutes, "stop", { ownerSessionID: "ses_owner" })
+    expect(ended.status).toBe(200)
+    expect(await ended.json()).toMatchObject({
+      mode: "stopped",
+      status: { status: "failed", stopped: true, in_flight: false, stages: { discrepancy: { status: "pending", session_id: "ses_stage", attempts: 2, calls: 2 } } },
+    })
+    const record = new Set([path.join(".dochaus", "lean", "state.json"), path.join(".dochaus", "lean", "events.jsonl")])
+    const now = matterFiles(orphan)
+    for (const [name, bytes] of kept) if (!record.has(name)) expect(now.get(name)).toEqual(bytes)
+    expect(restarted.created).toEqual([])
+
     const directory = matter()
     const state = initLeanState(directory, { request: "Draft the agreement.", ownerSessionID: "ses_owner", model: MODEL })
     writeLeanState(directory, { ...state, status: "blocked", stop_reason: "Waiting for your answers: q1" })
@@ -732,7 +758,7 @@ describe("pausing and stopping a lean drafting run", () => {
     expect((await post(routes, "stop", {})).status).toBe(409)
     const stopped = await post(routes, "stop", { ownerSessionID: "ses_owner" })
     expect(stopped.status).toBe(200)
-    expect(await stopped.json()).toMatchObject({ mode: "stopped", status: { status: "failed", stop_reason: "Stopped at your request.", questions: [{ id: "q1", status: "open" }] } })
+    expect(await stopped.json()).toMatchObject({ mode: "stopped", status: { status: "failed", stopped: true, stop_reason: "Stopped at your request.", questions: [{ id: "q1", status: "open" }] } })
     expect((await post(routes, "questions/q1", { answer: "The buyer." })).status).toBe(409)
     expect(model.created).toEqual([])
     expect(readQuestions(directory)).toMatchObject([{ id: "q1", status: "open" }])

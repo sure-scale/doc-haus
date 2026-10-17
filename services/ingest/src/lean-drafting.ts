@@ -43,9 +43,10 @@ import { registerLeanDeliverable } from "./lean-deliverables"
 // starts a fresh one; a blocked or paused run is continued, not replaced.
 // Pause is the one request that does not queue: it stops the coordinator at
 // once (see runLean), and Continue later resumes from the unfinished step.
-// Stop settles a paused or blocked run that nothing is working on as failed: it
-// takes no further Continue, answer or update, and the next drafting request
-// archives it like any failed run. Nothing in the matter is deleted.
+// Stop settles an unfinished run that nothing is working on (paused, blocked, or
+// left running by a restart) as failed: it takes no further Continue, answer or
+// update, and the next drafting request archives it like any failed run.
+// Nothing in the matter is deleted.
 
 export type DraftingProfile = "lean"
 
@@ -137,6 +138,8 @@ function readLeanDraftingStatus(directory: string) {
   return {
     ...state,
     in_flight: running.has(directory),
+    // Derived, never stored: the lawyer stopped this run (the reason is display only).
+    stopped: draftingRunStopped(state),
     // The later of the last state write and this process's last run event.
     last_progress_at: event && event > state.updated_at ? event : state.updated_at,
     pending_requests: pendingLeanRequests(directory).length,
@@ -273,17 +276,20 @@ export function leanDraftingRoutes(options: { directory: (id: string) => string;
     if (!paused) return c.json({ error: "This drafting run is not working, so there is nothing to pause.", code: "lean_run_not_working" }, 409)
     return c.json(paused, paused.mode === "paused" ? 200 : 202)
   })
-  // Stop: only a run that is paused or blocked and that no coordinator is
-  // working on. The check and the write run in one synchronous step, so no
-  // coordinator can start in between; the run's files all stay in place.
+  // Stop: only an unfinished run that no coordinator is working on, the same
+  // check the status reports as in_flight. The check and the write run in one
+  // synchronous step, so no coordinator can start in between; the run's files
+  // all stay in place.
   app.post("/:id/lean/stop", async (c) => {
     const directory = options.directory(c.req.param("id"))
     const input: { ownerSessionID?: unknown } | null = await c.req.json().catch(() => null)
     const state = readLeanState(directory)
     if (!state || input?.ownerSessionID !== state.owner_session_id)
       return c.json({ error: "The active drafting run changed. Reload before stopping it.", code: "lean_run_changed" }, 409)
-    if (running.has(directory) || state.status !== "blocked")
-      return c.json({ error: "Only a paused or held drafting run can be stopped. Pause it first, or reload to see where it stands.", code: "lean_run_not_stoppable" }, 409)
+    if (running.has(directory))
+      return c.json({ error: "This drafting run is working. Pause it before stopping it.", code: "lean_run_not_stoppable" }, 409)
+    if (state.status !== "blocked" && state.status !== "running")
+      return c.json({ error: "This drafting run has already finished, so there is nothing to stop.", code: "lean_run_not_stoppable" }, 409)
     stopLeanRun(directory, state)
     return c.json({ profile: "lean", mode: "stopped", status: leanDraftingStatus(directory)! })
   })

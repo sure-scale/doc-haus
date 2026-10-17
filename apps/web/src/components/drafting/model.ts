@@ -1,4 +1,3 @@
-import { draftingRunStopped } from "../../../../../dochaus/lib/drafting-update-admission"
 import type { LeanDraftingStatus, LeanOpenItem, LeanStageStatus } from "../../api/ingest/lean"
 
 // Pure view model for the drafting run header: plain step names, steps grouped per
@@ -93,12 +92,13 @@ export type RunState = "running" | "input" | "paused" | "done"
 /** The lawyer stopped this run: it is finished, asks nothing more and takes no
  * Continue or update. Its record stays; the next drafting request starts anew. */
 export function leanRunStopped(status: LeanDraftingStatus) {
-  return draftingRunStopped(status)
+  return status.stopped === true
 }
 
-/** Stop is offered for a paused or held run that nothing is working on. */
+/** Stop is offered for an unfinished run that nothing is working on: paused,
+ * held, or left running by an ingest restart. */
 export function leanStopAvailable(status: LeanDraftingStatus) {
-  return status.status === "blocked" && !status.in_flight
+  return (status.status === "blocked" || status.status === "running") && !status.in_flight
 }
 
 /** The composer sends updates to an open run; once the run completed or was

@@ -85,6 +85,8 @@ export type LeanDraftingStatus = {
   stages: Record<LeanStep, LeanStageStatus>
   /** True while ingest runs this matter's coordinator. */
   in_flight: boolean
+  /** The lawyer stopped this run; derived by ingest at read time. `stop_reason` is display only. */
+  stopped?: boolean
   pending_requests: number
   /** Answers durably received, waiting for the coordinator to consume them. */
   queued_answer_ids?: string[]
@@ -135,6 +137,7 @@ export function isLeanDraftingStatus(value: unknown): value is LeanDraftingStatu
     typeof value.owner_session_id === "string" &&
     typeof value.updated_at === "string" &&
     typeof value.in_flight === "boolean" &&
+    (value.stopped === undefined || typeof value.stopped === "boolean") &&
     Number.isInteger(value.pending_requests) &&
     Array.isArray(value.open_items) &&
     Array.isArray(value.questions) &&
@@ -204,8 +207,8 @@ export async function pauseLeanDraftingRun(matterId: string, ownerSessionID: str
   return body as LeanDraftingPaused
 }
 
-/** Stop: a paused or held run ends as failed and takes no Continue. Its files
- * stay in the matter, and the next drafting request starts a new run. */
+/** Stop: an unfinished run nothing is working on ends as failed and takes no
+ * Continue. Its files stay in the matter, and the next drafting request starts a new run. */
 export async function stopLeanDraftingRun(matterId: string, ownerSessionID: string): Promise<LeanDraftingStopped> {
   const res = await fetch(`${INGEST_URL}/matters/${matterId}/lean/stop`, {
     method: "POST",

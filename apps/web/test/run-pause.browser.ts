@@ -21,7 +21,7 @@ const paused = {
   stages: { ...blockedGate.stages, "d1.apply": pending, finalize: pending },
 }
 const { paused_at: _, ...unpaused } = paused
-const stopped = { ...unpaused, status: "failed", stop_reason: "Stopped at your request.", revision: paused.revision + 1, updated_at: "2026-10-17T09:05:00.000Z" }
+const stopped = { ...unpaused, status: "failed", stopped: true, stop_reason: "Stopped at your request.", revision: paused.revision + 1, updated_at: "2026-10-17T09:05:00.000Z" }
 const entry = path.join(directory, "harness.tsx")
 const source = (file: string) => JSON.stringify(path.resolve(import.meta.dir, "../src", file))
 await Bun.write(entry, `

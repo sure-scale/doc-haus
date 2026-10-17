@@ -511,7 +511,7 @@ button.run-head-toggle[aria-expanded="true"]::after {
   margin: 3px 0 0;
 }
 
-/* Stop asks once, in place, before it ends a paused or held run. */
+/* Stop asks once, in place, before it ends a run that nothing is working on. */
 .run-head-confirm {
   display: flex;
   flex-wrap: wrap;
