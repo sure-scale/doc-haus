@@ -111,6 +111,8 @@ export function buildChecklistDocumentContext(directory: string, options: {
     for (const row of scored.slice(0, 2)) for (let index = Math.max(0, row.index - 1); index <= Math.min(rows.length - 1, row.index + 1); index++) selected.add(index)
     for (const index of [...selected].sort((a, b) => a - b)) {
       const row = rows[index]!
+      // A whitespace-only neighbour (e.g. a lone no-break space) is not evidence; drop it without widening the window.
+      if (!row.paragraph_text.trim()) continue
       current_evidence.push({ document: options.item.target.document, locator: `native PIDs ${row.pids.join(", ") || "unavailable"}; accepted paragraph_index ${row.paragraph_index}; read-record ${target.path} /paragraphs/${index}`, text: row.paragraph_text, kind: "body" })
     }
   }
