@@ -205,6 +205,39 @@ test("accepted focused refinement reruns late verification only and archived adv
   expect(finalGate(directory).status).toBe("blocked")
 }, 120000)
 
+// A document-wide parent split for "Check the full draft": range and process
+// components defer it, and only the one document-properties finding decides it.
+for (const [status, outcome] of [["satisfied", "completed"], ["indeterminate", "blocked"]] as const) test(`full-draft check of a document-wide requirement: ${status} document-properties finding leaves the run ${outcome}`, async () => {
+  const directory = matter()
+  expect((await runLean(directory, { sessions: model(directory, "indeterminate").port })).status).toBe("blocked")
+  const parent = (readLeanJson(directory, "checklist/extraction.json") as any).sources.flatMap((row: any) => row.items)[0]
+  enqueueLeanRequest(directory, { kind: "refine_checklist", parents: [{ parent_id: parent.id, scope: "target_body" }] })
+  const inputs: ChecklistCheckerInput[] = []
+  const full = scriptedModel({ ...happyPath,
+    [CHECKLIST_JOB_AGENTS.check]: text => {
+      const input = JSON.parse(text.split("CHECK_INPUT:\n\n")[1]!) as ChecklistCheckerInput
+      inputs.push(input)
+      const whole = input.assignment?.kind === "document_properties"
+      return JSON.stringify({ item_id: input.item_id, status: whole ? status : "not_applicable",
+        reason: whole ? `Document-wide result ${status}.` : "Only the document-properties assignment decides this document-wide property.",
+        evidence: whole ? input.current_evidence : [], source_refs: input.item.source_refs, inspection_scope: JSON.stringify(input.assignment), limitation: "Rendered layout not inspected." })
+    },
+  })
+  const state = await runLean(directory, { sessions: full.port })
+  expect(state.status).toBe(outcome)
+  expect(state.stages["checklist-check"]?.status).toBe(status === "satisfied" ? "done" : "blocked")
+  expect(inputs.filter(input => input.assignment?.kind === "document_properties")).toHaveLength(1)
+  expect(inputs.filter(input => input.assignment?.kind === "process_records")).toHaveLength(1)
+  expect(inputs.every(input => input.assignment)).toBe(true)
+  const whole = inputs.find(input => input.assignment?.kind === "document_properties")!
+  expect(whole.current_evidence.length).toBeGreaterThan(0)
+  expect(whole.current_evidence.every(row => row.kind === "artifact" && "accepted_body_text_measures" in JSON.parse(row.text))).toBe(true)
+  expect(full.count(CHECKLIST_JOB_AGENTS.extract)).toBe(0)
+  expect(full.count(AGENT.draft)).toBe(0)
+  if (status === "indeterminate") expect(state.stop_reason).toContain(`${parent.id}: indeterminate`)
+  else expect(stageOutputValid(directory, "checklist-check")).toBe(true)
+}, 120000)
+
 test("a pending checklist with real extraction remains required at the gate", () => {
   const directory = matter()
   // Default pending stages alone do not retrofit checks into manual legacy work.

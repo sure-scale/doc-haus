@@ -229,7 +229,7 @@ export async function runChecklistRefinementFlow(directory: string, deps: Checkl
   const cached = store.parents.find(row => row.parent_id === original.id)
   if (selection.scope === "target_body") {
     const expected = checklistTargetAssignments(directory, original.item).assignments
-    if (JSON.stringify(selection.units.map(unit => ({ id: unit.id, assignment: unit.assignment }))) !== JSON.stringify(expected)) throw Error("Target comparison selection does not cover the actual current accepted paragraphs and process records.")
+    if (JSON.stringify(selection.units.map(unit => ({ id: unit.id, assignment: unit.assignment }))) !== JSON.stringify(expected)) throw Error("Target comparison selection does not cover the actual current accepted paragraphs, process records and document properties.")
     const units = expected.map(unit => ({ unit_id: unit.id, input_sha: shortHash(JSON.stringify([basis, unit]), 40), status: "succeeded" as const,
       children: [{ id: `${original.id}-comparison-${shortHash(unit.id, 12)}`, item: original.item, assignment: unit.assignment }], issues: [] }))
     const parent = { parent_id: original.id, parent: original.item, scope: selection.scope, source_basis: basis, expected_units: expected.map(unit => unit.id), units }
@@ -281,7 +281,7 @@ export function readEffectiveChecklistItems(directory: string, originals = origi
     }
     if (parent.scope === "target_body") {
       const expected = checklistTargetAssignments(directory, original.item).assignments
-      if (JSON.stringify(parent.expected_units) !== JSON.stringify(expected.map(unit => unit.id)) || parent.units.length !== expected.length) issues.push(`${original.id}: current paragraph/process assignment coverage is incomplete.`)
+      if (JSON.stringify(parent.expected_units) !== JSON.stringify(expected.map(unit => unit.id)) || parent.units.length !== expected.length) issues.push(`${original.id}: current paragraph/process/document-property assignment coverage is incomplete.`)
       for (const assignment of expected) {
         const unit = parent.units.find(row => row.unit_id === assignment.id)
         if (!unit || unit.status !== "succeeded" || unit.children.length !== 1 || JSON.stringify(unit.children[0]!.item) !== JSON.stringify(original.item) || JSON.stringify(unit.children[0]!.assignment) !== JSON.stringify(assignment.assignment)) issues.push(`${original.id}/${assignment.id}: current comparison assignment is missing or changed.`)

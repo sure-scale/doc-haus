@@ -124,3 +124,20 @@ test("counterevidence is exact-item-only and cannot replace any canonical input 
   expect(prompt).toContain("an inapplicable limb does not excuse an applicable unfulfilled action")
   expect(() => buildChecklistReinspectionPrompt(packet, previous, { ...counterevidence, item_id: "other" })).toThrow("exact checklist item")
 })
+
+test("comparison assignments include one whole-target document-properties kind with its own prompt branch", () => {
+  const whole = { kind: "document_properties" as const, ranges: [] }
+  expect(parseChecklistCheckerInput({ ...packet, assignment: whole }).assignment).toEqual(whole)
+  expect(() => parseChecklistCheckerInput({ ...packet, assignment: { kind: "document_length", ranges: [] } })).toThrow()
+  const prompt = buildChecklistCheckerPrompt({ ...packet, assignment: whole })
+  expect(prompt).toContain("other assignments cover the remaining paragraphs, process records and document-wide properties")
+  expect(prompt).toContain("Decide ONLY document-wide properties of the named target from its supplied exact artifact properties, including accepted_body_text_measures")
+  expect(prompt).toContain("Report not_applicable when the parent states no document-wide property")
+  expect(prompt).not.toContain("Only the separate document-properties assignment decides it")
+  for (const kind of ["target_body", "process_records"] as const) {
+    const range = buildChecklistCheckerPrompt({ ...packet, assignment: { kind, ranges: [] } })
+    expect(range).toContain("Only the separate document-properties assignment decides it. If the parent concerns only such a property, report not_applicable for this component rather than indeterminate")
+    expect(range).not.toContain("Decide ONLY document-wide properties")
+  }
+  expect(buildChecklistCheckerPrompt(packet)).not.toContain("document-properties assignment")
+})

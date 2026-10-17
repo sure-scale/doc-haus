@@ -59,11 +59,12 @@ async function select(dir: string, deps: ReturnType<typeof port>, parent_id: str
   return selection
 }
 
-test("every actual accepted paragraph including headings and tables is assigned once within generic bounds", async () => {
+test("every actual accepted paragraph including headings and tables is assigned once within generic bounds, with one process-records and one document-properties unit", async () => {
   const dir = await setup(), context = buildChecklistDocumentContext(dir, { item_id: "p", item })
   const target = context.artifacts[0]!.value
   const units = checklistTargetAssignments(dir, item).assignments
   expect(units.filter(unit => unit.assignment.kind === "process_records")).toHaveLength(1)
+  expect(units.filter(unit => unit.assignment.kind === "document_properties")).toEqual([{ id: "document-properties", assignment: { kind: "document_properties", ranges: [] } }])
   const ranges = units.flatMap(unit => unit.assignment.ranges)
   expect(ranges.map(range => range.paragraph_index)).toEqual(target.paragraphs.map(row => row.paragraph_index))
   expect(target.paragraphs[0]!.paragraph_text).toBe("Terms")
@@ -74,7 +75,12 @@ test("every actual accepted paragraph including headings and tables is assigned 
     const assigned = assignChecklistTargetContext(context, unit.assignment)
     expect(assigned.input.item).toBe(item)
     if (unit.assignment.kind === "process_records") expect(assigned.input.current_evidence).toEqual([])
-    else expect(assigned.input.current_evidence.map(row => row.text)).toEqual(unit.assignment.ranges.map(range => target.paragraphs.find(row => row.paragraph_index === range.paragraph_index)!.paragraph_text))
+    else if (unit.assignment.kind === "document_properties") {
+      // Exact artifact property strings only: no passage is assigned to the whole-target unit.
+      expect(assigned.input.current_evidence).toEqual(target.annotations!.map((annotation, index) => ({ document: annotation.artifact, locator: `read-record ${context.artifacts[0]!.path} /annotations/${index}/properties`, text: annotation.properties, kind: "artifact" })))
+      expect(assigned.input.current_evidence.length).toBeGreaterThan(0)
+      for (const row of assigned.input.current_evidence) expect(JSON.parse(row.text).accepted_body_text_measures.paragraphs).toBe(target.paragraphs.length)
+    } else expect(assigned.input.current_evidence.map(row => row.text)).toEqual(unit.assignment.ranges.map(range => target.paragraphs.find(row => row.paragraph_index === range.paragraph_index)!.paragraph_text))
   }
 })
 
@@ -203,8 +209,51 @@ test("assignment instructions separate recorded method from substantive effects 
       expect(prompt).toContain("A boilerplate label never exempts a material operative effect")
       expect(prompt).toContain("no missing fact or approval")
       expect(prompt).toContain("separately required source checks remain necessary")
-    } else expect(prompt).toContain("do not require a complete body comparison here")
+    } else if (unit.assignment.kind === "process_records") expect(prompt).toContain("do not require a complete body comparison here")
+    else {
+      expect(prompt).toContain("Decide ONLY document-wide properties of the named target")
+      expect(prompt).toContain("Report not_applicable when the parent states no document-wide property")
+      expect(prompt).not.toContain("EVERY assigned")
+    }
+    if (unit.assignment.kind === "document_properties") expect(prompt).not.toContain("Only the separate document-properties assignment decides it")
+    else expect(prompt).toContain("If the parent concerns only such a property, report not_applicable for this component rather than indeterminate")
   }
+})
+
+test("range units defer a document-wide parent to its one document-properties finding without relaxing indeterminate aggregation", async () => {
+  const dir = await setup(), deps = port(), parent = (await runChecklistExtractionFlow(dir, deps)).items[0]!
+  await select(dir, deps, parent.id)
+  const result = await runChecklistCheckFlow(dir, deps)
+  const whole = readEffectiveChecklistItems(dir).items.filter(row => row.assignment?.kind === "document_properties")
+  expect(whole).toHaveLength(1)
+  expect(deps.inputs.filter(input => input.item_id === whole[0]!.id).flatMap(input => input.current_evidence).every(row => row.kind === "artifact" && "accepted_body_text_measures" in JSON.parse(row.text))).toBe(true)
+  const deferred = (status: "satisfied" | "indeterminate" | "not_applicable") => result.checks.map(row => ({ ...row, finding: { ...row.finding!, status: row.item_id === whole[0]!.id ? status : "not_applicable" as const } }))
+  expect(reconcileChecklistParentCoverage(dir, deferred("satisfied"))[0]!.status).toBe("satisfied")
+  expect(reconcileChecklistParentCoverage(dir, deferred("indeterminate"))[0]!.status).toBe("indeterminate")
+  expect(reconcileChecklistParentCoverage(dir, result.checks.filter(row => row.item_id !== whole[0]!.id))[0]!.status).toBe("indeterminate")
+})
+
+test("a saved comparison without the document-properties unit is stale until the full-draft check is selected again", async () => {
+  const dir = await setup(), deps = port(), parent = (await runChecklistExtractionFlow(dir, deps)).items[0]!
+  await runChecklistCheckFlow(dir, deps)
+  const selection = await select(dir, deps, parent.id)
+  const saved = readLeanJson(dir, "checklist/refinements.json") as { parents: { expected_units: string[]; units: { unit_id: string }[] }[] }
+  saved.parents[0]!.expected_units = saved.parents[0]!.expected_units.filter(id => id !== "document-properties")
+  saved.parents[0]!.units = saved.parents[0]!.units.filter(unit => unit.unit_id !== "document-properties")
+  writeLeanText(dir, "checklist/refinements.json", JSON.stringify(saved))
+  const stale = await runChecklistCheckFlow(dir, deps)
+  expect(stale.status).toBe("incomplete")
+  expect(stale.parent_coverage[0]!.status).toBe("indeterminate")
+  const count = deps.count()
+  await select(dir, deps, parent.id)
+  expect(deps.count()).toBe(count) // deterministic re-selection, no model call
+  const current = await runChecklistCheckFlow(dir, deps)
+  // Unchanged range and process children keep their completed checks; only the new unit is checked.
+  expect(deps.count()).toBe(count + 1)
+  expect(deps.inputs.at(-1)!.assignment).toEqual({ kind: "document_properties", ranges: [] })
+  expect(current.status).toBe("succeeded")
+  expect(current.parent_coverage[0]!.status).toBe("satisfied")
+  expect(current.parent_coverage[0]!.children).toHaveLength(selection.units.length)
 })
 
 test("selection projection uses only original structured adverse findings and tolerates unavailable records", async () => {
