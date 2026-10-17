@@ -16,6 +16,7 @@
     "compromise": "^14.15.1",
     "docx": "^9.7.1",
     "docxodus": "^6.4.0",
+    "fflate": "0.8.3",
     "hono": "^4.10.7",
     "mammoth": "^1.8.0",
     "postal-mime": "2.7.4",
