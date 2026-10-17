@@ -14,6 +14,10 @@ import { writeLeanPlan } from "../../../dochaus/workflows/lean/plan"
 import { writeLeanBytes } from "../../../dochaus/workflows/lean/state"
 import { sha256File } from "../../../dochaus/lib/lineage"
 import { readDocxCommentParagraphs } from "../../../dochaus/lib/docx-comments"
+import { withParagraphPointers } from "../../../dochaus/lib/drafting-amendment"
+import { readLeanJson } from "../../../dochaus/workflows/lean/state"
+import { writeDeliverableRevision } from "./deliverable"
+import { acceptedWorkingDocxUpdate } from "./document-amendments"
 
 // Real coordinator, real deliverable registry write and real matter database.
 // Only the model is scripted.
@@ -118,4 +122,31 @@ test("legacy unpointed produced files retain one delivery name and a truthful ha
   expect(third.documents.find(row => row.kind === "body")!.deliverable).toBe("Review note (2).docx")
   expect(readFileSync(path.join(directory, "Review note.docx"), "utf8")).toBe("A lawyer changed this file.")
   expect(readFileSync(path.join(directory, FIXTURE_SOURCE))).toEqual(sourceBefore)
+}, 120_000)
+
+test("a lawyer's accepted revision keeps its name; a later output is neither written over it nor forked to a new name", async () => {
+  const directory = ingestMatter()
+  const deps = { sessions: scriptedLeanModel().port, registerDeliverable: registerLeanDeliverable }
+  expect((await runLean(directory, deps)).status).toBe("completed")
+  const file = path.join(directory, "Supply note.docx")
+  const delivered = sha256File(file)!.sha256
+  const revised = Buffer.from(withParagraphPointers(await Packer.toBuffer(new Document({ sections: [{ children: [new Paragraph("Revised by the lawyer.")] }] }))))
+  await writeDeliverableRevision(directory, "Supply note.docx", revised, { priorSha256: delivered, updateWorkingRevision: await acceptedWorkingDocxUpdate(directory, file, revised) })
+
+  // The run registers again (as a later pass would): the registry refuses the
+  // accepted revision's name and the run does not fall back to "(2)".
+  const again = await recordLeanDocuments(directory, deps, true)
+  expect(again.documents.map(row => [row.kind, row.deliverable, row.conflict])).toEqual([
+    ["body", "Supply note.docx", "accepted_revision"],
+    ["redline", "Supply note - redline.docx", undefined],
+    ["drafting_notes", "Supply note - drafting notes.docx", undefined],
+    ["drafting_notes_markdown", null, undefined],
+  ])
+  expect(again.documents[0]!.sha256).toBe(delivered)
+  expect(readFileSync(file)).toEqual(revised)
+  expect(deliverables(directory)).toEqual(["Supply note - drafting notes.docx", "Supply note - redline.docx", "Supply note.docx"])
+  // The status keeps the final check's own verdict and discloses the change.
+  const gate = readLeanJson(directory, "gate.json") as { status: string; checked_at: string }
+  expect(gate.status).toBe("pass")
+  expect(leanDraftingStatus(directory)).toMatchObject({ gate, changed_after_check: { since: gate.checked_at, documents: ["Supply note.docx"] } })
 }, 120_000)

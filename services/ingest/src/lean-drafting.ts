@@ -6,7 +6,8 @@ import { Hono } from "hono"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
 import { draftingTraceReference } from "../../../dochaus/lib/drafting-trace-identity"
 import { researchStatus } from "../../../dochaus/workflows/lean/research"
-import { readLeanDocuments } from "../../../dochaus/workflows/lean/deliverables"
+import { readLeanDocuments, type LeanDocuments } from "../../../dochaus/workflows/lean/deliverables"
+import { sha256File } from "../../../dochaus/lib/lineage"
 import { readLeanPlan } from "../../../dochaus/workflows/lean/plan"
 import { enqueueLeanRequest, pendingLeanRequests, leanUserUpdates, queuedAnswerIDs, isChecklistRefinement } from "../../../dochaus/workflows/lean/requests"
 import { runLean, stageInputSha } from "../../../dochaus/workflows/lean/runner"
@@ -112,6 +113,8 @@ export function leanDraftingStatus(directory: string) {
   const state = readLeanState(directory)
   if (!state) return undefined
   const refinable = checklistRefinableParents(directory)
+  const gate = readLeanJson(directory, "gate.json") ?? null
+  const documents = readLeanDocuments(directory) ?? null
   return {
     ...state,
     in_flight: running.has(directory),
@@ -120,8 +123,9 @@ export function leanDraftingStatus(directory: string) {
     updates: draftingUpdates(directory, state),
     open_items: currentOpenItems(directory),
     questions: readQuestions(directory),
-    gate: readLeanJson(directory, "gate.json") ?? null,
-    documents: readLeanDocuments(directory) ?? null,
+    gate,
+    documents,
+    changed_after_check: changedAfterCheck(directory, gate, documents),
     plan: plannedDocuments(directory),
     research: researchStatus(directory),
     checklist_refinement: {
@@ -150,6 +154,22 @@ function draftingUpdates(directory: string, state: LeanState) {
     : applied ? "applied" as const
     : running.has(directory) && state.status === "running" ? "applying" as const
     : stale ? "requires-rework" as const : undefined }))
+}
+
+/** Delivered drafts whose matter file no longer holds the bytes the final check
+ * saw: a change accepted after delivery, or a newer output kept from replacing
+ * such a change. Disclosure only: the check is not re-run and its verdict is
+ * passed through unchanged, so the lawyer is told to review the draft. */
+function changedAfterCheck(directory: string, gate: unknown, documents: LeanDocuments | null) {
+  if (documents?.status !== "completed") return null
+  const changed = documents.documents.flatMap(row => {
+    if (row.kind !== "body" || !row.deliverable || row.deliverable !== path.basename(row.deliverable)) return []
+    const current = sha256File(path.join(directory, row.deliverable))?.sha256
+    return row.conflict || (current && current !== row.sha256) ? [row.deliverable] : []
+  })
+  if (!changed.length) return null
+  const since = gate && typeof gate === "object" && "checked_at" in gate && typeof gate.checked_at === "string" ? gate.checked_at : null
+  return { since, documents: changed }
 }
 
 /** The run's planned documents without their parts, or null before the outline. */
