@@ -6,30 +6,10 @@
 # This is additive (upstream has no start.sh) so it never affects `git merge upstream/dev`.
 set -euo pipefail
 cd "$(dirname "$0")"
-# Prefer the installed runtime. Build/CI pins remain a reproducible baseline,
-# rather than a reason to reject a user's working newer Bun.
-BUN_BIN="${BUN_BIN:-$(command -v bun || true)}"
-BUN_BIN="${BUN_BIN:-$HOME/.bun/bin/bun}"
-if [[ "$BUN_BIN" != */* ]]; then
-  BUN_BIN="$(command -v "$BUN_BIN" || true)"
-fi
-BUN_FOUND=
-if [ -n "$BUN_BIN" ] && [ -x "$BUN_BIN" ] && [ ! -d "$BUN_BIN" ]; then
-  if [[ "$BUN_BIN" != /* ]]; then
-    BUN_BIN="$(cd "$(dirname "$BUN_BIN")" && pwd -P)/$(basename "$BUN_BIN")"
-  fi
-  BUN_FOUND="$("$BUN_BIN" --version 2>/dev/null)" || BUN_FOUND=
-fi
-if ! [[ "$BUN_FOUND" =~ ^([0-9]+)\.([0-9]+)\.[0-9]+(-[a-zA-Z0-9.-]+)?(\+[a-zA-Z0-9.-]+)?$ ]]; then
-  echo "doc.haus could not run Bun (${BUN_BIN:-not found on PATH})." >&2
-  echo "Install Bun or set BUN_BIN to a working Bun executable, then run ./start.sh again." >&2
-  exit 1
-fi
-if [ "${BASH_REMATCH[1]}" -lt 1 ] || { [ "${BASH_REMATCH[1]}" -eq 1 ] && [ "${BASH_REMATCH[2]}" -lt 4 ]; }; then
-  echo "doc.haus requires Bun 1.4.0 or newer (found: $BUN_FOUND)." >&2
-  echo "Update Bun or set BUN_BIN to a Bun 1.4.0+ executable, then run ./start.sh again." >&2
-  exit 1
-fi
+# Select Bun before anything else runs, offering to install it when it is
+# missing or too old. Optional host tools are checked later, before dependencies.
+. "$PWD/scripts/requirements.sh"
+ensure_bun || exit 1
 export BUN_BIN
 if [ "$(basename "$BUN_BIN")" = "bun" ]; then
   export PATH="$(dirname "$BUN_BIN"):$PATH"
@@ -156,8 +136,10 @@ if [ "$(basename "$BUN_BIN")" != "bun" ]; then
 fi
 
 # Check ownership and ports before installing, so an already-running stack can
-# be left alone without changing dependencies underneath it.
+# be left alone without changing tools or dependencies underneath it.
+add_tool_paths
 if [ -z "${SKIP_INSTALL:-}" ]; then
+  ensure_host_tools "$DOCHAUS_RUNTIME_DIR"
   for dir in . services/ingest; do
     "$BUN_BIN" run scripts/install-dependencies.ts "$dir"
   done

@@ -25,7 +25,7 @@ async function fixture(launcher = false) {
   await Bun.write(path.join(source, "dochaus/opencode.json"), '{"model":"default/model"}')
   if (launcher) {
     await Bun.write(path.join(source, "apps/web/package.json"), '{"name":"web-test","private":true}')
-    for (const file of ["start.sh", "scripts/start-runtime.sh", "scripts/data-paths.sh", "scripts/updater.ts", "scripts/install-dependencies.ts", "services/engine/src/data-paths.ts"])
+    for (const file of ["start.sh", "scripts/start-runtime.sh", "scripts/data-paths.sh", "scripts/requirements.sh", "scripts/updater.ts", "scripts/install-dependencies.ts", "services/engine/src/data-paths.ts"])
       await Bun.write(path.join(source, file), Bun.file(path.resolve(import.meta.dir, "../..", file)))
     await Bun.write(path.join(source, ".gitignore"), ".dochaus-runtime/\nworkspace/\nnode_modules/\n")
     for (const directory of [source, path.join(source, "services/ingest")]) {

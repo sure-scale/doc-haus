@@ -1,8 +1,10 @@
 # Setup
 
-Use Git and Bun 1.4.0 or newer. Run ./start.sh from a clone. The launcher uses
-Bun from PATH;
-set BUN_BIN=/absolute/path/to/bun to choose another executable. The package and
+Use Git. Run ./start.sh from a clone. The launcher uses Bun 1.4.0 or newer from
+PATH, then the official home install (~/.bun/bin/bun);
+set BUN_BIN=/absolute/path/to/bun to choose another executable. Without a usable
+Bun it offers to run the official installer from https://bun.sh. An explicit
+BUN_BIN is never replaced. The package and
 container pins provide reproducible baselines and do not restrict local startup.
 The launcher installs the root workspace and the separate ingest dependency graph with frozen lockfiles.
 It never needs provider credentials just to boot. Ports default to engine 4097,
@@ -56,10 +58,31 @@ Only the shipped local research server and explicitly consented CourtListener
 endpoint are managed. A failed consent filter prevents managed readiness;
 plugin/native failures must be diagnosed, not treated as an unconditional boundary.
 
-The shipped Python MCP tool requires Deno 2 (the container includes it).
-Its first activation downloads the declared Deno/Pyodide dependencies.
-For PDF/OCR fallback install Poppler, Tesseract, Python 3 and markitdown.
-For DOCX rendering install LibreOffice Writer, fontconfig and Carlito fonts.
+## Host tools
+
+After the ownership and port checks, the launcher looks for the optional tools
+the stack calls on PATH and offers to install any that are missing or too old:
+
+- Deno 2+ for the shipped Python MCP tool. Its first activation downloads the
+  declared Deno/Pyodide dependencies.
+- Python 3.10+ and markitdown (or uvx) for the PDF text fallback; markitdown
+  installs through pipx.
+- Poppler and Tesseract for OCR of scanned PDFs.
+- LibreOffice Writer, with fontconfig and the Carlito font, for PDF to DOCX
+  conversion and Calibri-compatible rendering.
+- lsof and pgrep (Linux) for the launcher's port checks and shutdown.
+
+Each install is shown before it runs and Enter accepts. macOS uses Homebrew and
+installs Homebrew first when absent; Linux uses apt-get, dnf or pacman with sudo.
+Deno installs with its official installer where the distribution has no package.
+The launcher adds ~/.deno/bin, ~/.local/bin and the macOS LibreOffice app to its
+own PATH so tools installed there work without a new shell.
+
+A declined set is recorded in the runtime directory (declined-tools) and not
+offered again until another tool goes missing. Set DOCHAUS_INSTALL_TOOLS=ask to
+be asked again, yes to install without asking (also without a terminal) or no to
+never install. Without a terminal the launcher only reports missing tools.
+SKIP_INSTALL=1 skips these checks along with dependency installation.
 Use docker compose up --build for the bundled local Linux toolchain. Only host
 127.0.0.1:5173 is published; /engine and /ingest proxy to internal loopback
 services and preserve native /api paths and streaming. /wasm hosts Docxodus assets.
