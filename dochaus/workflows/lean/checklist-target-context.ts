@@ -35,6 +35,8 @@ export function checklistTargetAssignments(directory: string, item: ChecklistIte
     assignments: [
       ...groups.map(ranges => ({ id: `body:${ranges.map(range => `${range.paragraph_index}@${range.start_char}:${range.end_char}`).join(",")}`, assignment: { kind: "target_body" as const, ranges } })),
       { id: "process-records", assignment: { kind: "process_records" as const, ranges: [] } },
+      // Exactly one whole-target unit: document-wide properties are never split by range.
+      { id: "document-properties", assignment: { kind: "document_properties" as const, ranges: [] } },
     ],
   }
 }
@@ -44,11 +46,14 @@ export function checklistTargetAssignments(directory: string, item: ChecklistIte
 export function assignChecklistTargetContext(context: ChecklistDocumentContext, assignment: ChecklistComparisonAssignment) {
   const target = context.artifacts.filter(row => row.value.aliases.includes(context.input.item.target.document))
   if (target.length !== 1) throw Error("Comparison target is unavailable or ambiguous.")
-  const current_evidence = assignment.ranges.flatMap(range => {
+  const body = assignment.ranges.flatMap(range => {
     const paragraph = target[0]!.value.paragraphs.find(row => row.paragraph_index === range.paragraph_index)
     if (!paragraph || range.end_char < range.start_char || range.end_char > paragraph.paragraph_text.length) throw Error("Assigned current paragraph range is unavailable.")
     const text = paragraph.paragraph_text.slice(range.start_char, range.end_char)
     return text ? [{ document: context.input.item.target.document, locator: `native PIDs ${paragraph.pids.join(", ") || "unavailable"}; accepted paragraph_index ${range.paragraph_index}; UTF-16 chars ${range.start_char}-${range.end_char}`, text, kind: "body" as const }] : []
   })
+  // The whole-target unit receives each exact artifact property string, not passages.
+  const current_evidence = assignment.kind !== "document_properties" ? body
+    : (target[0]!.value.annotations ?? []).map((annotation, index) => ({ document: annotation.artifact, locator: `read-record ${target[0]!.path} /annotations/${index}/properties`, text: annotation.properties, kind: "artifact" as const }))
   return { ...context, input: { ...context.input, assignment, current_evidence } }
 }
