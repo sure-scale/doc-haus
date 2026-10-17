@@ -141,9 +141,10 @@ function previousChanges(directory: string, document: DocID, paragraphs: Paragra
 
 /** Every open question of the run, so a later document can repeat a question
  * an earlier one asked rather than ask it again in other words. Paragraph
- * pointers are shown only for this document's own paragraphs. */
+ * pointers are shown only for this document's own paragraphs. The final
+ * gate's question is not a drafting question and is left out. */
 function openQuestions(directory: string, document: DocID) {
-  const open = readQuestions(directory).filter(question => question.status === "open")
+  const open = readQuestions(directory).filter(question => question.status === "open" && question.stage !== "gate")
   if (!open.length) return ""
   return tagged("open_questions", [
     "Questions already put to the lawyer and not yet answered. To keep one, repeat it with its \"id\"; do not ask it again in other words.",

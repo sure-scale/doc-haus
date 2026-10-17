@@ -45,6 +45,7 @@ import {
   matterRelative,
   readLeanState,
   readLeanJson,
+  readLeanText,
   readOpenItems,
   readQuestions,
   replaceStageOpenItems,
@@ -588,12 +589,15 @@ async function runGate(directory: string): Promise<StageRun> {
   writeLeanText(directory, "drafting-notes-coverage.md", notesCoverageReport(gate))
   // Unresolved checklist findings lead the notes delivered with the draft.
   // Without them the drafting notes are delivered as written, so earlier
-  // delivered notes are removed. Unchanged text re-rendered over the earlier
-  // file keeps its bytes.
+  // delivered notes are removed. Rendering is not byte-stable (a list gets a
+  // fresh relationship id), so unchanged notes keep their earlier file; the
+  // .docx is written before the .md, so a stop between the two re-renders.
   const previous = leanFile(directory, DELIVERED_NOTES.docx)
   if (notes) {
-    writeLeanText(directory, DELIVERED_NOTES.markdown, notes)
-    writeLeanBytes(directory, DELIVERED_NOTES.docx, (await renderMarkdownToDocx(notes, existsSync(previous) ? readFileSync(previous) : undefined)).bytes)
+    if (!existsSync(previous) || readLeanText(directory, DELIVERED_NOTES.markdown) !== notes) {
+      writeLeanBytes(directory, DELIVERED_NOTES.docx, (await renderMarkdownToDocx(notes, existsSync(previous) ? readFileSync(previous) : undefined)).bytes)
+      writeLeanText(directory, DELIVERED_NOTES.markdown, notes)
+    }
   } else for (const name of [DELIVERED_NOTES.markdown, DELIVERED_NOTES.docx]) rmSync(leanFile(directory, name), { force: true })
   const questions = question ? [question] : []
   if (gate.status === "pass") return { status: "done", outputs: stepOutputs("gate"), openItems: [], questions }

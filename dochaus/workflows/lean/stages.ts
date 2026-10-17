@@ -222,7 +222,9 @@ function baseStageInputs(directory: string, step: StepID, options: { repairConte
       { name: "questions", bytes: keyedQuestions(directory) }]
   if (step === "gate")
     return [...planned.flatMap(id => [file(`${id}/paragraphs-applied.json`), file(`${id}/apply.json`), file(`${id}/change-review.json`)]),
-      file("package-review.json"), file("checklist/refinements.json"), file("checklist/checks.json"), file("drafting-notes.md"), file("open-items.json"), file("questions.json")]
+      file("package-review.json"), file("checklist/refinements.json"), file("checklist/checks.json"), file("drafting-notes.md"), file("open-items.json"), file("questions.json"),
+      // A finding's disclosure says whether a repair round ran for it.
+      file("repairs.json")]
   const document = stepDocument(step) ?? FIRST_DOCUMENT
   const at = (name: string) => file(`${document}/${name}`)
   const finished = { name: "completed-documents", bytes: completedDocumentsText(directory, document) }

@@ -1,12 +1,14 @@
 import { afterEach, expect, test } from "bun:test"
+import { askedQuestions } from "./change-checks"
 import type { ChecklistCheckerInput, ChecklistFinding, ChecklistItem, ChecklistProducerInput } from "./checklist-contract"
 import { CHECKLIST_JOB_AGENTS } from "./checklist-job"
 import { checklistProducerInputs } from "./checklist-source-context"
 import { finalGate } from "./gate"
 import { leanSteps, writeLeanPlan } from "./plan"
+import { changesRepairSections } from "./repairs"
 import { enqueueLeanRequest } from "./requests"
 import { runLean, stageInputSha } from "./runner"
-import { answerQuestion, readLeanJson, readLeanState, readQuestions, updateLeanStage, writeLeanText } from "./state"
+import { answerQuestion, readLeanJson, readLeanState, readQuestions, updateLeanStage, writeLeanText, writeQuestions, type Question } from "./state"
 import { cleanupMatters, happyPath, matter, scriptedModel } from "./test-support"
 
 // A source conflict among the disclosed checklist findings becomes one batched
@@ -64,6 +66,22 @@ test("the gate batches every source conflict into one question naming each pair,
     expect(item).toMatchObject({ status: "disclosed", ref: { checklist_class: "source_conflict", question_id: question.id } })
   // Deterministic: the same conflicts give the same question.
   expect(finalGate(directory).question).toEqual(question)
+})
+
+test("the changes stages neither see nor re-own the gate's question", () => {
+  const directory = checklistMatter([conflict("c1", "Payment is due on delivery."), conflict("c2", "Deliver within thirty days of the order.")])
+  const question = finalGate(directory).question!
+  const drafting: Question = { id: "q-earlier", stage: "changes", question: "Which delivery address applies?", context: "", status: "open" }
+  writeQuestions(directory, [question, drafting])
+  const listed = changesRepairSections(directory, "d1").join("\n")
+  expect(listed).toContain("q-earlier")
+  expect(listed).not.toContain(question.id)
+  // A repeat of the gate question's id stays the gate's: it is dropped, so it
+  // cannot become a changes-stage question that pauses the run.
+  const asked = new Map(readQuestions(directory).map(row => [row.id, row]))
+  const repeated = askedQuestions([{ id: question.id, question: question.question }, { id: "q-earlier", question: drafting.question }], asked, "d1")
+  expect(repeated[0]).toBeUndefined()
+  expect(repeated[1]).toMatchObject({ id: "q-earlier", stage: "changes", status: "open" })
 })
 
 test("findings without a source conflict ask nothing and keep their delivery", () => {
