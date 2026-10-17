@@ -36,7 +36,7 @@ describe("drafting notes addendum for accepted Word changes", () => {
     ])
     // The renderer's "##" heading style, so the addendum heading looks native.
     expect(part(output, "word/document.xml")).toContain(`<w:p><w:pPr><w:pStyle w:val="Heading2"/></w:pPr><w:r><w:t xml:space="preserve">${HEADING}</w:t></w:r></w:p>`)
-    expect(part(notes, "word/styles.xml")).toMatch(/w:styleId="Heading2">\s*<w:name w:val="heading 2"\/>/)
+    expect(part(notes, "word/styles.xml")).toMatch(/w:styleId="Heading2">\s*<w:name w:val="heading 2"\s*\/>/)
   })
 
   test("a later append adds only its changes after the existing addendum", () => {
