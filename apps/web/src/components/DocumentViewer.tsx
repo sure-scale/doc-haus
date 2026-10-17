@@ -366,23 +366,27 @@ export function DownloadActions({ redlines, preview, onDownload }: {
   preview: boolean
   onDownload: (tracked: boolean) => void
 }) {
-  const icon = (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M12 4v11" />
-      <path d="m7 10 5 5 5-5" />
-      <path d="M5 20h14" />
-    </svg>
-  )
+  // Labels are visually hidden on narrow screens, so the two downloads need
+  // distinct glyphs: a plain arrow, and a document with a pen for tracked changes.
   return (
     <>
       {redlines.some((row) => !row.stale) && (
         <button onClick={() => onDownload(true)} disabled={!preview} title="Download as a Word file with the pending changes as tracked changes">
-          {icon}
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M13 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h4" />
+            <path d="M13 3v5h5v3" />
+            <path d="M8 13h5M8 17h2" />
+            <path d="M19 14.5a1.8 1.8 0 0 1 2.5 2.5L16 22.5l-3.5 1 1-3.5z" />
+          </svg>
           <span className="viewer-action-label">Download redline</span>
         </button>
       )}
       <button onClick={() => onDownload(false)} title="Download the current accepted Word file without pending changes">
-        {icon}
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M12 4v11" />
+          <path d="m7 10 5 5 5-5" />
+          <path d="M5 20h14" />
+        </svg>
         <span className="viewer-action-label">Download</span>
       </button>
     </>
