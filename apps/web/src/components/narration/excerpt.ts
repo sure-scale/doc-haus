@@ -1,4 +1,4 @@
-import { openQuestions } from "../drafting/model"
+import { leanRunStopped, openQuestions } from "../drafting/model"
 import { leanDeliveredDocuments, type LeanDraftingStatus } from "../../api/ingest/lean"
 import {
   activeStep,
@@ -112,6 +112,7 @@ function runState(status: LeanDraftingStatus) {
   if (status.status === "running") return status.in_flight ? "working" : "paused, nothing is working on it"
   if (status.status === "blocked") return "stopped, waiting on the lawyer"
   if (stoppedByTechnicalProblem(status)) return "paused after a technical problem; the work so far is kept"
+  if (leanRunStopped(status)) return "stopped by the lawyer; a new drafting request starts a new draft"
   return status.status === "failed" ? "stopped before finishing" : "complete"
 }
 

@@ -89,7 +89,27 @@ export function runPosition(status: LeanDraftingStatus) {
 
 export type RunState = "running" | "input" | "paused" | "done"
 
+/** The lawyer stopped this run: it is finished, asks nothing more and takes no
+ * Continue or update. Its record stays; the next drafting request starts anew. */
+export function leanRunStopped(status: LeanDraftingStatus) {
+  return status.stopped === true
+}
+
+/** Stop is offered for an unfinished run that nothing is working on: paused,
+ * held, or left running by an ingest restart. */
+export function leanStopAvailable(status: LeanDraftingStatus) {
+  return (status.status === "blocked" || status.status === "running") && !status.in_flight
+}
+
+/** The composer sends updates to an open run; once the run completed or was
+ * stopped, a message there is a new request. */
+export function leanRunTakesUpdates(status: LeanDraftingStatus) {
+  return status.status !== "completed" && !leanRunStopped(status)
+}
+
 export function openQuestions(status: LeanDraftingStatus) {
+  // A stopped run's questions stay in its record but are no longer asked.
+  if (leanRunStopped(status)) return []
   const queued = new Set(status.queued_answer_ids ?? [])
   return status.questions.filter((question) => question.status === "open" && !queued.has(question.id))
 }
@@ -266,6 +286,7 @@ function sentence(value: string) {
 /** Continue is offered when the run stopped (blocked or failed) or when its
  * state says running but no coordinator is running it (ingest restarted). */
 export function leanContinueAvailable(status: LeanDraftingStatus) {
+  if (leanRunStopped(status)) return false
   if (status.status === "blocked" || status.status === "failed") return true
   return status.status === "running" && !status.in_flight
 }
