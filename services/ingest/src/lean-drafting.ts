@@ -7,6 +7,7 @@ import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadat
 import { draftingTraceReference } from "../../../dochaus/lib/drafting-trace-identity"
 import { researchStatus } from "../../../dochaus/workflows/lean/research"
 import { readLeanDocuments } from "../../../dochaus/workflows/lean/deliverables"
+import { lastLeanEventAt } from "../../../dochaus/workflows/lean/events"
 import { readLeanPlan } from "../../../dochaus/workflows/lean/plan"
 import { enqueueLeanRequest, pendingLeanRequests, leanUserUpdates, queuedAnswerIDs, isChecklistRefinement } from "../../../dochaus/workflows/lean/requests"
 import { runLean, stageInputSha } from "../../../dochaus/workflows/lean/runner"
@@ -112,9 +113,12 @@ export function leanDraftingStatus(directory: string) {
   const state = readLeanState(directory)
   if (!state) return undefined
   const refinable = checklistRefinableParents(directory)
+  const event = lastLeanEventAt(directory)
   return {
     ...state,
     in_flight: running.has(directory),
+    // The later of the last state write and this process's last run event.
+    last_progress_at: event && event > state.updated_at ? event : state.updated_at,
     pending_requests: pendingLeanRequests(directory).length,
     queued_answer_ids: [...queuedAnswerIDs(directory)],
     updates: draftingUpdates(directory, state),
