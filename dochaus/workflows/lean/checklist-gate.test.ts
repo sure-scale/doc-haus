@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test"
 import type { ChecklistFinding, ChecklistItem } from "./checklist-contract"
 import { checklistRefinementSourceBasis } from "./checklist-flow"
-import { finalGate } from "./gate"
+import { deliveredNotes, finalGate } from "./gate"
 import { writeLeanPlan } from "./plan"
 import { openItem } from "./quotes"
 import { checklistOutputState } from "./stages"
@@ -120,6 +120,41 @@ test("a failed check row, a failed reinspection or a missing finding stays inval
   }
 })
 
+test("an integrity failure is described as one, not as an adverse finding", () => {
+  const directory = checklistMatter([{ item_id: "c1", status: "failed" }, { item_id: "c2", finding: finding("c2", "satisfied") }])
+  const [blocked] = finalGate(directory).blocking
+  expect(blocked).toMatchObject({ stage: "checklist-check", kind: "omission", status: "open",
+    detail: "Effective checklist findings or source-unit coverage are incomplete or stale, or a check or its reinspection failed; see checklist/report.md." })
+  expect(blocked!.detail).not.toContain("adverse")
+})
+
+const NOTES = "# Drafting notes\n\nThe draft states the delivery period.\n"
+
+test("unresolved findings lead the delivered notes with their source, class, reason and limitation; the drafting notes follow unchanged", () => {
+  const directory = checklistMatter([{ item_id: "c1", finding: finding("c1", "unsatisfied") },
+    { item_id: "c2", finding: finding("c2", "indeterminate", { indeterminate_cause: "not_inspectable" }) }])
+  writeLeanText(directory, "drafting-notes.md", NOTES)
+  const gate = finalGate(directory)
+  expect(gate.delivery).toBe("review_draft_with_findings")
+  const notes = deliveredNotes(directory, gate)!
+  expect(notes.endsWith(NOTES)).toBe(true)
+  const lead = notes.slice(0, -NOTES.length)
+  expect(lead.startsWith("# ")).toBe(true)
+  expect(lead.split("\n").filter(line => line.startsWith("- "))).toEqual([
+    `- c1: Checklist requirement unresolved (omission; no repair round ran): The note states the delivery period. Finding: Focused result unsatisfied. Limitation: Comments not inspected. Source: request, request: "Deliver within thirty days of the order."`,
+    `- c2: Checklist requirement unresolved (cannot be established from document text): The note states when payment falls due. Finding: Focused result indeterminate. Limitation: Comments not inspected. Source: request, request: "Payment is due on delivery."`,
+  ])
+  expect(deliveredNotes(directory, finalGate(directory))).toBe(notes)
+})
+
+test("with no unresolved finding there are no delivered notes to compose: the drafting notes are delivered as written", () => {
+  const directory = checklistMatter([{ item_id: "c1", finding: finding("c1", "open") }, { item_id: "c2", finding: finding("c2", "satisfied") }])
+  writeLeanText(directory, "drafting-notes.md", NOTES)
+  const gate = finalGate(directory)
+  expect(gate.delivery).toBe("review_draft")
+  expect(deliveredNotes(directory, gate)).toBeUndefined()
+})
+
 test("an informational open finding stays a checklist_open disclosure of a review draft", () => {
   const directory = checklistMatter([{ item_id: "c1", finding: finding("c1", "open", { open_decisions: ["Whether the period runs from dispatch"] }) }, { item_id: "c2", finding: finding("c2", "satisfied") }])
   expect(checklistOutputState(directory)).toMatchObject({ valid: true, open: true, openFindings: [{ item_id: "c1" }], unresolved: [], unresolvedParents: [] })
@@ -148,6 +183,7 @@ test("adverse coverage of a refined parent is disclosed, not blocking", () => {
   expect(gate.disclosed[0]).toMatchObject({ status: "disclosed", ref: { checklist_item: "c1", document: "d1" },
     detail: expect.stringContaining("The note states the delivery period.") })
   expect(gate.disclosed[0]!.ref.checklist_class).toBeUndefined()
+  expect(deliveredNotes(directory, gate)).toContain(`- c1: ${gate.disclosed[0]!.detail} Source: request, request: "Deliver within thirty days of the order."`)
 })
 
 test("a clean checklist still delivers execution-ready output", () => {

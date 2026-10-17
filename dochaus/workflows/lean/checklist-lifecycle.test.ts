@@ -1,16 +1,18 @@
 import { afterEach, expect, setSystemTime, test } from "bun:test"
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import path from "node:path"
 import { strFromU8, unzipSync } from "fflate"
 import { renderMarkdownToDocx } from "../../lib/render"
 import { runLean, stageInputSha } from "./runner"
 import { stageOutputValid, type StageSessionPort } from "./stages"
 import { exportDocxComments, readDocxCommentParagraphs } from "../../lib/docx-comments"
 import { leanFile, readLeanJson, readLeanState, readOpenItems, updateLeanStage, writeLeanBytes, writeLeanState, writeLeanText } from "./state"
-import { finalGate } from "./gate"
+import { finalGate, type GateResult } from "./gate"
+import { readLeanDocuments } from "./deliverables"
 import { enqueueLeanRequest } from "./requests"
 import { CHECKLIST_JOB_AGENTS } from "./checklist-job"
 import { readRepairRound } from "./repairs"
-import { AGENT, cleanupMatters, happyPath, matter, scriptedModel, drafter, pidOf, DRAFT, SOURCE, SUPPORT } from "./test-support"
+import { AGENT, cleanupMatters, happyPath, matter, registering, scriptedModel, drafter, pidOf, DRAFT, SOURCE, SUPPORT } from "./test-support"
 import { checklistTextMeasuresMeaning, type ChecklistCheckerInput, type ChecklistProducerInput } from "./checklist-contract"
 
 afterEach(cleanupMatters)
@@ -22,9 +24,10 @@ const deferChecklistRepair = (text: string) => JSON.stringify({ shared_decisions
     detail: "The assessed requirement still needs a supported correction.", reason: "No supported correction is identified for this assessment.", documents: ["d1"], sources: [], limitations: ["No supported correction identified."] }] } : {}) })
 
 // `broken` adds a second requirement whose check job always fails: an integrity
-// failure, so the checklist stage blocks. `second` adds it satisfied instead.
+// failure, so the checklist stage blocks. `second` adds it satisfied instead,
+// and `pair` with the same result as the first.
 // `departure` cites current draft text as a deliberate departure.
-function model(directory: string, status: "satisfied" | "open" | "unsatisfied" | "indeterminate" = "satisfied", extra: { open_decisions?: string[]; indeterminate_cause?: "missing_inspection" | "not_inspectable" } = {}, options: { broken?: boolean; second?: boolean; departure?: boolean } = {}) {
+function model(directory: string, status: "satisfied" | "open" | "unsatisfied" | "indeterminate" = "satisfied", extra: { open_decisions?: string[]; indeterminate_cause?: "missing_inspection" | "not_inspectable" } = {}, options: { broken?: boolean; second?: boolean; pair?: boolean; departure?: boolean } = {}) {
   let extractedBeforeBody = false
   let checkedAfterNotes = false
   const result = scriptedModel({
@@ -34,7 +37,7 @@ function model(directory: string, status: "satisfied" | "open" | "unsatisfied" |
       const input = JSON.parse(text.split("SOURCE_INPUT:\n\n")[1]!) as ChecklistProducerInput
       extractedBeforeBody = !existsSync(leanFile(directory, "d1/body.docx"))
       const item = { check: "The requested supply note is drafted.", basis: "directive", source_refs: input.passages, qualifications: [], target: { ...input.targets[0], treatment: "operative" } }
-      return JSON.stringify({ items: input.source.document === "request" ? [item, ...(options.broken || options.second ? [{ ...item, check: "Payment remains due on delivery." }] : [])] : [] })
+      return JSON.stringify({ items: input.source.document === "request" ? [item, ...(options.broken || options.second || options.pair ? [{ ...item, check: "Payment remains due on delivery." }] : [])] : [] })
     },
     [CHECKLIST_JOB_AGENTS.check]: text => {
       const input = JSON.parse(text.split("CHECK_INPUT:\n\n")[1]!) as ChecklistCheckerInput
@@ -146,6 +149,72 @@ for (const [label, scripted] of [
   expect(readLeanJson(directory, "gate.json")).toMatchObject({ status: "pass", delivery: "review_draft_with_findings", blocking: [] })
   expect(report(directory)).toContain(`Disclosed, not satisfied: ${id}: ${label === "departure" ? "deliberate departure" : "cannot be established from document text"}: Focused result `)
   expect(report(directory)).not.toContain("Delivery blocked")
+}, 120000)
+
+// Unresolved findings reach the lawyer in the delivered notes: the gate puts
+// them first, then the drafting notes unchanged, and the notes deliverable
+// carries that file under its usual name. With none, the drafting notes are
+// delivered as written.
+const notesRows = (directory: string) => readLeanDocuments(directory)!.documents.filter(row => row.document === null).map(row => [row.kind, row.path, row.deliverable])
+const NOTES_NAME = "Supply note - drafting notes.docx"
+
+test("unresolved findings lead the delivered notes, registered under the notes' own name; a gate re-run changes nothing", async () => {
+  const directory = matter()
+  const deliverables = registering()
+  const run = model(directory, "indeterminate", { indeterminate_cause: "not_inspectable" }, { pair: true })
+  expect((await runLean(directory, { sessions: run.port, registerDeliverable: deliverables.registerDeliverable })).status).toBe("completed")
+  const gate = readLeanJson(directory, "gate.json") as GateResult
+  const findings = gate.items.filter(item => item.kind === "checklist_unresolved")
+  expect(gate.delivery).toBe("review_draft_with_findings")
+  expect(findings.map(item => item.ref.checklist_item)).toEqual(checklistIDs(directory))
+  expect(findings).toHaveLength(2)
+  const notes = readFileSync(leanFile(directory, "drafting-notes.md"), "utf8")
+  const delivered = readFileSync(leanFile(directory, "delivered-notes.md"), "utf8")
+  expect(delivered.endsWith(notes)).toBe(true)
+  const lead = delivered.slice(0, -notes.length)
+  for (const item of findings) expect(lead).toContain(`- ${item.ref.checklist_item}: ${item.detail} Source: `)
+  expect(lead).toContain("(cannot be established from document text)")
+  const docx = readFileSync(leanFile(directory, "delivered-notes.docx"))
+  const text = readDocxCommentParagraphs(docx).map(row => row.paragraph_text)
+  const at = (needle: string) => text.findIndex(line => line.includes(needle))
+  expect(findings.map(item => at(item.detail)).every(index => index >= 0 && index < at("The draft states the delivery period from the supply terms."))).toBe(true)
+  expect(notesRows(directory)).toEqual([["drafting_notes", ".dochaus/lean/delivered-notes.docx", NOTES_NAME], ["drafting_notes_markdown", ".dochaus/lean/delivered-notes.md", null]])
+  expect(readFileSync(path.join(directory, NOTES_NAME))).toEqual(docx)
+  expect(run.prompts.find(row => row.agent === AGENT["package-review"])!.text).toContain('a "Disclosed, not satisfied" line is an unresolved finding')
+  // The same inputs give the same bytes; registration reuses the same name.
+  const summary = readFileSync(leanFile(directory, "documents.json"), "utf8")
+  updateLeanStage(directory, readLeanState(directory)!, "gate", { status: "pending", input_sha: null })
+  const idle = scriptedModel({})
+  expect((await runLean(directory, { sessions: idle.port, registerDeliverable: deliverables.registerDeliverable })).status).toBe("completed")
+  expect(idle.prompts).toHaveLength(0)
+  expect(readLeanState(directory)!.stages.gate?.input_sha).not.toBeNull()
+  expect(readFileSync(leanFile(directory, "delivered-notes.md"), "utf8")).toBe(delivered)
+  expect(readFileSync(leanFile(directory, "delivered-notes.docx"))).toEqual(docx)
+  expect(readFileSync(leanFile(directory, "documents.json"), "utf8")).toBe(summary)
+  expect(readdirSync(directory).filter(name => name.includes("drafting notes"))).toEqual([NOTES_NAME])
+  // Missing delivered notes make the gate's output invalid: it runs again
+  // rather than delivering the drafting notes without the findings.
+  rmSync(leanFile(directory, "delivered-notes.docx"))
+  expect((await runLean(directory, { sessions: scriptedModel({}).port, registerDeliverable: deliverables.registerDeliverable })).status).toBe("completed")
+  expect(notesRows(directory)[0]).toEqual(["drafting_notes", ".dochaus/lean/delivered-notes.docx", NOTES_NAME])
+  expect(readFileSync(path.join(directory, NOTES_NAME))).toEqual(readFileSync(leanFile(directory, "delivered-notes.docx")))
+}, 120000)
+
+test("with no unresolved finding the drafting notes are delivered as written; cleared findings leave no delivered notes", async () => {
+  const directory = matter()
+  const deliverables = registering()
+  const run = model(directory, "indeterminate", { indeterminate_cause: "not_inspectable" })
+  expect((await runLean(directory, { sessions: run.port, registerDeliverable: deliverables.registerDeliverable })).status).toBe("completed")
+  expect(existsSync(leanFile(directory, "delivered-notes.docx"))).toBe(true)
+  // A current Word change to the notes re-runs the check, which now finds the requirement met.
+  writeLeanBytes(directory, "drafting-notes.docx", (await renderMarkdownToDocx("# Current notes\n\nChanged current Word content.")).bytes)
+  const clean = model(directory)
+  expect((await runLean(directory, { sessions: clean.port, registerDeliverable: deliverables.registerDeliverable })).status).toBe("completed")
+  expect(readLeanJson(directory, "gate.json")).toMatchObject({ status: "pass", delivery: "execution_ready" })
+  expect(["delivered-notes.md", "delivered-notes.docx"].some(name => existsSync(leanFile(directory, name)))).toBe(false)
+  expect(notesRows(directory)).toEqual([["drafting_notes", ".dochaus/lean/drafting-notes.docx", NOTES_NAME], ["drafting_notes_markdown", ".dochaus/lean/drafting-notes.md", null]])
+  expect(readFileSync(path.join(directory, NOTES_NAME))).toEqual(readFileSync(leanFile(directory, "drafting-notes.docx")))
+  expect(readdirSync(directory).filter(name => name.includes("drafting notes"))).toEqual([NOTES_NAME])
 }, 120000)
 
 // An indeterminate finding is a missing inspection whether or not the checker

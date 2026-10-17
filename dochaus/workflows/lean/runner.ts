@@ -1,6 +1,8 @@
 import { runFocusedChangeReview } from "./focused-change-review"
 import { readFirmDraftingPreferences } from "../../lib/drafting-preferences"
 import { DRAFTING_STOPPED_REASON } from "../../lib/drafting-update-admission"
+import { renderMarkdownToDocx } from "../../lib/render"
+import { existsSync, readFileSync, rmSync } from "node:fs"
 import { runChangeReconciliation } from "./change-reconciliation"
 import { focusedChecklistRepairs, runFocusedRepairAdjudication } from "./checklist-repair-adjudication"
 import { classifyChecklistFinding } from "./checklist-classify"
@@ -14,10 +16,10 @@ import { LEAN_MAX_SUBSTANTIVE_REPAIRS, checklistRepairItems, readRepairRound, st
 import { acceptEvidenceReply, evidencePrompt } from "./evidence"
 import { researchPermissions, acceptResearchReply, researchPrompt } from "./research"
 import { runApply } from "./apply-stage"
-import { forgetUnplannedDocuments, recordLeanDocuments } from "./deliverables"
+import { DELIVERED_NOTES, forgetUnplannedDocuments, recordLeanDocuments } from "./deliverables"
 import { runDraftStage } from "./draft-sections"
 import { appendLeanEvent, leanElapsedMs } from "./events"
-import { checklistFindingLabel, finalGate, notesCoverageReport } from "./gate"
+import { checklistFindingLabel, deliveredNotes, finalGate, notesCoverageReport } from "./gate"
 import { readLeanPlan, reviewStages, leanSteps, stepDocument, stepStage, type StepID } from "./plan"
 import { retryPrompt, stagePrompt } from "./prompts"
 import { excerpt, inDocument, openItem, withSourceSnapshot } from "./quotes"
@@ -39,6 +41,7 @@ import {
   isReviewStage,
   hashStageInputs,
   keepAskedQuestions,
+  leanFile,
   matterRelative,
   readLeanState,
   readLeanJson,
@@ -51,6 +54,7 @@ import {
   updateLeanStage,
   writeOpenItems,
   writeQuestions,
+  writeLeanBytes,
   writeLeanState,
   writeLeanText,
   type LeanStageState,
@@ -509,7 +513,7 @@ function runStep(directory: string, state: LeanState, step: StepID, deps: LeanDe
   const stage = stepStage(step)
   const document = stepDocument(step)
   if (stage === "apply" && document) return runApply(directory, state, deps, document)
-  if (stage === "gate") return Promise.resolve(runGate(directory))
+  if (stage === "gate") return runGate(directory)
   if (stage === "checklist-check") return runChecklistStage(directory, state, deps, reinspectChecklist)
   if (stage === "change-plan" && document && focusedChecklistRepairs(directory, document)) return runFocusedRepairAdjudication(directory, state, deps, document, progress)
   if (stage === "change-review" && document && focusedChecklistRepairs(directory, document)) return runFocusedChangeReview(directory, state, deps, document, progress)
@@ -551,7 +555,7 @@ async function runModelStage(directory: string, state: LeanState, step: StepID, 
       return { status: "failed", reason: `${step}: checker failed after ${LEAN_MAX_RETRIES} retries: ${accepted.issues.join(" ")}` }
     return attempt(index + 1, retryPrompt(stage, accepted.issues))
   }
-  return attempt(0, stage === "change-plan" && document ? changePlanPrompt(directory, document) : stage === "change-review" && document ? changeReviewPrompt(directory, document) : stage === "package-review" ? `${packageReviewPrompt(directory)}\n\nFocused checklist findings are saved at .dochaus/lean/checklist/report.md and checklist/checks.json; use targeted read-record lookup when relevant. Open findings remain unresolved, not satisfied. Do not re-run every checklist item in this package review.` : stage === "discrepancy" || stage === "spine" ? evidencePrompt(directory, stage) : stage === "intake" || stage === "research" || stage === "research-review" ? researchPrompt(directory, stage) : stagePrompt(directory, step))
+  return attempt(0, stage === "change-plan" && document ? changePlanPrompt(directory, document) : stage === "change-review" && document ? changeReviewPrompt(directory, document) : stage === "package-review" ? `${packageReviewPrompt(directory)}\n\nFocused checklist findings are saved at .dochaus/lean/checklist/report.md and checklist/checks.json; use targeted read-record lookup when relevant. Open findings remain unresolved, not satisfied. In that report, a "Disclosed, not satisfied" line is an unresolved finding: it is disclosed with the review draft, is not a blocker for this review to clear, and is never treated as satisfied. Do not re-run every checklist item in this package review.` : stage === "discrepancy" || stage === "spine" ? evidencePrompt(directory, stage) : stage === "intake" || stage === "research" || stage === "research-review" ? researchPrompt(directory, stage) : stagePrompt(directory, step))
 }
 
 /** The state's step rows follow the plan, whether the first draft wrote it or
@@ -571,11 +575,23 @@ function followPlan(directory: string, state: LeanState) {
   return syncLeanSteps(directory, state, steps)
 }
 
-function runGate(directory: string): StageRun {
+async function runGate(directory: string): Promise<StageRun> {
   // The gate's checks are synchronous: they share one source read.
-  const gate = withSourceSnapshot(() => finalGate(directory))
+  const { gate, notes } = withSourceSnapshot(() => {
+    const gate = finalGate(directory)
+    return { gate, notes: deliveredNotes(directory, gate) }
+  })
   writeLeanText(directory, "gate.json", `${JSON.stringify(gate, null, 2)}\n`)
   writeLeanText(directory, "drafting-notes-coverage.md", notesCoverageReport(gate))
+  // Unresolved checklist findings lead the notes delivered with the draft.
+  // Without them the drafting notes are delivered as written, so earlier
+  // delivered notes are removed. Unchanged text re-rendered over the earlier
+  // file keeps its bytes.
+  const previous = leanFile(directory, DELIVERED_NOTES.docx)
+  if (notes) {
+    writeLeanText(directory, DELIVERED_NOTES.markdown, notes)
+    writeLeanBytes(directory, DELIVERED_NOTES.docx, (await renderMarkdownToDocx(notes, existsSync(previous) ? readFileSync(previous) : undefined)).bytes)
+  } else for (const name of [DELIVERED_NOTES.markdown, DELIVERED_NOTES.docx]) rmSync(leanFile(directory, name), { force: true })
   if (gate.status === "pass") return { status: "done", outputs: stepOutputs("gate"), openItems: [] }
   return {
     status: "blocked",

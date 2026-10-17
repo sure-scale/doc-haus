@@ -40,7 +40,8 @@ import { isReviewStage, currentOpenItems, readLeanText, readLeanJson, readLeanSt
 //   checklist/checks.json, which the gate already reads;
 // - a completed checklist finding that remains adverse (and a refined parent
 //   whose coverage is adverse) is never a pass: it is disclosed, with the class
-//   its verified fields establish, ahead of every other item.
+//   its verified fields establish, ahead of every other item, and ahead of the
+//   drafting notes in the notes delivered with the draft.
 // Disclosed items make the output a review draft, one with checklist findings
 // when any adverse finding is disclosed; execution-ready output has no
 // disclosed items and no unanswered questions. Incomplete, failed or stale
@@ -100,7 +101,7 @@ export function finalGate(directory: string): GateResult {
   const unresolved = checked?.valid ? [...checked.unresolved.map(row => checklistUnresolvedItem(directory, leanState, row)),
     ...checked.unresolvedParents.map(row => checklistUnresolvedParentItem(directory, row))] : []
   const items = [...unresolved, ...[...currentOpenItems(directory), ...deferredFindingItems(directory)].map(item => settle(item, context)), ...semantic, ...projected]
-  if (checked && !checked.valid) items.push(openItem("checklist-check", "omission", "Effective checklist findings or source-unit coverage are incomplete, adverse or stale; see checklist/report.md.", {}))
+  if (checked && !checked.valid) items.push(openItem("checklist-check", "omission", "Effective checklist findings or source-unit coverage are incomplete or stale, or a check or its reinspection failed; see checklist/report.md.", {}))
   // Focused checks can correctly preserve a source-dependent open issue
   // without requesting a missing answer or inventing a disclosure. Such a
   // package remains a review draft, even when no generic gate item blocks it,
@@ -118,6 +119,28 @@ export function finalGate(directory: string): GateResult {
     items,
     checked_at: new Date().toISOString(),
   }
+}
+
+/** The notes delivered with a review draft that has unresolved checklist
+ * findings: those findings first, each with its checklist item, the source it
+ * records, its class, reason and limitation (the gate's own disclosure), then
+ * the drafting notes unchanged. The drafting notes are written before the
+ * checklist check, so they cannot list its findings. Undefined when there is
+ * no such finding: the drafting notes are then delivered as written. */
+export function deliveredNotes(directory: string, gate: GateResult): string | undefined {
+  const findings = gate.items.filter(item => item.kind === "checklist_unresolved")
+  if (!findings.length) return
+  const checked = checklistOutputState(directory)
+  const items = new Map<string, ChecklistItem>([...checked.unresolved.map(row => [row.item_id, row.item] as const),
+    ...checked.unresolvedParents.map(row => [row.parent_id, row.item] as const)])
+  const entries = findings.map(finding => {
+    const id = finding.ref.checklist_item ?? finding.id
+    const sources = (items.get(id)?.source_refs ?? []).map(ref => `${ref.document}, ${ref.locator}: "${ref.quote}"`)
+    return `- ${id}: ${finding.detail}${sources.length ? ` Source: ${sources.join("; ")}` : ""}`.replace(/\s+/g, " ").trim()
+  })
+  return ["# Checklist findings not satisfied", "",
+    "These checklist requirements were not established as satisfied. Each is disclosed with this review draft for review; none is treated as satisfied.", "",
+    ...entries, "", readLeanText(directory, "drafting-notes.md") ?? ""].join("\n")
 }
 
 /** The drafting-notes coverage report for the gate: every item with its outcome, and

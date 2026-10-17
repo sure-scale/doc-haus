@@ -20,6 +20,9 @@ import { leanFile, readLeanJson, writeLeanBytes, writeLeanText } from "./state"
 // Once the lawyer accepts a Word revision of a file this run registered, the run
 // keeps that file and name: a newer output is neither written over the revision
 // nor forked to "<name> (2)"; its row says so and the output stays in the run.
+// When the gate passes with unresolved checklist findings, the notes delivered
+// are the gate's delivered notes (those findings first, then the drafting
+// notes), under the drafting notes' own kind and name.
 
 export type LeanDocumentKind = "body" | "redline" | "drafting_notes" | "drafting_notes_markdown"
 
@@ -40,6 +43,9 @@ export type LeanDocument = {
 }
 
 export type LeanDocuments = { schema: "dochaus.lean.documents/2"; status: "blocked" | "completed"; documents: LeanDocument[] }
+
+/** The gate's notes delivered in place of the drafting notes; see deliveredNotes. */
+export const DELIVERED_NOTES = { docx: "delivered-notes.docx", markdown: "delivered-notes.md" }
 
 type Produced = { kind: LeanDocumentKind; document: DocID | null; title: string | null; file: string; name: string | null; requested?: boolean }
 
@@ -75,7 +81,7 @@ export async function recordLeanDocuments(directory: string, deps: LeanDeps, reg
   const previous = new Map((readLeanDocuments(directory)?.documents ?? [])
     .map(row => [`${row.kind}:${row.title ?? row.deliverable?.replace(/(?: \(\d+\))?\.docx$/, "") ?? null}`, row]))
   const documents: LeanDocument[] = []
-  const produced = producedFiles(directory)
+  const produced = producedFiles(directory, register)
   const reserved = new Set(produced.filter(row => row.requested && row.name).map(row => `${row.name}.docx`.toLocaleLowerCase()))
   for (const item of produced.filter(row => existsSync(leanFile(directory, row.file)))) {
     const source = readFileSync(leanFile(directory, item.file))
@@ -117,21 +123,24 @@ export function forgetUnplannedDocuments(directory: string) {
 /** Every file the run may deliver, in plan order, with its deliverable name
  * stem (null for the Markdown notes, which are never registered). A document
  * the request gave a file name is delivered under that name; any other under
- * its title. Notes use their selected name or the first document's name. */
-function producedFiles(directory: string): Produced[] {
+ * its title. Notes use their selected name or the first document's name. Once
+ * the gate passed (`delivered`), its delivered notes, when it wrote them,
+ * replace the drafting notes. */
+function producedFiles(directory: string, delivered = false): Produced[] {
   const deliveryPlan = readLeanPlan(directory)
   const plan = (deliveryPlan?.documents ?? []).map(row => ({
     ...row,
     stem: row.file ? fileNameStem(row.file.replace(/\.(?:docx?|pdf|rtf|odt|txt|md)$/i, "")) : deliverableTitle(`# ${row.title}`),
   }))
+  const notes = delivered && existsSync(leanFile(directory, DELIVERED_NOTES.docx)) ? DELIVERED_NOTES : { docx: "drafting-notes.docx", markdown: "drafting-notes.md" }
   return [
     ...plan.flatMap((row): Produced[] => [
       { kind: "body", document: row.id, title: row.title, file: `${row.id}/body-applied.docx`, name: row.deliverable === "redline" ? `${row.stem} - clean` : row.stem, requested: Boolean(row.file) && row.deliverable !== "redline" },
       { kind: "redline", document: row.id, title: row.title, file: `${row.id}/redline.docx`, name: row.deliverable === "redline" ? row.stem : `${row.stem} - redline`, requested: Boolean(row.file) && row.deliverable === "redline" },
     ]),
     // A reviewed note can receive its requested name; otherwise use the usual default.
-    { kind: "drafting_notes", document: null, title: null, file: "drafting-notes.docx", name: deliveryPlan?.notes_file ? fileNameStem(deliveryPlan.notes_file.replace(/\.docx$/i, "")) : `${plan[0]?.stem ?? "Draft"} - drafting notes`, requested: Boolean(deliveryPlan?.notes_file) },
-    { kind: "drafting_notes_markdown", document: null, title: null, file: "drafting-notes.md", name: null },
+    { kind: "drafting_notes", document: null, title: null, file: notes.docx, name: deliveryPlan?.notes_file ? fileNameStem(deliveryPlan.notes_file.replace(/\.docx$/i, "")) : `${plan[0]?.stem ?? "Draft"} - drafting notes`, requested: Boolean(deliveryPlan?.notes_file) },
+    { kind: "drafting_notes_markdown", document: null, title: null, file: notes.markdown, name: null },
   ]
 }
 

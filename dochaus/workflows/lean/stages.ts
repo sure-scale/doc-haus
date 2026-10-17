@@ -7,6 +7,7 @@ import { classifyChecklistFinding, type ChecklistFindingClass } from "./checklis
 import { acceptChangePlan, acceptChangeReview, preparationOutputValid, readChangePlan, readChangeReview, deferredFindingItems, reviewDispositionText, uniqueReplacementIssues } from "./change-pipeline"
 import { comparisonBasis } from "./comparison"
 import { checkPackageReview, readPackageReview } from "./package-review"
+import { DELIVERED_NOTES } from "./deliverables"
 import { evidenceOutputValid } from "./evidence"
 import { researchOutputValid } from "./research"
 import { readFirmDraftingPreferences } from "../../lib/drafting-preferences"
@@ -346,6 +347,9 @@ export function stageOutputValid(directory: string, step: StepID) {
     return !uniqueReplacementIssues(list).length && !checkChanges(directory, text(`${document}/changes.json`), readParagraphs(directory, document), { document }).issues.length
   }
   if (stage === "finalize") return !checkDraftingNotes(directory, text("drafting-notes.md"), disclosableItems(directory)).issues.length
+  // A passed gate with unresolved checklist findings delivers them in its notes.
+  if (stage === "gate") return !(readLeanJson(directory, "gate.json") as { items?: OpenItem[] } | undefined)?.items?.some(item => item.kind === "checklist_unresolved") ||
+    [DELIVERED_NOTES.docx, DELIVERED_NOTES.markdown].every(name => existsSync(leanFile(directory, name)))
   return true
 }
 
