@@ -27,3 +27,18 @@ bun apps/web/e2e/settings-focus.ts
 It covers initial focus, native modal Tab containment, Escape/Close/backdrop
 dismissal, opener restoration, nested jurisdiction search and unsaved model
 choices. Its Save check writes only to the intercepted in-memory config fixture.
+
+Run the matter chat layout regression with the same environment:
+
+```sh
+PLAYWRIGHT_BASE_URL=http://127.0.0.1:5189 \
+DOCHAUS_EVIDENCE_DIR=/tmp/doc-haus-composer-evidence \
+bun apps/web/e2e/matter-composer.ts
+```
+
+It opens a blocked drafting run with its requirement-check form at
+1512×806, 1440×900, 1280×720 and 400×860, then checks that the composer stays
+inside the chat card and clear of the matter status bar, that Send is the
+element under its own centre and takes a real pointer click, and that the
+narrow window has no horizontal overflow. The click's request is answered by the
+fixture; nothing reaches a live run.

@@ -105,10 +105,19 @@
     grid-template-rows: minmax(0, 1fr);
   }
 
+  /* Nothing spills past the card, so the status bar below never covers the
+     composer; a tall run header (refinement form, Details) scrolls in place. */
   .matter-body > .workspace > .chat-card {
     align-self: stretch;
     min-height: 0;
     margin-bottom: 0;
+    overflow: hidden auto;
+  }
+
+  .matter-body > .workspace .run-head {
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
   }
 
   /* The conversation keeps a few lines however far Details open. */
