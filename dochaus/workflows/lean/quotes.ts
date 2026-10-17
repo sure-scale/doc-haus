@@ -34,9 +34,46 @@ export function inDocument(item: OpenItem, document: DocID): OpenItem {
   return { ...item, ...openItem(item.stage, item.kind, item.detail, ref), status: item.status }
 }
 
+// One synchronous operation's view of the matter's sources (basis, ids and
+// checklist source inputs) and processed requests. Keying every step rereads
+// them; inside a scope each is read once, and the scope ends before anything can
+// await, so no write, lock release or later turn sees it. Values are shared
+// within the scope: callers only read them. Outside a scope every read is fresh.
+const snapshot: { reads?: Map<string, unknown> } = {}
+
+/** Runs `operation` with the matter reads above memoized for its duration only.
+ * A nested call joins the outer scope. An async operation is refused: the
+ * snapshot must not outlive an await. */
+export function withSourceSnapshot<T>(operation: () => T): T {
+  const outer = snapshot.reads
+  snapshot.reads ??= new Map()
+  try {
+    const value = operation()
+    if (typeof (value as { then?: unknown } | null | undefined)?.then === "function") {
+      void Promise.resolve(value).catch(() => undefined)
+      throw new Error("withSourceSnapshot needs a synchronous operation; a source snapshot cannot span an await.")
+    }
+    return value
+  } finally {
+    snapshot.reads = outer
+  }
+}
+
+/** The scope's value for `key`, read once; a fresh read outside any scope. */
+export function snapshotRead<T>(key: string, read: () => T): T {
+  const reads = snapshot.reads
+  if (!reads) return read()
+  if (!reads.has(key)) reads.set(key, read())
+  return reads.get(key) as T
+}
+
 /** Canonical source ids include indexed document names and the selected library
  * playbook. read-document retrieves either; search-document addresses the index. */
 export function matterSourceIDs(directory: string): string[] {
+  return [...snapshotRead(`source-ids\0${directory}`, () => readMatterSourceIDs(directory))]
+}
+
+function readMatterSourceIDs(directory: string): string[] {
   const file = path.join(directory, ".dochaus", "legal.db")
   const playbook = boundPlaybook(directory)
   const policy = playbook?.text ? [playbook.source_id] : []
@@ -53,7 +90,11 @@ export function matterSourceIDs(directory: string): string[] {
 }
 
 /** Content-keyed resume notices revised canonical text even when its source name stays the same. */
-export function matterSourceBasis(directory: string) {
+export function matterSourceBasis(directory: string): string {
+  return snapshotRead(`source-basis\0${directory}`, () => readMatterSourceBasis(directory))
+}
+
+function readMatterSourceBasis(directory: string) {
   const file = path.join(directory, ".dochaus", "legal.db")
   const playbook = boundPlaybook(directory)
   if (!existsSync(file)) return playbook ? shortHash(JSON.stringify(playbook), 40) : ""

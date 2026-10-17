@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite"
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, spyOn, test } from "bun:test"
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
@@ -349,6 +349,27 @@ test("updates are only marked applied after current package review and become st
   expect(leanDraftingStatus(directory)?.updates.every(update => "progress" in update && update.progress === "requires-rework")).toBe(true)
 }, 120_000)
 
+
+test("a status read scans source text once and the next read still sees a source change", async () => {
+  const directory = leanFixtureMatter("lean-status-snapshot-")
+  directories.push(directory)
+  enqueueLeanRequest(directory, { kind: "update", text: "Keep headings concise." })
+  expect((await runLean(directory, { sessions: scriptedModel(happyPath).port })).status).toBe("completed")
+  // Statements that read chunk text in full, as in the latency harness.
+  const textScan = /^\s*SELECT\b[^;]*\btext\b[^;]*\bFROM chunks\b/i
+  const status = () => {
+    const queries = spyOn(Database.prototype, "query")
+    try {
+      const value = leanDraftingStatus(directory)
+      return { updates: value?.updates, scans: queries.mock.calls.filter(([sql]) => textScan.test(String(sql))).length }
+    } finally { queries.mockRestore() }
+  }
+  expect(status()).toMatchObject({ updates: [{ status: "included", progress: "applied" }], scans: 1 })
+  const db = new Database(path.join(directory, ".dochaus/legal.db"))
+  db.run("UPDATE chunks SET text = text || ' Delivery may be extended by agreement.'")
+  db.close()
+  expect(status()).toMatchObject({ updates: [{ status: "included", progress: "requires-rework" }], scans: 1 })
+}, 120_000)
 
 test("creating an empty source index during registration preserves applied update progress", async () => {
   const directory = leanFixtureMatter("lean-empty-index-update-")

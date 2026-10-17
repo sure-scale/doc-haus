@@ -18,7 +18,7 @@ import { appendLeanEvent, leanElapsedMs } from "./events"
 import { finalGate, notesCoverageReport } from "./gate"
 import { readLeanPlan, reviewStages, leanSteps, stepDocument, stepStage, type StepID } from "./plan"
 import { retryPrompt, stagePrompt } from "./prompts"
-import { inDocument, openItem } from "./quotes"
+import { inDocument, openItem, withSourceSnapshot } from "./quotes"
 import { checklistRefinementSelections, drainLeanRequests, pendingLeanRequests } from "./requests"
 import {
   LEAN_CHILD_PERMISSIONS,
@@ -144,7 +144,7 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
     if (unanswered.length)
       return { state: writeLeanState(directory, { ...state, status: "blocked", stop_reason: `Waiting for your answers: ${unanswered.map(question => question.id).join(", ")}` }) }
     if ((changes.answered || changes.updated) &&
-      settled.some(done => stageInputSha(directory, done) !== state.stages[done]?.input_sha))
+      withSourceSnapshot(() => settled.some(done => stageInputSha(directory, done) !== state.stages[done]?.input_sha)))
       return { state, restart: true }
     // A resumed draft may be skipped, but source/target changes must still
     // refresh extraction before any body is consumed or checking begins.
@@ -161,13 +161,17 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
     // The first draft can write the plan its own key reads; its key is then
     // taken again once the plan is saved.
     const keyed = performance.now()
-    let inputSha = stageInputSha(directory, step)
     const recorded = state.stages[step]
     settled.push(step)
-    const unchanged = recorded?.status === "done" && recorded.input_sha === inputSha && stageOutputValid(directory, step) && (step !== "package-review" || readPackageReview(directory)?.status === "pass") && (stage !== "change-review" || !document || readChangeReview(directory, document)?.status === "pass")
+    // Keying and the skip decision are synchronous: they share one source read.
+    const decision = withSourceSnapshot(() => {
+      const key = stageInputSha(directory, step)
+      return { key, unchanged: recorded?.status === "done" && recorded.input_sha === key && stageOutputValid(directory, step) && (step !== "package-review" || readPackageReview(directory)?.status === "pass") && (stage !== "change-review" || !document || readChangeReview(directory, document)?.status === "pass") }
+    })
+    let inputSha = decision.key
     // Time to key the step and decide whether it can be skipped.
     const check_ms = leanElapsedMs(keyed)
-    if (unchanged) {
+    if (decision.unchanged) {
       // A durable accepted review may have preceded a crash before its
       // delivery selection was applied. Reconcile it before any registration.
       if (step === "package-review") {
@@ -201,8 +205,12 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
         const independent: StepID = `${document}.${review}`
         if (prepared.has(independent)) continue
         const prefetchKeyed = performance.now()
-        const key = stageInputSha(directory, independent)
-        if (state.stages[independent]?.status === "done" && state.stages[independent]?.input_sha === key && stageOutputValid(directory, independent)) continue
+        const saved = state.stages[independent]
+        const key = withSourceSnapshot(() => {
+          const current = stageInputSha(directory, independent)
+          return saved?.status === "done" && saved.input_sha === current && stageOutputValid(directory, independent) ? undefined : current
+        })
+        if (key === undefined) continue
         const prefetchCheck = leanElapsedMs(prefetchKeyed)
         const agent = LEAN_STAGE_AGENTS[review]
         const creation = await deps.sessions.createSession({ directory, parentID: state.owner_session_id, agent, title: stepSessionTitle(directory, independent), model: state.model, permissions: LEAN_CHILD_PERMISSIONS })
