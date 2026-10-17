@@ -155,10 +155,10 @@ test("unresolved checklist findings sort first, read as not satisfied and carry 
   expect(
     ["omission", "source_conflict", "not_inspectable", "missing_inspection", "departure", undefined].map((value) => openItemClass(unresolvedFinding(9, value))),
   ).toEqual([
-    "not fixed by the repair round",
+    "left out of the draft",
     "conflicts with another source requirement",
     "cannot be established from document text",
-    "not inspected",
+    "not established by the check",
     "deliberate departure",
     undefined,
   ])
@@ -213,7 +213,7 @@ test("a review draft with unresolved checklist findings reads differently from a
   expect(html).toContain('class="run-head-icon is-done is-findings"')
   expect(render(plain)).toContain('class="run-head-icon is-done"')
   expect(html).toContain('<span class="open-item-tag is-unresolved">Not satisfied</span>')
-  expect(html).toContain('<span class="open-item-class">not fixed by the repair round</span>')
+  expect(html).toContain('<span class="open-item-class">left out of the draft</span>')
   expect(html).toContain('<span class="open-item-class">conflicts with another source requirement</span>')
   // The findings head the open items, ahead of what was recorded first.
   expect(html.indexOf("Unresolved checklist findings")).toBeLessThan(html.indexOf("Placeholders to fill"))
@@ -226,7 +226,7 @@ test("the open items list never caps away an unresolved checklist finding and co
   const html = renderToStaticMarkup(createElement(OpenItems, { items: [...others, ...findings], titles: new Map() }))
   expect(html).toContain('<span class="open-items-unresolved">6 not satisfied</span>')
   expect(html.match(/class="open-item-tag is-unresolved"/g)).toHaveLength(6)
-  expect(html.match(/<span class="open-item-class">not inspected<\/span>/g)).toHaveLength(6)
+  expect(html.match(/<span class="open-item-class">not established by the check<\/span>/g)).toHaveLength(6)
   // The cap still folds the rest behind Show all.
   expect(html).not.toContain("Placeholders to fill")
   expect(html).toContain("Show all 8")

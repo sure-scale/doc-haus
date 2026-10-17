@@ -168,11 +168,13 @@ export function openItemTag(item: LeanOpenItem) {
   return item.kind === "checklist_open" ? "Left open" : "In the notes"
 }
 
+// The class only. Whether a repair round or reinspection ran is in the item's
+// detail, as the final check worded it.
 const CHECKLIST_CLASS_LABELS: Record<string, string> = {
-  omission: "not fixed by the repair round",
+  omission: "left out of the draft",
   source_conflict: "conflicts with another source requirement",
   not_inspectable: "cannot be established from document text",
-  missing_inspection: "not inspected",
+  missing_inspection: "not established by the check",
   departure: "deliberate departure",
 }
 
