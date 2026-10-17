@@ -9,6 +9,7 @@ import {
   cleanTitle,
   currentStep,
   draftedGroups,
+  finalCheckNote,
   groupOpenItems,
   leanContinueAvailable,
   leanSettledItems,
@@ -90,6 +91,7 @@ export default function RunHeader({
   // settled the open items once it ran, else the run's own count.
   const settled = leanSettledItems(status)
   const note = status.status === "completed" || !settled ? openItemsSentence(status) : settled.length > 0 ? leanSettledSummary(settled) : undefined
+  const verdict = finalCheckNote(status)
   const held = status.documents?.status === "blocked" ? status.documents.documents.filter((document) => document.kind !== "drafting_notes_markdown").length : 0
   const canContinue = leanContinueAvailable(status) && !actions.resuming
   const openDraft = () => {
@@ -158,7 +160,7 @@ export default function RunHeader({
           <p className="run-note">{status.stages["research"] ? status.stages["research"].status === "done" ? status.research?.status === "not-needed" ? "External authority was not needed for this request; the reason is recorded with the drafting notes." : status.research?.status === "limited" ? "Legal research is incomplete. Source and research limitations must be disclosed with this review draft." : "Retrieved legal research findings are independently checked before drafting." : "External legal research runs after material questions are answered. Unavailable sources and research gaps are disclosed." : "This earlier drafting run checked matter documents; external legal research was not included."}</p>
           {held > 0 && <p className="run-note">{held} prepared document{held === 1 ? " is" : "s are"} held until the final check passes.</p>}
           {note && <p className="run-note">{note}</p>}
-          {head.tone === "done" && status.gate?.delivery && <p className="run-note">Final workflow check passed: {deliveryText(status.gate.delivery)}.</p>}
+          {head.tone === "done" && verdict && <p className="run-note">{verdict}</p>}
           <OpenItems items={attention.filter((item) => item.kind !== "question")} titles={titles} />
         </div>
       </div>
@@ -181,7 +183,11 @@ export function runHeadline(status: LeanDraftingStatus, now: number, resuming = 
     return {
       tone: "done",
       title: "Ready for review",
-      meta: [took ? `Drafted in ${took}` : "", drafts ? `${drafts} document${drafts === 1 ? "" : "s"}` : ""],
+      meta: [
+        took ? `Drafted in ${took}` : "",
+        drafts ? `${drafts} document${drafts === 1 ? "" : "s"}` : "",
+        status.changed_after_check?.documents.length ? "Changed after final check" : "",
+      ],
     }
   }
   if (state === "running") {
@@ -230,15 +236,6 @@ export function runHeadline(status: LeanDraftingStatus, now: number, resuming = 
     title: step ? `Paused at ${stepName(step.key).toLowerCase()}` : "Paused",
     meta: [position?.document ?? "", failed ? "Its check did not pass" : steps, failed ? "Continue runs the step again" : ""],
   }
-}
-
-const DELIVERY: Record<string, string> = {
-  execution_ready: "ready for signature",
-  review_draft: "a review draft, not yet ready for signature",
-}
-
-function deliveryText(delivery: string) {
-  return DELIVERY[delivery] ?? delivery.replace(/_/g, " ")
 }
 
 /** One segment per step, grouped per document; the step in progress pulses. */

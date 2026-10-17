@@ -14,6 +14,7 @@ import {
   cleanTitle,
   currentStep,
   draftedGroups,
+  finalCheckNote,
   groupOpenItems,
   openItemsSentence,
   openQuestions,
@@ -211,6 +212,27 @@ test("open items read as one sentence, questions apart from placeholders", () =>
     "Open items: 2 placeholders to fill and 1 other item to check.",
   )
   expect(openItemsSentence(status([]))).toBeUndefined()
+})
+
+test("a draft changed after the final check stops repeating the check's verdict", () => {
+  const actions = { busy: false, error: "", resuming: false, resume: async () => true, answer: async () => true }
+  const render = (status: LeanDraftingStatus) =>
+    renderToStaticMarkup(createElement(RunHeader, { status, actions, own: true, onOpen: () => {} }))
+  const changed = lean({ ...completed, changed_after_check: { since: completed.gate.checked_at, documents: ["Supply note.docx"] } })
+  expect(finalCheckNote(lean(completed))).toBe("Final workflow check passed: ready for signature.")
+  expect(finalCheckNote(lean({ ...completed, gate: { ...completed.gate, delivery: "review_draft" } }))).toBe(
+    "Final workflow check passed: a review draft, not yet ready for signature.",
+  )
+  expect(finalCheckNote(changed)).toBe("Changed after final check: review the draft.")
+  expect(finalCheckNote(lean({ ...changed, gate: { ...completed.gate, delivery: "review_draft" } }))).toBe("Changed after final check: review the draft.")
+  expect(finalCheckNote(lean({ ...completed, changed_after_check: null }))).toBe("Final workflow check passed: ready for signature.")
+  expect(render(lean(completed))).toContain("Final workflow check passed: ready for signature.")
+  const header = render(changed)
+  expect(header).toContain("Changed after final check: review the draft.")
+  expect(header).not.toContain("ready for signature")
+  expect(runHeadline(changed, Date.now())).toMatchObject({ tone: "done", title: "Ready for review" })
+  expect(runHeadline(changed, Date.now()).meta).toContain("Changed after final check")
+  expect(runHeadline(lean(completed), Date.now()).meta).not.toContain("Changed after final check")
 })
 
 test("a stopped run's header says what happened in plain words; the checker's wording stays on its step", () => {

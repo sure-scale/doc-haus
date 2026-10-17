@@ -282,6 +282,19 @@ export function leanSettledSummary(items: LeanOpenItem[]) {
     .join(", ")}.`
 }
 
+const DELIVERY: Record<string, string> = {
+  execution_ready: "ready for signature",
+  review_draft: "a review draft, not yet ready for signature",
+}
+
+/** The final check's verdict for a delivered run. A draft changed after the
+ * check is not what it checked, so the verdict is not repeated for it. */
+export function finalCheckNote(status: LeanDraftingStatus) {
+  if (!status.gate?.delivery) return undefined
+  if (status.changed_after_check?.documents.length) return "Changed after final check: review the draft."
+  return `Final workflow check passed: ${DELIVERY[status.gate.delivery] ?? status.gate.delivery.replace(/_/g, " ")}.`
+}
+
 /** Admission and execution are distinct: only explicit runner progress claims application. */
 export function updateProgressLabel(update: NonNullable<LeanDraftingStatus["updates"]>[number]) {
   if (update.kind === "clarification") {

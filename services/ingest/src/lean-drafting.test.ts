@@ -1,8 +1,12 @@
 import { Database } from "bun:sqlite"
 import { afterEach, describe, expect, test } from "bun:test"
+import { createHash } from "node:crypto"
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import { Document, Packer, Paragraph } from "docx"
+import { withParagraphPointers } from "../../../dochaus/lib/drafting-amendment"
+import { openItem } from "../../../dochaus/workflows/lean/quotes"
 import { drainLeanRequests, enqueueLeanRequest, pendingLeanRequests } from "../../../dochaus/workflows/lean/requests"
 import { runLean } from "../../../dochaus/workflows/lean/runner"
 import { LEAN_STAGE_AGENTS, type LeanDeps, type StageSessionPort } from "../../../dochaus/workflows/lean/stages"
@@ -14,6 +18,7 @@ import {
   readQuestions,
   writeLeanState,
   writeLeanText,
+  writeOpenItems,
   writeQuestions,
 } from "../../../dochaus/workflows/lean/state"
 import { happyPath, leanFixtureMatter, scriptedModel, noChanges } from "../../../dochaus/workflows/lean/test-support"
@@ -24,6 +29,8 @@ import {
   leanDraftingStatus,
   startLeanDraftingRun,
 } from "./lean-drafting"
+import { writeDeliverable, writeDeliverableRevision } from "./deliverable"
+import { acceptedWorkingDocxUpdate } from "./document-amendments"
 
 // The coordinator, state files and routes are real; only the model behind the
 // engine session port is scripted.
@@ -447,3 +454,32 @@ test("idle blocked checklist accepts a clarification while busy, changed-owner a
   expect(await completed.json()).toMatchObject({ code: "lean_update_too_late" })
   expect(pendingLeanRequests(directory)).toHaveLength(0)
 }, 120_000)
+
+test("a delivered draft changed after the final check is disclosed; the check's verdict and open items are passed through", async () => {
+  const directory = matter()
+  const sha = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex")
+  const docx = async (text: string) => Buffer.from(withParagraphPointers(await Packer.toBuffer(new Document({ sections: [{ children: [new Paragraph(text)] }] }))))
+  writeLeanState(directory, { ...initLeanState(directory, { request: "Draft a short supply note.", ownerSessionID: "ses_owner", model: MODEL }), status: "completed" })
+  await writeDeliverable(directory, "Supply note.docx", await docx("Delivery is due within five days."), { precondition: { kind: "create" } })
+  const file = path.join(directory, "Supply note.docx")
+  const checked = readFileSync(file)
+  const gate = { status: "pass", delivery: "execution_ready", blocking: [], disclosed: [], items: [], checked_at: "2026-10-11T09:05:28.417Z" }
+  writeLeanText(directory, "gate.json", `${JSON.stringify(gate)}\n`)
+  writeLeanText(directory, "documents.json", `${JSON.stringify({ schema: "dochaus.lean.documents/2", status: "completed", documents: [
+    { kind: "body", document: "d1", title: "Supply note", path: ".dochaus/lean/d1/body-applied.docx", sha256: sha(checked), deliverable: "Supply note.docx" },
+    { kind: "drafting_notes_markdown", document: null, title: null, path: ".dochaus/lean/drafting-notes.md", sha256: sha(new TextEncoder().encode("notes")), deliverable: null },
+  ] })}\n`)
+  const open = openItem("finalize", "placeholder", "Insert the delivery address.", { placeholder: "[delivery address]" })
+  writeOpenItems(directory, [open])
+  expect(leanDraftingStatus(directory)).toMatchObject({ status: "completed", gate, changed_after_check: null, open_items: [open] })
+
+  // The lawyer accepts a revision-bound change to the delivered draft.
+  const revised = await docx("Delivery is due within seven days.")
+  await writeDeliverableRevision(directory, "Supply note.docx", revised, { priorSha256: sha(checked), updateWorkingRevision: await acceptedWorkingDocxUpdate(directory, file, revised) })
+  expect(sha(readFileSync(file))).not.toBe(sha(checked))
+  const status = leanDraftingStatus(directory)!
+  expect(status.changed_after_check).toEqual({ since: gate.checked_at, documents: ["Supply note.docx"] })
+  // Disclosure only: nothing re-runs, upgrades or clears the final check.
+  expect(status).toMatchObject({ status: "completed", gate, open_items: [open] })
+  expect(JSON.parse(readLeanText(directory, "gate.json")!)).toEqual(gate)
+})
