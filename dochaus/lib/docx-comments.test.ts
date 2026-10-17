@@ -1,7 +1,8 @@
 import { beforeAll, describe, expect, test } from "bun:test"
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
-import { exportDocxComments, readDocxCommentParagraphs, type DocxComment } from "./docx-comments"
+import { exportDocxComments, preserveDocxComments, readDocxCommentParagraphs, readDocxComments, type DocxComment } from "./docx-comments"
+import { compareDocxWithPointers, withParagraphPointers, withStableRevisionDates } from "./drafting-amendment"
 import { docxodus } from "./docxodus"
 import { renderMarkdownToDocx } from "./render"
 
@@ -99,6 +100,42 @@ describe("native Word comment export", () => {
     expect(xml(output.bytes, "[Content_Types].xml")).toBe(strFromU8(before["[Content_Types].xml"]))
     expect(output.attached[0].comment_id).toBe("1")
   })
+
+  test("a comparison that carries an existing comment exports it once, unchanged, beside a review comment", async () => {
+    // Synthetic source: the unchanged paragraph carries a dated reviewer comment.
+    const commented = unzipSync(exportDocxComments(withParagraphPointers((await renderMarkdownToDocx(`# Service terms\n\n${ORIGINAL}\n\n${UNCHANGED}`)).bytes),
+      [{ id: "existing", anchor: { paragraph_text: UNCHANGED }, author: "Counterparty counsel", text: "Confirm the retention period." }]).bytes)
+    commented["word/comments.xml"] = strToU8(strFromU8(commented["word/comments.xml"]).replace("<w:comment ", '<w:comment w:date="2026-02-03T04:05:06Z" '))
+    const original = zipSync(commented)
+    const existing = parse(strFromU8(commented["word/comments.xml"])).getElementsByTagNameNS(W, "comment")[0]
+    expect([existing.getAttributeNS(W, "author"), existing.getAttributeNS(W, "date"), existing.textContent])
+      .toEqual(["Counterparty counsel", "2026-02-03T04:05:06Z", "Confirm the retention period."])
+    // A replayed proposal edits the other paragraph and leaves the comment in place.
+    const edited = unzipSync(original)
+    edited["word/document.xml"] = strToU8(strFromU8(edited["word/document.xml"]).replace("twelve days", "nineteen days"))
+    const modified = zipSync(edited)
+    const compared = withStableRevisionDates(await compareDocxWithPointers(original, modified, { authorName: "doc.haus review" }), "2026-03-04T05:06:07Z")
+    // Premise: the comparator itself carries the existing comment into its output.
+    expect(readDocxComments(compared)).toHaveLength(1)
+    const preserved = preserveDocxComments(original, compared)
+    const paragraphs = readDocxCommentParagraphs(modified)
+    const output = exportDocxComments(preserved, [comment("period", { paragraph_index: paragraphs[1].paragraph_index, paragraph_text: FINAL })])
+    expect(output.unresolved).toEqual([])
+    expect(output.attached).toEqual([{ id: "period", comment_id: "1", paragraph_index: 1, paragraph_text: FINAL }])
+    const parts = unzipSync(output.bytes)
+    const native = validateNative(parts, ["0", "1"])
+    expect(new XMLSerializer().serializeToString(native[0])).toBe(new XMLSerializer().serializeToString(existing))
+    expect([native[1].getAttributeNS(W, "author"), native[1].textContent]).toEqual(["doc.haus review", comment("period", {}).text.replace(/\n/g, "")])
+    expect(readDocxComments(output.bytes).map(row => [row.comment_id, [...new Set(row.markers.map(marker => marker.paragraph_index))]]))
+      .toEqual([["0", [2]], ["1", [1]]])
+    // Every paragraph keeps the pointer it had before comparison.
+    expect(readDocxCommentParagraphs(output.bytes)).toEqual(paragraphs)
+    expect(paragraphs.every(row => row.pids.length === 1)).toBe(true)
+    const tracked = revisions(xml(output.bytes, "word/document.xml"))
+    expect(tracked.some(text => text.startsWith("<w:ins") && text.includes("nineteen"))).toBe(true)
+    expect(tracked.some(text => text.startsWith("<w:del") && text.includes("twelve"))).toBe(true)
+    expect(new Set(tracked.map(text => text.match(/ w:date="([^"]*)"/)?.[1]))).toEqual(new Set(["2026-03-04T05:06:07Z"]))
+  }, 120000)
 
   test("honors an existing comments relationship with a non-default part name", () => {
     const first = unzipSync(exportDocxComments(clean, [comment("first", { paragraph_text: UNCHANGED })]).bytes)
