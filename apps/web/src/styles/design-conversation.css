@@ -34,16 +34,55 @@
   line-height: 1.7;
 }
 
+/* The lawyer's turn is a tinted bubble, so a long instruction still reads as
+   theirs beside unboxed answers. */
 .design-conversation .msg.user {
-  background: var(--bg);
-  border-radius: 12px 12px 3px 12px;
-  padding: 12px 16px;
+  background: var(--accent-soft);
+  border-radius: 20px 20px 6px 20px;
+  padding: 12px 18px;
 }
 
+/* Answers carry a small house mark beside the assistant's name, so each turn
+   has a speaker without boxing the prose. */
 .design-conversation .msg-agent {
-  font-size: 11px;
-  color: var(--muted);
-  letter-spacing: 0.07em;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0 10px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  text-transform: none;
+}
+
+.design-conversation .msg-agent::before {
+  content: "";
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--accent)
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 2.6 2.8 6.9v6.5h3.7V10h3v3.4h3.7V6.9z' fill='white'/%3E%3C/svg%3E")
+    center / 12px no-repeat;
+}
+
+/* Updates queued against a running draft are the lawyer's turns too. */
+.design-conversation .run-updates > div {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  margin-top: 16px;
+}
+
+.design-conversation .run-updates .msg.user {
+  max-width: 76%;
+}
+
+.design-conversation .run-updates .muted {
+  margin: 0;
+  font-size: 12px;
 }
 
 .design-conversation .chat-empty {
@@ -120,38 +159,95 @@
   padding-inline: 18px;
 }
 
-.design-conversation .composer-tools {
-  flex: none;
-  margin-top: 16px;
-  gap: 6px;
-}
-
+/* The composer is one soft field: the text above, its assistant, workflow,
+   playbook and document controls along the footer beside Send. A fill, not
+   a frame, so it does not read as another box on the page. */
 .design-conversation .composer {
+  --composer-fill: color-mix(in srgb, var(--bg-sunken) 75%, var(--panel));
   flex: none;
-  margin-top: 12px;
+  margin-top: 14px;
   border: 0;
-  border-top: 1px solid var(--border-strong);
-  border-radius: 0;
+  border-radius: 24px;
+  background: var(--composer-fill);
   box-shadow: none;
-  background: transparent;
+  container-type: inline-size;
 }
 
 .design-conversation .composer:focus-within {
-  border-top-color: var(--accent);
-  box-shadow: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
 .design-conversation .composer textarea {
   width: 100%;
-  min-height: 52px;
-  padding: 16px 0 6px;
-  border-radius: 0;
+  min-height: 56px;
+  padding: 16px 20px 6px;
+  border-radius: 24px 24px 0 0;
   font-size: 14px;
 }
 
 .design-conversation .composer-footer {
   justify-content: flex-end;
-  padding: 6px 0 0;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 6px 10px 10px;
+}
+
+.design-conversation .composer-tools {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  gap: 2px;
+}
+
+/* Controls in the card are quiet until pointed at. */
+.design-conversation .composer-tools .assistant-trigger,
+.design-conversation .composer-tools .workflow-btn {
+  height: 32px;
+  padding: 0 10px;
+  border-color: transparent;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-secondary);
+  box-shadow: none;
+}
+
+.design-conversation .composer-tools .assistant-trigger:hover:not(:disabled),
+.design-conversation .composer-tools .workflow-btn:hover:not(:disabled) {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--border) 60%, transparent);
+  color: var(--text);
+  box-shadow: none;
+}
+
+.design-conversation .composer-tools .assistant-trigger {
+  color: var(--text);
+}
+
+.design-conversation .composer-tools .docs-btn.is-open {
+  border-color: transparent;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.design-conversation .composer-tools .docs-btn-count,
+.design-conversation .composer-tools .docs-btn.is-open .docs-btn-count {
+  min-width: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.design-conversation .composer-tool-skeleton {
+  height: 32px;
+  border: 0;
+  border-radius: var(--radius-pill);
+}
+
+.design-conversation .composer-hint {
+  align-self: center;
 }
 
 .design-conversation .composer-hint {
@@ -168,11 +264,12 @@
 .design-conversation .composer-hint > span { white-space: nowrap; }
 .design-conversation .composer-hint-sep { margin: 0; }
 .design-conversation .composer-hint kbd {
-  padding: 1px 4px;
-  border-radius: 3px;
-  background: var(--bg);
-  box-shadow: 0 1px 0 var(--border);
+  padding: 0;
+  background: none;
+  box-shadow: none;
+  color: var(--text-secondary);
   font: inherit;
+  font-weight: 500;
 }
 
 @media (hover: none), (pointer: coarse) {
@@ -180,18 +277,24 @@
 }
 
 .design-conversation .send-btn {
-  gap: 8px;
+  gap: 6px;
   width: auto;
-  min-width: 84px;
-  height: 38px;
-  padding-inline: 14px;
-  border-radius: var(--radius-md);
+  min-width: 76px;
+  height: 36px;
+  padding-inline: 15px 13px;
+  border-radius: var(--radius-pill);
   font-size: 13px;
+  font-weight: 600;
 }
 
 .design-conversation .send-btn:disabled {
-  background: var(--bg-sunken);
+  background: color-mix(in srgb, var(--border) 70%, transparent);
   color: var(--muted);
+}
+
+/* A narrow card keeps its controls and Send; the keyboard hint goes first. */
+@container (max-width: 720px) {
+  .design-conversation .composer-hint { display: none; }
 }
 
 /* Completed work has its main action in the result itself. Keep the run's
@@ -199,10 +302,11 @@
 .design-conversation .run-head.is-done:not(.is-compact) {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 0 16px;
+  align-items: center;
+  gap: 0 20px;
   flex: none;
   margin-bottom: 8px;
-  padding: 0 0 12px;
+  padding: 0 0 14px;
   border: 0;
   border-bottom: 1px solid var(--border-soft);
   border-radius: 0;
@@ -211,15 +315,22 @@
 }
 
 .design-conversation .run-head.is-done .run-head-main {
+  align-items: center;
   gap: 8px 12px;
 }
 
 .design-conversation .run-head.is-done .run-head-icon {
-  width: 18px;
-  height: 18px;
-  margin-top: 1px;
-  color: var(--accent);
-  background: transparent;
+  align-self: center;
+  width: 24px;
+  height: 24px;
+  margin-top: 0;
+  color: var(--text-on-accent);
+  background: var(--accent);
+}
+
+.design-conversation .run-head.is-done .run-head-icon > svg {
+  width: 13px;
+  height: 13px;
 }
 
 .design-conversation .run-head.is-done .run-head-text {
@@ -227,31 +338,42 @@
 }
 
 .design-conversation .run-head.is-done .run-head-title {
-  font-size: 12px;
-  font-weight: 500;
-  letter-spacing: 0;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
 }
 
 .design-conversation .run-head.is-done .run-head-meta {
-  font-size: 10.5px;
+  margin-top: 1px;
+  font-size: 12px;
 }
 
 .design-conversation .run-head.is-done .run-head-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   min-height: 32px;
   padding: 5px 0;
   border: 0;
   background: transparent;
   color: var(--accent);
   box-shadow: none;
-  font-size: 12px;
-  font-weight: 500;
-  text-underline-offset: 4px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.design-conversation .run-head.is-done .run-head-cta::after {
+  content: "→";
+  transition: transform var(--duration-fast) var(--ease-out);
 }
 
 .design-conversation .run-head.is-done .run-head-cta:hover {
   background: transparent;
   color: var(--accent-hover);
-  text-decoration: underline;
+}
+
+.design-conversation .run-head.is-done .run-head-cta:hover::after {
+  transform: translateX(2px);
 }
 
 .design-conversation .run-head.is-done .run-head-cta:focus-visible {
@@ -264,18 +386,33 @@
   gap: 10px;
 }
 
+/* Settled steps join into one bar per document rather than a row of dots. */
 .design-conversation .run-head.is-done .run-segments {
-  width: 52px;
+  width: 72px;
+  gap: 3px;
+}
+
+.design-conversation .run-head.is-done .run-segment-group {
+  gap: 0;
 }
 
 .design-conversation .run-head.is-done .run-segment {
-  height: 2px;
+  height: 4px;
+  border-radius: 0;
 }
+
+.design-conversation .run-head.is-done .run-segment:first-child { border-radius: 2px 0 0 2px; }
+.design-conversation .run-head.is-done .run-segment:last-child { border-radius: 0 2px 2px 0; }
+.design-conversation .run-head.is-done .run-segment:only-child { border-radius: 2px; }
 
 .design-conversation .run-head.is-done .run-head-toggle {
   min-height: 32px;
-  font-size: 11px;
-  font-weight: 400;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.design-conversation .run-head.is-done > .run-head-details.is-open {
+  margin-top: 4px;
 }
 
 .design-conversation .run-head.is-done > .msg-error,
@@ -420,11 +557,36 @@
 }
 
 .design-conversation .result-files > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   width: fit-content;
   padding: 12px 0;
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: 13px;
+  font-weight: 500;
+  list-style: none;
   cursor: pointer;
+}
+
+.design-conversation .result-files > summary::-webkit-details-marker {
+  display: none;
+}
+
+.design-conversation .result-files > summary::after {
+  content: "";
+  width: 5px;
+  height: 5px;
+  margin-left: 2px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  opacity: 0.7;
+  transform: rotate(-45deg);
+  transition: transform var(--duration-fast) var(--ease-out);
+}
+
+.design-conversation .result-files[open] > summary::after {
+  transform: rotate(45deg);
 }
 
 .design-conversation .result-files > summary:hover {
@@ -432,10 +594,14 @@
 }
 
 .design-conversation .result-file-count {
-  margin-left: 6px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
+  font-weight: 400;
   font-variant-numeric: tabular-nums;
+}
+
+.design-conversation .result-files > summary:hover .result-file-count {
+  color: var(--accent);
 }
 
 .design-conversation .result-files .drafted-list {
@@ -484,7 +650,8 @@
     margin-top: 16px;
   }
 
-  .design-conversation .msg-user-wrap {
+  .design-conversation .msg-user-wrap,
+  .design-conversation .run-updates .msg.user {
     max-width: 92%;
   }
 
@@ -524,6 +691,8 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .design-conversation .run-head.is-done .run-head-cta::after,
+  .design-conversation .result-files > summary::after,
   .design-conversation .narration-result,
   .design-conversation .result-paper,
   .design-conversation .starter,
@@ -535,26 +704,143 @@
   }
 }
 
+/* The drafting narration hangs from one rail: stage icons and folded activity
+   sit on it, and the narrator's updates read beside it at the same indent. */
+.design-conversation .narration-timeline {
+  position: relative;
+}
+
+.design-conversation .narration-timeline::before {
+  content: "";
+  position: absolute;
+  top: 14px;
+  bottom: 14px;
+  left: 7.5px;
+  width: 1px;
+  background: var(--border);
+}
+
+.design-conversation .narration-timeline > li {
+  position: relative;
+}
+
+.design-conversation .narration-timeline > li > .narration-stage-row .narration-icon {
+  position: relative;
+  z-index: 1;
+  border-radius: 50%;
+  background: var(--panel);
+  box-shadow: 0 0 0 3px var(--panel);
+}
+
+.design-conversation .narration-timeline > .narration-stage > .narration-stage-body {
+  border-left-color: transparent;
+}
+
+.design-conversation .narration-timeline > .narration-note {
+  margin: 0;
+  padding: 8px 0 14px 24px;
+  border-left: 0;
+  color: var(--text);
+}
+
+.design-conversation .narration-timeline > .narration-heading {
+  margin: 0;
+  padding: 14px 0 4px 24px;
+}
+
+.design-conversation .narration-timeline > .narration-heading:first-child {
+  padding-top: 0;
+}
+
+.design-conversation .narration-timeline > .narration-steps {
+  margin: 0;
+  padding: 2px 0 2px 24px;
+  border-left: 0;
+}
+
+.design-conversation button.narration-more {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.design-conversation button.narration-more::after {
+  content: "";
+  width: 5px;
+  height: 5px;
+  margin-top: -3px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg);
+}
+
+.design-conversation button.narration-more[aria-expanded="true"]::after {
+  margin-top: 3px;
+  transform: rotate(-135deg);
+}
+
 /* Successful mechanical chronology is optional reading once the run settles.
-   Notes and any flagged/error stages remain in the surrounding timeline. */
-.design-conversation .narration-completed-activity { padding: 2px 0 6px; }
+   Notes and any flagged/error stages remain in the surrounding timeline. The
+   fold sits on the rail as one settled step. */
+.design-conversation .narration-completed-activity { padding: 2px 0 6px 24px; }
+.design-conversation .narration-completed-activity::before {
+  content: "";
+  position: absolute;
+  top: 10px;
+  left: 0;
+  z-index: 1;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--accent)
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='m5 8.2 2 2 4-4.2' fill='none' stroke='white' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")
+    center / 16px no-repeat;
+  box-shadow: 0 0 0 3px var(--panel);
+}
 .design-conversation .narration-completed-activity summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   width: fit-content;
   min-height: 32px;
   padding: 5px 0;
-  color: var(--muted);
-  font-size: 12px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+  list-style: none;
   cursor: pointer;
 }
+.design-conversation .narration-completed-activity summary::-webkit-details-marker { display: none; }
+.design-conversation .narration-completed-activity summary::after {
+  content: "";
+  width: 5px;
+  height: 5px;
+  margin-left: 2px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  opacity: 0.7;
+  transform: rotate(-45deg);
+  transition: transform var(--duration-fast) var(--ease-out);
+}
+.design-conversation .narration-completed-activity details[open] > summary::after { transform: rotate(45deg); }
 .design-conversation .narration-completed-activity summary span {
-  margin-left: 8px;
-  font-size: 11px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
   font-variant-numeric: tabular-nums;
 }
 .design-conversation .narration-completed-activity summary:hover { color: var(--accent); }
+.design-conversation .narration-completed-activity summary:hover span { color: var(--accent); }
 .design-conversation .narration-completed-activity details > ol { padding: 6px 0 10px; }
 @media (pointer: coarse) {
   .design-conversation .narration-completed-activity summary { min-height: 44px; }
+  .design-conversation .narration-completed-activity::before { top: 14px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .design-conversation .narration-completed-activity summary::after { transition: none; }
 }
 
 /* Template tool results use prose and a disclosed field list, not a code dump. */

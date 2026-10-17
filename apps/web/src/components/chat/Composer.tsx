@@ -52,100 +52,101 @@ export default function Composer({
   // The matter's Documents control (see DocumentChips), seated after the playbook.
   documentsControl?: ReactNode
 }) {
-  return (
-    <>
-      {!pinned &&
-        !draftingUpdate &&
-        // A pinned surface (the template library) owns its one assistant — no
-        // picker, no workflow launcher, nothing to choose. Drop the whole tools
-        // row so the composer reads clean.
-        (toolsLoading ? (
-          <div className="composer-tools" aria-busy="true" aria-label="Loading assistant choices">
-            <span className="composer-tool-skeleton is-assistant" />
-            <span className="composer-tool-skeleton is-workflows" />
-            {onPlaybookChange && <span className="composer-tool-skeleton is-playbook" />}
-          </div>
-        ) : (
-          <div className="composer-tools">
-            <ModelSelector
-              available={available}
-              value={agent}
-              resolvedLabel={isAuto(agent) && resolvedAgent ? agentLabel(resolvedAgent) : undefined}
-              onChange={(a) => {
-                onAgentChange(a)
-                // Leaving Auto drops the last routing so the chip does not keep showing
-                // a resolved label under a manually-picked assistant.
-                if (!isAuto(a)) setResolvedAgent(undefined)
-                inputRef.current?.focus()
-              }}
-            />
-            <WorkflowLauncher available={available} onLaunch={runWorkflow} workflows={workflows} />
-            {onPlaybookChange && (
-              <PlaybookSelector playbooks={playbooks ?? []} value={playbook} onChange={onPlaybookChange} />
-            )}
-            {documentsControl}
-          </div>
-        ))}
-      <div className="composer">
-        <textarea
-          ref={inputRef}
-          rows={1}
-          aria-label="Message"
-          placeholder={composerPlaceholder}
-          value={input}
-          onChange={(e) => {
-            setInput(e.target.value)
-            const el = e.currentTarget
-            el.style.height = "auto"
-            el.style.height = Math.min(el.scrollHeight, 200) + "px"
-          }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-              e.preventDefault()
-              onSend()
-              return
-            }
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault()
-              onSend()
-            }
+  // A pinned surface (the template library) owns its one assistant — no
+  // picker, no workflow launcher, nothing to choose. Drop the whole tools row so
+  // the composer reads clean. Otherwise the tools sit in the composer's footer,
+  // beside Send, so the field and its controls read as one form.
+  const tools =
+    !pinned &&
+    !draftingUpdate &&
+    (toolsLoading ? (
+      <div className="composer-tools" aria-busy="true" aria-label="Loading assistant choices">
+        <span className="composer-tool-skeleton is-assistant" />
+        <span className="composer-tool-skeleton is-workflows" />
+        {onPlaybookChange && <span className="composer-tool-skeleton is-playbook" />}
+      </div>
+    ) : (
+      <div className="composer-tools">
+        <ModelSelector
+          available={available}
+          value={agent}
+          resolvedLabel={isAuto(agent) && resolvedAgent ? agentLabel(resolvedAgent) : undefined}
+          onChange={(a) => {
+            onAgentChange(a)
+            // Leaving Auto drops the last routing so the chip does not keep showing
+            // a resolved label under a manually-picked assistant.
+            if (!isAuto(a)) setResolvedAgent(undefined)
+            inputRef.current?.focus()
           }}
         />
-        <div className="composer-footer">
-          <span className="composer-hint" aria-hidden>
-            <span>
-              <kbd>Enter</kbd> send
-            </span>
-            <span className="composer-hint-sep">·</span>
-            <span>
-              <kbd>Shift + Enter</kbd> new line
-            </span>
-          </span>
-          <button
-            type="button"
-            className="send-btn"
-            onClick={onSend}
-            disabled={busy || !input.trim()}
-            aria-label={draftingClarification ? "Send checklist clarification" : draftingUpdate ? "Send drafting update" : "Send message"}
-          >
-            <span>{draftingClarification ? "Clarify checklist" : draftingUpdate ? "Update draft" : "Send"}</span>
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2.2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
-            >
-              <path d="M12 19V5" />
-              <path d="m5 12 7-7 7 7" />
-            </svg>
-          </button>
-        </div>
+        <WorkflowLauncher available={available} onLaunch={runWorkflow} workflows={workflows} />
+        {onPlaybookChange && (
+          <PlaybookSelector playbooks={playbooks ?? []} value={playbook} onChange={onPlaybookChange} />
+        )}
+        {documentsControl}
       </div>
-    </>
+    ))
+  return (
+    <div className="composer">
+      <textarea
+        ref={inputRef}
+        rows={1}
+        aria-label="Message"
+        placeholder={composerPlaceholder}
+        value={input}
+        onChange={(e) => {
+          setInput(e.target.value)
+          const el = e.currentTarget
+          el.style.height = "auto"
+          el.style.height = Math.min(el.scrollHeight, 200) + "px"
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+            e.preventDefault()
+            onSend()
+            return
+          }
+          if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault()
+            onSend()
+          }
+        }}
+      />
+      <div className="composer-footer">
+        {tools}
+        <span className="composer-hint" aria-hidden>
+          <span>
+            <kbd>Enter</kbd> send
+          </span>
+          <span className="composer-hint-sep">·</span>
+          <span>
+            <kbd>Shift + Enter</kbd> new line
+          </span>
+        </span>
+        <button
+          type="button"
+          className="send-btn"
+          onClick={onSend}
+          disabled={busy || !input.trim()}
+          aria-label={draftingClarification ? "Send checklist clarification" : draftingUpdate ? "Send drafting update" : "Send message"}
+        >
+          <span>{draftingClarification ? "Clarify checklist" : draftingUpdate ? "Update draft" : "Send"}</span>
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M12 19V5" />
+            <path d="m5 12 7-7 7 7" />
+          </svg>
+        </button>
+      </div>
+    </div>
   )
 }
