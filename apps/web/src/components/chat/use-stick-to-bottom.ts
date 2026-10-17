@@ -65,7 +65,9 @@ export function useStickToBottom(logRef: RefObject<HTMLDivElement | null>, stick
     onScroll: (e: UIEvent<HTMLDivElement>) => {
       const el = e.currentTarget
       const gap = el.scrollHeight - el.scrollTop - el.clientHeight
-      if (gap <= 2) stickRef.current = true
+      // Only arriving at the bottom re-pins: the first eased frames of a smooth
+      // scroll up are still within the threshold and must not snap it back.
+      if (gap <= 2 && el.scrollTop >= lastTop.current) stickRef.current = true
       if (gap > 2 && el.scrollTop < lastTop.current - 1) stickRef.current = false
       report()
     },

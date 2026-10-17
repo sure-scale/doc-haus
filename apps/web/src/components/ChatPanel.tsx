@@ -307,6 +307,13 @@ export default function ChatPanel({
           statusError={feed?.error}
           checkedAt={feed?.checkedAt}
           onOpen={(name) => onViewDocument(name)}
+          onShowDrafts={() => {
+            // Leave the bottom first, so a render during the smooth scroll
+            // cannot re-pin the log and cancel it.
+            stickRef.current = false
+            const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches
+            document.getElementById("run-result")?.scrollIntoView({ block: "start", behavior: still ? "auto" : "smooth" })
+          }}
         />
       )}
       <div className="chat-log-wrap">

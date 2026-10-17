@@ -41,6 +41,7 @@ export default function RunHeader({
   statusError,
   checkedAt,
   onOpen,
+  onShowDrafts,
 }: {
   status: LeanDraftingStatus
   actions: RunActions
@@ -49,6 +50,8 @@ export default function RunHeader({
   statusError?: string
   checkedAt?: number
   onOpen: (name: string) => void
+  /** Brings the result card, with every drafted file, into view. */
+  onShowDrafts: () => void
 }) {
   const [now, setNow] = useState(() => Date.now())
   const [details, setDetails] = useState(false)
@@ -94,8 +97,7 @@ export default function RunHeader({
   const canContinue = leanContinueAvailable(status) && !actions.resuming
   const openDraft = () => {
     if (drafts.length === 1) return onOpen(drafts[0]!.name)
-    const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches
-    document.getElementById("run-result")?.scrollIntoView({ block: "start", behavior: still ? "auto" : "smooth" })
+    onShowDrafts()
   }
   const draftLabel = drafts.length === 1 ? "Open draft" : "View drafts"
   const meta = [
