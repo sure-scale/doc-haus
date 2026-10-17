@@ -38,9 +38,8 @@
    theirs beside unboxed answers. */
 .design-conversation .msg.user {
   background: var(--accent-soft);
-  border: 1px solid color-mix(in srgb, var(--accent-border) 55%, transparent);
-  border-radius: 16px 16px 4px 16px;
-  padding: 12px 16px;
+  border-radius: 20px 20px 6px 20px;
+  padding: 12px 18px;
 }
 
 /* Answers carry a small house mark beside the assistant's name, so each turn
@@ -62,11 +61,10 @@
   flex: none;
   width: 22px;
   height: 22px;
-  border-radius: 7px;
+  border-radius: 50%;
   background: var(--accent)
     url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 2.6 2.8 6.9v6.5h3.7V10h3v3.4h3.7V6.9z' fill='white'/%3E%3C/svg%3E")
-    center / 14px no-repeat;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08), var(--shadow-xs);
+    center / 12px no-repeat;
 }
 
 /* Updates queued against a running draft are the lawyer's turns too. */
@@ -161,28 +159,29 @@
   padding-inline: 18px;
 }
 
-/* The composer is one card: the field above, its assistant, workflow,
-   playbook and document controls along the footer beside Send. */
+/* The composer is one soft field: the text above, its assistant, workflow,
+   playbook and document controls along the footer beside Send. A fill, not
+   a frame, so it does not read as another box on the page. */
 .design-conversation .composer {
+  --composer-fill: color-mix(in srgb, var(--bg-sunken) 75%, var(--panel));
   flex: none;
   margin-top: 14px;
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  background: var(--panel);
-  box-shadow: 0 1px 2px rgba(26, 30, 28, 0.04), 0 6px 20px rgba(26, 30, 28, 0.05);
+  border: 0;
+  border-radius: 24px;
+  background: var(--composer-fill);
+  box-shadow: none;
   container-type: inline-size;
 }
 
 .design-conversation .composer:focus-within {
-  border-color: var(--accent-border);
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 10%, transparent), 0 6px 20px rgba(26, 30, 28, 0.05);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
 .design-conversation .composer textarea {
   width: 100%;
   min-height: 56px;
-  padding: 16px 18px 6px;
-  border-radius: 16px 16px 0 0;
+  padding: 16px 20px 6px;
+  border-radius: 24px 24px 0 0;
   font-size: 14px;
 }
 
@@ -190,7 +189,7 @@
   justify-content: flex-end;
   align-items: flex-end;
   gap: 8px;
-  padding: 6px 8px 8px;
+  padding: 6px 10px 10px;
 }
 
 .design-conversation .composer-tools {
@@ -205,9 +204,9 @@
 .design-conversation .composer-tools .assistant-trigger,
 .design-conversation .composer-tools .workflow-btn {
   height: 32px;
-  padding: 0 9px;
+  padding: 0 10px;
   border-color: transparent;
-  border-radius: 9px;
+  border-radius: var(--radius-pill);
   background: transparent;
   color: var(--text-secondary);
   box-shadow: none;
@@ -216,20 +215,35 @@
 .design-conversation .composer-tools .assistant-trigger:hover:not(:disabled),
 .design-conversation .composer-tools .workflow-btn:hover:not(:disabled) {
   border-color: transparent;
-  background: var(--bg-sunken);
+  background: color-mix(in srgb, var(--border) 60%, transparent);
   color: var(--text);
   box-shadow: none;
 }
 
 .design-conversation .composer-tools .assistant-trigger {
-  margin-right: 4px;
-  border-color: var(--border);
   color: var(--text);
+}
+
+.design-conversation .composer-tools .docs-btn.is-open {
+  border-color: transparent;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.design-conversation .composer-tools .docs-btn-count,
+.design-conversation .composer-tools .docs-btn.is-open .docs-btn-count {
+  min-width: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
 }
 
 .design-conversation .composer-tool-skeleton {
   height: 32px;
-  border-radius: 9px;
+  border: 0;
+  border-radius: var(--radius-pill);
 }
 
 .design-conversation .composer-hint {
@@ -250,11 +264,12 @@
 .design-conversation .composer-hint > span { white-space: nowrap; }
 .design-conversation .composer-hint-sep { margin: 0; }
 .design-conversation .composer-hint kbd {
-  padding: 1px 4px;
-  border-radius: 3px;
-  background: var(--bg);
-  box-shadow: 0 1px 0 var(--border);
+  padding: 0;
+  background: none;
+  box-shadow: none;
+  color: var(--text-secondary);
   font: inherit;
+  font-weight: 500;
 }
 
 @media (hover: none), (pointer: coarse) {
@@ -265,18 +280,16 @@
   gap: 6px;
   width: auto;
   min-width: 76px;
-  height: 34px;
-  padding-inline: 13px 11px;
-  border-radius: 10px;
+  height: 36px;
+  padding-inline: 15px 13px;
+  border-radius: var(--radius-pill);
   font-size: 13px;
   font-weight: 600;
-  box-shadow: var(--shadow-xs);
 }
 
 .design-conversation .send-btn:disabled {
-  background: var(--bg-sunken);
+  background: color-mix(in srgb, var(--border) 70%, transparent);
   color: var(--muted);
-  box-shadow: none;
 }
 
 /* A narrow card keeps its controls and Send; the keyboard hint goes first. */
@@ -293,10 +306,11 @@
   gap: 0 20px;
   flex: none;
   margin-bottom: 8px;
-  padding: 10px 12px 10px 14px;
-  border: 1px solid color-mix(in srgb, var(--accent-border) 70%, transparent);
-  border-radius: 14px;
-  background: var(--accent-tint);
+  padding: 0 0 14px;
+  border: 0;
+  border-bottom: 1px solid var(--border-soft);
+  border-radius: 0;
+  background: transparent;
   animation: none;
 }
 
@@ -307,12 +321,11 @@
 
 .design-conversation .run-head.is-done .run-head-icon {
   align-self: center;
-  width: 26px;
-  height: 26px;
+  width: 24px;
+  height: 24px;
   margin-top: 0;
   color: var(--text-on-accent);
   background: var(--accent);
-  box-shadow: 0 0 0 4px var(--accent-soft);
 }
 
 .design-conversation .run-head.is-done .run-head-icon > svg {
@@ -336,21 +349,31 @@
 }
 
 .design-conversation .run-head.is-done .run-head-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   min-height: 32px;
-  padding: 5px 12px;
-  border: 1px solid var(--accent-border);
-  border-radius: 9px;
-  background: var(--panel);
+  padding: 5px 0;
+  border: 0;
+  background: transparent;
   color: var(--accent);
-  box-shadow: var(--shadow-xs);
+  box-shadow: none;
   font-size: 13px;
   font-weight: 600;
 }
 
+.design-conversation .run-head.is-done .run-head-cta::after {
+  content: "→";
+  transition: transform var(--duration-fast) var(--ease-out);
+}
+
 .design-conversation .run-head.is-done .run-head-cta:hover {
-  border-color: var(--accent-muted);
-  background: var(--panel);
+  background: transparent;
   color: var(--accent-hover);
+}
+
+.design-conversation .run-head.is-done .run-head-cta:hover::after {
+  transform: translateX(2px);
 }
 
 .design-conversation .run-head.is-done .run-head-cta:focus-visible {
@@ -571,17 +594,13 @@
 }
 
 .design-conversation .result-file-count {
-  padding: 0 7px;
-  border-radius: var(--radius-pill);
-  background: var(--bg-sunken);
   color: var(--muted);
-  font-size: 11px;
-  line-height: 18px;
+  font-size: 12px;
+  font-weight: 400;
   font-variant-numeric: tabular-nums;
 }
 
 .design-conversation .result-files > summary:hover .result-file-count {
-  background: var(--accent-soft);
   color: var(--accent);
 }
 
@@ -672,6 +691,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .design-conversation .run-head.is-done .run-head-cta::after,
   .design-conversation .result-files > summary::after,
   .design-conversation .narration-result,
   .design-conversation .result-paper,
@@ -807,17 +827,13 @@
 }
 .design-conversation .narration-completed-activity details[open] > summary::after { transform: rotate(45deg); }
 .design-conversation .narration-completed-activity summary span {
-  padding: 0 7px;
-  border-radius: var(--radius-pill);
-  background: var(--bg-sunken);
   color: var(--muted);
-  font-size: 11px;
-  font-weight: 500;
-  line-height: 18px;
+  font-size: 12px;
+  font-weight: 400;
   font-variant-numeric: tabular-nums;
 }
 .design-conversation .narration-completed-activity summary:hover { color: var(--accent); }
-.design-conversation .narration-completed-activity summary:hover span { background: var(--accent-soft); color: var(--accent); }
+.design-conversation .narration-completed-activity summary:hover span { color: var(--accent); }
 .design-conversation .narration-completed-activity details > ol { padding: 6px 0 10px; }
 @media (pointer: coarse) {
   .design-conversation .narration-completed-activity summary { min-height: 44px; }
