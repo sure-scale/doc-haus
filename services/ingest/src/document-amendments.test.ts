@@ -1,11 +1,12 @@
 import { expect, test } from "bun:test"
 import { createHash } from "node:crypto"
 import { mkdtemp, mkdir, rm } from "node:fs/promises"
+import { existsSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { AlignmentType, Document, Footer, Header, LevelFormat, Packer, Paragraph, Table, TableCell, TableRow, TextRun } from "docx"
 import { paragraphTargets, withParagraphPointers } from "../../../dochaus/lib/drafting-amendment"
-import { openDb, getRedline, listSourceDocuments, upsertDocument } from "./db"
+import { openDb, getRedline, listDocuments, listSourceDocuments, upsertDocument } from "./db"
 import { readWorkingDocx } from "../../../dochaus/lib/working-docx"
 import { createDocxLocalization, createDocxRevision, openRevision, verifyPreservation } from "../../../dochaus/lib/docx-amendments"
 import { withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
@@ -15,6 +16,11 @@ import { writeDeliverable, writeDeliverableRevision } from "./deliverable"
 import { buildRedlined, bake, redlineState, redlineStaleReason } from "./redline"
 import { docxodus } from "./docxodus"
 import { readDocxComments } from "../../../dochaus/lib/docx-comments"
+import { recordLeanDocuments } from "../../../dochaus/workflows/lean/deliverables"
+import { runLean } from "../../../dochaus/workflows/lean/runner"
+import { initLeanState } from "../../../dochaus/workflows/lean/state"
+import { FIXTURE_SOURCE, FIXTURE_SOURCE_TEXT, scriptedLeanModel } from "../../../dochaus/workflows/lean/test-support"
+import { registerLeanDeliverable } from "./lean-deliverables"
 
 test("two-pass HTTP proposals require approval, preserve atomic revision metadata and refuse stale or unbound writes", async () => {
   const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-edit-"))
@@ -783,5 +789,170 @@ test("a same-paragraph sibling goes stale and stays pending and visible while pl
     expect(hash(await Bun.file(file).bytes())).toBe(hash(accepted))
   } finally {
     process.kill();await process.exited;engine.stop(true);await rm(temporary,{recursive:true,force:true})
+  }
+},120000)
+
+// A completed lean run in an isolated ingest matter: the real coordinator with a
+// scripted model registers "Supply note.docx", its redline and its drafting notes.
+async function completedLeanRun(directory:string) {
+  const db = openDb(directory)
+  try {
+    const docPath = path.join(directory,FIXTURE_SOURCE)
+    const id = db.query("INSERT INTO documents (doc_path, name, created_at) VALUES (?, ?, ?) RETURNING id").get(docPath,FIXTURE_SOURCE,1) as {id:number}
+    db.query("INSERT INTO chunks (document_id, doc_path, doc_name, section, chunk_index, text, char_start, char_end, embedding) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(id.id,docPath,FIXTURE_SOURCE,"1",0,FIXTURE_SOURCE_TEXT,0,FIXTURE_SOURCE_TEXT.length,new Uint8Array(4))
+  } finally {db.close()}
+  initLeanState(directory,{request:"Draft a short supply note from the supply terms.",ownerSessionID:"ses_owner",model:null})
+  const deps = {sessions:scriptedLeanModel().port,registerDeliverable:registerLeanDeliverable}
+  expect((await runLean(directory,deps)).status).toBe("completed")
+  return deps
+}
+const runFiles = ["Supply note - drafting notes.docx","Supply note - redline.docx","Supply note.docx"]
+const notesHeading = "Changes accepted after these notes were prepared"
+const notesIntro = "These changes were accepted in Word after the final check. The final check was not re-run on them."
+const preparedNotes = ["Drafting notes","The draft states the delivery period from the supply terms."]
+const supplyChanges = [
+  {before_quote:"thirty days",replacement:"forty-five days",target_context:"delivery period",reason:"Buyer asked for a longer delivery window."},
+  {before_quote:"on delivery",replacement:"within fourteen days of delivery",target_context:"payment timing",reason:"Agreed payment terms"},
+]
+const supplyEntries = [
+  "Supply note.docx: “thirty days” → “forty-five days”. Reason: Buyer asked for a longer delivery window.",
+  "Supply note.docx: “on delivery” → “within fourteen days of delivery”. Reason: Agreed payment terms.",
+]
+// Paragraph texts with each addendum entry's acceptance date checked and removed.
+async function notesText(file:string) {
+  return (await createDocxRevision(await Bun.file(file).bytes())).paragraphs.map((row) => row.text).map((text) => {
+    const dated = /^(\d{4}-\d{2}-\d{2}) — (Supply note\.docx: .*)$/.exec(text)
+    if (dated) expect(Number.isNaN(Date.parse(dated[1]))).toBe(false)
+    return dated?.[2] ?? text
+  })
+}
+function registeredDeliverables(directory:string) {
+  const db = openDb(directory)
+  try {return (listDocuments(db) as {name:string;role:string}[]).filter((row) => row.role === "deliverable").map((row) => row.name).toSorted()}
+  finally {db.close()}
+}
+
+test("accepted changes to a completed run's body are appended to its drafting notes; rejects and notes accepts are not", async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-notes-"))
+  const batches = [[...supplyChanges,{before_quote:"Delivery",replacement:"Delivery period",target_context:"delivery heading",reason:"Heading wording."}],
+    [{before_quote:"delivery period",replacement:"agreed delivery period",target_context:"drafting note on delivery",reason:"Lawyer's note."}]]
+  const engine = syntheticEngine(() => ({amendments:batches.shift()!,open_items:[]}),firstCandidate)
+  const ingest = await isolatedIngest(temporary,engine.server)
+  try {
+    await ingest.start("only")
+    const matter = await ingest.matter("Notes after accepted changes")
+    const deps = await completedLeanRun(matter.dir)
+    const body = path.join(matter.dir,"Supply note.docx")
+    const notes = path.join(matter.dir,"Supply note - drafting notes.docx")
+    const prepare = async (name:string) => (await (await ingest.request(`${matter.route}/documents/amendments`,{method:"POST",headers:{"content-type":"application/json"},
+      body:JSON.stringify({name,instructions:"Update the stated terms."})})).json() as {redline_ids:number[]}).redline_ids
+    const [first,second,rejected] = await prepare("Supply note.docx")
+    const [onNotes] = await prepare("Supply note - drafting notes.docx")
+    const notesPending = async () => (await (await ingest.request(`${matter.route}/redlines?name=${encodeURIComponent("Supply note - drafting notes.docx")}`)).json() as Array<{id:number;stale?:boolean}>)
+      .map((row) => [row.id,row.stale])
+    const prepared = await Bun.file(notes).bytes()
+    expect(await notesText(notes)).toEqual(preparedNotes)
+
+    // A rejected proposal never reaches the notes.
+    expect((await ingest.request(`${matter.route}/redlines/${rejected}/reject`,{method:"POST"})).status).toBe(200)
+    expect(sha256(await Bun.file(notes).bytes())).toBe(sha256(prepared))
+
+    expect(await matter.accept(first)).toBe(200)
+    expect((await createDocxRevision(await Bun.file(body).bytes())).markdown).toContain("within forty-five days")
+    expect(await notesText(notes)).toEqual([...preparedNotes,notesHeading,notesIntro,supplyEntries[0]])
+    // The notes' own pending proposal targets an unchanged paragraph and stays valid.
+    expect(await notesPending()).toEqual([[onNotes,undefined]])
+
+    expect(await matter.accept(second)).toBe(200)
+    expect(await notesText(notes)).toEqual([...preparedNotes,notesHeading,notesIntro,...supplyEntries])
+
+    // Accepting a change to the notes themselves adds no addendum entry.
+    expect(await matter.accept(onNotes)).toBe(200)
+    expect(await notesText(notes)).toEqual(["Drafting notes","The draft states the agreed delivery period from the supply terms.",
+      notesHeading,notesIntro,...supplyEntries])
+    expect([first,second,rejected,onNotes].map(matter.status)).toEqual(["accepted","accepted","rejected","accepted"])
+
+    // The notes are revised in place, and a later delivery pass keeps them under
+    // their name instead of writing over them or forking a "(2)" copy.
+    expect(registeredDeliverables(matter.dir)).toEqual(runFiles)
+    const revised = await Bun.file(notes).bytes()
+    const again = await recordLeanDocuments(matter.dir,deps,true)
+    expect(again.documents.find((row) => row.kind === "drafting_notes")).toMatchObject({deliverable:"Supply note - drafting notes.docx",conflict:"accepted_revision"})
+    expect(registeredDeliverables(matter.dir)).toEqual(runFiles)
+    expect(await Bun.file(notes).bytes()).toEqual(revised)
+  } finally {
+    await ingest.stop();engine.server.stop(true);await rm(temporary,{recursive:true,force:true})
+  }
+},120000)
+
+test("Accept all records every accepted body change in one notes revision", async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-notes-all-"))
+  const engine = syntheticEngine(() => ({amendments:supplyChanges,open_items:[]}),firstCandidate)
+  const ingest = await isolatedIngest(temporary,engine.server)
+  try {
+    await ingest.start("only")
+    const matter = await ingest.matter("Notes after Accept all")
+    await completedLeanRun(matter.dir)
+    const notes = path.join(matter.dir,"Supply note - drafting notes.docx")
+    expect((await (await ingest.request(`${matter.route}/documents/amendments`,{method:"POST",headers:{"content-type":"application/json"},
+      body:JSON.stringify({name:"Supply note.docx",instructions:"Update the stated terms."})})).json() as {proposed:number}).proposed).toBe(2)
+    const response = await ingest.request(`${matter.route}/redlines/accept-all?name=${encodeURIComponent("Supply note.docx")}`,{method:"POST"})
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ok:true,accepted:2})
+    expect(await notesText(notes)).toEqual([...preparedNotes,notesHeading,notesIntro,...supplyEntries])
+    expect(readWorkingDocx(matter.dir,notes)?.source_sha256).toBe(sha256(await Bun.file(notes).bytes()))
+    expect(registeredDeliverables(matter.dir)).toEqual(runFiles)
+  } finally {
+    await ingest.stop();engine.server.stop(true);await rm(temporary,{recursive:true,force:true})
+  }
+},120000)
+
+test("a notes addendum that cannot be written never undoes the accepted body change", async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-notes-fail-"))
+  const engine = syntheticEngine(() => ({amendments:supplyChanges.slice(0,1),open_items:[]}),firstCandidate)
+  const ingest = await isolatedIngest(temporary,engine.server)
+  try {
+    await ingest.start("only")
+    const prepare = async (route:string) => (await (await ingest.request(`${route}/documents/amendments`,{method:"POST",headers:{"content-type":"application/json"},
+      body:JSON.stringify({name:"Supply note.docx",instructions:"Update the delivery period."})})).json() as {redline_ids:number[]}).redline_ids
+
+    // The notes file was removed after delivery.
+    const missing = await ingest.matter("Notes removed after delivery")
+    await completedLeanRun(missing.dir)
+    const [removedId] = await prepare(missing.route)
+    rmSync(path.join(missing.dir,"Supply note - drafting notes.docx"))
+    expect(await missing.accept(removedId)).toBe(200)
+    expect((await createDocxRevision(await Bun.file(path.join(missing.dir,"Supply note.docx")).bytes())).markdown).toContain("within forty-five days")
+    expect(missing.status(removedId)).toBe("accepted")
+    expect(existsSync(path.join(missing.dir,"Supply note - drafting notes.docx"))).toBe(false)
+
+    // An older, unbound proposal on the notes would go stale under the
+    // addendum's accepted revision, so the notes are left for the lawyer.
+    const held = await ingest.matter("Notes with an older proposal")
+    await completedLeanRun(held.dir)
+    const notes = path.join(held.dir,"Supply note - drafting notes.docx")
+    const prepared = await Bun.file(notes).bytes()
+    const db = openDb(held.dir)
+    const older = (() => {
+      try {
+        return Number(db.run("INSERT INTO redlines (doc_path,doc_name,scope,find_text,old_text,new_text,author,review_comment,anchor_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+          [notes,"Supply note - drafting notes.docx","phrase","delivery period","delivery period","agreed delivery period","Review","",null,Date.now()]).lastInsertRowid)
+      } finally {db.close()}
+    })()
+    const [heldId] = await prepare(held.route)
+    expect(await held.accept(heldId)).toBe(200)
+    expect(held.status(heldId)).toBe("accepted")
+    expect(sha256(await Bun.file(notes).bytes())).toBe(sha256(prepared))
+    expect(readWorkingDocx(held.dir,notes)).toBeUndefined()
+    expect((await (await ingest.request(`${held.route}/redlines?name=${encodeURIComponent("Supply note - drafting notes.docx")}`)).json() as Array<{id:number;stale?:boolean}>)
+      .map((row) => [row.id,row.stale])).toEqual([[older,undefined]])
+
+    const log = await Bun.file(path.join(temporary,"ingest-only.log")).text()
+    for (const reason of ["notes_missing","pending_notes_proposals"])
+      expect(log).toMatch(new RegExp(`drafting notes not updated \\{[^}]*run: "ses_owner"[^}]*reason: "${reason}"`))
+    expect(registeredDeliverables(held.dir)).toEqual(runFiles)
+  } finally {
+    await ingest.stop();engine.server.stop(true);await rm(temporary,{recursive:true,force:true})
   }
 },120000)
