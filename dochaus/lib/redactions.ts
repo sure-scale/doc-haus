@@ -143,7 +143,7 @@ export function scrubDocxPackage(bytes: Uint8Array, needle: string, label: strin
     }
   }
   const unreachable = Object.keys(parts).filter((name) => /^word\/(media|embeddings)\//.test(name))
-  return { bytes: zipSync(parts), hits, unreachable }
+  return { bytes: zipSync(parts, { mtime: new Date(1980, 0, 1) }), hits, unreachable }
 }
 
 // Residue check across the whole package: any XML part where the needle still

@@ -28,7 +28,7 @@ function rewriteDocumentXml(
   const styleAdded = addMissingInlineCodeStyle(parts, polished)
   if (polished === original && !styleAdded) return bytes
   parts["word/document.xml"] = strToU8(polished)
-  return zipSync(parts)
+  return zipSync(parts, { mtime: new Date(1980, 0, 1) })
 }
 
 function addMissingInlineCodeStyle(parts: Record<string, Uint8Array>, document: string) {

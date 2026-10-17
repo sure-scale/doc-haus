@@ -1,12 +1,13 @@
-import { afterEach, expect, test } from "bun:test"
+import { afterEach, expect, setSystemTime, test } from "bun:test"
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { DOMParser } from "@xmldom/xmldom"
 import { strFromU8, unzipSync } from "fflate"
 import { draftingAttribution, withGeneratedDocxAttribution } from "./docx-attribution"
-import { exportDocxComments } from "./docx-comments"
+import { exportDocxComments, readDocxCommentParagraphs } from "./docx-comments"
 import { compareDocxWithPointers } from "./drafting-amendment"
+import { docxodus } from "./docxodus"
 import { renderMarkdownToDocx } from "./render"
 
 const previous = process.env.WORKSPACE_ROOT
@@ -101,4 +102,25 @@ test("stamping a generated derivative preserves prior revision and comment autho
   const doc = new DOMParser().parseFromString(strFromU8(output["word/document.xml"]), "application/xml")
   expect(Array.from(doc.getElementsByTagNameNS(W, "ins")).map(node => node.getAttributeNS(W, "author"))).toContain("Previous Reviewer")
   expect(property(generated, "docProps/core.xml", "http://purl.org/dc/elements/1.1/", "creator")).toBe("Current Lawyer")
+})
+
+test("identical generated content is written as identical bytes at any wall-clock time", async () => {
+  preferences({ attorney: "Current Lawyer", firm: "Current Firm" })
+  const source = (await renderMarkdownToDocx("# Supply note\n\nThe supplier shall deliver within thirty days.")).bytes
+  const stamped: Uint8Array[] = []
+  try {
+    for (const now of [new Date(2026, 0, 1, 9, 0, 0), new Date(2026, 5, 2, 13, 45, 17)]) {
+      setSystemTime(now)
+      stamped.push(withGeneratedDocxAttribution(source))
+    }
+  } finally {
+    setSystemTime()
+  }
+  // Re-stamping an unchanged body, as apply does after a no-op change list,
+  // keeps the rendered file's exact bytes.
+  expect(stamped[0]).toEqual(source)
+  expect(stamped[1]).toEqual(source)
+  expect(readDocxCommentParagraphs(stamped[1]!).map(row => row.paragraph_text)).toEqual(["Supply note", "The supplier shall deliver within thirty days."])
+  const session = (await docxodus()).openDocxSession(stamped[1]!, {})
+  try { expect(session.project().markdown).toContain("The supplier shall deliver within thirty days.") } finally { session.close() }
 })
