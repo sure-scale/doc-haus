@@ -72,6 +72,20 @@ test("malformed JSON and shape receive bounded correction in the same native ses
   expect(JSON.stringify(checker)).toBe(before)
 })
 
+test("a deferral marker is accepted only from range or process-records assignments", async () => {
+  const directory = matter(source.quote)
+  const marked = JSON.stringify({ ...finding, status: "not_applicable", deferred_to: "document_properties" })
+  const whole = sessionPort([marked, JSON.stringify({ ...finding, status: "not_applicable" })])
+  const corrected = await runChecklistCheckJob(directory, { sessions: whole.sessions, model: null }, { ...checker, assignment: { kind: "document_properties", ranges: [] } })
+  expect(corrected.status).toBe("succeeded")
+  expect(corrected.attempts).toBe(2)
+  expect(whole.prompts[1]!.text).toContain("deferred_to is only for a range or process-records assignment")
+  const range = sessionPort([marked])
+  const accepted = await runChecklistCheckJob(directory, { sessions: range.sessions, model: null }, { ...checker, assignment: { kind: "process_records", ranges: [] } })
+  expect(accepted.status).toBe("succeeded")
+  if (accepted.status === "succeeded") expect(accepted.value.deferred_to).toBe("document_properties")
+})
+
 test("persistent malformed output stops at the existing retry bound without repair", async () => {
   const directory = matter(source.quote)
   const port = sessionPort(Array.from({ length: LEAN_MAX_RETRIES + 1 }, () => "not json"))

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { checklistFindingRecovery, type ChecklistFinding, buildChecklistReinspectionPrompt, buildChecklistCheckerPrompt, buildChecklistProducerPrompt, CHECKLIST_ITEM_SHAPE, parseChecklistCheckerInput, parseChecklistExtraction, parseChecklistFinding, parseChecklistItem, type ChecklistItem } from "./checklist-contract"
+import { checklistFindingRecovery, checklistTextMeasuresMeaning, type ChecklistFinding, buildChecklistReinspectionPrompt, buildChecklistCheckerPrompt, buildChecklistProducerPrompt, CHECKLIST_ITEM_SHAPE, parseChecklistCheckerInput, parseChecklistExtraction, parseChecklistFinding, parseChecklistItem, type ChecklistItem } from "./checklist-contract"
 
 const item: ChecklistItem = {
   check: "Check the proposed notice arrangement remains subject to confirmation.",
@@ -123,4 +123,43 @@ test("counterevidence is exact-item-only and cannot replace any canonical input 
   expect(prompt).toContain("Independently verify its source quotations and reasoning")
   expect(prompt).toContain("an inapplicable limb does not excuse an applicable unfulfilled action")
   expect(() => buildChecklistReinspectionPrompt(packet, previous, { ...counterevidence, item_id: "other" })).toThrow("exact checklist item")
+})
+
+test("comparison assignments include one whole-target document-properties kind with its own prompt branch", () => {
+  const whole = { kind: "document_properties" as const, ranges: [] }
+  expect(parseChecklistCheckerInput({ ...packet, assignment: whole }).assignment).toEqual(whole)
+  expect(() => parseChecklistCheckerInput({ ...packet, assignment: { kind: "document_length", ranges: [] } })).toThrow()
+  const prompt = buildChecklistCheckerPrompt({ ...packet, assignment: whole })
+  expect(prompt).toContain("other assignments cover the remaining paragraphs, process records and document-wide properties")
+  expect(prompt).toContain("Decide ONLY document-wide properties of the named target from its supplied exact artifact properties, including accepted_body_text_measures")
+  expect(prompt).toContain("Report not_applicable when the parent states no document-wide property")
+  expect(prompt).not.toContain("Only the separate document-properties assignment decides it")
+  for (const kind of ["target_body", "process_records"] as const) {
+    const range = buildChecklistCheckerPrompt({ ...packet, assignment: { kind, ranges: [] } })
+    expect(range).toContain("Only the separate document-properties assignment decides it. If the parent concerns only such a property, report not_applicable for this component rather than indeterminate")
+    expect(range).not.toContain("Decide ONLY document-wide properties")
+  }
+  expect(buildChecklistCheckerPrompt(packet)).not.toContain("document-properties assignment")
+  expect(prompt).not.toContain("deferred_to")
+  expect(buildChecklistCheckerPrompt(packet)).not.toContain("deferred_to")
+  expect(buildChecklistCheckerPrompt({ ...packet, assignment: { kind: "target_body", ranges: [] } })).toContain('Whenever this component defers such a property, also return "deferred_to":"document_properties"; otherwise omit that field.')
+  const base = { item_id: packet.item_id, status: "not_applicable", reason: "Deferred.", evidence: [], source_refs: item.source_refs, inspection_scope: "Assigned range.", limitation: "" }
+  expect(parseChecklistFinding({ ...base, deferred_to: "document_properties" }).deferred_to).toBe("document_properties")
+  expect(parseChecklistFinding(base)).not.toHaveProperty("deferred_to")
+  expect(() => parseChecklistFinding({ ...base, deferred_to: "other_unit" })).toThrow()
+})
+
+test("text measures can disprove but never establish a rendered-length directive", () => {
+  const whole = buildChecklistCheckerPrompt({ ...packet, assignment: { kind: "document_properties", ranges: [] } })
+  const instructions = whole.split("CHECK_INPUT:")[0]!
+  expect(instructions).toContain(checklistTextMeasuresMeaning)
+  expect(checklistTextMeasuresMeaning).toContain("Never report such a directive satisfied from text measures: report unsatisfied when the measures clearly exceed it; otherwise report an approximate directive open, quoting the exact measures and stating that rendered pagination was not verified")
+  expect(checklistTextMeasuresMeaning).toContain("a strict page or layout limit that the measures cannot decide remains indeterminate")
+  expect(instructions).toContain("Any other property they cannot establish remains indeterminate.")
+  for (const kind of ["target_body", "process_records"] as const)
+    expect(buildChecklistCheckerPrompt({ ...packet, assignment: { kind, ranges: [] } })).not.toContain(checklistTextMeasuresMeaning)
+  // An approximate rendered-length directive left open is non-blocking; exceeding it routes to repair.
+  const finding = { item_id: packet.item_id, reason: "Measures quoted.", evidence: [], source_refs: item.source_refs, inspection_scope: "Artifact properties.", limitation: "Rendered pagination was not verified." }
+  expect(checklistFindingRecovery(item, parseChecklistFinding({ ...finding, status: "open" }))).toBe("none")
+  expect(checklistFindingRecovery(item, parseChecklistFinding({ ...finding, status: "unsatisfied" }))).toBe("repair")
 })

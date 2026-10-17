@@ -2,7 +2,7 @@ import { checkChanges, parseJsonObject } from "./change-checks"
 import { readChangeList, readParagraphs, record, type ChangeList } from "./checks"
 import { uniqueReplacementIssues, readChangePlan, type ChangePlan, type ChangePreparation } from "./change-pipeline"
 import { checklistProducerInputs } from "./checklist-source-context"
-import { appendLeanEvent } from "./events"
+import { appendLeanEvent, leanElapsedMs } from "./events"
 import { retryPrompt } from "./prompts"
 import { matterSourceIDs, openItem, quoteFound } from "./quotes"
 import { drainLeanRequests } from "./requests"
@@ -109,7 +109,9 @@ export async function runChangeReconciliation(directory: string, state: LeanStat
           counts.calls++; counts.attempts = Math.max(counts.attempts, index + 1)
           progress({ session_id: counts.sessions[0], session_ids: [...counts.sessions], calls: counts.calls, attempts: counts.attempts })
           appendLeanEvent(directory, { stage: "changes", document, step: component.id, event: index ? "retry" : "model_call", attempt: index, session_id: sessionID })
+          const asked = performance.now()
           const reply = await deps.sessions.prompt({ directory, sessionID, agent, text: index ? retryPrompt("changes", issues) : initialPrompt })
+          const answered = performance.now()
           const parsed = parseJsonObject(reply)
           if (parsed.ok && Array.isArray(parsed.value.dependencies) && parsed.value.dependencies.length) { failures.push(`${component.id}: bounded dependency reconciliation required: ${JSON.stringify(parsed.value.dependencies)}`); break }
           const check = checkChanges(directory, reply, readParagraphs(directory, document).filter(row => component.pids.includes(row.pid)), { document, withholdUnverified: index === LEAN_MAX_RETRIES })
@@ -120,7 +122,7 @@ export async function runChangeReconciliation(directory: string, state: LeanStat
           if (check.changes) for (const pid of new Set((component.changes.explanations ?? []).map(row => row.pid))) {
             if (!check.changes.explanations?.some(row => row.pid === pid)) issues.push(`[${pid}] source-to-initial explanation was omitted; preserve/correct its actual effect or disclose the dependency.`)
           }
-          appendLeanEvent(directory, { stage: "changes", document, step: component.id, event: "checker", attempt: index, issues })
+          appendLeanEvent(directory, { stage: "changes", document, step: component.id, event: "checker", attempt: index, issues, wait_ms: leanElapsedMs(asked, answered), check_ms: leanElapsedMs(answered) })
           progress({ feedback: issues })
           if (!issues.length && check.changes) { results.push({ ...check.changes, retained_initial: parsed.ok ? parsed.value.retained_initial as ChangeList["retained_initial"] : [], withheld: [...(component.changes.withheld ?? []).filter(row => !check.changes!.amendments.some(accepted => accepted.pid === row.amendment.pid) && !(parsed.ok && Array.isArray(parsed.value.retained_initial) && parsed.value.retained_initial.some(disposition => record(disposition) && disposition.pid === row.amendment.pid))), ...(check.changes.withheld ?? [])] }); break }
           if (index === LEAN_MAX_RETRIES) failures.push(`${component.id}: ${issues.join(" ")}`)

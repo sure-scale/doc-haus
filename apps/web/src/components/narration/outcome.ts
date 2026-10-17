@@ -20,6 +20,8 @@ export function runOutcome(status: LeanDraftingStatus): RunOutcome | undefined {
   if (questions) return { tone: "attention", text: `Drafting is waiting on ${asks} only you can answer.` }
   const resume = leanContinueAvailable(status) ? " Continue drafting (above) picks up from the last finished step." : ""
   if (status.status === "blocked") {
+    if (status.paused_at)
+      return { tone: "attention", text: "Paused at your request. Continue drafting (above) picks up from the step that was in progress." }
     const atGate = status.stages.gate?.status === "blocked"
     const blocking = (atGate ? status.gate?.blocking.length : undefined) ?? status.open_items.filter((item) => item.status === "open").length
     const items = `${blocking} open item${blocking === 1 ? "" : "s"}`
@@ -44,20 +46,29 @@ export type ResultCheck = { tone: "pass" | "warn" | "neutral"; text: string }
 
 /** The checks a completed run can honestly claim, from its status alone: the
  * final check, quotations verified against the sources (every misquote the
- * checks find becomes a quote item), and what remains for the lawyer. */
+ * checks find becomes a quote item), and what remains for the lawyer. A draft
+ * changed after the final check is not what it checked, so that pass is not claimed. */
 export function resultChecks(status: LeanDraftingStatus): ResultCheck[] {
   const items = attentionItems(status).filter((item) => item.kind !== "question")
   const misses = items.filter((item) => item.kind === "quote_miss").length
   const placeholders = items.filter((item) => item.kind === "placeholder").length
-  const other = items.length - misses - placeholders
+  const unverified = items.filter((item) => item.kind === "checklist_open").length
+  const other = items.length - misses - placeholders - unverified
   const checks: Array<ResultCheck | undefined> = [
-    status.gate?.status === "pass" ? { tone: "pass", text: "Final workflow check passed" } : undefined,
+    status.gate?.status === "pass"
+      ? status.changed_after_check?.documents.length
+        ? { tone: "warn", text: "Changed after final check: review the draft" }
+        : { tone: "pass", text: "Final workflow check passed" }
+      : undefined,
     status.gate && !misses ? { tone: "pass", text: "Quotes checked against sources" } : undefined,
     misses
       ? { tone: "warn", text: `${misses} quote${misses === 1 ? "" : "s"} not found word for word` }
       : undefined,
     placeholders
       ? { tone: "neutral", text: `${placeholders} placeholder${placeholders === 1 ? "" : "s"} to fill` }
+      : undefined,
+    unverified
+      ? { tone: "warn", text: `${unverified} requirement${unverified === 1 ? "" : "s"} left open by the checklist check` }
       : undefined,
     other
       ? { tone: "neutral", text: `${other} other item${other === 1 ? "" : "s"} in the drafting notes` }

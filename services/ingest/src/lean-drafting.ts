@@ -6,11 +6,14 @@ import { Hono } from "hono"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
 import { draftingTraceReference } from "../../../dochaus/lib/drafting-trace-identity"
 import { researchStatus } from "../../../dochaus/workflows/lean/research"
-import { readLeanDocuments } from "../../../dochaus/workflows/lean/deliverables"
+import { readLeanDocuments, type LeanDocuments } from "../../../dochaus/workflows/lean/deliverables"
+import { sha256File } from "../../../dochaus/lib/lineage"
+import { lastLeanEventAt } from "../../../dochaus/workflows/lean/events"
 import { readLeanPlan } from "../../../dochaus/workflows/lean/plan"
 import { enqueueLeanRequest, pendingLeanRequests, leanUserUpdates, queuedAnswerIDs, isChecklistRefinement } from "../../../dochaus/workflows/lean/requests"
 import { runLean, stageInputSha } from "../../../dochaus/workflows/lean/runner"
 import { leanSteps } from "../../../dochaus/workflows/lean/plan"
+import { withSourceSnapshot } from "../../../dochaus/workflows/lean/quotes"
 import { engineSessionPort, type LeanDeps } from "../../../dochaus/workflows/lean/stages"
 import {
   LeanQuestionError,
@@ -38,6 +41,8 @@ import { registerLeanDeliverable } from "./lean-deliverables"
 // this process; a request that arrives as it finishes starts it again. A new
 // request on a matter whose run completed or failed archives that run and
 // starts a fresh one; a blocked or paused run is continued, not replaced.
+// Pause is the one request that does not queue: it stops the coordinator at
+// once (see runLean), and Continue later resumes from the unfinished step.
 
 export type DraftingProfile = "lean"
 
@@ -48,6 +53,9 @@ export class LeanDraftingConflictError extends Error {
 }
 
 const running = new Set<string>()
+/** The coordinator working on each matter, and how to pause it. */
+type Coordinator = { pause: AbortController; stopped: Promise<void>; queuedAtPause?: Set<string> }
+const coordinators = new Map<string, Coordinator>()
 
 /** The requested drafting profile: lean is the only profile; undefined when
  * any other profile is named. */
@@ -108,24 +116,36 @@ export function answerLeanQuestion(directory: string, questionID: string, answer
   return { profile: "lean" as const, mode: "queued" as const, request_id: request.id, status: leanDraftingStatus(directory) }
 }
 
+/** One synchronous read of the run: every step key it takes shares one read of
+ * the matter's sources and processed requests. */
 export function leanDraftingStatus(directory: string) {
+  return withSourceSnapshot(() => readLeanDraftingStatus(directory))
+}
+
+function readLeanDraftingStatus(directory: string) {
   const state = readLeanState(directory)
   if (!state) return undefined
   const refinable = checklistRefinableParents(directory)
+  const gate = readLeanJson(directory, "gate.json") ?? null
+  const documents = readLeanDocuments(directory) ?? null
+  const event = lastLeanEventAt(directory)
   return {
     ...state,
     in_flight: running.has(directory),
+    // The later of the last state write and this process's last run event.
+    last_progress_at: event && event > state.updated_at ? event : state.updated_at,
     pending_requests: pendingLeanRequests(directory).length,
     queued_answer_ids: [...queuedAnswerIDs(directory)],
     updates: draftingUpdates(directory, state),
     open_items: currentOpenItems(directory),
     questions: readQuestions(directory),
-    gate: readLeanJson(directory, "gate.json") ?? null,
-    documents: readLeanDocuments(directory) ?? null,
+    gate,
+    documents,
+    changed_after_check: changedAfterCheck(directory, gate, documents),
     plan: plannedDocuments(directory),
     research: researchStatus(directory),
     checklist_refinement: {
-      available: refinable.length > 0 && !running.has(directory) && !pendingLeanRequests(directory).length && state.status === "blocked" && state.stages["checklist-check"]?.status === "blocked",
+      available: refinable.length > 0 && !running.has(directory) && !pendingLeanRequests(directory).length && state.status === "blocked" && !state.paused_at && state.stages["checklist-check"]?.status === "blocked",
       parents: refinable,
     },
     // The lawyer's own request, so the chat can show it again after a reload.
@@ -152,10 +172,49 @@ function draftingUpdates(directory: string, state: LeanState) {
     : stale ? "requires-rework" as const : undefined }))
 }
 
+/** Delivered drafts whose matter file no longer holds the bytes the final check
+ * saw: a change accepted after delivery, or a newer output kept from replacing
+ * such a change. Disclosure only: the check is not re-run and its verdict is
+ * passed through unchanged, so the lawyer is told to review the draft. */
+function changedAfterCheck(directory: string, gate: unknown, documents: LeanDocuments | null) {
+  if (documents?.status !== "completed") return null
+  const changed = documents.documents.flatMap(row => {
+    if (row.kind !== "body" || !row.deliverable || row.deliverable !== path.basename(row.deliverable)) return []
+    const current = sha256File(path.join(directory, row.deliverable))?.sha256
+    return row.conflict || (current && current !== row.sha256) ? [row.deliverable] : []
+  })
+  if (!changed.length) return null
+  const since = gate && typeof gate === "object" && "checked_at" in gate && typeof gate.checked_at === "string" ? gate.checked_at : null
+  return { since, documents: changed }
+}
+
 /** The run's planned documents without their parts, or null before the outline. */
 function plannedDocuments(directory: string) {
   const plan = readLeanPlan(directory)
   return plan ? { documents: plan.documents.map(row => ({ id: row.id, title: row.title, purpose: row.purpose })) } : null
+}
+
+/** Pause: stops the coordinator working on this matter. It interrupts the
+ * native sessions it is waiting on, drops any reply that arrives later, and
+ * settles the run as blocked with the step in progress back to pending;
+ * finished steps, answers and repair allowances stay as they were. Requests
+ * already queued wait for the next Continue. Resolves once the coordinator has
+ * stopped (mode "paused") or, after `settleMs`, while it is still stopping
+ * (mode "pausing"); undefined when no coordinator is working on this matter. */
+export async function pauseLeanDraftingRun(directory: string, settleMs = 5_000) {
+  const coordinator = coordinators.get(directory)
+  if (!coordinator) return undefined
+  if (!coordinator.pause.signal.aborted) {
+    coordinator.queuedAtPause = new Set(pendingLeanRequests(directory))
+    coordinator.pause.abort()
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const stopped = await Promise.race([
+    coordinator.stopped.then(() => true),
+    new Promise<false>(resolve => { timer = setTimeout(() => resolve(false), settleMs) }),
+  ])
+  clearTimeout(timer)
+  return { profile: "lean" as const, mode: stopped ? "paused" as const : "pausing" as const, status: leanDraftingStatus(directory)! }
 }
 
 /** Resolves once the background coordinator for this directory has stopped. */
@@ -175,7 +234,7 @@ export function leanDraftingRoutes(options: { directory: (id: string) => string;
     const state = readLeanState(directory)
     if (!state || input.ownerSessionID !== state.owner_session_id)
       return c.json({ error: "The active drafting run changed. Reload before refining its checklist.", code: "lean_run_changed" }, 409)
-    if (running.has(directory) || pendingLeanRequests(directory).length || state.status !== "blocked" || state.stages["checklist-check"]?.status !== "blocked")
+    if (running.has(directory) || pendingLeanRequests(directory).length || state.status !== "blocked" || state.paused_at || state.stages["checklist-check"]?.status !== "blocked")
       return c.json({ error: "Refinement requires an idle run blocked at checklist checking.", code: "checklist_not_settled" }, 409)
     const request = { kind: "refine_checklist", parents: input.parents }
     const comparable = new Set(checklistRefinableParents(directory).map(parent => parent.parent_id))
@@ -190,6 +249,16 @@ export function leanDraftingRoutes(options: { directory: (id: string) => string;
     const resumed = resumeLeanDraftingRun(directory, deps())
     if (!resumed) return c.json({ error: "This matter has no lean drafting run.", code: "lean_run_not_found" }, 404)
     return c.json(resumed, 202)
+  })
+  app.post("/:id/lean/pause", async (c) => {
+    const directory = options.directory(c.req.param("id"))
+    const input: { ownerSessionID?: unknown } | null = await c.req.json().catch(() => null)
+    const state = readLeanState(directory)
+    if (!state || input?.ownerSessionID !== state.owner_session_id)
+      return c.json({ error: "The active drafting run changed. Reload before pausing it.", code: "lean_run_changed" }, 409)
+    const paused = await pauseLeanDraftingRun(directory)
+    if (!paused) return c.json({ error: "This drafting run is not working, so there is nothing to pause.", code: "lean_run_not_working" }, 409)
+    return c.json(paused, paused.mode === "paused" ? 200 : 202)
   })
   app.get("/:id/lean/state", (c) => {
     const status = leanDraftingStatus(options.directory(c.req.param("id")))
@@ -230,8 +299,10 @@ export function leanDraftingRoutes(options: { directory: (id: string) => string;
 function launch(directory: string, deps: LeanDeps) {
   running.add(directory)
   const queuedAtLaunch = new Set(pendingLeanRequests(directory))
-  void runLean(directory, deps)
-    .catch((error: unknown) => {
+  const coordinator: Coordinator = { pause: new AbortController(), stopped: Promise.resolve() }
+  coordinators.set(directory, coordinator)
+  coordinator.stopped = runLean(directory, { ...deps, pause: coordinator.pause.signal })
+    .then(() => undefined, (error: unknown) => {
       console.error("lean drafting run stopped", { matter_ref: draftingTraceReference(directory), ...diagnosticErrorMetadata(error) })
       // Stage errors are recorded by the coordinator; this covers a failure
       // outside any stage so the state never claims a run that is not there.
@@ -240,10 +311,12 @@ function launch(directory: string, deps: LeanDeps) {
         writeLeanState(directory, { ...state, status: "failed", stop_reason: `stopped by a runtime error: ${matterRelative(directory, error instanceof Error ? error.message : String(error))}` })
     })
     .finally(() => {
+      if (coordinators.get(directory) === coordinator) coordinators.delete(directory)
       // The coordinator re-checks the queue before it returns; a request that
       // landed after that check starts it again. Requests it already saw and
-      // left (a run that stopped on an error) do not, so a failure cannot loop.
-      if (pendingLeanRequests(directory).some(name => !queuedAtLaunch.has(name))) return launch(directory, deps)
+      // left (a run that stopped on an error) do not, so a failure cannot loop;
+      // nor do requests a pause left waiting for the next Continue.
+      if (pendingLeanRequests(directory).some(name => !queuedAtLaunch.has(name) && !coordinator.queuedAtPause?.has(name))) return launch(directory, deps)
       running.delete(directory)
     })
 }

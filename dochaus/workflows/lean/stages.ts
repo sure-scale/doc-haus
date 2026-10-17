@@ -2,7 +2,7 @@ import { draftingStyleAdvisoryNotes } from "./style-warnings"
 import { checklistCheckResultSchema, readEffectiveChecklistItems, reconcileChecklistParentCoverage } from "./checklist-flow"
 import { leanClarifications, checklistRefinementSelections } from "./requests"
 import { z } from "zod"
-import { checklistFindingRecovery, checklistItemSchema } from "./checklist-contract"
+import { checklistFindingRecovery, checklistItemSchema, type ChecklistFinding, type ChecklistItem } from "./checklist-contract"
 import { acceptChangePlan, acceptChangeReview, preparationOutputValid, readChangePlan, readChangeReview, deferredFindingItems, reviewDispositionText, uniqueReplacementIssues } from "./change-pipeline"
 import { comparisonBasis } from "./comparison"
 import { checkPackageReview, readPackageReview } from "./package-review"
@@ -103,12 +103,18 @@ export type StageSessionPort = {
     metadata?: Record<string, unknown>
   }): Promise<string>
   /** Admits one prompt and resolves with the agent's final reply once the native
-   * session is idle again. Throws on an engine or provider failure. */
-  prompt(input: { directory: string; sessionID: string; agent: string; text: string }): Promise<string>
+   * session is idle again. Throws on an engine or provider failure, and stops
+   * waiting once `signal` is aborted. */
+  prompt(input: { directory: string; sessionID: string; agent: string; text: string; signal?: AbortSignal }): Promise<string>
+  /** Stops the session's active native execution (the engine's own interrupt). */
+  interrupt?(input: { directory: string; sessionID: string }): Promise<void>
 }
 
 export type LeanDeps = {
   sessions: StageSessionPort
+  /** Aborted when the lawyer pauses the run: the coordinator interrupts the
+   * native sessions it is waiting on, accepts no later reply and settles. */
+  pause?: AbortSignal
   /** Registers one finished file as a matter deliverable under `fileName`:
    * created when `priorSha256` is null, otherwise replacing a file that must
    * still hold exactly those bytes. Returns the matter-relative path, or
@@ -355,9 +361,11 @@ function message(error: unknown) {
 }
 
 
+export type ChecklistOpenFinding = { item_id: string; item: ChecklistItem; finding: ChecklistFinding }
+
 /** Validate authoritative effective IDs and recompute coverage; archived originals
  * remain evidence, not the current delivery verdict. */
-export function checklistOutputState(directory: string): { valid: boolean; open: boolean } {
+export function checklistOutputState(directory: string): { valid: boolean; open: boolean; openFindings: ChecklistOpenFinding[] } {
   try {
     const extraction = z.object({
       expected_sources: z.array(z.string()),
@@ -368,21 +376,25 @@ export function checklistOutputState(directory: string): { valid: boolean; open:
     }).parse(readLeanJson(directory, "checklist/checks.json"))
     const sameIDs = (expected: string[], actual: string[]) => new Set(expected).size === expected.length &&
       new Set(actual).size === actual.length && expected.length === actual.length && expected.every(id => actual.includes(id))
-    if (!sameIDs(extraction.expected_sources, extraction.sources.map(row => row.key))) return { valid: false, open: false }
+    if (!sameIDs(extraction.expected_sources, extraction.sources.map(row => row.key))) return { valid: false, open: false, openFindings: [] }
     const originals = extraction.sources.flatMap(source => source.items)
-    if (new Set(originals.map(row => row.id)).size !== originals.length) return { valid: false, open: false }
+    if (new Set(originals.map(row => row.id)).size !== originals.length) return { valid: false, open: false, openFindings: [] }
     const effective = readEffectiveChecklistItems(directory, originals)
     const expected = effective.items.map(row => row.id)
     const selected = checklistRefinementSelections(directory)
-    if (selected.some(row => !effective.parents.some(parent => parent.parent_id === row.parent_id && parent.scope === row.scope))) return { valid: false, open: false }
+    if (selected.some(row => !effective.parents.some(parent => parent.parent_id === row.parent_id && parent.scope === row.scope))) return { valid: false, open: false, openFindings: [] }
     if (!effective.complete || !sameIDs(expected, checks.expected_items) || new Set(checks.checks.map(row => row.item_id)).size !== checks.checks.length ||
-      checks.checks.some(row => row.finding && row.finding.item_id !== row.item_id)) return { valid: false, open: false }
+      checks.checks.some(row => row.finding && row.finding.item_id !== row.item_id)) return { valid: false, open: false, openFindings: [] }
     // Inactive original/refinement findings retain their consumed review allowance.
     // Only authoritative current IDs participate in delivery validity.
     const active = expected.map(id => checks.checks.find(row => row.item_id === id))
-    if (active.some((row, index) => !row || row.status !== "succeeded" || row.reinspection?.status === "failed" || !row.finding || checklistFindingRecovery(effective.items[index]!.item, row.finding) !== "none")) return { valid: false, open: false }
+    if (active.some((row, index) => !row || row.status !== "succeeded" || row.reinspection?.status === "failed" || !row.finding || checklistFindingRecovery(effective.items[index]!.item, row.finding) !== "none")) return { valid: false, open: false, openFindings: [] }
     const coverage = reconcileChecklistParentCoverage(directory, checks.checks, originals)
+    // Every current finding left open (or with open decisions), as recorded; a
+    // parent's coverage is open only through such a child finding.
+    const openFindings = active.flatMap((row, index) => row?.finding && (row.finding.status === "open" || row.finding.open_decisions?.length)
+      ? [{ item_id: row.item_id, item: effective.items[index]!.item, finding: row.finding }] : [])
     return { valid: coverage.every(row => row.status === "satisfied" || row.status === "open") && existsSync(leanFile(directory, "checklist/report.md")),
-      open: active.some(row => row?.finding?.status === "open" || row?.finding?.open_decisions?.length) || coverage.some(row => row.status === "open") }
-  } catch { return { valid: false, open: false } }
+      open: openFindings.length > 0 || coverage.some(row => row.status === "open"), openFindings }
+  } catch { return { valid: false, open: false, openFindings: [] } }
 }

@@ -8,7 +8,7 @@ import { checklistFindingRecovery, buildChecklistCheckerPrompt, buildChecklistPr
 import { buildChecklistDocumentContext } from "./checklist-document-context"
 import { runChecklistCheckJob, runChecklistExtractionJob, runChecklistRefinementJob, type ChecklistJobDeps } from "./checklist-job"
 import { checklistProducerInputs } from "./checklist-source-context"
-import { matterSourceBasis } from "./quotes"
+import { matterSourceBasis, snapshotRead, withSourceSnapshot } from "./quotes"
 import { readLeanJson, shortHash, writeLeanText } from "./state"
 
 const itemRecordSchema = z.object({ id: z.string(), item: checklistItemSchema, assignment: checklistComparisonAssignmentSchema.optional() })
@@ -105,12 +105,13 @@ export async function runChecklistCheckFlow(directory: string, deps: ChecklistJo
   const sourceBasis = matterSourceBasis(directory)
   const jobs = contexts.map(row => ({ ...row,
     // Review allowance follows actual evidence, never a prompt/model/session revision.
+    // Exact artifact properties are evidence: newly observable measures admit a fresh check.
     canonical_input_sha: shortHash(JSON.stringify([sourceBasis, row.record.id,
       current.map(job => job.input.passages.map(ref => ({ document: ref.document, quote: ref.quote }))),
       settled.map(ref => ({ document: ref.document, quote: ref.quote })), row.context.documents,
       row.context.artifacts.map(artifact => ({ id: artifact.value.id, document: artifact.value.document, aliases: artifact.value.aliases,
         artifact: artifact.value.artifact, sha256: artifact.value.sha256,
-        annotations: artifact.value.annotations?.map(annotation => ({ artifact: annotation.artifact, sha256: annotation.sha256 })) })),
+        annotations: artifact.value.annotations?.map(annotation => ({ artifact: annotation.artifact, sha256: annotation.sha256, properties: annotation.properties })) })),
       ...(row.context.workflow.length ? [row.context.workflow] : []),
       ...(row.record.assignment ? [row.record.assignment] : [])]), 40),
     input_sha: shortHash(JSON.stringify(["checklist-check-1", deps.model, sourceBasis, buildChecklistCheckerPrompt(row.context.input), row.context.artifacts, row.context.workflow]), 40) }))
@@ -228,7 +229,7 @@ export async function runChecklistRefinementFlow(directory: string, deps: Checkl
   const cached = store.parents.find(row => row.parent_id === original.id)
   if (selection.scope === "target_body") {
     const expected = checklistTargetAssignments(directory, original.item).assignments
-    if (JSON.stringify(selection.units.map(unit => ({ id: unit.id, assignment: unit.assignment }))) !== JSON.stringify(expected)) throw Error("Target comparison selection does not cover the actual current accepted paragraphs and process records.")
+    if (JSON.stringify(selection.units.map(unit => ({ id: unit.id, assignment: unit.assignment }))) !== JSON.stringify(expected)) throw Error("Target comparison selection does not cover the actual current accepted paragraphs, process records and document properties.")
     const units = expected.map(unit => ({ unit_id: unit.id, input_sha: shortHash(JSON.stringify([basis, unit]), 40), status: "succeeded" as const,
       children: [{ id: `${original.id}-comparison-${shortHash(unit.id, 12)}`, item: original.item, assignment: unit.assignment }], issues: [] }))
     const parent = { parent_id: original.id, parent: original.item, scope: selection.scope, source_basis: basis, expected_units: expected.map(unit => unit.id), units }
@@ -266,6 +267,11 @@ export async function runChecklistRefinementFlow(directory: string, deps: Checkl
 }
 
 export function readEffectiveChecklistItems(directory: string, originals = originalChecklistItems(directory)) {
+  // Every parent's basis rereads the same sources; one synchronous read serves all.
+  return withSourceSnapshot(() => effectiveChecklistItems(directory, originals))
+}
+
+function effectiveChecklistItems(directory: string, originals: ChecklistItemRecord[]) {
   const saved = readLeanJson(directory, REFINEMENTS)
   const parents = saved === undefined ? [] : checklistRefinementsSchema.parse(saved).parents
   const basis = checklistRefinementSourceBasis(directory)
@@ -280,7 +286,7 @@ export function readEffectiveChecklistItems(directory: string, originals = origi
     }
     if (parent.scope === "target_body") {
       const expected = checklistTargetAssignments(directory, original.item).assignments
-      if (JSON.stringify(parent.expected_units) !== JSON.stringify(expected.map(unit => unit.id)) || parent.units.length !== expected.length) issues.push(`${original.id}: current paragraph/process assignment coverage is incomplete.`)
+      if (JSON.stringify(parent.expected_units) !== JSON.stringify(expected.map(unit => unit.id)) || parent.units.length !== expected.length) issues.push(`${original.id}: current paragraph/process/document-property assignment coverage is incomplete.`)
       for (const assignment of expected) {
         const unit = parent.units.find(row => row.unit_id === assignment.id)
         if (!unit || unit.status !== "succeeded" || unit.children.length !== 1 || JSON.stringify(unit.children[0]!.item) !== JSON.stringify(original.item) || JSON.stringify(unit.children[0]!.assignment) !== JSON.stringify(assignment.assignment)) issues.push(`${original.id}/${assignment.id}: current comparison assignment is missing or changed.`)
@@ -315,6 +321,10 @@ export function reconcileChecklistParentCoverage(directory: string, checks: Chec
       if (checklistFindingRecovery(child.item, finding) === "inspect") issues.push(`${child.id}: action fulfillment or applicability requires inspection.`)
       if (child.item.required_action === "adopt" && child.item.target.treatment === "operative" && finding?.action_status === "fulfilled" && !finding.evidence.some(evidence => evidence.kind === "body" || evidence.kind === "artifact")) issues.push(`${child.id}: adoption lacks current operative or artifact evidence.`)
     }
+    // A range/process deferral is never a vacuous pass: the whole-target unit must decide it.
+    const deferred = parent.units.flatMap(unit => unit.children).filter(child => child.assignment?.kind !== "document_properties" && checks.find(row => row.item_id === child.id)?.finding?.deferred_to)
+    if (deferred.length && !parent.units.flatMap(unit => unit.children).some(child => child.assignment?.kind === "document_properties" && ["satisfied", "open", "unsatisfied"].includes(checks.find(row => row.item_id === child.id)?.finding?.status ?? "")))
+      issues.push(`${parent.parent_id}: ${deferred.map(child => child.id).join(", ")} deferred a document-wide property, but no document-properties finding decided it.`)
     const statuses = findings.map(row => row?.finding?.status)
     const unfulfilled = parent.units.flatMap(unit => unit.children).some(child => checklistFindingRecovery(child.item, checks.find(row => row.item_id === child.id)?.finding) === "repair")
     const status = issues.length || statuses.includes("indeterminate") ? "indeterminate" as const
@@ -325,7 +335,8 @@ export function reconcileChecklistParentCoverage(directory: string, checks: Chec
 }
 
 export function checklistRefinementSourceBasis(directory: string, target?: ChecklistItem) {
-  return shortHash(JSON.stringify([matterSourceBasis(directory), checklistProducerInputs(directory).map(job => job.input), ...(target ? [checklistTargetAssignments(directory, target)] : [])]), 40)
+  const sources = snapshotRead(`checklist-sources\0${directory}`, () => [matterSourceBasis(directory), checklistProducerInputs(directory).map(job => job.input)])
+  return shortHash(JSON.stringify([...sources, ...(target ? [checklistTargetAssignments(directory, target)] : [])]), 40)
 }
 
 /** Only exact-item product adjudications are relevant. Generated history never

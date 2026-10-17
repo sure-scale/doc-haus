@@ -9,7 +9,7 @@ import { exportDocxComments, readDocxCommentParagraphs, readDocxComments, readDo
 import { docxodus } from "../../lib/docxodus"
 import { renderMarkdownToDocx } from "../../lib/render"
 import { buildChecklistDocumentContext } from "./checklist-document-context"
-import { checklistCheckerInputSchema, type ChecklistItem } from "./checklist-contract"
+import { checklistCheckerInputSchema, checklistTextMeasuresMeaning, type ChecklistItem } from "./checklist-contract"
 import { writeLeanPlan } from "./plan"
 import { leanFile, writeLeanBytes } from "./state"
 
@@ -230,5 +230,35 @@ test("large multi-source matter exposes all exact source identities with bounded
     expect(result.input.retrieval).toContain("proposed action separately from unknown approval and applicability")
     expect(result.input.current_evidence.every(row => row.document === unchanged.target.document)).toBe(true)
     expect(JSON.stringify(unchanged)).toBe(before)
+  } finally { rmSync(directory, { recursive: true, force: true }) }
+})
+
+test("annotation properties give exact accepted-body text measures for clean and redline artifacts, never a page count", async () => {
+  const directory = matter()
+  try {
+    await save(directory, "d1/body-applied.docx", "# Record\n\nThe violet  receipt is pending.\n\n| Key | Value |\n| --- | --- |\n| Caf\u00e9 \u{1D538} | violet |")
+    const prior = (await renderMarkdownToDocx("Prior violet inventory receipt.")).bytes
+    const compared = (await renderMarkdownToDocx("Revised violet inventory receipt.")).bytes
+    writeLeanBytes(directory, "d1/redline.docx", await (await docxodus()).compareDocuments(prior, compared, { authorName: "Reviewer" }))
+    const context = buildChecklistDocumentContext(directory, { item_id: "length", item: item() })
+    const annotations = context.artifacts.find(row => row.value.id === "d1")!.value.annotations!
+    const properties = (suffix: string) => JSON.parse(annotations.find(row => row.artifact.endsWith(suffix))!.properties)
+    // Accepted paragraphs: "Record", "The violet  receipt is pending.", "Key", "Value", "Café 𝔸", "violet".
+    expect(context.artifacts.find(row => row.value.id === "d1")!.value.paragraphs).toHaveLength(6)
+    expect(properties("/body-applied.docx").accepted_body_text_measures).toEqual({ paragraphs: 6, words: 11, characters: 57 })
+    // The redline's own accepted text is the revised paragraph, not inserted plus deleted text.
+    expect(properties("/redline.docx").accepted_body_text_measures).toEqual({ paragraphs: 1, words: 4, characters: 33 })
+    expect(properties("/redline.docx").accepted_body_matches_current).toBe(false)
+    for (const row of annotations) expect(row.properties).not.toMatch(/page/i)
+    expect(context.input.retrieval).toContain("exact accepted-body text measures")
+    expect(context.input.retrieval).toContain("Text measures are exact text counts, not rendered pagination")
+    // Measures can disprove, never prove, a rendered-length directive.
+    expect(context.input.retrieval).toContain(checklistTextMeasuresMeaning)
+    expect(context.input.retrieval).toContain("Never report such a directive satisfied from text measures")
+    expect(context.input.retrieval).toContain("a strict page or layout limit that the measures cannot decide remains indeterminate")
+    expect(context.input.retrieval).not.toContain("may be judged from them")
+    expect(context.input.retrieval).toContain("rendered layout are NOT covered")
+    const again = buildChecklistDocumentContext(directory, { item_id: "length", item: item() })
+    expect(again.artifacts.find(row => row.value.id === "d1")!.value.annotations!.map(row => row.properties)).toEqual(annotations.map(row => row.properties))
   } finally { rmSync(directory, { recursive: true, force: true }) }
 })

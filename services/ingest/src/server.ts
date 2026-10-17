@@ -812,7 +812,10 @@ app.get("/matters/:id/redlines", async (c) => {
 
 // The redlined view: the clean .docx compared against itself with every pending
 // proposal applied, so the viewer renders native tracked changes green/red. Falls
-// back to the clean bytes when nothing is pending.
+// back to the clean bytes when nothing is pending. Stale proposals (the ones the
+// change list marks stale and refuses to accept) are left out: they cannot be
+// replayed against this revision, and they stay pending and visible as stale
+// until the reviewer rejects them. Nothing here changes a proposal's status.
 app.get("/matters/:id/documents/redlined", async (c) => {
   const dir = matterDir(c.req.param("id"))
   const name = registeredDocumentName(c.req.query("name") ?? "")
@@ -820,17 +823,20 @@ app.get("/matters/:id/documents/redlined", async (c) => {
   return withArtifactMutationLocksAsync(dir, [name], async () => {
     const target = readDocumentTarget(dir, name)
     if (!target || !existsSync(target.docPath)) return c.notFound()
+    const original = await Bun.file(target.docPath).bytes()
+    const current = createHash("sha256").update(original).digest("hex")
+    const protectedWord = Boolean(readWorkingDocx(dir, target.docPath))
     const db = existsSync(path.join(dir, ".dochaus", "legal.db")) ? openDb(dir) : undefined
     const rows = (() => {
       if (!db) return []
       try {
-        return listPendingRedlines(db, target.docPath)
+        return listPendingRedlines(db, target.docPath).filter((row) => !redlineStaleReason(row, current, protectedWord))
       } finally {
         db.close()
       }
     })()
     try {
-      const bytes = await buildRedlined(await Bun.file(target.docPath).bytes(), rows)
+      const bytes = await buildRedlined(original, rows)
       return new Response(new Uint8Array(bytes), {
         headers: { "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document" },
       })

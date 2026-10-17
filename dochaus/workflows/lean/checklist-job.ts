@@ -50,6 +50,7 @@ export function runChecklistCheckJob(directory: string, deps: ChecklistJobDeps, 
     ...currentEvidenceIssues(directory, value.evidence, input),
     ...(input.item.required_action && (!value.action_status || !value.open_decisions) ? ["Refined-item findings must include action_status and open_decisions, separately from overall status and source applicability."] : []),
     ...(value.item_id !== input.item_id ? [`item_id must equal the supplied ${JSON.stringify(input.item_id)}; do not replace the item identity.`] : []),
+    ...(value.deferred_to && input.assignment?.kind !== "target_body" && input.assignment?.kind !== "process_records" ? ["deferred_to is only for a range or process-records assignment that leaves a document-wide property to the document-properties assignment; omit it here."] : []),
   ], [...CHECKLIST_JOB_PERMISSIONS, ...checklistWorkflowEvidence(directory, input.item).map(record => ({ action: "read", resource: record.artifact, effect: "allow" as const }))])
 }
 

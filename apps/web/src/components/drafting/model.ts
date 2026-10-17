@@ -135,6 +135,14 @@ const KIND_LABELS: Record<string, string> = {
   question: "Questions for you",
   omission: "Points left out",
   template_removal: "Template text removed",
+  checklist_open: "Requirements left open by the checklist check",
+}
+
+/** Where a disclosed item is recorded for the lawyer. An open checklist finding
+ * is disclosed by the final check itself, not by the drafting notes. */
+export function openItemTag(item: LeanOpenItem) {
+  if (item.status !== "disclosed") return undefined
+  return item.kind === "checklist_open" ? "Left open" : "In the notes"
 }
 
 export type OpenItemGroup = { kind: string; label: string; items: LeanOpenItem[] }
@@ -271,15 +279,30 @@ export function leanSettledItems(status: LeanDraftingStatus) {
 
 export function leanSettledSummary(items: LeanOpenItem[]) {
   const count = (state: LeanOpenItem["status"]) => items.filter((item) => item.status === state).length
+  const checklist = items.filter((item) => item.status === "disclosed" && item.kind === "checklist_open").length
   const parts = [
     [count("open"), "still blocking"],
-    [count("disclosed"), "disclosed in the drafting notes"],
+    [count("disclosed") - checklist, "disclosed in the drafting notes"],
+    [checklist, "left open by the checklist check"],
     [count("resolved"), "resolved"],
   ] as const
   return `Final check settled ${items.length} open item${items.length === 1 ? "" : "s"}: ${parts
     .filter(([n]) => n > 0)
     .map(([n, label]) => `${n} ${label}`)
     .join(", ")}.`
+}
+
+const DELIVERY: Record<string, string> = {
+  execution_ready: "ready for signature",
+  review_draft: "a review draft, not yet ready for signature",
+}
+
+/** The final check's verdict for a delivered run. A draft changed after the
+ * check is not what it checked, so the verdict is not repeated for it. */
+export function finalCheckNote(status: LeanDraftingStatus) {
+  if (!status.gate?.delivery) return undefined
+  if (status.changed_after_check?.documents.length) return "Changed after final check: review the draft."
+  return `Final workflow check passed: ${DELIVERY[status.gate.delivery] ?? status.gate.delivery.replace(/_/g, " ")}.`
 }
 
 /** Admission and execution are distinct: only explicit runner progress claims application. */

@@ -1,6 +1,6 @@
 import { useState } from "react"
 import type { LeanOpenItem } from "../../api/ingest/lean"
-import { capGroups, groupOpenItems } from "./model"
+import { capGroups, groupOpenItems, openItemTag } from "./model"
 
 const CAP = 5
 
@@ -27,7 +27,7 @@ export default function OpenItems({ items, titles }: { items: LeanOpenItem[]; ti
             <ul>
               {group.items.map((item) => (
                 <li key={item.id}>
-                  {item.status === "disclosed" && <span className="open-item-tag">In the notes</span>}
+                  {openItemTag(item) && <span className="open-item-tag">{openItemTag(item)}</span>}
                   {item.ref?.document && titles.size > 1 && titles.get(item.ref.document) && (
                     <span className="open-item-doc">{titles.get(item.ref.document)}</span>
                   )}
