@@ -427,7 +427,7 @@ async function runChecklistStage(directory: string, state: LeanState, deps: Lean
     refinementOutputs.push(...refined.outputs)
   }
   const key = stageInputSha(directory, "checklist-check")
-  const result = await runChecklistCheckFlow(directory, { sessions: deps.sessions, model: state.model, parentID: state.owner_session_id }, { reinspectAdverse })
+  const result = await runChecklistCheckFlow(directory, { sessions: deps.sessions, model: state.model, parentID: state.owner_session_id }, { reinspectAdverse, pause: deps.pause })
   // An answer is queued while read-only jobs run; it cannot become accepted
   // evidence for the snapshot they inspected. Refresh before proceeding.
   const queued = drainLeanRequests(directory)
