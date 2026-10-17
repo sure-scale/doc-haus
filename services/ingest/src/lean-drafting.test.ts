@@ -438,6 +438,9 @@ test("amendment status rows preserve stage order, worker-only sessions and the u
 test("idle blocked checklist accepts a clarification while busy, changed-owner and completed late requests conflict", async () => {
   const directory = leanFixtureMatter("lean-held-clarification-")
   directories.push(directory)
+  // An undetermined finding is reinspected once and then disclosed; only a
+  // failed reinspection holds the checklist, so the second check fails.
+  const inspected = new Set<string>()
   const inspect = scriptedModel({ ...happyPath,
     "lean-checklist-extract": text => {
       const input = JSON.parse(text.split("SOURCE_INPUT:\n\n")[1]!)
@@ -445,10 +448,13 @@ test("idle blocked checklist accepts a clarification while busy, changed-owner a
     },
     "lean-checklist-check": text => {
       const input = JSON.parse(text.split("CHECK_INPUT:\n\n")[1]!)
+      if (inspected.has(input.item_id)) return "not a finding"
+      inspected.add(input.item_id)
       return JSON.stringify({ item_id: input.item_id, status: "indeterminate", reason: "Inspect applicability.", evidence: input.current_evidence, source_refs: input.item.source_refs, inspection_scope: "Current target.", limitation: "Applicability needs inspection." })
     },
   })
   expect((await runLean(directory, { sessions: inspect.port })).status).toBe("blocked")
+  expect(readLeanText(directory, "checklist/checks.json")).toContain('"original_finding"')
   const ownerSessionID = readLeanState(directory)!.owner_session_id
   const model = heldModel()
   const routes = leanDraftingRoutes({ directory: () => directory, deps: () => model.deps })
