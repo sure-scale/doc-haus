@@ -9,10 +9,10 @@ import { normalize } from "../../lib/quote-verify"
 import { finalBodyParagraphs, type ApplyResult } from "./checks"
 import { FIRST_DOCUMENT, readLeanPlan, type DocID } from "./plan"
 import { readPackageReview } from "./package-review"
-import { quoteFound, openItem } from "./quotes"
+import { excerpt, quoteFound, openItem } from "./quotes"
 import { LEAN_MAX_SUBSTANTIVE_REPAIRS, readRepairRound } from "./repairs"
 import { withheldChecklistRepair } from "./requests"
-import { isReviewStage, currentOpenItems, readLeanText, readLeanJson, readLeanState, readQuestions, type LeanState, type OpenItem, type Question } from "./state"
+import { isReviewStage, currentOpenItems, readLeanText, readLeanJson, readLeanState, readQuestions, shortHash, type LeanState, type OpenItem, type Question } from "./state"
 
 // Final legal gate: the only place an open item blocks delivery. It covers every
 // planned document; each item is settled against the final body of the
@@ -41,7 +41,10 @@ import { isReviewStage, currentOpenItems, readLeanText, readLeanJson, readLeanSt
 // - a completed checklist finding that remains adverse (and a refined parent
 //   whose coverage is adverse) is never a pass: it is disclosed, with the class
 //   its verified fields establish, ahead of every other item, and ahead of the
-//   drafting notes in the notes delivered with the draft.
+//   drafting notes in the notes delivered with the draft;
+// - source conflicts among those findings are put to the lawyer as one
+//   question, which the gate asks after the walk: it pauses nothing, and each
+//   conflict stays disclosed until the answer re-runs the stages it reaches.
 // Disclosed items make the output a review draft, one with checklist findings
 // when any adverse finding is disclosed; execution-ready output has no
 // disclosed items and no unanswered questions. Incomplete, failed or stale
@@ -57,6 +60,9 @@ export type GateResult = {
   disclosed: OpenItem[]
   items: OpenItem[]
   checked_at: string
+  /** The gate's one question on the disclosed source conflicts; the runner
+   * records it with the run's questions, not in gate.json. */
+  question?: Question
 }
 
 type FinalBody = { paragraphs: Map<string, string>; body: string }
@@ -97,8 +103,9 @@ export function finalGate(directory: string): GateResult {
   const checklistState = leanState?.stages["checklist-check"]
   const checked = checklistState && (checklistState.status !== "pending" || readLeanJson(directory, "checklist/extraction.json") !== undefined)
     ? checklistOutputState(directory) : undefined
+  const question = checked?.valid ? checklistConflictQuestion(checked.unresolved) : undefined
   // Adverse checklist findings lead: the lawyer's list of items may be capped.
-  const unresolved = checked?.valid ? [...checked.unresolved.map(row => checklistUnresolvedItem(directory, leanState, row)),
+  const unresolved = checked?.valid ? [...checked.unresolved.map(row => checklistUnresolvedItem(directory, leanState, row, question?.id)),
     ...checked.unresolvedParents.map(row => checklistUnresolvedParentItem(directory, row))] : []
   const items = [...unresolved, ...[...currentOpenItems(directory), ...deferredFindingItems(directory)].map(item => settle(item, context)), ...semantic, ...projected]
   if (checked && !checked.valid) items.push(openItem("checklist-check", "omission", "Effective checklist findings or source-unit coverage are incomplete or stale, or a check or its reinspection failed; see checklist/report.md.", {}))
@@ -110,7 +117,8 @@ export function finalGate(directory: string): GateResult {
   if (checklistOpen) items.push(...checked.openFindings.map(row => checklistOpenItem(directory, row)))
   const blocking = items.filter(item => item.status === "open")
   const disclosed = items.filter(item => item.status === "disclosed")
-  const unanswered = [...context.questions.values()].some(question => question.status !== "answered")
+  // The gate's own question asks about findings already disclosed here.
+  const unanswered = [...context.questions.values()].some(row => row.status !== "answered" && row.stage !== "gate")
   return {
     status: blocking.length ? "blocked" : "pass",
     delivery: blocking.length ? null : unresolved.length ? "review_draft_with_findings" : disclosed.length || unanswered || checklistOpen ? "review_draft" : "execution_ready",
@@ -118,6 +126,7 @@ export function finalGate(directory: string): GateResult {
     disclosed,
     items,
     checked_at: new Date().toISOString(),
+    ...(question ? { question } : {}),
   }
 }
 
@@ -198,14 +207,40 @@ function checklistRoundItems(directory: string) {
 const UNRESOLVED = "not established as satisfied; disclosed with the review draft"
 
 /** A completed finding that remains adverse, disclosed with its class and its
- * own recorded reason and limitation. It is never a pass and never blocks. */
-function checklistUnresolvedItem(directory: string, state: LeanState | undefined, row: ChecklistUnresolvedFinding): OpenItem {
+ * own recorded reason and limitation. It is never a pass and never blocks. A
+ * source conflict refers to the gate's question on it. */
+function checklistUnresolvedItem(directory: string, state: LeanState | undefined, row: ChecklistUnresolvedFinding, questionID?: string): OpenItem {
   const { item_id, item, finding, class: kind, conflicting_item_ids } = row
   const document = checklistDocument(directory, item)
   const detail = [`Checklist requirement unresolved (${checklistFindingLabel(directory, state, row)}): ${sentence(item.check)}`, ...findingText(finding),
     conflicting_item_ids?.length ? `Conflicting checklist items: ${conflicting_item_ids.join(", ")}.` : ""].filter(Boolean).join(" ")
-  return { ...openItem("checklist-check", "checklist_unresolved", detail, { checklist_item: item_id, checklist_class: kind, ...(document ? { document } : {}) }),
+  return { ...openItem("checklist-check", "checklist_unresolved", detail, { checklist_item: item_id, checklist_class: kind, ...(document ? { document } : {}),
+    ...(kind === "source_conflict" && questionID ? { question_id: questionID } : {}) }),
     status: "disclosed", resolution: UNRESOLVED }
+}
+
+/** One question for every source conflict among the adverse findings, so the
+ * lawyer settles them together: each pair by its item ids, then each item's
+ * requirement and sources. Its id is the pairs alone, so a gate re-run asks the
+ * same question and an answered one is never asked again. */
+function checklistConflictQuestion(rows: ChecklistUnresolvedFinding[]): Question | undefined {
+  const items = new Map(rows.flatMap(row => [{ id: row.item_id, item: row.item }, ...(row.conflicting_items ?? [])]).map(row => [row.id, row.item]))
+  const pairs = [...new Map(rows.flatMap(row => row.class === "source_conflict" ? (row.conflicting_item_ids ?? []).map(other => [row.item_id, other].toSorted()) : [])
+    .map(pair => [JSON.stringify(pair), pair])).values()].toSorted((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)))
+  if (!pairs.length) return undefined
+  const requirement = (id: string) => {
+    const item = items.get(id)
+    return item ? `${id}: ${sentence(item.check)} Sources: ${item.source_refs.map(ref => `${ref.document} "${excerpt(ref.quote, 160)}"`).join(", ")}` : id
+  }
+  return {
+    id: `checklist-conflict-${shortHash(JSON.stringify(pairs))}`,
+    stage: "gate",
+    question: [`Checklist requirements taken from the sources conflict: ${pairs.map(([a, b]) => `${a} with ${b}`).join("; ")}.`,
+      ...[...new Set(pairs.flat())].map(requirement),
+      pairs.length > 1 ? "For each pair, which requirement governs, or how should they be reconciled?" : "Which requirement governs, or how should they be reconciled?"].join(" "),
+    context: "Until you answer, each conflicting requirement is disclosed with the review draft as not satisfied; delivery is not held for it. Your answer re-runs the stages it affects, including the checklist check.",
+    status: "open",
+  }
 }
 
 /** A refined parent whose reconciled coverage is adverse, with the coverage issues. */

@@ -177,7 +177,8 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
     const stage = stepStage(step)
     const document = stepDocument(step) ?? undefined
     const changes = drainLeanRequests(directory)
-    const unanswered = readQuestions(directory).filter(question => question.status === "open")
+    // The gate asks its question after the walk; it holds back no step.
+    const unanswered = readQuestions(directory).filter(question => question.status === "open" && question.stage !== "gate")
     if (unanswered.length)
       return { state: writeLeanState(directory, { ...state, status: "blocked", stop_reason: `Waiting for your answers: ${unanswered.map(question => question.id).join(", ")}` }) }
     if ((changes.answered || changes.updated) &&
@@ -294,7 +295,8 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
     if (result.questions)
       replaceStageQuestions(directory, stage, document ?? null, result.questions.map(question => document ? { ...question, document } : question))
     snapshotStage(directory, state.revision, step, result.outputs)
-    state = updateLeanStage(directory, state, step, { status: result.status, input_sha: step === "checklist-check" ? stageInputSha(directory, step) : inputSha, outputs: result.outputs, finished_at: now() })
+    // These steps write some of their own inputs (the gate its question); their key is taken again.
+    state = updateLeanStage(directory, state, step, { status: result.status, input_sha: step === "checklist-check" || step === "gate" ? stageInputSha(directory, step) : inputSha, outputs: result.outputs, finished_at: now() })
     if (stage === "change-review" && document && readChangeReview(directory, document)?.status === "changes-required") {
       const review = readChangeReview(directory, document)!
       if ((readRepairRound(directory)?.substantive_attempts ?? 0) >= LEAN_MAX_SUBSTANTIVE_REPAIRS)
@@ -576,8 +578,9 @@ function followPlan(directory: string, state: LeanState) {
 }
 
 async function runGate(directory: string): Promise<StageRun> {
-  // The gate's checks are synchronous: they share one source read.
-  const { gate, notes } = withSourceSnapshot(() => {
+  // The gate's checks are synchronous: they share one source read. Its
+  // question replaces the one it asked before, or withdraws it.
+  const { gate: { question, ...gate }, notes } = withSourceSnapshot(() => {
     const gate = finalGate(directory)
     return { gate, notes: deliveredNotes(directory, gate) }
   })
@@ -592,11 +595,13 @@ async function runGate(directory: string): Promise<StageRun> {
     writeLeanText(directory, DELIVERED_NOTES.markdown, notes)
     writeLeanBytes(directory, DELIVERED_NOTES.docx, (await renderMarkdownToDocx(notes, existsSync(previous) ? readFileSync(previous) : undefined)).bytes)
   } else for (const name of [DELIVERED_NOTES.markdown, DELIVERED_NOTES.docx]) rmSync(leanFile(directory, name), { force: true })
-  if (gate.status === "pass") return { status: "done", outputs: stepOutputs("gate"), openItems: [] }
+  const questions = question ? [question] : []
+  if (gate.status === "pass") return { status: "done", outputs: stepOutputs("gate"), openItems: [], questions }
   return {
     status: "blocked",
     outputs: stepOutputs("gate"),
     openItems: [],
+    questions,
     reason: `gate: blocked by open items ${gate.blocking.map(item => item.id).join(", ")}`,
   }
 }
