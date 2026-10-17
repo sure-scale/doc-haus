@@ -9,11 +9,13 @@ import {
   acceptAllRedlines,
   rejectAllRedlines,
   prepareDocumentChanges,
+  type AcceptResult,
   type Redline,
 } from "../api/ingest/redlines"
 import { convertPdfToDocx, documentContentUrl } from "../api/ingest/documents"
 import { ModalClose } from "./ModalHeader"
 import { focusCitationPassage, type CitationFocus } from "./citation-target"
+import { useToast } from "./Toast"
 
 // In-browser redline viewer. Fetches the matter's document with every pending
 // redline applied as native tracked changes and converts it to HTML with the WASM
@@ -68,6 +70,7 @@ export default function DocumentViewer({
   const documentRef = useRef<HTMLDivElement>(null)
   const [passage, setPassage] = useState<"matched" | "ambiguous" | "unavailable">()
   const moreRef = useRef<HTMLDetailsElement>(null)
+  const toast = useToast()
   // Keep React from resetting the HTML when passage status or viewer controls
   // re-render. The citation effect owns only its temporary text highlights.
   const documentPreview = useMemo(() => html && <div className="docx-render" ref={documentRef} dangerouslySetInnerHTML={{ __html: html }} />, [html])
@@ -130,11 +133,12 @@ export default function DocumentViewer({
     return () => document.removeEventListener("pointerdown", dismiss)
   }, [])
 
-  async function resolve(action: () => Promise<void>, key: number | "all") {
+  async function resolve(action: () => Promise<AcceptResult | void>, key: number | "all") {
     setBusy(key)
     setError(undefined)
     try {
-      await action()
+      const notice = notesNotUpdatedNotice(await action(), key === "all")
+      if (notice) toast("warning", notice)
       onChanged?.()
       setReload((n) => n + 1)
     } catch (cause) {
@@ -402,6 +406,21 @@ export function staleExportNotice(redlines: Redline[]) {
   const one = stale === 1
   return `${one ? "1 stale proposal is" : `${stale} stale proposals are`} left out of the tracked changes and the redline download. ` +
     `Reject ${one ? "it" : "them"} to clear ${one ? "it" : "them"}; prepare a fresh change list if the change is still needed.`
+}
+
+// An accept into a drafting run's body also records the change in the run's
+// drafting notes. When that could not happen the accept still stands; say so.
+const notesSkipReasons: Record<string, string> = {
+  notes_not_delivered: "the run has no delivered drafting notes",
+  notes_missing: "the notes file is no longer in the matter",
+  notes_not_deliverable: "the notes file is no longer a delivered document",
+  pending_notes_proposals: "the notes have pending proposed changes",
+  write_failed: "the notes file could not be saved",
+}
+export function notesNotUpdatedNotice(result: AcceptResult | void, all = false) {
+  if (result?.notes_updated !== false) return
+  const reason = result.notes_skip_reason && notesSkipReasons[result.notes_skip_reason]
+  return `${all ? "Changes" : "Change"} accepted. The drafting notes were not updated${reason ? `: ${reason}` : ""}.`
 }
 
 // File glyph, name and a quiet status line. The pending count stays visible on

@@ -122,6 +122,11 @@ jobs:
         run: |
           bun test src/preferences.test.ts --timeout 30000
           bun test src/engine-config.test.ts src/setup.test.ts src/research-connections.test.ts src/auth-reuse.test.ts src/identifiers.test.ts src/source-artifacts.test.ts --timeout 30000
+      - name: Test Word proposals through a LibreOffice save
+        working-directory: services/ingest
+        # Committed LibreOffice-saved fixtures and a scripted engine; no model.
+        # The live soffice case skips when LibreOffice is not installed.
+        run: bun test src/document-amendment-libreoffice.test.ts --timeout 30000
       - name: Test native discovery and selected sign-in reuse
         working-directory: services/engine
         run: bun test src/credential-reuse.test.ts test/provider-catalog.test.ts --timeout 30000

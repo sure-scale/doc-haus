@@ -40,3 +40,24 @@ Required runtime dependencies are the package's LiteParse/unpdf stack and the
 local `pdftoppm` and `tesseract` executables. No model provider or paid request is
 used. Regeneration tools are development-only and are not required to run tests
 against the committed PDFs.
+
+# Synthetic Word round-trip fixtures
+
+These three DOCX files were authored for doc.haus on 17 October 2026 from
+invented supply-terms wording. They contain no client documents, actual
+parties or copied agreement text. They exercise
+`src/document-amendment-libreoffice.test.ts`.
+
+| Fixture | Regression purpose |
+| --- | --- |
+| `synthetic-word-accepted.docx` | Working file written by doc.haus after an accepted change: heading, numbered list, table, open item and a header reference, with a `_dh_` paragraph pointer on every body paragraph. |
+| `synthetic-word-libreoffice-saved.docx` | The accepted file opened and saved by LibreOffice 26.2.4.2 (`soffice --headless --convert-to "docx:MS Word 2007 XML"`) with no edit. |
+| `synthetic-word-libreoffice-edited.docx` | The same LibreOffice save of a copy whose retention paragraph was first changed in its XML to "Records must be retained securely for three months." |
+
+The accepted file is kept byte for byte as doc.haus wrote it. Its metadata names
+only doc.haus. The two LibreOffice saves were checked for user names, hostnames,
+paths and timestamps. Their document properties name only doc.haus and the
+LibreOffice version. They were re-zipped with unchanged part contents and fixed
+1980-01-01 entry times, so no save time is embedded. The live test in the same
+file repeats the save with the installed `soffice` and is skipped when it is
+absent. No model provider or paid request is used.
