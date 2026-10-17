@@ -3,7 +3,7 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { strFromU8, unzipSync } from "fflate"
 import { renderMarkdownToDocx } from "../../lib/render"
 import { runLean, stageInputSha } from "./runner"
-import { stageOutputValid } from "./stages"
+import { stageOutputValid, type StageSessionPort } from "./stages"
 import { exportDocxComments, readDocxCommentParagraphs } from "../../lib/docx-comments"
 import { leanFile, readLeanJson, readLeanState, readOpenItems, updateLeanStage, writeLeanBytes, writeLeanText } from "./state"
 import { finalGate } from "./gate"
@@ -194,6 +194,51 @@ test("only explicit Continue reinspects blocked findings once without redrafting
   const exhausted = model(directory, "satisfied")
   expect((await runLean(directory, { sessions: exhausted.port })).status).toBe("blocked")
   expect(exhausted.count(CHECKLIST_JOB_AGENTS.check)).toBe(0)
+}, 120000)
+
+test("a pause during the one reinspection spends nothing: Continue runs it again and uses its finding; the late reply is never recorded", async () => {
+  const directory = matter()
+  expect((await runLean(directory, { sessions: model(directory, "indeterminate").port })).status).toBe("blocked")
+  const checks = () => readLeanJson(directory, "checklist/checks.json") as { checks: { finding: unknown; reinspection?: { status: string; sessionID?: string } }[] }
+  const original = checks().checks[0]!.finding
+  enqueueLeanRequest(directory, { kind: "continue" })
+  const late = model(directory, "satisfied")
+  const asked = Promise.withResolvers<string>(), hold = Promise.withResolvers<void>()
+  const interrupts: string[] = []
+  const sessions: StageSessionPort = {
+    createSession: input => late.port.createSession(input),
+    async prompt(input) {
+      if (input.agent === CHECKLIST_JOB_AGENTS.check) {
+        asked.resolve(input.sessionID)
+        await hold.promise
+      }
+      return late.port.prompt(input)
+    },
+    interrupt: async input => { interrupts.push(input.sessionID) },
+  }
+  const pause = new AbortController()
+  const working = runLean(directory, { sessions, pause: pause.signal })
+  const session = await asked.promise
+  pause.abort()
+  const paused = await working
+  expect(paused).toMatchObject({ status: "blocked", stop_reason: "Paused at your request.", stages: { "checklist-check": { status: "pending" } } })
+  expect(paused.paused_at).toBeDefined()
+  expect(interrupts).toEqual([session])
+  const admitted = checks()
+  expect(admitted.checks[0]).toMatchObject({ finding: original, reinspection: { status: "failed" } })
+  expect(admitted.checks[0]!.reinspection!.sessionID).toBeUndefined()
+  // The held reply arrives after the pause and is never recorded.
+  hold.resolve()
+  await Bun.sleep(20)
+  expect(late.count(CHECKLIST_JOB_AGENTS.check)).toBe(1)
+  expect(checks()).toEqual(admitted)
+  enqueueLeanRequest(directory, { kind: "continue" })
+  const resumed = model(directory, "satisfied")
+  expect((await runLean(directory, { sessions: resumed.port })).status).toBe("completed")
+  expect(resumed.count(CHECKLIST_JOB_AGENTS.check)).toBe(1)
+  expect(resumed.count(CHECKLIST_JOB_AGENTS.extract)).toBe(0)
+  expect(resumed.count(AGENT.draft)).toBe(0)
+  expect(checks()).toMatchObject({ checks: [{ finding: { status: "satisfied" }, reinspection: { original_finding: { status: "indeterminate" }, status: "succeeded" } }] })
 }, 120000)
 
 test("a focused model review may resolve an adverse assessment without changing its item or Word bytes", async () => {

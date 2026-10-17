@@ -5,13 +5,14 @@ import {
   pauseLeanDraftingRun,
   resumeLeanDraftingRun,
   refineLeanChecklist,
+  stopLeanDraftingRun,
   updateLeanDraftingRun,
   type LeanDraftingStatus,
 } from "../../api/ingest/lean"
 import { runState } from "./model"
 
-// Actions queue work for the run's coordinator (or pause it) and show its
-// returned status. A synchronous guard prevents a second submission before
+// Actions queue work for the run's coordinator (or pause or stop it) and show
+// its returned status. A synchronous guard prevents a second submission before
 // React renders busy.
 export default function useRunActions(
   matterId: string | undefined,
@@ -20,22 +21,22 @@ export default function useRunActions(
 ) {
   const submitting = useRef(false)
   const [busy, setBusy] = useState(false)
-  const [pausing, setPausing] = useState(false)
+  // Pause and Stop settle the run; neither reads as resuming.
+  const [halting, setHalting] = useState<"pause" | "stop">()
   const [error, setError] = useState("")
   // The run's updated_at when a request was accepted: until the run moves on
   // from it, a stopped run reads as resuming rather than paused.
   const [resumedFrom, setResumedFrom] = useState<string>()
 
-  async function queue(work: () => Promise<{ status: LeanDraftingStatus }>, pause = false) {
+  async function queue(work: () => Promise<{ status: LeanDraftingStatus }>, halt?: "pause" | "stop") {
     if (submitting.current) return false
     submitting.current = true
     setBusy(true)
-    setPausing(pause)
+    setHalting(halt)
     setError("")
     try {
       const next = (await work()).status
-      // A pause never reads as resuming.
-      setResumedFrom(pause ? undefined : next.updated_at)
+      setResumedFrom(halt ? undefined : next.updated_at)
       onStatus(next)
       return true
     } catch (e) {
@@ -44,7 +45,7 @@ export default function useRunActions(
     } finally {
       submitting.current = false
       setBusy(false)
-      setPausing(false)
+      setHalting(undefined)
     }
   }
 
@@ -52,9 +53,10 @@ export default function useRunActions(
   return {
     busy,
     error,
-    pausing,
+    pausing: halting === "pause",
+    stopping: halting === "stop",
     resuming:
-      (busy && !pausing) || (status !== undefined && resumedFrom === status.updated_at && state !== "running" && state !== "done" && state !== "input"),
+      (busy && !halting) || (status !== undefined && resumedFrom === status.updated_at && state !== "running" && state !== "done" && state !== "input"),
     update: (text: string) =>
       matterId && status
         ? queue(() => updateLeanDraftingRun(matterId, status.owner_session_id, text))
@@ -66,7 +68,11 @@ export default function useRunActions(
     resume: () => (matterId ? queue(() => resumeLeanDraftingRun(matterId)) : Promise.resolve(false)),
     pause: () =>
       matterId && status
-        ? queue(() => pauseLeanDraftingRun(matterId, status.owner_session_id), true)
+        ? queue(() => pauseLeanDraftingRun(matterId, status.owner_session_id), "pause")
+        : Promise.resolve(false),
+    stop: () =>
+      matterId && status
+        ? queue(() => stopLeanDraftingRun(matterId, status.owner_session_id), "stop")
         : Promise.resolve(false),
     answer: (questionID: string, answer: string) =>
       matterId ? queue(() => answerLeanQuestion(matterId, questionID, answer)) : Promise.resolve(false),

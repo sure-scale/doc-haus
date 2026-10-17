@@ -237,6 +237,38 @@ test("failed reinspection preserves original adverse finding and does not retry 
   expect(deps.counts.created).toBe(calls)
 })
 
+test("a reinspection a pause interrupted spends nothing and runs again; its recorded outcome is never repeated", async () => {
+  const directory = matter()
+  const options = { finding: "indeterminate" as "indeterminate" | "unsatisfied" }
+  const deps = port(directory, options)
+  await runChecklistExtractionFlow(directory, deps)
+  const initial = await runChecklistCheckFlow(directory, deps)
+  const pause = new AbortController()
+  const asked = Promise.withResolvers<void>()
+  // As the runner's guard does, a pause rejects the pending prompt at once.
+  const held = { ...deps, sessions: { ...deps.sessions, prompt: () => {
+    asked.resolve()
+    return new Promise<string>((_, reject) => pause.signal.addEventListener("abort", () => reject(new Error("Paused at your request.")), { once: true }))
+  } } }
+  const interrupted = runChecklistCheckFlow(directory, held, { reinspectAdverse: true, pause: pause.signal })
+  await asked.promise
+  pause.abort()
+  const paused = (await interrupted).checks[0]!
+  expect(paused.finding).toEqual(initial.checks[0]!.finding)
+  expect(paused.reinspection).toMatchObject({ status: "failed", original_finding: initial.checks[0]!.finding })
+  expect(paused.reinspection?.sessionID).toBeUndefined()
+  // The Continue after a pause does not request reinspection; the unspent admission resumes.
+  options.finding = "unsatisfied"
+  const before = deps.counts.created
+  const resumed = await runChecklistCheckFlow(directory, deps)
+  expect(deps.counts.created).toBe(before + 1)
+  expect(resumed.checks[0]!.finding?.status).toBe("unsatisfied")
+  expect(resumed.checks[0]!.reinspection).toMatchObject({ status: "succeeded", original_finding: initial.checks[0]!.finding })
+  await runChecklistCheckFlow(directory, deps, { reinspectAdverse: true })
+  await runChecklistCheckFlow(directory, deps)
+  expect(deps.counts.created).toBe(before + 1)
+})
+
 test("refining a selected parent preserves original finding and exact extraction while checking children", async () => {
   const { runChecklistRefinementFlow, reconcileChecklistParentCoverage } = await import("./checklist-flow")
   const directory = matter(), base = port(directory)

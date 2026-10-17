@@ -1,3 +1,12 @@
+/** The reason a run the lawyer stopped records. A stopped run is finished: it
+ * settles as failed, takes no further Continue, answer or update, and the next
+ * drafting request archives it and starts a new run. */
+export const DRAFTING_STOPPED_REASON = "Stopped at your request."
+
+export function draftingRunStopped(run: { status: string; stop_reason?: string | null }) {
+  return run.status === "failed" && run.stop_reason === DRAFTING_STOPPED_REASON
+}
+
 /** Shared browser/API admission policy. A held checklist may be clarified for
  * inspection, but its existing documents cannot receive a late general edit. */
 export function draftingUpdateAdmission(run: {

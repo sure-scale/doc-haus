@@ -75,46 +75,52 @@ export async function runChecklistExtractionFlow(directory: string, deps: Checkl
   return { status: sources.length === jobs.length && sources.every(row => row.status === "succeeded") ? "succeeded" as const : "incomplete" as const, sources, items: sources.flatMap(row => row.items), outputs: [EXTRACTION] }
 }
 
+const UNFINISHED_REINSPECTION = "Reinspection did not complete; no result overrides the original finding."
+
 /** Each unchanged item gets its own native check. Full current lookup records
  * are persisted before any sessions start, while only target hints go inline. */
-export async function runChecklistCheckFlow(directory: string, deps: ChecklistJobDeps, options: { reinspectAdverse?: boolean } = {}) {
-  const current = extractionInputs(directory, deps)
-  const saved = readLeanJson(directory, EXTRACTION)
-  if (saved === undefined) throw new Error("Checklist extraction has no saved output; run source extraction before checking.")
-  const extraction = extractionSchema.parse(saved)
-  const valid = current.map(job => extraction.sources.find(row => row.key === job.key && row.input_sha === job.input_sha))
-  const extractionComplete = valid.every(row => row?.status === "succeeded")
-  const originals = valid.flatMap(row => row?.status === "succeeded" ? row.items : [])
-  const effective = readEffectiveChecklistItems(directory, originals)
-  const items = effective.items
-  const instructions = current.find(job => job.key === "request")!.input
-  const clarifications = leanClarifications(directory)
-  const settled = [...instructions.passages, ...instructions.instructions, ...clarifications]
-  const contexts = items.map(record => {
-    const context = buildChecklistDocumentContext(directory, { item_id: record.id, item: record.item, settled_instructions: settled,
-    ...(clarifications.length ? { retrieval: "Later human clarification is supplied with its original queue locator. It clarifies source relationships or applicability for inspection only; it does not change the item, current Word evidence, or adopt a proposal as approved. A statement that text is present is not proof of the artifact: inspect it. If the clarification calls for a material document change, retain the adverse finding and describe the supported correction needed; this inspection cannot implement it." } : {}) })
-    return { record, context: record.assignment ? assignChecklistTargetContext(context, record.assignment) : context }
+export async function runChecklistCheckFlow(directory: string, deps: ChecklistJobDeps, options: { reinspectAdverse?: boolean; pause?: AbortSignal } = {}) {
+  // Preparing the checks is synchronous: every key it takes shares one source read.
+  const { extractionComplete, originals, effective, clarifications, artifacts, missing, jobs } = withSourceSnapshot(() => {
+    const current = extractionInputs(directory, deps)
+    const saved = readLeanJson(directory, EXTRACTION)
+    if (saved === undefined) throw new Error("Checklist extraction has no saved output; run source extraction before checking.")
+    const extraction = extractionSchema.parse(saved)
+    const valid = current.map(job => extraction.sources.find(row => row.key === job.key && row.input_sha === job.input_sha))
+    const extractionComplete = valid.every(row => row?.status === "succeeded")
+    const originals = valid.flatMap(row => row?.status === "succeeded" ? row.items : [])
+    const effective = readEffectiveChecklistItems(directory, originals)
+    const items = effective.items
+    const instructions = current.find(job => job.key === "request")!.input
+    const clarifications = leanClarifications(directory)
+    const settled = [...instructions.passages, ...instructions.instructions, ...clarifications]
+    const contexts = items.map(record => {
+      const context = buildChecklistDocumentContext(directory, { item_id: record.id, item: record.item, settled_instructions: settled,
+      ...(clarifications.length ? { retrieval: "Later human clarification is supplied with its original queue locator. It clarifies source relationships or applicability for inspection only; it does not change the item, current Word evidence, or adopt a proposal as approved. A statement that text is present is not proof of the artifact: inspect it. If the clarification calls for a material document change, retain the adverse finding and describe the supported correction needed; this inspection cannot implement it." } : {}) })
+      return { record, context: record.assignment ? assignChecklistTargetContext(context, record.assignment) : context }
+    })
+    const artifacts = new Map(contexts.flatMap(row => row.context.artifacts.map(artifact => [artifact.path, artifact] as const)))
+    for (const artifact of artifacts.values()) {
+      if (!artifact.path.startsWith(".dochaus/lean/")) throw new Error("Checklist lookup records must be lean output artifacts.")
+      writeLeanText(directory, artifact.path.slice(".dochaus/lean/".length), `${JSON.stringify(artifact.value, null, 2)}\n`)
+    }
+    const missing = new Map(contexts.flatMap(row => row.context.documents.filter(document => document.status === "unavailable").map(document => [document.path, document] as const)))
+    for (const [file, document] of missing) writeLeanText(directory, file.slice(".dochaus/lean/".length), `${JSON.stringify({ id: document.id, document: document.document, status: "unavailable", paragraphs: [] }, null, 2)}\n`)
+    const sourceBasis = matterSourceBasis(directory)
+    const jobs = contexts.map(row => ({ ...row,
+      // Review allowance follows actual evidence, never a prompt/model/session revision.
+      // Exact artifact properties are evidence: newly observable measures admit a fresh check.
+      canonical_input_sha: shortHash(JSON.stringify([sourceBasis, row.record.id,
+        current.map(job => job.input.passages.map(ref => ({ document: ref.document, quote: ref.quote }))),
+        settled.map(ref => ({ document: ref.document, quote: ref.quote })), row.context.documents,
+        row.context.artifacts.map(artifact => ({ id: artifact.value.id, document: artifact.value.document, aliases: artifact.value.aliases,
+          artifact: artifact.value.artifact, sha256: artifact.value.sha256,
+          annotations: artifact.value.annotations?.map(annotation => ({ artifact: annotation.artifact, sha256: annotation.sha256, properties: annotation.properties })) })),
+        ...(row.context.workflow.length ? [row.context.workflow] : []),
+        ...(row.record.assignment ? [row.record.assignment] : [])]), 40),
+      input_sha: shortHash(JSON.stringify(["checklist-check-1", deps.model, sourceBasis, buildChecklistCheckerPrompt(row.context.input), row.context.artifacts, row.context.workflow]), 40) }))
+    return { extractionComplete, originals, effective, clarifications, artifacts, missing, jobs }
   })
-  const artifacts = new Map(contexts.flatMap(row => row.context.artifacts.map(artifact => [artifact.path, artifact] as const)))
-  for (const artifact of artifacts.values()) {
-    if (!artifact.path.startsWith(".dochaus/lean/")) throw new Error("Checklist lookup records must be lean output artifacts.")
-    writeLeanText(directory, artifact.path.slice(".dochaus/lean/".length), `${JSON.stringify(artifact.value, null, 2)}\n`)
-  }
-  const missing = new Map(contexts.flatMap(row => row.context.documents.filter(document => document.status === "unavailable").map(document => [document.path, document] as const)))
-  for (const [file, document] of missing) writeLeanText(directory, file.slice(".dochaus/lean/".length), `${JSON.stringify({ id: document.id, document: document.document, status: "unavailable", paragraphs: [] }, null, 2)}\n`)
-  const sourceBasis = matterSourceBasis(directory)
-  const jobs = contexts.map(row => ({ ...row,
-    // Review allowance follows actual evidence, never a prompt/model/session revision.
-    // Exact artifact properties are evidence: newly observable measures admit a fresh check.
-    canonical_input_sha: shortHash(JSON.stringify([sourceBasis, row.record.id,
-      current.map(job => job.input.passages.map(ref => ({ document: ref.document, quote: ref.quote }))),
-      settled.map(ref => ({ document: ref.document, quote: ref.quote })), row.context.documents,
-      row.context.artifacts.map(artifact => ({ id: artifact.value.id, document: artifact.value.document, aliases: artifact.value.aliases,
-        artifact: artifact.value.artifact, sha256: artifact.value.sha256,
-        annotations: artifact.value.annotations?.map(annotation => ({ artifact: annotation.artifact, sha256: annotation.sha256, properties: annotation.properties })) })),
-      ...(row.context.workflow.length ? [row.context.workflow] : []),
-      ...(row.record.assignment ? [row.record.assignment] : [])]), 40),
-    input_sha: shortHash(JSON.stringify(["checklist-check-1", deps.model, sourceBasis, buildChecklistCheckerPrompt(row.context.input), row.context.artifacts, row.context.workflow]), 40) }))
   const prior = readLeanJson(directory, CHECKS)
   const cached = prior === undefined ? undefined : checksSchema.parse(prior)
   const records: (ChecklistCheckResult | undefined)[] = jobs.map(job => cached?.checks.find(row => row.item_id === job.record.id && row.input_sha === job.input_sha))
@@ -122,24 +128,28 @@ export async function runChecklistCheckFlow(directory: string, deps: ChecklistJo
   await parallel(jobs, async (job, index) => {
     const priorReview = cached?.checks.find(row => row.item_id === job.record.id)?.reinspection
     const reinspection = priorReview?.canonical_input_sha === job.canonical_input_sha ? priorReview : undefined
+    // An admission that recorded no outcome has not spent the allowance.
+    const unfinished = reinspection?.status === "failed" && reinspection.sessionID === undefined && reinspection.issues.length === 1 && reinspection.issues[0] === UNFINISHED_REINSPECTION
     const record = records[index]
     const previous = cached?.checks.find(row => row.item_id === job.record.id)
     // A changed prompt or navigation hint is not new substantive evidence.
     // Preserve the consumed assessment before either ordinary or clarified admission.
-    if (!record && reinspection && previous?.status === "succeeded" && previous.finding) {
+    if (!record && reinspection && !unfinished && previous?.status === "succeeded" && previous.finding) {
       records[index] = { ...previous, input_sha: job.input_sha }
       save()
       return
     }
     const clarified = !record && clarifications.length > 0 && previous?.status === "succeeded" && previous.finding ? previous : undefined
-    const inspected = record ?? clarified
+    const inspected = record ?? clarified ?? (unfinished ? previous : undefined)
     if (inspected?.status === "succeeded") {
-      if (!clarified && (!options.reinspectAdverse || !inspected.finding || checklistFindingRecovery(job.record.item, inspected.finding) === "none" || reinspection)) return
+      if (!clarified && !unfinished && (!options.reinspectAdverse || !inspected.finding || checklistFindingRecovery(job.record.item, inspected.finding) === "none" || reinspection)) return
       if (!inspected.finding) return
-      // Consume the one permitted assessment in this existing completed-output
-      // record before admission. Interruption remains visible and cannot loop.
+      // Record the admission in this existing completed-output record before the
+      // call. Only an outcome (a finding, a contract failure or a runtime error)
+      // spends the one permitted assessment and is never repeated. An admission
+      // left without one, as a pause leaves it, runs again from the original.
       const review = { canonical_input_sha: job.canonical_input_sha, original_finding: inspected.reinspection?.original_finding ?? inspected.finding,
-        status: "failed" as const, issues: ["Reinspection did not complete; no result overrides the original finding."] }
+        status: "failed" as const, issues: [UNFINISHED_REINSPECTION] }
       records[index] = { ...inspected, input_sha: job.input_sha, reinspection: review }
       save()
       try {
@@ -148,6 +158,8 @@ export async function runChecklistCheckFlow(directory: string, deps: ChecklistJo
           ? { ...inspected, input_sha: job.input_sha, finding: result.value, reinspection: { ...review, status: "succeeded", issues: [], sessionID: result.sessionID, attempts: result.attempts } }
           : { ...inspected, input_sha: job.input_sha, reinspection: { ...review, issues: result.issues, sessionID: result.sessionID, attempts: result.attempts } }
       } catch (error) {
+        // A paused run accepts no outcome; the saved admission stays unspent.
+        if (options.pause?.aborted) return
         records[index] = { ...inspected, input_sha: job.input_sha, reinspection: { ...review, issues: [message(error)] } }
       }
       save()

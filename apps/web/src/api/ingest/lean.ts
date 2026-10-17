@@ -5,7 +5,7 @@ import { INGEST_URL } from "../../config"
 // items, gate result, delivered documents). The types mirror
 // dochaus/workflows/lean/{state,gate,deliverables}.ts, which the browser cannot
 // import. Continue and answers queue a request for the run's own coordinator;
-// Pause stops it at once.
+// Pause stops it at once, and Stop ends a paused or held run for good.
 
 /** Stage keys are steps in walk order: drafting and four reviews, then
  * change-plan, change-prepare, changes, change-review and apply per document;
@@ -85,6 +85,8 @@ export type LeanDraftingStatus = {
   stages: Record<LeanStep, LeanStageStatus>
   /** True while ingest runs this matter's coordinator. */
   in_flight: boolean
+  /** The lawyer stopped this run; derived by ingest at read time. `stop_reason` is display only. */
+  stopped?: boolean
   pending_requests: number
   /** Answers durably received, waiting for the coordinator to consume them. */
   queued_answer_ids?: string[]
@@ -120,6 +122,7 @@ export type LeanDraftingStart = { profile: "lean"; mode: "started"; ownerSession
 export type LeanDraftingQueued = { profile: "lean"; mode: "queued"; request_id: string; status: LeanDraftingStatus }
 /** "pausing" while the run is still stopping; its status then follows. */
 export type LeanDraftingPaused = { profile: "lean"; mode: "paused" | "pausing"; status: LeanDraftingStatus }
+export type LeanDraftingStopped = { profile: "lean"; mode: "stopped"; status: LeanDraftingStatus }
 
 const RUN_STATUSES = ["running", "blocked", "failed", "completed"]
 const STAGE_STATUSES = ["pending", "running", "done", "failed", "blocked"]
@@ -134,6 +137,7 @@ export function isLeanDraftingStatus(value: unknown): value is LeanDraftingStatu
     typeof value.owner_session_id === "string" &&
     typeof value.updated_at === "string" &&
     typeof value.in_flight === "boolean" &&
+    (value.stopped === undefined || typeof value.stopped === "boolean") &&
     Number.isInteger(value.pending_requests) &&
     Array.isArray(value.open_items) &&
     Array.isArray(value.questions) &&
@@ -201,6 +205,24 @@ export async function pauseLeanDraftingRun(matterId: string, ownerSessionID: str
   if (!record(body) || body.profile !== "lean" || (body.mode !== "paused" && body.mode !== "pausing") || !isLeanDraftingStatus(body.status))
     throw new Error("Drafting run response is invalid.")
   return body as LeanDraftingPaused
+}
+
+/** Stop: an unfinished run nothing is working on ends as failed and takes no
+ * Continue. Its files stay in the matter, and the next drafting request starts a new run. */
+export async function stopLeanDraftingRun(matterId: string, ownerSessionID: string): Promise<LeanDraftingStopped> {
+  const res = await fetch(`${INGEST_URL}/matters/${matterId}/lean/stop`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ownerSessionID }),
+  })
+  if (!res.ok) {
+    const body = (await res.json().catch(() => undefined)) as { error?: unknown } | undefined
+    throw new Error(typeof body?.error === "string" ? body.error : `Could not stop the drafting run (${res.status})`)
+  }
+  const body: unknown = await res.json()
+  if (!record(body) || body.profile !== "lean" || body.mode !== "stopped" || !isLeanDraftingStatus(body.status))
+    throw new Error("Drafting run response is invalid.")
+  return body as LeanDraftingStopped
 }
 
 export async function answerLeanQuestion(

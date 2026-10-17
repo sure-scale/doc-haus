@@ -1,5 +1,5 @@
 import type { LeanDraftingStatus } from "../../api/ingest/lean"
-import { attentionItems, leanContinueAvailable, openQuestions } from "../drafting/model"
+import { attentionItems, leanContinueAvailable, leanRunStopped, openQuestions } from "../drafting/model"
 import { stoppedByTechnicalProblem } from "./activity"
 
 // What the lawyer needs to know once the run settles or stalls, in one short
@@ -17,6 +17,8 @@ export function runOutcome(status: LeanDraftingStatus): RunOutcome | undefined {
       tone: "done",
       text: `Drafting is complete.${questions ? ` ${questions === 1 ? "One question still awaits" : `${questions} questions still await`} your answer.` : ""}`,
     }
+  if (leanRunStopped(status))
+    return { tone: "attention", text: "You stopped this draft. Its work so far is kept; a new drafting request starts a new draft." }
   if (questions) return { tone: "attention", text: `Drafting is waiting on ${asks} only you can answer.` }
   const resume = leanContinueAvailable(status) ? " Continue drafting (above) picks up from the last finished step." : ""
   if (status.status === "blocked") {
