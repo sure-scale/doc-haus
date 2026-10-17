@@ -67,6 +67,7 @@ export default function DocumentViewer({
   const focusRef = useRef<HTMLDivElement>(null)
   const documentRef = useRef<HTMLDivElement>(null)
   const [passage, setPassage] = useState<"matched" | "ambiguous" | "unavailable">()
+  const moreRef = useRef<HTMLDetailsElement>(null)
   // Keep React from resetting the HTML when passage status or viewer controls
   // re-render. The citation effect owns only its temporary text highlights.
   const documentPreview = useMemo(() => html && <div className="docx-render" ref={documentRef} dangerouslySetInnerHTML={{ __html: html }} />, [html])
@@ -117,6 +118,17 @@ export default function DocumentViewer({
       root.normalize()
     }
   }, [citation, html])
+
+  // A <details> menu stays open until its summary is clicked again; also close it
+  // on a press anywhere else in the viewer, as a menu is expected to.
+  useEffect(() => {
+    const dismiss = (event: PointerEvent) => {
+      const menu = moreRef.current
+      if (menu?.open && !menu.contains(event.target as Node)) menu.open = false
+    }
+    document.addEventListener("pointerdown", dismiss)
+    return () => document.removeEventListener("pointerdown", dismiss)
+  }, [])
 
   async function resolve(action: () => Promise<void>, key: number | "all") {
     setBusy(key)
@@ -183,10 +195,7 @@ export default function DocumentViewer({
       <div className="viewer-overlay" onClick={onClose}>
         <div className="viewer-panel document-reader" role="dialog" aria-modal="true" aria-label={name} onClick={(e) => e.stopPropagation()}>
           <div className="viewer-bar">
-            <span className="viewer-title">
-              <span className="viewer-doctype">PDF</span>
-              <span className="viewer-title-name">{name}</span>
-            </span>
+            <ViewerTitle name={name} kind="PDF document" />
             <div className="viewer-bar-actions">
               <button
                 className="primary"
@@ -196,6 +205,7 @@ export default function DocumentViewer({
               >
                 {converting ? "Converting..." : "Convert to DOCX"}
               </button>
+              <span className="viewer-bar-divider" aria-hidden="true" />
               <ModalClose onClose={onClose} />
             </div>
           </div>
@@ -214,31 +224,53 @@ export default function DocumentViewer({
     <div className="viewer-overlay" onClick={onClose}>
       <div className="viewer-panel document-reader" role="dialog" aria-modal="true" aria-label={name} onClick={(e) => e.stopPropagation()}>
         <div className="viewer-bar">
-          <span className="viewer-title">
-            <span className="viewer-doctype">DOCX</span>
-            <span className="viewer-title-name">{name}</span>
-          </span>
+          <ViewerTitle name={name} kind="Word document" pending={redlines.length} />
           <div className="viewer-bar-actions">
-            <button className="primary" onClick={() => setEditing((value) => !value)} disabled={busy !== undefined} aria-expanded={editing} aria-controls="document-edit-request">Request edits</button>
             <button onClick={download} disabled={!html} title="Download as a Word file with tracked changes">
-              {redlines.length ? "Download redline" : "Download"}
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M12 4v11" />
+                <path d="m7 10 5 5 5-5" />
+                <path d="M5 20h14" />
+              </svg>
+              <span className="viewer-action-label">{redlines.length ? "Download redline" : "Download"}</span>
+            </button>
+            <button className="primary" onClick={() => setEditing((value) => !value)} disabled={busy !== undefined} aria-expanded={editing} aria-controls="document-edit-request">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M12 20h9" />
+                <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z" />
+              </svg>
+              Request edits
             </button>
             {onSaveTemplate && (
-              <details className="viewer-more-actions" onKeyDown={(event) => {
+              <details className="viewer-more-actions" ref={moreRef} onKeyDown={(event) => {
                 if (event.key !== "Escape" || !event.currentTarget.open) return
                 event.preventDefault()
                 event.stopPropagation()
                 event.currentTarget.open = false
                 event.currentTarget.querySelector("summary")?.focus()
               }}>
-                <summary>More actions <span aria-hidden="true">⌄</span></summary>
+                <summary aria-label="More actions" title="More actions">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                    <circle cx="5" cy="12" r="1.8" />
+                    <circle cx="12" cy="12" r="1.8" />
+                    <circle cx="19" cy="12" r="1.8" />
+                  </svg>
+                </summary>
                 <div className="viewer-more-menu">
-                  <button onClick={onSaveTemplate} title="Turn this document into a reusable template (with client details removed)">
-                    Save as template
+                  <button onClick={onSaveTemplate}>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <rect x="8" y="8" width="13" height="13" rx="2" />
+                      <path d="M4 16V5a2 2 0 0 1 2-2h11" />
+                    </svg>
+                    <span>
+                      Save as template
+                      <small>Reusable copy with client details removed</small>
+                    </span>
                   </button>
                 </div>
               </details>
             )}
+            <span className="viewer-bar-divider" aria-hidden="true" />
             <ModalClose onClose={onClose} />
           </div>
         </div>
@@ -323,6 +355,28 @@ export default function DocumentViewer({
           )}
         </div>
       </div>
+    </div>
+  )
+}
+
+// File glyph, name and a quiet status line. The pending count stays visible on
+// narrow screens, where the change list sits below the document.
+function ViewerTitle({ name, kind, pending = 0 }: { name: string; kind: string; pending?: number }) {
+  return (
+    <div className="viewer-title">
+      <span className="viewer-file-icon" aria-hidden="true">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+          <path d="M14 2v6h6M8 13h8M8 17h5" />
+        </svg>
+      </span>
+      <span className="viewer-title-text">
+        <span className="viewer-title-name" title={name}>{name}</span>
+        <span className="viewer-title-meta">
+          {kind}
+          {pending > 0 && <span className="viewer-title-pending">{pending} pending change{pending === 1 ? "" : "s"}</span>}
+        </span>
+      </span>
     </div>
   )
 }
