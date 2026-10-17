@@ -28,9 +28,9 @@ or jurisdiction details are optional. Opening setup does not make a paid model
 request; connection tests run only when requested. Provider access and quota
 remain subject to the provider's account and organization policies.
 
-Only Bun is required. The stack starts without declined tools, and a declined
-set is not offered again until another tool goes missing. The container
-includes every tool. See [setup](docs/setup.md).
+Only Bun is required, and the launcher installs it. The stack starts without
+declined tools, and a declined set is not offered again until another tool goes
+missing. The container includes every tool. See [setup](docs/setup.md).
 
 ## Local container
 
