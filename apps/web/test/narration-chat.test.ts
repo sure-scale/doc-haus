@@ -224,28 +224,68 @@ test("a flagged completed stage and narrator prose remain outside closed activit
   }
 })
 
-test("multiple primary drafts make all generated files visible by default", () => {
-  const render = (status: LeanDraftingStatus) => renderToStaticMarkup(createElement(ResultCard, {
-    status, matterId: "m1", onViewDocument: () => {},
-  }))
-  // Establish the single-draft baseline before adding one more primary output.
-  expect(render(done)).toContain('<details class="result-files">')
-  const body = done.documents!.documents.find((document) => document.kind === "body")!
-  const status: LeanDraftingStatus = {
+function renderResult(status: LeanDraftingStatus) {
+  return renderToStaticMarkup(createElement(ResultCard, { status, matterId: "m1", onViewDocument: () => {} }))
+}
+
+/** The completed fixture with more planned documents, each delivered with its
+ * redline, as a run asked for several documents delivers them. */
+function withDrafts(titles: string[]): LeanDraftingStatus {
+  const rows = done.documents!.documents
+  const body = rows.find((document) => document.kind === "body")!
+  const redline = rows.find((document) => document.kind === "redline")!
+  const added = titles.flatMap((title, index) => {
+    const id = `d${index + 2}`
+    return [
+      { ...body, document: id, title, path: `.dochaus/lean/${id}/body-applied.docx`, deliverable: `${title}.docx` },
+      { ...redline, document: id, title, path: `.dochaus/lean/${id}/redline.docx`, deliverable: `${title} - redline.docx` },
+    ]
+  })
+  const notes = rows.findIndex((document) => document.kind === "drafting_notes")
+  return {
     ...done,
-    documents: {
-      ...done.documents!,
-      documents: [...done.documents!.documents, {
-        ...body, document: "d2", title: "Cover note", path: ".dochaus/lean/d2/body-applied.docx", deliverable: "Cover note.docx",
-      }],
-    },
-    plan: { documents: [...done.plan!.documents, { id: "d2", title: "Cover note", purpose: "" }] },
+    documents: { ...done.documents!, documents: [...rows.slice(0, notes), ...added, ...rows.slice(notes)] },
+    plan: { documents: [...done.plan!.documents, ...titles.map((title, index) => ({ id: `d${index + 2}`, title, purpose: "" }))] },
   }
-  const html = render(status)
-  expect(html).toContain('<details class="result-files" open="">')
+}
+
+test("a lone draft keeps the page and its drafting notes are featured for review beside it", () => {
+  const html = renderResult(done)
+  const stack = html.slice(html.indexOf('<ul class="result-stack"'), html.indexOf('<details class="result-files"'))
+  expect(html).toContain('<div class="result-document">')
+  expect(html.match(/class="primary result-review"/g)).toHaveLength(1)
+  expect(html).toContain("Review draft")
+  expect(stack).toContain('aria-label="Also for review"')
+  expect(stack).toContain('class="result-row is-notes"')
+  expect(stack).toContain('aria-label="Review Supply note - drafting notes.docx"')
+  // The draft stays the page and the redline stays with all the files.
+  expect(stack).not.toContain("Supply note.docx")
+  expect(stack).not.toContain("redline")
+  expect(html).toContain('<details class="result-files">')
+  expect(html).toContain('All generated files <span class="result-file-count">3</span>')
+})
+
+test("every draft of a several-document run is featured for review, in plan order, before the notes", () => {
+  const html = renderResult(withDrafts(["Cover note", "Board resolution", "Disclosure letter"]))
+  const stack = html.slice(html.indexOf('<ul class="result-stack"'), html.indexOf('<details class="result-files"'))
+  expect(html).not.toContain('<div class="result-document">')
+  expect(html).not.toContain("primary result-review")
+  expect(stack).toContain('aria-label="Files for review"')
+  const reviewed = [...stack.matchAll(/aria-label="Review ([^"]+)"/g)].map((match) => match[1])
+  expect(reviewed).toEqual([
+    "Supply note.docx",
+    "Cover note.docx",
+    "Board resolution.docx",
+    "Disclosure letter.docx",
+    "Supply note - drafting notes.docx",
+  ])
+  expect(stack.match(/class="result-row is-draft"/g)).toHaveLength(4)
+  expect(stack).not.toContain("redline")
+  // Everything to review is featured, so the full list stays folded.
+  expect(html).toContain('<details class="result-files">')
+  expect(html).toContain('All generated files <span class="result-file-count">9</span>')
   const files = html.slice(html.indexOf('<details class="result-files"'))
-  expect(files).toContain(body.deliverable!)
-  expect(files).toContain("Cover note.docx")
+  expect(files).toContain("Disclosure letter - redline.docx")
 })
 
 function renderFinishedNarration(lines: ActivityLine[], notes: { id: string; at: number; text: string; keys: string[] }[] = []) {
