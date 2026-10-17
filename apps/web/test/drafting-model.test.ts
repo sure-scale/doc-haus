@@ -11,14 +11,18 @@ import DocumentUpload from "../src/components/DocumentUpload"
 import {
   attentionItems,
   capGroups,
+  checklistFindingsCount,
   cleanTitle,
   currentStep,
   draftedGroups,
   finalCheckNote,
   groupOpenItems,
   leanSettledSummary,
+  openItemClass,
   openItemsSentence,
+  openItemTag,
   openQuestions,
+  unresolvedChecklistFindings,
   runPosition,
   stageElapsed,
   stepCause,
@@ -26,6 +30,7 @@ import {
   stepName,
   updateProgressLabel,
 } from "../src/components/drafting/model"
+import OpenItems from "../src/components/drafting/OpenItems"
 import QuestionDock from "../src/components/drafting/QuestionDock"
 import RunHeader, { runHeadline } from "../src/components/drafting/RunHeader"
 
@@ -116,6 +121,118 @@ test("a checklist requirement left open shows in the delivered review draft's de
   expect(leanSettledSummary(status.gate!.items!)).toBe(
     "Final check settled 2 open items: 1 disclosed in the drafting notes, 1 left open by the checklist check.",
   )
+})
+
+/** A completed run whose final check delivered a review draft with unresolved
+ * checklist findings: requirements the delivered draft does not satisfy. */
+function withFindings(unresolved: LeanOpenItem[], others: LeanOpenItem[] = []) {
+  const items = [...others, ...unresolved]
+  return lean({ ...completed, gate: { ...completed.gate, delivery: "review_draft_with_findings", disclosed: items, items } })
+}
+
+const unresolvedFinding = (n: number, checklist_class?: string): LeanOpenItem => ({
+  id: `checklist-check:checklist_unresolved:${n}`,
+  stage: "checklist-check",
+  kind: "checklist_unresolved",
+  detail: `Checklist requirement not satisfied: Requirement ${n}. Finding: Still absent after the repair round.`,
+  status: "disclosed",
+  ref: { checklist_item: `item-${n}`, ...(checklist_class ? { checklist_class } : {}), document: "d1" },
+})
+
+test("unresolved checklist findings sort first, read as not satisfied and carry their class in plain words", () => {
+  const omission = unresolvedFinding(1, "omission")
+  const conflict = unresolvedFinding(2, "source_conflict")
+  const open: LeanOpenItem = { ...item("c1", "checklist_open", "disclosed"), stage: "checklist-check" }
+  const others = [item("p1", "placeholder", "disclosed"), open, item("o1", "omission", "disclosed")]
+  const groups = groupOpenItems([...others, omission, conflict])
+  expect(groups.map((group) => group.kind)).toEqual(["checklist_unresolved", "placeholder", "checklist_open", "omission"])
+  expect(groups[0]!.label).toBe("Unresolved checklist findings")
+  // The list is capped; the findings are never the part cut off.
+  expect(capGroups(groups, 2).map((group) => [group.kind, group.items.length])).toEqual([["checklist_unresolved", 2]])
+  expect(openItemTag(omission)).toBe("Not satisfied")
+  expect(openItemTag(open)).toBe("Left open")
+  expect(openItemTag(others[0]!)).toBe("In the notes")
+  expect(
+    ["omission", "source_conflict", "not_inspectable", "missing_inspection", "departure", undefined].map((value) => openItemClass(unresolvedFinding(9, value))),
+  ).toEqual([
+    "not fixed by the repair round",
+    "conflicts with another source requirement",
+    "cannot be established from document text",
+    "not inspected",
+    "deliberate departure",
+    undefined,
+  ])
+  // Only an unresolved finding carries a class sub-label.
+  expect(openItemClass({ ...open, ref: { checklist_class: "omission" } })).toBeUndefined()
+  expect(leanSettledSummary([...others, omission, conflict])).toBe(
+    "Final check settled 5 open items: 2 not satisfied (unresolved checklist findings), 2 disclosed in the drafting notes, 1 left open by the checklist check.",
+  )
+})
+
+test("a review draft with unresolved checklist findings reads differently from a clean completion and a plain review draft", () => {
+  const actions = { busy: false, error: "", resuming: false, resume: async () => true, answer: async () => true }
+  const render = (status: LeanDraftingStatus) =>
+    renderToStaticMarkup(createElement(RunHeader, { status, actions, own: true, onOpen: () => {} }))
+  const now = Date.parse(completed.updated_at)
+  const two = withFindings([unresolvedFinding(1, "omission"), unresolvedFinding(2, "source_conflict")], [item("p1", "placeholder", "disclosed"), item("o1", "omission", "disclosed")])
+  const one = withFindings([unresolvedFinding(1)])
+  const plain = lean({ ...completed, gate: { ...completed.gate, delivery: "review_draft", items: [item("p1", "placeholder", "disclosed")] } })
+
+  expect(unresolvedChecklistFindings(two).map((row) => row.id)).toEqual([unresolvedFinding(1).id, unresolvedFinding(2).id])
+  expect(checklistFindingsCount(two)).toBe(2)
+  expect(checklistFindingsCount(plain)).toBeUndefined()
+  expect(checklistFindingsCount(lean(completed))).toBeUndefined()
+  // The delivery alone marks the run, even if its items did not reach the status.
+  expect(checklistFindingsCount(lean({ ...completed, gate: { ...completed.gate, delivery: "review_draft_with_findings" } }))).toBe(0)
+
+  expect(runHeadline(two, now)).toMatchObject({ tone: "done", title: "Review draft — 2 unresolved checklist findings" })
+  expect(runHeadline(one, now).title).toBe("Review draft — 1 unresolved checklist finding")
+  expect(runHeadline(lean({ ...completed, gate: { ...completed.gate, delivery: "review_draft_with_findings" } }), now).title).toBe(
+    "Review draft — unresolved checklist findings",
+  )
+  expect(runHeadline(plain, now).title).toBe("Ready for review")
+  expect(runHeadline(lean(completed), now).title).toBe("Ready for review")
+
+  expect(openItemsSentence(two)).toBe("Open items: 2 unresolved checklist findings, 1 placeholder to fill and 1 other item to check.")
+  expect(openItemsSentence(one)).toBe("Open items: 1 unresolved checklist finding.")
+  expect(finalCheckNote(two)).toBe(
+    "Final workflow check: a review draft with 2 unresolved checklist findings, not yet ready for signature. The draft does not satisfy those requirements.",
+  )
+  expect(finalCheckNote(one)).toBe(
+    "Final workflow check: a review draft with 1 unresolved checklist finding, not yet ready for signature. The draft does not satisfy that requirement.",
+  )
+  expect(finalCheckNote(plain)).toBe("Final workflow check passed: a review draft, not yet ready for signature.")
+  // A draft changed after the check is not what it checked.
+  expect(finalCheckNote(lean({ ...two, changed_after_check: { since: completed.gate.checked_at, documents: ["Supply note.docx"] } }))).toBe(
+    "Changed after final check: review the draft.",
+  )
+
+  const html = render(two)
+  expect(html).toContain("Review draft — 2 unresolved checklist findings")
+  expect(html).not.toContain("Ready for review")
+  expect(html).toContain('class="run-head-icon is-done is-findings"')
+  expect(render(plain)).toContain('class="run-head-icon is-done"')
+  expect(html).toContain('<span class="open-item-tag is-unresolved">Not satisfied</span>')
+  expect(html).toContain('<span class="open-item-class">not fixed by the repair round</span>')
+  expect(html).toContain('<span class="open-item-class">conflicts with another source requirement</span>')
+  // The findings head the open items, ahead of what was recorded first.
+  expect(html.indexOf("Unresolved checklist findings")).toBeLessThan(html.indexOf("Placeholders to fill"))
+  expect(html).toContain("The draft does not satisfy those requirements.")
+})
+
+test("the open items list never caps away an unresolved checklist finding and counts them in its summary", () => {
+  const findings = Array.from({ length: 6 }, (_, i) => unresolvedFinding(i + 1, "missing_inspection"))
+  const others = [item("p1", "placeholder", "disclosed"), item("p2", "placeholder", "disclosed")]
+  const html = renderToStaticMarkup(createElement(OpenItems, { items: [...others, ...findings], titles: new Map() }))
+  expect(html).toContain('<span class="open-items-unresolved">6 not satisfied</span>')
+  expect(html.match(/class="open-item-tag is-unresolved"/g)).toHaveLength(6)
+  expect(html.match(/<span class="open-item-class">not inspected<\/span>/g)).toHaveLength(6)
+  // The cap still folds the rest behind Show all.
+  expect(html).not.toContain("Placeholders to fill")
+  expect(html).toContain("Show all 8")
+  const plain = renderToStaticMarkup(createElement(OpenItems, { items: others, titles: new Map() }))
+  expect(plain).not.toContain("open-items-unresolved")
+  expect(plain).not.toContain("Show all")
 })
 
 test("drafted outputs nest the redline and notes under a single draft", () => {

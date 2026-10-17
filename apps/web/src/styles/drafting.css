@@ -54,7 +54,8 @@
 }
 
 .run-head-icon.is-input,
-.run-head-icon.is-paused {
+.run-head-icon.is-paused,
+.run-head-icon.is-findings {
   background: var(--warn);
 }
 

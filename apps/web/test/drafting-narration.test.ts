@@ -232,6 +232,65 @@ test("a completed run claims only the checks its status shows", () => {
   expect(resultChecks(lean({ ...done, changed_after_check: null }))[0]).toEqual({ tone: "pass", text: "Final workflow check passed" })
 })
 
+/** The completed fixture delivered as a review draft with unresolved checklist
+ * findings: checklist requirements the draft does not satisfy. */
+function withFindings(count: number, others: LeanDraftingStatus["open_items"] = []) {
+  const findings = Array.from({ length: count }, (_, i) => ({
+    id: `checklist-check:checklist_unresolved:${i + 1}`,
+    stage: "checklist-check",
+    kind: "checklist_unresolved",
+    detail: `Checklist requirement not satisfied: Requirement ${i + 1}.`,
+    status: "disclosed" as const,
+    ref: { checklist_item: `item-${i + 1}`, checklist_class: "omission" },
+  }))
+  const items = [...findings, ...others]
+  return lean({ ...done, gate: { ...done.gate!, delivery: "review_draft_with_findings", disclosed: items, items } })
+}
+
+test("a review draft with unresolved checklist findings never reads as a clean completion", () => {
+  const placeholder = { id: "p1", stage: "finalize", kind: "placeholder", detail: "p1", status: "disclosed" as const }
+  const two = withFindings(2, [placeholder])
+  const one = withFindings(1)
+  const plain = lean({ ...done, gate: { ...done.gate!, delivery: "review_draft", items: [placeholder] } })
+
+  expect(runOutcome(two)).toEqual({
+    tone: "done",
+    text: "Drafting delivered a review draft with 2 unresolved checklist findings. The draft does not satisfy those requirements.",
+  })
+  expect(runOutcome(one)?.text).toBe("Drafting delivered a review draft with 1 unresolved checklist finding. The draft does not satisfy that requirement.")
+  expect(runOutcome(plain)).toEqual({ tone: "done", text: "Drafting is complete." })
+
+  // The final check delivered the draft, but does not claim it passed clean.
+  expect(resultChecks(two)).toEqual([
+    { tone: "warn", text: "2 checklist requirements not satisfied" },
+    { tone: "pass", text: "Quotes checked against sources" },
+    { tone: "neutral", text: "1 placeholder to fill" },
+  ])
+  expect(resultChecks(one)[0]).toEqual({ tone: "warn", text: "1 checklist requirement not satisfied" })
+  expect(resultChecks(plain)[0]).toEqual({ tone: "pass", text: "Final workflow check passed" })
+  const changed = lean({ ...two, changed_after_check: { since: "2026-10-11T09:05:28.417Z", documents: ["Supply note.docx"] } })
+  expect(resultChecks(changed).slice(0, 2)).toEqual([
+    { tone: "warn", text: "Changed after final check: review the draft" },
+    { tone: "warn", text: "2 checklist requirements not satisfied" },
+  ])
+
+  // The final check's row is flagged, so it stays outside the folded activity.
+  expect(stageMilestones(two).at(-1)).toMatchObject({ step: "gate", state: "done", flag: true, text: "Final check: review draft with 2 unresolved checklist findings" })
+  expect(stageMilestones(plain).at(-1)).toMatchObject({ step: "gate", state: "done", text: "Final workflow check passed" })
+  expect(stageMilestones(plain).at(-1)?.flag).toBeUndefined()
+
+  const settled = buildExcerpt({
+    status: two,
+    plan: { keys: [`run:completed:${done.updated_at}`], focus: `run:completed:${done.updated_at}`, reason: "checkpoint" },
+    activity: [],
+    now: Date.parse(done.updated_at),
+  })
+  expect(settled).toContain("Run state: complete as a review draft with 2 unresolved checklist findings; the draft does not satisfy those requirements.")
+  expect(settled).toContain("- The run settled: Drafting delivered a review draft with 2 unresolved checklist findings.")
+  expect(settled).toContain("<unresolved_checklist_findings>\n2 not satisfied.\n- Checklist requirement not satisfied: Requirement 1.")
+  expect(settled).not.toContain("Drafting is complete.")
+})
+
 test("a technical stop reads as a calm pause, and Continue reads as a resume", () => {
   const fault = lean({ ...stopped, stop_reason: "d1.draft: stopped by a runtime error: provider unavailable" })
   expect(stoppedByTechnicalProblem(fault)).toBe(true)

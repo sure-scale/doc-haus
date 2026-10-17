@@ -156,20 +156,38 @@ const KIND_LABELS: Record<string, string> = {
   omission: "Points left out",
   template_removal: "Template text removed",
   checklist_open: "Requirements left open by the checklist check",
+  checklist_unresolved: "Unresolved checklist findings",
 }
 
 /** Where a disclosed item is recorded for the lawyer. An open checklist finding
- * is disclosed by the final check itself, not by the drafting notes. */
+ * is disclosed by the final check itself, not by the drafting notes; an
+ * unresolved one is a requirement the delivered draft does not satisfy. */
 export function openItemTag(item: LeanOpenItem) {
   if (item.status !== "disclosed") return undefined
+  if (item.kind === "checklist_unresolved") return "Not satisfied"
   return item.kind === "checklist_open" ? "Left open" : "In the notes"
+}
+
+const CHECKLIST_CLASS_LABELS: Record<string, string> = {
+  omission: "not fixed by the repair round",
+  source_conflict: "conflicts with another source requirement",
+  not_inspectable: "cannot be established from document text",
+  missing_inspection: "not inspected",
+  departure: "deliberate departure",
+}
+
+/** Why an unresolved checklist finding stayed unresolved, in plain words. */
+export function openItemClass(item: LeanOpenItem) {
+  if (item.kind !== "checklist_unresolved" || !item.ref?.checklist_class) return undefined
+  return CHECKLIST_CLASS_LABELS[item.ref.checklist_class] ?? sentence(item.ref.checklist_class).toLowerCase()
 }
 
 export type OpenItemGroup = { kind: string; label: string; items: LeanOpenItem[] }
 
-/** Open items grouped by kind, in the order each kind first appears. */
+/** Open items grouped by kind, in the order each kind first appears, except
+ * that unresolved checklist findings always come first. */
 export function groupOpenItems(items: LeanOpenItem[]) {
-  return items.reduce<OpenItemGroup[]>((groups, item) => {
+  const groups = items.reduce<OpenItemGroup[]>((groups, item) => {
     const group = groups.find((row) => row.kind === item.kind)
     if (group) {
       group.items.push(item)
@@ -177,6 +195,8 @@ export function groupOpenItems(items: LeanOpenItem[]) {
     }
     return [...groups, { kind: item.kind, label: KIND_LABELS[item.kind] ?? sentence(item.kind), items: [item] }]
   }, [])
+  const first = (group: OpenItemGroup) => group.kind === "checklist_unresolved"
+  return [...groups.filter(first), ...groups.filter((group) => !first(group))]
 }
 
 /** The first `cap` items across the groups, in display order, so the first
@@ -192,20 +212,59 @@ export function capGroups(groups: OpenItemGroup[], cap: number) {
 }
 
 /** The items still worth the lawyer's attention: as the final check settled them
- * once it ran for this pass (blocking or disclosed), else the run's open items. */
+ * once it ran for this pass (blocking or disclosed), else the run's open items
+ * and any checklist requirement recorded as not satisfied. */
 export function attentionItems(status: LeanDraftingStatus) {
   const ran = status.stages.gate?.status === "done" || status.stages.gate?.status === "blocked"
   if (ran && Array.isArray(status.gate?.items)) return status.gate.items.filter((item) => item.status !== "resolved")
-  return status.open_items.filter((item) => item.status === "open")
+  return status.open_items.filter((item) => item.status === "open" || isUnresolvedFinding(item))
 }
 
-/** The open items in one sentence, questions for the lawyer apart from the
- * placeholders to fill; undefined while there is nothing to report. */
+function isUnresolvedFinding(item: LeanOpenItem) {
+  return item.kind === "checklist_unresolved" && item.status !== "resolved"
+}
+
+/** The checklist requirements the delivered draft does not satisfy, as the final
+ * check settled them (or as the run recorded them before the check ran). */
+export function unresolvedChecklistFindings(status: LeanDraftingStatus) {
+  return (leanSettledItems(status) ?? status.open_items).filter(isUnresolvedFinding)
+}
+
+/** How many unresolved checklist findings the final check delivered the draft
+ * with; undefined unless the run carries any or its delivery says so, in which
+ * case 0 means the count did not reach the status. */
+export function checklistFindingsCount(status: LeanDraftingStatus) {
+  const count = unresolvedChecklistFindings(status).length
+  return count > 0 || status.gate?.delivery === "review_draft_with_findings" ? count : undefined
+}
+
+/** "2 unresolved checklist findings"; without a count, the plain plural. */
+export function unresolvedFindingsPhrase(count: number) {
+  if (count === 0) return "unresolved checklist findings"
+  return `${count} unresolved checklist finding${count === 1 ? "" : "s"}`
+}
+
+/** The lawyer-facing title of a review draft delivered with unresolved findings. */
+export function findingsTitle(count: number) {
+  return `Review draft — ${unresolvedFindingsPhrase(count)}`
+}
+
+/** "The draft does not satisfy those requirements." */
+export function findingsConsequence(count: number) {
+  return `The draft does not satisfy ${count === 1 ? "that requirement" : "those requirements"}.`
+}
+
+/** The open items in one sentence: unresolved checklist findings first, then
+ * questions for the lawyer apart from the placeholders to fill; undefined while
+ * there is nothing to report. */
 export function openItemsSentence(status: LeanDraftingStatus) {
   const asks = openQuestions(status).length
-  const items = attentionItems(status).filter((item) => item.kind !== "question")
+  const all = attentionItems(status).filter((item) => item.kind !== "question")
+  const unresolved = all.filter(isUnresolvedFinding).length
+  const items = all.filter((item) => !isUnresolvedFinding(item))
   const placeholders = items.filter((item) => item.kind === "placeholder").length
   const parts = [
+    unresolved ? unresolvedFindingsPhrase(unresolved) : "",
     asks ? `${asks} question${asks === 1 ? "" : "s"} for you` : "",
     placeholders ? `${placeholders} placeholder${placeholders === 1 ? "" : "s"} to fill` : "",
     items.length > placeholders ? `${items.length - placeholders} other item${items.length - placeholders === 1 ? "" : "s"} to check` : "",
@@ -301,9 +360,11 @@ export function leanSettledItems(status: LeanDraftingStatus) {
 export function leanSettledSummary(items: LeanOpenItem[]) {
   const count = (state: LeanOpenItem["status"]) => items.filter((item) => item.status === state).length
   const checklist = items.filter((item) => item.status === "disclosed" && item.kind === "checklist_open").length
+  const unresolved = items.filter((item) => item.status === "disclosed" && item.kind === "checklist_unresolved").length
   const parts = [
     [count("open"), "still blocking"],
-    [count("disclosed") - checklist, "disclosed in the drafting notes"],
+    [unresolved, "not satisfied (unresolved checklist findings)"],
+    [count("disclosed") - checklist - unresolved, "disclosed in the drafting notes"],
     [checklist, "left open by the checklist check"],
     [count("resolved"), "resolved"],
   ] as const
@@ -319,10 +380,14 @@ const DELIVERY: Record<string, string> = {
 }
 
 /** The final check's verdict for a delivered run. A draft changed after the
- * check is not what it checked, so the verdict is not repeated for it. */
+ * check is not what it checked, so the verdict is not repeated for it. A draft
+ * delivered with unresolved checklist findings did not pass clean. */
 export function finalCheckNote(status: LeanDraftingStatus) {
   if (!status.gate?.delivery) return undefined
   if (status.changed_after_check?.documents.length) return "Changed after final check: review the draft."
+  const findings = checklistFindingsCount(status)
+  if (findings !== undefined)
+    return `Final workflow check: a review draft with ${unresolvedFindingsPhrase(findings)}, not yet ready for signature. ${findingsConsequence(findings)}`
   return `Final workflow check passed: ${DELIVERY[status.gate.delivery] ?? status.gate.delivery.replace(/_/g, " ")}.`
 }
 
