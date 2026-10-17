@@ -3,6 +3,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import { readLeanEvents } from "../../../dochaus/workflows/lean/events"
 import { drainLeanRequests, enqueueLeanRequest, pendingLeanRequests } from "../../../dochaus/workflows/lean/requests"
 import { runLean } from "../../../dochaus/workflows/lean/runner"
 import { LEAN_STAGE_AGENTS, type LeanDeps, type StageSessionPort } from "../../../dochaus/workflows/lean/stages"
@@ -447,3 +448,119 @@ test("idle blocked checklist accepts a clarification while busy, changed-owner a
   expect(await completed.json()).toMatchObject({ code: "lean_update_too_late" })
   expect(pendingLeanRequests(directory)).toHaveLength(0)
 }, 120_000)
+
+describe("pausing a lean drafting run", () => {
+  const FINISHED = ["discrepancy", "intake", "research", "research-review", "spine", "d1.draft"] as const
+  const REVIEW = LEAN_STAGE_AGENTS.review
+
+  /** The scripted happy path, except that the first review waits for `release`
+   * and only then answers as scripted: a reply that arrives after the pause. */
+  function heldReview() {
+    const model = scriptedModel(happyPath)
+    const asked: string[] = []
+    const interrupts: { directory: string; sessionID: string }[] = []
+    const hold = Promise.withResolvers<void>()
+    const waiting = Promise.withResolvers<string>()
+    const sessions: StageSessionPort = {
+      createSession: (input) => model.port.createSession(input),
+      prompt: async (input) => {
+        asked.push(input.agent)
+        if (input.agent === REVIEW && asked.filter((agent) => agent === REVIEW).length === 1) {
+          waiting.resolve(input.sessionID)
+          await hold.promise
+        }
+        return model.port.prompt(input)
+      },
+      interrupt: async (input) => { interrupts.push(input) },
+    }
+    return { deps: { sessions } satisfies LeanDeps, asked, interrupts, waiting: waiting.promise, release: () => hold.resolve() }
+  }
+
+  test("Pause stops the working run at once, interrupts its live session, drops the late reply and keeps finished work; Continue resumes", async () => {
+    const directory = leanFixtureMatter("lean-pause-")
+    directories.push(directory)
+    // An earlier final check still on disk and an allowance already consumed:
+    // a pause must neither repair from that verdict nor touch the allowance.
+    writeLeanText(directory, "gate.json", `${JSON.stringify({ status: "blocked", delivery: null, blocking: [{ id: "gate:omission:earlier", stage: "gate", kind: "omission", detail: "An earlier final check item.", ref: {}, status: "open" }] }, null, 2)}\n`)
+    writeLeanText(directory, "repairs.json", `${JSON.stringify({ round: 2, requested_at: "2026-10-01T00:00:00.000Z", items: [], substantive_attempts: 2 }, null, 2)}\n`)
+    const repairs = readFileSync(path.join(leanDir(directory), "repairs.json"))
+    const model = heldReview()
+    const routes = leanDraftingRoutes({ directory: () => directory, deps: () => model.deps })
+    const pause = (ownerSessionID: unknown = "ses_owner") => routes.request("/m1/lean/pause", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ownerSessionID }),
+    })
+
+    expect((await routes.request("/m1/lean/resume", { method: "POST" })).status).toBe(202)
+    const reviewSession = await model.waiting
+    const working = readLeanState(directory)!
+    expect(working).toMatchObject({ status: "running", stages: { "d1.review": { status: "running", session_id: reviewSession } } })
+    const finished = Object.fromEntries(FINISHED.map((step) => [step, working.stages[step]]))
+    expect(Object.values(finished).every((row) => row?.status === "done" && row.input_sha)).toBe(true)
+
+    // Another run's owner cannot pause this one.
+    expect((await pause("ses_previous")).status).toBe(409)
+    expect(leanDraftingStatus(directory)).toMatchObject({ status: "running", in_flight: true })
+
+    const asked = performance.now()
+    const paused = await pause()
+    expect(performance.now() - asked).toBeLessThan(2_000)
+    expect(paused.status).toBe(200)
+    const body = await paused.json()
+    expect(body).toMatchObject({
+      profile: "lean", mode: "paused",
+      status: { status: "blocked", stop_reason: "Paused at your request.", paused_at: expect.any(String), in_flight: false, stages: { "d1.review": { status: "pending", input_sha: null, outputs: [], session_id: reviewSession } } },
+    })
+    expect(model.interrupts).toEqual([{ directory, sessionID: reviewSession }])
+
+    // The held reply arrives late and is not accepted.
+    model.release()
+    await Bun.sleep(50)
+    expect(model.asked.filter((agent) => agent === REVIEW)).toHaveLength(1)
+    const settled = readLeanState(directory)!
+    expect(settled.revision).toBe(body.status.revision)
+    expect(settled.stages["d1.review"]).toMatchObject({ status: "pending", outputs: [] })
+    expect(existsSync(path.join(leanDir(directory), "d1", "review.md"))).toBe(false)
+    expect(readLeanEvents(directory).filter((event) => event.stage === "review" && event.event === "done")).toEqual([])
+    expect(readLeanEvents(directory).filter((event) => event.event === "paused")).toHaveLength(1)
+    for (const step of FINISHED) expect(settled.stages[step]).toEqual(finished[step])
+    expect(readFileSync(path.join(leanDir(directory), "repairs.json")).equals(repairs)).toBe(true)
+
+    // Nothing is working now: a second pause conflicts.
+    expect(await (await pause()).json()).toMatchObject({ code: "lean_run_not_working" })
+
+    // Continue resumes at the review; finished steps are skipped, no repair round starts.
+    const before = model.asked.length
+    expect((await routes.request("/m1/lean/resume", { method: "POST" })).status).toBe(202)
+    await leanDraftingIdle(directory)
+    const resumed = readLeanState(directory)!
+    expect(resumed.status).toBe("completed")
+    expect(resumed.paused_at).toBeUndefined()
+    const again = model.asked.slice(before)
+    expect(again.filter((agent) => FINISHED.some((step) => LEAN_STAGE_AGENTS[step === "d1.draft" ? "draft" : step] === agent))).toEqual([])
+    expect(again.filter((agent) => agent === REVIEW)).toHaveLength(1)
+    for (const step of FINISHED) expect(resumed.stages[step]).toEqual(finished[step])
+    expect(readFileSync(path.join(leanDir(directory), "repairs.json")).equals(repairs)).toBe(true)
+    expect(readdirSync(path.join(leanDir(directory), "requests", "done")).map((name) => JSON.parse(readFileSync(path.join(leanDir(directory), "requests", "done", name), "utf8")).outcome.status))
+      .toEqual(["resume", "resume"])
+  }, 120_000)
+
+  test("an unknown run or a run with nothing working cannot be paused", async () => {
+    const empty = matter()
+    const none = leanDraftingRoutes({ directory: () => empty, deps: () => heldModel().deps })
+    const post = (routes: typeof none, body: unknown) => routes.request("/m1/lean/pause", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
+    const unknown = await post(none, { ownerSessionID: "ses_owner" })
+    expect(unknown.status).toBe(409)
+    expect(await unknown.json()).toMatchObject({ code: "lean_run_changed" })
+
+    const directory = matter()
+    initLeanState(directory, { request: "Draft the agreement.", ownerSessionID: "ses_owner", model: MODEL })
+    const routes = leanDraftingRoutes({ directory: () => directory, deps: () => heldModel().deps })
+    // A state left "running" by an ingest restart has no coordinator to pause.
+    const idle = await post(routes, { ownerSessionID: "ses_owner" })
+    expect(idle.status).toBe(409)
+    expect(await idle.json()).toMatchObject({ code: "lean_run_not_working" })
+    expect((await post(routes, {})).status).toBe(409)
+    expect(readLeanState(directory)).toMatchObject({ status: "running", stop_reason: null })
+    expect(readLeanState(directory)?.paused_at).toBeUndefined()
+  })
+})

@@ -20,6 +20,8 @@ export function runOutcome(status: LeanDraftingStatus): RunOutcome | undefined {
   if (questions) return { tone: "attention", text: `Drafting is waiting on ${asks} only you can answer.` }
   const resume = leanContinueAvailable(status) ? " Continue drafting (above) picks up from the last finished step." : ""
   if (status.status === "blocked") {
+    if (status.paused_at)
+      return { tone: "attention", text: "Paused at your request. Continue drafting (above) picks up from the step that was in progress." }
     const atGate = status.stages.gate?.status === "blocked"
     const blocking = (atGate ? status.gate?.blocking.length : undefined) ?? status.open_items.filter((item) => item.status === "open").length
     const items = `${blocking} open item${blocking === 1 ? "" : "s"}`

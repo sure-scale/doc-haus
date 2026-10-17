@@ -103,12 +103,18 @@ export type StageSessionPort = {
     metadata?: Record<string, unknown>
   }): Promise<string>
   /** Admits one prompt and resolves with the agent's final reply once the native
-   * session is idle again. Throws on an engine or provider failure. */
-  prompt(input: { directory: string; sessionID: string; agent: string; text: string }): Promise<string>
+   * session is idle again. Throws on an engine or provider failure, and stops
+   * waiting once `signal` is aborted. */
+  prompt(input: { directory: string; sessionID: string; agent: string; text: string; signal?: AbortSignal }): Promise<string>
+  /** Stops the session's active native execution (the engine's own interrupt). */
+  interrupt?(input: { directory: string; sessionID: string }): Promise<void>
 }
 
 export type LeanDeps = {
   sessions: StageSessionPort
+  /** Aborted when the lawyer pauses the run: the coordinator interrupts the
+   * native sessions it is waiting on, accepts no later reply and settles. */
+  pause?: AbortSignal
   /** Registers one finished file as a matter deliverable under `fileName`:
    * created when `priorSha256` is null, otherwise replacing a file that must
    * still hold exactly those bytes. Returns the matter-relative path, or

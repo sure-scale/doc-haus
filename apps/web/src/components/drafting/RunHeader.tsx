@@ -92,6 +92,7 @@ export default function RunHeader({
   const note = status.status === "completed" || !settled ? openItemsSentence(status) : settled.length > 0 ? leanSettledSummary(settled) : undefined
   const held = status.documents?.status === "blocked" ? status.documents.documents.filter((document) => document.kind !== "drafting_notes_markdown").length : 0
   const canContinue = leanContinueAvailable(status) && !actions.resuming
+  const canPause = runState(status) === "running" && !actions.resuming
   const openDraft = () => {
     if (drafts.length === 1) return onOpen(drafts[0]!.name)
     const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches
@@ -122,6 +123,11 @@ export default function RunHeader({
           )}
         </div>
         <div className="run-head-actions">
+          {canPause && (
+            <button type="button" className="run-head-cta" disabled={actions.busy} onClick={() => actions.pause()}>
+              {actions.pausing ? "Pausing…" : "Pause drafting"}
+            </button>
+          )}
           {asks === 0 && canContinue && (
             <button type="button" className="primary run-head-cta" disabled={actions.busy} onClick={() => actions.resume()}>
               Continue drafting
@@ -209,6 +215,12 @@ export function runHeadline(status: LeanDraftingStatus, now: number, resuming = 
   }
   if (status.status === "running")
     return { tone: "paused", title: "Paused", meta: ["The drafting service is not working on this run", steps] }
+  if (status.paused_at)
+    return {
+      tone: "paused",
+      title: step ? `Paused at ${stepName(step.key).toLowerCase()}` : "Paused",
+      meta: [position?.document ?? "", "You paused drafting", "Continue picks up from this step"],
+    }
   if (stoppedByTechnicalProblem(status))
     return { tone: "paused", title: "Paused after a technical problem", meta: ["The work so far is kept", steps] }
   if (step?.key === "gate") {

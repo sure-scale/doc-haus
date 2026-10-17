@@ -7,9 +7,10 @@ import { LEAN_CHILD_PERMISSIONS, engineSessionPort } from "./stages"
 
 const DIRECTORY = "/matters/lean-port"
 
-function scriptedEngine(reply: { text: string; outcome: string; interrupted?: boolean; finalError?: boolean }) {
+function scriptedEngine(reply: { text: string; outcome: string; interrupted?: boolean; finalError?: boolean; onIdlePoll?: () => void }) {
   const created: Record<string, unknown>[] = []
   const admitted: Record<string, unknown>[] = []
+  const interrupts: string[] = []
   const transcript: Record<string, unknown>[] = [
     { id: "msg_000000000001aaaaaaaaaaaaaa", type: "user", text: "earlier turn", time: { created: 1 } },
     { id: "msg_000000000002aaaaaaaaaaaaaa", type: "assistant", agent: "expander", time: { created: 2, completed: 3 }, content: [{ type: "text", text: "earlier reply" }] },
@@ -32,7 +33,13 @@ function scriptedEngine(reply: { text: string; outcome: string; interrupted?: bo
       queued.push(body)
       return Response.json({ data: { id: body.id, sessionID: "ses_child", type: "user", payload: { text: body.text }, delivery: body.delivery, time: { created: 5 } } })
     }
+    if (url.pathname === "/api/session/ses_child/interrupt" && method === "POST") {
+      interrupts.push(url.pathname)
+      // The native interrupt answers without the v2 data envelope.
+      return Response.json({ interrupted: true })
+    }
     if (url.pathname === "/api/session/ses_child/message" && method === "GET") {
+      if (url.searchParams.get("limit") === "1") reply.onIdlePoll?.()
       // The first idle poll still sees the earlier turn's idle record; the
       // queued prompt is promoted and answered before the second.
       if (url.searchParams.get("limit") === "1" && idlePolls.count++ === 1)
@@ -52,7 +59,7 @@ function scriptedEngine(reply: { text: string; outcome: string; interrupted?: bo
     }
     return new Response("unhandled", { status: 500 })
   }) as typeof fetch
-  return { fetcher, created, admitted, idlePolls }
+  return { fetcher, created, admitted, idlePolls, interrupts }
 }
 
 describe("lean engine session port", () => {
@@ -86,6 +93,30 @@ describe("lean engine session port", () => {
     const engine = scriptedEngine({ text: "# Memo\n\nBody.", outcome: "succeeded", interrupted: true })
     const port = engineSessionPort({ engineURL: "http://engine.test", fetch: engine.fetcher, pollMs: 1 })
     expect(await port.prompt({ directory: DIRECTORY, sessionID: "ses_child", agent: "expander", text: "Draft it." })).toBe("# Memo\n\nBody.")
+  })
+
+  test("a pause interrupts the native session and stops waiting for its reply", async () => {
+    const engine = scriptedEngine({ text: "# Memo\n\nBody.", outcome: "succeeded" })
+    const port = engineSessionPort({ engineURL: "http://engine.test", fetch: engine.fetcher, pollMs: 1 })
+    await port.interrupt!({ directory: DIRECTORY, sessionID: "ses_child" })
+    expect(engine.interrupts).toEqual(["/api/session/ses_child/interrupt"])
+
+    // Paused while the prompt was being admitted: the admitted turn is interrupted at once.
+    const admitting = new AbortController()
+    const reply = port.prompt({ directory: DIRECTORY, sessionID: "ses_child", agent: "expander", text: "Draft it.", signal: admitting.signal })
+    admitting.abort()
+    await expect(reply).rejects.toThrow("The expander session was paused.")
+    expect(engine.admitted).toHaveLength(1)
+    expect(engine.interrupts).toHaveLength(2)
+    expect(engine.idlePolls.count).toBe(0)
+
+    // Paused while waiting: polling stops; the coordinator has interrupted the session.
+    const waiting = new AbortController()
+    const polled = scriptedEngine({ text: "# Memo\n\nBody.", outcome: "succeeded", onIdlePoll: () => waiting.abort() })
+    const polling = engineSessionPort({ engineURL: "http://engine.test", fetch: polled.fetcher, pollMs: 1 })
+    await expect(polling.prompt({ directory: DIRECTORY, sessionID: "ses_child", agent: "expander", text: "Draft it.", signal: waiting.signal }))
+      .rejects.toThrow("The expander session was paused.")
+    expect(polled.idlePolls.count).toBe(1)
   })
 
   test("a turn whose last reply carries an error fails even when the session idles as succeeded", async () => {
