@@ -369,9 +369,10 @@ function parse(xml: string) {
   return new DOMParser({ errorHandler: { warning: fail, error: fail, fatalError: fail } }).parseFromString(xml, "application/xml")
 }
 function elements(node: Document | Element, name: string) { return Array.from(node.getElementsByTagNameNS(W, name)) }
+// grep projects w:t text only: breaks of any type, tabs and field codes add
+// nothing, so a paragraph holding only those has no match and is skipped here.
 function emptyParagraph(node: Element) {
   return elements(node, "t").every(text => !text.textContent)
-    && !["tab", "br", "instrText"].some(name => elements(node, name).length)
 }
 function children(node: Element, name: string) {
   return Array.from(node.childNodes).filter((child): child is Element => child.nodeType === 1)
