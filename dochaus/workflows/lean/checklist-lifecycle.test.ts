@@ -6,10 +6,11 @@ import { stageOutputValid } from "./stages"
 import { exportDocxComments, readDocxCommentParagraphs } from "../../lib/docx-comments"
 import { leanFile, readLeanJson, readOpenItems, writeLeanBytes, writeLeanText } from "./state"
 import { finalGate } from "./gate"
-import { enqueueLeanRequest } from "./requests"
+import { drainLeanRequests, enqueueLeanRequest } from "./requests"
 import { CHECKLIST_JOB_AGENTS } from "./checklist-job"
+import { checklistRepairItems, readRepairRound } from "./repairs"
 import { AGENT, cleanupMatters, happyPath, matter, scriptedModel, drafter, pidOf, DRAFT, SOURCE, SUPPORT } from "./test-support"
-import type { ChecklistCheckerInput, ChecklistProducerInput } from "./checklist-contract"
+import { checklistTextMeasuresMeaning, type ChecklistCheckerInput, type ChecklistProducerInput } from "./checklist-contract"
 
 afterEach(cleanupMatters)
 
@@ -239,6 +240,58 @@ for (const [status, marked, outcome] of [["satisfied", true, "completed"], ["ind
   if (outcome === "blocked") expect(state.stop_reason).toContain(`${parent.id}: indeterminate`)
   else expect(stageOutputValid(directory, "checklist-check")).toBe(true)
   if (outcome === "blocked" && status === "not_applicable") expect(state.stop_reason).toContain("no document-properties finding decided it")
+}, 120000)
+
+// Text measures can disprove but never establish a rendered-length directive:
+// an approximate one stays open (disclosed in the report, review draft); a
+// clearly exceeded one is unsatisfied and takes the existing repair route.
+async function documentPropertiesRun(status: "open" | "unsatisfied") {
+  const directory = matter()
+  expect((await runLean(directory, { sessions: model(directory, "indeterminate").port })).status).toBe("blocked")
+  const parent = (readLeanJson(directory, "checklist/extraction.json") as any).sources.flatMap((row: any) => row.items)[0]
+  enqueueLeanRequest(directory, { kind: "refine_checklist", parents: [{ parent_id: parent.id, scope: "target_body" }] })
+  const seen = { measures: "", guided: false }
+  const full = scriptedModel({ ...happyPath,
+    [CHECKLIST_JOB_AGENTS.check]: text => {
+      const input = JSON.parse(text.split("CHECK_INPUT:\n\n")[1]!) as ChecklistCheckerInput
+      if (input.assignment?.kind !== "document_properties")
+        return JSON.stringify({ item_id: input.item_id, status: "not_applicable", reason: "Only the document-properties assignment decides this document-wide property.", evidence: [], source_refs: input.item.source_refs, inspection_scope: JSON.stringify(input.assignment), limitation: "", deferred_to: "document_properties" })
+      seen.guided = text.split("CHECK_INPUT:")[0]!.includes(checklistTextMeasuresMeaning)
+      seen.measures = JSON.stringify(JSON.parse(input.current_evidence[0]!.text).accepted_body_text_measures)
+      return JSON.stringify({ item_id: input.item_id, status, reason: `Accepted body text measures ${seen.measures} ${status === "open" ? "do not clearly exceed about one page" : "clearly exceed one page"}.`,
+        evidence: input.current_evidence, source_refs: input.item.source_refs, inspection_scope: "Exact artifact properties.", limitation: "Rendered pagination was not verified." })
+    },
+  })
+  return { directory, parent, state: await runLean(directory, { sessions: full.port }), seen }
+}
+
+test("an approximate rendered-length directive left open by text measures completes as a review draft with its measures in the report", async () => {
+  const { directory, state, seen } = await documentPropertiesRun("open")
+  expect(seen.guided).toBe(true)
+  expect(seen.measures).toMatch(/^\{"paragraphs":\d+,"words":\d+,"characters":\d+\}$/)
+  expect(state.status).toBe("completed")
+  expect(state.stages["checklist-check"]?.status).toBe("done")
+  expect(stageOutputValid(directory, "checklist-check")).toBe(true)
+  expect(readLeanJson(directory, "gate.json")).toMatchObject({ status: "pass", delivery: "review_draft", blocking: [] })
+  const report = readFileSync(leanFile(directory, "checklist/report.md"), "utf8")
+  expect(report).toContain(`Status: open\nAccepted body text measures ${seen.measures} do not clearly exceed about one page.`)
+  expect(report).toContain("Limitation: Rendered pagination was not verified.")
+  expect(report).toContain("coverage: target_body; status: open")
+  expect(report).not.toContain("Delivery blocked")
+}, 120000)
+
+test("a rendered-length directive clearly exceeded by text measures blocks and offers the existing focused repair", async () => {
+  const { directory, parent, state, seen } = await documentPropertiesRun("unsatisfied")
+  expect(state.status).toBe("blocked")
+  expect(state.stages["checklist-check"]?.status).toBe("blocked")
+  expect(state.stop_reason).toContain(`${parent.id}: unsatisfied`)
+  const repairs = checklistRepairItems(directory)
+  expect(repairs).toHaveLength(1)
+  expect(repairs[0]).toMatchObject({ stage: "checklist-check", ref: { document: "d1", repair_target: "body" } })
+  expect(repairs[0]!.detail).toContain(seen.measures.replaceAll('"', '\\"'))
+  enqueueLeanRequest(directory, { kind: "continue" })
+  drainLeanRequests(directory, state)
+  expect(readRepairRound(directory)?.items).toEqual(repairs)
 }, 120000)
 
 test("a pending checklist with real extraction remains required at the gate", () => {

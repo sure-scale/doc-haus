@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { checklistFindingRecovery, type ChecklistFinding, buildChecklistReinspectionPrompt, buildChecklistCheckerPrompt, buildChecklistProducerPrompt, CHECKLIST_ITEM_SHAPE, parseChecklistCheckerInput, parseChecklistExtraction, parseChecklistFinding, parseChecklistItem, type ChecklistItem } from "./checklist-contract"
+import { checklistFindingRecovery, checklistTextMeasuresMeaning, type ChecklistFinding, buildChecklistReinspectionPrompt, buildChecklistCheckerPrompt, buildChecklistProducerPrompt, CHECKLIST_ITEM_SHAPE, parseChecklistCheckerInput, parseChecklistExtraction, parseChecklistFinding, parseChecklistItem, type ChecklistItem } from "./checklist-contract"
 
 const item: ChecklistItem = {
   check: "Check the proposed notice arrangement remains subject to confirmation.",
@@ -147,4 +147,19 @@ test("comparison assignments include one whole-target document-properties kind w
   expect(parseChecklistFinding({ ...base, deferred_to: "document_properties" }).deferred_to).toBe("document_properties")
   expect(parseChecklistFinding(base)).not.toHaveProperty("deferred_to")
   expect(() => parseChecklistFinding({ ...base, deferred_to: "other_unit" })).toThrow()
+})
+
+test("text measures can disprove but never establish a rendered-length directive", () => {
+  const whole = buildChecklistCheckerPrompt({ ...packet, assignment: { kind: "document_properties", ranges: [] } })
+  const instructions = whole.split("CHECK_INPUT:")[0]!
+  expect(instructions).toContain(checklistTextMeasuresMeaning)
+  expect(checklistTextMeasuresMeaning).toContain("Never report such a directive satisfied from text measures: report unsatisfied when the measures clearly exceed it; otherwise report an approximate directive open, quoting the exact measures and stating that rendered pagination was not verified")
+  expect(checklistTextMeasuresMeaning).toContain("a strict page or layout limit that the measures cannot decide remains indeterminate")
+  expect(instructions).toContain("Any other property they cannot establish remains indeterminate.")
+  for (const kind of ["target_body", "process_records"] as const)
+    expect(buildChecklistCheckerPrompt({ ...packet, assignment: { kind, ranges: [] } })).not.toContain(checklistTextMeasuresMeaning)
+  // An approximate rendered-length directive left open is non-blocking; exceeding it routes to repair.
+  const finding = { item_id: packet.item_id, reason: "Measures quoted.", evidence: [], source_refs: item.source_refs, inspection_scope: "Artifact properties.", limitation: "Rendered pagination was not verified." }
+  expect(checklistFindingRecovery(item, parseChecklistFinding({ ...finding, status: "open" }))).toBe("none")
+  expect(checklistFindingRecovery(item, parseChecklistFinding({ ...finding, status: "unsatisfied" }))).toBe("repair")
 })
