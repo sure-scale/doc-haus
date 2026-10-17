@@ -12,7 +12,7 @@ import { runChecklistRefinementFlow, readEffectiveChecklistItems, runChecklistEx
 import { selectedDeliveryPlan } from "./delivery-selection"
 import { changePlanPrompt, changeReviewPrompt, readChangeReview, runChangePreparation } from "./change-pipeline"
 import { packageReviewPrompt, readPackageReview } from "./package-review"
-import { LEAN_MAX_SUBSTANTIVE_REPAIRS, checklistRepairItems, readRepairRound, startRepairRound } from "./repairs"
+import { LEAN_MAX_SUBSTANTIVE_REPAIRS, checklistRepairItems, readRepairRound, repairedChecklistItems, startRepairRound } from "./repairs"
 import { acceptEvidenceReply, evidencePrompt } from "./evidence"
 import { researchPermissions, acceptResearchReply, researchPrompt } from "./research"
 import { runApply } from "./apply-stage"
@@ -473,11 +473,12 @@ async function runChecklistStage(directory: string, state: LeanState, deps: Lean
   if (!result.extraction_complete) details.unshift("Source extraction is incomplete or stale; not every current source item was checked.")
   // An omission gets one checklist repair round, started here without a
   // Continue: only with no integrity failure, before the run's checklist round
-  // is used, and within the shared substantive allowance. The walk restarts
-  // and this stage re-runs from the repaired draft.
+  // is used (a later review round does not restore it), and within the shared
+  // substantive allowance. The walk restarts and this stage re-runs from the
+  // repaired draft.
   const omissions = new Set(adverse.filter(row => row.class === "omission" && row.recovery === "repair" && !declined.has(row.row.item_id)).map(row => row.row.item_id))
   const round = readRepairRound(directory)
-  if (!details.length && omissions.size && !round?.items.some(item => item.stage === "checklist-check") && (round?.substantive_attempts ?? 0) < LEAN_MAX_SUBSTANTIVE_REPAIRS) {
+  if (!details.length && omissions.size && !repairedChecklistItems(round).size && (round?.substantive_attempts ?? 0) < LEAN_MAX_SUBSTANTIVE_REPAIRS) {
     const repairs = checklistRepairItems(directory, item_id => !omissions.has(item_id))
     if (repairs.length) {
       startRepairRound(directory, repairs, true)

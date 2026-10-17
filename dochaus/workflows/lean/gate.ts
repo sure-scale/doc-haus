@@ -10,7 +10,7 @@ import { finalBodyParagraphs, type ApplyResult } from "./checks"
 import { FIRST_DOCUMENT, readLeanPlan, type DocID } from "./plan"
 import { readPackageReview } from "./package-review"
 import { excerpt, quoteFound, openItem } from "./quotes"
-import { LEAN_MAX_SUBSTANTIVE_REPAIRS, readRepairRound } from "./repairs"
+import { LEAN_MAX_SUBSTANTIVE_REPAIRS, readRepairRound, repairedChecklistItems } from "./repairs"
 import { withheldChecklistRepair } from "./requests"
 import { isReviewStage, currentOpenItems, readLeanText, readLeanJson, readLeanState, readQuestions, shortHash, type LeanState, type OpenItem, type Question } from "./state"
 
@@ -174,13 +174,12 @@ function checklistOpenItem(directory: string, { item_id, item, finding }: Checkl
 /** Why an adverse finding remains, in the lawyer's words. The runner's report
  * and the gate's disclosure share it. It reads recorded state only: whether
  * the one reinspection ran, the source adjudication that declined a repair,
- * and the checklist repair round in repairs.json (the current round and each
- * document's retained repair context). */
+ * and the checklist items this run's repair rounds submitted (repairs.json). */
 export function checklistFindingLabel(directory: string, state: LeanState | undefined, row: { item_id: string; item: ChecklistItem; class: ChecklistFindingClass; reinspected: boolean }): string {
   switch (row.class) {
     case "omission":
       if (state && withheldChecklistRepair(directory, state, row.item_id, row.item)) return "omission; source adjudication declined the repair"
-      if (checklistRoundItems(directory).has(row.item_id)) return "omission not fixed by the repair round"
+      if (repairedChecklistItems(readRepairRound(directory)).has(row.item_id)) return "omission not fixed by the repair round"
       // A later round may have replaced the checklist round; the cumulative
       // allowance still shows that no further round could run.
       return (readRepairRound(directory)?.substantive_attempts ?? 0) >= LEAN_MAX_SUBSTANTIVE_REPAIRS ? "omission; the repair allowance was used up" : "omission; no repair round ran"
@@ -192,18 +191,6 @@ export function checklistFindingLabel(directory: string, state: LeanState | unde
   }
 }
 
-/** Item IDs a recorded checklist repair round submitted. */
-function checklistRoundItems(directory: string) {
-  const round = readRepairRound(directory)
-  const items = [...round?.items ?? [], ...Object.values(round?.document_contexts ?? {}).flatMap(context => context?.items ?? [])]
-  return new Set(items.flatMap(item => {
-    if (item.stage !== "checklist-check") return []
-    try {
-      const value = JSON.parse(item.detail.slice(item.detail.indexOf("\n") + 1)) as { item_id?: unknown } | null
-      return typeof value?.item_id === "string" ? [value.item_id] : []
-    } catch { return [] }
-  }))
-}
 const UNRESOLVED = "not established as satisfied; disclosed with the review draft"
 
 /** A completed finding that remains adverse, disclosed with its class and its

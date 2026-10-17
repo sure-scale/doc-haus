@@ -21,7 +21,7 @@ import { LEAN_PROMPT_VERSION, stageInputs } from "./stages"
 export const LEAN_MAX_SUBSTANTIVE_REPAIRS = 5
 
 type DocumentRepairContext = { round: number; items: OpenItem[]; basis: string }
-export type RepairRound = { round: number; requested_at: string; items: OpenItem[]; substantive_attempts?: number; document_contexts?: Partial<Record<DocID, DocumentRepairContext>> }
+export type RepairRound = { round: number; requested_at: string; items: OpenItem[]; substantive_attempts?: number; checklist_items?: string[]; document_contexts?: Partial<Record<DocID, DocumentRepairContext>> }
 
 const REPAIRABLE_DRAFT_KINDS = new Set<OpenItem["kind"]>(["quote_miss", "citation_unsupported"])
 
@@ -56,10 +56,30 @@ export function startRepairRound(directory: string, blocking: OpenItem[], substa
     if (accepted?.status !== "done" || accepted.input_sha !== hashStageInputs(step, LEAN_PROMPT_VERSION, stageInputs(directory, step))) continue
     contexts[document] = { round: previous!.round, items, basis: documentRepairBasis(directory, document) }
   }
+  // Like the allowance, the checklist items submitted so far outlive the round
+  // that submitted them, so a later round cannot re-arm their one repair.
+  const checklist = new Set([...repairedChecklistItems(previous), ...checklistItemIDs(blocking)])
   const round: RepairRound = { round: (previous?.round ?? 0) + 1, requested_at: new Date().toISOString(), items: blocking, substantive_attempts: (previous?.substantive_attempts ?? 0) + (substantive ? 1 : 0),
+    ...(checklist.size ? { checklist_items: [...checklist] } : {}),
     ...(Object.keys(contexts).length ? { document_contexts: contexts } : {}) }
   writeLeanText(directory, "repairs.json", `${JSON.stringify(round, null, 2)}\n`)
   return round
+}
+
+/** Checklist item IDs any repair round of this run submitted. */
+export function repairedChecklistItems(round: RepairRound | undefined) {
+  const items = [...round?.items ?? [], ...Object.values(round?.document_contexts ?? {}).flatMap(context => context?.items ?? [])]
+  return new Set([...round?.checklist_items ?? [], ...checklistItemIDs(items)])
+}
+
+function checklistItemIDs(items: OpenItem[]) {
+  return items.flatMap(item => {
+    if (item.stage !== "checklist-check") return []
+    try {
+      const value = JSON.parse(item.detail.slice(item.detail.indexOf("\n") + 1)) as { item_id?: unknown } | null
+      return typeof value?.item_id === "string" ? [value.item_id] : []
+    } catch { return [] }
+  })
 }
 
 /** Last admitted repair input for this document, while its non-repair inputs

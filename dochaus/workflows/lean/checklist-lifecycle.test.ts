@@ -27,12 +27,20 @@ const deferChecklistRepair = (text: string) => JSON.stringify({ shared_decisions
 // failure, so the checklist stage blocks. `second` adds it satisfied instead,
 // and `pair` with the same result as the first.
 // `departure` cites current draft text as a deliberate departure.
-function model(directory: string, status: "satisfied" | "open" | "unsatisfied" | "indeterminate" = "satisfied", extra: { open_decisions?: string[]; indeterminate_cause?: "missing_inspection" | "not_inspectable" } = {}, options: { broken?: boolean; second?: boolean; pair?: boolean; departure?: boolean } = {}) {
+// `review` has the first change review after the checklist round require one
+// body correction, so a change-review round replaces the checklist round.
+function model(directory: string, status: "satisfied" | "open" | "unsatisfied" | "indeterminate" = "satisfied", extra: { open_decisions?: string[]; indeterminate_cause?: "missing_inspection" | "not_inspectable" } = {}, options: { broken?: boolean; second?: boolean; pair?: boolean; departure?: boolean; review?: boolean } = {}) {
   let extractedBeforeBody = false
   let checkedAfterNotes = false
+  let reviewed = false
   const result = scriptedModel({
     ...happyPath,
     [AGENT["change-plan"]]: deferChecklistRepair,
+    ...(options.review ? { [AGENT["change-review"]]: () => {
+      const correction = !reviewed && Boolean(readRepairRound(directory)?.items.some(item => item.stage === "checklist-check"))
+      reviewed ||= correction
+      return JSON.stringify(correction ? { status: "changes-required", findings: [{ detail: "One material body correction." }], limitations: [] } : { status: "pass", findings: [], limitations: [] })
+    } } : {}),
     [CHECKLIST_JOB_AGENTS.extract]: text => {
       const input = JSON.parse(text.split("SOURCE_INPUT:\n\n")[1]!) as ChecklistProducerInput
       extractedBeforeBody = !existsSync(leanFile(directory, "d1/body.docx"))
@@ -132,6 +140,19 @@ test("an omission is repaired once without Continue; an adverse re-check is disc
   expect((await runLean(directory, { sessions: idle.port })).status).toBe("completed")
   expect(idle.prompts).toHaveLength(0)
   expect(readLeanJson(directory, "repairs.json")).toEqual(round)
+}, 120000)
+
+test("a later review round does not re-arm the checklist repair of an omission", async () => {
+  const directory = matter()
+  const scripted = model(directory, "unsatisfied", {}, { review: true })
+  expect((await runLean(directory, { sessions: scripted.port })).status).toBe("completed")
+  const [id] = checklistIDs(directory)
+  // The change-review round replaced the checklist round, then the re-check
+  // found the omission again: no second checklist round runs.
+  expect(focusedRepairs(scripted)).toBe(1)
+  expect(readRepairRound(directory)).toMatchObject({ round: 2, substantive_attempts: 2, items: [{ stage: "change-review" }], checklist_items: [id] })
+  expect(readLeanJson(directory, "gate.json")).toMatchObject({ status: "pass", delivery: "review_draft_with_findings", blocking: [] })
+  expect(report(directory)).toContain(`Disclosed, not satisfied: ${id}: omission not fixed by the repair round: Focused result unsatisfied.`)
 }, 120000)
 
 for (const [label, scripted] of [
