@@ -105,12 +105,13 @@ export async function runChecklistCheckFlow(directory: string, deps: ChecklistJo
   const sourceBasis = matterSourceBasis(directory)
   const jobs = contexts.map(row => ({ ...row,
     // Review allowance follows actual evidence, never a prompt/model/session revision.
+    // Exact artifact properties are evidence: newly observable measures admit a fresh check.
     canonical_input_sha: shortHash(JSON.stringify([sourceBasis, row.record.id,
       current.map(job => job.input.passages.map(ref => ({ document: ref.document, quote: ref.quote }))),
       settled.map(ref => ({ document: ref.document, quote: ref.quote })), row.context.documents,
       row.context.artifacts.map(artifact => ({ id: artifact.value.id, document: artifact.value.document, aliases: artifact.value.aliases,
         artifact: artifact.value.artifact, sha256: artifact.value.sha256,
-        annotations: artifact.value.annotations?.map(annotation => ({ artifact: annotation.artifact, sha256: annotation.sha256 })) })),
+        annotations: artifact.value.annotations?.map(annotation => ({ artifact: annotation.artifact, sha256: annotation.sha256, properties: annotation.properties })) })),
       ...(row.context.workflow.length ? [row.context.workflow] : []),
       ...(row.record.assignment ? [row.record.assignment] : [])]), 40),
     input_sha: shortHash(JSON.stringify(["checklist-check-1", deps.model, sourceBasis, buildChecklistCheckerPrompt(row.context.input), row.context.artifacts, row.context.workflow]), 40) }))
