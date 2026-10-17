@@ -4,7 +4,7 @@ import path from "node:path"
 import { drainLeanRequests, enqueueLeanRequest, pendingLeanRequests, leanUserUpdates, checklistRefinementSelections, isChecklistRefinement } from "./requests"
 import { runLean } from "./runner"
 import { quoteFound } from "./quotes"
-import { leanDir, readLeanJson, readLeanState, readLeanText, readQuestions } from "./state"
+import { leanDir, readLeanJson, readLeanState, readLeanText, readQuestions, writeLeanText } from "./state"
 import { AGENT, changes, cleanupMatters, draftingNotes, happyPath, matter, sameSession, scriptedModel, type Reply } from "./test-support"
 
 // The lawyer request queue: POSTs append request files, the lean runner is the
@@ -29,6 +29,30 @@ describe("lean request queue", () => {
     expect(readLeanText(directory, "updated-notes.md")).toBeUndefined()
     expect(readLeanState(directory)).toEqual(original)
     expect(readLeanJson(directory, `requests/done/${request.id}.json`)).toMatchObject({ outcome: { status: "refinement_included" } })
+  })
+
+  test("a Continue after a pause only resumes: an earlier gate or checklist verdict starts no repair or refinement", () => {
+    const directory = matter()
+    const original = readLeanState(directory)!
+    const blocking = [{ id: "gate:omission:earlier", stage: "gate", kind: "omission", detail: "An earlier final check item.", ref: {}, status: "open" }]
+    writeLeanText(directory, "gate.json", `${JSON.stringify({ status: "blocked", delivery: null, blocking }, null, 2)}\n`)
+    writeLeanText(directory, "repairs.json", `${JSON.stringify({ round: 2, requested_at: "2026-10-01T00:00:00.000Z", items: [], substantive_attempts: 2 }, null, 2)}\n`)
+    const repairs = readLeanText(directory, "repairs.json")
+    const paused = { ...original, status: "blocked" as const, stop_reason: "Paused at your request.", paused_at: "2026-10-17T00:00:00.000Z" }
+    const resume = enqueueLeanRequest(directory, { kind: "continue" })
+    expect(drainLeanRequests(directory, paused)).toEqual({ answered: 0, updated: 0, repairRound: false })
+    expect(readLeanJson(directory, `requests/done/${resume.id}.json`)).toMatchObject({ outcome: { status: "resume" } })
+    expect(readLeanText(directory, "repairs.json")).toBe(repairs)
+    // A checklist row still blocked from an earlier pass is not a settled hold.
+    const refine = enqueueLeanRequest(directory, { kind: "refine_checklist", parents: [{ parent_id: "requirement-a", scope: "target_body" }] })
+    drainLeanRequests(directory, { ...paused, stages: { ...original.stages, "checklist-check": { ...original.stages.discrepancy!, status: "blocked" as const } } })
+    expect(readLeanJson(directory, `requests/done/${refine.id}.json`)).toMatchObject({ outcome: { status: "rejected" } })
+    expect(checklistRefinementSelections(directory)).toEqual([])
+    // The same gate verdict, settled rather than paused, is a request for a repair round.
+    const { paused_at: _paused, ...settled } = paused
+    enqueueLeanRequest(directory, { kind: "continue" })
+    expect(drainLeanRequests(directory, settled)).toMatchObject({ repairRound: true })
+    expect(readLeanText(directory, "repairs.json")).not.toBe(repairs)
   })
 
   test("refinement rejects other stop points and malformed selections", () => {

@@ -17,12 +17,14 @@ import {
   answerLeanQuestion,
   isLeanDraftingStatus,
   leanDeliveredDocuments,
+  pauseLeanDraftingRun,
   resumeLeanDraftingRun,
   type LeanDraftingStatus,
 } from "../src/api/ingest/lean"
 import { draftingTurnRecoveryMode } from "../src/components/chat/drafting-recovery"
 import { leanContinueAvailable, leanSettledItems, leanSettledSummary, runPosition, stepGroups, openQuestions } from "../src/components/drafting/model"
 import Questions from "../src/components/drafting/Questions"
+import { runOutcome } from "../src/components/narration/outcome"
 import RunHeader, { runHeadline } from "../src/components/drafting/RunHeader"
 import type { RunActions } from "../src/components/drafting/useRunActions"
 
@@ -128,6 +130,55 @@ test("the run header says where the run is in one line and offers the one next s
   expect(gated).toContain("Final check settled 2 open items: 1 still blocking, 1 resolved.")
   expect(gated).not.toContain("recorded in the drafting notes")
   expect(render(repairing())).toContain("Open items: 2 other items to check.")
+})
+
+function pausedRun() {
+  const pending = { status: "pending", attempts: 0, started_at: null, finished_at: null }
+  // Paused during apply; the final check's row is still the earlier pass's.
+  return lean({
+    ...blockedGate,
+    stop_reason: "Paused at your request.",
+    paused_at: "2026-10-17T09:00:00.000Z",
+    stages: { ...blockedGate.stages, "d1.apply": pending, finalize: pending },
+  })
+}
+
+test("Pause posts the run's owner to the lean pause route and keeps refusals", async () => {
+  const calls = respond({ profile: "lean", mode: "paused", status: pausedRun() })
+  expect(await pauseLeanDraftingRun("matter-a", "ses_child1")).toMatchObject({ mode: "paused", status: { status: "blocked", stop_reason: "Paused at your request." } })
+  expect(calls).toHaveLength(1)
+  expect(calls[0]?.url).toEndWith("/matters/matter-a/lean/pause")
+  expect(calls[0]?.init?.method).toBe("POST")
+  expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({ ownerSessionID: "ses_child1" })
+
+  respond({ error: "This drafting run is not working, so there is nothing to pause.", code: "lean_run_not_working" }, 409)
+  await expect(pauseLeanDraftingRun("matter-a", "ses_child1")).rejects.toThrow("This drafting run is not working, so there is nothing to pause.")
+  respond({ profile: "lean", mode: "queued", request_id: "r1", status: pausedRun() })
+  await expect(pauseLeanDraftingRun("matter-a", "ses_child1")).rejects.toThrow("Drafting run response is invalid.")
+})
+
+test("the header offers Pause only while the run is working; a paused run offers Continue", () => {
+  const now = Date.parse(completed.updated_at)
+  let paused = 0
+  const actions: RunActions = { busy: false, pausing: false, error: "", resuming: false, resume: async () => true, answer: async () => true, update: async () => true, refine: async () => true, pause: async () => (paused++, true) }
+  const render = (status: LeanDraftingStatus, overrides: Partial<RunActions> = {}) =>
+    renderToStaticMarkup(createElement(RunHeader, { status, actions: { ...actions, ...overrides }, own: true, onOpen: () => {} }))
+  const working = render(lean(start.status))
+  expect(working).toMatch(/<button type="button" class="run-head-cta">Pause drafting<\/button>/)
+  expect(working).not.toContain("Continue drafting")
+  expect(render(lean(start.status), { busy: true, pausing: true })).toMatch(/<button type="button" class="run-head-cta" disabled="">Pausing…<\/button>/)
+  expect(render(lean(start.status), { resuming: true })).not.toContain("Pause drafting")
+  for (const fixture of [completed, blockedGate, blockedQuestion, failed, orphaned]) expect(render(lean(fixture))).not.toContain("Pause drafting")
+  expect(paused).toBe(0)
+
+  const stopped = render(pausedRun())
+  expect(stopped).toContain("You paused drafting")
+  expect(stopped).toContain("Continue drafting")
+  expect(stopped).not.toContain("Pause drafting")
+  expect(stopped).not.toContain("Continue runs a repair round")
+  expect(runHeadline(pausedRun(), now)).toMatchObject({ tone: "paused", title: "Paused at apply changes" })
+  expect(runOutcome(pausedRun())?.text).toBe("Paused at your request. Continue drafting (above) picks up from the step that was in progress.")
+  expect(draftingUpdateAdmission({ ...pausedRun(), stages: { ...pausedRun().stages, "checklist-check": { status: "blocked" } } })).toBe("closed")
 })
 
 test("the conversation recovers only a printed tool call; a new draft request starts after a run finished and is refused while it is open", async () => {

@@ -44,6 +44,9 @@ export type LeanState = {
   revision: number
   status: "running" | "blocked" | "failed" | "completed"
   stop_reason: string | null
+  /** Set while the run is blocked only because the lawyer paused it. Continue
+   * then simply resumes: the pause is not a settled gate or checklist verdict. */
+  paused_at?: string
   owner_session_id: string
   model: LeanModel | null
   created_at: string

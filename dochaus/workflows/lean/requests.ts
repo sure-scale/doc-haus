@@ -62,8 +62,9 @@ export function queuedAnswerIDs(directory: string) {
 
 /** Processes pending requests in order. Answers are always applied. A Continue
  * is processed only when `stopped` is the run's settled state: on a blocked gate
- * it starts one repair round; otherwise it simply resumes. While a pass is in
- * progress a Continue stays queued until the pass settles. */
+ * it starts one repair round; otherwise, including after a pause, it simply
+ * resumes. While a pass is in progress a Continue stays queued until the pass
+ * settles. */
 export function drainLeanRequests(directory: string, stopped?: LeanState): DrainOutcome {
   const pending = pendingLeanRequests(directory)
   if (pending.length) mkdirSync(path.join(requestsDir(directory), "done"), { recursive: true, mode: 0o700 })
@@ -86,13 +87,16 @@ export function drainLeanRequests(directory: string, stopped?: LeanState): Drain
 }
 
 function processRequest(directory: string, request: unknown, stopped: LeanState | undefined): { status: string; detail?: string } {
+  // A paused run stopped mid-pass: an earlier gate or checklist verdict it still
+  // shows is not current, so it neither admits nor repairs anything.
+  const verdict = stopped?.paused_at ? undefined : stopped
   if (isChecklistRefinement(request)) {
-    if (stopped?.status !== "blocked" || stopped.stages["checklist-check"]?.status !== "blocked")
+    if (verdict?.status !== "blocked" || verdict.stages["checklist-check"]?.status !== "blocked")
       return { status: "rejected", detail: "Checklist refinement requires a settled blocked checklist stage." }
     return { status: "refinement_included" }
   }
   if (isClarification(request)) {
-    if (stopped?.status !== "blocked" || stopped.stages["checklist-check"]?.status !== "blocked")
+    if (verdict?.status !== "blocked" || verdict.stages["checklist-check"]?.status !== "blocked")
       return { status: "rejected", detail: "Clarification requires a settled blocked checklist; no document edit was admitted." }
     // The processed request is the context. Do not rewrite the brief or body.
     return { status: "clarification_included" }
@@ -113,11 +117,11 @@ function processRequest(directory: string, request: unknown, stopped: LeanState 
     }
   }
   if (!isContinue(request)) return { status: "rejected", detail: "unreadable request" }
-  if (stopped?.status === "blocked" && stopped.stages["checklist-check"]?.status === "blocked") {
+  if (verdict?.status === "blocked" && verdict.stages["checklist-check"]?.status === "blocked") {
     // Changed source, answer or Word inputs must be inspected before an old
     // adverse verdict can consume a substantive repair attempt.
     const current = hashStageInputs("checklist-check", LEAN_PROMPT_VERSION, stageInputs(directory, "checklist-check"))
-    const findings = stopped.stages["checklist-check"]?.input_sha === current ? checklistRepairItems(directory) : []
+    const findings = verdict.stages["checklist-check"]?.input_sha === current ? checklistRepairItems(directory) : []
     if (findings.length) {
       if ((readRepairRound(directory)?.substantive_attempts ?? 0) >= LEAN_MAX_SUBSTANTIVE_REPAIRS)
         return { status: "rejected", detail: `Checklist corrections remain after ${LEAN_MAX_SUBSTANTIVE_REPAIRS} substantive repair rounds; no new body repair was admitted.` }
@@ -126,7 +130,7 @@ function processRequest(directory: string, request: unknown, stopped: LeanState 
     }
     return { status: "resume" }
   }
-  const blocking = stopped?.status === "blocked" ? blockedGateItems(directory) : []
+  const blocking = verdict?.status === "blocked" ? blockedGateItems(directory) : []
   if (!blocking.length) return { status: "resume" }
   const round = startRepairRound(directory, blocking)
   return { status: "repair_round", detail: `round ${round.round}: ${blocking.length} item(s)` }
