@@ -1,10 +1,11 @@
-import { afterEach, expect, test } from "bun:test"
+import { afterEach, expect, setSystemTime, test } from "bun:test"
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
+import { strFromU8, unzipSync } from "fflate"
 import { renderMarkdownToDocx } from "../../lib/render"
 import { runLean, stageInputSha } from "./runner"
 import { stageOutputValid } from "./stages"
 import { exportDocxComments, readDocxCommentParagraphs } from "../../lib/docx-comments"
-import { leanFile, readLeanJson, readOpenItems, writeLeanBytes, writeLeanText } from "./state"
+import { leanFile, readLeanJson, readLeanState, readOpenItems, updateLeanStage, writeLeanBytes, writeLeanText } from "./state"
 import { finalGate } from "./gate"
 import { drainLeanRequests, enqueueLeanRequest } from "./requests"
 import { CHECKLIST_JOB_AGENTS } from "./checklist-job"
@@ -507,13 +508,19 @@ async function declinedRepairRun(reinspected: "unsatisfied" | "open") {
         source_refs: input.item.source_refs, inspection_scope: "Current body paragraphs only.", limitation: "Comments not inspected." })
     },
   })
-  expect((await runLean(directory, { sessions: scripted.port })).status).toBe("blocked")
+  const initial = await runLean(directory, { sessions: scripted.port })
+  expect(initial.status).toBe("blocked")
+  const outputs = () => ["d1/redline.docx", "d1/body-applied.docx", "drafting-notes.docx"].map(file => readFileSync(leanFile(directory, file)))
+  const delivered = outputs()
   // The first Continue submits the adverse assessment; the adjudicator declines
   // it with a source-cited reason and the ordinary re-check stays unsatisfied.
   enqueueLeanRequest(directory, { kind: "continue" })
   expect((await runLean(directory, { sessions: scripted.port })).status).toBe("blocked")
   const round = readLeanJson(directory, "repairs.json")
   expect(round).toMatchObject({ round: 1, substantive_attempts: 1 })
+  // The declined repair applies nothing; re-applying and re-rendering the
+  // unchanged notes keep every Word output byte for byte.
+  expect(outputs()).toEqual(delivered)
   expect(readLeanJson(directory, "d1/repair-adjudications.json")).toMatchObject({ assessments: [{ value: { groups: [], findings: [{ disposition: "rejected" }] } }] })
   expect(checks.some(text => text.includes("GENERATED, UNVERIFIED COUNTEREVIDENCE"))).toBe(false)
   const before = { prompts: scripted.prompts.length, plans: scripted.count(AGENT["change-plan"]) }
@@ -528,7 +535,7 @@ async function declinedRepairRun(reinspected: "unsatisfied" | "open") {
   expect(added[0]!.text).toContain("DECLINED_REASON")
   expect(readLeanJson(directory, "repairs.json")).toEqual(round)
   expect(readLeanJson(directory, "checklist/checks.json")).toMatchObject({ checks: [{ reinspection: { original_finding: { status: "unsatisfied" }, status: "succeeded" } }] })
-  return { directory, scripted, state, round }
+  return { directory, scripted, state, round, applied: initial.stages["d1.apply"]!.started_at! }
 }
 
 test("Continue does not resubmit a declined checklist repair; its one reinspection keeps the evidenced defect blocked and an unchanged Continue does nothing", async () => {
@@ -547,6 +554,32 @@ test("Continue does not resubmit a declined checklist repair; its one reinspecti
   expect(again).toMatchObject({ status: "blocked", stop_reason: settled.stop_reason })
   expect(readLeanJson(directory, "repairs.json")).toEqual(round)
   expect(readFileSync(leanFile(directory, "checklist/report.md"), "utf8")).toBe(settled.report)
+}, 120000)
+
+test("an apply re-run from unchanged inputs keeps the Word outputs, first-applied revision dates, checklist records and spent reinspection without a model call", async () => {
+  const { directory, scripted, state, applied } = await declinedRepairRun("unsatisfied")
+  const files = ["d1/redline.docx", "d1/body-applied.docx", "drafting-notes.docx"]
+  const before = Object.fromEntries(files.map(file => [file, readFileSync(leanFile(directory, file))]))
+  const checks = readLeanJson(directory, "checklist/checks.json")
+  // Tracked changes show when they were first applied, through the declined no-op apply.
+  const dates = [...strFromU8(unzipSync(before["d1/redline.docx"]!)["word/document.xml"]!).matchAll(/<w:(?:ins|del)\b[^>]*\bw:date="([^"]*)"/g)].map(match => match[1])
+  expect(dates.length).toBeGreaterThan(0)
+  expect(new Set(dates)).toEqual(new Set([new Date(applied).toISOString().replace(/\.\d{3}Z$/, "Z")]))
+  // An apply interrupted after writing its outputs re-runs from its inputs, a day later.
+  updateLeanStage(directory, readLeanState(directory)!, "d1.apply", { status: "running", input_sha: null, outputs: [], finished_at: null })
+  const prompts = scripted.prompts.length
+  try {
+    setSystemTime(new Date(Date.parse(applied) + 86_400_000))
+    enqueueLeanRequest(directory, { kind: "continue" })
+    const again = await runLean(directory, { sessions: scripted.port })
+    expect(Date.parse(again.stages["d1.apply"]!.started_at!)).toBe(Date.parse(applied) + 86_400_000)
+    expect(again).toMatchObject({ status: "blocked", stop_reason: state.stop_reason })
+  } finally {
+    setSystemTime()
+  }
+  expect(scripted.prompts.length).toBe(prompts)
+  for (const file of files) expect(readFileSync(leanFile(directory, file))).toEqual(before[file]!)
+  expect(readLeanJson(directory, "checklist/checks.json")).toEqual(checks)
 }, 120000)
 
 test("a reinspection that weighs a declined repair and leaves the item open delivers a review draft disclosing it", async () => {

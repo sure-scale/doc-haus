@@ -24,6 +24,18 @@ test("shared rendering gives drafting notes and table cells unique hidden paragr
   expect(body.getElementsByTagNameNS(W, "tc").length).toBe(4)
 })
 
+test("re-rendering unchanged text against its earlier render keeps its ids and exact bytes", async () => {
+  const notes = "# Drafting notes\n\nA remaining question is disclosed here.\n\n| Topic | Treatment |\n| --- | --- |\n| Timing | Confirm the date. |"
+  const first = (await renderMarkdownToDocx(notes)).bytes
+  expect((await renderMarkdownToDocx(notes, first)).bytes).toEqual(first)
+  // Changed or unreadable earlier output lends no ids.
+  const changed = (await renderMarkdownToDocx(`${notes}\n\nA further note.`, first)).bytes
+  expect(readDocxCommentParagraphs(changed)[0]!.pids).not.toEqual(readDocxCommentParagraphs(first)[0]!.pids)
+  const unreadable = (await renderMarkdownToDocx(notes, new Uint8Array([1, 2, 3]))).bytes
+  expect(readDocxCommentParagraphs(unreadable).map(row => row.paragraph_text)).toEqual(readDocxCommentParagraphs(first).map(row => row.paragraph_text))
+  expect(readDocxCommentParagraphs(unreadable)[0]!.pids).not.toEqual(readDocxCommentParagraphs(first)[0]!.pids)
+})
+
 test("a saved template round trip and a second pointer pass retain ids and exact bytes", async () => {
   const source = (await renderMarkdownToDocx("# Template\n\n[insert recipient] shall receive the record.\n\n| Topic | Detail |\n| --- | --- |\n| Notice | [insert date] | ")).bytes
   const session = (await docxodus()).openDocxSession(source, {})

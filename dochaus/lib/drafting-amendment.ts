@@ -89,13 +89,14 @@ export async function ensureParagraphPointers(docxPath: string) {
 
 // Generation/export metadata only: unlike the amendment reader above, this can
 // point at accepted text in a native comparison without accepting its revisions.
-// A comparison may reuse the clean body's ids only when its complete accepted
-// paragraph sequence matches. Fresh generation otherwise receives fresh ids.
+// A comparison or re-render may reuse the reference's ids only when its complete
+// accepted paragraph sequence matches. Fresh generation otherwise receives fresh
+// ids, as it does when the reference cannot be read.
 export function withParagraphPointers(source: Uint8Array, reference?: Uint8Array) {
   const parts = unzipSync(source)
   const doc = pointerDocument(parts)
   const paragraphs = pointerParagraphs(doc)
-  const referenceParagraphs = reference ? pointerParagraphs(pointerDocument(unzipSync(reference))) : []
+  const referenceParagraphs = (() => { try { return reference ? pointerParagraphs(pointerDocument(unzipSync(reference))) : [] } catch { return [] } })()
   const preferred = paragraphs.length === referenceParagraphs.length && paragraphs.every((row, index) => row.text === referenceParagraphs[index]!.text)
     ? referenceParagraphs.map(row => paragraphPointers(row.node).find(pointer => PID.test(pointer.pid))?.pid)
     : []
@@ -105,6 +106,81 @@ export function withParagraphPointers(source: Uint8Array, reference?: Uint8Array
 export async function compareDocxWithPointers(original: Uint8Array, modified: Uint8Array, options: Parameters<Awaited<ReturnType<typeof docxodus>>["compareDocuments"]>[2]) {
   const current = withParagraphPointers(modified)
   return withParagraphPointers(await (await docxodus()).compareDocuments(original, current, options), current)
+}
+
+// Docxodus dates every revision with the wall clock and gives its ignorable
+// markup fresh random ids, so regenerating an unchanged comparison changed its
+// bytes and showed regeneration time. A revision whose paragraph (else table
+// row) reads exactly as in the previous export keeps that export's dates, when
+// the change was first made; other revisions take `date`, when this change was
+// applied. When nothing else differs, the previous export is kept whole.
+export function withStableRevisionDates(bytes: Uint8Array, date: string, previous?: Uint8Array) {
+  const stamp = new Date(date).toISOString().replace(/\.\d{3}Z$/, "Z")
+  const earlier = earlierRevisions(previous)
+  const parts = unzipSync(bytes)
+  for (const [name, doc] of revisionDocuments(parts)) {
+    const units = revisionUnits(doc)
+    for (const unit of units) {
+      const dates = earlier?.dates.get(`${name}\n${unit.key}`)?.shift()
+      unit.revisions.forEach((node, index) => node.setAttributeNS(W, "w:date", dates?.length === unit.revisions.length ? dates[index]! : stamp))
+    }
+    if (units.length) parts[name] = strToU8(new XMLSerializer().serializeToString(doc))
+  }
+  return earlier && regenerated(earlier.parts) === regenerated(parts) ? previous! : zipSync(parts, { mtime: new Date(1980, 0, 1) })
+}
+
+// An unreadable earlier export lends no dates.
+function earlierRevisions(previous?: Uint8Array) {
+  try {
+    if (!previous) return
+    const parts = unzipSync(previous)
+    const dates = new Map<string, string[][]>()
+    for (const [name, doc] of revisionDocuments(parts)) for (const unit of revisionUnits(doc)) {
+      const key = `${name}\n${unit.key}`
+      dates.set(key, [...dates.get(key) ?? [], unit.revisions.map(node => node.getAttributeNS(W, "date")!)])
+    }
+    return { parts, dates }
+  } catch {
+    return undefined
+  }
+}
+
+function revisionDocuments(parts: Record<string, Uint8Array>) {
+  return Object.entries(parts).flatMap(([name, bytes]) => /^word\/[^/]+\.xml$/.test(name) && strFromU8(bytes).includes(" w:date=")
+    ? [[name, new DOMParser().parseFromString(strFromU8(bytes), "application/xml")] as const] : [])
+}
+
+function revisionUnits(doc: Document) {
+  const units = new Map<Element, Element[]>()
+  for (const node of Array.from(doc.getElementsByTagNameNS(W, "*"))) {
+    if (node.localName === "comment" || !node.hasAttributeNS(W, "date")) continue
+    const unit = enclosing(node, "p") ?? enclosing(node, "tr") ?? node
+    units.set(unit, [...units.get(unit) ?? [], node])
+  }
+  // Revision, bookmark and comment ids are numbered package-wide, so an earlier
+  // change renumbers them; hidden paragraph pointers are artifact-scoped.
+  return [...units].map(([unit, revisions]) => ({ revisions,
+    key: regeneratedMarkup(new XMLSerializer().serializeToString(unit), new Map())
+      .replace(/ w:(?:date|id)="[^"]*"/g, "").replace(new RegExp(` w:name="${PREFIX}[^"]*"`, "g"), "") }))
+}
+
+function enclosing(node: Node, name: string) {
+  for (let parent = node.parentNode; parent; parent = parent.parentNode)
+    if (parent.nodeType === 1 && (parent as Element).namespaceURI === W && (parent as Element).localName === name) return parent as Element
+  return null
+}
+
+// Package content apart from the comparator's random markup ids and new
+// relationship ids; a relationship id keeps its role through first appearance.
+function regenerated(parts: Record<string, Uint8Array>) {
+  const ids = new Map<string, string>()
+  return JSON.stringify(Object.keys(parts).toSorted().map(name => [name, /\.(?:xml|rels)$/.test(name)
+    ? regeneratedMarkup(strFromU8(parts[name]!), ids) : Buffer.from(parts[name]!).toString("base64")]))
+}
+
+function regeneratedMarkup(xml: string, ids: Map<string, string>) {
+  return xml.replace(/( [\w.-]+:Unid=")[0-9a-f]*"/g, '$1"')
+    .replace(/="(R[0-9a-f]{16})"/g, (_, id: string) => `="R${ids.get(id) ?? ids.set(id, String(ids.size)).get(id)}"`)
 }
 
 function pointerDocument(parts: Record<string, Uint8Array>) {

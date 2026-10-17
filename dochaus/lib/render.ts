@@ -34,7 +34,8 @@ const ingestUrl = process.env.INGEST_URL ?? `http://127.0.0.1:${process.env.DOC_
 // Compose `content` (markdown) onto the styled seed and return the saved .docx
 // bytes plus the advisory consistency lint. Caller owns the deliverable write via
 // uploadDeliverable so each tool can name the file and report independently.
-export async function renderMarkdownToDocx(content: string) {
+// A re-render of an earlier render's unchanged text keeps its paragraph ids.
+export async function renderMarkdownToDocx(content: string, previous?: Uint8Array) {
   const text = prepareMarkdownRenderText(splitBlocks(content))
   const dx = await docxodus()
   const session = dx.openDocxSession(await Bun.file(baseSeed).bytes(), {})
@@ -70,7 +71,7 @@ export async function renderMarkdownToDocx(content: string) {
       .join("\n"),
   )
 
-  const bytes = withGeneratedDocxAttribution(withParagraphPointers(highlightOpenItemsInDocx(composed)))
+  const bytes = withGeneratedDocxAttribution(withParagraphPointers(highlightOpenItemsInDocx(composed), previous))
   return { bytes, lint }
 }
 

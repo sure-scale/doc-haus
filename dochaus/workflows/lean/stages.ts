@@ -308,7 +308,8 @@ export async function acceptStageReply(directory: string, step: StepID, reply: s
   ])
   const notes = advisory ? `${reply.trimEnd()}\n\n${advisory}\n` : reply
   writeLeanText(directory, "drafting-notes.md", ensureNewline(notes))
-  writeLeanBytes(directory, "drafting-notes.docx", (await renderMarkdownToDocx(notes)).bytes)
+  const previous = leanFile(directory, "drafting-notes.docx")
+  writeLeanBytes(directory, "drafting-notes.docx", (await renderMarkdownToDocx(notes, existsSync(previous) ? readFileSync(previous) : undefined)).bytes)
   return { ...check, outputs: stepOutputs(step) }
 }
 
