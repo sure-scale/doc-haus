@@ -140,4 +140,11 @@ test("comparison assignments include one whole-target document-properties kind w
     expect(range).not.toContain("Decide ONLY document-wide properties")
   }
   expect(buildChecklistCheckerPrompt(packet)).not.toContain("document-properties assignment")
+  expect(prompt).not.toContain("deferred_to")
+  expect(buildChecklistCheckerPrompt(packet)).not.toContain("deferred_to")
+  expect(buildChecklistCheckerPrompt({ ...packet, assignment: { kind: "target_body", ranges: [] } })).toContain('Whenever this component defers such a property, also return "deferred_to":"document_properties"; otherwise omit that field.')
+  const base = { item_id: packet.item_id, status: "not_applicable", reason: "Deferred.", evidence: [], source_refs: item.source_refs, inspection_scope: "Assigned range.", limitation: "" }
+  expect(parseChecklistFinding({ ...base, deferred_to: "document_properties" }).deferred_to).toBe("document_properties")
+  expect(parseChecklistFinding(base)).not.toHaveProperty("deferred_to")
+  expect(() => parseChecklistFinding({ ...base, deferred_to: "other_unit" })).toThrow()
 })

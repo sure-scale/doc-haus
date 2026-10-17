@@ -65,6 +65,8 @@ export const checklistFindingSchema = z.object({
   limitation: z.string(),
   action_status: z.enum(["fulfilled", "not_fulfilled", "indeterminate", "not_applicable"]).optional(),
   open_decisions: z.array(text).optional(),
+  // Typed range/process deferral: only an affirmative whole-target finding can then pass the parent.
+  deferred_to: z.enum(["document_properties"]).optional(),
 }).strict()
 
 export type ChecklistTargetDocument = z.infer<typeof checklistTargetDocumentSchema>
@@ -129,7 +131,7 @@ export function buildChecklistProducerPrompt(value: ChecklistProducerInput): str
 }
 
 // Whole-target properties have one assignment; passage and record assignments defer them.
-const documentPropertiesDeferral = "A document-wide property is one established from the whole target's artifact properties, such as its exact text measures or revision counts, rather than from the wording of any passage. Only the separate document-properties assignment decides it. If the parent concerns only such a property, report not_applicable for this component rather than indeterminate; otherwise decide its other aspects here without treating that property as an inspection gap."
+const documentPropertiesDeferral = `A document-wide property is one established from the whole target's artifact properties, such as its exact text measures or revision counts, rather than from the wording of any passage. Only the separate document-properties assignment decides it. If the parent concerns only such a property, report not_applicable for this component rather than indeterminate; otherwise decide its other aspects here without treating that property as an inspection gap. Whenever this component defers such a property, also return "deferred_to":"document_properties"; otherwise omit that field.`
 const documentPropertiesAssignment = "Decide ONLY document-wide properties of the named target from its supplied exact artifact properties, including accepted_body_text_measures; separate assignments compare every paragraph and the process records. Report not_applicable when the parent states no document-wide property. Do not assess passage wording here, and do not treat these properties as proof of content, layout or compliance beyond what they state; a property they cannot establish remains indeterminate."
 
 export function buildChecklistCheckerPrompt(value: ChecklistCheckerInput): string {

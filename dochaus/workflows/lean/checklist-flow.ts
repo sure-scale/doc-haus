@@ -316,6 +316,10 @@ export function reconcileChecklistParentCoverage(directory: string, checks: Chec
       if (checklistFindingRecovery(child.item, finding) === "inspect") issues.push(`${child.id}: action fulfillment or applicability requires inspection.`)
       if (child.item.required_action === "adopt" && child.item.target.treatment === "operative" && finding?.action_status === "fulfilled" && !finding.evidence.some(evidence => evidence.kind === "body" || evidence.kind === "artifact")) issues.push(`${child.id}: adoption lacks current operative or artifact evidence.`)
     }
+    // A range/process deferral is never a vacuous pass: the whole-target unit must decide it.
+    const deferred = parent.units.flatMap(unit => unit.children).filter(child => child.assignment?.kind !== "document_properties" && checks.find(row => row.item_id === child.id)?.finding?.deferred_to)
+    if (deferred.length && !parent.units.flatMap(unit => unit.children).some(child => child.assignment?.kind === "document_properties" && ["satisfied", "open", "unsatisfied"].includes(checks.find(row => row.item_id === child.id)?.finding?.status ?? "")))
+      issues.push(`${parent.parent_id}: ${deferred.map(child => child.id).join(", ")} deferred a document-wide property, but no document-properties finding decided it.`)
     const statuses = findings.map(row => row?.finding?.status)
     const unfulfilled = parent.units.flatMap(unit => unit.children).some(child => checklistFindingRecovery(child.item, checks.find(row => row.item_id === child.id)?.finding) === "repair")
     const status = issues.length || statuses.includes("indeterminate") ? "indeterminate" as const

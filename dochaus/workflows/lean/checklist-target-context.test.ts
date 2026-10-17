@@ -227,10 +227,19 @@ test("range units defer a document-wide parent to its one document-properties fi
   const whole = readEffectiveChecklistItems(dir).items.filter(row => row.assignment?.kind === "document_properties")
   expect(whole).toHaveLength(1)
   expect(deps.inputs.filter(input => input.item_id === whole[0]!.id).flatMap(input => input.current_evidence).every(row => row.kind === "artifact" && "accepted_body_text_measures" in JSON.parse(row.text))).toBe(true)
-  const deferred = (status: "satisfied" | "indeterminate" | "not_applicable") => result.checks.map(row => ({ ...row, finding: { ...row.finding!, status: row.item_id === whole[0]!.id ? status : "not_applicable" as const } }))
-  expect(reconcileChecklistParentCoverage(dir, deferred("satisfied"))[0]!.status).toBe("satisfied")
-  expect(reconcileChecklistParentCoverage(dir, deferred("indeterminate"))[0]!.status).toBe("indeterminate")
-  expect(reconcileChecklistParentCoverage(dir, result.checks.filter(row => row.item_id !== whole[0]!.id))[0]!.status).toBe("indeterminate")
+  const coverage = (checks: typeof result.checks) => reconcileChecklistParentCoverage(dir, checks)[0]!
+  const deferred = (status: "satisfied" | "open" | "indeterminate" | "not_applicable", others: "satisfied" | "not_applicable" = "not_applicable", marked = true) => result.checks.map(row => ({ ...row, finding: row.item_id === whole[0]!.id
+    ? { ...row.finding!, status } : { ...row.finding!, status: others, ...(marked ? { deferred_to: "document_properties" as const } : {}) } }))
+  expect(coverage(deferred("satisfied")).status).toBe("satisfied")
+  expect(coverage(deferred("open")).status).toBe("open")
+  // A deferral is never a vacuous pass, including when other aspects were decided by the ranges.
+  for (const checks of [deferred("not_applicable"), deferred("indeterminate"), deferred("not_applicable", "satisfied")]) {
+    expect(coverage(checks).status).toBe("indeterminate")
+    expect(coverage(checks).issues.some(issue => issue.includes("deferred a document-wide property, but no document-properties finding decided it"))).toBe(true)
+  }
+  // Without a typed deferral, base all-not_applicable semantics are unchanged: a non-blocking satisfied parent.
+  expect(coverage(deferred("not_applicable", "not_applicable", false))).toMatchObject({ status: "satisfied", issues: [] })
+  expect(coverage(result.checks.filter(row => row.item_id !== whole[0]!.id)).status).toBe("indeterminate")
 })
 
 test("a saved comparison without the document-properties unit is stale until the full-draft check is selected again", async () => {
