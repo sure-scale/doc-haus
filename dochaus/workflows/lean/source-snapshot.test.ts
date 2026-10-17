@@ -1,10 +1,10 @@
 import { Database } from "bun:sqlite"
 import { afterEach, expect, spyOn, test } from "bun:test"
 import { leanSteps } from "./plan"
-import { matterSourceBasis, matterSourceIDs, withSourceSnapshot } from "./quotes"
-import { enqueueLeanRequest, leanUserUpdates } from "./requests"
+import { matterSourceBasis, matterSourceIDs, snapshotRead, withSourceSnapshot } from "./quotes"
+import { checklistRefinementSelections, enqueueLeanRequest, leanUserUpdates } from "./requests"
 import { runLean, stageInputSha } from "./runner"
-import { readLeanState } from "./state"
+import { readLeanState, writeLeanText } from "./state"
 import { cleanupMatters, happyPath, matter, scriptedModel } from "./test-support"
 
 // One synchronous operation reads the matter's sources and processed requests
@@ -70,4 +70,23 @@ test("an async operation is refused and its snapshot ends with the synchronous c
   // A failed operation also ends its snapshot.
   expect(() => withSourceSnapshot(() => { throw new Error("stopped") })).toThrow("stopped")
   expect(countScans(() => [matterSourceBasis(directory), matterSourceBasis(directory)]).scans).toBe(2)
+})
+
+test("a caller cannot alter a snapshot value another caller reads", () => {
+  const directory = matter()
+  const selection = { parent_id: "p1", scope: "target_body" as const }
+  writeLeanText(directory, "requests/done/000000000000001-000000-aaaaaaaa.json", `${JSON.stringify({ kind: "refine_checklist", parents: [selection], id: "000000000000001-000000-aaaaaaaa", outcome: { status: "refinement_included" } })}\n`)
+  writeLeanText(directory, "requests/done/000000000000002-000000-bbbbbbbb.json", `${JSON.stringify({ kind: "update", text: "Keep the headings short.", id: "000000000000002-000000-bbbbbbbb", outcome: { status: "included" } })}\n`)
+  withSourceSnapshot(() => {
+    const processed = checklistRefinementSelections(directory)
+    expect(() => { (processed[0] as { scope: string }).scope = "cited_sources" }).toThrow(TypeError)
+    expect(checklistRefinementSelections(directory)).toEqual([selection])
+    leanUserUpdates(directory)[0]!.text = "Changed by one caller."
+    expect(leanUserUpdates(directory)).toMatchObject([{ text: "Keep the headings short." }])
+    // Checklist source inputs share this path: nested values are frozen too.
+    const inputs = snapshotRead("nested", () => ({ passages: [{ quote: "within thirty days" }] }))
+    expect(() => { inputs.passages[0]!.quote = "within sixty days" }).toThrow(TypeError)
+    expect(() => { inputs.passages.push({ quote: "added" }) }).toThrow(TypeError)
+    expect(snapshotRead("nested", () => ({ passages: [{ quote: "unread" }] }))).toEqual({ passages: [{ quote: "within thirty days" }] })
+  })
 })

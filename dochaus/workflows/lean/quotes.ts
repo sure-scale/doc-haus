@@ -38,7 +38,8 @@ export function inDocument(item: OpenItem, document: DocID): OpenItem {
 // checklist source inputs) and processed requests. Keying every step rereads
 // them; inside a scope each is read once, and the scope ends before anything can
 // await, so no write, lock release or later turn sees it. Values are shared
-// within the scope: callers only read them. Outside a scope every read is fresh.
+// within the scope, so they are deeply frozen: one caller cannot alter what
+// another reads. Outside a scope every read is fresh (and frozen alike).
 const snapshot: { reads?: Map<string, unknown> } = {}
 
 /** Runs `operation` with the matter reads above memoized for its duration only.
@@ -59,12 +60,20 @@ export function withSourceSnapshot<T>(operation: () => T): T {
   }
 }
 
-/** The scope's value for `key`, read once; a fresh read outside any scope. */
+/** The scope's value for `key`, read once; a fresh read outside any scope.
+ * Either way the value is deeply frozen. */
 export function snapshotRead<T>(key: string, read: () => T): T {
   const reads = snapshot.reads
-  if (!reads) return read()
-  if (!reads.has(key)) reads.set(key, read())
+  if (!reads) return deepFreeze(read())
+  if (!reads.has(key)) reads.set(key, deepFreeze(read()))
   return reads.get(key) as T
+}
+
+function deepFreeze<T>(value: T): T {
+  if (typeof value !== "object" || value === null || ArrayBuffer.isView(value) || Object.isFrozen(value)) return value
+  Object.freeze(value)
+  for (const child of Object.values(value)) deepFreeze(child)
+  return value
 }
 
 /** Canonical source ids include indexed document names and the selected library
