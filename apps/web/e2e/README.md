@@ -48,6 +48,7 @@ and restarts it mid-run. Its legal generation reaches a scripted local engine
 fixture, never a provider. Browser engine traffic (`ready`, session and agent
 lists, the event stream) and the release update check are intercepted. It
 seeds a synthetic Word deliverable with a numbered list and a table, then
-covers Prepare, single acceptance, stale proposals, API refusals, fail-closed
-redline export, restart persistence, rejection and the downloaded package XML.
+covers Prepare, single acceptance, stale proposals, API refusals, a redline
+export that leaves stale proposals out, restart persistence, rejection and the
+downloaded package XML.
 The temporary data root is removed afterwards.

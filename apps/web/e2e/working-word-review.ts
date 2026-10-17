@@ -272,8 +272,6 @@ try {
   page.setDefaultTimeout(20_000)
   page.on("pageerror", (error: Error) => pageErrors.push(error.message))
   page.on("console", (message: { type: () => string; text: () => string }) => message.type() === "error" && consoleErrors.push(message.text()))
-  const downloads: unknown[] = []
-  page.on("download", (download: unknown) => downloads.push(download))
   const dialog = page.getByRole("dialog", { name: NAME, exact: true })
   const cards = dialog.locator(".changes-panel .change-card")
   const shot = (name: string) => page.screenshot({ path: path.join(evidence, `${name}.png`) })
@@ -285,6 +283,7 @@ try {
   const acceptAll = dialog.getByRole("button", { name: "Accept all", exact: true })
   const staleReason = "This proposal targets an earlier Word revision. Prepare a fresh change list."
   const exportRefusal = "A proposal no longer resolves against this Word revision."
+  const staleNotice = "1 stale proposal is left out of the tracked changes and the redline download. Reject it to clear it; prepare a fresh change list if the change is still needed."
   const working = () => readWorkingDocx(file.dir, file.path)?.source_sha256
   const resolved = (action: "accept" | "reject") => page.waitForResponse((response: { url: () => string }) => new RegExp(`/redlines/\\d+/${action}$`).test(new URL(response.url()).pathname))
   async function openDocument(navigate = true) {
@@ -385,17 +384,39 @@ try {
     expect((await pending()).map(row => [row.id, row.stale])).toEqual([[stale.id, true]])
   })
 
-  await step("6 Download fails closed while a stale proposal is pending; the accepted Word XML preserves structure", async () => {
-    const before = downloads.length
-    const exported = page.waitForResponse((response: { url: () => string }) => new URL(response.url()).pathname.endsWith("/documents/redlined"))
-    await dialog.getByRole("button", { name: "Download redline", exact: true }).click()
-    expect((await exported).status()).toBe(409)
-    await expect(dialog.getByText(exportRefusal, { exact: false })).toBeVisible()
-    expect(downloads.length).toBe(before)
-    const bytes = await (await api(`/matters/${file.matter}/documents/content?name=${encodeURIComponent(NAME)}`)).bytes()
+  await step("6 with only a stale proposal pending, Download returns the accepted Word file and the redline export leaves the stale change out", async () => {
+    // No pending proposal can render as tracked changes, so only Download is offered.
+    await expect(dialog.getByRole("button", { name: "Download redline", exact: true })).toHaveCount(0)
+    await expect(dialog.getByRole("status").filter({ hasText: "stale proposal" })).toHaveText(staleNotice)
+    await expect(dialog.getByText(exportRefusal, { exact: false })).toHaveCount(0)
+    const content = page.waitForResponse((response: { url: () => string }) => new URL(response.url()).pathname.endsWith("/documents/content"))
+    const [download] = await Promise.all([page.waitForEvent("download"), dialog.getByRole("button", { name: "Download", exact: true }).click()])
+    expect((await content).status()).toBe(200)
+    expect(download.suggestedFilename()).toBe(NAME)
+    await download.saveAs(path.join(evidence, "06-download.docx"))
+    const bytes = await Bun.file(path.join(evidence, "06-download.docx")).bytes()
     expect(hash(bytes)).toBe(hashes.accepted)
+    expect(hash(bytes)).toBe(working())
     expectPreserved(seeded, inspect(bytes), ["within five days"])
-    await shot("06-download-refused")
+    // The redline export no longer refuses: it omits the stale row, which leaves
+    // nothing to track, so it is the accepted file without the stale change.
+    const exported = await api(`/matters/${file.matter}/documents/redlined?name=${encodeURIComponent(NAME)}`)
+    expect(exported.status).toBe(200)
+    const redlined = await exported.bytes()
+    await writeFile(path.join(evidence, "06-redlined-export.docx"), redlined)
+    const tracked = inspect(redlined)
+    expect(tracked.insertions).toBe(0)
+    expect(tracked.deletions).toBe(0)
+    expect(strFromU8(unzipSync(redlined)["word/document.xml"])).not.toContain("Three percent")
+    expect(tracked.cells).toContain("Two percent")
+    expect(hash(redlined)).toBe(hashes.accepted)
+    expectPreserved(seeded, tracked, ["within five days"])
+    // Downloading resolves nothing: the stale row stays pending and stale.
+    expect(await current()).toBe(hashes.accepted)
+    expect((await pending()).map(row => row.stale)).toEqual([true])
+    await expect(cards).toHaveCount(1)
+    await expect(cards.nth(0)).toContainText(staleReason)
+    await shot("06-stale-excluded-download")
   })
 
   await step("7 restart ingest on the same root; reload keeps the hash and stale card; a fresh Prepare and Accept succeed", async () => {
