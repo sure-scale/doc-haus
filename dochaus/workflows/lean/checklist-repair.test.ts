@@ -6,7 +6,7 @@ import { checklistRepairItems, readRepairRound, LEAN_MAX_SUBSTANTIVE_REPAIRS } f
 import { checklistRefinementSourceBasis } from "./checklist-flow"
 import { repairBodyText } from "./change-pipeline"
 import { changesRepairSections, startRepairRound } from "./repairs"
-import { LEAN_PROMPT_VERSION, stageInputs, stageOutputValid } from "./stages"
+import { LEAN_PROMPT_VERSION, checklistOutputState, stageInputs, stageOutputValid } from "./stages"
 import { stageInputSha } from "./runner"
 import { drainLeanRequests, enqueueLeanRequest } from "./requests"
 import { writeLeanPlan } from "./plan"
@@ -164,12 +164,15 @@ test("completed checklist validity cannot hide an unfulfilled or inconsistent re
   extraction.sources[0].items[0].item.required_action = "propose"
   writeLeanText(directory, "checklist/extraction.json", JSON.stringify(extraction))
   writeLeanText(directory, "checklist/report.md", "Current findings")
+  // Complete output is valid; the unfulfilled action is returned as an
+  // unresolved finding for disclosure, never as an open or satisfied one.
   for (const status of ["open", "satisfied"] as const) {
     save({ ...finding, status, action_status: "not_fulfilled", open_decisions: ["Approval"] })
-    expect(stageOutputValid(directory, "checklist-check")).toBe(false)
+    expect(checklistOutputState(directory)).toMatchObject({ valid: true, openFindings: [], unresolved: [{ item_id: "parent", class: "omission", finding: { status } }] })
   }
   save({ ...finding, status: "open", action_status: "fulfilled", open_decisions: ["Approval"] })
   expect(stageOutputValid(directory, "checklist-check")).toBe(true)
+  expect(checklistOutputState(directory)).toMatchObject({ valid: true, open: true, openFindings: [{ item_id: "parent" }], unresolved: [] })
 })
 
 // The focused adjudicator's exact-item disposition of the last admitted round.

@@ -2,7 +2,8 @@ import { draftingStyleAdvisoryNotes } from "./style-warnings"
 import { checklistCheckResultSchema, readEffectiveChecklistItems, reconcileChecklistParentCoverage } from "./checklist-flow"
 import { leanClarifications, checklistRefinementSelections } from "./requests"
 import { z } from "zod"
-import { checklistFindingRecovery, checklistItemSchema, type ChecklistFinding, type ChecklistItem } from "./checklist-contract"
+import { checklistItemSchema, type ChecklistFinding, type ChecklistItem } from "./checklist-contract"
+import { classifyChecklistFinding, type ChecklistFindingClass } from "./checklist-classify"
 import { acceptChangePlan, acceptChangeReview, preparationOutputValid, readChangePlan, readChangeReview, deferredFindingItems, reviewDispositionText, uniqueReplacementIssues } from "./change-pipeline"
 import { comparisonBasis } from "./comparison"
 import { checkPackageReview, readPackageReview } from "./package-review"
@@ -363,10 +364,19 @@ function message(error: unknown) {
 
 
 export type ChecklistOpenFinding = { item_id: string; item: ChecklistItem; finding: ChecklistFinding }
+/** A completed current finding that remains adverse, with the class its
+ * verified fields establish. */
+export type ChecklistUnresolvedFinding = ChecklistOpenFinding & { class: ChecklistFindingClass; conflicting_item_ids?: string[] }
+/** A refined parent whose reconciled coverage is unsatisfied or indeterminate. */
+export type ChecklistUnresolvedParent = { parent_id: string; item: ChecklistItem; status: "unsatisfied" | "indeterminate"; issues: string[] }
+export type ChecklistOutputState = { valid: boolean; open: boolean; openFindings: ChecklistOpenFinding[]; unresolved: ChecklistUnresolvedFinding[]; unresolvedParents: ChecklistUnresolvedParent[] }
 
 /** Validate authoritative effective IDs and recompute coverage; archived originals
- * remain evidence, not the current delivery verdict. */
-export function checklistOutputState(directory: string): { valid: boolean; open: boolean; openFindings: ChecklistOpenFinding[] } {
+ * remain evidence, not the current delivery verdict. Output that is incomplete,
+ * failed or stale is invalid. A completed adverse finding, or adverse parent
+ * coverage, is valid output returned for disclosure, never as a pass. */
+export function checklistOutputState(directory: string): ChecklistOutputState {
+  const invalid: ChecklistOutputState = { valid: false, open: false, openFindings: [], unresolved: [], unresolvedParents: [] }
   try {
     const extraction = z.object({
       expected_sources: z.array(z.string()),
@@ -377,25 +387,39 @@ export function checklistOutputState(directory: string): { valid: boolean; open:
     }).parse(readLeanJson(directory, "checklist/checks.json"))
     const sameIDs = (expected: string[], actual: string[]) => new Set(expected).size === expected.length &&
       new Set(actual).size === actual.length && expected.length === actual.length && expected.every(id => actual.includes(id))
-    if (!sameIDs(extraction.expected_sources, extraction.sources.map(row => row.key))) return { valid: false, open: false, openFindings: [] }
+    if (!sameIDs(extraction.expected_sources, extraction.sources.map(row => row.key))) return invalid
     const originals = extraction.sources.flatMap(source => source.items)
-    if (new Set(originals.map(row => row.id)).size !== originals.length) return { valid: false, open: false, openFindings: [] }
+    if (new Set(originals.map(row => row.id)).size !== originals.length) return invalid
     const effective = readEffectiveChecklistItems(directory, originals)
     const expected = effective.items.map(row => row.id)
     const selected = checklistRefinementSelections(directory)
-    if (selected.some(row => !effective.parents.some(parent => parent.parent_id === row.parent_id && parent.scope === row.scope))) return { valid: false, open: false, openFindings: [] }
+    if (selected.some(row => !effective.parents.some(parent => parent.parent_id === row.parent_id && parent.scope === row.scope))) return invalid
     if (!effective.complete || !sameIDs(expected, checks.expected_items) || new Set(checks.checks.map(row => row.item_id)).size !== checks.checks.length ||
-      checks.checks.some(row => row.finding && row.finding.item_id !== row.item_id)) return { valid: false, open: false, openFindings: [] }
+      checks.checks.some(row => row.finding && row.finding.item_id !== row.item_id)) return invalid
     // Inactive original/refinement findings retain their consumed review allowance.
-    // Only authoritative current IDs participate in delivery validity.
-    const active = expected.map(id => checks.checks.find(row => row.item_id === id))
-    if (active.some((row, index) => !row || row.status !== "succeeded" || row.reinspection?.status === "failed" || !row.finding || checklistFindingRecovery(effective.items[index]!.item, row.finding) !== "none")) return { valid: false, open: false, openFindings: [] }
+    // Only authoritative current IDs participate in delivery validity, and each
+    // needs one completed finding.
+    const completed = (id: string) => {
+      const row = checks.checks.find(check => check.item_id === id)
+      return row?.status === "succeeded" && row.reinspection?.status !== "failed" && row.finding ? row.finding : undefined
+    }
+    const current = effective.items.flatMap(({ id, item }): ChecklistOpenFinding[] => {
+      const finding = completed(id)
+      return finding ? [{ item_id: id, item, finding }] : []
+    })
+    if (current.length !== effective.items.length) return invalid
     const coverage = reconcileChecklistParentCoverage(directory, checks.checks, originals)
-    // Every current finding left open (or with open decisions), as recorded; a
-    // parent's coverage is open only through such a child finding.
-    const openFindings = active.flatMap((row, index) => row?.finding && (row.finding.status === "open" || row.finding.open_decisions?.length)
-      ? [{ item_id: row.item_id, item: effective.items[index]!.item, finding: row.finding }] : [])
-    return { valid: coverage.every(row => row.status === "satisfied" || row.status === "open") && existsSync(leanFile(directory, "checklist/report.md")),
-      open: openFindings.length > 0 || coverage.some(row => row.status === "open"), openFindings }
-  } catch { return { valid: false, open: false, openFindings: [] } }
+    if (coverage.some(parent => parent.children.some(id => !completed(id))) || !existsSync(leanFile(directory, "checklist/report.md"))) return invalid
+    const unresolved = current.flatMap(row => {
+      const classified = classifyChecklistFinding(row.item, row.finding, effective.items)
+      return classified ? [{ ...row, ...classified }] : []
+    })
+    const unresolvedParents = coverage.flatMap(parent => parent.status === "unsatisfied" || parent.status === "indeterminate"
+      ? [{ parent_id: parent.parent_id, item: originals.find(row => row.id === parent.parent_id)!.item, status: parent.status, issues: parent.issues }] : [])
+    // Every current finding left open (or with open decisions) and not adverse,
+    // as recorded; a parent's coverage is open only through such a child finding.
+    const openFindings = current.filter(row => !unresolved.some(adverse => adverse.item_id === row.item_id) &&
+      (row.finding.status === "open" || row.finding.open_decisions?.length))
+    return { valid: true, open: openFindings.length > 0 || coverage.some(row => row.status === "open"), openFindings, unresolved, unresolvedParents }
+  } catch { return invalid }
 }

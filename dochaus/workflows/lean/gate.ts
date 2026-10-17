@@ -1,4 +1,6 @@
-import { checklistOutputState, type ChecklistOpenFinding } from "./stages"
+import type { ChecklistFindingClass } from "./checklist-classify"
+import type { ChecklistFinding, ChecklistItem } from "./checklist-contract"
+import { checklistOutputState, type ChecklistOpenFinding, type ChecklistUnresolvedFinding, type ChecklistUnresolvedParent } from "./stages"
 import { readChangeReview, deferredFindingItems } from "./change-pipeline"
 import { renderNotesCoverage } from "../../lib/notes-coverage-report"
 import { hasOpenItemMarker } from "../../lib/open-items"
@@ -33,11 +35,16 @@ import { isReviewStage, currentOpenItems, readLeanText, readLeanJson, readLeanSt
 // - a checklist finding left open (a requirement the focused check could not
 //   establish, or one with decisions still open) stays non-blocking and is
 //   disclosed here with its recorded reason and limitation, derived from
-//   checklist/checks.json, which the gate already reads.
-// Disclosed items make the output a review draft; execution-ready output has no
-// disclosed items and no unanswered questions.
+//   checklist/checks.json, which the gate already reads;
+// - a completed checklist finding that remains adverse (and a refined parent
+//   whose coverage is adverse) is never a pass: it is disclosed, with the class
+//   its verified fields establish, ahead of every other item.
+// Disclosed items make the output a review draft, one with checklist findings
+// when any adverse finding is disclosed; execution-ready output has no
+// disclosed items and no unanswered questions. Incomplete, failed or stale
+// checklist output still blocks.
 
-export type GateDelivery = "review_draft" | "execution_ready"
+export type GateDelivery = "review_draft" | "review_draft_with_findings" | "execution_ready"
 
 export type GateResult = {
   status: "pass" | "blocked"
@@ -83,10 +90,13 @@ export function finalGate(directory: string): GateResult {
     return checked?.status === "changes-required" ? checked.findings.map(row => openItem("change-review", "omission", row.detail,
       { document, ...(row.pid ? { pid: row.pid } : {}) })) : []
   })
-  const items = [...[...currentOpenItems(directory), ...deferredFindingItems(directory)].map(item => settle(item, context)), ...semantic, ...projected]
   const checklistState = readLeanState(directory)?.stages["checklist-check"]
   const checked = checklistState && (checklistState.status !== "pending" || readLeanJson(directory, "checklist/extraction.json") !== undefined)
     ? checklistOutputState(directory) : undefined
+  // Adverse checklist findings lead: the lawyer's list of items may be capped.
+  const unresolved = checked?.valid ? [...checked.unresolved.map(row => checklistUnresolvedItem(directory, row)),
+    ...checked.unresolvedParents.map(row => checklistUnresolvedParentItem(directory, row))] : []
+  const items = [...unresolved, ...[...currentOpenItems(directory), ...deferredFindingItems(directory)].map(item => settle(item, context)), ...semantic, ...projected]
   if (checked && !checked.valid) items.push(openItem("checklist-check", "omission", "Effective checklist findings or source-unit coverage are incomplete, adverse or stale; see checklist/report.md.", {}))
   // Focused checks can correctly preserve a source-dependent open issue
   // without requesting a missing answer or inventing a disclosure. Such a
@@ -99,7 +109,7 @@ export function finalGate(directory: string): GateResult {
   const unanswered = [...context.questions.values()].some(question => question.status !== "answered")
   return {
     status: blocking.length ? "blocked" : "pass",
-    delivery: blocking.length ? null : disclosed.length || unanswered || checklistOpen ? "review_draft" : "execution_ready",
+    delivery: blocking.length ? null : unresolved.length ? "review_draft_with_findings" : disclosed.length || unanswered || checklistOpen ? "review_draft" : "execution_ready",
     blocking,
     disclosed,
     items,
@@ -120,12 +130,52 @@ export function notesCoverageReport(gate: GateResult) {
  * finding's own recorded reason, limitation and open decisions. The verdict
  * is the checker's; the gate only makes it visible. */
 function checklistOpenItem(directory: string, { item_id, item, finding }: ChecklistOpenFinding): OpenItem {
-  const document = readLeanPlan(directory)?.documents.find(row => row.id === item.target.document || row.file === item.target.document)?.id
-  const sentence = (text: string) => /[.!?]$/.test(text.trim()) ? text.trim() : `${text.trim()}.`
-  const detail = [`Checklist requirement left open: ${sentence(item.check)}`, `Finding: ${sentence(finding.reason)}`, finding.limitation.trim() && `Limitation: ${sentence(finding.limitation)}`,
-    finding.open_decisions?.length ? `Open decisions: ${sentence(finding.open_decisions.map(row => row.trim()).join("; "))}` : ""].filter(Boolean).join(" ")
+  const document = checklistDocument(directory, item)
+  const detail = [`Checklist requirement left open: ${sentence(item.check)}`, ...findingText(finding)].join(" ")
   return { ...openItem("checklist-check", "checklist_open", detail, { checklist_item: item_id, ...(document ? { document } : {}) }),
     status: "disclosed", resolution: "left open by the checklist check; disclosed with the review draft" }
+}
+
+/** Why an adverse finding remains, in the lawyer's words. */
+const CHECKLIST_CLASS_LABELS: Record<ChecklistFindingClass, string> = {
+  omission: "omission not fixed by the repair round",
+  source_conflict: "conflicts with another source requirement",
+  not_inspectable: "cannot be established from document text",
+  missing_inspection: "not inspected",
+  departure: "deliberate departure",
+}
+const UNRESOLVED = "not established as satisfied; disclosed with the review draft"
+
+/** A completed finding that remains adverse, disclosed with its class and its
+ * own recorded reason and limitation. It is never a pass and never blocks. */
+function checklistUnresolvedItem(directory: string, { item_id, item, finding, class: kind, conflicting_item_ids }: ChecklistUnresolvedFinding): OpenItem {
+  const document = checklistDocument(directory, item)
+  const detail = [`Checklist requirement unresolved (${CHECKLIST_CLASS_LABELS[kind]}): ${sentence(item.check)}`, ...findingText(finding),
+    conflicting_item_ids?.length ? `Conflicting checklist items: ${conflicting_item_ids.join(", ")}.` : ""].filter(Boolean).join(" ")
+  return { ...openItem("checklist-check", "checklist_unresolved", detail, { checklist_item: item_id, checklist_class: kind, ...(document ? { document } : {}) }),
+    status: "disclosed", resolution: UNRESOLVED }
+}
+
+/** A refined parent whose reconciled coverage is adverse, with the coverage issues. */
+function checklistUnresolvedParentItem(directory: string, { parent_id, item, status, issues }: ChecklistUnresolvedParent): OpenItem {
+  const document = checklistDocument(directory, item)
+  const detail = [`Checklist requirement unresolved across its refined checks (${status === "unsatisfied" ? "not satisfied" : "could not be established"}): ${sentence(item.check)}`,
+    issues.length ? `Coverage: ${issues.map(sentence).join(" ")}` : "A refined check remains adverse."].join(" ")
+  return { ...openItem("checklist-check", "checklist_unresolved", detail, { checklist_item: parent_id, ...(document ? { document } : {}) }),
+    status: "disclosed", resolution: UNRESOLVED }
+}
+
+function checklistDocument(directory: string, item: ChecklistItem) {
+  return readLeanPlan(directory)?.documents.find(row => row.id === item.target.document || row.file === item.target.document)?.id
+}
+
+function findingText(finding: ChecklistFinding) {
+  return [`Finding: ${sentence(finding.reason)}`, finding.limitation.trim() && `Limitation: ${sentence(finding.limitation)}`,
+    finding.open_decisions?.length ? `Open decisions: ${sentence(finding.open_decisions.map(row => row.trim()).join("; "))}` : ""].filter(Boolean)
+}
+
+function sentence(text: string) {
+  return /[.!?]$/.test(text.trim()) ? text.trim() : `${text.trim()}.`
 }
 
 function settle(item: OpenItem, context: SettleContext): OpenItem {
