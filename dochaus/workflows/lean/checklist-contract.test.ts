@@ -163,3 +163,43 @@ test("text measures can disprove but never establish a rendered-length directive
   expect(checklistFindingRecovery(item, parseChecklistFinding({ ...finding, status: "open" }))).toBe("none")
   expect(checklistFindingRecovery(item, parseChecklistFinding({ ...finding, status: "unsatisfied" }))).toBe("repair")
 })
+
+// Applicability left unsettled by the request's scope after inspection is a
+// decision for the lawyer, not missing evidence; directed requirements stay decided.
+test("an inspected scope-only applicability question is an open decision in plain, component and reinspection prompts", () => {
+  const rule = "If the needed evidence was inspected and the only unresolved question is whether the request's scope covers this requirement for this deliverable, report open, name that decision in open_decisions, and state what the target contains and which elements would be missing. Use indeterminate only when evidence or inspection is missing."
+  const directed = "A requirement directed by the request or a current human instruction is applicable: decide its compliance."
+  const component = "Every component applies the applicability rule below exactly as a whole-item check does. Content in unassigned ranges or records is neither evidence nor a gap for this component"
+  const binding = "A term binding the parties in a source is source content, not by itself a directive for the deliverable to cover; unless the request or a current human instruction directs that coverage, whether the deliverable must cover it is an applicability question."
+  const previous = { item_id: packet.item_id, status: "indeterminate" as const, reason: "Applicability was not established.", evidence: [], source_refs: item.source_refs, inspection_scope: "Assigned range.", limitation: "" }
+  const plain = buildChecklistCheckerPrompt(packet)
+  const components = (["target_body", "process_records", "document_properties"] as const).map(kind => buildChecklistCheckerPrompt({ ...packet, assignment: { kind, ranges: [] } }))
+  const reinspections = [packet, { ...packet, assignment: { kind: "target_body" as const, ranges: [] } }].map(input => buildChecklistReinspectionPrompt(input, previous))
+  for (const prompt of [plain, ...components, ...reinspections]) {
+    const instructions = prompt.split("CHECK_INPUT:")[0]!
+    expect(instructions).toContain(rule)
+    expect(instructions).toContain(directed)
+    expect(instructions).toContain(binding)
+    expect(instructions).toContain("open preserves a substantive unresolved fact or decision, or an unsettled applicability decision")
+    expect(instructions).not.toContain("use indeterminate when that relationship cannot be established")
+  }
+  expect(plain).not.toContain(component)
+  for (const prompt of [...components, reinspections[1]!]) expect(prompt).toContain(component)
+  expect(buildChecklistProducerPrompt({ source: { document: "instruction.txt", role: "client instructions" }, passages: item.source_refs, instructions: [], targets: [{ document: "agreement.docx", role: "operative agreement" }], retrieval: "Use targeted lookup." })).toContain(binding)
+  // Every finding may name its open decisions; only a refined item also reports action status.
+  expect(plain).toContain('"limitation":"...","open_decisions":[]}')
+  expect(plain).not.toContain('"action_status"')
+  expect(buildChecklistCheckerPrompt({ ...packet, item: { ...item, required_action: "propose" } })).toContain('"limitation":"...","action_status":"fulfilled|not_fulfilled|indeterminate|not_applicable","open_decisions":[]}')
+})
+
+test("an unrefined open applicability decision needs no recovery; indeterminate and a refined indeterminate action still inspect", () => {
+  const open = parseChecklistFinding({ item_id: packet.item_id, status: "open", open_decisions: ["Whether the request's scope covers this requirement for this deliverable."],
+    reason: "The target states the arrangement generally; its stated conditions would be missing if the request covers them.", evidence, source_refs: item.source_refs,
+    inspection_scope: "Complete target paragraph and cited source.", limitation: "No scope decision is inferred." })
+  expect(open.open_decisions).toEqual(["Whether the request's scope covers this requirement for this deliverable."])
+  expect(checklistFindingRecovery(item, open)).toBe("none")
+  expect(checklistFindingRecovery(item, { ...open, status: "indeterminate" })).toBe("inspect")
+  const refined = { ...item, required_action: "flag" as const }
+  expect(checklistFindingRecovery(refined, { ...open, action_status: "indeterminate" })).toBe("inspect")
+  expect(checklistFindingRecovery(refined, { ...open, action_status: undefined })).toBe("inspect")
+})

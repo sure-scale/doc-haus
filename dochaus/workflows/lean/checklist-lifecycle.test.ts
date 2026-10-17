@@ -14,7 +14,7 @@ import { checklistTextMeasuresMeaning, type ChecklistCheckerInput, type Checklis
 
 afterEach(cleanupMatters)
 
-function model(directory: string, status: "satisfied" | "open" | "unsatisfied" | "indeterminate" = "satisfied") {
+function model(directory: string, status: "satisfied" | "open" | "unsatisfied" | "indeterminate" = "satisfied", extra: { open_decisions?: string[] } = {}) {
   let extractedBeforeBody = false
   let checkedAfterNotes = false
   const result = scriptedModel({
@@ -31,7 +31,7 @@ function model(directory: string, status: "satisfied" | "open" | "unsatisfied" |
       const input = JSON.parse(text.split("CHECK_INPUT:\n\n")[1]!) as ChecklistCheckerInput
       checkedAfterNotes = existsSync(leanFile(directory, "drafting-notes.docx")) && existsSync(leanFile(directory, "d1/body-applied.docx"))
       return JSON.stringify({ item_id: input.item_id, status, reason: `Focused result ${status}.`, evidence: input.current_evidence,
-        source_refs: input.item.source_refs, inspection_scope: "Current body paragraphs only.", limitation: "Comments not inspected." })
+        source_refs: input.item.source_refs, inspection_scope: "Current body paragraphs only.", limitation: "Comments not inspected.", ...extra })
     },
   })
   return { ...result, early: () => extractedBeforeBody, late: () => checkedAfterNotes }
@@ -92,6 +92,45 @@ test("informational open finding remains open in report while permitting review 
   expect(gate.items).toContainEqual(gate.disclosed[0])
   expect(readOpenItems(directory).some(item => item.kind === "checklist_open")).toBe(false)
   expect(readFileSync(leanFile(directory, "checklist/report.md"), "utf8")).toContain("Status: open")
+}, 120000)
+
+// After inspection, a requirement whose only open question is whether the
+// request's scope covers it goes to the lawyer as a disclosed decision instead
+// of an indeterminate finding that permanently blocks once reinspected.
+const scopeDecision = "Whether the request's scope requires this deliverable to cover the requirement"
+
+test("an inspected applicability decision left open completes as a review draft disclosing that decision", async () => {
+  const directory = matter()
+  const scripted = model(directory, "open", { open_decisions: [scopeDecision] })
+  const state = await runLean(directory, { sessions: scripted.port })
+  expect(state.status).toBe("completed")
+  expect(state.stages["checklist-check"]?.status).toBe("done")
+  expect(scripted.prompts.find(row => row.agent === CHECKLIST_JOB_AGENTS.check)?.text).toContain("report open, name that decision in open_decisions")
+  expect(readLeanJson(directory, "checklist/checks.json")).toMatchObject({ checks: [{ finding: { status: "open", open_decisions: [scopeDecision] } }] })
+  const gate = readLeanJson(directory, "gate.json") as any
+  expect(gate).toMatchObject({ status: "pass", delivery: "review_draft", blocking: [] })
+  expect(gate.disclosed).toHaveLength(1)
+  expect(gate.disclosed[0]).toMatchObject({ stage: "checklist-check", kind: "checklist_open", status: "disclosed", ref: { document: "d1" } })
+  expect(gate.disclosed[0].detail).toContain(`Open decisions: ${scopeDecision}.`)
+  expect(readFileSync(leanFile(directory, "checklist/report.md"), "utf8")).not.toContain("Delivery blocked")
+  const idle = scriptedModel({})
+  expect((await runLean(directory, { sessions: idle.port })).status).toBe("completed")
+  expect(idle.prompts).toHaveLength(0)
+}, 120000)
+
+test("the one reinspection of an indeterminate finding may settle on an open applicability decision without redrafting", async () => {
+  const directory = matter()
+  expect((await runLean(directory, { sessions: model(directory, "indeterminate").port })).status).toBe("blocked")
+  enqueueLeanRequest(directory, { kind: "continue" })
+  const review = model(directory, "open", { open_decisions: [scopeDecision] })
+  expect((await runLean(directory, { sessions: review.port })).status).toBe("completed")
+  expect(review.count(CHECKLIST_JOB_AGENTS.check)).toBe(1)
+  expect(review.count(CHECKLIST_JOB_AGENTS.extract)).toBe(0)
+  expect(review.count(AGENT.draft)).toBe(0)
+  expect(readLeanJson(directory, "checklist/checks.json")).toMatchObject({ checks: [{ finding: { status: "open", open_decisions: [scopeDecision] },
+    reinspection: { original_finding: { status: "indeterminate" }, status: "succeeded" } }] })
+  expect(readLeanJson(directory, "gate.json")).toMatchObject({ status: "pass", delivery: "review_draft",
+    disclosed: [{ kind: "checklist_open", detail: expect.stringContaining(`Open decisions: ${scopeDecision}.`) }] })
 }, 120000)
 
 
@@ -249,6 +288,47 @@ for (const [status, marked, outcome] of [["satisfied", true, "completed"], ["ind
   if (outcome === "blocked") expect(state.stop_reason).toContain(`${parent.id}: indeterminate`)
   else expect(stageOutputValid(directory, "checklist-check")).toBe(true)
   if (outcome === "blocked" && status === "not_applicable") expect(state.stop_reason).toContain("no document-properties finding decided it")
+}, 120000)
+
+// Each full-draft component applies the same applicability rule: paragraph
+// components left open on the scope decision with the other components not
+// applicable reconcile the parent open; any indeterminate component still blocks it.
+for (const [other, parentStatus] of [["not_applicable", "open"], ["indeterminate", "indeterminate"]] as const) test(`full-draft components left open on an applicability decision with ${other} other components reconcile the parent ${parentStatus}`, async () => {
+  const directory = matter()
+  expect((await runLean(directory, { sessions: model(directory, "indeterminate").port })).status).toBe("blocked")
+  const parent = (readLeanJson(directory, "checklist/extraction.json") as any).sources.flatMap((row: any) => row.items)[0]
+  enqueueLeanRequest(directory, { kind: "refine_checklist", parents: [{ parent_id: parent.id, scope: "target_body" }] })
+  const instructions: string[] = []
+  const full = scriptedModel({ ...happyPath,
+    [CHECKLIST_JOB_AGENTS.check]: text => {
+      const input = JSON.parse(text.split("CHECK_INPUT:\n\n")[1]!) as ChecklistCheckerInput
+      instructions.push(text.split("CHECK_INPUT:")[0]!)
+      const body = input.assignment?.kind === "target_body"
+      return JSON.stringify({ item_id: input.item_id, status: body ? "open" : other,
+        reason: body ? "The assigned paragraphs state the arrangement generally; its stated conditions would be missing if the request covers them." : `Component result ${other}.`,
+        evidence: body ? input.current_evidence : [], source_refs: input.item.source_refs, inspection_scope: JSON.stringify(input.assignment), limitation: "No scope decision is inferred.",
+        ...(body ? { open_decisions: [scopeDecision] } : {}) })
+    },
+  })
+  const state = await runLean(directory, { sessions: full.port })
+  expect(instructions.length).toBeGreaterThanOrEqual(3)
+  expect(instructions.every(text => text.includes("Every component applies the applicability rule below exactly as a whole-item check does."))).toBe(true)
+  expect(readFileSync(leanFile(directory, "checklist/report.md"), "utf8")).toContain(`coverage: target_body; status: ${parentStatus}`)
+  expect(full.count(AGENT.draft)).toBe(0)
+  if (parentStatus === "indeterminate") {
+    expect(state.status).toBe("blocked")
+    expect(state.stages["checklist-check"]?.status).toBe("blocked")
+    expect(state.stop_reason).toContain(`${parent.id}: indeterminate`)
+    return
+  }
+  expect(state.status).toBe("completed")
+  expect(state.stages["checklist-check"]?.status).toBe("done")
+  expect(stageOutputValid(directory, "checklist-check")).toBe(true)
+  const gate = readLeanJson(directory, "gate.json") as any
+  expect(gate).toMatchObject({ status: "pass", delivery: "review_draft", blocking: [] })
+  const open = gate.disclosed.filter((item: any) => item.kind === "checklist_open")
+  expect(open.length).toBeGreaterThan(0)
+  expect(open.every((item: any) => item.detail.includes(`Open decisions: ${scopeDecision}.`))).toBe(true)
 }, 120000)
 
 // Text measures can disprove but never establish a rendered-length directive:
