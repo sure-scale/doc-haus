@@ -41,25 +41,29 @@ export async function prepareDocumentChanges(id:string,name:string,instructions:
   return result
 }
 
-export async function acceptRedline(id: string, redlineId: number): Promise<void> {
-  await resolveRedlines(`${INGEST_URL}/matters/${id}/redlines/${redlineId}/accept`)
+// Present only when the accepted file is the body of a completed drafting run:
+// whether that run's drafting notes recorded the accepted change, and if not, why.
+export type AcceptResult = { notes_updated?: boolean; notes_skip_reason?: string }
+
+export async function acceptRedline(id: string, redlineId: number): Promise<AcceptResult> {
+  return resolveRedlines(`${INGEST_URL}/matters/${id}/redlines/${redlineId}/accept`)
 }
 
 export async function rejectRedline(id: string, redlineId: number): Promise<void> {
   await resolveRedlines(`${INGEST_URL}/matters/${id}/redlines/${redlineId}/reject`)
 }
 
-export async function acceptAllRedlines(id: string, name: string): Promise<void> {
-  await resolveRedlines(`${INGEST_URL}/matters/${id}/redlines/accept-all?name=${encodeURIComponent(name)}`)
+export async function acceptAllRedlines(id: string, name: string): Promise<AcceptResult> {
+  return resolveRedlines(`${INGEST_URL}/matters/${id}/redlines/accept-all?name=${encodeURIComponent(name)}`)
 }
 
 export async function rejectAllRedlines(id: string, name: string): Promise<void> {
   await resolveRedlines(`${INGEST_URL}/matters/${id}/redlines/reject-all?name=${encodeURIComponent(name)}`)
 }
 
-async function resolveRedlines(url: string) {
+async function resolveRedlines(url: string): Promise<AcceptResult> {
   const response = await fetch(url, { method: "POST" })
-  if (response.ok) return
+  if (response.ok) return response.json().catch(() => ({}))
   const detail: unknown = await response.json().catch(() => undefined)
   const message = detail && typeof detail === "object" && "error" in detail && typeof detail.error === "string"
     ? detail.error : `Could not resolve tracked changes (${response.status})`

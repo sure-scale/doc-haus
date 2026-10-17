@@ -12,7 +12,7 @@ export type AcceptedNotesChange = { document: string; before: string; after: str
 const BODY = "word/document.xml"
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 const HEADING = "Changes accepted after these notes were prepared"
-const INTRO = "These changes were accepted in Word after the final check. The final check was not re-run on them."
+const INTRO = "These changes were accepted in Word after the final check. The final check was not re-run on them. Changes accepted while the notes could not be updated are not listed."
 
 /** Returns new notes bytes with `changes` appended in order. The heading and
  * introduction are added once; a later call appends only its change paragraphs. */

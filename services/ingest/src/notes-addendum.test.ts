@@ -6,7 +6,7 @@ import { renderMarkdownToDocx } from "../../../dochaus/lib/render"
 import { readDocxCommentParagraphs } from "../../../dochaus/lib/docx-comments"
 
 const HEADING = "Changes accepted after these notes were prepared"
-const INTRO = "These changes were accepted in Word after the final check. The final check was not re-run on them."
+const INTRO = "These changes were accepted in Word after the final check. The final check was not re-run on them. Changes accepted while the notes could not be updated are not listed."
 
 // Synthetic notes rendered by the real drafting-notes renderer.
 const notes = (await renderMarkdownToDocx([
