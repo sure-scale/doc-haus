@@ -29,6 +29,14 @@ test("a completed lean run settles observation and yields its registered Word de
   expect(leanProgressLine(status)).toBe("completed d1.draft=done/3calls d1.review=done d1.changes=done d1.apply=done finalize=done gate=done")
 })
 
+test("a review draft delivered with unresolved checklist findings is reported apart from a clean completion and still stages its deliverables", () => {
+  const findings = lean({ ...completed, gate: { ...completed.gate, delivery: "review_draft_with_findings" } })
+  expect(classifyLeanObservation(findings)).toBe("complete_with_findings")
+  expect(leanDeliverableDocx(findings)).toEqual(["Supply note.docx", "Supply note - redline.docx", "Supply note - drafting notes.docx"])
+  // A plain review draft is still a completion.
+  expect(classifyLeanObservation(lean({ ...completed, gate: { ...completed.gate, delivery: "review_draft" } }))).toBe("complete")
+})
+
 test("a completed run of two documents stages every registered Word file", () => {
   const [body, redline, notes, markdown] = completed.documents.documents
   const second = { document: "d2", title: "Covering letter" }
