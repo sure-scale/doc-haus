@@ -5,7 +5,7 @@ import fs from "node:fs"
 import { fileURLToPath } from "node:url"
 import { backendProxy } from "./backend-proxy"
 
-// Docxodus ships its ~16MB WASM runtime under the package's dist/wasm. The React
+// Docxodus ships its ~30MB WASM runtime (13.x; ~25MB of .wasm plus optional .br copies) under the package's dist/wasm. The React
 // hooks fetch it from a base path, so we host that directory at /wasm/ — streamed
 // from node_modules in dev, copied into the build output for production. This keeps
 // the runtime out of the repo (installed with the package) while the viewer still

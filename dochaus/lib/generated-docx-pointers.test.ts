@@ -195,3 +195,51 @@ test("paragraph targets bind one well-formed pointer per body paragraph to its e
     Array.from(doc.getElementsByTagNameNS(W, name)).forEach(node => node.parentNode!.removeChild(node))))
   expect((await paragraphTargets(bare)).map(row => row.pid)).toEqual([null, null, null])
 })
+
+test("comparison keeps a header part's section reference and every paragraph pointer", async () => {
+  const R = "http://schemas.openxmlformats.org/package/2006/relationships"
+  const O = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+  const CT = "http://schemas.openxmlformats.org/package/2006/content-types"
+  // A rendered draft with one default header part, related and declared as Word saves it.
+  const withHeader = (bytes: Uint8Array) => {
+    const parts = unzipSync(bytes)
+    const xml = (name: string) => new DOMParser().parseFromString(strFromU8(parts[name]!), "application/xml")
+    const serialize = (doc: Document) => strToU8(new XMLSerializer().serializeToString(doc))
+    const body = xml("word/document.xml")
+    const section = body.getElementsByTagNameNS(W, "sectPr")[0]!
+    const reference = body.createElementNS(W, "w:headerReference")
+    reference.setAttributeNS(W, "w:type", "default")
+    reference.setAttributeNS(O, "r:id", "rIdHeaderDefault")
+    section.insertBefore(reference, section.firstChild)
+    const relationships = xml("word/_rels/document.xml.rels")
+    const relationship = relationships.createElementNS(R, "Relationship")
+    relationship.setAttribute("Id", "rIdHeaderDefault")
+    relationship.setAttribute("Type", `${O}/header`)
+    relationship.setAttribute("Target", "header1.xml")
+    relationships.documentElement!.appendChild(relationship)
+    const types = xml("[Content_Types].xml")
+    const override = types.createElementNS(CT, "Override")
+    override.setAttribute("PartName", "/word/header1.xml")
+    override.setAttribute("ContentType", "application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml")
+    types.documentElement!.appendChild(override)
+    return zipSync({ ...parts, "word/document.xml": serialize(body), "word/_rels/document.xml.rels": serialize(relationships),
+      "[Content_Types].xml": serialize(types), "word/header1.xml": strToU8(`<w:hdr xmlns:w="${W}"><w:p><w:r><w:t>Confidential draft</w:t></w:r></w:p></w:hdr>`) })
+  }
+  const before = withHeader((await renderMarkdownToDocx("# Terms\n\nThe record is due within five days.\n\nKeep a copy.")).bytes)
+  const current = withHeader((await renderMarkdownToDocx("# Terms\n\nThe record is due within seven days.\n\nKeep a copy.")).bytes)
+  const output = await compareDocxWithPointers(before, current, { authorName: "Review author" })
+  expect(readDocxRevisionText(output).inserted_text.join("")).toContain("seven")
+  // The section still references the header, and the reference resolves to its text.
+  const parts = unzipSync(output)
+  const body = new DOMParser().parseFromString(strFromU8(parts["word/document.xml"]!), "application/xml")
+  const references = Array.from(body.getElementsByTagNameNS(W, "sectPr")).flatMap(section => Array.from(section.getElementsByTagNameNS(W, "headerReference")))
+  expect(references).toHaveLength(1)
+  const relationship = Array.from(new DOMParser().parseFromString(strFromU8(parts["word/_rels/document.xml.rels"]!), "application/xml")
+    .getElementsByTagNameNS(R, "Relationship")).find(row => row.getAttribute("Id") === references[0]!.getAttributeNS(O, "id"))
+  expect(relationship?.getAttribute("Type")).toBe(`${O}/header`)
+  const header = parts[path.posix.resolve("/word", relationship!.getAttribute("Target")!).slice(1)]
+  expect(header && strFromU8(header)).toContain("Confidential draft")
+  // Every accepted body paragraph keeps the current draft's hidden pointer.
+  expect(readDocxCommentParagraphs(output)).toEqual(readDocxCommentParagraphs(current))
+  expect(readDocxCommentParagraphs(output).every(row => row.pids.length === 1)).toBe(true)
+})

@@ -10,7 +10,7 @@
         "@llamaindex/liteparse": "2.1.1",
         "compromise": "^14.15.1",
         "docx": "^9.7.1",
-        "docxodus": "^6.4.0",
+        "docxodus": "^13.0.0",
         "fflate": "0.8.3",
         "hono": "^4.10.7",
         "mammoth": "^1.8.0",
@@ -37,9 +37,6 @@
   "trustedDependencies": [
     "@ladybugdb/core",
   ],
-  "patchedDependencies": {
-    "docxodus@6.4.0": "patches/docxodus@6.4.0.patch",
-  },
   "packages": {
     "@emnapi/runtime": ["@emnapi/runtime@1.11.0", "", { "dependencies": { "tslib": "^2.4.0" } }, "sha512-55coeOFKHv1ywEcUXJtWU5f+Jr/W5tZDvZig8DLKSwUN1JpROQ4rk/SNOQiFWmaR/VKF4zuFyW1B8JduOSv6Pg=="],
 
@@ -207,7 +204,7 @@
 
     "docx": ["docx@9.7.1", "", { "dependencies": { "@types/node": "^25.2.3", "hash.js": "^1.1.7", "jszip": "^3.10.1", "nanoid": "^5.1.3", "xml": "^1.0.1", "xml-js": "^1.6.8" } }, "sha512-ilXFf9Moz47ABjFpDiA5s1w9lpb4EFSp7+5iiJSbfyYDM+bpZdAgLlSr7fW4aXhVe/E+F6QCv0EvRVFEd5CsWg=="],
 
-    "docxodus": ["docxodus@6.4.0", "", { "peerDependencies": { "react": ">=16.8.0" }, "optionalPeers": ["react"] }, "sha512-8OAM1oyEcwC+BtfeqDZ8e914cTR8OAO0ARU59jyrvSozft2xTqbw0sUij07trt4wMFgpytb2fgqrw41Fvrh7yg=="],
+    "docxodus": ["docxodus@13.0.0", "", { "peerDependencies": { "react": ">=16.8.0" }, "optionalPeers": ["react"] }, "sha512-i46SIeysRh1lieFAlzspl5VcTvOUi3ffEECjp2LDw9ZQTyzHE+Kt2Q53rNi7JNcM+CK+2LVOOEIfr0qtdSghzg=="],
 
     "duck": ["duck@0.1.12", "", { "dependencies": { "underscore": "^1.13.1" } }, "sha512-wkctla1O6VfP89gQ+J/yDesM0S7B7XLXjKGzXxMDVFg7uEn706niAtyYovKbyq1oT9YwDcly721/iUWoc8MVRg=="],
 

@@ -1,5 +1,5 @@
 import { docxodus } from "./docxodus"
-import { compareDocxWithPointers, paragraphTargets, resolveParagraphTarget, type ParagraphTarget } from "../../../dochaus/lib/drafting-amendment"
+import { compareDocxWithPointers, paragraphTargets, resolveParagraphTarget, withStableRevisionDates, type ParagraphTarget } from "../../../dochaus/lib/drafting-amendment"
 import type { RedlineRow } from "./db"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
 import { createDocxLocalization, applyDocxParagraphEdits, DocxTrackedRevisionsError } from "../../../dochaus/lib/docx-amendments"
@@ -98,7 +98,8 @@ export async function buildRedlined(original: Uint8Array, rows: RedlineRow[], st
 }
 
 async function commentRedline(original: Uint8Array, modified: Uint8Array, rows: RedlineRow[], targets: number[]) {
-  const compared = await compareDocxWithPointers(original, modified, { authorName: previewAuthor(rows) })
+  // Docxodus dates every compared revision 2000-01-01; an export is dated when made.
+  const compared = withStableRevisionDates(await compareDocxWithPointers(original, modified, { authorName: previewAuthor(rows) }), new Date().toISOString())
   const redline = (() => {
     try { return preserveDocxComments(original, compared) }
     catch { throw new RedlinePreviewConflictError("An existing Word comment could not be preserved at its original unchanged anchor or with its original links and formatting dependencies. Review comments on edited ranges, complex fields, objects, threaded comments and attachments separately before exporting.") }

@@ -136,7 +136,7 @@ export async function compareDocxWithPointers(original: Uint8Array, modified: Ui
   return withParagraphPointers(await (await docxodus()).compareDocuments(original, current, options), current)
 }
 
-// Docxodus dates every revision with the wall clock and gives its ignorable
+// Docxodus 13 stamps every revision with a fixed date and gives its ignorable
 // markup fresh random ids, so regenerating an unchanged comparison changed its
 // bytes and showed regeneration time. A revision whose paragraph (else table
 // row) reads exactly as in the previous export keeps that export's dates, when

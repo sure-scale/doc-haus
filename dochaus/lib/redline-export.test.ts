@@ -83,8 +83,9 @@ test("restoring a commented hyperlink rejects coherent comparison relationship r
   const compared = unzipSync(await compareDocxWithPointers(original, modified, { authorName: author }))
   const comparedBody = xml(zipSync(compared), "word/document.xml")
   const comparedRelationships = xml(zipSync(compared), "word/_rels/document.xml.rels")
-  // This comparator removes the wrapper but keeps its relationship. Restoration
-  // is safe while that mapping is unchanged; also prove a missing map refuses.
+  // This comparator keeps the wrapper under a fresh relationship to the same
+  // target and also keeps the original relationship. Restoration is safe while
+  // that original mapping is unchanged; also prove a missing map refuses.
   expect(readDocxComments(preserveDocxComments(original, zipSync(compared)))[0].text).toBe("Review this linked record.")
   const comparedRelationship = Array.from(comparedRelationships.getElementsByTagNameNS(R, "Relationship"))
     .find(node => node.getAttribute("Id") === "rIdOriginalLink")!
@@ -92,14 +93,11 @@ test("restoring a commented hyperlink rejects coherent comparison relationship r
   compared["word/_rels/document.xml.rels"] = strToU8(new XMLSerializer().serializeToString(comparedRelationships))
   expect(() => preserveDocxComments(original, zipSync(compared))).toThrow("original_comment_paragraph_dependency_changed")
   comparedRelationships.documentElement.appendChild(comparedRelationship)
-  // Reintroduce a coherent hyperlink in the comparison package, then reallocate
-  // its ID below while keeping the comparison's own link correct.
-  const comparedParagraph = comparedBody.getElementsByTagNameNS(W, "p")[1]
-  const comparedLink = comparedBody.createElementNS(W, "w:hyperlink")
-  comparedLink.setAttributeNS(O, "r:id", "rIdOriginalLink")
-  const comparedRun = comparedParagraph.getElementsByTagNameNS(W, "r")[0]
-  comparedParagraph.insertBefore(comparedLink, comparedRun)
-  comparedLink.appendChild(comparedRun)
+  // The comparison's own coherent hyperlink; its ID is reallocated below while
+  // the comparison's own link stays correct.
+  const comparedLink = comparedBody.getElementsByTagNameNS(W, "p")[1].getElementsByTagNameNS(W, "hyperlink")[0]
+  expect(Array.from(comparedRelationships.getElementsByTagNameNS(R, "Relationship"))
+    .find(node => node.getAttribute("Id") === comparedLink.getAttributeNS(O, "id"))?.getAttribute("Target")).toBe("https://example.test/retained-record")
   compared["word/document.xml"] = strToU8(new XMLSerializer().serializeToString(comparedBody))
   compared["word/_rels/document.xml.rels"] = strToU8(new XMLSerializer().serializeToString(comparedRelationships))
   const matching = zipSync(compared)
