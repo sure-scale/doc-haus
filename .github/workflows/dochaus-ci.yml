@@ -45,7 +45,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install --yes lsof
 
       - name: Check launcher shell syntax
-        run: bash -n start.sh scripts/start-runtime.sh
+        run: bash -n start.sh scripts/start-runtime.sh scripts/requirements.sh
 
       - name: Test launcher ownership and restart prompts
         working-directory: scripts
@@ -54,6 +54,10 @@ jobs:
       - name: Test Bun selection and launcher compatibility
         working-directory: scripts
         run: bun test test/bun-runtime.test.ts --timeout 30000
+
+      - name: Test host requirement checks and install prompts
+        working-directory: scripts
+        run: bun test test/requirements.test.ts --timeout 30000
 
       - name: Test dependency installation cache
         working-directory: scripts

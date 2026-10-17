@@ -14,7 +14,7 @@ async function fixture() {
   roots.push(root)
   const bin = path.join(root, "bin"), home = path.join(root, "home"), runtime = path.join(root, "data", "runtime")
   for (const directory of [bin, home, path.join(root, "scripts")]) await mkdir(directory, { recursive: true })
-  for (const file of ["start.sh", "scripts/start-runtime.sh", "scripts/data-paths.sh"]) await copyFile(path.join(repository, file), path.join(root, file))
+  for (const file of ["start.sh", "scripts/start-runtime.sh", "scripts/data-paths.sh", "scripts/requirements.sh"]) await copyFile(path.join(repository, file), path.join(root, file))
   await writeFile(path.join(bin, "lsof"), "#!/bin/sh\nexit 0\n")
   await chmod(path.join(bin, "lsof"), 0o755)
   async function executable(file: string, version: string, valid = true) {
@@ -77,6 +77,16 @@ test("Bun below 1.4.0 fails clearly before creating runtime data", async () => {
 
 test("the official home install is a fallback when PATH has no Bun", async () => {
   const f = await fixture()
+  const selected = await f.executable(path.join(f.home, ".bun/bin/bun"), "1.4.3")
+  const result = await f.run()
+  expect(result.status).toBe(23)
+  expect(result.output).toContain(`SELECTED:${selected}`)
+  expect(result.output).toContain("CHILD:1.4.3")
+})
+
+test("a supported official home install is chosen over a too-old PATH Bun", async () => {
+  const f = await fixture()
+  await f.executable(path.join(f.bin, "bun"), "1.3.99")
   const selected = await f.executable(path.join(f.home, ".bun/bin/bun"), "1.4.3")
   const result = await f.run()
   expect(result.status).toBe(23)

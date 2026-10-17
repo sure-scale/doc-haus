@@ -14,11 +14,11 @@ import { researchPermissions, acceptResearchReply, researchPrompt } from "./rese
 import { runApply } from "./apply-stage"
 import { forgetUnplannedDocuments, recordLeanDocuments } from "./deliverables"
 import { runDraftStage } from "./draft-sections"
-import { appendLeanEvent } from "./events"
+import { appendLeanEvent, leanElapsedMs } from "./events"
 import { finalGate, notesCoverageReport } from "./gate"
 import { readLeanPlan, reviewStages, leanSteps, stepDocument, stepStage, type StepID } from "./plan"
 import { retryPrompt, stagePrompt } from "./prompts"
-import { inDocument, openItem } from "./quotes"
+import { inDocument, openItem, withSourceSnapshot } from "./quotes"
 import { checklistRefinementSelections, drainLeanRequests, pendingLeanRequests } from "./requests"
 import {
   LEAN_CHILD_PERMISSIONS,
@@ -73,6 +73,12 @@ import {
 // stage boundary, and a Continue once the pass has settled. Before it returns,
 // the coordinator checks the queue again and runs another pass for anything
 // that arrived, so no request is left behind.
+//
+// A pause (deps.pause) stops the coordinator at once: it interrupts the native
+// sessions it is waiting on, accepts no reply that arrives later, returns the
+// step in progress to pending and settles the run as blocked. Finished steps,
+// answers, approvals and repair allowances are left exactly as they were, so a
+// later Continue resumes from the first unfinished step.
 
 type StageRun =
   | { status: "restart" }
@@ -80,6 +86,8 @@ type StageRun =
   | { status: "failed"; reason: string }
 
 type PreparedReview = { inputSha: string; sessionID: string; reply: Promise<string> }
+
+type PassResult = { state: LeanState; restart?: boolean; paused?: boolean }
 
 type Progress = (patch: Partial<LeanStageState>) => void
 
@@ -98,12 +106,18 @@ export async function runLean(directory: string, deps: LeanDeps): Promise<LeanSt
   // The state as last settled; a Continue is applied against it.
   const pass = { state: initial, settled: initial as LeanState | undefined, reinspectChecklist: false }
   for (;;) {
-    pass.reinspectChecklist ||= pass.settled?.status === "blocked" && pass.settled.stages["checklist-check"]?.status === "blocked" &&
+    if (deps.pause?.aborted) return settlePause(directory, pass.state)
+    // A paused run never settled at checklist checking, so its Continue is
+    // not a request to reinspect.
+    pass.reinspectChecklist ||= pass.settled?.status === "blocked" && !pass.settled.paused_at && pass.settled.stages["checklist-check"]?.status === "blocked" &&
       pendingLeanRequests(directory).some(name => (readLeanJson(directory, `requests/${name}`) as { kind?: string } | undefined)?.kind === "continue")
     drainLeanRequests(directory, pass.settled)
-    const result = await runPass(directory, writeLeanState(directory, { ...pass.state, status: "running", stop_reason: null }), deps, pass.reinspectChecklist)
-      .catch((error: unknown) => ({ state: writeLeanState(directory, { ...(readLeanState(directory) ?? pass.state), status: "failed", stop_reason: `Drafting stopped by a runtime error: ${message(directory, error)}` }), restart: false }))
+    const result: PassResult = await runPass(directory, writeLeanState(directory, { ...pass.state, status: "running", stop_reason: null, paused_at: undefined }), deps, pass.reinspectChecklist)
+      .catch((error: unknown) => deps.pause?.aborted
+        ? { state: settlePause(directory, pass.state), paused: true }
+        : { state: writeLeanState(directory, { ...(readLeanState(directory) ?? pass.state), status: "failed", stop_reason: `Drafting stopped by a runtime error: ${message(directory, error)}` }), restart: false })
     pass.state = readLeanState(directory) ?? result.state
+    if (result.paused) return pass.state
     pass.settled = result.restart ? undefined : pass.state
     if (!result.restart) pass.reinspectChecklist = false
     if (!result.restart && !pendingLeanRequests(directory).length) return pass.state
@@ -114,17 +128,33 @@ export async function runLean(directory: string, deps: LeanDeps): Promise<LeanSt
  * the inputs of a step this pass already settled restarts the walk, so the
  * earliest step that consumes the answer runs next. The step list is read
  * again at every boundary because the first draft writes the plan. */
-async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDeps, reinspectChecklist = false): Promise<{ state: LeanState; restart?: boolean }> {
+async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDeps, reinspectChecklist = false): Promise<PassResult> {
   const preferences = readFirmDraftingPreferences()
   const preferenceChange = { observed: false }
   const preferencesChanged = () => preferenceChange.observed ||= readFirmDraftingPreferences() !== preferences
+  const pause = sourceDeps.pause
+  const paused = () => pause?.aborted === true
+  // A pause interrupts every native session with a prompt in flight.
+  const live = new Set<string>()
+  const interruptLive = () => {
+    for (const sessionID of live) void sourceDeps.sessions.interrupt?.({ directory, sessionID }).catch(() => undefined)
+  }
+  pause?.addEventListener("abort", interruptLive, { once: true })
   // Every model exchange, including focused helpers, shares this pass's guard.
   // A later return to the original value must not clear an observed change.
-  const deps: LeanDeps = { ...sourceDeps, sessions: { ...sourceDeps.sessions, async prompt(input) {
+  // Once paused, no session or prompt starts and no reply is returned, even
+  // one that arrives afterwards.
+  const deps: LeanDeps = { ...sourceDeps, sessions: { ...sourceDeps.sessions, createSession(input) {
+    return paused() ? Promise.reject(new LeanPauseRequested()) : sourceDeps.sessions.createSession(input)
+  }, async prompt(input) {
+    if (paused()) throw new LeanPauseRequested()
     if (preferencesChanged()) throw new ChecklistRefreshRestart()
+    live.add(input.sessionID)
     try {
-      return await sourceDeps.sessions.prompt(input)
+      return await untilPaused(sourceDeps.sessions.prompt(pause ? { ...input, signal: pause } : input), pause)
     } finally {
+      live.delete(input.sessionID)
+      if (paused()) throw new LeanPauseRequested()
       if (preferencesChanged()) throw new ChecklistRefreshRestart()
     }
   } } }
@@ -133,6 +163,7 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
   const prepared = new Map<StepID, PreparedReview>()
   try {
   for (let index = 0; index < leanSteps(directory).length; index += 1) {
+    if (paused()) return { state: settlePause(directory, state), paused: true }
     // Settings saves are outside the matter queue. At safe stage boundaries,
     // restart the content-keyed walk before accepting work from mixed settings.
     if (preferencesChanged()) return { state, restart: true }
@@ -144,12 +175,13 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
     if (unanswered.length)
       return { state: writeLeanState(directory, { ...state, status: "blocked", stop_reason: `Waiting for your answers: ${unanswered.map(question => question.id).join(", ")}` }) }
     if ((changes.answered || changes.updated) &&
-      settled.some(done => stageInputSha(directory, done) !== state.stages[done]?.input_sha))
+      withSourceSnapshot(() => settled.some(done => stageInputSha(directory, done) !== state.stages[done]?.input_sha)))
       return { state, restart: true }
     // A resumed draft may be skipped, but source/target changes must still
     // refresh extraction before any body is consumed or checking begins.
     if (stage === "draft" && readLeanPlan(directory)) {
       await ensureChecklistExtraction(directory, state, deps)
+      if (paused()) return { state: settlePause(directory, state), paused: true }
       if (preferencesChanged()) return { state, restart: true }
       const queued = drainLeanRequests(directory)
       if (queued.answered || queued.updated) return { state, restart: true }
@@ -160,22 +192,30 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
       return { state, restart: true }
     // The first draft can write the plan its own key reads; its key is then
     // taken again once the plan is saved.
-    let inputSha = stageInputSha(directory, step)
+    const keyed = performance.now()
     const recorded = state.stages[step]
     settled.push(step)
-    if (recorded?.status === "done" && recorded.input_sha === inputSha && stageOutputValid(directory, step) && (step !== "package-review" || readPackageReview(directory)?.status === "pass") && (stage !== "change-review" || !document || readChangeReview(directory, document)?.status === "pass")) {
+    // Keying and the skip decision are synchronous: they share one source read.
+    const decision = withSourceSnapshot(() => {
+      const key = stageInputSha(directory, step)
+      return { key, unchanged: recorded?.status === "done" && recorded.input_sha === key && stageOutputValid(directory, step) && (step !== "package-review" || readPackageReview(directory)?.status === "pass") && (stage !== "change-review" || !document || readChangeReview(directory, document)?.status === "pass") }
+    })
+    let inputSha = decision.key
+    // Time to key the step and decide whether it can be skipped.
+    const check_ms = leanElapsedMs(keyed)
+    if (decision.unchanged) {
       // A durable accepted review may have preceded a crash before its
       // delivery selection was applied. Reconcile it before any registration.
       if (step === "package-review") {
         const repair = await reconcilePackageReview(directory, state, deps)
         if (repair) return repair
       }
-      appendLeanEvent(directory, { stage, document, event: "skipped" })
+      appendLeanEvent(directory, { stage, document, event: "skipped", check_ms })
       continue
     }
     const prefetched = prepared.get(step)
     const currentPrefetch = prefetched?.inputSha === inputSha
-    if (!currentPrefetch) appendLeanEvent(directory, { stage, document, event: "started" })
+    if (!currentPrefetch) appendLeanEvent(directory, { stage, document, event: "started", check_ms })
     state = updateLeanStage(directory, state, step, {
       status: "running", input_sha: null, outputs: [], session_ids: [], session_id: currentPrefetch ? prefetched.sessionID : null, attempts: 0, calls: 0, feedback: [], started_at: currentPrefetch ? state.stages[step]?.started_at ?? now() : now(), finished_at: null,
     })
@@ -196,12 +236,19 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
       for (const review of reviewStages(directory, document).slice(reviewStages(directory, document).indexOf(stage) + 1)) {
         const independent: StepID = `${document}.${review}`
         if (prepared.has(independent)) continue
-        const key = stageInputSha(directory, independent)
-        if (state.stages[independent]?.status === "done" && state.stages[independent]?.input_sha === key && stageOutputValid(directory, independent)) continue
+        const prefetchKeyed = performance.now()
+        const saved = state.stages[independent]
+        const key = withSourceSnapshot(() => {
+          const current = stageInputSha(directory, independent)
+          return saved?.status === "done" && saved.input_sha === current && stageOutputValid(directory, independent) ? undefined : current
+        })
+        if (key === undefined) continue
+        const prefetchCheck = leanElapsedMs(prefetchKeyed)
         const agent = LEAN_STAGE_AGENTS[review]
         const creation = await deps.sessions.createSession({ directory, parentID: state.owner_session_id, agent, title: stepSessionTitle(directory, independent), model: state.model, permissions: LEAN_CHILD_PERMISSIONS })
           .then(sessionID => ({ sessionID }), (error: unknown) => ({ error }))
         if ("error" in creation) {
+          if (paused()) return { state: settlePause(directory, state), paused: true }
           if (preferencesChanged()) return { state, restart: true }
           const reason = `${independent}: stopped by a runtime error: ${message(directory, creation.error)}`
           state = updateLeanStage(directory, state, step, { status: "pending", input_sha: null, outputs: [], finished_at: null })
@@ -211,7 +258,7 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
         }
         const sessionID = creation.sessionID
         state = updateLeanStage(directory, state, independent, { status: "running", session_id: sessionID, input_sha: null, outputs: [], attempts: 0, calls: 1, feedback: [], started_at: now(), finished_at: null })
-        appendLeanEvent(directory, { stage: review, document, event: "started", session_id: sessionID })
+        appendLeanEvent(directory, { stage: review, document, event: "started", session_id: sessionID, check_ms: prefetchCheck })
         const reply = deps.sessions.prompt({ directory, sessionID, agent, text: stagePrompt(directory, independent) })
         // Consume native errors when accepting this stage, without an unhandled
         // rejection while another independent review is running.
@@ -223,6 +270,9 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
     prepared.delete(step)
     const result = await runStep(directory, state, step, deps, progress, planned, prefetched?.inputSha === inputSha ? prefetched : undefined, reinspectChecklist)
       .catch((error: unknown): StageRun => error instanceof ChecklistRefreshRestart ? { status: "restart" } : ({ status: "failed", reason: `${step}: stopped by a runtime error: ${message(directory, error)}` }))
+    // Whatever the step returned once paused (helpers turn a refused prompt into
+    // their own failure) is not accepted; the step is run again on Continue.
+    if (paused()) return { state: settlePause(directory, state), paused: true }
     if (result.status === "restart" || preferencesChanged()) {
       state = updateLeanStage(directory, state, step, { status: "pending", input_sha: null, outputs: [], finished_at: null })
       return { state, restart: true }
@@ -264,10 +314,12 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
   return { state: writeLeanState(directory, { ...state, status: "completed", stop_reason: null }) }
   } catch (error) {
     // Helpers may translate a rejected prompt into their own failure result.
-    // Preference invalidation still takes precedence over accepting that work.
+    // A pause, then preference invalidation, takes precedence over that work.
+    if (paused()) return { state: settlePause(directory, state), paused: true }
     if (preferencesChanged()) return { state, restart: true }
     throw error
   } finally {
+    pause?.removeEventListener("abort", interruptLive)
     // Read-only native reviews must settle even when the other review fails or
     // a later update restarts the pass. Their session history remains durable;
     // stale replies are never saved as accepted outputs.
@@ -314,6 +366,37 @@ async function reconcilePackageReview(directory: string, state: LeanState, deps:
 }
 
 class ChecklistRefreshRestart extends Error {}
+
+export const LEAN_PAUSED_REASON = "Paused at your request."
+
+/** The lawyer paused the run: no further model work starts or is accepted. */
+class LeanPauseRequested extends Error {
+  constructor() {
+    super(LEAN_PAUSED_REASON)
+  }
+}
+
+/** The reply, unless the run is paused first. A reply that arrives after the
+ * pause is dropped: nothing waits for it any more. */
+function untilPaused<T>(work: Promise<T>, pause: AbortSignal | undefined): Promise<T> {
+  if (!pause) return work
+  return new Promise<T>((resolve, reject) => {
+    const stop = () => reject(new LeanPauseRequested())
+    pause.addEventListener("abort", stop, { once: true })
+    if (pause.aborted) stop()
+    void work.then(resolve, reject).finally(() => pause.removeEventListener("abort", stop))
+  })
+}
+
+/** Settles a paused run as blocked. A step still running returns to pending,
+ * keeping its native session for inspection; nothing else is changed. */
+function settlePause(directory: string, fallback: LeanState): LeanState {
+  const latest = readLeanState(directory) ?? fallback
+  appendLeanEvent(directory, { stage: "run", event: "paused", reason: LEAN_PAUSED_REASON })
+  const stages = Object.fromEntries(Object.entries(latest.stages).map(([step, row]) => [step, row?.status === "running"
+    ? { ...row, status: "pending", input_sha: null, outputs: [], finished_at: null } : row])) as LeanState["stages"]
+  return writeLeanState(directory, { ...latest, status: "blocked", stop_reason: LEAN_PAUSED_REASON, paused_at: now(), stages })
+}
 
 async function ensureChecklistExtraction(directory: string, state: LeanState, deps: LeanDeps) {
   const result = await runChecklistExtractionFlow(directory, { sessions: deps.sessions, model: state.model, parentID: state.owner_session_id })
@@ -379,14 +462,17 @@ async function runModelStage(directory: string, state: LeanState, step: StepID, 
   progress({ session_id: sessionID })
   const attempt = async (index: number, text: string): Promise<StageRun> => {
     appendLeanEvent(directory, { stage, document, event: index ? "retry" : "model_call", attempt: index, session_id: sessionID })
+    const asked = performance.now()
     const reply = await (index === 0 && prepared ? prepared.reply : deps.sessions.prompt({ directory, sessionID, agent, text }))
+    const answered = performance.now()
     const accepted = stage === "discrepancy" || stage === "spine"
       ? acceptEvidenceReply(directory, stage, reply)
       : stage === "intake" || stage === "research" || stage === "research-review"
       ? acceptResearchReply(directory, stage, reply)
       : await acceptStageReply(directory, step, reply, { final: index >= LEAN_MAX_RETRIES })
+    const timing = { wait_ms: leanElapsedMs(asked, answered), check_ms: leanElapsedMs(answered) }
     progress({ attempts: index + 1, calls: index + 1, feedback: accepted.issues })
-    appendLeanEvent(directory, { stage, document, event: "checker", attempt: index, issues: accepted.issues })
+    appendLeanEvent(directory, { stage, document, event: "checker", attempt: index, issues: accepted.issues, ...timing })
     if (!accepted.issues.length)
       return { status: (stage === "intake" || stage === "change-plan") && accepted.questions?.length ? "blocked" : "done", outputs: accepted.outputs, openItems: accepted.openItems, questions: accepted.questions,
         ...((stage === "intake" || stage === "change-plan") && accepted.questions?.length ? { reason: stage === "intake" ? "Waiting for your answers before legal research and drafting." : "Waiting for your answers before drafting amendments." } : {}) }

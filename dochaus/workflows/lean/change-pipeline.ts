@@ -6,7 +6,7 @@ import { readDocxCommentParagraphs } from "../../lib/docx-comments"
 import { amendmentParagraphs } from "../../lib/drafting-amendment"
 import { askedQuestions, checkChanges, parseJsonObject, questionIssues } from "./change-checks"
 import { finalBodyParagraphs, readChangeList, readParagraphs, record, type ChangeList } from "./checks"
-import { appendLeanEvent } from "./events"
+import { appendLeanEvent, leanElapsedMs } from "./events"
 import { reviewStages, earlierDocuments, readLeanPlan, type DocID } from "./plan"
 import { stagePrompt, retryPrompt } from "./prompts"
 import { matterSourceIDs, openItem, quoteFound, quoteMissIssue } from "./quotes"
@@ -214,10 +214,12 @@ export async function runChangePreparation(directory: string, state: LeanState, 
           counts.attempts = Math.max(counts.attempts, index + 1)
           progress({ calls: counts.calls, attempts: counts.attempts })
           appendLeanEvent(directory, { stage: "change-prepare", document, step: group.id, event: index ? "retry" : "model_call", attempt: index, session_id: sessionID })
+          const asked = performance.now()
           const reply = await deps.sessions.prompt({ directory, sessionID, agent, text: index ? retryPrompt("change-prepare", failuresForGroup) : changePreparationPrompt(directory, document, plan, group) })
+          const answered = performance.now()
           const check = checkChanges(directory, reply, readParagraphs(directory, document).filter(row => group.pids.includes(row.pid)), { document, withholdUnverified: index >= LEAN_MAX_RETRIES })
           failuresForGroup = [...check.issues, ...(check.changes ? uniqueReplacementIssues(check.changes) : [])]
-          appendLeanEvent(directory, { stage: "change-prepare", document, step: group.id, event: "checker", attempt: index, issues: failuresForGroup })
+          appendLeanEvent(directory, { stage: "change-prepare", document, step: group.id, event: "checker", attempt: index, issues: failuresForGroup, wait_ms: leanElapsedMs(asked, answered), check_ms: leanElapsedMs(answered) })
           progress({ feedback: failuresForGroup })
           if (!failuresForGroup.length && check.changes) {
             results.push({ group: group.id, changes: check.changes })

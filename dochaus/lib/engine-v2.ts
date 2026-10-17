@@ -58,6 +58,8 @@ export function engineV2Fetch(transport: typeof fetch = fetch): typeof fetch {
       })
     }
     const response = await transport(url, options)
+    // The native interrupt answers { interrupted } without the v2 data envelope.
+    if (method === "POST" && /^\/api\/session\/[^/]+\/interrupt$/.test(url.pathname)) return response
     if (promptRoute && response.status === 204) throw new Error("Engine did not acknowledge the exact durable prompt admission.")
     if (!response.ok || response.status === 204) return response
     const envelope: unknown = await response.json()

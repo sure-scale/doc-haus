@@ -4,7 +4,8 @@ import { INGEST_URL } from "../../config"
 // state.json plus the coordinator's projection (in_flight, open questions and
 // items, gate result, delivered documents). The types mirror
 // dochaus/workflows/lean/{state,gate,deliverables}.ts, which the browser cannot
-// import. Continue and answers queue a request for the run's own coordinator.
+// import. Continue and answers queue a request for the run's own coordinator;
+// Pause stops it at once.
 
 /** Stage keys are steps in walk order: drafting and four reviews, then
  * change-plan, change-prepare, changes, change-review and apply per document;
@@ -62,6 +63,8 @@ export type LeanDocument = {
   path: string
   sha256: string
   deliverable: string | null
+  /** The deliverable holds the lawyer's accepted Word revision; this output was not registered over it. */
+  conflict?: "accepted_revision"
 }
 
 export type LeanPlannedDocument = { id: string; title: string; purpose: string }
@@ -72,6 +75,8 @@ export type LeanDraftingStatus = {
   revision: number
   status: "running" | "blocked" | "failed" | "completed"
   stop_reason: string | null
+  /** Set while the run is blocked only because the lawyer paused it. */
+  paused_at?: string
   owner_session_id: string
   model: { providerID: string; modelID: string } | null
   created_at: string
@@ -87,9 +92,13 @@ export type LeanDraftingStatus = {
   open_items: LeanOpenItem[]
   questions: LeanQuestion[]
   /** The final check's result; `items` holds every open item as the check settled it
-   * (open = still blocking, disclosed in the drafting notes, or resolved). */
+   * (open = still blocking, disclosed in the drafting notes, or resolved), and
+   * each checklist finding left open, disclosed as kind `checklist_open`. */
   gate: { status: "pass" | "blocked"; delivery: string | null; blocking: LeanOpenItem[]; items?: LeanOpenItem[] } | null
   documents: { status: "blocked" | "completed"; documents: LeanDocument[] } | null
+  /** Delivered drafts whose matter file differs from what the final check saw
+   * (`since` is when it ran). The gate's verdict above is not re-evaluated. */
+  changed_after_check?: { since: string | null; documents: string[] } | null
   /** The documents the run plans to draft, in order; null before the outline. */
   plan: { documents: LeanPlannedDocument[] } | null
   /** The lawyer's drafting request as the run recorded it. */
@@ -109,6 +118,8 @@ export type LeanDraftingStatus = {
 
 export type LeanDraftingStart = { profile: "lean"; mode: "started"; ownerSessionID: string; status: LeanDraftingStatus }
 export type LeanDraftingQueued = { profile: "lean"; mode: "queued"; request_id: string; status: LeanDraftingStatus }
+/** "pausing" while the run is still stopping; its status then follows. */
+export type LeanDraftingPaused = { profile: "lean"; mode: "paused" | "pausing"; status: LeanDraftingStatus }
 
 const RUN_STATUSES = ["running", "blocked", "failed", "completed"]
 const STAGE_STATUSES = ["pending", "running", "done", "failed", "blocked"]
@@ -172,6 +183,24 @@ export function leanStartRefusal(body: unknown) {
 export async function resumeLeanDraftingRun(matterId: string): Promise<LeanDraftingQueued> {
   const res = await fetch(`${INGEST_URL}/matters/${matterId}/lean/resume`, { method: "POST" })
   return leanQueued(res, "Failed to continue the drafting run")
+}
+
+/** Pause: the run stops its current work at once. Finished steps are kept and
+ * Continue picks up from the step that was in progress. */
+export async function pauseLeanDraftingRun(matterId: string, ownerSessionID: string): Promise<LeanDraftingPaused> {
+  const res = await fetch(`${INGEST_URL}/matters/${matterId}/lean/pause`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ownerSessionID }),
+  })
+  if (!res.ok) {
+    const body = (await res.json().catch(() => undefined)) as { error?: unknown } | undefined
+    throw new Error(typeof body?.error === "string" ? body.error : `Could not pause the drafting run (${res.status})`)
+  }
+  const body: unknown = await res.json()
+  if (!record(body) || body.profile !== "lean" || (body.mode !== "paused" && body.mode !== "pausing") || !isLeanDraftingStatus(body.status))
+    throw new Error("Drafting run response is invalid.")
+  return body as LeanDraftingPaused
 }
 
 export async function answerLeanQuestion(

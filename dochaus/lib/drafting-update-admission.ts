@@ -2,6 +2,8 @@
  * inspection, but its existing documents cannot receive a late general edit. */
 export function draftingUpdateAdmission(run: {
   status: string
+  /** A paused run stopped mid-pass; its checklist row is not a settled hold. */
+  paused_at?: string | null
   stages: Record<string, { status: string } | undefined>
   in_flight: boolean
   pending_requests: number
@@ -10,7 +12,7 @@ export function draftingUpdateAdmission(run: {
   const late = Object.entries(run.stages).some(([step, value]) =>
     (step.endsWith(".apply") || step === "finalize" || step === "gate") && value && value.status !== "pending")
   if (!late) return "update"
-  if (run.status === "blocked" && run.stages["checklist-check"]?.status === "blocked" &&
+  if (run.status === "blocked" && !run.paused_at && run.stages["checklist-check"]?.status === "blocked" &&
     !run.in_flight && run.pending_requests === 0) return "clarification"
   return "closed"
 }

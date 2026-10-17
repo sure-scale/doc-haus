@@ -42,9 +42,16 @@ export function engineSessionPort(options: { engineURL?: string; fetch?: typeof 
         signal: AbortSignal.timeout(30_000),
       })
       if (!admitted.ok) throw new Error(`The engine refused the ${input.agent} prompt (HTTP ${admitted.status}).`)
+      // A pause that arrived while this prompt was being admitted found nothing
+      // to interrupt yet; stop the admitted turn here instead.
+      if (input.signal?.aborted) {
+        await interrupt(input).catch(() => undefined)
+        throw new Error(`The ${input.agent} session was paused.`)
+      }
       const deadline = Date.now() + timeoutMs
       while (Date.now() < deadline) {
         await Bun.sleep(pollMs)
+        if (input.signal?.aborted) throw new Error(`The ${input.agent} session was paused.`)
         const outcome = await idleOutcome(transport, base, input.directory, input.sessionID)
         if (!outcome) continue
         const listed = await request(`${base}/api/session/${encodeURIComponent(input.sessionID)}/message`, {
@@ -67,6 +74,14 @@ export function engineSessionPort(options: { engineURL?: string; fetch?: typeof 
       }
       throw new Error(`The ${input.agent} session did not finish within ${Math.round(timeoutMs / 60_000)} minutes.`)
     },
+    interrupt,
+  }
+
+  async function interrupt(input: { directory: string; sessionID: string }) {
+    const response = await request(`${base}/api/session/${encodeURIComponent(input.sessionID)}/interrupt`, {
+      method: "POST", headers: { "x-opencode-directory": input.directory }, signal: AbortSignal.timeout(30_000),
+    })
+    if (!response.ok) throw new Error(`The engine could not interrupt the session (HTTP ${response.status}).`)
   }
 }
 

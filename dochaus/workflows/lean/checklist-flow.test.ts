@@ -6,9 +6,12 @@ import { renderMarkdownToDocx } from "../../lib/render"
 import { runChecklistCheckFlow, runChecklistExtractionFlow } from "./checklist-flow"
 import { CHECKLIST_JOB_AGENTS } from "./checklist-job"
 import { writeLeanPlan } from "./plan"
-import { leanFile, readLeanJson, writeLeanBytes, writeLeanText } from "./state"
+import { leanFile, readLeanJson, shortHash, writeLeanBytes, writeLeanText } from "./state"
 import type { StageSessionPort } from "./stages"
-import type { ChecklistCheckerInput, ChecklistProducerInput } from "./checklist-contract"
+import type { ChecklistCheckerInput, ChecklistItem, ChecklistProducerInput } from "./checklist-contract"
+import { buildChecklistDocumentContext } from "./checklist-document-context"
+import { checklistProducerInputs } from "./checklist-source-context"
+import { matterSourceBasis } from "./quotes"
 
 const dirs: string[] = []
 afterEach(() => dirs.splice(0).forEach(directory => rmSync(directory, { recursive: true, force: true })))
@@ -168,6 +171,55 @@ test("adverse findings need explicit reinspection, preserve original, and consum
   const revised = await runChecklistCheckFlow(directory, changedModel, { reinspectAdverse: true })
   expect(revised.checks[0].finding?.status).toBe("satisfied")
   expect(revised.checks[0].reinspection?.canonical_input_sha).not.toBe(reviewed.checks[0].reinspection?.canonical_input_sha)
+})
+
+/** Evidence identity as computed before annotation properties carried text
+ * measures (base 9d4a29764): artifact identity and SHA-256 only. */
+function preMeasureCanonicalSha(directory: string, item_id: string, item: ChecklistItem) {
+  const current = checklistProducerInputs(directory)
+  const request = current.find(job => job.key === "request")!.input
+  const settled = [...request.passages, ...request.instructions]
+  const context = buildChecklistDocumentContext(directory, { item_id, item, settled_instructions: settled })
+  return shortHash(JSON.stringify([matterSourceBasis(directory), item_id,
+    current.map(job => job.input.passages.map(ref => ({ document: ref.document, quote: ref.quote }))),
+    settled.map(ref => ({ document: ref.document, quote: ref.quote })), context.documents,
+    context.artifacts.map(artifact => ({ id: artifact.value.id, document: artifact.value.document, aliases: artifact.value.aliases,
+      artifact: artifact.value.artifact, sha256: artifact.value.sha256,
+      annotations: artifact.value.annotations?.map(annotation => ({ artifact: annotation.artifact, sha256: annotation.sha256 })) })),
+    ...(context.workflow.length ? [context.workflow] : [])]), 40)
+}
+
+test("a reinspection consumed before text measures existed is not reused once exact measures are observable", async () => {
+  const directory = matter()
+  const options = { finding: "indeterminate" as "indeterminate" | "satisfied" }
+  const deps = port(directory, options)
+  const extracted = await runChecklistExtractionFlow(directory, deps)
+  writeLeanBytes(directory, "d1/body.docx", (await renderMarkdownToDocx("# Record\n\nThe proposed arrangement remains open.")).bytes)
+  await runChecklistCheckFlow(directory, deps)
+  const reviewed = await runChecklistCheckFlow(directory, deps, { reinspectAdverse: true })
+  const consumed = reviewed.checks[0]!
+  expect(consumed.reinspection?.status).toBe("succeeded")
+  // Identical inputs keep the same identity, so the consumed allowance is not renewed.
+  const before = deps.counts.created
+  const repeated = await runChecklistCheckFlow(directory, deps, { reinspectAdverse: true })
+  expect(deps.counts.created).toBe(before)
+  expect(repeated.checks[0]!.reinspection!.canonical_input_sha).toBe(consumed.reinspection!.canonical_input_sha)
+  const persist = (canonical_input_sha: string) => writeLeanText(directory, "checklist/checks.json", JSON.stringify({ extraction_complete: true, expected_items: [consumed.item_id],
+    checks: [{ ...consumed, input_sha: "pre-measure-prompt", reinspection: { ...consumed.reinspection!, canonical_input_sha } }] }))
+  // A changed prompt under the same evidence identity reuses the consumed finding without a call.
+  persist(consumed.reinspection!.canonical_input_sha)
+  expect((await runChecklistCheckFlow(directory, deps, { reinspectAdverse: true })).checks[0]!.finding).toEqual(consumed.finding)
+  expect(deps.counts.created).toBe(before)
+  // The same record consumed under the pre-measure identity admits exactly one fresh check.
+  const legacy = preMeasureCanonicalSha(directory, consumed.item_id, extracted.items[0]!.item)
+  expect(legacy).not.toBe(consumed.reinspection!.canonical_input_sha)
+  persist(legacy)
+  options.finding = "satisfied"
+  const refreshed = await runChecklistCheckFlow(directory, deps, { reinspectAdverse: true })
+  expect(deps.counts.created).toBe(before + 1)
+  expect(refreshed.checks[0]!.finding?.status).toBe("satisfied")
+  await runChecklistCheckFlow(directory, deps, { reinspectAdverse: true })
+  expect(deps.counts.created).toBe(before + 1)
 })
 
 test("failed reinspection preserves original adverse finding and does not retry provider on Continue", async () => {

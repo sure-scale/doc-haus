@@ -2,6 +2,8 @@ import { createHash } from "node:crypto"
 import { existsSync, readFileSync } from "node:fs"
 import path from "node:path"
 import { withParagraphPointers } from "../../lib/drafting-amendment"
+import { sha256File } from "../../lib/lineage"
+import { readWorkingDocx } from "../../lib/working-docx"
 import { appendLeanEvent } from "./events"
 import { readLeanPlan, type DocID } from "./plan"
 import type { LeanDeps } from "./stages"
@@ -15,6 +17,9 @@ import { leanFile, readLeanJson, writeLeanBytes, writeLeanText } from "./state"
 // list next to the sources. Registration replaces a file only when it still holds
 // exactly the bytes this run registered before (or the same bytes again), so it
 // never overwrites a matter document the run did not write or a lawyer changed.
+// Once the lawyer accepts a Word revision of a file this run registered, the run
+// keeps that file and name: a newer output is neither written over the revision
+// nor forked to "<name> (2)"; its row says so and the output stays in the run.
 
 export type LeanDocumentKind = "body" | "redline" | "drafting_notes" | "drafting_notes_markdown"
 
@@ -29,6 +34,9 @@ export type LeanDocument = {
   sha256: string
   /** Matter-relative path of the registered deliverable, once registered. */
   deliverable: string | null
+  /** Set when `deliverable` holds the lawyer's accepted Word revision and these
+   * bytes differ: this output was not registered over it, or under another name. */
+  conflict?: "accepted_revision"
 }
 
 export type LeanDocuments = { schema: "dochaus.lean.documents/2"; status: "blocked" | "completed"; documents: LeanDocument[] }
@@ -79,11 +87,13 @@ export async function recordLeanDocuments(directory: string, deps: LeanDeps, reg
     if (bytes !== source) writeLeanBytes(directory, item.file, bytes)
     const sha256 = createHash("sha256").update(bytes).digest("hex")
     const prior = previous.get(`${item.kind}:${item.title ?? item.name}`)
-    const deliverable = register && item.name !== null && deps.registerDeliverable
+    const kept = register && item.name !== null ? acceptedRevisionName(directory, item.name, prior) : undefined
+    const deliverable = kept ?? (register && item.name !== null && deps.registerDeliverable
       ? await registerOnce(directory, deps.registerDeliverable, item.name, bytes, sha256, prior, [...previous.values()].filter(row => row.title === item.title), reserved, item.requested === true)
-      : prior?.sha256 === sha256 ? prior.deliverable : null
+      : prior?.sha256 === sha256 ? prior.deliverable : null)
     documents.push({
       kind: item.kind, document: item.document, title: item.title, path: path.relative(directory, leanFile(directory, item.file)), sha256, deliverable,
+      ...(kept && sha256File(path.join(directory, kept))?.sha256 !== sha256 ? { conflict: "accepted_revision" as const } : {}),
     })
   }
   const summary: LeanDocuments = { schema: "dochaus.lean.documents/2", status: register ? "completed" : "blocked", documents }
@@ -125,6 +135,19 @@ function producedFiles(directory: string): Produced[] {
   ]
 }
 
+/** This output's earlier deliverable name when the lawyer has since accepted a
+ * Word revision there. The registry refuses to write over such a revision; trying
+ * the next free name would silently move the run's delivery away from it. */
+function acceptedRevisionName(directory: string, stem: string, prior: LeanDocument | undefined) {
+  const name = prior?.deliverable
+  if (!name || !deliverableNames(stem).includes(name)) return
+  return readWorkingDocx(directory, path.join(directory, name)) ? name : undefined
+}
+
+function deliverableNames(stem: string) {
+  return Array.from({ length: MAX_NAME_SUFFIX }, (_, index) => `${stem}${index ? ` (${index + 1})` : ""}.docx`)
+}
+
 /** Tries this run's earlier deliverable name first, then "<title>.docx",
  * "<title> (2).docx" and on. A name is usable when its file is absent (create),
  * holds these exact bytes, or still holds the bytes this run registered there. */
@@ -139,7 +162,7 @@ async function registerOnce(
   reserved: Set<string>,
   requested: boolean,
 ): Promise<string> {
-  const names = Array.from({ length: MAX_NAME_SUFFIX }, (_, index) => `${stem}${index ? ` (${index + 1})` : ""}.docx`)
+  const names = deliverableNames(stem)
   for (const name of [...new Set([...(prior?.deliverable && names.includes(prior.deliverable) ? [prior.deliverable] : []), ...names])]) {
     if (reserved.has(name.toLocaleLowerCase()) && (!requested || name.toLocaleLowerCase() !== `${stem}.docx`.toLocaleLowerCase())) continue
     const target = path.join(directory, name)

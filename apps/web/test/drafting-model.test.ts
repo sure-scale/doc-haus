@@ -14,7 +14,9 @@ import {
   cleanTitle,
   currentStep,
   draftedGroups,
+  finalCheckNote,
   groupOpenItems,
+  leanSettledSummary,
   openItemsSentence,
   openQuestions,
   runPosition,
@@ -93,6 +95,27 @@ test("attention items follow the final check once it ran for this pass", () => {
   expect(attentionItems(lean(blockedGate)).map((row) => row.status)).toEqual(["open"])
   const disclosed = lean({ ...completed, gate: { ...completed.gate, items: [item("x", "placeholder", "disclosed"), item("y", "omission", "resolved")] } })
   expect(attentionItems(disclosed).map((row) => row.id)).toEqual(["x"])
+})
+
+test("a checklist requirement left open shows in the delivered review draft's details list", () => {
+  const actions = { busy: false, error: "", resuming: false, resume: async () => true, answer: async () => true }
+  const detail =
+    "Checklist requirement left open: Keep the note to about one page. Finding: Accepted body text measures {\"paragraphs\":28,\"words\":626,\"characters\":3900} do not clearly exceed about one page. Limitation: Rendered pagination was not verified."
+  const open: LeanOpenItem = { id: "checklist-check:checklist_open:1", stage: "checklist-check", kind: "checklist_open", detail, status: "disclosed", ref: { document: "d1" } }
+  const status = lean({ ...completed, gate: { ...completed.gate, delivery: "review_draft", disclosed: [open], items: [open, item("p1", "placeholder", "disclosed")] } })
+  expect(attentionItems(status)).toContainEqual(open)
+  expect(groupOpenItems([open])[0]!.label).toBe("Requirements left open by the checklist check")
+  const html = renderToStaticMarkup(createElement(RunHeader, { status, actions, own: true, onOpen: () => {} }))
+  expect(html).toContain("Requirements left open by the checklist check")
+  expect(html).toContain("626")
+  expect(html).toContain("Rendered pagination was not verified.")
+  expect(html).toContain('<span class="open-item-tag">Left open</span>')
+  // Only the placeholder is named in the drafting notes.
+  expect(html.match(/<span class="open-item-tag">In the notes<\/span>/g)).toHaveLength(1)
+  expect(html).toContain("a review draft, not yet ready for signature")
+  expect(leanSettledSummary(status.gate!.items!)).toBe(
+    "Final check settled 2 open items: 1 disclosed in the drafting notes, 1 left open by the checklist check.",
+  )
 })
 
 test("drafted outputs nest the redline and notes under a single draft", () => {
@@ -211,6 +234,27 @@ test("open items read as one sentence, questions apart from placeholders", () =>
     "Open items: 2 placeholders to fill and 1 other item to check.",
   )
   expect(openItemsSentence(status([]))).toBeUndefined()
+})
+
+test("a draft changed after the final check stops repeating the check's verdict", () => {
+  const actions = { busy: false, error: "", resuming: false, resume: async () => true, answer: async () => true }
+  const render = (status: LeanDraftingStatus) =>
+    renderToStaticMarkup(createElement(RunHeader, { status, actions, own: true, onOpen: () => {} }))
+  const changed = lean({ ...completed, changed_after_check: { since: completed.gate.checked_at, documents: ["Supply note.docx"] } })
+  expect(finalCheckNote(lean(completed))).toBe("Final workflow check passed: ready for signature.")
+  expect(finalCheckNote(lean({ ...completed, gate: { ...completed.gate, delivery: "review_draft" } }))).toBe(
+    "Final workflow check passed: a review draft, not yet ready for signature.",
+  )
+  expect(finalCheckNote(changed)).toBe("Changed after final check: review the draft.")
+  expect(finalCheckNote(lean({ ...changed, gate: { ...completed.gate, delivery: "review_draft" } }))).toBe("Changed after final check: review the draft.")
+  expect(finalCheckNote(lean({ ...completed, changed_after_check: null }))).toBe("Final workflow check passed: ready for signature.")
+  expect(render(lean(completed))).toContain("Final workflow check passed: ready for signature.")
+  const header = render(changed)
+  expect(header).toContain("Changed after final check: review the draft.")
+  expect(header).not.toContain("ready for signature")
+  expect(runHeadline(changed, Date.now())).toMatchObject({ tone: "done", title: "Ready for review" })
+  expect(runHeadline(changed, Date.now()).meta).toContain("Changed after final check")
+  expect(runHeadline(lean(completed), Date.now()).meta).not.toContain("Changed after final check")
 })
 
 test("a stopped run's header says what happened in plain words; the checker's wording stays on its step", () => {

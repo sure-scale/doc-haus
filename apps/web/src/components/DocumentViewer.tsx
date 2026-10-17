@@ -157,22 +157,28 @@ export default function DocumentViewer({
     finally {setBusy(undefined)}
   }
 
-  // Download the redlined .docx — the document with pending changes as native Word
-  // tracked changes — so it can be sent to counsel to accept or reject in Word.
-  // With nothing pending this is simply the current clean document.
-  async function download() {
+  // Download either the redlined .docx — the pending changes that can still be
+  // accepted, as native Word tracked changes, to send to counsel — or the current
+  // accepted Word file exactly as stored. Pending proposals never block the latter.
+  async function download(tracked: boolean) {
+    setError(undefined)
     try {
-    const bytes = await fetchRedlinedBytes(matterId, name)
+    const bytes = tracked ? await fetchRedlinedBytes(matterId, name) : await (async () => {
+      const current = await fetch(documentContentUrl(matterId, name))
+      if (!current.ok) throw new Error(`Could not download ${name} (${current.status})`)
+      return new Uint8Array(await current.arrayBuffer())
+    })()
     const url = URL.createObjectURL(
       new Blob([bytes as BlobPart], { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" }),
     )
     const a = document.createElement("a")
     a.href = url
-    a.download = redlines.length ? `${name.replace(/\.docx$/i, "")} (tracked changes).docx` : name
+    a.download = tracked ? `${name.replace(/\.docx$/i, "")} (tracked changes).docx` : name
     a.click()
     URL.revokeObjectURL(url)
     } catch(cause) {setError(cause instanceof Error ? cause.message : String(cause))}
   }
+  const staleNotice = staleExportNotice(redlines)
 
   // Convert this PDF into an editable .docx sibling, index it, and swap the viewer
   // onto the new document so it can be redlined like any other contract.
@@ -226,14 +232,7 @@ export default function DocumentViewer({
         <div className="viewer-bar">
           <ViewerTitle name={name} kind="Word document" pending={redlines.length} />
           <div className="viewer-bar-actions">
-            <button onClick={download} disabled={!html} title="Download as a Word file with tracked changes">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <path d="M12 4v11" />
-                <path d="m7 10 5 5 5-5" />
-                <path d="M5 20h14" />
-              </svg>
-              <span className="viewer-action-label">{redlines.length ? "Download redline" : "Download"}</span>
-            </button>
+            <DownloadActions redlines={redlines} preview={Boolean(html)} onDownload={download} />
             <button className="primary" onClick={() => setEditing((value) => !value)} disabled={busy !== undefined} aria-expanded={editing} aria-controls="document-edit-request">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <path d="M12 20h9" />
@@ -292,6 +291,7 @@ export default function DocumentViewer({
             </div>}
             {wasmError && <p className="muted">Viewer failed to load: {wasmError.message}</p>}
             {error && <p className="muted">{error}</p>}
+            {staleNotice && <p role="status" className="muted">{staleNotice}</p>}
             {!wasmError && !error && !html && (
               <div className="docx-render docx-skeleton" aria-label="Rendering document">
                 {Array.from({ length: 14 }, (_, i) => <div key={i} className="sk-line" />)}
@@ -357,6 +357,51 @@ export default function DocumentViewer({
       </div>
     </div>
   )
+}
+
+// The current accepted Word file is always downloadable. A redline download is
+// offered only while some pending proposal can still render as tracked changes.
+export function DownloadActions({ redlines, preview, onDownload }: {
+  redlines: Redline[]
+  preview: boolean
+  onDownload: (tracked: boolean) => void
+}) {
+  // Labels are visually hidden on narrow screens, so the two downloads need
+  // distinct glyphs: a plain arrow, and a document with a pen for tracked changes.
+  return (
+    <>
+      {redlines.some((row) => !row.stale) && (
+        <button onClick={() => onDownload(true)} disabled={!preview} title="Download as a Word file with the pending changes as tracked changes">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M13 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h4" />
+            <path d="M13 3v5h5v3" />
+            <path d="M8 13h5M8 17h2" />
+            <path d="M19 14.5a1.8 1.8 0 0 1 2.5 2.5L16 22.5l-3.5 1 1-3.5z" />
+          </svg>
+          <span className="viewer-action-label">Download redline</span>
+        </button>
+      )}
+      <button onClick={() => onDownload(false)} title="Download the current accepted Word file without pending changes">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M12 4v11" />
+          <path d="m7 10 5 5 5-5" />
+          <path d="M5 20h14" />
+        </svg>
+        <span className="viewer-action-label">Download</span>
+      </button>
+    </>
+  )
+}
+
+// Stale proposals stay listed until the reviewer rejects them, but the tracked-
+// changes preview and redline download leave them out: they target an earlier
+// Word revision. Say so, and name the action that actually clears them.
+export function staleExportNotice(redlines: Redline[]) {
+  const stale = redlines.filter((row) => row.stale).length
+  if (!stale) return
+  const one = stale === 1
+  return `${one ? "1 stale proposal is" : `${stale} stale proposals are`} left out of the tracked changes and the redline download. ` +
+    `Reject ${one ? "it" : "them"} to clear ${one ? "it" : "them"}; prepare a fresh change list if the change is still needed.`
 }
 
 // File glyph, name and a quiet status line. The pending count stays visible on

@@ -1,4 +1,4 @@
-import { checklistOutputState } from "./stages"
+import { checklistOutputState, type ChecklistOpenFinding } from "./stages"
 import { readChangeReview, deferredFindingItems } from "./change-pipeline"
 import { renderNotesCoverage } from "../../lib/notes-coverage-report"
 import { hasOpenItemMarker } from "../../lib/open-items"
@@ -29,7 +29,11 @@ import { isReviewStage, currentOpenItems, readLeanText, readLeanJson, readLeanSt
 //   disclosed by the notes naming it;
 // - a template part left out on purpose (by the outline, or by an applied
 //   amendment with its reason) is a recorded removal, resolved by the notes
-//   naming it.
+//   naming it;
+// - a checklist finding left open (a requirement the focused check could not
+//   establish, or one with decisions still open) stays non-blocking and is
+//   disclosed here with its recorded reason and limitation, derived from
+//   checklist/checks.json, which the gate already reads.
 // Disclosed items make the output a review draft; execution-ready output has no
 // disclosed items and no unanswered questions.
 
@@ -84,13 +88,15 @@ export function finalGate(directory: string): GateResult {
   const checked = checklistState && (checklistState.status !== "pending" || readLeanJson(directory, "checklist/extraction.json") !== undefined)
     ? checklistOutputState(directory) : undefined
   if (checked && !checked.valid) items.push(openItem("checklist-check", "omission", "Effective checklist findings or source-unit coverage are incomplete, adverse or stale; see checklist/report.md.", {}))
+  // Focused checks can correctly preserve a source-dependent open issue
+  // without requesting a missing answer or inventing a disclosure. Such a
+  // package remains a review draft, even when no generic gate item blocks it,
+  // and each open finding is disclosed with its own reason and limitation.
+  const checklistOpen = checklistState?.status === "done" && checked?.valid && checked.open
+  if (checklistOpen) items.push(...checked.openFindings.map(row => checklistOpenItem(directory, row)))
   const blocking = items.filter(item => item.status === "open")
   const disclosed = items.filter(item => item.status === "disclosed")
   const unanswered = [...context.questions.values()].some(question => question.status !== "answered")
-  // Focused checks can correctly preserve a source-dependent open issue
-  // without requesting a missing answer or inventing a disclosure. Such a
-  // package remains a review draft, even when no generic gate item blocks it.
-  const checklistOpen = checklistState?.status === "done" && checked?.valid && checked.open
   return {
     status: blocking.length ? "blocked" : "pass",
     delivery: blocking.length ? null : disclosed.length || unanswered || checklistOpen ? "review_draft" : "execution_ready",
@@ -108,6 +114,18 @@ export function notesCoverageReport(gate: GateResult) {
     rows: gate.items.map(item => ({ id: `${item.id} (${item.status})${item.resolution ? `: ${item.resolution}` : ""}` })),
     issues: gate.blocking.map(item => `${item.id}: ${item.resolution ?? "open"}. ${item.detail}`),
   })
+}
+
+/** An open checklist finding as a disclosed item: the requirement and the
+ * finding's own recorded reason, limitation and open decisions. The verdict
+ * is the checker's; the gate only makes it visible. */
+function checklistOpenItem(directory: string, { item_id, item, finding }: ChecklistOpenFinding): OpenItem {
+  const document = readLeanPlan(directory)?.documents.find(row => row.id === item.target.document || row.file === item.target.document)?.id
+  const sentence = (text: string) => /[.!?]$/.test(text.trim()) ? text.trim() : `${text.trim()}.`
+  const detail = [`Checklist requirement left open: ${sentence(item.check)}`, `Finding: ${sentence(finding.reason)}`, finding.limitation.trim() && `Limitation: ${sentence(finding.limitation)}`,
+    finding.open_decisions?.length ? `Open decisions: ${sentence(finding.open_decisions.map(row => row.trim()).join("; "))}` : ""].filter(Boolean).join(" ")
+  return { ...openItem("checklist-check", "checklist_open", detail, { checklist_item: item_id, ...(document ? { document } : {}) }),
+    status: "disclosed", resolution: "left open by the checklist check; disclosed with the review draft" }
 }
 
 function settle(item: OpenItem, context: SettleContext): OpenItem {

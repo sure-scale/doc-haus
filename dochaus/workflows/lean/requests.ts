@@ -5,6 +5,7 @@ import { readDurableJson } from "../../lib/durable-json"
 import { appendLeanEvent } from "./events"
 import { LEAN_PROMPT_VERSION, stageInputs } from "./stages"
 import { checklistRepairItems, LEAN_MAX_SUBSTANTIVE_REPAIRS, readRepairRound, startRepairRound } from "./repairs"
+import { snapshotRead } from "./quotes"
 import { LeanQuestionError, hashStageInputs, answerQuestion, leanDir, readLeanJson, readLeanText, writeLeanText, type LeanState, type OpenItem } from "./state"
 
 // Lawyer requests to a lean drafting run. Continue and answer POSTs only append a
@@ -62,8 +63,9 @@ export function queuedAnswerIDs(directory: string) {
 
 /** Processes pending requests in order. Answers are always applied. A Continue
  * is processed only when `stopped` is the run's settled state: on a blocked gate
- * it starts one repair round; otherwise it simply resumes. While a pass is in
- * progress a Continue stays queued until the pass settles. */
+ * it starts one repair round; otherwise, including after a pause, it simply
+ * resumes. While a pass is in progress a Continue stays queued until the pass
+ * settles. */
 export function drainLeanRequests(directory: string, stopped?: LeanState): DrainOutcome {
   const pending = pendingLeanRequests(directory)
   if (pending.length) mkdirSync(path.join(requestsDir(directory), "done"), { recursive: true, mode: 0o700 })
@@ -86,13 +88,16 @@ export function drainLeanRequests(directory: string, stopped?: LeanState): Drain
 }
 
 function processRequest(directory: string, request: unknown, stopped: LeanState | undefined): { status: string; detail?: string } {
+  // A paused run stopped mid-pass: an earlier gate or checklist verdict it still
+  // shows is not current, so it neither admits nor repairs anything.
+  const verdict = stopped?.paused_at ? undefined : stopped
   if (isChecklistRefinement(request)) {
-    if (stopped?.status !== "blocked" || stopped.stages["checklist-check"]?.status !== "blocked")
+    if (verdict?.status !== "blocked" || verdict.stages["checklist-check"]?.status !== "blocked")
       return { status: "rejected", detail: "Checklist refinement requires a settled blocked checklist stage." }
     return { status: "refinement_included" }
   }
   if (isClarification(request)) {
-    if (stopped?.status !== "blocked" || stopped.stages["checklist-check"]?.status !== "blocked")
+    if (verdict?.status !== "blocked" || verdict.stages["checklist-check"]?.status !== "blocked")
       return { status: "rejected", detail: "Clarification requires a settled blocked checklist; no document edit was admitted." }
     // The processed request is the context. Do not rewrite the brief or body.
     return { status: "clarification_included" }
@@ -113,11 +118,11 @@ function processRequest(directory: string, request: unknown, stopped: LeanState 
     }
   }
   if (!isContinue(request)) return { status: "rejected", detail: "unreadable request" }
-  if (stopped?.status === "blocked" && stopped.stages["checklist-check"]?.status === "blocked") {
+  if (verdict?.status === "blocked" && verdict.stages["checklist-check"]?.status === "blocked") {
     // Changed source, answer or Word inputs must be inspected before an old
     // adverse verdict can consume a substantive repair attempt.
     const current = hashStageInputs("checklist-check", LEAN_PROMPT_VERSION, stageInputs(directory, "checklist-check"))
-    const findings = stopped.stages["checklist-check"]?.input_sha === current ? checklistRepairItems(directory) : []
+    const findings = verdict.stages["checklist-check"]?.input_sha === current ? checklistRepairItems(directory) : []
     if (findings.length) {
       if ((readRepairRound(directory)?.substantive_attempts ?? 0) >= LEAN_MAX_SUBSTANTIVE_REPAIRS)
         return { status: "rejected", detail: `Checklist corrections remain after ${LEAN_MAX_SUBSTANTIVE_REPAIRS} substantive repair rounds; no new body repair was admitted.` }
@@ -126,7 +131,7 @@ function processRequest(directory: string, request: unknown, stopped: LeanState 
     }
     return { status: "resume" }
   }
-  const blocking = stopped?.status === "blocked" ? blockedGateItems(directory) : []
+  const blocking = verdict?.status === "blocked" ? blockedGateItems(directory) : []
   if (!blocking.length) return { status: "resume" }
   const round = startRepairRound(directory, blocking)
   return { status: "repair_round", detail: `round ${round.round}: ${blocking.length} item(s)` }
@@ -161,11 +166,8 @@ function isClarification(value: unknown): value is { kind: "clarification"; text
 /** Human inspection context from accepted queue requests, never new drafting
  * instructions. Identical text adds no new evidence or reinspection allowance. */
 export function leanClarifications(directory: string) {
-  const done = path.join(requestsDir(directory), "done")
-  if (!existsSync(done)) return []
   const texts = new Set<string>()
-  return readdirSync(done).filter(name => name.endsWith(".json")).toSorted().flatMap(name => {
-    const value = readDurableJson(path.join(done, name))
+  return processedLeanRequests(directory).flatMap(({ name, value }) => {
     if (!isClarification(value) || !record(value.outcome) || value.outcome.status !== "clarification_included" || texts.has(value.text)) return []
     texts.add(value.text)
     return [{ document: "request", locator: `.dochaus/lean/requests/done/${name} /text`, quote: value.text }]
@@ -182,11 +184,8 @@ export function isChecklistRefinement(value: unknown): value is { kind: "refine_
 /** Refinement changes late verification scope, never the lawyer's instructions.
  * Only selections accepted by the sole writer participate in the stage key. */
 export function checklistRefinementSelections(directory: string): ChecklistRefinementSelection[] {
-  const done = path.join(requestsDir(directory), "done")
-  if (!existsSync(done)) return []
   const selected = new Map<string, ChecklistRefinementSelection>()
-  for (const name of readdirSync(done).filter(name => name.endsWith(".json")).toSorted()) {
-    const value = readDurableJson(path.join(done, name))
+  for (const { value } of processedLeanRequests(directory)) {
     if (!record(value) || !record(value.outcome) || value.outcome.status !== "refinement_included" || !isChecklistRefinement(value)) continue
     for (const parent of value.parents) selected.set(parent.parent_id, parent)
   }
@@ -196,15 +195,23 @@ export function checklistRefinementSelections(directory: string): ChecklistRefin
 /** Stored user updates survive reload; included means prompt context, not applied wording. */
 export function leanUserUpdates(directory: string) {
   const dir = requestsDir(directory)
-  const done = path.join(dir, "done")
-  const files = [
-    ...pendingLeanRequests(directory).map(name => ({ file: path.join(dir, name), status: "queued" as const })),
-    ...(existsSync(done) ? readdirSync(done).filter(name => name.endsWith(".json")).map(name => ({ file: path.join(done, name), status: "included" as const })) : []),
+  const requests = [
+    ...pendingLeanRequests(directory).map(name => ({ value: readDurableJson(path.join(dir, name)), status: "queued" as const })),
+    ...processedLeanRequests(directory).map(({ value }) => ({ value, status: "included" as const })),
   ]
-  return files.flatMap(({ file, status }) => {
-    const value = readDurableJson(file)
-    return (isUpdate(value) || isClarification(value)) && typeof value.id === "string" &&
-      (status === "queued" || record(value.outcome) && ["included", "clarification_included"].includes(String(value.outcome.status)))
-      ? [{ id: value.id, text: value.text, status, ...(isClarification(value) ? { kind: "clarification" as const } : {}) }] : []
-  }).sort((a, b) => a.id.localeCompare(b.id))
+  return requests.flatMap(({ value, status }) => (isUpdate(value) || isClarification(value)) && typeof value.id === "string" &&
+    (status === "queued" || record(value.outcome) && ["included", "clarification_included"].includes(String(value.outcome.status)))
+    ? [{ id: value.id, text: value.text, status, ...(isClarification(value) ? { kind: "clarification" as const } : {}) }] : [])
+    .sort((a, b) => a.id.localeCompare(b.id))
+}
+
+/** Processed requests in name (arrival) order. They are read once per source
+ * snapshot: keying each step consults them, and only the drain writes them. */
+function processedLeanRequests(directory: string): { name: string; value: unknown }[] {
+  return snapshotRead(`processed-requests\0${directory}`, () => {
+    const done = path.join(requestsDir(directory), "done")
+    if (!existsSync(done)) return []
+    return readdirSync(done).filter(name => name.endsWith(".json")).toSorted()
+      .map(name => ({ name, value: readDurableJson(path.join(done, name)) }))
+  })
 }
