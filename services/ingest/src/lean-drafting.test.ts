@@ -512,6 +512,29 @@ test("a delivered draft changed after the final check is disclosed; the check's 
   expect(JSON.parse(readLeanText(directory, "gate.json")!)).toEqual(gate)
 })
 
+test("a review draft delivered with unresolved checklist findings passes through as delivered, with each finding's checklist reference", async () => {
+  const directory = matter()
+  writeLeanState(directory, { ...initLeanState(directory, { request: "Draft a short supply note.", ownerSessionID: "ses_owner", model: MODEL }), status: "completed" })
+  const finding = {
+    id: "checklist-check:checklist_unresolved:item-1",
+    stage: "checklist-check",
+    kind: "checklist_unresolved",
+    detail: "Checklist requirement not satisfied: The note states the delivery period.",
+    ref: { checklist_item: "item-1", checklist_class: "omission", document: "d1" },
+    status: "disclosed",
+  }
+  const gate = { status: "pass", delivery: "review_draft_with_findings", blocking: [], disclosed: [finding], items: [finding], checked_at: "2026-10-11T09:05:28.417Z" }
+  writeLeanText(directory, "gate.json", `${JSON.stringify(gate)}\n`)
+  // Written as JSON: the open item's kind and checklist reference are passed through verbatim.
+  writeLeanText(directory, "open-items.json", `${JSON.stringify({ items: [finding] })}\n`)
+  expect(leanDraftingStatus(directory)).toMatchObject({ status: "completed", gate, open_items: [finding] })
+
+  const routes = leanDraftingRoutes({ directory: () => directory, deps: () => ({ sessions: scriptedModel({}).port }) })
+  const response = await routes.request("/m1/lean/state")
+  expect(response.status).toBe(200)
+  expect(await response.json()).toMatchObject({ status: "completed", gate, open_items: [finding] })
+})
+
 describe("pausing and stopping a lean drafting run", () => {
   const FINISHED = ["discrepancy", "intake", "research", "research-review", "spine", "d1.draft"] as const
   const REVIEW = LEAN_STAGE_AGENTS.review

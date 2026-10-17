@@ -11,6 +11,8 @@ export type LeanDraftingStatus = LeanState & {
   in_flight: boolean
   documents: LeanDocuments | null
   plan: { documents: { id: string; title: string; purpose: string }[] } | null
+  /** The final check's delivery: execution_ready, review_draft or review_draft_with_findings. */
+  gate?: { delivery?: string | null } | null
 }
 export type LeanDraftingStart = { profile: "lean"; mode: "started"; ownerSessionID: string; status: LeanDraftingStatus }
 
@@ -26,11 +28,15 @@ export function isLeanDraftingStart(value: unknown): value is LeanDraftingStart 
     value.status.owner_session_id === value.ownerSessionID
 }
 
-/** complete: the run finished and its deliverables are registered. failed and
- * blocked are the product's own stops. inactive: the status still says running
- * but no coordinator runs it (an ingest restart), so nothing will change it. */
+/** complete: the run finished and its deliverables are registered.
+ * complete_with_findings: the run finished, but delivered a review draft with
+ * checklist requirements it does not satisfy (unresolved checklist findings).
+ * failed and blocked are the product's own stops. inactive: the status still
+ * says running but no coordinator runs it (an ingest restart), so nothing will
+ * change it. */
 export function classifyLeanObservation(status: LeanDraftingStatus) {
-  if (status.status === "completed") return "complete"
+  if (status.status === "completed")
+    return status.gate?.delivery === "review_draft_with_findings" ? "complete_with_findings" : "complete"
   if (status.status === "failed") return "failed"
   if (status.status === "blocked") return "blocked"
   if (!status.in_flight) return "inactive"

@@ -26,6 +26,11 @@
   color: var(--accent);
 }
 
+/* Delivered with unresolved checklist findings: not a clean completion. */
+.narration-result-title.is-findings svg {
+  color: var(--warn);
+}
+
 .result-chips {
   display: flex;
   flex-wrap: wrap;

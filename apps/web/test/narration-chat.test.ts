@@ -288,6 +288,30 @@ test("every draft of a several-document run is featured for review, in plan orde
   expect(files).toContain("Disclosure letter - redline.docx")
 })
 
+test("a review draft with unresolved checklist findings is not titled ready for review and claims no clean pass", () => {
+  const finding = {
+    id: "checklist-check:checklist_unresolved:item-1",
+    stage: "checklist-check",
+    kind: "checklist_unresolved",
+    detail: "Checklist requirement not satisfied: The note states the delivery period.",
+    status: "disclosed" as const,
+    ref: { checklist_item: "item-1", checklist_class: "omission" },
+  }
+  const findings = lean({ ...done, gate: { ...done.gate!, delivery: "review_draft_with_findings", items: [finding, { ...finding, id: "x2" }] } })
+  const html = renderResult(findings)
+  expect(html).toContain('class="narration-result-title is-findings"')
+  expect(html).toContain("Review draft — 2 unresolved checklist findings")
+  expect(html).not.toContain("Ready for review")
+  expect(html).not.toContain("Final workflow check passed")
+  expect(html).toContain('<li class="result-chip is-warn">')
+  expect(html).toContain("2 checklist requirements not satisfied")
+  // A clean completion keeps its title and pass.
+  const clean = renderResult(done)
+  expect(clean).toContain('class="narration-result-title"')
+  expect(clean).toContain("Ready for review")
+  expect(clean).toContain("Final workflow check passed")
+})
+
 function renderFinishedNarration(lines: ActivityLine[], notes: { id: string; at: number; text: string; keys: string[] }[] = []) {
   return renderToStaticMarkup(createElement(MemoryRouter, null, createElement(DraftingNarration, {
     narration: {

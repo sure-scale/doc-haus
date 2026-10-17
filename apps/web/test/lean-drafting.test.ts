@@ -24,6 +24,7 @@ import {
   type LeanDraftingStatus,
 } from "../src/api/ingest/lean"
 import { draftingTurnRecoveryMode } from "../src/components/chat/drafting-recovery"
+import { draftingStatusLabel } from "../src/components/matter/MatterRail"
 import { leanContinueAvailable, leanRunStopped, leanRunTakesUpdates, leanSettledItems, leanSettledSummary, runPosition, stepGroups, openQuestions } from "../src/components/drafting/model"
 import Questions from "../src/components/drafting/Questions"
 import { runOutcome } from "../src/components/narration/outcome"
@@ -75,6 +76,28 @@ test("drafting status reads a lean run's state", async () => {
   expect(await getDraftingStatus("matter-none")).toBeUndefined()
   respond({ ...completed, stages: { ...completed.stages, gate: undefined } })
   await expect(getDraftingStatus("matter-x")).rejects.toThrow("Drafting workflow status response is invalid.")
+})
+
+test("a review draft delivered with unresolved checklist findings is read from ingest and named apart from a clean completion", async () => {
+  const finding = {
+    id: "checklist-check:checklist_unresolved:item-1",
+    stage: "checklist-check",
+    kind: "checklist_unresolved",
+    detail: "Checklist requirement not satisfied: The note states the delivery period.",
+    status: "disclosed",
+    ref: { checklist_item: "item-1", checklist_class: "source_conflict", document: "d1" },
+  }
+  const body = { ...completed, open_items: [finding], gate: { ...completed.gate, delivery: "review_draft_with_findings", disclosed: [finding], items: [finding] } }
+  expect(isLeanDraftingStatus(body)).toBe(true)
+  respond(body)
+  const status = (await getDraftingStatus("matter-findings")) as LeanDraftingStatus
+  expect(status).toMatchObject({ status: "completed", gate: { delivery: "review_draft_with_findings", items: [finding] }, open_items: [finding] })
+
+  expect(draftingStatusLabel(status)).toEqual({ text: "Review draft — 1 unresolved checklist finding", findings: true })
+  expect(draftingStatusLabel(lean(completed))).toEqual({ text: "Drafting complete", findings: false })
+  const plain = lean({ ...completed, gate: { ...completed.gate, delivery: "review_draft" } })
+  expect(draftingStatusLabel(plain)).toEqual({ text: "Drafting complete", findings: false })
+  expect(draftingStatusLabel(lean(blockedGate))).toEqual({ text: "Drafting needs your attention", findings: false })
 })
 
 test("Continue posts to the lean resume route and answers to the question route", async () => {

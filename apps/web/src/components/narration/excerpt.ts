@@ -1,4 +1,10 @@
-import { leanRunStopped, openQuestions } from "../drafting/model"
+import {
+  checklistFindingsCount,
+  leanRunStopped,
+  openQuestions,
+  unresolvedChecklistFindings,
+  unresolvedFindingsPhrase,
+} from "../drafting/model"
 import { leanDeliveredDocuments, type LeanDraftingStatus } from "../../api/ingest/lean"
 import {
   activeStep,
@@ -54,6 +60,7 @@ export function buildExcerpt(input: {
   const step = activeStep(status)
   const questions = openQuestions(status).slice(0, LIST_ITEMS)
   const openItems = status.open_items.filter((item) => item.status === "open")
+  const unresolved = unresolvedChecklistFindings(status)
   const feedback = Object.values(status.stages)
     .flatMap((row) => row.feedback ?? [])
     .slice(-LIST_ITEMS)
@@ -97,6 +104,15 @@ export function buildExcerpt(input: {
           ]
         : [],
     ),
+    section(
+      "unresolved_checklist_findings",
+      unresolved.length
+        ? [
+            `${unresolved.length} not satisfied.`,
+            ...unresolved.slice(0, LIST_ITEMS).map((item) => `- ${clip(item.detail, ITEM_CHARS)}`),
+          ]
+        : [],
+    ),
     section("stop_reason", [status.stop_reason ? clip(status.stop_reason, 400) : ""]),
   ]
   return head(
@@ -113,7 +129,11 @@ function runState(status: LeanDraftingStatus) {
   if (status.status === "blocked") return "stopped, waiting on the lawyer"
   if (stoppedByTechnicalProblem(status)) return "paused after a technical problem; the work so far is kept"
   if (leanRunStopped(status)) return "stopped by the lawyer; a new drafting request starts a new draft"
-  return status.status === "failed" ? "stopped before finishing" : "complete"
+  if (status.status === "failed") return "stopped before finishing"
+  const findings = checklistFindingsCount(status)
+  if (status.status === "completed" && findings !== undefined)
+    return `complete as a review draft with ${unresolvedFindingsPhrase(findings)}; the draft does not satisfy ${findings === 1 ? "that requirement" : "those requirements"}`
+  return "complete"
 }
 
 /** A checkpoint key in words, from the same status that produced it. */

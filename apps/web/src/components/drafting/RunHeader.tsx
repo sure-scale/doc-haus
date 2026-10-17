@@ -6,10 +6,12 @@ import { activeStep, stepActivityLabel, stoppedByTechnicalProblem } from "../nar
 import { draftedIn } from "../narration/timeline"
 import {
   attentionItems,
+  checklistFindingsCount,
   cleanTitle,
   currentStep,
   draftedGroups,
   finalCheckNote,
+  findingsTitle,
   groupOpenItems,
   leanContinueAvailable,
   leanRunStopped,
@@ -71,6 +73,8 @@ export default function RunHeader({
   }, [status.in_flight])
 
   const head = runHeadline(status, now, actions.resuming)
+  // A review draft delivered with unresolved checklist findings is not a clean completion.
+  const findings = head.tone === "done" && checklistFindingsCount(status) !== undefined
   const stopped = leanRunStopped(status)
   const asks = openQuestions(status).length
   const drafts = draftedGroups(status).map((group) => group.main).filter((output) => output.role === "draft")
@@ -80,7 +84,7 @@ export default function RunHeader({
   if (!own)
     return (
       <section className={`run-head is-compact is-${head.tone}`} aria-label="Drafting run">
-        <RunIcon tone={head.tone} stopped={stopped} />
+        <RunIcon tone={head.tone} stopped={stopped} findings={findings} />
         <div className="run-head-text">
           <p className="run-head-title" role="status" aria-live="polite">
             {head.title}
@@ -124,7 +128,7 @@ export default function RunHeader({
   return (
     <section className={`run-head is-${head.tone}`} aria-label="Drafting run">
       <div className="run-head-main">
-        <RunIcon tone={head.tone} stopped={stopped} />
+        <RunIcon tone={head.tone} stopped={stopped} findings={findings} />
         <div className="run-head-text">
           <h2 className="run-head-title" aria-live="polite">
             {head.title}
@@ -246,9 +250,10 @@ export function runHeadline(status: LeanDraftingStatus, now: number, resuming = 
   if (state === "done") {
     const took = draftedIn(status)
     const drafts = draftedGroups(status).filter((group) => group.main.role === "draft").length
+    const findings = checklistFindingsCount(status)
     return {
       tone: "done",
-      title: "Ready for review",
+      title: findings === undefined ? "Ready for review" : findingsTitle(findings),
       meta: [
         took ? `Drafted in ${took}` : "",
         drafts ? `${drafts} document${drafts === 1 ? "" : "s"}` : "",
@@ -346,10 +351,16 @@ function segmentState(status: LeanDraftingStatus, key: string, current: string |
   return status.in_flight && row.status === "running" ? "live" : "stopped"
 }
 
-function RunIcon({ tone, stopped = false }: { tone: RunState; stopped?: boolean }) {
+function RunIcon({ tone, stopped = false, findings = false }: { tone: RunState; stopped?: boolean; findings?: boolean }) {
   return (
-    <span className={`run-head-icon is-${tone}`} aria-hidden>
-      {tone === "done" && (
+    <span className={`run-head-icon is-${tone}${findings ? " is-findings" : ""}`} aria-hidden>
+      {tone === "done" && findings && (
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round">
+          <line x1="12" y1="6" x2="12" y2="13" />
+          <line x1="12" y1="18" x2="12.01" y2="18" />
+        </svg>
+      )}
+      {tone === "done" && !findings && (
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
           <polyline points="20 6 9 17 4 12" />
         </svg>

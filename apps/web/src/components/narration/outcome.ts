@@ -1,5 +1,13 @@
 import type { LeanDraftingStatus } from "../../api/ingest/lean"
-import { attentionItems, leanContinueAvailable, leanRunStopped, openQuestions } from "../drafting/model"
+import {
+  attentionItems,
+  checklistFindingsCount,
+  findingsConsequence,
+  leanContinueAvailable,
+  leanRunStopped,
+  openQuestions,
+  unresolvedFindingsPhrase,
+} from "../drafting/model"
 import { stoppedByTechnicalProblem } from "./activity"
 
 // What the lawyer needs to know once the run settles or stalls, in one short
@@ -12,11 +20,17 @@ export type RunOutcome = { tone: "attention" | "done"; text: string }
 export function runOutcome(status: LeanDraftingStatus): RunOutcome | undefined {
   const questions = openQuestions(status).length
   const asks = questions === 1 ? "a question" : `${questions} questions`
-  if (status.status === "completed")
-    return {
-      tone: "done",
-      text: `Drafting is complete.${questions ? ` ${questions === 1 ? "One question still awaits" : `${questions} questions still await`} your answer.` : ""}`,
-    }
+  if (status.status === "completed") {
+    const pending = questions ? ` ${questions === 1 ? "One question still awaits" : `${questions} questions still await`} your answer.` : ""
+    // Delivered, but with checklist requirements the draft does not satisfy.
+    const findings = checklistFindingsCount(status)
+    if (findings !== undefined)
+      return {
+        tone: "done",
+        text: `Drafting delivered a review draft with ${unresolvedFindingsPhrase(findings)}. ${findingsConsequence(findings)}${pending}`,
+      }
+    return { tone: "done", text: `Drafting is complete.${pending}` }
+  }
   if (leanRunStopped(status))
     return { tone: "attention", text: "You stopped this draft. Its work so far is kept; a new drafting request starts a new draft." }
   if (questions) return { tone: "attention", text: `Drafting is waiting on ${asks} only you can answer.` }
@@ -49,18 +63,30 @@ export type ResultCheck = { tone: "pass" | "warn" | "neutral"; text: string }
 /** The checks a completed run can honestly claim, from its status alone: the
  * final check, quotations verified against the sources (every misquote the
  * checks find becomes a quote item), and what remains for the lawyer. A draft
- * changed after the final check is not what it checked, so that pass is not claimed. */
+ * changed after the final check is not what it checked, so that pass is not
+ * claimed; nor is it for a draft delivered with unresolved checklist findings. */
 export function resultChecks(status: LeanDraftingStatus): ResultCheck[] {
   const items = attentionItems(status).filter((item) => item.kind !== "question")
   const misses = items.filter((item) => item.kind === "quote_miss").length
   const placeholders = items.filter((item) => item.kind === "placeholder").length
   const unverified = items.filter((item) => item.kind === "checklist_open").length
-  const other = items.length - misses - placeholders - unverified
+  const unresolved = items.filter((item) => item.kind === "checklist_unresolved").length
+  const other = items.length - misses - placeholders - unverified - unresolved
+  const findings = checklistFindingsCount(status)
+  const changed = !!status.changed_after_check?.documents.length
   const checks: Array<ResultCheck | undefined> = [
     status.gate?.status === "pass"
-      ? status.changed_after_check?.documents.length
+      ? changed
         ? { tone: "warn", text: "Changed after final check: review the draft" }
-        : { tone: "pass", text: "Final workflow check passed" }
+        : findings === undefined
+          ? { tone: "pass", text: "Final workflow check passed" }
+          : undefined
+      : undefined,
+    findings !== undefined
+      ? {
+          tone: "warn",
+          text: findings ? `${findings} checklist requirement${findings === 1 ? "" : "s"} not satisfied` : "Checklist requirements not satisfied",
+        }
       : undefined,
     status.gate && !misses ? { tone: "pass", text: "Quotes checked against sources" } : undefined,
     misses
