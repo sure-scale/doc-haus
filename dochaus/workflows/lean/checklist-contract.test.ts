@@ -203,3 +203,20 @@ test("an unrefined open applicability decision needs no recovery; indeterminate 
   expect(checklistFindingRecovery(refined, { ...open, action_status: "indeterminate" })).toBe("inspect")
   expect(checklistFindingRecovery(refined, { ...open, action_status: undefined })).toBe("inspect")
 })
+
+test("disclosure fields are optional typed finding fields, each named once in the checker output contract", () => {
+  const base = { item_id: packet.item_id, status: "indeterminate", reason: "Target unavailable.", evidence: [], source_refs: item.source_refs, inspection_scope: "Supplied sources only.", limitation: "" }
+  const old = parseChecklistFinding(base)
+  for (const field of ["indeterminate_cause", "conflicting_source_refs", "departure_disclosure"]) expect(old).not.toHaveProperty(field)
+  const full = { ...base, indeterminate_cause: "missing_inspection", conflicting_source_refs: item.source_refs, departure_disclosure: evidence }
+  expect(parseChecklistFinding(full)).toEqual(full as ChecklistFinding)
+  for (const malformed of [{ ...base, indeterminate_cause: "unclear" }, { ...base, conflicting_source_refs: [{ document: "instruction.txt", locator: "paragraph 2" }] }, { ...base, departure_disclosure: [{ ...evidence[0], kind: "memo" }] }])
+    expect(() => parseChecklistFinding(malformed)).toThrow()
+  const instructions = buildChecklistCheckerPrompt(packet).split("CHECK_INPUT:")[0]!
+  for (const line of [
+    'Only when status or action_status is indeterminate, add "indeterminate_cause": "missing_inspection" if the needed text was not inspected or is not in the supplied artifacts, or "not_inspectable" if document text cannot establish the property at all; otherwise omit it.',
+    'Only when status is unsatisfied, open or indeterminate, add "conflicting_source_refs" (source_refs shape) for exact source passages that contradict this item\'s sources, so satisfying the item would conflict with them; otherwise omit it.',
+    'Only when status is unsatisfied, open or indeterminate, add "departure_disclosure" (evidence shape) for exact current draft or notes text stating that the draft deliberately departs from this item; otherwise omit it.',
+  ]) expect(instructions.split(line)).toHaveLength(2)
+  expect(buildChecklistProducerPrompt({ source: { document: "instruction.txt", role: "client instructions" }, passages: item.source_refs, instructions: [], targets: [{ document: "agreement.docx", role: "operative agreement" }], retrieval: "Use targeted lookup." })).not.toContain("indeterminate_cause")
+})

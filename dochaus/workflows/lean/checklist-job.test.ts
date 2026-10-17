@@ -297,3 +297,76 @@ test("native revision properties and inserted text are quotable artifact evidenc
   expect(port.prompts[1]!.text).toContain("not verified in current artifact evidence")
   expect(port.prompts[2]!.text).toContain("not verified in current body evidence")
 })
+
+// Disclosure fields are optional, typed and verified; the checker decides them, never the validator.
+test("indeterminate_cause is accepted only with an indeterminate status or action status", async () => {
+  const directory = matter(source.quote)
+  const accepted = await runChecklistCheckJob(directory, { sessions: sessionPort([JSON.stringify({ ...finding, indeterminate_cause: "not_inspectable" })]).sessions, model: null }, checker)
+  expect(accepted.status).toBe("succeeded")
+  expect(accepted.attempts).toBe(1)
+  if (accepted.status === "succeeded") expect(accepted.value.indeterminate_cause).toBe("not_inspectable")
+  const refined = { ...checker, item: { ...checker.item, required_action: "flag" as const } }
+  const action = { ...finding, status: "open", action_status: "indeterminate", open_decisions: [], indeterminate_cause: "missing_inspection" }
+  expect((await runChecklistCheckJob(directory, { sessions: sessionPort([JSON.stringify(action)]).sessions, model: null }, refined)).attempts).toBe(1)
+  const port = sessionPort([
+    JSON.stringify({ ...finding, indeterminate_cause: "unclear" }),
+    JSON.stringify({ ...finding, status: "unsatisfied", indeterminate_cause: "missing_inspection" }),
+    JSON.stringify(finding),
+  ])
+  const corrected = await runChecklistCheckJob(directory, { sessions: port.sessions, model: null }, checker)
+  expect(corrected.status).toBe("succeeded")
+  expect(corrected.attempts).toBe(3)
+  expect(port.prompts[1]!.text).toContain("indeterminate_cause: Invalid option")
+  expect(port.prompts[2]!.text).toContain("indeterminate_cause applies only when status or action_status is indeterminate; otherwise omit it.")
+})
+
+test("conflicting source references verify like source references and need an adverse status", async () => {
+  const conflict = { document: SOURCE, locator: "paragraph 2", quote: "The proposal is withdrawn." }
+  const directory = matter(`${source.quote} ${conflict.quote}`)
+  const adverse = { ...finding, status: "unsatisfied", conflicting_source_refs: [conflict] }
+  const accepted = await runChecklistCheckJob(directory, { sessions: sessionPort([JSON.stringify(adverse)]).sessions, model: null }, checker)
+  expect(accepted.status).toBe("succeeded")
+  expect(accepted.attempts).toBe(1)
+  if (accepted.status === "succeeded") expect(accepted.value.conflicting_source_refs).toEqual([conflict])
+  // An empty array states no conflict, whatever the status.
+  expect((await runChecklistCheckJob(directory, { sessions: sessionPort([JSON.stringify({ ...finding, status: "satisfied", conflicting_source_refs: [] })]).sessions, model: null }, checker)).attempts).toBe(1)
+  const port = sessionPort([
+    JSON.stringify({ ...adverse, conflicting_source_refs: [{ ...conflict, quote: "The proposal is accepted." }] }),
+    JSON.stringify({ ...adverse, status: "satisfied" }),
+    JSON.stringify(adverse),
+  ])
+  const corrected = await runChecklistCheckJob(directory, { sessions: port.sessions, model: null }, checker)
+  expect(corrected.status).toBe("succeeded")
+  expect(corrected.attempts).toBe(3)
+  expect(port.prompts[1]!.text).toContain('conflicting_source_refs[0] quotes "The proposal is accepted."')
+  expect(port.prompts[2]!.text).toContain("conflicting_source_refs applies only to an unsatisfied, open or indeterminate status; otherwise omit it.")
+})
+
+test("a departure disclosure verifies like current draft or notes evidence and needs an adverse status", async () => {
+  const directory = matter(source.quote)
+  writeLeanPlan(directory, [{ title: "Arrangement", purpose: "Record arrangement", file: "draft.docx", parts: [{ heading: "Terms", scope: "Terms" }] }])
+  const body = "This draft deliberately departs from the proposed arrangement."
+  const note = "The draft departs from the proposed arrangement on instruction."
+  writeLeanBytes(directory, "d1/body-applied.docx", (await renderMarkdownToDocx(`# Arrangement\n\n${body}`)).bytes)
+  writeLeanBytes(directory, "drafting-notes.docx", (await renderMarkdownToDocx(`# Notes\n\n${note}`)).bytes)
+  acceptApplyForTest(directory)
+  const disclosure = [
+    { document: "draft.docx", locator: "accepted paragraph 1", text: body, kind: "body" as const },
+    { document: "notes", locator: "notes paragraph 1", text: note, kind: "body" as const },
+  ]
+  const adverse = { ...finding, status: "unsatisfied", departure_disclosure: disclosure }
+  const accepted = await runChecklistCheckJob(directory, { sessions: sessionPort([JSON.stringify(adverse)]).sessions, model: null }, checker)
+  expect(accepted.status).toBe("succeeded")
+  expect(accepted.attempts).toBe(1)
+  if (accepted.status === "succeeded") expect(accepted.value.departure_disclosure).toEqual(disclosure)
+  const port = sessionPort([
+    JSON.stringify({ ...adverse, departure_disclosure: [{ ...disclosure[0], text: body.replace("deliberately", "silently") }] }),
+    JSON.stringify({ ...adverse, status: "not_applicable" }),
+    JSON.stringify(adverse),
+  ])
+  const corrected = await runChecklistCheckJob(directory, { sessions: port.sessions, model: null }, checker)
+  expect(corrected.status).toBe("succeeded")
+  expect(corrected.attempts).toBe(3)
+  expect(port.prompts[1]!.text).toContain('departure_disclosure[0] text is not verified in current body evidence for document "draft.docx"')
+  expect(port.prompts[2]!.text).toContain("departure_disclosure applies only to an unsatisfied, open or indeterminate status; otherwise omit it.")
+})
