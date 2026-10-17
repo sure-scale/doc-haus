@@ -510,3 +510,31 @@ button.run-head-toggle[aria-expanded="true"]::after {
   display: block;
   margin: 3px 0 0;
 }
+
+/* Stop asks once, in place, before it ends a paused or held run. */
+.run-head-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--warn-border);
+  border-radius: var(--radius-md);
+  background: var(--panel);
+}
+
+.run-head-confirm p {
+  flex: 1 1 240px;
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.run-head-confirm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-left: auto;
+}

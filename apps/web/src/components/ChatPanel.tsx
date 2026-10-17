@@ -28,7 +28,7 @@ import { useChatActions } from "./chat/use-chat-actions"
 import { useStickToBottom } from "./chat/use-stick-to-bottom"
 import DraftingNarration from "./narration/DraftingNarration"
 import { useDraftingNarration } from "./narration/use-drafting-narration"
-import { cleanTitle, openQuestions, updateProgressLabel } from "./drafting/model"
+import { cleanTitle, leanRunTakesUpdates, openQuestions, updateProgressLabel } from "./drafting/model"
 import SessionQuestions from "./chat/SessionQuestions"
 import QuestionDock from "./drafting/QuestionDock"
 import RunHeader from "./drafting/RunHeader"
@@ -244,7 +244,8 @@ export default function ChatPanel({
   // The run's own conversation (or the one that started it) carries its story
   // and its questions; any other conversation gets one line leading there.
   const own = run !== undefined && (run.owner_session_id === sessionID || run.owner_session_id === drafting?.owner)
-  const updatingRun = Boolean(run && run.status !== "completed" && matterId)
+  // A completed or stopped run takes no updates: the composer starts a new request.
+  const updatingRun = Boolean(run && leanRunTakesUpdates(run) && matterId)
   const updateAdmission = run ? draftingUpdateAdmission(run) : "closed"
   const updateTooLate = updateAdmission === "closed"
   const clarifyingRun = updateAdmission === "clarification"

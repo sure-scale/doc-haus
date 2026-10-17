@@ -5,7 +5,7 @@ import { INGEST_URL } from "../../config"
 // items, gate result, delivered documents). The types mirror
 // dochaus/workflows/lean/{state,gate,deliverables}.ts, which the browser cannot
 // import. Continue and answers queue a request for the run's own coordinator;
-// Pause stops it at once.
+// Pause stops it at once, and Stop ends a paused or held run for good.
 
 /** Stage keys are steps in walk order: drafting and four reviews, then
  * change-plan, change-prepare, changes, change-review and apply per document;
@@ -120,6 +120,7 @@ export type LeanDraftingStart = { profile: "lean"; mode: "started"; ownerSession
 export type LeanDraftingQueued = { profile: "lean"; mode: "queued"; request_id: string; status: LeanDraftingStatus }
 /** "pausing" while the run is still stopping; its status then follows. */
 export type LeanDraftingPaused = { profile: "lean"; mode: "paused" | "pausing"; status: LeanDraftingStatus }
+export type LeanDraftingStopped = { profile: "lean"; mode: "stopped"; status: LeanDraftingStatus }
 
 const RUN_STATUSES = ["running", "blocked", "failed", "completed"]
 const STAGE_STATUSES = ["pending", "running", "done", "failed", "blocked"]
@@ -201,6 +202,24 @@ export async function pauseLeanDraftingRun(matterId: string, ownerSessionID: str
   if (!record(body) || body.profile !== "lean" || (body.mode !== "paused" && body.mode !== "pausing") || !isLeanDraftingStatus(body.status))
     throw new Error("Drafting run response is invalid.")
   return body as LeanDraftingPaused
+}
+
+/** Stop: a paused or held run ends as failed and takes no Continue. Its files
+ * stay in the matter, and the next drafting request starts a new run. */
+export async function stopLeanDraftingRun(matterId: string, ownerSessionID: string): Promise<LeanDraftingStopped> {
+  const res = await fetch(`${INGEST_URL}/matters/${matterId}/lean/stop`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ownerSessionID }),
+  })
+  if (!res.ok) {
+    const body = (await res.json().catch(() => undefined)) as { error?: unknown } | undefined
+    throw new Error(typeof body?.error === "string" ? body.error : `Could not stop the drafting run (${res.status})`)
+  }
+  const body: unknown = await res.json()
+  if (!record(body) || body.profile !== "lean" || body.mode !== "stopped" || !isLeanDraftingStatus(body.status))
+    throw new Error("Drafting run response is invalid.")
+  return body as LeanDraftingStopped
 }
 
 export async function answerLeanQuestion(

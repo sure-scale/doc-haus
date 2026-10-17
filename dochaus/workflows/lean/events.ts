@@ -20,6 +20,7 @@ export type LeanEventName =
   | "request_received"
   | "request_processed"
   | "paused"
+  | "stopped"
 
 export type LeanEvent = {
   stage: StageID | "run"

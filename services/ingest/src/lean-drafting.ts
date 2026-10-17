@@ -1,5 +1,5 @@
 import { checklistRefinableParents } from "../../../dochaus/workflows/lean/checklist-flow"
-import { draftingUpdateAdmission } from "../../../dochaus/lib/drafting-update-admission"
+import { draftingRunStopped, draftingUpdateAdmission } from "../../../dochaus/lib/drafting-update-admission"
 import { mkdirSync, renameSync } from "node:fs"
 import path from "node:path"
 import { Hono } from "hono"
@@ -11,7 +11,7 @@ import { sha256File } from "../../../dochaus/lib/lineage"
 import { lastLeanEventAt } from "../../../dochaus/workflows/lean/events"
 import { readLeanPlan } from "../../../dochaus/workflows/lean/plan"
 import { enqueueLeanRequest, pendingLeanRequests, leanUserUpdates, queuedAnswerIDs, isChecklistRefinement } from "../../../dochaus/workflows/lean/requests"
-import { runLean, stageInputSha } from "../../../dochaus/workflows/lean/runner"
+import { runLean, stageInputSha, stopLeanRun } from "../../../dochaus/workflows/lean/runner"
 import { leanSteps } from "../../../dochaus/workflows/lean/plan"
 import { withSourceSnapshot } from "../../../dochaus/workflows/lean/quotes"
 import { engineSessionPort, type LeanDeps } from "../../../dochaus/workflows/lean/stages"
@@ -43,11 +43,14 @@ import { registerLeanDeliverable } from "./lean-deliverables"
 // starts a fresh one; a blocked or paused run is continued, not replaced.
 // Pause is the one request that does not queue: it stops the coordinator at
 // once (see runLean), and Continue later resumes from the unfinished step.
+// Stop settles a paused or blocked run that nothing is working on as failed: it
+// takes no further Continue, answer or update, and the next drafting request
+// archives it like any failed run. Nothing in the matter is deleted.
 
 export type DraftingProfile = "lean"
 
 export class LeanDraftingConflictError extends Error {
-  constructor(message: string, readonly code: "lean_run_in_progress" | "lean_run_awaiting_continue" | "drafting_profile_conflict") {
+  constructor(message: string, readonly code: "lean_run_in_progress" | "lean_run_awaiting_continue" | "lean_run_stopped" | "drafting_profile_conflict") {
     super(message)
   }
 }
@@ -99,6 +102,7 @@ export async function startLeanDraftingRun(
  * it resumes, skipping stages whose inputs are unchanged. */
 export function resumeLeanDraftingRun(directory: string, deps: LeanDeps = defaultDeps()) {
   if (!leanStateExists(directory)) return undefined
+  refuseStopped(readLeanState(directory))
   const request = enqueueLeanRequest(directory, { kind: "continue" })
   if (!running.has(directory)) launch(directory, deps)
   return { profile: "lean" as const, mode: "queued" as const, request_id: request.id, status: leanDraftingStatus(directory) }
@@ -108,6 +112,7 @@ export function resumeLeanDraftingRun(directory: string, deps: LeanDeps = defaul
  * at its next stage boundary and re-runs the stages that consume answers. */
 export function answerLeanQuestion(directory: string, questionID: string, answer: unknown, deps: LeanDeps = defaultDeps()) {
   if (!leanStateExists(directory)) return undefined
+  refuseStopped(readLeanState(directory))
   const text = validateAnswerText(typeof answer === "string" ? answer : "")
   if (!readQuestions(directory).some(question => question.id === questionID))
     throw new LeanQuestionError("No such question in this matter's lean drafting run.", "not_found")
@@ -217,6 +222,13 @@ export async function pauseLeanDraftingRun(directory: string, settleMs = 5_000) 
   return { profile: "lean" as const, mode: stopped ? "paused" as const : "pausing" as const, status: leanDraftingStatus(directory)! }
 }
 
+const STOPPED = { error: "This draft was stopped. Send a new drafting request to start a new draft.", code: "lean_run_stopped" } as const
+
+/** A stopped run is finished: it takes no further Continue, answer or update. */
+function refuseStopped(state: LeanState | undefined) {
+  if (state && draftingRunStopped(state)) throw new LeanDraftingConflictError(STOPPED.error, STOPPED.code)
+}
+
 /** Resolves once the background coordinator for this directory has stopped. */
 export async function leanDraftingIdle(directory: string, pollMs = 10) {
   while (running.has(directory)) await Bun.sleep(pollMs)
@@ -246,7 +258,8 @@ export function leanDraftingRoutes(options: { directory: (id: string) => string;
   })
   app.post("/:id/lean/resume", (c) => {
     const directory = options.directory(c.req.param("id"))
-    const resumed = resumeLeanDraftingRun(directory, deps())
+    const resumed = guard(() => resumeLeanDraftingRun(directory, deps()))
+    if (resumed instanceof LeanDraftingConflictError) return c.json({ error: resumed.message, code: resumed.code }, 409)
     if (!resumed) return c.json({ error: "This matter has no lean drafting run.", code: "lean_run_not_found" }, 404)
     return c.json(resumed, 202)
   })
@@ -259,6 +272,20 @@ export function leanDraftingRoutes(options: { directory: (id: string) => string;
     const paused = await pauseLeanDraftingRun(directory)
     if (!paused) return c.json({ error: "This drafting run is not working, so there is nothing to pause.", code: "lean_run_not_working" }, 409)
     return c.json(paused, paused.mode === "paused" ? 200 : 202)
+  })
+  // Stop: only a run that is paused or blocked and that no coordinator is
+  // working on. The check and the write run in one synchronous step, so no
+  // coordinator can start in between; the run's files all stay in place.
+  app.post("/:id/lean/stop", async (c) => {
+    const directory = options.directory(c.req.param("id"))
+    const input: { ownerSessionID?: unknown } | null = await c.req.json().catch(() => null)
+    const state = readLeanState(directory)
+    if (!state || input?.ownerSessionID !== state.owner_session_id)
+      return c.json({ error: "The active drafting run changed. Reload before stopping it.", code: "lean_run_changed" }, 409)
+    if (running.has(directory) || state.status !== "blocked")
+      return c.json({ error: "Only a paused or held drafting run can be stopped. Pause it first, or reload to see where it stands.", code: "lean_run_not_stoppable" }, 409)
+    stopLeanRun(directory, state)
+    return c.json({ profile: "lean", mode: "stopped", status: leanDraftingStatus(directory)! })
   })
   app.get("/:id/lean/state", (c) => {
     const status = leanDraftingStatus(options.directory(c.req.param("id")))
@@ -275,6 +302,7 @@ export function leanDraftingRoutes(options: { directory: (id: string) => string;
     if (!state) return c.json({ error: "This matter has no drafting run.", code: "lean_run_not_found" }, 404)
     if (input.ownerSessionID !== state.owner_session_id)
       return c.json({ error: "The active drafting run changed. Reload before sending this update.", code: "lean_run_changed" }, 409)
+    if (draftingRunStopped(state)) return c.json(STOPPED, 409)
     const admission = draftingUpdateAdmission({ ...state, in_flight: running.has(directory), pending_requests: pendingLeanRequests(directory).length })
     if (admission === "closed") return c.json({ error: "This update was not sent. Late clarification requires an idle draft held at checklist checking. Wait for the current work to settle; completed drafts need an amendment. You can still answer specific questions.", code: "lean_update_too_late" }, 409)
     const text = typeof input.text === "string" ? input.text.replace(/\r\n/g, "\n").trim() : ""
@@ -288,6 +316,7 @@ export function leanDraftingRoutes(options: { directory: (id: string) => string;
     const directory = options.directory(c.req.param("id"))
     const input: { answer?: unknown } = await c.req.json().catch(() => ({}))
     const queued = guard(() => answerLeanQuestion(directory, c.req.param("qid"), input.answer, deps()))
+    if (queued instanceof LeanDraftingConflictError) return c.json({ error: queued.message, code: queued.code }, 409)
     if (queued instanceof LeanQuestionError)
       return c.json({ error: queued.message, code: queued.code }, queued.code === "not_found" ? 404 : 400)
     if (!queued) return c.json({ error: "This matter has no lean drafting run.", code: "lean_run_not_found" }, 404)

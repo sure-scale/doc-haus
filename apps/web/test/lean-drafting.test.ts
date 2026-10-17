@@ -1,7 +1,8 @@
-import { draftingUpdateAdmission } from "../../../dochaus/lib/drafting-update-admission"
+import { draftingRunStopped, draftingUpdateAdmission } from "../../../dochaus/lib/drafting-update-admission"
 import { afterEach, expect, test } from "bun:test"
 import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
+import { MemoryRouter } from "react-router-dom"
 import answer from "../../../dochaus/workflows/lean/fixtures/answer.json"
 import resume from "../../../dochaus/workflows/lean/fixtures/resume.json"
 import start from "../../../dochaus/workflows/lean/fixtures/start.json"
@@ -19,10 +20,11 @@ import {
   leanDeliveredDocuments,
   pauseLeanDraftingRun,
   resumeLeanDraftingRun,
+  stopLeanDraftingRun,
   type LeanDraftingStatus,
 } from "../src/api/ingest/lean"
 import { draftingTurnRecoveryMode } from "../src/components/chat/drafting-recovery"
-import { leanContinueAvailable, leanSettledItems, leanSettledSummary, runPosition, stepGroups, openQuestions } from "../src/components/drafting/model"
+import { leanContinueAvailable, leanRunTakesUpdates, leanSettledItems, leanSettledSummary, runPosition, stepGroups, openQuestions } from "../src/components/drafting/model"
 import Questions from "../src/components/drafting/Questions"
 import { runOutcome } from "../src/components/narration/outcome"
 import RunHeader, { runHeadline } from "../src/components/drafting/RunHeader"
@@ -179,6 +181,58 @@ test("the header offers Pause only while the run is working; a paused run offers
   expect(runHeadline(pausedRun(), now)).toMatchObject({ tone: "paused", title: "Paused at apply changes" })
   expect(runOutcome(pausedRun())?.text).toBe("Paused at your request. Continue drafting (above) picks up from the step that was in progress.")
   expect(draftingUpdateAdmission({ ...pausedRun(), stages: { ...pausedRun().stages, "checklist-check": { status: "blocked" } } })).toBe("closed")
+})
+
+/** Stopped by the lawyer while a question and a request were still open. */
+function stoppedRun() {
+  const { paused_at: _, ...run } = pausedRun()
+  return lean({ ...run, status: "failed", stop_reason: "Stopped at your request.", pending_requests: 1, questions: blockedQuestion.questions })
+}
+
+test("Stop posts the run's owner to the lean stop route and keeps refusals", async () => {
+  const calls = respond({ profile: "lean", mode: "stopped", status: stoppedRun() })
+  expect(await stopLeanDraftingRun("matter-a", "ses_child1")).toMatchObject({ mode: "stopped", status: { status: "failed", stop_reason: "Stopped at your request." } })
+  expect(calls).toHaveLength(1)
+  expect(calls[0]?.url).toEndWith("/matters/matter-a/lean/stop")
+  expect(calls[0]?.init?.method).toBe("POST")
+  expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({ ownerSessionID: "ses_child1" })
+
+  respond({ error: "Only a paused or held drafting run can be stopped. Pause it first, or reload to see where it stands.", code: "lean_run_not_stoppable" }, 409)
+  await expect(stopLeanDraftingRun("matter-a", "ses_child1")).rejects.toThrow("Only a paused or held drafting run can be stopped.")
+  respond({ profile: "lean", mode: "paused", status: pausedRun() })
+  await expect(stopLeanDraftingRun("matter-a", "ses_child1")).rejects.toThrow("Drafting run response is invalid.")
+})
+
+test("a paused or held run offers Stop draft; a stopped run says so, asks nothing, offers no Continue and takes a new request", () => {
+  const now = Date.parse(completed.updated_at)
+  let stops = 0
+  const actions: RunActions = { busy: false, pausing: false, stopping: false, error: "", resuming: false, resume: async () => true, answer: async () => true, update: async () => true, refine: async () => true, pause: async () => true, stop: async () => (stops++, true) }
+  const render = (status: LeanDraftingStatus, overrides: Partial<RunActions> = {}, own = true) =>
+    renderToStaticMarkup(createElement(MemoryRouter, null, createElement(RunHeader, { status, actions: { ...actions, ...overrides }, own, onOpen: () => {}, onShowDrafts: () => {} })))
+  const paused = render(pausedRun())
+  expect(paused).toMatch(/<button type="button" class="run-head-cta">Stop draft<\/button><button type="button" class="primary run-head-cta">Continue drafting<\/button>/)
+  // The question is asked only once Stop is pressed.
+  expect(paused).not.toContain("Stop this draft?")
+  for (const fixture of [blockedQuestion, blockedGate]) expect(render(lean(fixture))).toContain(">Stop draft<")
+  for (const fixture of [start.status, completed, failed, orphaned]) expect(render(lean(fixture))).not.toContain("Stop draft")
+  expect(render(pausedRun(), { resuming: true })).not.toContain("Stop draft")
+  expect(render(pausedRun(), { busy: true })).toMatch(/<button type="button" class="run-head-cta" disabled="">Stop draft<\/button>/)
+  expect(stops).toBe(0)
+
+  const stopped = stoppedRun()
+  expect(runHeadline(stopped, now)).toMatchObject({ tone: "paused", title: "Draft stopped" })
+  const html = render(stopped)
+  expect(html).toContain("You stopped this draft")
+  for (const text of ["Continue drafting", "Stop draft", "Pause drafting", "question for you", "Request queued"]) expect(html).not.toContain(text)
+  expect(render(stopped, {}, false)).toContain("A new request starts a new draft")
+  expect(openQuestions(stopped)).toEqual([])
+  expect(leanContinueAvailable(stopped)).toBe(false)
+  expect(runOutcome(stopped)?.text).toBe("You stopped this draft. Its work so far is kept; a new drafting request starts a new draft.")
+  // The composer updates an open run; a completed or stopped run takes a new request.
+  expect([pausedRun(), lean(failed), lean(blockedQuestion), stopped, lean(completed)].map(leanRunTakesUpdates)).toEqual([true, true, true, false, false])
+  // Only the lawyer's own stop reads as stopped: any other failed run still offers Continue.
+  expect([lean(failed), stopped].map(draftingRunStopped)).toEqual([false, true])
+  expect(leanContinueAvailable(lean(failed))).toBe(true)
 })
 
 test("the conversation recovers only a printed tool call; a new draft request starts after a run finished and is refused while it is open", async () => {

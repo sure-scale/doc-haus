@@ -1,5 +1,6 @@
 import { runFocusedChangeReview } from "./focused-change-review"
 import { readFirmDraftingPreferences } from "../../lib/drafting-preferences"
+import { DRAFTING_STOPPED_REASON } from "../../lib/drafting-update-admission"
 import { runChangeReconciliation } from "./change-reconciliation"
 import { focusedChecklistRepairs, runFocusedRepairAdjudication } from "./checklist-repair-adjudication"
 import { checklistFindingRecovery } from "./checklist-contract"
@@ -396,6 +397,15 @@ function settlePause(directory: string, fallback: LeanState): LeanState {
   const stages = Object.fromEntries(Object.entries(latest.stages).map(([step, row]) => [step, row?.status === "running"
     ? { ...row, status: "pending", input_sha: null, outputs: [], finished_at: null } : row])) as LeanState["stages"]
   return writeLeanState(directory, { ...latest, status: "blocked", stop_reason: LEAN_PAUSED_REASON, paused_at: now(), stages })
+}
+
+/** The lawyer stopped a run no coordinator is working on (the caller checks).
+ * It settles as failed, so the next drafting request archives it and starts a
+ * new run. Steps, outputs, answers, repair allowances and queued requests stay
+ * exactly as they were: nothing is marked done and no budget is reset. */
+export function stopLeanRun(directory: string, state: LeanState): LeanState {
+  appendLeanEvent(directory, { stage: "run", event: "stopped", reason: DRAFTING_STOPPED_REASON })
+  return writeLeanState(directory, { ...state, status: "failed", stop_reason: DRAFTING_STOPPED_REASON, paused_at: undefined })
 }
 
 async function ensureChecklistExtraction(directory: string, state: LeanState, deps: LeanDeps) {
