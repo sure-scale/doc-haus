@@ -127,6 +127,38 @@ describe("an amendment that changes only markers", () => {
   })
 })
 
+describe("a split that keeps the paragraph as it stands", () => {
+  const CONFIRMED = "The supplier shall deliver the goods [open item: confirm the delivery period chosen]."
+  const ADDED = "The supplier shall insure the goods in transit [open item: confirm the transit cover chosen]."
+  const split = (current: string, updated: string[], sources: object[] = []) =>
+    checkChanges(matter(), reply([{ pid: P1, operation: "split", updated, reason: "Adds a paragraph.", sources }]), paragraph(current))
+
+  test("the kept paragraph before the new one changes nothing; the new one is checked as before", () => {
+    const check = split(DELIVERY, [DELIVERY, ADDED])
+    expect(check.issues).toEqual([])
+    expect(check.changes?.amendments).toEqual([expect.objectContaining({ pid: P1, operation: "split", updated: [DELIVERY, ADDED] })])
+    expect(split(DELIVERY, [DELIVERY, "The supplier shall insure the goods in transit."]).issues).toEqual([NO_SOURCE(0)])
+  })
+
+  test("the kept paragraph after the new one, with any open item it shows, changes nothing", () => {
+    expect(split(DELIVERY, [ADDED, DELIVERY]).issues).toEqual([])
+    expect(split(CONFIRMED, [ADDED, CONFIRMED]).issues).toEqual([])
+  })
+
+  test("a title kept as it stands with new introductory text changes nothing in the title", () => {
+    expect(split("Delivery", ["Delivery", "Delivery is due within thirty days of the order date."], SUPPORT).issues).toEqual([])
+  })
+
+  test("a replacement that only adds a marker still changes only markers", () => {
+    const check = checkChanges(matter(), reply([{ pid: P1, updated: CONFIRMED, reason: "The period is open.", sources: [] }]), PARAGRAPHS)
+    expect(check.issues).toEqual([MARKER_ONLY(0)])
+  })
+
+  test("a split part that only adds a marker to the paragraph still changes only markers", () => {
+    expect(split(DELIVERY, [CONFIRMED, ADDED]).issues).toEqual([MARKER_ONLY(0)])
+  })
+})
+
 describe("markers are read as the final body will show them", () => {
   const SPACING = (marker: string) => `amendments[0] ([${P1}]) writes the marker "${marker}" with spacing that will not show as an open item. ` +
     "Write it as [open item: ...] with ordinary single spaces."

@@ -17,8 +17,15 @@ export function markerIssues(amendment: Amendment, index: number, current: strin
   if (amendment.operation === "delete") return amendment.sources.length ? [] : [
     `${at} is an explicit deletion without source support. Quote the source or settled instruction that supports removing this paragraph; otherwise retain its wording with a new visible [open item: confirm ...] marker.`,
   ]
-  if (amendment.operation === "split") return amendmentParagraphs(amendment).flatMap((text, part) =>
-    markerIssues({ ...amendment, operation: "replace", updated: text }, index, current, questionPids))
+  // A split may keep the paragraph as it stands, markers included, as one of its
+  // parts beside new text; that part changes nothing, so only the others are checked.
+  if (amendment.operation === "split") {
+    const parts = amendmentParagraphs(amendment)
+    const kept = parts.findIndex(text => normalizeParagraphText(text) === normalizeParagraphText(current) &&
+      [...markerSet(text)].join("\0") === [...markerSet(current)].join("\0"))
+    return parts.flatMap((text, part) => part === kept ? [] :
+      markerIssues({ ...amendment, operation: "replace", updated: text }, index, current, questionPids))
+  }
   const updated = amendmentText(amendment)
   const before = markerSet(current)
   const after = markerSet(updated)
