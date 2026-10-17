@@ -37,8 +37,10 @@ bun apps/web/e2e/matter-composer.ts
 ```
 
 It opens a blocked drafting run with its requirement-check form at
-1512×806, 1440×900, 1280×720 and 400×860, then checks that the composer stays
-inside the chat card and clear of the matter status bar, that Send is the
-element under its own centre and takes a real pointer click, and that the
-narrow window has no horizontal overflow. The click's request is answered by the
+1512×806, 1440×900, 1280×720 and 400×860, then checks that Continue drafting,
+Check the full draft and Details are in view and under their own centres, that
+arrowing through the requirements keeps the focused one inside the scrolling
+list, that the composer stays inside the chat card and clear of the matter
+status bar, that Send is the element under its own centre and takes a real
+pointer click, and that the narrow window has no horizontal overflow. The click's request is answered by the
 fixture; nothing reaches a live run.

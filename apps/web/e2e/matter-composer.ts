@@ -1,6 +1,7 @@
 // Matter chat layout regression against a separately started Vite/preview
 // server. A blocked run's refinement form makes the run header tall; the
-// composer must stay inside the chat card and clear of the status bar.
+// composer must stay inside the chat card and clear of the status bar, and the
+// header's own actions must stay in view while only its requirement list scrolls.
 // All API traffic is intercepted; this never reaches a live service or account.
 import { mkdir, writeFile } from "node:fs/promises"
 import path from "node:path"
@@ -71,8 +72,22 @@ try {
     await page.goto(`${baseURL}/matter/${matter.id}?view=chat&session=${blockedGate.owner_session_id}`)
     await expect(page.getByRole("form", { name: "Check a requirement against the full draft" })).toBeVisible()
     const send = page.locator("button.send-btn")
+    // A desktop window keeps the header's actions and the composer on screen;
+    // a stacked one scrolls the page to each in turn.
+    const reachable = (selector: string) => page.evaluate((selector: string) => {
+      const node = document.querySelector(selector)!
+      const box = node.getBoundingClientRect()
+      const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2)
+      return box.top >= 0 && box.bottom <= innerHeight && box.left >= 0 && box.right <= innerWidth && Boolean(hit && node.contains(hit))
+    }, selector)
+    const actions: Record<string, boolean> = {}
+    for (const [name, selector] of [["continue", ".run-head-actions .run-head-cta"], ["check", ".run-checklist-refinement button[type=submit]"], ["details", ".run-head-toggle"]]) {
+      if (width <= 700) await page.locator(selector).scrollIntoViewIfNeeded()
+      actions[name] = await reachable(selector)
+    }
+    await expect(page.getByRole("button", { name: "Continue drafting", exact: true })).toBeVisible()
+    await expect(page.getByRole("button", { name: "Check the full draft", exact: true })).toBeVisible()
     await page.getByRole("textbox", { name: "Message" }).fill("Fixture instruction.")
-    // A desktop window keeps the composer on screen; a stacked one scrolls the page.
     if (width <= 700) await send.scrollIntoViewIfNeeded()
     const layout = await page.evaluate(() => {
       const rect = (selector: string) => document.querySelector(selector)!.getBoundingClientRect()
@@ -92,10 +107,19 @@ try {
       }
     })
     await page.screenshot({ path: path.join(evidence, `matter-composer-${width}x${height}.png`) })
+    // Arrowing to the last requirement scrolls it into the list's view.
+    const radios = page.getByRole("radio")
+    await radios.first().focus()
+    for (let index = 1; index < await radios.count(); index++) await page.keyboard.press("ArrowDown")
+    const focusInList = await page.evaluate(() => {
+      const focused = document.activeElement!.getBoundingClientRect()
+      const list = document.querySelector(".run-checklist-choices")!.getBoundingClientRect()
+      return document.activeElement === [...document.querySelectorAll(".run-checklist-choices input")].at(-1) && focused.top >= list.top && focused.bottom <= list.bottom
+    })
     // A real pointer click: Playwright refuses it while another element intercepts.
     const click = await send.click({ timeout: 3000 }).then(() => "clicked", (error: Error) => error.message.split("\n").find(line => line.includes("intercepts")) ?? error.message.split("\n")[0])
     if (click === "clicked") await expect.poll(() => writes.length).toBeGreaterThan(0)
-    results.push({ size: `${width}x${height}`, ...layout, click, writes, unexpected })
+    results.push({ size: `${width}x${height}`, actions, focusInList, ...layout, click, writes, unexpected })
     await context.close()
   }
 } finally {
@@ -104,8 +128,8 @@ try {
 }
 for (const result of results) {
   console.log(JSON.stringify(result))
-  expect(result).toMatchObject({ hitsSend: true, composerInCard: true, clearOfStatusbar: true, overflowX: 0, click: "clicked", unexpected: [] })
+  expect(result).toMatchObject({ actions: { continue: true, check: true, details: true }, focusInList: true, hitsSend: true, composerInCard: true, clearOfStatusbar: true, overflowX: 0, click: "clicked", unexpected: [] })
   expect(result.writes).toEqual([`POST /matters/${matter.id}/lean/updates`])
   if (!String(result.size).startsWith("400x")) expect(result.statusbarVisible).toBe(true)
 }
-console.log(`PASS ${results.length} viewports: Send is the hit target and clear of the status bar`)
+console.log(`PASS ${results.length} viewports: run actions and Send are in view, hit-testable and clear of the status bar`)
