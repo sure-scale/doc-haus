@@ -6,6 +6,7 @@ import path from "node:path"
 import { pathToFileURL } from "node:url"
 import { paragraphTargets } from "../../../dochaus/lib/drafting-amendment"
 import { createDocxRevision } from "../../../dochaus/lib/docx-amendments"
+import { readWorkingDocx } from "../../../dochaus/lib/working-docx"
 import { getRedline, openDb } from "./db"
 import { docxodus } from "./docxodus"
 
@@ -85,10 +86,13 @@ async function isolatedReview(temporary:string,batches:Amendment[][]) {
       },
       revise:async (bytes:Uint8Array,prior:string) => (await request(`${route}/documents/revisions`,{method:"POST",headers:{"x-document-prior-sha256":prior},body:wordForm(bytes)})).status,
       accept:async (id:number) => (await request(`${route}/redlines/${id}/accept`,{method:"POST"})).status,
+      post:(suffix:string,init?:RequestInit) => request(`${route}${suffix}`,{...init,method:"POST"}),
       redlined:() => request(`${route}/documents/redlined?name=working.docx`),
       pending:async () => (await (await request(`${route}/redlines?name=working.docx`)).json() as Array<{id:number;stale?:boolean;stale_reason?:string}>)
         .map((row) => [row.id,row.stale,row.stale_reason]),
       bindings:(ids:number[]) => {const db=openDb(created.dir);try {return ids.map((id) => JSON.parse(getRedline(db,id)!.target_json!) as Record<string,unknown>)} finally {db.close()}},
+      rows:(ids:number[]) => {const db=openDb(created.dir);try {return ids.map((id) => getRedline(db,id))} finally {db.close()}},
+      working:() => readWorkingDocx(created.dir,file),
     }
   } catch (error) {
     await stop();throw error
@@ -162,6 +166,72 @@ for (const {saved,edited} of [
       expect((await bodyParagraphs(await review.current())).at(-1)).toEqual({...closing,text:"Closing wording remains.",
         sha256:sha256(new TextEncoder().encode("Closing wording remains."))})
       expect((await review.redlined()).status).toBe(200)
+    } finally {await review.stop()}
+  } finally {await rm(temporary,{recursive:true,force:true})}
+},120000)
+
+// One edit to the retention paragraph, as Word saves it with Track Changes on
+// (a w:ins revision) or off (a plain run).
+async function retentionEdit(bytes:Uint8Array,tracked:boolean) {
+  const run = `<w:r><w:t xml:space="preserve"> Securely.</w:t></w:r>`
+  const session = (await docxodus()).openDocxSession(bytes,{})
+  try {
+    const block = session.findByText("Records must be retained for three months.")!
+    const result = session.raw.replaceXml(block.id,session.raw.getXml(block.id).replace(/<\/w:p>\s*$/,
+      `${tracked ? `<w:ins w:id="901" w:author="Reviewer" w:date="2026-10-17T12:00:00Z">${run}</w:ins>` : run}</w:p>`))
+    if (!result.success) throw new Error(result.error?.message)
+    return session.save()
+  } finally {session.close()}
+}
+
+test("a Word file with tracked changes is refused plainly at import and at Accept, changing nothing, while the same edit untracked imports", async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-tracked-"))
+  try {
+    const review = await isolatedReview(temporary,[pendingChanges])
+    try {
+      expect(await review.deliver(await fixture("synthetic-word-accepted.docx"))).toBe(200)
+      const [payment,notice,retention,header] = await review.prepare("Update the payment period, the notice method, the retention period and the header reference.") as [number,number,number,number]
+      // The first accept records the working Word revision that later imports must name.
+      expect(await review.accept(payment)).toBe(200)
+      const accepted = await review.current()
+      const record = review.working()
+      expect(record?.source_sha256).toBe(sha256(accepted))
+      const ids = [notice,retention,header]
+      const rows = review.rows(ids)
+      const valid = [[notice,undefined,undefined],[retention,undefined,undefined],[header,true,earlierRevision]]
+      expect(await review.pending()).toEqual(valid)
+      const refused = async (response:Response,error:string) => {
+        expect(response.status).toBe(409)
+        expect(await response.json()).toEqual({error})
+        expect(review.working()).toEqual(record)
+        expect(review.rows(ids)).toEqual(rows)
+      }
+      const tracked = await retentionEdit(accepted,true)
+      await expect(createDocxRevision(tracked)).rejects.toThrow("unsupported_existing_tracked_revisions")
+
+      // Import through the revisions route: refused before anything is written.
+      await refused(await review.post("/documents/revisions",{headers:{"x-document-prior-sha256":sha256(accepted)},body:wordForm(tracked)}),
+        "This Word file contains tracked changes. Accept or reject them in Word, then upload it again.")
+      expect(sha256(await review.current())).toBe(sha256(accepted))
+      expect(await review.pending()).toEqual(valid)
+
+      // A direct Word save left tracked changes in the stored file: every
+      // revision-bound proposal says so, and Accept and Accept all refuse.
+      const trackedAccept = "This Word file contains tracked changes. Accept or reject them in Word before changes can be applied."
+      await Bun.write(review.file,tracked)
+      expect(await review.pending()).toEqual(ids.map((id) => [id,true,trackedAccept]))
+      for (const id of [notice,header]) await refused(await review.post(`/redlines/${id}/accept`),trackedAccept)
+      await refused(await review.post("/redlines/accept-all?name=working.docx"),trackedAccept)
+      expect(sha256(await review.current())).toBe(sha256(tracked))
+
+      // Restored, the same edit without tracked changes imports and stales only its paragraph.
+      await Bun.write(review.file,accepted)
+      expect(await review.pending()).toEqual(valid)
+      const untracked = await retentionEdit(accepted,false)
+      expect(await review.revise(untracked,sha256(accepted))).toBe(200)
+      expect(sha256(await review.current())).toBe(sha256(untracked))
+      expect(review.working()?.source_sha256).toBe(sha256(untracked))
+      expect(await review.pending()).toEqual([[notice,undefined,undefined],[retention,true,paragraphChanged],[header,true,earlierRevision]])
     } finally {await review.stop()}
   } finally {await rm(temporary,{recursive:true,force:true})}
 },120000)
