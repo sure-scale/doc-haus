@@ -55,7 +55,7 @@ export type LeanState = {
   stages: Partial<Record<StepID, LeanStageState>>
 }
 
-export type OpenItemKind = "research_gap" | "quote_miss" | "citation_unsupported" | "placeholder" | "unapplied_amendment" | "question" | "omission" | "template_removal"
+export type OpenItemKind = "research_gap" | "quote_miss" | "citation_unsupported" | "placeholder" | "unapplied_amendment" | "question" | "omission" | "template_removal" | "checklist_open"
 
 export type OpenItem = {
   id: string
@@ -75,6 +75,8 @@ export type OpenItem = {
     template_part?: string
     /** The planned document whose body the item is about. */
     document?: DocID
+    /** The current checklist item a checklist_open item discloses. */
+    checklist_item?: string
   }
   status: "open" | "resolved" | "disclosed"
   resolution?: string

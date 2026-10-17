@@ -9,7 +9,7 @@ import { exportDocxComments, readDocxCommentParagraphs, readDocxComments, readDo
 import { docxodus } from "../../lib/docxodus"
 import { renderMarkdownToDocx } from "../../lib/render"
 import { buildChecklistDocumentContext } from "./checklist-document-context"
-import { checklistCheckerInputSchema, type ChecklistItem } from "./checklist-contract"
+import { checklistCheckerInputSchema, checklistTextMeasuresMeaning, type ChecklistItem } from "./checklist-contract"
 import { writeLeanPlan } from "./plan"
 import { leanFile, writeLeanBytes } from "./state"
 
@@ -252,7 +252,11 @@ test("annotation properties give exact accepted-body text measures for clean and
     for (const row of annotations) expect(row.properties).not.toMatch(/page/i)
     expect(context.input.retrieval).toContain("exact accepted-body text measures")
     expect(context.input.retrieval).toContain("Text measures are exact text counts, not rendered pagination")
-    expect(context.input.retrieval).toContain("a strict page or layout limit remains indeterminate")
+    // Measures can disprove, never prove, a rendered-length directive.
+    expect(context.input.retrieval).toContain(checklistTextMeasuresMeaning)
+    expect(context.input.retrieval).toContain("Never report such a directive satisfied from text measures")
+    expect(context.input.retrieval).toContain("a strict page or layout limit that the measures cannot decide remains indeterminate")
+    expect(context.input.retrieval).not.toContain("may be judged from them")
     expect(context.input.retrieval).toContain("rendered layout are NOT covered")
     const again = buildChecklistDocumentContext(directory, { item_id: "length", item: item() })
     expect(again.artifacts.find(row => row.value.id === "d1")!.value.annotations!.map(row => row.properties)).toEqual(annotations.map(row => row.properties))

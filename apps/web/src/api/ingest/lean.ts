@@ -92,7 +92,8 @@ export type LeanDraftingStatus = {
   open_items: LeanOpenItem[]
   questions: LeanQuestion[]
   /** The final check's result; `items` holds every open item as the check settled it
-   * (open = still blocking, disclosed in the drafting notes, or resolved). */
+   * (open = still blocking, disclosed in the drafting notes, or resolved), and
+   * each checklist finding left open, disclosed as kind `checklist_open`. */
   gate: { status: "pass" | "blocked"; delivery: string | null; blocking: LeanOpenItem[]; items?: LeanOpenItem[] } | null
   documents: { status: "blocked" | "completed"; documents: LeanDocument[] } | null
   /** Delivered drafts whose matter file differs from what the final check saw

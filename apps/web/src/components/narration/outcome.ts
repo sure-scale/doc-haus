@@ -52,7 +52,8 @@ export function resultChecks(status: LeanDraftingStatus): ResultCheck[] {
   const items = attentionItems(status).filter((item) => item.kind !== "question")
   const misses = items.filter((item) => item.kind === "quote_miss").length
   const placeholders = items.filter((item) => item.kind === "placeholder").length
-  const other = items.length - misses - placeholders
+  const unverified = items.filter((item) => item.kind === "checklist_open").length
+  const other = items.length - misses - placeholders - unverified
   const checks: Array<ResultCheck | undefined> = [
     status.gate?.status === "pass"
       ? status.changed_after_check?.documents.length
@@ -65,6 +66,9 @@ export function resultChecks(status: LeanDraftingStatus): ResultCheck[] {
       : undefined,
     placeholders
       ? { tone: "neutral", text: `${placeholders} placeholder${placeholders === 1 ? "" : "s"} to fill` }
+      : undefined,
+    unverified
+      ? { tone: "warn", text: `${unverified} requirement${unverified === 1 ? "" : "s"} left open by the checklist check` }
       : undefined,
     other
       ? { tone: "neutral", text: `${other} other item${other === 1 ? "" : "s"} in the drafting notes` }
