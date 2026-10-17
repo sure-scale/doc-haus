@@ -12,10 +12,15 @@ const selectionSchema = z.array(z.union([
   z.object({ amendment_id: z.string(), target_handle: z.string().min(1) }).strict(),
   z.object({ amendment_id: z.string(), unresolved_reason: z.string().min(1) }).strict(),
 ]))
+const paragraphEditSchema = z.object({ id: z.string().min(1), paragraph_handle: z.string().min(1),
+  occurrence: z.number().int().min(0), before_quote: z.string().min(1), replacement: z.string() }).strict()
 export type DocxAmendment = z.infer<typeof amendmentSchema>
 export type DocxLocalizationSelection = z.infer<typeof selectionSchema>[number]
+export type DocxParagraphEdit = z.infer<typeof paragraphEditSchema>
 type Session = ReturnType<Awaited<ReturnType<typeof docxodus>>["openDocxSession"]>
 type Match = ReturnType<Session["grep"]>[number]
+type Opened = Awaited<ReturnType<typeof openRevision>>
+type Binding = { handle: string; amendment: DocxAmendment; match: Match; ordinal: number }
 type Limits = { maxCandidates?: number; maxContextCharacters?: number }
 export type DocxLocalizationLimits = Limits
 
@@ -50,70 +55,139 @@ export async function docxLocalizationCandidateOccurrences(bytes: Uint8Array, pa
 // canonical bytes. Admission is all-or-nothing; this function never writes files.
 // The locator can select a handle or refuse. It cannot supply replacement text.
 export async function applyDocxLocalization(bytes: Uint8Array, packet: DocxLocalizationPacket, selections: unknown) {
+  return applyDocxParagraphEdits(bytes, [], { packet, selections })
+}
+
+// Paragraph-addressed amendments for this exact base: each names one projection
+// paragraph by its handle and the occurrence of its exact quote inside that
+// paragraph's text. Only that paragraph is searched, so a localization packet's
+// whole-document candidate limits do not apply. `localized` carries any
+// handle-selected amendments for the same base under applyDocxLocalization's
+// rules. Admission is all-or-nothing across both; this never writes files.
+export async function applyDocxParagraphEdits(bytes: Uint8Array, edits: DocxParagraphEdit[],
+  localized?: { packet: DocxLocalizationPacket; selections: unknown }) {
   const source = new Uint8Array(bytes)
-  if (digest(source) !== packet.revision.source_sha256) throw new Error("stale_docx_revision")
-  const selected = selectionSchema.parse(selections)
+  if (localized && digest(source) !== localized.packet.revision.source_sha256) throw new Error("stale_docx_revision")
+  const selected = localized ? selectionSchema.parse(localized.selections) : []
+  const addressed = z.array(paragraphEditSchema).parse(edits)
   const opened = await openRevision(source)
   try {
-    const rebuilt = localize(opened, packet.amendments, packet.limits)
-    if (JSON.stringify(rebuilt.packet) !== JSON.stringify(packet)) throw new Error("docx_packet_binding_changed")
-    if (selected.length !== packet.amendments.length || new Set(selected.map(s => s.amendment_id)).size !== selected.length)
-      throw new Error("missing_or_duplicate_amendment_selection")
-    const edits = selected.map(selection => {
-      const amendment = packet.amendments.find(a => a.id === selection.amendment_id)
-      if (!amendment) throw new Error("unknown_amendment_selection")
-      if ("unresolved_reason" in selection) throw new Error(`unresolved_docx_localization:${selection.amendment_id}`)
-      const binding = rebuilt.bindings.get(`${selection.amendment_id}:${selection.target_handle}`)
-      if (!binding || binding.amendment.id !== selection.amendment_id) throw new Error("unknown_or_conflicting_target_handle")
-      if (binding.match.text !== amendment.before_quote) throw new Error("before_quote_changed")
-      if (/[\r\n\t]/.test(amendment.replacement)) throw new Error("unsupported_structural_replacement")
-      if (!amendment.replacement && binding.match.text === opened.paragraphs[binding.ordinal].match.text)
-        throw new Error("unsupported_empty_paragraph_replacement")
-      const xml = opened.session.raw.getXml(binding.match.enclosingAnchor.id)
-      if (elements(parse(xml), "fldChar").length || elements(parse(xml), "instrText").length)
-        throw new Error("unsupported_field_replacement")
-      return { ...binding, change: changedDocxSpan(binding.match, amendment.replacement) }
-    })
-    if (edits.some((a, i) => edits.slice(i + 1).some(b => a.ordinal === b.ordinal
-      && a.match.span.start < b.match.span.start + b.match.span.length
-      && b.match.span.start < a.match.span.start + a.match.span.length))) throw new Error("overlapping_docx_amendments")
-    const expected = opened.paragraphs.map(p => p.match.text)
-    const ordered = edits.toSorted((a, b) => a.ordinal - b.ordinal || b.match.span.start - a.match.span.start)
-    for (const edit of ordered) {
-      const text = expected[edit.ordinal]
-      expected[edit.ordinal] = text.slice(0, edit.match.span.start) + edit.amendment.replacement
-        + text.slice(edit.match.span.start + edit.match.span.length)
-      // The complete authenticated quote localizes the occurrence. Unchanged
-      // context keeps its own runs; only the changed text is mutated.
-      if (!edit.change.match.text && !edit.change.replacement) continue
-      const result = opened.session.replaceMatch(edit.change.match, edit.change.replacement)
-      if (!result.success) throw new Error(`docx_mutation_failed:${result.error?.code}`)
-    }
-    const output = opened.session.save()
-    const reopened = await openRevision(output)
-    try {
-      if (JSON.stringify(reopened.paragraphs.map(p => p.match.text)) !== JSON.stringify(expected))
-        throw new Error("docx_saved_text_mismatch")
-      const changed = new Set(edits.map(edit => edit.ordinal))
-      verifyPreservation(opened, reopened, changed)
-      return {
-        bytes: output,
-        report: {
-          source_sha256: packet.revision.source_sha256,
-          output_sha256: reopened.revision.source_sha256,
-          amendments: edits.map(edit => ({ amendment_id: edit.amendment.id, target_handle: edit.handle,
-            before_quote: edit.amendment.before_quote, replacement: edit.amendment.replacement,
-            paragraph_before: opened.revision.paragraphs[edit.ordinal].text,
-            paragraph_after: expected[edit.ordinal],
-            replacement_formatting: edit.change.formatting,
-          })),
-          unchanged_paragraphs_verified: opened.paragraphs.length - changed.size,
-          package_structure_verified: true,
-          limitation: "changed text inherits first touched run formatting; structural edits and existing tracked revisions unsupported",
-        },
-      }
-    } finally { reopened.session.close() }
+    const bindings = [
+      ...localized ? selectedBindings(opened, localized.packet, selected) : [],
+      ...addressed.map(edit => paragraphBinding(opened, edit)),
+    ]
+    if (!bindings.length) throw new Error("missing_docx_amendments")
+    if (new Set(bindings.map(binding => binding.amendment.id)).size !== bindings.length) throw new Error("duplicate_amendment_id")
+    return await writeEdits(opened, bindings.map(binding => admitted(opened, binding)))
   } finally { opened.session.close() }
+}
+
+function selectedBindings(opened: Opened, packet: DocxLocalizationPacket, selected: DocxLocalizationSelection[]) {
+  const rebuilt = localize(opened, packet.amendments, packet.limits)
+  if (JSON.stringify(rebuilt.packet) !== JSON.stringify(packet)) throw new Error("docx_packet_binding_changed")
+  if (selected.length !== packet.amendments.length || new Set(selected.map(s => s.amendment_id)).size !== selected.length)
+    throw new Error("missing_or_duplicate_amendment_selection")
+  return selected.map(selection => {
+    const amendment = packet.amendments.find(a => a.id === selection.amendment_id)
+    if (!amendment) throw new Error("unknown_amendment_selection")
+    if ("unresolved_reason" in selection) throw new Error(`unresolved_docx_localization:${selection.amendment_id}`)
+    const binding = rebuilt.bindings.get(`${selection.amendment_id}:${selection.target_handle}`)
+    if (!binding || binding.amendment.id !== selection.amendment_id) throw new Error("unknown_or_conflicting_target_handle")
+    if (binding.match.text !== amendment.before_quote) throw new Error("before_quote_changed")
+    return binding
+  })
+}
+
+// The occurrence-th match of the quote in the named paragraph, counted left to
+// right without overlap as grep counts candidates; its handle is the one a
+// localization packet would offer for the same span.
+function paragraphBinding(opened: Opened, edit: DocxParagraphEdit): Binding {
+  if (/[\r\n\t]/.test(edit.before_quote)) throw new Error("unsupported_cross_block_quote")
+  const ordinal = opened.revision.paragraphs.findIndex(paragraph => paragraph.paragraph_handle === edit.paragraph_handle)
+  if (ordinal < 0) throw new Error("unknown_paragraph_handle")
+  const paragraph = opened.paragraphs[ordinal]!.match
+  let start = -edit.before_quote.length
+  for (let found = 0; found <= edit.occurrence; found++) {
+    start = paragraph.text.indexOf(edit.before_quote, start + edit.before_quote.length)
+    if (start < 0) throw new Error(`before_quote_not_found:${edit.id}`)
+  }
+  const match = paragraphSpan(paragraph, start, edit.before_quote.length)
+  return { handle: targetHandle(opened.revision.source_sha256, ordinal, match), ordinal, match,
+    amendment: { id: edit.id, before_quote: edit.before_quote, replacement: edit.replacement } }
+}
+
+// The grep match for one span of a whole-paragraph match: the same anchor,
+// paragraph-relative span and per-run fragments.
+function paragraphSpan(paragraph: Match, start: number, length: number): Match {
+  const end = start + length
+  let at = 0
+  const fragments = paragraph.fragments.flatMap(fragment => {
+    const from = at
+    at += fragment.text.length
+    const first = Math.max(start, from)
+    const last = Math.min(end, at)
+    return first < last ? [{ ...fragment, text: fragment.text.slice(first - from, last - from),
+      spanInElement: { start: fragment.spanInElement.start + first - from, length: last - first } }] : []
+  })
+  const text = paragraph.text.slice(start, end)
+  return { ...paragraph, text, span: { start: paragraph.span.start + start, length }, fragments, groups: [text],
+    contextBefore: paragraph.text.slice(Math.max(0, start - 160), start), contextAfter: paragraph.text.slice(end, end + 160) }
+}
+
+function admitted(opened: Opened, binding: Binding) {
+  const { amendment, match, ordinal } = binding
+  if (/[\r\n\t]/.test(amendment.replacement)) throw new Error("unsupported_structural_replacement")
+  if (!amendment.replacement && match.text === opened.paragraphs[ordinal].match.text)
+    throw new Error("unsupported_empty_paragraph_replacement")
+  const xml = parse(opened.session.raw.getXml(match.enclosingAnchor.id))
+  if (elements(xml, "fldChar").length || elements(xml, "instrText").length)
+    throw new Error("unsupported_field_replacement")
+  return { ...binding, change: changedDocxSpan(match, amendment.replacement) }
+}
+
+async function writeEdits(opened: Opened, edits: ReturnType<typeof admitted>[]) {
+  if (edits.some((a, i) => edits.slice(i + 1).some(b => a.ordinal === b.ordinal
+    && a.match.span.start < b.match.span.start + b.match.span.length
+    && b.match.span.start < a.match.span.start + a.match.span.length))) throw new Error("overlapping_docx_amendments")
+  const expected = opened.paragraphs.map(p => p.match.text)
+  const ordered = edits.toSorted((a, b) => a.ordinal - b.ordinal || b.match.span.start - a.match.span.start)
+  for (const edit of ordered) {
+    const text = expected[edit.ordinal]
+    expected[edit.ordinal] = text.slice(0, edit.match.span.start) + edit.amendment.replacement
+      + text.slice(edit.match.span.start + edit.match.span.length)
+    // The complete authenticated quote localizes the occurrence. Unchanged
+    // context keeps its own runs; only the changed text is mutated.
+    if (!edit.change.match.text && !edit.change.replacement) continue
+    const result = opened.session.replaceMatch(edit.change.match, edit.change.replacement)
+    if (!result.success) throw new Error(`docx_mutation_failed:${result.error?.code}`)
+  }
+  const output = opened.session.save()
+  const reopened = await openRevision(output)
+  try {
+    if (JSON.stringify(reopened.paragraphs.map(p => p.match.text)) !== JSON.stringify(expected))
+      throw new Error("docx_saved_text_mismatch")
+    const changed = new Set(edits.map(edit => edit.ordinal))
+    verifyPreservation(opened, reopened, changed)
+    return {
+      bytes: output,
+      // The projection these edits were admitted against.
+      revision: opened.revision,
+      report: {
+        source_sha256: opened.revision.source_sha256,
+        output_sha256: reopened.revision.source_sha256,
+        amendments: edits.map(edit => ({ amendment_id: edit.amendment.id, target_handle: edit.handle,
+          paragraph_handle: opened.revision.paragraphs[edit.ordinal].paragraph_handle,
+          before_quote: edit.amendment.before_quote, replacement: edit.amendment.replacement,
+          paragraph_before: opened.revision.paragraphs[edit.ordinal].text,
+          paragraph_after: expected[edit.ordinal],
+          replacement_formatting: edit.change.formatting,
+        })),
+        unchanged_paragraphs_verified: opened.paragraphs.length - changed.size,
+        package_structure_verified: true,
+        limitation: "changed text inherits first touched run formatting; structural edits and existing tracked revisions unsupported",
+      },
+    }
+  } finally { reopened.session.close() }
 }
 
 export function changedDocxSpan(match: Match, replacement: string) {
@@ -143,13 +217,17 @@ export function changedDocxSpan(match: Match, replacement: string) {
     replacement: changed, formatting }
 }
 
-function localize(opened: Awaited<ReturnType<typeof openRevision>>, proposed: DocxAmendment[], limits: Limits) {
+function targetHandle(source_sha256: string, ordinal: number, match: Match) {
+  return `target-${digest(JSON.stringify([source_sha256, ordinal, match.span.start, match.span.length, match.text])).slice(0, 24)}`
+}
+
+function localize(opened: Opened, proposed: DocxAmendment[], limits: Limits) {
   const amendments = z.array(amendmentSchema).min(1).parse(proposed)
   if (new Set(amendments.map(a => a.id)).size !== amendments.length) throw new Error("duplicate_amendment_id")
   const bounded = { maxCandidates: limits.maxCandidates ?? 512, maxContextCharacters: limits.maxContextCharacters ?? 200_000 }
   if (!Number.isSafeInteger(bounded.maxCandidates) || bounded.maxCandidates < 1
     || !Number.isSafeInteger(bounded.maxContextCharacters) || bounded.maxContextCharacters < 1) throw new Error("invalid_localization_limits")
-  const bindings = new Map<string, { handle: string; amendment: DocxAmendment; match: Match; ordinal: number }>()
+  const bindings = new Map<string, Binding>()
   const candidates = amendments.flatMap(amendment => {
     if (/[\r\n\t]/.test(amendment.before_quote)) throw new Error("unsupported_cross_block_quote")
     const matches = opened.session.grep(literal(amendment.before_quote), { scope: 63, whitespace: 0, contextChars: 160 })
@@ -157,7 +235,7 @@ function localize(opened: Awaited<ReturnType<typeof openRevision>>, proposed: Do
     return matches.map(match => {
       const ordinal = opened.paragraphs.findIndex(p => p.match.enclosingAnchor.id === match.enclosingAnchor.id)
       if (ordinal < 0 || match.text !== amendment.before_quote) throw new Error("unowned_docx_match")
-      const handle = `target-${digest(JSON.stringify([opened.revision.source_sha256, ordinal, match.span.start, match.span.length, match.text])).slice(0, 24)}`
+      const handle = targetHandle(opened.revision.source_sha256, ordinal, match)
       bindings.set(`${amendment.id}:${handle}`, { handle, amendment, match, ordinal })
       return { amendment_id: amendment.id, target_handle: handle, exact_text: match.text,
         context_before: match.contextBefore, context_after: match.contextAfter,

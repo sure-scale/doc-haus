@@ -7,7 +7,7 @@ import { AlignmentType, Document, Footer, Header, LevelFormat, Packer, Paragraph
 import { paragraphTargets, withParagraphPointers } from "../../../dochaus/lib/drafting-amendment"
 import { openDb, getRedline, listSourceDocuments, upsertDocument } from "./db"
 import { readWorkingDocx } from "../../../dochaus/lib/working-docx"
-import { createDocxRevision, openRevision, verifyPreservation } from "../../../dochaus/lib/docx-amendments"
+import { createDocxLocalization, createDocxRevision, openRevision, verifyPreservation } from "../../../dochaus/lib/docx-amendments"
 import { withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
 import wordIntegration from "../../../dochaus/tool/word-integration"
 import { acceptedWorkingDocxUpdate, documentAmendmentRoutes } from "./document-amendments"
@@ -286,6 +286,140 @@ test("proposals on separate paragraphs stay valid after one is accepted and acro
   }
 },120000)
 
+const periodDocument = async () => Buffer.from(withParagraphPointers(await Packer.toBuffer(new Document({sections:[{children:[
+  ...periodParagraphs.map((text) => new Paragraph(text)),new Paragraph("Unrelated closing wording stays."),
+]}]}))))
+const periodsChanged = ["Notice must arrive within seven days.","Retain records for six months.","Pay each invoice within forty-five days.",
+  "Cure any breach within fifteen business days.","Unrelated closing wording stays."]
+
+test("four proposals on four paragraphs accept one by one or all at once, and an export after one accept keeps the others' notes", async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-four-"))
+  const engine = syntheticEngine(() => ({amendments:periods,open_items:[]}),firstCandidate)
+  const ingest = await isolatedIngest(temporary,engine.server)
+  try {
+    await ingest.start("only")
+    const sequential = await ingest.matter("Sequential Word review")
+    expect(await sequential.deliver(await periodDocument())).toBe(200)
+    const ids = (await (await sequential.prepare("Update the stated periods.")).json() as {redline_ids:number[]}).redline_ids
+    expect(ids).toHaveLength(4)
+    expect(await sequential.accept(ids[0])).toBe(200)
+    expect(await sequential.pending()).toEqual(ids.slice(1).map((id) => [id,undefined,undefined]))
+    // The remaining three export as tracked changes, each with its review note.
+    const exported = await ingest.request(`${sequential.route}/documents/redlined?name=working.docx`)
+    expect(exported.status).toBe(200)
+    const redline = new Uint8Array(await exported.arrayBuffer())
+    const revised = (await (await docxodus()).getRevisions(redline)).map((row) => row.text).join(" ")
+    for (const text of ["six","forty-five","fifteen"]) expect(revised).toContain(text)
+    expect(revised).not.toContain("seven")
+    expect(readDocxComments(redline).map((row) => row.text)).toEqual(periods.slice(1).map((row) => row.reason))
+    for (const [index,id] of ids.slice(1).entries()) {
+      expect(await sequential.accept(id)).toBe(200)
+      expect(await sequential.pending()).toEqual(ids.slice(index+2).map((id) => [id,undefined,undefined]))
+    }
+    expect((await createDocxRevision(await Bun.file(sequential.file).bytes())).paragraphs.map((row) => row.text)).toEqual(periodsChanged)
+    expect(ids.map(sequential.status)).toEqual(["accepted","accepted","accepted","accepted"])
+
+    const batch = await ingest.matter("Batch Word review")
+    expect(await batch.deliver(await periodDocument())).toBe(200)
+    const pointers = (await paragraphTargets(await Bun.file(batch.file).bytes())).map((row) => row.pid)
+    const batchIds = (await (await batch.prepare("Update the stated periods.")).json() as {redline_ids:number[]}).redline_ids
+    const response = await ingest.request(`${batch.route}/redlines/accept-all?name=working.docx`,{method:"POST"})
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ok:true,accepted:4})
+    const final = await Bun.file(batch.file).bytes()
+    expect((await createDocxRevision(final)).paragraphs.map((row) => row.text)).toEqual(periodsChanged)
+    expect(batchIds.map(batch.status)).toEqual(["accepted","accepted","accepted","accepted"])
+    expect(readWorkingDocx(batch.dir,batch.file)?.source_sha256).toBe(sha256(final))
+    expect((await paragraphTargets(final)).map((row) => row.pid)).toEqual(pointers)
+  } finally {
+    await ingest.stop();engine.server.stop(true);await rm(temporary,{recursive:true,force:true})
+  }
+},120000)
+
+test("Accept all applies a same-paragraph pair together and refuses an overlapping pair without changing the file", async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-pair-"))
+  const batches:LegalPass["amendments"][] = [periods.slice(0,2),
+    [{before_quote:"within five days",replacement:"within seven days",target_context:"notice period",reason:"Requested notice update."}],
+    [{before_quote:"five days and records",replacement:"five business days and records",target_context:"notice period",reason:"Requested business days."}]]
+  const engine = syntheticEngine(() => ({amendments:batches.shift()!,open_items:[]}),firstCandidate)
+  const ingest = await isolatedIngest(temporary,engine.server)
+  const shared = async () => Buffer.from(withParagraphPointers(await Packer.toBuffer(new Document({sections:[{children:[
+    new Paragraph("Notice must arrive within five days and records are kept for three months."),new Paragraph("Pay each invoice within thirty days."),
+  ]}]}))))
+  try {
+    await ingest.start("only")
+    const pair = await ingest.matter("Same-paragraph Word review")
+    expect(await pair.deliver(await shared())).toBe(200)
+    const [paragraph] = await paragraphTargets(await Bun.file(pair.file).bytes())
+    const ids = (await (await pair.prepare("Update the notice and retention periods.")).json() as {redline_ids:number[]}).redline_ids
+    expect(pair.bindings(ids).map((row) => [row.version,row.pid,row.occurrence])).toEqual([[2,paragraph.pid,0],[2,paragraph.pid,0]])
+    // Both changes and both notes export on their shared paragraph.
+    const exported = await ingest.request(`${pair.route}/documents/redlined?name=working.docx`)
+    expect(exported.status).toBe(200)
+    expect(readDocxComments(new Uint8Array(await exported.arrayBuffer())).map((row) => row.text)).toEqual(periods.slice(0,2).map((row) => row.reason))
+    const response = await ingest.request(`${pair.route}/redlines/accept-all?name=working.docx`,{method:"POST"})
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ok:true,accepted:2})
+    expect((await createDocxRevision(await Bun.file(pair.file).bytes())).paragraphs.map((row) => row.text))
+      .toEqual(["Notice must arrive within seven days and records are kept for six months.","Pay each invoice within thirty days."])
+
+    const overlap = await ingest.matter("Overlapping Word review")
+    expect(await overlap.deliver(await shared())).toBe(200)
+    const before = await Bun.file(overlap.file).bytes()
+    const [first] = (await (await overlap.prepare("Extend the notice period.")).json() as {redline_ids:number[]}).redline_ids
+    const [second] = (await (await overlap.prepare("Count the notice period in business days.")).json() as {redline_ids:number[]}).redline_ids
+    // Each still reads its unchanged paragraph, but their spans overlap.
+    expect(await overlap.pending()).toEqual([[first,undefined,undefined],[second,undefined,undefined]])
+    expect((await ingest.request(`${overlap.route}/redlines/accept-all?name=working.docx`,{method:"POST"})).status).toBe(409)
+    expect(await Bun.file(overlap.file).bytes()).toEqual(before)
+    expect([first,second].map(overlap.status)).toEqual(["pending","pending"])
+    expect(await overlap.accept(first)).toBe(200)
+    expect(await overlap.pending()).toEqual([[second,true,paragraphChanged]])
+    expect(await overlap.accept(second)).toBe(409)
+    expect((await createDocxRevision(await Bun.file(overlap.file).bytes())).paragraphs[0]!.text)
+      .toBe("Notice must arrive within seven days and records are kept for three months.")
+  } finally {
+    await ingest.stop();engine.server.stop(true);await rm(temporary,{recursive:true,force:true})
+  }
+},120000)
+
+test("a paragraph-bound proposal accepts in a long document whose common phrase exceeds the whole-document candidate limits", async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-long-"))
+  const ingest = await isolatedIngest(temporary,{})
+  const clause = (number:number) => `Clause ${number}. In this clause the Supplier keeps complete records of the services, and the Supplier gives the Customer reasonable access to those records on request during normal business hours, subject to the confidentiality terms of this agreement and to any lawful instruction from the Customer about retention and secure disposal of records.`
+  const clauses = Array.from({length:600},(_,index) => clause(index+1))
+  try {
+    await ingest.start("only")
+    const matter = await ingest.matter("Long Word review")
+    expect(await matter.deliver(await Packer.toBuffer(new Document({sections:[{children:clauses.map((text) => new Paragraph(text))}]})))).toBe(200)
+    const delivered = await Bun.file(matter.file).bytes()
+    expect(clauses.join("").length).toBeGreaterThan(200_000)
+    // The superseded bake rebuilt a whole-document candidate packet for every
+    // proposal; this quote's 1,200 matches exceed both of its limits.
+    const quote = {id:"supplier",before_quote:"the Supplier",replacement:"the Service Provider"}
+    await expect(createDocxLocalization(delivered,[quote])).rejects.toThrow("docx_candidate_limit_exceeded:1200")
+    await expect(createDocxLocalization(delivered,[quote],{maxCandidates:Number.MAX_SAFE_INTEGER})).rejects.toThrow("docx_candidate_context_limit_exceeded")
+    // Stored as Prepare binds a body selection: the second quote in clause 400.
+    const target = (await paragraphTargets(delivered))[399]!
+    const db = openDb(matter.dir)
+    const id = (() => {
+      try {
+        return Number(db.run("INSERT INTO redlines (doc_path,doc_name,scope,find_text,old_text,new_text,author,review_comment,anchor_id,target_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",[
+          matter.file,"working.docx","phrase",quote.before_quote,quote.before_quote,quote.replacement,"Synthetic Reviewer","Requested party label.",null,
+          JSON.stringify({version:2,amendment_id:"amendment-1",pid:target.pid,paragraph_sha256:target.sha256,occurrence:1,base_sha256:sha256(delivered)}),Date.now(),
+        ]).lastInsertRowid)
+      } finally {db.close()}
+    })()
+    expect(await matter.pending()).toEqual([[id,undefined,undefined]])
+    expect(await matter.accept(id)).toBe(200)
+    expect((await createDocxRevision(await Bun.file(matter.file).bytes())).paragraphs.map((row) => row.text))
+      .toEqual(clauses.map((text,index) => index === 399 ? text.replace("and the Supplier gives","and the Service Provider gives") : text))
+    expect(matter.status(id)).toBe("accepted")
+  } finally {
+    await ingest.stop();await rm(temporary,{recursive:true,force:true})
+  }
+},120000)
+
 // An outside Word edit through the native session: each edit rewrites one
 // paragraph's XML, keeping every other paragraph and pointer intact.
 async function outsideRevision(bytes:Uint8Array,edits:Array<{paragraph:string;xml:(xml:string) => string}>) {
@@ -473,11 +607,12 @@ test("a locator unresolved_reason becomes a visible open item without a pending 
   } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
 })
 
-test("accepting an amendment to a numbered list paragraph preserves numbering, tables, sibling paragraphs and untouched runs", async () => {
+test("accepting paragraph-bound amendments to a numbered list paragraph and a table paragraph preserves numbering, tables, sibling paragraphs and untouched runs", async () => {
   const directory = await mkdtemp(path.join(tmpdir(),"dochaus-word-numbered-"))
   const file = path.join(directory,"working.docx")
   const engine = syntheticEngine(() => ({amendments:[
     {before_quote:"thirty days",replacement:"ten days",target_context:"first numbered delivery clause",reason:"Requested delivery update."},
+    {before_quote:"In writing",replacement:"In writing or by email",target_context:"notice table value",reason:"Requested notice method."},
   ],open_items:[]}),firstCandidate)
   try {
     await writeDeliverable(directory,"working.docx",await Packer.toBuffer(new Document({
@@ -492,31 +627,39 @@ test("accepting an amendment to a numbered list paragraph preserves numbering, t
     })))
     const original = await Bun.file(file).bytes()
     const ids = await withPreparation(directory,engine,async (prepare) => {
-      const response = await prepare("Shorten the delivery period in the first numbered clause to ten days.")
+      const response = await prepare("Shorten the delivery period in the first numbered clause to ten days and allow notice by email.")
       expect(response.status).toBe(200)
       return (await response.json() as {redline_ids:number[]}).redline_ids
     })
-    expect(ids).toHaveLength(1)
+    expect(ids).toHaveLength(2)
     const db = openDb(directory)
-    const row = (() => {try {return getRedline(db,ids[0])!} finally {db.close()}})()
-    // The accept route's baking step for a revision-bound proposal.
-    const baked = await bake(original,[row])
+    const rows = (() => {try {return ids.map((id) => getRedline(db,id)!)} finally {db.close()}})()
+    const targets = await paragraphTargets(original)
+    const pointed = (text:string) => targets.find((target) => target.sha256 === sha256(Buffer.from(text)))!.pid
+    expect(rows.map((row) => JSON.parse(row.target_json!)).map((row) => [row.version,row.pid,row.occurrence])).toEqual([
+      [2,pointed("The Supplier shall deliver all Goods within thirty days of the order date."),0],[2,pointed("In writing"),0]])
+    // The Accept-all route's baking step, with the state it read for the stale check.
+    const baked = await bake(original,rows,await redlineState(original,rows))
     const before = await openRevision(original)
     const after = await openRevision(baked)
     try {
       const listOrdinal = before.paragraphs.findIndex((paragraph) => paragraph.match.text.includes("thirty days"))
-      expect(before.paragraphs.flatMap((paragraph,index) => paragraph.match.text === after.paragraphs[index].match.text ? [] : [index])).toEqual([listOrdinal])
+      const cellOrdinal = before.paragraphs.findIndex((paragraph) => paragraph.match.text === "In writing")
+      expect(before.paragraphs.flatMap((paragraph,index) => paragraph.match.text === after.paragraphs[index].match.text ? [] : [index])).toEqual([listOrdinal,cellOrdinal])
       expect(after.paragraphs[listOrdinal].match.text).toBe("The Supplier shall deliver all Goods within ten days of the order date.")
-      expect(() => verifyPreservation(before,after,new Set([listOrdinal]))).not.toThrow()
+      expect(after.paragraphs[cellOrdinal].match.text).toBe("In writing or by email")
+      expect(() => verifyPreservation(before,after,new Set([listOrdinal,cellOrdinal]))).not.toThrow()
       // Element markup is compared after one shared XML serializer, so the
       // engine's self-closing tag spelling is not mistaken for a change.
       const markup = (opened:typeof before,name:string) => Array.from(opened.documents["word/document.xml"].getElementsByTagNameNS(W,name)).map(String)
       expect(markup(before,"numPr")).toHaveLength(2)
       expect(markup(before,"numPr")[0]).toContain("numId")
       expect(markup(before,"tc")).toHaveLength(2)
-      for (const name of ["numPr","tbl","tc","sectPr"]) expect(markup(after,name)).toEqual(markup(before,name))
-      expect(after.paragraphs.map((paragraph,index) => index === listOrdinal ? "" : String(paragraph.node)))
-        .toEqual(before.paragraphs.map((paragraph,index) => index === listOrdinal ? "" : String(paragraph.node)))
+      for (const name of ["numPr","tblPr","tblGrid","trPr","tcPr","sectPr"]) expect(markup(after,name)).toEqual(markup(before,name))
+      expect(markup(after,"tc")[0]).toBe(markup(before,"tc")[0])
+      const changed = new Set([listOrdinal,cellOrdinal])
+      expect(after.paragraphs.map((paragraph,index) => changed.has(index) ? "" : String(paragraph.node)))
+        .toEqual(before.paragraphs.map((paragraph,index) => changed.has(index) ? "" : String(paragraph.node)))
       const pPr = (node:Element) => Array.from(node.childNodes).filter((child) => (child as Element).localName === "pPr").map(String)
       expect(pPr(after.paragraphs[listOrdinal].node)).toEqual(pPr(before.paragraphs[listOrdinal].node))
       const runs = (node:Element) => Array.from(node.getElementsByTagNameNS(W,"r")).map((run) => ({
@@ -527,6 +670,10 @@ test("accepting an amendment to a numbered list paragraph preserves numbering, t
       expect(afterRuns.filter((run) => !run.text.includes("ten days")).map((run) => run.markup))
         .toEqual(beforeRuns.filter((run) => !run.text.includes("thirty days")).map((run) => run.markup))
       expect(afterRuns.find((run) => run.text.includes("ten days"))!.rPr).toBe(beforeRuns.find((run) => run.text.includes("thirty days"))!.rPr)
+      // The table cell's added words keep the cell run's underline.
+      const cellRuns = runs(after.paragraphs[cellOrdinal].node)
+      expect(cellRuns.map((run) => run.text).join("")).toBe("In writing or by email")
+      expect(new Set(cellRuns.map((run) => run.rPr))).toEqual(new Set(runs(before.paragraphs[cellOrdinal].node).map((run) => run.rPr)))
       for (const part of ["word/numbering.xml","word/styles.xml"]) expect(after.parts[part]).toEqual(before.parts[part])
     } finally {before.session.close();after.session.close()}
   } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}

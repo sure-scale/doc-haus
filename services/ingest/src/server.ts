@@ -838,7 +838,7 @@ app.get("/matters/:id/documents/redlined", async (c) => {
     const state = await redlineState(original, pending)
     const rows = pending.filter((row) => !redlineStaleReason(row, state, protectedWord))
     try {
-      const bytes = await buildRedlined(original, rows)
+      const bytes = await buildRedlined(original, rows, state)
       return new Response(new Uint8Array(bytes), {
         headers: { "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document" },
       })
@@ -870,9 +870,10 @@ app.post("/matters/:id/redlines/:rid/accept", async (c) => {
       const original = await Bun.file(current.doc_path).bytes()
       const prior = createHash("sha256").update(original).digest("hex")
       const working = readWorkingDocx(dir,current.doc_path)
-      const stale = redlineStaleReason(current,await redlineState(original,[current]),Boolean(working))
+      const state = await redlineState(original,[current])
+      const stale = redlineStaleReason(current,state,Boolean(working))
       if (stale || working && working.source_sha256 !== prior) return c.json({error:stale ?? "The working Word revision is inconsistent. Refresh it through the revision API."},409)
-      const baked = await bake(original,[current])
+      const baked = await bake(original,[current],state)
       await writeDocumentRevision(dir,current.doc_name,Buffer.from(baked),[current.id],prior,current.target_json != null)
       return c.json({ok:true})
     } catch (error) {
@@ -924,7 +925,7 @@ app.post("/matters/:id/redlines/accept-all", async (c) => {
       const state = await redlineState(original,rows)
       const stale = rows.map((row) => redlineStaleReason(row,state,Boolean(working))).find(Boolean)
       if (stale || working && working.source_sha256 !== prior) return c.json({error:stale ?? "The working Word revision is inconsistent. Refresh it through the revision API."},409)
-      await writeDocumentRevision(dir,name,Buffer.from(await bake(original,rows)),rows.map((row) => row.id),prior,rows.some((row) => row.target_json != null))
+      await writeDocumentRevision(dir,name,Buffer.from(await bake(original,rows,state)),rows.map((row) => row.id),prior,rows.some((row) => row.target_json != null))
       return c.json({ok:true,accepted:rows.length})
     } catch (error) {
       console.warn("[redline] batch acceptance refused",diagnosticErrorMetadata(error))

@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, test } from "bun:test"
 import { strFromU8, unzipSync } from "fflate"
-import { createDocxRevision, createDocxLocalization, applyDocxLocalization } from "./docx-amendments"
+import { createDocxRevision, createDocxLocalization, applyDocxLocalization, applyDocxParagraphEdits } from "./docx-amendments"
 import { renderMarkdownToDocx } from "./render"
 import { docxodus } from "./docxodus"
 
@@ -147,6 +147,49 @@ describe("revision-bound DOCX amendments", () => {
     const changed = (await renderMarkdownToDocx("A changed note.")).bytes
     const tracked = await (await docxodus()).compareDocuments(source, changed, { authorName: "Reviewer" })
     await expect(createDocxRevision(tracked)).rejects.toThrow("unsupported_existing_tracked_revisions")
+  })
+
+  test("a paragraph-addressed edit writes exactly the span its handle names, run formatting included", async () => {
+    const quotes = [amendments[0], { id: "split-run", before_quote: "Notify when feasible", replacement: "Notify promptly" },
+      { id: "three-runs", before_quote: "feasible after a confirmed", replacement: "feasible after a verified" }]
+    for (const amendment of quotes) {
+      const packet = await createDocxLocalization(source, [amendment])
+      for (const candidate of packet.candidates) {
+        const paragraph_handle = candidate.paragraph.paragraph_handle
+        const occurrence = packet.candidates.filter(row => row.paragraph.paragraph_handle === paragraph_handle).indexOf(candidate)
+        const byHandle = await applyDocxLocalization(source, packet, [{ amendment_id: amendment.id, target_handle: candidate.target_handle }])
+        const byParagraph = await applyDocxParagraphEdits(source, [{ ...amendment, paragraph_handle, occurrence }])
+        expect(byParagraph.report).toEqual(byHandle.report)
+        expect(byParagraph.bytes).toEqual(byHandle.bytes)
+      }
+    }
+  })
+
+  test("paragraph-addressed edits apply together with handle selections and refuse overlap, absent occurrences and other revisions", async () => {
+    const snapshot = new Uint8Array(source)
+    const packet = await createDocxLocalization(source, [amendments[0]])
+    const current = packet.candidates.find(row => row.context_before.endsWith("Current: "))!
+    const edit = { ...amendments[0], paragraph_handle: current.paragraph.paragraph_handle, occurrence: 0 }
+    const timing = await createDocxLocalization(source, [amendments[1]])
+    const output = await applyDocxParagraphEdits(source, [edit, { ...edit, id: "example", occurrence: 1, replacement: "Prior approval is required." }],
+      { packet: timing, selections: [{ amendment_id: "timing", target_handle: timing.candidates[0]!.target_handle }] })
+    const after = await createDocxRevision(output.bytes)
+    expect(after.markdown).toContain("Current: Written approval is required. Example: Prior approval is required.")
+    expect(after.markdown).toContain("Notify **promptly** after a *confirmed event*.")
+    expect(after.paragraphs.filter(p => p.text === "Approval is required.")).toHaveLength(2)
+    expect(output.report.amendments.map(row => [row.amendment_id, row.paragraph_handle])).toEqual([
+      ["timing", timing.candidates[0]!.paragraph.paragraph_handle], ["permission", edit.paragraph_handle], ["example", edit.paragraph_handle]])
+    expect(output.report.package_structure_verified).toBe(true)
+    await expect(applyDocxParagraphEdits(source, [{ ...edit, occurrence: 2 }])).rejects.toThrow("before_quote_not_found:permission")
+    await expect(applyDocxParagraphEdits(source, [{ ...edit, paragraph_handle: "paragraph-missing" }])).rejects.toThrow("unknown_paragraph_handle")
+    await expect(applyDocxParagraphEdits(output.bytes, [edit])).rejects.toThrow("unknown_paragraph_handle")
+    await expect(applyDocxParagraphEdits(source, [edit, { ...edit, id: "overlap", before_quote: "Current: Approval", replacement: "Live: Approval" }]))
+      .rejects.toThrow("overlapping_docx_amendments")
+    await expect(applyDocxParagraphEdits(source, [edit, { ...edit, occurrence: 1 }])).rejects.toThrow("duplicate_amendment_id")
+    await expect(applyDocxParagraphEdits(source, [{ ...edit, before_quote: "Approval\tis required." }])).rejects.toThrow("unsupported_cross_block_quote")
+    await expect(applyDocxParagraphEdits(source, [{ ...edit, replacement: "One.\nTwo." }])).rejects.toThrow("unsupported_structural_replacement")
+    await expect(applyDocxParagraphEdits(source, [])).rejects.toThrow("missing_docx_amendments")
+    expect(source).toEqual(snapshot)
   })
 })
 
