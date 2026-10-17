@@ -674,7 +674,10 @@ test("accepting paragraph-bound amendments to a numbered list paragraph and a ta
       const cellRuns = runs(after.paragraphs[cellOrdinal].node)
       expect(cellRuns.map((run) => run.text).join("")).toBe("In writing or by email")
       expect(new Set(cellRuns.map((run) => run.rPr))).toEqual(new Set(runs(before.paragraphs[cellOrdinal].node).map((run) => run.rPr)))
-      for (const part of ["word/numbering.xml","word/styles.xml"]) expect(after.parts[part]).toEqual(before.parts[part])
+      expect(after.parts["word/numbering.xml"]).toEqual(before.parts["word/numbering.xml"])
+      // Docxodus 13 re-serializes styles.xml on save (encoding-name case and
+      // "<a />" spelling only), so it is compared after the shared serializer.
+      expect(String(after.documents["word/styles.xml"].documentElement)).toBe(String(before.documents["word/styles.xml"].documentElement))
     } finally {before.session.close();after.session.close()}
   } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
 })
