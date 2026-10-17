@@ -10,13 +10,16 @@ export type ChecklistFindingClassification =
 /** Why one adverse finding blocks, from its verified structured fields only;
  * never from wording. A finding that does not block delivery (recovery "none")
  * has no class. First match wins: a disclosed departure, a conflict with a
- * sibling item's sources, the indeterminate cause, else an omission. */
+ * sibling item's sources, the indeterminate cause, else an omission. An
+ * indeterminate finding that records no cause is a missing inspection: it is
+ * reinspected, never repaired as an omission. */
 export function classifyChecklistFinding(item: ChecklistItem, finding: ChecklistFinding, siblings: readonly Pick<ChecklistItemRecord, "id" | "item">[]): ChecklistFindingClassification | null {
   if (checklistFindingRecovery(item, finding) === "none") return null
   if (finding.departure_disclosure?.length) return { class: "departure" }
   const conflicting = conflictingItemIDs(item, finding, siblings)
   if (conflicting.length) return { class: "source_conflict", conflicting_item_ids: conflicting }
   if (finding.indeterminate_cause) return { class: finding.indeterminate_cause }
+  if (finding.status === "indeterminate" || finding.action_status === "indeterminate") return { class: "missing_inspection" }
   return { class: "omission" }
 }
 

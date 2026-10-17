@@ -51,9 +51,9 @@ test("classifies each adverse class from structured fields only", () => {
   expect(classifyChecklistFinding(refined, { ...finding, status: "open", action_status: "not_fulfilled", open_decisions: [], departure_disclosure: departure }, siblings)).toEqual({ class: "departure" })
 })
 
-test("an indeterminate finding with no cause is an omission", () => {
-  expect(classifyChecklistFinding(item, indeterminate, siblings)).toEqual({ class: "omission" })
-  expect(classifyChecklistFinding(refined, { ...finding, status: "open", action_status: "indeterminate", open_decisions: [] }, siblings)).toEqual({ class: "omission" })
+test("an indeterminate finding with no cause is a missing inspection, not an omission", () => {
+  expect(classifyChecklistFinding(item, indeterminate, siblings)).toEqual({ class: "missing_inspection" })
+  expect(classifyChecklistFinding(refined, { ...finding, status: "open", action_status: "indeterminate", open_decisions: [] }, siblings)).toEqual({ class: "missing_inspection" })
 })
 
 test("first match wins: departure, then a mapped conflict, then the indeterminate cause", () => {

@@ -10,7 +10,9 @@ import { finalBodyParagraphs, type ApplyResult } from "./checks"
 import { FIRST_DOCUMENT, readLeanPlan, type DocID } from "./plan"
 import { readPackageReview } from "./package-review"
 import { quoteFound, openItem } from "./quotes"
-import { isReviewStage, currentOpenItems, readLeanText, readLeanJson, readLeanState, readQuestions, type OpenItem, type Question } from "./state"
+import { readRepairRound } from "./repairs"
+import { withheldChecklistRepair } from "./requests"
+import { isReviewStage, currentOpenItems, readLeanText, readLeanJson, readLeanState, readQuestions, type LeanState, type OpenItem, type Question } from "./state"
 
 // Final legal gate: the only place an open item blocks delivery. It covers every
 // planned document; each item is settled against the final body of the
@@ -90,11 +92,12 @@ export function finalGate(directory: string): GateResult {
     return checked?.status === "changes-required" ? checked.findings.map(row => openItem("change-review", "omission", row.detail,
       { document, ...(row.pid ? { pid: row.pid } : {}) })) : []
   })
-  const checklistState = readLeanState(directory)?.stages["checklist-check"]
+  const leanState = readLeanState(directory)
+  const checklistState = leanState?.stages["checklist-check"]
   const checked = checklistState && (checklistState.status !== "pending" || readLeanJson(directory, "checklist/extraction.json") !== undefined)
     ? checklistOutputState(directory) : undefined
   // Adverse checklist findings lead: the lawyer's list of items may be capped.
-  const unresolved = checked?.valid ? [...checked.unresolved.map(row => checklistUnresolvedItem(directory, row)),
+  const unresolved = checked?.valid ? [...checked.unresolved.map(row => checklistUnresolvedItem(directory, leanState, row)),
     ...checked.unresolvedParents.map(row => checklistUnresolvedParentItem(directory, row))] : []
   const items = [...unresolved, ...[...currentOpenItems(directory), ...deferredFindingItems(directory)].map(item => settle(item, context)), ...semantic, ...projected]
   if (checked && !checked.valid) items.push(openItem("checklist-check", "omission", "Effective checklist findings or source-unit coverage are incomplete, adverse or stale; see checklist/report.md.", {}))
@@ -136,21 +139,44 @@ function checklistOpenItem(directory: string, { item_id, item, finding }: Checkl
     status: "disclosed", resolution: "left open by the checklist check; disclosed with the review draft" }
 }
 
-/** Why an adverse finding remains, in the lawyer's words. */
-export const CHECKLIST_CLASS_LABELS: Record<ChecklistFindingClass, string> = {
-  omission: "omission not fixed by the repair round",
-  source_conflict: "conflicts with another source requirement",
-  not_inspectable: "cannot be established from document text",
-  missing_inspection: "not inspected",
-  departure: "deliberate departure",
+/** Why an adverse finding remains, in the lawyer's words. The runner's report
+ * and the gate's disclosure share it. It reads recorded state only: whether
+ * the one reinspection ran, the source adjudication that declined a repair,
+ * and the checklist repair round in repairs.json (the current round and each
+ * document's retained repair context). */
+export function checklistFindingLabel(directory: string, state: LeanState | undefined, row: { item_id: string; item: ChecklistItem; class: ChecklistFindingClass; reinspected: boolean }): string {
+  switch (row.class) {
+    case "omission":
+      if (state && withheldChecklistRepair(directory, state, row.item_id, row.item)) return "omission; source adjudication declined the repair"
+      return checklistRoundItems(directory).has(row.item_id) ? "omission not fixed by the repair round" : "omission; no repair round ran"
+    case "missing_inspection":
+      return row.reinspected ? "not established by the check after reinspection" : "not established by the check; not yet reinspected"
+    case "source_conflict": return "conflicts with another source requirement"
+    case "not_inspectable": return "cannot be established from document text"
+    case "departure": return "deliberate departure"
+  }
+}
+
+/** Item IDs a recorded checklist repair round submitted. */
+function checklistRoundItems(directory: string) {
+  const round = readRepairRound(directory)
+  const items = [...round?.items ?? [], ...Object.values(round?.document_contexts ?? {}).flatMap(context => context?.items ?? [])]
+  return new Set(items.flatMap(item => {
+    if (item.stage !== "checklist-check") return []
+    try {
+      const value = JSON.parse(item.detail.slice(item.detail.indexOf("\n") + 1)) as { item_id?: unknown } | null
+      return typeof value?.item_id === "string" ? [value.item_id] : []
+    } catch { return [] }
+  }))
 }
 const UNRESOLVED = "not established as satisfied; disclosed with the review draft"
 
 /** A completed finding that remains adverse, disclosed with its class and its
  * own recorded reason and limitation. It is never a pass and never blocks. */
-function checklistUnresolvedItem(directory: string, { item_id, item, finding, class: kind, conflicting_item_ids }: ChecklistUnresolvedFinding): OpenItem {
+function checklistUnresolvedItem(directory: string, state: LeanState | undefined, row: ChecklistUnresolvedFinding): OpenItem {
+  const { item_id, item, finding, class: kind, conflicting_item_ids } = row
   const document = checklistDocument(directory, item)
-  const detail = [`Checklist requirement unresolved (${CHECKLIST_CLASS_LABELS[kind]}): ${sentence(item.check)}`, ...findingText(finding),
+  const detail = [`Checklist requirement unresolved (${checklistFindingLabel(directory, state, row)}): ${sentence(item.check)}`, ...findingText(finding),
     conflicting_item_ids?.length ? `Conflicting checklist items: ${conflicting_item_ids.join(", ")}.` : ""].filter(Boolean).join(" ")
   return { ...openItem("checklist-check", "checklist_unresolved", detail, { checklist_item: item_id, checklist_class: kind, ...(document ? { document } : {}) }),
     status: "disclosed", resolution: UNRESOLVED }

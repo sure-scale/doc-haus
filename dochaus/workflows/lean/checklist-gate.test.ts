@@ -3,6 +3,7 @@ import type { ChecklistFinding, ChecklistItem } from "./checklist-contract"
 import { checklistRefinementSourceBasis } from "./checklist-flow"
 import { finalGate } from "./gate"
 import { writeLeanPlan } from "./plan"
+import { openItem } from "./quotes"
 import { checklistOutputState } from "./stages"
 import { readLeanState, updateLeanStage, writeLeanText } from "./state"
 import { cleanupMatters, matter } from "./test-support"
@@ -53,7 +54,7 @@ test("an unsatisfied omission finding is disclosed first and makes a review draf
   expect(unresolvedItems(gate)).toHaveLength(1)
   expect(gate.disclosed[0]).toMatchObject({ stage: "checklist-check", kind: "checklist_unresolved", status: "disclosed",
     ref: { checklist_item: "c1", checklist_class: "omission", document: "d1" },
-    detail: "Checklist requirement unresolved (omission not fixed by the repair round): The note states the delivery period. Finding: Focused result unsatisfied. Limitation: Comments not inspected.",
+    detail: "Checklist requirement unresolved (omission; no repair round ran): The note states the delivery period. Finding: Focused result unsatisfied. Limitation: Comments not inspected.",
     resolution: "not established as satisfied; disclosed with the review draft" })
   expect(gate.items[0]).toEqual(gate.disclosed[0]!)
   expect(gate.disclosed[1]).toMatchObject({ kind: "checklist_open", ref: { checklist_item: "c2" } })
@@ -62,7 +63,7 @@ test("an unsatisfied omission finding is disclosed first and makes a review draf
 test("each verified disclosure class is carried to the disclosed item", () => {
   const cases = [
     { finding: finding("c1", "indeterminate", { indeterminate_cause: "not_inspectable" }), label: "cannot be established from document text", class: "not_inspectable" },
-    { finding: finding("c1", "indeterminate", { indeterminate_cause: "missing_inspection" }), label: "not inspected", class: "missing_inspection" },
+    { finding: finding("c1", "indeterminate", { indeterminate_cause: "missing_inspection" }), label: "not established by the check; not yet reinspected", class: "missing_inspection" },
     { finding: finding("c1", "unsatisfied", { conflicting_source_refs: [ref("Payment is due on delivery.")] }), label: "conflicts with another source requirement", class: "source_conflict" },
     { finding: finding("c1", "unsatisfied", { departure_disclosure: [{ document: "d1", locator: "p1", text: "The period is left out on purpose.", kind: "body" }] }), label: "deliberate departure", class: "departure" },
   ] as const
@@ -77,6 +78,24 @@ test("each verified disclosure class is carried to the disclosed item", () => {
   const conflict = checklistMatter([{ item_id: "c1", finding: cases[2].finding }, { item_id: "c2", finding: finding("c2", "satisfied") }])
   expect(checklistOutputState(conflict).unresolved).toEqual([expect.objectContaining({ class: "source_conflict", conflicting_item_ids: ["c2"] })])
   expect(unresolvedItems(finalGate(conflict))[0]!.detail).toContain("Conflicting checklist items: c2.")
+})
+
+test("an omission's label says whether a checklist repair round ran for it; a reinspected missing inspection says so", () => {
+  const directory = checklistMatter([{ item_id: "c1", finding: finding("c1", "unsatisfied") }, { item_id: "c2", finding: finding("c2", "satisfied") }])
+  const disclosed = () => unresolvedItems(finalGate(directory))
+  // A checklist repair round item as the runner records it: the instruction, then the assessment.
+  const round = (item_id: string) => writeLeanText(directory, "repairs.json", JSON.stringify({ round: 1, substantive_attempts: 1, requested_at: "saved",
+    items: [openItem("checklist-check", "omission", `Reassess this focused checklist assessment.\n${JSON.stringify({ item_id, item: ITEMS.find(row => row.id === item_id)!.item, finding: finding(item_id, "unsatisfied") })}`,
+      { document: "d1", repair_target: "body" })] }))
+  expect(disclosed()).toEqual([expect.objectContaining({ ref: { checklist_item: "c1", checklist_class: "omission", document: "d1" }, detail: expect.stringContaining("(omission; no repair round ran)") })])
+  round("c2")
+  expect(disclosed()[0]!.detail).toContain("(omission; no repair round ran)")
+  round("c1")
+  expect(disclosed()).toEqual([expect.objectContaining({ ref: { checklist_item: "c1", checklist_class: "omission", document: "d1" }, detail: expect.stringContaining("(omission not fixed by the repair round)") })])
+  const reinspected = checklistMatter([{ item_id: "c1", finding: finding("c1", "indeterminate"),
+    reinspection: { canonical_input_sha: "sha", original_finding: finding("c1", "indeterminate"), status: "succeeded", issues: [] } }, { item_id: "c2", finding: finding("c2", "satisfied") }])
+  expect(unresolvedItems(finalGate(reinspected))).toEqual([expect.objectContaining({ ref: { checklist_item: "c1", checklist_class: "missing_inspection", document: "d1" },
+    detail: expect.stringContaining("(not established by the check after reinspection)") })])
 })
 
 test("a failed check row, a failed reinspection or a missing finding stays invalid and blocks", () => {

@@ -365,8 +365,8 @@ function message(error: unknown) {
 
 export type ChecklistOpenFinding = { item_id: string; item: ChecklistItem; finding: ChecklistFinding }
 /** A completed current finding that remains adverse, with the class its
- * verified fields establish. */
-export type ChecklistUnresolvedFinding = ChecklistOpenFinding & { class: ChecklistFindingClass; conflicting_item_ids?: string[] }
+ * verified fields establish and whether its one reinspection ran. */
+export type ChecklistUnresolvedFinding = ChecklistOpenFinding & { class: ChecklistFindingClass; conflicting_item_ids?: string[]; reinspected: boolean }
 /** A refined parent whose reconciled coverage is unsatisfied or indeterminate. */
 export type ChecklistUnresolvedParent = { parent_id: string; item: ChecklistItem; status: "unsatisfied" | "indeterminate"; issues: string[] }
 export type ChecklistOutputState = { valid: boolean; open: boolean; openFindings: ChecklistOpenFinding[]; unresolved: ChecklistUnresolvedFinding[]; unresolvedParents: ChecklistUnresolvedParent[] }
@@ -412,7 +412,7 @@ export function checklistOutputState(directory: string): ChecklistOutputState {
     if (coverage.some(parent => parent.children.some(id => !completed(id))) || !existsSync(leanFile(directory, "checklist/report.md"))) return invalid
     const unresolved = current.flatMap(row => {
       const classified = classifyChecklistFinding(row.item, row.finding, effective.items)
-      return classified ? [{ ...row, ...classified }] : []
+      return classified ? [{ ...row, ...classified, reinspected: !!checks.checks.find(check => check.item_id === row.item_id)?.reinspection }] : []
     })
     const unresolvedParents = coverage.flatMap(parent => parent.status === "unsatisfied" || parent.status === "indeterminate"
       ? [{ parent_id: parent.parent_id, item: originals.find(row => row.id === parent.parent_id)!.item, status: parent.status, issues: parent.issues }] : [])

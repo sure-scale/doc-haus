@@ -78,8 +78,10 @@ export async function runChecklistExtractionFlow(directory: string, deps: Checkl
 const UNFINISHED_REINSPECTION = "Reinspection did not complete; no result overrides the original finding."
 
 /** Each unchanged item gets its own native check. Full current lookup records
- * are persisted before any sessions start, while only target hints go inline. */
-export async function runChecklistCheckFlow(directory: string, deps: ChecklistJobDeps, options: { reinspectAdverse?: boolean; pause?: AbortSignal } = {}) {
+ * are persisted before any sessions start, while only target hints go inline.
+ * `reinspectAdverse` admits every adverse finding's one reinspection;
+ * `reinspectItems` admits only the listed items'. */
+export async function runChecklistCheckFlow(directory: string, deps: ChecklistJobDeps, options: { reinspectAdverse?: boolean; reinspectItems?: ReadonlySet<string>; pause?: AbortSignal } = {}) {
   // Preparing the checks is synchronous: every key it takes shares one source read.
   const { extractionComplete, originals, effective, clarifications, artifacts, missing, jobs } = withSourceSnapshot(() => {
     const current = extractionInputs(directory, deps)
@@ -142,7 +144,8 @@ export async function runChecklistCheckFlow(directory: string, deps: ChecklistJo
     const clarified = !record && clarifications.length > 0 && previous?.status === "succeeded" && previous.finding ? previous : undefined
     const inspected = record ?? clarified ?? (unfinished ? previous : undefined)
     if (inspected?.status === "succeeded") {
-      if (!clarified && !unfinished && (!options.reinspectAdverse || !inspected.finding || checklistFindingRecovery(job.record.item, inspected.finding) === "none" || reinspection)) return
+      const admitted = options.reinspectAdverse || options.reinspectItems?.has(job.record.id)
+      if (!clarified && !unfinished && (!admitted || !inspected.finding || checklistFindingRecovery(job.record.item, inspected.finding) === "none" || reinspection)) return
       if (!inspected.finding) return
       // Record the admission in this existing completed-output record before the
       // call. Only an outcome (a finding, a contract failure or a runtime error)

@@ -6,7 +6,7 @@ import { focusedChecklistRepairs, runFocusedRepairAdjudication } from "./checkli
 import { classifyChecklistFinding } from "./checklist-classify"
 import { checklistFindingRecovery } from "./checklist-contract"
 import { buildChecklistRefinementContext } from "./checklist-refinement-context"
-import { runChecklistRefinementFlow, readEffectiveChecklistItems, runChecklistExtractionFlow, runChecklistCheckFlow } from "./checklist-flow"
+import { runChecklistRefinementFlow, readEffectiveChecklistItems, runChecklistExtractionFlow, runChecklistCheckFlow, type ChecklistCheckResult } from "./checklist-flow"
 import { selectedDeliveryPlan } from "./delivery-selection"
 import { changePlanPrompt, changeReviewPrompt, readChangeReview, runChangePreparation } from "./change-pipeline"
 import { packageReviewPrompt, readPackageReview } from "./package-review"
@@ -17,7 +17,7 @@ import { runApply } from "./apply-stage"
 import { forgetUnplannedDocuments, recordLeanDocuments } from "./deliverables"
 import { runDraftStage } from "./draft-sections"
 import { appendLeanEvent, leanElapsedMs } from "./events"
-import { CHECKLIST_CLASS_LABELS, finalGate, notesCoverageReport } from "./gate"
+import { checklistFindingLabel, finalGate, notesCoverageReport } from "./gate"
 import { readLeanPlan, reviewStages, leanSteps, stepDocument, stepStage, type StepID } from "./plan"
 import { retryPrompt, stagePrompt } from "./prompts"
 import { excerpt, inDocument, openItem, withSourceSnapshot } from "./quotes"
@@ -428,7 +428,14 @@ async function runChecklistStage(directory: string, state: LeanState, deps: Lean
     refinementOutputs.push(...refined.outputs)
   }
   const key = stageInputSha(directory, "checklist-check")
-  const result = await runChecklistCheckFlow(directory, { sessions: deps.sessions, model: state.model, parentID: state.owner_session_id }, { reinspectAdverse, pause: deps.pause })
+  const checkDeps = { sessions: deps.sessions, model: state.model, parentID: state.owner_session_id }
+  const checked = await runChecklistCheckFlow(directory, checkDeps, { reinspectAdverse, pause: deps.pause })
+  // A finding the check could not establish gets its one reinspection here,
+  // limited to those items and only with no integrity failure; it is then
+  // disclosed, never repaired. A recorded reinspection is never repeated.
+  const uninspected = checked.status === "succeeded" && checked.checks.every(row => row.reinspection?.status !== "failed") && !deps.pause?.aborted
+    ? missingInspections(directory, checked.checks) : new Set<string>()
+  const result = uninspected.size ? await runChecklistCheckFlow(directory, checkDeps, { reinspectItems: uninspected, pause: deps.pause }) : checked
   // An answer is queued while read-only jobs run; it cannot become accepted
   // evidence for the snapshot they inspected. Refresh before proceeding.
   const queued = drainLeanRequests(directory)
@@ -471,7 +478,7 @@ async function runChecklistStage(directory: string, state: LeanState, deps: Lean
     }
   }
   const disclosed = [
-    ...adverse.map(({ row, finding, class: kind }) => `${row.item_id}: ${CHECKLIST_CLASS_LABELS[kind]}: ${finding.reason}${declined.has(row.item_id) ? ` Source adjudication declined the repair: ${declined.get(row.item_id)}` : ""}`),
+    ...adverse.map(({ row, item, finding, class: kind }) => `${row.item_id}: ${checklistFindingLabel(directory, state, { item_id: row.item_id, item, class: kind, reinspected: !!row.reinspection })}: ${finding.reason}${declined.has(row.item_id) ? ` Adjudicator's reason: ${declined.get(row.item_id)}` : ""}`),
     ...result.parent_coverage.filter(parent => ["unsatisfied", "indeterminate"].includes(parent.status))
       .map(parent => `${parent.parent_id}: refined checks ${parent.status}: ${parent.issues.join(" ") || "A refined child remains adverse."}`),
   ]
@@ -482,6 +489,15 @@ async function runChecklistStage(directory: string, state: LeanState, deps: Lean
   // coerced to satisfied or to a delivery-blocking generic omission.
   return { status: details.length ? "blocked" : "done", outputs: [...new Set(["checklist/extraction.json", ...refinementOutputs, ...result.outputs, "checklist/report.md"])], openItems,
     ...(details.length ? { reason: `Checklist handoff blocked: ${details.join("; ")}. See checklist/report.md.` } : {}) }
+}
+
+/** Completed findings classed as a missing inspection that have not had their one reinspection. */
+function missingInspections(directory: string, checks: ChecklistCheckResult[]) {
+  const items = readEffectiveChecklistItems(directory).items
+  return new Set(checks.flatMap(row => {
+    const item = items.find(record => record.id === row.item_id)?.item
+    return item && row.finding && !row.reinspection && classifyChecklistFinding(item, row.finding, items)?.class === "missing_inspection" ? [row.item_id] : []
+  }))
 }
 
 /** One synchronous read of the matter's sources serves every input of the key. */
