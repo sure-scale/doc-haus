@@ -15,6 +15,7 @@ import {
   currentStep,
   draftedGroups,
   groupOpenItems,
+  leanSettledSummary,
   openItemsSentence,
   openQuestions,
   runPosition,
@@ -93,6 +94,27 @@ test("attention items follow the final check once it ran for this pass", () => {
   expect(attentionItems(lean(blockedGate)).map((row) => row.status)).toEqual(["open"])
   const disclosed = lean({ ...completed, gate: { ...completed.gate, items: [item("x", "placeholder", "disclosed"), item("y", "omission", "resolved")] } })
   expect(attentionItems(disclosed).map((row) => row.id)).toEqual(["x"])
+})
+
+test("a checklist requirement left open shows in the delivered review draft's details list", () => {
+  const actions = { busy: false, error: "", resuming: false, resume: async () => true, answer: async () => true }
+  const detail =
+    "Checklist requirement left open: Keep the note to about one page. Finding: Accepted body text measures {\"paragraphs\":28,\"words\":626,\"characters\":3900} do not clearly exceed about one page. Limitation: Rendered pagination was not verified."
+  const open: LeanOpenItem = { id: "checklist-check:checklist_open:1", stage: "checklist-check", kind: "checklist_open", detail, status: "disclosed", ref: { document: "d1" } }
+  const status = lean({ ...completed, gate: { ...completed.gate, delivery: "review_draft", disclosed: [open], items: [open, item("p1", "placeholder", "disclosed")] } })
+  expect(attentionItems(status)).toContainEqual(open)
+  expect(groupOpenItems([open])[0]!.label).toBe("Requirements left open by the checklist check")
+  const html = renderToStaticMarkup(createElement(RunHeader, { status, actions, own: true, onOpen: () => {} }))
+  expect(html).toContain("Requirements left open by the checklist check")
+  expect(html).toContain("626")
+  expect(html).toContain("Rendered pagination was not verified.")
+  expect(html).toContain('<span class="open-item-tag">Left open</span>')
+  // Only the placeholder is named in the drafting notes.
+  expect(html.match(/<span class="open-item-tag">In the notes<\/span>/g)).toHaveLength(1)
+  expect(html).toContain("a review draft, not yet ready for signature")
+  expect(leanSettledSummary(status.gate!.items!)).toBe(
+    "Final check settled 2 open items: 1 disclosed in the drafting notes, 1 left open by the checklist check.",
+  )
 })
 
 test("drafted outputs nest the redline and notes under a single draft", () => {

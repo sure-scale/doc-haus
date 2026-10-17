@@ -60,7 +60,8 @@ test("coordinator extracts before body drafting and checks after body and notes;
   writeLeanBytes(directory, "drafting-notes.docx", (await renderMarkdownToDocx("# Current notes\n\nA further current Word change.")).bytes)
   const unresolved = model(directory, "open")
   expect((await runLean(directory, { sessions: unresolved.port })).status).toBe("completed")
-  expect(readLeanJson(directory, "gate.json")).toMatchObject({ status: "pass", delivery: "review_draft", disclosed: [] })
+  expect(readLeanJson(directory, "gate.json")).toMatchObject({ status: "pass", delivery: "review_draft", blocking: [],
+    disclosed: [{ stage: "checklist-check", kind: "checklist_open", status: "disclosed", detail: expect.stringContaining("Finding: Focused result open.") }] })
   expect(existsSync(leanFile(directory, "checklist/report.md"))).toBe(true)
 }, 120000)
 
@@ -81,7 +82,15 @@ test("informational open finding remains open in report while permitting review 
   const scripted = model(directory, "open")
   expect((await runLean(directory, { sessions: scripted.port })).status).toBe("completed")
   expect(readLeanJson(directory, "checklist/checks.json")).toMatchObject({ checks: [{ finding: { status: "open" } }] })
-  expect(readLeanJson(directory, "gate.json")).toMatchObject({ status: "pass", delivery: "review_draft", disclosed: [] })
+  // The finding stays open, non-blocking and unchanged; it is disclosed rather
+  // than coerced to a pass or to a generic blocking omission.
+  const gate = readLeanJson(directory, "gate.json") as any
+  expect(gate).toMatchObject({ status: "pass", delivery: "review_draft", blocking: [] })
+  expect(gate.disclosed).toHaveLength(1)
+  expect(gate.disclosed[0]).toMatchObject({ stage: "checklist-check", kind: "checklist_open", status: "disclosed", ref: { document: "d1" },
+    detail: "Checklist requirement left open: The requested supply note is drafted. Finding: Focused result open. Limitation: Comments not inspected." })
+  expect(gate.items).toContainEqual(gate.disclosed[0])
+  expect(readOpenItems(directory).some(item => item.kind === "checklist_open")).toBe(false)
   expect(readFileSync(leanFile(directory, "checklist/report.md"), "utf8")).toContain("Status: open")
 }, 120000)
 
@@ -278,6 +287,24 @@ test("an approximate rendered-length directive left open by text measures comple
   expect(report).toContain("Limitation: Rendered pagination was not verified.")
   expect(report).toContain("coverage: target_body; status: open")
   expect(report).not.toContain("Delivery blocked")
+  // The lawyer sees the open requirement on the delivered review draft: the
+  // gate discloses the measures and the pagination limitation.
+  const gate = readLeanJson(directory, "gate.json") as any
+  const open = gate.items.filter((item: any) => item.kind === "checklist_open")
+  expect(open).toHaveLength(1)
+  expect(gate.disclosed).toContainEqual(open[0])
+  expect(open[0]).toMatchObject({ stage: "checklist-check", status: "disclosed", ref: { document: "d1" } })
+  expect(open[0].detail).toContain(`Finding: Accepted body text measures ${seen.measures} do not clearly exceed about one page.`)
+  expect(open[0].detail).toContain("Limitation: Rendered pagination was not verified.")
+  // Derived at the gate from checklist results it already reads: nothing is
+  // written to open-items.json, so completed stage keys hold and an unchanged
+  // resume does no work.
+  expect(readOpenItems(directory).some(item => item.kind === "checklist_open")).toBe(false)
+  const keys = (["checklist-check", "package-review", "gate"] as const).map(step => [state.stages[step]?.input_sha, stageInputSha(directory, step)])
+  expect(keys.every(([saved, current]) => saved === current)).toBe(true)
+  const idle = scriptedModel({})
+  expect((await runLean(directory, { sessions: idle.port })).status).toBe("completed")
+  expect(idle.prompts).toHaveLength(0)
 }, 120000)
 
 test("a rendered-length directive clearly exceeded by text measures blocks and offers the existing focused repair", async () => {
