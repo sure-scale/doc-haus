@@ -30,9 +30,6 @@ not affiliated with or endorsed by Anthropic. If any claude-for-legal text is ev
 incorporated verbatim in future, that file will carry the Apache-2.0 license and a
 statement of changes as Section 4 of that license requires.
 
-See [docs/research/claude-for-legal-patterns.md](docs/research/claude-for-legal-patterns.md)
-for the recorded provenance.
-
 ## CUAD — Contract Understanding Atticus Dataset (CC BY 4.0)
 
 doc.haus's contract-risk checklist reproduces clause-category names from the
