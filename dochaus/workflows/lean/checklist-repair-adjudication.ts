@@ -7,7 +7,7 @@ import { CHECKLIST_JOB_PERMISSIONS, type ChecklistJobDeps, type ChecklistJobResu
 import { acceptChangePlan, checkChangePlan, readChangePlan, type ChangePlan, type ChangeGroup } from "./change-pipeline"
 import { readChangeList, readParagraphs, record, type ApplyResult } from "./checks"
 import { parseJsonObject } from "./change-checks"
-import { appendLeanEvent } from "./events"
+import { appendLeanEvent, leanElapsedMs } from "./events"
 import { documentRepairs } from "./repairs"
 import { retryPrompt } from "./prompts"
 import { drainLeanRequests } from "./requests"
@@ -183,10 +183,12 @@ export async function runRepairAdjudicationJob(directory: string, deps: Checklis
   for (let index = 0; index <= LEAN_MAX_RETRIES; index++) {
     progress({ attempt: index + 1 })
     appendLeanEvent(directory, { stage: "change-plan", document, step: input.assessment.item_id, event: index ? "retry" : "model_call", attempt: index, session_id: sessionID })
+    const asked = performance.now()
     const reply = await deps.sessions.prompt({ directory, sessionID, agent, text: index ? retryPrompt("change-plan", issues) : input.prompt })
+    const answered = performance.now()
     const parsed = parseJsonObject(reply)
     issues = parsed.ok ? repairAdjudicationIssues(directory, document, input, parsed.value) : [parsed.error]
-    appendLeanEvent(directory, { stage: "change-plan", document, step: input.assessment.item_id, event: "checker", attempt: index, issues })
+    appendLeanEvent(directory, { stage: "change-plan", document, step: input.assessment.item_id, event: "checker", attempt: index, issues, wait_ms: leanElapsedMs(asked, answered), check_ms: leanElapsedMs(answered) })
     progress({ issues })
     if (!issues.length && parsed.ok) return { status: "succeeded", sessionID, attempts: index + 1, reply, value: parsed.value as RepairAdjudication }
     if (index === LEAN_MAX_RETRIES) return { status: "failed", sessionID, attempts: index + 1, reply, issues }

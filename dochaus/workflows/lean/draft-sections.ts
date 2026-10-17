@@ -1,6 +1,6 @@
 import { playbookSelectionIssues } from "./playbook-review"
 import { TOOL_SYNTAX_ISSUE, printedToolCall } from "./checks"
-import { appendLeanEvent } from "./events"
+import { appendLeanEvent, leanElapsedMs } from "./events"
 import { matterSourceIDs } from "./quotes"
 import { FIRST_DOCUMENT, headingText, normalizedHeading, parsePlan, plannedDocument, writeLeanPlan, type DocID, type LeanOutline, type PlannedPart, type StepID } from "./plan"
 import { actingForBlock, retryPrompt, stagePrompt } from "./prompts"
@@ -69,12 +69,15 @@ export async function runDraftStage(
   // hand the checker's issues back to the same session.
   const ask = async <T>(label: string, text: string, check: (reply: string) => Checked<T>, attempt = 0): Promise<Checked<T>> => {
     appendLeanEvent(directory, { stage: "draft", document, event: attempt ? "retry" : "model_call", step: label, attempt, session_id: sessionID })
+    const asked = performance.now()
     const reply = await deps.sessions.prompt({ directory, sessionID, agent, text })
+    const answered = performance.now()
     const checked = check(reply)
+    const timing = { wait_ms: leanElapsedMs(asked, answered), check_ms: leanElapsedMs(answered) }
     calls.count += 1
     calls.attempts = Math.max(calls.attempts, attempt + 1)
     progress({ attempts: calls.attempts, calls: calls.count, feedback: checked.issues })
-    appendLeanEvent(directory, { stage: "draft", document, event: "checker", step: label, attempt, issues: checked.issues })
+    appendLeanEvent(directory, { stage: "draft", document, event: "checker", step: label, attempt, issues: checked.issues, ...timing })
     if (!checked.issues.length || attempt >= LEAN_MAX_RETRIES) return checked
     return ask(label, retryPrompt("draft", checked.issues), check, attempt + 1)
   }

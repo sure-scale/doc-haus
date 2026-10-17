@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite"
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, spyOn, test } from "bun:test"
 import { createHash } from "node:crypto"
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -22,7 +22,7 @@ import {
   writeOpenItems,
   writeQuestions,
 } from "../../../dochaus/workflows/lean/state"
-import { happyPath, leanFixtureMatter, scriptedModel, noChanges } from "../../../dochaus/workflows/lean/test-support"
+import { FIXTURE_SOURCE_TEXT, happyPath, leanFixtureMatter, scriptedModel, noChanges } from "../../../dochaus/workflows/lean/test-support"
 import {
   draftingStartProfile,
   leanDraftingIdle,
@@ -357,6 +357,27 @@ test("updates are only marked applied after current package review and become st
 }, 120_000)
 
 
+test("a status read scans source text once and the next read still sees a source change", async () => {
+  const directory = leanFixtureMatter("lean-status-snapshot-")
+  directories.push(directory)
+  enqueueLeanRequest(directory, { kind: "update", text: "Keep headings concise." })
+  expect((await runLean(directory, { sessions: scriptedModel(happyPath).port })).status).toBe("completed")
+  // Statements that read chunk text in full, as in the latency harness.
+  const textScan = /^\s*SELECT\b[^;]*\btext\b[^;]*\bFROM chunks\b/i
+  const status = () => {
+    const queries = spyOn(Database.prototype, "query")
+    try {
+      const value = leanDraftingStatus(directory)
+      return { updates: value?.updates, scans: queries.mock.calls.filter(([sql]) => textScan.test(String(sql))).length }
+    } finally { queries.mockRestore() }
+  }
+  expect(status()).toMatchObject({ updates: [{ status: "included", progress: "applied" }], scans: 1 })
+  const db = new Database(path.join(directory, ".dochaus/legal.db"))
+  db.run("UPDATE chunks SET text = text || ' Delivery may be extended by agreement.'")
+  db.close()
+  expect(status()).toMatchObject({ updates: [{ status: "included", progress: "requires-rework" }], scans: 1 })
+}, 120_000)
+
 test("creating an empty source index during registration preserves applied update progress", async () => {
   const directory = leanFixtureMatter("lean-empty-index-update-")
   directories.push(directory)
@@ -600,3 +621,43 @@ describe("pausing a lean drafting run", () => {
     expect(readLeanState(directory)?.paused_at).toBeUndefined()
   })
 })
+
+test("checker events time the model wait and the check as numbers, never content; status reports the last progress", async () => {
+  const SLEEP_MS = 30
+  const directory = leanFixtureMatter("lean-timing-")
+  directories.push(directory)
+  const scripted = scriptedModel(happyPath)
+  // Every reply is held for a known time first, like an engine call in flight.
+  const deps: LeanDeps = { sessions: { ...scripted.port, prompt: async (input) => {
+    await Bun.sleep(SLEEP_MS)
+    return scripted.port.prompt(input)
+  } } }
+  const routes = leanDraftingRoutes({ directory: () => directory, deps: () => deps })
+  enqueueLeanRequest(directory, { kind: "update", text: "Keep the synthetic headings short." })
+  expect((await routes.request("/m1/lean/resume", { method: "POST" })).status).toBe(202)
+  await leanDraftingIdle(directory)
+  const status = await (await routes.request("/m1/lean/state")).json() as { status: string; updated_at: string; last_progress_at: string }
+  expect(status.status).toBe("completed")
+  const events = readLeanEvents(directory)
+  const checkers = events.filter(event => event.event === "checker")
+  expect(checkers.length).toBeGreaterThan(5)
+  // A review prefetched beside its sibling counts only the wait left when its own step began.
+  const prefetched = new Set(["review-independent", "review-wording", "review-client-disadvantage"])
+  const checkerKeys = new Set(["at", "stage", "document", "event", "step", "attempt", "issues", "wait_ms", "check_ms"])
+  for (const event of checkers) {
+    expect(Object.keys(event).filter(key => !checkerKeys.has(key))).toEqual([])
+    expect(event.issues).toEqual([])
+    expect(event.check_ms).toBeGreaterThanOrEqual(0)
+    expect(event.wait_ms).toBeGreaterThanOrEqual(prefetched.has(event.stage) ? 0 : SLEEP_MS)
+  }
+  const boundaries = events.filter(event => event.event === "started" || event.event === "skipped")
+  expect(boundaries.length).toBeGreaterThan(0)
+  for (const event of boundaries) expect(event.check_ms).toBeGreaterThanOrEqual(0)
+  // Timing is metadata only: no prompt, request, update or source wording reaches the log.
+  const log = readFileSync(path.join(leanDir(directory), "events.jsonl"), "utf8")
+  const prompts = scripted.prompts.map(prompt => prompt.text.slice(0, 120)).filter(text => text.trim().length >= 20)
+  expect(prompts.length).toBeGreaterThan(0)
+  for (const text of [FIXTURE_SOURCE_TEXT, "Keep the synthetic headings short.", "Draft a short supply note", ...prompts]) expect(log).not.toContain(text)
+  expect(status.last_progress_at >= events.at(-1)!.at).toBe(true)
+  expect(status.last_progress_at >= status.updated_at).toBe(true)
+}, 120_000)

@@ -8,10 +8,12 @@ import { draftingTraceReference } from "../../../dochaus/lib/drafting-trace-iden
 import { researchStatus } from "../../../dochaus/workflows/lean/research"
 import { readLeanDocuments, type LeanDocuments } from "../../../dochaus/workflows/lean/deliverables"
 import { sha256File } from "../../../dochaus/lib/lineage"
+import { lastLeanEventAt } from "../../../dochaus/workflows/lean/events"
 import { readLeanPlan } from "../../../dochaus/workflows/lean/plan"
 import { enqueueLeanRequest, pendingLeanRequests, leanUserUpdates, queuedAnswerIDs, isChecklistRefinement } from "../../../dochaus/workflows/lean/requests"
 import { runLean, stageInputSha } from "../../../dochaus/workflows/lean/runner"
 import { leanSteps } from "../../../dochaus/workflows/lean/plan"
+import { withSourceSnapshot } from "../../../dochaus/workflows/lean/quotes"
 import { engineSessionPort, type LeanDeps } from "../../../dochaus/workflows/lean/stages"
 import {
   LeanQuestionError,
@@ -114,15 +116,24 @@ export function answerLeanQuestion(directory: string, questionID: string, answer
   return { profile: "lean" as const, mode: "queued" as const, request_id: request.id, status: leanDraftingStatus(directory) }
 }
 
+/** One synchronous read of the run: every step key it takes shares one read of
+ * the matter's sources and processed requests. */
 export function leanDraftingStatus(directory: string) {
+  return withSourceSnapshot(() => readLeanDraftingStatus(directory))
+}
+
+function readLeanDraftingStatus(directory: string) {
   const state = readLeanState(directory)
   if (!state) return undefined
   const refinable = checklistRefinableParents(directory)
   const gate = readLeanJson(directory, "gate.json") ?? null
   const documents = readLeanDocuments(directory) ?? null
+  const event = lastLeanEventAt(directory)
   return {
     ...state,
     in_flight: running.has(directory),
+    // The later of the last state write and this process's last run event.
+    last_progress_at: event && event > state.updated_at ? event : state.updated_at,
     pending_requests: pendingLeanRequests(directory).length,
     queued_answer_ids: [...queuedAnswerIDs(directory)],
     updates: draftingUpdates(directory, state),

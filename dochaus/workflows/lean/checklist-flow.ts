@@ -8,7 +8,7 @@ import { checklistFindingRecovery, buildChecklistCheckerPrompt, buildChecklistPr
 import { buildChecklistDocumentContext } from "./checklist-document-context"
 import { runChecklistCheckJob, runChecklistExtractionJob, runChecklistRefinementJob, type ChecklistJobDeps } from "./checklist-job"
 import { checklistProducerInputs } from "./checklist-source-context"
-import { matterSourceBasis } from "./quotes"
+import { matterSourceBasis, snapshotRead, withSourceSnapshot } from "./quotes"
 import { readLeanJson, shortHash, writeLeanText } from "./state"
 
 const itemRecordSchema = z.object({ id: z.string(), item: checklistItemSchema, assignment: checklistComparisonAssignmentSchema.optional() })
@@ -266,6 +266,11 @@ export async function runChecklistRefinementFlow(directory: string, deps: Checkl
 }
 
 export function readEffectiveChecklistItems(directory: string, originals = originalChecklistItems(directory)) {
+  // Every parent's basis rereads the same sources; one synchronous read serves all.
+  return withSourceSnapshot(() => effectiveChecklistItems(directory, originals))
+}
+
+function effectiveChecklistItems(directory: string, originals: ChecklistItemRecord[]) {
   const saved = readLeanJson(directory, REFINEMENTS)
   const parents = saved === undefined ? [] : checklistRefinementsSchema.parse(saved).parents
   const basis = checklistRefinementSourceBasis(directory)
@@ -325,7 +330,8 @@ export function reconcileChecklistParentCoverage(directory: string, checks: Chec
 }
 
 export function checklistRefinementSourceBasis(directory: string, target?: ChecklistItem) {
-  return shortHash(JSON.stringify([matterSourceBasis(directory), checklistProducerInputs(directory).map(job => job.input), ...(target ? [checklistTargetAssignments(directory, target)] : [])]), 40)
+  const sources = snapshotRead(`checklist-sources\0${directory}`, () => [matterSourceBasis(directory), checklistProducerInputs(directory).map(job => job.input)])
+  return shortHash(JSON.stringify([...sources, ...(target ? [checklistTargetAssignments(directory, target)] : [])]), 40)
 }
 
 /** Only exact-item product adjudications are relevant. Generated history never

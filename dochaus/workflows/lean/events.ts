@@ -37,12 +37,33 @@ export type LeanEvent = {
   request_id?: string
   kind?: string
   outcome?: string
+  /** Checker events: milliseconds the attempt awaited the model's reply; for a
+   * prefetched review, only the wait left when its step began. Timing only. */
+  wait_ms?: number
+  /** Milliseconds of deterministic work: on checker events the reply's check, on
+   * started and skipped events keying the step and deciding whether to skip it. */
+  check_ms?: number
+}
+
+// The latest event time per matter in this process, so status can report when
+// a running coordinator last made progress without reading the log back.
+const lastEventAt = new Map<string, string>()
+
+export function lastLeanEventAt(directory: string) {
+  return lastEventAt.get(directory)
+}
+
+/** Milliseconds since `from` (a performance.now() reading), to 0.1 ms. */
+export function leanElapsedMs(from: number, to = performance.now()) {
+  return Math.round(Math.max(0, to - from) * 10) / 10
 }
 
 export function appendLeanEvent(directory: string, event: LeanEvent) {
+  const at = new Date().toISOString()
+  lastEventAt.set(directory, at)
   try {
     mkdirSync(leanDir(directory), { recursive: true, mode: 0o700 })
-    appendFileSync(leanFile(directory, "events.jsonl"), `${JSON.stringify({ at: new Date().toISOString(), ...event })}\n`, { mode: 0o600 })
+    appendFileSync(leanFile(directory, "events.jsonl"), `${JSON.stringify({ at, ...event })}\n`, { mode: 0o600 })
   } catch {
     // Diagnostic record only; losing a line must never affect the run.
   }

@@ -14,11 +14,11 @@ import { researchPermissions, acceptResearchReply, researchPrompt } from "./rese
 import { runApply } from "./apply-stage"
 import { forgetUnplannedDocuments, recordLeanDocuments } from "./deliverables"
 import { runDraftStage } from "./draft-sections"
-import { appendLeanEvent } from "./events"
+import { appendLeanEvent, leanElapsedMs } from "./events"
 import { finalGate, notesCoverageReport } from "./gate"
 import { readLeanPlan, reviewStages, leanSteps, stepDocument, stepStage, type StepID } from "./plan"
 import { retryPrompt, stagePrompt } from "./prompts"
-import { inDocument, openItem } from "./quotes"
+import { inDocument, openItem, withSourceSnapshot } from "./quotes"
 import { checklistRefinementSelections, drainLeanRequests, pendingLeanRequests } from "./requests"
 import {
   LEAN_CHILD_PERMISSIONS,
@@ -175,7 +175,7 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
     if (unanswered.length)
       return { state: writeLeanState(directory, { ...state, status: "blocked", stop_reason: `Waiting for your answers: ${unanswered.map(question => question.id).join(", ")}` }) }
     if ((changes.answered || changes.updated) &&
-      settled.some(done => stageInputSha(directory, done) !== state.stages[done]?.input_sha))
+      withSourceSnapshot(() => settled.some(done => stageInputSha(directory, done) !== state.stages[done]?.input_sha)))
       return { state, restart: true }
     // A resumed draft may be skipped, but source/target changes must still
     // refresh extraction before any body is consumed or checking begins.
@@ -192,22 +192,30 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
       return { state, restart: true }
     // The first draft can write the plan its own key reads; its key is then
     // taken again once the plan is saved.
-    let inputSha = stageInputSha(directory, step)
+    const keyed = performance.now()
     const recorded = state.stages[step]
     settled.push(step)
-    if (recorded?.status === "done" && recorded.input_sha === inputSha && stageOutputValid(directory, step) && (step !== "package-review" || readPackageReview(directory)?.status === "pass") && (stage !== "change-review" || !document || readChangeReview(directory, document)?.status === "pass")) {
+    // Keying and the skip decision are synchronous: they share one source read.
+    const decision = withSourceSnapshot(() => {
+      const key = stageInputSha(directory, step)
+      return { key, unchanged: recorded?.status === "done" && recorded.input_sha === key && stageOutputValid(directory, step) && (step !== "package-review" || readPackageReview(directory)?.status === "pass") && (stage !== "change-review" || !document || readChangeReview(directory, document)?.status === "pass") }
+    })
+    let inputSha = decision.key
+    // Time to key the step and decide whether it can be skipped.
+    const check_ms = leanElapsedMs(keyed)
+    if (decision.unchanged) {
       // A durable accepted review may have preceded a crash before its
       // delivery selection was applied. Reconcile it before any registration.
       if (step === "package-review") {
         const repair = await reconcilePackageReview(directory, state, deps)
         if (repair) return repair
       }
-      appendLeanEvent(directory, { stage, document, event: "skipped" })
+      appendLeanEvent(directory, { stage, document, event: "skipped", check_ms })
       continue
     }
     const prefetched = prepared.get(step)
     const currentPrefetch = prefetched?.inputSha === inputSha
-    if (!currentPrefetch) appendLeanEvent(directory, { stage, document, event: "started" })
+    if (!currentPrefetch) appendLeanEvent(directory, { stage, document, event: "started", check_ms })
     state = updateLeanStage(directory, state, step, {
       status: "running", input_sha: null, outputs: [], session_ids: [], session_id: currentPrefetch ? prefetched.sessionID : null, attempts: 0, calls: 0, feedback: [], started_at: currentPrefetch ? state.stages[step]?.started_at ?? now() : now(), finished_at: null,
     })
@@ -228,8 +236,14 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
       for (const review of reviewStages(directory, document).slice(reviewStages(directory, document).indexOf(stage) + 1)) {
         const independent: StepID = `${document}.${review}`
         if (prepared.has(independent)) continue
-        const key = stageInputSha(directory, independent)
-        if (state.stages[independent]?.status === "done" && state.stages[independent]?.input_sha === key && stageOutputValid(directory, independent)) continue
+        const prefetchKeyed = performance.now()
+        const saved = state.stages[independent]
+        const key = withSourceSnapshot(() => {
+          const current = stageInputSha(directory, independent)
+          return saved?.status === "done" && saved.input_sha === current && stageOutputValid(directory, independent) ? undefined : current
+        })
+        if (key === undefined) continue
+        const prefetchCheck = leanElapsedMs(prefetchKeyed)
         const agent = LEAN_STAGE_AGENTS[review]
         const creation = await deps.sessions.createSession({ directory, parentID: state.owner_session_id, agent, title: stepSessionTitle(directory, independent), model: state.model, permissions: LEAN_CHILD_PERMISSIONS })
           .then(sessionID => ({ sessionID }), (error: unknown) => ({ error }))
@@ -244,7 +258,7 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
         }
         const sessionID = creation.sessionID
         state = updateLeanStage(directory, state, independent, { status: "running", session_id: sessionID, input_sha: null, outputs: [], attempts: 0, calls: 1, feedback: [], started_at: now(), finished_at: null })
-        appendLeanEvent(directory, { stage: review, document, event: "started", session_id: sessionID })
+        appendLeanEvent(directory, { stage: review, document, event: "started", session_id: sessionID, check_ms: prefetchCheck })
         const reply = deps.sessions.prompt({ directory, sessionID, agent, text: stagePrompt(directory, independent) })
         // Consume native errors when accepting this stage, without an unhandled
         // rejection while another independent review is running.
@@ -448,14 +462,17 @@ async function runModelStage(directory: string, state: LeanState, step: StepID, 
   progress({ session_id: sessionID })
   const attempt = async (index: number, text: string): Promise<StageRun> => {
     appendLeanEvent(directory, { stage, document, event: index ? "retry" : "model_call", attempt: index, session_id: sessionID })
+    const asked = performance.now()
     const reply = await (index === 0 && prepared ? prepared.reply : deps.sessions.prompt({ directory, sessionID, agent, text }))
+    const answered = performance.now()
     const accepted = stage === "discrepancy" || stage === "spine"
       ? acceptEvidenceReply(directory, stage, reply)
       : stage === "intake" || stage === "research" || stage === "research-review"
       ? acceptResearchReply(directory, stage, reply)
       : await acceptStageReply(directory, step, reply, { final: index >= LEAN_MAX_RETRIES })
+    const timing = { wait_ms: leanElapsedMs(asked, answered), check_ms: leanElapsedMs(answered) }
     progress({ attempts: index + 1, calls: index + 1, feedback: accepted.issues })
-    appendLeanEvent(directory, { stage, document, event: "checker", attempt: index, issues: accepted.issues })
+    appendLeanEvent(directory, { stage, document, event: "checker", attempt: index, issues: accepted.issues, ...timing })
     if (!accepted.issues.length)
       return { status: (stage === "intake" || stage === "change-plan") && accepted.questions?.length ? "blocked" : "done", outputs: accepted.outputs, openItems: accepted.openItems, questions: accepted.questions,
         ...((stage === "intake" || stage === "change-plan") && accepted.questions?.length ? { reason: stage === "intake" ? "Waiting for your answers before legal research and drafting." : "Waiting for your answers before drafting amendments." } : {}) }
