@@ -147,10 +147,44 @@ describe("pointer-based paragraph amendments", () => {
       target: "Payment is due within ten days after the invoice date.", reason: "Reflect the agreed position.", issue: "No paragraph carries this pointer.",
     } }] })
     expect((await texts(doc.out)).get(doc.pid(PAYMENT))).toBe(plain(PAYMENT))
+    // Nothing applied: the written output is the input, byte for byte.
+    expect(await readFile(doc.out)).toEqual(await readFile(doc.file))
     const ambiguous = await applyAmendments({ docxPath: duplicated, outPath: doc.out, merge: async () => "unused", amendments: [
       amend("twice", doc.pid(PAYMENT), plain(PAYMENT), "Payment is due within ten days after the invoice date."),
     ] })
     expect(ambiguous.unapplied).toMatchObject([{ id: "twice", pid: doc.pid(PAYMENT), reason: "target_deleted", detail: { issue: "More than one paragraph carries this pointer." } }])
+    expect(ambiguous.applied).toEqual([])
+    expect(await readFile(doc.out)).toEqual(await readFile(duplicated))
+  })
+
+  test("a numbered list paragraph amends by code and keeps its numbering, sibling items, table and untouched runs", async () => {
+    const doc = await fixture("numbered")
+    await writeFile(doc.file, await numbered(doc.file, [doc.pid(DELIVERY), doc.pid(PAYMENT)]))
+    const updated = "The Supplier shall deliver the Goods within ten days of the order date."
+    const result = await applyAmendments({ docxPath: doc.file, outPath: doc.out, merge: async () => { throw new Error("not called") }, amendments: [
+      amend("listed", doc.pid(DELIVERY), plain(DELIVERY), updated),
+    ] })
+    expect(result).toEqual({ applied: [{ id: "listed", pid: doc.pid(DELIVERY), mode: "code" }], unapplied: [] })
+    expect((await texts(doc.out)).get(doc.pid(DELIVERY))).toBe(updated)
+    const formatting = await measure(doc.file, doc.out)
+    expect(formatting.changed).toBe(1)
+    expect(formatting.preservation).toBe("ok")
+    expect(formatting.outside).toBe(0)
+    expect(formatting.word(doc.pid(DELIVERY), "Goods")).toEqual({ before: true, after: true })
+    // One shared serializer, so the engine's self-closing tag spelling is not a change.
+    const before = await markup(doc.file)
+    const after = await markup(doc.out)
+    expect(before.numPr).toHaveLength(2)
+    expect(before.numPr[0]).toContain("numId")
+    expect(after.numPr).toEqual(before.numPr)
+    expect(before.tables).toHaveLength(1)
+    expect(after.tables).toEqual(before.tables)
+    expect(after.paragraphs.get(doc.pid(DELIVERY))!.properties).toEqual(before.paragraphs.get(doc.pid(DELIVERY))!.properties)
+    for (const pid of before.paragraphs.keys()) if (pid !== doc.pid(DELIVERY)) expect(after.paragraphs.get(pid)!.xml).toBe(before.paragraphs.get(pid)!.xml)
+    const runs = (side: typeof before) => side.paragraphs.get(doc.pid(DELIVERY))!.runs
+    expect(runs(after).filter(run => !run.text.includes("ten")).map(run => run.xml))
+      .toEqual(runs(before).filter(run => !run.text.includes("thirty")).map(run => run.xml))
+    expect(after.parts["word/numbering.xml"]).toEqual(before.parts["word/numbering.xml"])
   })
 
   test("two pointers left on one paragraph settle as one sequence", async () => {
@@ -535,6 +569,44 @@ async function editBody(file: string, edit: (body: Document) => void) {
   const body = new DOMParser().parseFromString(strFromU8(parts["word/document.xml"]!), "application/xml")
   edit(body)
   return zipSync({ ...parts, "word/document.xml": strToU8(new XMLSerializer().serializeToString(body)) })
+}
+
+// Adds a decimal numbering definition and puts the given paragraphs in that list.
+async function numbered(file: string, pids: string[]) {
+  const parts = unzipSync(new Uint8Array(await readFile(file)))
+  const body = new DOMParser().parseFromString(strFromU8(parts["word/document.xml"]!), "application/xml")
+  for (const node of Array.from(body.getElementsByTagNameNS(W, "p")).filter(node => paragraphPointers(node).some(row => pids.includes(row.pid)))) {
+    const properties = Array.from(node.childNodes).find(child => (child as Element).localName === "pPr") as Element | undefined
+      ?? node.insertBefore(body.createElementNS(W, "w:pPr"), node.firstChild)
+    const numPr = properties.appendChild(body.createElementNS(W, "w:numPr"))
+    numPr.appendChild(body.createElementNS(W, "w:ilvl")).setAttributeNS(W, "w:val", "0")
+    numPr.appendChild(body.createElementNS(W, "w:numId")).setAttributeNS(W, "w:val", "1")
+  }
+  const types = strFromU8(parts["[Content_Types].xml"]!).replace("</Types>",
+    '<Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/></Types>')
+  const relationships = strFromU8(parts["word/_rels/document.xml.rels"]!).replace("</Relationships>",
+    '<Relationship Id="rIdNumbering" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/></Relationships>')
+  const numbering = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:numbering xmlns:w="${W}"><w:abstractNum w:abstractNumId="0"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/><w:lvlJc w:val="left"/></w:lvl></w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num></w:numbering>`
+  return zipSync({ ...parts, "[Content_Types].xml": strToU8(types), "word/_rels/document.xml.rels": strToU8(relationships),
+    "word/numbering.xml": strToU8(numbering), "word/document.xml": strToU8(new XMLSerializer().serializeToString(body)) })
+}
+
+// Serialized markup of list properties, tables and each pointer paragraph.
+async function markup(file: string) {
+  const parts = unzipSync(new Uint8Array(await readFile(file)))
+  const body = new DOMParser().parseFromString(strFromU8(parts["word/document.xml"]!), "application/xml")
+  const serializer = new XMLSerializer()
+  const all = (node: Document | Element, name: string) => Array.from(node.getElementsByTagNameNS(W, name))
+  return {
+    parts,
+    numPr: all(body, "numPr").map(node => serializer.serializeToString(node)),
+    tables: all(body, "tbl").map(node => serializer.serializeToString(node)),
+    paragraphs: new Map(all(body, "p").flatMap(node => paragraphPointers(node).map(row => [row.pid, {
+      xml: serializer.serializeToString(node),
+      properties: all(node, "pPr").map(child => serializer.serializeToString(child)),
+      runs: all(node, "r").map(run => ({ text: all(run, "t").map(text => text.textContent).join(""), xml: serializer.serializeToString(run) })),
+    }] as const))),
+  }
 }
 
 function bookmarks(bytes: Uint8Array) {
