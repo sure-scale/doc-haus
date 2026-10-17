@@ -1,11 +1,12 @@
 import { Database } from "bun:sqlite"
 import { afterEach, expect, spyOn, test } from "bun:test"
+import path from "node:path"
 import { leanSteps } from "./plan"
 import { matterSourceBasis, matterSourceIDs, snapshotRead, withSourceSnapshot } from "./quotes"
 import { checklistRefinementSelections, enqueueLeanRequest, leanUserUpdates } from "./requests"
 import { runLean, stageInputSha } from "./runner"
 import { readLeanState, writeLeanText } from "./state"
-import { cleanupMatters, happyPath, matter, scriptedModel } from "./test-support"
+import { AGENT, cleanupMatters, happyPath, matter, scriptedModel } from "./test-support"
 
 // One synchronous operation reads the matter's sources and processed requests
 // once. The values, and so every step key, are those of fresh reads.
@@ -42,6 +43,45 @@ test("every step key inside one snapshot equals a fresh read and the key its fin
   const resumed = scriptedModel({})
   expect((await runLean(directory, { sessions: resumed.port })).status).toBe("completed")
   expect(resumed.prompts).toHaveLength(0)
+}, 120_000)
+
+test("a source revised between step boundaries re-keys every later step and asks stale prefetched reviews again", async () => {
+  const directory = matter()
+  const scripted = scriptedModel(happyPath)
+  const revised = { done: false }
+  // The revision lands while the first review is asked, after the remaining
+  // reviews were keyed and prompted on the original text.
+  const port = { ...scripted.port, prompt: (input: Parameters<typeof scripted.port.prompt>[0]) => {
+    if (input.agent === AGENT.review && !revised.done) {
+      revised.done = true
+      const db = new Database(path.join(directory, ".dochaus", "legal.db"))
+      try { db.run("UPDATE chunks SET text = text || ' Revised timing applies.'") } finally { db.close() }
+    }
+    return scripted.port.prompt(input)
+  } }
+  // Checklist checking finds the extraction taken at drafting stale.
+  const first = await runLean(directory, { sessions: port })
+  expect(revised.done).toBe(true)
+  expect(first.status).toBe("blocked")
+  expect(first.stop_reason).toContain("Source extraction is incomplete or stale")
+  const steps = leanSteps(directory)
+  const revisedAt = steps.indexOf("d1.review")
+  for (const [index, step] of steps.slice(0, steps.indexOf("checklist-check")).entries()) {
+    expect(first.stages[step]?.status).toBe("done")
+    if (index <= revisedAt) expect(first.stages[step]!.input_sha).not.toBe(stageInputSha(directory, step))
+    else expect(first.stages[step]!.input_sha).toBe(stageInputSha(directory, step))
+  }
+  // Each prefetched review keyed on the original text was asked again, not accepted.
+  for (const review of ["review-independent", "review-wording", "review-client-disadvantage"] as const)
+    expect(scripted.prompts.filter(row => row.agent === AGENT[review])).toHaveLength(2)
+  // Resume redoes the stale steps; once current, a further resume asks nothing.
+  const resumed = scriptedModel(happyPath)
+  expect((await runLean(directory, { sessions: resumed.port })).status).toBe("completed")
+  expect(resumed.prompts.length).toBeGreaterThan(0)
+  for (const step of steps) expect(readLeanState(directory)!.stages[step]!.input_sha).toBe(stageInputSha(directory, step))
+  const idle = scriptedModel({})
+  expect((await runLean(directory, { sessions: idle.port })).status).toBe("completed")
+  expect(idle.prompts).toHaveLength(0)
 }, 120_000)
 
 test("outside a snapshot every read is fresh; a nested snapshot joins the outer one", () => {

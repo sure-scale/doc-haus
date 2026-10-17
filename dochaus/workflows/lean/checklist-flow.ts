@@ -80,43 +80,47 @@ const UNFINISHED_REINSPECTION = "Reinspection did not complete; no result overri
 /** Each unchanged item gets its own native check. Full current lookup records
  * are persisted before any sessions start, while only target hints go inline. */
 export async function runChecklistCheckFlow(directory: string, deps: ChecklistJobDeps, options: { reinspectAdverse?: boolean; pause?: AbortSignal } = {}) {
-  const current = extractionInputs(directory, deps)
-  const saved = readLeanJson(directory, EXTRACTION)
-  if (saved === undefined) throw new Error("Checklist extraction has no saved output; run source extraction before checking.")
-  const extraction = extractionSchema.parse(saved)
-  const valid = current.map(job => extraction.sources.find(row => row.key === job.key && row.input_sha === job.input_sha))
-  const extractionComplete = valid.every(row => row?.status === "succeeded")
-  const originals = valid.flatMap(row => row?.status === "succeeded" ? row.items : [])
-  const effective = readEffectiveChecklistItems(directory, originals)
-  const items = effective.items
-  const instructions = current.find(job => job.key === "request")!.input
-  const clarifications = leanClarifications(directory)
-  const settled = [...instructions.passages, ...instructions.instructions, ...clarifications]
-  const contexts = items.map(record => {
-    const context = buildChecklistDocumentContext(directory, { item_id: record.id, item: record.item, settled_instructions: settled,
-    ...(clarifications.length ? { retrieval: "Later human clarification is supplied with its original queue locator. It clarifies source relationships or applicability for inspection only; it does not change the item, current Word evidence, or adopt a proposal as approved. A statement that text is present is not proof of the artifact: inspect it. If the clarification calls for a material document change, retain the adverse finding and describe the supported correction needed; this inspection cannot implement it." } : {}) })
-    return { record, context: record.assignment ? assignChecklistTargetContext(context, record.assignment) : context }
+  // Preparing the checks is synchronous: every key it takes shares one source read.
+  const { extractionComplete, originals, effective, clarifications, artifacts, missing, jobs } = withSourceSnapshot(() => {
+    const current = extractionInputs(directory, deps)
+    const saved = readLeanJson(directory, EXTRACTION)
+    if (saved === undefined) throw new Error("Checklist extraction has no saved output; run source extraction before checking.")
+    const extraction = extractionSchema.parse(saved)
+    const valid = current.map(job => extraction.sources.find(row => row.key === job.key && row.input_sha === job.input_sha))
+    const extractionComplete = valid.every(row => row?.status === "succeeded")
+    const originals = valid.flatMap(row => row?.status === "succeeded" ? row.items : [])
+    const effective = readEffectiveChecklistItems(directory, originals)
+    const items = effective.items
+    const instructions = current.find(job => job.key === "request")!.input
+    const clarifications = leanClarifications(directory)
+    const settled = [...instructions.passages, ...instructions.instructions, ...clarifications]
+    const contexts = items.map(record => {
+      const context = buildChecklistDocumentContext(directory, { item_id: record.id, item: record.item, settled_instructions: settled,
+      ...(clarifications.length ? { retrieval: "Later human clarification is supplied with its original queue locator. It clarifies source relationships or applicability for inspection only; it does not change the item, current Word evidence, or adopt a proposal as approved. A statement that text is present is not proof of the artifact: inspect it. If the clarification calls for a material document change, retain the adverse finding and describe the supported correction needed; this inspection cannot implement it." } : {}) })
+      return { record, context: record.assignment ? assignChecklistTargetContext(context, record.assignment) : context }
+    })
+    const artifacts = new Map(contexts.flatMap(row => row.context.artifacts.map(artifact => [artifact.path, artifact] as const)))
+    for (const artifact of artifacts.values()) {
+      if (!artifact.path.startsWith(".dochaus/lean/")) throw new Error("Checklist lookup records must be lean output artifacts.")
+      writeLeanText(directory, artifact.path.slice(".dochaus/lean/".length), `${JSON.stringify(artifact.value, null, 2)}\n`)
+    }
+    const missing = new Map(contexts.flatMap(row => row.context.documents.filter(document => document.status === "unavailable").map(document => [document.path, document] as const)))
+    for (const [file, document] of missing) writeLeanText(directory, file.slice(".dochaus/lean/".length), `${JSON.stringify({ id: document.id, document: document.document, status: "unavailable", paragraphs: [] }, null, 2)}\n`)
+    const sourceBasis = matterSourceBasis(directory)
+    const jobs = contexts.map(row => ({ ...row,
+      // Review allowance follows actual evidence, never a prompt/model/session revision.
+      // Exact artifact properties are evidence: newly observable measures admit a fresh check.
+      canonical_input_sha: shortHash(JSON.stringify([sourceBasis, row.record.id,
+        current.map(job => job.input.passages.map(ref => ({ document: ref.document, quote: ref.quote }))),
+        settled.map(ref => ({ document: ref.document, quote: ref.quote })), row.context.documents,
+        row.context.artifacts.map(artifact => ({ id: artifact.value.id, document: artifact.value.document, aliases: artifact.value.aliases,
+          artifact: artifact.value.artifact, sha256: artifact.value.sha256,
+          annotations: artifact.value.annotations?.map(annotation => ({ artifact: annotation.artifact, sha256: annotation.sha256, properties: annotation.properties })) })),
+        ...(row.context.workflow.length ? [row.context.workflow] : []),
+        ...(row.record.assignment ? [row.record.assignment] : [])]), 40),
+      input_sha: shortHash(JSON.stringify(["checklist-check-1", deps.model, sourceBasis, buildChecklistCheckerPrompt(row.context.input), row.context.artifacts, row.context.workflow]), 40) }))
+    return { extractionComplete, originals, effective, clarifications, artifacts, missing, jobs }
   })
-  const artifacts = new Map(contexts.flatMap(row => row.context.artifacts.map(artifact => [artifact.path, artifact] as const)))
-  for (const artifact of artifacts.values()) {
-    if (!artifact.path.startsWith(".dochaus/lean/")) throw new Error("Checklist lookup records must be lean output artifacts.")
-    writeLeanText(directory, artifact.path.slice(".dochaus/lean/".length), `${JSON.stringify(artifact.value, null, 2)}\n`)
-  }
-  const missing = new Map(contexts.flatMap(row => row.context.documents.filter(document => document.status === "unavailable").map(document => [document.path, document] as const)))
-  for (const [file, document] of missing) writeLeanText(directory, file.slice(".dochaus/lean/".length), `${JSON.stringify({ id: document.id, document: document.document, status: "unavailable", paragraphs: [] }, null, 2)}\n`)
-  const sourceBasis = matterSourceBasis(directory)
-  const jobs = contexts.map(row => ({ ...row,
-    // Review allowance follows actual evidence, never a prompt/model/session revision.
-    // Exact artifact properties are evidence: newly observable measures admit a fresh check.
-    canonical_input_sha: shortHash(JSON.stringify([sourceBasis, row.record.id,
-      current.map(job => job.input.passages.map(ref => ({ document: ref.document, quote: ref.quote }))),
-      settled.map(ref => ({ document: ref.document, quote: ref.quote })), row.context.documents,
-      row.context.artifacts.map(artifact => ({ id: artifact.value.id, document: artifact.value.document, aliases: artifact.value.aliases,
-        artifact: artifact.value.artifact, sha256: artifact.value.sha256,
-        annotations: artifact.value.annotations?.map(annotation => ({ artifact: annotation.artifact, sha256: annotation.sha256, properties: annotation.properties })) })),
-      ...(row.context.workflow.length ? [row.context.workflow] : []),
-      ...(row.record.assignment ? [row.record.assignment] : [])]), 40),
-    input_sha: shortHash(JSON.stringify(["checklist-check-1", deps.model, sourceBasis, buildChecklistCheckerPrompt(row.context.input), row.context.artifacts, row.context.workflow]), 40) }))
   const prior = readLeanJson(directory, CHECKS)
   const cached = prior === undefined ? undefined : checksSchema.parse(prior)
   const records: (ChecklistCheckResult | undefined)[] = jobs.map(job => cached?.checks.find(row => row.item_id === job.record.id && row.input_sha === job.input_sha))

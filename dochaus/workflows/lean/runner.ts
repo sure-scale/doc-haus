@@ -187,20 +187,20 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
       const queued = drainLeanRequests(directory)
       if (queued.answered || queued.updated) return { state, restart: true }
     }
-    // Package review may take time; do not classify or register a package
-    // against checklist results for Word bytes that have since changed.
-    if (stage === "gate" && state.stages["checklist-check"]?.input_sha !== stageInputSha(directory, "checklist-check"))
-      return { state, restart: true }
     // The first draft can write the plan its own key reads; its key is then
     // taken again once the plan is saved.
     const keyed = performance.now()
     const recorded = state.stages[step]
-    settled.push(step)
     // Keying and the skip decision are synchronous: they share one source read.
     const decision = withSourceSnapshot(() => {
+      // Package review may take time; do not classify or register a package
+      // against checklist results for Word bytes that have since changed.
+      if (stage === "gate" && state.stages["checklist-check"]?.input_sha !== stageInputSha(directory, "checklist-check")) return undefined
       const key = stageInputSha(directory, step)
       return { key, unchanged: recorded?.status === "done" && recorded.input_sha === key && stageOutputValid(directory, step) && (step !== "package-review" || readPackageReview(directory)?.status === "pass") && (stage !== "change-review" || !document || readChangeReview(directory, document)?.status === "pass") }
     })
+    if (!decision) return { state, restart: true }
+    settled.push(step)
     let inputSha = decision.key
     // Time to key the step and decide whether it can be skipped.
     const check_ms = leanElapsedMs(keyed)
@@ -234,17 +234,17 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
     // writer saves replies in stage order; every review feeds the one changes
     // stage. Queued updates invalidate prefetched replies by their input keys.
     if (isReviewStage(stage) && document) {
-      for (const review of reviewStages(directory, document).slice(reviewStages(directory, document).indexOf(stage) + 1)) {
+      // Keying the remaining reviews is synchronous: they share one source read.
+      // A source change before a prompt is built still fails its key at its own step.
+      const fanout = withSourceSnapshot(() => reviewStages(directory, document).slice(reviewStages(directory, document).indexOf(stage) + 1).flatMap(review => {
         const independent: StepID = `${document}.${review}`
-        if (prepared.has(independent)) continue
+        if (prepared.has(independent)) return []
         const prefetchKeyed = performance.now()
         const saved = state.stages[independent]
-        const key = withSourceSnapshot(() => {
-          const current = stageInputSha(directory, independent)
-          return saved?.status === "done" && saved.input_sha === current && stageOutputValid(directory, independent) ? undefined : current
-        })
-        if (key === undefined) continue
-        const prefetchCheck = leanElapsedMs(prefetchKeyed)
+        const key = stageInputSha(directory, independent)
+        return saved?.status === "done" && saved.input_sha === key && stageOutputValid(directory, independent) ? [] : [{ review, independent, key, prefetchCheck: leanElapsedMs(prefetchKeyed) }]
+      }))
+      for (const { review, independent, key, prefetchCheck } of fanout) {
         const agent = LEAN_STAGE_AGENTS[review]
         const creation = await deps.sessions.createSession({ directory, parentID: state.owner_session_id, agent, title: stepSessionTitle(directory, independent), model: state.model, permissions: LEAN_CHILD_PERMISSIONS })
           .then(sessionID => ({ sessionID }), (error: unknown) => ({ error }))
@@ -431,8 +431,11 @@ async function runChecklistStage(directory: string, state: LeanState, deps: Lean
   // An answer is queued while read-only jobs run; it cannot become accepted
   // evidence for the snapshot they inspected. Refresh before proceeding.
   const queued = drainLeanRequests(directory)
-  if (queued.answered || queued.updated || stageInputSha(directory, "checklist-check") !== key) return { status: "restart" }
-  const itemMap = new Map(readEffectiveChecklistItems(directory).items.map(record => [record.id, record.item] as const))
+  if (queued.answered || queued.updated) return { status: "restart" }
+  // The fresh key and the effective items share one source read.
+  const current = withSourceSnapshot(() => ({ key: stageInputSha(directory, "checklist-check"), effective: readEffectiveChecklistItems(directory) }))
+  if (current.key !== key) return { status: "restart" }
+  const itemMap = new Map(current.effective.items.map(record => [record.id, record.item] as const))
   const blocking = result.checks.filter(row => row.status !== "succeeded" || row.reinspection?.status === "failed" || !row.finding || !itemMap.has(row.item_id) || checklistFindingRecovery(itemMap.get(row.item_id)!, row.finding) !== "none")
   // A defect that survives a declined repair and its reinspection shows the
   // adjudicator's reason, since Continue does not resubmit that repair.
@@ -446,7 +449,7 @@ async function runChecklistStage(directory: string, state: LeanState, deps: Lean
     ? ` Source adjudication declined the repair: ${declined.get(row.item_id)} Continue does not repeat a declined repair after reinspection; a clarification or update decides this item`
     : row.reinspection ? " One reinspection has been used for this evidence; a remaining defect or inspection gap requires changed evidence or a focused substantive fix, not another unchanged Continue." : ""}`)
   for (const parent of result.parent_coverage) if (["unsatisfied", "indeterminate"].includes(parent.status)) details.push(`${parent.parent_id}: ${parent.status}: ${parent.issues.join(" ") || "A refined child remains adverse."}`)
-  if (!result.refinement_complete) details.push(...readEffectiveChecklistItems(directory).issues)
+  if (!result.refinement_complete) details.push(...current.effective.issues)
   if (!result.extraction_complete) details.unshift("Source extraction is incomplete or stale; not every current source item was checked.")
   const report = ["# Checklist handoff findings", "", "Each result addresses its unchanged source item and declared target. Open findings remain unresolved; they are not satisfied findings. Comments, deleted text and layout may be uninspected; see each finding's scope and limitation.", "", ...result.checks.flatMap(row => [`## ${row.item_id}`, `Target: ${itemMap.get(row.item_id)?.target.document ?? "unresolved"}; treatment: ${itemMap.get(row.item_id)?.target.treatment ?? "unresolved"}`, itemMap.get(row.item_id)?.check ?? "", ...(row.reinspection ? [`Original finding: ${row.reinspection.original_finding.status}: ${row.reinspection.original_finding.reason}`, `Reinspection: ${row.reinspection.status}; ${row.reinspection.issues.join(" ")}`] : []), `Status: ${row.finding?.status ?? row.status}`, row.finding?.reason ?? row.issues.join(" "), ...(row.finding ? [`Inspection: ${row.finding.inspection_scope}`, `Limitation: ${row.finding.limitation}`] : []), ""]), ...result.parent_coverage.flatMap(parent => [`Parent: ${parent.parent_id}; coverage: ${parent.scope}; status: ${parent.status}`, `Children: ${parent.children.join(", ")}`, ...parent.issues, ""]), ...details.map(detail => `Delivery blocked: ${detail}`)].join("\n")
   writeLeanText(directory, "checklist/report.md", `${report}\n`)
@@ -457,8 +460,9 @@ async function runChecklistStage(directory: string, state: LeanState, deps: Lean
     ...(details.length ? { reason: `Checklist handoff blocked: ${details.join("; ")}. See checklist/report.md.` } : {}) }
 }
 
+/** One synchronous read of the matter's sources serves every input of the key. */
 export function stageInputSha(directory: string, step: StepID) {
-  return hashStageInputs(step, LEAN_PROMPT_VERSION, stageInputs(directory, step))
+  return withSourceSnapshot(() => hashStageInputs(step, LEAN_PROMPT_VERSION, stageInputs(directory, step)))
 }
 
 function runStep(directory: string, state: LeanState, step: StepID, deps: LeanDeps, progress: Progress, planned: () => void | Promise<void>, prepared?: PreparedReview, reinspectChecklist = false): Promise<StageRun> {
@@ -528,7 +532,8 @@ function followPlan(directory: string, state: LeanState) {
 }
 
 function runGate(directory: string): StageRun {
-  const gate = finalGate(directory)
+  // The gate's checks are synchronous: they share one source read.
+  const gate = withSourceSnapshot(() => finalGate(directory))
   writeLeanText(directory, "gate.json", `${JSON.stringify(gate, null, 2)}\n`)
   writeLeanText(directory, "drafting-notes-coverage.md", notesCoverageReport(gate))
   if (gate.status === "pass") return { status: "done", outputs: stepOutputs("gate"), openItems: [] }
