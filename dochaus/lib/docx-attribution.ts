@@ -72,5 +72,7 @@ export function withGeneratedDocxAttribution(bytes: Uint8Array, identity = draft
   }
   parts["_rels/.rels"] = strToU8(new XMLSerializer().serializeToString(relationships))
   parts["[Content_Types].xml"] = strToU8(new XMLSerializer().serializeToString(contentTypes))
-  return zipSync(parts)
+  // Fixed entry times keep identical content byte-identical. fflate encodes local
+  // date fields, so the local DOS epoch is the same in every timezone.
+  return zipSync(parts, { mtime: new Date(1980, 0, 1) })
 }

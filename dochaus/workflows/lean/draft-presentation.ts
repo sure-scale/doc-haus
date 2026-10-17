@@ -42,5 +42,5 @@ export function presentDraft(bytes: Uint8Array, parts: DraftPresentation["parts"
   }
   if (next !== parts.length) throw new Error("Rendered draft does not contain all planned part boundaries in order.")
   entries["word/document.xml"] = strToU8(new XMLSerializer().serializeToString(document))
-  return { bytes: zipSync(entries), attribution }
+  return { bytes: zipSync(entries, { mtime: new Date(1980, 0, 1) }), attribution }
 }

@@ -160,7 +160,7 @@ function addParagraphPointers(source: Uint8Array, parts: Record<string, Uint8Arr
     seen.add(pid)
     return [pid, paragraph.text]
   }))
-  return { pointers, bytes: state.changed ? zipSync({ ...parts, [BODY]: strToU8(new XMLSerializer().serializeToString(doc)) }) : source }
+  return { pointers, bytes: state.changed ? zipSync({ ...parts, [BODY]: strToU8(new XMLSerializer().serializeToString(doc)) }, { mtime: new Date(1980, 0, 1) }) : source }
 }
 
 function insertBookmark(doc: Document, paragraph: Element, id: string, preferred?: string) {

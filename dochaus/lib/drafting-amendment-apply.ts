@@ -421,7 +421,7 @@ function preserveDeletedCellParagraphs(bytes: Uint8Array, opened: Opened, edits:
     cell.appendChild(doc.createElementNS(W, "w:p"))
     changed = true
   }
-  return changed ? zipSync({ ...parts, [BODY]: strToU8(new XMLSerializer().serializeToString(doc)) }) : bytes
+  return changed ? zipSync({ ...parts, [BODY]: strToU8(new XMLSerializer().serializeToString(doc)) }, { mtime: new Date(1980, 0, 1) }) : bytes
 }
 
 // Inserted text takes the formatting of the first run it touches, so resolving a
@@ -439,7 +439,7 @@ function clearResolvedHighlights(bytes: Uint8Array, pids: Set<string>) {
   })
   if (!shading.length) return bytes
   for (const shd of shading) shd.parentNode!.removeChild(shd)
-  return zipSync({ ...parts, [BODY]: strToU8(new XMLSerializer().serializeToString(doc)) })
+  return zipSync({ ...parts, [BODY]: strToU8(new XMLSerializer().serializeToString(doc)) }, { mtime: new Date(1980, 0, 1) })
 }
 
 // Edited paragraphs that do not read back as their final text. A change to a
