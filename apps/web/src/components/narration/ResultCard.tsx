@@ -1,11 +1,13 @@
 import { documentContentUrl } from "../../api/ingest/documents"
 import type { LeanDraftingStatus } from "../../api/ingest/lean"
 import DraftedList from "../drafting/DraftedList"
-import { draftedGroups } from "../drafting/model"
+import { draftedGroups, OUTPUT_ROLE, type DraftedOutput } from "../drafting/model"
 import { resultChecks } from "./outcome"
 
 /** A completed run in brief: what the checks established, what remains for the
- * lawyer, and the files it produced, each one click from the viewer. */
+ * lawyer, and the files it produced, each one click from the viewer. Every file
+ * to review is featured: a lone draft as a page, several drafts as rows, and
+ * the drafting notes as a row beneath them. Redlines stay with all the files. */
 export default function ResultCard({
   status,
   matterId,
@@ -17,8 +19,11 @@ export default function ResultCard({
 }) {
   const checks = resultChecks(status)
   const groups = draftedGroups(status)
-  const featured = groups.find((group) => group.main.role === "draft")
-  const count = groups.reduce((total, group) => total + 1 + group.extras.length, 0)
+  const outputs = groups.flatMap((group) => [group.main, ...group.extras])
+  const drafts = outputs.filter((output) => output.role === "draft")
+  const notes = outputs.filter((output) => output.role === "notes")
+  const lone = drafts.length === 1 ? drafts[0] : undefined
+  const rows = [...(lone ? [] : drafts), ...notes]
   return (
     <section id="run-result" className="narration-result" aria-labelledby="run-result-title">
       <h3 id="run-result-title" className="narration-result-title">
@@ -47,35 +52,70 @@ export default function ResultCard({
           ))}
         </ul>
       )}
-      {featured && (
+      {lone && (
         <div className="result-document">
           <div className="result-paper" aria-hidden="true">
             <span className="result-paper-label">Draft</span>
-            <span className="result-paper-name">{featured.main.name}</span>
+            <span className="result-paper-name">{lone.name}</span>
             <span className="result-paper-lines" />
           </div>
           <div className="result-document-info">
             <p className="result-document-kind">Created by Doc.Haus</p>
-            <h4>{featured.main.name}</h4>
+            <h4>{lone.name}</h4>
             <div className="result-document-actions">
-              <button type="button" className="primary result-review" onClick={() => onViewDocument(featured.main.name)}>
+              <button type="button" className="primary result-review" onClick={() => onViewDocument(lone.name)}>
                 Review draft
               </button>
-              <a href={documentContentUrl(matterId, featured.main.name)} download={featured.main.name}>
+              <a href={documentContentUrl(matterId, lone.name)} download={lone.name}>
                 Download
               </a>
             </div>
           </div>
         </div>
       )}
+      {rows.length > 0 && (
+        <ul className="result-stack" aria-label={lone ? "Also for review" : "Files for review"}>
+          {rows.map((output) => (
+            <li key={output.name}>
+              <ReviewRow output={output} matterId={matterId} onView={onViewDocument} />
+            </li>
+          ))}
+        </ul>
+      )}
       {groups.length > 0 && (
-        <details className="result-files" open={!featured || groups.filter((group) => group.main.role === "draft").length > 1 ? true : undefined}>
+        <details className="result-files" open={drafts.length + notes.length === 0 ? true : undefined}>
           <summary>
-            All generated files <span className="result-file-count">{count}</span>
+            All generated files <span className="result-file-count">{outputs.length}</span>
           </summary>
           <DraftedList matterId={matterId} groups={groups} onView={onViewDocument} />
         </details>
       )}
     </section>
+  )
+}
+
+function ReviewRow({ output, matterId, onView }: { output: DraftedOutput; matterId: string; onView: (name: string) => void }) {
+  const role = OUTPUT_ROLE[output.role]
+  return (
+    <div className={`result-row is-${output.role}`}>
+      <span className="result-row-paper" aria-hidden="true">
+        <span className="result-paper-label">{role}</span>
+        <span className="result-paper-lines" />
+      </span>
+      <div className="result-row-info">
+        <p className="result-document-kind">
+          {role} · Created by Doc.Haus
+        </p>
+        <h4>{output.name}</h4>
+      </div>
+      <div className="result-document-actions">
+        <button type="button" className="result-review" onClick={() => onView(output.name)} aria-label={`Review ${output.name}`}>
+          Review
+        </button>
+        <a href={documentContentUrl(matterId, output.name)} download={output.name} aria-label={`Download ${output.name}`}>
+          Download
+        </a>
+      </div>
+    </div>
   )
 }

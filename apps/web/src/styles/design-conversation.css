@@ -550,6 +550,85 @@
   text-decoration: underline;
 }
 
+/* Several files to review, or the notes beside a lone draft: one row each, so
+   any number of documents and long filenames stay readable. */
+.design-conversation .result-stack {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.design-conversation .result-stack > li {
+  border-top: 1px solid var(--border-soft);
+}
+
+.design-conversation .result-row {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) auto;
+  gap: 18px;
+  align-items: center;
+  padding: 14px 0;
+  white-space: normal;
+}
+
+.design-conversation .result-row-paper {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  height: 56px;
+  padding: 8px 7px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  box-shadow: 0 4px 10px rgba(26, 30, 28, 0.06), 0 1px 2px rgba(26, 30, 28, 0.03);
+  user-select: none;
+}
+
+.design-conversation .result-row.is-notes .result-row-paper {
+  background: var(--accent-tint);
+}
+
+.design-conversation .result-row-paper .result-paper-label {
+  font-size: 6px;
+  letter-spacing: 0.1em;
+}
+
+.design-conversation .result-row-paper .result-paper-lines {
+  flex: 1;
+  height: auto;
+  margin-top: 0;
+  background: repeating-linear-gradient(to bottom, var(--border) 0 1px, transparent 1px 6px);
+}
+
+.design-conversation .result-row-info {
+  min-width: 0;
+}
+
+.design-conversation .result-row-info .result-document-kind {
+  margin-bottom: 3px;
+}
+
+.design-conversation .result-row-info h4 {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.4;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  overflow-wrap: anywhere;
+}
+
+.design-conversation .result-row .result-document-actions {
+  flex-wrap: nowrap;
+  gap: 8px 16px;
+  margin-top: 0;
+}
+
+.design-conversation .result-row .result-review {
+  min-height: 34px;
+  padding: 6px 14px;
+  font-size: 13px;
+}
+
 .design-conversation .result-files {
   margin: 0;
   border-top: 1px solid var(--border-soft);
@@ -650,6 +729,21 @@
     margin-top: 16px;
   }
 
+  .design-conversation .result-row {
+    grid-template-columns: 36px minmax(0, 1fr);
+    gap: 10px 14px;
+  }
+
+  .design-conversation .result-row-paper {
+    height: 46px;
+    padding: 6px 5px;
+  }
+
+  .design-conversation .result-row .result-document-actions {
+    grid-column: 2;
+    margin-top: 0;
+  }
+
   .design-conversation .msg-user-wrap,
   .design-conversation .run-updates .msg.user {
     max-width: 92%;
@@ -685,6 +779,7 @@
 
 @media (pointer: coarse) {
   .design-conversation .send-btn,
+  .design-conversation .result-row .result-review,
   .design-conversation .result-files > summary {
     min-height: 44px;
   }
