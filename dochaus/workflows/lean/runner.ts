@@ -18,8 +18,8 @@ import { appendLeanEvent, leanElapsedMs } from "./events"
 import { finalGate, notesCoverageReport } from "./gate"
 import { readLeanPlan, reviewStages, leanSteps, stepDocument, stepStage, type StepID } from "./plan"
 import { retryPrompt, stagePrompt } from "./prompts"
-import { inDocument, openItem, withSourceSnapshot } from "./quotes"
-import { checklistRefinementSelections, drainLeanRequests, pendingLeanRequests } from "./requests"
+import { excerpt, inDocument, openItem, withSourceSnapshot } from "./quotes"
+import { checklistRefinementSelections, drainLeanRequests, pendingLeanRequests, withheldChecklistRepair } from "./requests"
 import {
   LEAN_CHILD_PERMISSIONS,
   LEAN_MAX_RETRIES,
@@ -417,7 +417,17 @@ async function runChecklistStage(directory: string, state: LeanState, deps: Lean
   if (queued.answered || queued.updated || stageInputSha(directory, "checklist-check") !== key) return { status: "restart" }
   const itemMap = new Map(readEffectiveChecklistItems(directory).items.map(record => [record.id, record.item] as const))
   const blocking = result.checks.filter(row => row.status !== "succeeded" || row.reinspection?.status === "failed" || !row.finding || !itemMap.has(row.item_id) || checklistFindingRecovery(itemMap.get(row.item_id)!, row.finding) !== "none")
-  const details = blocking.map(row => `${row.item_id}: ${row.finding?.status ?? row.status}: ${row.finding?.reason ?? row.issues.join(" ")}${row.reinspection ? " One reinspection has been used for this evidence; a remaining defect or inspection gap requires changed evidence or a focused substantive fix, not another unchanged Continue." : ""}`)
+  // A defect that survives a declined repair and its reinspection shows the
+  // adjudicator's reason, since Continue does not resubmit that repair.
+  const declined = new Map(blocking.flatMap(row => {
+    const item = itemMap.get(row.item_id)
+    if (row.reinspection?.status !== "succeeded" || !item || checklistFindingRecovery(item, row.finding) !== "repair") return []
+    const adjudication = withheldChecklistRepair(directory, state, row.item_id, item)
+    return adjudication ? [[row.item_id, excerpt(adjudication.claims.map(claim => claim.reason).join(" "))] as const] : []
+  }))
+  const details = blocking.map(row => `${row.item_id}: ${row.finding?.status ?? row.status}: ${row.finding?.reason ?? row.issues.join(" ")}${declined.has(row.item_id)
+    ? ` Source adjudication declined the repair: ${declined.get(row.item_id)} Continue does not repeat a declined repair after reinspection; a clarification or update decides this item`
+    : row.reinspection ? " One reinspection has been used for this evidence; a remaining defect or inspection gap requires changed evidence or a focused substantive fix, not another unchanged Continue." : ""}`)
   for (const parent of result.parent_coverage) if (["unsatisfied", "indeterminate"].includes(parent.status)) details.push(`${parent.parent_id}: ${parent.status}: ${parent.issues.join(" ") || "A refined child remains adverse."}`)
   if (!result.refinement_complete) details.push(...readEffectiveChecklistItems(directory).issues)
   if (!result.extraction_complete) details.unshift("Source extraction is incomplete or stale; not every current source item was checked.")

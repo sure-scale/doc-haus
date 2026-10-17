@@ -10,7 +10,7 @@ import { LEAN_PROMPT_VERSION, stageInputs, stageOutputValid } from "./stages"
 import { stageInputSha } from "./runner"
 import { drainLeanRequests, enqueueLeanRequest } from "./requests"
 import { writeLeanPlan } from "./plan"
-import { hashStageInputs, leanFile, readLeanState, writeLeanBytes, writeLeanText } from "./state"
+import { hashStageInputs, leanFile, readLeanState, writeLeanBytes, writeLeanText, writeQuestions, type LeanState } from "./state"
 import { cleanupMatters, matter, SOURCE, SUPPORT } from "./test-support"
 import type { ChecklistItem, ChecklistFinding } from "./checklist-contract"
 
@@ -170,4 +170,57 @@ test("completed checklist validity cannot hide an unfulfilled or inconsistent re
   }
   save({ ...finding, status: "open", action_status: "fulfilled", open_decisions: ["Approval"] })
   expect(stageOutputValid(directory, "checklist-check")).toBe(true)
+})
+
+// The focused adjudicator's exact-item disposition of the last admitted round.
+function adjudicate(directory: string, item_id: string, options: { groups?: unknown[]; cited?: boolean } = {}) {
+  writeLeanText(directory, "d2/repair-adjudications.json", JSON.stringify({ assessments: [{ item_id, value: { shared_decisions: [], groups: options.groups ?? [], dismissed: [], questions: [],
+    findings: [{ disposition: options.cited === false ? "deferred" : "rejected", kind: "information", detail: "Decline the assessed timing repair.", reason: "The supplied terms already govern timing.", documents: ["d2"],
+      sources: options.cited === false ? [] : [{ source_id: SOURCE, quote: SUPPORT[0]!.quote }], limitations: options.cited === false ? ["No source passage located."] : [] }],
+    superseded_findings: [], superseded_decisions: [] } }] }))
+}
+function settled(directory: string, outputs = ["d2/change-plan.json", "d2/repair-adjudications.json"]): LeanState {
+  const state = readLeanState(directory)!
+  state.status = "blocked"
+  state.stages["checklist-check"] = { ...state.stages["checklist-check"]!, status: "blocked", input_sha: stageInputSha(directory, "checklist-check") }
+  state.stages["d2.change-plan"] = { status: "done", input_sha: "accepted", outputs, session_id: null, attempts: 1, calls: 1, feedback: [], started_at: null, finished_at: null }
+  return state
+}
+async function declinedRound() {
+  const fixture = await setup()
+  startRepairRound(fixture.directory, checklistRepairItems(fixture.directory), true)
+  return { ...fixture, round: readRepairRound(fixture.directory)! }
+}
+
+test("Continue resumes instead of resubmitting a repair the current adjudication declined for the exact item", async () => {
+  const { directory, round } = await declinedRound()
+  adjudicate(directory, "parent")
+  enqueueLeanRequest(directory, { kind: "continue" })
+  expect(drainLeanRequests(directory, settled(directory)).repairRound).toBe(false)
+  expect(readRepairRound(directory)).toEqual(round)
+  expect(round.substantive_attempts).toBe(1)
+})
+
+for (const variant of ["another item", "a correction group", "a superseded plan", "an uncited deferral"] as const) test(`Continue admits the repair round as before when the adjudication has ${variant}`, async () => {
+  const { directory, initialPID } = await declinedRound()
+  adjudicate(directory, variant === "another item" ? "other" : "parent", {
+    ...(variant === "a correction group" ? { groups: [{ id: "timing", pids: [initialPID], goal: "Restore the supplied timing.", sources: SUPPORT, limitations: [] }] } : {}),
+    ...(variant === "an uncited deferral" ? { cited: false } : {}) })
+  enqueueLeanRequest(directory, { kind: "continue" })
+  expect(drainLeanRequests(directory, settled(directory, variant === "a superseded plan" ? ["d2/change-plan.json"] : undefined)).repairRound).toBe(true)
+  expect(readRepairRound(directory)).toMatchObject({ round: 2, substantive_attempts: 2 })
+})
+
+for (const kind of ["clarification", "update", "answer"] as const) test(`${kind === "clarification" ? "a" : "an"} ${kind} accepted after the declined round lets Continue resubmit the repair`, async () => {
+  const { directory } = await declinedRound()
+  adjudicate(directory, "parent")
+  if (kind === "answer") writeQuestions(directory, [{ id: "q1", stage: "change-plan", question: "Does the supplied timing apply to the advice?", context: "Timing", status: "open" }])
+  await Bun.sleep(5)
+  const text = "The supplied timing applies to the advice."
+  enqueueLeanRequest(directory, kind === "answer" ? { kind, question_id: "q1", answer: text } : { kind, text })
+  expect(drainLeanRequests(directory, settled(directory))).toMatchObject({ repairRound: false })
+  // The checklist stage settles again on the new inputs before the Continue.
+  enqueueLeanRequest(directory, { kind: "continue" })
+  expect(drainLeanRequests(directory, settled(directory)).repairRound).toBe(true)
+  expect(readRepairRound(directory)).toMatchObject({ round: 2, substantive_attempts: 2 })
 })

@@ -4,8 +4,9 @@ import path from "node:path"
 import { readDurableJson } from "../../lib/durable-json"
 import { appendLeanEvent } from "./events"
 import { LEAN_PROMPT_VERSION, stageInputs } from "./stages"
-import { checklistRepairItems, LEAN_MAX_SUBSTANTIVE_REPAIRS, readRepairRound, startRepairRound } from "./repairs"
+import { checklistRepairItems, declinedChecklistRepair, LEAN_MAX_SUBSTANTIVE_REPAIRS, readRepairRound, startRepairRound } from "./repairs"
 import { snapshotRead } from "./quotes"
+import type { ChecklistItem } from "./checklist-contract"
 import { LeanQuestionError, hashStageInputs, answerQuestion, leanDir, readLeanJson, readLeanText, writeLeanText, type LeanState, type OpenItem } from "./state"
 
 // Lawyer requests to a lean drafting run. Continue and answer POSTs only append a
@@ -122,19 +123,44 @@ function processRequest(directory: string, request: unknown, stopped: LeanState 
     // Changed source, answer or Word inputs must be inspected before an old
     // adverse verdict can consume a substantive repair attempt.
     const current = hashStageInputs("checklist-check", LEAN_PROMPT_VERSION, stageInputs(directory, "checklist-check"))
-    const findings = verdict.stages["checklist-check"]?.input_sha === current ? checklistRepairItems(directory) : []
+    // A declined repair is not resubmitted unchanged: the checklist stage's one
+    // reinspection weighs that adjudication instead.
+    const declined: string[] = []
+    const skip = (id: string, item: ChecklistItem) => {
+      if (!withheldChecklistRepair(directory, verdict, id, item)) return false
+      declined.push(id)
+      return true
+    }
+    const findings = verdict.stages["checklist-check"]?.input_sha === current ? checklistRepairItems(directory, skip) : []
+    const withheld = declined.length ? ` ${declined.length} item(s) already declined by source adjudication are reinspected instead of resubmitted.` : ""
     if (findings.length) {
       if ((readRepairRound(directory)?.substantive_attempts ?? 0) >= LEAN_MAX_SUBSTANTIVE_REPAIRS)
         return { status: "rejected", detail: `Checklist corrections remain after ${LEAN_MAX_SUBSTANTIVE_REPAIRS} substantive repair rounds; no new body repair was admitted.` }
       const round = startRepairRound(directory, findings, true)
-      return { status: "repair_round", detail: `round ${round.round}: ${findings.length} checklist finding(s) submitted for source adjudication` }
+      return { status: "repair_round", detail: `round ${round.round}: ${findings.length} checklist finding(s) submitted for source adjudication.${withheld}` }
     }
-    return { status: "resume" }
+    return { status: "resume", ...(withheld ? { detail: withheld.trim() } : {}) }
   }
   const blocking = verdict?.status === "blocked" ? blockedGateItems(directory) : []
   if (!blocking.length) return { status: "resume" }
   const round = startRepairRound(directory, blocking)
   return { status: "repair_round", detail: `round ${round.round}: ${blocking.length} item(s)` }
+}
+
+/** The current source adjudication declined this exact item's repair and no
+ * human context was accepted after that round, so Continue does not resubmit
+ * it. Returns the adjudication that the checklist reinspection weighs. */
+export function withheldChecklistRepair(directory: string, state: LeanState, item_id: string, item: ChecklistItem) {
+  const round = readRepairRound(directory)
+  if (!round || humanContextSince(directory, round.requested_at)) return
+  return declinedChecklistRepair(directory, state, item_id, item)
+}
+
+/** A clarification, answer or update the sole writer accepted after `since`. */
+function humanContextSince(directory: string, since: string) {
+  return processedLeanRequests(directory).some(({ value }) => record(value) && record(value.outcome) &&
+    ["answered", "included", "clarification_included"].includes(String(value.outcome.status)) &&
+    typeof value.processed_at === "string" && value.processed_at > since)
 }
 
 function blockedGateItems(directory: string): OpenItem[] {

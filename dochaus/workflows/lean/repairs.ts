@@ -1,12 +1,12 @@
 import { existsSync, readFileSync } from "node:fs"
 import { readDocxCommentParagraphs } from "../../lib/docx-comments"
-import { checklistFindingSchema, checklistFindingRecovery } from "./checklist-contract"
-import { readEffectiveChecklistItems } from "./checklist-flow"
+import { checklistFindingSchema, checklistFindingRecovery, type ChecklistItem } from "./checklist-contract"
+import { readChecklistAdjudicationCounterevidence, readEffectiveChecklistItems } from "./checklist-flow"
 import { normalize } from "../../lib/quote-verify"
 import { readChangeList, readParagraphs, type ApplyResult, type ParagraphRow } from "./checks"
 import { FIRST_DOCUMENT, readLeanPlan, type DocID } from "./plan"
 import { excerpt, openItem } from "./quotes"
-import { hashStageInputs, isReviewStage, leanFile, readLeanJson, readLeanState, readOpenItems, readQuestions, writeLeanText, type OpenItem } from "./state"
+import { hashStageInputs, isReviewStage, leanFile, readLeanJson, readLeanState, readOpenItems, readQuestions, writeLeanText, type LeanState, type OpenItem } from "./state"
 import { LEAN_PROMPT_VERSION, stageInputs } from "./stages"
 
 // Repair inputs for the changes stage. The changes stage owns every fixable
@@ -173,8 +173,9 @@ function tagged(name: string, body: string) {
 
 
 /** Explicit Continue may submit an adverse assessment to the existing native
- * amendment adjudicator. It is evidence to reassess, never a predetermined fix. */
-export function checklistRepairItems(directory: string): OpenItem[] {
+ * amendment adjudicator. It is evidence to reassess, never a predetermined fix.
+ * `skip` withholds an item the caller will not resubmit. */
+export function checklistRepairItems(directory: string, skip: (item_id: string, item: ChecklistItem) => boolean = () => false): OpenItem[] {
   const saved = readLeanJson(directory, "checklist/checks.json") as { extraction_complete?: unknown; expected_items?: unknown; checks?: unknown } | undefined
   if (!saved || saved.extraction_complete !== true || !Array.isArray(saved.expected_items) || !Array.isArray(saved.checks)) return []
   const expected = saved.expected_items, checks = saved.checks
@@ -194,7 +195,7 @@ export function checklistRepairItems(directory: string): OpenItem[] {
     if (matches.length !== 1) return []
     const document = matches[0]!, finding = parsed.data
     const file = [`${document.id}/body-applied.docx`, `${document.id}/body.docx`].find(file => existsSync(leanFile(directory, file)))
-    if (!file) return []
+    if (!file || skip(record.id, record.item)) return []
     let current: ReturnType<typeof readDocxCommentParagraphs>
     try { current = readDocxCommentParagraphs(readFileSync(leanFile(directory, file))) } catch { return [] }
     const originals = readParagraphs(directory, document.id)
@@ -218,4 +219,20 @@ export function checklistRepairItems(directory: string): OpenItem[] {
       JSON.stringify({ item_id: record.id, item: record.item, finding, current_artifact: `.dochaus/lean/${file}`, current_target_paragraphs: inspected }),
     ].join("\n"), { document: document.id, repair_target: "body", ...(pid ? { pid } : {}) })]
   })
+}
+
+/** The document's current accepted focused adjudication of this exact item
+ * declined a repair: no correction group, and a source-cited disposition. Its
+ * claims are the counterevidence the checklist stage's reinspection weighs. */
+export function declinedChecklistRepair(directory: string, state: LeanState, item_id: string, item: ChecklistItem) {
+  const documents = readLeanPlan(directory)?.documents.filter(row => row.id === item.target.document || row.file === item.target.document)
+  if (documents?.length !== 1) return
+  const document = documents[0]!.id, file = `${document}/repair-adjudications.json`
+  const step = state.stages[`${document}.change-plan`]
+  if (step?.status !== "done" || !step.outputs.includes(file)) return
+  const saved = readLeanJson(directory, file) as { assessments?: unknown } | undefined
+  const entries = Array.isArray(saved?.assessments) ? saved.assessments.filter(row => (row as { item_id?: unknown } | null)?.item_id === item_id) as { value?: { groups?: unknown } }[] : []
+  if (entries.length !== 1 || !Array.isArray(entries[0]!.value?.groups) || entries[0]!.value.groups.length) return
+  const counterevidence = readChecklistAdjudicationCounterevidence(directory, item_id, item)
+  return counterevidence?.claims.some(claim => claim.source_refs.length) ? counterevidence : undefined
 }

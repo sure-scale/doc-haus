@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test"
-import { existsSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { renderMarkdownToDocx } from "../../lib/render"
 import { runLean, stageInputSha } from "./runner"
 import { stageOutputValid } from "./stages"
@@ -483,4 +483,76 @@ test("Continue repairs a source-backed omission through cumulative changes while
   expect(current).toContain(payment)
   expect(current).not.toContain(omitted)
   expect(readLeanJson(directory, "repairs.json")).toMatchObject({ substantive_attempts: 1, items: [{ ref: { document: "d1", repair_target: "body" } }] })
+}, 120000)
+
+// A source adjudication that declines a checklist repair is not resubmitted by
+// a later unchanged Continue: the stage's one reinspection weighs it instead.
+async function declinedRepairRun(reinspected: "unsatisfied" | "open") {
+  const directory = matter()
+  const checks: string[] = []
+  const scripted = scriptedModel({ ...happyPath,
+    [AGENT["change-plan"]]: text => JSON.stringify({ shared_decisions: [], groups: [], dismissed: [], questions: [],
+      ...(text.includes("ONE supplied checklist assessment") ? { superseded_findings: [], superseded_decisions: [], findings: [{ disposition: "rejected", kind: "information",
+        detail: "The assessed timing repair is not required.", reason: "DECLINED_REASON: the supplied terms already state the delivery period.", documents: ["d1"], sources: SUPPORT, limitations: [] }] } : {}) }),
+    [CHECKLIST_JOB_AGENTS.extract]: text => {
+      const input = JSON.parse(text.split("SOURCE_INPUT:\n\n")[1]!) as ChecklistProducerInput
+      return JSON.stringify({ items: input.source.document === "request" ? [{ check: "The supplied delivery timing is stated.", basis: "directive",
+        source_refs: [{ document: SOURCE, locator: "source paragraph", quote: SUPPORT[0]!.quote }], qualifications: [], target: { ...input.targets[0], treatment: "operative" } }] : [] })
+    },
+    [CHECKLIST_JOB_AGENTS.check]: text => {
+      checks.push(text)
+      const input = JSON.parse(text.split("CHECK_INPUT:\n\n")[1]!) as ChecklistCheckerInput
+      const status = text.includes("GENERATED, UNVERIFIED COUNTEREVIDENCE") ? reinspected : "unsatisfied"
+      return JSON.stringify({ item_id: input.item_id, status, reason: `Focused result ${status}.`, evidence: input.current_evidence,
+        source_refs: input.item.source_refs, inspection_scope: "Current body paragraphs only.", limitation: "Comments not inspected." })
+    },
+  })
+  expect((await runLean(directory, { sessions: scripted.port })).status).toBe("blocked")
+  // The first Continue submits the adverse assessment; the adjudicator declines
+  // it with a source-cited reason and the ordinary re-check stays unsatisfied.
+  enqueueLeanRequest(directory, { kind: "continue" })
+  expect((await runLean(directory, { sessions: scripted.port })).status).toBe("blocked")
+  const round = readLeanJson(directory, "repairs.json")
+  expect(round).toMatchObject({ round: 1, substantive_attempts: 1 })
+  expect(readLeanJson(directory, "d1/repair-adjudications.json")).toMatchObject({ assessments: [{ value: { groups: [], findings: [{ disposition: "rejected" }] } }] })
+  expect(checks.some(text => text.includes("GENERATED, UNVERIFIED COUNTEREVIDENCE"))).toBe(false)
+  const before = { prompts: scripted.prompts.length, plans: scripted.count(AGENT["change-plan"]) }
+  enqueueLeanRequest(directory, { kind: "continue" })
+  const state = await runLean(directory, { sessions: scripted.port })
+  // Exactly one reinspection and no repair or drafting work; an open result
+  // then proceeds to the existing package review.
+  const added = scripted.prompts.slice(before.prompts)
+  expect(added.map(row => row.agent)).toEqual([CHECKLIST_JOB_AGENTS.check, ...(reinspected === "open" ? [AGENT["package-review"]] : [])])
+  expect(scripted.count(AGENT["change-plan"])).toBe(before.plans)
+  expect(added[0]!.text).toContain("GENERATED, UNVERIFIED COUNTEREVIDENCE")
+  expect(added[0]!.text).toContain("DECLINED_REASON")
+  expect(readLeanJson(directory, "repairs.json")).toEqual(round)
+  expect(readLeanJson(directory, "checklist/checks.json")).toMatchObject({ checks: [{ reinspection: { original_finding: { status: "unsatisfied" }, status: "succeeded" } }] })
+  return { directory, scripted, state, round }
+}
+
+test("Continue does not resubmit a declined checklist repair; its one reinspection keeps the evidenced defect blocked and an unchanged Continue does nothing", async () => {
+  const { directory, scripted, state, round } = await declinedRepairRun("unsatisfied")
+  expect(state.status).toBe("blocked")
+  expect(state.stages["checklist-check"]?.status).toBe("blocked")
+  expect(state.stop_reason).toContain("unsatisfied: Focused result unsatisfied. Source adjudication declined the repair: DECLINED_REASON: the supplied terms already state the delivery period.")
+  expect(state.stop_reason).toContain("Continue does not repeat a declined repair after reinspection; a clarification or update decides this item. See checklist/report.md.")
+  expect(readFileSync(leanFile(directory, "checklist/report.md"), "utf8")).toContain("Source adjudication declined the repair: DECLINED_REASON")
+  const done = readdirSync(leanFile(directory, "requests/done")).toSorted().map(name => readLeanJson(directory, `requests/done/${name}`) as { outcome: { status: string; detail?: string } })
+  expect(done.at(-1)!.outcome).toEqual({ status: "resume", detail: "1 item(s) already declined by source adjudication are reinspected instead of resubmitted." })
+  const settled = { prompts: scripted.prompts.length, stop_reason: state.stop_reason, report: readFileSync(leanFile(directory, "checklist/report.md"), "utf8") }
+  enqueueLeanRequest(directory, { kind: "continue" })
+  const again = await runLean(directory, { sessions: scripted.port })
+  expect(scripted.prompts.length).toBe(settled.prompts)
+  expect(again).toMatchObject({ status: "blocked", stop_reason: settled.stop_reason })
+  expect(readLeanJson(directory, "repairs.json")).toEqual(round)
+  expect(readFileSync(leanFile(directory, "checklist/report.md"), "utf8")).toBe(settled.report)
+}, 120000)
+
+test("a reinspection that weighs a declined repair and leaves the item open delivers a review draft disclosing it", async () => {
+  const { directory, state } = await declinedRepairRun("open")
+  expect(state.status).toBe("completed")
+  const gate = readLeanJson(directory, "gate.json") as any
+  expect(gate).toMatchObject({ status: "pass", delivery: "review_draft", blocking: [] })
+  expect(gate.disclosed).toContainEqual(expect.objectContaining({ stage: "checklist-check", kind: "checklist_open", status: "disclosed", detail: expect.stringContaining("Finding: Focused result open.") }))
 }, 120000)
