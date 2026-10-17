@@ -1,6 +1,6 @@
 import { copyFileSync, existsSync, readFileSync, rmSync } from "node:fs"
 import { comparisonBaseline } from "./comparison"
-import { compareDocxWithPointers } from "../../lib/drafting-amendment"
+import { compareDocxWithPointers, withStableRevisionDates } from "../../lib/drafting-amendment"
 import { applyAmendments, createAmendmentMerge } from "../../lib/drafting-amendment-apply"
 import { finalBodyItems, readChangeList, readParagraphs, settleApply, type ApplyResult } from "./checks"
 import type { DocID } from "./plan"
@@ -59,7 +59,12 @@ export async function runApply(directory: string, state: LeanState, deps: LeanDe
   writeLeanText(directory, `${document}/paragraphs-applied.json`, `${JSON.stringify(rows, null, 2)}\n`)
   const redline = withGeneratedDocxAttribution(await compareDocxWithPointers(comparisonBaseline(directory, document).bytes, readFileSync(out), { authorName: identity.author }), identity)
   const annotated = exportAppliedChangeComments(redline, readFileSync(out), document, changes.amendments, settled.result.applied, changes.explanations, readParagraphs(directory, document), identity.author)
-  writeLeanBytes(directory, `${document}/redline.docx`, annotated.bytes)
+  // Tracked changes are dated when this step started applying them; a change
+  // already in the previous redline keeps its date, so an unchanged redline
+  // keeps its bytes and the evidence keyed on them.
+  const previous = leanFile(directory, `${document}/redline.docx`)
+  writeLeanBytes(directory, `${document}/redline.docx`, withStableRevisionDates(annotated.bytes, state.stages[step]?.started_at ?? new Date().toISOString(),
+    existsSync(previous) ? readFileSync(previous) : undefined))
   writeLeanText(directory, `${document}/apply.json`, `${JSON.stringify({ ...settled.result, comments: annotated.comments }, null, 2)}\n`)
   return {
     status: "done", outputs: stepOutputs(step),

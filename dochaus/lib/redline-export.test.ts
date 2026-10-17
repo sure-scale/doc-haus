@@ -1,9 +1,9 @@
-import { expect, test } from "bun:test"
+import { expect, setSystemTime, test } from "bun:test"
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { createDocxLocalization } from "./docx-amendments"
 import { exportDocxComments, preserveDocxComments, readDocxCommentParagraphs, readDocxComments } from "./docx-comments"
-import { compareDocxWithPointers } from "./drafting-amendment"
+import { compareDocxWithPointers, withStableRevisionDates } from "./drafting-amendment"
 import { renderMarkdownToDocx } from "./render"
 import type { RedlineRow } from "../../services/ingest/src/db"
 import { bake, buildRedlined, RedlinePreviewConflictError } from "../../services/ingest/src/redline"
@@ -146,4 +146,30 @@ test("annotated exports reject missing, ambiguous, structural and missing-author
   await expect(buildRedlined(original, [row(1, "five", "seven\nmore")])).rejects.toThrow("paragraph-preserving")
   await expect(buildRedlined(original, [{ ...row(1, "five", "seven"), author: "" }])).rejects.toThrow("stored author")
   await expect(buildRedlined(original, [row(1, "Notice is five days.", "")])).rejects.toThrow("exact changed paragraph")
+})
+
+test("a regenerated comparison keeps first-made revision dates and exact bytes; only a new change takes the new time", async () => {
+  const original = await document("The notice period is five days.", "Keep the retained record.")
+  const revised = await document("The notice period is seven days.", "Keep the retained record.")
+  const dates = (bytes: Uint8Array) => Array.from(xml(bytes, "word/document.xml").getElementsByTagNameNS(W, "p"))
+    .map(paragraph => ["del", "ins"].flatMap(kind => Array.from(paragraph.getElementsByTagNameNS(W, kind)).map(node => node.getAttributeNS(W, "date"))))
+  const withoutDates = (bytes: Uint8Array, kind: string) => serialized(bytes, "word/document.xml", kind).map(text => text.replace(/ w:date="[^"]*"/g, ""))
+  try {
+    setSystemTime(new Date("2026-03-04T05:06:07.890Z"))
+    const raw = await compareDocxWithPointers(original, revised, { authorName: author })
+    const first = withStableRevisionDates(raw, new Date().toISOString())
+    expect(dates(first)).toEqual([["2026-03-04T05:06:07Z", "2026-03-04T05:06:07Z"], []])
+    for (const kind of ["ins", "del"]) expect(withoutDates(first, kind)).toEqual(withoutDates(raw, kind))
+    // The comparator dates and ids differ on every run; the export does not.
+    setSystemTime(new Date("2026-05-06T07:08:09Z"))
+    const again = withStableRevisionDates(await compareDocxWithPointers(original, revised, { authorName: author }), new Date().toISOString(), first)
+    expect(again).toEqual(first)
+    const later = await document("The notice period is seven days.", "Keep the signed record.")
+    const changed = withStableRevisionDates(await compareDocxWithPointers(original, later, { authorName: author }), new Date().toISOString(), first)
+    expect(dates(changed)).toEqual([["2026-03-04T05:06:07Z", "2026-03-04T05:06:07Z"], ["2026-05-06T07:08:09Z", "2026-05-06T07:08:09Z"]])
+    expect(withStableRevisionDates(await compareDocxWithPointers(original, later, { authorName: author }), new Date().toISOString(), new Uint8Array([1, 2, 3])))
+      .not.toEqual(changed)
+  } finally {
+    setSystemTime()
+  }
 })
