@@ -219,8 +219,9 @@ export function readOpenItems(directory: string): OpenItem[] {
  * document's draft and review findings are found in its draft body and are
  * inputs of its changes step; once its apply step has checked the final body,
  * that check's items are the document's body findings and the earlier ones are
- * superseded (the gate settles them as such). open-items.json keeps them for
- * the changes step; what the lawyer is shown and the gate settles is this list. */
+ * superseded: this list leaves them out, so the gate neither shows nor settles
+ * them. open-items.json keeps them for the changes step; what the lawyer is
+ * shown and the gate settles is this list. */
 export function currentOpenItems(directory: string): OpenItem[] {
   const stages = readLeanState(directory)?.stages ?? {}
   return readOpenItems(directory).filter(item => (item.stage !== "draft" && !isReviewStage(item.stage)) ||
