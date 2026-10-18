@@ -254,15 +254,47 @@ describe("package review's selection on a combined document", () => {
   })
 
   const PACKAGE_FINDING = "Distinct named primary artifacts need distinct filenames. Report a conflicting naming instruction as a package finding."
+  const ONE_ROW = '"Supply Pack Final.docx" is the one file that holds the memo and document d1. Select it by one row only: document "d1", role body, file "Supply Pack Final.docx". Code builds it from the memo and the clean body at download; give no drafting_notes row for it.'
   const notesRow = { document: null, role: "drafting_notes" as const, file: "Supply Pack Final.docx", instruction_quote: INSTRUCTION }
 
   test("a notes row beside the body row under the combined file's name is refused with the one-row rule, not as a package finding", () => {
     const directory = matter()
     writeLeanText(directory, "request.md", `${INSTRUCTION}.`)
     writeLeanPlan(directory, [COMBINED], undefined, undefined, memo([COMBINED]))
-    expect(checkDeliverySelections(directory, [notesRow, selection("body")])).toEqual([
-      '"Supply Pack Final.docx" is the one file that holds the memo and document d1. Select it by one row only: document "d1", role body, file "Supply Pack Final.docx". Code builds it from the memo and the clean body at download; give no drafting_notes row for it.',
-    ])
+    expect(checkDeliverySelections(directory, [notesRow, selection("body")])).toEqual([ONE_ROW])
+  })
+
+  test("a notes row under the plan's combined file name is refused with the one-row rule when no body row names the file", () => {
+    // Registration would otherwise name the notes after the combined file and suffix them.
+    const SCHEDULE_INSTRUCTION = "Deliver the schedule as Schedule Final.docx"
+    const directory = matter()
+    writeLeanText(directory, "request.md", `${INSTRUCTION}. ${SCHEDULE_INSTRUCTION}.`)
+    const documents: Document[] = [{ ...COMBINED, file: "supply pack final.docx" }, SCHEDULE]
+    writeLeanPlan(directory, documents, undefined, undefined, memo(documents))
+    expect(checkDeliverySelections(directory, [notesRow])).toEqual([ONE_ROW])
+    // A row for another document does not name the combined file.
+    expect(checkDeliverySelections(directory, [{ document: "d2", role: "body", file: "Schedule Final.docx", instruction_quote: SCHEDULE_INSTRUCTION }, notesRow])).toEqual([ONE_ROW])
+  })
+
+  test("a notes row under a name the reply leaves free, or without a combined file, keeps today's result", () => {
+    // The reply renames the combined file, or delivers that document as a redline (selectedDeliveryPlan).
+    const NOTE_INSTRUCTION = "Deliver the note itself as Supply Note Final.docx"
+    const combined = matter()
+    writeLeanText(combined, "request.md", `${INSTRUCTION}. ${NOTE_INSTRUCTION}.`)
+    const documents: Document[] = [{ ...COMBINED, file: "Supply Pack Final.docx" }]
+    writeLeanPlan(combined, documents, undefined, undefined, memo(documents))
+    for (const role of ["body", "redline"] as const)
+      expect(checkDeliverySelections(combined, [{ ...selection(role, "Supply Note Final.docx"), instruction_quote: NOTE_INSTRUCTION }, notesRow])).toEqual([])
+    // Another notes name in a combined package.
+    expect(checkDeliverySelections(combined, [{ ...notesRow, file: "Supply Note Final.docx", instruction_quote: NOTE_INSTRUCTION }])).toEqual([])
+    // A body deliverable under that name with the memo, and a combined document without one.
+    const plain = matter()
+    writeLeanText(plain, "request.md", `${INSTRUCTION}.`)
+    const body: Document[] = [{ ...SUPPLY, file: "Supply Pack Final.docx", deliverable: "body" }]
+    writeLeanPlan(plain, body, undefined, undefined, memo(body))
+    expect(checkDeliverySelections(plain, [notesRow])).toEqual([])
+    writeLeanPlan(plain, documents)
+    expect(checkDeliverySelections(plain, [notesRow])).toEqual([])
   })
 
   test("any other repeated file name keeps the package-finding refusal", () => {
