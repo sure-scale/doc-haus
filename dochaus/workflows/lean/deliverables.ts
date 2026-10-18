@@ -7,7 +7,7 @@ import { withParagraphPointers } from "../../lib/drafting-amendment"
 import { sha256File } from "../../lib/lineage"
 import { readWorkingDocx } from "../../lib/working-docx"
 import { appendLeanEvent } from "./events"
-import { readLeanPlan, type DocID } from "./plan"
+import { readLeanPlan, type DocID, type LeanPlan } from "./plan"
 import type { LeanDeps } from "./stages"
 import { leanFile, readLeanJson, writeLeanBytes, writeLeanText } from "./state"
 
@@ -223,9 +223,8 @@ export function forgetUnplannedDocuments(directory: string) {
  * deliverable's is, leaving its name to the combined file (combinedDelivery).
  * Notes use their selected name or the first document's name. Once
  * the gate passed (`delivered`), its delivered notes, when it wrote them,
- * replace the drafting notes. */
-function producedFiles(directory: string, delivered = false): Produced[] {
-  const deliveryPlan = readLeanPlan(directory)
+ * replace the drafting notes. `deliveryPlan` is the saved plan unless given. */
+function producedFiles(directory: string, delivered = false, deliveryPlan = readLeanPlan(directory)): Produced[] {
   const plan = (deliveryPlan?.documents ?? []).map(row => ({
     ...row,
     stem: deliveryStem(row),
@@ -239,6 +238,18 @@ function producedFiles(directory: string, delivered = false): Produced[] {
     // A reviewed note can receive its requested name; otherwise use the usual default.
     { kind: "drafting_notes", document: null, title: null, file: notes.docx, name: deliveryPlan?.notes_file ? fileNameStem(deliveryPlan.notes_file.replace(/\.docx$/i, "")) : `${plan[0]?.stem ?? "Draft"} - drafting notes`, requested: Boolean(deliveryPlan?.notes_file) },
     { kind: "drafting_notes_markdown", document: null, title: null, file: notes.markdown, name: null },
+  ]
+}
+
+/** The names, lowercased, a plan delivers files under at its request, as
+ * registration names them: each requested file of producedFiles (a document's
+ * body or redline file, the notes file) and the combined file
+ * (combinedDelivery). `document` is null for the notes. */
+export function requestedNames(directory: string, plan: LeanPlan) {
+  const combined = combinedDelivery(directory, plan)
+  return [
+    ...producedFiles(directory, false, plan).flatMap(row => row.requested && row.name ? [{ document: row.document, name: `${row.name}.docx`.toLocaleLowerCase() }] : []),
+    ...(combined ? [{ document: combined.document, name: `${combined.name}.docx`.toLocaleLowerCase() }] : []),
   ]
 }
 
@@ -328,9 +339,9 @@ export function memoAnchor<T extends { file?: string; deliverable?: string }>(do
 
 /** The memo the notes are written as, when the request asks for one: the notes
  * file it is delivered as and the outline's name for it, both from the plan.
- * A notes file without a memo name (a delivery selection's rename) is no memo. */
-export function requestedMemo(directory: string): { file: string; name: string } | undefined {
-  const plan = readLeanPlan(directory)
+ * A notes file without a memo name (a delivery selection's rename) is no memo.
+ * `plan` is the saved plan unless given. */
+export function requestedMemo(directory: string, plan = readLeanPlan(directory)): { file: string; name: string } | undefined {
   if (!plan?.notes_file || !plan.memo) return
   return { file: plan.notes_file, name: plan.memo }
 }
@@ -339,10 +350,11 @@ export function requestedMemo(directory: string): { file: string; name: string }
  * the document's id and its requested delivery name stem, so "<name>.docx" is
  * the requested file. The file is built at download time from the registered
  * body and notes and is never written or registered. Undefined unless the plan
- * has exactly one combined document and a requested memo. */
-export function combinedDelivery(directory: string): { document: DocID; name: string } | undefined {
-  const combined = readLeanPlan(directory)?.documents.filter(row => row.deliverable === "combined") ?? []
-  if (combined.length !== 1 || !requestedMemo(directory)) return
+ * has exactly one combined document and a requested memo. `plan` is the saved
+ * plan unless given. */
+export function combinedDelivery(directory: string, plan = readLeanPlan(directory)): { document: DocID; name: string } | undefined {
+  const combined = plan?.documents.filter(row => row.deliverable === "combined") ?? []
+  if (combined.length !== 1 || !requestedMemo(directory, plan)) return
   return { document: combined[0]!.id, name: deliveryStem(combined[0]!) }
 }
 
