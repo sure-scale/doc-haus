@@ -364,6 +364,33 @@ describe("package review's selection on a combined document", () => {
     expect(selectedDeliveryPlan(directory, [{ ...selection("body"), document: "d2" }])).toMatchObject({ documents: [{ file: "supply-pack.docx" }, { file: "Supply Pack Final.docx" }], notes_file: "Supply Pack Final.docx" })
   })
 
+  test("a body row repeating the combined file's name renames nothing: a saved notes name equal to it stays", () => {
+    // A notes name an earlier contract saved under the combined file's name.
+    const directory = matter()
+    const documents: Document[] = [{ ...COMBINED, file: "Supply Pack Final.docx" }]
+    const plan = writeLeanPlan(directory, documents, undefined, undefined, memo(documents))
+    writeLeanText(directory, "plan.json", `${JSON.stringify({ ...plan, notes_file: "Supply Pack Final.docx" }, null, 2)}\n`)
+    expect(selectedDeliveryPlan(directory, [selection("body")])).toBeUndefined()
+  })
+
+  test("a redline row onto the saved notes name leaves it: the notes and the redline keep the package-finding refusal", () => {
+    const directory = matter()
+    writeLeanText(directory, "request.md", `${INSTRUCTION}.`)
+    const plan = writeLeanPlan(directory, [COMBINED], undefined, undefined, memo([COMBINED]))
+    writeLeanText(directory, "plan.json", `${JSON.stringify({ ...plan, notes_file: "Supply Pack Final.docx" }, null, 2)}\n`)
+    expect(selectedDeliveryPlan(directory, [selection("redline")])).toMatchObject({ documents: [{ file: "Supply Pack Final.docx", deliverable: "redline" }], notes_file: "Supply Pack Final.docx" })
+    expect(checkDeliverySelections(directory, [selection("redline")])).toEqual([PACKAGE_FINDING])
+  })
+
+  test("a body row renaming the combined file onto the saved notes name in another case gives the notes the memo's default name", () => {
+    const directory = matter()
+    writeLeanText(directory, "request.md", `${INSTRUCTION}.`)
+    const plan = writeLeanPlan(directory, [COMBINED], undefined, undefined, memo([COMBINED]))
+    writeLeanText(directory, "plan.json", `${JSON.stringify({ ...plan, notes_file: "supply pack final.docx" }, null, 2)}\n`)
+    expect(checkDeliverySelections(directory, [selection("body")])).toEqual([])
+    expect(selectedDeliveryPlan(directory, [selection("body")])).toMatchObject({ documents: [{ file: "Supply Pack Final.docx", deliverable: "combined" }], notes_file: "Supply Pack Final - cover memo.docx" })
+  })
+
   test("any other repeated file name keeps the package-finding refusal", () => {
     // Two documents under one name in a combined package.
     const combined = matter()
