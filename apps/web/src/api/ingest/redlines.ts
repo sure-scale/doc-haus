@@ -42,8 +42,9 @@ export async function prepareDocumentChanges(id:string,name:string,instructions:
 }
 
 // Present only when the accepted file is the body of a completed drafting run:
-// whether that run's drafting notes recorded the accepted change, and if not, why.
-export type AcceptResult = { notes_updated?: boolean; notes_skip_reason?: string }
+// whether that run's drafting notes recorded the accepted change and its
+// delivered redline was rebuilt from the accepted body, and if not, why.
+export type AcceptResult = { notes_updated?: boolean; notes_skip_reason?: string; redline_updated?: boolean; redline_skip_reason?: string }
 
 export async function acceptRedline(id: string, redlineId: number): Promise<AcceptResult> {
   return acceptResult(await resolveRedlines(`${INGEST_URL}/matters/${id}/redlines/${redlineId}/accept`))
@@ -58,9 +59,14 @@ export async function acceptAllRedlines(id: string, name: string): Promise<Accep
 }
 
 function acceptResult(body: unknown): AcceptResult {
-  if (!body || typeof body !== "object" || !("notes_updated" in body) || typeof body.notes_updated !== "boolean") return {}
-  const reason = "notes_skip_reason" in body && typeof body.notes_skip_reason === "string" ? body.notes_skip_reason : undefined
-  return { notes_updated: body.notes_updated, ...(reason ? { notes_skip_reason: reason } : {}) }
+  if (!body || typeof body !== "object") return {}
+  const outcome = (updated: "notes_updated" | "redline_updated", skipped: "notes_skip_reason" | "redline_skip_reason") => {
+    const value = (body as Record<string, unknown>)[updated]
+    if (typeof value !== "boolean") return {}
+    const reason = (body as Record<string, unknown>)[skipped]
+    return { [updated]: value, ...(typeof reason === "string" ? { [skipped]: reason } : {}) }
+  }
+  return { ...outcome("notes_updated", "notes_skip_reason"), ...outcome("redline_updated", "redline_skip_reason") }
 }
 
 export async function rejectAllRedlines(id: string, name: string): Promise<void> {

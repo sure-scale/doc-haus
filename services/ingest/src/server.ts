@@ -55,7 +55,7 @@ import { readLeanPayload, readDetailPayload, readStoragePayload } from "./teleme
 import { openTelemetryDb, applyRetentionPolicy, clearTelemetry } from "../../../dochaus/lib/telemetry"
 import { documentAmendmentRoutes, acceptedWorkingDocxUpdate } from "./document-amendments"
 import { readWorkingDocx } from "../../../dochaus/lib/working-docx"
-import { withParagraphPointers } from "../../../dochaus/lib/drafting-amendment"
+import { withParagraphPointers, withStableRevisionDates } from "../../../dochaus/lib/drafting-amendment"
 import { DocxTrackedRevisionsError } from "../../../dochaus/lib/docx-amendments"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
 import { draftingTraceReference } from "../../../dochaus/lib/drafting-trace-identity"
@@ -76,6 +76,7 @@ import { recoverDocumentMutations } from "./document-mutation"
 import { appendAcceptedChangesToNotes } from "./notes-addendum"
 import { readLeanDocuments } from "../../../dochaus/workflows/lean/deliverables"
 import { readLeanState } from "../../../dochaus/workflows/lean/state"
+import { documentRedline } from "../../../dochaus/workflows/lean/apply-stage"
 
 const app = new Hono()
 
@@ -627,9 +628,16 @@ app.post("/matters/:id/documents/revisions", async (c) => {
     return c.json({ error: `The filename extension is not valid for a ${role} document.` }, 400)
   try {
     const priorSha256 = c.req.header("x-document-prior-sha256")
-    if (readWorkingDocx(dir,target.docPath) && !/^[a-f0-9]{64}$/.test(priorSha256 ?? ""))
-      return c.json({error:"Provide the exact current Word hash in x-document-prior-sha256 before replacing an accepted revision."},409)
-    return c.json(await writeDocumentRevision(dir, target.name, Buffer.from(await file.arrayBuffer()),[],priorSha256))
+    const bytes = Buffer.from(await file.arrayBuffer())
+    // Under the document's lock, which an accept holds from building its run's
+    // delivered redline to writing it, so a revision never lands in between. The
+    // revision writer takes the same lock; taking it here also keeps the
+    // precondition below and the working-revision update under it.
+    return await withArtifactMutationLocksAsync(dir, [target.name, ".dochaus/source-corpus"], async () => {
+      if (readWorkingDocx(dir,target.docPath) && !/^[a-f0-9]{64}$/.test(priorSha256 ?? ""))
+        return c.json({error:"Provide the exact current Word hash in x-document-prior-sha256 before replacing an accepted revision."},409)
+      return c.json(await writeDocumentRevision(dir, target.name, bytes,[],priorSha256))
+    })
   } catch (error) {
     if (error instanceof SourceDocumentConflictError || error instanceof DeliverableConflictError)
       return c.json({ error: error.message }, 409)
@@ -873,12 +881,13 @@ app.post("/matters/:id/redlines/:rid/accept", async (c) => {
   const row = getRedline(initialDb, Number(c.req.param("rid")))
   initialDb.close()
   if (!row || row.status !== "pending") return c.json({ error: "Redline not found or already resolved" }, 404)
-  return withArtifactMutationLocksAsync(dir, [row.doc_name, ...runNotesLock(dir), ".dochaus/source-corpus"], async () => {
+  return withArtifactMutationLocksAsync(dir, [row.doc_name, ...runRedlineLock(dir, row.doc_path), ...runNotesLock(dir), ".dochaus/source-corpus"], async () => {
     const db = openDb(dir)
     const current = getRedline(db, row.id)
     db.close()
     if (!current || current.status !== "pending")
       return c.json({ error: "Redline not found or already resolved" }, 404)
+    let redline: PreparedRedline
     try {
       const original = await Bun.file(current.doc_path).bytes()
       const prior = createHash("sha256").update(original).digest("hex")
@@ -886,13 +895,14 @@ app.post("/matters/:id/redlines/:rid/accept", async (c) => {
       const state = await redlineState(original,[current])
       const stale = redlineStaleReason(current,state,Boolean(working))
       if (stale || working && working.source_sha256 !== prior) return c.json({error:stale ?? "The working Word revision is inconsistent. Refresh it through the revision API."},409)
-      const baked = await bake(original,[current],state)
-      await writeDocumentRevision(dir,current.doc_name,Buffer.from(baked),[current.id],prior,current.target_json != null)
+      const baked = documentRevisionBytes(dir,current.doc_name,Buffer.from(await bake(original,[current],state))).bytes
+      redline = await prepareDeliveredRedline(dir,current.doc_path,baked)
+      await writeDocumentRevision(dir,current.doc_name,baked,[current.id],prior,current.target_json != null)
     } catch (error) {
       console.warn("[redline] acceptance refused",diagnosticErrorMetadata(error))
       return c.json({error:"Acceptance could not be confirmed. Refresh the document and change list before trying again."},409)
     }
-    return c.json({ ok: true, ...await recordAcceptedChangesInRunNotes(dir, row.doc_path, [current]) })
+    return c.json({ ok: true, ...await writeDeliveredRedline(redline), ...await recordAcceptedChangesInRunNotes(dir, row.doc_path, [current]) })
   })
 })
 
@@ -924,13 +934,14 @@ app.post("/matters/:id/redlines/accept-all", async (c) => {
   const name = matterDocumentName(requested) ?? deliverableDocumentName(requested)
   if (!name) return c.json({ error: "The document filename or extension is not supported." }, 400)
   const file = path.join(dir, name)
-  return withArtifactMutationLocksAsync(dir, [name, ...runNotesLock(dir), ".dochaus/source-corpus"], async () => {
+  return withArtifactMutationLocksAsync(dir, [name, ...runRedlineLock(dir, file), ...runNotesLock(dir), ".dochaus/source-corpus"], async () => {
     if (!existsSync(file) || !existsSync(path.join(dir, ".dochaus", "legal.db")))
       return c.json({ ok: true, accepted: 0 })
     const db = openDb(dir)
     const rows = listPendingRedlines(db, file)
     db.close()
     if (!rows.length) return c.json({ ok: true, accepted: 0 })
+    let redline: PreparedRedline
     try {
       const original = await Bun.file(file).bytes()
       const prior = createHash("sha256").update(original).digest("hex")
@@ -938,12 +949,14 @@ app.post("/matters/:id/redlines/accept-all", async (c) => {
       const state = await redlineState(original,rows)
       const stale = rows.map((row) => redlineStaleReason(row,state,Boolean(working))).find(Boolean)
       if (stale || working && working.source_sha256 !== prior) return c.json({error:stale ?? "The working Word revision is inconsistent. Refresh it through the revision API."},409)
-      await writeDocumentRevision(dir,name,Buffer.from(await bake(original,rows,state)),rows.map((row) => row.id),prior,rows.some((row) => row.target_json != null))
+      const baked = documentRevisionBytes(dir,name,Buffer.from(await bake(original,rows,state))).bytes
+      redline = await prepareDeliveredRedline(dir,file,baked)
+      await writeDocumentRevision(dir,name,baked,rows.map((row) => row.id),prior,rows.some((row) => row.target_json != null))
     } catch (error) {
       console.warn("[redline] batch acceptance refused",diagnosticErrorMetadata(error))
       return c.json({error:"Batch acceptance could not be confirmed. Refresh the document and change list before trying again."},409)
     }
-    return c.json({ ok: true, accepted: rows.length, ...await recordAcceptedChangesInRunNotes(dir, file, rows) })
+    return c.json({ ok: true, accepted: rows.length, ...await writeDeliveredRedline(redline), ...await recordAcceptedChangesInRunNotes(dir, file, rows) })
   })
 })
 
@@ -974,10 +987,7 @@ async function writeDocumentRevision(
   priorSha256?: string,
   boundAcceptance = false,
 ) {
-  const db = openDb(directory)
-  const role = getDocumentRole(db, path.join(directory, path.basename(name)))
-  db.close()
-  const bytes = role === "deliverable" && name.toLowerCase().endsWith(".docx") ? Buffer.from(withParagraphPointers(input)) : input
+  const { role, bytes } = documentRevisionBytes(directory, name, input)
   const existing = readWorkingDocx(directory,name)
   const working = role === "deliverable" && (boundAcceptance || existing) && name.toLowerCase().endsWith(".docx")
     ? await acceptedWorkingDocxUpdate(directory,name,bytes) : undefined
@@ -986,6 +996,15 @@ async function writeDocumentRevision(
   }
   if (role === "deliverable") return writeDeliverableRevision(directory, name, bytes, { updateRegistry,priorSha256,updateWorkingRevision:working })
   return ingestDocument(directory, name, bytes, { requireExistingSource: true, updateRegistry })
+}
+
+/** The document's role and the bytes writeDocumentRevision stores for `input`:
+ * a deliverable docx gains paragraph pointers. Idempotent, so an accept can build
+ * what depends on the stored body (its run's redline) before writing it. */
+function documentRevisionBytes(directory: string, name: string, input: Buffer) {
+  const db = openDb(directory)
+  const role = (() => { try { return getDocumentRole(db, path.join(directory, path.basename(name))) } finally { db.close() } })()
+  return { role, bytes: role === "deliverable" && name.toLowerCase().endsWith(".docx") ? Buffer.from(withParagraphPointers(input)) : input }
 }
 
 // Changes accepted into the body of a completed lean run are appended to that
@@ -1015,18 +1034,11 @@ async function recordAcceptedChangesInRunNotes(directory: string, body: string, 
     return { notes_updated: false, notes_skip_reason: reason }
   }
   try {
-    const state = readLeanState(directory)
-    const summary = readLeanDocuments(directory)
-    if (state?.status !== "completed" || summary?.status !== "completed") return
-    const identity = documentRegistryIdentity(body)
-    const delivered = summary.documents.find((row) => row.kind === "body" && row.deliverable === path.basename(row.deliverable ?? "") &&
-      documentRegistryIdentity(path.join(directory, row.deliverable!)) === identity)?.deliverable
-    if (!delivered) return
-    const registry = openDb(directory)
-    const bodyRole = (() => { try { return getDocumentRole(registry, path.join(directory, delivered)) } finally { registry.close() } })()
-    if (bodyRole !== "deliverable") return
-    run = state.owner_session_id
-    const notes = summary.documents.find((row) => row.kind === "drafting_notes")?.deliverable
+    const runBody = deliveredRunBody(directory, body)
+    if (!runBody) return
+    const delivered = runBody.name
+    run = runBody.run
+    const notes = runBody.summary.documents.find((row) => row.kind === "drafting_notes")?.deliverable
     if (!notes || notes !== path.basename(notes)) return skipped("notes_not_delivered")
     return await withArtifactMutationLocksAsync(directory, [notes, ".dochaus/source-corpus"], async (): Promise<NotesAddendum> => {
       const file = path.join(directory, notes)
@@ -1064,6 +1076,134 @@ function runNotesLock(directory: string): string[] {
     if (readLeanState(directory)?.status !== "completed" || summary?.status !== "completed") return []
     const notes = summary.documents.find((row) => row.kind === "drafting_notes")?.deliverable
     return notes && deliverableDocumentName(notes) === notes && readDocumentTarget(directory, notes) ? [notes] : []
+  } catch {
+    return []
+  }
+}
+
+/** A completed lean run's delivery of `body`, an accepted file's matter path:
+ * the run, its documents summary and that body's summary row (its planned
+ * document, title and delivered name), while the file is still a deliverable.
+ * Undefined when the accepted file is no delivered body of a completed run. */
+function deliveredRunBody(directory: string, body: string) {
+  const state = readLeanState(directory)
+  const summary = readLeanDocuments(directory)
+  if (state?.status !== "completed" || summary?.status !== "completed") return
+  const identity = documentRegistryIdentity(body)
+  const row = summary.documents.find((row) => row.kind === "body" && row.deliverable === path.basename(row.deliverable ?? "") &&
+    documentRegistryIdentity(path.join(directory, row.deliverable!)) === identity)
+  const name = row?.deliverable
+  if (!row?.document || !name) return
+  const registry = openDb(directory)
+  try {
+    if (getDocumentRole(registry, path.join(directory, name)) !== "deliverable") return
+  } finally {
+    registry.close()
+  }
+  return { run: state.owner_session_id, summary, document: row.document, title: row.title, name }
+}
+
+/** The delivered redline of a delivered body's document, under its plain registered name. */
+function deliveredRedlineName(delivered: NonNullable<ReturnType<typeof deliveredRunBody>>) {
+  const name = delivered.summary.documents.find((row) => row.kind === "redline" && row.document === delivered.document && row.title === delivered.title)?.deliverable
+  return name && deliverableDocumentName(name) === name ? name : undefined
+}
+
+// A change accepted into the body of a completed lean run also rebuilds the
+// run's delivered redline of that body (documentRedline: the run's comparison
+// baseline against the accepted body, the run's change explanations as Word
+// comments), so the viewer and downloads never pair the accepted body with the
+// redline from before it. The run's own copy (d<n>/redline.docx) is a stage
+// input and stays as it is, so no stage re-runs. The redline is built from the
+// body bytes about to be written, before the body commits (prepareDeliveredRedline),
+// and written once the body has committed (writeDeliveredRedline): only the
+// redline write itself can then fail after the body. Like the notes addendum,
+// this runs inside the accept's lock set, which holds the redline's lock
+// (runRedlineLock; when that read finds none, each step takes the lock and the
+// write checks the redline again), and goes through the same revision writer;
+// a revision upload waits on the body's lock. Revisions already
+// in the delivered redline keep their dates. Best-effort: the accepted body
+// stands, and the accept response says whether the redline was rebuilt or why
+// not (logged too). Nothing is returned when the accepted file is no delivered
+// body of a completed run, which has no redline to rebuild.
+type RedlineSkipReason = "redline_not_delivered" | "redline_missing" | "redline_not_deliverable" | "pending_redline_proposals" | "rebuild_failed" | "write_failed"
+type RedlineRebuild = { redline_updated: true } | { redline_updated: false; redline_skip_reason: RedlineSkipReason }
+type PreparedRedline = { directory: string; body: string; run: string; name: string; prior: string; bytes: Uint8Array } | RedlineRebuild | undefined
+function redlineSkipped(directory: string, run: string | undefined, reason: RedlineSkipReason, error?: unknown): RedlineRebuild {
+  console.warn("[redline] delivered redline not rebuilt",
+    { run, matter_ref: draftingTraceReference(directory), reason, ...(error === undefined ? {} : diagnosticErrorMetadata(error)) })
+  return { redline_updated: false, redline_skip_reason: reason }
+}
+
+async function prepareDeliveredRedline(directory: string, body: string, final: Uint8Array): Promise<PreparedRedline> {
+  let run: string | undefined
+  try {
+    const delivered = deliveredRunBody(directory, body)
+    if (!delivered) return
+    run = delivered.run
+    const name = deliveredRedlineName(delivered)
+    if (!name) return redlineSkipped(directory, run, "redline_not_delivered")
+    return await withArtifactMutationLocksAsync(directory, [name, ".dochaus/source-corpus"], async (): Promise<PreparedRedline> => {
+      const blocked = redlineBlocked(directory, name)
+      if (blocked) return redlineSkipped(directory, run, blocked)
+      const prior = await Bun.file(path.join(directory, name)).bytes()
+      const rebuilt = await documentRedline(directory, delivered.document, final)
+      const bytes = withStableRevisionDates(rebuilt.bytes, new Date().toISOString(), prior)
+      return { directory, body, run: delivered.run, name, prior: createHash("sha256").update(prior).digest("hex"), bytes }
+    })
+  } catch (error) {
+    return redlineSkipped(directory, run, "rebuild_failed", error)
+  }
+}
+
+/** Writes a prepared redline once the body has committed. The redline's lock may
+ * have been released since it was built (runRedlineLock is read before the
+ * accept locks), so the name and the redline file are checked again under it:
+ * the name must still be the body's delivered redline, the file must still hold
+ * the bytes it was built against (the write's prior hash) and take no change
+ * proposed in between. */
+async function writeDeliveredRedline(prepared: PreparedRedline): Promise<RedlineRebuild | undefined> {
+  if (!prepared || "redline_updated" in prepared) return prepared
+  const { directory, body, run, name, prior, bytes } = prepared
+  try {
+    return await withArtifactMutationLocksAsync(directory, [name, ".dochaus/source-corpus"], async (): Promise<RedlineRebuild> => {
+      const delivered = deliveredRunBody(directory, body)
+      if (!delivered || deliveredRedlineName(delivered) !== name) return redlineSkipped(directory, run, "redline_not_delivered")
+      const blocked = redlineBlocked(directory, name)
+      if (blocked) return redlineSkipped(directory, run, blocked)
+      await writeDocumentRevision(directory, name, Buffer.from(bytes), [], prior)
+      return { redline_updated: true }
+    })
+  } catch (error) {
+    return redlineSkipped(directory, run, "write_failed", error)
+  }
+}
+
+/** Why the delivered redline `name` must be left as it is, read under its lock;
+ * undefined when it may be rebuilt. */
+function redlineBlocked(directory: string, name: string): RedlineSkipReason | undefined {
+  const file = path.join(directory, name)
+  if (!existsSync(file)) return "redline_missing"
+  const db = openDb(directory)
+  const [role, pending] = (() => { try { return [getDocumentRole(db, file), listPendingRedlines(db, file)] as const } finally { db.close() } })()
+  // A file that has since taken the redline's name, such as a source, is never written.
+  if (role !== "deliverable") return "redline_not_deliverable"
+  // The agent's tracked-changes and redline tools can propose changes to the
+  // redline file itself; never invalidate one the lawyer has yet to review.
+  // Proposals take the file's artifact lock, which this check runs under.
+  if (pending.length) return "pending_redline_proposals"
+}
+
+/** The delivered redline of a completed run's accepted body, as the extra lock
+ * an accept takes with its body's, so the body write and the redline rebuild
+ * form one critical section. Read before locking; empty when the accepted file
+ * is no such body or its redline is not delivered under a plain name, so the
+ * redline write checks its name and file again under its own lock. */
+function runRedlineLock(directory: string, body: string): string[] {
+  try {
+    const delivered = deliveredRunBody(directory, body)
+    const name = delivered && deliveredRedlineName(delivered)
+    return name && readDocumentTarget(directory, name) ? [name] : []
   } catch {
     return []
   }

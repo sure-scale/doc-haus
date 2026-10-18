@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
-import { DownloadActions, notesNotUpdatedNotice, staleExportNotice } from "../src/components/DocumentViewer"
+import { DownloadActions, notesNotUpdatedNotice, redlineNotUpdatedNotice, staleExportNotice } from "../src/components/DocumentViewer"
 import type { Redline } from "../src/api/ingest/redlines"
 
 const proposal = (id: number, stale?: true): Redline => ({
@@ -33,6 +33,19 @@ describe("document viewer downloads", () => {
       "1 stale proposal is left out of the tracked changes and the redline download. Reject it to clear it; prepare a fresh change list if the change is still needed.")
     expect(staleExportNotice([proposal(1, true), proposal(3, true)])).toStartWith("2 stale proposals are left out")
     expect(staleExportNotice([proposal(1, true), proposal(3, true)])).toContain("Reject them to clear them")
+  })
+})
+
+describe("the delivered redline after an accept", () => {
+  test("a redline left as it was is named in plain words; anything else says nothing", () => {
+    expect(redlineNotUpdatedNotice({ redline_updated: false, redline_skip_reason: "pending_redline_proposals" })).toBe(
+      "The redline was not updated: the redline has pending proposed changes.")
+    expect(redlineNotUpdatedNotice({ redline_updated: false, redline_skip_reason: "rebuild_failed" })).toBe(
+      "The redline was not updated: it could not be rebuilt from the accepted document.")
+    expect(redlineNotUpdatedNotice({ redline_updated: false, redline_skip_reason: "unknown_reason" })).toBe("The redline was not updated.")
+    expect(redlineNotUpdatedNotice({ redline_updated: true, notes_updated: false })).toBeUndefined()
+    expect(redlineNotUpdatedNotice({})).toBeUndefined()
+    expect(redlineNotUpdatedNotice(undefined)).toBeUndefined()
   })
 })
 

@@ -2,10 +2,10 @@ import { copyFileSync, existsSync, readFileSync, rmSync } from "node:fs"
 import { comparisonBaseline } from "./comparison"
 import { compareDocxWithPointers, withStableRevisionDates } from "../../lib/drafting-amendment"
 import { applyAmendments, createAmendmentMerge } from "../../lib/drafting-amendment-apply"
-import { finalBodyItems, readChangeList, readParagraphs, settleApply, type ApplyResult } from "./checks"
+import { finalBodyItems, readChangeList, readParagraphs, settleApply, type ApplyResult, type ChangeList } from "./checks"
 import type { DocID } from "./plan"
 import { LEAN_CHILD_PERMISSIONS, LEAN_STAGE_AGENTS, paragraphRows, stepOutputs, stepSessionTitle, type LeanDeps } from "./stages"
-import { leanFile, matterRelative, writeLeanBytes, writeLeanText, type LeanState, type OpenItem } from "./state"
+import { leanFile, matterRelative, readLeanJson, writeLeanBytes, writeLeanText, type LeanState, type OpenItem } from "./state"
 import { templateItems } from "./template-coverage"
 import { exportAppliedChangeComments } from "./review-evidence"
 import { draftingAttribution, withGeneratedDocxAttribution } from "../../lib/docx-attribution"
@@ -57,8 +57,7 @@ export async function runApply(directory: string, state: LeanState, deps: LeanDe
   writeLeanBytes(directory, `${document}/body-applied.docx`, withGeneratedDocxAttribution(readFileSync(out), identity))
   const rows = await paragraphRows(out)
   writeLeanText(directory, `${document}/paragraphs-applied.json`, `${JSON.stringify(rows, null, 2)}\n`)
-  const redline = withGeneratedDocxAttribution(await compareDocxWithPointers(comparisonBaseline(directory, document).bytes, readFileSync(out), { authorName: identity.author }), identity)
-  const annotated = exportAppliedChangeComments(redline, readFileSync(out), document, changes.amendments, settled.result.applied, changes.explanations, readParagraphs(directory, document), identity.author)
+  const annotated = await documentRedline(directory, document, readFileSync(out), changes, settled.result.applied, identity)
   // Tracked changes are dated when this step started applying them; a change
   // already in the previous redline keeps its date, so an unchanged redline
   // keeps its bytes and the evidence keyed on them.
@@ -73,6 +72,24 @@ export async function runApply(directory: string, state: LeanState, deps: LeanDe
       ...templateItems(directory, document, readParagraphs(directory, document), rows, changes.amendments, new Set(settled.result.applied.map(row => row.id))),
     ],
   }
+}
+
+/** A document's redline: its comparison baseline (comparisonBaseline) compared
+ * with `final`, each applied change's explanation attached as a Word comment.
+ * The apply step passes its own outcome. A change the lawyer accepts into the
+ * delivered body later rebuilds the delivered redline from the outcome the step
+ * recorded (changes.json and apply.json). */
+export async function documentRedline(directory: string, document: DocID, final: Uint8Array,
+  changes: ChangeList | undefined = readChangeList(directory, document),
+  applied: ApplyResult["applied"] | undefined = recordedApplied(directory, document), identity = draftingAttribution()) {
+  if (!changes || !applied) throw new Error(`${document}: the change list or the apply outcome is missing or unreadable.`)
+  const redline = withGeneratedDocxAttribution(await compareDocxWithPointers(comparisonBaseline(directory, document).bytes, final, { authorName: identity.author }), identity)
+  return exportAppliedChangeComments(redline, final, document, changes.amendments, applied, changes.explanations, readParagraphs(directory, document), identity.author)
+}
+
+function recordedApplied(directory: string, document: DocID) {
+  const applied = (readLeanJson(directory, `${document}/apply.json`) as Partial<ApplyResult> | undefined)?.applied
+  return Array.isArray(applied) ? applied : undefined
 }
 
 function message(directory: string, error: unknown) {

@@ -1,8 +1,10 @@
+import { Database } from "bun:sqlite"
 import { createHash } from "node:crypto"
 import { existsSync, readFileSync } from "node:fs"
 import path from "node:path"
+import { canonicalArtifactIdentity } from "../../capabilities/artifacts/mutation-lock"
 import { combineMemoAndBody } from "../../lib/combined-docx"
-import { readDocxCommentParagraphs } from "../../lib/docx-comments"
+import { readDocxCommentParagraphs, readDocxRevisionProperties } from "../../lib/docx-comments"
 import { withParagraphPointers } from "../../lib/drafting-amendment"
 import { sha256File } from "../../lib/lineage"
 import { readWorkingDocx } from "../../lib/working-docx"
@@ -22,6 +24,9 @@ import { leanFile, readLeanJson, writeLeanBytes, writeLeanText } from "./state"
 // Once the lawyer accepts a Word revision of a file this run registered, the run
 // keeps that file and name: a newer output is neither written over the revision
 // nor forked to "<name> (2)"; its row says so and the output stays in the run.
+// A body's redline, which each accept into that body rebuilds from it, stays
+// with the body it shows the same way, while the file under its name is still a
+// registered deliverable redline of that body.
 // When the gate passes with unresolved checklist findings, the notes delivered
 // are the gate's delivered notes (in memo mode the memo first, then those
 // findings; otherwise those findings first, then the drafting notes), under the drafting notes' own kind and name.
@@ -179,7 +184,15 @@ export async function recordLeanDocuments(directory: string, deps: LeanDeps, reg
   const documents: LeanDocument[] = []
   const produced = producedFiles(directory, register)
   const closed = closedNames(directory, produced)
-  for (const item of produced.filter(row => existsSync(leanFile(directory, row.file)))) {
+  const items = produced.filter(row => existsSync(leanFile(directory, row.file)))
+  const priorRow = (item: Produced) => previous.get(`${item.kind}:${item.title ?? item.name}`)
+  // Each document's body kept at the lawyer's accepted revision, found before any
+  // row is recorded, so its redline's keep does not depend on the rows' order.
+  const keptBodies = new Map(items.flatMap(item => {
+    const kept = register && item.kind === "body" && item.document && item.name !== null ? acceptedRevisionName(directory, item.name, priorRow(item)) : undefined
+    return kept ? [[item.document!, kept] as const] : []
+  }))
+  for (const item of items) {
     const source = readFileSync(leanFile(directory, item.file))
     const clean = item.document ? leanFile(directory, `${item.document}/body-applied.docx`) : undefined
     // Normalize legacy generated copies before their delivery identity is read.
@@ -188,8 +201,10 @@ export async function recordLeanDocuments(directory: string, deps: LeanDeps, reg
       item.kind === "redline" && clean && existsSync(clean) ? readFileSync(clean) : undefined) : source
     if (bytes !== source) writeLeanBytes(directory, item.file, bytes)
     const sha256 = createHash("sha256").update(bytes).digest("hex")
-    const prior = previous.get(`${item.kind}:${item.title ?? item.name}`)
-    const kept = register && item.name !== null ? acceptedRevisionName(directory, item.name, prior) : undefined
+    const prior = priorRow(item)
+    const body = item.kind === "redline" && item.document ? keptBodies.get(item.document) : undefined
+    const kept = register && item.name !== null
+      ? body ? keptRedlineName(directory, item.name, prior, body) : acceptedRevisionName(directory, item.name, prior) : undefined
     const deliverable = kept ?? (register && item.name !== null && deps.registerDeliverable
       ? await registerOnce(directory, deps.registerDeliverable, item.name, bytes, sha256, prior, [...previous.values()].filter(row => row.title === item.title), closed(item, item.name))
       : prior?.sha256 === sha256 ? prior.deliverable : null)
@@ -292,6 +307,44 @@ function acceptedRevisionName(directory: string, stem: string, prior: LeanDocume
   const name = prior?.deliverable
   if (!name || !deliverableNames(stem).includes(name)) return
   return readWorkingDocx(directory, path.join(directory, name)) ? name : undefined
+}
+
+/** The earlier deliverable name of a redline whose body is kept so (`body`, the
+ * body's name), while the file there is still a redline of that body, as each
+ * accept into the body rebuilds it: it is registered as a deliverable, holds
+ * tracked changes of any kind (text, paragraph-mark or formatting) and reads as
+ * the body once they are accepted. Any other file under that name, such as a
+ * source or one the lawyer put there, is not the run's redline; the redline then
+ * registers like any other output (registerOnce), under a free name. */
+function keptRedlineName(directory: string, stem: string, prior: LeanDocument | undefined, body: string) {
+  const name = prior?.deliverable
+  if (!name || !deliverableNames(stem).includes(name)) return
+  try {
+    if (registeredRole(directory, name) !== "deliverable") return
+    const redline = readFileSync(path.join(directory, name))
+    const tracked = Object.values(readDocxRevisionProperties(redline).revision_elements).some(count => count > 0)
+    const text = (bytes: Uint8Array) => JSON.stringify(readDocxCommentParagraphs(bytes).map(row => row.paragraph_text))
+    return tracked && text(redline) === text(readFileSync(path.join(directory, body))) ? name : undefined
+  } catch {
+    return
+  }
+}
+
+/** The matter registry's role for the matter file `name` ("source" or
+ * "deliverable"), read-only; undefined when it is unregistered or its rows disagree. */
+function registeredRole(directory: string, name: string) {
+  const file = path.join(directory, ".dochaus", "legal.db")
+  if (!existsSync(file)) return
+  const db = new Database(file, { readonly: true })
+  try {
+    const identity = canonicalArtifactIdentity(directory, name)
+    const roles = new Set((db.query("SELECT doc_path, role FROM documents").all() as { doc_path: string; role: string }[])
+      .filter(row => canonicalArtifactIdentity(path.dirname(row.doc_path), path.basename(row.doc_path)) === identity)
+      .map(row => row.role))
+    return roles.size === 1 ? [...roles][0] : undefined
+  } finally {
+    db.close()
+  }
 }
 
 function deliverableNames(stem: string) {
