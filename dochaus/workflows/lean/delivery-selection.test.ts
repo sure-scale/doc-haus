@@ -26,6 +26,10 @@ test("an explicit Word output title supplies the exact basename without inventin
     "Create an editable Word draft and name the file Supply Review, with an open-items list.",
     "Create an editable Word draft. Save it as Supply Review.",
     "Create an editable Word draft. File name: Supply Review",
+    "Create an editable Word draft and name the document Supply Review, with an open-items list.",
+    "Create an editable Word draft and call this file Supply Review.",
+    "Create an editable Word draft. Save the file as Supply Review.",
+    "Create an editable Word draft and title this draft Supply Review.",
   ]) {
     writeLeanText(directory, "request.md", instruction)
     expect(checkDeliverySelections(directory, [{ ...selection, instruction_quote: instruction }])).toEqual([])
@@ -40,6 +44,15 @@ test("an explicit Word output title supplies the exact basename without inventin
   ]) {
     writeLeanText(directory, "request.md", instruction)
     expect(checkDeliverySelections(directory, [{ ...selection, instruction_quote: instruction }]).length).toBeGreaterThan(0)
+  }
+  // A format is no title: the words that ask for one never ground it as a name.
+  for (const [instruction, file] of [
+    ["Create an editable Word draft. Save it as PDF.", "PDF.docx"],
+    ["Create an editable Word draft and save it as a Word document.", "a Word document.docx"],
+    ["Create an editable Word draft and name the file docx.", "docx.docx"],
+  ]) {
+    writeLeanText(directory, "request.md", instruction!)
+    expect(checkDeliverySelections(directory, [{ ...selection, file: file!, instruction_quote: instruction! }]).length).toBeGreaterThan(0)
   }
 })
 

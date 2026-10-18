@@ -65,12 +65,20 @@ function distinctFiles(rows: DeliverySelection[]) {
  * file's name or a Word output's title, as a regular-expression alternation;
  * the name follows them after whitespace. requested-files.ts grounds a name
  * given without ".docx" on the same words. */
-export const NAMING_WORDS = String.raw`titled|entitled|named|called|with\s+the\s+title|name\s+(?:it|the\s+file|this\s+file)|call\s+(?:it|the\s+file)|save\s+(?:it\s+)?as|file\s*name:`
+export const NAMING_WORDS = String.raw`titled|entitled|named|called|with\s+the\s+title|(?:name|call|title)\s+(?:it|(?:the|this)\s+(?:file|document|draft))|save\s+(?:(?:it|(?:the|this)\s+(?:file|document|draft))\s+)?as|file\s*name:`
+
+/** Whether a file name's stem is a format's name rather than a name: words
+ * that ask for a format never name a file. Code only, never a prompt. */
+export function formatStem(stem: string) {
+  return /^(?:an?\s+)?(?:(?:ms|microsoft)\s+)?(?:word|docx?|pdf|rtf|odt|wpd|wordperfect|pages|xps|epub|te?xt|plain\s+text|md|markdown|html?|xml|excel|xlsx?|csv|ods|powerpoint|pptx?|odp)(?:\s+(?:document|file|format|version|copy))?$/i.test(stem.trim())
+}
 
 /** Naming intent and artifact roles belong to the semantic reviewer. The
  * checker only grounds the literal name; adding Word's extension to an
- * explicitly stated title does not require a model to invent another name. */
+ * explicitly stated title does not require a model to invent another name,
+ * and a format's name (formatStem) is no title. */
 export function deliveryNameQuoted(quote: string, file: string) {
+  if (formatStem(file.slice(0, -5))) return false
   if (quote.includes(file)) return true
   const title = file.slice(0, -5).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
   const named = new RegExp(`\\b(?:${NAMING_WORDS})\\s+["“'‘]?(${title})(?=$|[,;!?]|\\.(?:\\s|$)|["”'’])`, "gi")

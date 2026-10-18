@@ -119,7 +119,6 @@ describe("parse requested files", () => {
     // The refused text is kept beside the file, for disclosure.
     expect(parseRequestedFiles(text, directory, DOCUMENTS, MEMO, { final: true })).toEqual({ issues: [], value: stated(
       { ...file(["memo", "d2"], PACK), refused_name: "Kestrel Pack.docx" }, { ...file(["d1"], TRANSFER), refused_name: "transfers/Kestrel Transfer.docx" }) })
-    expect(parseRequestedFiles(reply(true, file(["d1"], TRANSFER, "Kestrel Transfer.pdf")), directory, DOCUMENTS, MEMO)).toEqual({ issues: [nameNotPlain(0, "Kestrel Transfer.pdf")] })
   })
 
   test("a name is held to the lawyer's own text around the quote, whatever its case or line breaks", () => {
@@ -185,7 +184,8 @@ describe("parse requested files", () => {
   })
 
   test("the ordinary ways of naming a file ground a name given without .docx", () => {
-    for (const naming of ["name it", "Name the file", "name this file", "call it", "call the file", "save it as", "save as", "File name:", "filename:"]) {
+    for (const naming of ["name it", "Name the file", "name this file", "name the document", "call it", "call the file", "call the document", "save it as", "save as",
+      "save the file as", "title this draft", "File name:", "filename:"]) {
       const quote = `Put the cover memo and the board minute in one file and ${naming} Kestrel Board Pack`
       const directory = prepared(`${quote}.`)
       expect(parseRequestedFiles(reply(true, file(["memo", "d2"], quote, "Kestrel Board Pack.docx")), directory, DOCUMENTS, MEMO))
@@ -203,11 +203,51 @@ describe("parse requested files", () => {
       .toEqual({ issues: [], value: stated(file(["memo", "d2"], "in one file titled Kestrel Pack", "Kestrel Pack.docx")) })
   })
 
-  test("a name the reply gives without an extension is a Word file's; another extension is still refused", () => {
+  test("a name given without .docx may follow its naming word after a colon and an opening mark", () => {
+    const words = "Put the board minute in a file of its own"
+    const parse = (named: string) => {
+      const quote = `${words}, ${named}`
+      const directory = prepared(`${quote}.`)
+      return { quote, result: parseRequestedFiles(reply(true, file(["d2"], quote, "Kestrel Minute")), directory, DOCUMENTS, MEMO) }
+    }
+    for (const named of ["save it as **Kestrel Minute**", "named `Kestrel Minute`", "named [Kestrel Minute]", "named (Kestrel Minute)", "titled: Kestrel Minute", "named: Kestrel Minute"]) {
+      const { quote, result } = parse(named)
+      expect(result).toEqual({ issues: [], value: stated(file(["d2"], quote, "Kestrel Minute.docx")) })
+    }
+    // A name cut short, or starting inside a word, is still refused.
+    for (const named of ["save it as **Kestrel Minute Final**", "named `Kestrel Minutes`", "named **Draft-Kestrel Minute**"])
+      expect(parse(named).result).toEqual({ issues: [nameNotQuoted(0, "Kestrel Minute")] })
+  })
+
+  test("a name the reply gives without a format's extension is a Word file's; another format the lawyer does not write is retried", () => {
     const directory = prepared()
     expect(parseRequestedFiles(reply(true, file(["memo", "d2"], PACK, "Kestrel Board Pack"), file(["d1"], TRANSFER, " kestrel transfer ")), directory, DOCUMENTS, MEMO)).toEqual({ issues: [], value: ASKED })
-    expect(parseRequestedFiles(reply(true, file(["d1"], TRANSFER, "Kestrel Transfer.pdf")), directory, DOCUMENTS, MEMO)).toEqual({ issues: [nameNotPlain(0, "Kestrel Transfer.pdf")] })
-    expect(parseRequestedFiles(reply(true, file(["d1"], TRANSFER, "Kestrel Transfer.doc")), directory, DOCUMENTS, MEMO)).toEqual({ issues: [nameNotPlain(0, "Kestrel Transfer.doc")] })
+    expect(parseRequestedFiles(reply(true, file(["d1"], TRANSFER, "Kestrel Transfer.pdf")), directory, DOCUMENTS, MEMO)).toEqual({ issues: [nameNotQuoted(0, "Kestrel Transfer.pdf")] })
+    expect(parseRequestedFiles(reply(true, file(["d1"], TRANSFER, "Kestrel Transfer.doc")), directory, DOCUMENTS, MEMO)).toEqual({ issues: [nameNotQuoted(0, "Kestrel Transfer.doc")] })
+    // An ending that is no format's is part of the name.
+    for (const name of ["Kestrel Holdings S.A", "Kestrel Minute rev.A"]) {
+      const quote = `Put the cover memo and the board minute in one file named ${name}, with the memo first`
+      expect(parseRequestedFiles(reply(true, file(["memo", "d2"], quote, name)), prepared(`${quote}.`), DOCUMENTS, MEMO))
+        .toEqual({ issues: [], value: stated(file(["memo", "d2"], quote, `${name}.docx`)) })
+    }
+  })
+
+  test("a name the lawyer writes in another format is refused at once in the lawyer's spelling, as no retry makes it a Word file's", () => {
+    const quote = "Deliver the share transfer form separately as Kestrel Transfer.pdf"
+    const directory = prepared(`${quote}.`)
+    for (const name of ["Kestrel Transfer.pdf", "kestrel transfer.PDF"])
+      expect(parseRequestedFiles(reply(true, file(["d1"], quote, name)), directory, DOCUMENTS, MEMO))
+        .toEqual({ issues: [], value: stated({ ...file(["d1"], quote), refused_name: "Kestrel Transfer.pdf" }) })
+  })
+
+  test("a format is no name: a format given as a file's name is refused at once, and no refused name is made up", () => {
+    for (const [words, name] of [["save it as PDF", "PDF"], ["save as Word", "Word"], ["save it as a Word document", "a Word document"], ["name the file docx", "docx"]]) {
+      const quote = `Deliver the share transfer form separately and ${words}`
+      const directory = prepared(`${quote}.`)
+      expect(parseRequestedFiles(reply(true, file(["d1"], quote, name)), directory, DOCUMENTS, MEMO))
+        .toEqual({ issues: [], value: stated({ ...file(["d1"], quote), refused_name: name }) })
+      expect(parseRequestedFiles(reply(true, file(["d1"], quote)), directory, DOCUMENTS, MEMO)).toEqual({ issues: [], value: stated(file(["d1"], quote)) })
+    }
   })
 
   test("a file holds planned documents, the memo only when one is planned, each in one file at most, on every attempt", () => {
@@ -559,6 +599,14 @@ describe("requested files items", () => {
     expect(requestedFilesItems(saved(AS_ASKED, record({ ...refused, refused_name: "Kestrel Transfer.docx" })))).toEqual([])
   })
 
+  test("a file asked for in another format is disclosed as such, though the run delivers a Word file of the same stem", () => {
+    const quote = TRANSFER.replace(".docx", ".pdf")
+    const disclosed = (name: string) => item(`the lawyer's words "${quote}" [source: request] ask for "Share transfer form" as a file of its own ` +
+      `and give it as "${name}"; the run delivers Word files only and delivers "Share transfer form" in "Kestrel Transfer.docx".`)
+    for (const name of ["Kestrel Transfer.pdf", "PDF"])
+      expect(requestedFilesItems(saved(AS_ASKED, record({ ...file(["d1"], quote), refused_name: name })))).toEqual([disclosed(name)])
+  })
+
   test("a name refused on an earlier attempt stays disclosed when the last attempt gives none, until a name passes", () => {
     const directory = saved()
     const refused = new Map<string, string>()
@@ -573,6 +621,19 @@ describe("requested files items", () => {
     // A later name the lawyer's words give clears it.
     expect(parse("Kestrel Transfer.docx")).toEqual({ issues: [], value: ASKED })
     expect(parse(null, true)).toEqual({ issues: [], value: stated(file(["memo", "d2"], PACK, "Kestrel Board Pack.docx"), file(["d1"], TRANSFER)) })
+  })
+
+  test("a name refused for one file is kept for that file alone, though another file shares its quote", () => {
+    const directory = prepared()
+    const refused = new Map<string, string>()
+    const parse = (final: boolean, ...files: RequestedFile[]) => parseRequestedFiles(reply(true, ...files), directory, DOCUMENTS, MEMO, { final, refused })
+    expect(parse(false, file(["d1"], BOTH, "Kestrel Form.docx"), file(["d2"], BOTH))).toEqual({ issues: [nameNotQuoted(0, "Kestrel Form.docx")] })
+    expect(parse(true, file(["d1"], BOTH), file(["d2"], BOTH))).toEqual({ issues: [], value: stated({ ...file(["d1"], BOTH), refused_name: "Kestrel Form.docx" }, file(["d2"], BOTH)) })
+    // A name that passes for the other file does not clear it.
+    refused.clear()
+    expect(parse(false, file(["d1"], PACK, "Kestrel Form.docx"), file(["memo", "d2"], PACK, "Kestrel Board Pack.docx"))).toEqual({ issues: [nameNotQuoted(0, "Kestrel Form.docx")] })
+    expect(parse(true, file(["d1"], PACK), file(["memo", "d2"], PACK, "Kestrel Board Pack.docx")))
+      .toEqual({ issues: [], value: stated({ ...file(["d1"], PACK), refused_name: "Kestrel Form.docx" }, file(["memo", "d2"], PACK, "Kestrel Board Pack.docx")) })
   })
 
   test("a files job that never passed its check is recorded as unchecked and disclosed as one item", () => {
