@@ -60,7 +60,7 @@ export const LEAN_PROMPT_VERSION = "lean-17-advice-scope"
 const OUTLINE_CONTRACT = "document-executing-parties-memo-6"
 const DELIVERY_REVIEW_CONTRACT = "grounded-delivery-selection-4"
 const STRUCTURAL_AMENDMENT_CONTRACT = "explicit-paragraph-cardinality-1"
-const DRAFTING_NOTES_CONTRACT = "lawyer-facing-notes-placeholders-2"
+const DRAFTING_NOTES_CONTRACT = "lawyer-facing-notes-plain-refs-3"
 /** Keys finalize only when the notes are a requested memo (the plan has a
  * memo name), so runs without one keep their finalize key. */
 const REQUESTED_MEMO_CONTRACT = "requested-memo-titles-7"
@@ -388,12 +388,14 @@ export function stageOutputValid(directory: string, step: StepID) {
     if (!readLeanText(directory, `${document}/change-plan.json`)) return true
     return !uniqueReplacementIssues(list).length && !checkChanges(directory, text(`${document}/changes.json`), readParagraphs(directory, document), { document }).issues.length
   }
-  // Saved notes are judged as a last attempt judges them: an internal id in a
-  // memo's prose or a placeholder of the notes' own was retry feedback, not a
-  // defect of the saved notes, so it does not re-run them; any other failed check does.
+  // Saved notes are judged as a last attempt judges them: an internal id in
+  // their prose or a placeholder of their own was retry feedback, not a defect
+  // of the saved notes, so it does not re-run them; any other failed check does.
   if (stage === "finalize") return !checkDraftingNotes(directory, text("drafting-notes.md"), disclosableItems(directory), { final: true }).issues.length
-  // A passed gate with unresolved checklist findings delivers them in its notes.
-  if (stage === "gate") return !(readLeanJson(directory, "gate.json") as { items?: OpenItem[] } | undefined)?.items?.some(item => item.kind === "checklist_unresolved") ||
+  // A passed gate delivers the drafting notes, and any unresolved checklist
+  // findings, in its own notes (deliveredNotes).
+  if (stage === "gate") return !(existsSync(leanFile(directory, "drafting-notes.md")) ||
+    (readLeanJson(directory, "gate.json") as { items?: OpenItem[] } | undefined)?.items?.some(item => item.kind === "checklist_unresolved")) ||
     [DELIVERED_NOTES.docx, DELIVERED_NOTES.markdown].every(name => existsSync(leanFile(directory, name)))
   return true
 }

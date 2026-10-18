@@ -113,32 +113,31 @@ export function settleApply(changes: ChangeList, result: ApplyResult | undefined
   }
 }
 
-/** The drafting notes must disclose every open item by id. Its own quotes and citations
- * must be supported: it cannot disclose itself, so a defect there is retried.
- * A requested memo is delivered with only its "[ref: …]" markers removed, so
- * there an item is disclosed by its id inside a marker, and a run id, planned
- * document id or recorded change id written anywhere else, which would reach
- * the reader, is retried. So is a placeholder in the notes' own text, a gap
- * no open item records. The notes may quote a body placeholder exactly as its
- * open item records it, and neither a "[ref: …]" marker, an item's id, quoted
- * text nor an editorial mark (EDITORIAL_MARK) is a placeholder of their own.
- * On the last attempt (`final`) such an id or placeholder alone does not fail
- * the notes: they are saved as the model wrote them, never rewritten, and
- * every other check still applies. */
+/** The drafting notes must disclose every open item: they say what it is and
+ * end that statement with its id in a "[ref: …]" marker. The notes are
+ * delivered with only those markers removed, so a run id, planned document id
+ * or recorded change id written anywhere else, which would reach the reader, is
+ * retried. Their own quotes and citations must be supported: they cannot
+ * disclose themselves, so a defect there is retried. So is a placeholder in the
+ * notes' own text, a gap no open item records. The notes may quote a body
+ * placeholder exactly as its open item records it, and neither a "[ref: …]"
+ * marker, an item's id, quoted text nor an editorial mark (EDITORIAL_MARK) is a
+ * placeholder of their own. On the last attempt (`final`) an item's id anywhere
+ * in the notes discloses it, as the gate reads them, and such an id or
+ * placeholder alone does not fail the notes: they are saved as the model wrote
+ * them, never rewritten, and every other check still applies. */
 export function checkDraftingNotes(directory: string, content: string, items: OpenItem[], options: { final?: boolean } = {}): StageCheck {
   const shape = documentShapeIssues(content, "drafting notes")
   if (shape.length) return { issues: shape, openItems: [] }
   const memo = memoMode(directory)
-  const markers = memo ? [...content.matchAll(REF_MARKER)].map(match => match[1]!) : []
-  const undisclosed = items.filter(item => memo
-    ? !markers.some(marker => standingID(item.id).test(marker))
-    : !content.includes(item.id)).map(item => item.id)
-  const unmarked = withoutRefMarkers(content)
-  const delivered = memo ? unmarked : ""
-  const ids = memo && !options.final
+  const markers = [...content.matchAll(REF_MARKER)].map(match => match[1]!)
+  const undisclosed = items.filter(item => !markers.some(marker => standingID(item.id).test(marker)) && !(options.final && content.includes(item.id)))
+    .map(item => item.id)
+  const delivered = withoutRefMarkers(content)
+  const ids = !options.final
   const stray = ids ? runItemIDs(directory, items).filter(id => readerVisibleID(id) && standingID(id).test(delivered)) : []
-  // A planned document's short id ("d1") is internal in a memo too: the reader
-  // knows the document by its title or file name.
+  // A planned document's short id ("d1") is internal too: the reader knows the
+  // document by its title or file name.
   // Quoted text, a citation, a footnote marker and a locator's number are not
   // prose (NOT_PROSE): only a standalone id there is a stray.
   const prose = NOT_PROSE.reduce((text, mask) => text.replace(mask, " "), delivered)
@@ -146,27 +145,26 @@ export function checkDraftingNotes(directory: string, content: string, items: Op
   // So is a recorded change id ("a1"): the reader knows a change by its effect.
   const strayChanges = ids ? runChangeIDs(directory, items).filter(id => standingID(id).test(prose)) : []
   const recorded = new Set(items.flatMap(item => item.ref.placeholder ? [item.ref.placeholder.toLowerCase()] : []))
-  const own = items.reduce((text, item) => text.replaceAll(item.id, " "), unmarked).replace(QUOTED, " ")
+  const own = items.reduce((text, item) => text.replaceAll(item.id, " "), delivered).replace(QUOTED, " ")
   const gaps = options.final ? [] : textPlaceholders(own)
     .filter(placeholder => !recorded.has(placeholder.toLowerCase()) && !EDITORIAL_MARK.test(placeholder))
   const misquoted = sourceQuotes(content).filter(quote => !quoteFound(directory, quote))
   const unsupported = [...new Set(citationRowsForLeanText(directory, "drafting-notes.md", content)
     .filter(row => row.status === "unsupported").map(row => row.citation_text))]
+  const reader = memo ? "The memo is" : "The notes are"
   return {
     issues: [
       ...(undisclosed.length
-        ? [`The drafting notes do not mention these open items: ${undisclosed.join(", ")}. ${memo
-          ? "Say what each is and what the lawyer needs to do about it, ending that statement with its exact id as \"[ref: <id>]\"."
-          : "Name each id and say what the lawyer needs to do about it."}`]
+        ? [`The drafting notes do not mention these open items: ${undisclosed.join(", ")}. Say what each is and what the lawyer needs to do about it, ending that statement with its exact id as "[ref: <id>]".`]
         : []),
       ...(stray.length
-        ? [`These internal ids appear outside a "[ref: …]" marker: ${stray.join(", ")}. The memo is for the reader: describe each point in words and keep each id only in the marker that ends its statement.`]
+        ? [`These internal ids appear outside a "[ref: …]" marker: ${stray.join(", ")}. ${reader} for the reader: describe each point in words and keep each id only in the marker that ends its statement.`]
         : []),
       ...(strayDocuments.length
-        ? [`These document ids appear outside a "[ref: …]" marker: ${strayDocuments.join(", ")}. The memo is for the reader: name each document by its title or file name, not its id.`]
+        ? [`These document ids appear outside a "[ref: …]" marker: ${strayDocuments.join(", ")}. ${reader} for the reader: name each document by its title or file name, not its id.`]
         : []),
       ...(strayChanges.length
-        ? [`These change ids appear outside a "[ref: …]" marker: ${strayChanges.join(", ")}. The memo is for the reader: describe each change by what it does, not its id.`]
+        ? [`These change ids appear outside a "[ref: …]" marker: ${strayChanges.join(", ")}. ${reader} for the reader: describe each change by what it does, not its id.`]
         : []),
       ...(gaps.length
         ? [`The drafting notes leave these placeholders in their own text: ${gaps.join(", ")}. State the point in words, or quote the body's placeholder exactly as its open item records it.`]
@@ -186,7 +184,7 @@ const QUOTED = /"[^"\n]*"|\u201c[^\u201d\n]*\u201d/g
  * ("added", "inserted", "supplied", "omitted"), optionally after "emphasis". */
 const EDITORIAL_MARK = /^\[\s*(?:(?:emphasis\s+)?(?:added|inserted|supplied|omitted)|sic)\s*\]$/i
 
-/** Text the memo check does not read as prose: quoted text (the memo's verified
+/** Text the notes check does not read as prose: quoted text (the notes' verified
  * quotes), a footnote marker "[^d1]", a citation such as "3(d1)" or
  * "3(1)(a1)", and the number a locator word gives. That number starts with a
  * digit ("clause 12.1(d)", "Section 21A", "para. 3", "reg. 4(2)(b)"), or is in
@@ -229,8 +227,8 @@ export function standingIDPattern(ids: string) {
  * digit and no space, joined by ":" or "-" (open item and checklist ids, which
  * carry a hash) or a paragraph pointer. Short labels such as a document or
  * amendment id ("d1", "a1", "w1", "i1") and word-like ids with no digit are
- * not counted here; a memo's planned document ids and recorded change ids are
- * checked on their own. */
+ * not counted here; the notes' planned document ids and recorded change ids
+ * are checked on their own. */
 function readerVisibleID(id: string) {
   return id.length >= 8 && /\d/.test(id) && !/\s/.test(id) && (/[:-]/.test(id) || /^p[0-9a-f]{12}$/.test(id))
 }

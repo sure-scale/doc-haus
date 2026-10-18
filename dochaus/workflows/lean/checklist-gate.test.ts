@@ -132,7 +132,7 @@ test("an integrity failure is described as one, not as an adverse finding", () =
 
 const NOTES = "# Drafting notes\n\nThe draft states the delivery period.\n"
 
-test("unresolved findings lead the delivered notes with their source, class, reason and limitation; the drafting notes follow unchanged", () => {
+test("unresolved findings lead the delivered notes in plain words with their source, status, reason and limitation; the drafting notes follow", () => {
   const directory = checklistMatter([{ item_id: "c1", finding: finding("c1", "unsatisfied") },
     { item_id: "c2", finding: finding("c2", "indeterminate", { indeterminate_cause: "not_inspectable" }) }])
   writeLeanText(directory, "drafting-notes.md", NOTES)
@@ -143,18 +143,20 @@ test("unresolved findings lead the delivered notes with their source, class, rea
   const lead = notes.slice(0, -NOTES.length)
   expect(lead.startsWith("# ")).toBe(true)
   expect(lead.split("\n").filter(line => line.startsWith("- "))).toEqual([
-    `- c1: Checklist requirement unresolved (omission; no repair round ran): The note states the delivery period. Finding: Focused result unsatisfied. Limitation: Comments not inspected. Source: request, request: "Deliver within thirty days of the order."`,
-    `- c2: Checklist requirement unresolved (cannot be established from document text): The note states when payment falls due. Finding: Focused result indeterminate. Limitation: Comments not inspected. Source: request, request: "Payment is due on delivery."`,
+    `- The note states the delivery period. Status: not met in this draft; check whether the draft should be changed to meet it. Reason: Focused result unsatisfied. Limitation: Comments not inspected. Source: request: "Deliver within thirty days of the order."`,
+    `- The note states when payment falls due. Status: cannot be confirmed from the document text; check it directly. Reason: Focused result indeterminate. Limitation: Comments not inspected. Source: request: "Payment is due on delivery."`,
   ])
   expect(deliveredNotes(directory, finalGate(directory))).toBe(notes)
 })
 
-test("with no unresolved finding there are no delivered notes to compose: the drafting notes are delivered as written", () => {
+test("with no unresolved finding the drafting notes are delivered without their markers", () => {
   const directory = checklistMatter([{ item_id: "c1", finding: finding("c1", "open") }, { item_id: "c2", finding: finding("c2", "satisfied") }])
   writeLeanText(directory, "drafting-notes.md", NOTES)
   const gate = finalGate(directory)
   expect(gate.delivery).toBe("review_draft")
-  expect(deliveredNotes(directory, gate)).toBeUndefined()
+  expect(deliveredNotes(directory, gate)).toBe(NOTES)
+  writeLeanText(directory, "drafting-notes.md", "# Drafting notes\n\nThe draft states the delivery period. [ref: c1]\n")
+  expect(deliveredNotes(directory, gate)).toBe("# Drafting notes\n\nThe draft states the delivery period.\n")
 })
 
 test("an informational open finding stays a checklist_open disclosure of a review draft", () => {
@@ -189,7 +191,8 @@ test("adverse coverage of a refined parent is disclosed, not blocking", () => {
   expect(gate.disclosed[0]).toMatchObject({ status: "disclosed", ref: { checklist_item: "c1", document: "d1" },
     detail: expect.stringContaining("The note states the delivery period.") })
   expect(gate.disclosed[0]!.ref.checklist_class).toBeUndefined()
-  expect(deliveredNotes(directory, gate)).toContain(`- c1: ${gate.disclosed[0]!.detail} Source: request, request: "Deliver within thirty days of the order."`)
+  // Read from a fresh gate: the matchers above stand in for the item's detail.
+  expect(deliveredNotes(directory, finalGate(directory))!.split("\n")).toContain(`- The note states the delivery period. Status: could not be confirmed from the draft; check the draft against it. Reason: No current text or file in the draft shows that part of it was adopted. Source: request: "Deliver within thirty days of the order."`)
 })
 
 test("a clean checklist still delivers execution-ready output", () => {

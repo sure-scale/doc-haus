@@ -235,7 +235,7 @@ describe("plan coverage through the run", () => {
     expect(items).toEqual([expect.objectContaining({ stage: "finalize", kind: "omission", detail: expect.stringContaining("Plan coverage could not be checked") })])
     const [item] = items
     expect(model.prompts.find(prompt => prompt.agent === AGENT.finalize)!.text).toContain(`- ${item!.id}: `)
-    expect(readLeanText(directory, "drafting-notes.md")).toContain(`- ${item!.id}: `)
+    expect(readLeanText(directory, "drafting-notes.md")).toContain(`[ref: ${item!.id}]`)
     const gate = gateOf(directory)
     expect(gate).toMatchObject({ status: "pass", delivery: "review_draft", blocking: [] })
     expect(gate.disclosed).toEqual([expect.objectContaining({ id: item!.id, status: "disclosed" })])

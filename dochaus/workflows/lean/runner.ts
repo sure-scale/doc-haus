@@ -591,12 +591,12 @@ async function runGate(directory: string): Promise<StageRun> {
   })
   writeLeanText(directory, "gate.json", `${JSON.stringify(gate, null, 2)}\n`)
   writeLeanText(directory, "drafting-notes-coverage.md", notesCoverageReport(gate))
-  // Unresolved checklist findings lead the notes delivered with the draft, and
-  // a requested memo is always delivered without its reference markers.
-  // Otherwise the drafting notes are delivered as written, so earlier
-  // delivered notes are removed. Rendering is not byte-stable (a list gets a
-  // fresh relationship id), so unchanged notes keep their earlier file; the
-  // .docx is written before the .md, so a stop between the two re-renders.
+  // The drafting notes are delivered without their reference markers, with
+  // any unresolved checklist findings in plain words. With no drafting notes
+  // and no finding there is nothing to deliver, so earlier delivered notes are
+  // removed. Rendering is not byte-stable (a list gets a fresh relationship
+  // id), so unchanged notes keep their earlier file; the .docx is written
+  // before the .md, so a stop between the two re-renders.
   const previous = leanFile(directory, DELIVERED_NOTES.docx)
   if (notes) {
     if (!existsSync(previous) || readLeanText(directory, DELIVERED_NOTES.markdown) !== notes) {

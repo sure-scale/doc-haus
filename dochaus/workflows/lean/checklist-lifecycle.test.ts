@@ -183,7 +183,9 @@ test("an omission resting on a delivered file's properties is disclosed with the
   expect(disclosed.ref.checklist_class).toBe("omission")
   expect(disclosed.detail).toContain("(omission; no repair round ran)")
   expect(report(directory)).toContain(`Disclosed, not satisfied: ${id}: omission; no repair round ran: Focused result unsatisfied.`)
-  expect(readFileSync(leanFile(directory, "delivered-notes.md"), "utf8")).toContain(`- ${id}: ${disclosed.detail}`)
+  const delivered = readFileSync(leanFile(directory, "delivered-notes.md"), "utf8")
+  expect(delivered).toContain("- The requested supply note is drafted. Status: not met in this draft; check whether the draft should be changed to meet it. Reason: Focused result unsatisfied.")
+  expect(delivered).not.toContain(id!)
 }, 120000)
 
 test("a later review round does not re-arm the checklist repair of an omission", async () => {
@@ -254,9 +256,9 @@ for (const [label, scripted] of [
 }, 120000)
 
 // Unresolved findings reach the lawyer in the delivered notes: the gate puts
-// them first, then the drafting notes unchanged, and the notes deliverable
-// carries that file under its usual name. With none, the drafting notes are
-// delivered as written.
+// them first, in plain words, then the drafting notes without their markers,
+// and the notes deliverable carries that file under its usual name. With none,
+// the drafting notes alone are delivered, without their markers.
 const notesRows = (directory: string) => readLeanDocuments(directory)!.documents.filter(row => row.document === null).map(row => [row.kind, row.path, row.deliverable])
 const NOTES_NAME = "Supply note - drafting notes.docx"
 
@@ -274,12 +276,14 @@ test("unresolved findings lead the delivered notes, registered under the notes' 
   const delivered = readFileSync(leanFile(directory, "delivered-notes.md"), "utf8")
   expect(delivered.endsWith(notes)).toBe(true)
   const lead = delivered.slice(0, -notes.length)
-  for (const item of findings) expect(lead).toContain(`- ${item.ref.checklist_item}: ${item.detail} Source: `)
-  expect(lead).toContain("(cannot be established from document text)")
+  const requirements = ["The requested supply note is drafted.", "Payment remains due on delivery."]
+  expect(lead.split("\n").filter(line => line.startsWith("- ")).map(line => line.split(" Status: ")[0])).toEqual(requirements.map(text => `- ${text}`))
+  expect(lead).toContain("Status: cannot be confirmed from the document text; check it directly.")
+  for (const item of findings) expect(lead).not.toContain(item.ref.checklist_item!)
   const docx = readFileSync(leanFile(directory, "delivered-notes.docx"))
   const text = readDocxCommentParagraphs(docx).map(row => row.paragraph_text)
   const at = (needle: string) => text.findIndex(line => line.includes(needle))
-  expect(findings.map(item => at(item.detail)).every(index => index >= 0 && index < at("The draft states the delivery period from the supply terms."))).toBe(true)
+  expect(requirements.map(at).every(index => index >= 0 && index < at("The draft states the delivery period from the supply terms."))).toBe(true)
   expect(notesRows(directory)).toEqual([["drafting_notes", ".dochaus/lean/delivered-notes.docx", NOTES_NAME], ["drafting_notes_markdown", ".dochaus/lean/delivered-notes.md", null]])
   expect(readFileSync(path.join(directory, NOTES_NAME))).toEqual(docx)
   expect(run.prompts.find(row => row.agent === AGENT["package-review"])!.text).toContain('a "Disclosed, not satisfied" line is an unresolved finding')
@@ -302,7 +306,7 @@ test("unresolved findings lead the delivered notes, registered under the notes' 
   expect(readFileSync(path.join(directory, NOTES_NAME))).toEqual(readFileSync(leanFile(directory, "delivered-notes.docx")))
 }, 120000)
 
-test("with no unresolved finding the drafting notes are delivered as written; cleared findings leave no delivered notes", async () => {
+test("with no unresolved finding the drafting notes alone are delivered; cleared findings leave the delivered notes", async () => {
   const directory = matter()
   const deliverables = registering()
   const run = model(directory, "indeterminate", { indeterminate_cause: "not_inspectable" })
@@ -313,9 +317,9 @@ test("with no unresolved finding the drafting notes are delivered as written; cl
   const clean = model(directory)
   expect((await runLean(directory, { sessions: clean.port, registerDeliverable: deliverables.registerDeliverable })).status).toBe("completed")
   expect(readLeanJson(directory, "gate.json")).toMatchObject({ status: "pass", delivery: "execution_ready" })
-  expect(["delivered-notes.md", "delivered-notes.docx"].some(name => existsSync(leanFile(directory, name)))).toBe(false)
-  expect(notesRows(directory)).toEqual([["drafting_notes", ".dochaus/lean/drafting-notes.docx", NOTES_NAME], ["drafting_notes_markdown", ".dochaus/lean/drafting-notes.md", null]])
-  expect(readFileSync(path.join(directory, NOTES_NAME))).toEqual(readFileSync(leanFile(directory, "drafting-notes.docx")))
+  expect(readFileSync(leanFile(directory, "delivered-notes.md"), "utf8")).toBe(readFileSync(leanFile(directory, "drafting-notes.md"), "utf8"))
+  expect(notesRows(directory)).toEqual([["drafting_notes", ".dochaus/lean/delivered-notes.docx", NOTES_NAME], ["drafting_notes_markdown", ".dochaus/lean/delivered-notes.md", null]])
+  expect(readFileSync(path.join(directory, NOTES_NAME))).toEqual(readFileSync(leanFile(directory, "delivered-notes.docx")))
   expect(readdirSync(directory).filter(name => name.includes("drafting notes"))).toEqual([NOTES_NAME])
 }, 120000)
 

@@ -76,7 +76,10 @@ function uncheckedItems(plan: LeanPlan) {
 const notCheckedItems = () => [openItem("finalize", "omission", "Plan coverage was not checked against the saved document plan: no current record of that check exists, " +
   "so it is not known whether each act the instructions direct has a document executed by the parties who must take it. " +
   "The lawyer should confirm that each instructed act is carried by a document executed by the parties who must take it.", { repair_target: "memo" })]
-const notesNaming = (items: OpenItem[]) => ["# Drafting notes", "", "The release letter records the release.", "", ...items.map(item => `- ${item.id}: ${item.detail}`)].join("\n")
+/** Notes saying each item in its detail's words, each planned document by its
+ * quoted title rather than its id, and ending with its ref marker. */
+const notesNaming = (items: OpenItem[]) => ["# Drafting notes", "", "The release letter records the release.", "",
+  ...items.map(item => `- ${item.detail.replace(/\bd\d+ (?=")/g, "")} [ref: ${item.id}]`)].join("\n")
 
 function gate(directory: string, notes: string): GateResult {
   writeLeanText(directory, "drafting-notes.md", `${notes}\n`)

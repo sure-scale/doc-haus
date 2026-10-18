@@ -14,11 +14,10 @@ import { acceptStageReply } from "./stages"
 import { leanFile, readLeanState, readLeanText, readOpenItems, updateLeanStage, writeLeanText, writeOpenItems, type OpenItem } from "./state"
 import { AGENT, DRAFT, cleanupMatters, drafter, happyPath, matter, pidOf, registering, sameSession, scriptedModel, type Reply } from "./test-support"
 
-// A requested memo is delivered at the gate without its "[ref: …]" markers,
-// and the finding lines the gate composes for it name no internal id. The
-// working drafting notes keep their markers for the notes check, the gate and
-// the checklist check. Without a requested memo the delivered notes are
-// unchanged.
+// The drafting notes, a requested memo or not, are delivered at the gate
+// without their "[ref: …]" markers, and the finding lines the gate composes
+// for them name no internal id. The working drafting notes keep their markers
+// for the notes check, the gate and the checklist check.
 
 afterEach(cleanupMatters)
 
@@ -192,11 +191,10 @@ test("finalize keeps a requested memo's markers in the working notes; only the g
   expect(gate).toMatchObject({ status: "pass", blocking: [] })
   expect(deliveredNotes(directory, gate)).toBe("# Cover memo\n\nNo authority was found for the delivery period; confirm it before use.\n")
 
-  // Without a requested memo there is nothing to compose: the drafting notes
-  // are delivered as written.
+  // Without a requested memo the notes are delivered the same way.
   writeLeanPlan(directory, [DOCUMENT])
   expect(memoMode(directory)).toBe(false)
-  expect(deliveredNotes(directory, finalGate(directory))).toBeUndefined()
+  expect(deliveredNotes(directory, finalGate(directory))).toBe("# Cover memo\n\nNo authority was found for the delivery period; confirm it before use.\n")
 })
 
 test("a requested memo delivered without findings keeps each quotation whole on a line that loses its marker", () => {
@@ -241,10 +239,6 @@ function checklistMatter() {
   return directory
 }
 
-// The notes delivered without a requested memo, byte for byte as they were
-// before the memo's findings moved to its end: the findings lead, each with
-// its id and full detail, then the drafting notes unchanged.
-const PLAIN_DELIVERED = "# Checklist findings not satisfied\n\nThese checklist requirements were not established as satisfied. Each is disclosed with this review draft for review; none is treated as satisfied.\n\n- c1: Checklist requirement unresolved (conflicts with another source requirement): The note states the delivery period. Finding: Paragraph p0123456789ab omits it. Limitation: Comments not inspected. Conflicting checklist items: c2. Source: request, .dochaus/lean/questions.json answer (delivery-start): \"Deliver within thirty days of the order.\"\n- c2: Checklist requirement unresolved (omission; no repair round ran): The note states when delivery starts. Finding: Paragraph p0123456789ab omits it. Limitation: Comments not inspected. Source: request, request.md: \"Deliver within ten days of the order.\"\n\n# Cover memo\n\nThe delivery period follows the order. [ref: c2]\n"
 const MEMO_FINDINGS = ["## Requirements not confirmed as met", "",
   "These requirements were not confirmed as met in this draft and need the lawyer's review.", ""]
 // A memo finding's status in plain words: what is not confirmed and what the
@@ -253,11 +247,18 @@ const OMISSION = "Status: not met in this draft; check whether the draft should 
 const CONFLICT = "Status: conflicts with another requirement in the sources; check which one governs."
 const PROCESS_WORDS = ["repair", "omission", "reinspect", "source adjudication", "allowance", "the check ", "checker", "finalize", "Checklist", "Finding:"]
 
-test("without a requested memo the delivered notes are unchanged: findings first with their ids and detail, then the drafting notes", () => {
+test("without a requested memo the findings lead in a memo's plain words, with no internal id, then the drafting notes without their markers", () => {
   const plain = checklistMatter()
   const gate = finalGate(plain)
   expect(gate).toMatchObject({ status: "pass", delivery: "review_draft_with_findings", blocking: [] })
-  expect(deliveredNotes(plain, gate)).toBe(PLAIN_DELIVERED)
+  const delivered = deliveredNotes(plain, gate)!
+  expect(delivered).toBe(["# Checklist findings not satisfied", "",
+    "These checklist requirements were not established as satisfied. Each is disclosed with this review draft for review; none is treated as satisfied.", "",
+    `- The note states the delivery period. ${CONFLICT} Reason: Paragraph omits it. Limitation: Comments not inspected. Source: request: "Deliver within thirty days of the order."`,
+    `- The note states when delivery starts. ${OMISSION} Reason: Paragraph omits it. Limitation: Comments not inspected. Source: request: "Deliver within ten days of the order."`, "",
+    "# Cover memo", "", "The delivery period follows the order.", ""].join("\n"))
+  for (const text of ["c1", "c2", PID, REQUEST_LOCATOR, "[ref", "Finding:", "Conflicting"]) expect(delivered).not.toContain(text)
+  expect(readLeanText(plain, "drafting-notes.md")).toBe(NOTES)
 })
 
 test("a requested memo comes first; its findings close it in the requirement's own words and sources, a conflict said without naming either side, with no internal id", () => {
@@ -338,10 +339,10 @@ test("a memo finding's status says, in plain words for each class, what is not c
     expect(deliveredNotes(memo, { ...gate, items: [parent] })!.split("\n").at(-2))
       .toBe(`- The note states when delivery starts. ${status} Reason: A refined check remains adverse. Source: request: "Deliver within ten days of the order."`)
   }
-  // Without a requested memo the label stays as recorded.
+  // Without a requested memo the notes give the same plain status.
   writeLeanPlan(memo, [{ ...DOCUMENT, file: "supply-note.docx" }])
-  expect(deliveredNotes(memo, { ...gate, items: [{ ...c2, detail: `Checklist requirement unresolved (omission not fixed by the repair round):${rest}` }] }))
-    .toContain("- c2: Checklist requirement unresolved (omission not fixed by the repair round): The note states when delivery starts.")
+  expect(deliveredNotes(memo, { ...gate, items: [{ ...c2, detail: `Checklist requirement unresolved (omission not fixed by the repair round):${rest}` }] })!.split("\n"))
+    .toContain(`- The note states when delivery starts. ${OMISSION} Reason: Paragraph omits it. Limitation: Comments not inspected. Source: request: "Deliver within ten days of the order."`)
 })
 
 // A refined parent's coverage issues in the memo: one plain reason for each
@@ -389,7 +390,7 @@ test("a refined parent's coverage read back from its detail gives each kind of i
   for (const text of CHECKER_WORDS) expect(line).not.toContain(text)
 })
 
-test("a refined parent's memo finding gives its recorded coverage issues in plain words; its disclosure and the notes without a memo keep the checker's", () => {
+test("a refined parent's finding gives its recorded coverage issues in plain words, with or without a memo; its disclosure keeps the checker's", () => {
   const directory = matter()
   writeLeanPlan(directory, [{ ...DOCUMENT, file: "supply-note.docx" }])
   writeLeanText(directory, "d1/paragraphs.json", JSON.stringify([{ pid: PID, sha256: "sha", text: "The supplier shall deliver the goods." }]))
@@ -423,8 +424,8 @@ test("a refined parent's memo finding gives its recorded coverage issues in plai
   const line = deliveredNotes(directory, gate)!.split("\n").find(row => row.startsWith("- The note states when delivery starts."))!
   expect(line).toBe(`- The note states when delivery starts. ${MISSING} Reason: ${ADOPTION} ${INSPECT} ${DEFERRED} Source: request: "Deliver within ten days of the order."`)
   for (const text of CHECKER_WORDS) expect(line).not.toContain(text)
-  // Without a requested memo the finding keeps its id and full detail.
-  expect(plain).toContain(`- c2: ${parent.detail} Source: request, request.md: "Deliver within ten days of the order."`)
+  // Without a requested memo the notes give it in the same plain words.
+  expect(plain.split("\n")).toContain(line)
 })
 
 test("a memo finding's reason is its recorded finding, even where the requirement itself names a field", () => {
