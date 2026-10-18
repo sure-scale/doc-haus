@@ -198,13 +198,13 @@ export function actingForBlock(directory: string) {
 /** What the package holds besides this body, from two flags: a memo is
  * requested, and this document is the body of the combined file. The memo is
  * the drafting notes, written once the documents are final; the combined file
- * is built at download. Empty without a memo, so the prompt and stage inputs
+ * is built at delivery. Empty without a memo, so the prompt and stage inputs
  * stay as they were. */
 export function packageCompositionBlock(directory: string, document: DocID) {
   if (!requestedMemo(directory)) return ""
   return tagged("package_composition", [
     "The request asks for a memo to accompany the documents. The run writes that memo separately, as the drafting notes, after the documents are final; it is not part of this document's body.",
-    ...(combinedDelivery(directory)?.document === document ? ["The request asks for that memo and this document in one file. The code builds that file at download: the memo first, then this document's clean body."] : []),
+    ...(combinedDelivery(directory)?.document === document ? ["The request asks for that memo and this document in one file. The code builds that file at delivery: the memo first, then this document's clean body."] : []),
     "Do not report the memo as missing from this body, and do not insert memo, cover-note or advice text meant for the memo into this body.",
     "Content this document's own purpose or the request assigns to it still belongs in this body. Advice belongs in this body only when this document's purpose is advice, and a reference to the memo only when the request requires one.",
   ].join("\n"))
