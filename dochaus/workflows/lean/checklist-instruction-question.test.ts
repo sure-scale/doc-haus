@@ -245,12 +245,12 @@ test("an instruction left open that a source conflict names is asked only in the
   const [conflict, scope, ...rest] = gate.questions!
   expect(rest).toEqual([])
   expect(conflict!.id).toMatch(/^checklist-conflict-/)
-  expect(conflict!.question).toContain("c1 with c2")
+  expect(conflict!.question).toContain(`First: ${PERIOD.check} Sources: request "Deliver within thirty days of the order." Second: ${PAYMENT.check}`)
   expect(scope!.id.startsWith(PACKAGE_SCOPE_QUESTION)).toBe(true)
   expect(scope!.question).toContain("c3: The note names the delivery address.")
   expect(scope!.question).not.toContain("c2")
   // No item is asked about twice.
-  for (const id of ["c1", "c2", "c3"]) expect(gate.questions!.filter(row => row.question.includes(`${id}: `))).toHaveLength(1)
+  for (const item of [PERIOD, PAYMENT, ADDRESS]) expect(gate.questions!.filter(row => row.question.includes(item.check))).toHaveLength(1)
   expect(gate.disclosed.find(item => item.kind === "checklist_unresolved")!.ref).toMatchObject({ checklist_item: "c1", question_id: conflict!.id })
   expect(leftOpen(gate).map(item => item.ref)).toEqual([{ checklist_item: "c2", document: "d1", question_id: conflict!.id }, { checklist_item: "c3", document: "d1", question_id: scope!.id }])
   // Recorded together, each replaces nothing of the other; answering one

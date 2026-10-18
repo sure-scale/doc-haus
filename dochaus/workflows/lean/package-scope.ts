@@ -29,10 +29,16 @@ import { shortHash, type Question, type StageID } from "./state"
 /** The id prefix of the one question on the package's scope. */
 export const PACKAGE_SCOPE_QUESTION = "package-scope-"
 
-/** A package-scope question's id: the prefix and a short hash of the unique
- * `keys` of what it asks about, sorted, never of item ids or order. */
+/** A question's id keyed on what it asks about: `prefix` and a short hash of
+ * the unique `keys`, sorted, never of item ids or order. The gate's checklist
+ * conflict question uses it too. */
+export function keyedQuestionID(prefix: string, keys: string[]) {
+  return `${prefix}${shortHash(JSON.stringify([...new Set(keys)].toSorted()))}`
+}
+
+/** A package-scope question's id: the prefix and the keys of what it asks about. */
 export function packageScopeQuestionID(keys: string[]) {
-  return `${PACKAGE_SCOPE_QUESTION}${shortHash(JSON.stringify([...new Set(keys)].toSorted()))}`
+  return keyedQuestionID(PACKAGE_SCOPE_QUESTION, keys)
 }
 
 /** The keys of verbatim quotes: each normalized, so spacing and quotation

@@ -8,13 +8,13 @@ import { leanSteps, writeLeanPlan } from "./plan"
 import { changesRepairSections } from "./repairs"
 import { enqueueLeanRequest } from "./requests"
 import { runLean, stageInputSha } from "./runner"
-import { answerQuestion, readLeanJson, readLeanState, readQuestions, updateLeanStage, writeLeanText, writeQuestions, type Question } from "./state"
+import { answerQuestion, readLeanJson, readLeanState, readQuestions, replaceStageQuestions, shortHash, updateLeanStage, writeLeanText, writeQuestions, type Question } from "./state"
 import { cleanupMatters, happyPath, matter, scriptedModel } from "./test-support"
 
 // A source conflict among the disclosed checklist findings becomes one batched
 // question, asked by the gate after the walk. It pauses nothing: the run
 // completes as a review draft with findings and each conflict stays disclosed
-// until the lawyer answers. Its answer reaches the checklist check's inputs
+// until a later check no longer finds it. Its answer reaches the checklist check's inputs
 // through the ordinary answer path. Only the model is scripted.
 
 afterEach(cleanupMatters)
@@ -57,10 +57,10 @@ test("the gate batches every source conflict into one question naming each pair,
   expect(question).toMatchObject({ stage: "gate", status: "open" })
   expect(question).not.toHaveProperty("pid")
   expect(question).not.toHaveProperty("document")
-  for (const text of ["c1 with c2", "c1: The note states the delivery period.", "c2: The note states when payment falls due.",
-    'request "Deliver within thirty days of the order."', 'request "Payment is due on delivery."'])
-    expect(question.question).toContain(text)
-  expect(question.question.match(/ with /g)).toHaveLength(1)
+  expect(question.question).toBe(['Two checklist requirements taken from the sources conflict.',
+    'First: The note states the delivery period. Sources: request "Deliver within thirty days of the order."',
+    'Second: The note states when payment falls due. Sources: request "Payment is due on delivery."',
+    "Which requirement governs, or how should they be reconciled?"].join(" "))
   const disclosed = gate.disclosed.filter(item => item.kind === "checklist_unresolved")
   expect(disclosed).toHaveLength(2)
   for (const item of disclosed)
@@ -112,14 +112,19 @@ test("an answer to the conflict question re-keys the checklist check and reaches
 const ANSWER = "Payment on delivery governs; state it in the note."
 
 // Two requirements from the request; the first is reported as contradicted by
-// the second's source passage.
-function conflictModel() {
+// the second's source passage. With `answerFirst`, once the answer is a
+// settled instruction the extractor also extracts it as an item, placed first,
+// so the two conflicting items take other ordinal ids.
+function conflictModel({ answerFirst = false } = {}) {
   return scriptedModel({
     ...happyPath,
     [CHECKLIST_JOB_AGENTS.extract]: text => {
       const input = JSON.parse(text.split("SOURCE_INPUT:\n\n")[1]!) as ChecklistProducerInput
-      const item = (check: string) => ({ check, basis: "directive", source_refs: input.passages, qualifications: [], target: { ...input.targets[0], treatment: "operative" } })
-      return JSON.stringify({ items: input.source.document === "request" ? [item("The requested supply note is drafted."), item("The note states that payment is due on delivery.")] : [] })
+      const item = (check: string, refs = input.passages) => ({ check, basis: "directive", source_refs: refs, qualifications: [], target: { ...input.targets[0], treatment: "operative" } })
+      if (input.source.document !== "request") return JSON.stringify({ items: [] })
+      const answer = input.instructions.filter(row => row.quote === ANSWER)
+      const first = answerFirst && answer.length ? [item("The note states the payment rule the lawyer chose.", answer)] : []
+      return JSON.stringify({ items: [...first, item("The requested supply note is drafted."), item("The note states that payment is due on delivery.")] })
     },
     [CHECKLIST_JOB_AGENTS.check]: text => {
       const input = JSON.parse(text.split("CHECK_INPUT:\n\n")[1]!) as ChecklistCheckerInput
@@ -142,7 +147,9 @@ test("a source conflict completes the run with one open question; resume and a g
   const question = readQuestions(directory)[0]
   const ids = (readLeanJson(directory, "checklist/extraction.json") as any).sources.flatMap((row: any) => row.items).map((row: any) => row.id) as string[]
   expect(ids).toHaveLength(2)
-  expect(question!.question).toContain(`${ids[0]} with ${ids[1]}`)
+  for (const id of ids) expect(question!.question).not.toContain(id)
+  expect(question!.question).toContain("First: The note states that payment is due on delivery.")
+  expect(question!.question).toContain("Second: The requested supply note is drafted.")
   expect((readLeanJson(directory, "gate.json") as any).disclosed).toContainEqual(expect.objectContaining({ kind: "checklist_unresolved",
     ref: expect.objectContaining({ checklist_item: ids[0], checklist_class: "source_conflict", question_id: question!.id }) }))
   // The open question keys no step: every settled step is current, and a
@@ -168,3 +175,77 @@ test("a source conflict completes the run with one open question; resume and a g
   expect(readLeanJson(directory, "gate.json")).toMatchObject({ status: "pass", delivery: "review_draft_with_findings" })
   expect((readLeanJson(directory, "gate.json") as any).disclosed).toContainEqual(expect.objectContaining({ ref: expect.objectContaining({ question_id: question!.id }) }))
 }, 180000)
+
+test("an answered conflict is not asked again when re-extraction gives its requirements other item ids; its disclosure keeps the answered question", async () => {
+  const directory = matter()
+  expect((await runLean(directory, { sessions: conflictModel().port })).status).toBe("completed")
+  const [question] = readQuestions(directory)
+  const extracted = () => (readLeanJson(directory, "checklist/extraction.json") as any).sources.flatMap((row: any) => row.items).map((row: any) => row.id) as string[]
+  const before = extracted()
+  enqueueLeanRequest(directory, { kind: "answer", question_id: question!.id, answer: ANSWER })
+  expect((await runLean(directory, { sessions: conflictModel({ answerFirst: true }).port })).status).toBe("completed")
+  // The answer was extracted first, so the two conflicting items moved.
+  const after = extracted()
+  expect(after).toHaveLength(3)
+  expect(after.slice(1)).not.toEqual(before)
+  expect(readQuestions(directory)).toEqual([expect.objectContaining({ id: question!.id, status: "answered", answer: ANSWER })])
+  const disclosed = (readLeanJson(directory, "gate.json") as any).disclosed.filter((row: any) => row.ref.checklist_class === "source_conflict")
+  expect(disclosed.length).toBeGreaterThan(0)
+  for (const row of disclosed) expect(row.ref.question_id).toBe(question!.id)
+  for (const id of new Set([...before, ...after])) expect(question!.question).not.toContain(id)
+}, 180000)
+
+test("the conflict question names each requirement by its check and sources, never by an internal item id, and its context is true before and after an answer", () => {
+  const directory = checklistMatter([conflict("c1", "Payment is due on delivery."), conflict("c2", "Deliver within thirty days of the order.")])
+  const [question] = finalGate(directory).questions!
+  expect(question!.question).not.toMatch(/\bc[12]\b/)
+  for (const text of ["The note states the delivery period.", "The note states when payment falls due.",
+    'request "Deliver within thirty days of the order."', 'request "Payment is due on delivery."'])
+    expect(question!.question).toContain(text)
+  expect(question!.context).toContain("Until a later check no longer finds this conflict, it is disclosed with the review draft")
+  expect(question!.context).not.toContain("Until you answer")
+})
+
+test("the same conflicting requirements under other item ids are the same question", () => {
+  const first = finalGate(checklistMatter([conflict("c1", "Payment is due on delivery."), conflict("c2", "Deliver within thirty days of the order.")])).questions!
+  // Re-extracted with one more item first: c1 and c2 are now c2 and c3.
+  const shifted = checklistMatter([finding("c1", "satisfied"), conflict("c2", "Payment is due on delivery."), conflict("c3", "Deliver within thirty days of the order.")])
+  writeLeanText(shifted, "checklist/extraction.json", JSON.stringify({ expected_sources: ["request"], sources: [{ key: "request", status: "succeeded",
+    items: [{ id: "c1", item: requirement("The note states the governing law.", "English law governs the note.") }, ...ITEMS.map((row, index) => ({ ...row, id: `c${index + 2}` }))] }] }))
+  expect(finalGate(shifted).questions).toEqual(first)
+})
+
+// A conflict question answered before its id keyed on the requirements'
+// quotes: its id hashed the ordinal item ids, and its text named them.
+const LEGACY = (a: string, b: string, payment = "Payment is due on delivery."): Question => ({
+  id: `checklist-conflict-${shortHash(JSON.stringify([[a, b]]))}`, stage: "gate", status: "answered", answer: ANSWER, answered_at: "2026-10-01T00:00:00.000Z",
+  question: `Checklist requirements taken from the sources conflict: ${a} with ${b}. ${a}: The note states the delivery period. Sources: request "Deliver within thirty days of the order." ${b}: The note states when payment falls due. Sources: request "${payment}" Which requirement governs, or how should they be reconciled?`,
+  context: "Until you answer, each conflicting requirement is disclosed with the review draft as not satisfied; delivery is not held for it. Your answer re-runs the drafting from the start, including the checklist check.",
+})
+
+test("a conflict answered under an ordinal-id question is not asked again when that question showed the same requirements; any other is asked", () => {
+  const shifted = () => {
+    const directory = checklistMatter([finding("c1", "satisfied"), conflict("c2", "Payment is due on delivery."), conflict("c3", "Deliver within thirty days of the order.")])
+    writeLeanText(directory, "checklist/extraction.json", JSON.stringify({ expected_sources: ["request"], sources: [{ key: "request", status: "succeeded",
+      items: [{ id: "c1", item: requirement("The note states the governing law.", "English law governs the note.") }, ...ITEMS.map((row, index) => ({ ...row, id: `c${index + 2}` }))] }] }))
+    return directory
+  }
+  // Answered when the same two requirements were c1 and c2.
+  const same = shifted()
+  const legacy = LEGACY("c1", "c2")
+  writeQuestions(same, [legacy])
+  const gate = finalGate(same)
+  expect(gate.questions!.map(row => row.id)).toEqual([legacy.id])
+  for (const item of gate.disclosed.filter(item => item.kind === "checklist_unresolved")) expect(item.ref.question_id).toBe(legacy.id)
+  replaceStageQuestions(same, "gate", null, gate.questions!)
+  expect(readQuestions(same)).toEqual([legacy])
+  // One that showed another payment requirement asked about another conflict:
+  // this one is asked, and the answered question is left as it was.
+  const other = shifted()
+  const different = LEGACY("c1", "c2", "Payment is due within sixty days of delivery.")
+  writeQuestions(other, [different])
+  const asked = finalGate(other).questions!
+  expect(asked.map(row => [row.id === different.id, row.status])).toEqual([[false, "open"]])
+  replaceStageQuestions(other, "gate", null, asked)
+  expect(readQuestions(other)).toEqual([different, expect.objectContaining({ id: asked[0]!.id, status: "open" })])
+})
