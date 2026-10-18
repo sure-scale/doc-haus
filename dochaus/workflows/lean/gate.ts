@@ -13,10 +13,10 @@ import { FIRST_DOCUMENT, readLeanPlan, type DocID } from "./plan"
 import { readPackageReview } from "./package-review"
 import { coverageCarries, coverageItems, gateScopeParties } from "./package-coverage"
 import { excerpt, quoteFound, openItem } from "./quotes"
-import { answeredScopeQuestion, GATE_EXCERPT, openScopeQuestion, scopeAnswers, scopeField, scopeQuestionShows } from "./package-scope"
+import { answeredScopeQuestion, GATE_EXCERPT, keyedQuestionID, openScopeQuestion, scopeAnswers, scopeField, scopeQuestionShows } from "./package-scope"
 import { LEAN_MAX_SUBSTANTIVE_REPAIRS, readRepairRound, repairedChecklistItems } from "./repairs"
 import { withheldChecklistRepair } from "./requests"
-import { isReviewStage, currentOpenItems, readLeanText, readLeanJson, readLeanState, readQuestions, shortHash, type LeanState, type OpenItem, type Question } from "./state"
+import { isReviewStage, currentOpenItems, readLeanText, readLeanJson, readLeanState, readQuestions, type LeanState, type OpenItem, type Question } from "./state"
 
 // Final legal gate: the only place an open item blocks delivery. It covers every
 // planned document; each item is settled against the final body of the
@@ -116,7 +116,7 @@ export function finalGate(directory: string): GateResult {
   const checklistState = leanState?.stages["checklist-check"]
   const checked = checklistState && (checklistState.status !== "pending" || readLeanJson(directory, "checklist/extraction.json") !== undefined)
     ? checklistOutputState(directory) : undefined
-  const conflict = checked?.valid ? checklistConflictQuestion(checked.unresolved) : undefined
+  const conflict = checked?.valid ? checklistConflictQuestion(checked.unresolved, [...context.questions.values()]) : undefined
   // Adverse checklist findings lead: the lawyer's list of items may be capped.
   const unresolved = checked?.valid ? [...checked.unresolved.map(row => checklistUnresolvedItem(directory, leanState, row, conflict?.id)),
     ...checked.unresolvedParents.map(row => checklistUnresolvedParentItem(directory, row))] : []
@@ -130,7 +130,8 @@ export function finalGate(directory: string): GateResult {
   // the conflict question names a conflicting one, the scope question the rest
   // the plan may leave out.
   const checklistOpen = checklistState?.status === "done" && checked?.valid && checked.open
-  const paired = new Set(checked?.valid ? conflictPairs(checked.unresolved).flat() : [])
+  const paired = new Set(checked?.valid ? checked.unresolved.flatMap(row => row.class === "source_conflict" && row.conflicting_items?.length
+    ? [row.item_id, ...row.conflicting_items.map(other => other.id)] : []) : [])
   const scoped = checklistOpen ? checked.openFindings.filter(row => instructionLeftOpen(directory, row) && !paired.has(row.item_id)) : []
   // The scope question covers the instructions no answered scope question has
   // settled (scopeAnswers). None is asked once two of the gate's own are
@@ -561,41 +562,99 @@ function checklistUnresolvedItem(directory: string, state: LeanState | undefined
     status: "disclosed", resolution: UNRESOLVED }
 }
 
+const CHECKLIST_CONFLICT_QUESTION = "checklist-conflict-"
+
 /** One question for every source conflict among the adverse findings, so the
- * lawyer settles them together: each pair by its item ids, then each item's
- * requirement and sources. Its id is the pairs alone, so a gate re-run asks the
- * same question and an answered one is never asked again. */
-function checklistConflictQuestion(rows: ChecklistUnresolvedFinding[]): Question | undefined {
-  const items = new Map(rows.flatMap(row => [{ id: row.item_id, item: row.item }, ...(row.conflicting_items ?? [])]).map(row => [row.id, row.item]))
-  const pairs = conflictPairs(rows)
+ * lawyer settles them together: each pair by its two requirements, each with
+ * its check and sources, never an internal item id. Its id keys on each
+ * requirement's source documents and verbatim quotes (conflictKey), never on
+ * extraction-ordinal item ids, so a re-run or a re-extraction asks the same
+ * question and an answered one is never asked again. A question answered
+ * before its id was keyed so, under item ids, still stands for these
+ * conflicts when its text showed exactly these pairs of sources
+ * (legacyConflictPairs): its answer is the lawyer's own to the same question,
+ * so it is not asked again. */
+function checklistConflictQuestion(rows: ChecklistUnresolvedFinding[], asked: Question[]): Question | undefined {
+  const pairs = conflictItemPairs(rows)
   if (!pairs.length) return undefined
-  const requirement = (id: string) => {
-    const item = items.get(id)
-    return item ? checklistRequirement(id, item) : id
-  }
+  const several = pairs.length > 1
+  const keyed = keyedQuestionID(CHECKLIST_CONFLICT_QUESTION, pairs.map(pair => JSON.stringify(pair.map(conflictKey))))
+  const shown = sourcePairsKey(pairs.map(pair => pair.map(checklistSources)))
+  const legacy = asked.some(question => question.id === keyed) ? undefined : asked.find(question => question.status === "answered" && question.stage === "gate" &&
+    question.id.startsWith(CHECKLIST_CONFLICT_QUESTION) && sourcePairsKey(legacyConflictPairs(question.question)) === shown)
   return {
-    id: `checklist-conflict-${shortHash(JSON.stringify(pairs))}`,
+    id: legacy?.id ?? keyed,
     stage: "gate",
-    question: [`Checklist requirements taken from the sources conflict: ${pairs.map(([a, b]) => `${a} with ${b}`).join("; ")}.`,
-      ...[...new Set(pairs.flat())].map(requirement),
-      pairs.length > 1 ? "For each pair, which requirement governs, or how should they be reconciled?" : "Which requirement governs, or how should they be reconciled?"].join(" "),
-    context: "Until you answer, each conflicting requirement is disclosed with the review draft as not satisfied; delivery is not held for it. Your answer re-runs the drafting from the start, including the checklist check.",
+    question: [several ? `Checklist requirements taken from the sources conflict, in ${pairs.length} pairs.` : "Two checklist requirements taken from the sources conflict.",
+      ...pairs.map(([a, b], index) => `${several ? `Pair ${index + 1}, first` : "First"}: ${requirementText(a!)} Second: ${requirementText(b!)}`),
+      several ? "For each pair, which requirement governs, or how should they be reconciled?" : "Which requirement governs, or how should they be reconciled?"].join(" "),
+    context: `Until a later check no longer finds ${several ? "these conflicts, they are" : "this conflict, it is"} disclosed with the review draft; delivery is not held for ${several ? "them" : "it"}. Your answer re-runs the drafting from the start, including the checklist check.`,
     status: "open",
   }
 }
 
-/** Each source conflict once, as its sorted pair of item ids, in a stable order. */
-function conflictPairs(rows: ChecklistUnresolvedFinding[]) {
-  return [...new Map(rows.flatMap(row => row.class === "source_conflict" ? (row.conflicting_item_ids ?? []).map(other => [row.item_id, other].toSorted()) : [])
-    .map(pair => [JSON.stringify(pair), pair])).values()].toSorted((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)))
+/** A conflicting requirement as the conflict question's id knows it: its
+ * source documents and normalized verbatim quotes, never its item id or its
+ * check (a model's words), so re-extraction keeps it. Two requirements citing
+ * the same source passages are one conflict for asking purposes. */
+function conflictKey(item: ChecklistItem) {
+  return JSON.stringify([...new Set(item.source_refs.map(ref => `${ref.document}\n${normalize(ref.quote)}`))].toSorted())
 }
 
-/** A requirement as the gate's questions list it: its id, check and sources.
- * The check is a model's words, so it goes through scopeField, as the scope
- * question's open decisions do: questionQuotes reads only the rows the gate
- * writes. The quotes are verbatim. */
+/** Each source conflict once, as its two requirements, in a stable order: by
+ * their conflict keys, then their checks. An identical copy of a requirement
+ * under another item id is the same requirement. */
+function conflictItemPairs(rows: ChecklistUnresolvedFinding[]) {
+  const order = (item: ChecklistItem) => JSON.stringify([conflictKey(item), item.check])
+  const pairs = rows.flatMap(row => row.class === "source_conflict"
+    ? (row.conflicting_items ?? []).map(other => [row.item, other.item].toSorted((a, b) => order(a).localeCompare(order(b)))) : [])
+  return [...new Map(pairs.map(pair => [JSON.stringify(pair), pair])).values()]
+    .toSorted((a, b) => JSON.stringify(a.map(order)).localeCompare(JSON.stringify(b.map(order))))
+}
+
+/** Pairs of requirements' sources as one comparable key: each normalized, each
+ * pair and the pairs in any order. */
+function sourcePairsKey(pairs: string[][]) {
+  return JSON.stringify([...new Set(pairs.map(pair => JSON.stringify(pair.map(normalize).toSorted())))].toSorted())
+}
+
+/** The pairs a conflict question keyed on item ids showed, each as its two
+ * requirements' sources as written (checklistSources), or none when its text
+ * is not that question's. It named the pairs by item id ("A with B; C with
+ * D."), then each item once, in the order the pairs first name it, as "<id>:
+ * <check> Sources: <sources>", then its closing question. An item id holds no
+ * space, and a check no " Sources: " (scopeField). */
+function legacyConflictPairs(text: string) {
+  const [, named, listed] = /^Checklist requirements taken from the sources conflict: (\S+ with \S+(?:; \S+ with \S+)*)\. (.*) (?:Which|For each pair, which) requirement governs, or how should they be reconciled\?$/.exec(normalize(text)) ?? []
+  if (!named || !listed) return []
+  const pairs = named.split("; ").map(pair => pair.split(" with "))
+  const ids = [...new Set(pairs.flat())]
+  const sources = new Map<string, string>()
+  let at = 0
+  for (const [index, id] of ids.entries()) {
+    const end = index + 1 < ids.length ? listed.indexOf(` ${ids[index + 1]}: `, at) : listed.length
+    const marker = listed.indexOf(" Sources: ", at)
+    if (!listed.startsWith(`${id}: `, at) || end < 0 || marker < 0 || marker > end) return []
+    sources.set(id, listed.slice(marker + " Sources: ".length, end))
+    at = end + 1
+  }
+  return pairs.map(pair => pair.map(id => sources.get(id)!))
+}
+
+/** A requirement as the gate's questions list it: its id, check and sources. */
 function checklistRequirement(id: string, item: ChecklistItem) {
-  return `${id}: ${sentence(scopeField(item.check))} Sources: ${item.source_refs.map(ref => `${ref.document} "${excerpt(ref.quote, GATE_EXCERPT)}"`).join(", ")}`
+  return `${id}: ${requirementText(item)}`
+}
+
+/** A requirement's check and sources. The check is a model's words, so it
+ * goes through scopeField, as the scope question's open decisions do:
+ * questionQuotes reads only the rows the gate writes. The quotes are verbatim. */
+function requirementText(item: ChecklistItem) {
+  return `${sentence(scopeField(item.check))} Sources: ${checklistSources(item)}`
+}
+
+function checklistSources(item: ChecklistItem) {
+  return item.source_refs.map(ref => `${ref.document} "${excerpt(ref.quote, GATE_EXCERPT)}"`).join(", ")
 }
 
 /** A refined parent whose reconciled coverage is adverse, with the coverage issues. */

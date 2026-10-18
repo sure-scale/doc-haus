@@ -64,6 +64,10 @@ const DRAFTING_NOTES_CONTRACT = "lawyer-facing-notes-placeholders-2"
 /** Keys finalize only when the notes are a requested memo (the plan has a
  * memo name), so runs without one keep their finalize key. */
 const REQUESTED_MEMO_CONTRACT = "requested-memo-titles-7"
+/** Keys the gate, whose questions are written in code: a change to how it
+ * words or keys one re-runs a done gate, so an open question it asked takes
+ * the current form. */
+const GATE_CONTRACT = "quote-keyed-conflict-question-1"
 export const LEAN_MAX_RETRIES = 3
 
 export const LEAN_STAGE_AGENTS = {
@@ -199,6 +203,7 @@ export function stageInputs(directory: string, step: StepID, options: { repairCo
     ...(step === "finalize" && requestedMemo(directory) ? [{ name: "requested-memo-contract", bytes: REQUESTED_MEMO_CONTRACT }] : []),
     ...(["finalize", "package-review", "gate"].includes(step) ? [{ name: "review-dispositions", bytes: JSON.stringify((readLeanPlan(directory)?.documents ?? []).map(row => reviewDispositionText(directory, row.id))) }] : []),
     ...(["finalize", "package-review"].includes(step) ? [{ name: "delivery-review-contract", bytes: DELIVERY_REVIEW_CONTRACT }] : []),
+    ...(step === "gate" ? [{ name: "gate-contract", bytes: GATE_CONTRACT }] : []),
     ...(!["discrepancy", "intake", "research", "research-review"].includes(step) ? ["research.json", "research-review.json"].map(name => ({ name, bytes: readLeanText(directory, name) ?? "" })) : []),
     ...(!["discrepancy", "intake", "research", "research-review", "spine"].includes(step) ? ["discrepancy.json", "spine.json"].map(name => ({ name, bytes: readLeanText(directory, name) ?? "" })) : []),
     ...(clarifications.length && ["checklist-check", "package-review", "gate"].includes(step) ? [{ name: "inspection-clarifications", bytes: JSON.stringify(clarifications) }] : []),
