@@ -11,7 +11,10 @@ import { dataPaths } from "../../engine/src/data-paths"
 // uploaded documents. This is the same directory the opencode server scopes a
 // session to via the x-opencode-directory header.
 
-export const WORKSPACE_ROOT = dataPaths(path.resolve(import.meta.dir, "../../.."), process.env, path.join(process.cwd(), "workspace")).workspace
+// Resolved per call so a changed WORKSPACE_ROOT is honoured, not pinned by
+// whichever module imported this file first. WORKSPACE_ROOT is the boot value.
+const workspaceRoot = () => dataPaths(path.resolve(import.meta.dir, "../../.."), process.env, path.join(process.cwd(), "workspace")).workspace
+export const WORKSPACE_ROOT = workspaceRoot()
 
 // reference is the firm's own client-matter number (e.g. "2026-0042"), shown in
 // the UI. It is display metadata only — the directory id stays the auto slug+uuid.
@@ -76,13 +79,14 @@ type MatterOriginIntent = {
 // paths) out of WORKSPACE_ROOT across the whole service.
 export function matterDir(id: string) {
   if (!/^[a-z0-9][a-z0-9-]*$/.test(id)) throw new Error(`invalid matter id: ${id}`)
-  return path.join(WORKSPACE_ROOT, id)
+  return path.join(workspaceRoot(), id)
 }
 
 export function listMatters(): Matter[] {
-  mkdirSync(WORKSPACE_ROOT, { recursive: true })
-  return readdirSync(WORKSPACE_ROOT)
-    .map((name) => path.join(WORKSPACE_ROOT, name))
+  const root = workspaceRoot()
+  mkdirSync(root, { recursive: true })
+  return readdirSync(root)
+    .map((name) => path.join(root, name))
     // One hand-edited or partially written metadata file must not take down the
     // matter list, startup maintenance, or the drafting recovery sweep for
     // every other matter. Invalid records stay isolated to their directory.
@@ -392,7 +396,7 @@ export function listJurisdictions() {
 // leading frontmatter block. The web app reads this to offer the playbook choices
 // for a matter; the engine binds one via matter.json.
 const SKILL_DIR = path.join(path.dirname(JURISDICTION_DIR), "skill")
-const PLAYBOOK_DIR = path.join(WORKSPACE_ROOT, ".playbooks")
+const PLAYBOOK_DIR = () => path.join(workspaceRoot(), ".playbooks")
 
 export type Playbook = {
   name: string
@@ -419,7 +423,7 @@ export function listPlaybooks(): Playbook[] {
   const matters = listMatters()
   return [
     { dir: SKILL_DIR, builtin: true },
-    { dir: PLAYBOOK_DIR, builtin: false },
+    { dir: PLAYBOOK_DIR(), builtin: false },
   ]
     .filter((source) => existsSync(source.dir))
     .flatMap((source) =>
@@ -498,7 +502,7 @@ export function updatePlaybook(name: string, input: { description?: string; cont
     description: input.description ?? current.description,
     content: input.content?.trim() ?? current.content,
   }
-  const file = path.join(PLAYBOOK_DIR, safe, "SKILL.md")
+  const file = path.join(PLAYBOOK_DIR(), safe, "SKILL.md")
   writeFileSync(file, renderPlaybookMarkdown(updated))
   return { ...updated, updated_at: statSync(file).mtimeMs }
 }
@@ -514,7 +518,7 @@ export function deletePlaybook(name: string) {
       `playbook "${safe}" is bound to ${current.matters.length} matter(s): ${current.matters.join(", ")}. Unbind it from each matter before deleting.`,
       409,
     )
-  rmSync(path.join(PLAYBOOK_DIR, safe), { recursive: true, force: true })
+  rmSync(path.join(PLAYBOOK_DIR(), safe), { recursive: true, force: true })
 }
 
 function requireImportedPlaybook(name: string) {
