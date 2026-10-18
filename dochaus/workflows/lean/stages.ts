@@ -8,6 +8,7 @@ import { acceptChangePlan, acceptChangeReview, preparationOutputValid, readChang
 import { comparisonBasis } from "./comparison"
 import { checkPackageReview, readPackageReview } from "./package-review"
 import { coverageItems, planCoverageCurrent } from "./package-coverage"
+import { requestedFilesItems } from "./requested-files"
 import { DELIVERED_NOTES, requestedMemo } from "./deliverables"
 import { evidenceOutputValid } from "./evidence"
 import { researchOutputValid } from "./research"
@@ -92,6 +93,8 @@ export const LEAN_STAGE_AGENTS = {
   finalize: "lean-drafting-notes",
   // A job of the outline, not a stage: it checks the planned package against the instructions.
   coverage: "lean-coverage",
+  // A job of the outline, not a stage: it reads the files the lawyer asks to receive.
+  files: "lean-files",
 } as const
 
 export type PermissionRule = { action: string; resource: string; effect: "allow" | "deny" | "ask" }
@@ -149,11 +152,13 @@ export function stepSessionTitle(directory: string, step: StepID, detail: string
 }
 
 /** Outputs a step may leave unwritten: a plan written by hand has no coverage
+ * record, and a plan whose files job did not run has no requested-files
  * record. Restoring a step whose snapshot lacks one removes it. */
-export const OPTIONAL_OUTPUTS = ["coverage.json"]
+export const OPTIONAL_OUTPUTS = ["coverage.json", "requested-files.json"]
 
 /** Output files of one step, relative to the lean directory. The first
- * document's draft also saves the run's plan and its coverage record. */
+ * document's draft also saves the run's plan, its coverage record and its
+ * requested-files record. */
 export function stepOutputs(step: StepID): string[] {
   if (step === "discrepancy" || step === "spine" || step === "package-review") return [`${step}.json`]
   if (step === "checklist-check") return ["checklist/extraction.json", "checklist/refinements.json", "checklist/checks.json", "checklist/report.md"]
@@ -163,7 +168,7 @@ export function stepOutputs(step: StepID): string[] {
   const document = stepDocument(step)
   const at = (names: string[]) => names.map(name => `${document}/${name}`)
   const stage = stepStage(step)
-  if (stage === "draft") return [...(document === FIRST_DOCUMENT ? ["plan.json", "coverage.json"] : []), ...at(["draft.md", "body.docx", "paragraphs.json"])]
+  if (stage === "draft") return [...(document === FIRST_DOCUMENT ? ["plan.json", "coverage.json", "requested-files.json"] : []), ...at(["draft.md", "body.docx", "paragraphs.json"])]
   if (isReviewStage(stage)) return at([`${stage}.md`])
   if (stage === "change-plan") return at(["change-plan.json"])
   if (stage === "change-prepare") return at(["change-preparation.json"])
@@ -407,7 +412,7 @@ export function stageOutputValid(directory: string, step: StepID) {
 
 /** Open items the drafting notes must disclose. */
 export function disclosableItems(directory: string): OpenItem[] {
-  return [...readOpenItems(directory).filter(item => DISCLOSED_STAGES.includes(item.stage)), ...deferredFindingItems(directory), ...coverageItems(directory)]
+  return [...readOpenItems(directory).filter(item => DISCLOSED_STAGES.includes(item.stage)), ...deferredFindingItems(directory), ...coverageItems(directory), ...requestedFilesItems(directory)]
 }
 
 function ensureNewline(text: string) {

@@ -29,6 +29,7 @@ agent/*.md
 !agent/lean-discrepancy.md
 !agent/lean-draft.md
 !agent/lean-drafting-notes.md
+!agent/lean-files.md
 !agent/lean-intake.md
 !agent/lean-merge.md
 !agent/lean-package-review.md

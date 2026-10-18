@@ -1,6 +1,7 @@
+import { normalize, normalizeWithMap } from "../../lib/quote-verify"
 import { combinedDelivery, memoAnchor, memoNotesFile, plannedRegistration } from "./deliverables"
 import { readLeanPlan, type DocID, type PlannedDocument } from "./plan"
-import { instructionFound } from "./quotes"
+import { instructionFound, lawyerWords } from "./quotes"
 
 /** A semantic interpretation of an explicitly named or titled Word output in the lawyer's
  * instructions. It selects an existing artifact, never changes its content. */
@@ -19,8 +20,16 @@ export function checkDeliverySelections(directory: string, value: unknown): stri
       if (row.role !== "body" && row.role !== "redline") return ["Delivery role must be body, redline or drafting_notes; select an existing artifact without changing its content or comparison source."]
     }
     if (typeof row.file !== "string" || !/^[^\\/:*?"<>|`\x00-\x1f]+\.docx$/i.test(row.file) || row.file !== row.file.trim()) return ["Delivery file must be the requested Word filename, without a folder path."]
-    if (typeof row.instruction_quote !== "string" || !instructionFound(directory, row.instruction_quote) || !deliveryNameQuoted(row.instruction_quote, row.file)) return ["Delivery instruction_quote must quote the lawyer's actual instructions naming that output file or explicitly titling the Word output with its exact basename. Quote the actual naming instruction; source titles and input filenames do not themselves establish output intent. For an explicitly titled Word output, add only .docx to that title; do not guess, shorten or rename it."]
-    return []
+    if (typeof row.instruction_quote !== "string" || !instructionFound(directory, row.instruction_quote)) return [NOT_QUOTED]
+    // A name the quote spells with its extension, or one the earlier check
+    // accepted, is a name, even in format words: package review is never
+    // stricter than before.
+    if (deliveryNameQuoted(directory, row.instruction_quote, row.file) || quotedOrTitled(row.instruction_quote, row.file)) return []
+    // A format the lawyer's words ask for, or a name in another format, is no file to select.
+    const stem = row.file.slice(0, -5)
+    if (formatStem(stem) || OTHER_FORMAT.test(stem))
+      return [`Delivery file "${row.file}" names a format, not a file. Words that ask only for a format give no file name; return no delivery row for them.`]
+    return [NOT_QUOTED]
   })
   if (issues.length) return issues
   const rows = value as DeliverySelection[]
@@ -55,16 +64,119 @@ export function checkDeliverySelections(directory: string, value: unknown): stri
   return [...issues, ...messages]
 }
 
+const NOT_QUOTED = "Delivery instruction_quote must quote the lawyer's actual instructions naming that output file or explicitly titling the Word output with its exact basename. Quote the actual naming instruction; source titles and input filenames do not themselves establish output intent. For an explicitly titled Word output, add only .docx to that title; do not guess, shorten or rename it."
 const DISTINCT_FILES = "Distinct named primary artifacts need distinct filenames. Report a conflicting naming instruction as a package finding."
 
 function distinctFiles(rows: DeliverySelection[]) {
   return new Set(rows.map(row => row.file.toLocaleLowerCase())).size === rows.length
 }
 
+/** The words, in lower case, after which the lawyer's instructions give a
+ * file's name or a Word output's title, as a regular-expression alternation;
+ * the name follows them after whitespace. */
+const NAMING_WORDS = String.raw`titled|entitled|named|called|with\s+the\s+title|(?:name|call|title)\s+(?:it|(?:the|this)\s+(?:file|document|draft))|save\s+(?:(?:it|(?:the|this)\s+(?:file|document|draft))\s+)?as|file\s*name:`
+
+/** A format's name, as formatStem reads it. */
+const FORMAT = String.raw`(?:(?:ms|microsoft)\s+)?(?:word|docx?|pdf|rtf|odt|wpd|wordperfect|pages|xps|epub|te?xt|plain\s+text|md|markdown|html?|xml|excel|xlsx?|csv|ods|powerpoint|pptx?|odp)`
+const FORMAT_STEM = new RegExp(String.raw`^(?:(?:an?\s+)?${FORMAT}(?:\s+(?:docx?|document|file|format|version|copy))?(?:\s*\(\s*\.?${FORMAT}\s*\))?)?$`, "i")
+
+/** Whether a file name's stem is a format's name rather than a name: words
+ * that ask for a format never name a file, nor do they with a format's
+ * extension or name after them in brackets. An empty stem is Word's own format
+ * too: ".docx" alone names no file. Code only, never a prompt. */
+export function formatStem(stem: string) {
+  return FORMAT_STEM.test(stem.trim())
+}
+
+/** The extensions of common document, text, sheet and slide formats other than
+ * Word's own: a name's ending only counts as an extension when it is one. Code
+ * only, never a prompt. */
+export const OTHER_FORMAT = /\.(?:doc|docm|dot|dotx|dotm|rtf|odt|wpd|pages|pdf|xps|epub|txt|md|html?|xml|xlsx?|xlsm|csv|ods|pptx?|odp)$/i
+
+// One grammar of a name's edges in the lawyer's text, for the files job
+// (requested-files.ts) and package review alike, read as instructionFound reads
+// it (normalize: curly quotation marks straight, whitespace runs one space). A
+// name starts at the text's start, after a space, a colon, or an opening
+// quotation mark, bracket or Markdown mark; an apostrophe opens a name only
+// outside a word. A name given without ".docx" follows a naming word
+// (NAMING_WORDS) after a space, a colon or an opening mark, and ends at a line
+// break, a clause mark, a colon, a closing quotation mark, bracket or Markdown
+// mark, a full stop before a space, a closing mark or the end, or a dash
+// between spaces.
+const WORD = /[\p{L}\p{N}_]/u
+const NAME_OPENS = /["«(\[*`:]/
+const NAME_END = /^(?:$|[,;!?:"'»)\]*`]|\.(?:["'»)\]*`]|\s|$)|\s[-–—](?:\s|$))/
+const LINE_END = /^[^\S\r\n]*[\r\n]/
+const NAMING = new RegExp(String.raw`(?:^|[^\p{L}\p{N}_])(?:${NAMING_WORDS}):?\s*(?:\*\*|["'«(\[*\x60])?$`, "u")
+
+/** Lower case where it keeps the text's length, so offsets still map. */
+const fold = (text: string) => text.replace(/[\s\S]/gu, char => {
+  const lower = char.toLowerCase()
+  return lower.length === char.length ? lower : char
+})
+
+/** Each spelling in which `raw`, one text of the lawyer's words, gives a file
+ * of `stem` and `extension` where it holds `quote` (compared as
+ * instructionFound compares them: whitespace and case aside). The stem starts
+ * inside the quoted words at a name's start and is followed there by the
+ * extension, which makes it a name even when its words also name a format; or,
+ * a Word file's given without ".docx", it follows a naming word inside the
+ * quote and ends at a name's end, and is then no format's name (formatStem) and
+ * ends in no other format's extension (OTHER_FORMAT). So
+ * a name cut short from a longer name is refused, a quote may run on past the
+ * name, and a line break inside the name does not matter. The spelling is
+ * `raw` from the stem's start, whitespace runs one space, with the extension as
+ * the lawyer writes it or ".docx" added. Not caught, since no rule of the text
+ * says where such a name starts or ends: a name cut short at its start at a
+ * space, which leaves a name the lawyer's words also end with its extension,
+ * and a name given without ".docx" cut short at a full stop and a space or at a
+ * comma. The grammar is not widened further: a name it does not ground reaches
+ * the lawyer as a disclosed item. Package review accepts what this grammar
+ * grounds or what its earlier literal or titled check accepted
+ * (deliveryNameQuoted, quotedOrTitled). */
+export function* spelledNames(raw: string, quote: string, stem: string, extension: string) {
+  const name = fold(normalize(stem))
+  const words = fold(normalize(quote))
+  const ending = extension.toLowerCase()
+  if (!name || !words) return
+  const titled = ending === ".docx" && !formatStem(name) && !OTHER_FORMAT.test(name)
+  const { text: normal, map } = normalizeWithMap(raw)
+  const text = fold(normal)
+  const starts = (at: number) => at === 0 || text[at - 1] === " " || NAME_OPENS.test(text[at - 1]!) ||
+    (text[at - 1] === "'" && !WORD.test(text[at - 2] ?? ""))
+  for (let start = text.indexOf(words); start >= 0; start = text.indexOf(words, start + 1)) {
+    const end = start + words.length
+    for (let at = text.indexOf(name, start); at >= 0 && at < end; at = text.indexOf(name, at + 1)) {
+      if (!starts(at)) continue
+      const close = at + name.length
+      const spelled = (to: number) => raw.slice(map[at], map[to - 1]! + 1).replace(/\s+/g, " ")
+      if (text.startsWith(ending, close) && !WORD.test(text[close + ending.length] ?? "")) yield spelled(close + ending.length)
+      else if (titled && close <= end && NAMING.test(text.slice(start, at)) && (NAME_END.test(text.slice(close)) || LINE_END.test(raw.slice(map[close - 1]! + 1))))
+        yield `${spelled(close)}.docx`
+    }
+  }
+}
+
 /** Naming intent and artifact roles belong to the semantic reviewer. The
- * checker only grounds the literal name; adding Word's extension to an
- * explicitly stated title does not require a model to invent another name. */
-function deliveryNameQuoted(quote: string, file: string) {
+ * checker only grounds the literal name, by the files job's grammar
+ * (spelledNames) in the lawyer's words: adding Word's extension to an
+ * explicitly stated title does not require a model to invent another name.
+ * The selection matches the lawyer's spelling as instructionFound compares
+ * text (normalize: quotation marks and whitespace aside), in the lawyer's case:
+ * unlike the files job, which keeps the lawyer's spelling of a name given in
+ * another case, it names the file delivered. A name this refuses is still
+ * accepted where the earlier check accepted it (quotedOrTitled), unless it
+ * names a format; so package review is never stricter than before, and every
+ * name the files job grounds is accepted. */
+export function deliveryNameQuoted(directory: string, quote: string, file: string) {
+  const name = normalize(file)
+  return lawyerWords(directory).some(raw => [...spelledNames(raw, quote, file.slice(0, -5), ".docx")].some(spelled => normalize(spelled) === name))
+}
+
+/** The earlier check, on the quote alone: the quote holds the file name, or a
+ * naming word in it gives the name as a title ending at the quote's end, a
+ * clause mark, a full stop or a closing quotation mark. */
+function quotedOrTitled(quote: string, file: string) {
   if (quote.includes(file)) return true
   const title = file.slice(0, -5).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
   const named = new RegExp(`\\b(?:titled|entitled|named|called|with the title)\\s+["“'‘]?(${title})(?=$|[,;!?]|\\.(?:\\s|$)|["”'’])`, "gi")

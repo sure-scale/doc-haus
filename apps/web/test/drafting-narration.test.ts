@@ -64,6 +64,8 @@ test("tool parts read as plain activity and name the run's working files by role
     text: "Reading Supply Terms.docx",
   })
   expect(fileLabel("/m/.dochaus/runs/r1/plan.json")).toBe("the drafting plan")
+  expect(fileLabel(".dochaus/lean/coverage.json")).toBe("the plan coverage check")
+  expect(fileLabel(".dochaus/lean/requested-files.json")).toBe("the requested files")
   expect(fileLabel(".dochaus/runs/r1/other.txt")).toBe("the run's working files")
 
   const search = partActivity(

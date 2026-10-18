@@ -303,6 +303,12 @@ function leftOutPart(text: string): LeftOutPart {
 const FILE_IN_TITLE = /[^\s`'"“”]+\.docx?\b/i
 const FILE_NAME_FORBIDDEN = /[\\/:*?"<>|\u0000-\u001f`]/
 
+/** Whether `file` can stand as a requested file name: no folder, Markdown code
+ * mark or character a file name cannot carry, and at most 120 characters. */
+export function plainFileName(file: string) {
+  return !FILE_NAME_FORBIDDEN.test(file) && file.length <= 120
+}
+
 function titleIssues(title: string) {
   if (FILE_IN_TITLE.test(title))
     return [`The title "${title}" carries a file name. Write the document's own title on the "# " line, and give the file name the request asks for on a "File:" line under it.`]
@@ -318,7 +324,7 @@ function plainTitle(title: string) {
 /** A "File:" line's name, kept only when it is a plain file name the request gives. */
 function requestedFile(title: string, file: string | undefined, request: string | undefined): { name?: string; issues: string[] } {
   if (!file) return { issues: [] }
-  if (FILE_NAME_FORBIDDEN.test(file) || file.length > 120)
+  if (!plainFileName(file))
     return { issues: [`The "File:" line of "${title}" gives "${file}", which is not a plain file name. Give the file name only, as the request writes it, without a folder or Markdown.`] }
   if (request !== undefined && !namedIn(request, file))
     return { issues: [`The "File:" line of "${title}" gives "${file}", but the request gives no such file name. Add a "File:" line only for a file name the request gives, in its words.`] }

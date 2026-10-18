@@ -5,7 +5,7 @@ import path from "node:path"
 import { renderMarkdownToDocx } from "../../lib/render"
 import { memoNotesFile, readLeanDocuments } from "./deliverables"
 import { checkDeliverySelections, selectedDeliveryPlan } from "./delivery-selection"
-import { packageReviewPrompt } from "./package-review"
+import { packageReviewPrompt, readPackageReview } from "./package-review"
 import { DOC_STAGES, readLeanPlan, writeLeanPlan } from "./plan"
 import { readRepairRound, startRepairRound } from "./repairs"
 import { enqueueLeanRequest } from "./requests"
@@ -23,6 +23,17 @@ test("an explicit Word output title supplies the exact basename without inventin
   for (const instruction of [
     "Create an editable Word draft in this matter titled Supply Review, with an open-items list.",
     'Provide the clean document with the title "Supply Review" for review.',
+    "Create an editable Word draft and name the file Supply Review, with an open-items list.",
+    "Create an editable Word draft. Save it as Supply Review.",
+    "Create an editable Word draft. File name: Supply Review",
+    "Create an editable Word draft and name the document Supply Review, with an open-items list.",
+    "Create an editable Word draft and call this file Supply Review.",
+    "Create an editable Word draft. Save the file as Supply Review.",
+    "Create an editable Word draft and title this draft Supply Review.",
+    "Create an editable Word draft and name the file **Supply Review**.",
+    "Create an editable Word draft named `Supply Review`, with an open-items list.",
+    "Create an editable Word draft titled: Supply Review",
+    "Create an editable Word draft (titled Supply Review) with an open-items list.",
   ]) {
     writeLeanText(directory, "request.md", instruction)
     expect(checkDeliverySelections(directory, [{ ...selection, instruction_quote: instruction }])).toEqual([])
@@ -37,6 +48,79 @@ test("an explicit Word output title supplies the exact basename without inventin
   ]) {
     writeLeanText(directory, "request.md", instruction)
     expect(checkDeliverySelections(directory, [{ ...selection, instruction_quote: instruction }]).length).toBeGreaterThan(0)
+  }
+  // A format is no title: the words that ask for one never ground it as a name.
+  for (const [instruction, file] of [
+    ["Create an editable Word draft. Save it as PDF.", "PDF.docx"],
+    ["Create an editable Word draft and save it as a Word document.", "a Word document.docx"],
+    ["Create an editable Word draft and save it as a Word doc.", "a Word doc.docx"],
+    ["Create an editable Word draft and save it as Word docx.", "Word docx.docx"],
+    ["Create an editable Word draft and name the file docx.", "docx.docx"],
+    ["Create an editable Word draft and save it as Word (.docx).", "Word (.docx).docx"],
+    ["Create an editable Word draft. Save it as PDF (.pdf).", "PDF (.pdf).docx"],
+  ]) {
+    writeLeanText(directory, "request.md", instruction!)
+    expect(checkDeliverySelections(directory, [{ ...selection, file: file!, instruction_quote: instruction! }]))
+      .toEqual([`Delivery file "${file}" names a format, not a file. Words that ask only for a format give no file name; return no delivery row for them.`])
+  }
+  // A name the lawyer spells with .docx is a name, though its words also name a format.
+  const literal = "Create an editable Word draft and name the file Word Document.docx."
+  writeLeanText(directory, "request.md", literal)
+  expect(checkDeliverySelections(directory, [{ ...selection, file: "Word Document.docx", instruction_quote: literal }])).toEqual([])
+})
+
+// Names the earlier literal or titled check accepted (a quote holding the name,
+// or ending a title a naming word gives), which the shared grammar alone does not ground.
+const EARLIER: [string, string, string][] = [
+  // The lawyer writes a curly apostrophe or a no-break space; the selection a straight one or either space.
+  ["Save the letter as Purchaser’s Disclosure Letter.docx.", "Save the letter as Purchaser's Disclosure Letter.docx", "Purchaser's Disclosure Letter.docx"],
+  ["Prepare the resolutions titled Directors’ Written Resolutions.", "titled Directors' Written Resolutions", "Directors' Written Resolutions.docx"],
+  ["Save the form as Kestrel\u00a0Transfer.docx.", "Save the form as Kestrel Transfer.docx", "Kestrel Transfer.docx"],
+  ["Save the form as Kestrel\u00a0Transfer.docx.", "Save the form as Kestrel\u00a0Transfer.docx", "Kestrel\u00a0Transfer.docx"],
+  // A title given without .docx, with more words after it.
+  ["Prepare a side letter titled Kestrel Side Letter and a minute titled Kestrel Minute.", "a side letter titled Kestrel Side Letter", "Kestrel Side Letter.docx"],
+  ["Prepare a side letter titled Kestrel Side Letter (the “Side Letter”).", "titled Kestrel Side Letter", "Kestrel Side Letter.docx"],
+  ["Prepare a side letter titled Kestrel Side Letter in the agreed form.", "titled Kestrel Side Letter", "Kestrel Side Letter.docx"],
+  // A name opened by a slash, an unspaced dash or a Markdown underscore.
+  ["Deliver the form as Closing Set/Kestrel Transfer.docx.", "Deliver the form as Closing Set/Kestrel Transfer.docx", "Kestrel Transfer.docx"],
+  ["One file only—Kestrel Transfer.docx.", "One file only—Kestrel Transfer.docx", "Kestrel Transfer.docx"],
+  ["Deliver the form as _Kestrel Transfer.docx_.", "Deliver the form as _Kestrel Transfer.docx_", "Kestrel Transfer.docx"],
+  // A name in format words, spelled with .docx where the shared grammar starts no name.
+  ["Save the form as _Word Document.docx_.", "Save the form as _Word Document.docx_", "Word Document.docx"],
+  ["Deliver the form as Closing Set/Word Document.docx.", "Deliver the form as Closing Set/Word Document.docx", "Word Document.docx"],
+  ["One file only—Word Document.docx.", "One file only—Word Document.docx", "Word Document.docx"],
+  ["Save the copy as _PDF Copy.docx_.", "Save the copy as _PDF Copy.docx_", "PDF Copy.docx"],
+  // A title in a format's words, or ending in another format's extension, after a naming word.
+  ["Prepare a document titled Word.", "titled Word", "Word.docx"],
+  ["Prepare a note called Text.", "called Text", "Text.docx"],
+  ["Prepare a note entitled Pages.", "entitled Pages", "Pages.docx"],
+  ["Prepare a note titled Notes.pdf.", "titled Notes.pdf.", "Notes.pdf.docx"],
+]
+
+test("package review accepts every name the earlier literal or titled check accepted, and still names a format", () => {
+  const directory = matter()
+  writeLeanPlan(directory, [{ title: "Transfer form", purpose: "Operative terms", parts: [{ heading: "Terms", scope: "Preserve" }] }])
+  const review = (request: string, instruction_quote: string, file: string) => {
+    writeLeanText(directory, "request.md", request)
+    return checkDeliverySelections(directory, [{ document: "d1", role: "body", file, instruction_quote }])
+  }
+  for (const [request, quote, file] of EARLIER) expect({ request, file, issues: review(request, quote, file) }).toEqual({ request, file, issues: [] })
+  const format = (file: string) => [`Delivery file "${file}" names a format, not a file. Words that ask only for a format give no file name; return no delivery row for them.`]
+  // A name in another format gets no .docx added: it is that format's file.
+  expect(review("Save it as Kestrel Transfer.doc.", "Save it as Kestrel Transfer.doc", "Kestrel Transfer.doc.docx")).toEqual(format("Kestrel Transfer.doc.docx"))
+  expect(review("Save it as a Word document.", "Save it as a Word document", "Word.docx")).toEqual(format("Word.docx"))
+  for (const file of ["Kestrel Transfer Final.docx", "Kestrel Transfers.docx", "kestrel transfer.docx"])
+    expect(review("Save the form as Kestrel Transfer.docx.", "Save the form as Kestrel Transfer.docx", file).join(" ")).toContain("actual instructions")
+})
+
+test("a package review saved with a name the earlier check accepted stays valid on Continue", () => {
+  const directory = matter()
+  writeLeanPlan(directory, [{ title: "Transfer form", purpose: "Operative terms", parts: [{ heading: "Terms", scope: "Preserve" }] }])
+  for (const [request, instruction_quote, file] of EARLIER) {
+    writeLeanText(directory, "request.md", `Prepare the transfer form. ${request}`)
+    const saved = { status: "pass" as const, findings: [], limitations: [], delivery: [{ document: "d1" as const, role: "body" as const, file, instruction_quote }] }
+    writeLeanText(directory, "package-review.json", JSON.stringify(saved))
+    expect({ request, saved: readPackageReview(directory) }).toEqual({ request, saved })
   }
 })
 
