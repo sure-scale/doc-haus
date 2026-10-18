@@ -6,7 +6,7 @@ import { Hono } from "hono"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
 import { draftingTraceReference } from "../../../dochaus/lib/drafting-trace-identity"
 import { researchStatus } from "../../../dochaus/workflows/lean/research"
-import { combinedParts, readLeanDocuments, requestedMemo, type LeanDocuments } from "../../../dochaus/workflows/lean/deliverables"
+import { readLeanDocuments, requestedMemo, type LeanDocuments } from "../../../dochaus/workflows/lean/deliverables"
 import { sha256File } from "../../../dochaus/lib/lineage"
 import { lastLeanEventAt } from "../../../dochaus/workflows/lean/events"
 import { readLeanPlan } from "../../../dochaus/workflows/lean/plan"
@@ -31,6 +31,7 @@ import {
   type LeanModel,
   type LeanState,
 } from "../../../dochaus/workflows/lean/state"
+import { registeredCombinedParts } from "./combined-output"
 import { deliverableDocumentName } from "./deliverable"
 import { registerLeanDeliverable } from "./lean-deliverables"
 
@@ -209,13 +210,14 @@ function changedAfterCheck(directory: string, gate: unknown, documents: LeanDocu
 }
 
 /** Derived, never stored: the one file a combined document downloads as, once
- * the summary lists both its parts under the current plan's names (combinedParts;
- * the download route also checks the registry), with the document's id, the
- * combined file's matter name (combinedParts' `file`: "<name>.docx" or a " (n)"
- * suffix) and the exact registered names of its body and notes, so a client
- * matches those rows rather than guessing them from the name. Null otherwise. */
+ * the summary registers it and both its parts under the current plan's names
+ * (registeredCombinedParts; the download route also checks the registry), with
+ * the document's id, the combined file's registered matter name ("<name>.docx"
+ * or a " (n)" suffix) and the exact registered names of its body and notes, so a
+ * client matches those rows rather than guessing them from the name. Null
+ * otherwise, including when no combined row is registered. */
 function combinedOutput(directory: string): { document: string; name: string; file: string; body: string; notes: string } | null {
-  const parts = combinedParts(directory)
+  const parts = registeredCombinedParts(directory)
   return parts ? { document: parts.document, name: parts.name, file: parts.file, body: parts.body, notes: parts.notes } : null
 }
 

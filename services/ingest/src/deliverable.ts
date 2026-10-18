@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite"
+import { createHash } from "node:crypto"
 import path from "node:path"
 import { existsSync, lstatSync } from "node:fs"
 import { withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
@@ -13,6 +14,7 @@ import { commitDocumentWriteAsync } from "./atomic-document-write"
 import { MatterDocumentIdentityError, resolveMatterDocumentTarget } from "./document-identity"
 import { sha256File } from "../../../dochaus/lib/lineage"
 import { readWorkingDocx } from "../../../dochaus/lib/working-docx"
+import { forgetSystemDocx, recordSystemDocx } from "../../../dochaus/lib/system-docx"
 import { withParagraphPointers } from "../../../dochaus/lib/drafting-amendment"
 import {
   beginDocumentMutation,
@@ -33,6 +35,11 @@ export function deliverableDocumentName(fileName: string) {
 // Generated outputs share the matter document registry with uploaded sources so
 // the web can list and serve them, but they never enter extraction, chunking,
 // embedding, structure analysis, or source-artifact generation.
+// A write with `system` set is the system's own (a run's registration of its
+// outputs, ingest's rebuild of a saved combined file): the registry transaction
+// that writes it records the sha256 of the bytes stored (system-docx.ts). Every
+// other write removes that record, so only an unchanged system write may be
+// written over again by the system.
 export async function writeDeliverable(
   matterDir: string,
   fileName: string,
@@ -41,6 +48,7 @@ export async function writeDeliverable(
     precondition?:
       | { kind: "create" }
       | { kind: "replace"; prior_sha256: string }
+    system?: boolean
   } = {},
 ) {
   const name = deliverableDocumentName(fileName)
@@ -67,7 +75,7 @@ export async function writeDeliverable(
           `Cannot replace generated deliverable ${target.name} because its prior identity changed.`,
         )
       const bytes = name.toLowerCase().endsWith(".docx") ? Buffer.from(withParagraphPointers(buffer)) : buffer
-      return await persistDeliverable(db, matterDir, target, bytes)
+      return await persistDeliverable(db, matterDir, target, bytes, options.system)
     } finally {
       db.close()
     }
@@ -107,13 +115,14 @@ export async function copyWordDocument(matterDir: string, sourceName: string, fi
   })
 }
 
-async function persistDeliverable(db: Database, matterDir: string, target: { name: string; docPath: string }, bytes: Buffer) {
+async function persistDeliverable(db: Database, matterDir: string, target: { name: string; docPath: string }, bytes: Buffer, system = false) {
   const mutation = beginDocumentMutation(matterDir, target.name, "write", false)
   try {
     await commitDocumentWriteAsync(target.docPath, bytes, async () => {
       db.run("BEGIN IMMEDIATE")
       try {
         upsertDeliverable(db, target.docPath, target.name, Date.now())
+        updateSystemDocx(db, matterDir, target.docPath, bytes, system)
         recordDocumentMutationCommit(db, mutation)
         db.run("COMMIT")
       } catch (error) {
@@ -136,7 +145,7 @@ export async function writeDeliverableRevision(
   matterDir: string,
   fileName: string,
   buffer: Buffer,
-  options: { updateRegistry?: (db: Database) => void; priorSha256?: string; updateWorkingRevision?: (db: Database) => void } = {},
+  options: { updateRegistry?: (db: Database) => void; priorSha256?: string; updateWorkingRevision?: (db: Database) => void; system?: boolean } = {},
 ) {
   const name = deliverableDocumentName(fileName)
   if (!name) throw new DeliverableConflictError(`Deliverables must use a supported document filename and extension.`)
@@ -157,6 +166,7 @@ export async function writeDeliverableRevision(
           db.run("BEGIN IMMEDIATE")
           try {
             refreshDeliverable(db, target.docPath, target.name, Date.now())
+            updateSystemDocx(db, matterDir, target.docPath, buffer, options.system)
             options.updateRegistry?.(db)
             options.updateWorkingRevision?.(db)
             recordDocumentMutationCommit(db, mutation)
@@ -176,6 +186,13 @@ export async function writeDeliverableRevision(
       db.close()
     }
   })
+}
+
+/** In the write's registry transaction: records the bytes of the system's own
+ * write, or removes the record for any other write. */
+function updateSystemDocx(db: Database, matterDir: string, docPath: string, bytes: Uint8Array, system = false) {
+  if (system) recordSystemDocx(db, matterDir, docPath, createHash("sha256").update(bytes).digest("hex"))
+  else forgetSystemDocx(db, matterDir, docPath)
 }
 
 function deliverableTarget(matterDir: string, fileName: string) {
