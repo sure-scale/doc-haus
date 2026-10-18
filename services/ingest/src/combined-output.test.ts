@@ -573,7 +573,9 @@ describe("combined download hardening: refusal codes, matter boundary, lock scop
       }
       await hold.release()
       const accepted = await accepting
-      expect({ status: accepted.status, body: await accepted.json() }).toEqual({ status: 200, body: { ok: true, notes_updated: true } })
+      // This run records no change list, so its redline cannot be rebuilt; the accept says so.
+      expect({ status: accepted.status, body: await accepted.json() })
+        .toEqual({ status: 200, body: { ok: true, notes_updated: true, redline_updated: false, redline_skip_reason: "rebuild_failed" } })
 
       // The download that waited with it pairs the body and the notes from one side of the accept.
       const waited = await downloading
