@@ -8,7 +8,8 @@ import { leanSteps, writeLeanPlan } from "./plan"
 import { changesRepairSections } from "./repairs"
 import { enqueueLeanRequest } from "./requests"
 import { runLean, stageInputSha } from "./runner"
-import { answerQuestion, readLeanJson, readLeanState, readQuestions, replaceStageQuestions, shortHash, updateLeanStage, writeLeanText, writeQuestions, type Question } from "./state"
+import { LEAN_PROMPT_VERSION, stageInputs } from "./stages"
+import { answerQuestion, hashStageInputs, readLeanJson, readLeanState, readQuestions, replaceStageQuestions, shortHash, updateLeanStage, writeLeanText, writeQuestions, type Question } from "./state"
 import { cleanupMatters, happyPath, matter, scriptedModel } from "./test-support"
 
 // A source conflict among the disclosed checklist findings becomes one batched
@@ -249,3 +250,23 @@ test("a conflict answered under an ordinal-id question is not asked again when t
   replaceStageQuestions(other, "gate", null, asked)
   expect(readQuestions(other)).toEqual([different, expect.objectContaining({ id: asked[0]!.id, status: "open" })])
 })
+
+test("an open conflict question in the ordinal-id form is asked in the current form on resume, though the gate's other inputs are unchanged", async () => {
+  const directory = matter()
+  expect((await runLean(directory, { sessions: conflictModel().port })).status).toBe("completed")
+  const [question] = readQuestions(directory)
+  // The matter as an earlier gate left it: its open question in that form,
+  // and the gate done from the inputs it keyed then, with no gate contract.
+  const items = (readLeanJson(directory, "checklist/extraction.json") as any).sources.flatMap((row: any) => row.items) as { id: string; item: ChecklistItem }[]
+  const [a, b] = items.map(row => row.id)
+  const quote = items[0]!.item.source_refs[0]!.quote.replace(/\s+/g, " ").trim()
+  writeQuestions(directory, [{ id: `checklist-conflict-${shortHash(JSON.stringify([[a, b]]))}`, stage: "gate", status: "open",
+    question: `Checklist requirements taken from the sources conflict: ${a} with ${b}. ${a}: ${items[0]!.item.check} Sources: request "${quote}" ${b}: ${items[1]!.item.check} Sources: request "${quote}" Which requirement governs, or how should they be reconciled?`,
+    context: "Until you answer, each conflicting requirement is disclosed with the review draft as not satisfied; delivery is not held for it. Your answer re-runs the drafting from the start, including the checklist check." }])
+  const earlier = stageInputs(directory, "gate").filter(part => part.name !== "gate-contract")
+  updateLeanStage(directory, readLeanState(directory)!, "gate", { input_sha: hashStageInputs("gate", LEAN_PROMPT_VERSION, earlier) })
+  const idle = scriptedModel({})
+  expect((await runLean(directory, { sessions: idle.port })).status).toBe("completed")
+  expect(idle.prompts).toHaveLength(0)
+  expect(readQuestions(directory)).toEqual([question!])
+}, 180000)

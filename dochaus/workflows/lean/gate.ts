@@ -595,7 +595,8 @@ function checklistConflictQuestion(rows: ChecklistUnresolvedFinding[], asked: Qu
 
 /** A conflicting requirement as the conflict question's id knows it: its
  * source documents and normalized verbatim quotes, never its item id or its
- * check (a model's words), so re-extraction keeps it. */
+ * check (a model's words), so re-extraction keeps it. Two requirements citing
+ * the same source passages are one conflict for asking purposes. */
 function conflictKey(item: ChecklistItem) {
   return JSON.stringify([...new Set(item.source_refs.map(ref => `${ref.document}\n${normalize(ref.quote)}`))].toSorted())
 }
