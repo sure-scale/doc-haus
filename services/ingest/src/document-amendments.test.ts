@@ -980,6 +980,14 @@ test("an accept or Accept all into a completed run's body rebuilds its delivered
         .toEqual([["body","Supply note.docx","accepted_revision"],["redline",redlineName,"accepted_revision"]])
       expect(registeredDeliverables(matter.dir)).toEqual(runFiles)
       expect(sha256(await Bun.file(redline).bytes())).toBe(sha256(rebuilt))
+      // A file that is not a redline of the kept body, here a clean copy of the
+      // body saved under the redline's name, is not the run's: delivery leaves it
+      // and registers the run's redline under the next free name.
+      await Bun.write(redline,accepted)
+      const moved = await recordLeanDocuments(matter.dir,deps,true)
+      expect(moved.documents.find((row) => row.kind === "redline")?.deliverable).toBe("Supply note - redline (2).docx")
+      expect(sha256(await Bun.file(redline).bytes())).toBe(sha256(accepted))
+      expect(sha256(await Bun.file(path.join(matter.dir,"Supply note - redline (2).docx")).bytes())).toBe(sha256(runRedline))
     }
   } finally {
     await ingest.stop();engine.server.stop(true);await rm(temporary,{recursive:true,force:true})

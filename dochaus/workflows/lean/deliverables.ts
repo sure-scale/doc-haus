@@ -2,7 +2,7 @@ import { createHash } from "node:crypto"
 import { existsSync, readFileSync } from "node:fs"
 import path from "node:path"
 import { combineMemoAndBody } from "../../lib/combined-docx"
-import { readDocxCommentParagraphs } from "../../lib/docx-comments"
+import { readDocxCommentParagraphs, readDocxRevisionText } from "../../lib/docx-comments"
 import { withParagraphPointers } from "../../lib/drafting-amendment"
 import { sha256File } from "../../lib/lineage"
 import { readWorkingDocx } from "../../lib/working-docx"
@@ -23,7 +23,8 @@ import { leanFile, readLeanJson, writeLeanBytes, writeLeanText } from "./state"
 // keeps that file and name: a newer output is neither written over the revision
 // nor forked to "<name> (2)"; its row says so and the output stays in the run.
 // A body's redline, which each accept into that body rebuilds from it, stays
-// with the body it shows the same way.
+// with the body it shows the same way, while the file under its name is still a
+// redline of that body.
 // When the gate passes with unresolved checklist findings, the notes delivered
 // are the gate's delivered notes (in memo mode the memo first, then those
 // findings; otherwise those findings first, then the drafting notes), under the drafting notes' own kind and name.
@@ -181,8 +182,15 @@ export async function recordLeanDocuments(directory: string, deps: LeanDeps, reg
   const documents: LeanDocument[] = []
   const produced = producedFiles(directory, register)
   const closed = closedNames(directory, produced)
-  const keptBodies = new Set<DocID>()
-  for (const item of produced.filter(row => existsSync(leanFile(directory, row.file)))) {
+  const items = produced.filter(row => existsSync(leanFile(directory, row.file)))
+  const priorRow = (item: Produced) => previous.get(`${item.kind}:${item.title ?? item.name}`)
+  // Each document's body kept at the lawyer's accepted revision, found before any
+  // row is recorded, so its redline's keep does not depend on the rows' order.
+  const keptBodies = new Map(items.flatMap(item => {
+    const kept = register && item.kind === "body" && item.document && item.name !== null ? acceptedRevisionName(directory, item.name, priorRow(item)) : undefined
+    return kept ? [[item.document!, kept] as const] : []
+  }))
+  for (const item of items) {
     const source = readFileSync(leanFile(directory, item.file))
     const clean = item.document ? leanFile(directory, `${item.document}/body-applied.docx`) : undefined
     // Normalize legacy generated copies before their delivery identity is read.
@@ -191,10 +199,10 @@ export async function recordLeanDocuments(directory: string, deps: LeanDeps, reg
       item.kind === "redline" && clean && existsSync(clean) ? readFileSync(clean) : undefined) : source
     if (bytes !== source) writeLeanBytes(directory, item.file, bytes)
     const sha256 = createHash("sha256").update(bytes).digest("hex")
-    const prior = previous.get(`${item.kind}:${item.title ?? item.name}`)
+    const prior = priorRow(item)
+    const body = item.kind === "redline" && item.document ? keptBodies.get(item.document) : undefined
     const kept = register && item.name !== null
-      ? acceptedRevisionName(directory, item.name, prior, item.kind === "redline" && item.document !== null && keptBodies.has(item.document)) : undefined
-    if (kept && item.kind === "body" && item.document) keptBodies.add(item.document)
+      ? body ? keptRedlineName(directory, item.name, prior, body) : acceptedRevisionName(directory, item.name, prior) : undefined
     const deliverable = kept ?? (register && item.name !== null && deps.registerDeliverable
       ? await registerOnce(directory, deps.registerDeliverable, item.name, bytes, sha256, prior, [...previous.values()].filter(row => row.title === item.title), closed(item, item.name))
       : prior?.sha256 === sha256 ? prior.deliverable : null)
@@ -292,14 +300,30 @@ function closedNames(directory: string, produced: Produced[], plan = readLeanPla
 
 /** This output's earlier deliverable name when the lawyer has since accepted a
  * Word revision there. The registry refuses to write over such a revision; trying
- * the next free name would silently move the run's delivery away from it. A
- * redline whose body is kept so (`bodyKept`) is kept with it while its file is
- * there: each accept into the body rebuilds that redline from it. */
-function acceptedRevisionName(directory: string, stem: string, prior: LeanDocument | undefined, bodyKept = false) {
+ * the next free name would silently move the run's delivery away from it. */
+function acceptedRevisionName(directory: string, stem: string, prior: LeanDocument | undefined) {
   const name = prior?.deliverable
   if (!name || !deliverableNames(stem).includes(name)) return
-  const file = path.join(directory, name)
-  return readWorkingDocx(directory, file) || (bodyKept && existsSync(file)) ? name : undefined
+  return readWorkingDocx(directory, path.join(directory, name)) ? name : undefined
+}
+
+/** The earlier deliverable name of a redline whose body is kept so (`body`, the
+ * body's name), while the file there is still a redline of that body, as each
+ * accept into the body rebuilds it: it holds tracked changes and reads as the
+ * body once they are accepted. Any other file under that name, such as one the
+ * lawyer put there, is not the run's redline; the redline then registers like
+ * any other output (registerOnce), under a free name. */
+function keptRedlineName(directory: string, stem: string, prior: LeanDocument | undefined, body: string) {
+  const name = prior?.deliverable
+  if (!name || !deliverableNames(stem).includes(name)) return
+  try {
+    const redline = readFileSync(path.join(directory, name))
+    const revisions = readDocxRevisionText(redline)
+    const text = (bytes: Uint8Array) => JSON.stringify(readDocxCommentParagraphs(bytes).map(row => row.paragraph_text))
+    return (revisions.inserted_text.length || revisions.deleted_text.length) && text(redline) === text(readFileSync(path.join(directory, body))) ? name : undefined
+  } catch {
+    return
+  }
 }
 
 function deliverableNames(stem: string) {
