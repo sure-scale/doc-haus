@@ -90,3 +90,68 @@ describe("lean elided quotation matching", () => {
     expect(quoteFound(directory, { quote: "The supplier shall deliver the goods \u2026 Payment is due in full on delivery", source_id: SOURCE })).toBe(false)
   })
 })
+
+// An ellipsis may only shorten a passage, never turn it into words the source
+// does not say: each passage begins and ends on whole words of the source, the
+// omitted words hold no negation or qualification, and each omission stays a
+// short run within one paragraph.
+describe("lean elided quotation limits", () => {
+  const LIMITS = [
+    "The Supplier shall be liable for direct losses only and shall not be liable for indirect or consequential losses arising from late delivery.",
+    "The Seller hereby agrees that it shall not indemnify the Buyer for third-party claims of any kind.",
+    "The licence granted under this Agreement is non-exclusive and non-transferable.",
+    "The Customer's liability under this Agreement is unlimited in amount for breach of confidentiality.",
+  ].join("\n\n")
+  const verified = (directory: string, quote: string) =>
+    checkDraftingNotes(directory, `# Drafting notes\n\nThe terms provide "${quote}" [source: ${SOURCE}].`, []).issues.length === 0
+  const PURCHASE = (omitted: string) => `The Distributor shall purchase the goods ${omitted} from the Manufacturer at the list price.`
+  const PURCHASE_QUOTE = "The Distributor shall purchase the goods … from the Manufacturer at the list price"
+  const NEUTRAL = "in the quantities stated in each purchase order and on the delivery dates agreed in writing by both parties"
+
+  test("a passage that begins or ends inside a word of the source is refused", () => {
+    const directory = matter(LIMITS)
+    expect(verified(directory, "The licence granted under this Agreement is … exclusive and non-transferable.")).toBe(false)
+    expect(verified(directory, "The Customer's liability under this Agreement is …limited in amount for breach of confidentiality.")).toBe(false)
+    expect(verified(directory, "The licence granted under this Agreement is non … and non-transferable.")).toBe(false)
+    expect(verified(directory, "The licence granted under this Agreement is … and non-transferable.")).toBe(true)
+  })
+
+  test("an omission holding a negation or qualification is refused", () => {
+    const directory = matter(LIMITS)
+    expect(verified(directory, "The Supplier shall be liable … for indirect or consequential losses")).toBe(false)
+    expect(verified(directory, "The Seller hereby agrees that it shall … indemnify the Buyer for third-party claims")).toBe(false)
+    for (const omitted of ["not", "never", "only", "in no event", "nor", "neither", "none of", "without delay", "except samples", "unless rejected",
+      "save as agreed", "subject to clause 4", "provided that stock lasts", "notwithstanding clause 4", "cannot", "won't"])
+      expect([omitted, verified(matter(PURCHASE(omitted)), PURCHASE_QUOTE)]).toEqual([omitted, false])
+    expect(verified(matter(PURCHASE(NEUTRAL)), PURCHASE_QUOTE)).toBe(true)
+    // "No." before a number abbreviates "number"; it negates nothing.
+    expect(verified(matter(PURCHASE("listed in schedule No. 4")), PURCHASE_QUOTE)).toBe(true)
+  })
+
+  test("an omission that drops a non- or un- prefix from the next word is refused", () => {
+    for (const source of [
+      "The licence granted under this Agreement is non exclusive and is limited to the Territory.",
+      "The licence granted under this Agreement is non-\nexclusive and is limited to the Territory.",
+      "The licence granted under this Agreement is un- conditional and is limited to the Territory.",
+    ]) expect(verified(matter(source), `The licence granted under this Agreement is … ${source.includes("un-") ? "conditional" : "exclusive"} and is limited to the Territory`)).toBe(false)
+  })
+
+  test("an omission longer than a short run or crossing a paragraph break is refused", () => {
+    const long = Array.from({ length: 4 }, () => NEUTRAL).join(", ")
+    expect(long.length).toBeGreaterThan(300)
+    expect(verified(matter(PURCHASE(long)), PURCHASE_QUOTE)).toBe(false)
+    expect(verified(matter(PURCHASE(`${NEUTRAL}, ${NEUTRAL}`)), PURCHASE_QUOTE)).toBe(true)
+    const paragraphs = (gap: string) => `The Distributor shall purchase the goods each month.${gap}The price for the goods is the list price on the order date.`
+    const quote = "The Distributor shall purchase the goods … The price for the goods is the list price"
+    expect(verified(matter(paragraphs("\n\n")), quote)).toBe(false)
+    expect(verified(matter(paragraphs("\r\n \r\n")), quote)).toBe(false)
+    expect(verified(matter(paragraphs("\n")), quote)).toBe(true)
+  })
+
+  test("a later occurrence of a passage is tried when the first leaves too long an omission", () => {
+    const far = Array.from({ length: 4 }, () => NEUTRAL).join(", ")
+    const source = `The Distributor shall purchase the goods on the first order date, ${far}. ${PURCHASE("each month")}`
+    expect(verified(matter(source), PURCHASE_QUOTE)).toBe(true)
+    expect(verified(matter(source.replace(PURCHASE("each month"), "The goods come from the Manufacturer at the list price.")), PURCHASE_QUOTE)).toBe(false)
+  })
+})

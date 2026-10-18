@@ -146,7 +146,7 @@ test("long canonical source text is readable beyond JSON clipping with focused s
 
 test("drafting notes may cite an approved authority by name after a signal word and quote it with an ellipsis", () => {
   const directory = matter()
-  const text = "The tenant must keep the premises insured against the listed risks (see the schedule; Ashdown v. Merrow, 12 Synth. 34 [2020]). A subtenant is bound by the same insurance covenant."
+  const text = "The tenant must keep the premises insured against the listed risks (see Property Act § 14-201; Ashdown v. Merrow, 12 Synth. 34, 36 [2020]; Kestrel v. Fenby Holdings, 304 Synth. 513, 514 [2019]). A subtenant is bound by the same insurance covenant."
   const research = retrieved(directory, text)
   research.findings[0]!.citation = "Ashdown v. Merrow, 12 Synth. 34 (2020)"
   expect(acceptResearchReply(directory, "research", JSON.stringify(research)).issues).toEqual([])

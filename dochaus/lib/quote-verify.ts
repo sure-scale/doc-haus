@@ -199,18 +199,79 @@ export function elidedParts(quote: string): string[] | undefined {
   return parts.filter((part, index) => part || (index > 0 && index < parts.length - 1))
 }
 
-/** Whether every passage appears in `text` in the quoted order, each starting
- * after the previous one ends (no overlap) and each long enough (SHORT_QUOTE)
- * to identify its place on its own. */
-export function partsInOrder(text: string, parts: string[]) {
+/** The most source text one ellipsis may stand for: a citation or an aside,
+ * not the distance between two parts of a document. */
+export const MAX_OMITTED = 300
+
+/** Omitted words that would negate, limit or condition the words around them.
+ * "No." before a number abbreviates "number" and negates nothing. */
+const QUALIFIER = /\b(?:not|no(?!\.\s?\d)|never|nor|neither|none|nothing|cannot|without|except|unless|save|only|subject\s+to|provided|notwithstanding)\b|n't\b/i
+
+/** An omission that ends on a bare "non" or "un" prefix of the next word
+ * ("non exclusive", "un- limited"). */
+const DROPPED_PREFIX = /(?:^|[^\p{L}\p{N}])(?:non|un)-?\s*$/iu
+
+/** Whether every passage appears in `raw`, normalized like a quotation (and
+ * case-insensitively with `ignoreCase`), in the quoted order, each starting
+ * after the previous one ends, and the ellipsis only shortens the source:
+ * - each passage is long enough (SHORT_QUOTE) to identify its place on its own
+ *   and begins and ends on whole words of the source (insideWord);
+ * - each omission between passages is short (MAX_OMITTED), stays within one
+ *   paragraph (no blank line in the raw text) and drops no negation,
+ *   qualification or word prefix that changes the meaning (QUALIFIER,
+ *   DROPPED_PREFIX).
+ * Every place a passage appears is tried, not only the first. */
+export function partsInOrder(raw: string, parts: string[], options: { unescapeMarkdown?: boolean; ignoreCase?: boolean } = {}) {
   if (!parts.length || parts.some(part => part.length < SHORT_QUOTE)) return false
-  let from = 0
-  for (const part of parts) {
-    const at = text.indexOf(part, from)
-    if (at === -1) return false
-    from = at + part.length
+  const normalized = normalizeWithMap(raw, options)
+  const { text, map } = options.ignoreCase ? lowerWithMap(normalized) : normalized
+  const wanted = options.ignoreCase ? parts.map(lowerChars) : parts
+  const omissionAllowed = (from: number, to: number) => {
+    const omitted = text.slice(from, to)
+    return !QUALIFIER.test(omitted) && !DROPPED_PREFIX.test(omitted) && !/\n[^\S\n]*\n/.test(raw.slice(map[from - 1]! + 1, map[to]))
   }
-  return true
+  // A failed (passage, start) pair fails the same way from any earlier placement.
+  const failed = new Set<string>()
+  const place = (index: number, from: number): boolean => {
+    if (failed.has(`${index}:${from}`)) return false
+    const part = wanted[index]!
+    for (let at = text.indexOf(part, from); at !== -1; at = text.indexOf(part, at + 1)) {
+      if (index > 0 && at - from > MAX_OMITTED) break
+      if (insideWord(text, at) || insideWord(text, at + part.length)) continue
+      if (index > 0 && !omissionAllowed(from, at)) continue
+      if (index === wanted.length - 1 || place(index + 1, at + part.length)) return true
+    }
+    failed.add(`${index}:${from}`)
+    return false
+  }
+  return place(0, 0)
+}
+
+/** Whether one word of `text` runs across offset `at`: letters or digits on
+ * both sides, or joined there by a hyphen, apostrophe or underscore
+ * ("non-exclusive", "Customer's"). */
+function insideWord(text: string, at: number) {
+  const word = (i: number) => /[\p{L}\p{N}]/u.test(text[i] ?? "")
+  const joiner = (i: number) => /[-_'\u2019]/.test(text[i] ?? "")
+  return word(at - 1) && (word(at) || joiner(at) && word(at + 1)) || joiner(at - 1) && word(at - 2) && word(at)
+}
+
+/** Lower case one character at a time, so offsets keep their raw positions. */
+function lowerChars(text: string) {
+  return Array.from(text, ch => ch.toLowerCase()).join("")
+}
+
+function lowerWithMap(normalized: { text: string; map: number[] }) {
+  let text = ""
+  const map: number[] = []
+  let at = 0
+  for (const ch of normalized.text) {
+    const lower = ch.toLowerCase()
+    text += lower
+    for (let i = 0; i < lower.length; i++) map.push(normalized.map[at]!)
+    at += ch.length
+  }
+  return { text, map }
 }
 
 /** Whether a quotation's elided passages (elidedParts) all appear, in order, in
@@ -220,8 +281,7 @@ export function verifyElidedQuote(args: { directory: string; parts: string[]; do
   const texts = args.document.startsWith("playbook:")
     ? playbook?.text && args.document === playbook.source_id ? [playbook.text] : []
     : indexedText(args.directory, args.document)
-  return texts.some(raw => [{}, { unescapeMarkdown: true }]
-    .some(options => partsInOrder(normalizeWithMap(raw, options).text, args.parts)))
+  return texts.some(raw => [{}, { unescapeMarkdown: true }].some(options => partsInOrder(raw, args.parts, options)))
 }
 
 function indexedText(directory: string, document: string): string[] {

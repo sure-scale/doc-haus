@@ -139,18 +139,18 @@ export function instructionFound(directory: string, quote: string) {
 /** A quotation in prose ('"words" [source: id]') may omit words with an
  * ellipsis, as a lawyer would: it passes when quoteFound does, or when each
  * passage the ellipsis separates is in the one named source, in the quoted
- * order, and long enough to verify on its own. A JSON quote field keeps the
+ * order, and long enough to verify on its own, and the ellipsis only shortens
+ * the source (partsInOrder: whole words, short omissions within a paragraph,
+ * no omitted negation or qualification). A JSON quote field keeps the
  * verbatim contract of quoteFound, since its consumers locate those words. */
 export function proseQuoteFound(directory: string, quote: SourceQuote) {
   if (quoteFound(directory, quote)) return true
   const parts = elidedParts(quote.quote)
   if (!parts) return false
   if (/^https?:\/\//.test(quote.source_id)) return approvedResearch(directory).some(row => row.url === quote.source_id &&
-    partsInOrder(normalize(researchSource(directory, row.snapshot)?.text ?? ""), parts))
-  if (quote.source_id === REQUEST_SOURCE && !matterSourceIDs(directory).includes(REQUEST_SOURCE)) {
-    const lower = parts.map(part => part.toLowerCase())
-    return lawyerWords(directory).some(text => partsInOrder(normalize(text).toLowerCase(), lower))
-  }
+    partsInOrder(researchSource(directory, row.snapshot)?.text ?? "", parts))
+  if (quote.source_id === REQUEST_SOURCE && !matterSourceIDs(directory).includes(REQUEST_SOURCE))
+    return lawyerWords(directory).some(text => partsInOrder(text, parts, { ignoreCase: true }))
   return verifyElidedQuote({ directory, parts, document: quote.source_id })
 }
 
