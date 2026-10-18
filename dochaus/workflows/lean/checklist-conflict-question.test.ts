@@ -106,7 +106,7 @@ test("an answer to the conflict question re-keys the checklist check and reaches
   answerQuestion(directory, question.id, "The payment requirement governs.")
   expect(stageInputSha(directory, "checklist-check")).not.toBe(before)
   expect(checklistProducerInputs(directory).find(row => row.key === "request")!.input.instructions).toContainEqual(
-    { document: "request", locator: `.dochaus/lean/questions.json /questions/0/answer (${question.id})`, quote: "The payment requirement governs." })
+    { document: "request", locator: `.dochaus/lean/questions.json answer (${question.id})`, quote: "The payment requirement governs." })
 })
 
 const ANSWER = "Payment on delivery governs; state it in the note."
@@ -167,4 +167,47 @@ test("a source conflict completes the run with one open question; resume and a g
   expect(readQuestions(directory)).toEqual([expect.objectContaining({ id: question!.id, status: "answered", answer: ANSWER })])
   expect(readLeanJson(directory, "gate.json")).toMatchObject({ status: "pass", delivery: "review_draft_with_findings" })
   expect((readLeanJson(directory, "gate.json") as any).disclosed).toContainEqual(expect.objectContaining({ ref: expect.objectContaining({ question_id: question!.id }) }))
+}, 180000)
+
+test("an answer's source locator survives a later step rewriting questions.json: the extraction stays current, the run completes and an idle resume makes no call", async () => {
+  const directory = matter()
+  expect((await runLean(directory, { sessions: conflictModel().port })).status).toBe("completed")
+  const [conflict] = readQuestions(directory)
+  // The gate asked two questions; the lawyer answers the second. A later
+  // step's question rewrite puts answered questions first, so the answer
+  // moves within questions.json during the walk.
+  writeQuestions(directory, [conflict!, { id: "gate-second", stage: "gate", question: "Should the package carry the instruction?", context: "", status: "open" }])
+  enqueueLeanRequest(directory, { kind: "answer", question_id: "gate-second", answer: "It is outside this request." })
+  const state = await runLean(directory, { sessions: conflictModel().port })
+  expect(state.stop_reason ?? "").not.toContain("Source extraction is incomplete or stale")
+  expect(state.status).toBe("completed")
+  expect(readQuestions(directory).map(row => row.id)).toEqual(["gate-second", conflict!.id])
+  expect(checklistProducerInputs(directory).find(row => row.key === "request")!.input.instructions).toEqual(
+    [{ document: "request", locator: ".dochaus/lean/questions.json answer (gate-second)", quote: "It is outside this request." }])
+  const settled = readLeanState(directory)!
+  expect(leanSteps(directory).filter(step => settled.stages[step]?.input_sha !== stageInputSha(directory, step))).toEqual([])
+  const idle = scriptedModel({})
+  expect((await runLean(directory, { sessions: idle.port })).status).toBe("completed")
+  expect(idle.prompts).toHaveLength(0)
+}, 180000)
+
+test("a rewrite that only reorders questions.json re-keys no step: finalize, change-review and the gate stay current and a resume makes no call", async () => {
+  const directory = matter()
+  expect((await runLean(directory, { sessions: conflictModel().port })).status).toBe("completed")
+  const [conflict] = readQuestions(directory)
+  const answered = (id: string): Question => ({ id, stage: "gate", question: `Does ${id} apply?`, context: "", status: "answered", answer: `${id} applies.` })
+  writeQuestions(directory, [conflict!, answered("gate-b"), answered("gate-a")])
+  expect((await runLean(directory, { sessions: conflictModel().port })).status).toBe("completed")
+  const steps = leanSteps(directory).filter(step => step === "finalize" || step === "gate" || step.endsWith(".change-review"))
+  expect(steps.length).toBe(3)
+  const keys = () => steps.map(step => stageInputSha(directory, step))
+  const before = { keys: keys(), questions: readQuestions(directory) }
+  writeQuestions(directory, before.questions.toReversed())
+  expect(keys()).toEqual(before.keys)
+  const settled = readLeanState(directory)!
+  expect(leanSteps(directory).filter(step => settled.stages[step]?.input_sha !== stageInputSha(directory, step))).toEqual([])
+  const idle = scriptedModel({})
+  expect((await runLean(directory, { sessions: idle.port })).status).toBe("completed")
+  expect(idle.prompts).toHaveLength(0)
+  expect(readQuestions(directory).toSorted((a, b) => a.id.localeCompare(b.id))).toEqual(before.questions.toSorted((a, b) => a.id.localeCompare(b.id)))
 }, 180000)

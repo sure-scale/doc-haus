@@ -40,7 +40,7 @@ import { EmbeddingModelUnavailableError, migrateEmbeddings } from "./embed"
 import { migrateStructure } from "./structure"
 import { pdfToDocx } from "./convert"
 import { buildRedlined, bake, redlineState, redlineStaleReason, RedlinePreviewConflictError } from "./redline"
-import { listMatters, createMatter, getMatter, renameMatter, deleteMatter, recordConflicts, matterDir, listJurisdictions, listPlaybooks, updatePlaybook, deletePlaybook, PlaybookError, WORKSPACE_ROOT, type Conflicts } from "./matter"
+import { listMatters, createMatter, getMatter, renameMatter, deleteMatter, recordConflicts, matterDir, listJurisdictions, listPlaybooks, updatePlaybook, deletePlaybook, PlaybookError, PLAYBOOK_DIR, type Conflicts } from "./matter"
 import { listTemplates, templatePath, setTemplateDescription, removeTemplateDescription, TEMPLATES_DIR } from "./template"
 import { listWorkflows, createWorkflow, updateWorkflow, deleteWorkflow, NAME_RE, WORKFLOWS_DIR } from "./workflow"
 import { listSkills, createSkill, updateSkill, deleteSkill, importSkill, setSkillEnabled, SKILLS_DIR } from "./skill"
@@ -202,7 +202,7 @@ app.post("/playbooks", async (c) => {
   if (!NAME_RE.test(skill) || !/^playbook-[a-z0-9]/.test(skill)) return c.json({ error: `"${skill}" is not a valid playbook name (lowercase, hyphenated)` }, 400)
   if (listPlaybooks().some((p) => p.name === skill)) return c.json({ error: `playbook "${skill}" already exists` }, 409)
   await Bun.write(
-    path.join(WORKSPACE_ROOT, ".playbooks", skill, "SKILL.md"),
+    path.join(PLAYBOOK_DIR(), skill, "SKILL.md"),
     // Description is JSON-quoted so a colon or newline cannot inject YAML keys
     // (same posture as skill.ts renderSkillMarkdown).
     `---\nname: ${skill}\ndescription: ${JSON.stringify(description)}\n---\n\n${content}`,
@@ -808,7 +808,7 @@ app.get("/matters/:id/redlines", async (c) => {
   if (!name) return c.json([])
   return withArtifactMutationLocksAsync(dir, [name], async () => {
     const target = readDocumentTarget(dir, name)
-    if (!target) return c.json([])
+    if (!target || !existsSync(target.docPath)) return c.json([])
     const db = openDb(dir)
     try {
       const rows = listPendingRedlines(db, target.docPath)

@@ -187,7 +187,8 @@ test("document and structural scopes intersect, including an unknown document na
     ])
     expect(both.result!.metadata.citations.map((citation) => citation.excerpt)).toEqual(["needle first included"])
     expect(mismatch.result!.metadata.citations).toHaveLength(0)
-    expect(unknown.result!.metadata.citations).toHaveLength(0)
+    // A document with no indexed passages is refused before any source search runs.
+    expect(String(unknown.result)).toContain("Source view unavailable")
     expect(documentOnly.result!.metadata.citations.map((citation) => citation.excerpt).sort()).toEqual([
       "needle first included", "needle first other",
     ])

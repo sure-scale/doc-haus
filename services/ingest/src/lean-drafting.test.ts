@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite"
 import { afterEach, describe, expect, spyOn, test } from "bun:test"
 import { createHash } from "node:crypto"
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { Document, Packer, Paragraph } from "docx"
@@ -517,6 +517,33 @@ test("a delivered draft changed after the final check is disclosed; the check's 
   // Disclosure only: nothing re-runs, upgrades or clears the final check.
   expect(status).toMatchObject({ status: "completed", gate, open_items: [open] })
   expect(JSON.parse(readLeanText(directory, "gate.json")!)).toEqual(gate)
+})
+
+describe("changed-after-check reads only regular files inside the matter", () => {
+  const outsideBytes = Buffer.from("outside the matter")
+  function completedWith(deliverable: string, prepare: (directory: string, outside: string) => void) {
+    const directory = matter()
+    const outside = path.join(mkdtempSync(path.join(tmpdir(), "dochaus-outside-")), "Secret.docx")
+    writeFileSync(outside, outsideBytes)
+    prepare(directory, outside)
+    writeLeanState(directory, { ...initLeanState(directory, { request: "Draft a short supply note.", ownerSessionID: "ses_owner", model: MODEL }), status: "completed" })
+    writeLeanText(directory, "documents.json", `${JSON.stringify({ schema: "dochaus.lean.documents/2", status: "completed", documents: [
+      { kind: "body", document: "d1", title: "Supply note", path: ".dochaus/lean/d1/body-applied.docx", sha256: "0".repeat(64), deliverable },
+    ] })}\n`)
+    return directory
+  }
+  for (const [label, name, prepare] of [
+    ["a dot name", ".", () => {}],
+    ["a dot-dot name", "..", () => {}],
+    ["an empty name", "", () => {}],
+    ["a directory", "Folder.docx", (directory: string) => mkdirSync(path.join(directory, "Folder.docx"))],
+    ["a symlink to a file outside the matter", "Link.docx", (directory: string, outside: string) => symlinkSync(outside, path.join(directory, "Link.docx"))],
+  ] as const) {
+    test(`${label} is skipped like a missing file`, () => {
+      const directory = completedWith(name, prepare)
+      expect(leanDraftingStatus(directory)!.changed_after_check).toBeNull()
+    })
+  }
 })
 
 test("a review draft delivered with unresolved checklist findings passes through as delivered, with each finding's checklist reference", async () => {
