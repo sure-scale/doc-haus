@@ -140,4 +140,10 @@ test("native outcome counts keep withheld proposals separate from amendment appl
   expect(prompt).toContain('"unapplied_amendment_count": 0')
   expect(prompt).toContain('"withheld_proposal_count": 1')
   expect(prompt).toContain('"change_origin": "initial-draft-revision"')
+  // The counts check the notes' statements; the notes do not report them.
+  const notes = stagePrompt(directory, "finalize")
+  expect(notes).toContain('"withheld_proposal_count": 1')
+  expect(notes).toContain("Retain source support, comparison baselines, limitations and every required open-item id; an unapplied or withheld change reaches you as its own open item.")
+  expect(notes).toContain("Use that record for artifact presence and to check any statement about which review amendments were applied, unapplied or withheld; do not report the counts themselves. Keep source support and legal effect separate.")
+  expect(notes).not.toContain("applied/unapplied")
 })

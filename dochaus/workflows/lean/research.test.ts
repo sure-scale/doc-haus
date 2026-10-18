@@ -152,7 +152,7 @@ test("research with no findings sends the reviewer no source-context reading or 
   const prompt = researchPrompt(directory, "research-review")
   expect(prompt).not.toContain("research-context.txt")
   expect(prompt).not.toContain("read locators")
-  expect(prompt).toContain('{"approved":[]')
+  expect(prompt.endsWith('\n\nResearch returned no findings, so there is no retrieved authority to review. Disclose missing research the request still needs. No discovery tools are available here. Return JSON only: {"approved":[],"rejected":[],"limitations":["remaining legal research gaps the lawyer must see"]}.')).toBe(true)
   const research = retrieved(directory)
   expect(acceptResearchReply(directory, "research", JSON.stringify(research)).issues).toEqual([])
   expect(researchPrompt(directory, "research-review")).toContain("research-context.txt")
