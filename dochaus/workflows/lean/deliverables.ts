@@ -312,23 +312,28 @@ function acceptedRevisionName(directory: string, stem: string, prior: LeanDocume
 }
 
 /** The earlier deliverable name of a redline whose body is kept so (`body`, the
- * body's name), while the file there is still a redline of that body, as each
- * accept into the body rebuilds it: it is registered as a deliverable, holds
- * tracked changes of any kind (text, paragraph-mark or formatting) and reads as
- * the body once they are accepted. Any other file under that name, such as a
- * source or one the lawyer put there, is not the run's redline; the redline then
- * registers like any other output (registerOnce), under a free name. */
+ * body's name), while the file there is still a redline of that body
+ * (redlineOfBody). Any other file under that name, such as a source or one the
+ * lawyer put there, is not the run's redline; the redline then registers like
+ * any other output (registerOnce), under a free name. */
 function keptRedlineName(directory: string, stem: string, prior: LeanDocument | undefined, body: string) {
   const name = prior?.deliverable
-  if (!name || !deliverableNames(stem).includes(name)) return
+  return name && deliverableNames(stem).includes(name) && redlineOfBody(directory, name, body) ? name : undefined
+}
+
+/** Whether the matter file `name` is still the run's redline of the body file
+ * `body`, as each accept into the body rebuilds it: it is registered as a
+ * deliverable, holds tracked changes of any kind (text, paragraph-mark or
+ * formatting) and reads as the body once they are accepted. */
+export function redlineOfBody(directory: string, name: string, body: string) {
   try {
-    if (registeredRole(directory, name) !== "deliverable") return
+    if (registeredRole(directory, name) !== "deliverable") return false
     const redline = readFileSync(path.join(directory, name))
     const tracked = Object.values(readDocxRevisionProperties(redline).revision_elements).some(count => count > 0)
     const text = (bytes: Uint8Array) => JSON.stringify(readDocxCommentParagraphs(bytes).map(row => row.paragraph_text))
-    return tracked && text(redline) === text(readFileSync(path.join(directory, body))) ? name : undefined
+    return tracked && text(redline) === text(readFileSync(path.join(directory, body)))
   } catch {
-    return
+    return false
   }
 }
 

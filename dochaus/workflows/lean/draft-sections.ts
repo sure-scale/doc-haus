@@ -247,15 +247,16 @@ export async function runDraftStage(
     // settle go back to the outline session as a revision request, unless the
     // lawyer has already been asked about this very mismatch or has answered a
     // question on the requested files: a revision never overrides an answer. A
-    // revision settles delivery only: the deliverables and file names of the
-    // documents its issues concern are taken when it plans the same titles, in
-    // order, and the same memo, spelled alike, and otherwise it is spent and the
-    // outline kept. Neither job reads what it changes, so neither is asked again.
+    // revision settles delivery only: the deliverables of the documents its
+    // issues concern are taken when it plans the same titles, in order, and the
+    // same memo, spelled alike, and otherwise it is spent and the outline kept.
+    // File names stay the outline's: code gives each file its name. Neither job
+    // reads what it changes, so neither is asked again.
     const filed = await filing(covered, value.memo)
     const requested = filed?.value
     const contents = (outline: LeanOutline) => JSON.stringify([outline.documents.map(row => normalizedHeading(row.title)), outline.memo ? normalizedHeading(outline.memo) : null])
-    const delivered = ({ deliverable: _deliverable, file: _file, ...row }: LeanOutline["documents"][number], revised: LeanOutline["documents"][number]) =>
-      ({ ...row, ...(revised.deliverable ? { deliverable: revised.deliverable } : {}), ...(revised.file ? { file: revised.file } : {}) })
+    const delivered = ({ deliverable: _deliverable, ...row }: LeanOutline["documents"][number], revised: LeanOutline["documents"][number]) =>
+      ({ ...row, ...(revised.deliverable ? { deliverable: revised.deliverable } : {}) })
     let files = requested ? requestedFilesIssues(covered, value.memo, requested).issues : []
     const revising = (documents: LeanOutline["documents"]) =>
       requested && requestedFilesQuestion(directory, requested, withDocumentIDs(documents), files) ? requestedFilesRevision(directory, files) : undefined

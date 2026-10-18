@@ -163,6 +163,16 @@ describe("requested files through the run", () => {
     ])
   }, 120_000)
 
+  test("a files revision changes only the deliverables: a file name the outline gives is kept, though the revision leaves out its line", async () => {
+    const directory = prepared()
+    const named = outline("Memo: cover memo", letter("File: Kestrel Release Pack.docx"))
+    const model = scriptedModel(replies({ [AGENT.draft]: outliner(named, COMBINED), [AGENT.files]: filesOf({ ...PACKED, name: null }) }))
+    expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+
+    expect(revisions(model)).toHaveLength(1)
+    expect(readLeanPlan(directory)!.documents).toEqual([expect.objectContaining({ id: "d1", title: "Release letter", deliverable: "combined", file: "Kestrel Release Pack.docx" })])
+  }, 120_000)
+
   test("the memo asked for with a document planned as a redline goes to the lawyer with no revision", async () => {
     const directory = prepared()
     const model = scriptedModel(replies({ [AGENT.draft]: outliner(outline("Memo: cover memo", letter("Deliverable: redline")), COMBINED), [AGENT.files]: filesOf(PACKED) }))
@@ -238,7 +248,8 @@ describe("requested files through the run", () => {
     expect(items).toEqual([expect.objectContaining({ stage: "finalize", kind: "omission", ref: expect.objectContaining({ repair_target: "memo" }) })])
     expect(items[0]!.detail).toBe(`Requested files: the lawyer's words "${requoted.quote}" [source: request] ask for the memo and "Release letter" in one file named "Kestrel Release Pack.docx", ` +
       'but the run delivers the memo in "Kestrel Release Pack - cover memo.docx" and "Release letter" in "Kestrel Release Pack.docx". ' +
-      `The lawyer answered the requested-files question ${asked[0]!.id}; the plan drawn up with that answer still delivers them so.`)
+      `The lawyer answered the question about the files the words "${PACK}" [source: request] ask for; the plan drawn up with that answer still delivers them so.`)
+    expect(items[0]!.detail).not.toContain(asked[0]!.id)
     expect(disclosableItems(directory)).toContainEqual(items[0])
     expect(readLeanText(directory, "drafting-notes.md")).toContain(`[ref: ${items[0]!.id}]`)
     expect(gateOf(directory)).toMatchObject({ status: "pass", blocking: [] })

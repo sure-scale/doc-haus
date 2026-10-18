@@ -2,7 +2,9 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { Database } from "bun:sqlite"
 import { writeFileSync } from "node:fs"
 import path from "node:path"
+import { docxodus } from "../../lib/docxodus"
 import { sha256File } from "../../lib/lineage"
+import { renderMarkdownToDocx } from "../../lib/render"
 import { workingDocxKey } from "../../lib/working-docx"
 import { TOOL_SYNTAX_ISSUE } from "./checks"
 import { writeLeanPlan, type DocID, type PlannedDocument } from "./plan"
@@ -241,12 +243,24 @@ describe("parse requested files", () => {
   })
 
   test("a format is no name: a format given as a file's name is refused at once, and no refused name is made up", () => {
-    for (const [words, name] of [["save it as PDF", "PDF"], ["save as Word", "Word"], ["save it as a Word document", "a Word document"], ["name the file docx", "docx"]]) {
+    for (const [words, name] of [["save it as PDF", "PDF"], ["save it as a PDF file", "a PDF file"], ["name the file rtf", "rtf"]]) {
       const quote = `Deliver the share transfer form separately and ${words}`
       const directory = prepared(`${quote}.`)
       expect(parseRequestedFiles(reply(true, file(["d1"], quote, name)), directory, DOCUMENTS, MEMO))
         .toEqual({ issues: [], value: stated({ ...file(["d1"], quote), refused_name: name }) })
       expect(parseRequestedFiles(reply(true, file(["d1"], quote)), directory, DOCUMENTS, MEMO)).toEqual({ issues: [], value: stated(file(["d1"], quote)) })
+    }
+  })
+
+  test("Word's own format given as a file's name asks for what the run delivers: no name, nothing refused and no item", () => {
+    for (const [words, name] of [["save as Word", "Word"], ["save it as a Word document", "a Word document"], ["save it as a Word document", "Word document.docx"], ["name the file docx", "docx"]]) {
+      const quote = `Deliver the share transfer form separately and ${words}`
+      const directory = prepared(`${quote}.`)
+      for (const final of [false, true])
+        expect(parseRequestedFiles(reply(true, file(["d1"], quote, name)), directory, DOCUMENTS, MEMO, { final })).toEqual({ issues: [], value: stated(file(["d1"], quote)) })
+      writeLeanPlan(directory, [outline("Share transfer form"), outline("Board minute")], "basis-1")
+      writeRequestedFiles(directory, { schema: LEAN_REQUESTED_FILES_SCHEMA, basis: "basis-1", planned: { titles: ["Share transfer form", "Board minute"], memo: null }, ...stated(file(["d1"], quote)) })
+      expect(requestedFilesItems(directory)).toEqual([])
     }
   })
 
@@ -318,8 +332,9 @@ describe("requested files issues", () => {
   test("the revision request first says that only the delivery lines may change, and none is made once the lawyer has answered", () => {
     const directory = prepared()
     const { issues } = requestedFilesIssues(DOCUMENTS, MEMO, ASKED)
-    expect(FILES_REVISION_SCOPE).toBe('These issues concern only how the outline delivers its files: change only the "Deliverable:" and "File:" lines, ' +
-      'and keep every title, part and the "Memo:" line exactly as they are.')
+    // Code gives the files their names, so a revision keeps the "File:" lines as they are.
+    expect(FILES_REVISION_SCOPE).toBe('These issues concern only how the outline delivers its files: change only the "Deliverable:" lines, ' +
+      'and keep every title, part, "File:" line and the "Memo:" line exactly as they are.')
     expect(requestedFilesRevision(directory, issues)).toEqual({ feedback: [FILES_REVISION_SCOPE, issues[0]!.issue], documents: new Set(["d2"]) })
     // Any answered requested-files question, even one on the lawyer's earlier words, stops the revisions.
     writeQuestions(directory, [{ id: "requested-files-0000", stage: "draft", question: "Earlier question.", context: "", status: "answered", answer: "As planned.", answered_at: "2026-10-18T00:00:00.000Z" }])
@@ -426,12 +441,13 @@ describe("requested files question", () => {
       "Do you want it delivered as your words ask, or as planned? If neither, say how it should be delivered.")
   })
 
-  test("the memo asked for with a document planned as a redline is asked about", () => {
+  test("the memo asked for with a document planned as a redline is asked about, saying the memo joins only a document's clean text", () => {
     const directory = prepared()
     const documents = [planned("d1", "Share transfer form"), planned("d2", "Board minute", { deliverable: "redline" })]
     const { issues } = requestedFilesIssues(documents, MEMO, ASKED)
     expect(requestedFilesQuestion(directory, ASKED, documents, issues)!.question).toBe(
       `Your words "${PACK}" ask for the memo and "Board minute" in one file named "Kestrel Board Pack.docx", but the document plan delivers "Board minute" as a redline and the memo as a file of its own. ` +
+      "The memo can be joined in one file only with a document's clean text, not with a redline. " +
       "Do you want it delivered as your words ask, or as planned? If neither, say how it should be delivered.")
   })
 
@@ -453,6 +469,7 @@ describe("requested files items", () => {
   const AS_ASKED = [outline("Share transfer form", { file: "Kestrel Transfer.docx" }), outline("Board minute", { file: "Kestrel Board Pack.docx", deliverable: "combined" })]
   const NOTES = { name: MEMO, file: "Kestrel Board Pack - cover memo.docx" }
   const CONFIRM = " The lawyer should confirm how these files are to be delivered."
+  const ANSWERED = " The lawyer answered the question about these files; the plan drawn up with that answer still delivers them so."
   const item = (detail: string, closing = CONFIRM) => openItem("finalize", "omission", `Requested files: ${detail}${closing}`, { repair_target: "memo" })
   const record = (...files: RequestedFile[]): LeanRequestedFiles => ({ schema: LEAN_REQUESTED_FILES_SCHEMA, basis: BASIS, planned: PLANNED, stated: true, files })
 
@@ -491,11 +508,27 @@ describe("requested files items", () => {
     writeQuestions(directory, [{ ...question, status: "answered", answer: "As planned.", answered_at: "2026-10-18T00:00:00.000Z" }])
     const detail = `the lawyer's words "${PACK}" [source: request] ask for the memo and "Board minute" in one file named "Kestrel Board Pack.docx", ` +
       'but the run delivers the memo in "Kestrel Board Pack - cover memo.docx" and "Board minute" in "Kestrel Board Pack.docx".'
-    const cited = item(detail, ` The lawyer answered the requested-files question ${question.id}; the plan drawn up with that answer still delivers them so.`)
+    // The answer is cited in plain words: no question id reaches the lawyer.
+    const cited = item(detail, ANSWERED)
     expect(requestedFilesItems(directory)).toEqual([cited])
+    expect(cited.detail).not.toContain(question.id)
     // An update that leaves these words as they were leaves the answer standing.
     writeLeanText(directory, "updated-notes.md", "<!-- update-1 -->\nAlso prepare a resignation letter.\n\n")
     expect(requestedFilesItems(directory)).toEqual([cited])
+  })
+
+  test("an answer to a question that listed more or fewer of the lawyer's words is cited with the words it listed", () => {
+    const fewer = "with a cover memo, all in one file named Kestrel Board Pack.docx"
+    const plan = [AS_ASKED[0]!, outline("Board minute", { file: "Kestrel Board Pack.docx", deliverable: "body" })]
+    for (const [listed, recorded] of [[fewer, PACK], [PACK, fewer]] as const) {
+      const directory = saved(plan, record(file(["memo", "d2"], recorded, "Kestrel Board Pack.docx")))
+      const listing = stated(file(["memo", "d2"], listed, "Kestrel Board Pack.docx"))
+      const question = requestedFilesQuestion(directory, listing, DOCUMENTS, requestedFilesIssues(DOCUMENTS, MEMO, listing).issues)!
+      writeQuestions(directory, [{ ...question, status: "answered", answer: "As planned.", answered_at: "2026-10-18T00:00:00.000Z" }])
+      expect(requestedFilesItems(directory)).toEqual([item(`the lawyer's words "${recorded}" [source: request] ask for the memo and "Board minute" in one file named "Kestrel Board Pack.docx", ` +
+        'but the run delivers the memo in "Kestrel Board Pack - cover memo.docx" and "Board minute" in "Kestrel Board Pack.docx".',
+      ` The lawyer answered the question about the files the words "${listed}" [source: request] ask for; the plan drawn up with that answer still delivers them so.`)])
+    }
   })
 
   test("an answer is cited only for the files its question asked about", () => {
@@ -508,7 +541,7 @@ describe("requested files items", () => {
     expect(requestedFilesItems(directory)).toEqual([
       item(`the lawyer's words "${PACK}" [source: request] ask for the memo and "Board minute" in one file named "Kestrel Board Pack.docx", ` +
         `but the run delivers ${combined} and "Board minute" in "Kestrel Board Pack.docx".`,
-      ` The lawyer answered the requested-files question ${question.id}; the plan drawn up with that answer still delivers them so.`),
+      ANSWERED),
       item(`the lawyer's words "${TRANSFER}" [source: request] ask for "Share transfer form" as a file named "Kestrel Transfer.docx", but the run delivers ${combined}.`),
     ])
   })
@@ -527,8 +560,9 @@ describe("requested files items", () => {
     // The run's own registered file there is its delivery; an earlier suffixed delivery is named.
     const row = (deliverable: string, sha256: string) => ({ kind: "body", document: "d1", title: "Share transfer form", path: ".dochaus/lean/d1/body-applied.docx", sha256, deliverable })
     const summary = (...documents: unknown[]) => writeLeanText(directory, "documents.json", JSON.stringify({ schema: "dochaus.lean.documents/2", status: "completed", documents }))
+    // The item reads the same once the run has registered its file under another name.
     summary(row("Kestrel Transfer (2).docx", "0".repeat(64)))
-    expect(requestedFilesItems(directory)).toEqual([item(`${asked}"Kestrel Transfer (2).docx", since a file already in the matter holds the name "Kestrel Transfer.docx".`)])
+    expect(requestedFilesItems(directory)).toEqual([item(`${asked}a file of another name, since a file already in the matter holds the name "Kestrel Transfer.docx".`)])
     summary(row("Kestrel Transfer.docx", sha256File(path.join(directory, "Kestrel Transfer.docx"))!.sha256))
     expect(requestedFilesItems(directory)).toEqual([])
     // The lawyer's accepted Word revision of the run's file keeps that file the run's.
@@ -569,6 +603,32 @@ describe("requested files items", () => {
     expect(requestedFilesItems(directory)).toEqual([])
   })
 
+  test("a redline the lawyer's accepted Word revision of its body rebuilt is still the run's, while it is a redline of that body", async () => {
+    const plan = [outline("Share transfer form", { file: "Kestrel Transfer.docx", deliverable: "redline" }), AS_ASKED[1]!]
+    const directory = saved(plan, record(file(["d1"], TRANSFER, "Kestrel Transfer.docx")))
+    const clean = path.join(directory, "Kestrel Transfer - clean.docx")
+    const redline = path.join(directory, "Kestrel Transfer.docx")
+    const original = (await renderMarkdownToDocx("# Share transfer form\n\nThe transferor transfers ten shares.")).bytes
+    const accepted = (await renderMarkdownToDocx("# Share transfer form\n\nThe transferor transfers twelve shares.")).bytes
+    // The accept rewrites the body and rebuilds the redline in place; the summary still holds the bytes first registered.
+    writeFileSync(clean, accepted)
+    writeFileSync(redline, await (await docxodus()).compareDocuments(original, accepted, { authorName: "Reviewer" }))
+    const db = new Database(path.join(directory, ".dochaus", "legal.db"), { create: true })
+    db.run("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
+    db.run("CREATE TABLE IF NOT EXISTS documents (doc_path TEXT, role TEXT)")
+    db.query("INSERT INTO meta (key, value) VALUES (?, ?)").run(workingDocxKey(directory, clean), JSON.stringify({ version: 1, source_sha256: "1".repeat(64), projection_sha256: "2".repeat(64) }))
+    for (const name of [clean, redline]) db.query("INSERT INTO documents (doc_path, role) VALUES (?, 'deliverable')").run(name)
+    db.close()
+    const row = (kind: string, file: string, deliverable: string) => ({ kind, document: "d1", title: "Share transfer form", path: `.dochaus/lean/d1/${file}`, sha256: "0".repeat(64), deliverable })
+    writeLeanText(directory, "documents.json", JSON.stringify({ schema: "dochaus.lean.documents/2", status: "completed",
+      documents: [row("body", "body-applied.docx", "Kestrel Transfer - clean.docx"), row("redline", "redline.docx", "Kestrel Transfer.docx")] }))
+    expect(requestedFilesItems(directory)).toEqual([])
+    // A file there that is no redline of the body is not the run's.
+    writeFileSync(redline, accepted)
+    expect(requestedFilesItems(directory)).toEqual([item(`the lawyer's words "${TRANSFER}" [source: request] ask for "Share transfer form" as a file named "Kestrel Transfer.docx", ` +
+      'but the run delivers "Share transfer form" as a redline in a file of another name, since a file already in the matter holds the name "Kestrel Transfer.docx".')])
+  })
+
   test("each delivered file is described by all it holds", () => {
     // The combined file holds the memo and its document, whatever the record asks of either.
     const combined = saved([outline("Share transfer form", { deliverable: "combined" }), outline("Board minute")], record(file(["d1"], TRANSFER)))
@@ -588,7 +648,7 @@ describe("requested files items", () => {
     const ids = documents.map((row, index) => ({ ...row, id: `d${index + 1}` as DocID }))
     const question = requestedFilesQuestion(directory, ASKED, ids, requestedFilesIssues(ids, MEMO, ASKED).issues)!
     writeQuestions(directory, [{ ...question, status: "answered", answer: "As planned.", answered_at: "2026-10-18T00:00:00.000Z" }])
-    expect(requestedFilesItems(directory)).toEqual([item(detail, ` The lawyer answered the requested-files question ${question.id}; the plan drawn up with that answer still delivers them so.`)])
+    expect(requestedFilesItems(directory)).toEqual([item(detail, ANSWERED)])
   })
 
   test("a name the run could not confirm is disclosed with the file delivered", () => {
