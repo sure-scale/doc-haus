@@ -513,7 +513,8 @@ export function requestedFilesItems(directory: string): OpenItem[] {
     const spelled = planned && row.wanted === planned.toLocaleLowerCase() && row.name.startsWith(row.wanted.slice(0, -5))
       ? `${planned.slice(0, -5)}${row.name.slice(row.wanted.length - 5)}` : row.name
     const titled = document ? title(document) ?? null : null
-    if (kind === "combined") return { kind, title: titled, name: row.name, spelled, held: undefined }
+    // The combined file under the name registration gave or will give it, as the run's evidence names it.
+    if (kind === "combined") return { kind, title: titled, name: planned?.toLocaleLowerCase() ?? row.name, spelled: planned ?? row.name, held: undefined }
     const accepted = (name: string) => Boolean(readWorkingDocx(directory, path.join(directory, name)))
     const runs = (name: string) => {
       const current = sha256File(path.join(directory, name))?.sha256

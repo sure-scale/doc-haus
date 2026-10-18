@@ -8,11 +8,12 @@ import { buildCombinedFile } from "../../lib/combined-docx"
 import { withParagraphPointers } from "../../lib/drafting-amendment"
 import { renderMarkdownToDocx } from "../../lib/render"
 import { workingDocxKey } from "../../lib/working-docx"
-import { combinedDelivery, combinedParts, memoNotesFile, readLeanDocuments, recordLeanDocuments, type LeanDocumentKind } from "./deliverables"
+import { combinedDelivery, combinedParts, deliveryArtifactEvidence, memoNotesFile, readLeanDocuments, recordLeanDocuments, type LeanDocumentKind } from "./deliverables"
 import { checkDeliverySelections, selectedDeliveryPlan, type DeliverySelection } from "./delivery-selection"
 import { packageReviewPrompt } from "./package-review"
 import { writeLeanPlan, type PlannedDocument } from "./plan"
 import { openItem } from "./quotes"
+import { LEAN_REQUESTED_FILES_SCHEMA, requestedFilesItems, requestedFilesPlanned, writeRequestedFiles } from "./requested-files"
 import { disclosableItems, type LeanDeps } from "./stages"
 import { writeLeanBytes, writeLeanText } from "./state"
 import { cleanupMatters, matter, registering, scriptedModel } from "./test-support"
@@ -272,6 +273,96 @@ describe("the combined file saved in the matter", () => {
     expect(rows.map(([kind]) => kind)).not.toContain("combined")
     expect(matterFile(directory, "supply-pack.docx")).toEqual(other)
     expect(existsSync(path.join(directory, "supply-pack (2).docx"))).toBe(false)
+  }, 60_000)
+
+  const REVISED_MEMO = { "drafting-notes.docx": "# Cover memo\n\nThe delivery terms follow the revised supply terms." }
+
+  test("an accept with a working record and a changed memo: the combined file is held with its item, never moved to the next free name", async () => {
+    const directory = matter()
+    writeLeanPlan(directory, [COMBINED], undefined, undefined, memo([COMBINED]))
+    await writeCopies(directory, COPIES)
+    await deliver(directory)
+    const accepted = await acceptIntoBody(directory, true)
+    await writeCopies(directory, REVISED_MEMO)
+
+    const item = unsaved("a file the run did not write already has that name")
+    expect(disclosableItems(directory)).toEqual([item])
+    await expect(deliver(directory)).rejects.toThrow(item.detail)
+    discloseAtGate(directory, [item])
+    const { rows } = await deliver(directory)
+    expect(rows).toContainEqual(["body", "d1", "supply-pack - clean.docx"])
+    expect(rows.map(([kind]) => kind)).not.toContain("combined")
+    expect(matterFile(directory, "supply-pack.docx")).toEqual(accepted.combined)
+    expect(existsSync(path.join(directory, "supply-pack (2).docx"))).toBe(false)
+  }, 60_000)
+
+  test("the next free name skips a name another planned output is requested under, while that output is not yet written", async () => {
+    const directory = matter()
+    const documents: Document[] = [COMBINED, { ...SCHEDULE, file: "supply-pack (2).docx", deliverable: "body" }]
+    writeLeanPlan(directory, documents, undefined, undefined, memo(documents))
+    await writeCopies(directory, COPIES)
+    await deliver(directory)
+    await acceptIntoBody(directory, false)
+    await writeCopies(directory, REVISED_MEMO)
+
+    expect(disclosableItems(directory)).toEqual([])
+    expect(deliveryArtifactEvidence(directory).at(-1)).toMatchObject({ kind: "combined", download_filename: "supply-pack (3).docx" })
+    expect((await deliver(directory)).rows).toContainEqual(["combined", "d1", "supply-pack (3).docx"])
+    expect(existsSync(path.join(directory, "supply-pack (2).docx"))).toBe(false)
+    // Once written, that output takes its requested name.
+    await writeCopies(directory, { "d2/body-applied.docx": "# Delivery schedule\n\nGoods arrive on the first day.", "d2/redline.docx": "# Delivery schedule\n\nGoods arrive on the first day." })
+    const { rows } = await deliver(directory)
+    expect(rows).toContainEqual(["body", "d2", "supply-pack (2).docx"])
+    expect(rows).toContainEqual(["combined", "d1", "supply-pack (3).docx"])
+  }, 60_000)
+
+  test("an accept without a working record while every numbered name is taken: a finalize item before delivery, and no file is written over", async () => {
+    const directory = matter()
+    writeLeanPlan(directory, [COMBINED], undefined, undefined, memo([COMBINED]))
+    await writeCopies(directory, COPIES)
+    await deliver(directory)
+    const accepted = await acceptIntoBody(directory, false)
+    const others = new Map<string, Uint8Array<ArrayBuffer>>()
+    for (let index = 2; index <= 9; index++) {
+      const bytes = await docx(`# Supply pack ${index}\n\nA synthetic file saved under this name by hand.`)
+      others.set(`supply-pack (${index}).docx`, bytes)
+      writeFileSync(path.join(directory, `supply-pack (${index}).docx`), bytes)
+    }
+    await writeCopies(directory, REVISED_MEMO)
+
+    const item = unsaved('the file of that name holds the lawyer\'s accepted changes, which the run keeps, and other files already have each numbered name the run can give the new file, up to "supply-pack (9).docx"')
+    expect(disclosableItems(directory)).toEqual([item])
+    // Registration finds the same item, which the gate's notes disclose.
+    discloseAtGate(directory, [item])
+    const { rows } = await deliver(directory)
+    expect(rows.map(([kind]) => kind)).not.toContain("combined")
+    expect(matterFile(directory, "supply-pack.docx")).toEqual(accepted.combined)
+    for (const [name, bytes] of others) expect(matterFile(directory, name)).toEqual(bytes)
+  }, 60_000)
+
+  test("a request naming the combined file is checked against the name registration gives it: once it moves to the next free name, the mismatch is disclosed", async () => {
+    const directory = matter()
+    const words = "Send the supply note with the cover memo in one file named supply-pack.docx"
+    const plan = writeLeanPlan(directory, [COMBINED], "basis-1", undefined, memo([COMBINED]))
+    writeRequestedFiles(directory, { schema: LEAN_REQUESTED_FILES_SCHEMA, basis: "basis-1", planned: requestedFilesPlanned(plan.documents, plan.memo), stated: true,
+      files: [{ holds: ["memo", "d1"], name: "supply-pack.docx", quote: words }] })
+    const evidence = () => deliveryArtifactEvidence(directory).at(-1)
+    await writeCopies(directory, COPIES)
+    expect(requestedFilesItems(directory)).toEqual([])
+    await deliver(directory)
+    expect(requestedFilesItems(directory)).toEqual([])
+    expect(evidence()).toMatchObject({ kind: "combined", download_filename: "supply-pack.docx" })
+    await acceptIntoBody(directory, false)
+    await writeCopies(directory, REVISED_MEMO)
+
+    const item = openItem("finalize", "omission", `Requested files: the lawyer's words "${words}" [source: request] ask for the memo and "Supply note" in one file named "supply-pack.docx", ` +
+      'but the run delivers the memo and "Supply note" in one file named "supply-pack (2).docx". The lawyer should confirm how these files are to be delivered.', { repair_target: "memo" })
+    // Predicted before the delivery moves the file, and read from the summary after it.
+    expect(requestedFilesItems(directory)).toEqual([item])
+    expect(evidence()).toMatchObject({ download_filename: "supply-pack (2).docx" })
+    expect((await deliver(directory)).rows).toContainEqual(["combined", "d1", "supply-pack (2).docx"])
+    expect(requestedFilesItems(directory)).toEqual([item])
+    expect(evidence()).toMatchObject({ download_filename: "supply-pack (2).docx" })
   }, 60_000)
 
   test("a later plan without the combined delivery handles the saved file as a dropped deliverable's", async () => {
