@@ -592,8 +592,9 @@ async function runGate(directory: string): Promise<StageRun> {
   writeLeanText(directory, "gate.json", `${JSON.stringify(gate, null, 2)}\n`)
   writeLeanText(directory, "drafting-notes-coverage.md", notesCoverageReport(gate))
   // The drafting notes are delivered as the reader gets them, with any
-  // unresolved checklist findings in plain words: whenever either exists, as
-  // the gate's validity requires (stageOutputValid). Notes left without a
+  // unresolved checklist findings and disclosed requirements left open in plain
+  // words: whenever any of them exists, as the gate's validity requires
+  // (stageOutputValid). Notes left without a
   // heading are delivered under a plain title, so they are never empty. With no
   // drafting notes and no finding there is nothing to deliver, so earlier
   // delivered notes are removed. Rendering is not byte-stable (a list gets a fresh relationship

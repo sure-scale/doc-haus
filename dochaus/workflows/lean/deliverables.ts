@@ -27,9 +27,10 @@ import { leanFile, readLeanJson, writeLeanBytes, writeLeanText } from "./state"
 // A body's redline, which each accept into that body rebuilds from it, stays
 // with the body it shows the same way, while the file under its name is still a
 // registered deliverable redline of that body.
-// When the gate passes with unresolved checklist findings, the notes delivered
-// are the gate's delivered notes (in memo mode the memo first, then those
-// findings; otherwise those findings first, then the drafting notes), under the drafting notes' own kind and name.
+// When the gate passes, the notes delivered are the gate's delivered notes,
+// which list any unresolved checklist findings and then any requirements left
+// open (in memo mode the memo first, then those findings; otherwise those
+// findings first, then the drafting notes), under the drafting notes' own kind and name.
 
 export type LeanDocumentKind = "body" | "redline" | "drafting_notes" | "drafting_notes_markdown"
 

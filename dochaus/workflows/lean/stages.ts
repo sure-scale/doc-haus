@@ -68,7 +68,7 @@ const REQUESTED_MEMO_CONTRACT = "requested-memo-titles-7"
  * change to how it words or keys a question, or how it composes the delivered
  * notes, re-runs a done gate, so an open question it asked takes the current
  * form and the delivered notes are written again. */
-const GATE_CONTRACT = "reader-notes-delivery-2"
+const GATE_CONTRACT = "checklist-open-delivery-3"
 export const LEAN_MAX_RETRIES = 3
 
 export const LEAN_STAGE_AGENTS = {
@@ -396,9 +396,11 @@ export function stageOutputValid(directory: string, step: StepID) {
   // re-run them; any other failed check does.
   if (stage === "finalize") return !checkDraftingNotes(directory, text("drafting-notes.md"), disclosableItems(directory), { final: true }).issues.length
   // A passed gate delivers the drafting notes, and any unresolved checklist
-  // findings, in its own notes (deliveredNotes).
+  // findings and disclosed requirements left open, in its own notes
+  // (deliveredNotes).
   if (stage === "gate") return !(existsSync(leanFile(directory, "drafting-notes.md")) ||
-    (readLeanJson(directory, "gate.json") as { items?: OpenItem[] } | undefined)?.items?.some(item => item.kind === "checklist_unresolved")) ||
+    (readLeanJson(directory, "gate.json") as { items?: OpenItem[] } | undefined)?.items?.some(item => item.kind === "checklist_unresolved" ||
+      item.kind === "checklist_open" && item.status === "disclosed")) ||
     [DELIVERED_NOTES.docx, DELIVERED_NOTES.markdown].every(name => existsSync(leanFile(directory, name)))
   return true
 }
