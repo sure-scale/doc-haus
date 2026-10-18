@@ -16,6 +16,8 @@ import type { Amendment } from "../../lib/drafting-amendment"
 type Component = { id: string; pids: string[]; groups: ChangePlan["groups"]; prior_only: string[]; prior: ChangeList; changes: ChangeList }
 const MAX_CONFLICT_CONTEXT = 60_000
 const TOO_LARGE = "Not reconciled: the paragraph is too large to reconcile in one bounded step, so this proposed change was not applied."
+const CONTEXT_TOO_LARGE = "Not reconciled: the instructions, goals and shared decisions this paragraph must be reconciled against are too large for one bounded step, so this proposed change was not applied."
+const SEVERAL_EARLIER = "The paragraph also has more than one earlier operation, so none of them was kept without reconciliation."
 export type ReconciliationWork = { direct: ChangeList; conflicts: Component[] }
 
 /** Preparation already supplies source-checked operations. Revisit only a
@@ -96,7 +98,7 @@ function reconciliationPrompts(directory: string, document: DocID) {
       `<shared_dependencies>\n${JSON.stringify(plan?.shared_decisions ?? [])}\n</shared_dependencies>`,
       `<initial_targets>\n${JSON.stringify(paragraphs.filter(row => pids.has(row.pid)))}\n</initial_targets>`,
       `<competing_operations_and_explanations>\n${JSON.stringify(component.changes)}\n</competing_operations_and_explanations>`,
-      ...(sliced ? ["This job covers only the listed initial targets. Separate bounded jobs reconcile the other paragraphs these goals name; that is not a dependency. Read them only where a listed target's wording depends on them."] : []),
+      ...(sliced ? [`This job covers only the listed initial targets; separate bounded jobs reconcile the other paragraphs these goals name, and separate jobs never establish consistency. Their prepared operations are in read-record .dochaus/lean/${document}/change-preparation.json, in the groups entry for each goal id: follow them where a listed target must agree with another paragraph, such as a defined term, a cross-reference or moved text.`] : []),
       `Original source inventory: ${sources}. Use search-document/read-document view=source with exact filename. Current documents use view=current_body, comments/deleted_text separately. Read-record .dochaus/lean/${document}/paragraphs.json supplies initial targets. Retrieve only necessary conditions or related document passages. Other components are not amendment targets.`,
       'Return {"amendments":[{"pid":"listed initial pid","operation":"replace|delete|split (omit for replace)","updated":"complete replacement text, or array for split","reason":"combined supported effect","sources":[{"source_id":"canonical source or request","quote":"exact words"}]}],"explanations":[{"pid":"listed initial pid","reason":"actual source-to-initial revision, corrected for resulting effect","sources":[]}],"questions":[{"pid":"listed initial pid","question":"indispensable unresolved human decision","context":"why needed"}],"dependencies":[]}. Also return "retained_initial":[{"pid":"listed initial pid","reason":"source-grounded reason an earlier operation is rejected and initial wording retained","sources":[{"source_id":"canonical source or request","quote":"exact words"}]}] when withdrawing an earlier operation; this is a recorded disposition, never a no-op edit. Every listed candidate PID needs a resulting operation, explicit retained_initial disposition, or an explicit dependencies entry explaining why it cannot safely be reconciled. dependencies holds a newly discovered cross-component dependency or unsupported candidate needing renewed source adjudication; name affected PIDs/components and specific issue. Such work stops publication, never silently drops an operation. Source questions retain visible [open item: ...] carriers. Unsupported drafting judgment retains a new visible confirmation marker. Do not emit no-op edits to create comments. Never turn missing approval into adoption. No file writes.',
     ].join("\n\n")
@@ -106,11 +108,12 @@ function reconciliationPrompts(directory: string, document: DocID) {
 /** A component whose prompt exceeds the bounded context is decomposed into
  * consecutive document-order paragraph slices that each fit. Every slice keeps
  * the component's goals; its operations, explanations and prior-only paragraphs
- * are its own. A paragraph too large even alone is returned in `oversized`. */
+ * are its own. A paragraph too large even alone is returned in `oversized`, with
+ * whether the paragraph or the goals and instructions alone exceed the bound. */
 function reconciliationSlices(directory: string, document: DocID, component: Component) {
   const prompt = reconciliationPrompts(directory, document)
   const fits = (slice: Component) => prompt(slice).length <= MAX_CONFLICT_CONTEXT
-  if (fits(component)) return { slices: [component], oversized: [] as string[] }
+  if (fits(component)) return { slices: [component], oversized: [] as { pid: string; reason: string }[] }
   const order = new Map(readParagraphs(directory, document).map((row, index) => [row.pid, index]))
   const ordered = component.pids.toSorted((a, b) => (order.get(a) ?? order.size) - (order.get(b) ?? order.size))
   const slice = (pids: string[], first: boolean): Component => {
@@ -122,7 +125,7 @@ function reconciliationSlices(directory: string, document: DocID, component: Com
     })
     return { ...component, pids, prior_only: component.prior_only.filter(pid => keep.has(pid)), prior: own(component.prior), changes: own(component.changes) }
   }
-  const slices: Component[] = [], oversized: string[] = []
+  const slices: Component[] = [], oversized: { pid: string; reason: string }[] = []
   let current: Component | undefined
   for (const pid of ordered) {
     const grown = slice([...(current?.pids ?? []), pid], !slices.length)
@@ -130,21 +133,28 @@ function reconciliationSlices(directory: string, document: DocID, component: Com
     if (current) slices.push(current)
     const alone = slice([pid], !slices.length)
     current = fits(alone) ? alone : undefined
-    if (!current) oversized.push(pid)
+    if (!current) oversized.push({ pid, reason: fits({ ...alone, pids: [], changes: emptyChanges() }) ? TOO_LARGE : CONTEXT_TOO_LARGE })
   }
   if (current) slices.push(current)
   return { slices: slices.map((row, index) => slices.length > 1 ? { ...row, id: `${component.id} part ${index + 1} of ${slices.length}` } : row), oversized }
 }
 
-/** A paragraph no bounded job can hold keeps its earlier valid operations and
- * explanation; each new prepared operation is withheld as a visible open item. */
-function unreconciledParagraph(component: Component, pid: string): ChangeList {
-  const own = <T extends { pid: string }>(rows: T[] | undefined) => (rows ?? []).filter(row => row.pid === pid)
-  const kept = own(component.prior.amendments)
-  const fresh = own(component.changes.amendments).filter(row => !kept.some(prior => operationKey(prior) === operationKey(row)))
+/** A paragraph no bounded job can hold keeps its explanations, questions,
+ * withheld rows and earlier valid operation; each new prepared operation is
+ * withheld as a visible open item. As on the direct path, one operation with
+ * nothing earlier to revisit is applied as prepared. Several earlier operations
+ * (an older change list) cannot be kept unreconciled, so all are withheld. */
+function unreconciledParagraph(component: Component, pid: string, reason: string): ChangeList {
+  const own = <T extends { pid?: string }>(rows: T[] | undefined) => (rows ?? []).filter(row => row.pid === pid)
+  const operations = own(component.changes.amendments), explanations = own(component.changes.explanations), retained = own(component.changes.retained_initial), questions = own(component.changes.questions)
+  const withheld = (component.changes.withheld ?? []).filter(row => row.amendment.pid === pid)
+  if (!explanations.length && !retained.length && !withheld.length && new Set(operations.map(operationKey)).size === 1) return { ...emptyChanges(), amendments: [coalesce(operations)], questions }
+  const earlier = [...Map.groupBy(own(component.prior.amendments), operationKey).values()].map(coalesce)
+  const kept = earlier.length === 1 ? earlier : []
+  const fresh = operations.filter(row => !kept.some(prior => operationKey(prior) === operationKey(row)))
   return {
-    ...emptyChanges(), amendments: kept, explanations: own(component.prior.explanations), retained_initial: own(component.prior.retained_initial),
-    withheld: [...(component.changes.withheld ?? []).filter(row => row.amendment.pid === pid), ...[...Map.groupBy(fresh, operationKey).values()].map(rows => ({ amendment: coalesce(rows), issues: [TOO_LARGE] }))],
+    ...emptyChanges(), amendments: kept, explanations, retained_initial: retained, questions,
+    withheld: [...withheld, ...[...Map.groupBy(fresh, operationKey).values()].map(rows => ({ amendment: coalesce(rows), issues: earlier.length > 1 ? [reason, SEVERAL_EARLIER] : [reason] }))],
   }
 }
 
@@ -155,21 +165,27 @@ export async function runChangeReconciliation(directory: string, state: LeanStat
   const work = reconciliationWork(directory, document, plan, preparation)
   const step = `${document}.changes` as const
   const key = hashStageInputs(step, LEAN_PROMPT_VERSION, stageInputs(directory, step))
-  const results: ChangeList[] = []
+  // A job's result fills its own index, so order and ids do not depend on which job finishes first.
+  const results: (ChangeList | undefined)[] = []
   const failures: string[] = []
   const counts = { next: 0, calls: 0, attempts: 0, sessions: [] as string[] }
-  const jobs: Component[] = []
+  const jobs: { component: Component; at: number }[] = []
   for (const component of work.conflicts) {
     try {
       const { slices, oversized } = reconciliationSlices(directory, document, component)
-      jobs.push(...slices)
-      results.push(...oversized.map(pid => unreconciledParagraph(component, pid)))
+      // A slice with no operation or withheld candidate has nothing to reconcile: its own rows pass through.
+      for (const slice of slices) {
+        if (slice.changes.amendments.length || slice.changes.withheld?.length) jobs.push({ component: slice, at: results.push(undefined) - 1 })
+        else results.push(slice.changes)
+      }
+      results.push(...oversized.map(row => unreconciledParagraph(component, row.pid, row.reason)))
     } catch (error) { failures.push(`${component.id}: ${error instanceof Error ? error.message : String(error)}`) }
   }
   await Promise.all(Array.from({ length: Math.min(4, jobs.length) }, async () => {
     for (;;) {
-      const component = jobs[counts.next++]
-      if (!component) return
+      const job = jobs[counts.next++]
+      if (!job) return
+      const { component } = job
       try {
         const initialPrompt = reconciliationPrompt(directory, document, component)
         const agent = LEAN_STAGE_AGENTS.changes
@@ -195,7 +211,7 @@ export async function runChangeReconciliation(directory: string, state: LeanStat
           }
           appendLeanEvent(directory, { stage: "changes", document, step: component.id, event: "checker", attempt: index, issues, wait_ms: leanElapsedMs(asked, answered), check_ms: leanElapsedMs(answered) })
           progress({ feedback: issues })
-          if (!issues.length && check.changes) { results.push({ ...check.changes, retained_initial: parsed.ok ? parsed.value.retained_initial as ChangeList["retained_initial"] : [], withheld: [...(component.changes.withheld ?? []).filter(row => !check.changes!.amendments.some(accepted => accepted.pid === row.amendment.pid) && !(parsed.ok && Array.isArray(parsed.value.retained_initial) && parsed.value.retained_initial.some(disposition => record(disposition) && disposition.pid === row.amendment.pid))), ...(check.changes.withheld ?? [])] }); break }
+          if (!issues.length && check.changes) { results[job.at] = { ...check.changes, retained_initial: parsed.ok ? parsed.value.retained_initial as ChangeList["retained_initial"] : [], withheld: [...(component.changes.withheld ?? []).filter(row => !check.changes!.amendments.some(accepted => accepted.pid === row.amendment.pid) && !(parsed.ok && Array.isArray(parsed.value.retained_initial) && parsed.value.retained_initial.some(disposition => record(disposition) && disposition.pid === row.amendment.pid))), ...(check.changes.withheld ?? [])] }; break }
           if (index === LEAN_MAX_RETRIES) failures.push(`${component.id}: ${issues.join(" ")}`)
         }
       } catch (error) { failures.push(`${component.id}: ${error instanceof Error ? error.message : String(error)}`) }
@@ -204,7 +220,7 @@ export async function runChangeReconciliation(directory: string, state: LeanStat
   drainLeanRequests(directory)
   if (key !== hashStageInputs(step, LEAN_PROMPT_VERSION, stageInputs(directory, step))) return { status: "restart" as const }
   if (failures.length) return { status: "failed" as const, reason: `${step}: ${failures.join(" ")}` }
-  const combined = combine([work.direct, ...results])
+  const combined = combine([work.direct, ...results.filter(row => row !== undefined)])
   const order = new Map(readParagraphs(directory, document).map((row, index) => [row.pid, index]))
   combined.amendments.sort((a, b) => order.get(a.pid)! - order.get(b.pid)!)
   const knownQuestions = readQuestions(directory)

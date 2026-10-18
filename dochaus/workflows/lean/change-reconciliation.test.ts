@@ -171,3 +171,95 @@ test("a paragraph too large for one bounded step keeps its earlier change and wi
  expect(accepted.withheld?.map(row=>[row.amendment.pid,row.amendment.updated])).toEqual([[rows[1]!.pid,"New shortened provision."]])
  expect("openItems" in result&&result.openItems.filter(item=>item.kind==="unapplied_amendment").map(item=>[item.ref.pid,item.detail])).toEqual([[rows[1]!.pid,expect.stringContaining("too large to reconcile in one bounded step")]])
 })
+const tooLong=`Long provision. ${"The supplier keeps the delivery schedule under review. ".repeat(1200)}`
+function tagged(prompt: string, tag: string) { return JSON.parse(new RegExp(`<${tag}>\\n(.*)\\n</${tag}>`, "s").exec(prompt)![1]!) }
+function echo(edits: (pid: string) => boolean = () => true, explained: string[] = []) {
+ return scriptedModel({"lean-changes":prompt=>{const listed=targets(prompt);return JSON.stringify({amendments:listed.filter(edits).map(pid=>({pid,updated:`Reconciled correction for ${pid}.`,reason:"Combined supported effect.",sources:support})),explanations:listed.filter(pid=>explained.includes(pid)).map(pid=>({pid,reason:"Initial revision explanation, corrected.",sources:support})),questions:[],dependencies:[]})}})
+}
+async function reconcile(dir: string, port: ReturnType<typeof scriptedModel>["port"]) { return runChangeReconciliation(dir,readLeanState(dir)!,{sessions:port},"d1",()=>{}) }
+test("explanations, withheld rows and earlier-only paragraphs stay with their own slice across slice boundaries",async()=>{
+ const dir=matter(),filler="The supplier keeps the delivery schedule under review. ".repeat(7)
+ const rows=provisions(dir,Array.from({length:200},(_,index)=>`Initial provision ${index+1}. ${filler}`))
+ const explained=rows.filter((_,index)=>index%9===0).map(row=>row.pid),pending=rows.filter((_,index)=>index%13===5)
+ writeLeanText(dir,"d1/changes.json",JSON.stringify({...changes(rows.map((row,index)=>op(row,`Earlier correction ${index+1}. ${filler}`))),explanations:explained.map((pid,index)=>({id:`i${index+1}`,pid,reason:"Initial revision explanation.",sources:support})),withheld:pending.map(row=>({amendment:op(row,"Unverified intent."),issues:["Source support unresolved."]}))}))
+ save(dir,inputs([{id:"whole",pids:rows.map(row=>row.pid)}],[changes(rows.filter((_,index)=>index%7).map((row,index)=>op(row,`Prepared correction ${index+1}. ${filler}`)))]))
+ const model=echo(undefined,explained),result=await reconcile(dir,model.port)
+ expect(result.status).toBe("done");expect(model.prompts.length).toBeGreaterThan(1)
+ for(const prompt of model.prompts){
+  const listed=targets(prompt.text),own=tagged(prompt.text,"competing_operations_and_explanations") as ChangeList
+  expect([...own.amendments.map(row=>row.pid),...own.explanations!.map(row=>row.pid),...own.withheld!.map(row=>row.amendment.pid)].filter(pid=>!listed.includes(pid))).toEqual([])
+ }
+ expect(model.prompts.flatMap(prompt=>targets(prompt.text)).toSorted()).toEqual(rows.map(row=>row.pid).toSorted())
+ const accepted=readChangeList(dir,"d1")!
+ expect(accepted.amendments).toHaveLength(200);expect(accepted.explanations!.map(row=>row.pid).toSorted()).toEqual(explained.toSorted());expect(accepted.withheld).toEqual([])
+})
+test("a paragraph too large for one bounded step keeps its earlier change, every explanation and its earlier withheld rows",async()=>{
+ const dir=matter(),rows=provisions(dir,["Initial provision 1.",tooLong]),long=rows[1]!
+ writeLeanText(dir,"d1/changes.json",JSON.stringify({...changes([op(rows[0]!,"Earlier first correction."),op(long,"Earlier shortened provision.")]),explanations:[{id:"i1",pid:long.pid,reason:"Earlier initial revision explanation.",sources:support}],withheld:[{amendment:op(long,"Unverified intent."),issues:["Source support unresolved."]}]}))
+ save(dir,inputs([{id:"one",pids:rows.map(row=>row.pid)}],[{...changes([op(rows[0]!,"New first correction."),op(long,"New shortened provision.")]),explanations:[{id:"i1",pid:long.pid,reason:"Prepared initial revision explanation.",sources:support}]}]))
+ const model=echo(),result=await reconcile(dir,model.port)
+ expect(result.status).toBe("done");expect(model.prompts.map(prompt=>targets(prompt.text))).toEqual([[rows[0]!.pid]])
+ const accepted=readChangeList(dir,"d1")!
+ expect(accepted.amendments.map(row=>[row.pid,row.updated])).toEqual([[rows[0]!.pid,`Reconciled correction for ${rows[0]!.pid}.`],[long.pid,"Earlier shortened provision."]])
+ expect(accepted.explanations!.map(row=>[row.pid,row.reason])).toEqual([[long.pid,"Earlier initial revision explanation."],[long.pid,"Prepared initial revision explanation."]])
+ expect(accepted.withheld!.map(row=>[row.amendment.pid,row.amendment.updated,row.issues])).toEqual([[long.pid,"Unverified intent.",["Source support unresolved."]],[long.pid,"New shortened provision.",[expect.stringContaining("too large to reconcile in one bounded step")]]])
+ expect("openItems" in result&&result.openItems.filter(item=>item.kind==="unapplied_amendment").map(item=>item.ref.pid)).toEqual([long.pid,long.pid])
+})
+test("a paragraph too large for one bounded step keeps its own question and still blocks for the answer",async()=>{
+ const dir=matter(),rows=provisions(dir,["Initial provision 1.",tooLong]),long=rows[1]!
+ const question={id:"q-length",stage:"change-prepare" as const,question:"Which length applies?",context:"The sources do not settle it.",pid:long.pid,document:"d1" as const,status:"open" as const}
+ writeLeanText(dir,"questions.json",JSON.stringify({questions:[question]}))
+ writeLeanText(dir,"d1/changes.json",JSON.stringify(changes([op(rows[0]!,"Earlier first correction."),op(long,"Earlier shortened provision. [open item: confirm length]")])))
+ save(dir,inputs([{id:"one",pids:rows.map(row=>row.pid)}],[{...changes([op(rows[0]!,"New first correction."),op(long,"New shortened provision. [open item: confirm length]")]),questions:[{...question,stage:"changes"}]}]))
+ const result=await reconcile(dir,echo().port)
+ expect(result.status).toBe("blocked");expect(readChangeList(dir,"d1")!.questions.map(row=>[row.id,row.pid])).toEqual([["q-length",long.pid]])
+})
+test("a paragraph too large for one bounded step with one prepared change and nothing earlier is applied as prepared",async()=>{
+ const dir=matter(),rows=provisions(dir,["Initial provision 1.",tooLong]),long=rows[1]!
+ writeLeanText(dir,"d1/changes.json",JSON.stringify(changes([op(rows[0]!,"Earlier first correction.")])))
+ save(dir,inputs([{id:"one",pids:rows.map(row=>row.pid)}],[changes([op(rows[0]!,"New first correction."),op(long,"New shortened provision.")])]))
+ const result=await reconcile(dir,echo().port),accepted=readChangeList(dir,"d1")!
+ expect(result.status).toBe("done");expect(accepted.withheld).toEqual([])
+ expect(accepted.amendments.map(row=>[row.pid,row.updated])).toEqual([[rows[0]!.pid,`Reconciled correction for ${rows[0]!.pid}.`],[long.pid,"New shortened provision."]])
+})
+test("a paragraph too large for one bounded step with several earlier changes withholds them all as open items instead of failing",async()=>{
+ const dir=matter(),rows=provisions(dir,["Initial provision 1.",tooLong]),long=rows[1]!
+ writeLeanText(dir,"d1/changes.json",JSON.stringify(changes([op(rows[0]!,"Earlier first correction."),op(long,"Earlier shortened provision."),{...op(long,"Earlier other provision."),id:"a3"}])))
+ save(dir,inputs([{id:"one",pids:rows.map(row=>row.pid)}],[changes([op(rows[0]!,"New first correction."),op(long,"New shortened provision.")])]))
+ const result=await reconcile(dir,echo().port),accepted=readChangeList(dir,"d1")!
+ expect(result.status).toBe("done");expect(accepted.amendments.map(row=>row.pid)).toEqual([rows[0]!.pid])
+ expect(accepted.withheld!.map(row=>row.amendment.updated)).toEqual(["Earlier shortened provision.","Earlier other provision.","New shortened provision."])
+ expect("openItems" in result&&result.openItems.filter(item=>item.kind==="unapplied_amendment").map(item=>item.ref.pid)).toEqual([long.pid,long.pid,long.pid])
+})
+test("a split goal's slices point to the goal's other prepared changes instead of calling them independent",async()=>{
+ const dir=matter(),filler="The supplier keeps the delivery schedule under review. ".repeat(7)
+ const rows=provisions(dir,Array.from({length:40},(_,index)=>`Initial provision ${index+1}. ${filler}`))
+ writeLeanText(dir,"d1/changes.json",JSON.stringify(changes(rows.map((row,index)=>op(row,`Earlier correction ${index+1}. ${filler}`)))))
+ save(dir,inputs([{id:"whole",pids:rows.map(row=>row.pid)}],[changes(rows.map((row,index)=>op(row,`Prepared correction ${index+1}. ${filler}`)))]))
+ const model=echo(),result=await reconcile(dir,model.port)
+ expect(result.status).toBe("done");expect(model.prompts.length).toBeGreaterThan(1)
+ for(const prompt of model.prompts){expect(prompt.text.length).toBeLessThanOrEqual(60_000);expect(prompt.text).toContain("read-record .dochaus/lean/d1/change-preparation.json");expect(prompt.text).not.toContain("that is not a dependency")}
+})
+test("when the goal and instructions alone exceed the bound, the withheld changes say so rather than blaming the paragraph",async()=>{
+ const dir=matter(),rows=provisions(dir,Array.from({length:5},(_,index)=>`Initial provision ${index+1}.`))
+ writeLeanText(dir,"d1/changes.json",JSON.stringify(changes(rows.map((row,index)=>op(row,`Earlier correction ${index+1}.`)))))
+ const input=inputs([{id:"whole",pids:rows.map(row=>row.pid)}],[changes(rows.map((row,index)=>op(row,`Prepared correction ${index+1}.`)))])
+ input.plan.groups[0]!.goal=`Shorten every provision. ${"Keep every supplied condition. ".repeat(2000)}`;save(dir,input)
+ const model=echo(),result=await reconcile(dir,model.port),accepted=readChangeList(dir,"d1")!
+ expect(result.status).toBe("done");expect(model.prompts).toEqual([])
+ expect(accepted.amendments.map(row=>row.updated)).toEqual(rows.map((_,index)=>`Earlier correction ${index+1}.`))
+ expect(accepted.withheld!.map(row=>[row.amendment.updated,row.issues])).toEqual(rows.map((_,index)=>[`Prepared correction ${index+1}.`,[expect.stringContaining("instructions, goals and shared decisions")]]))
+ expect(JSON.stringify(accepted.withheld)).not.toContain("paragraph is too large")
+})
+test("slices with nothing to reconcile make no model call, and results keep job order whichever slice finishes first",async()=>{
+ const dir=matter(),filler="The supplier keeps the delivery schedule under review. ".repeat(20)
+ const rows=provisions(dir,Array.from({length:200},(_,index)=>`Initial provision ${index+1}. ${filler}`))
+ const edited=[...rows.slice(0,5),...rows.slice(195)],first=edited[0]!.pid,last=edited.at(-1)!.pid
+ writeLeanText(dir,"d1/changes.json",JSON.stringify({...changes(edited.map((row,index)=>op(row,`Earlier correction ${index+1}.`))),explanations:[first,last].map((pid,index)=>({id:`i${index+1}`,pid,reason:`Initial revision explanation ${index+1}.`,sources:support}))}))
+ save(dir,inputs([{id:"whole",pids:rows.map(row=>row.pid)}],[changes(edited.map((row,index)=>op(row,`Prepared correction ${index+1}.`)))]))
+ const model=echo(pid=>edited.some(row=>row.pid===pid),[first,last])
+ const port={...model.port,prompt:async(input:Parameters<typeof model.port.prompt>[0])=>{if(input.text.includes(`"pid":"${first}"`))await Bun.sleep(25);return model.port.prompt(input)}}
+ const result=await reconcile(dir,port)
+ expect(result.status).toBe("done");expect(model.prompts).toHaveLength(2)
+ expect(readChangeList(dir,"d1")!.explanations!.map(row=>[row.id,row.pid])).toEqual([["i1",first],["i2",last]])
+})
