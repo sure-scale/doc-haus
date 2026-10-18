@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import path from "node:path"
-import { WORKSPACE_ROOT } from "./matter"
+import { workspaceRoot } from "./matter"
 import { DOCHAUS_DIR } from "./workflow"
 import { extractDocumentText } from "./ingest"
 import { disabledSkills, setSkillDisabled } from "./engine-config"
@@ -12,9 +12,9 @@ import { disabledSkills, setSkillDisabled } from "./engine-config"
 // .playbooks library. Repo-shipped skills under dochaus/skill/ are listed
 // read-only beside them. Playbooks (playbook-*) are skills too but have their
 // own library and lifecycle, so they are excluded here.
-// Read lazily (like DOCHAUS_DIR) so test files can point WORKSPACE_ROOT at their
+// Read lazily (workspaceRoot) so test files can point WORKSPACE_ROOT at their
 // own temp dirs regardless of which test file imported this module first.
-export const SKILLS_DIR = () => path.join(process.env.WORKSPACE_ROOT ?? WORKSPACE_ROOT, ".skills")
+export const SKILLS_DIR = () => path.join(workspaceRoot(), ".skills")
 
 const BUILTIN_SKILL_DIR = () => path.join(DOCHAUS_DIR(), "skill")
 

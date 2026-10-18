@@ -121,7 +121,7 @@ jobs:
         # A separate process prevents another test file's imports from caching it first.
         run: |
           bun test src/preferences.test.ts --timeout 30000
-          bun test src/engine-config.test.ts src/setup.test.ts src/research-connections.test.ts src/auth-reuse.test.ts src/identifiers.test.ts src/source-artifacts.test.ts --timeout 30000
+          bun test src/engine-config.test.ts src/setup.test.ts src/research-connections.test.ts src/auth-reuse.test.ts src/identifiers.test.ts src/source-artifacts.test.ts src/playbook-library.test.ts --timeout 30000
       - name: Test Word proposals through a LibreOffice save
         working-directory: services/ingest
         # Committed LibreOffice-saved fixtures and a scripted engine; no model.
