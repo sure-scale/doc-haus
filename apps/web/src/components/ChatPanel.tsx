@@ -484,6 +484,8 @@ export default function ChatPanel({
           questions={asked}
           answered={run.questions.length - asked.length}
           handedBack={handedBackQuestions(run)}
+          order={run.questions.map((question) => question.id)}
+          done={run.status === "completed"}
           titles={new Map((run.plan?.documents ?? []).map((row) => [row.id, cleanTitle(row.title)]))}
           busy={actions.busy}
           error={actions.error}

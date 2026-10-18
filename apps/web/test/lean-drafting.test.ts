@@ -367,7 +367,7 @@ test("the question card shows how many are answered and Send waits for an answer
 
 function questionCard(
   questions: LeanQuestion[],
-  extra: { answered?: number; handedBack?: LeanQuestion[]; error?: string; errorFor?: string } = {},
+  extra: { answered?: number; handedBack?: LeanQuestion[]; order?: string[]; done?: boolean; error?: string; errorFor?: string } = {},
 ) {
   respond({ answers: {}, revision: 0 })
   return renderToStaticMarkup(
@@ -377,6 +377,8 @@ function questionCard(
       questions,
       answered: extra.answered ?? 0,
       handedBack: extra.handedBack,
+      order: extra.order,
+      done: extra.done,
       titles: new Map(),
       busy: false,
       error: extra.error ?? "",
@@ -503,6 +505,76 @@ test("a question left to the drafter can still be answered from the question car
   expect(dock([], [])).toBe("")
   // A stopped run asks nothing and offers nothing back.
   expect(handedBackQuestions({ ...status, stopped: true })).toEqual([])
+})
+
+test("a hand-back moves no question: each keeps its number, and the current dot is its own", () => {
+  const status = structuredClone(blockedQuestion) as LeanDraftingStatus
+  const first = status.questions[0]!
+  status.questions = [
+    { ...first, status: "answered", answer_kind: "decide_for_me" },
+    { ...first, id: "q-second", question: "Who bears the cost of storage?" },
+  ]
+  const order = status.questions.map((question) => question.id)
+  const dots = (html: string) => [...html.matchAll(/<span class="(question-dot[^"]*)"><\/span>/g)].map((match) => match[1])
+  // The first question was handed back: the second is still the second, and
+  // the card opens on it, the one still asked.
+  const html = questionCard(openQuestions(status), { answered: 1, handedBack: handedBackQuestions(status), order })
+  expect(html).toContain("Question 2 of 2")
+  expect(html).toContain("Who bears the cost of storage?")
+  expect(dots(html)).toEqual(["question-dot is-answered is-delegated", "question-dot is-current"])
+
+  // A question asked later follows those left to the drafter, under its own number.
+  status.questions = [
+    { ...first, status: "answered", answer_kind: "decide_for_me" },
+    { ...first, id: "q-second", status: "answered", answer_kind: "decide_for_me", question: "Who bears the cost of storage?" },
+    { ...first, id: "package-scope-d1", question: "Which documents should the package carry?" },
+  ]
+  const later = questionCard(openQuestions(status), { answered: 2, handedBack: handedBackQuestions(status), order: status.questions.map((question) => question.id) })
+  expect(later).toContain("Question 3 of 3")
+  expect(later).toContain("Which documents should the package carry?")
+  expect(dots(later)).toEqual(["question-dot is-answered is-delegated", "question-dot is-answered is-delegated", "question-dot is-current"])
+
+  // Answered questions leave the card as before; their dots come first.
+  status.questions = [
+    { ...first, status: "answered", answer: "The buyer." },
+    { ...first, id: "q-second", status: "answered", answer_kind: "decide_for_me", question: "Who bears the cost of storage?" },
+    { ...first, id: "q-third", question: "When is delivery due?" },
+  ]
+  const mixed = questionCard(openQuestions(status), { answered: 2, handedBack: handedBackQuestions(status), order: status.questions.map((question) => question.id) })
+  expect(mixed).toContain("Question 2 of 2")
+  expect(mixed).toContain("1 answered, 1 left to the drafter, 1 to answer")
+  expect(dots(mixed)).toEqual(["question-dot is-answered", "question-dot is-answered is-delegated", "question-dot is-current"])
+})
+
+test("on a finished draft, a question left to the drafter says that answering it runs the drafting again", () => {
+  const status = structuredClone(blockedQuestion) as LeanDraftingStatus
+  const first = status.questions[0]!
+  status.questions = [{ ...first, status: "answered", answer_kind: "decide_for_me" }]
+  const left = handedBackQuestions(status)
+  const note = "This draft is finished. Answering now runs the drafting again with your answer."
+  const finished = questionCard([], { answered: 1, handedBack: left, done: true })
+  expect(finished).toContain(note)
+  expect(finished).toMatch(/<button class="primary" type="button" aria-describedby="[^"]+" disabled="">Answer instead<\/button>/)
+  // While the run is still drafting, the answer is taken as the run goes on.
+  expect(questionCard([], { answered: 1, handedBack: left })).not.toContain(note)
+  // A question still asked on a finished run is answered as usual.
+  expect(questionCard([{ ...first, id: "package-scope-d1" }], { answered: 1, handedBack: left, done: true })).not.toContain(note)
+})
+
+test("with nothing asked, the dock for questions left to the drafter does not call for the lawyer", () => {
+  const status = structuredClone(blockedQuestion) as LeanDraftingStatus
+  const first = status.questions[0]!
+  status.questions = [{ ...first, status: "answered", answer_kind: "decide_for_me" }]
+  const left = handedBackQuestions(status)
+  const dock = (questions: LeanQuestion[]) =>
+    renderToStaticMarkup(
+      createElement(QuestionDock, {
+        matterId: "m", ownerSessionID: "s", questions, answered: 1, handedBack: left, titles: new Map(), busy: false, error: "",
+        onSend: async () => true, onDecide: async () => true,
+      }),
+    )
+  expect(dock([])).toContain('<div class="question-dock is-settled">')
+  expect(dock([{ ...first, id: "q-open", question: "Who bears the cost of storage?" }])).toContain('<div class="question-dock">')
 })
 
 test("a hand-back received but not yet recorded counts as left to the drafter, not answered", () => {

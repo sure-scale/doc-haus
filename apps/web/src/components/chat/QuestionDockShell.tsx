@@ -11,7 +11,8 @@ export default function QuestionDockShell({
   /** Questions asked; the dock counts them. */
   count: number
   /** Settled questions the dialog still offers; with none asked, the dock
-   * names them with keptTitle and offers Review. */
+   * names them with keptTitle and offers Review, without the amber call for
+   * an answer: nothing waits on the lawyer. */
   kept?: number
   keptTitle?: string
   preview: string
@@ -41,7 +42,7 @@ export default function QuestionDockShell({
   if (count + kept === 0) return null
   return (
     <>
-      <div className="question-dock">
+      <div className={count === 0 ? "question-dock is-settled" : "question-dock"}>
         <span className="question-dock-icon" aria-hidden>
           <svg
             width="14"

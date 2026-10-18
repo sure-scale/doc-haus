@@ -11,15 +11,18 @@ import { delegableQuestion } from "./model"
 // Each answer is the lawyer's own: there is no
 // default or suggested answer. A question the run's model asked can instead be
 // handed back with Decide for me while its answer box is empty; the count calls
-// it left to the drafter, and it follows the open questions so the lawyer can
-// still answer it instead. The cursor sits in the answer field of whichever
-// question is showing.
+// it left to the drafter, and it stays in its place so the lawyer can still
+// answer it instead. The questions keep the run's order, so a hand-back moves
+// no question and each keeps its number and dot. The cursor sits in the answer
+// field of whichever question is showing.
 export default function Questions({
   matterId,
   ownerSessionID,
   questions,
   answered,
   handedBack = [],
+  order,
+  done = false,
   titles,
   busy,
   error,
@@ -33,8 +36,14 @@ export default function Questions({
   ownerSessionID: string
   questions: LeanQuestion[]
   answered: number
-  /** The answered questions left to the drafter, offered after the open ones. */
+  /** The answered questions left to the drafter, offered in their place. */
   handedBack?: LeanQuestion[]
+  /** The run's question ids in the order it asked them. Without it, the open
+   * questions come first. */
+  order?: string[]
+  /** The run finished: answering a question left to the drafter runs the
+   * drafting again. */
+  done?: boolean
   titles: Map<string, string>
   busy: boolean
   error: string
@@ -47,16 +56,22 @@ export default function Questions({
   onDecide: (question: LeanQuestion) => Promise<boolean>
 }) {
   const hintId = useId()
+  const rerunId = useId()
   const drafts = useAnswerDrafts(matterId, `lean.${ownerSessionID}`, `dh.lean.answers.${matterId}`)
-  const [index, setIndex] = useState(0)
+  // The question chosen to show; until one is (or once it leaves the card),
+  // the first one still asked.
+  const [chosen, setChosen] = useState<string>()
   // Which button's request is in flight, so each reads as its own.
   const [pending, setPending] = useState<"send" | "decide">()
   // Counts refused hand-backs: the cursor goes back to Decide for me.
   const [refused, setRefused] = useState(0)
   const field = useRef<HTMLTextAreaElement>(null)
   const decideButton = useRef<HTMLButtonElement>(null)
-  const cards = [...questions, ...handedBack]
-  const at = Math.min(index, Math.max(0, cards.length - 1))
+  const place = new Map(order?.map((id, index) => [id, index]))
+  const cards = [...questions, ...handedBack].sort((a, b) => (place.get(a.id) ?? place.size) - (place.get(b.id) ?? place.size))
+  const handed = new Set(handedBack.map((question) => question.id))
+  const found = cards.findIndex((question) => question.id === chosen)
+  const at = found === -1 ? Math.max(0, cards.findIndex((question) => !handed.has(question.id))) : found
   const shown = cards[at]?.id
 
   // A new question (the next one once an answer is sent) gets the cursor.
@@ -70,29 +85,44 @@ export default function Questions({
 
   if (cards.length === 0) return null
   const question = cards[at]!
-  const left = at >= questions.length
+  const left = handed.has(question.id)
   const draft = typeof drafts.answers[question.id] === "string" ? drafts.answers[question.id] as string : ""
   const about = question.document && titles.size > 1 ? titles.get(question.document) : undefined
   const fieldId = `lean-answer-${question.id}`
-  const total = answered + questions.length
   const delegated = Math.min(handedBack.length, answered)
-  // Answered dots first, then those left to the drafter, then the open ones.
-  const current = left ? answered - delegated + at - questions.length : answered + at
+  // Answered dots first, then one per question in the card, in its order.
+  const settled = answered - delegated
+  const total = settled + cards.length
+  const current = settled + at
+  const dot = (i: number) => {
+    const handedDot = i >= settled && handed.has(cards[i - settled]!.id)
+    return `question-dot${i < settled || handedDot ? " is-answered" : ""}${handedDot ? " is-delegated" : ""}${i === current ? " is-current" : ""}`
+  }
   const delegable = !left && delegableQuestion(question)
+  const rerun = left && done
+
+  // Once this question is answered or handed back, the next one still asked.
+  function moveOn() {
+    const asked = cards.filter((card) => card.id !== question.id && !handed.has(card.id))
+    setChosen((asked.find((card) => cards.indexOf(card) > at) ?? asked[0])?.id)
+  }
 
   async function send() {
     setPending("send")
     const sent = await onSend(question, draft)
     setPending(undefined)
-    if (sent) drafts.set(question.id, undefined)
+    if (!sent) return
+    drafts.set(question.id, undefined)
+    moveOn()
   }
 
   // Offered only while the answer box is empty, so no typed answer is lost.
   async function decide() {
     setPending("decide")
-    const handed = await onDecide(question)
+    const accepted = await onDecide(question)
     setPending(undefined)
-    if (!handed) setRefused((count) => count + 1)
+    if (accepted) moveOn()
+    else setRefused((count) => count + 1)
   }
 
   return (
@@ -101,14 +131,14 @@ export default function Questions({
         <h2 id={titleId}>{cards.length === 1 ? "Question for you" : `Question ${at + 1} of ${cards.length}`}</h2>
         {cards.length > 1 && (
           <span className="question-nav">
-            <button type="button" className="icon-btn question-nav-btn" disabled={at === 0} onClick={() => setIndex(at - 1)} aria-label="Previous question">
+            <button type="button" className="icon-btn question-nav-btn" disabled={at === 0} onClick={() => setChosen(cards[at - 1]!.id)} aria-label="Previous question">
               <Chevron points="15 18 9 12 15 6" />
             </button>
             <button
               type="button"
               className="icon-btn question-nav-btn"
               disabled={at === cards.length - 1}
-              onClick={() => setIndex(at + 1)}
+              onClick={() => setChosen(cards[at + 1]!.id)}
               aria-label="Next question"
             >
               <Chevron points="9 18 15 12 9 6" />
@@ -121,15 +151,12 @@ export default function Questions({
         <div className="question-progress">
           <span className="question-dots" aria-hidden>
             {Array.from({ length: total }, (_, i) => (
-              <span
-                key={i}
-                className={`question-dot${i < answered ? " is-answered" : ""}${i >= answered - delegated && i < answered ? " is-delegated" : ""}${i === current ? " is-current" : ""}`}
-              />
+              <span key={i} className={dot(i)} />
             ))}
           </span>
           <span>
             {delegated
-              ? `${answered - delegated} answered, ${delegated} left to the drafter, ${questions.length} to answer`
+              ? `${settled} answered, ${delegated} left to the drafter, ${questions.length} to answer`
               : `${answered} answered, ${questions.length} left`}
           </span>
         </div>
@@ -175,7 +202,13 @@ export default function Questions({
               {busy && pending === "decide" ? "Handing back…" : "Decide for me"}
             </button>
           )}
-          <button className="primary" type="button" disabled={busy || !drafts.loaded || !draft.trim()} onClick={send}>
+          <button
+            className="primary"
+            type="button"
+            aria-describedby={rerun ? rerunId : undefined}
+            disabled={busy || !drafts.loaded || !draft.trim()}
+            onClick={send}
+          >
             {busy && pending !== "decide" ? "Sending…" : left ? "Answer instead" : "Send answer"}
           </button>
         </span>
@@ -183,6 +216,11 @@ export default function Questions({
       {delegable && (
         <p id={hintId} className="question-delegate-hint">
           You'll get a review draft that says what was chosen and why, or what is still open.
+        </p>
+      )}
+      {rerun && (
+        <p id={rerunId} className="question-delegate-hint">
+          This draft is finished. Answering now runs the drafting again with your answer.
         </p>
       )}
     </section>

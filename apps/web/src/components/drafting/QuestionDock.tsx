@@ -3,13 +3,18 @@ import QuestionDockShell from "../chat/QuestionDockShell"
 import Questions from "./Questions"
 
 // The run's questions for the lawyer. It stays while a question is left to the
-// drafter, so the lawyer can still answer it instead.
+// drafter, so the lawyer can still answer it instead; with nothing asked, it
+// stays quiet.
 export default function QuestionDock(props: {
   matterId: string
   ownerSessionID: string
   questions: LeanQuestion[]
   answered: number
   handedBack: LeanQuestion[]
+  /** The run's question ids in the order it asked them. */
+  order?: string[]
+  /** The run finished. */
+  done?: boolean
   titles: Map<string, string>
   busy: boolean
   error: string
