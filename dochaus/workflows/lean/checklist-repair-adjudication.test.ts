@@ -4,12 +4,13 @@ import { renderMarkdownToDocx } from "../../lib/render"
 import { readDocxCommentParagraphs } from "../../lib/docx-comments"
 import { readFileSync } from "node:fs"
 import { buildRepairAdjudicationInput, mergeRepairAdjudications, repairAdjudicationIssues, runFocusedRepairAdjudication, type RepairAdjudication } from "./checklist-repair-adjudication"
-import { acceptChangePlan, type ChangePlan } from "./change-pipeline"
-import { writeLeanPlan } from "./plan"
+import { acceptChangePlan, changePreparationPrompt, type ChangePlan } from "./change-pipeline"
+import { writeLeanPlan, type StepID } from "./plan"
+import { packageCompositionBlock } from "./prompts"
 import { hashStageInputs, updateLeanStage, writeQuestions, leanFile, readLeanState, readLeanText, writeLeanBytes, writeLeanText } from "./state"
 import { startRepairRound } from "./repairs"
 import { openItem } from "./quotes"
-import { cleanupMatters, matter, scriptedModel, SOURCE, SUPPORT } from "./test-support"
+import { cleanupMatters, matter, requestMemo, scriptedModel, SOURCE, SUPPORT } from "./test-support"
 import type { ChecklistItem, ChecklistFinding } from "./checklist-contract"
 
 afterEach(cleanupMatters)
@@ -168,4 +169,23 @@ test("actual request and human answers can support supersession; generated quest
   expect(repairAdjudicationIssues(directory, "d1", input, withQuote("Retain the delivery timing as supplied."))).toEqual([])
   expect(repairAdjudicationIssues(directory, "d1", input, withQuote("The generated question is not a client instruction.")).join(" ")).toContain("but those words")
   expect(repairAdjudicationIssues(directory, "d1", input, withQuote("Retain the delivery timing as supplied. Approval granted.")).join(" ")).toContain("but those words")
+})
+
+test("a requested memo reaches the focused adjudication and checklist preparation prompts; without one they are unchanged", async () => {
+  const { directory, assessment } = await setup()
+  const prompts = () => ({ adjudication: buildRepairAdjudicationInput(directory, "d1", assessment).prompt, preparation: changePreparationPrompt(directory, "d1", plan, plan.groups[0]!) })
+  const without = prompts()
+  expect(without.preparation).toContain("Prepare ONE accepted repair group")
+  requestMemo(directory)
+  const block = packageCompositionBlock(directory, "d1")
+  expect(block).toStartWith("<package_composition>\n")
+  const memo = prompts()
+  for (const name of ["adjudication", "preparation"] as const) {
+    expect([name, memo[name].split(block).length - 1]).toEqual([name, 1])
+    expect([name, memo[name].replace(`\n\n${block}`, "")]).toEqual([name, without[name]])
+    expect([name, without[name].includes("package_composition")]).toEqual([name, false])
+  }
+  // The checklist-only stages are keyed by the block, so resume sees it.
+  for (const stage of ["change-plan", "change-prepare", "changes", "change-review"])
+    expect([stage, stageInputs(directory, `d1.${stage}` as StepID).filter(row => row.name === "package-composition")]).toEqual([stage, [{ name: "package-composition", bytes: block }]])
 })

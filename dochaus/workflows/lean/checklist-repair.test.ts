@@ -12,7 +12,8 @@ import { drainLeanRequests, enqueueLeanRequest } from "./requests"
 import { writeLeanPlan } from "./plan"
 import { hashStageInputs, leanFile, readLeanState, writeLeanBytes, writeLeanText, writeQuestions, type LeanState } from "./state"
 import { cleanupMatters, matter, SOURCE, SUPPORT } from "./test-support"
-import type { ChecklistItem, ChecklistFinding } from "./checklist-contract"
+import { buildChecklistDocumentContext } from "./checklist-document-context"
+import { DELIVERY_ARTIFACTS_ROW, type ChecklistItem, type ChecklistFinding } from "./checklist-contract"
 
 afterEach(cleanupMatters)
 const item: ChecklistItem = { check: "Preserve supplied delivery timing.", basis: "directive", qualifications: [],
@@ -59,6 +60,102 @@ test("indeterminate, undeclared and ambiguous targets do not invent a body owner
   extraction.sources[0].items[0].item.target.document = "not-planned.docx"
   writeLeanText(directory, "checklist/extraction.json", JSON.stringify(extraction))
   expect(checklistRepairItems(directory)).toEqual([])
+})
+
+// The delivery rows the checker is supplied for the item's target: code-set
+// properties (name, Word format, composition) of the files that deliver it.
+const deliveryRows = (directory: string, target: ChecklistItem) => buildChecklistDocumentContext(directory, { item_id: "parent", item: target }).input.current_evidence
+  .filter(row => row.kind === "artifact" && row.locator.startsWith(DELIVERY_ARTIFACTS_ROW))
+
+const packetFinding = (repair: { detail: string }) => JSON.parse(repair.detail.split("\n")[1]!).finding as ChecklistFinding
+
+// Excerpts of each delivery row that the checker accepts: within a supplied row
+// of the same document and kind.
+const deliveryExcerpts = (delivery: ChecklistFinding["evidence"]) => [delivery.map(row => ({ ...row, text: `"planned_filename":${JSON.stringify(row.document)}` })),
+  delivery.map(row => ({ ...row, text: row.document }))]
+
+test("a finding citing only delivered-file properties gets no text repair, however it labels or excerpts them", async () => {
+  const { directory, finding, save } = await setup()
+  const delivery = deliveryRows(directory, item)
+  expect(delivery.length).toBeGreaterThan(0)
+  // A delivery row is known by its document, kind and text, whatever locator the finding gives it.
+  for (const evidence of [delivery, delivery.map(row => ({ ...row, locator: "delivery_artifacts: advice file" })),
+    delivery.map(row => ({ ...row, locator: `Delivery artifacts row for ${row.document}` })),
+    delivery.map(row => ({ ...row, text: `  ${row.text.replaceAll(" ", "\n  ")} ` })), ...deliveryExcerpts(delivery)]) {
+    save({ ...finding, reason: "The delivered file does not have the requested name.", evidence })
+    expect(checklistRepairItems(directory)).toEqual([])
+  }
+})
+
+test("a finding citing delivered-file properties beside other evidence keeps its repair, which receives only the other evidence", async () => {
+  const { directory, finding, save, initialPID } = await setup()
+  const delivery = deliveryRows(directory, item)
+  // A target's own text measures are document text a repair can change, and a
+  // delivery locator does not make another row a delivery row.
+  const measures = { document: ".dochaus/lean/d2/body-applied.docx", locator: "read-record .dochaus/lean/checklist-context/d2.json /annotations/0/properties",
+    text: JSON.stringify({ accepted_body_text_measures: { paragraphs: 2, words: 7, characters: 52 } }), kind: "artifact" as const }
+  const labelled = { ...measures, locator: `${DELIVERY_ARTIFACTS_ROW} for advice.docx` }
+  for (const [other, ref] of [[finding.evidence, { pid: initialPID }], [[...finding.evidence, measures], { pid: initialPID }], [[labelled], {}]] as const) {
+    for (const evidence of [[...other], [...delivery, ...other]]) {
+      save({ ...finding, evidence })
+      const repairs = checklistRepairItems(directory)
+      expect(repairs.map(row => row.ref)).toEqual([{ document: "d2", repair_target: "body", ...ref }])
+      expect(packetFinding(repairs[0]!)).toEqual({ ...finding, evidence: [...other] })
+    }
+  }
+})
+
+test("a delivery row or excerpt cited as another document or a non-artifact kind keeps its repair, and a mixed finding's repair receives only its text", async () => {
+  const { directory, finding, save, initialPID } = await setup()
+  const delivery = deliveryRows(directory, item)
+  for (const excerpts of deliveryExcerpts(delivery)) {
+    save({ ...finding, evidence: [...excerpts, ...finding.evidence] })
+    const repairs = checklistRepairItems(directory)
+    expect(repairs.map(row => row.ref)).toEqual([{ document: "d2", repair_target: "body", pid: initialPID }])
+    expect(packetFinding(repairs[0]!)).toEqual(finding)
+  }
+  for (const rows of [delivery, ...deliveryExcerpts(delivery)])
+    for (const evidence of [rows.map(row => ({ ...row, document: "record.docx" })), rows.map(row => ({ ...row, kind: "body" as const })), rows.map(row => ({ ...row, kind: "comment" as const }))]) {
+      save({ ...finding, evidence })
+      const repairs = checklistRepairItems(directory)
+      expect(repairs.map(row => row.ref)).toEqual([{ document: "d2", repair_target: "body" }])
+      expect(packetFinding(repairs[0]!).evidence).toEqual(evidence)
+    }
+})
+
+test("a drafting-notes finding resting on the notes file's properties gets no notes repair; a notes text finding keeps it", async () => {
+  const { directory, finding, save } = await setup()
+  const notes = { ...item, target: { ...item.target, document: "notes" } }
+  const extraction = JSON.parse(readFileSync(leanFile(directory, "checklist/extraction.json"), "utf8"))
+  extraction.sources[0].items[0].item = notes
+  writeLeanText(directory, "checklist/extraction.json", JSON.stringify(extraction))
+  writeLeanText(directory, "drafting-notes.md", "# Drafting notes\n\nTiming is missing.")
+  const delivery = deliveryRows(directory, notes)
+  expect(delivery.length).toBeGreaterThan(0)
+  save({ ...finding, reason: "The notes are not delivered under the requested file name.", evidence: delivery })
+  expect(checklistRepairItems(directory)).toEqual([])
+  save({ ...finding, evidence: [] })
+  expect(checklistRepairItems(directory).map(row => row.ref)).toEqual([{ repair_target: "memo" }])
+  const text = { document: "notes", locator: "drafting notes paragraph 2", text: "Timing is missing.", kind: "body" as const }
+  save({ ...finding, evidence: [text, ...delivery] })
+  const repairs = checklistRepairItems(directory)
+  expect(repairs.map(row => row.ref)).toEqual([{ repair_target: "memo" }])
+  expect(packetFinding(repairs[0]!).evidence).toEqual([text])
+})
+
+test("Continue at a blocked checklist admits no text repair for a delivered file's properties, and admits one for text cited beside them", async () => {
+  const { directory, finding, save } = await setup()
+  save({ ...finding, reason: "The delivered file does not have the requested name.", evidence: deliveryRows(directory, item) })
+  const state = readLeanState(directory)!
+  state.status = "blocked"
+  state.stages["checklist-check"] = { ...state.stages["checklist-check"]!, status: "blocked", input_sha: stageInputSha(directory, "checklist-check") }
+  enqueueLeanRequest(directory, { kind: "continue" })
+  expect(drainLeanRequests(directory, state).repairRound).toBe(false)
+  expect(readRepairRound(directory)).toBeUndefined()
+  save({ ...finding, evidence: [...finding.evidence, ...deliveryRows(directory, item)] })
+  enqueueLeanRequest(directory, { kind: "continue" })
+  expect(drainLeanRequests(directory, state).repairRound).toBe(true)
+  expect(packetFinding(readRepairRound(directory)!.items[0]!)).toEqual(finding)
 })
 
 test("archived original adverse findings are not effective repair targets", async () => {

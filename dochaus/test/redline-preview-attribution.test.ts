@@ -33,8 +33,10 @@ test("revision-bound preview preserves the stored proposal author and defaults o
     find_text: "five days", old_text: "five days", new_text: "seven days", review_comment: "Instructed period.", anchor_id: null, created_at: 1, status: "pending" as const,
     target_json: JSON.stringify({ version: 1, source_sha256: createHash("sha256").update(original).digest("hex"), target_handle: target, amendment_id: "period" }),
   }
-  for (const [author, expected] of [["Explicit Reviewer", "Explicit Reviewer"], ["", "Saved Lawyer"]]) {
-    const redline = await buildRedlined(original, [{ ...row, author }])
+  // A review comment needs its stored author, so only an unannotated proposal takes the saved default.
+  await expect(buildRedlined(original, [{ ...row, author: "" }])).rejects.toThrow("stored author")
+  for (const [author, review_comment, expected] of [["Explicit Reviewer", "Instructed period.", "Explicit Reviewer"], ["", "", "Saved Lawyer"]]) {
+    const redline = await buildRedlined(original, [{ ...row, author, review_comment }])
     const body = new DOMParser().parseFromString(strFromU8(unzipSync(redline)["word/document.xml"]), "application/xml")
     const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
     const revisions = ["ins", "del"].flatMap(name => Array.from(body.getElementsByTagNameNS(W, name)))
@@ -64,8 +66,8 @@ test("mixed-author previews refuse false shared attribution while exact same-aut
   const stored = structuredClone(rows)
   await expect(buildRedlined(original, rows)).rejects.toBeInstanceOf(RedlinePreviewConflictError)
   await expect(buildRedlined(original, rows)).rejects.toThrow("different authors")
-  // Legacy replay has the same comparison-wide author constraint.
-  await expect(buildRedlined(original, rows.map(row => ({ ...row, target_json: null })))).rejects.toThrow("different authors")
+  // Legacy replay without review notes has the same comparison-wide author constraint.
+  await expect(buildRedlined(original, rows.map(row => ({ ...row, target_json: null, review_comment: "" })))).rejects.toThrow("different authors")
   expect(rows).toEqual(stored)
   expect(original).toEqual(snapshot)
   expect(strFromU8(unzipSync(original)["word/comments.xml"]!)).toContain('w:author="Historical Reviewer"')
@@ -81,10 +83,10 @@ test("mixed-author previews refuse false shared attribution while exact same-aut
   const text = new DOMParser().parseFromString(strFromU8(unzipSync(accepted)["word/document.xml"]!), "application/xml")
   expect(Array.from(text.getElementsByTagNameNS(W, "t")).map(node => node.textContent).join(""))
     .toBe("Current review period is seven days and retention is six months.Historical review period was five days.")
-  // A stale second author is not part of the preview; exact target validation
-  // still takes precedence over the mixed-author export limitation.
-  await expect(buildRedlined(original, [rows[0]!, { ...rows[1]!, target_json: JSON.stringify({ ...JSON.parse(rows[1]!.target_json), source_sha256: "0".repeat(64) }) }])).resolves.toBeInstanceOf(Uint8Array)
-  await expect(buildRedlined(original, [rows[0]!, { ...rows[1]!, target_json: JSON.stringify({ ...JSON.parse(rows[1]!.target_json), target_handle: "unknown-target" }) }])).rejects.toThrow("unknown_or_conflicting_target_handle")
-  await expect(buildRedlined(original, [rows[0]!, { ...rows[0]!, id: 3, author: "Explicit Reviewer B" }])).rejects.toThrow("overlapping_docx_amendments")
+  // A stale, unknown or overlapping second target fails the whole preview closed;
+  // exact target validation still takes precedence over the mixed-author export limitation.
+  await expect(buildRedlined(original, [rows[0]!, { ...rows[1]!, target_json: JSON.stringify({ ...JSON.parse(rows[1]!.target_json), source_sha256: "0".repeat(64) }) }])).rejects.toThrow("no longer resolves")
+  await expect(buildRedlined(original, [rows[0]!, { ...rows[1]!, target_json: JSON.stringify({ ...JSON.parse(rows[1]!.target_json), target_handle: "unknown-target" }) }])).rejects.toThrow("no longer resolves")
+  await expect(buildRedlined(original, [rows[0]!, { ...rows[0]!, id: 3, author: "Explicit Reviewer B" }])).rejects.toThrow("no longer resolves")
   expect(original).toEqual(snapshot)
 })

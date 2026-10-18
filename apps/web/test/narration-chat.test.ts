@@ -312,6 +312,29 @@ test("a review draft with unresolved checklist findings is not titled ready for 
   expect(clean).toContain("Final workflow check passed")
 })
 
+test("a combined document downloads as its one file; the draft stays the page and the memo is featured beside it", () => {
+  const rows = done.documents!.documents.map((row) =>
+    row.kind === "drafting_notes" ? { ...row, deliverable: "Supply note - cover note.docx" }
+    : row.kind === "body" ? { ...row, deliverable: "Supply note - clean.docx" }
+    : row)
+  const combined = lean({ ...done, documents: { ...done.documents!, documents: rows }, combined_output: { document: "d1", name: "Supply note", file: "Supply note.docx", body: "Supply note - clean.docx", notes: "Supply note - cover note.docx" } })
+  const html = renderResult(combined)
+  const page = html.slice(html.indexOf('<div class="result-document">'), html.indexOf('<ul class="result-stack"'))
+  expect(page).toContain("<h4>Supply note - clean.docx</h4>")
+  expect(page).toContain('aria-label="Download Supply note.docx"')
+  expect(page).not.toContain('download="Supply note - clean.docx"')
+  const stack = html.slice(html.indexOf('<ul class="result-stack"'), html.indexOf('<details class="result-files"'))
+  expect(stack).toContain('aria-label="Review Supply note - cover note.docx"')
+  expect(stack).toContain('download="Supply note - cover note.docx"')
+  // The combined file is listed with the draft, its redline and the memo.
+  expect(html).toContain('All generated files <span class="result-file-count">4</span>')
+  // Without the combined file the page downloads the draft itself, as before.
+  const plain = renderResult(lean({ ...combined, combined_output: null }))
+  expect(plain).toMatch(/<a href="[^"]*\/matters\/m1\/documents\/content\?name=Supply%20note%20-%20clean\.docx" download="Supply note - clean\.docx">Download<\/a>/)
+  expect(plain).toContain('All generated files <span class="result-file-count">3</span>')
+  expect(renderResult(lean({ ...done, combined_output: null }))).toBe(renderResult(done))
+})
+
 function renderFinishedNarration(lines: ActivityLine[], notes: { id: string; at: number; text: string; keys: string[] }[] = []) {
   return renderToStaticMarkup(createElement(MemoryRouter, null, createElement(DraftingNarration, {
     narration: {

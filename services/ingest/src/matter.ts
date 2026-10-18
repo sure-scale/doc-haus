@@ -11,14 +11,12 @@ import { dataPaths } from "../../engine/src/data-paths"
 // uploaded documents. This is the same directory the opencode server scopes a
 // session to via the x-opencode-directory header.
 
-const REPOSITORY = path.resolve(import.meta.dir, "../../..")
-export const WORKSPACE_ROOT = dataPaths(REPOSITORY, process.env, path.join(process.cwd(), "workspace")).workspace
-
-// Read lazily so test files can point WORKSPACE_ROOT at their
-// own temp dirs regardless of which test file imported this module first. A set
-// override resolves through the same dataPaths derivation, so a server whose
-// environment is fixed before start sees the same directory as WORKSPACE_ROOT.
-export const workspaceRoot = () => (process.env.WORKSPACE_ROOT ? dataPaths(REPOSITORY, process.env).workspace : WORKSPACE_ROOT)
+// Resolved per call so a changed WORKSPACE_ROOT is honoured, not pinned by
+// whichever module imported this file first. Every reader of the workspace
+// (matters, preferences, playbooks, skills, agents) goes through this.
+// WORKSPACE_ROOT is the boot value.
+export const workspaceRoot = () => dataPaths(path.resolve(import.meta.dir, "../../.."), process.env, path.join(process.cwd(), "workspace")).workspace
+export const WORKSPACE_ROOT = workspaceRoot()
 
 // reference is the firm's own client-matter number (e.g. "2026-0042"), shown in
 // the UI. It is display metadata only — the directory id stays the auto slug+uuid.

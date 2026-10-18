@@ -422,7 +422,8 @@ button.question-dock-cta:focus-visible {
   background: var(--accent-soft);
 }
 
-a.drafted-download {
+a.drafted-download,
+button.drafted-download {
   display: inline-flex;
   flex: none;
   align-items: center;

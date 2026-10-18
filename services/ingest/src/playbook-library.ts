@@ -7,8 +7,10 @@ import { listPlaybooks, workspaceRoot } from "./matter"
 // become selectable playbooks after the lawyer submits the builder's import.
 export function playbookLibraryRoutes() {
   const app = new Hono()
-  const dir = path.join(workspaceRoot(), ".playbook-library")
+  // Read per request so the directory follows WORKSPACE_ROOT.
+  const libraryDir = () => path.join(workspaceRoot(), ".playbook-library")
   app.get("/playbooks/library", (c) => {
+    const dir = libraryDir()
     mkdirSync(dir, { recursive: true })
     return c.json({ dir, playbooks: listPlaybooks() })
   })
@@ -16,6 +18,7 @@ export function playbookLibraryRoutes() {
     const body = await c.req.parseBody()
     const file = body.file
     if (!(file instanceof File)) return c.json({ error: "Choose a playbook file to import" }, 400)
+    const dir = libraryDir()
     const name = path.basename(file.name)
     const ext = path.extname(name).toLowerCase()
     if (![".docx", ".md", ".txt"].includes(ext))

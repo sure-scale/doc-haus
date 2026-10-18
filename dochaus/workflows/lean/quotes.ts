@@ -14,7 +14,7 @@ import { readLeanText, readQuestions, shortHash, type OpenItem, type StageID } f
 // source). A miss names the quote so the authoring model can correct it.
 
 const SOURCE_QUOTE = /["“]([^"“”\n]{1,2000})["”]\s*[[(]\s*source\s*:\s*([^\])\n]+?)\s*[\])]/gi
-const EXCERPT = 240
+export const EXCERPT = 240
 
 export type SourceQuote = { quote: string; source_id: string }
 
@@ -136,9 +136,10 @@ export function instructionFound(directory: string, quote: string) {
   return words.length > 0 && lawyerWords(directory).some(text => normalize(text).toLowerCase().includes(words))
 }
 
-/** The request and each answer, quoted one at a time so a quotation never runs
- * across two of them. The questions are the model's words and are not included. */
-function lawyerWords(directory: string) {
+/** The request, each included update and each answer, quoted one at a time so a
+ * quotation never runs across two of them. The questions are the model's words
+ * and are not included. */
+export function lawyerWords(directory: string) {
   return [readLeanText(directory, "request.md") ?? "", ...leanUserUpdates(directory).filter(update => update.status === "included").map(update => update.text), ...readQuestions(directory).flatMap(question =>
     question.status === "answered" && question.answer ? [question.answer] : [])]
 }

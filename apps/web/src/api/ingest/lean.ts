@@ -115,6 +115,17 @@ export type LeanDraftingStatus = {
   changed_after_check?: { since: string | null; documents: string[] } | null
   /** The documents the run plans to draft, in order; null before the outline. */
   plan: { documents: LeanPlannedDocument[] } | null
+  /** The name the plan gives the memo the lawyer asked for, which the run's
+   * drafting notes are written and delivered as; null when none was requested,
+   * absent from an older ingest. */
+  memo?: string | null
+  /** The one file (`file`, "<name>.docx") a combined document is delivered as:
+   * the requested memo, then the body. `document` is the planned document's id,
+   * and `body` and `notes` the exact names its two parts are registered under
+   * (the body as "<name> - clean" or its next free name). Ingest reports it only
+   * once both parts are delivered and composes it on each download, so it is
+   * never a matter file; null otherwise, absent from an older ingest. */
+  combined_output?: { document: string; name: string; file: string; body: string; notes: string } | null
   /** The lawyer's drafting request as the run recorded it. */
   request?: string | null
   /** Explicit adverse original requirements that can be checked against the full draft. */
@@ -156,6 +167,10 @@ export function isLeanDraftingStatus(value: unknown): value is LeanDraftingStatu
     (value.gate === null || record(value.gate)) &&
     (documents === null || (record(documents) && Array.isArray(documents.documents))) &&
     (value.plan === null || (record(value.plan) && Array.isArray(value.plan.documents))) &&
+    (value.memo == null || typeof value.memo === "string") &&
+    (value.combined_output == null ||
+      (record(value.combined_output) &&
+        ["document", "name", "file", "body", "notes"].every((key) => typeof (value.combined_output as Record<string, unknown>)[key] === "string"))) &&
     record(stages) &&
     "finalize" in stages &&
     "gate" in stages &&

@@ -6,7 +6,7 @@ import { Hono } from "hono"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
 import { draftingTraceReference } from "../../../dochaus/lib/drafting-trace-identity"
 import { researchStatus } from "../../../dochaus/workflows/lean/research"
-import { readLeanDocuments, type LeanDocuments } from "../../../dochaus/workflows/lean/deliverables"
+import { combinedParts, readLeanDocuments, requestedMemo, type LeanDocuments } from "../../../dochaus/workflows/lean/deliverables"
 import { sha256File } from "../../../dochaus/lib/lineage"
 import { lastLeanEventAt } from "../../../dochaus/workflows/lean/events"
 import { readLeanPlan } from "../../../dochaus/workflows/lean/plan"
@@ -31,6 +31,7 @@ import {
   type LeanModel,
   type LeanState,
 } from "../../../dochaus/workflows/lean/state"
+import { deliverableDocumentName } from "./deliverable"
 import { registerLeanDeliverable } from "./lean-deliverables"
 
 // Web wiring for the lean drafting profile. Start creates the owner session and
@@ -151,6 +152,10 @@ function readLeanDraftingStatus(directory: string) {
     documents,
     changed_after_check: changedAfterCheck(directory, gate, documents),
     plan: plannedDocuments(directory),
+    // The name the plan gives the memo the lawyer asked for, which the run's
+    // notes are written and delivered as; null when no memo was requested.
+    memo: requestedMemo(directory)?.name ?? null,
+    combined_output: combinedOutput(directory),
     research: researchStatus(directory),
     checklist_refinement: {
       available: refinable.length > 0 && !running.has(directory) && !pendingLeanRequests(directory).length && state.status === "blocked" && !state.paused_at && state.stages["checklist-check"]?.status === "blocked",
@@ -180,6 +185,13 @@ function draftingUpdates(directory: string, state: LeanState) {
     : stale ? "requires-rework" as const : undefined }))
 }
 
+/** Hash of a delivered draft read inside the matter: a plain document name,
+ * opened without following links, regular files only. Anything else reads as
+ * missing, the same as an absent file. */
+function matterFileSha(directory: string, name: string) {
+  try { return sha256File(path.join(directory, name))?.sha256 } catch { return undefined }
+}
+
 /** Delivered drafts whose matter file no longer holds the bytes the final check
  * saw: a change accepted after delivery, or a newer output kept from replacing
  * such a change. Disclosure only: the check is not re-run and its verdict is
@@ -187,13 +199,23 @@ function draftingUpdates(directory: string, state: LeanState) {
 function changedAfterCheck(directory: string, gate: unknown, documents: LeanDocuments | null) {
   if (documents?.status !== "completed") return null
   const changed = documents.documents.flatMap(row => {
-    if (row.kind !== "body" || !row.deliverable || row.deliverable !== path.basename(row.deliverable)) return []
-    const current = sha256File(path.join(directory, row.deliverable))?.sha256
+    if (row.kind !== "body" || !row.deliverable || !deliverableDocumentName(row.deliverable)) return []
+    const current = matterFileSha(directory, row.deliverable)
     return row.conflict || (current && current !== row.sha256) ? [row.deliverable] : []
   })
   if (!changed.length) return null
   const since = gate && typeof gate === "object" && "checked_at" in gate && typeof gate.checked_at === "string" ? gate.checked_at : null
   return { since, documents: changed }
+}
+
+/** Derived, never stored: the one file a combined document downloads as, once
+ * the summary lists both its parts under the current plan's names (combinedParts;
+ * the download route also checks the registry), with the document's id and the
+ * exact registered names of its body and notes, so a client matches those rows
+ * rather than guessing them from the name. Null otherwise. */
+function combinedOutput(directory: string): { document: string; name: string; file: string; body: string; notes: string } | null {
+  const parts = combinedParts(directory)
+  return parts ? { document: parts.document, name: parts.name, file: `${parts.name}.docx`, body: parts.body, notes: parts.notes } : null
 }
 
 /** The run's planned documents without their parts, or null before the outline. */

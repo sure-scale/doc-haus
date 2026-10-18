@@ -21,6 +21,8 @@ export type LeanEventName =
   | "request_processed"
   | "paused"
   | "stopped"
+  /** The draft step's recorded plan coverage: its status as `outcome`, its issues. */
+  | "coverage"
 
 export type LeanEvent = {
   stage: StageID | "run"

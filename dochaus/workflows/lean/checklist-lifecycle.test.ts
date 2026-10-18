@@ -13,7 +13,7 @@ import { enqueueLeanRequest } from "./requests"
 import { CHECKLIST_JOB_AGENTS } from "./checklist-job"
 import { readRepairRound } from "./repairs"
 import { AGENT, cleanupMatters, happyPath, matter, registering, scriptedModel, drafter, draftingNotes, pidOf, DRAFT, SOURCE, SUPPORT } from "./test-support"
-import { checklistTextMeasuresMeaning, type ChecklistCheckerInput, type ChecklistProducerInput } from "./checklist-contract"
+import { DELIVERY_ARTIFACTS_ROW, checklistTextMeasuresMeaning, isDeliveryArtifactEvidence, type ChecklistCheckerInput, type ChecklistProducerInput } from "./checklist-contract"
 
 afterEach(cleanupMatters)
 
@@ -32,7 +32,10 @@ const deferChecklistRepair = (text: string) => JSON.stringify({ shared_decisions
 // `notes` targets the requirement at the drafting notes as advice.
 // `notesReview` has the first package review after the checklist round require
 // one notes correction.
-function model(directory: string, status: "satisfied" | "open" | "unsatisfied" | "indeterminate" = "satisfied", extra: { open_decisions?: string[]; indeterminate_cause?: "missing_inspection" | "not_inspectable" } = {}, options: { broken?: boolean; second?: boolean; pair?: boolean; departure?: boolean; review?: boolean; notes?: boolean; notesReview?: boolean } = {}) {
+// The checker cites every row it is supplied, the target's delivery_artifacts
+// rows included; `delivery` cites only those rows: a finding about a delivered
+// file's name, format or composition.
+function model(directory: string, status: "satisfied" | "open" | "unsatisfied" | "indeterminate" = "satisfied", extra: { open_decisions?: string[]; indeterminate_cause?: "missing_inspection" | "not_inspectable" } = {}, options: { broken?: boolean; second?: boolean; pair?: boolean; departure?: boolean; review?: boolean; notes?: boolean; notesReview?: boolean; delivery?: boolean } = {}) {
   let extractedBeforeBody = false
   let checkedAfterNotes = false
   let reviewed = false
@@ -64,7 +67,8 @@ function model(directory: string, status: "satisfied" | "open" | "unsatisfied" |
       if (options.second && input.item.check.startsWith("Payment")) return JSON.stringify({ item_id: input.item_id, status: "satisfied", reason: "Focused result satisfied.",
         evidence: input.current_evidence, source_refs: input.item.source_refs, inspection_scope: "Current body paragraphs only.", limitation: "Comments not inspected." })
       checkedAfterNotes = existsSync(leanFile(directory, "drafting-notes.docx")) && existsSync(leanFile(directory, "d1/body-applied.docx"))
-      return JSON.stringify({ item_id: input.item_id, status, reason: `Focused result ${status}.`, evidence: input.current_evidence,
+      return JSON.stringify({ item_id: input.item_id, status, reason: `Focused result ${status}.`,
+        evidence: options.delivery ? input.current_evidence.filter(row => isDeliveryArtifactEvidence(row, input.current_evidence)) : input.current_evidence,
         source_refs: input.item.source_refs, inspection_scope: "Current body paragraphs only.", limitation: "Comments not inspected.", ...extra,
         ...(options.departure ? { departure_disclosure: input.current_evidence.slice(0, 1) } : {}) })
     },
@@ -137,6 +141,12 @@ test("an omission is repaired once without Continue; an adverse re-check is disc
   // Exactly one checklist repair round, adjudicated once, then one re-check.
   expect(focusedRepairs(scripted)).toBe(1)
   expect(readRepairRound(directory)).toMatchObject({ round: 1, substantive_attempts: 1, items: [{ stage: "checklist-check", ref: { document: "d1", repair_target: "body" } }] })
+  // The checker cited the target's delivery rows beside its text; the repair
+  // receives only the text evidence.
+  expect(JSON.stringify((readLeanJson(directory, "checklist/checks.json") as any).checks[0].finding.evidence)).toContain(DELIVERY_ARTIFACTS_ROW)
+  const repaired = JSON.parse(readRepairRound(directory)!.items[0]!.detail.split("\n")[1]!).finding.evidence as { kind: string }[]
+  expect(repaired.length).toBeGreaterThan(0)
+  expect(repaired.every(row => row.kind === "body")).toBe(true)
   expect(scripted.count(CHECKLIST_JOB_AGENTS.check)).toBe(2)
   expect(scripted.count(AGENT["package-review"])).toBe(1)
   const gate = readLeanJson(directory, "gate.json") as any
@@ -151,6 +161,29 @@ test("an omission is repaired once without Continue; an adverse re-check is disc
   expect((await runLean(directory, { sessions: idle.port })).status).toBe("completed")
   expect(idle.prompts).toHaveLength(0)
   expect(readLeanJson(directory, "repairs.json")).toEqual(round)
+}, 120000)
+
+test("an omission resting on a delivered file's properties is disclosed with the review draft, never sent to a text repair", async () => {
+  const directory = matter()
+  const scripted = model(directory, "unsatisfied", {}, { delivery: true })
+  const state = await runLean(directory, { sessions: scripted.port })
+  expect(state.status).toBe("completed")
+  expect(state.stages["checklist-check"]?.status).toBe("done")
+  const [id] = checklistIDs(directory)
+  const evidence = (readLeanJson(directory, "checklist/checks.json") as any).checks[0].finding.evidence as { kind: string; locator: string }[]
+  expect(evidence.length).toBeGreaterThan(0)
+  expect(evidence.every(row => row.kind === "artifact" && row.locator.startsWith(DELIVERY_ARTIFACTS_ROW))).toBe(true)
+  // No repair round, no focused adjudication, no re-check.
+  expect(focusedRepairs(scripted)).toBe(0)
+  expect(readRepairRound(directory)).toBeUndefined()
+  expect(scripted.count(CHECKLIST_JOB_AGENTS.check)).toBe(1)
+  const gate = readLeanJson(directory, "gate.json") as GateResult
+  expect(gate).toMatchObject({ status: "pass", delivery: "review_draft_with_findings", blocking: [] })
+  const disclosed = gate.disclosed.find(item => item.kind === "checklist_unresolved" && item.ref.checklist_item === id)!
+  expect(disclosed.ref.checklist_class).toBe("omission")
+  expect(disclosed.detail).toContain("(omission; no repair round ran)")
+  expect(report(directory)).toContain(`Disclosed, not satisfied: ${id}: omission; no repair round ran: Focused result unsatisfied.`)
+  expect(readFileSync(leanFile(directory, "delivered-notes.md"), "utf8")).toContain(`- ${id}: ${disclosed.detail}`)
 }, 120000)
 
 test("a later review round does not re-arm the checklist repair of an omission", async () => {
@@ -627,8 +660,9 @@ for (const [status, marked, disclosed] of [["satisfied", true, false], ["indeter
   expect(inputs.filter(input => input.assignment?.kind === "process_records")).toHaveLength(1)
   expect(inputs.every(input => input.assignment)).toBe(true)
   const whole = inputs.find(input => input.assignment?.kind === "document_properties")!
-  expect(whole.current_evidence.length).toBeGreaterThan(0)
-  expect(whole.current_evidence.every(row => row.kind === "artifact" && "accepted_body_text_measures" in JSON.parse(row.text))).toBe(true)
+  // Exact artifact property strings, then the delivery rows of the target's files.
+  expect(whole.current_evidence.some(row => "accepted_body_text_measures" in JSON.parse(row.text))).toBe(true)
+  expect(whole.current_evidence.every(row => row.kind === "artifact" && ("accepted_body_text_measures" in JSON.parse(row.text) || row.locator.startsWith("delivery_artifacts")))).toBe(true)
   expect(full.count(CHECKLIST_JOB_AGENTS.extract)).toBe(0)
   expect(full.count(AGENT.draft)).toBe(0)
   expect(stageOutputValid(directory, "checklist-check")).toBe(true)
@@ -691,7 +725,7 @@ async function documentPropertiesRun(status: "open" | "unsatisfied") {
   settleBlockedChecklist(directory)
   const parent = (readLeanJson(directory, "checklist/extraction.json") as any).sources.flatMap((row: any) => row.items)[0]
   enqueueLeanRequest(directory, { kind: "refine_checklist", parents: [{ parent_id: parent.id, scope: "target_body" }] })
-  const seen = { measures: "", guided: false }
+  const seen = { measures: "", guided: false, delivery: 0 }
   const full = scriptedModel({ ...happyPath,
     [AGENT["change-plan"]]: deferChecklistRepair,
     [CHECKLIST_JOB_AGENTS.check]: text => {
@@ -700,6 +734,7 @@ async function documentPropertiesRun(status: "open" | "unsatisfied") {
         return JSON.stringify({ item_id: input.item_id, status: "not_applicable", reason: "Only the document-properties assignment decides this document-wide property.", evidence: [], source_refs: input.item.source_refs, inspection_scope: JSON.stringify(input.assignment), limitation: "", deferred_to: "document_properties" })
       seen.guided = text.split("CHECK_INPUT:")[0]!.includes(checklistTextMeasuresMeaning)
       seen.measures = JSON.stringify(JSON.parse(input.current_evidence[0]!.text).accepted_body_text_measures)
+      seen.delivery = input.current_evidence.filter(row => row.locator.startsWith(DELIVERY_ARTIFACTS_ROW)).length
       return JSON.stringify({ item_id: input.item_id, status, reason: `Accepted body text measures ${seen.measures} ${status === "open" ? "do not clearly exceed about one page" : "clearly exceed one page"}.`,
         evidence: input.current_evidence, source_refs: input.item.source_refs, inspection_scope: "Exact artifact properties.", limitation: "Rendered pagination was not verified." })
     },
@@ -750,6 +785,11 @@ test("a rendered-length directive clearly exceeded by text measures takes the on
   expect(round.items).toHaveLength(1)
   expect(round.items[0]).toMatchObject({ stage: "checklist-check", ref: { document: "d1", repair_target: "body" } })
   expect(round.items[0]!.detail).toContain(seen.measures.replaceAll('"', '\\"'))
+  // The checker cited every supplied row, the delivery rows of the target's
+  // files included; neither the round nor its adjudicator receives them.
+  expect(seen.delivery).toBeGreaterThan(0)
+  expect(round.items[0]!.detail).not.toContain(DELIVERY_ARTIFACTS_ROW)
+  expect(full.prompts.filter(row => row.agent === AGENT["change-plan"] && row.text.includes("ONE supplied checklist assessment")).every(row => !row.text.includes(DELIVERY_ARTIFACTS_ROW))).toBe(true)
   expect(readLeanJson(directory, "gate.json")).toMatchObject({ status: "pass", delivery: "review_draft_with_findings", blocking: [] })
   expect(report(directory)).toContain(`Disclosed, not satisfied: ${parent.id}`)
   expect(report(directory)).not.toContain("Delivery blocked")

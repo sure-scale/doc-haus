@@ -1,5 +1,5 @@
 import { draftingStyleAdvisoryNotes } from "./style-warnings"
-import { checklistCheckResultSchema, readEffectiveChecklistItems, reconcileChecklistParentCoverage } from "./checklist-flow"
+import { checklistCheckResultSchema, readEffectiveChecklistItems, reconcileChecklistParentCoverage, type ChecklistCoverageIssue } from "./checklist-flow"
 import { leanClarifications, checklistRefinementSelections } from "./requests"
 import { z } from "zod"
 import { checklistItemSchema, type ChecklistFinding, type ChecklistItem } from "./checklist-contract"
@@ -7,7 +7,8 @@ import { classifyChecklistFinding, type ChecklistFindingClass } from "./checklis
 import { acceptChangePlan, acceptChangeReview, preparationOutputValid, readChangePlan, readChangeReview, deferredFindingItems, reviewDispositionText, uniqueReplacementIssues } from "./change-pipeline"
 import { comparisonBasis } from "./comparison"
 import { checkPackageReview, readPackageReview } from "./package-review"
-import { DELIVERED_NOTES } from "./deliverables"
+import { coverageItems, planCoverageCurrent } from "./package-coverage"
+import { DELIVERED_NOTES, requestedMemo } from "./deliverables"
 import { evidenceOutputValid } from "./evidence"
 import { researchOutputValid } from "./research"
 import { readFirmDraftingPreferences } from "../../lib/drafting-preferences"
@@ -28,7 +29,7 @@ import {
   type StageCheck,
 } from "./checks"
 import { reviewStages, FIRST_DOCUMENT, planActingFor, operativeDocument, operativePlan, plannedDocument, readLeanPlan, stepDocument, stepStage, type StepID } from "./plan"
-import { completedDocumentsText } from "./prompts"
+import { completedDocumentsText, packageCompositionBlock } from "./prompts"
 import { matterSourceBasis, matterSourceIDs } from "./quotes"
 import { documentRepairs, readRepairRound } from "./repairs"
 import {
@@ -55,11 +56,14 @@ import {
 // goes to the pointer applier as data, addressed by paragraph pointer. Steps of
 // one planned document keep their files under that document's id (d1/, d2/...).
 
-export const LEAN_PROMPT_VERSION = "lean-14"
-const OUTLINE_CONTRACT = "document-playbook-selection-3"
-const DELIVERY_REVIEW_CONTRACT = "grounded-delivery-selection-3"
+export const LEAN_PROMPT_VERSION = "lean-17-advice-scope"
+const OUTLINE_CONTRACT = "document-executing-parties-memo-6"
+const DELIVERY_REVIEW_CONTRACT = "grounded-delivery-selection-4"
 const STRUCTURAL_AMENDMENT_CONTRACT = "explicit-paragraph-cardinality-1"
 const DRAFTING_NOTES_CONTRACT = "lawyer-facing-source-comparison-notes-1"
+/** Keys finalize only when the notes are a requested memo (the plan has a
+ * memo name), so runs without one keep their finalize key. */
+const REQUESTED_MEMO_CONTRACT = "requested-memo-titles-7"
 export const LEAN_MAX_RETRIES = 3
 
 export const LEAN_STAGE_AGENTS = {
@@ -81,6 +85,8 @@ export const LEAN_STAGE_AGENTS = {
   changes: "lean-changes",
   merge: "lean-merge",
   finalize: "lean-drafting-notes",
+  // A job of the outline, not a stage: it checks the planned package against the instructions.
+  coverage: "lean-coverage",
 } as const
 
 export type PermissionRule = { action: string; resource: string; effect: "allow" | "deny" | "ask" }
@@ -137,8 +143,12 @@ export function stepSessionTitle(directory: string, step: StepID, detail: string
   return title ? `Lean drafting: ${title}: ${detail}` : `Lean drafting: ${detail}`
 }
 
+/** Outputs a step may leave unwritten: a plan written by hand has no coverage
+ * record. Restoring a step whose snapshot lacks one removes it. */
+export const OPTIONAL_OUTPUTS = ["coverage.json"]
+
 /** Output files of one step, relative to the lean directory. The first
- * document's draft also saves the run's plan. */
+ * document's draft also saves the run's plan and its coverage record. */
 export function stepOutputs(step: StepID): string[] {
   if (step === "discrepancy" || step === "spine" || step === "package-review") return [`${step}.json`]
   if (step === "checklist-check") return ["checklist/extraction.json", "checklist/refinements.json", "checklist/checks.json", "checklist/report.md"]
@@ -148,7 +158,7 @@ export function stepOutputs(step: StepID): string[] {
   const document = stepDocument(step)
   const at = (names: string[]) => names.map(name => `${document}/${name}`)
   const stage = stepStage(step)
-  if (stage === "draft") return [...(document === FIRST_DOCUMENT ? ["plan.json"] : []), ...at(["draft.md", "body.docx", "paragraphs.json"])]
+  if (stage === "draft") return [...(document === FIRST_DOCUMENT ? ["plan.json", "coverage.json"] : []), ...at(["draft.md", "body.docx", "paragraphs.json"])]
   if (isReviewStage(stage)) return at([`${stage}.md`])
   if (stage === "change-plan") return at(["change-plan.json"])
   if (stage === "change-prepare") return at(["change-preparation.json"])
@@ -186,6 +196,7 @@ export function stageInputs(directory: string, step: StepID, options: { repairCo
     ...(["change-plan", "change-prepare", "changes", "change-review", "apply", "finalize", "package-review", "gate"].includes(stepStage(step))
       ? [{ name: "structural-amendment-contract", bytes: STRUCTURAL_AMENDMENT_CONTRACT }] : []),
     ...(step === "finalize" ? [{ name: "drafting-notes-contract", bytes: DRAFTING_NOTES_CONTRACT }] : []),
+    ...(step === "finalize" && requestedMemo(directory) ? [{ name: "requested-memo-contract", bytes: REQUESTED_MEMO_CONTRACT }] : []),
     ...(["finalize", "package-review", "gate"].includes(step) ? [{ name: "review-dispositions", bytes: JSON.stringify((readLeanPlan(directory)?.documents ?? []).map(row => reviewDispositionText(directory, row.id))) }] : []),
     ...(["finalize", "package-review"].includes(step) ? [{ name: "delivery-review-contract", bytes: DELIVERY_REVIEW_CONTRACT }] : []),
     ...(!["discrepancy", "intake", "research", "research-review"].includes(step) ? ["research.json", "research-review.json"].map(name => ({ name, bytes: readLeanText(directory, name) ?? "" })) : []),
@@ -232,17 +243,20 @@ function baseStageInputs(directory: string, step: StepID, options: { repairConte
   const plan = readLeanPlan(directory)?.documents ?? []
   const entry = { name: "plan-entry", bytes: JSON.stringify(operativeDocument(plannedDocument(directory, document))) }
   const scope = { name: "planned-documents", bytes: plan.length > 1 ? JSON.stringify(plan.map(row => [row.id, row.title, row.purpose])) : "" }
+  // Only with a requested memo, so a run without one keeps its keys.
+  const composition = packageCompositionBlock(directory, document)
+  const composed = composition ? [{ name: "package-composition", bytes: composition }] : []
   const stage = stepStage(step)
   const repairs = options.repairContext === false || !["change-plan", "change-prepare", "changes", "change-review"].includes(stage) ? undefined : documentRepairs(directory, document)
-  if (stage === "draft") return [{ name: "outline-contract", bytes: OUTLINE_CONTRACT }, ...outlineInputs(directory), { name: "plan-entry", bytes: JSON.stringify(operativeDocument(plannedDocument(directory, document))) }, acting, ...(planned.indexOf(document) > 0 ? [finished] : [])]
-  if (isReviewStage(stage)) return [{ name: "playbook-selection", bytes: JSON.stringify(plannedDocument(directory, document)?.playbook_review ?? null) }, file("request.md"), at("paragraphs.json"), sources, finished, acting, scope]
-  if (stage === "change-prepare") return [file("request.md"), entry, at("paragraphs.json"), at("change-plan.json"), answers, sources, finished, acting, scope, { name: "repairs", bytes: JSON.stringify(repairs ?? null) }]
-  if (stage === "change-review") return [...(repairs?.items.every(item => item.stage === "checklist-check") ? [{ name: "focused-review-contract", bytes: "prepared-dependency-component-review-2-proposed-body" }] : []), { name: "review-contract", bytes: "phase-aware-owned-body-review-2" }, file("request.md"), entry, at("paragraphs.json"), at("changes.json"), at("change-plan.json"), at("change-preparation.json"), ...reviewStages(directory, document).map(stage => at(`${stage}.md`)), answers, sources, finished, acting, scope, { name: "questions", bytes: keyedQuestions(directory) }, { name: "repairs", bytes: JSON.stringify(repairs ?? null) }]
+  if (stage === "draft") return [{ name: "outline-contract", bytes: OUTLINE_CONTRACT }, ...outlineInputs(directory), { name: "plan-entry", bytes: JSON.stringify(operativeDocument(plannedDocument(directory, document))) }, acting, ...composed, ...(planned.indexOf(document) > 0 ? [finished] : [])]
+  if (isReviewStage(stage)) return [{ name: "playbook-selection", bytes: JSON.stringify(plannedDocument(directory, document)?.playbook_review ?? null) }, file("request.md"), at("paragraphs.json"), sources, finished, acting, scope, ...composed]
+  if (stage === "change-prepare") return [file("request.md"), entry, at("paragraphs.json"), at("change-plan.json"), answers, sources, finished, acting, scope, ...composed, { name: "repairs", bytes: JSON.stringify(repairs ?? null) }]
+  if (stage === "change-review") return [...(repairs?.items.every(item => item.stage === "checklist-check") ? [{ name: "focused-review-contract", bytes: "prepared-dependency-component-review-2-proposed-body" }] : []), { name: "review-contract", bytes: "phase-aware-owned-body-review-2" }, file("request.md"), entry, at("paragraphs.json"), at("changes.json"), at("change-plan.json"), at("change-preparation.json"), ...reviewStages(directory, document).map(stage => at(`${stage}.md`)), answers, sources, finished, acting, scope, ...composed, { name: "questions", bytes: keyedQuestions(directory) }, { name: "repairs", bytes: JSON.stringify(repairs ?? null) }]
   if (stage === "changes" || stage === "change-plan") {
     return [...(stage === "changes" && repairs?.items.every(item => item.stage === "checklist-check") ? [{ name: "focused-reconciliation-contract", bytes: "prepared-operation-components-1" }] : []), ...(stage === "change-plan" && repairs?.items.every(item => item.stage === "checklist-check") ? [{ name: "focused-repair-contract", bytes: "one-assessment-source-adjudication-2" }] : []), file("request.md"), entry, ...(stage === "changes" ? [at("change-plan.json"), at("change-preparation.json")] : []), ...reviewStages(directory, document).map(stage => at(`${stage}.md`)), at("paragraphs.json"), { name: "repairs", bytes: repairs ? JSON.stringify(repairs) : "" }, answers, sources,
       { name: "draft-items", bytes: JSON.stringify(readOpenItems(directory).filter(item =>
         (item.stage === "draft" || isReviewStage(item.stage)) && (item.ref.document ?? FIRST_DOCUMENT) === document)) },
-      finished, acting, scope]
+      finished, acting, scope, ...composed]
   }
   return [at("body.docx"), at("changes.json"), at("change-review.json"), { name: "operative-plan", bytes: JSON.stringify(operativePlan(readLeanPlan(directory))) }, sources, { name: "comparison-original", bytes: comparisonBasis(directory, document) }]
 }
@@ -253,8 +267,9 @@ export function outlineBasis(directory: string) {
 }
 
 /** A saved plan is followed unless it records a different outline basis. A plan
- * that records none was written by hand and is followed as it is. */
-export function planIsCurrent(directory: string) {
+ * that records none was written by hand and is followed as it is. Whether its
+ * coverage check is current too is planCoverageCurrent (package-coverage.ts). */
+export function planBasisCurrent(directory: string) {
   const plan = readLeanPlan(directory)
   return Boolean(plan) && (plan?.basis === undefined || plan.basis === outlineBasis(directory))
 }
@@ -311,7 +326,9 @@ export async function acceptStageReply(directory: string, step: StepID, reply: s
     writeLeanText(directory, `${document}/changes.json`, `${JSON.stringify(check.changes, null, 2)}\n`)
     return { issues: [], openItems: check.openItems, outputs: stepOutputs(step), questions: check.changes.questions }
   }
-  const check = checkDraftingNotes(directory, reply, disclosableItems(directory))
+  // On the last attempt a requested memo that names an internal id in its prose
+  // is saved as the model wrote it; earlier attempts retry it.
+  const check = checkDraftingNotes(directory, reply, disclosableItems(directory), { final: options.final })
   if (check.issues.length) return { ...check, outputs: [] }
   const advisory = draftingStyleAdvisoryNotes([
     ...(readLeanPlan(directory)?.documents ?? []).map(row => ({ title: row.title, rows: finalBodyParagraphs(directory, row.id) })),
@@ -330,6 +347,13 @@ export async function paragraphRows(docxPath: string): Promise<ParagraphRow[]> {
   return Object.entries(await ensureParagraphPointers(docxPath)).map(([pid, text]) => ({ pid, sha256: paragraphSha256(text), text }))
 }
 
+/** A draft step's saved document is planned, passes the draft check and has its paragraphs. */
+export function draftOutputValid(directory: string, step: StepID) {
+  const document = stepDocument(step) ?? FIRST_DOCUMENT
+  return stepOutputs(step).every(name => OPTIONAL_OUTPUTS.includes(name) || existsSync(leanFile(directory, name))) && Boolean(plannedDocument(directory, document)) &&
+    !checkDraft(directory, readLeanText(directory, `${document}/draft.md`) ?? "").issues.length && readParagraphs(directory, document).length > 0
+}
+
 /** Pure re-check of a completed step's saved output, used before skipping it on
  * resume. A lawyer's edit that still passes is kept; one that does not re-runs. */
 export function stageOutputValid(directory: string, step: StepID) {
@@ -337,16 +361,17 @@ export function stageOutputValid(directory: string, step: StepID) {
   if (step === "package-review") return Boolean(readPackageReview(directory))
   if (step === "discrepancy" || step === "spine") return evidenceOutputValid(directory, step)
   if (step === "intake" || step === "research" || step === "research-review") return researchOutputValid(directory, step)
-  if (!stepOutputs(step).every(name => existsSync(leanFile(directory, name)))) return false
+  if (!stepOutputs(step).every(name => OPTIONAL_OUTPUTS.includes(name) || existsSync(leanFile(directory, name)))) return false
   const text = (name: string) => readLeanText(directory, name) ?? ""
   const stage = stepStage(step)
   const document = stepDocument(step) ?? FIRST_DOCUMENT
   if (stage === "change-plan") return Boolean(readChangePlan(directory, document))
   if (stage === "change-prepare") return preparationOutputValid(directory, document)
   if (stage === "change-review") return Boolean(readChangeReview(directory, document))
-  if (stage === "draft")
-    return Boolean(plannedDocument(directory, document)) && !checkDraft(directory, text(`${document}/draft.md`)).issues.length &&
-      readParagraphs(directory, document).length > 0
+  // The first document's draft step also settles the plan's coverage: a missing,
+  // unreadable or earlier plan's record re-runs it, which checks the saved plan
+  // again and keeps a draft already done from the same inputs (draftOutputValid).
+  if (stage === "draft") return draftOutputValid(directory, step) && (document !== FIRST_DOCUMENT || planCoverageCurrent(directory))
   if (isReviewStage(stage)) return !checkReview(directory, text(`${document}/${stage}.md`), readParagraphs(directory, document)).issues.length
   if (stage === "changes") {
     const pids = new Set(readParagraphs(directory, document).map(row => row.pid))
@@ -355,7 +380,10 @@ export function stageOutputValid(directory: string, step: StepID) {
     if (!readLeanText(directory, `${document}/change-plan.json`)) return true
     return !uniqueReplacementIssues(list).length && !checkChanges(directory, text(`${document}/changes.json`), readParagraphs(directory, document), { document }).issues.length
   }
-  if (stage === "finalize") return !checkDraftingNotes(directory, text("drafting-notes.md"), disclosableItems(directory)).issues.length
+  // Saved notes are judged as a last attempt judges them: an internal id in a
+  // memo's prose was retry feedback, not a defect of the saved notes, so it does
+  // not re-run them; any other failed check does.
+  if (stage === "finalize") return !checkDraftingNotes(directory, text("drafting-notes.md"), disclosableItems(directory), { final: true }).issues.length
   // A passed gate with unresolved checklist findings delivers them in its notes.
   if (stage === "gate") return !(readLeanJson(directory, "gate.json") as { items?: OpenItem[] } | undefined)?.items?.some(item => item.kind === "checklist_unresolved") ||
     [DELIVERED_NOTES.docx, DELIVERED_NOTES.markdown].every(name => existsSync(leanFile(directory, name)))
@@ -364,7 +392,7 @@ export function stageOutputValid(directory: string, step: StepID) {
 
 /** Open items the drafting notes must disclose. */
 export function disclosableItems(directory: string): OpenItem[] {
-  return [...readOpenItems(directory).filter(item => DISCLOSED_STAGES.includes(item.stage)), ...deferredFindingItems(directory)]
+  return [...readOpenItems(directory).filter(item => DISCLOSED_STAGES.includes(item.stage)), ...deferredFindingItems(directory), ...coverageItems(directory)]
 }
 
 function ensureNewline(text: string) {
@@ -381,8 +409,9 @@ export type ChecklistOpenFinding = { item_id: string; item: ChecklistItem; findi
  * verified fields establish, whether its one reinspection ran and, for a
  * source conflict, the current items it conflicts with. */
 export type ChecklistUnresolvedFinding = ChecklistOpenFinding & { class: ChecklistFindingClass; conflicting_item_ids?: string[]; conflicting_items?: { id: string; item: ChecklistItem }[]; reinspected: boolean }
-/** A refined parent whose reconciled coverage is unsatisfied or indeterminate. */
-export type ChecklistUnresolvedParent = { parent_id: string; item: ChecklistItem; status: "unsatisfied" | "indeterminate"; issues: string[] }
+/** A refined parent whose reconciled coverage is unsatisfied or indeterminate,
+ * with its coverage issues and each issue's kind. */
+export type ChecklistUnresolvedParent = { parent_id: string; item: ChecklistItem; status: "unsatisfied" | "indeterminate"; issues: string[]; issue_kinds: ChecklistCoverageIssue[] }
 export type ChecklistOutputState = { valid: boolean; open: boolean; openFindings: ChecklistOpenFinding[]; unresolved: ChecklistUnresolvedFinding[]; unresolvedParents: ChecklistUnresolvedParent[] }
 
 /** Validate authoritative effective IDs and recompute coverage; archived originals
@@ -431,7 +460,7 @@ export function checklistOutputState(directory: string): ChecklistOutputState {
         ? { conflicting_items: effective.items.filter(other => classified.conflicting_item_ids.includes(other.id)).map(({ id, item }) => ({ id, item })) } : {}) }]
     })
     const unresolvedParents = coverage.flatMap(parent => parent.status === "unsatisfied" || parent.status === "indeterminate"
-      ? [{ parent_id: parent.parent_id, item: originals.find(row => row.id === parent.parent_id)!.item, status: parent.status, issues: parent.issues }] : [])
+      ? [{ parent_id: parent.parent_id, item: originals.find(row => row.id === parent.parent_id)!.item, status: parent.status, issues: parent.issues, issue_kinds: parent.issue_kinds }] : [])
     // Every current finding left open (or with open decisions) and not adverse,
     // as recorded; a parent's coverage is open only through such a child finding.
     const openFindings = current.filter(row => !unresolved.some(adverse => adverse.item_id === row.item_id) &&

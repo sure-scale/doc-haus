@@ -3,7 +3,7 @@ import { afterEach, expect, test } from "bun:test"
 import { readFileSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import { renderMarkdownToDocx } from "../../lib/render"
-import { readLeanDocuments } from "./deliverables"
+import { memoNotesFile, readLeanDocuments } from "./deliverables"
 import { checkDeliverySelections, selectedDeliveryPlan } from "./delivery-selection"
 import { packageReviewPrompt } from "./package-review"
 import { DOC_STAGES, readLeanPlan, writeLeanPlan } from "./plan"
@@ -362,3 +362,38 @@ for (const selected of [false, true]) test(`notes selection at the repair ceilin
   if (selected) expect(readLeanDocuments(directory)?.documents.find(row => row.kind === "drafting_notes")?.deliverable).toBe("ceiling-note.docx")
   else expect(registration.names).toEqual([])
 }, 120_000)
+
+const memoDoc = (title: string, extra: Record<string, unknown> = {}) => ({ title, purpose: "p", parts: [{ heading: "Terms", scope: "s" }], ...extra })
+const memoPlan = (docs: ReturnType<typeof memoDoc>[]) => {
+  const directory = matter()
+  const notes = memoNotesFile(docs, "cover memo")
+  writeLeanPlan(directory, docs, undefined, undefined, { name: "cover memo", file: notes })
+  return { directory, notes }
+}
+const pick = (document: "d1" | "d2", role: "body" | "redline", file: string) => ({ document, role, file, instruction_quote: "x" }) as const
+
+test("a requested memo keeps its name when a selection names a redline or body of another document", () => {
+  const { directory, notes } = memoPlan([memoDoc("Share Purchase Agreement"), memoDoc("Disclosure Letter")])
+  expect(notes).toBe("Share Purchase Agreement - cover memo.docx")
+  expect(selectedDeliveryPlan(directory, [pick("d2", "redline", "Disclosure Letter - marked.docx")])?.notes_file).toBe(notes)
+  expect(selectedDeliveryPlan(directory, [pick("d2", "body", "DL-final.docx")])?.notes_file).toBe(notes)
+})
+
+test("a requested memo follows a rename of its anchor document's body, not its redline", () => {
+  const { directory, notes } = memoPlan([memoDoc("Share Purchase Agreement"), memoDoc("Disclosure Letter")])
+  expect(selectedDeliveryPlan(directory, [pick("d1", "body", "SPA-final.docx")])?.notes_file).toBe("SPA-final - cover memo.docx")
+  expect(selectedDeliveryPlan(directory, [pick("d1", "redline", "SPA - marked.docx")])?.notes_file).toBe(notes)
+})
+
+test("a requested memo anchored on the combined document follows its rename only", () => {
+  const { directory, notes } = memoPlan([memoDoc("Share Purchase Agreement"), memoDoc("Disclosure Letter", { deliverable: "combined" })])
+  expect(notes).toBe("Disclosure Letter - cover memo.docx")
+  expect(selectedDeliveryPlan(directory, [pick("d1", "body", "SPA-final.docx")])?.notes_file).toBe(notes)
+  expect(selectedDeliveryPlan(directory, [pick("d2", "body", "DL-final.docx")])?.notes_file).toBe("DL-final - cover memo.docx")
+})
+
+test("a requested memo anchored on the first named file ignores a file given to an earlier document", () => {
+  const { directory, notes } = memoPlan([memoDoc("Share Purchase Agreement"), memoDoc("Disclosure Letter", { file: "DL.docx" })])
+  expect(notes).toBe("DL - cover memo.docx")
+  expect(selectedDeliveryPlan(directory, [pick("d1", "body", "SPA-final.docx")])?.notes_file).toBe(notes)
+})

@@ -53,8 +53,14 @@ export function assignChecklistTargetContext(context: ChecklistDocumentContext, 
     // The range stays assigned; a whitespace-only slice is not evidence.
     return text.trim() ? [{ document: context.input.item.target.document, locator: `native PIDs ${paragraph.pids.join(", ") || "unavailable"}; accepted paragraph_index ${range.paragraph_index}; UTF-16 chars ${range.start_char}-${range.end_char}`, text, kind: "body" as const }] : []
   })
-  // The whole-target unit receives each exact artifact property string, not passages.
-  const current_evidence = assignment.kind !== "document_properties" ? body
-    : (target[0]!.value.annotations ?? []).map((annotation, index) => ({ document: annotation.artifact, locator: `read-record ${target[0]!.path} /annotations/${index}/properties`, text: annotation.properties, kind: "artifact" as const }))
-  return { ...context, input: { ...context.input, assignment, current_evidence } }
+  // The whole-target unit receives each exact artifact property string, not
+  // passages, and the delivery rows of the files that deliver the target
+  // (its own files and a combined file that contains it).
+  const { delivery, ...rest } = context
+  const whole = assignment.kind === "document_properties"
+  const delivered = new Set(delivery?.map(row => JSON.stringify(row)))
+  const current_evidence = !whole ? body
+    : [...(target[0]!.value.annotations ?? []).map((annotation, index) => ({ document: annotation.artifact, locator: `read-record ${target[0]!.path} /annotations/${index}/properties`, text: annotation.properties, kind: "artifact" as const })),
+      ...context.input.current_evidence.filter(row => row.kind === "artifact" && delivered.has(row.text))]
+  return { ...rest, ...(whole && delivery ? { delivery } : {}), input: { ...context.input, assignment, current_evidence } }
 }

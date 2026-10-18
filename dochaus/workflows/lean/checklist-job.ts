@@ -10,6 +10,7 @@ import {
   buildChecklistProducerPrompt,
   parseChecklistExtraction,
   parseChecklistFinding,
+  suppliedEvidenceContains,
   type ChecklistAdjudicationCounterevidence,
   type ChecklistCheckerInput,
   type ChecklistExtraction,
@@ -128,8 +129,7 @@ function sourceReferenceIssues(directory: string, refs: ChecklistSourceReference
  * hints and freshly read native Word records are independent evidence pools;
  * annotations cannot establish operative body wording. */
 function currentEvidenceIssues(directory: string, refs: ChecklistCurrentEvidence[], input: ChecklistCheckerInput, where = "evidence"): string[] {
-  const supplied = (ref: ChecklistCurrentEvidence) => input.current_evidence.some(evidence =>
-    evidence.document === ref.document && evidence.kind === ref.kind && normalize(evidence.text).includes(normalize(ref.text)))
+  const supplied = (ref: ChecklistCurrentEvidence) => input.current_evidence.some(evidence => suppliedEvidenceContains(evidence, ref))
   const unresolved = refs.filter(ref => !supplied(ref))
   if (!unresolved.length) return []
   const current = buildChecklistDocumentContext(directory, { item_id: input.item_id, item: input.item }).artifacts.map(artifact => artifact.value)

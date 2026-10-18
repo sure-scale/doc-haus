@@ -72,8 +72,13 @@ test("Exa failures and response limits fail closed without exposing provider err
 
 test("shared fallback preserves extracted text without claiming original bytes or full-source verification", async () => {
   const previous = process.env.EXA_API_KEY
+  const previousRoot = process.env.WORKSPACE_ROOT
   const directory = mkdtempSync(path.join(tmpdir(), "research-exa-"))
   process.env.EXA_API_KEY = "test-only"
+  // Web research defaults to the open web; the redirect fence below needs the official-sources scope.
+  process.env.WORKSPACE_ROOT = directory
+  mkdirSync(path.join(directory, ".preferences"))
+  writeFileSync(path.join(directory, ".preferences", "preferences.json"), JSON.stringify({ webResearch: "official" }))
   try {
     const calls: string[] = []
     const result = await fetchSourceText(url, { browserFallback: false, fetch: async endpoint => {
@@ -111,6 +116,8 @@ test("shared fallback preserves extracted text without claiming original bytes o
   } finally {
     if (previous === undefined) delete process.env.EXA_API_KEY
     else process.env.EXA_API_KEY = previous
+    if (previousRoot === undefined) delete process.env.WORKSPACE_ROOT
+    else process.env.WORKSPACE_ROOT = previousRoot
     rmSync(directory, { recursive: true, force: true })
   }
 })

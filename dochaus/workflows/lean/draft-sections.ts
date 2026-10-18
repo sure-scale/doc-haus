@@ -2,19 +2,27 @@ import { playbookSelectionIssues } from "./playbook-review"
 import { TOOL_SYNTAX_ISSUE, printedToolCall } from "./checks"
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { matterSourceIDs } from "./quotes"
-import { FIRST_DOCUMENT, headingText, normalizedHeading, parsePlan, plannedDocument, writeLeanPlan, type DocID, type LeanOutline, type PlannedPart, type StepID } from "./plan"
-import { actingForBlock, retryPrompt, stagePrompt } from "./prompts"
+import { memoNotesFile } from "./deliverables"
+import { LEAN_COVERAGE_SCHEMA, coveragePlanHash, coveragePrompt, coverageScopeQuestion, parseCoverage, planCoverageCurrent, planCoverageIssues, type CoverageAct, type LeanCoverage } from "./package-coverage"
+import { answeredScopeQuestion, openScopeQuestion } from "./package-scope"
+import {
+  FIRST_DOCUMENT, headingText, normalizedHeading, parsePlan, plannedDocument, readLeanPlan, withDocumentIDs, writeLeanPlan,
+  type ActingFor, type DocID, type LeanOutline, type PlannedDocument, type PlannedPart, type StepID,
+} from "./plan"
+import { actingForBlock, packageCompositionBlock, retryPrompt, stagePrompt } from "./prompts"
 import {
   LEAN_CHILD_PERMISSIONS,
   LEAN_MAX_RETRIES,
   LEAN_STAGE_AGENTS,
   acceptStageReply,
+  draftOutputValid,
   outlineBasis,
-  planIsCurrent,
+  planBasisCurrent,
+  stepOutputs,
   stepSessionTitle,
   type LeanDeps,
 } from "./stages"
-import { answeredQuestionsText, readLeanText, writeLeanText, type LeanStageState, type LeanState, type OpenItem, type Question } from "./state"
+import { answeredQuestionsText, readLeanText, readOpenItems, readQuestions, writeLeanText, type LeanStageState, type LeanState, type OpenItem, type Question } from "./state"
 import { outlineCoverageIssues, partCarries, plannedContract, type TemplateContract } from "./template-contract"
 import { contractGaps, draftBody, draftGapIssues, type DraftPart } from "./template-coverage"
 import { countWords, headingUnits, tokens } from "./template-structure"
@@ -29,6 +37,19 @@ import { countWords, headingUnits, tokens } from "./template-structure"
 // issues; code assembles the parts in outline order and the assembled document
 // goes through the ordinary draft check, render and paragraph pointers. The
 // outline comes from the model; nothing here knows what a document should hold.
+// Before the plan is saved, a coverage job in its own session checks it against
+// the lawyer's instructions (package-coverage.ts), its issues go back to the
+// outline session for at most PLAN_COVERAGE_REVISIONS revised outlines, and the
+// result is recorded in coverage.json without failing the step. When an
+// instructed act is still left without a document its parties execute and no
+// answered package-scope question has shown it, the step saves no plan and
+// stops, blocked on one package-scope question for the lawyer about those acts
+// only; the answer joins the outline basis, so the plan is drawn up again with
+// it. An act an answered question showed is saved as uncovered and disclosed,
+// never asked about again. While the gate's
+// package-scope question is open, the step asks none of its own: it saves the
+// plan, the act is disclosed, and the open question stays the one to answer. A
+// coverage reply that never passed its check (unchecked) does not stop the step.
 // When a document is drafted from a matter document as its template, the
 // outline is admitted only once its coverage contract accounts for every
 // top-level part of the template (template-contract.ts); each part is told
@@ -47,6 +68,17 @@ export type DraftStageRun =
   | { status: "failed"; reason: string }
 
 type Checked<T> = { issues: string[]; value?: T }
+type Coverage = { acts?: CoverageAct[]; issues: string[] }
+
+/** Revised outlines the coverage job's issues may ask for before the plan is saved. */
+export const PLAN_COVERAGE_REVISIONS = 2
+
+/** The saved plan is followed (planBasisCurrent) and, unless it was written by
+ * hand, its coverage record checked this very plan (planCoverageCurrent, which
+ * the first document's draft step also needs to count as done on resume). */
+export function planIsCurrent(directory: string) {
+  return planBasisCurrent(directory) && planCoverageCurrent(directory)
+}
 
 export async function runDraftStage(
   directory: string,
@@ -55,40 +87,96 @@ export async function runDraftStage(
   progress: (patch: Partial<LeanStageState>) => void,
   document: DocID,
   planned: () => void | Promise<void>,
+  /** The step was done from these very inputs; only its saved output was found wanting. */
+  current = false,
 ): Promise<DraftStageRun> {
   const step: StepID = `${document}.draft`
   // A new stage attempt cannot retrieve a partial draft from an older attempt.
   writeLeanText(directory, `${document}/draft-in-progress.md`, "")
   const agent = LEAN_STAGE_AGENTS.draft
-  const sessionID = await deps.sessions.createSession({
+  // The coverage jobs' sessions join the outline's, so the step reports each of its sessions.
+  const sessionIDs: string[] = []
+  // Created when first prompted: a refresh that keeps the draft never prompts it.
+  let drafting: Promise<string> | undefined
+  const drafter = () => drafting ??= deps.sessions.createSession({
     directory, parentID: state.owner_session_id, agent, title: stepSessionTitle(directory, step), model: state.model, permissions: LEAN_CHILD_PERMISSIONS,
-  })
-  progress({ session_id: sessionID })
+  }).then(id => { sessionIDs.unshift(id); progress({ session_id: id, session_ids: [...sessionIDs] }); return id })
   const calls = { count: 0, attempts: 0 }
   // One checked exchange: prompt, check, and up to LEAN_MAX_RETRIES retries that
-  // hand the checker's issues back to the same session.
-  const ask = async <T>(label: string, text: string, check: (reply: string) => Checked<T>, attempt = 0): Promise<Checked<T>> => {
-    appendLeanEvent(directory, { stage: "draft", document, event: attempt ? "retry" : "model_call", step: label, attempt, session_id: sessionID })
-    const asked = performance.now()
-    const reply = await deps.sessions.prompt({ directory, sessionID, agent, text })
-    const answered = performance.now()
-    const checked = check(reply)
-    const timing = { wait_ms: leanElapsedMs(asked, answered), check_ms: leanElapsedMs(answered) }
-    calls.count += 1
-    calls.attempts = Math.max(calls.attempts, attempt + 1)
-    progress({ attempts: calls.attempts, calls: calls.count, feedback: checked.issues })
-    appendLeanEvent(directory, { stage: "draft", document, event: "checker", step: label, attempt, issues: checked.issues, ...timing })
-    if (!checked.issues.length || attempt >= LEAN_MAX_RETRIES) return checked
-    return ask(label, retryPrompt("draft", checked.issues), check, attempt + 1)
+  // hand the checker's issues back to the same session. The check is told when it
+  // reads the last attempt (`final`), after which its issues are not retried.
+  // `cause` records on the model_call event the issues of another check that the
+  // call answers.
+  const exchange = (session: { id: string | (() => Promise<string>); agent: string }) => {
+    const ask = async <T>(label: string, text: string, check: (reply: string, final: boolean) => Checked<T>, attempt = 0, cause?: string[]): Promise<Checked<T>> => {
+      const id = typeof session.id === "string" ? session.id : await session.id()
+      appendLeanEvent(directory, { stage: "draft", document, event: attempt ? "retry" : "model_call", step: label, attempt, session_id: id, ...(cause ? { issues: cause } : {}) })
+      const asked = performance.now()
+      const reply = await deps.sessions.prompt({ directory, sessionID: id, agent: session.agent, text })
+      const answered = performance.now()
+      const checked = check(reply, attempt >= LEAN_MAX_RETRIES)
+      const timing = { wait_ms: leanElapsedMs(asked, answered), check_ms: leanElapsedMs(answered) }
+      calls.count += 1
+      calls.attempts = Math.max(calls.attempts, attempt + 1)
+      progress({ attempts: calls.attempts, calls: calls.count, feedback: checked.issues })
+      appendLeanEvent(directory, { stage: "draft", document, event: "checker", step: label, attempt, issues: checked.issues, ...timing })
+      if (!checked.issues.length || attempt >= LEAN_MAX_RETRIES) return checked
+      return ask(label, retryPrompt("draft", checked.issues), check, attempt + 1)
+    }
+    return ask
   }
+  const ask = exchange({ id: drafter, agent })
   const failed = (label: string, issues: string[]): DraftStageRun =>
     ({ status: "failed", reason: `${step}: ${label}: checker failed after ${LEAN_MAX_RETRIES} retries: ${issues.join(" ")}` })
-  const outlined = document === FIRST_DOCUMENT && !planIsCurrent(directory)
+  // The coverage job reads the plan in a fresh session of its own, so the
+  // outline's reasoning does not steer it. Errors from the session calls,
+  // including a pause or restart, propagate and leave the plan unwritten.
+  const covering = async (documents: PlannedDocument[]): Promise<Coverage> => {
+    const coverageAgent = LEAN_STAGE_AGENTS.coverage
+    const id = await deps.sessions.createSession({
+      directory, parentID: state.owner_session_id, agent: coverageAgent, title: stepSessionTitle(directory, step, "draft: coverage"), model: state.model, permissions: LEAN_CHILD_PERMISSIONS,
+    })
+    sessionIDs.push(id)
+    progress({ ...(sessionIDs.length === 1 ? { session_id: id } : {}), session_ids: [...sessionIDs] })
+    const checked = await exchange({ id, agent: coverageAgent })("coverage", coveragePrompt(directory, documents), (reply, final) => parseCoverage(reply, directory, documents, { final }))
+    return checked.value ? { acts: checked.value, issues: planCoverageIssues(checked.value, documents, directory) } : { issues: checked.issues }
+  }
+  const recordCoverage = (documents: PlannedDocument[], actingFor: ActingFor | undefined, coverage: Coverage) => {
+    const record: LeanCoverage = {
+      schema: LEAN_COVERAGE_SCHEMA,
+      plan: coveragePlanHash(documents, actingFor),
+      status: !coverage.acts ? "unchecked" : coverage.issues.length ? "uncovered" : "covered",
+      acts: coverage.acts ?? [],
+      issues: coverage.issues,
+    }
+    writeLeanText(directory, "coverage.json", `${JSON.stringify(record, null, 2)}\n`)
+    appendLeanEvent(directory, { stage: "draft", document, event: "coverage", step: "coverage", outcome: record.status, issues: record.issues })
+  }
+  // An instructed act still left without a document its parties execute is the
+  // lawyer's call on the package's scope: the step stops before drafting with
+  // one package-scope question, never answered here, about the acts no answered
+  // package-scope question has settled (none is asked when all were, or once
+  // two of the step's own are answered; coverageItems discloses the rest), and
+  // none while another stage's is still open. An unchecked coverage reply never
+  // asks.
+  const scopeBlock = (documents: PlannedDocument[], coverage: Coverage): DraftStageRun | undefined => {
+    if (!coverage.acts || !coverage.issues.length) return
+    const questions = readQuestions(directory)
+    if (openScopeQuestion(questions, "draft")) return
+    const question = coverageScopeQuestion(coverage.acts, documents, questions.filter(answeredScopeQuestion))
+    if (!question) return
+    return { status: "blocked", outputs: ["coverage.json"], openItems: [], questions: [question],
+      reason: `${step}: the document plan leaves an instructed act without a document its parties execute; drafting waits for your answer on the package's scope.` }
+  }
+  // A plan whose outline basis is current is followed as it stands, including a
+  // lawyer's edits; only its coverage record is refreshed when it no longer
+  // matches the plan.
+  const outlined = document === FIRST_DOCUMENT && !planBasisCurrent(directory)
   if (outlined) {
     const basis = outlineBasis(directory)
     const request = [readLeanText(directory, "request.md"), readLeanText(directory, "updated-notes.md"), answeredQuestionsText(directory)].filter(Boolean).join("\n\n")
     const best: { value?: LeanOutline } = {}
-    const outline = await ask<LeanOutline>("outline", stagePrompt(directory, step, { outline: true }), reply => {
+    const checkOutline = (reply: string): Checked<LeanOutline> => {
       const parsed = parsePlan(reply, request)
       if (!parsed.value) return parsed
       const selectionIssues = playbookSelectionIssues(directory, parsed.value.documents)
@@ -97,10 +185,40 @@ export async function runDraftStage(
       // Keep the parser's own issues (the "Acting for:" retry) alongside the
       // template coverage issues.
       return { issues: [...parsed.issues, ...outlineCoverageIssues(directory, parsed.value.documents), ...parsed.value.documents.flatMap(document => document.comparison && (!matterSourceIDs(directory).includes(document.comparison) || !/\.docx$/i.test(document.comparison)) ? [`Compare against names an unknown source: ${document.comparison}. Use the exact supplied matter document name or omit comparison.`] : [])], value: parsed.value }
-    })
-    const value = outline.value ?? best.value
+    }
+    const outline = await ask<LeanOutline>("outline", stagePrompt(directory, step, { outline: true }), checkOutline)
+    let value = outline.value ?? best.value
     if (!value) return failed("outline", outline.issues)
-    writeLeanPlan(directory, value.documents, basis, value.acting_for)
+    let coverage = await covering(withDocumentIDs(value.documents))
+    // The coverage issues go back to the outline session as a revision request;
+    // a revision that yields no usable outline keeps the last one.
+    for (let revision = 1; coverage.acts && coverage.issues.length && revision <= PLAN_COVERAGE_REVISIONS; revision++) {
+      delete best.value
+      const revised = await ask<LeanOutline>(`outline revision ${revision}/${PLAN_COVERAGE_REVISIONS}`, retryPrompt("draft", coverage.issues), checkOutline, 0, coverage.issues)
+      const next = revised.value ?? best.value
+      if (!next) continue
+      value = next
+      coverage = await covering(withDocumentIDs(value.documents))
+    }
+    const documents = withDocumentIDs(value.documents)
+    recordCoverage(documents, value.acting_for, coverage)
+    const blocked = scopeBlock(documents, coverage)
+    if (blocked) return blocked
+    // A memo the request asks for is the run's notes, named for the request.
+    writeLeanPlan(directory, value.documents, basis, value.acting_for, value.memo ? { name: value.memo, file: memoNotesFile(value.documents, value.memo) } : undefined)
+  } else if (document === FIRST_DOCUMENT && !planIsCurrent(directory)) {
+    const saved = readLeanPlan(directory)!
+    const coverage = await covering(saved.documents)
+    recordCoverage(saved.documents, saved.acting_for, coverage)
+    const blocked = scopeBlock(saved.documents, coverage)
+    if (blocked) return blocked
+    // When only the coverage record was out of date (a lawyer's edit to another
+    // document's entry, say), the draft already done from these inputs is kept
+    // with its open items.
+    if (current && draftOutputValid(directory, step)) {
+      await planned()
+      return { status: "done", outputs: stepOutputs(step), openItems: readOpenItems(directory).filter(item => item.stage === "draft" && item.ref.document === document) }
+    }
   }
   const plan = plannedDocument(directory, document)
   if (!plan) return { status: "failed", reason: `${step}: the run's plan has no document ${document}.` }
@@ -117,7 +235,8 @@ export async function runDraftStage(
       ? { source: contract.source, parts: carried.carried.map(unit => unit.label), left: carried.left.map(unit => unit.label) }
       : undefined)
     const brief = sectionHandoff(directory, document)
-    const text = [index > 0 ? "" : outlined ? actingForBlock(directory) : stagePrompt(directory, step), brief, section].filter(Boolean).join("\n\n")
+    // The outline's session saw the run context before the plan named a memo.
+    const text = [...(index > 0 ? [] : outlined ? [actingForBlock(directory), packageCompositionBlock(directory, document)] : [stagePrompt(directory, step)]), brief, section].filter(Boolean).join("\n\n")
     const written = await ask(label, text, reply => checkSection(reply, plan, index))
     if (!written.value) return failed(`${label} "${part.heading}"`, written.issues)
     drafted.push({ part: index, text: written.value })

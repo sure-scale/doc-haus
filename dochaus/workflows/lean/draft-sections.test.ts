@@ -37,6 +37,8 @@ function scripted(reply: (text: string, index: number) => string) {
   const sessions: StageSessionPort = {
     createSession: async () => "ses_draft",
     prompt: async input => {
+      // The outline's coverage job finds no lawyer instruction to account for.
+      if (input.agent === LEAN_STAGE_AGENTS.coverage) return JSON.stringify({ acts: [] })
       prompts.push({ sessionID: input.sessionID, text: input.text })
       expect(input.agent).toBe(LEAN_STAGE_AGENTS.draft)
       return reply(input.text, prompts.length - 1)
@@ -142,8 +144,9 @@ describe("sectioned draft stage", () => {
       "## Notice", "", "\"Notice must be given in writing\" [source: terms.docx].", "",
       "## Next steps", "", "### Timing", "", "We will wait for a reply. [open item: reply deadline]", "",
     ].join("\n"))
-    // Five calls; the hardest step (the retried part) took two tries.
-    expect(progress.at(-1)).toEqual({ attempts: 2, calls: 5, feedback: [] })
+    // Six calls, the outline's coverage job included; the hardest step (the
+    // retried part) took two tries.
+    expect(progress.at(-1)).toEqual({ attempts: 2, calls: 6, feedback: [] })
 
     // Every listed paragraph carries its hidden pointer bookmark in the body docx.
     const rows = readParagraphs(directory, "d1")
@@ -154,7 +157,7 @@ describe("sectioned draft stage", () => {
 
     const events = readLeanEvents(directory).map(event => `${event.event}:${event.step}`)
     expect(events).toEqual([
-      "model_call:outline", "checker:outline",
+      "model_call:outline", "checker:outline", "model_call:coverage", "checker:coverage", "coverage:coverage",
       "model_call:part 1/3", "checker:part 1/3",
       "model_call:part 2/3", "checker:part 2/3", "retry:part 2/3", "checker:part 2/3",
       "model_call:part 3/3", "checker:part 3/3",

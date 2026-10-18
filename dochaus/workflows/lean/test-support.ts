@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import { readLeanPlan, writeLeanPlan } from "./plan"
 import { LEAN_STAGE_AGENTS, type LeanDeps, type StageSessionPort } from "./stages"
 import { initLeanState } from "./state"
 
@@ -31,6 +32,12 @@ export function matter(sourceText = SOURCE_TEXT) {
   return directory
 }
 
+/** The current plan, now also naming a requested memo, as an outline does. */
+export function requestMemo(directory: string) {
+  const plan = readLeanPlan(directory)!
+  writeLeanPlan(directory, plan.documents.map(({ id, ...document }) => document), plan.basis, plan.acting_for, { name: "cover memo", file: "cover memo.docx" })
+}
+
 export function scriptedModel(replies: Record<string, Reply>) {
   const prompts: { agent: string; sessionID: string; text: string }[] = []
   const sessions: Parameters<StageSessionPort["createSession"]>[0][] = []
@@ -45,6 +52,8 @@ export function scriptedModel(replies: Record<string, Reply>) {
         // Ordinary drafting regression fixtures assert no source-derived items.
         // Dedicated checklist lifecycle fixtures provide positive items/checks.
         "lean-checklist-extract": () => JSON.stringify({ items: [] }),
+        // The outline's coverage job finds no lawyer instruction to account for.
+        [AGENT.coverage]: () => JSON.stringify({ acts: [] }),
         [AGENT["change-plan"]]: () => JSON.stringify({ shared_decisions: [], groups: [], dismissed: [], questions: [] }),
         [AGENT["change-prepare"]]: () => JSON.stringify({ amendments: [], questions: [] }),
         [AGENT["change-review"]]: () => JSON.stringify({ status: "pass", findings: [], limitations: [] }),

@@ -1,11 +1,12 @@
 import { existsSync, readFileSync } from "node:fs"
 import { readDocxCommentParagraphs } from "../../lib/docx-comments"
-import { checklistFindingSchema, checklistFindingRecovery, type ChecklistItem } from "./checklist-contract"
+import { checklistFindingSchema, checklistFindingRecovery, isDeliveryArtifactEvidence, type ChecklistItem } from "./checklist-contract"
 import { readChecklistAdjudicationCounterevidence, readEffectiveChecklistItems } from "./checklist-flow"
+import { checklistDeliveryEvidence } from "./checklist-document-context"
 import { normalize } from "../../lib/quote-verify"
 import { readChangeList, readParagraphs, type ApplyResult, type ParagraphRow } from "./checks"
 import { FIRST_DOCUMENT, readLeanPlan, type DocID } from "./plan"
-import { excerpt, openItem } from "./quotes"
+import { excerpt, openItem, withSourceSnapshot } from "./quotes"
 import { hashStageInputs, isReviewStage, leanFile, readLeanJson, readLeanState, readOpenItems, readQuestions, writeLeanText, type LeanState, type OpenItem } from "./state"
 import { LEAN_PROMPT_VERSION, stageInputs } from "./stages"
 
@@ -204,7 +205,8 @@ export function checklistRepairItems(directory: string, skip: (item_id: string, 
   if (!effective.complete) return []
   const plan = readLeanPlan(directory)
   if (!plan) return []
-  return effective.items.flatMap(record => {
+  // One snapshot builds the delivered files' properties once for every item.
+  return withSourceSnapshot(() => effective.items.flatMap(record => {
     if (!expected.includes(record.id)) return []
     const rows = checks.filter((value): value is { item_id: string; status: string; finding: unknown } => typeof value === "object" && value !== null &&
       (value as { item_id?: unknown }).item_id === record.id && (value as { status?: unknown }).status === "succeeded")
@@ -213,17 +215,27 @@ export function checklistRepairItems(directory: string, skip: (item_id: string, 
     if (!parsed.success || parsed.data.item_id !== record.id || checklistFindingRecovery(record.item, parsed.data) !== "repair") return []
     if (!["operative", "advice"].includes(record.item.target.treatment)) return []
     const matches = plan.documents.filter(document => document.id === record.item.target.document || document.file === record.item.target.document)
+    const notes = !matches.length && ["notes", plan.notes_file ?? "drafting-notes.docx"].includes(record.item.target.document)
+    // Code sets a delivered file's name, Word format and composition, so no
+    // text repair can change them. A finding resting only on the delivery
+    // rows supplied for its target stays disclosed with its class; one that
+    // also cites text keeps its repair, which receives only that text.
+    const target = matches.length === 1 ? matches[0]!.id : notes ? "notes" : undefined
+    const supplied = target === undefined ? [] : checklistDeliveryEvidence(directory, target).evidence
+    const evidence = parsed.data.evidence.filter(row => !isDeliveryArtifactEvidence(row, supplied))
+    if (parsed.data.evidence.length && !evidence.length) return []
+    const finding = { ...parsed.data, evidence }
     // The run-wide drafting notes have no editing stages: their omission is a
     // required repair for the notes writer, like the package review's notes findings.
-    if (!matches.length && ["notes", plan.notes_file ?? "drafting-notes.docx"].includes(record.item.target.document)) {
+    if (notes) {
       if (!existsSync(leanFile(directory, "drafting-notes.md")) || skip(record.id, record.item)) return []
       return [openItem("checklist-check", "omission", [
         "Reassess this focused checklist assessment of the drafting notes against actual sources, qualifications and the current notes; its adverse verdict is not authority or an instruction to force a change. Address a supported omission in the notes and record what remains unsupported as uncertain. Do not invent approval, facts or advice from the verdict.",
-        JSON.stringify({ item_id: record.id, item: record.item, finding: parsed.data, current_artifact: ".dochaus/lean/drafting-notes.md" }),
+        JSON.stringify({ item_id: record.id, item: record.item, finding, current_artifact: ".dochaus/lean/drafting-notes.md" }),
       ].join("\n"), { repair_target: "memo" })]
     }
     if (matches.length !== 1) return []
-    const document = matches[0]!, finding = parsed.data
+    const document = matches[0]!
     const file = [`${document.id}/body-applied.docx`, `${document.id}/body.docx`].find(file => existsSync(leanFile(directory, file)))
     if (!file || skip(record.id, record.item)) return []
     let current: ReturnType<typeof readDocxCommentParagraphs>
@@ -248,7 +260,7 @@ export function checklistRepairItems(directory: string, skip: (item_id: string, 
       "Reassess this focused checklist assessment against actual sources, qualifications and current text; its adverse verdict is not authority or an instruction to force a change. Preserve proposals as proposals and unsupported requirements as uncertain. Do not invent approval or replacement wording from the verdict. Retain every still-supported existing amendment; correct or drop an earlier amendment if source adjudication shows it caused this defect.",
       JSON.stringify({ item_id: record.id, item: record.item, finding, current_artifact: `.dochaus/lean/${file}`, current_target_paragraphs: inspected }),
     ].join("\n"), { document: document.id, repair_target: "body", ...(pid ? { pid } : {}) })]
-  })
+   }))
 }
 
 /** The document's current accepted focused adjudication of this exact item
