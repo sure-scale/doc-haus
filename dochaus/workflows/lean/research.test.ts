@@ -170,7 +170,7 @@ test("drafting notes may cite an approved authority by name after a signal word 
   expect(notes("In Re Ashdown v. Merrow, the covenant binds.")).toEqual([unsupported("In Re Ashdown v. Merrow")])
   expect(notes("The Ashdown v. Merrow decision binds the subtenant.")).toEqual([unsupported("The Ashdown v. Merrow")])
   expect(notes("See Down v. Merrow, on the covenant.")).toEqual([unsupported("Down v. Merrow")])
-  expect(notes("Under Ashdown v. Merrow, the covenant binds.")).toEqual([])
+  expect(notes("Under Ashdown v. Merrow, the covenant binds.")).toEqual([unsupported("Under Ashdown v. Merrow")])
   const reordered = "A subtenant is bound by the same insurance covenant \u2026 The tenant must keep the premises insured"
   const refused = notes(`The covenant reads "${reordered}" [source: ${url}].`)
   expect(refused).toHaveLength(1)

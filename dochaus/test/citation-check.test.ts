@@ -247,4 +247,34 @@ describe("case-name support matching", () => {
       expect(rows("Down v. Merrow", supportText)).toEqual([["Down v. Merrow", "verified"]])
     expect(rows("Merrow, 12 Synth. 34", "ashdown v. merrow, 12 synth. 34 (2020)")).toEqual([["Merrow, 12 Synth. 34", "verified"]])
   })
+
+  test("a key joined to a longer word by a hyphen, apostrophe or underscore, or running on into one, is unsupported", () => {
+    for (const [cited, supportText, key] of [
+      ["Down v. Merrow", "ash-down v. merrow, 12 synth. 34"],
+      ["Down v. Merrow", "ash_down v. merrow"],
+      ["Brien v. Merrow", "o'brien v. merrow"],
+      ["Brien v. Merrow", "o\u2019brien v. merrow"],
+      ["See Merrow v. Kestrel", "ashdown-merrow v. kestrel", "Merrow v. Kestrel"],
+      ["Down v. Merrow", "down v. merrowfield, 12 synth. 34"],
+      ["Merrow, 12 Synth. 34", "ashdown v. merrow, 12 synth. 345 (2020)"],
+      ["Companies Act s. 5", "companies act s. 51"],
+      ["Data Act s. 5", "metadata act s. 5"],
+    ]) expect(rows(cited!, supportText!)).toEqual([[key ?? cited, "unsupported"]])
+  })
+
+  test("a key that is whole words of the support text is supported", () => {
+    expect(rows("Companies Act s. 5", "notice under the companies act s. 5, in writing")).toEqual([["Companies Act s. 5", "verified"]])
+    expect(rows("Down v. Merrow", "the reasoning in down v. merrow's second part")).toEqual([["Down v. Merrow", "verified"]])
+    expect(rows("Merrow, 12 Synth. 34", "ashdown v. merrow, 12 synth. 34-35 (2020)")).toEqual([["Merrow, 12 Synth. 34", "verified"]])
+  })
+
+  test("only a citation signal is dropped from a name, and the name as written is tried first", () => {
+    for (const signal of ["See", "See Also", "See Generally", "Cf.", "Compare", "But See", "But Cf.", "Accord", "Contra", "E.g."])
+      expect(rows(`${signal} Ashdown v. Merrow`, "ashdown v. merrow, 12 synth. 34")).toEqual([["Ashdown v. Merrow", "verified"]])
+    // A party name may begin with a word that is not a signal.
+    expect(rows("Under Armour Inc. v. Nike", "armour inc. v. nike, 1 synth. 2")).toEqual([["Under Armour Inc. v. Nike", "unsupported"]])
+    expect(rows("Under Armour Inc. v. Nike", "under armour inc. v. nike, 1 synth. 2")).toEqual([["Under Armour Inc. v. Nike", "verified"]])
+    expect(rows("In Home Health Inc. v. Merrow", "in home health inc. v. merrow, 3 synth. 4")).toEqual([["In Home Health Inc. v. Merrow", "verified"]])
+    expect(rows("Accord Corp. v. Merrow", "accord corp. v. merrow, 3 synth. 4")).toEqual([["Accord Corp. v. Merrow", "verified"]])
+  })
 })
