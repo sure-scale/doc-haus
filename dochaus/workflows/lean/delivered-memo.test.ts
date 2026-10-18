@@ -253,7 +253,7 @@ test("without a requested memo the findings lead in a memo's plain words, with n
   expect(gate).toMatchObject({ status: "pass", delivery: "review_draft_with_findings", blocking: [] })
   const delivered = deliveredNotes(plain, gate)!
   expect(delivered).toBe(["# Checklist findings not satisfied", "",
-    "These checklist requirements were not established as satisfied. Each is disclosed with this review draft for review; none is treated as satisfied.", "",
+    "These checklist requirements were not established as satisfied. Each is disclosed with this review draft; none is treated as satisfied.", "",
     `- The note states the delivery period. ${CONFLICT} Reason: Paragraph omits it. Limitation: Comments not inspected. Source: request: "Deliver within thirty days of the order."`,
     `- The note states when delivery starts. ${OMISSION} Reason: Paragraph omits it. Limitation: Comments not inspected. Source: request: "Deliver within ten days of the order."`, "",
     "# Cover memo", "", "The delivery period follows the order.", ""].join("\n"))
@@ -278,7 +278,7 @@ test("a requested memo comes first; its findings close it in the requirement's o
 })
 
 const MEMO_LEFT_OPEN = ["## Requirements left open", "", "These requirements were left open in this draft and need the lawyer's review.", ""]
-const LEFT_OPEN = "Status: left open in this draft; settle what it leaves open and check the draft against it."
+const LEFT_OPEN = "Status: left open in this draft; settle what is left open and check the draft against it."
 const saveFindings = (directory: string, rows: ChecklistFinding[]) => writeLeanText(directory, "checklist/checks.json", JSON.stringify({ extraction_complete: true,
   expected_items: rows.map(row => row.item_id), checks: rows.map(row => ({ item_id: row.item_id, input_sha: "sha", status: "succeeded", issues: [], finding: row })) }))
 
@@ -300,9 +300,12 @@ test("a requested memo's requirements left open close it, after any unresolved f
   saveFindings(memo, [finding("c1", { status: "satisfied" }), open])
   const alone = deliveredNotes(memo, finalGate(memo))!
   expect(alone).toBe(["# Cover memo", "", "The delivery period follows the order.", "", ...MEMO_LEFT_OPEN, line, ""].join("\n"))
-  // An open item the checklist output no longer holds is read back from its detail.
+  // A requirement a later check settled is not read back from the earlier
+  // gate's detail: its entry is dropped, with its section.
+  saveFindings(memo, [finding("c1"), finding("c2", { status: "satisfied" })])
+  expect(deliveredNotes(memo, gate)).toBe(delivered.slice(0, delivered.indexOf(`\n${MEMO_LEFT_OPEN[0]}`)))
   writeLeanText(memo, "checklist/extraction.json", JSON.stringify({ expected_sources: [], sources: [] }))
-  expect(deliveredNotes(memo, gate)!.split("\n").at(-2)).toBe(line.replace(/ Source: .*$/, ""))
+  expect(deliveredNotes(memo, gate)).not.toMatch(/left open|delivery starts/)
 })
 
 test("a memo finding whose checklist item cannot be found takes its requirement from its detail, cut of its conflict list and ids, with its plain status", () => {

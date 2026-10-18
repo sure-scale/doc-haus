@@ -594,10 +594,10 @@ async function runGate(directory: string): Promise<StageRun> {
   // The drafting notes are delivered as the reader gets them, with any
   // unresolved checklist findings and disclosed requirements left open in plain
   // words: whenever any of them exists, as the gate's validity requires
-  // (stageOutputValid). Notes left without a
-  // heading are delivered under a plain title, so they are never empty. With no
-  // drafting notes and no finding there is nothing to deliver, so earlier
-  // delivered notes are removed. Rendering is not byte-stable (a list gets a fresh relationship
+  // (stageOutputValid). Notes left without a heading are delivered under a
+  // plain title, so they are never empty. With no drafting notes and no
+  // finding there is nothing to deliver, so earlier delivered notes are
+  // removed. Rendering is not byte-stable (a list gets a fresh relationship
   // id), so unchanged notes keep their earlier file; the .docx is written
   // before the .md, so a stop between the two re-renders.
   const previous = leanFile(directory, DELIVERED_NOTES.docx)

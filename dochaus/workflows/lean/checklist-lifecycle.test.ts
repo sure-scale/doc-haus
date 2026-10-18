@@ -404,7 +404,7 @@ test("a declined checklist repair is disclosed with the adjudicator's reason, no
 }, 120000)
 
 const LEFT_OPEN = "# Checklist requirements left open"
-const OPEN_LINE = "- The requested supply note is drafted. Status: left open in this draft; settle what it leaves open and check the draft against it. Reason: Focused result open. Limitation: Comments not inspected."
+const OPEN_LINE = "- The requested supply note is drafted. Status: left open in this draft; settle what is left open and check the draft against it. Reason: Focused result open. Limitation: Comments not inspected."
 
 test("informational open finding remains open in report while permitting review draft workflow", async () => {
   const directory = matter()

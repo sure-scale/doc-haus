@@ -151,11 +151,19 @@ test("unresolved findings lead the delivered notes in plain words with their sou
   expect(deliveredNotes(directory, finalGate(directory))).toBe(notes)
 })
 
+test("with no finding and no memo the delivered notes are the drafting notes, byte for byte", () => {
+  const directory = checklistMatter([{ item_id: "c1", finding: finding("c1", "satisfied") }, { item_id: "c2", finding: finding("c2", "satisfied") }])
+  writeLeanText(directory, "drafting-notes.md", NOTES)
+  const gate = finalGate(directory)
+  expect(gate.items.filter(item => item.stage === "checklist-check")).toEqual([])
+  expect(deliveredNotes(directory, gate)).toBe(NOTES)
+})
+
 // A requirement left open is listed in the delivered notes as an unresolved
 // finding is, in plain words with no id, in its own section after theirs.
 const LEFT_OPEN = ["# Checklist requirements left open", "",
-  "These checklist requirements were left open. Each is disclosed with this review draft for review; none is treated as satisfied.", ""]
-const OPEN_STATUS = "Status: left open in this draft; settle what it leaves open and check the draft against it."
+  "These checklist requirements were left open. Each is disclosed with this review draft; none is treated as satisfied.", ""]
+const OPEN_STATUS = "Status: left open in this draft; settle what is left open and check the draft against it."
 
 test("a requirement left open leads the delivered notes in plain words, with no id; the drafting notes follow without their markers", () => {
   const directory = checklistMatter([{ item_id: "c1", finding: finding("c1", "open") }, { item_id: "c2", finding: finding("c2", "satisfied") }])
