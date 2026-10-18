@@ -30,6 +30,10 @@ test("an explicit Word output title supplies the exact basename without inventin
     "Create an editable Word draft and call this file Supply Review.",
     "Create an editable Word draft. Save the file as Supply Review.",
     "Create an editable Word draft and title this draft Supply Review.",
+    "Create an editable Word draft and name the file **Supply Review**.",
+    "Create an editable Word draft named `Supply Review`, with an open-items list.",
+    "Create an editable Word draft titled: Supply Review",
+    "Create an editable Word draft (titled Supply Review) with an open-items list.",
   ]) {
     writeLeanText(directory, "request.md", instruction)
     expect(checkDeliverySelections(directory, [{ ...selection, instruction_quote: instruction }])).toEqual([])
@@ -49,11 +53,18 @@ test("an explicit Word output title supplies the exact basename without inventin
   for (const [instruction, file] of [
     ["Create an editable Word draft. Save it as PDF.", "PDF.docx"],
     ["Create an editable Word draft and save it as a Word document.", "a Word document.docx"],
+    ["Create an editable Word draft and save it as a Word doc.", "a Word doc.docx"],
+    ["Create an editable Word draft and save it as Word docx.", "Word docx.docx"],
     ["Create an editable Word draft and name the file docx.", "docx.docx"],
   ]) {
     writeLeanText(directory, "request.md", instruction!)
-    expect(checkDeliverySelections(directory, [{ ...selection, file: file!, instruction_quote: instruction! }]).length).toBeGreaterThan(0)
+    expect(checkDeliverySelections(directory, [{ ...selection, file: file!, instruction_quote: instruction! }]))
+      .toEqual([`Delivery file "${file}" names a format, not a file. Words that ask only for a format give no file name; return no delivery row for them.`])
   }
+  // A name the lawyer spells with .docx is a name, though its words also name a format.
+  const literal = "Create an editable Word draft and name the file Word Document.docx."
+  writeLeanText(directory, "request.md", literal)
+  expect(checkDeliverySelections(directory, [{ ...selection, file: "Word Document.docx", instruction_quote: literal }])).toEqual([])
 })
 
 test("literal name grounding leaves output intent and roles to the semantic reviewer", () => {

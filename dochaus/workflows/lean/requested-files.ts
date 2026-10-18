@@ -1,10 +1,10 @@
 import path from "node:path"
 import { sha256File } from "../../lib/lineage"
-import { normalize, normalizeWithMap } from "../../lib/quote-verify"
+import { normalize } from "../../lib/quote-verify"
 import { TOOL_SYNTAX_ISSUE, printedToolCall, record } from "./checks"
 import { readWorkingDocx } from "../../lib/working-docx"
 import { combinedDelivery, deliveryArtifactEvidence, deliveryStem, memoNotesFile, plannedRegistration, readLeanDocuments, redlineOfBody, requestedMemo } from "./deliverables"
-import { NAMING_WORDS, formatStem } from "./delivery-selection"
+import { formatStem, spelledNames } from "./delivery-selection"
 import { plainFileName, readLeanPlan, type DocID, type PlannedDocument } from "./plan"
 import { tagged } from "./prompts"
 import { REQUEST_SOURCE, excerpt, instructionFound, lawyerWords, matterSourceIDs, openItem, quoteMissIssue } from "./quotes"
@@ -101,11 +101,12 @@ export function requestedFilesPrompt(directory: string, documents: PlannedDocume
  * gives where the quote stands (nameGrounded), kept in the lawyer's spelling,
  * its holds as planned ids or "memo" when a memo is planned, each in one file
  * at most. A name given without another format's extension (OTHER_FORMAT) is a
- * Word file's: code adds ".docx". Word's own format given as a name (wordFormat)
- * names nothing: the file is a Word file, as the run delivers it. No retry
- * makes a format a Word file's name, so a name the lawyer writes in another
- * format, and another format's name given as a name (formatStem), become null
- * at once, kept as `refused_name`. Every other defect is retry feedback; the
+ * Word file's: code adds ".docx". A name the lawyer spells with its extension
+ * is a name, though its words also name a format. Word's own format given as a
+ * name (wordFormat) names nothing: the file is a Word file, as the run delivers
+ * it. No retry makes a format a Word file's name, so a name the lawyer writes
+ * in another format, and another format's name given as a name (formatStem),
+ * become null at once, kept as `refused_name`. Every other defect is retry feedback; the
  * files are returned only when none is left. On
  * the last attempt (`final`) a refused name becomes null, kept as
  * `refused_name` for disclosure; any other defect, a quote that is not the
@@ -131,23 +132,24 @@ export function parseRequestedFiles(reply: string, directory: string, documents:
       !(row.name == null || typeof row.name === "string") || typeof row.quote !== "string" || !row.quote.trim())
       return void issues.push(`${where} needs "holds" as a nonempty list of planned ids${memo !== undefined ? ' or "memo"' : ""}, "name" as a file name or null, and a nonempty "quote" string. ${shape}`)
     const given = typeof row.name === "string" ? row.name.trim() : ""
-    const name = !given || wordFormat(given) ? null : /\.docx$/i.test(given) || OTHER_FORMAT.test(given) ? given : `${given}.docx`
+    const name = !given ? null : /\.docx$/i.test(given) || OTHER_FORMAT.test(given) ? given : `${given}.docx`
     const file: RequestedFile = { holds: [...new Set((row.holds as string[]).map(id => id.trim()))], name, quote: row.quote.trim() }
     rows.push({ index, file })
     if (!instructionFound(directory, file.quote)) return void issues.push(quoteMissIssue(directory, where, { quote: file.quote, source_id: REQUEST_SOURCE }, "json"))
     // A name is held to its quote once the quote is the lawyer's words.
     const key = JSON.stringify([normalize(file.quote).toLowerCase(), [...file.holds].sort()])
-    if (name === null) {
-      if (refused.has(key)) file.refused_name = refused.get(key)
-      return
-    }
-    const plain = plainFileName(name)
-    const spelled = plain ? nameGrounded(directory, file.quote, name) : undefined
+    const spelled = name !== null && plainFileName(name) ? nameGrounded(directory, file.quote, name) : undefined
     if (spelled && !OTHER_FORMAT.test(spelled)) {
       refused.delete(key)
       file.name = spelled
       return
     }
+    if (name === null || wordFormat(given)) {
+      file.name = null
+      if (refused.has(key)) file.refused_name = refused.get(key)
+      return
+    }
+    const plain = plainFileName(name)
     const refusal = spelled ?? (formatStem(nameStem(name)) ? given : final ? name : undefined)
     refused.set(key, refusal ?? name)
     if (refusal) return void Object.assign(file, { name: null, refused_name: refusal })
@@ -176,69 +178,21 @@ const OTHER_FORMAT = /\.(?:doc|docm|dot|dotx|dotm|rtf|odt|wpd|pages|pdf|xps|epub
 /** A name without its ".docx" or other format's extension. */
 const nameStem = (name: string) => name.replace(/\.docx$/i, "").replace(OTHER_FORMAT, "")
 
-/** Whether `name` is Word's own format (formatStem) rather than a file's name. */
-const wordFormat = (name: string) =>
-  !OTHER_FORMAT.test(name) && formatStem(nameStem(name)) && /^(?:an?\s+)?(?:(?:ms|microsoft)\s+)?(?:word|docx)\b/i.test(nameStem(name).trim())
-
-// A name's edges in the lawyer's text, read as instructionFound reads it
-// (normalize: curly quotation marks straight, whitespace runs one space). A
-// name starts at the text's start, after a space, a colon, or an opening
-// quotation mark, bracket or Markdown mark; an apostrophe opens a name only
-// outside a word. A name given without ".docx" follows a naming word
-// (NAMING_WORDS, as deliveryNameQuoted grounds a title), after a space, a
-// colon or an opening mark, and ends at a line break, a clause mark, a colon, a
-// closing quotation mark, bracket or Markdown mark, a full stop before a
-// space, a closing mark or the end, or a dash between spaces.
-const WORD = /[\p{L}\p{N}_]/u
-const NAME_OPENS = /["«(\[*`:]/
-const NAME_END = /^(?:$|[,;!?:"'»)\]*`]|\.(?:["'»)\]*`]|\s|$)|\s[-–—](?:\s|$))/
-const LINE_END = /^[^\S\r\n]*[\r\n]/
-
-/** Lower case where it keeps the text's length, so offsets still map. */
-const fold = (text: string) => text.replace(/[\s\S]/gu, char => {
-  const lower = char.toLowerCase()
-  return lower.length === char.length ? lower : char
-})
+/** Whether `name` is Word's own format (formatStem) rather than a file's name;
+ * ".docx" alone is. */
+const wordFormat = (name: string) => {
+  const stem = nameStem(name).trim()
+  return !OTHER_FORMAT.test(name) && formatStem(stem) && (!stem || /^(?:an?\s+)?(?:(?:ms|microsoft)\s+)?(?:word|docx)\b/i.test(stem))
+}
 
 /** The name in the lawyer's own spelling when the lawyer's words
- * (lawyerWords, compared as instructionFound compares them: whitespace and case
- * aside) give `name` where they hold `quote`; undefined otherwise. Its stem
- * (the name without its extension: ".docx", or another format's) starts inside
- * the quoted words at a name's start in the lawyer's text and is followed there
- * by that extension, or, a Word file's given without ".docx", follows a naming
- * word inside the quote and ends at a name's end. A format's name (formatStem)
- * is no stem. So a name cut short from a longer name is refused, a quote may
- * run on past the name, and a line break inside the name does not matter. The
- * spelling is the lawyer's text from the stem's start, whitespace runs one
- * space, with the extension as the lawyer writes it or ".docx" added. Not
- * caught, since no rule of the text says where such a name starts or ends: a
- * name cut short at its start at a space, which leaves a name the lawyer's
- * words also end with its extension, and a name given without ".docx" cut
- * short at a full stop and a space or at a comma. */
+ * (lawyerWords) give `name` where they hold `quote`, by the grammar package
+ * review grounds a delivery name on (spelledNames); undefined otherwise. Its
+ * stem is the name without its extension: ".docx", or another format's, which
+ * is grounded too, to be refused. */
 function nameGrounded(directory: string, quote: string, name: string) {
-  const extension = (OTHER_FORMAT.exec(name)?.[0] ?? ".docx").toLowerCase()
-  const stem = fold(normalize(nameStem(name)))
-  const words = fold(normalize(quote))
-  if (!stem || !words || formatStem(stem)) return
-  // Built here: delivery-selection.ts and this module import each other through the stage table.
-  const naming = new RegExp(String.raw`(?:^|[^\p{L}\p{N}_])(?:${NAMING_WORDS}):?\s*(?:\*\*|["'«(\[*\x60])?$`, "u")
-  for (const raw of lawyerWords(directory)) {
-    const { text: normal, map } = normalizeWithMap(raw)
-    const text = fold(normal)
-    const starts = (at: number) => at === 0 || text[at - 1] === " " || NAME_OPENS.test(text[at - 1]!) ||
-      (text[at - 1] === "'" && !WORD.test(text[at - 2] ?? ""))
-    for (let start = text.indexOf(words); start >= 0; start = text.indexOf(words, start + 1)) {
-      const end = start + words.length
-      for (let at = text.indexOf(stem, start); at >= 0 && at < end; at = text.indexOf(stem, at + 1)) {
-        if (!starts(at)) continue
-        const close = at + stem.length
-        const spelled = (to: number) => raw.slice(map[at], map[to - 1]! + 1).replace(/\s+/g, " ")
-        if (text.startsWith(extension, close) && !WORD.test(text[close + extension.length] ?? "")) return spelled(close + extension.length)
-        if (extension === ".docx" && close <= end && naming.test(text.slice(start, at)) && (NAME_END.test(text.slice(close)) || LINE_END.test(raw.slice(map[close - 1]! + 1))))
-          return `${spelled(close)}.docx`
-      }
-    }
-  }
+  const extension = OTHER_FORMAT.exec(name)?.[0] ?? ".docx"
+  for (const raw of lawyerWords(directory)) for (const spelled of spelledNames(raw, quote, nameStem(name), extension)) return spelled
 }
 
 /** What a recorded file asks of the plan: the memo with one document, the memo
@@ -575,8 +529,11 @@ export function requestedFilesItems(directory: string): OpenItem[] {
     const shape = fileShape(file)
     const target = shape && deliveredIn(shape.document ?? MEMO)
     const given = file.name ?? file.refused_name
-    // Only a Word file's plain name can be the file delivered.
-    const named = given === undefined || (/\.docx$/i.test(given) && plainFileName(given) && target?.name === nameKey(given))
+    // A refused name the lawyer's words give is theirs: only a Word file's plain
+    // name can then be the file delivered. Any other refused name is the reply's,
+    // and is compared by its stem.
+    const quoted = file.name === null && given !== undefined && normalize(file.quote).toLowerCase().includes(normalize(given).toLowerCase())
+    const named = given === undefined || ((!quoted || /\.docx$/i.test(given) && plainFileName(given)) && target?.name === nameKey(given))
     if (!check.unsupported && !check.issue && named) return []
     const files = new Map<string, NonNullable<ReturnType<typeof delivery>>>()
     for (const held of file.holds) {
@@ -596,7 +553,7 @@ export function requestedFilesItems(directory: string): OpenItem[] {
       : " The lawyer should confirm how these files are to be delivered."
     return [openItem("finalize", "omission", `Requested files: the lawyer's words ${lawyerQuote(file.quote)} ask for ${asked(file, held => plan.documents.find(row => row.id === held))}` +
       (!refused ? `, but the run delivers ${delivers}.`
-        : OTHER_FORMAT.test(file.refused_name!) || formatStem(nameStem(file.refused_name!)) ? ` and give it as "${file.refused_name}"; the run delivers Word files only and delivers ${delivers}.`
+        : quoted && (OTHER_FORMAT.test(file.refused_name!) || formatStem(nameStem(file.refused_name!))) ? ` and give it as "${file.refused_name}"; the run delivers .docx files only and delivers ${delivers}.`
         : ` and name this file; the run could not confirm the name "${file.refused_name}" in those words and delivers ${delivers}.`) +
       `${reason}${closing}`, { repair_target: "memo" })]
   })

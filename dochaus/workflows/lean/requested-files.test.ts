@@ -7,6 +7,7 @@ import { sha256File } from "../../lib/lineage"
 import { renderMarkdownToDocx } from "../../lib/render"
 import { workingDocxKey } from "../../lib/working-docx"
 import { TOOL_SYNTAX_ISSUE } from "./checks"
+import { checkDeliverySelections } from "./delivery-selection"
 import { writeLeanPlan, type DocID, type PlannedDocument } from "./plan"
 import { tagged } from "./prompts"
 import { REQUEST_SOURCE, openItem, quoteMissIssue } from "./quotes"
@@ -253,7 +254,8 @@ describe("parse requested files", () => {
   })
 
   test("Word's own format given as a file's name asks for what the run delivers: no name, nothing refused and no item", () => {
-    for (const [words, name] of [["save as Word", "Word"], ["save it as a Word document", "a Word document"], ["save it as a Word document", "Word document.docx"], ["name the file docx", "docx"]]) {
+    for (const [words, name] of [["save as Word", "Word"], ["save it as a Word document", "a Word document"], ["save it as a Word document", "Word document.docx"], ["name the file docx", "docx"],
+      ["save it as a Word doc", "a Word doc"], ["save it as Word docx", "Word docx"], ["save it as .docx", ".docx"]]) {
       const quote = `Deliver the share transfer form separately and ${words}`
       const directory = prepared(`${quote}.`)
       for (const final of [false, true])
@@ -262,6 +264,50 @@ describe("parse requested files", () => {
       writeRequestedFiles(directory, { schema: LEAN_REQUESTED_FILES_SCHEMA, basis: "basis-1", planned: { titles: ["Share transfer form", "Board minute"], memo: null }, ...stated(file(["d1"], quote)) })
       expect(requestedFilesItems(directory)).toEqual([])
     }
+  })
+
+  test("a name the lawyer spells with .docx is a name, though its words also name a format", () => {
+    const quote = "Deliver the share transfer form separately and name the file Word Document.docx"
+    const directory = prepared(`${quote}.`)
+    for (const name of ["Word Document.docx", "Word Document"])
+      expect(parseRequestedFiles(reply(true, file(["d1"], quote, name)), directory, DOCUMENTS, MEMO)).toEqual({ issues: [], value: stated(file(["d1"], quote, "Word Document.docx")) })
+  })
+
+  test("the files job and package review ground a name by one grammar", () => {
+    const words = "Deliver the share transfer form separately"
+    // The lawyer's words, the quote, the Word file name, and whether that name is grounded.
+    const cases: [string, string, string, boolean][] = [
+      [`${words} as Kestrel Transfer.docx.`, `${words} as Kestrel Transfer.docx`, "Kestrel Transfer.docx", true],
+      [`${words}, titled Kestrel Transfer.`, `${words}, titled Kestrel Transfer`, "Kestrel Transfer.docx", true],
+      ["Prepare the board minute. Name the file **Kestrel Board Pack**.", "Name the file **Kestrel Board Pack**", "Kestrel Board Pack.docx", true],
+      [`${words}, named \`Kestrel Transfer\`.`, `${words}, named \`Kestrel Transfer`, "Kestrel Transfer.docx", true],
+      [`${words}, titled: Kestrel Transfer`, `${words}, titled: Kestrel Transfer`, "Kestrel Transfer.docx", true],
+      [`${words} (titled Kestrel Transfer) by Friday.`, `${words} (titled Kestrel Transfer`, "Kestrel Transfer.docx", true],
+      [`${words}, titled “Kestrel Transfer.” Then send it.`, `${words}, titled “Kestrel Transfer`, "Kestrel Transfer.docx", true],
+      [`${words}, titled Kestrel Transfer\nThen send it.`, `${words}, titled Kestrel Transfer`, "Kestrel Transfer.docx", true],
+      [`${words}, titled Kestrel Transfer — signed copy to follow.`, `${words}, titled Kestrel Transfer`, "Kestrel Transfer.docx", true],
+      [`${words} and name the file Word Document.docx.`, `${words} and name the file Word Document.docx`, "Word Document.docx", true],
+      [`${words}, titled Kestrel Transfer Final.`, `${words}, titled Kestrel Transfer`, "Kestrel Transfer.docx", false],
+      [`${words} as Draft-Kestrel Transfer.docx.`, `${words} as Draft-Kestrel Transfer.docx`, "Kestrel Transfer.docx", false],
+      [`${words}, titled Kestrel Transfer.pdf.`, `${words}, titled Kestrel Transfer`, "Kestrel Transfer.docx", false],
+      [`${words} and save it as PDF.`, `${words} and save it as PDF`, "PDF.docx", false],
+      [`${words} and save it as a Word doc.`, `${words} and save it as a Word doc`, "a Word doc.docx", false],
+      [`${words} and name the file docx.`, `${words} and name the file docx`, "docx.docx", false],
+    ]
+    for (const [request, quote, name, grounded] of cases) {
+      const directory = prepared(request)
+      writeLeanPlan(directory, [outline("Share transfer form")])
+      const files = parseRequestedFiles(reply(true, file(["d1"], quote, name)), directory, DOCUMENTS, MEMO)
+      const review = checkDeliverySelections(directory, [{ document: "d1", role: "body", file: name, instruction_quote: quote }])
+      expect({ request, files: files.value?.files[0]?.name === name, review: review.length === 0 }).toEqual({ request, files: grounded, review: grounded })
+    }
+    // Intended difference: the files job keeps the lawyer's spelling of a name given in another case, while
+    // package review, which selects the file delivered, takes the lawyer's spelling only.
+    const directory = prepared(`${words}, titled Kestrel Transfer.`)
+    writeLeanPlan(directory, [outline("Share transfer form")])
+    const quote = `${words}, titled Kestrel Transfer`
+    expect(parseRequestedFiles(reply(true, file(["d1"], quote, "kestrel transfer")), directory, DOCUMENTS, MEMO)).toEqual({ issues: [], value: stated(file(["d1"], quote, "Kestrel Transfer.docx")) })
+    expect(checkDeliverySelections(directory, [{ document: "d1", role: "body", file: "kestrel transfer.docx", instruction_quote: quote }])).not.toEqual([])
   })
 
   test("a file holds planned documents, the memo only when one is planned, each in one file at most, on every attempt", () => {
@@ -660,11 +706,23 @@ describe("requested files items", () => {
   })
 
   test("a file asked for in another format is disclosed as such, though the run delivers a Word file of the same stem", () => {
-    const quote = TRANSFER.replace(".docx", ".pdf")
-    const disclosed = (name: string) => item(`the lawyer's words "${quote}" [source: request] ask for "Share transfer form" as a file of its own ` +
-      `and give it as "${name}"; the run delivers Word files only and delivers "Share transfer form" in "Kestrel Transfer.docx".`)
-    for (const name of ["Kestrel Transfer.pdf", "PDF"])
-      expect(requestedFilesItems(saved(AS_ASKED, record({ ...file(["d1"], quote), refused_name: name })))).toEqual([disclosed(name)])
+    for (const [extension, name] of [[".pdf", "Kestrel Transfer.pdf"], [".pdf", "PDF"], [".doc", "Kestrel Transfer.doc"]]) {
+      const quote = TRANSFER.replace(".docx", extension!)
+      expect(requestedFilesItems(saved(AS_ASKED, record({ ...file(["d1"], quote), refused_name: name! })))).toEqual([item(`the lawyer's words "${quote}" [source: request] ` +
+        `ask for "Share transfer form" as a file of its own and give it as "${name}"; the run delivers .docx files only and delivers "Share transfer form" in "Kestrel Transfer.docx".`)])
+    }
+  })
+
+  test("a refused name the lawyer's words do not give is no format the lawyer asked for", () => {
+    // The lawyer asks for Kestrel Transfer.docx; the last attempt answers in another format.
+    const directory = saved()
+    const last = parseRequestedFiles(reply(true, file(["d1"], TRANSFER, "Kestrel Transfer.pdf")), directory, DOCUMENTS, MEMO, { final: true })
+    expect(last).toEqual({ issues: [], value: stated({ ...file(["d1"], TRANSFER), refused_name: "Kestrel Transfer.pdf" }) })
+    writeRequestedFiles(directory, record(...last.value!.files))
+    // Delivered under the stem the lawyer gave, there is nothing to disclose.
+    expect(requestedFilesItems(directory)).toEqual([])
+    expect(requestedFilesItems(saved(AS_ASKED, record({ ...file(["d1"], TRANSFER), refused_name: "Kestrel Form.pdf" })))).toEqual([item(`the lawyer's words "${TRANSFER}" [source: request] ` +
+      'ask for "Share transfer form" as a file of its own and name this file; the run could not confirm the name "Kestrel Form.pdf" in those words and delivers "Share transfer form" in "Kestrel Transfer.docx".')])
   })
 
   test("a name refused on an earlier attempt stays disclosed when the last attempt gives none, until a name passes", () => {
