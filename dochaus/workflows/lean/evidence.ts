@@ -21,7 +21,7 @@ export function checkEvidence(directory: string, stage: EvidenceStage, value: un
       if (!sources.includes(ref.source_id)) return [`Unknown evidence source_id "${ref.source_id}". Allowed source_id values: ${JSON.stringify(sources)}. ${EVIDENCE_SOURCE_CONTRACT} Retrieve the canonical evidence behind a handoff or record the derived uncertainty in limitations without an evidence quotation.`]
       return quoteFound(directory, ref as SourceQuote) ? [] : [`The supporting quotation ${JSON.stringify(excerpt(ref.quote))} in ${JSON.stringify(ref.source_id)} was not found in that canonical source. ${EVIDENCE_SOURCE_CONTRACT} Copy exact supporting words from the named source or disclose the limitation without invented evidence.`]
     })
-    if (!row.evidence.length && !row.limitations.length) issues.push("An entry without evidence must disclose its uncertainty in limitations.")
+    if (!row.evidence.length && !row.limitations.some(text => text.trim())) issues.push("An entry without evidence must disclose its uncertainty in at least one non-blank limitation.")
     if (stage === "discrepancy" && (typeof row.material !== "boolean" || !["resolved", "unresolved", "verify-source", "benign"].includes(String(row.status)) || typeof row.resolution !== "string" || !["unresolved", "verify-source"].includes(String(row.status)) && !row.resolution.trim()))
       issues.push("A discrepancy needs material:boolean, status:resolved|unresolved|verify-source|benign, and resolution explaining the evidence or distinction; unresolved findings must never be silently corrected.")
     if (stage === "spine" && !["decision", "recommendation", "requirement", "fact", "open-item"].includes(String(row.kind))) issues.push("A spine entry kind must be decision, recommendation, requirement, fact or open-item.")
@@ -40,21 +40,25 @@ export function acceptEvidenceReply(directory: string, stage: EvidenceStage, rep
   return { issues: [], outputs: [`${stage}.json`], openItems: stage === "spine" ? unsupportedChoices((value as { entries: DraftingEntry[] }).entries) : [] }
 }
 
-/** The drafting choices no matter source or verified research supports: each
- * is in the draft but rests on its recorded limitation alone, so the final
- * gate holds it open until the drafting notes name it. Only the notes are
- * repaired for it, never a body. A fact is not a choice. */
+/** The drafting choices recorded without a verified quotation from the
+ * request, an answer, a matter source or approved research: each rests on its
+ * recorded limitation alone, so the final gate holds it open until the
+ * drafting notes name it. Only the notes are repaired for it, never a body.
+ * The item says only what was checked: that no quotation was recorded. A fact
+ * is not a choice, and an open point is not a choice made; it reaches the
+ * lawyer as a placeholder, marker or question. */
 function unsupportedChoices(entries: DraftingEntry[]): OpenItem[] {
   return entries.flatMap(entry => {
-    const basis = CHOICE_BASIS[entry.kind]
-    return basis && !entry.evidence.length ? [openItem("spine", "unsupported_choice",
-      `${sentence(entry.detail)} No supplied source or verified research ${basis}. Limitation: ${entry.limitations.map(sentence).join(" ")}`,
+    const choice = CHOICE_NAMES[entry.kind]
+    const limitations = entry.limitations.filter(text => text.trim()).map(sentence)
+    return choice && !entry.evidence.length ? [openItem("spine", "unsupported_choice", [sentence(entry.detail),
+      `No quotation from the supplied documents, your instructions or answers, or verified research was recorded for this ${choice}.`,
+      ...limitations.length ? [`Limitation: ${limitations.join(" ")}`] : []].join(" "),
       { repair_target: "memo" })] : []
   })
 }
 
-const CHOICE_BASIS: Partial<Record<DraftingEntry["kind"], string>> = { decision: "supports this drafting decision", requirement: "supports this requirement",
-  recommendation: "supports this recommendation", "open-item": "settles this open point" }
+const CHOICE_NAMES: Partial<Record<DraftingEntry["kind"], string>> = { decision: "drafting decision", requirement: "requirement", recommendation: "recommendation" }
 
 function sentence(text: string) {
   return /[.!?]$/.test(text.trim()) ? text.trim() : `${text.trim()}.`

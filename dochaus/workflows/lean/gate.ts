@@ -762,7 +762,7 @@ function settle(item: OpenItem, context: SettleContext): OpenItem {
   if (item.kind === "omission")
     return named ? disclosed("omission named in the drafting notes") : open("the drafting notes do not name this omission")
   if (item.kind === "unsupported_choice")
-    return named ? disclosed("drafted without a supporting source; named in the drafting notes") : open("the drafting notes do not name this choice made without a supporting source")
+    return named ? disclosed("made without a recorded supporting quotation; named in the drafting notes") : open("the drafting notes do not name this choice made without a recorded supporting quotation")
   if (item.kind === "template_removal")
     return named ? resolved("template part left out or cut down on purpose, with a recorded reason; named in the drafting notes")
       : open("the drafting notes do not name this removal of a template part")

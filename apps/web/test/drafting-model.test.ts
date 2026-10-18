@@ -100,9 +100,10 @@ test("open items group by kind in first-seen order and cap across groups", () =>
     ["placeholder", 1, 2],
   ])
   expect(capGroups(groups, 5).flatMap((group) => group.items)).toHaveLength(5)
-  // A drafting choice made without a supporting source is in the draft, not left out of it.
+  // A drafting choice made without a recorded supporting quotation is in the draft, not left out of it.
+  // The label claims only what was checked: no quotation was recorded for it.
   expect(groupOpenItems([item("f", "unsupported_choice"), item("g", "omission")]).map((group) => group.label)).toEqual([
-    "Drafting choices no source supports",
+    "Drafting choices with no recorded quotation",
     "Points left out",
   ])
 })
