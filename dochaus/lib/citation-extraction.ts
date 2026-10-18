@@ -14,6 +14,8 @@ type CitationCandidate = {
   kind: CitationCheckRow["kind"]
   start: number
   end: number
+  /** A leading signal was dropped from the name (LEADING_SIGNAL). */
+  signal: boolean
 }
 
 export function normalizeCitationKey(raw: string): string {
@@ -66,7 +68,7 @@ function citationRowsFromText(
 ): CitationCheckRow[] {
   return extractCitations(text).map((citation) => {
     const position = lineColumn(text, citation.start)
-    const support = resolveSupport(citation.normalized_key, supportIndex)
+    const support = resolveSupport(citation.normalized_key, supportIndex, { wordStart: citation.signal })
     let status: CitationCheckStatus
     let pinpointInfo: CitationPinpoint | undefined
     let allSupport = support
@@ -77,7 +79,7 @@ function citationRowsFromText(
     } else {
       const pinpoint = extractPinpoint(citation.normalized_key, citation.kind)
       if (pinpoint) {
-        const baseSupport = resolveSupport(pinpoint.base_key, supportIndex)
+        const baseSupport = resolveSupport(pinpoint.base_key, supportIndex, { wordStart: citation.signal })
         if (baseSupport.length) {
           status = "unresolved"
           pinpointInfo = {
@@ -166,6 +168,7 @@ function matchCitations(text: string, pattern: RegExp, kind: CitationCandidate["
       const start = (match.index ?? 0) + match[0].indexOf(citation_text)
       return {
         citation_text,
+        signal: citation_text !== trimmed,
         normalized_key: normalizeCitationKey(citation_text),
         kind,
         start,
@@ -177,8 +180,11 @@ function matchCitations(text: string, pattern: RegExp, kind: CitationCandidate["
 
 /** A capitalized signal or preposition opening the sentence before a name
  * ("In Smith v. Jones", "See Smith v. Jones") is not part of the name; kept, it
- * makes the citation key miss the authority it names. */
-const LEADING_SIGNAL = /^(?:(?:See|Accord|Cf\.|Compare|Contra|But|In|Under|Per|Following|Applying|Citing|Unlike|Like|As|After|Since|The)[ \t]+)+(?=[A-Z])/
+ * makes the citation key miss the authority it names. Only words that do not
+ * begin party names are dropped: not "The", "As", "Accord" or "Contra", and
+ * not "In" before "Re". The name left must then start a word of the support
+ * text (resolveSupport wordStart), so it cannot match inside a longer word. */
+const LEADING_SIGNAL = /^(?:(?:See|Cf\.|Compare|But|In(?![ \t]+Re\b)|Under|Following|Applying|Citing|Unlike)[ \t]+)+(?=[A-Z])/
 
 function rangesOverlap(a: CitationCandidate, b: CitationCandidate) {
   return a.start < b.end && b.start < a.end

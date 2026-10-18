@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test"
+import { Database } from "bun:sqlite"
+import path from "node:path"
 import { checkDraftingNotes } from "./checks"
 import { quoteFound, quoteMissIssue } from "./quotes"
 import { SOURCE, cleanupMatters, matter } from "./test-support"
@@ -61,6 +63,26 @@ describe("lean elided quotation matching", () => {
       expect(found[0]).toContain(miss(quote))
     }
     expect(issues(directory, "from the supply terms \u2026 Draft a short supply note", "request")).toHaveLength(1)
+  })
+
+  test("spaced, bracketed and sentence-ending ellipses separate passages under the same rules", () => {
+    const directory = matter(TERMS)
+    for (const mark of [" . . . ", " [\u2026] ", " [...] ", " [. . .] ", ". . . . "])
+      expect(issues(directory, `The supplier shall deliver the goods${mark}Payment is due in full on delivery`)).toEqual([])
+    expect(issues(directory, "The supplier shall deliver the goods . . . Payment is due")).toHaveLength(1)
+    expect(issues(directory, "Payment is due in full on delivery [...] The supplier shall deliver the goods")).toHaveLength(1)
+  })
+
+  test("a passage must begin after the previous one ends and come from the same source", () => {
+    const directory = matter(TERMS)
+    const db = new Database(path.join(directory, ".dochaus", "legal.db"))
+    const schedule = "Late delivery entitles the buyer to a service credit of five percent."
+    db.query("INSERT INTO chunks VALUES (?, ?, ?, ?, ?)").run("delivery-schedule.docx", "1", schedule, 0, schedule.length)
+    db.close()
+    expect(issues(directory, "The supplier shall deliver the goods within \u2026 deliver the goods within thirty days")).toHaveLength(1)
+    expect(issues(directory, "The supplier shall deliver the goods \u2026 entitles the buyer to a service credit")).toHaveLength(1)
+    expect(issues(directory, "The supplier shall deliver the goods \u2026 entitles the buyer to a service credit", "delivery-schedule.docx")).toHaveLength(1)
+    expect(issues(directory, "Late delivery entitles the buyer \u2026 a service credit of five percent", "delivery-schedule.docx")).toEqual([])
   })
 
   test("a recorded quotation field still needs the verbatim words", () => {

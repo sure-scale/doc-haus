@@ -153,13 +153,21 @@ function haystack(text: string, support: CitationSupport): SupportHaystack | nul
   return { normalized_text, support }
 }
 
-export function resolveSupport(normalizedKey: string, supportIndex: SupportHaystack[]): CitationSupport[] {
+/** With `wordStart`, the key must begin a word of the support text, not
+ * continue one ("down v jones" is not in "ashdown v jones"). */
+export function resolveSupport(normalizedKey: string, supportIndex: SupportHaystack[], options: { wordStart?: boolean } = {}): CitationSupport[] {
   const byID = new Map<string, CitationSupport>()
   for (const item of supportIndex) {
-    if (!item.normalized_text.includes(normalizedKey)) continue
+    if (!(options.wordStart ? startsWord(item.normalized_text, normalizedKey) : item.normalized_text.includes(normalizedKey))) continue
     byID.set(item.support.id, item.support)
   }
   return [...byID.values()].sort((a, b) => a.id.localeCompare(b.id))
+}
+
+function startsWord(text: string, key: string) {
+  for (let at = text.indexOf(key); at !== -1; at = text.indexOf(key, at + 1))
+    if (at === 0 || !/[\p{L}\p{N}]/u.test(text[at - 1]!)) return true
+  return false
 }
 
 function normalizeSupportText(text: string) {

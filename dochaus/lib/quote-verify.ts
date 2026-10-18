@@ -186,17 +186,22 @@ function documentText(chunks: QuoteChunk[]) {
   )
 }
 
+/** An ellipsis: "...", "…" or spaced ". . .", optionally in square brackets;
+ * a fourth dot (the period ending the sentence before it) is part of it. */
+const ELLIPSIS = /\s*(?:\[\s*(?:(?:\. ?){2,3}\.|\u2026)\s*\]|(?:\. ?){2,3}\.|\u2026)\s*/
+
 /** The normalized passages of a quotation that marks omitted words with an
- * ellipsis ("..." or "…"), or undefined when it marks none. An ellipsis at
- * either end omits words outside the quotation and leaves no passage there. */
+ * ellipsis (ELLIPSIS), or undefined when it marks none. An ellipsis at either
+ * end omits words outside the quotation and leaves no passage there. */
 export function elidedParts(quote: string): string[] | undefined {
-  const parts = normalize(quote).split(/\s*(?:\.{3}|\u2026)\s*/)
+  const parts = normalize(quote).split(ELLIPSIS)
   if (parts.length < 2) return
   return parts.filter((part, index) => part || (index > 0 && index < parts.length - 1))
 }
 
-/** Whether every passage appears in `text` in the quoted order without
- * overlapping, each long enough (SHORT_QUOTE) to identify its place on its own. */
+/** Whether every passage appears in `text` in the quoted order, each starting
+ * after the previous one ends (no overlap) and each long enough (SHORT_QUOTE)
+ * to identify its place on its own. */
 export function partsInOrder(text: string, parts: string[]) {
   if (!parts.length || parts.some(part => part.length < SHORT_QUOTE)) return false
   let from = 0

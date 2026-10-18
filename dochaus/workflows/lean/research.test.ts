@@ -162,6 +162,15 @@ test("drafting notes may cite an approved authority by name after a signal word 
   expect(notes("In Ashdown v. Kestrel, the covenant binds.")).toEqual([
     `The drafting notes cite "Ashdown v. Kestrel", which no matter source, research row or verified authority supports. Remove the citation or describe the point as needing research.`,
   ])
+  // Dropping a signal never lets a citation key match another case: "In re"
+  // is not part of a case name, "The" can begin one and stays, and the name
+  // left after a signal must start a word of the support text.
+  const unsupported = (citation: string) => `The drafting notes cite "${citation}", which no matter source, research row or verified authority supports. Remove the citation or describe the point as needing research.`
+  expect(notes("In re Ashdown v. Kestrel, the covenant binds.")).toEqual([unsupported("Ashdown v. Kestrel")])
+  expect(notes("In Re Ashdown v. Merrow, the covenant binds.")).toEqual([unsupported("In Re Ashdown v. Merrow")])
+  expect(notes("The Ashdown v. Merrow decision binds the subtenant.")).toEqual([unsupported("The Ashdown v. Merrow")])
+  expect(notes("See Down v. Merrow, on the covenant.")).toEqual([unsupported("Down v. Merrow")])
+  expect(notes("Under Ashdown v. Merrow, the covenant binds.")).toEqual([])
   const reordered = "A subtenant is bound by the same insurance covenant \u2026 The tenant must keep the premises insured"
   const refused = notes(`The covenant reads "${reordered}" [source: ${url}].`)
   expect(refused).toHaveLength(1)
