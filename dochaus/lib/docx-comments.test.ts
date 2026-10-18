@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, test } from "bun:test"
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
-import { exportDocxComments, preserveDocxComments, readDocxCommentParagraphs, readDocxComments, type DocxComment } from "./docx-comments"
+import { exportDocxComments, preserveDocxComments, readDocxCommentParagraphs, readDocxComments, readDocxRevisionProperties, readDocxRevisionText, type DocxComment } from "./docx-comments"
 import { compareDocxWithPointers, withParagraphPointers, withStableRevisionDates } from "./drafting-amendment"
 import { docxodus } from "./docxodus"
 import { renderMarkdownToDocx } from "./render"
@@ -177,16 +177,79 @@ describe("native Word comment export", () => {
       .toThrow("invalid_docx_comments_relationship")
   })
 
-  test("excludes deletion-only paragraphs and deleted pointers, and reports deleted paragraph boundaries", () => {
+  test("excludes deletion-only paragraphs and deleted pointers, anchors a deleted paragraph boundary as the merged paragraph and refuses an unjoined one", () => {
     const source = withBody(clean, `<w:p><w:del w:id="3" w:author="Earlier reviewer"><w:r><w:delText>Gone.</w:delText></w:r></w:del></w:p>`
       + `<w:p><w:del w:id="4"><w:bookmarkStart w:id="9" w:name="_dh_p123456789abc"/></w:del><w:r><w:t>Kept.</w:t></w:r></w:p>`
-      + `<w:p><w:pPr><w:rPr><w:del w:id="5"/></w:rPr></w:pPr><w:r><w:t>Merged boundary.</w:t></w:r></w:p>`)
+      + `<w:p><w:pPr><w:rPr><w:del w:id="5"/></w:rPr></w:pPr><w:r><w:t xml:space="preserve">Merged </w:t></w:r></w:p>`
+      + `<w:p><w:r><w:t>boundary.</w:t></w:r></w:p>`
+      + `<w:p><w:pPr><w:rPr><w:del w:id="6"/></w:rPr></w:pPr><w:r><w:t>Unjoined boundary.</w:t></w:r></w:p>`)
+    expect(readDocxCommentParagraphs(source).map(row => row.paragraph_text)).toEqual(["Kept.", "Merged boundary.", "Unjoined boundary."])
     const output = exportDocxComments(source, [comment("gone", { quote: "Gone." }), comment("kept", { paragraph_text: "Kept.", paragraph_index: 0 }),
-      comment("deleted-pointer", { paragraph_text: "Kept.", pid: "p123456789abc" }), comment("boundary", { paragraph_text: "Merged boundary." })])
-    expect(output.attached.map(row => row.id)).toEqual(["kept"])
-    expect(output.unresolved.map(row => row.id)).toEqual(["gone", "deleted-pointer", "boundary"])
-    expect(output.unresolved[2].reason).toContain("boundary is deleted")
+      comment("deleted-pointer", { paragraph_text: "Kept.", pid: "p123456789abc" }), comment("fragment", { paragraph_text: "Merged " }),
+      comment("boundary", { paragraph_text: "Merged boundary.", paragraph_index: 1 }), comment("unjoined", { paragraph_text: "Unjoined boundary." })])
+    expect(output.attached.map(row => [row.id, row.paragraph_index])).toEqual([["kept", 0], ["boundary", 1]])
+    expect(output.unresolved.map(row => row.id)).toEqual(["gone", "deleted-pointer", "fragment", "unjoined"])
+    expect(output.unresolved[3].reason).toContain("boundary is deleted")
+    const body = Array.from(parse(xml(output.bytes, "word/document.xml")).getElementsByTagNameNS(W, "p"))
+    expect(body.map(node => ["commentRangeStart", "commentRangeEnd", "commentReference"].map(name => node.getElementsByTagNameNS(W, name).length)))
+      .toEqual([[0, 0, 0], [1, 1, 1], [1, 0, 0], [0, 1, 1], [0, 0, 0]])
+    expect(readDocxComments(output.bytes).map(row => row.markers.map(marker => marker.paragraph_index))).toEqual([[0, 0, 0], [1, 1, 1]])
     expect(revisions(xml(output.bytes, "word/document.xml"))).toEqual(revisions(xml(source, "word/document.xml")))
+  })
+
+  test("numbers a comparator-split paragraph as its accepted paragraph and attaches comments on it and after it", () => {
+    // Synthetic shape of a comparison that splits one final paragraph across two
+    // w:p: the first carries a deleted paragraph mark, a deleted paragraph follows.
+    const source = withBody(clean, `<w:p><w:r><w:t>4.1 Release applies where that condition is:</w:t></w:r></w:p>`
+      + `<w:p><w:pPr><w:rPr><w:del w:id="1" w:author="Reviewer"/></w:rPr></w:pPr><w:ins w:id="2"><w:bookmarkStart w:id="20" w:name="_dh_p111111111111"/></w:ins>`
+      + `<w:ins w:id="3"><w:r><w:t>(a) the</w:t></w:r></w:ins><w:del w:id="4"><w:r><w:delText>if:</w:delText></w:r></w:del></w:p>`
+      + `<w:p><w:pPr><w:rPr><w:ins w:id="5"/></w:rPr></w:pPr><w:bookmarkStart w:id="21" w:name="_dh_p222222222222"/>`
+      + `<w:del w:id="6"><w:r><w:delText>(a) the</w:delText></w:r></w:del><w:r><w:t xml:space="preserve"> Tenant has given notice.</w:t></w:r></w:p>`
+      + `<w:p><w:pPr><w:rPr><w:del w:id="7"/></w:rPr></w:pPr><w:del w:id="8"><w:r><w:delText>(b) Removed condition.</w:delText></w:r></w:del></w:p>`
+      + `<w:p><w:r><w:t>Later.</w:t></w:r></w:p>`)
+    const accepted = withBody(clean, ["4.1 Release applies where that condition is:", "(a) the Tenant has given notice.", "Later."]
+      .map(text => `<w:p><w:r><w:t>${text}</w:t></w:r></w:p>`).join(""))
+    const rows = readDocxCommentParagraphs(source)
+    expect(rows.map(row => [row.paragraph_index, row.paragraph_text]))
+      .toEqual(readDocxCommentParagraphs(accepted).map(row => [row.paragraph_index, row.paragraph_text]))
+    expect(rows[1].pids).toEqual(["p111111111111", "p222222222222"])
+    const later = readDocxCommentParagraphs(accepted).find(row => row.paragraph_text === "Later.")!
+    const output = exportDocxComments(source, [comment("later", { paragraph_index: later.paragraph_index, paragraph_text: later.paragraph_text }),
+      comment("joined", { paragraph_index: 1, paragraph_text: "(a) the Tenant has given notice.", pid: "p222222222222" }),
+      comment("fragment", { paragraph_text: "(a) the" }), comment("removed", { deleted_paragraph_text: "(b) Removed condition." })])
+    expect(output.attached).toEqual([
+      { id: "later", comment_id: "0", paragraph_index: 2, paragraph_text: "Later." },
+      { id: "joined", comment_id: "1", paragraph_index: 1, paragraph_text: "(a) the Tenant has given notice." },
+      { id: "removed", comment_id: "2", paragraph_index: 3, paragraph_text: "(b) Removed condition.", anchor_kind: "deleted" },
+    ])
+    expect(output.unresolved).toEqual([{ id: "fragment", reason: expect.stringContaining("No accepted paragraph") }])
+    validateNative(unzipSync(output.bytes), ["0", "1", "2"])
+    const body = Array.from(parse(xml(output.bytes, "word/document.xml")).getElementsByTagNameNS(W, "p"))
+    const ids = (node: Element, name: string) => Array.from(node.getElementsByTagNameNS(W, name)).map(marker => marker.getAttributeNS(W, "id"))
+    expect(body.map(node => [ids(node, "commentRangeStart"), ids(node, "commentRangeEnd"), ids(node, "commentReference")])).toEqual([
+      [[], [], []], [["1"], [], []], [[], ["1"], ["1"]], [["2"], ["2"], ["2"]], [["0"], ["0"], ["0"]],
+    ])
+    // The deleted-paragraph explanation keeps its own exact deleted anchor, outside the accepted paragraph it merges into.
+    expect(readDocxComments(output.bytes).map(row => [row.comment_id, row.markers.map(marker => marker.paragraph_index)]))
+      .toEqual([["0", [2, 2, 2]], ["1", [1, 1, 1]], ["2", [null, null, null]]])
+    expect(readDocxComments(output.bytes)[1].markers.map(marker => [marker.xml_paragraph_index, marker.accepted_paragraph_text, marker.pids]))
+      .toEqual([[1, "(a) the Tenant has given notice.", ["p111111111111", "p222222222222"]], [2, "(a) the Tenant has given notice.", ["p111111111111", "p222222222222"]],
+        [2, "(a) the Tenant has given notice.", ["p111111111111", "p222222222222"]]])
+    expect(readDocxCommentParagraphs(output.bytes)).toEqual(rows)
+    expect(readDocxRevisionText(output.bytes)).toEqual(readDocxRevisionText(source))
+    expect(readDocxRevisionProperties(output.bytes)).toEqual(readDocxRevisionProperties(source))
+  })
+
+  test("restores an existing comment after a comparator-split paragraph at its accepted position", () => {
+    const paragraph = (text: string) => `<w:p><w:r><w:t xml:space="preserve">${text}</w:t></w:r></w:p>`
+    const original = exportDocxComments(withBody(clean, ["The first term applies.", "Retained.", "Commented."].map(paragraph).join("")),
+      [{ id: "existing", anchor: { paragraph_text: "Commented." }, author: "Counterparty counsel", text: "Confirm this term." }]).bytes
+    const compared = withBody(clean, `<w:p><w:pPr><w:rPr><w:del w:id="1"/></w:rPr></w:pPr><w:r><w:t xml:space="preserve">The first </w:t></w:r></w:p>`
+      + `<w:p><w:r><w:t>term applies.</w:t></w:r></w:p>` + paragraph("Retained.") + paragraph("Commented."))
+    const preserved = preserveDocxComments(original, compared)
+    expect(readDocxComments(preserved).map(row => [row.text, row.markers.map(marker => marker.paragraph_index)])).toEqual([["Confirm this term.", [2, 2, 2]]])
+    expect(readDocxCommentParagraphs(preserved).map(row => row.paragraph_text)).toEqual(["The first term applies.", "Retained.", "Commented."])
+    expect(revisions(xml(preserved, "word/document.xml"))).toEqual(revisions(xml(compared, "word/document.xml")))
   })
 
   test("shares exact native paragraph positions, separators and active pointers with attachment", () => {
@@ -201,15 +264,24 @@ describe("native Word comment export", () => {
     expect(exportDocxComments(source, [comment("native", { paragraph_index: row.paragraph_index, paragraph_text: row.paragraph_text, pid: row.pids[0] })]).unresolved).toEqual([])
   })
 
-  test("a comment spanning split results refuses a deleted later paragraph boundary", () => {
-    const source = withBody(clean, `<w:p><w:r><w:t>First result.</w:t></w:r></w:p>`
-      + `<w:p><w:pPr><w:rPr><w:del w:id="8"/></w:rPr></w:pPr><w:r><w:t>Second result.</w:t></w:r></w:p>`)
-    const output = exportDocxComments(source, [comment("split", { paragraphs: [
+  test("a comment spanning split results covers a deleted later paragraph boundary through its merged paragraph and refuses an unjoined one", () => {
+    const range = comment("split", { paragraphs: [
       { paragraph_index: 0, paragraph_text: "First result." }, { paragraph_index: 1, paragraph_text: "Second result." },
-    ] })])
+    ] })
+    const joined = withBody(clean, `<w:p><w:r><w:t>First result.</w:t></w:r></w:p>`
+      + `<w:p><w:pPr><w:rPr><w:del w:id="8"/></w:rPr></w:pPr><w:r><w:t xml:space="preserve">Second </w:t></w:r></w:p><w:p><w:r><w:t>result.</w:t></w:r></w:p>`)
+    const spanning = exportDocxComments(joined, [range])
+    expect(spanning.unresolved).toEqual([])
+    expect(spanning.attached).toEqual([{ id: "split", comment_id: "0", paragraph_index: 0, paragraph_text: "First result.", paragraphs: range.anchor.paragraphs }])
+    const body = Array.from(parse(xml(spanning.bytes, "word/document.xml")).getElementsByTagNameNS(W, "p"))
+    expect(body.map(node => ["commentRangeStart", "commentRangeEnd", "commentReference"].map(name => node.getElementsByTagNameNS(W, name).length)))
+      .toEqual([[1, 0, 0], [0, 0, 0], [0, 1, 1]])
+    const unjoined = withBody(clean, `<w:p><w:r><w:t>First result.</w:t></w:r></w:p>`
+      + `<w:p><w:pPr><w:rPr><w:del w:id="8"/></w:rPr></w:pPr><w:r><w:t>Second result.</w:t></w:r></w:p>`)
+    const output = exportDocxComments(unjoined, [range])
     expect(output.attached).toEqual([])
     expect(output.unresolved[0]!.reason).toContain("boundary is deleted")
-    expect(output.bytes).toEqual(source)
+    expect(output.bytes).toEqual(unjoined)
   })
 
   test("leaves bytes intact when all anchors are unresolved and refuses missing attribution", () => {
