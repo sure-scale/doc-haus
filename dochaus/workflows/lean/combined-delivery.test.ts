@@ -235,6 +235,42 @@ describe("the combined file saved in the matter", () => {
     expect(matterFile(directory, "supply-pack.docx")).toEqual(accepted.combined)
   }, 60_000)
 
+  test("an accept without a working record, then a delivery that fails to save the combined file: the retry still keeps the accepted file and saves the new one under the next free name", async () => {
+    for (const memoChanged of [false, true]) {
+      const directory = matter()
+      writeLeanPlan(directory, [COMBINED], undefined, undefined, memo([COMBINED]))
+      await writeCopies(directory, COPIES)
+      await deliver(directory)
+      const accepted = await acceptIntoBody(directory, false)
+      if (memoChanged) await writeCopies(directory, REVISED_MEMO)
+
+      // The parts are registered, then the matter fails to write the combined file; nothing discloses it.
+      const failing: NonNullable<LeanDeps["registerDeliverable"]> = async (directory, name, bytes) => {
+        if (/^supply-pack(?: \(\d+\))?\.docx$/.test(name)) throw new Error("The matter could not write the file.")
+        writeFileSync(path.join(directory, name), bytes)
+        return name
+      }
+      const fail = () => expect(recordLeanDocuments(directory, { sessions: scriptedModel({}).port, registerDeliverable: failing }, true)).rejects.toThrow("The matter could not write the file.")
+      await fail()
+      expect(readLeanDocuments(directory)?.documents).toContainEqual(expect.objectContaining({ kind: "body", deliverable: "supply-pack - clean (2).docx" }))
+      expect(readLeanDocuments(directory)?.documents.at(-1)).toMatchObject({ kind: "combined", path: "supply-pack (2).docx", deliverable: null })
+      // Neither a second failure nor a stop before delivery loses that name.
+      await fail()
+      await recordLeanDocuments(directory, { sessions: scriptedModel({}).port }, false)
+      expect(readLeanDocuments(directory)?.documents.at(-1)).toMatchObject({ kind: "combined", path: "supply-pack (2).docx", deliverable: null })
+
+      expect(disclosableItems(directory)).toEqual([])
+      expect(deliveryArtifactEvidence(directory).at(-1)).toMatchObject({ kind: "combined", download_filename: "supply-pack (2).docx" })
+      const { rows } = await deliver(directory)
+      expect(rows).toContainEqual(["body", "d1", "supply-pack - clean (2).docx"])
+      expect(rows).toContainEqual(["combined", "d1", "supply-pack (2).docx"])
+      expect(matterFile(directory, "supply-pack - clean.docx")).toEqual(accepted.body)
+      expect(matterFile(directory, "supply-pack.docx")).toEqual(accepted.combined)
+      const built = buildCombinedFile({ memo: matterFile(directory, "supply-pack - cover memo.docx"), body: matterFile(directory, "supply-pack - clean (2).docx") })
+      expect("bytes" in built && sha256(built.bytes)).toBe(sha256(matterFile(directory, "supply-pack (2).docx")))
+    }
+  }, 60_000)
+
   test("an accept with a working record: a rerun keeps the body and builds the same combined file under its name, with no item", async () => {
     const directory = matter()
     writeLeanPlan(directory, [COMBINED], undefined, undefined, memo([COMBINED]))

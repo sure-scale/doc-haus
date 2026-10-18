@@ -50,7 +50,8 @@ export type LeanDocument = {
   /** The planned title of a body or redline; null for the run's notes. */
   title: string | null
   /** Matter-relative path of the run's own copy; for the combined file, of the
-   * matter file, as the run keeps no copy of it. */
+   * matter file, as the run keeps no copy of it (while the matter has not taken
+   * it, the name registration gave it). */
   path: string
   sha256: string
   /** Matter-relative path of the registered deliverable, once registered. */
@@ -237,13 +238,17 @@ function earlierRows(directory: string) {
  * acceptedCombined), under the next free name (registerOnce), as the body is
  * (combinedOutcome). A file not saved has no row, except that the earlier copy
  * (`prior`), while still in the matter unchanged, keeps its row without a
- * deliverable, as the run's to replace later. At a stop before delivery, the
+ * deliverable, as the run's to replace later; and a file the matter failed to
+ * take keeps a row without a deliverable under the name registration gave it,
+ * which no file has yet, so a retry takes that name again, as a body's row
+ * keeps its name. At a stop before delivery, the
  * earlier row is kept, delivered only while both parts are. `failure` says why
  * the file is not saved when the gate's notes did not disclose it
  * (combinedFileItems). */
 async function combinedRow(directory: string, deps: LeanDeps, register: boolean, delivery: CombinedDelivery, documents: LeanDocument[], prior: LeanDocument | undefined, accepted: boolean): Promise<{ row?: LeanDocument; failure?: string }> {
   const name = combinedName(delivery, prior)
-  const earlier = prior?.path === name && sha256File(path.join(directory, prior.path))?.sha256 === prior.sha256
+  const file = path.join(directory, name)
+  const earlier = prior?.path === name && (prior.deliverable === null && !existsSync(file) || sha256File(file)?.sha256 === prior.sha256)
     ? { ...prior, document: delivery.document } : undefined
   const parts = combinedParts(directory, documents)
   if (!register || !deps.registerDeliverable) return { row: earlier && { ...earlier, deliverable: parts ? earlier.deliverable : null } }
@@ -260,8 +265,9 @@ async function combinedRow(directory: string, deps: LeanDeps, register: boolean,
   const registered = outcome.next
     ? await registerOnce(directory, deps.registerDeliverable, delivery.name, outcome.bytes, outcome.sha256, prior, prior ? [prior] : [], combinedClosed(directory, delivery)).catch((error: Error) => error)
     : await deps.registerDeliverable(directory, name, outcome.bytes, outcome.current)
-  if (registered instanceof Error) return { row: kept, failure: registered.message }
-  if (!registered) return { row: kept, failure: `The combined file "${name}" is not saved in the matter: the matter refused it.` }
+  const unsaved = kept ?? { kind: "combined" as const, document: delivery.document, title: delivery.title, path: outcome.name, sha256: outcome.sha256, deliverable: null }
+  if (registered instanceof Error) return { row: unsaved, failure: registered.message }
+  if (!registered) return { row: unsaved, failure: `The combined file "${name}" is not saved in the matter: the matter refused it.` }
   return { row: { kind: "combined", document: delivery.document, title: delivery.title, path: registered, sha256: outcome.sha256, deliverable: registered } }
 }
 
