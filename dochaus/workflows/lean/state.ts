@@ -305,10 +305,15 @@ export function answerQuestion(directory: string, questionID: string, answer: st
   return answered
 }
 
+/** Every answered question, ordered by id: questions.json's own order moves
+ * when a step's questions replace its earlier ones. */
+export function answeredQuestions(directory: string) {
+  return readQuestions(directory).filter(question => question.status === "answered").toSorted((a, b) => a.id.localeCompare(b.id))
+}
+
 /** Canonical text of every human answer; an input to every drafting stage. */
 export function answeredQuestionsText(directory: string) {
-  return readQuestions(directory).filter(question => question.status === "answered")
-    .toSorted((a, b) => a.id.localeCompare(b.id))
+  return answeredQuestions(directory)
     .map(question => `- [${question.id}] Q: ${question.question}\n  A: ${question.answer}`)
     .join("\n")
 }

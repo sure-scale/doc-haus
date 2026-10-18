@@ -60,7 +60,7 @@ export const LEAN_PROMPT_VERSION = "lean-17-advice-scope"
 const OUTLINE_CONTRACT = "document-executing-parties-memo-6"
 const DELIVERY_REVIEW_CONTRACT = "grounded-delivery-selection-4"
 const STRUCTURAL_AMENDMENT_CONTRACT = "explicit-paragraph-cardinality-1"
-const DRAFTING_NOTES_CONTRACT = "lawyer-facing-source-comparison-notes-1"
+const DRAFTING_NOTES_CONTRACT = "lawyer-facing-notes-placeholders-2"
 /** Keys finalize only when the notes are a requested memo (the plan has a
  * memo name), so runs without one keep their finalize key. */
 const REQUESTED_MEMO_CONTRACT = "requested-memo-titles-7"
@@ -207,11 +207,13 @@ export function stageInputs(directory: string, step: StepID, options: { repairCo
     ...(updates && !inputs.some(part => part.name === "updated-notes.md") ? [{ name: "updated-notes.md", bytes: updates }] : [])]
 }
 
-/** The questions a step's key reads. The gate's open question is asked after
- * the walk, so it re-keys no step before it; its answer, like any other, keys
- * every step through "answers". */
-function keyedQuestions(directory: string) {
-  return JSON.stringify(readQuestions(directory).filter(question => question.stage !== "gate" || question.status === "answered"))
+/** The questions a step's key reads, in id order: a step replacing its
+ * questions reorders questions.json without changing any question. The gate's
+ * open question is asked after the walk, so it re-keys no step before it; its
+ * answer, like any other, keys every step through "answers". */
+function keyedQuestions(directory: string, gate = false) {
+  return JSON.stringify(readQuestions(directory).filter(question => gate || question.stage !== "gate" || question.status === "answered")
+    .toSorted((a, b) => a.id.localeCompare(b.id)))
 }
 
 function baseStageInputs(directory: string, step: StepID, options: { repairContext?: false }): { name: string; bytes: string | Uint8Array }[] {
@@ -233,7 +235,7 @@ function baseStageInputs(directory: string, step: StepID, options: { repairConte
       { name: "questions", bytes: keyedQuestions(directory) }]
   if (step === "gate")
     return [...planned.flatMap(id => [file(`${id}/paragraphs-applied.json`), file(`${id}/apply.json`), file(`${id}/change-review.json`)]),
-      file("package-review.json"), file("checklist/refinements.json"), file("checklist/checks.json"), file("drafting-notes.md"), file("open-items.json"), file("questions.json"),
+      file("package-review.json"), file("checklist/refinements.json"), file("checklist/checks.json"), file("drafting-notes.md"), file("open-items.json"), { name: "questions.json", bytes: keyedQuestions(directory, true) },
       // A finding's disclosure says whether a repair round ran for it.
       file("repairs.json")]
   const document = stepDocument(step) ?? FIRST_DOCUMENT
@@ -326,8 +328,9 @@ export async function acceptStageReply(directory: string, step: StepID, reply: s
     writeLeanText(directory, `${document}/changes.json`, `${JSON.stringify(check.changes, null, 2)}\n`)
     return { issues: [], openItems: check.openItems, outputs: stepOutputs(step), questions: check.changes.questions }
   }
-  // On the last attempt a requested memo that names an internal id in its prose
-  // is saved as the model wrote it; earlier attempts retry it.
+  // On the last attempt a requested memo that names an internal id in its prose,
+  // or notes that leave a placeholder of their own, are saved as the model wrote
+  // them; earlier attempts retry them.
   const check = checkDraftingNotes(directory, reply, disclosableItems(directory), { final: options.final })
   if (check.issues.length) return { ...check, outputs: [] }
   const advisory = draftingStyleAdvisoryNotes([
@@ -381,8 +384,8 @@ export function stageOutputValid(directory: string, step: StepID) {
     return !uniqueReplacementIssues(list).length && !checkChanges(directory, text(`${document}/changes.json`), readParagraphs(directory, document), { document }).issues.length
   }
   // Saved notes are judged as a last attempt judges them: an internal id in a
-  // memo's prose was retry feedback, not a defect of the saved notes, so it does
-  // not re-run them; any other failed check does.
+  // memo's prose or a placeholder of the notes' own was retry feedback, not a
+  // defect of the saved notes, so it does not re-run them; any other failed check does.
   if (stage === "finalize") return !checkDraftingNotes(directory, text("drafting-notes.md"), disclosableItems(directory), { final: true }).issues.length
   // A passed gate with unresolved checklist findings delivers them in its notes.
   if (stage === "gate") return !(readLeanJson(directory, "gate.json") as { items?: OpenItem[] } | undefined)?.items?.some(item => item.kind === "checklist_unresolved") ||
