@@ -4,7 +4,7 @@ import { normalize } from "../../lib/quote-verify"
 import { TOOL_SYNTAX_ISSUE, printedToolCall, record } from "./checks"
 import { readWorkingDocx } from "../../lib/working-docx"
 import { combinedDelivery, deliveryArtifactEvidence, deliveryStem, memoNotesFile, plannedRegistration, readLeanDocuments, redlineOfBody, requestedMemo } from "./deliverables"
-import { NAMING, OTHER_FORMAT, formatStem, spelledNames } from "./delivery-selection"
+import { OTHER_FORMAT, formatStem, spelledNames } from "./delivery-selection"
 import { plainFileName, readLeanPlan, type DocID, type PlannedDocument } from "./plan"
 import { tagged } from "./prompts"
 import { REQUEST_SOURCE, excerpt, instructionFound, lawyerWords, matterSourceIDs, openItem, quoteMissIssue } from "./quotes"
@@ -424,18 +424,6 @@ function asked(file: RequestedFile, planned: (id: string) => { title: string } |
   return `${serialList(parts)} ${how}`
 }
 
-/** Whether the lawyer's words `quote` give the format's words `format` (formatStem)
- * as a file's name: right after a naming word (NAMING), with "a" or "an"
- * between them, as in "save it as a PDF". Elsewhere, as in "the PDF-ready
- * form", they describe something else. */
-function namedFormat(quote: string, format: string) {
-  const text = normalize(quote).toLowerCase()
-  const words = normalize(format).toLowerCase()
-  for (let at = words ? text.indexOf(words) : -1; at >= 0; at = text.indexOf(words, at + 1))
-    if (!/[\p{L}\p{N}_]/u.test(text[at + words.length] ?? "") && NAMING.test(text.slice(0, at).replace(/\ban?\s+$/, ""))) return true
-  return false
-}
-
 /** The planned titles, in order, and memo name a record is read for. */
 export function requestedFilesPlanned(documents: { title: string }[], memo: string | undefined): LeanRequestedFiles["planned"] {
   return { titles: documents.map(document => document.title), memo: memo ?? null }
@@ -474,13 +462,13 @@ const savedFile = (row: unknown) => record(row) && Array.isArray(row.holds) && r
  * with one document must be that document's combined file (combinedDelivery),
  * one document alone must not be combined, the memo alone must be delivered
  * with no document combined, and a requested name must be the name
- * registration takes for that file. A name the run could not confirm is the
- * lawyer's only where the lawyer's words give it (nameGrounded), or, a format's
- * words, where they follow a naming word (namedFormat): only a Word file's
- * plain name can then be the file delivered. Any other is the reply's, and the
- * file counts as delivered as named only under a name the lawyer's words give.
- * Each item quotes the lawyer's words, says what they ask for and every file
- * the run delivers instead, by all it holds, and belongs to the drafting notes,
+ * registration takes for that file. A name the run could not confirm
+ * (`refused_name`) always gives an item, whatever file is delivered: the item
+ * says the run could not confirm it in the lawyer's words, never that the
+ * lawyer gave it, and adds that the run delivers .docx files only when that
+ * name is a format's or another format's file name. Each item quotes the
+ * lawyer's words, says what they ask for and every file the run delivers
+ * instead, by all it holds, and belongs to the drafting notes,
  * so a repair goes to the notes writer. Once the lawyer has answered a
  * requested-files question that listed these words for this file
  * (answeredFiles), the item cites that answer in plain words, quoting the
@@ -563,15 +551,8 @@ export function requestedFilesItems(directory: string): OpenItem[] {
     const check = fileCheck(file, plan.documents, memo !== undefined)
     const shape = fileShape(file)
     const target = shape && deliveredIn(shape.document ?? MEMO)
-    const given = file.name ?? file.refused_name
-    // A refused name the lawyer's words give is theirs: only a Word file's plain
-    // name can then be the file delivered. Any other refused name is the reply's:
-    // the file is then delivered as named only under a name the words give.
-    const quoted = file.name === null && given !== undefined &&
-      (nameGrounded(directory, file.quote, given) !== undefined || (formatStem(nameStem(given)) && namedFormat(file.quote, given)))
-    const named = given === undefined || (file.name !== null ? target?.name === nameKey(file.name)
-      : quoted ? /\.docx$/i.test(given) && plainFileName(given) && target?.name === nameKey(given)
-      : Boolean(target?.spelled && nameGrounded(directory, file.quote, target.spelled)))
+    // A name the run could not confirm never counts as delivered as named.
+    const named = file.name !== null ? target?.name === nameKey(file.name) : file.refused_name === undefined
     if (!check.unsupported && !check.issue && named) return []
     const files = new Map<string, NonNullable<ReturnType<typeof delivery>>>()
     for (const held of file.holds) {
@@ -583,7 +564,10 @@ export function requestedFilesItems(directory: string): OpenItem[] {
     const reason = !shape ? file.holds.filter(held => held !== MEMO).length > 1 ? " The run cannot put more than one document in one file."
       : " The run can join the memo and a document in one file only with the memo first."
       : !check.unsupported && check.issue?.ask ? " The run cannot join the memo with a redline." : ""
-    const refused = file.name === null && file.refused_name !== undefined && !named
+    const refused = file.name === null ? file.refused_name : undefined
+    // Whether the refused name is a format or another format's file name: a fact
+    // about the run's output, read from that name alone, never from the quote.
+    const format = refused !== undefined && (OTHER_FORMAT.test(refused) || formatStem(nameStem(refused)))
     const what = asked(file, held => plan.documents.find(row => row.id === held))
     const listed = answered.listing(file, saved.files, what)
     const closing = listed && !check.unsupported && check.planned === listed.planned
@@ -591,9 +575,8 @@ export function requestedFilesItems(directory: string): OpenItem[] {
         "the plan drawn up with that answer still delivers them so."
       : " The lawyer should confirm how these files are to be delivered."
     return [openItem("finalize", "omission", `Requested files: the lawyer's words ${lawyerQuote(file.quote)} ask for ${what}` +
-      (!refused ? `, but the run delivers ${delivers}.`
-        : quoted && (OTHER_FORMAT.test(file.refused_name!) || formatStem(nameStem(file.refused_name!))) ? ` and give it as "${file.refused_name}"; the run delivers .docx files only and delivers ${delivers}.`
-        : ` and name this file; the run could not confirm the name "${file.refused_name}" in those words and delivers ${delivers}.`) +
+      (refused === undefined ? `, but the run delivers ${delivers}.`
+        : `, but the run could not confirm "${refused}" as its name in those words${format ? " and delivers .docx files only" : ""}; it delivers ${delivers}.`) +
       `${reason}${closing}`, { repair_target: "memo" })]
   })
   return [...new Map(items.map(row => [row.id, row])).values()]

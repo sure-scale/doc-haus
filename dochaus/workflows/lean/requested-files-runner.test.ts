@@ -343,8 +343,8 @@ describe("requested files through the run", () => {
     expect(readRequestedFiles(directory)).toMatchObject({ stated: true, files: [{ ...PACKED, name: null, refused_name: refused }] })
     const items = requestedFilesItems(directory)
     expect(items).toHaveLength(1)
-    expect(items[0]!.detail).toBe(`Requested files: the lawyer's words "${PACK}" [source: request] ask for the memo and "Release letter" in one file and name this file; ` +
-      `the run could not confirm the name "${refused}" in those words and delivers the memo and "Release letter" in one file named "Release letter.docx". ` +
+    expect(items[0]!.detail).toBe(`Requested files: the lawyer's words "${PACK}" [source: request] ask for the memo and "Release letter" in one file, ` +
+      `but the run could not confirm "${refused}" as its name in those words; it delivers the memo and "Release letter" in one file named "Release letter.docx". ` +
       "The lawyer should confirm how these files are to be delivered.")
     expect(gateOf(directory).disclosed).toContainEqual(expect.objectContaining({ id: items[0]!.id, status: "disclosed" }))
   }, 120_000)
