@@ -1,6 +1,6 @@
 import { boundPlaybookContext } from "../../lib/playbook-source"
-import { answeredQuestionsText, readLeanJson, readLeanText, writeLeanText } from "./state"
-import { excerpt, matterSourceIDs, REQUEST_SOURCE, quoteFound, type SourceQuote } from "./quotes"
+import { answeredQuestionsText, readLeanJson, readLeanText, writeLeanText, type OpenItem } from "./state"
+import { excerpt, matterSourceIDs, openItem, REQUEST_SOURCE, quoteFound, type SourceQuote } from "./quotes"
 import { approvedResearch, researchHandoff } from "./research"
 import type { StageAcceptance } from "./stages"
 
@@ -37,7 +37,27 @@ export function acceptEvidenceReply(directory: string, stage: EvidenceStage, rep
   const issues = checkEvidence(directory, stage, value)
   if (issues.length) return { issues, outputs: [], openItems: [] }
   writeLeanText(directory, `${stage}.json`, `${JSON.stringify(value, null, 2)}\n`)
-  return { issues: [], outputs: [`${stage}.json`], openItems: [] }
+  return { issues: [], outputs: [`${stage}.json`], openItems: stage === "spine" ? unsupportedChoices((value as { entries: DraftingEntry[] }).entries) : [] }
+}
+
+/** The drafting choices no matter source or verified research supports: each
+ * rests on its recorded limitation alone, so the drafting notes must name it
+ * (an omission, settled at the final gate by the notes naming it). Only the
+ * notes are repaired for it, never a body. A fact is not a choice. */
+function unsupportedChoices(entries: DraftingEntry[]): OpenItem[] {
+  return entries.flatMap(entry => {
+    const basis = CHOICE_BASIS[entry.kind]
+    return basis && !entry.evidence.length ? [openItem("spine", "omission",
+      `${sentence(entry.detail)} No supplied source or verified research ${basis}. Limitation: ${entry.limitations.map(sentence).join(" ")}`,
+      { repair_target: "memo" })] : []
+  })
+}
+
+const CHOICE_BASIS: Partial<Record<DraftingEntry["kind"], string>> = { decision: "supports this drafting decision", requirement: "supports this requirement",
+  recommendation: "supports this recommendation", "open-item": "settles this open point" }
+
+function sentence(text: string) {
+  return /[.!?]$/.test(text.trim()) ? text.trim() : `${text.trim()}.`
 }
 
 export function evidenceOutputValid(directory: string, stage: EvidenceStage) {

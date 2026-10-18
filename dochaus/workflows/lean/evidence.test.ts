@@ -2,11 +2,14 @@ import { afterEach, expect, test } from "bun:test"
 import { Database } from "bun:sqlite"
 import path from "node:path"
 import { acceptEvidenceReply, checkEvidence, evidencePrompt } from "./evidence"
+import { finalGate } from "./gate"
 import { enqueueLeanRequest, drainLeanRequests } from "./requests"
 import { leanSteps } from "./plan"
-import { stageInputSha } from "./runner"
-import { answerQuestion, writeQuestions, writeLeanText } from "./state"
-import { cleanupMatters, matter, SOURCE, SOURCE_TEXT } from "./test-support"
+import { stagePrompt } from "./prompts"
+import { documentRepairs, startRepairRound } from "./repairs"
+import { runLean, stageInputSha } from "./runner"
+import { answerQuestion, readLeanText, readOpenItems, writeQuestions, writeLeanText } from "./state"
+import { AGENT, cleanupMatters, happyPath, matter, scriptedModel, SOURCE, SOURCE_TEXT } from "./test-support"
 
 afterEach(cleanupMatters)
 
@@ -78,3 +81,57 @@ test("a rejected quotation identifies the exact evidence to correct without acce
   expect(issues[0]).toContain('in "request"')
   expect(issues[0]).toContain("not found in that canonical source")
 })
+
+// Spine entries for the disclosure tests: one the matter supports and
+// substantive ones that rest only on a recorded limitation.
+const SUPPORTED = { kind: "requirement", detail: "State that payment is due on delivery.", evidence: [{ source_id: SOURCE, quote: "Payment is due on delivery." }], limitations: ["Currency of the terms is not confirmed."] }
+const UNSUPPORTED = { kind: "decision", detail: "Fix delivery to a calendar date rather than a period after the order.", evidence: [], limitations: ["The supply terms give a period, not a date, and no instruction chooses a date."] }
+
+test("only a substantive spine entry without matter support becomes an open item, worded for the lawyer", () => {
+  const directory = matter()
+  const entry = (kind: string, detail: string) => ({ kind, detail, evidence: [], limitations: [`No supplied source settles: ${detail}`] })
+  const substantive = [entry("decision", "Use a fixed delivery date."), entry("requirement", "Include a late-delivery remedy."),
+    entry("recommendation", "Offer a shorter payment period."), entry("open-item", "Whether title passes on delivery.")]
+  const accepted = acceptEvidenceReply(directory, "spine", JSON.stringify({ entries: [SUPPORTED, entry("fact", "The goods are standard stock."), ...substantive], limitations: ["Authority on remedies was not researched."] }))
+  expect(accepted.issues).toEqual([])
+  expect(accepted.openItems).toHaveLength(substantive.length)
+  for (const [index, item] of accepted.openItems.entries()) {
+    expect(item).toMatchObject({ stage: "spine", kind: "omission", status: "open", ref: { repair_target: "memo" } })
+    expect(item.detail).toContain(substantive[index]!.detail)
+    expect(item.detail).toContain(substantive[index]!.limitations[0]!)
+    expect(item.detail).not.toMatch(/spine|stage|evidence|entr(y|ies)|limitations/i)
+  }
+  // Supported entries and evidence-less discrepancy findings give none.
+  expect(acceptEvidenceReply(directory, "spine", JSON.stringify({ entries: [SUPPORTED], limitations: [] })).openItems).toEqual([])
+  expect(acceptEvidenceReply(directory, "discrepancy", JSON.stringify({ entries: [{ detail: "Two delivery periods", evidence: [], limitations: ["Original unavailable"], material: true, status: "unresolved", resolution: "" }], limitations: [] })).openItems).toEqual([])
+})
+
+test("an evidence-less spine decision is disclosed in the notes, held by the final gate until they name it, and repaired only in the notes", async () => {
+  const directory = matter()
+  const model = scriptedModel({ ...happyPath, [AGENT.spine]: () => JSON.stringify({ entries: [UNSUPPORTED, SUPPORTED], limitations: [] }) })
+  expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+  const items = readOpenItems(directory).filter(item => item.stage === "spine")
+  expect(items.map(row => [row.kind, row.ref])).toEqual([["omission", { repair_target: "memo" }]])
+  const item = items[0]!
+  expect(item.detail).toContain(UNSUPPORTED.detail)
+  expect(item.detail).toContain(UNSUPPORTED.limitations[0]!)
+  // The notes are told of it, and the final gate settles it against them.
+  expect(model.prompts.find(row => row.agent === AGENT.finalize)?.text).toContain(`- ${item.id}: ${item.detail}`)
+  const notes = readLeanText(directory, "drafting-notes.md")!
+  expect(notes).toContain(`[ref: ${item.id}]`)
+  expect(finalGate(directory)).toMatchObject({ status: "pass", delivery: "review_draft", disclosed: expect.arrayContaining([expect.objectContaining({ id: item.id, stage: "spine", status: "disclosed" })]) })
+  writeLeanText(directory, "drafting-notes.md", notes.replace(`[ref: ${item.id}]`, ""))
+  const held = finalGate(directory)
+  expect(held.status).toBe("blocked")
+  expect(held.blocking.map(row => [row.id, row.stage, row.status])).toEqual([[item.id, "spine", "open"]])
+  // A repair round for it reaches the notes only: no document body is repaired.
+  startRepairRound(directory, held.blocking)
+  expect(documentRepairs(directory, "d1")).toBeUndefined()
+  expect(/<required_repairs>\n([\s\S]*?)\n<\/required_repairs>/.exec(stagePrompt(directory, "finalize"))?.[1]).toBe(`- ${item.detail}`)
+  const resumed = scriptedModel(happyPath)
+  expect((await runLean(directory, { sessions: resumed.port })).status).toBe("completed")
+  expect([AGENT.draft, AGENT.review, AGENT.changes].map(resumed.count)).toEqual([0, 0, 0])
+  expect(resumed.count(AGENT.finalize)).toBe(1)
+  expect(readLeanText(directory, "drafting-notes.md")).toContain(`[ref: ${item.id}]`)
+  expect(finalGate(directory)).toMatchObject({ status: "pass", disclosed: expect.arrayContaining([expect.objectContaining({ id: item.id, status: "disclosed" })]) })
+}, 120_000)

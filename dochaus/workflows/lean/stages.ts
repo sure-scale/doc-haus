@@ -180,8 +180,9 @@ export function stepOutputs(step: StepID): string[] {
 }
 
 // Items the drafting notes must disclose. Draft and review findings are re-derived from the
-// final body at apply, so the notes disclose what the delivered body still has.
-const DISCLOSED_STAGES: StageID[] = ["research", "research-review", "change-plan", "change-prepare", "changes", "apply"]
+// final body at apply, so the notes disclose what the delivered body still has. The
+// spine's items are drafting choices that rest on a limitation alone.
+const DISCLOSED_STAGES: StageID[] = ["research", "research-review", "spine", "change-plan", "change-prepare", "changes", "apply"]
 
 /** Named inputs of each step: everything its prompt or code step reads. Their
  * content hash is the step's resume key and nothing more. Answers are inputs of
