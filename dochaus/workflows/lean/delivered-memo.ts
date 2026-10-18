@@ -3,7 +3,7 @@ import { finalBodyParagraphs, readChangeList, readParagraphs, record, standingID
 import { requestedMemo } from "./deliverables"
 import { readLeanPlan, type DocID } from "./plan"
 import { readRepairRound } from "./repairs"
-import { readLeanJson, readOpenItems, type OpenItem } from "./state"
+import { readLeanJson, readOpenItems, readQuestions, type OpenItem } from "./state"
 
 // The drafting notes, and the memo they are written as when the request asks
 // for one, refer to each open item in plain words with a trailing
@@ -71,10 +71,23 @@ export function withoutInternalIDs(text: string, ids: Iterable<string>) {
 /** A Unicode noncharacter, never in document text, holding a quotation's place. */
 const QUOTE = "\uFDD0"
 
+/** The id the run gives a question it asks: a fixed lowercase prefix and a
+ * ten-character hash (shortHash), as intake and the change steps mint "q-…",
+ * and the package-scope, requested-files and checklist-conflict questions
+ * theirs. The model never chooses one. A question saved under an id of any
+ * other form, such as a word, is not matched, so no ordinary word is. */
+const MINTED_QUESTION_ID = /^[a-z]+(?:-[a-z]+)*-[0-9a-f]{10}$/
+
+/** Whether `id` has the form the run gives its own question ids. */
+export function mintedQuestionID(id: string) {
+  return MINTED_QUESTION_ID.test(id)
+}
+
 /** What a run id names, told apart by the shape its producer gives it: a
  * planned document "d1", a proposed change "a1" or a withheld one "w1", an
- * explanation "i1", a paragraph pointer, a checklist requirement (its refined
- * and comparison checks included) and an open item "stage:kind:hash". Each
+ * explanation "i1", a paragraph pointer, a question the run asked
+ * (MINTED_QUESTION_ID), a checklist requirement (its refined and comparison
+ * checks included) and an open item "stage:kind:hash". Each
  * kind is said with its article, after a determiner, and for several; `names`
  * are the words that already name it, beside which its id is only a label. A
  * memo finding is itself a requirement, so another one it cites is "another". */
@@ -83,6 +96,7 @@ const ID_KINDS = [
   { shape: /^[aw]\d+$/, one: "a proposed change", bare: "proposed change", many: "proposed changes", names: ["change", "amendment"] },
   { shape: /^i\d+$/, one: "an explanation", bare: "explanation", many: "explanations", names: ["explanation"] },
   { shape: /^p[0-9a-f]{12}$/, one: "a paragraph", bare: "paragraph", many: "paragraphs", names: ["paragraph"] },
+  { shape: MINTED_QUESTION_ID, one: "a question", bare: "question", many: "questions", names: ["question"] },
   { shape: /^source-[0-9a-f]{12}-\d+/, one: "another requirement", bare: "other requirement", many: "other requirements", names: ["requirement", "item"] },
   { shape: /^[^\s:]+:[^\s:]+:[^\s:]+$/, one: "an open item", bare: "open item", many: "open items", names: ["item"] },
 ]
@@ -153,22 +167,24 @@ const OPENING = /^$|(?:(?<!\.[A-Za-z]|\b(?=[^\W\d_]*[a-z])[^\W\dAEIOUYaeiouy_]+)
 /** Every internal id the run records that its notes may name: open, deferred
  * and repair items (and `items`, such as the gate's) with their amendment,
  * checklist and paragraph references, each planned document's id, paragraph
- * pointers and change-list ids, and the checklist's item ids. Question ids are
- * not included: the model chooses them and they may be ordinary words. */
+ * pointers and change-list ids, the checklist's item ids, and the question ids
+ * the run minted (mintedQuestionID), saved or named by an item, which the
+ * finalize prompt lists. */
 export function runItemIDs(directory: string, items: OpenItem[] = []) {
   const repair = readRepairRound(directory)
   const checks = readLeanJson(directory, "checklist/checks.json")
   const extraction = readLeanJson(directory, "checklist/extraction.json")
   const rows = (value: unknown, key: string) => record(value) && Array.isArray(value[key]) ? value[key] as unknown[] : []
+  const recorded = [...readOpenItems(directory), ...deferredFindingItems(directory), ...(repair?.items ?? []), ...items]
   return [...new Set([
-    ...[...readOpenItems(directory), ...deferredFindingItems(directory), ...(repair?.items ?? []), ...items]
-      .flatMap(item => [item.id, item.ref.amendment_id, item.ref.checklist_item, item.ref.pid]),
+    ...recorded.flatMap(item => [item.id, item.ref.amendment_id, item.ref.checklist_item, item.ref.pid]),
     ...(readLeanPlan(directory)?.documents ?? []).flatMap(({ id: document }) =>
       [document, ...[...readParagraphs(directory, document), ...finalBodyParagraphs(directory, document)].map(row => row.pid), ...changeListIDs(directory, document)]),
     ...(repair?.checklist_items ?? []),
     ...rows(checks, "expected_items"),
     ...rows(checks, "checks").map(row => record(row) ? row.item_id : undefined),
     ...rows(extraction, "sources").flatMap(source => rows(source, "items").map(row => record(row) ? row.id : undefined)),
+    ...[...readQuestions(directory).map(question => question.id), ...recorded.map(item => item.ref.question_id)].filter(id => id !== undefined && mintedQuestionID(id)),
   ].filter((value): value is string => typeof value === "string" && value.length > 0))]
 }
 

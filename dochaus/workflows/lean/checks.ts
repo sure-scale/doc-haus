@@ -5,7 +5,7 @@ import type { AppliedAmendment, UnappliedAmendment } from "../../lib/drafting-am
 import { openItemMarkers } from "../../lib/open-items"
 import { draftingPlaceholders } from "../../lib/placeholder-resolution"
 import { normalize } from "../../lib/quote-verify"
-import { changeListIDs, memoMode, runItemIDs, withoutRefMarkers } from "./delivered-memo"
+import { changeListIDs, memoMode, mintedQuestionID, runItemIDs, withoutRefMarkers } from "./delivered-memo"
 import { notesForReader } from "./gate"
 import { excerpt, openItem, quoteFound, quoteMissIssue, quoteMissItems, sourceQuotes } from "./quotes"
 import { readLeanPlan, type DocID } from "./plan"
@@ -245,12 +245,13 @@ export function standingIDPattern(ids: string) {
 
 /** A run id no lawyer would write as prose: at least eight characters with a
  * digit and no space, joined by ":" or "-" (open item and checklist ids, which
- * carry a hash) or a paragraph pointer. Short labels such as a document or
- * amendment id ("d1", "a1", "w1", "i1") and word-like ids with no digit are
- * not counted here; the notes' planned document ids and recorded change ids
- * are checked on their own. */
+ * carry a hash), a paragraph pointer, or a question id the run minted, whose
+ * hash may hold no digit. Short labels such as a document or amendment id
+ * ("d1", "a1", "w1", "i1") and other word-like ids with no digit are not
+ * counted here; the notes' planned document ids and recorded change ids are
+ * checked on their own. */
 function readerVisibleID(id: string) {
-  return id.length >= 8 && /\d/.test(id) && !/\s/.test(id) && (/[:-]/.test(id) || /^p[0-9a-f]{12}$/.test(id))
+  return mintedQuestionID(id) || id.length >= 8 && /\d/.test(id) && !/\s/.test(id) && (/[:-]/.test(id) || /^p[0-9a-f]{12}$/.test(id))
 }
 
 /** A planned document's final body, as its apply step left it. */
