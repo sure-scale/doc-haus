@@ -4,6 +4,7 @@ import { repairBodyText, reviewDispositionText } from "./change-pipeline"
 import { appliedChangeEvidence, nativeExportEvidence } from "./review-evidence"
 import { comparisonDescription } from "./comparison"
 import { combinedDelivery, deliveryArtifactEvidence, requestedMemo } from "./deliverables"
+import type { DraftingEntry } from "./evidence"
 import { researchHandoff } from "./research"
 import { finalBodyParagraphs, readChangeList, readParagraphs, type ApplyResult } from "./checks"
 import { reviewStages, FIRST_DOCUMENT, earlierDocuments, planActingFor, operativeDocument, plannedDocument, readLeanPlan, stepDocument, stepStage, type DocID, type StepID } from "./plan"
@@ -264,7 +265,7 @@ function draftingNotesSections(directory: string, request: string) {
     tagged("drafting_spine", readLeanText(directory, "spine.json") ?? "None."),
     tagged("discrepancies", readLeanText(directory, "discrepancy.json") ?? "None."),
     ...plan.map(row => `<document id="${row.id}" title="${attribute(row.title)}">\n${documentSections(directory, row.id, items).join("\n\n")}\n</document>`),
-    loose.length ? tagged("open_items", openItemLines(loose)) : "",
+    loose.length ? tagged("open_items", openItemLines(loose, handedBackChoices(directory))) : "",
     tagged("questions", questions.map(question => `- ${question.id} (${handedBack(question) ? "left to the drafting" : question.status}): ${question.question}${question.answer ? `\n  Answer: ${question.answer}` : ""}`).join("\n") || "None."),
     tagged("output_contract", [
       "- Follow the lawyer's explanation-detail, formality and house-style preferences when writing the notes. Translate the supplied records into their practical meaning rather than copying workflow field names, raw paths or stage status. Retain source support, comparison baselines, applied/unapplied outcomes, limitations and every required open-item id. Name documents where this helps locate them.",
@@ -307,8 +308,23 @@ function documentSections(directory: string, document: DocID, items: OpenItem[])
   ]
 }
 
-function openItemLines(items: OpenItem[]) {
-  return items.map(item => `- ${item.id}: ${item.detail}`).join("\n")
+/** An item about a question the lawyer handed back carries what the spine
+ * recorded for it, so the notes can say what was chosen and why. */
+function openItemLines(items: OpenItem[], choices = new Map<string, DraftingEntry>()) {
+  return items.map(item => {
+    const choice = item.ref.question_id ? choices.get(item.ref.question_id) : undefined
+    return `- ${item.id}: ${item.detail}${choice ? `\n  Drafting spine (${choice.kind}): ${choice.detail}` : ""}`
+  }).join("\n")
+}
+
+/** The spine entry of each standing hand-back, by question id; ids come from
+ * stored question state, and the checked spine holds one entry for each. */
+function handedBackChoices(directory: string) {
+  const handed = new Set(readQuestions(directory).filter(handedBack).map(question => question.id))
+  const spine = readLeanJson(directory, "spine.json") as { entries?: unknown } | undefined
+  const entries: unknown[] = Array.isArray(spine?.entries) ? spine.entries : []
+  return new Map(entries.flatMap(entry => typeof entry === "object" && entry !== null && "question_id" in entry && typeof entry.question_id === "string" && handed.has(entry.question_id)
+    ? [[entry.question_id, entry as DraftingEntry] as const] : []))
 }
 
 function attribute(text: string) {

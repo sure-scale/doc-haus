@@ -1,10 +1,12 @@
 import { afterEach, expect, test } from "bun:test"
+import { createHash } from "node:crypto"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { acceptChangePlan } from "./change-pipeline"
 import { checkChanges } from "./change-checks"
 import { readParagraphs } from "./checks"
+import { checkEvidence, evidencePrompt } from "./evidence"
 import { focusedChangeReviewInputs } from "./focused-change-review"
 import { finalGate, type GateResult } from "./gate"
 import { intakeQuestions } from "./intake"
@@ -13,9 +15,9 @@ import { openItem, withSourceSnapshot } from "./quotes"
 import { requestedFilesPrompt } from "./requested-files"
 import { drainLeanRequests, enqueueLeanRequest, queuedAnswerIDs, type LeanRequest, type StoredLeanRequest } from "./requests"
 import { runLean } from "./runner"
-import { LEAN_PROMPT_VERSION, stageInputs } from "./stages"
-import { answeredQuestionsText, answerQuestion, delegateQuestion, handedBackBlock, handedBackQuestionsText, hashStageInputs, readLeanJson, readLeanText, readOpenItems, readQuestions, writeLeanText, writeOpenItems, writeQuestions, type Question } from "./state"
-import { AGENT, cleanupMatters, happyPath, matter, noChanges, scriptedModel, SUPPORT } from "./test-support"
+import { handedBackItems, LEAN_PROMPT_VERSION, stageInputs } from "./stages"
+import { answeredQuestionsText, answerQuestion, delegateQuestion, handedBack as isHandedBack, handedBackBlock, handedBackQuestionsText, hashStageInputs, readLeanJson, readLeanText, readOpenItems, readQuestions, writeLeanText, writeOpenItems, writeQuestions, type Question } from "./state"
+import { AGENT, cleanupMatters, happyPath, matter, noChanges, scriptedModel, SUPPORT, type Reply } from "./test-support"
 
 // "Decide for me": the lawyer hands a run question back instead of answering
 // it. The hand-back is recorded as a choice the lawyer has not made: the
@@ -27,12 +29,19 @@ import { AGENT, cleanupMatters, happyPath, matter, noChanges, scriptedModel, SUP
 afterEach(cleanupMatters)
 
 const QUESTION = "Should late delivery carry a remedy?"
+const CHOSEN = "Add no separate late-delivery remedy: the terms fix delivery within thirty days and the general law covers late performance."
 const quiet = { ...happyPath, [AGENT.review]: () => "No changes needed.", [AGENT.changes]: noChanges }
+
+/** The spine records each question the lawyer handed back as a drafting choice. */
+function spineChoosing(directory: string): Reply {
+  return () => JSON.stringify({ entries: readQuestions(directory).filter(isHandedBack).map(question => ({
+    kind: "drafting-choice", question_id: question.id, detail: CHOSEN, evidence: SUPPORT, limitations: ["The lawyer has not made this choice."] })), limitations: [] })
+}
 
 /** A completed run whose one intake question the lawyer handed back. */
 async function handedBack() {
   const directory = matter()
-  const model = scriptedModel({ ...quiet, [AGENT.intake]: (_prompt, index) => index === 0
+  const model = scriptedModel({ ...quiet, [AGENT.spine]: spineChoosing(directory), [AGENT.intake]: (_prompt, index) => index === 0
     ? JSON.stringify({ questions: [{ question: QUESTION, context: "The supplied terms are silent on late delivery." }] })
     : JSON.stringify({ ready: true, jurisdiction: "Singapore law", scope: "Supplied terms" }) })
   expect((await runLean(directory, { sessions: model.port })).status).toBe("blocked")
@@ -195,7 +204,7 @@ test("a hand-back changes the intake key, as an answer does", () => {
  * the other back. Returns the prompts of the rerun that followed. */
 async function answeredAndHandedBack() {
   const directory = matter()
-  const model = scriptedModel({ ...quiet, [AGENT.intake]: (_prompt, index) => index === 0
+  const model = scriptedModel({ ...quiet, [AGENT.spine]: spineChoosing(directory), [AGENT.intake]: (_prompt, index) => index === 0
     ? JSON.stringify({ questions: [{ question: QUESTION, context: "The supplied terms are silent on late delivery." }, { question: LAW, context: "The terms name no governing law." }] })
     : JSON.stringify({ ready: true, jurisdiction: "Singapore law", scope: "Supplied terms" }) })
   expect((await runLean(directory, { sessions: model.port })).status).toBe("blocked")
@@ -236,6 +245,11 @@ test("every prompt given the lawyer's answers also lists the hand-back, apart fr
   expect(notes).toContain(`- ${left} (left to the drafting): ${QUESTION}`)
   expect(notes).not.toContain(`- ${left} (answered)`)
   expect(notes).toContain(`- ${law} (answered): ${LAW}\n  Answer: Singapore law.`)
+  // The spine is told how to record the hand-back, and the notes' open item
+  // for it carries what the spine chose, so the memo can say what and why.
+  expect(prompts.find(prompt => prompt.agent === AGENT.spine)!.text).toContain(`"question_id"`)
+  const [item] = handedBackItems(directory)
+  expect(notes).toContain(`- ${item!.id}: ${item!.detail}\n  Drafting spine (drafting-choice): ${CHOSEN}`)
 }, 120_000)
 
 test("the focused change review lists the hand-back apart from the actual answers", async () => {
@@ -261,4 +275,60 @@ test("intake re-asking a handed-back question is told it was left to the draftin
   const issues = intakeQuestions(directory, reply)!.issues.join(" ")
   expect(issues).toContain("left that question to the drafting to decide")
   expect(issues).not.toContain("lawyer's answer")
+})
+
+// The spine records each hand-back once, keyed by the stored question id, as a
+// drafting choice the lawyer has not made, or as an open item when deciding it
+// would need a fact the sources do not give. Never as the lawyer's decision.
+const CHOICE = { kind: "drafting-choice", question_id: "q-late", detail: CHOSEN, evidence: SUPPORT, limitations: ["The lawyer has not made this choice."] }
+const spine = (...entries: object[]) => ({ entries, limitations: [] })
+
+function spineMatter(late: Question["status"] | "handed back") {
+  const directory = matter()
+  writeQuestions(directory, [
+    { id: "q-law", stage: "intake", question: LAW, context: "Legal basis.", status: "answered", answer: "Singapore law.", answered_at: "2026-10-18T09:00:00.000Z" },
+    { id: "q-late", stage: "intake", question: QUESTION, context: "The terms are silent.", ...(late === "handed back" ? { status: "answered", answer_kind: "decide_for_me", answered_at: "2026-10-18T09:05:00.000Z" } : { status: late }) },
+  ])
+  return directory
+}
+
+test("the spine accepts a hand-back recorded once as a drafting choice or an open item", () => {
+  const directory = spineMatter("handed back")
+  expect(checkEvidence(directory, "spine", spine(CHOICE))).toEqual([])
+  expect(checkEvidence(directory, "spine", spine({ ...CHOICE, kind: "open-item", detail: "Whether late delivery carries a remedy needs a commercial term the sources do not give; the body keeps its placeholder." }))).toEqual([])
+  expect(evidencePrompt(directory, "spine")).toContain(`"question_id"`)
+})
+
+test("the spine rejects a hand-back left out, recorded as a decision, recorded twice or under an id that is not a hand-back", () => {
+  const directory = spineMatter("handed back")
+  const issues = (...entries: object[]) => checkEvidence(directory, "spine", spine(...entries))
+  const fact = { kind: "fact", detail: "Delivery is within thirty days.", evidence: SUPPORT, limitations: [] }
+  const missing = issues(fact)
+  expect(missing).toHaveLength(1)
+  expect(missing[0]).toContain(`"q-late"`)
+  expect(missing[0]).toContain(QUESTION)
+  const decision = issues({ ...CHOICE, kind: "decision" })
+  expect(decision).toHaveLength(1)
+  expect(decision[0]).toContain("decision")
+  expect(decision[0]).toContain(`"q-late"`)
+  expect(issues(CHOICE, { ...CHOICE, kind: "open-item" })).toEqual([expect.stringContaining("exactly one")])
+  // The lawyer answered q-law; q-other was never asked. Neither is a hand-back.
+  for (const id of ["q-law", "q-other"]) expect(issues(CHOICE, { ...fact, question_id: id })).toEqual([expect.stringContaining(`"${id}"`)])
+  const { question_id: _id, ...unkeyed } = CHOICE
+  expect(issues(CHOICE, unkeyed)).toEqual([expect.stringContaining("question_id")])
+})
+
+// Pinned on the code before hand-backs reached the spine.
+const SPINE_PROMPT = "aa0471af46a44d8b7a3ccc78fbfb1d1f647d5a746a00e934ca36b8886ea6a283"
+
+test("without a hand-back the spine check and prompt are unchanged", () => {
+  for (const late of ["open", "answered"] as const) {
+    const directory = spineMatter(late)
+    if (late === "answered") answerQuestion(directory, "q-late", "No separate remedy.")
+    // The new kind is not offered and a stray question_id is ignored, as before.
+    expect(checkEvidence(directory, "spine", spine(CHOICE))).toEqual(["A spine entry kind must be decision, recommendation, requirement, fact or open-item."])
+    expect(checkEvidence(directory, "spine", spine({ ...CHOICE, kind: "decision", question_id: "q-law" }))).toEqual([])
+    expect(checkEvidence(directory, "spine", spine())).toEqual([])
+    if (late === "open") expect(createHash("sha256").update(evidencePrompt(directory, "spine")).digest("hex")).toBe(SPINE_PROMPT)
+  }
 })
