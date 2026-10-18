@@ -55,7 +55,7 @@ import { readLeanPayload, readDetailPayload, readStoragePayload } from "./teleme
 import { openTelemetryDb, applyRetentionPolicy, clearTelemetry } from "../../../dochaus/lib/telemetry"
 import { documentAmendmentRoutes, acceptedWorkingDocxUpdate } from "./document-amendments"
 import { readWorkingDocx } from "../../../dochaus/lib/working-docx"
-import { withParagraphPointers } from "../../../dochaus/lib/drafting-amendment"
+import { withParagraphPointers, withStableRevisionDates } from "../../../dochaus/lib/drafting-amendment"
 import { DocxTrackedRevisionsError } from "../../../dochaus/lib/docx-amendments"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
 import { draftingTraceReference } from "../../../dochaus/lib/drafting-trace-identity"
@@ -76,6 +76,7 @@ import { recoverDocumentMutations } from "./document-mutation"
 import { appendAcceptedChangesToNotes } from "./notes-addendum"
 import { readLeanDocuments } from "../../../dochaus/workflows/lean/deliverables"
 import { readLeanState } from "../../../dochaus/workflows/lean/state"
+import { documentRedline } from "../../../dochaus/workflows/lean/apply-stage"
 
 const app = new Hono()
 
@@ -873,7 +874,7 @@ app.post("/matters/:id/redlines/:rid/accept", async (c) => {
   const row = getRedline(initialDb, Number(c.req.param("rid")))
   initialDb.close()
   if (!row || row.status !== "pending") return c.json({ error: "Redline not found or already resolved" }, 404)
-  return withArtifactMutationLocksAsync(dir, [row.doc_name, ...runNotesLock(dir), ".dochaus/source-corpus"], async () => {
+  return withArtifactMutationLocksAsync(dir, [row.doc_name, ...runRedlineLock(dir, row.doc_path), ...runNotesLock(dir), ".dochaus/source-corpus"], async () => {
     const db = openDb(dir)
     const current = getRedline(db, row.id)
     db.close()
@@ -892,7 +893,8 @@ app.post("/matters/:id/redlines/:rid/accept", async (c) => {
       console.warn("[redline] acceptance refused",diagnosticErrorMetadata(error))
       return c.json({error:"Acceptance could not be confirmed. Refresh the document and change list before trying again."},409)
     }
-    return c.json({ ok: true, ...await recordAcceptedChangesInRunNotes(dir, row.doc_path, [current]) })
+    const redline = await rebuildDeliveredRedline(dir, row.doc_path)
+    return c.json({ ok: true, ...redline, ...await recordAcceptedChangesInRunNotes(dir, row.doc_path, [current]) })
   })
 })
 
@@ -924,7 +926,7 @@ app.post("/matters/:id/redlines/accept-all", async (c) => {
   const name = matterDocumentName(requested) ?? deliverableDocumentName(requested)
   if (!name) return c.json({ error: "The document filename or extension is not supported." }, 400)
   const file = path.join(dir, name)
-  return withArtifactMutationLocksAsync(dir, [name, ...runNotesLock(dir), ".dochaus/source-corpus"], async () => {
+  return withArtifactMutationLocksAsync(dir, [name, ...runRedlineLock(dir, file), ...runNotesLock(dir), ".dochaus/source-corpus"], async () => {
     if (!existsSync(file) || !existsSync(path.join(dir, ".dochaus", "legal.db")))
       return c.json({ ok: true, accepted: 0 })
     const db = openDb(dir)
@@ -943,7 +945,8 @@ app.post("/matters/:id/redlines/accept-all", async (c) => {
       console.warn("[redline] batch acceptance refused",diagnosticErrorMetadata(error))
       return c.json({error:"Batch acceptance could not be confirmed. Refresh the document and change list before trying again."},409)
     }
-    return c.json({ ok: true, accepted: rows.length, ...await recordAcceptedChangesInRunNotes(dir, file, rows) })
+    const redline = await rebuildDeliveredRedline(dir, file)
+    return c.json({ ok: true, accepted: rows.length, ...redline, ...await recordAcceptedChangesInRunNotes(dir, file, rows) })
   })
 })
 
@@ -1015,18 +1018,11 @@ async function recordAcceptedChangesInRunNotes(directory: string, body: string, 
     return { notes_updated: false, notes_skip_reason: reason }
   }
   try {
-    const state = readLeanState(directory)
-    const summary = readLeanDocuments(directory)
-    if (state?.status !== "completed" || summary?.status !== "completed") return
-    const identity = documentRegistryIdentity(body)
-    const delivered = summary.documents.find((row) => row.kind === "body" && row.deliverable === path.basename(row.deliverable ?? "") &&
-      documentRegistryIdentity(path.join(directory, row.deliverable!)) === identity)?.deliverable
-    if (!delivered) return
-    const registry = openDb(directory)
-    const bodyRole = (() => { try { return getDocumentRole(registry, path.join(directory, delivered)) } finally { registry.close() } })()
-    if (bodyRole !== "deliverable") return
-    run = state.owner_session_id
-    const notes = summary.documents.find((row) => row.kind === "drafting_notes")?.deliverable
+    const runBody = deliveredRunBody(directory, body)
+    if (!runBody) return
+    const delivered = runBody.name
+    run = runBody.run
+    const notes = runBody.summary.documents.find((row) => row.kind === "drafting_notes")?.deliverable
     if (!notes || notes !== path.basename(notes)) return skipped("notes_not_delivered")
     return await withArtifactMutationLocksAsync(directory, [notes, ".dochaus/source-corpus"], async (): Promise<NotesAddendum> => {
       const file = path.join(directory, notes)
@@ -1064,6 +1060,93 @@ function runNotesLock(directory: string): string[] {
     if (readLeanState(directory)?.status !== "completed" || summary?.status !== "completed") return []
     const notes = summary.documents.find((row) => row.kind === "drafting_notes")?.deliverable
     return notes && deliverableDocumentName(notes) === notes && readDocumentTarget(directory, notes) ? [notes] : []
+  } catch {
+    return []
+  }
+}
+
+/** A completed lean run's delivery of `body`, an accepted file's matter path:
+ * the run, its documents summary and that body's summary row (its planned
+ * document, title and delivered name), while the file is still a deliverable.
+ * Undefined when the accepted file is no delivered body of a completed run. */
+function deliveredRunBody(directory: string, body: string) {
+  const state = readLeanState(directory)
+  const summary = readLeanDocuments(directory)
+  if (state?.status !== "completed" || summary?.status !== "completed") return
+  const identity = documentRegistryIdentity(body)
+  const row = summary.documents.find((row) => row.kind === "body" && row.deliverable === path.basename(row.deliverable ?? "") &&
+    documentRegistryIdentity(path.join(directory, row.deliverable!)) === identity)
+  const name = row?.deliverable
+  if (!row?.document || !name) return
+  const registry = openDb(directory)
+  try {
+    if (getDocumentRole(registry, path.join(directory, name)) !== "deliverable") return
+  } finally {
+    registry.close()
+  }
+  return { run: state.owner_session_id, summary, document: row.document, title: row.title, name }
+}
+
+/** The delivered redline of a delivered body's document, under its plain registered name. */
+function deliveredRedlineName(delivered: NonNullable<ReturnType<typeof deliveredRunBody>>) {
+  const name = delivered.summary.documents.find((row) => row.kind === "redline" && row.document === delivered.document && row.title === delivered.title)?.deliverable
+  return name && deliverableDocumentName(name) === name ? name : undefined
+}
+
+// A change accepted into the body of a completed lean run also rebuilds the
+// run's delivered redline of that body (documentRedline: the run's comparison
+// baseline against the accepted body, the run's change explanations as Word
+// comments), so the viewer and downloads never pair the accepted body with the
+// redline from before it. The run's own copy (d<n>/redline.docx) is a stage
+// input and stays as it is, so no stage re-runs. Like the notes addendum, this
+// runs after the body write, inside the accept's lock set, which holds the
+// redline's lock (runRedlineLock), and goes through the same revision writer;
+// revisions already in the delivered redline keep their dates. Best-effort: the
+// accepted body stands. Returns nothing once rebuilt or when no delivered
+// redline applies; a redline left as it was is logged and returned for the
+// accept response.
+type RedlineSkipReason = "pending_redline_proposals" | "rebuild_failed"
+type RedlineRebuild = { redline_updated: false; redline_skip_reason: RedlineSkipReason }
+async function rebuildDeliveredRedline(directory: string, body: string): Promise<RedlineRebuild | undefined> {
+  let run: string | undefined
+  const skipped = (reason: RedlineSkipReason, error?: unknown): RedlineRebuild => {
+    console.warn("[redline] delivered redline not rebuilt",
+      { run, matter_ref: draftingTraceReference(directory), reason, ...(error === undefined ? {} : diagnosticErrorMetadata(error)) })
+    return { redline_updated: false, redline_skip_reason: reason }
+  }
+  try {
+    const delivered = deliveredRunBody(directory, body)
+    const name = delivered && deliveredRedlineName(delivered)
+    if (!delivered || !name) return
+    run = delivered.run
+    return await withArtifactMutationLocksAsync(directory, [name, ".dochaus/source-corpus"], async (): Promise<RedlineRebuild | undefined> => {
+      const file = path.join(directory, name)
+      if (!existsSync(file)) return
+      const db = openDb(directory)
+      const [role, pending] = (() => { try { return [getDocumentRole(db, file), listPendingRedlines(db, file)] as const } finally { db.close() } })()
+      // A file that has since taken the redline's name, such as a source, is never written.
+      if (role !== "deliverable") return
+      // Never invalidate a proposal on the redline that the lawyer has yet to review.
+      if (pending.length) return skipped("pending_redline_proposals")
+      const prior = await Bun.file(file).bytes()
+      const rebuilt = await documentRedline(directory, delivered.document, await Bun.file(body).bytes())
+      const next = withStableRevisionDates(rebuilt.bytes, new Date().toISOString(), prior)
+      await writeDocumentRevision(directory, name, Buffer.from(next), [], createHash("sha256").update(prior).digest("hex"))
+    })
+  } catch (error) {
+    return skipped("rebuild_failed", error)
+  }
+}
+
+/** The delivered redline of a completed run's accepted body, as the extra lock
+ * an accept takes with its body's, so the body write and the redline rebuild
+ * form one critical section. Read before locking; empty when the accepted file
+ * is no such body or its redline is not delivered under a plain name. */
+function runRedlineLock(directory: string, body: string): string[] {
+  try {
+    const delivered = deliveredRunBody(directory, body)
+    const name = delivered && deliveredRedlineName(delivered)
+    return name && readDocumentTarget(directory, name) ? [name] : []
   } catch {
     return []
   }

@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, rm } from "node:fs/promises"
 import { chmodSync, existsSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import { strFromU8, unzipSync } from "fflate"
 import { AlignmentType, Document, Footer, Header, LevelFormat, Packer, Paragraph, Table, TableCell, TableRow, TextRun } from "docx"
 import { paragraphTargets, withParagraphPointers } from "../../../dochaus/lib/drafting-amendment"
 import { openDb, getDocumentRole, getRedline, listDocuments, listSourceDocuments, upsertDocument } from "./db"
@@ -15,7 +16,7 @@ import { acceptedWorkingDocxUpdate, documentAmendmentRoutes } from "./document-a
 import { writeDeliverable, writeDeliverableRevision } from "./deliverable"
 import { buildRedlined, bake, redlineState, redlineStaleReason } from "./redline"
 import { docxodus } from "./docxodus"
-import { readDocxComments } from "../../../dochaus/lib/docx-comments"
+import { readDocxCommentParagraphs, readDocxComments, readDocxRevisionText } from "../../../dochaus/lib/docx-comments"
 import { recordLeanDocuments } from "../../../dochaus/workflows/lean/deliverables"
 import { runLean } from "../../../dochaus/workflows/lean/runner"
 import { initLeanState, readLeanState, writeLeanState } from "../../../dochaus/workflows/lean/state"
@@ -916,6 +917,70 @@ test("Accept all records every accepted body change in one notes revision, dated
     expect(await notesText(notes,zoneDay(offsetZone))).toEqual([...preparedNotes,notesHeading,notesIntro,...supplyEntries])
     expect(readWorkingDocx(matter.dir,notes)?.source_sha256).toBe(sha256(await Bun.file(notes).bytes()))
     expect(registeredDeliverables(matter.dir)).toEqual(runFiles)
+  } finally {
+    await ingest.stop();engine.server.stop(true);await rm(temporary,{recursive:true,force:true})
+  }
+},120000)
+
+test("an accept or Accept all into a completed run's body rebuilds its delivered redline from the accepted body", async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-redline-"))
+  const payment = supplyChanges[1]!
+  const heading = {before_quote:"Delivery",replacement:"Delivery period",target_context:"delivery heading",reason:"Heading wording."}
+  const batches = [[payment],[payment,heading]]
+  const engine = syntheticEngine(() => ({amendments:batches.shift()!,open_items:[]}),firstCandidate)
+  const ingest = await isolatedIngest(temporary,engine.server)
+  const redlineName = "Supply note - redline.docx"
+  const texts = (bytes:Uint8Array) => readDocxCommentParagraphs(bytes).map((row) => row.paragraph_text)
+  try {
+    await ingest.start("only")
+    for (const all of [false,true]) {
+      const matter = await ingest.matter(all ? "Redline after Accept all" : "Redline after accept")
+      const deps = await completedLeanRun(matter.dir)
+      const body = path.join(matter.dir,"Supply note.docx")
+      const redline = path.join(matter.dir,redlineName)
+      const runRedline = await Bun.file(path.join(matter.dir,".dochaus/lean/d1/redline.docx")).bytes()
+      const delivered = await Bun.file(redline).bytes()
+      // The run's change and its explanation, as delivered.
+      const runChange = "within thirty days of the order date"
+      const runComment = "States the delivery period from the supply terms."
+      expect(readDocxRevisionText(delivered).inserted_text.join(" ")).toContain(runChange)
+      expect(readDocxComments(delivered).map((row) => row.text).join("\n")).toContain(runComment)
+
+      const ids = (await (await ingest.request(`${matter.route}/documents/amendments`,{method:"POST",headers:{"content-type":"application/json"},
+        body:JSON.stringify({name:"Supply note.docx",instructions:"Update the stated terms."})})).json() as {redline_ids:number[]}).redline_ids
+      expect(ids).toHaveLength(all ? 2 : 1)
+      if (all) expect((await ingest.request(`${matter.route}/redlines/accept-all?name=${encodeURIComponent("Supply note.docx")}`,{method:"POST"})).status).toBe(200)
+      else expect(await matter.accept(ids[0]!)).toBe(200)
+
+      const accepted = await Bun.file(body).bytes()
+      expect(texts(accepted).join("\n")).toContain("Payment is due within fourteen days of delivery.")
+      if (all) expect(texts(accepted)).toContain("Delivery period")
+      // The delivered redline reads, once its tracked changes are accepted, as the accepted body.
+      const rebuilt = await Bun.file(redline).bytes()
+      expect(texts(rebuilt)).toEqual(texts(accepted))
+      // It still shows the run's own change with its explanation, and now the lawyer's.
+      const revisions = readDocxRevisionText(rebuilt)
+      expect(revisions.inserted_text.join(" ")).toContain(runChange)
+      expect(revisions.inserted_text.join(" ")).toContain("fourteen days")
+      expect(readDocxComments(rebuilt).map((row) => row.text).join("\n")).toContain(runComment)
+      // The run's revisions keep their dates.
+      const dates = (bytes:Uint8Array) => [...strFromU8(unzipSync(bytes)["word/document.xml"]!).matchAll(/<w:(?:ins|del)\b[^>]*\bw:date="([^"]+)"/g)].map((match) => match[1])
+      expect(dates(rebuilt)).toEqual(expect.arrayContaining(dates(delivered)))
+      // The viewer serves the rebuilt file.
+      const viewed = new Uint8Array(await (await ingest.request(`${matter.route}/documents/redlined?name=${encodeURIComponent(redlineName)}`)).arrayBuffer())
+      expect(sha256(viewed)).toBe(sha256(rebuilt))
+      // The run's own redline is a stage input and stays as the run wrote it.
+      expect(sha256(await Bun.file(path.join(matter.dir,".dochaus/lean/d1/redline.docx")).bytes())).toBe(sha256(runRedline))
+      expect(ids.map(matter.status)).toEqual(ids.map(() => "accepted"))
+      expect(registeredDeliverables(matter.dir)).toEqual(runFiles)
+      // A later delivery pass keeps the rebuilt redline with the accepted body
+      // instead of writing over it or forking a "(2)" copy.
+      const again = await recordLeanDocuments(matter.dir,deps,true)
+      expect(again.documents.filter((row) => row.kind === "body" || row.kind === "redline").map((row) => [row.kind,row.deliverable,row.conflict]))
+        .toEqual([["body","Supply note.docx","accepted_revision"],["redline",redlineName,"accepted_revision"]])
+      expect(registeredDeliverables(matter.dir)).toEqual(runFiles)
+      expect(sha256(await Bun.file(redline).bytes())).toBe(sha256(rebuilt))
+    }
   } finally {
     await ingest.stop();engine.server.stop(true);await rm(temporary,{recursive:true,force:true})
   }

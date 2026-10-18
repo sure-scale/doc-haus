@@ -22,6 +22,8 @@ import { leanFile, readLeanJson, writeLeanBytes, writeLeanText } from "./state"
 // Once the lawyer accepts a Word revision of a file this run registered, the run
 // keeps that file and name: a newer output is neither written over the revision
 // nor forked to "<name> (2)"; its row says so and the output stays in the run.
+// A body's redline, which each accept into that body rebuilds from it, stays
+// with the body it shows the same way.
 // When the gate passes with unresolved checklist findings, the notes delivered
 // are the gate's delivered notes (in memo mode the memo first, then those
 // findings; otherwise those findings first, then the drafting notes), under the drafting notes' own kind and name.
@@ -179,6 +181,7 @@ export async function recordLeanDocuments(directory: string, deps: LeanDeps, reg
   const documents: LeanDocument[] = []
   const produced = producedFiles(directory, register)
   const closed = closedNames(directory, produced)
+  const keptBodies = new Set<DocID>()
   for (const item of produced.filter(row => existsSync(leanFile(directory, row.file)))) {
     const source = readFileSync(leanFile(directory, item.file))
     const clean = item.document ? leanFile(directory, `${item.document}/body-applied.docx`) : undefined
@@ -189,7 +192,9 @@ export async function recordLeanDocuments(directory: string, deps: LeanDeps, reg
     if (bytes !== source) writeLeanBytes(directory, item.file, bytes)
     const sha256 = createHash("sha256").update(bytes).digest("hex")
     const prior = previous.get(`${item.kind}:${item.title ?? item.name}`)
-    const kept = register && item.name !== null ? acceptedRevisionName(directory, item.name, prior) : undefined
+    const kept = register && item.name !== null
+      ? acceptedRevisionName(directory, item.name, prior, item.kind === "redline" && item.document !== null && keptBodies.has(item.document)) : undefined
+    if (kept && item.kind === "body" && item.document) keptBodies.add(item.document)
     const deliverable = kept ?? (register && item.name !== null && deps.registerDeliverable
       ? await registerOnce(directory, deps.registerDeliverable, item.name, bytes, sha256, prior, [...previous.values()].filter(row => row.title === item.title), closed(item, item.name))
       : prior?.sha256 === sha256 ? prior.deliverable : null)
@@ -287,11 +292,14 @@ function closedNames(directory: string, produced: Produced[], plan = readLeanPla
 
 /** This output's earlier deliverable name when the lawyer has since accepted a
  * Word revision there. The registry refuses to write over such a revision; trying
- * the next free name would silently move the run's delivery away from it. */
-function acceptedRevisionName(directory: string, stem: string, prior: LeanDocument | undefined) {
+ * the next free name would silently move the run's delivery away from it. A
+ * redline whose body is kept so (`bodyKept`) is kept with it while its file is
+ * there: each accept into the body rebuilds that redline from it. */
+function acceptedRevisionName(directory: string, stem: string, prior: LeanDocument | undefined, bodyKept = false) {
   const name = prior?.deliverable
   if (!name || !deliverableNames(stem).includes(name)) return
-  return readWorkingDocx(directory, path.join(directory, name)) ? name : undefined
+  const file = path.join(directory, name)
+  return readWorkingDocx(directory, file) || (bodyKept && existsSync(file)) ? name : undefined
 }
 
 function deliverableNames(stem: string) {
