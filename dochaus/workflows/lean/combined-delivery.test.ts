@@ -1,19 +1,25 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { existsSync, writeFileSync } from "node:fs"
+import { Database } from "bun:sqlite"
+import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
+import { createHash } from "node:crypto"
+import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import path from "node:path"
+import { buildCombinedFile } from "../../lib/combined-docx"
 import { renderMarkdownToDocx } from "../../lib/render"
-import { combinedDelivery, combinedParts, memoNotesFile, recordLeanDocuments } from "./deliverables"
+import { combinedDelivery, combinedParts, memoNotesFile, readLeanDocuments, recordLeanDocuments, type LeanDocumentKind } from "./deliverables"
 import { checkDeliverySelections, selectedDeliveryPlan, type DeliverySelection } from "./delivery-selection"
 import { packageReviewPrompt } from "./package-review"
 import { writeLeanPlan, type PlannedDocument } from "./plan"
+import { openItem } from "./quotes"
+import { disclosableItems, type LeanDeps } from "./stages"
 import { writeLeanBytes, writeLeanText } from "./state"
 import { cleanupMatters, matter, registering, scriptedModel } from "./test-support"
 
 // A document delivered with the requested memo in one file ("Deliverable:
-// combined"). The combined file is built at download time from the registered
-// body and notes, so registration keeps the bare requested name free: the body
-// is registered as "<stem> - clean" and the notes under the memo's name. Real
-// registration path; only the registry writes are local.
+// combined"). The body is registered as "<stem> - clean" and the notes under
+// the memo's name; once both are registered, the combined file built from them
+// (buildCombinedFile, as each download builds it) is registered under the
+// requested name. Real registration path; only the registry writes are local.
 
 afterEach(cleanupMatters)
 
@@ -35,8 +41,43 @@ async function registered(directory: string, documents: Document[]) {
   return { names: registration.names, rows: summary.documents.map(row => [row.kind, row.document, row.deliverable]) }
 }
 
+const matterFile = (directory: string, name: string) => new Uint8Array(readFileSync(path.join(directory, name)))
+const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex")
+const docx = async (markdown: string) => (await renderMarkdownToDocx(markdown)).bytes
+
+/** Writes the run's copy of each given file, rendered from Markdown. */
+async function writeCopies(directory: string, files: Record<string, string>) {
+  for (const [file, markdown] of Object.entries(files)) writeLeanBytes(directory, file, await docx(markdown))
+}
+
+/** Registers the run's current copies as a passed gate does, recording each
+ * registration's name and the sha256 it replaces. */
+async function deliver(directory: string) {
+  const calls: [string, string | null][] = []
+  const registerDeliverable: NonNullable<LeanDeps["registerDeliverable"]> = async (directory, name, bytes, prior) => {
+    writeFileSync(path.join(directory, name), bytes)
+    calls.push([name, prior])
+    return name
+  }
+  const summary = await recordLeanDocuments(directory, { sessions: scriptedModel({}).port, registerDeliverable }, true)
+  return { calls, rows: summary.documents.map(row => [row.kind, row.document, row.deliverable]) }
+}
+
+/** The gate's record of `items`, each disclosed by the notes. */
+function discloseAtGate(directory: string, items: ReturnType<typeof openItem>[]) {
+  writeLeanText(directory, "gate.json", `${JSON.stringify({ items: items.map(item => ({ ...item, status: "disclosed" })) }, null, 2)}\n`)
+}
+
+const COPIES = {
+  "d1/body-applied.docx": "# Supply note\n\nThe supplier delivers the goods each month.",
+  "d1/redline.docx": "# Supply note\n\nThe supplier delivers the goods each month.",
+  "drafting-notes.docx": "# Cover memo\n\nThe delivery terms follow the supply terms.",
+}
+const unsaved = (reason: string) => openItem("finalize", "omission", `The combined file "supply-pack.docx" (the memo, then "Supply note") is not saved in the matter: ${reason}. ` +
+  'The memo and "Supply note" are delivered as separate files.', { repair_target: "memo" })
+
 describe("registration of a combined document", () => {
-  test("registers the body as '<stem> - clean', the notes under the memo's name, and nothing under the requested name", async () => {
+  test("registers the body as '<stem> - clean', the notes under the memo's name, then the file built from them under the requested name", async () => {
     const directory = matter()
     writeLeanPlan(directory, [COMBINED], undefined, undefined, memo([COMBINED]))
     const { names, rows } = await registered(directory, [COMBINED])
@@ -45,9 +86,14 @@ describe("registration of a combined document", () => {
       ["redline", "d1", "supply-pack - redline.docx"],
       ["drafting_notes", null, "supply-pack - cover memo.docx"],
       ["drafting_notes_markdown", null, null],
+      ["combined", "d1", "supply-pack.docx"],
     ])
-    expect(names).not.toContain("supply-pack.docx")
-    expect(existsSync(path.join(directory, "supply-pack.docx"))).toBe(false)
+    expect(names).toEqual(["supply-pack - clean.docx", "supply-pack - redline.docx", "supply-pack - cover memo.docx", "supply-pack.docx"])
+    // Exactly the bytes each download builds from the two registered parts.
+    const built = buildCombinedFile({ memo: matterFile(directory, "supply-pack - cover memo.docx"), body: matterFile(directory, "supply-pack - clean.docx") })
+    expect("bytes" in built && sha256(built.bytes)).toBe(sha256(matterFile(directory, "supply-pack.docx")))
+    expect(readLeanDocuments(directory)?.documents.at(-1)).toEqual({ kind: "combined", document: "d1", title: "Supply note", path: "supply-pack.docx",
+      sha256: sha256(matterFile(directory, "supply-pack.docx")), deliverable: "supply-pack.docx" })
   }, 60_000)
 
   test("without combined, registered names are unchanged", async () => {
@@ -74,6 +120,130 @@ describe("registration of a combined document", () => {
   }, 60_000)
 })
 
+describe("the combined file saved in the matter", () => {
+  test("a memo the build refuses: one finalize item, no combined file, and registration fails visibly unless the gate disclosed it", async () => {
+    const directory = matter()
+    writeLeanPlan(directory, [COMBINED], undefined, undefined, memo([COMBINED]))
+    await writeCopies(directory, COPIES)
+    // A numbered list whose definition links to a numbering style.
+    const numbered = unzipSync(await docx("# Cover memo\n\n1. First point.\n2. Second point."))
+    numbered["word/numbering.xml"] = strToU8(strFromU8(numbered["word/numbering.xml"]!).replace(/(<w:abstractNum\b[^>]*>)/g, '$1<w:numStyleLink w:val="MemoList"/>'))
+    writeLeanBytes(directory, "drafting-notes.docx", zipSync(numbered))
+    expect(buildCombinedFile({ memo: zipSync(numbered), body: await docx(COPIES["d1/body-applied.docx"]) })).toEqual({ refused: "unsupported_memo_numbering" })
+
+    const item = unsaved("the memo uses list numbering the combined file cannot carry")
+    expect(disclosableItems(directory)).toEqual([item])
+    await expect(deliver(directory)).rejects.toThrow(item.detail)
+    expect(existsSync(path.join(directory, "supply-pack.docx"))).toBe(false)
+    discloseAtGate(directory, [item])
+    const { calls, rows } = await deliver(directory)
+    expect(calls.map(([name]) => name)).toEqual(["supply-pack - clean.docx", "supply-pack - redline.docx", "supply-pack - cover memo.docx"])
+    expect(rows.map(([kind]) => kind)).not.toContain("combined")
+    expect(existsSync(path.join(directory, "supply-pack.docx"))).toBe(false)
+  }, 60_000)
+
+  test("a source under the requested name: a finalize item, and the source is untouched", async () => {
+    const directory = matter()
+    writeLeanPlan(directory, [COMBINED], undefined, undefined, memo([COMBINED]))
+    await writeCopies(directory, COPIES)
+    const source = await docx("# Supply terms\n\nThe goods are delivered monthly.")
+    writeFileSync(path.join(directory, "supply-pack.docx"), source)
+    const db = new Database(path.join(directory, ".dochaus", "legal.db"))
+    db.run("CREATE TABLE IF NOT EXISTS documents (doc_path TEXT, role TEXT)")
+    db.query("INSERT INTO documents (doc_path, role) VALUES (?, 'source')").run(path.join(directory, "supply-pack.docx"))
+    db.close()
+
+    const item = unsaved("a source document in the matter has that name")
+    expect(disclosableItems(directory)).toEqual([item])
+    discloseAtGate(directory, [item])
+    const { calls, rows } = await deliver(directory)
+    expect(calls.map(([name]) => name)).not.toContain("supply-pack.docx")
+    expect(rows.map(([kind]) => kind)).not.toContain("combined")
+    expect(sha256(matterFile(directory, "supply-pack.docx"))).toBe(sha256(source))
+  }, 60_000)
+
+  test("a rerun rebuilds the file from the current parts, replacing the earlier copy by its sha256; unchanged parts give the same bytes", async () => {
+    const directory = matter()
+    writeLeanPlan(directory, [COMBINED], undefined, undefined, memo([COMBINED]))
+    await writeCopies(directory, COPIES)
+    expect(disclosableItems(directory)).toEqual([])
+    await deliver(directory)
+    const first = sha256(matterFile(directory, "supply-pack.docx"))
+
+    await writeCopies(directory, { "d1/body-applied.docx": "# Supply note\n\nThe supplier delivers the goods each week." })
+    const second = await deliver(directory)
+    expect(second.calls).toContainEqual(["supply-pack.docx", first])
+    const built = buildCombinedFile({ memo: matterFile(directory, "supply-pack - cover memo.docx"), body: matterFile(directory, "supply-pack - clean.docx") })
+    expect("bytes" in built && sha256(built.bytes)).toBe(sha256(matterFile(directory, "supply-pack.docx")))
+    const rebuilt = sha256(matterFile(directory, "supply-pack.docx"))
+    expect(rebuilt).not.toBe(first)
+
+    const third = await deliver(directory)
+    expect(third.calls).toContainEqual(["supply-pack.docx", rebuilt])
+    expect(sha256(matterFile(directory, "supply-pack.docx"))).toBe(rebuilt)
+  }, 60_000)
+
+  test("a later plan without the combined delivery handles the saved file as a dropped deliverable's", async () => {
+    const dropped = matter()
+    writeLeanPlan(dropped, [COMBINED], undefined, undefined, memo([COMBINED]))
+    await writeCopies(dropped, COPIES)
+    await deliver(dropped)
+    const saved = sha256(matterFile(dropped, "supply-pack.docx"))
+    // Without the memo there is no combined file: the file stays, its row goes.
+    writeLeanPlan(dropped, [COMBINED])
+    const { calls, rows } = await deliver(dropped)
+    expect(calls.map(([name]) => name)).not.toContain("supply-pack.docx")
+    expect(rows.map(([kind]) => kind)).not.toContain("combined")
+    expect(sha256(matterFile(dropped, "supply-pack.docx"))).toBe(saved)
+
+    // As with any earlier file of the same document, a deliverable now planned
+    // under that name replaces it while it still holds the bytes registered.
+    const renamed = matter()
+    writeLeanPlan(renamed, [COMBINED], undefined, undefined, memo([COMBINED]))
+    await writeCopies(renamed, COPIES)
+    await deliver(renamed)
+    const combined = sha256(matterFile(renamed, "supply-pack.docx"))
+    const body = { ...COMBINED, deliverable: "body" as const }
+    writeLeanPlan(renamed, [body], undefined, undefined, memo([body]))
+    const again = await deliver(renamed)
+    expect(again.calls).toContainEqual(["supply-pack.docx", combined])
+    expect(again.rows).toContainEqual(["body", "d1", "supply-pack.docx"])
+    expect(again.rows.map(([kind]) => kind)).not.toContain("combined")
+  }, 60_000)
+
+  test("without a combined delivery, registration calls, the summary and the items are as before", async () => {
+    const plain = matter()
+    writeLeanPlan(plain, [SUPPLY])
+    await writeCopies(plain, COPIES)
+    expect(disclosableItems(plain)).toEqual([])
+    expect((await deliver(plain)).calls).toEqual([["Supply note.docx", null], ["Supply note - redline.docx", null], ["Supply note - drafting notes.docx", null]])
+    const row = (kind: LeanDocumentKind, file: string, deliverable: string) => ({ kind, document: "d1" as const, title: "Supply note", path: `.dochaus/lean/${file}`, sha256: sha256(matterFile(plain, deliverable)), deliverable })
+    expect(readLeanDocuments(plain)).toEqual({ schema: "dochaus.lean.documents/2", status: "completed", documents: [
+      row("body", "d1/body-applied.docx", "Supply note.docx"),
+      row("redline", "d1/redline.docx", "Supply note - redline.docx"),
+      { ...row("drafting_notes", "drafting-notes.docx", "Supply note - drafting notes.docx"), document: null, title: null },
+    ] })
+    const registered = readLeanDocuments(plain)!.documents.map(row => [row.deliverable, row.sha256])
+    expect((await deliver(plain)).calls).toEqual(registered.map(([name, sha]) => [name!, sha!]))
+
+    // A memo with each document in its own file.
+    const named = matter()
+    const documents: Document[] = [{ ...SUPPLY, file: "supply-pack.docx", deliverable: "body" }, { ...SCHEDULE, file: "schedule-review.docx", deliverable: "redline" }]
+    writeLeanPlan(named, documents, undefined, undefined, memo(documents))
+    await writeCopies(named, { ...COPIES, "d2/body-applied.docx": "# Delivery schedule\n\nGoods arrive on the first day.", "d2/redline.docx": "# Delivery schedule\n\nGoods arrive on the first day." })
+    expect(disclosableItems(named)).toEqual([])
+    expect((await deliver(named)).calls).toEqual([["supply-pack.docx", null], ["supply-pack - redline.docx", null], ["schedule-review - clean.docx", null],
+      ["schedule-review.docx", null], ["supply-pack - cover memo.docx", null]])
+    expect(readLeanDocuments(named)!.documents.map(row => [row.kind, row.document, row.title, row.path, row.deliverable, row.sha256 === sha256(matterFile(named, row.deliverable!))])).toEqual([
+      ["body", "d1", "Supply note", ".dochaus/lean/d1/body-applied.docx", "supply-pack.docx", true],
+      ["redline", "d1", "Supply note", ".dochaus/lean/d1/redline.docx", "supply-pack - redline.docx", true],
+      ["body", "d2", "Delivery schedule", ".dochaus/lean/d2/body-applied.docx", "schedule-review - clean.docx", true],
+      ["redline", "d2", "Delivery schedule", ".dochaus/lean/d2/redline.docx", "schedule-review.docx", true],
+      ["drafting_notes", null, null, ".dochaus/lean/drafting-notes.docx", "supply-pack - cover memo.docx", true],
+    ])
+  }, 60_000)
+})
+
 describe("delivery names that collide", () => {
   const named = (documents: Document[], name: string) => ({ name, file: memoNotesFile(documents, name) })
 
@@ -83,7 +253,8 @@ describe("delivery names that collide", () => {
     writeLeanPlan(directory, documents, undefined, undefined, memo(documents))
     const { names, rows } = await registered(directory, documents)
     expect(rows).toContainEqual(["body", "d2", "supply-pack (2).docx"])
-    expect(names).not.toContain("supply-pack.docx")
+    expect(rows).toContainEqual(["combined", "d1", "supply-pack.docx"])
+    expect(names.filter(name => name === "supply-pack.docx")).toHaveLength(1)
   }, 60_000)
 
   test("the memo does not take a later combined document's name", async () => {
@@ -94,7 +265,8 @@ describe("delivery names that collide", () => {
     writeLeanPlan(directory, documents, undefined, undefined, { name: "cover memo", file: "Delivery schedule - cover memo.docx" })
     const { names, rows } = await registered(directory, documents)
     expect(rows).toContainEqual(["drafting_notes", null, "Delivery schedule - cover memo (2).docx"])
-    expect(names).not.toContain("Delivery schedule - cover memo.docx")
+    expect(rows).toContainEqual(["combined", "d2", "Delivery schedule - cover memo.docx"])
+    expect(names.filter(name => name === "Delivery schedule - cover memo.docx")).toHaveLength(1)
   }, 60_000)
 
   test("a memo named like the redline yields: the redline keeps its name", async () => {
@@ -117,6 +289,7 @@ describe("delivery names that collide", () => {
       ["redline", "d1", "supply-pack - redline.docx"],
       ["drafting_notes", null, "supply-pack - clean (2).docx"],
       ["drafting_notes_markdown", null, null],
+      ["combined", "d1", "supply-pack.docx"],
     ])
 
     const redline = matter()
@@ -212,7 +385,7 @@ describe("the requested memo's notes file in a combined package", () => {
     writeLeanPlan(directory, documents, undefined, undefined, memo(documents))
     const { names, rows } = await registered(directory, documents)
     expect(rows).toContainEqual(["drafting_notes", null, "supply-pack - cover memo.docx"])
-    expect(names).not.toContain("supply-pack.docx")
+    expect(names.at(-1)).toBe("supply-pack.docx")
     expect(combinedParts(directory)).toEqual({ document: "d2", name: "supply-pack", body: "supply-pack - clean.docx", notes: "supply-pack - cover memo.docx" })
   }, 60_000)
 })

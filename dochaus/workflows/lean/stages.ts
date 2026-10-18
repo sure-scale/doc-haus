@@ -9,7 +9,7 @@ import { comparisonBasis } from "./comparison"
 import { checkPackageReview, readPackageReview } from "./package-review"
 import { coverageItems, planCoverageCurrent } from "./package-coverage"
 import { requestedFilesItems } from "./requested-files"
-import { DELIVERED_NOTES, requestedMemo } from "./deliverables"
+import { combinedFileItems, DELIVERED_NOTES, requestedMemo } from "./deliverables"
 import { evidenceOutputValid } from "./evidence"
 import { researchOutputValid } from "./research"
 import { readFirmDraftingPreferences } from "../../lib/drafting-preferences"
@@ -412,7 +412,7 @@ export function stageOutputValid(directory: string, step: StepID) {
 
 /** Open items the drafting notes must disclose. */
 export function disclosableItems(directory: string): OpenItem[] {
-  return [...readOpenItems(directory).filter(item => DISCLOSED_STAGES.includes(item.stage)), ...deferredFindingItems(directory), ...coverageItems(directory), ...requestedFilesItems(directory)]
+  return [...readOpenItems(directory).filter(item => DISCLOSED_STAGES.includes(item.stage)), ...deferredFindingItems(directory), ...coverageItems(directory), ...requestedFilesItems(directory), ...combinedFileItems(directory)]
 }
 
 function ensureNewline(text: string) {

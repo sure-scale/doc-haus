@@ -3,15 +3,16 @@ import { createHash } from "node:crypto"
 import { existsSync, readFileSync } from "node:fs"
 import path from "node:path"
 import { canonicalArtifactIdentity } from "../../capabilities/artifacts/mutation-lock"
-import { combineMemoAndBody } from "../../lib/combined-docx"
+import { buildCombinedFile } from "../../lib/combined-docx"
 import { readDocxCommentParagraphs, readDocxRevisionProperties } from "../../lib/docx-comments"
 import { withParagraphPointers } from "../../lib/drafting-amendment"
 import { sha256File } from "../../lib/lineage"
 import { readWorkingDocx } from "../../lib/working-docx"
 import { appendLeanEvent } from "./events"
 import { readLeanPlan, type DocID, type LeanPlan } from "./plan"
+import { openItem } from "./quotes"
 import type { LeanDeps } from "./stages"
-import { leanFile, readLeanJson, writeLeanBytes, writeLeanText } from "./state"
+import { leanFile, readLeanJson, writeLeanBytes, writeLeanText, type OpenItem } from "./state"
 
 // Documents a lean run produces: for each planned document its final body and
 // redline, and once for the run the drafting notes. When the run stops at its final gate, the
@@ -32,8 +33,13 @@ import { leanFile, readLeanJson, writeLeanBytes, writeLeanText } from "./state"
 // own, any requirements left open (in memo mode the memo first, then both
 // sections; otherwise both sections first, then the drafting notes), under the
 // drafting notes' own kind and name.
+// With a combined document (combinedDelivery), the file built from its two
+// registered parts, as each download builds it (buildCombinedFile), is then
+// registered under the requested name, never suffixed. When the build is refused
+// or a file the run may not replace holds that name, it is not saved: a finalize
+// item the notes disclose says so (combinedFileItems).
 
-export type LeanDocumentKind = "body" | "redline" | "drafting_notes" | "drafting_notes_markdown"
+export type LeanDocumentKind = "body" | "redline" | "drafting_notes" | "drafting_notes_markdown" | "combined"
 
 export type LeanDocument = {
   kind: LeanDocumentKind
@@ -41,7 +47,8 @@ export type LeanDocument = {
   document: DocID | null
   /** The planned title of a body or redline; null for the run's notes. */
   title: string | null
-  /** Matter-relative path of the run's own copy. */
+  /** Matter-relative path of the run's own copy; for the combined file, of the
+   * matter file, as the run keeps no copy of it. */
   path: string
   sha256: string
   /** Matter-relative path of the registered deliverable, once registered. */
@@ -56,7 +63,7 @@ export type LeanDocuments = { schema: "dochaus.lean.documents/2"; status: "block
 /** The gate's notes delivered in place of the drafting notes; see deliveredNotes. */
 export const DELIVERED_NOTES = { docx: "delivered-notes.docx", markdown: "delivered-notes.md" }
 
-type Produced = { kind: LeanDocumentKind; document: DocID | null; title: string | null; file: string; name: string | null; requested?: boolean }
+type Produced = { kind: Exclude<LeanDocumentKind, "combined">; document: DocID | null; title: string | null; file: string; name: string | null; requested?: boolean }
 
 /** The Word content type of every delivered file, the combined download's included. */
 export const DOCX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -64,7 +71,7 @@ export const DOCX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.
 // The fixed wording of every delivery row: what code sets, and what a row made
 // before delivery cannot show.
 const PLAIN_CODE_SETS = "Code sets this file's name (registration's naming logic on the current plan and matter files; registration may add \" (n)\" to keep an existing matter document) and its Word format."
-const COMBINED_CODE_SETS = "Code sets this file's name (registration's naming logic on the current plan; each download uses exactly this name), its Word format and its part order: the memo, a section break, then the body from a new page. Each download builds it from the two registered parts; it is never registered itself."
+const COMBINED_CODE_SETS = "Code sets this file's name (registration's naming logic on the current plan; registration and each download use exactly this name, never suffixed), its Word format and its part order: the memo, a section break, then the body from a new page. Once the final gate passes, code builds it from the two registered parts and registers it in the matter; each download builds it the same way. When the build is refused or a file the run may not replace holds the name, it is not saved, and a finalize item says so."
 const NOT_COVERED = "Not covered: Word changes accepted after delivery, changes the final gate makes to the notes, and rendered layout."
 const NOT_WRITTEN = "not yet written"
 
@@ -72,11 +79,12 @@ const NOT_WRITTEN = "not yet written"
  * names come from the model's plan, not independently verified user intent;
  * registration may suffix a name to preserve an existing matter document. With
  * a combined document (combinedDelivery), a last row states the one file built
- * from two of these rows at download, under the name and in the order the
- * download builds it. With `build`, that row also gives each part's sha256 and
- * paragraph count and the properties of the file combineMemoAndBody builds from
- * the run's current copies of both parts (or its refusal code, or which part is
- * not yet written). The build is held in memory only; nothing is written. */
+ * from two of these rows once they are registered, under the name and in the
+ * order registration and each download build it. With `build`, that row also
+ * gives each part's sha256 and paragraph count and the properties of the file
+ * buildCombinedFile builds from the run's current copies of both parts (or its
+ * refusal code, or which part is not yet written). The build is held in memory
+ * only; nothing is written. */
 export function deliveryArtifactEvidence(directory: string, options: { build?: boolean } = {}) {
   const rows = producedFiles(directory).flatMap(row => row.name === null ? [] : [{
     kind: row.kind,
@@ -110,7 +118,7 @@ export function deliveryArtifactEvidence(directory: string, options: { build?: b
   }]
 }
 
-/** The combined file as combineMemoAndBody builds it now from the parts' run
+/** The combined file as buildCombinedFile builds it now from the parts' run
  * copies, in memory: its sha256, its non-empty accepted paragraphs and whether
  * they are the memo's followed by the body's; else the build's refusal code,
  * or which part is not yet written. Each written part gains its sha256 and
@@ -127,12 +135,9 @@ function builtCombined<T extends { kind: string; path: string; file_status: stri
     const missing = parts.filter((_, index) => !bytes[index]).map(part => part.kind === "body" ? "body" : "memo")
     return { contains, built_at_check: { not_built: `The ${missing.join(" and ")} part${missing.length > 1 ? "s are" : " is"} not yet written at check time.` } }
   }
-  let file: Uint8Array
-  try {
-    file = combineMemoAndBody({ memo, body })
-  } catch (error) {
-    return { contains, built_at_check: { refused: combineRefusalCode(error) } }
-  }
+  const built = buildCombinedFile({ memo, body })
+  if ("refused" in built) return { contains, built_at_check: { refused: built.refused } }
+  const file = built.bytes
   const text = paragraphTexts(file)
   const [memoText, bodyText] = texts
   return { contains, built_at_check: {
@@ -155,17 +160,6 @@ function paragraphTexts(bytes: Uint8Array) {
   }
 }
 
-/** combineMemoAndBody's code for a build it refuses, as the combined download
- * reports it: its own codes, invalid_docx_xml for any XML error, and
- * invalid_docx_package for a zip error (fflate's numeric code). */
-function combineRefusalCode(error: unknown) {
-  const message = error instanceof Error ? error.message : ""
-  if (message.startsWith("invalid_docx_xml:")) return "invalid_docx_xml"
-  if (/^(?:unsupported_memo_\w+|empty_memo|invalid_docx_package)$/.test(message)) return message
-  if (typeof (error as { code?: unknown } | null)?.code === "number") return "invalid_docx_package"
-  return "build_failed"
-}
-
 const MAX_NAME_SUFFIX = 9
 
 export function readLeanDocuments(directory: string): LeanDocuments | undefined {
@@ -178,11 +172,7 @@ export function readLeanDocuments(directory: string): LeanDocuments | undefined 
  * files also become matter deliverables through `deps.registerDeliverable`. A
  * registration failure throws: the files exist but the lawyer cannot see them. */
 export async function recordLeanDocuments(directory: string, deps: LeanDeps, register: boolean): Promise<LeanDocuments> {
-  // Document ids are plan positions, so a re-plan can give an id to another
-  // document; an earlier row is this file's only when its title matches (for
-  // the untitled notes, its deliverable name, which follows a document's name).
-  const previous = new Map((readLeanDocuments(directory)?.documents ?? [])
-    .map(row => [`${row.kind}:${row.title ?? row.deliverable?.replace(/(?: \(\d+\))?\.docx$/, "") ?? null}`, row]))
+  const previous = earlierRows(directory)
   const documents: LeanDocument[] = []
   const produced = producedFiles(directory, register)
   const closed = closedNames(directory, produced)
@@ -215,10 +205,120 @@ export async function recordLeanDocuments(directory: string, deps: LeanDeps, reg
       ...(kept && sha256File(path.join(directory, kept))?.sha256 !== sha256 ? { conflict: "accepted_revision" as const } : {}),
     })
   }
+  const delivery = titledCombinedDelivery(directory)
+  const combined = delivery && await combinedRow(directory, deps, register, delivery, documents, previous.get(`combined:${delivery.title}`))
+  if (combined?.row) documents.push(combined.row)
   const summary: LeanDocuments = { schema: "dochaus.lean.documents/2", status: register ? "completed" : "blocked", documents }
   writeLeanText(directory, "documents.json", `${JSON.stringify(summary, null, 2)}\n`)
   if (register) appendLeanEvent(directory, { stage: "run", event: "delivered", outputs: documents.flatMap(row => row.deliverable ?? []) })
+  // The parts are delivered and listed; the run then fails visibly.
+  if (combined?.failure) throw new Error(combined.failure)
   return summary
+}
+
+/** The summary's earlier rows by kind and title. Document ids are plan
+ * positions, so a re-plan can give an id to another document; an earlier row
+ * is a file's only when its title matches (for the untitled notes, its
+ * deliverable name, which follows a document's name). */
+function earlierRows(directory: string) {
+  return new Map((readLeanDocuments(directory)?.documents ?? [])
+    .map(row => [`${row.kind}:${row.title ?? row.deliverable?.replace(/(?: \(\d+\))?\.docx$/, "") ?? null}`, row]))
+}
+
+/** The combined file's summary row. Once the gate passed, the file built from
+ * the two parts as registered (combinedParts on this run's `documents`) is
+ * registered under the requested name, replacing the earlier copy by its
+ * sha256 (combinedOutcome). A file not saved has no row, except that the
+ * earlier copy (`prior`), while still in the matter unchanged, keeps its row
+ * without a deliverable, as the run's to replace later. At a stop before
+ * delivery, the earlier row is kept, delivered only while both parts are.
+ * `failure` says why the file is not saved when the gate's notes did not
+ * disclose it (combinedFileItems). */
+async function combinedRow(directory: string, deps: LeanDeps, register: boolean, delivery: CombinedDelivery, documents: LeanDocument[], prior: LeanDocument | undefined): Promise<{ row?: LeanDocument; failure?: string }> {
+  const name = `${delivery.name}.docx`
+  const earlier = prior?.path.toLocaleLowerCase() === name.toLocaleLowerCase() && sha256File(path.join(directory, prior.path))?.sha256 === prior.sha256
+    ? { ...prior, document: delivery.document } : undefined
+  const parts = combinedParts(directory, documents)
+  if (!register || !deps.registerDeliverable) return { row: earlier && { ...earlier, deliverable: parts ? earlier.deliverable : null } }
+  const kept = earlier && { ...earlier, deliverable: null }
+  const read = (file: string) => new Uint8Array(readFileSync(path.join(directory, file)))
+  const outcome = combinedOutcome(directory, delivery, parts && { memo: read(parts.notes), body: read(parts.body) }, prior)
+  if (!outcome) return { row: kept, failure: `The combined file "${name}" is not saved in the matter: the memo and "${delivery.title}" are not both registered.` }
+  if ("item" in outcome) {
+    const gate = readLeanJson(directory, "gate.json") as { items?: OpenItem[] } | undefined
+    const disclosed = gate?.items?.some(item => item.id === outcome.item.id && item.status === "disclosed")
+    return { row: kept, ...(disclosed ? {} : { failure: outcome.item.detail }) }
+  }
+  const registered = await deps.registerDeliverable(directory, name, outcome.bytes, outcome.current)
+  if (!registered) return { row: kept, failure: `The combined file "${name}" is not saved in the matter: the matter refused it.` }
+  return { row: { kind: "combined", document: delivery.document, title: delivery.title, path: registered, sha256: outcome.sha256, deliverable: registered } }
+}
+
+/** The finalize item saying the combined file will not be saved, as
+ * registration will find it (combinedOutcome), from the run's current copies of
+ * its parts, or of a part kept at the lawyer's accepted Word revision, the file
+ * registration keeps for it. None without a combined delivery, nor, unless a
+ * file the run may not replace holds the name, while a part is not yet written.
+ * Builds in memory only; writes nothing. */
+export function combinedFileItems(directory: string): OpenItem[] {
+  const delivery = titledCombinedDelivery(directory)
+  if (!delivery) return []
+  const previous = earlierRows(directory)
+  const copy = (item: Produced | undefined) => {
+    if (!item?.name) return
+    const kept = acceptedRevisionName(directory, item.name, previous.get(`${item.kind}:${item.title ?? item.name}`))
+    const file = kept ? path.join(directory, kept) : leanFile(directory, item.file)
+    return existsSync(file) ? new Uint8Array(readFileSync(file)) : undefined
+  }
+  const produced = producedFiles(directory)
+  const memo = copy(produced.find(row => row.kind === "drafting_notes"))
+  const body = copy(produced.find(row => row.kind === "body" && row.document === delivery.document))
+  const outcome = combinedOutcome(directory, delivery, memo && body ? { memo, body } : undefined, previous.get(`combined:${delivery.title}`))
+  return outcome && "item" in outcome ? [outcome.item] : []
+}
+
+/** What registration saves as the combined file "<name>.docx": the bytes
+ * buildCombinedFile gives from `parts`, with the sha256 of the file they
+ * replace (null when absent); or the finalize item saying why nothing is saved:
+ * the build is refused, or the name is held by a file the run may not replace (a
+ * source, the lawyer's accepted Word revision, or bytes other than its earlier
+ * copy, `prior`). Never another name. Undefined when `parts` is and no such file
+ * holds the name. Reads the matter; writes nothing. */
+function combinedOutcome(directory: string, delivery: CombinedDelivery, parts: { memo: Uint8Array; body: Uint8Array } | undefined, prior: LeanDocument | undefined):
+  { bytes: Uint8Array; sha256: string; current: string | null } | { item: OpenItem } | undefined {
+  const name = `${delivery.name}.docx`
+  const file = path.join(directory, name)
+  const current = sha256File(file)?.sha256 ?? null
+  const earlier = current !== null && prior?.path.toLocaleLowerCase() === name.toLocaleLowerCase() && prior.sha256 === current
+  const unsaved = (reason: string) => ({ item: openItem("finalize", "omission", `The combined file "${name}" (the memo, then "${delivery.title}") is not saved in the matter: ${reason}. ` +
+    `The memo and "${delivery.title}" are delivered as separate files.${earlier ? ` The file "${name}" in the matter is from an earlier delivery.` : ""}`, { repair_target: "memo" }) })
+  if (current !== null && sourceName(directory, name)) return unsaved("a source document in the matter has that name")
+  if (current !== null && readWorkingDocx(directory, file)) return unsaved("the file of that name holds the lawyer's accepted Word changes, which the run does not write over")
+  if (!parts) return
+  const built = buildCombinedFile(parts)
+  if ("refused" in built) return unsaved(built.part ? `the ${built.part === "memo" ? "memo" : "draft"} could not be read as a Word document` : COMBINED_REFUSALS[built.refused] ?? "the file could not be built")
+  // Paragraph pointers as registration gives them, the earlier copy's where the text is unchanged.
+  const bytes = withParagraphPointers(built.bytes, earlier ? readFileSync(file) : undefined)
+  const sha256 = createHash("sha256").update(bytes).digest("hex")
+  if (current !== null && current !== sha256 && !earlier) return unsaved("a file the run did not write already has that name")
+  return { bytes, sha256, current }
+}
+
+/** A refused build's reason, in plain words, by buildCombinedFile's code. */
+const COMBINED_REFUSALS: Record<string, string> = {
+  empty_memo: "the memo has no text to place before the draft",
+  unsupported_memo_numbering: "the memo uses list numbering the combined file cannot carry",
+  unsupported_memo_namespace: "the memo uses Word markup the combined file cannot carry",
+  unsupported_memo_dependency: "the memo holds footnotes, endnotes, pictures, embedded objects or links to other parts of its file, which the combined file cannot carry",
+}
+
+/** Whether the matter registry lists the matter file `name` as a source. */
+function sourceName(directory: string, name: string) {
+  try {
+    return registeredRole(directory, name) === "source"
+  } catch {
+    return false
+  }
 }
 
 /** Drops the summary rows of documents no longer planned. Rows are matched by
@@ -262,8 +362,9 @@ function producedFiles(directory: string, delivered = false, deliveryPlan = read
  * holds none of them: each named file of producedFiles, in order, takes the
  * first name registration tries (openNames) that no earlier file took, as the
  * earlier file's registered copy would refuse it; null when none is left. The
- * combined file (combinedDelivery), never registered, keeps its name. `wanted`
- * is the name before any suffix; `requested`, whether the plan requests it.
+ * combined file (combinedDelivery), registered under no other name, keeps it.
+ * `wanted` is the name before any suffix; `requested`, whether the plan
+ * requests it.
  * Nothing is read from or written to the matter. */
 export function plannedRegistration(directory: string, plan: LeanPlan) {
   const key = (name: string) => `${name}.docx`.toLocaleLowerCase()
@@ -280,11 +381,11 @@ export function plannedRegistration(directory: string, plan: LeanPlan) {
   return combined ? [...files, { kind: "combined", document: combined.document, wanted: key(combined.name), name: key(combined.name), requested: true }] : files
 }
 
-type PlannedName = { kind: LeanDocumentKind | "combined"; document: DocID | null; wanted: string; name: string | null; requested: boolean }
+type PlannedName = { kind: LeanDocumentKind; document: DocID | null; wanted: string; name: string | null; requested: boolean }
 
 /** The names, lowercased, a file's registration may not take: a name another
- * file was requested under; a combined document's "<stem>.docx", the file built
- * at download (combinedDelivery); and, for a requested memo, every planned
+ * file was requested under; a combined document's "<stem>.docx", the combined
+ * file's (combinedDelivery); and, for a requested memo, every planned
  * document's name. The memo is named after a planned document (memoNotesFile),
  * so it can repeat a body, clean or redline name; it then yields and takes the
  * next suffix. `plan` is the saved plan unless given. */
@@ -425,14 +526,25 @@ export function requestedMemo(directory: string, plan = readLeanPlan(directory))
 
 /** The one file a combined document is delivered as with the requested memo:
  * the document's id and its requested delivery name stem, so "<name>.docx" is
- * the requested file. The file is built at download time from the registered
- * body and notes and is never written or registered. Undefined unless the plan
- * has exactly one combined document and a requested memo. `plan` is the saved
- * plan unless given. */
+ * the requested file. The file is built from the registered body and notes
+ * (buildCombinedFile), registered under that name once they are
+ * (recordLeanDocuments), and built so again for each download. Undefined unless
+ * the plan has exactly one combined document and a requested memo. `plan` is
+ * the saved plan unless given. */
 export function combinedDelivery(directory: string, plan = readLeanPlan(directory)): { document: DocID; name: string } | undefined {
   const combined = plan?.documents.filter(row => row.deliverable === "combined") ?? []
   if (combined.length !== 1 || !requestedMemo(directory, plan)) return
   return { document: combined[0]!.id, name: deliveryStem(combined[0]!) }
+}
+
+type CombinedDelivery = { document: DocID; name: string; title: string }
+
+/** combinedDelivery with the combined document's planned title. */
+function titledCombinedDelivery(directory: string): CombinedDelivery | undefined {
+  const plan = readLeanPlan(directory)
+  const delivery = combinedDelivery(directory, plan)
+  const document = delivery && plan?.documents.find(row => row.id === delivery.document)
+  return delivery && document ? { ...delivery, title: document.title } : undefined
 }
 
 /** The combined file's parts as the current plan delivers them: the registered
@@ -442,12 +554,11 @@ export function combinedDelivery(directory: string, plan = readLeanPlan(director
  * (the registry keeps an existing file's spelling). Rows delivered under another
  * plan (another deliverable, file or memo name) never match, and a run stopped
  * at its gate lists a part it changed without a name. Plain file names only;
- * reads the plan and summary, not the registry or the files. Undefined unless
- * combinedDelivery holds and both parts are listed. */
-export function combinedParts(directory: string): { document: DocID; name: string; body: string; notes: string } | undefined {
+ * reads the plan and summary (or the given `rows`), not the registry or the
+ * files. Undefined unless combinedDelivery holds and both parts are listed. */
+export function combinedParts(directory: string, rows = readLeanDocuments(directory)?.documents ?? []): { document: DocID; name: string; body: string; notes: string } | undefined {
   const delivery = combinedDelivery(directory)
   if (!delivery) return
-  const rows = readLeanDocuments(directory)?.documents ?? []
   const registered = (part: Produced | undefined) => {
     if (!part?.name) return
     const names = new Set(deliverableNames(part.name).map(name => name.toLocaleLowerCase()))

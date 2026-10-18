@@ -16,6 +16,7 @@ import { excerpt, quoteFound, openItem } from "./quotes"
 import { answeredScopeQuestion, GATE_EXCERPT, keyedQuestionID, openScopeQuestion, scopeAnswers, scopeField, scopeQuestionShows } from "./package-scope"
 import { LEAN_MAX_SUBSTANTIVE_REPAIRS, readRepairRound, repairedChecklistItems } from "./repairs"
 import { requestedFilesItems } from "./requested-files"
+import { combinedFileItems } from "./deliverables"
 import { withheldChecklistRepair } from "./requests"
 import { isReviewStage, currentOpenItems, readLeanText, readLeanJson, readLeanState, readQuestions, type LeanState, type OpenItem, type Question } from "./state"
 
@@ -123,7 +124,7 @@ export function finalGate(directory: string): GateResult {
   // Adverse checklist findings lead: the lawyer's list of items may be capped.
   const unresolved = checked?.valid ? [...checked.unresolved.map(row => checklistUnresolvedItem(directory, leanState, row, conflict?.id)),
     ...checked.unresolvedParents.map(row => checklistUnresolvedParentItem(directory, row))] : []
-  const items = [...unresolved, ...[...currentOpenItems(directory), ...deferredFindingItems(directory), ...coverageItems(directory), ...requestedFilesItems(directory)].map(item => settle(item, context)), ...semantic, ...projected]
+  const items = [...unresolved, ...[...currentOpenItems(directory), ...deferredFindingItems(directory), ...coverageItems(directory), ...requestedFilesItems(directory), ...combinedFileItems(directory)].map(item => settle(item, context)), ...semantic, ...projected]
   if (checked && !checked.valid) items.push(openItem("checklist-check", "omission", "Effective checklist findings or source-unit coverage are incomplete or stale, or a check or its reinspection failed; see checklist/report.md.", {}))
   // Focused checks can correctly preserve a source-dependent open issue
   // without requesting a missing answer or inventing a disclosure. Such a

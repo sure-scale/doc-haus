@@ -40,6 +40,39 @@ const STYLES = { rel: `${O}/styles`, file: "word/styles.xml", root: "styles",
 const NUMBERING = { rel: `${O}/numbering`, file: "word/numbering.xml", root: "numbering",
   type: "application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml" }
 
+/** The one build of the combined file, for the copy a lean run saves in the
+ * matter and for each download: combineMemoAndBody's bytes, or the code of a
+ * build it refuses. The code is its own (empty_memo, unsupported_memo_*),
+ * invalid_docx_xml for any XML error, invalid_docx_package for a zip error
+ * (fflate's numeric code), else build_failed; for an unreadable package,
+ * `part` names the input that cannot be read. Pure, like combineMemoAndBody. */
+export function buildCombinedFile(parts: { memo: Uint8Array; body: Uint8Array }): { bytes: Uint8Array } | { refused: string; part?: "memo" | "body" } {
+  try {
+    return { bytes: combineMemoAndBody(parts) }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : ""
+    if (/^(?:unsupported_memo_\w+|empty_memo)$/.test(message)) return { refused: message }
+    const unreadable = unreadableCode(error)
+    // Only after a failed build: the body read as both parts names the other one.
+    if (unreadable) return { refused: unreadable, part: unreadableCode(attempt(() => combineMemoAndBody({ memo: parts.body, body: parts.body }))) ? "body" : "memo" }
+    return { refused: "build_failed" }
+  }
+}
+
+function unreadableCode(error: unknown) {
+  const message = error instanceof Error ? error.message : ""
+  if (message.startsWith("invalid_docx_xml:")) return "invalid_docx_xml"
+  if (message === "invalid_docx_package" || typeof (error as { code?: unknown } | null)?.code === "number") return "invalid_docx_package"
+}
+
+function attempt(build: () => unknown) {
+  try {
+    build()
+  } catch (error) {
+    return error
+  }
+}
+
 /** Memo first, a section break, then the body, as new .docx bytes. `memo` is
  * the registered notes .docx; `body` is the registered body .docx. Pure: no
  * file or state reads, and neither input changes. */
