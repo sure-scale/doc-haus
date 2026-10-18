@@ -4,7 +4,7 @@ import { normalize } from "../../lib/quote-verify"
 import { TOOL_SYNTAX_ISSUE, printedToolCall, record } from "./checks"
 import { readWorkingDocx } from "../../lib/working-docx"
 import { combinedDelivery, deliveryArtifactEvidence, deliveryStem, memoNotesFile, plannedRegistration, readLeanDocuments, redlineOfBody, requestedMemo } from "./deliverables"
-import { OTHER_FORMAT, formatStem, spelledNames } from "./delivery-selection"
+import { NAMING, OTHER_FORMAT, formatStem, spelledNames } from "./delivery-selection"
 import { plainFileName, readLeanPlan, type DocID, type PlannedDocument } from "./plan"
 import { tagged } from "./prompts"
 import { REQUEST_SOURCE, excerpt, instructionFound, lawyerWords, matterSourceIDs, openItem, quoteMissIssue } from "./quotes"
@@ -349,23 +349,35 @@ export function withRequestedNames<T extends { title: string; file?: string; del
 const questionID = (directory: string) =>
   `${QUESTION_ID}${shortHash(JSON.stringify([readLeanText(directory, "request.md") ?? "", readLeanText(directory, "updated-notes.md") ?? ""]))}`
 
+/** One line of a requested-files question (requestedFilesQuestion): the
+ * lawyer's words, what they ask for and how the plan delivers it instead, up to
+ * the next line, the redline note or the closing question. */
+const QUESTION_LINE = /Your words "(.*?)" ask for (.*?), but the document plan delivers (.*?)\.(?= Your words "| The memo can be joined | (?:For each, do|Do) you want )/g
+
 /** The answered requested-files questions (requestedFilesQuestion), on the
- * lawyer's words as they stand or as they stood: whether there is any, and the
- * words, as an answered question listed them for the file `files` describes
- * (asked), that hold or are held in the words `quote`, which a later job may
- * quote more or less fully; `same` when the question listed them as `quote`
- * gives them. Words that ask for several files are listed for each file the
- * question asked about, never for another file they ask for. */
+ * lawyer's words as they stand or as they stood: whether there is any, and,
+ * for a recorded `file`, the words an answered question listed that hold or
+ * are held in the file's quote, which a later job may quote more or less fully;
+ * `same` when the question listed them as the quote gives them, and `planned`,
+ * how the plan delivered the file when the question was asked. Words match
+ * whatever the question said they ask for, since a later outline may rename a
+ * document and a later job may give or drop a name. Only when other files of
+ * the record (`files`) are asked for in those words too does what the question
+ * said they ask for (asked) have to be `what` the file asks for: words that ask
+ * for several files are listed for each file the question asked about, never
+ * for another file they ask for. */
 function answeredFiles(directory: string) {
   const flat = (words: string) => normalize(words.replace(/…$/, "")).toLowerCase()
+  const holds = (words: string, quote: string) => flat(words).includes(flat(quote)) || flat(quote).includes(flat(words))
   const answered = readQuestions(directory).filter(question => question.id.startsWith(QUESTION_ID) && question.status === "answered")
-  const listed = answered.flatMap(question => [...question.question.matchAll(/Your words "(.*?)" ask for (.*?), but the document plan delivers /g)]
-    .map(match => ({ words: match[1]!.replace(/…$/, ""), files: match[2]! })))
+  const listed = answered.flatMap(question => [...question.question.matchAll(QUESTION_LINE)]
+    .map(match => ({ words: match[1]!.replace(/…$/, ""), files: match[2]!, planned: match[3]! })))
   return {
     any: answered.length > 0,
-    listing: (quote: string, files: string) => {
-      const row = listed.find(row => flat(row.files) === flat(files) && (flat(row.words).includes(flat(quote)) || flat(quote).includes(flat(row.words))))
-      return row === undefined ? undefined : { words: row.words, same: flat(row.words) === flat(excerpt(quote)) }
+    listing: (file: RequestedFile, files: RequestedFile[], what: string) => {
+      const row = listed.find(row => holds(row.words, file.quote) &&
+        (flat(row.files) === flat(what) || !files.some(other => other !== file && holds(row.words, other.quote))))
+      return row === undefined ? undefined : { words: row.words, same: flat(row.words) === flat(excerpt(file.quote)), planned: row.planned }
     },
   }
 }
@@ -376,9 +388,10 @@ function answeredFiles(directory: string) {
  * file name, and how the plan delivers it instead. It is asked once for the
  * lawyer's words as they stand (questionID): undefined when there is no issue
  * or that question is already open or answered, since a later job may quote
- * the same words differently. A file an answered question listed, by the
- * lawyer's words and what they ask for, is not asked about again, even once an
- * update changes the lawyer's words. */
+ * the same words differently. A file whose words an answered question listed
+ * (answeredFiles) is not asked about again, even once an update changes the
+ * lawyer's words, a later outline renames its document or a later job gives or
+ * drops its name. */
 export function requestedFilesQuestion(directory: string, requested: RequestedFiles, documents: PlannedDocument[], issues: FilesIssue[]): Question | undefined {
   if (!issues.length) return
   const id = questionID(directory)
@@ -388,7 +401,7 @@ export function requestedFilesQuestion(directory: string, requested: RequestedFi
   const listed = requested.files.flatMap(file => {
     const check = fileCheck(file, documents, true)
     const what = asked(file, id => documents.find(document => document.id === id))
-    return check.unsupported || !check.planned || answered.listing(file.quote, what) ? []
+    return check.unsupported || !check.planned || answered.listing(file, requested.files, what) ? []
       : [{ ask: Boolean(check.issue?.ask), line: `Your words "${excerpt(file.quote)}" ask for ${what}, but the document plan delivers ${check.planned}.` }]
   })
   if (!listed.length) return
@@ -409,6 +422,18 @@ function asked(file: RequestedFile, planned: (id: string) => { title: string } |
   const parts = file.holds.map(id => id === MEMO ? "the memo" : planned(id) ? `"${planned(id)!.title}"` : "a document no longer planned")
   const how = file.name ? (parts.length > 1 ? `in one file named "${file.name}"` : `as a file named "${file.name}"`) : parts.length > 1 ? "in one file" : "as a file of its own"
   return `${serialList(parts)} ${how}`
+}
+
+/** Whether the lawyer's words `quote` give the format's words `format` (formatStem)
+ * as a file's name: right after a naming word (NAMING), with "a" or "an"
+ * between them, as in "save it as a PDF". Elsewhere, as in "the PDF-ready
+ * form", they describe something else. */
+function namedFormat(quote: string, format: string) {
+  const text = normalize(quote).toLowerCase()
+  const words = normalize(format).toLowerCase()
+  for (let at = words ? text.indexOf(words) : -1; at >= 0; at = text.indexOf(words, at + 1))
+    if (!/[\p{L}\p{N}_]/u.test(text[at + words.length] ?? "") && NAMING.test(text.slice(0, at).replace(/\ban?\s+$/, ""))) return true
+  return false
 }
 
 /** The planned titles, in order, and memo name a record is read for. */
@@ -448,14 +473,20 @@ const savedFile = (row: unknown) => record(row) && Array.isArray(row.holds) && r
  * names registration gives the plan's files (plannedRegistration): the memo
  * with one document must be that document's combined file (combinedDelivery),
  * one document alone must not be combined, the memo alone must be delivered
- * with no document combined, and a requested name, or one the run could not
- * confirm, must be the name registration takes for that file. Each item quotes
- * the lawyer's words, says what they ask for and every file the run delivers
- * instead, by all it holds, and belongs to the drafting notes, so a repair goes
- * to the notes writer. Once the lawyer has answered a requested-files question
- * that listed these words for this file, the item cites that answer in plain
- * words, quoting the words it listed when they are more or fewer than the
- * item's. Each id keys on the item's content. */
+ * with no document combined, and a requested name must be the name
+ * registration takes for that file. A name the run could not confirm is the
+ * lawyer's only where the lawyer's words give it (nameGrounded), or, a format's
+ * words, where they follow a naming word (namedFormat): only a Word file's
+ * plain name can then be the file delivered. Any other is the reply's, and the
+ * file counts as delivered as named only under a name the lawyer's words give.
+ * Each item quotes the lawyer's words, says what they ask for and every file
+ * the run delivers instead, by all it holds, and belongs to the drafting notes,
+ * so a repair goes to the notes writer. Once the lawyer has answered a
+ * requested-files question that listed these words for this file
+ * (answeredFiles), the item cites that answer in plain words, quoting the
+ * words it listed when they are more or fewer than the item's, but only while
+ * the plan delivers the file as that question showed; otherwise the lawyer
+ * should confirm it. Each id keys on the item's content. */
 export function requestedFilesItems(directory: string): OpenItem[] {
   const plan = readLeanPlan(directory)
   const saved = readRequestedFiles(directory)
@@ -534,10 +565,13 @@ export function requestedFilesItems(directory: string): OpenItem[] {
     const target = shape && deliveredIn(shape.document ?? MEMO)
     const given = file.name ?? file.refused_name
     // A refused name the lawyer's words give is theirs: only a Word file's plain
-    // name can then be the file delivered. Any other refused name is the reply's,
-    // and is compared by its stem.
-    const quoted = file.name === null && given !== undefined && normalize(file.quote).toLowerCase().includes(normalize(given).toLowerCase())
-    const named = given === undefined || ((!quoted || /\.docx$/i.test(given) && plainFileName(given)) && target?.name === nameKey(given))
+    // name can then be the file delivered. Any other refused name is the reply's:
+    // the file is then delivered as named only under a name the words give.
+    const quoted = file.name === null && given !== undefined &&
+      (nameGrounded(directory, file.quote, given) !== undefined || (formatStem(nameStem(given)) && namedFormat(file.quote, given)))
+    const named = given === undefined || (file.name !== null ? target?.name === nameKey(file.name)
+      : quoted ? /\.docx$/i.test(given) && plainFileName(given) && target?.name === nameKey(given)
+      : Boolean(target?.spelled && nameGrounded(directory, file.quote, target.spelled)))
     if (!check.unsupported && !check.issue && named) return []
     const files = new Map<string, NonNullable<ReturnType<typeof delivery>>>()
     for (const held of file.holds) {
@@ -551,8 +585,8 @@ export function requestedFilesItems(directory: string): OpenItem[] {
       : !check.unsupported && check.issue?.ask ? " The run cannot join the memo with a redline." : ""
     const refused = file.name === null && file.refused_name !== undefined && !named
     const what = asked(file, held => plan.documents.find(row => row.id === held))
-    const listed = answered.listing(file.quote, what)
-    const closing = listed && !check.unsupported && check.planned
+    const listed = answered.listing(file, saved.files, what)
+    const closing = listed && !check.unsupported && check.planned === listed.planned
       ? ` The lawyer answered the question about ${listed.same ? "these files" : `the files the words ${lawyerQuote(listed.words)} ask for`}; ` +
         "the plan drawn up with that answer still delivers them so."
       : " The lawyer should confirm how these files are to be delivered."

@@ -15,7 +15,7 @@ import {
   FILES_REVISION_SCOPE, LEAN_REQUESTED_FILES_SCHEMA, parseRequestedFiles, readRequestedFiles, requestedFilesIssues, requestedFilesItems, requestedFilesPrompt, requestedFilesQuestion,
   requestedFilesRevision, withRequestedNames, writeRequestedFiles, type LeanRequestedFiles, type RequestedFile, type RequestedFiles,
 } from "./requested-files"
-import { writeLeanText, writeQuestions } from "./state"
+import { writeLeanText, writeQuestions, type Question } from "./state"
 import { cleanupMatters, matter } from "./test-support"
 
 // Requested files: the files the lawyer asks to receive, grounded in the
@@ -517,6 +517,8 @@ describe("requested files items", () => {
   const PLANNED = { titles: ["Share transfer form", "Board minute"], memo: MEMO }
   const RECORD: LeanRequestedFiles = { schema: LEAN_REQUESTED_FILES_SCHEMA, basis: BASIS, planned: PLANNED, ...ASKED }
   const AS_ASKED = [outline("Share transfer form", { file: "Kestrel Transfer.docx" }), outline("Board minute", { file: "Kestrel Board Pack.docx", deliverable: "combined" })]
+  // The transfer form delivered under its title's name, not the lawyer's.
+  const ELSEWHERE = [outline("Share transfer form"), AS_ASKED[1]!]
   const NOTES = { name: MEMO, file: "Kestrel Board Pack - cover memo.docx" }
   const CONFIRM = " The lawyer should confirm how these files are to be delivered."
   const ANSWERED = " The lawyer answered the question about these files; the plan drawn up with that answer still delivers them so."
@@ -581,42 +583,77 @@ describe("requested files items", () => {
     }
   })
 
-  test("an answer is cited only for the files its question asked about", () => {
+  test("an answer is cited only for the files its question asked about, while the plan delivers them as the question showed", () => {
     const directory = saved([outline("Share transfer form", { deliverable: "combined" }), outline("Board minute", { file: "Kestrel Board Pack.docx" })])
-    // Asked over an earlier outline, the question lists only the board pack.
-    const question = requestedFilesQuestion(directory, ASKED, DOCUMENTS, requestedFilesIssues(DOCUMENTS, MEMO, ASKED).issues)!
-    expect(question.question).not.toContain(TRANSFER)
-    writeQuestions(directory, [{ ...question, status: "answered", answer: "As planned.", answered_at: "2026-10-18T00:00:00.000Z" }])
+    const answer = (question: Question) => writeQuestions(directory, [{ ...question, status: "answered", answer: "As planned.", answered_at: "2026-10-18T00:00:00.000Z" }])
     const combined = 'the memo and "Share transfer form" in one file named "Share transfer form.docx"'
-    expect(requestedFilesItems(directory)).toEqual([
-      item(`the lawyer's words "${PACK}" [source: request] ask for the memo and "Board minute" in one file named "Kestrel Board Pack.docx", ` +
-        `but the run delivers ${combined} and "Board minute" in "Kestrel Board Pack.docx".`,
-      ANSWERED),
-      item(`the lawyer's words "${TRANSFER}" [source: request] ask for "Share transfer form" as a file named "Kestrel Transfer.docx", but the run delivers ${combined}.`),
-    ])
+    const pack = `the lawyer's words "${PACK}" [source: request] ask for the memo and "Board minute" in one file named "Kestrel Board Pack.docx", ` +
+      `but the run delivers ${combined} and "Board minute" in "Kestrel Board Pack.docx".`
+    const transfer = item(`the lawyer's words "${TRANSFER}" [source: request] ask for "Share transfer form" as a file named "Kestrel Transfer.docx", but the run delivers ${combined}.`)
+    // Asked over the plan as it stands, while the files job had recorded the board pack alone, the question lists only the board pack.
+    const current = [planned("d1", "Share transfer form", { deliverable: "combined" }), planned("d2", "Board minute", { file: "Kestrel Board Pack.docx" })]
+    const alone = stated(ASKED.files[0]!)
+    answer(requestedFilesQuestion(directory, alone, current, requestedFilesIssues(current, MEMO, alone).issues)!)
+    expect(requestedFilesItems(directory)).toEqual([item(pack, ANSWERED), transfer])
+    // Asked over an earlier outline, which delivered the board pack's memo and minute as separate files, the answer is not cited
+    // now that the plan joins the memo with the transfer form instead.
+    const question = requestedFilesQuestion(prepared(), ASKED, DOCUMENTS, requestedFilesIssues(DOCUMENTS, MEMO, ASKED).issues)!
+    expect(question.question).not.toContain(TRANSFER)
+    answer(question)
+    expect(requestedFilesItems(directory)).toEqual([item(pack), transfer])
   })
 
   test("of two files the same words ask for, an answer is cited only for the one its question asked about", () => {
     const words = "Send the cover memo on its own and the board minute as Kestrel Minute.docx"
+    const request = `Prepare a share transfer form and a board minute for Kestrel Works. ${words}.`
     const shared = record(file(["memo"], words), file(["d2"], words, "Kestrel Minute.docx"))
     const directory = saved([outline("Share transfer form"), outline("Board minute", { file: "Kestrel Minute.docx", deliverable: "combined" })], shared)
-    writeLeanText(directory, "request.md", `Prepare a share transfer form and a board minute for Kestrel Works. ${words}.`)
-    // Asked over an earlier outline that joined the memo with the transfer form, the question lists only the memo's file.
-    const earlier = [planned("d1", "Share transfer form", { deliverable: "combined" }), planned("d2", "Board minute")]
-    const question = requestedFilesQuestion(directory, shared, earlier, requestedFilesIssues(earlier, MEMO, shared).issues)!
-    expect(question.question).not.toContain('ask for "Board minute"')
-    writeQuestions(directory, [{ ...question, status: "answered", answer: "As planned.", answered_at: "2026-10-18T00:00:00.000Z" }])
+    writeLeanText(directory, "request.md", request)
+    const answer = (question: Question) => writeQuestions(directory, [{ ...question, status: "answered", answer: "As planned.", answered_at: "2026-10-18T00:00:00.000Z" }])
     const delivered = 'but the run delivers the memo and "Board minute" in one file named "Kestrel Minute.docx".'
-    expect(requestedFilesItems(directory)).toEqual([
-      item(`the lawyer's words "${words}" [source: request] ask for the memo as a file of its own, ${delivered}`, ANSWERED),
-      item(`the lawyer's words "${words}" [source: request] ask for "Board minute" as a file named "Kestrel Minute.docx", ${delivered}`),
-    ])
+    const memo = `the lawyer's words "${words}" [source: request] ask for the memo as a file of its own, ${delivered}`
+    const minute = item(`the lawyer's words "${words}" [source: request] ask for "Board minute" as a file named "Kestrel Minute.docx", ${delivered}`)
+    // Asked over the plan as it stands, while the files job had recorded the memo's file alone, the question lists only the memo's file.
+    const current = [planned("d1", "Share transfer form"), planned("d2", "Board minute", { file: "Kestrel Minute.docx", deliverable: "combined" })]
+    const alone = stated(shared.files[0]!)
+    answer(requestedFilesQuestion(directory, alone, current, requestedFilesIssues(current, MEMO, alone).issues)!)
+    expect(requestedFilesItems(directory)).toEqual([item(memo, ANSWERED), minute])
+    // Asked over an earlier outline that joined the memo with the transfer form, the question lists only the memo's file too;
+    // its answer is not cited now that the plan joins the memo with the board minute.
+    const earlier = [planned("d1", "Share transfer form", { deliverable: "combined" }), planned("d2", "Board minute")]
+    const question = requestedFilesQuestion(prepared(request), shared, earlier, requestedFilesIssues(earlier, MEMO, shared).issues)!
+    expect(question.question).not.toContain('ask for "Board minute"')
+    answer(question)
+    expect(requestedFilesItems(directory)).toEqual([item(memo), minute])
     // Once an update changes the lawyer's words, the file no answered question asked about is asked about.
     writeLeanText(directory, "updated-notes.md", "<!-- update-1 -->\nAlso prepare a resignation letter.\n\n")
-    const current = [planned("d1", "Share transfer form"), planned("d2", "Board minute", { file: "Kestrel Minute.docx", deliverable: "combined" })]
     expect(requestedFilesQuestion(directory, shared, current, requestedFilesIssues(current, MEMO, shared).issues)!.question).toBe(
       `Your words "${words}" ask for "Board minute" as a file named "Kestrel Minute.docx", but the document plan delivers "Board minute" in one file with the memo. ` +
       "Do you want it delivered as your words ask, or as planned? If neither, say how it should be delivered.")
+  })
+
+  test("an answered file is not asked about again once a later outline renames its document or a later job drops its name; its answer is cited while the plan delivers it as the question showed", () => {
+    const documents = [outline("Share transfer form", { deliverable: "combined" }), outline("Board resolution", { file: "Kestrel Board Pack.docx" })]
+    const later = { ...record(file(["memo", "d2"], PACK, "Kestrel Board Pack.docx"), file(["d1"], TRANSFER)), planned: { titles: ["Share transfer form", "Board resolution"], memo: MEMO } }
+    const directory = saved(documents, later)
+    // Asked over an outline that already joined the memo with the transfer form and titled the minute "Board minute".
+    const earlier = [planned("d1", "Share transfer form", { deliverable: "combined" }), planned("d2", "Board minute")]
+    const question = requestedFilesQuestion(directory, ASKED, earlier, requestedFilesIssues(earlier, MEMO, ASKED).issues)!
+    expect(question.question).toContain(`Your words "${PACK}" ask for the memo and "Board minute"`)
+    expect(question.question).toContain(`Your words "${TRANSFER}" ask for "Share transfer form" as a file named "Kestrel Transfer.docx"`)
+    writeQuestions(directory, [{ ...question, status: "answered", answer: "As planned.", answered_at: "2026-10-18T00:00:00.000Z" }])
+    // After an update, neither file is asked about again: the lawyer's words were answered.
+    writeLeanText(directory, "updated-notes.md", "<!-- update-1 -->\nAlso prepare a resignation letter.\n\n")
+    const current = documents.map((row, index) => ({ ...row, id: `d${index + 1}` as DocID }))
+    expect(requestedFilesQuestion(directory, later, current, requestedFilesIssues(current, MEMO, later).issues)).toBeUndefined()
+    // The transfer form is delivered as the question showed, so its answer is cited; the board pack's delivery now reads
+    // otherwise, under the new title, so the lawyer confirms it.
+    const combined = 'the memo and "Share transfer form" in one file named "Share transfer form.docx"'
+    expect(requestedFilesItems(directory)).toEqual([
+      item(`the lawyer's words "${PACK}" [source: request] ask for the memo and "Board resolution" in one file named "Kestrel Board Pack.docx", ` +
+        `but the run delivers ${combined} and "Board resolution" in "Kestrel Board Pack.docx".`),
+      item(`the lawyer's words "${TRANSFER}" [source: request] ask for "Share transfer form" as a file of its own, but the run delivers ${combined}.`, ANSWERED),
+    ])
   })
 
   test("a document delivered under another name gives an item naming the file delivered", () => {
@@ -740,18 +777,66 @@ describe("requested files items", () => {
 
   test("a name the run could not confirm is disclosed with the file delivered", () => {
     const refused = { ...file(["d1"], TRANSFER), refused_name: "Kestrel Transfer Form.docx" }
-    expect(requestedFilesItems(saved(AS_ASKED, record(refused)))).toEqual([item(`the lawyer's words "${TRANSFER}" [source: request] ask for "Share transfer form" as a file of its own ` +
-      'and name this file; the run could not confirm the name "Kestrel Transfer Form.docx" in those words and delivers "Share transfer form" in "Kestrel Transfer.docx".')])
-    // Delivered under that very name, there is nothing to disclose.
+    expect(requestedFilesItems(saved(ELSEWHERE, record(refused)))).toEqual([item(`the lawyer's words "${TRANSFER}" [source: request] ask for "Share transfer form" as a file of its own ` +
+      'and name this file; the run could not confirm the name "Kestrel Transfer Form.docx" in those words and delivers "Share transfer form" in "Share transfer form.docx".')])
+    // Delivered under the name the lawyer's words give, or under that very name when the words give it, there is nothing to disclose.
+    expect(requestedFilesItems(saved(AS_ASKED, record(refused)))).toEqual([])
     expect(requestedFilesItems(saved(AS_ASKED, record({ ...refused, refused_name: "Kestrel Transfer.docx" })))).toEqual([])
   })
 
-  test("a file asked for in another format is disclosed as such, though the run delivers a Word file of the same stem", () => {
-    for (const [extension, name] of [[".pdf", "Kestrel Transfer.pdf"], [".pdf", "PDF"], [".doc", "Kestrel Transfer.doc"]]) {
-      const quote = TRANSFER.replace(".docx", extension!)
-      expect(requestedFilesItems(saved(AS_ASKED, record({ ...file(["d1"], quote), refused_name: name! })))).toEqual([item(`the lawyer's words "${quote}" [source: request] ` +
+  test("a refused name the lawyer's words do not give counts as delivered only under a name those words give", () => {
+    // The lawyer asks for Kestrel Transfer v2.docx; the reply's name, refused, shares the delivered file's stem.
+    const v2 = "Deliver the share transfer form separately as Kestrel Transfer v2.docx"
+    let directory = saved(AS_ASKED, record({ ...file(["d1"], v2), refused_name: "Kestrel Transfer.pdf" }))
+    writeLeanText(directory, "request.md", `${BOTH}. ${PACK}. ${v2}.`)
+    expect(requestedFilesItems(directory)).toEqual([item(`the lawyer's words "${v2}" [source: request] ask for "Share transfer form" as a file of its own ` +
+      'and name this file; the run could not confirm the name "Kestrel Transfer.pdf" in those words and delivers "Share transfer form" in "Kestrel Transfer.docx".')])
+    // The lawyer asks for Kestrel Transfer.doc; the last attempt gives the bare stem, which code makes a Word file's name.
+    const doc = "Deliver the share transfer form separately and save it as Kestrel Transfer.doc"
+    directory = saved()
+    writeLeanText(directory, "request.md", `${BOTH}. ${PACK}. ${doc}.`)
+    const last = parseRequestedFiles(reply(true, file(["d1"], doc, "Kestrel Transfer")), directory, DOCUMENTS, MEMO, { final: true })
+    expect(last).toEqual({ issues: [], value: stated({ ...file(["d1"], doc), refused_name: "Kestrel Transfer.docx" }) })
+    writeRequestedFiles(directory, record(...last.value!.files))
+    expect(requestedFilesItems(directory)).toEqual([item(`the lawyer's words "${doc}" [source: request] ask for "Share transfer form" as a file of its own ` +
+      'and name this file; the run could not confirm the name "Kestrel Transfer.docx" in those words and delivers "Share transfer form" in "Kestrel Transfer.docx".')])
+  })
+
+  test("format words count as the lawyer's only where the lawyer's words give them as a name", () => {
+    // "PDF" in a description is no format the lawyer asked for.
+    const ready = "Deliver the PDF-ready share transfer form separately as Kestrel Transfer.docx"
+    const directory = saved()
+    writeLeanText(directory, "request.md", `${BOTH}. ${PACK}. ${ready}.`)
+    const parsed = parseRequestedFiles(reply(true, file(["d1"], ready, "PDF")), directory, DOCUMENTS, MEMO)
+    expect(parsed).toEqual({ issues: [], value: stated({ ...file(["d1"], ready), refused_name: "PDF" }) })
+    writeRequestedFiles(directory, record(...parsed.value!.files))
+    expect(requestedFilesItems(directory)).toEqual([])
+    // Asked for after a naming word, it is.
+    const save = "Deliver the share transfer form separately and save it as a PDF"
+    for (const name of ["PDF", "a PDF"]) {
+      const saving = saved(AS_ASKED, record({ ...file(["d1"], save), refused_name: name }))
+      writeLeanText(saving, "request.md", `${BOTH}. ${PACK}. ${save}.`)
+      expect(requestedFilesItems(saving)).toEqual([item(`the lawyer's words "${save}" [source: request] ` +
         `ask for "Share transfer form" as a file of its own and give it as "${name}"; the run delivers .docx files only and delivers "Share transfer form" in "Kestrel Transfer.docx".`)])
     }
+  })
+
+  test("a file asked for in another format is disclosed as such, though the run delivers a Word file of the same stem", () => {
+    const words = (quote: string, name: string) => {
+      const directory = saved(AS_ASKED, record({ ...file(["d1"], quote), refused_name: name }))
+      writeLeanText(directory, "request.md", `${BOTH}. ${PACK}. ${quote}.`)
+      return requestedFilesItems(directory)
+    }
+    for (const extension of [".pdf", ".doc"]) {
+      const quote = TRANSFER.replace(".docx", extension)
+      const name = `Kestrel Transfer${extension}`
+      expect(words(quote, name)).toEqual([item(`the lawyer's words "${quote}" [source: request] ` +
+        `ask for "Share transfer form" as a file of its own and give it as "${name}"; the run delivers .docx files only and delivers "Share transfer form" in "Kestrel Transfer.docx".`)])
+    }
+    // A format the lawyer's words give only as a name's extension is not given as the file's name: it is a name the run could not confirm.
+    const quote = TRANSFER.replace(".docx", ".pdf")
+    expect(words(quote, "PDF")).toEqual([item(`the lawyer's words "${quote}" [source: request] ` +
+      'ask for "Share transfer form" as a file of its own and name this file; the run could not confirm the name "PDF" in those words and delivers "Share transfer form" in "Kestrel Transfer.docx".')])
   })
 
   test("a refused name the lawyer's words do not give is no format the lawyer asked for", () => {
@@ -760,14 +845,15 @@ describe("requested files items", () => {
     const last = parseRequestedFiles(reply(true, file(["d1"], TRANSFER, "Kestrel Transfer.pdf")), directory, DOCUMENTS, MEMO, { final: true })
     expect(last).toEqual({ issues: [], value: stated({ ...file(["d1"], TRANSFER), refused_name: "Kestrel Transfer.pdf" }) })
     writeRequestedFiles(directory, record(...last.value!.files))
-    // Delivered under the stem the lawyer gave, there is nothing to disclose.
+    // Delivered under the name the lawyer gave, there is nothing to disclose, whatever name the reply gave.
     expect(requestedFilesItems(directory)).toEqual([])
-    expect(requestedFilesItems(saved(AS_ASKED, record({ ...file(["d1"], TRANSFER), refused_name: "Kestrel Form.pdf" })))).toEqual([item(`the lawyer's words "${TRANSFER}" [source: request] ` +
-      'ask for "Share transfer form" as a file of its own and name this file; the run could not confirm the name "Kestrel Form.pdf" in those words and delivers "Share transfer form" in "Kestrel Transfer.docx".')])
+    expect(requestedFilesItems(saved(AS_ASKED, record({ ...file(["d1"], TRANSFER), refused_name: "Kestrel Form.pdf" })))).toEqual([])
+    expect(requestedFilesItems(saved(ELSEWHERE, record({ ...file(["d1"], TRANSFER), refused_name: "Kestrel Form.pdf" })))).toEqual([item(`the lawyer's words "${TRANSFER}" [source: request] ` +
+      'ask for "Share transfer form" as a file of its own and name this file; the run could not confirm the name "Kestrel Form.pdf" in those words and delivers "Share transfer form" in "Share transfer form.docx".')])
   })
 
   test("a name refused on an earlier attempt stays disclosed when the last attempt gives none, until a name passes", () => {
-    const directory = saved()
+    const directory = saved(ELSEWHERE)
     const refused = new Map<string, string>()
     const parse = (name: string | null, final = false) =>
       parseRequestedFiles(reply(true, file(["memo", "d2"], PACK, "Kestrel Board Pack.docx"), file(["d1"], ` ${TRANSFER} `, name)), directory, DOCUMENTS, MEMO, { final, refused })
@@ -776,7 +862,7 @@ describe("requested files items", () => {
     expect(last).toEqual({ issues: [], value: stated(file(["memo", "d2"], PACK, "Kestrel Board Pack.docx"), { ...file(["d1"], TRANSFER), refused_name: "Kestrel Transfer Form.docx" }) })
     writeRequestedFiles(directory, record(...last.value!.files))
     expect(requestedFilesItems(directory)).toEqual([item(`the lawyer's words "${TRANSFER}" [source: request] ask for "Share transfer form" as a file of its own ` +
-      'and name this file; the run could not confirm the name "Kestrel Transfer Form.docx" in those words and delivers "Share transfer form" in "Kestrel Transfer.docx".')])
+      'and name this file; the run could not confirm the name "Kestrel Transfer Form.docx" in those words and delivers "Share transfer form" in "Share transfer form.docx".')])
     // A later name the lawyer's words give clears it.
     expect(parse("Kestrel Transfer.docx")).toEqual({ issues: [], value: ASKED })
     expect(parse(null, true)).toEqual({ issues: [], value: stated(file(["memo", "d2"], PACK, "Kestrel Board Pack.docx"), file(["d1"], TRANSFER)) })

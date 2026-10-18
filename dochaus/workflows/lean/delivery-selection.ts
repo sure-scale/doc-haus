@@ -104,7 +104,7 @@ const WORD = /[\p{L}\p{N}_]/u
 const NAME_OPENS = /["«(\[*`:]/
 const NAME_END = /^(?:$|[,;!?:"'»)\]*`]|\.(?:["'»)\]*`]|\s|$)|\s[-–—](?:\s|$))/
 const LINE_END = /^[^\S\r\n]*[\r\n]/
-const NAMING = new RegExp(String.raw`(?:^|[^\p{L}\p{N}_])(?:${NAMING_WORDS}):?\s*(?:\*\*|["'«(\[*\x60])?$`, "u")
+export const NAMING = new RegExp(String.raw`(?:^|[^\p{L}\p{N}_])(?:${NAMING_WORDS}):?\s*(?:\*\*|["'«(\[*\x60])?$`, "u")
 
 /** Lower case where it keeps the text's length, so offsets still map. */
 const fold = (text: string) => text.replace(/[\s\S]/gu, char => {
