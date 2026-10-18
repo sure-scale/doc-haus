@@ -263,3 +263,28 @@ test("slices with nothing to reconcile make no model call, and results keep job 
  expect(result.status).toBe("done");expect(model.prompts).toHaveLength(2)
  expect(readChangeList(dir,"d1")!.explanations!.map(row=>[row.id,row.pid])).toEqual([["i1",first],["i2",last]])
 })
+const splitFiller="The supplier keeps the delivery schedule under review. ".repeat(7).trim()
+function splitGoal(dir: string, extra = 0) {
+ const filler=splitFiller
+ const rows=provisions(dir,Array.from({length:40+extra},(_,index)=>`Initial provision ${index+1}. ${filler}`)),goal=rows.slice(0,40)
+ writeLeanText(dir,"d1/changes.json",JSON.stringify(changes(goal.map((row,index)=>op(row,`Earlier correction ${index+1}. ${filler}`)))))
+ save(dir,inputs([{id:"whole",pids:goal.map(row=>row.pid)}],[changes(goal.map((row,index)=>op(row,`Prepared correction ${index+1}. ${filler}`)))]))
+ return rows
+}
+function dependent(pid: string, on: string) {
+ return scriptedModel({"lean-changes":prompt=>{const listed=targets(prompt);return JSON.stringify({amendments:listed.filter(row=>row!==pid).map(row=>({pid:row,updated:`Reconciled correction for ${row}.`,reason:"Combined supported effect.",sources:support})),questions:[],dependencies:listed.includes(pid)?[{pid,depends_on:[on],issue:"The renamed term must match the definition reconciled elsewhere."}]:[]})}})
+}
+test("a sliced job's dependency on another slice of the same goal withholds that change and keeps its earlier one instead of failing",async()=>{
+ const dir=matter(),rows=splitGoal(dir),model=dependent(rows[0]!.pid,rows[39]!.pid),result=await reconcile(dir,model.port)
+ expect(result.status).toBe("done");expect(model.prompts.length).toBeGreaterThan(1)
+ expect(model.prompts.every(prompt=>prompt.text.includes('"depends_on"'))).toBe(true)
+ const accepted=readChangeList(dir,"d1")!
+ expect(accepted.amendments.map(row=>[row.pid,row.updated])).toEqual(rows.map((row,index)=>[row.pid,index?`Reconciled correction for ${row.pid}.`:`Earlier correction 1. ${splitFiller}`]))
+ expect(accepted.withheld!.map(row=>[row.amendment.pid,row.amendment.updated,row.issues])).toEqual([[rows[0]!.pid,`Prepared correction 1. ${splitFiller}`,[expect.stringContaining("depends on another paragraph of the same edit")]]])
+ expect("openItems" in result&&result.openItems.filter(item=>item.kind==="unapplied_amendment").map(item=>item.ref.pid)).toEqual([rows[0]!.pid])
+})
+test("a sliced job's dependency outside its own goal still stops the run",async()=>{
+ const dir=matter(),rows=splitGoal(dir,1),before=JSON.stringify(readChangeList(dir,"d1"))
+ const result=await reconcile(dir,dependent(rows[0]!.pid,rows[40]!.pid).port)
+ expect(result.status).toBe("failed");expect(JSON.stringify(readChangeList(dir,"d1"))).toBe(before)
+})
