@@ -442,3 +442,47 @@ describe("a planned document id inside a quotation, a citation, a footnote marke
     for (const line of ["The draft d1 is ready.", "Doc 1 (d1).", "Under d1's terms the price is fixed.", "The risk is the buyer's. d1 carries it."]) expect(check(line)).toHaveLength(1)
   })
 })
+
+// The notes are lawyer-facing text: a placeholder of their own is a gap no open
+// item records, so it is retried. Quoting a body placeholder exactly as its open
+// item records it is disclosure, not a gap; an id, in a "[ref: …]" marker or
+// not, is not a placeholder.
+describe("a placeholder in the drafting notes' own text", () => {
+  const HOLE = openItem("apply", "placeholder", "The body contains the placeholder [insert date].", { document: "d1", placeholder: "[insert date]" })
+  const NOTES_PLACEHOLDER = (placeholders: string[]) =>
+    `The drafting notes leave these placeholders in their own text: ${placeholders.join(", ")}. State the point in words, or quote the body's placeholder exactly as its open item records it.`
+  /** Notes that disclose GAP and HOLE as the mode asks, after `line`. A memo's
+   * marker may also name an id the run no longer lists; delivery removes it. */
+  const notes = (withMemo: boolean, line: string) => withMemo
+    ? memo(line, `No authority was found for the delivery period. [refs: ${GAP.id}; apply:placeholder:0123456789ab]`,
+      `The body keeps [INSERT DATE] for the start date; supply it. [ref: ${HOLE.id}]`)
+    : ["# Drafting notes", "", line, `- ${GAP.id}: research the delivery period.`, `- [${HOLE.id}]: the body keeps [insert date]; supply the start date.`, ""].join("\n")
+
+  for (const withMemo of [false, true])
+    test(`is retried ${withMemo ? "in a requested memo" : "without a requested memo"}; a quoted open placeholder, an id and a ref marker are not`, () => {
+      const directory = memoMatter(withMemo ? "memo" : "none")
+      expect(checkDraftingNotes(directory, notes(withMemo, "The notice period is [insert period]."), [GAP, HOLE]).issues).toEqual([NOTES_PLACEHOLDER(["[insert period]"])])
+      expect(checkDraftingNotes(directory, notes(withMemo, "The notice period follows the source."), [GAP, HOLE]).issues).toEqual([])
+      // The same bracket is a gap of the notes when no open item records it.
+      expect(checkDraftingNotes(directory, notes(withMemo, "The notice period follows the source."), [GAP, { ...HOLE, ref: { document: "d1" } }]).issues)
+        .toEqual([NOTES_PLACEHOLDER([withMemo ? "[INSERT DATE]" : "[insert date]"])])
+    })
+
+  test("a line of underscores only is not a placeholder, as in the body", () => {
+    const directory = memoMatter("none")
+    expect(checkDraftingNotes(directory, notes(false, "Signed:\n\n______________"), [GAP, HOLE]).issues).toEqual([])
+  })
+
+  test("on the last attempt it does not fail the notes, which are saved as written", async () => {
+    const directory = memoMatter()
+    writeOpenItems(directory, [GAP, HOLE])
+    const reply = notes(true, "The notice period is [insert period].")
+    // Before the last attempt the issue is retried and nothing is saved.
+    expect((await acceptStageReply(directory, "finalize", reply)).issues).toEqual([NOTES_PLACEHOLDER(["[insert period]"])])
+    expect(readLeanText(directory, "drafting-notes.md")).toBeUndefined()
+    // On the last attempt the notes are accepted and saved as written; a resume keeps them.
+    expect((await acceptStageReply(directory, "finalize", reply, { final: true })).issues).toEqual([])
+    expect(readLeanText(directory, "drafting-notes.md")).toBe(reply)
+    expect(stageOutputValid(directory, "finalize")).toBe(true)
+  })
+})

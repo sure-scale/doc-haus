@@ -118,9 +118,12 @@ export function settleApply(changes: ChangeList, result: ApplyResult | undefined
  * A requested memo is delivered with only its "[ref: …]" markers removed, so
  * there an item is disclosed by its id inside a marker, and a run id, planned
  * document id or recorded change id written anywhere else, which would reach
- * the reader, is retried. On the last attempt (`final`) such an id alone does
- * not fail the notes: they are saved as the model wrote them, never rewritten,
- * and every other check still applies. */
+ * the reader, is retried. So is a placeholder in the notes' own text (the
+ * delivered memo's, without its markers), a gap no open item records; the
+ * notes may quote a body placeholder exactly as its open item records it.
+ * On the last attempt (`final`) such an id or placeholder alone does not fail
+ * the notes: they are saved as the model wrote them, never rewritten, and
+ * every other check still applies. */
 export function checkDraftingNotes(directory: string, content: string, items: OpenItem[], options: { final?: boolean } = {}): StageCheck {
   const shape = documentShapeIssues(content, "drafting notes")
   if (shape.length) return { issues: shape, openItems: [] }
@@ -140,6 +143,10 @@ export function checkDraftingNotes(directory: string, content: string, items: Op
   const strayDocuments = ids ? (readLeanPlan(directory)?.documents ?? []).map(row => row.id).filter(id => standingID(id).test(prose)) : []
   // So is a recorded change id ("a1"): the reader knows a change by its effect.
   const strayChanges = ids ? runChangeIDs(directory, items).filter(id => standingID(id).test(prose)) : []
+  // An item's id ("apply:placeholder:…"), in a marker or not, is no placeholder.
+  const recorded = new Set(items.flatMap(item => item.ref.placeholder ? [item.ref.placeholder.toLowerCase()] : []))
+  const gaps = options.final ? [] : textPlaceholders(items.reduce((text, item) => text.replaceAll(item.id, " "), memo ? delivered : content))
+    .filter(placeholder => !recorded.has(placeholder.toLowerCase()))
   const misquoted = sourceQuotes(content).filter(quote => !quoteFound(directory, quote))
   const unsupported = [...new Set(citationRowsForLeanText(directory, "drafting-notes.md", content)
     .filter(row => row.status === "unsupported").map(row => row.citation_text))]
@@ -158,6 +165,9 @@ export function checkDraftingNotes(directory: string, content: string, items: Op
         : []),
       ...(strayChanges.length
         ? [`These change ids appear outside a "[ref: …]" marker: ${strayChanges.join(", ")}. The memo is for the reader: describe each change by what it does, not its id.`]
+        : []),
+      ...(gaps.length
+        ? [`The drafting notes leave these placeholders in their own text: ${gaps.join(", ")}. State the point in words, or quote the body's placeholder exactly as its open item records it.`]
         : []),
       ...misquoted.map(quote => quoteMissIssue(directory, "The drafting notes", quote)),
       ...unsupported.map(citation => `The drafting notes cite "${citation}", which no matter source, research row or verified authority supports. Remove the citation or describe the point as needing research.`),
@@ -251,8 +261,7 @@ export function finalBodyItems(directory: string, rows: ParagraphRow[]) {
 }
 
 export function bodyOpenItems(directory: string, stage: StageID, content: string) {
-  const prose = content.split("\n").filter(line => !/^\s*_{3,}\s*$/.test(line)).join("\n")
-  const placeholders = [...new Set([...draftingPlaceholders(prose), ...openItemMarkers(prose)])]
+  const placeholders = textPlaceholders(content)
   const citations = [...new Map(citationRowsForLeanText(directory, `${stage}.md`, content)
     .filter(row => row.status === "unsupported").map(row => [row.normalized_key, row.citation_text])).values()]
   return [
@@ -261,6 +270,13 @@ export function bodyOpenItems(directory: string, stage: StageID, content: string
       `No matter source, research row or verified authority supports the citation "${citation}".`, { citation })),
     ...quoteMissItems(directory, stage, content),
   ]
+}
+
+/** The drafting placeholders and open-item markers in `content`; a line of
+ * underscores only (a signature or blank line) is none. */
+function textPlaceholders(content: string) {
+  const prose = content.split("\n").filter(line => !/^\s*_{3,}\s*$/.test(line)).join("\n")
+  return [...new Set([...draftingPlaceholders(prose), ...openItemMarkers(prose)])]
 }
 
 function documentShapeIssues(content: string, noun: "document" | "drafting notes") {
