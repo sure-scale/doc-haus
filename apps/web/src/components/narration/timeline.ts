@@ -2,6 +2,7 @@ import type { LeanDraftingStatus } from "../../api/ingest/lean"
 import type { NarratorNote } from "../../api/opencode/narrator"
 import { cleanTitle } from "../drafting/model"
 import { TOOL_GROUPS, type ActivityLine } from "./activity"
+import { checkpointKeys } from "./schedule"
 
 // The narration's reading order: one row per stage run, each holding the
 // activity its session produced, with narrator updates between them by time. A
@@ -18,7 +19,7 @@ export type StepRow = ActivityLine & { count: number; flagged: number }
 export type RollUpPart = { text: string; flagged?: string }
 
 export type TimelineBlock =
-  | { kind: "note"; id: string; text: string }
+  | { kind: "note"; id: string; text: string; past?: boolean }
   | { kind: "heading"; id: string; text: string }
   | { kind: "milestone"; line: ActivityLine }
   | { kind: "stage"; line: ActivityLine; lines: ActivityLine[]; shown: StepRow[]; rollUp: RollUpPart[] }
@@ -31,7 +32,9 @@ export function narrationTimeline(
   notes: NarratorNote[],
   live: boolean,
   planned: Planned = [],
+  status?: LeanDraftingStatus,
 ): TimelineBlock[] {
+  const current = status ? new Set(checkpointKeys(status)) : undefined
   const stages = lines.filter((line) => line.kind === "milestone" && line.step).sort((a, b) => a.at - b.at)
   const attached = new Map(stages.map((stage) => [stage.id, [] as ActivityLine[]]))
   const loose = lines
@@ -50,7 +53,7 @@ export function narrationTimeline(
       .map((line) => ({ at: line.at, block: { kind: "milestone" as const, line } })),
     ...uniqueNotes(notes).map((note) => ({
       at: note.at,
-      block: { kind: "note" as const, id: note.id, text: note.text },
+      block: { kind: "note" as const, id: note.id, text: note.text, ...(current && supersededPause(note, current) && { past: true }) },
     })),
     ...loose.map((line) => ({ at: line.at, line })),
   ].sort((a, b) => a.at - b.at)
@@ -122,6 +125,17 @@ export function rollUp(lines: ActivityLine[]): RollUpPart[] {
 
 function count(n: number, one: string, many = `${one}s`) {
   return `${n} ${n === 1 ? one : many}`
+}
+
+const PAUSE_KEY = /^question:|^run:(?!completed:)|:(blocked|failed):/
+
+/** An update written because the run stopped (a question for the lawyer, a
+ * block, a pause) that no longer describes the run: none of the stop
+ * checkpoints it covered still hold, so the run has since resumed. It stays in
+ * the history, marked as past, instead of reading as the run's present state. */
+export function supersededPause(note: NarratorNote, current: ReadonlySet<string>) {
+  const stops = note.keys.filter((key) => PAUSE_KEY.test(key))
+  return stops.length > 0 && !stops.some((key) => current.has(key))
 }
 
 /** A narrator update the lawyer has already read, word for word, is not shown twice. */

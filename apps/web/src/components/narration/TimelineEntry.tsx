@@ -8,7 +8,7 @@ import { elapsed, type RollUpPart, type StepRow, type TimelineBlock } from "./ti
 // beneath it, a run-level line, or a loose group of activity steps.
 
 export default function TimelineEntry({ block }: { block: TimelineBlock }) {
-  if (block.kind === "note") return <Note text={block.text} />
+  if (block.kind === "note") return <Note text={block.text} past={block.past} />
   if (block.kind === "heading") return <li className="narration-heading">{block.text}</li>
   if (block.kind === "milestone")
     return (
@@ -83,7 +83,7 @@ function StateIcon({ state }: { state: ActivityLine["state"] }) {
   )
 }
 
-function Note({ text }: { text: string }) {
+function Note({ text, past }: { text: string; past?: boolean }) {
   const body = useRef<HTMLDivElement>(null)
   const [long, setLong] = useState(false)
   const [open, setOpen] = useState(false)
@@ -97,7 +97,8 @@ function Note({ text }: { text: string }) {
     return () => observer.disconnect()
   }, [text, open])
   return (
-    <li className="narration-note">
+    <li className={`narration-note${past ? " is-past" : ""}`}>
+      {past && <div className="narration-note-past">Earlier, while the run was paused. It has since resumed.</div>}
       <div ref={body} className={`narration-note-body${open ? "" : " is-clamped"}${long && !open ? " is-long" : ""}`}>
         <Markdown>{text}</Markdown>
       </div>
