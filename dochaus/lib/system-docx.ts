@@ -47,14 +47,14 @@ export function readSystemDocx(directory: string, document: string): { version: 
 }
 
 /** Whether the matter file `name` still holds exactly the bytes the system last
- * wrote to it. A missing file or a link is not. Reads only. */
+ * wrote to it. A missing file, a link or a record that cannot be read
+ * (readSystemDocx throws) is not: such a file is never written over. Reads only. */
 export function ownedDeliverable(directory: string, name: string) {
-  const record = readSystemDocx(directory, name)
-  if (!record) return false
   try {
-    return sha256File(path.resolve(directory, name))?.sha256 === record.sha256
+    const record = readSystemDocx(directory, name)
+    // sha256File throws when a link or another non-regular file holds the name.
+    return record !== undefined && sha256File(path.resolve(directory, name))?.sha256 === record.sha256
   } catch {
-    // A link or another non-regular file holds the name.
     return false
   }
 }

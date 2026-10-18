@@ -6,6 +6,7 @@ import path from "node:path"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
 import * as combinedDocx from "../../../dochaus/lib/combined-docx"
+import { withParagraphPointers } from "../../../dochaus/lib/drafting-amendment"
 import { renderMarkdownToDocx } from "../../../dochaus/lib/render"
 import * as deliverables from "../../../dochaus/workflows/lean/deliverables"
 import { memoNotesFile, readLeanDocuments, recordLeanDocuments } from "../../../dochaus/workflows/lean/deliverables"
@@ -547,9 +548,9 @@ describe("combined download and rebuild: matter boundary, lock, contention and o
   test("a combined file saved under a numbered name is the one an accept rebuilds and the download names", async () => {
     await withIngest(async request => {
       const matter = await completedMatter(request)
-      await request(`${matter.route}/redlines/${propose(matter.dir, BODY_NAME)}/accept`, { method: "POST" })
+      await request(`${matter.route}/redlines/${propose(matter.dir, SAVED, "Memo marker", "Lawyer marker")}/accept`, { method: "POST" })
       const accepted = readFileSync(path.join(matter.dir, SAVED))
-      // A re-delivery keeps the accept's combined file and saves the new one under the next free name.
+      // A re-delivery keeps the combined file the lawyer changed and saves the new one under the next free name.
       await recordLeanDocuments(matter.dir, { sessions: scriptedLeanModel().port, registerDeliverable: registerLeanDeliverable }, true)
       const numbered = "supply-pack (2).docx"
       const status = leanDraftingStatus(matter.dir)?.combined_output
@@ -698,6 +699,22 @@ describe("combined download and rebuild: matter boundary, lock, contention and o
       const accepted = await request(`${matter.route}/redlines/${propose(matter.dir, BODY_NAME)}/accept`, { method: "POST" })
       expect(await accepted.json()).toMatchObject({ ok: true, combined_updated: false, combined_skip_reason: "combined_changed" })
       expect(readFileSync(path.join(matter.dir, SAVED))).toEqual(saved)
+    })
+  }, 120_000)
+
+  test("a rebuild is saved with paragraph pointers as the run's save gives them, and recorded by the bytes saved", async () => {
+    await withIngest(async request => {
+      const matter = await completedMatter(request)
+      // A body revision saved without paragraph pointers; an accept into the notes then rebuilds the combined file from it.
+      const body = unzipSync(readFileSync(path.join(matter.dir, BODY_NAME)))
+      body["word/document.xml"] = strToU8(strFromU8(body["word/document.xml"]!).replace(/<w:bookmark(?:Start|End)\b[^>]*\/>/g, ""))
+      await writeDeliverableRevision(matter.dir, BODY_NAME, Buffer.from(zipSync(body)))
+      const accepted = await request(`${matter.route}/redlines/${propose(matter.dir, NOTES_NAME, "Memo marker", "Memo note")}/accept`, { method: "POST" })
+      expect(await accepted.json()).toMatchObject({ ok: true, combined_updated: true })
+      const saved = new Uint8Array(readFileSync(path.join(matter.dir, SAVED)))
+      expect(documentText(saved)).toContain("Memo note")
+      expect(withParagraphPointers(saved)).toEqual(saved)
+      expect(readSystemDocx(matter.dir, SAVED)).toEqual({ version: 1, sha256: sha256(saved) })
     })
   }, 120_000)
 

@@ -75,7 +75,7 @@ import { MatterDocumentIdentityError, resolveMatterDocumentTarget, documentRegis
 import { recoverDocumentMutations } from "./document-mutation"
 import { appendAcceptedChangesToNotes } from "./notes-addendum"
 import { readLeanDocuments } from "../../../dochaus/workflows/lean/deliverables"
-import { ownedDeliverable, readSystemDocx } from "../../../dochaus/lib/system-docx"
+import { ownedDeliverable } from "../../../dochaus/lib/system-docx"
 import { buildCombinedFile } from "../../../dochaus/lib/combined-docx"
 import { readLeanState } from "../../../dochaus/workflows/lean/state"
 import { documentRedline } from "../../../dochaus/workflows/lean/apply-stage"
@@ -1228,10 +1228,12 @@ function runRedlineLock(directory: string, body: string): string[] {
 // last write of it (ownedDeliverable: the delivery's registration or an earlier
 // rebuild). A lawyer's accept into the combined file, a revision uploaded in its
 // place or a change made outside doc.haus removes or breaks that record, and the
-// file is then kept as it is. The rebuild is written as built and recorded as the
-// system's own write, so a rebuild skipped for any reason (a pending proposal on
-// the combined file, a refused build, a failed write) leaves the file the
-// system's and the next accept or upload tries again. Under the file's lock the
+// file is then kept as it is. The rebuild is written with paragraph pointers as
+// the run's save gives them (the saved file's where the text is unchanged) and
+// recorded, by the bytes written, as the system's own write, so a rebuild
+// skipped for any reason (a pending proposal on the combined file, a refused
+// build, a failed write) leaves the file the system's and the next accept or
+// upload tries again. Under the file's lock the
 // rebuild checks again that the run is completed and still registers this
 // combined file with these parts, as the redline write does. Best-effort like
 // the redline: the accepted body stands, and the response says whether the
@@ -1324,11 +1326,12 @@ async function rebuildCombinedFile(prepared: PreparedCombined | undefined): Prom
       if (current?.file !== file || current.body !== body || current.notes !== notes) return combinedSkipped(directory, "combined_not_deliverable")
       const blocked = combinedBlocked(directory, file)
       if (blocked) return combinedSkipped(directory, blocked)
-      const prior = readSystemDocx(directory, file)?.sha256
-      if (!prior || !ownedDeliverable(directory, file)) return combinedSkipped(directory, "combined_changed")
+      const saved = await Bun.file(path.join(directory, file)).bytes()
+      if (!ownedDeliverable(directory, file)) return combinedSkipped(directory, "combined_changed")
       const built = buildCombinedFile({ memo: memoBytes, body: bodyBytes })
       if ("refused" in built) return combinedSkipped(directory, "build_refused", { refused: built.refused, ...(built.part ? { part: built.part } : {}) })
-      await writeDeliverableRevision(directory, file, Buffer.from(built.bytes), { priorSha256: prior, system: true })
+      // Paragraph pointers as the run's save gives them, the saved file's where the text is unchanged.
+      await writeDeliverableRevision(directory, file, Buffer.from(withParagraphPointers(built.bytes, saved)), { priorSha256: sha256Hex(saved), system: true })
       return { combined_updated: true }
     })
   } catch (error) {

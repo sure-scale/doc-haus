@@ -60,13 +60,15 @@ test("without a registry, a record or a regular file, nothing is owned", () => {
   expect(ownedDeliverable(directory, "Gone.docx")).toBe(false)
 })
 
-test("a record that is not the system write record is refused, and only a sha256 is recorded", () => {
+test("a record that is not the system write record is refused on read and owns nothing, and only a sha256 is recorded", () => {
   const directory = matter()
   writeFileSync(path.join(directory, "Pack.docx"), "bytes")
   expect(() => registry(directory, db => recordSystemDocx(db, directory, "Pack.docx", "not-a-hash"))).toThrow("sha256")
   registry(directory, db => db.run("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"))
-  for (const value of [JSON.stringify({ version: 2, sha256: sha256("bytes") }), JSON.stringify({ version: 1 }), JSON.stringify({ version: 1, sha256: "A".repeat(64) }), "null"]) {
+  for (const value of [JSON.stringify({ version: 2, sha256: sha256("bytes") }), JSON.stringify({ version: 1 }), JSON.stringify({ version: 1, sha256: "A".repeat(64) }), "null", "{"]) {
     registry(directory, db => db.run("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [systemDocxKey(directory, "Pack.docx"), value]))
-    expect(() => ownedDeliverable(directory, "Pack.docx")).toThrow("The record of the system's last write of this Word file is invalid.")
+    expect(() => readSystemDocx(directory, "Pack.docx")).toThrow()
+    // Never the system's to write over.
+    expect(ownedDeliverable(directory, "Pack.docx")).toBe(false)
   }
 })
