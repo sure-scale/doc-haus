@@ -5,11 +5,12 @@ import { acceptChangePlan } from "./change-pipeline"
 import { checkChanges } from "./change-checks"
 import { readParagraphs } from "./checks"
 import { writeLeanPlan } from "./plan"
+import { packageCompositionBlock } from "./prompts"
 import { drainLeanRequests, enqueueLeanRequest } from "./requests"
 import { runLean } from "./runner"
 import { LEAN_CHILD_PERMISSIONS } from "./stages"
 import { readLeanJson, readLeanState, readLeanText, writeLeanText } from "./state"
-import { cleanupMatters, happyPath, matter, scriptedModel, SOURCE, SUPPORT } from "./test-support"
+import { cleanupMatters, happyPath, matter, requestMemo, scriptedModel, SOURCE, SUPPORT } from "./test-support"
 
 afterEach(cleanupMatters)
 async function fixture() {
@@ -243,4 +244,22 @@ test("every decomposed target must settle; a sibling cross-document defect survi
   expect((await runFocusedChangeReview(directory, readLeanState(directory)!, { sessions: complete.port }, "d2", () => {})).status).toBe("done")
   expect(complete.sessions).toHaveLength(paragraphs.length)
   expect(readLeanJson(directory, "d2/change-review.json")).toMatchObject({ status: "changes-required", findings: [{ document: "d1", pid: earlier.pid }] })
+})
+
+test("a requested memo reaches every focused review assignment, disclosure included; without one they are unchanged", async () => {
+  const { directory, plan } = await fixture()
+  expect(acceptChangePlan(directory, "d1", JSON.stringify({ ...plan, findings: [{ disposition: "deferred", kind: "information", detail: "Confirm a material delivery exception before execution.", reason: "The exception is unresolved.", documents: ["d1"], sources: SUPPORT, limitations: [] }] })).issues).toEqual([])
+  const texts = () => new Map(focusedChangeReviewInputs(directory, "d1").map(row => [row.id, row.text]))
+  const without = texts()
+  expect(without.has("disclosure:0")).toBe(true)
+  requestMemo(directory)
+  const block = packageCompositionBlock(directory, "d1")
+  expect(block).toStartWith("<package_composition>\n")
+  const memo = texts()
+  expect([...memo.keys()]).toEqual([...without.keys()])
+  for (const [id, text] of memo) {
+    expect([id, text.split(block).length - 1]).toEqual([id, 1])
+    expect([id, text.replace(`\n\n${block}`, "")]).toEqual([id, without.get(id)!])
+    expect([id, without.get(id)!.includes("package_composition")]).toEqual([id, false])
+  }
 })

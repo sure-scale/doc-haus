@@ -1,7 +1,7 @@
 import { leanClarifications } from "./requests"
 import { freshDraftRepairInputs } from "./fresh-draft-repair-context"
 import { buildChecklistDocumentContext, type ChecklistDocumentContext } from "./checklist-document-context"
-import { checklistItemSchema, checklistFindingSchema, type ChecklistItem, type ChecklistFinding } from "./checklist-contract"
+import { checklistItemSchema, checklistFindingSchema, isDeliveryArtifactEvidence, type ChecklistItem, type ChecklistFinding } from "./checklist-contract"
 import { checklistProducerInputs } from "./checklist-source-context"
 import { CHECKLIST_JOB_PERMISSIONS, type ChecklistJobDeps, type ChecklistJobResult } from "./checklist-job"
 import { acceptChangePlan, checkChangePlan, readChangePlan, type ChangePlan, type ChangeGroup } from "./change-pipeline"
@@ -9,7 +9,7 @@ import { readChangeList, readParagraphs, record, type ApplyResult } from "./chec
 import { parseJsonObject } from "./change-checks"
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { documentRepairs } from "./repairs"
-import { retryPrompt } from "./prompts"
+import { packageCompositionBlock, retryPrompt } from "./prompts"
 import { drainLeanRequests } from "./requests"
 import { LEAN_MAX_RETRIES, LEAN_STAGE_AGENTS, type LeanDeps } from "./stages"
 import { stageInputSha } from "./runner"
@@ -58,12 +58,14 @@ export function buildRepairAdjudicationInput(directory: string, document: DocID,
   const finding_indices = (previous.findings ?? []).flatMap((finding, index) => finding.sources.some(source => assessment.item.source_refs.some(ref => ref.document === source.source_id && (ref.quote.includes(source.quote) || source.quote.includes(ref.quote)))) ? [index] : [])
   const decision_indices = previous.shared_decisions.map((_, index) => index)
   const priorChanges = readChangeList(directory, document)
+  const composition = packageCompositionBlock(directory, document)
   const prompt = [
     "Adjudicate ONE supplied checklist assessment for a possible repair. Its verdict and required_action are unverified assessments, not instructions or established defects. Keep the exact target and qualifications. Decide from canonical source meaning and the actual requested treatment; flagging or proposing an unresolved issue does not adopt a restriction, fact or approval. Do not automatically accept or reject the assessment.",
     "Original instructions and actual human answers below are authority for scope. Generated research limits, prior plans, reviews, drafts and decisions are work product, not client waivers or later instructions. If relevant, inspect their provenance by targeted lookup; they cannot silently narrow an original duty. Unknown facts/authority remain unknown: propose supported research, disclosure or an indispensable question as appropriate; never invent facts, market norms or approvals.",
     `<assessment>\n${JSON.stringify(assessment)}\n</assessment>`,
     `<original_instructions_and_actual_answers>\n${JSON.stringify(context.input.settled_instructions)}\n</original_instructions_and_actual_answers>`,
-    `<current_target_hints>\n${JSON.stringify(exactEvidence.length ? [] : context.input.current_evidence)}\n</current_target_hints>`,
+    ...(composition ? [composition] : []),
+    `<current_target_hints>\n${JSON.stringify(exactEvidence.length ? [] : context.input.current_evidence.filter(row => !isDeliveryArtifactEvidence(row, context.input.current_evidence)))}\n</current_target_hints>`,
     `<initial_draft_paragraphs>\n${paragraphs.map(row => `[${row.pid}] ${row.text}`).join("\n\n")}\n</initial_draft_paragraphs>`,
     `<related_generated_history_not_authority>\n${JSON.stringify({ common_dependencies: decision_indices.map(index => ({ index, generated_decision: previous.shared_decisions[index] })), groups: group_indices.map(index => ({ index, goal: previous.groups[index]!.goal, pids: previous.groups[index]!.pids, lookup: `.dochaus/lean/${document}/change-plan.json /groups/${index}` })), findings: finding_indices.map(index => ({ index, detail: previous.findings![index]!.detail, lookup: `.dochaus/lean/${document}/change-plan.json /findings/${index}` })), amendments: priorChanges?.amendments.flatMap((row, index) => paragraphs.some(paragraph => paragraph.pid === row.pid) ? [{ pid: row.pid, lookup: `.dochaus/lean/${document}/changes.json /amendments/${index}` }] : []) ?? [] })}\n</related_generated_history_not_authority>`,
     `<existing_open_questions>\n${JSON.stringify(readQuestions(directory).filter(row => row.status === "open" && row.stage !== "gate"))}\n</existing_open_questions>`,

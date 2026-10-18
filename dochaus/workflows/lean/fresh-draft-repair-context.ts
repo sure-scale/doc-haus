@@ -2,6 +2,7 @@ import { readLeanJson, readLeanState, readLeanText } from "./state"
 import { readParagraphs, readChangeList, record } from "./checks"
 import { checkChangePlan, type ChangePlan } from "./change-pipeline"
 import { checklistProducerInputs } from "./checklist-source-context"
+import { packageCompositionBlock } from "./prompts"
 import { matterSourceIDs } from "./quotes"
 import { reviewStages, type DocID } from "./plan"
 import type { Assessment, FocusedRepairInput } from "./checklist-repair-adjudication"
@@ -73,6 +74,7 @@ export function freshDraftRepairInputs(directory: string, document: DocID, asses
   }))
   const request = checklistProducerInputs(directory).find(row => row.key === "request")!.input
   const instructions = [...request.passages, ...request.instructions]
+  const composition = packageCompositionBlock(directory, document)
   const inputs: FocusedRepairInput[] = assignments.map(assignment => {
     const named = originals.flatMap((row, index) => assignment.text.includes(row.pid) ? [index - 1, index, index + 1] : [])
     const terms = new Set(assignment.text.toLowerCase().match(/[\p{L}\p{N}]{4,}/gu) ?? [])
@@ -89,6 +91,7 @@ export function freshDraftRepairInputs(directory: string, document: DocID, asses
       `Assignment identity and provenance: ${JSON.stringify({ id: assignment.id, kind: assignment.kind })}`,
       `<assignment>\n${assignment.text}\n</assignment>`,
       `<original_instructions_and_actual_answers>\n${JSON.stringify(instructions)}\n</original_instructions_and_actual_answers>`,
+      ...(composition ? [composition] : []),
       `<current_initial_draft_hints>\n${paragraphs.map(row => `[${row.pid}] ${row.text}`).join("\n\n")}\n</current_initial_draft_hints>`,
       "These lexical hints are nonexhaustive. Historical PIDs, hashes, dispositions and quoted generated wording are not current amendment targets or client waivers. Verify the original source condition, action and requested treatment. A proposal is not adoption; unknown facts and approval remain unknown. Do not waive research from generated limitations or turn observations into disclosure duties.",
       `Current amendment targets are ONLY exact PIDs from read-record .dochaus/lean/${document}/paragraphs.json. Use targeted current_body lookup for document=${document}; saved body-applied/redline artifacts are historical when they belong to an earlier initial draft. Original uploads ${JSON.stringify(matterSourceIDs(directory))}: search-document/read-document view=source with exact identity. Inspect only necessary adjacent conditions and related documents. Missing lexical matches never prove absence.`,

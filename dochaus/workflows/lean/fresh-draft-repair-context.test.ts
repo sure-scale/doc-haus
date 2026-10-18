@@ -1,5 +1,5 @@
 import { renderMarkdownToDocx } from "../../lib/render"
-import { stagePrompt } from "./prompts"
+import { packageCompositionBlock, stagePrompt } from "./prompts"
 import { afterEach, expect, test } from "bun:test"
 import { freshDraftRepairInputs, reviewSections } from "./fresh-draft-repair-context"
 import { REPAIR_ADJUDICATION_OUTPUT, repairAdjudicationIssues, mergeRepairAdjudications, runFocusedRepairAdjudication, type Assessment, type RepairAdjudication } from "./checklist-repair-adjudication"
@@ -9,7 +9,7 @@ import { reviewStages, writeLeanPlan } from "./plan"
 import { readLeanState, readLeanText, updateLeanStage, writeLeanBytes, writeLeanText } from "./state"
 import { openItem, quoteFound } from "./quotes"
 import { readRepairRound, startRepairRound } from "./repairs"
-import { cleanupMatters, matter, scriptedModel, SOURCE, SUPPORT } from "./test-support"
+import { cleanupMatters, matter, requestMemo, scriptedModel, SOURCE, SUPPORT } from "./test-support"
 
 afterEach(cleanupMatters)
 const old = "p111111111111", current = "p222222222222"
@@ -157,4 +157,20 @@ test("ordinary multiline review prose and small tables remain unchanged", () => 
   const chunks = reviewSections(`## Scope\n\n${header}\n${rows.join("\n")}`)
   expect(chunks.every(chunk => chunk.length <= 6000 && chunk.includes(header))).toBe(true)
   for (const row of rows) expect(chunks.flatMap(chunk => chunk.split("\n")).filter(line => line === row)).toHaveLength(1)
+})
+
+test("a requested memo reaches every fresh-draft adjudication prompt; without one they are unchanged", () => {
+  const { directory, assessment } = setup()
+  const prompts = () => freshDraftRepairInputs(directory, "d1", [assessment], REPAIR_ADJUDICATION_OUTPUT).inputs.map(row => row.prompt)
+  const without = prompts()
+  requestMemo(directory)
+  const block = packageCompositionBlock(directory, "d1")
+  expect(block).toStartWith("<package_composition>\n")
+  const memo = prompts()
+  expect(memo).toHaveLength(without.length)
+  memo.forEach((prompt, index) => {
+    expect([index, prompt.split(block).length - 1]).toEqual([index, 1])
+    expect([index, prompt.replace(`\n\n${block}`, "")]).toEqual([index, without[index]])
+    expect([index, without[index]!.includes("package_composition")]).toEqual([index, false])
+  })
 })

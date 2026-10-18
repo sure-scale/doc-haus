@@ -1,4 +1,5 @@
-import { readLeanPlan, type DocID } from "./plan"
+import { combinedDelivery, memoAnchor, memoNotesFile, plannedRegistration } from "./deliverables"
+import { readLeanPlan, type DocID, type PlannedDocument } from "./plan"
 import { instructionFound } from "./quotes"
 
 /** A semantic interpretation of an explicitly named or titled Word output in the lawyer's
@@ -24,8 +25,40 @@ export function checkDeliverySelections(directory: string, value: unknown): stri
   if (issues.length) return issues
   const rows = value as DeliverySelection[]
   if (new Set(rows.map(row => row.document)).size !== rows.length) issues.push("The plan supports one named primary artifact per document and one name for the run's notes. Report conflicting or additional requested outputs as a package finding rather than choosing silently.")
-  if (new Set(rows.map(row => row.file.toLocaleLowerCase())).size !== rows.length) issues.push("Distinct named primary artifacts need distinct filenames. Report a conflicting naming instruction as a package finding.")
-  return issues
+  // Names are checked as registration gives them (plannedRegistration) on the
+  // plan the reply leaves (selectedDeliveryPlan), held in memory. The file each
+  // row selects, and the notes when the reply moves their name, must keep that
+  // name, wanted by no other requested file; registration would otherwise
+  // suffix or yield it. A repeat the reply leaves alone, and a matter document
+  // under the name, stay registration's to suffix. The combined file is the
+  // combined document's body row alone, so the notes under its name, from a
+  // notes row, are a selection error rather than a conflicting instruction.
+  const plan = readLeanPlan(directory)
+  const applied = plan && (selectedDeliveryPlan(directory, rows) ?? plan)
+  const files = applied ? plannedRegistration(directory, applied) : []
+  const combined = files.find(file => file.kind === "combined")
+  const notes = rows.find(row => row.role === "drafting_notes")
+  const selected = (document: DocID | null) => {
+    const kind = document === null ? "drafting_notes" : document === combined?.document ? "combined"
+      : applied?.documents.find(row => row.id === document)?.deliverable === "redline" ? "redline" : "body"
+    return files.find(file => file.kind === kind && file.document === document)
+  }
+  const targets = new Set([...rows.map(row => selected(row.document)), ...(applied?.notes_file !== plan?.notes_file ? [selected(null)] : [])])
+  const messages = new Set([...targets].flatMap(target => {
+    const group = target ? files.filter(file => file.wanted === target.wanted && (file === target || file.requested)) : []
+    if (!target || (target.name === target.wanted && group.length === 1)) return []
+    if (!combined || !notes || group.length !== 2 || !group.includes(combined) || !group.some(file => file.kind === "drafting_notes")) return [DISTINCT_FILES]
+    const name = rows.findLast(row => row.document === combined.document)?.file ?? notes.file
+    return [`"${name}" is the one file that holds the memo and document ${combined.document}. Select this file by one row: document "${combined.document}", role body, filename "${name}". Keep the other rows. The code builds it from the memo and the clean body at download; give no drafting_notes row for it.`]
+  }))
+  if (!messages.size && !distinctFiles(rows)) messages.add(DISTINCT_FILES)
+  return [...issues, ...messages]
+}
+
+const DISTINCT_FILES = "Distinct named primary artifacts need distinct filenames. Report a conflicting naming instruction as a package finding."
+
+function distinctFiles(rows: DeliverySelection[]) {
+  return new Set(rows.map(row => row.file.toLocaleLowerCase())).size === rows.length
 }
 
 /** Naming intent and artifact roles belong to the semantic reviewer. The
@@ -39,17 +72,41 @@ function deliveryNameQuoted(quote: string, file: string) {
 }
 
 /** Only the delivery metadata changes. Stable document ids, source foundations,
- * drafting intent and all operative parts remain the accepted plan's values. */
+ * drafting intent and all operative parts remain the accepted plan's values.
+ * A selected notes name replaces the notes file and never turns on a memo; a
+ * requested memo keeps its name. Without one, a memo file still named as
+ * memoNotesFile names it is named again after its anchor document (memoAnchor,
+ * chosen on the plan), so it follows a rename of that document's body file only;
+ * a redline selection, a selection on another document or any other memo file
+ * leaves it. A body selection on a combined document names the combined
+ * file and keeps it combined; a redline selection still makes it a redline
+ * deliverable. A body row that renames the combined file onto the saved notes
+ * name, without a notes row, gives the memo its default name (memoNotesFile)
+ * again: that name is the combined file's alone. Applying the reply again
+ * changes nothing. */
 export function selectedDeliveryPlan(directory: string, selections: DeliverySelection[]) {
   const plan = readLeanPlan(directory)
   if (!plan) return
-  const selected = new Map(selections.filter(row => row.role !== "drafting_notes").map(row => [row.document, row]))
+  const selected = new Map(selections.flatMap(row => row.role === "drafting_notes" ? [] : [[row.document, row] as const]))
   const notes = selections.find(row => row.role === "drafting_notes")
-  const documents = plan.documents.map(row => {
+  const documents = plan.documents.map((row): PlannedDocument => {
     const selection = selected.get(row.id)
-    return selection && (row.file !== selection.file || (row.deliverable ?? "body") !== selection.role)
-      ? { ...row, file: selection.file, deliverable: selection.role } : row
+    if (!selection) return row
+    const role = row.deliverable === "combined" && selection.role === "body" ? "combined" : selection.role
+    return row.file !== selection.file || (row.deliverable ?? "body") !== role ? { ...row, file: selection.file, deliverable: role } : row
   })
-  return documents.some((row, index) => row !== plan.documents[index]) || (notes && notes.file !== plan.notes_file)
-    ? { ...plan, documents, ...(notes ? { notes_file: notes.file } : {}) } : undefined
+  // The memo follows only a rename of its plan-time anchor document's body
+  // file, never a redline file or another document.
+  const anchor = memoAnchor(plan.documents)
+  const renamed = documents.find(row => row.id === anchor?.id)
+  const follows = !notes && plan.memo && anchor && renamed && plan.notes_file === memoNotesFile(plan.documents, plan.memo)
+  // A pass's notes row may have saved the name a later body row gives the combined file.
+  const combined = combinedDelivery(directory, plan)?.document
+  const onto = combined && selected.get(combined)
+  const reclaimed = !notes && onto?.role === "body" && onto.file !== plan.documents.find(row => row.id === combined)?.file
+    && onto.file.toLocaleLowerCase() === plan.notes_file?.toLocaleLowerCase()
+  const notesFile = notes ? notes.file : reclaimed ? memoNotesFile(documents, plan.memo!)
+    : follows && renamed.deliverable !== "redline" ? memoNotesFile([renamed], plan.memo!) : plan.notes_file
+  return documents.some((row, index) => row !== plan.documents[index]) || notesFile !== plan.notes_file
+    ? { ...plan, documents, ...(notesFile !== undefined ? { notes_file: notesFile } : {}) } : undefined
 }

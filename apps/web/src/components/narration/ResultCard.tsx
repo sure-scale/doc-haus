@@ -1,13 +1,14 @@
 import { documentContentUrl } from "../../api/ingest/documents"
 import type { LeanDraftingStatus } from "../../api/ingest/lean"
-import DraftedList from "../drafting/DraftedList"
+import DraftedList, { useCombinedDownload } from "../drafting/DraftedList"
 import { checklistFindingsCount, draftedGroups, findingsTitle, OUTPUT_ROLE, type DraftedOutput } from "../drafting/model"
 import { resultChecks } from "./outcome"
 
 /** A completed run in brief: what the checks established, what remains for the
  * lawyer, and the files it produced, each one click from the viewer. Every file
  * to review is featured: a lone draft as a page, several drafts as rows, and
- * the drafting notes as a row beneath them. Redlines stay with all the files. */
+ * the drafting notes as a row beneath them. Redlines stay with all the files.
+ * A draft delivered as one combined file with its memo downloads as that file. */
 export default function ResultCard({
   status,
   matterId,
@@ -26,6 +27,8 @@ export default function ResultCard({
   const notes = outputs.filter((output) => output.role === "notes")
   const lone = drafts.length === 1 ? drafts[0] : undefined
   const rows = [...(lone ? [] : drafts), ...notes]
+  const combinedOf = (output: DraftedOutput) => groups.find((group) => group.main === output)?.combined
+  const loneCombined = lone && combinedOf(lone)
   return (
     <section id="run-result" className="narration-result" aria-labelledby="run-result-title">
       <h3 id="run-result-title" className={`narration-result-title${findings === undefined ? "" : " is-findings"}`}>
@@ -72,9 +75,13 @@ export default function ResultCard({
               <button type="button" className="primary result-review" onClick={() => onViewDocument(lone.name)}>
                 Review draft
               </button>
-              <a href={documentContentUrl(matterId, lone.name)} download={lone.name}>
-                Download
-              </a>
+              {loneCombined ? (
+                <CombinedDownload matterId={matterId} name={loneCombined} />
+              ) : (
+                <a href={documentContentUrl(matterId, lone.name)} download={lone.name}>
+                  Download
+                </a>
+              )}
             </div>
           </div>
         </div>
@@ -83,7 +90,7 @@ export default function ResultCard({
         <ul className="result-stack" aria-label={lone ? "Also for review" : "Files for review"}>
           {rows.map((output) => (
             <li key={output.name}>
-              <ReviewRow output={output} matterId={matterId} onView={onViewDocument} />
+              <ReviewRow output={output} matterId={matterId} onView={onViewDocument} combined={combinedOf(output)} />
             </li>
           ))}
         </ul>
@@ -91,7 +98,7 @@ export default function ResultCard({
       {groups.length > 0 && (
         <details className="result-files" open={drafts.length + notes.length === 0 ? true : undefined}>
           <summary>
-            All generated files <span className="result-file-count">{outputs.length}</span>
+            All generated files <span className="result-file-count">{outputs.length + groups.filter((group) => group.combined).length}</span>
           </summary>
           <DraftedList matterId={matterId} groups={groups} onView={onViewDocument} />
         </details>
@@ -100,7 +107,18 @@ export default function ResultCard({
   )
 }
 
-function ReviewRow({ output, matterId, onView }: { output: DraftedOutput; matterId: string; onView: (name: string) => void }) {
+function ReviewRow({
+  output,
+  matterId,
+  onView,
+  combined,
+}: {
+  output: DraftedOutput
+  matterId: string
+  onView: (name: string) => void
+  /** The one file this draft downloads as with the requested memo. */
+  combined?: string
+}) {
   const role = OUTPUT_ROLE[output.role]
   return (
     <div className={`result-row is-${output.role}`}>
@@ -118,10 +136,31 @@ function ReviewRow({ output, matterId, onView }: { output: DraftedOutput; matter
         <button type="button" className="result-review" onClick={() => onView(output.name)} aria-label={`Review ${output.name}`}>
           Review
         </button>
-        <a href={documentContentUrl(matterId, output.name)} download={output.name} aria-label={`Download ${output.name}`}>
-          Download
-        </a>
+        {combined ? (
+          <CombinedDownload matterId={matterId} name={combined} />
+        ) : (
+          <a href={documentContentUrl(matterId, output.name)} download={output.name} aria-label={`Download ${output.name}`}>
+            Download
+          </a>
+        )}
       </div>
     </div>
+  )
+}
+
+/** A combined document's one file, downloaded in place of its draft. */
+function CombinedDownload({ matterId, name }: { matterId: string; name: string }) {
+  const { busy, download } = useCombinedDownload(matterId)
+  return (
+    <button
+      type="button"
+      className="linklike result-download"
+      disabled={busy}
+      onClick={() => download(name)}
+      aria-label={`Download ${name}`}
+      title="Download the memo and the draft as one .docx"
+    >
+      Download
+    </button>
   )
 }

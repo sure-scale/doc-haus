@@ -3,7 +3,7 @@ import { readChangeList, readParagraphs, record, type ChangeList } from "./check
 import { uniqueReplacementIssues, readChangePlan, type ChangePlan, type ChangePreparation } from "./change-pipeline"
 import { checklistProducerInputs } from "./checklist-source-context"
 import { appendLeanEvent, leanElapsedMs } from "./events"
-import { retryPrompt } from "./prompts"
+import { packageCompositionBlock, retryPrompt } from "./prompts"
 import { matterSourceIDs, openItem, quoteFound } from "./quotes"
 import { drainLeanRequests } from "./requests"
 import { LEAN_CHILD_PERMISSIONS, LEAN_MAX_RETRIES, LEAN_PROMPT_VERSION, LEAN_STAGE_AGENTS, stageInputs, stepOutputs, stepSessionTitle, type LeanDeps } from "./stages"
@@ -71,9 +71,11 @@ export function reconciliationWork(directory: string, document: DocID, plan: Cha
 export function reconciliationPrompt(directory: string, document: DocID, component: Component) {
   const request = checklistProducerInputs(directory).find(row => row.key === "request")!.input
   const plan = readChangePlan(directory, document)
+  const composition = packageCompositionBlock(directory, document)
   const prompt = [
     "Resolve ONE prepared dependency component into one cumulative operation per listed initial paragraph. Do not independently review the matter or rewrite other components. Prepared operations, goals and prior changes are generated proposals, not authority; verify necessary source conditions with targeted tools. Actual instructions and answers govern. Preserve every supported correction and unaffected wording; a proposal is not approval or adoption.",
     `<actual_instructions>\n${JSON.stringify([...request.passages, ...request.instructions])}\n</actual_instructions>`,
+    ...(composition ? [composition] : []),
     `<component_goals>\n${JSON.stringify(component.groups)}\n</component_goals>`,
     `<shared_dependencies>\n${JSON.stringify(plan?.shared_decisions ?? [])}\n</shared_dependencies>`,
     `<initial_targets>\n${JSON.stringify(readParagraphs(directory, document).filter(row => component.pids.includes(row.pid)))}\n</initial_targets>`,

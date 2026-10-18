@@ -591,8 +591,9 @@ async function runGate(directory: string): Promise<StageRun> {
   })
   writeLeanText(directory, "gate.json", `${JSON.stringify(gate, null, 2)}\n`)
   writeLeanText(directory, "drafting-notes-coverage.md", notesCoverageReport(gate))
-  // Unresolved checklist findings lead the notes delivered with the draft.
-  // Without them the drafting notes are delivered as written, so earlier
+  // Unresolved checklist findings lead the notes delivered with the draft, and
+  // a requested memo is always delivered without its reference markers.
+  // Otherwise the drafting notes are delivered as written, so earlier
   // delivered notes are removed. Rendering is not byte-stable (a list gets a
   // fresh relationship id), so unchanged notes keep their earlier file; the
   // .docx is written before the .md, so a stop between the two re-renders.

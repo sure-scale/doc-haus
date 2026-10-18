@@ -111,7 +111,8 @@ export async function runChecklistCheckFlow(directory: string, deps: ChecklistJo
     const sourceBasis = matterSourceBasis(directory)
     const jobs = contexts.map(row => ({ ...row,
       // Review allowance follows actual evidence, never a prompt/model/session revision.
-      // Exact artifact properties are evidence: newly observable measures admit a fresh check.
+      // Exact artifact properties are evidence: newly observable measures admit a fresh check,
+      // as do the supplied delivery rows of the files that deliver the target.
       canonical_input_sha: shortHash(JSON.stringify([sourceBasis, row.record.id,
         current.map(job => job.input.passages.map(ref => ({ document: ref.document, quote: ref.quote }))),
         settled.map(ref => ({ document: ref.document, quote: ref.quote })), row.context.documents,
@@ -119,8 +120,9 @@ export async function runChecklistCheckFlow(directory: string, deps: ChecklistJo
           artifact: artifact.value.artifact, sha256: artifact.value.sha256,
           annotations: artifact.value.annotations?.map(annotation => ({ artifact: annotation.artifact, sha256: annotation.sha256, properties: annotation.properties })) })),
         ...(row.context.workflow.length ? [row.context.workflow] : []),
-        ...(row.record.assignment ? [row.record.assignment] : [])]), 40),
-      input_sha: shortHash(JSON.stringify(["checklist-check-1", deps.model, sourceBasis, buildChecklistCheckerPrompt(row.context.input), row.context.artifacts, row.context.workflow]), 40) }))
+        ...(row.record.assignment ? [row.record.assignment] : []),
+        ...(row.context.delivery ? [row.context.delivery] : [])]), 40),
+      input_sha: shortHash(JSON.stringify(["checklist-check-2", deps.model, sourceBasis, buildChecklistCheckerPrompt(row.context.input), row.context.artifacts, row.context.workflow]), 40) }))
     return { extractionComplete, originals, effective, clarifications, artifacts, missing, jobs }
   })
   const prior = readLeanJson(directory, CHECKS)
@@ -322,30 +324,50 @@ function effectiveChecklistItems(directory: string, originals: ChecklistItemReco
   return { items, parents, complete: !issues.length, issues }
 }
 
-/** Structural coverage reconciliation only. Legal judgments remain native child findings. */
+/** The wording each child-level coverage issue ends with, after the ids of the
+ * checks it concerns. */
+export const CHECKLIST_COVERAGE_ISSUES = {
+  no_finding: "no completed finding.",
+  inspect: "action fulfillment or applicability requires inspection.",
+  adoption_evidence: "adoption lacks current operative or artifact evidence.",
+  deferred_property: "deferred a document-wide property, but no document-properties finding decided it.",
+} as const
+
+/** What a parent's coverage issue concerns, as recorded where it is written:
+ * its refined scope is incomplete or stale (an effective-items issue), or one
+ * of the child-level kinds above. */
+export type ChecklistCoverageIssue = "scope" | keyof typeof CHECKLIST_COVERAGE_ISSUES
+
+/** Structural coverage reconciliation only. Legal judgments remain native child findings.
+ * Each issue's kind is recorded beside it, in the same order. */
 export function reconcileChecklistParentCoverage(directory: string, checks: ChecklistCheckResult[], originals = originalChecklistItems(directory)) {
   const effective = readEffectiveChecklistItems(directory, originals)
   return effective.parents.map(parent => {
     const issues = effective.issues.filter(issue => issue.startsWith(`${parent.parent_id}:`) || issue.startsWith(`${parent.parent_id}/`))
+    const issue_kinds: ChecklistCoverageIssue[] = issues.map(() => "scope")
+    const issue = (kind: keyof typeof CHECKLIST_COVERAGE_ISSUES, subject: string) => {
+      issues.push(`${subject} ${CHECKLIST_COVERAGE_ISSUES[kind]}`)
+      issue_kinds.push(kind)
+    }
     const children = parent.units.flatMap(unit => unit.children.map(row => row.id))
     const findings = children.map(id => checks.find(row => row.item_id === id))
-    for (const [index, check] of findings.entries()) if (!check || check.status !== "succeeded" || check.reinspection?.status === "failed" || !check.finding) issues.push(`${children[index]}: no completed finding.`)
+    for (const [index, check] of findings.entries()) if (!check || check.status !== "succeeded" || check.reinspection?.status === "failed" || !check.finding) issue("no_finding", `${children[index]}:`)
     // Applied adoption cannot be certified by an annotation or a stated intention.
     for (const child of parent.units.flatMap(unit => unit.children)) {
       const finding = checks.find(row => row.item_id === child.id)?.finding
-      if (checklistFindingRecovery(child.item, finding) === "inspect") issues.push(`${child.id}: action fulfillment or applicability requires inspection.`)
-      if (child.item.required_action === "adopt" && child.item.target.treatment === "operative" && finding?.action_status === "fulfilled" && !finding.evidence.some(evidence => evidence.kind === "body" || evidence.kind === "artifact")) issues.push(`${child.id}: adoption lacks current operative or artifact evidence.`)
+      if (checklistFindingRecovery(child.item, finding) === "inspect") issue("inspect", `${child.id}:`)
+      if (child.item.required_action === "adopt" && child.item.target.treatment === "operative" && finding?.action_status === "fulfilled" && !finding.evidence.some(evidence => evidence.kind === "body" || evidence.kind === "artifact")) issue("adoption_evidence", `${child.id}:`)
     }
     // A range/process deferral is never a vacuous pass: the whole-target unit must decide it.
     const deferred = parent.units.flatMap(unit => unit.children).filter(child => child.assignment?.kind !== "document_properties" && checks.find(row => row.item_id === child.id)?.finding?.deferred_to)
     if (deferred.length && !parent.units.flatMap(unit => unit.children).some(child => child.assignment?.kind === "document_properties" && ["satisfied", "open", "unsatisfied"].includes(checks.find(row => row.item_id === child.id)?.finding?.status ?? "")))
-      issues.push(`${parent.parent_id}: ${deferred.map(child => child.id).join(", ")} deferred a document-wide property, but no document-properties finding decided it.`)
+      issue("deferred_property", `${parent.parent_id}: ${deferred.map(child => child.id).join(", ")}`)
     const statuses = findings.map(row => row?.finding?.status)
     const unfulfilled = parent.units.flatMap(unit => unit.children).some(child => checklistFindingRecovery(child.item, checks.find(row => row.item_id === child.id)?.finding) === "repair")
     const status = issues.length || statuses.includes("indeterminate") ? "indeterminate" as const
       : unfulfilled ? "unsatisfied" as const
       : statuses.includes("open") || findings.some(row => row?.finding?.open_decisions?.length) ? "open" as const : "satisfied" as const
-    return { parent_id: parent.parent_id, scope: parent.scope, status, children, issues }
+    return { parent_id: parent.parent_id, scope: parent.scope, status, children, issues, issue_kinds }
   })
 }
 

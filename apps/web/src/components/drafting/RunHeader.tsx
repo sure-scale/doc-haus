@@ -18,16 +18,17 @@ import {
   leanSettledItems,
   leanSettledSummary,
   leanStopAvailable,
+  notesWording,
   LONG_STEP_MS,
   openItemsSentence,
   openQuestions,
   runPosition,
   runState,
+  runStepName,
   type RunState,
   stageElapsed,
   stepCause,
   stepGroups,
-  stepName,
 } from "./model"
 import OpenItems from "./OpenItems"
 import ChecklistRefinement from "./ChecklistRefinement"
@@ -105,7 +106,7 @@ export default function RunHeader({
   // Once delivered, what is left to look at; before then, how the final check
   // settled the open items once it ran, else the run's own count.
   const settled = leanSettledItems(status)
-  const note = status.status === "completed" || !settled ? openItemsSentence(status) : settled.length > 0 ? leanSettledSummary(settled) : undefined
+  const note = status.status === "completed" || !settled ? openItemsSentence(status) : settled.length > 0 ? leanSettledSummary(settled, status.memo) : undefined
   const verdict = finalCheckNote(status)
   const held = status.documents?.status === "blocked" ? status.documents.documents.filter((document) => document.kind !== "drafting_notes_markdown").length : 0
   const canContinue = leanContinueAvailable(status) && !actions.resuming
@@ -227,7 +228,7 @@ export default function RunHeader({
       <div id={detailsId} className={`run-head-details${details ? " is-open" : ""}`} inert={!details} aria-hidden={!details}>
         <div className="run-head-details-body">
           <Stepper status={status} now={now} />
-          <p className="run-note">{status.stages["research"] ? status.stages["research"].status === "done" ? status.research?.status === "not-needed" ? "External authority was not needed for this request; the reason is recorded with the drafting notes." : status.research?.status === "limited" ? "Legal research is incomplete. Source and research limitations must be disclosed with this review draft." : "Retrieved legal research findings are independently checked before drafting." : "External legal research runs after material questions are answered. Unavailable sources and research gaps are disclosed." : "This earlier drafting run checked matter documents; external legal research was not included."}</p>
+          <p className="run-note">{status.stages["research"] ? status.stages["research"].status === "done" ? status.research?.status === "not-needed" ? `External authority was not needed for this request; the reason is recorded with ${notesWording(status.memo).phrase}.` : status.research?.status === "limited" ? "Legal research is incomplete. Source and research limitations must be disclosed with this review draft." : "Retrieved legal research findings are independently checked before drafting." : "External legal research runs after material questions are answered. Unavailable sources and research gaps are disclosed." : "This earlier drafting run checked matter documents; external legal research was not included."}</p>
           {held > 0 && !stopped && <p className="run-note">{held} prepared document{held === 1 ? " is" : "s are"} held until the final check passes.</p>}
           {note && <p className="run-note">{note}</p>}
           {head.tone === "done" && verdict && <p className="run-note">{verdict}</p>}
@@ -295,7 +296,7 @@ export function runHeadline(status: LeanDraftingStatus, now: number, resuming = 
   if (status.paused_at)
     return {
       tone: "paused",
-      title: step ? `Paused at ${stepName(step.key).toLowerCase()}` : "Paused",
+      title: step ? `Paused at ${runStepName(status, step.key).toLowerCase()}` : "Paused",
       meta: [position?.document ?? "", "You paused drafting", "Continue picks up from this step"],
     }
   if (stoppedByTechnicalProblem(status))
@@ -316,7 +317,7 @@ export function runHeadline(status: LeanDraftingStatus, now: number, resuming = 
   const failed = step ? stepCause(status, step.key) !== undefined : false
   return {
     tone: "paused",
-    title: step ? `Paused at ${stepName(step.key).toLowerCase()}` : "Paused",
+    title: step ? `Paused at ${runStepName(status, step.key).toLowerCase()}` : "Paused",
     meta: [position?.document ?? "", failed ? "Its check did not pass" : steps, failed ? "Continue runs the step again" : ""],
   }
 }

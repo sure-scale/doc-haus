@@ -5,8 +5,9 @@ import type { AppliedAmendment, UnappliedAmendment } from "../../lib/drafting-am
 import { openItemMarkers } from "../../lib/open-items"
 import { draftingPlaceholders } from "../../lib/placeholder-resolution"
 import { normalize } from "../../lib/quote-verify"
+import { changeListIDs, memoMode, runItemIDs, withoutRefMarkers } from "./delivered-memo"
 import { excerpt, openItem, quoteFound, quoteMissIssue, quoteMissItems, sourceQuotes } from "./quotes"
-import type { DocID } from "./plan"
+import { readLeanPlan, type DocID } from "./plan"
 import { readLeanJson, type OpenItem, type Question, type StageID } from "./state"
 
 // Deterministic checks for the lean drafting stages. Each check returns retry
@@ -113,24 +114,105 @@ export function settleApply(changes: ChangeList, result: ApplyResult | undefined
 }
 
 /** The drafting notes must disclose every open item by id. Its own quotes and citations
- * must be supported: it cannot disclose itself, so a defect there is retried. */
-export function checkDraftingNotes(directory: string, content: string, items: OpenItem[]): StageCheck {
+ * must be supported: it cannot disclose itself, so a defect there is retried.
+ * A requested memo is delivered with only its "[ref: …]" markers removed, so
+ * there an item is disclosed by its id inside a marker, and a run id, planned
+ * document id or recorded change id written anywhere else, which would reach
+ * the reader, is retried. On the last attempt (`final`) such an id alone does
+ * not fail the notes: they are saved as the model wrote them, never rewritten,
+ * and every other check still applies. */
+export function checkDraftingNotes(directory: string, content: string, items: OpenItem[], options: { final?: boolean } = {}): StageCheck {
   const shape = documentShapeIssues(content, "drafting notes")
   if (shape.length) return { issues: shape, openItems: [] }
-  const undisclosed = items.filter(item => !content.includes(item.id)).map(item => item.id)
+  const memo = memoMode(directory)
+  const markers = memo ? [...content.matchAll(REF_MARKER)].map(match => match[1]!) : []
+  const undisclosed = items.filter(item => memo
+    ? !markers.some(marker => standingID(item.id).test(marker))
+    : !content.includes(item.id)).map(item => item.id)
+  const delivered = memo ? withoutRefMarkers(content) : ""
+  const ids = memo && !options.final
+  const stray = ids ? runItemIDs(directory, items).filter(id => readerVisibleID(id) && standingID(id).test(delivered)) : []
+  // A planned document's short id ("d1") is internal in a memo too: the reader
+  // knows the document by its title or file name.
+  // Quoted text, a citation, a footnote marker and a locator's number are not
+  // prose (NOT_PROSE): only a standalone id there is a stray.
+  const prose = NOT_PROSE.reduce((text, mask) => text.replace(mask, " "), delivered)
+  const strayDocuments = ids ? (readLeanPlan(directory)?.documents ?? []).map(row => row.id).filter(id => standingID(id).test(prose)) : []
+  // So is a recorded change id ("a1"): the reader knows a change by its effect.
+  const strayChanges = ids ? runChangeIDs(directory, items).filter(id => standingID(id).test(prose)) : []
   const misquoted = sourceQuotes(content).filter(quote => !quoteFound(directory, quote))
   const unsupported = [...new Set(citationRowsForLeanText(directory, "drafting-notes.md", content)
     .filter(row => row.status === "unsupported").map(row => row.citation_text))]
   return {
     issues: [
       ...(undisclosed.length
-        ? [`The drafting notes do not mention these open items: ${undisclosed.join(", ")}. Name each id and say what the lawyer needs to do about it.`]
+        ? [`The drafting notes do not mention these open items: ${undisclosed.join(", ")}. ${memo
+          ? "Say what each is and what the lawyer needs to do about it, ending that statement with its exact id as \"[ref: <id>]\"."
+          : "Name each id and say what the lawyer needs to do about it."}`]
+        : []),
+      ...(stray.length
+        ? [`These internal ids appear outside a "[ref: …]" marker: ${stray.join(", ")}. The memo is for the reader: describe each point in words and keep each id only in the marker that ends its statement.`]
+        : []),
+      ...(strayDocuments.length
+        ? [`These document ids appear outside a "[ref: …]" marker: ${strayDocuments.join(", ")}. The memo is for the reader: name each document by its title or file name, not its id.`]
+        : []),
+      ...(strayChanges.length
+        ? [`These change ids appear outside a "[ref: …]" marker: ${strayChanges.join(", ")}. The memo is for the reader: describe each change by what it does, not its id.`]
         : []),
       ...misquoted.map(quote => quoteMissIssue(directory, "The drafting notes", quote)),
       ...unsupported.map(citation => `The drafting notes cite "${citation}", which no matter source, research row or verified authority supports. Remove the citation or describe the point as needing research.`),
     ],
     openItems: [],
   }
+}
+
+/** Text the memo check does not read as prose: quoted text (the memo's verified
+ * quotes), a footnote marker "[^d1]", a citation such as "3(d1)" or
+ * "3(1)(a1)", and the number a locator word gives. That number starts with a
+ * digit ("clause 12.1(d)", "Section 21A", "para. 3", "reg. 4(2)(b)"), or is in
+ * parentheses after a sub-division ("Sub-paragraph (a1)"). Any other token
+ * after a locator word is prose: "the clause a1 adds", "the new clause (a1)"
+ * and "Part d2" name an internal id. */
+const NOT_PROSE = [/"[^"\n]*"|\u201c[^\u201d\n]*\u201d/g, /\[\^[^\]\n]*\]/g, /(?<=[A-Za-z0-9)]\()[^)\n]*\)/g,
+  /(?<![\w'\u2019])(?:(?:section|regulation|paragraph|clause|schedule|article|part|rule)s?\b|(?:ss?|regs?|paras?|cl|sch|arts?)\.)[ \t]*(?:\(?\d[^\s(),;]*\)?|(?<=sub-[a-z]+[ \t]*)\([^\s(),;]+\))/gi]
+
+/** A "[ref: …]" or "[refs: …]" marker, as withoutRefMarkers (delivered-memo.ts)
+ * removes it; group 1 is its ids, one or several separated by "," or ";". */
+const REF_MARKER = /\[[ \t]*[Rr]efs?[ \t]*:([^\]\n]*)\]/g
+
+/** The change ids the run records for its planned documents (each change
+ * list's amendments, withheld amendments and explanations) and the amendment
+ * each open item names. Only these are matched, so a list label "(a)" or other
+ * text of the same shape is not. */
+function runChangeIDs(directory: string, items: OpenItem[]) {
+  return [...new Set([
+    ...(readLeanPlan(directory)?.documents ?? []).flatMap(({ id }) => changeListIDs(directory, id)),
+    ...items.map(item => item.ref.amendment_id),
+  ].filter((id): id is string => typeof id === "string" && id.length > 0))]
+}
+
+/** A whole occurrence of `id`, case-sensitive and not part of a longer id, word
+ * or path, with the boundaries withoutInternalIDs (delivered-memo.ts) uses. */
+function standingID(id: string) {
+  return new RegExp(standingIDPattern(id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")))
+}
+
+/** The pattern of a whole occurrence of one of `ids`, an alternation of
+ * escaped ids, as standingID bounds it. An id joined by "/", "-" or an en dash
+ * to a short id such as "d2" or "a3" ("d1/d2", "a1-a3") still stands alone. */
+export function standingIDPattern(ids: string) {
+  const edge = String.raw`(?<![\w:./-])`, end = String.raw`(?![\w-]|[.:/]\w)`, joint = String.raw`[/\u2013-]`
+  return String.raw`(?:${edge}|(?<=${edge}(?:[a-z]\d+${joint})+))(?:${ids})(?:${end}|(?=(?:${joint}[a-z]\d+)+${end}))`
+}
+
+/** A run id no lawyer would write as prose: at least eight characters with a
+ * digit and no space, joined by ":" or "-" (open item and checklist ids, which
+ * carry a hash) or a paragraph pointer. Short labels such as a document or
+ * amendment id ("d1", "a1", "w1", "i1") and word-like ids with no digit are
+ * not counted here; a memo's planned document ids and recorded change ids are
+ * checked on their own. */
+function readerVisibleID(id: string) {
+  return id.length >= 8 && /\d/.test(id) && !/\s/.test(id) && (/[:-]/.test(id) || /^p[0-9a-f]{12}$/.test(id))
 }
 
 /** A planned document's final body, as its apply step left it. */

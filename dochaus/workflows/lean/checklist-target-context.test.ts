@@ -76,10 +76,12 @@ test("every actual accepted paragraph including headings and tables is assigned 
     expect(assigned.input.item).toBe(item)
     if (unit.assignment.kind === "process_records") expect(assigned.input.current_evidence).toEqual([])
     else if (unit.assignment.kind === "document_properties") {
-      // Exact artifact property strings only: no passage is assigned to the whole-target unit.
-      expect(assigned.input.current_evidence).toEqual(target.annotations!.map((annotation, index) => ({ document: annotation.artifact, locator: `read-record ${context.artifacts[0]!.path} /annotations/${index}/properties`, text: annotation.properties, kind: "artifact" })))
-      expect(assigned.input.current_evidence.length).toBeGreaterThan(0)
-      for (const row of assigned.input.current_evidence) expect(JSON.parse(row.text).accepted_body_text_measures.paragraphs).toBe(target.paragraphs.length)
+      // Exact artifact property strings and the target's delivery rows: no passage is assigned to the whole-target unit.
+      const delivery = context.input.current_evidence.filter(row => row.locator.startsWith("delivery_artifacts"))
+      expect(delivery.map(row => JSON.parse(row.text).planned_filename)).toEqual(["terms.docx", "terms - redline.docx"])
+      expect(assigned.input.current_evidence).toEqual([...target.annotations!.map((annotation, index) => ({ document: annotation.artifact, locator: `read-record ${context.artifacts[0]!.path} /annotations/${index}/properties`, text: annotation.properties, kind: "artifact" as const })), ...delivery])
+      expect(assigned.input.current_evidence.length).toBeGreaterThan(delivery.length)
+      for (const row of assigned.input.current_evidence.slice(0, -delivery.length)) expect(JSON.parse(row.text).accepted_body_text_measures.paragraphs).toBe(target.paragraphs.length)
     } else expect(assigned.input.current_evidence.map(row => row.text)).toEqual(unit.assignment.ranges.map(range => target.paragraphs.find(row => row.paragraph_index === range.paragraph_index)!.paragraph_text))
   }
 })
@@ -227,7 +229,9 @@ test("range units defer a document-wide parent to its one document-properties fi
   const result = await runChecklistCheckFlow(dir, deps)
   const whole = readEffectiveChecklistItems(dir).items.filter(row => row.assignment?.kind === "document_properties")
   expect(whole).toHaveLength(1)
-  expect(deps.inputs.filter(input => input.item_id === whole[0]!.id).flatMap(input => input.current_evidence).every(row => row.kind === "artifact" && "accepted_body_text_measures" in JSON.parse(row.text))).toBe(true)
+  const wholeEvidence = deps.inputs.filter(input => input.item_id === whole[0]!.id).flatMap(input => input.current_evidence)
+  expect(wholeEvidence.some(row => "accepted_body_text_measures" in JSON.parse(row.text))).toBe(true)
+  expect(wholeEvidence.every(row => row.kind === "artifact" && ("accepted_body_text_measures" in JSON.parse(row.text) || row.locator.startsWith("delivery_artifacts")))).toBe(true)
   const coverage = (checks: typeof result.checks) => reconcileChecklistParentCoverage(dir, checks)[0]!
   const deferred = (status: "satisfied" | "open" | "indeterminate" | "not_applicable", others: "satisfied" | "not_applicable" = "not_applicable", marked = true) => result.checks.map(row => ({ ...row, finding: row.item_id === whole[0]!.id
     ? { ...row.finding!, status } : { ...row.finding!, status: others, ...(marked ? { deferred_to: "document_properties" as const } : {}) } }))

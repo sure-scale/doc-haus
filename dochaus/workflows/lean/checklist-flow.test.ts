@@ -1,11 +1,14 @@
 import { afterEach, expect, test } from "bun:test"
+import { createHash } from "node:crypto"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import { combineMemoAndBody } from "../../lib/combined-docx"
 import { renderMarkdownToDocx } from "../../lib/render"
 import { runChecklistCheckFlow, runChecklistExtractionFlow } from "./checklist-flow"
 import { CHECKLIST_JOB_AGENTS } from "./checklist-job"
 import { writeLeanPlan } from "./plan"
+import { memoNotesFile } from "./deliverables"
 import { leanFile, readLeanJson, shortHash, writeLeanBytes, writeLeanText } from "./state"
 import type { StageSessionPort } from "./stages"
 import type { ChecklistCheckerInput, ChecklistItem, ChecklistProducerInput } from "./checklist-contract"
@@ -218,6 +221,77 @@ test("a reinspection consumed before text measures existed is not reused once ex
   const refreshed = await runChecklistCheckFlow(directory, deps, { reinspectAdverse: true })
   expect(deps.counts.created).toBe(before + 1)
   expect(refreshed.checks[0]!.finding?.status).toBe("satisfied")
+  await runChecklistCheckFlow(directory, deps, { reinspectAdverse: true })
+  expect(deps.counts.created).toBe(before + 1)
+})
+
+test("a consumed reinspection admits one fresh check once the plan delivers its target in a combined file", async () => {
+  const directory = matter()
+  const record = { title: "Record", purpose: "Record instructions", file: "record.docx", parts: [{ heading: "Record", scope: "Record" }] }
+  const memo = { name: "cover memo", file: memoNotesFile([record], "cover memo") }
+  writeLeanPlan(directory, [record], undefined, undefined, memo)
+  const options = { finding: "indeterminate" as "indeterminate" | "satisfied" }
+  const deps = port(directory, options)
+  const checked: ChecklistCheckerInput[] = []
+  const prompt = deps.sessions.prompt
+  deps.sessions.prompt = async input => {
+    if (input.agent === CHECKLIST_JOB_AGENTS.check) checked.push(JSON.parse(input.text.split("CHECK_INPUT:\n\n")[1]))
+    return prompt(input)
+  }
+  await runChecklistExtractionFlow(directory, deps)
+  writeLeanBytes(directory, "d1/body.docx", (await renderMarkdownToDocx("# Record\n\nThe proposed arrangement remains open.")).bytes)
+  await runChecklistCheckFlow(directory, deps)
+  expect((await runChecklistCheckFlow(directory, deps, { reinspectAdverse: true })).checks[0]!.reinspection?.status).toBe("succeeded")
+  const before = deps.counts.created
+  // Delivered on its own: passages and the record's own files, no combined file.
+  expect(checked.flatMap(input => input.current_evidence).every(row => row.kind === "body" || (row.locator.startsWith("delivery_artifacts") && JSON.parse(row.text).kind !== "combined"))).toBe(true)
+  // Only the record's delivery changes: it is now built into one file with the same memo.
+  writeLeanPlan(directory, [{ ...record, deliverable: "combined" }], undefined, undefined, memo)
+  options.finding = "satisfied"
+  const refreshed = await runChecklistCheckFlow(directory, deps, { reinspectAdverse: true })
+  expect(deps.counts.created).toBe(before + 1)
+  expect(refreshed.checks[0]!.finding?.status).toBe("satisfied")
+  expect(JSON.parse(checked.at(-1)!.current_evidence.at(-1)!.text)).toMatchObject({ kind: "combined", download_filename: "record.docx",
+    contains: [{ order: 1, planned_filename: "record - cover memo.docx" }, { order: 2, planned_filename: "record - clean.docx" }] })
+  await runChecklistCheckFlow(directory, deps, { reinspectAdverse: true })
+  expect(deps.counts.created).toBe(before + 1)
+})
+
+test("a consumed reinspection admits one fresh check when only the combined file built from the target's parts changes", async () => {
+  const directory = matter()
+  const record = { title: "Record", purpose: "Record instructions", file: "record.docx", deliverable: "combined" as const, parts: [{ heading: "Record", scope: "Record" }] }
+  writeLeanPlan(directory, [record], undefined, undefined, { name: "cover memo", file: memoNotesFile([record], "cover memo") })
+  const options = { finding: "indeterminate" as "indeterminate" | "satisfied" }
+  const deps = port(directory, options)
+  const checked: ChecklistCheckerInput[] = []
+  const prompt = deps.sessions.prompt
+  deps.sessions.prompt = async input => {
+    if (input.agent === CHECKLIST_JOB_AGENTS.check) checked.push(JSON.parse(input.text.split("CHECK_INPUT:\n\n")[1]))
+    return prompt(input)
+  }
+  const docx = async (markdown: string) => (await renderMarkdownToDocx(markdown)).bytes
+  await runChecklistExtractionFlow(directory, deps)
+  writeLeanBytes(directory, "d1/body.docx", await docx("# Record\n\nThe proposed arrangement remains open."))
+  const memo = await docx("# Cover memo\n\nThe proposed arrangement is summarised.")
+  writeLeanBytes(directory, "drafting-notes.docx", memo)
+  // Not an accepted apply result, so the checked passages stay those of the draft.
+  writeLeanBytes(directory, "d1/body-applied.docx", await docx("# Record\n\nThe proposed arrangement remains open."))
+  await runChecklistCheckFlow(directory, deps)
+  expect((await runChecklistCheckFlow(directory, deps, { reinspectAdverse: true })).checks[0]!.reinspection?.status).toBe("succeeded")
+  const before = deps.counts.created
+  const passages = checked.at(-1)!.current_evidence.filter(row => row.kind === "body")
+  expect(passages.length).toBeGreaterThan(0)
+  // Only the combined file's body part changes; every passage the checker saw stays the same.
+  const body = await docx("# Record\n\nThe proposed arrangement remains open, subject to confirmation.")
+  writeLeanBytes(directory, "d1/body-applied.docx", body)
+  options.finding = "satisfied"
+  const refreshed = await runChecklistCheckFlow(directory, deps, { reinspectAdverse: true })
+  expect(deps.counts.created).toBe(before + 1)
+  expect(refreshed.checks[0]!.finding?.status).toBe("satisfied")
+  const latest = checked.at(-1)!
+  expect(latest.current_evidence.filter(row => row.kind === "body")).toEqual(passages)
+  expect(JSON.parse(latest.current_evidence.at(-1)!.text).built_at_check).toEqual({
+    sha256: createHash("sha256").update(combineMemoAndBody({ memo, body })).digest("hex"), nonempty_paragraphs: 4, paragraphs_equal_memo_then_body: true })
   await runChecklistCheckFlow(directory, deps, { reinspectAdverse: true })
   expect(deps.counts.created).toBe(before + 1)
 })
