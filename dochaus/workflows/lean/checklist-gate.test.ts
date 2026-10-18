@@ -33,10 +33,10 @@ function saveChecks(directory: string, rows: Row[]) {
     checks: rows.map(row => ({ input_sha: "sha", status: "succeeded", issues: [], ...row })) }))
 }
 
-function checklistMatter(rows: Row[] = ITEMS.map(row => ({ item_id: row.id, finding: finding(row.id, "satisfied") }))) {
+function checklistMatter(rows: Row[] = ITEMS.map(row => ({ item_id: row.id, finding: finding(row.id, "satisfied") })), items = ITEMS) {
   const directory = matter()
   writeLeanPlan(directory, [{ title: "Supply note", purpose: "Supply note", file: "supply-note.docx", parts: [{ heading: "Delivery", scope: "Delivery terms" }] }])
-  writeLeanText(directory, "checklist/extraction.json", JSON.stringify({ expected_sources: ["request"], sources: [{ key: "request", status: "succeeded", items: ITEMS }] }))
+  writeLeanText(directory, "checklist/extraction.json", JSON.stringify({ expected_sources: ["request"], sources: [{ key: "request", status: "succeeded", items }] }))
   saveChecks(directory, rows)
   writeLeanText(directory, "checklist/report.md", "# Checklist handoff findings\n")
   updateLeanStage(directory, readLeanState(directory)!, "checklist-check", { status: "done" })
@@ -74,7 +74,7 @@ test("each verified disclosure class is carried to the disclosed item", () => {
     expect(gate).toMatchObject({ status: "pass", delivery: "review_draft_with_findings", blocking: [] })
     // A source conflict also refers to the gate's question on it.
     expect(unresolvedItems(gate)).toEqual([expect.objectContaining({ status: "disclosed", ref: { checklist_item: "c1", checklist_class: row.class, document: "d1",
-      ...(row.class === "source_conflict" ? { question_id: gate.question!.id } : {}) },
+      ...(row.class === "source_conflict" ? { question_id: gate.questions![0]!.id } : {}) },
       detail: expect.stringContaining(`(${row.label})`) })])
   }
   const conflict = checklistMatter([{ item_id: "c1", finding: cases[2].finding }, { item_id: "c2", finding: finding("c2", "satisfied") }])
@@ -158,10 +158,14 @@ test("with no unresolved finding there are no delivered notes to compose: the dr
 })
 
 test("an informational open finding stays a checklist_open disclosure of a review draft", () => {
-  const directory = checklistMatter([{ item_id: "c1", finding: finding("c1", "open", { open_decisions: ["Whether the period runs from dispatch"] }) }, { item_id: "c2", finding: finding("c2", "satisfied") }])
+  // A proposal, not an instruction: left open, it is disclosed and not asked.
+  // (An instruction left open is also asked: checklist-instruction-question.test.ts.)
+  const proposal = [{ id: "c1", item: { ...ITEMS[0]!.item, basis: "proposal" as const } }, ITEMS[1]!]
+  const directory = checklistMatter([{ item_id: "c1", finding: finding("c1", "open", { open_decisions: ["Whether the period runs from dispatch"] }) }, { item_id: "c2", finding: finding("c2", "satisfied") }], proposal)
   expect(checklistOutputState(directory)).toMatchObject({ valid: true, open: true, openFindings: [{ item_id: "c1" }], unresolved: [], unresolvedParents: [] })
   const gate = finalGate(directory)
   expect(gate).toMatchObject({ status: "pass", delivery: "review_draft", blocking: [] })
+  expect(gate.questions).toBeUndefined()
   expect(gate.disclosed).toEqual([expect.objectContaining({ kind: "checklist_open", ref: { checklist_item: "c1", document: "d1" },
     detail: "Checklist requirement left open: The note states the delivery period. Finding: Focused result open. Limitation: Comments not inspected. Open decisions: Whether the period runs from dispatch." })])
 })

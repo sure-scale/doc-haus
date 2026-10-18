@@ -3,7 +3,7 @@ import path from "node:path"
 import { appendLeanEvent } from "./events"
 import { isStepID, leanSteps, stepDocument, stepStage, type StepID } from "./plan"
 import { queuedAnswerIDs } from "./requests"
-import { LEAN_PROMPT_VERSION, stageInputs, stepOutputs } from "./stages"
+import { LEAN_PROMPT_VERSION, OPTIONAL_OUTPUTS, stageInputs, stepOutputs } from "./stages"
 import {
   hashStageInputs,
   keepAskedQuestions,
@@ -39,9 +39,11 @@ export function restoreLeanStage(directory: string, step: StepID) {
   const snapshots = chooseSnapshots(directory, kept)
   steps.slice(upTo + 1).flatMap(stepOutputs).forEach(name => rmSync(leanFile(directory, name), { force: true }))
   if (step !== "gate") rmSync(leanFile(directory, "documents.json"), { force: true })
+  // An optional output the kept step's snapshot lacks belongs to a later run of that step.
   kept.forEach(row => stepOutputs(row).forEach(name => {
     const from = path.join(snapshots[row]!, path.basename(name))
     if (existsSync(from)) copyFileSync(from, leanFile(directory, name))
+    else if (OPTIONAL_OUTPUTS.includes(name)) rmSync(leanFile(directory, name), { force: true })
   }))
   const keeps = (stage: StageID, document: string | undefined) => kept.some(row => stepStage(row) === stage && (stepDocument(row) ?? undefined) === document)
   writeOpenItems(directory, readOpenItems(directory).filter(item => keeps(item.stage, item.ref.document)))

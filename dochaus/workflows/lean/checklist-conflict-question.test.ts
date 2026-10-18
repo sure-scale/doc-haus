@@ -49,7 +49,8 @@ test("the gate batches every source conflict into one question naming each pair,
   const directory = checklistMatter([conflict("c1", "Payment is due on delivery."), conflict("c2", "Deliver within thirty days of the order.")])
   const gate = finalGate(directory)
   expect(gate).toMatchObject({ status: "pass", delivery: "review_draft_with_findings", blocking: [] })
-  const question = gate.question!
+  expect(gate.questions).toHaveLength(1)
+  const question = gate.questions![0]!
   // Asymmetric matchers are kept off objects reused below: Bun's
   // toMatchObject writes them into the received value.
   expect(question.id).toMatch(/^checklist-conflict-/)
@@ -65,12 +66,12 @@ test("the gate batches every source conflict into one question naming each pair,
   for (const item of disclosed)
     expect(item).toMatchObject({ status: "disclosed", ref: { checklist_class: "source_conflict", question_id: question.id } })
   // Deterministic: the same conflicts give the same question.
-  expect(finalGate(directory).question).toEqual(question)
+  expect(finalGate(directory).questions).toEqual([question])
 })
 
 test("the changes stages neither see nor re-own the gate's question", () => {
   const directory = checklistMatter([conflict("c1", "Payment is due on delivery."), conflict("c2", "Deliver within thirty days of the order.")])
-  const question = finalGate(directory).question!
+  const question = finalGate(directory).questions![0]!
   const drafting: Question = { id: "q-earlier", stage: "changes", question: "Which delivery address applies?", context: "", status: "open" }
   writeQuestions(directory, [question, drafting])
   const listed = changesRepairSections(directory, "d1").join("\n")
@@ -88,16 +89,16 @@ test("findings without a source conflict ask nothing and keep their delivery", (
   const omission = checklistMatter([finding("c1", "unsatisfied"), finding("c2", "satisfied")])
   const gate = finalGate(omission)
   expect(gate).toMatchObject({ status: "pass", delivery: "review_draft_with_findings" })
-  expect(gate.question).toBeUndefined()
+  expect(gate.questions).toBeUndefined()
   expect(gate.disclosed[0]!.ref).not.toHaveProperty("question_id")
   const satisfied = checklistMatter([finding("c1", "satisfied"), finding("c2", "satisfied")])
   expect(finalGate(satisfied)).toMatchObject({ status: "pass", delivery: "execution_ready" })
-  expect(finalGate(satisfied).question).toBeUndefined()
+  expect(finalGate(satisfied).questions).toBeUndefined()
 })
 
 test("an answer to the conflict question re-keys the checklist check and reaches its source instructions", () => {
   const directory = checklistMatter([conflict("c1", "Payment is due on delivery."), finding("c2", "satisfied")])
-  const question = finalGate(directory).question!
+  const question = finalGate(directory).questions![0]!
   writeLeanText(directory, "questions.json", `${JSON.stringify({ questions: [question] }, null, 2)}\n`)
   const before = stageInputSha(directory, "checklist-check")
   // An open question is not yet an instruction.
@@ -135,7 +136,7 @@ test("a source conflict completes the run with one open question; resume and a g
   const state = await runLean(directory, { sessions: conflictModel().port })
   expect(state.status).toBe("completed")
   expect(readLeanJson(directory, "gate.json")).toMatchObject({ status: "pass", delivery: "review_draft_with_findings", blocking: [] })
-  expect(readLeanJson(directory, "gate.json")).not.toHaveProperty("question")
+  expect(readLeanJson(directory, "gate.json")).not.toHaveProperty("questions")
   const asked = readQuestions(directory)
   expect(asked).toEqual([expect.objectContaining({ id: expect.stringMatching(/^checklist-conflict-/), stage: "gate", status: "open" })])
   const question = readQuestions(directory)[0]

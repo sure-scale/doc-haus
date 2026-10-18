@@ -8,7 +8,7 @@ import { readLeanDocuments } from "./deliverables"
 import { readLeanPlan, writeLeanPlan } from "./plan"
 import { restoreLeanStage } from "./restore-stage"
 import { runLean } from "./runner"
-import { outlineBasis, planIsCurrent } from "./stages"
+import { outlineBasis, planBasisCurrent } from "./stages"
 import { answerQuestion, leanFile, readLeanJson, readOpenItems, readQuestions, writeQuestions, writeOpenItems, replaceStageQuestions, replaceStageOpenItems } from "./state"
 import {
   AGENT, APPLIED, DRAFT, DRAFTED, LETTER, QUESTION, SUPPORT, changesFirst, cleanupMatters, drafter, happyPath, listed, matter, noChanges, pidIn,
@@ -153,13 +153,13 @@ describe("lean drafting when a finished document's steps change", () => {
   test("a saved plan is followed until the request it was outlined from changes; a plan without its basis is followed as written", () => {
     const directory = matter()
     const parts = [{ heading: "Delivery", scope: "" }]
-    expect(planIsCurrent(directory)).toBe(false)
+    expect(planBasisCurrent(directory)).toBe(false)
     writeLeanPlan(directory, [{ title: "Supply note", purpose: "", parts }], outlineBasis(directory))
-    expect(planIsCurrent(directory)).toBe(true)
+    expect(planBasisCurrent(directory)).toBe(true)
     writeFileSync(leanFile(directory, "request.md"), "Draft a covering letter for the supply note.\n")
-    expect(planIsCurrent(directory)).toBe(false)
+    expect(planBasisCurrent(directory)).toBe(false)
     writeLeanPlan(directory, [{ title: "Supply note", purpose: "", parts }])
-    expect(planIsCurrent(directory)).toBe(true)
+    expect(planBasisCurrent(directory)).toBe(true)
   })
 
   test("a question repeated by id without a paragraph keeps the earlier paragraph only in the same document", () => {

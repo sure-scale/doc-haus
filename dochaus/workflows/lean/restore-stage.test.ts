@@ -1,8 +1,9 @@
 import { afterEach, expect, test } from "bun:test"
-import { existsSync, readFileSync, rmSync } from "node:fs"
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import { readLeanDocuments } from "./deliverables"
 import { readLeanEvents } from "./events"
+import { writeLeanPlan } from "./plan"
 import { enqueueLeanRequest, pendingLeanRequests } from "./requests"
 import { restoreLeanStage } from "./restore-stage"
 import { runLean } from "./runner"
@@ -78,9 +79,47 @@ test("restoring keeps a question whose answer is still queued, and the next run 
   const resume = scriptedLeanModel({ ...happyLeanReplies() })
   const resumed = await runLean(directory, { sessions: resume.port })
   expect(resumed.status).toBe("completed")
-  expect(resume.agents()).toEqual([LEAN_STAGE_AGENTS.discrepancy, LEAN_STAGE_AGENTS.intake, LEAN_STAGE_AGENTS.research, LEAN_STAGE_AGENTS["research-review"], LEAN_STAGE_AGENTS.spine, "lean-checklist-extract", LEAN_STAGE_AGENTS.draft, LEAN_STAGE_AGENTS.draft, LEAN_STAGE_AGENTS.draft, LEAN_STAGE_AGENTS["review-independent"], LEAN_STAGE_AGENTS["review-wording"], LEAN_STAGE_AGENTS["review-client-disadvantage"], LEAN_STAGE_AGENTS.review, LEAN_STAGE_AGENTS["change-plan"], LEAN_STAGE_AGENTS.changes, LEAN_STAGE_AGENTS["change-review"], LEAN_STAGE_AGENTS.finalize, LEAN_STAGE_AGENTS["package-review"]])
+  expect(resume.agents()).toEqual([LEAN_STAGE_AGENTS.discrepancy, LEAN_STAGE_AGENTS.intake, LEAN_STAGE_AGENTS.research, LEAN_STAGE_AGENTS["research-review"], LEAN_STAGE_AGENTS.spine, "lean-checklist-extract", LEAN_STAGE_AGENTS.draft, LEAN_STAGE_AGENTS.coverage, LEAN_STAGE_AGENTS.draft, LEAN_STAGE_AGENTS.draft, LEAN_STAGE_AGENTS["review-independent"], LEAN_STAGE_AGENTS["review-wording"], LEAN_STAGE_AGENTS["review-client-disadvantage"], LEAN_STAGE_AGENTS.review, LEAN_STAGE_AGENTS["change-plan"], LEAN_STAGE_AGENTS.changes, LEAN_STAGE_AGENTS["change-review"], LEAN_STAGE_AGENTS.finalize, LEAN_STAGE_AGENTS["package-review"]])
   expect(readLeanJson(directory, `requests/done/${request.id}.json`)).toMatchObject({ kind: "answer", outcome: { status: "answered" } })
   expect(readQuestions(directory)).toEqual([expect.objectContaining({ id: question.id, status: "answered", answer: "No remedy." })])
   const sinceRestore = readLeanEvents(directory).slice(readLeanEvents(directory).findIndex(event => event.event === "restored"))
   expect(sinceRestore.filter(event => event.event === "request_processed").map(event => event.outcome)).toEqual(["answered"])
+}, 120_000)
+
+test("restoring puts back the plan's coverage record with the plan, and restoring before the plan removes it", async () => {
+  const directory = leanFixtureMatter("lean-restore-")
+  directories.push(directory)
+  expect((await runLean(directory, { sessions: scriptedLeanModel().port })).status).toBe("completed")
+  const record = readFileSync(leanFile(directory, "coverage.json"), "utf8")
+  expect(JSON.parse(record)).toMatchObject({ status: "covered" })
+  // A later plan's record, as a later outline would leave it.
+  writeFileSync(leanFile(directory, "coverage.json"), record.replace(/"plan": "[0-9a-f]+"/, `"plan": "${"0".repeat(64)}"`))
+
+  restoreLeanStage(directory, "d1.changes")
+  expect(readFileSync(leanFile(directory, "coverage.json"), "utf8")).toBe(record)
+  const resume = scriptedLeanModel({ [LEAN_STAGE_AGENTS.finalize]: happyLeanReplies()[LEAN_STAGE_AGENTS.finalize] })
+  expect((await runLean(directory, { sessions: resume.port })).status).toBe("completed")
+  expect(resume.agents()).toEqual(["lean-checklist-extract", LEAN_STAGE_AGENTS["change-review"], LEAN_STAGE_AGENTS.finalize, LEAN_STAGE_AGENTS["package-review"]])
+
+  restoreLeanStage(directory, "spine")
+  expect(existsSync(leanFile(directory, "plan.json"))).toBe(false)
+  expect(existsSync(leanFile(directory, "coverage.json"))).toBe(false)
+}, 120_000)
+
+test("restoring a plan written by hand removes a coverage record its snapshot does not have", async () => {
+  const directory = leanFixtureMatter("lean-restore-")
+  directories.push(directory)
+  writeLeanPlan(directory, [{ title: "Supply note", purpose: "Record the supply terms", file: "supply-note.docx",
+    parts: [{ heading: "Delivery", scope: "Delivery terms" }, { heading: "Payment", scope: "Payment terms" }] }])
+  const first = scriptedLeanModel()
+  expect((await runLean(directory, { sessions: first.port })).status).toBe("completed")
+  expect(first.agents()).not.toContain(LEAN_STAGE_AGENTS.coverage)
+  expect(existsSync(leanFile(directory, "coverage.json"))).toBe(false)
+  writeFileSync(leanFile(directory, "coverage.json"), `${JSON.stringify({ schema: "dochaus.lean.coverage/1", plan: "0".repeat(64), status: "covered", acts: [], issues: [] })}\n`)
+
+  restoreLeanStage(directory, "d1.changes")
+  expect(existsSync(leanFile(directory, "coverage.json"))).toBe(false)
+  const resume = scriptedLeanModel({ [LEAN_STAGE_AGENTS.finalize]: happyLeanReplies()[LEAN_STAGE_AGENTS.finalize] })
+  expect((await runLean(directory, { sessions: resume.port })).status).toBe("completed")
+  expect(resume.agents()).not.toContain(LEAN_STAGE_AGENTS.draft)
 }, 120_000)

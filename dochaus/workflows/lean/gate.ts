@@ -9,7 +9,9 @@ import { normalize } from "../../lib/quote-verify"
 import { finalBodyParagraphs, type ApplyResult } from "./checks"
 import { FIRST_DOCUMENT, readLeanPlan, type DocID } from "./plan"
 import { readPackageReview } from "./package-review"
+import { coverageCarries, coverageItems, gateScopeParties } from "./package-coverage"
 import { excerpt, quoteFound, openItem } from "./quotes"
+import { answeredScopeQuestion, GATE_EXCERPT, openScopeQuestion, scopeAnswers, scopeField, scopeQuestionShows } from "./package-scope"
 import { LEAN_MAX_SUBSTANTIVE_REPAIRS, readRepairRound, repairedChecklistItems } from "./repairs"
 import { withheldChecklistRepair } from "./requests"
 import { isReviewStage, currentOpenItems, readLeanText, readLeanJson, readLeanState, readQuestions, shortHash, type LeanState, type OpenItem, type Question } from "./state"
@@ -44,7 +46,14 @@ import { isReviewStage, currentOpenItems, readLeanText, readLeanJson, readLeanSt
 //   drafting notes in the notes delivered with the draft;
 // - source conflicts among those findings are put to the lawyer as one
 //   question, which the gate asks after the walk: it pauses nothing, and each
-//   conflict stays disclosed until the answer re-runs the stages it reaches.
+//   conflict stays disclosed until the answer re-runs the stages it reaches;
+// - an instruction (a directive item) the checklist check left open may be
+//   carried by no planned document, which disclosure alone cannot settle; the
+//   gate puts those no answered package-scope question has shown to the lawyer
+//   as one package-scope question on the same terms, and none while another
+//   stage's is still open; each refers to the question that showed it.
+//   One the plan carries in full, left open for a fact its body marks as
+//   missing, is disclosed and not asked about.
 // Disclosed items make the output a review draft, one with checklist findings
 // when any adverse finding is disclosed; execution-ready output has no
 // disclosed items and no unanswered questions. Incomplete, failed or stale
@@ -60,9 +69,11 @@ export type GateResult = {
   disclosed: OpenItem[]
   items: OpenItem[]
   checked_at: string
-  /** The gate's one question on the disclosed source conflicts; the runner
-   * records it with the run's questions, not in gate.json. */
-  question?: Question
+  /** The gate's questions: one on the disclosed source conflicts, one on the
+   * package's scope for the instructions left open. The runner records them
+   * with the run's questions, not in gate.json. Absent when the gate asks
+   * nothing. */
+  questions?: Question[]
 }
 
 type FinalBody = { paragraphs: Map<string, string>; body: string }
@@ -103,21 +114,42 @@ export function finalGate(directory: string): GateResult {
   const checklistState = leanState?.stages["checklist-check"]
   const checked = checklistState && (checklistState.status !== "pending" || readLeanJson(directory, "checklist/extraction.json") !== undefined)
     ? checklistOutputState(directory) : undefined
-  const question = checked?.valid ? checklistConflictQuestion(checked.unresolved) : undefined
+  const conflict = checked?.valid ? checklistConflictQuestion(checked.unresolved) : undefined
   // Adverse checklist findings lead: the lawyer's list of items may be capped.
-  const unresolved = checked?.valid ? [...checked.unresolved.map(row => checklistUnresolvedItem(directory, leanState, row, question?.id)),
+  const unresolved = checked?.valid ? [...checked.unresolved.map(row => checklistUnresolvedItem(directory, leanState, row, conflict?.id)),
     ...checked.unresolvedParents.map(row => checklistUnresolvedParentItem(directory, row))] : []
-  const items = [...unresolved, ...[...currentOpenItems(directory), ...deferredFindingItems(directory)].map(item => settle(item, context)), ...semantic, ...projected]
+  const items = [...unresolved, ...[...currentOpenItems(directory), ...deferredFindingItems(directory), ...coverageItems(directory)].map(item => settle(item, context)), ...semantic, ...projected]
   if (checked && !checked.valid) items.push(openItem("checklist-check", "omission", "Effective checklist findings or source-unit coverage are incomplete or stale, or a check or its reinspection failed; see checklist/report.md.", {}))
   // Focused checks can correctly preserve a source-dependent open issue
   // without requesting a missing answer or inventing a disclosure. Such a
   // package remains a review draft, even when no generic gate item blocks it,
-  // and each open finding is disclosed with its own reason and limitation.
+  // and each open finding is disclosed with its own reason and limitation. An
+  // instruction left open is also asked about, once, with the review draft:
+  // the conflict question names a conflicting one, the scope question the rest
+  // the plan may leave out.
   const checklistOpen = checklistState?.status === "done" && checked?.valid && checked.open
-  if (checklistOpen) items.push(...checked.openFindings.map(row => checklistOpenItem(directory, row)))
+  const paired = new Set(checked?.valid ? conflictPairs(checked.unresolved).flat() : [])
+  const scoped = checklistOpen ? checked.openFindings.filter(row => instructionLeftOpen(directory, row) && !paired.has(row.item_id)) : []
+  // The scope question covers the instructions no answered scope question has
+  // settled (scopeAnswers). None is asked once two of the gate's own are
+  // answered, or while another stage's is open. An instruction refers to an
+  // earlier question only when that question settled or showed it; a plan-step
+  // question shows it only when it showed every act it directs that the plan
+  // step asks about, each for its own parties (gateScopeParties).
+  const asked = [...context.questions.values()]
+  const otherOpen = openScopeQuestion(asked, "gate")
+  const quotes = (row: ChecklistOpenFinding) => row.item.source_refs.map(ref => ref.quote)
+  const parties = gateScopeParties(directory)
+  const shows = (question: Question, row: ChecklistOpenFinding) => scopeQuestionShows(question, quotes(row), parties(quotes(row)))
+  const settled = scopeAnswers(scoped, quotes, asked.filter(answeredScopeQuestion), "gate", shows)
+  const scope = otherOpen ? undefined : packageScopeQuestion(settled.ask, settled.id)
+  const scopeAsks = (row: ChecklistOpenFinding) => settled.by(row)[0] ?? (otherOpen && shows(otherOpen, row) ? otherOpen : scope)
+  const asks = (row: ChecklistOpenFinding) => paired.has(row.item_id) ? conflict?.id : scoped.includes(row) ? scopeAsks(row)?.id : undefined
+  if (checklistOpen) items.push(...checked.openFindings.map(row => checklistOpenItem(directory, row, asks(row))))
+  const questions = [conflict, scope].filter((row): row is Question => row !== undefined)
   const blocking = items.filter(item => item.status === "open")
   const disclosed = items.filter(item => item.status === "disclosed")
-  // The gate's own question asks about findings already disclosed here.
+  // The gate's own questions ask about findings already disclosed here.
   const unanswered = [...context.questions.values()].some(row => row.status !== "answered" && row.stage !== "gate")
   return {
     status: blocking.length ? "blocked" : "pass",
@@ -126,7 +158,7 @@ export function finalGate(directory: string): GateResult {
     disclosed,
     items,
     checked_at: new Date().toISOString(),
-    ...(question ? { question } : {}),
+    ...(questions.length ? { questions } : {}),
   }
 }
 
@@ -163,12 +195,57 @@ export function notesCoverageReport(gate: GateResult) {
 
 /** An open checklist finding as a disclosed item: the requirement and the
  * finding's own recorded reason, limitation and open decisions. The verdict
- * is the checker's; the gate only makes it visible. */
-function checklistOpenItem(directory: string, { item_id, item, finding }: ChecklistOpenFinding): OpenItem {
+ * is the checker's; the gate only makes it visible. An instruction left open
+ * refers to the question that names it. */
+function checklistOpenItem(directory: string, { item_id, item, finding }: ChecklistOpenFinding, questionID?: string): OpenItem {
   const document = checklistDocument(directory, item)
   const detail = [`Checklist requirement left open: ${sentence(item.check)}`, ...findingText(finding)].join(" ")
-  return { ...openItem("checklist-check", "checklist_open", detail, { checklist_item: item_id, ...(document ? { document } : {}) }),
+  return { ...openItem("checklist-check", "checklist_open", detail, { checklist_item: item_id, ...(document ? { document } : {}),
+    ...(questionID ? { question_id: questionID } : {}) }),
     status: "disclosed", resolution: "left open by the checklist check; disclosed with the review draft" }
+}
+
+/** A directive (an instruction from the request, the lawyer or the sources)
+ * that the check left open rather than settled, and that the plan may leave
+ * out. Whether the package carries it is the lawyer's call, not a disclosure.
+ * One the plan carries is left open for a missing fact instead, which its
+ * disclosure already shows: the saved plan's coverage record has its document
+ * carrying, for the parties who must take it, an act for every quote it cites,
+ * with none they direct left uncovered (coverageCarries), and the finding's own
+ * body evidence from that document shows an open item. A bare underscore run is
+ * a blank filled at execution ("Dated: ____"), not an open item; a bracketed
+ * blank ("[____]") is. Either signal alone leaves it asked. */
+function instructionLeftOpen(directory: string, { item, finding }: ChecklistOpenFinding) {
+  if (item.basis !== "directive" || finding.status !== "open") return false
+  const document = checklistDocument(directory, item)
+  const unblanked = (text: string) => normalize(text).replace(/\[[^\]]*\]|_{3,}/g, run => run.startsWith("[") ? run : "")
+  const marked = finding.evidence.some(row => row.kind === "body" && plannedID(directory, row.document) === document && paragraphShowsOpenItem(unblanked(row.text)))
+  return !(document && marked && coverageCarries(directory, item.source_refs, document))
+}
+
+/** The gate's backstop for instructions the checklist check left open: one
+ * question asking, for each, whether the package carries it and in which
+ * document, or whether it is outside this request. The plan-side route for
+ * instructed acts is the package-coverage check before drafting; this asks
+ * only what reached the gate still open. Its `id`, from scopeAnswers, keys
+ * on the verbatim instruction quotes, never on extraction-ordinal item ids, so
+ * re-extraction asks the same question, and the caller leaves out the
+ * instructions an answered package-scope question settled (scopeAnswers), and
+ * asks none once two of the gate's own are answered or while another stage's
+ * is open. */
+function packageScopeQuestion(rows: ChecklistOpenFinding[], id: string): Question | undefined {
+  if (!rows.length) return undefined
+  const several = rows.length > 1
+  return {
+    id,
+    stage: "gate",
+    question: [`The checklist check left ${several ? "these instructions" : "this instruction"} open, so the package may not carry ${several ? "them" : "it"}:`,
+      ...rows.map(({ item_id, item, finding }) => `${checklistRequirement(item_id, item)} ${finding.open_decisions?.length
+        ? `Open decisions: ${sentence(finding.open_decisions.map(row => scopeField(row.trim())).join("; "))}` : "No open decision recorded; state what is missing."}`),
+      `${several ? "For each, answer" : "Answer"} the open decisions above (supply any missing fact or approval they name). If the package should carry it, say in which document; otherwise say it is outside this request.`].join(" "),
+    context: `Until a later check settles ${several ? "these instructions, they are" : "this instruction, it is"} disclosed with the review draft as left open; delivery is not held for ${several ? "them" : "it"}. Your answer re-runs the drafting from the start, including the document plan and the checklist check.`,
+    status: "open",
+  }
 }
 
 /** Why an adverse finding remains, in the lawyer's words. The runner's report
@@ -212,12 +289,11 @@ function checklistUnresolvedItem(directory: string, state: LeanState | undefined
  * same question and an answered one is never asked again. */
 function checklistConflictQuestion(rows: ChecklistUnresolvedFinding[]): Question | undefined {
   const items = new Map(rows.flatMap(row => [{ id: row.item_id, item: row.item }, ...(row.conflicting_items ?? [])]).map(row => [row.id, row.item]))
-  const pairs = [...new Map(rows.flatMap(row => row.class === "source_conflict" ? (row.conflicting_item_ids ?? []).map(other => [row.item_id, other].toSorted()) : [])
-    .map(pair => [JSON.stringify(pair), pair])).values()].toSorted((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)))
+  const pairs = conflictPairs(rows)
   if (!pairs.length) return undefined
   const requirement = (id: string) => {
     const item = items.get(id)
-    return item ? `${id}: ${sentence(item.check)} Sources: ${item.source_refs.map(ref => `${ref.document} "${excerpt(ref.quote, 160)}"`).join(", ")}` : id
+    return item ? checklistRequirement(id, item) : id
   }
   return {
     id: `checklist-conflict-${shortHash(JSON.stringify(pairs))}`,
@@ -225,9 +301,23 @@ function checklistConflictQuestion(rows: ChecklistUnresolvedFinding[]): Question
     question: [`Checklist requirements taken from the sources conflict: ${pairs.map(([a, b]) => `${a} with ${b}`).join("; ")}.`,
       ...[...new Set(pairs.flat())].map(requirement),
       pairs.length > 1 ? "For each pair, which requirement governs, or how should they be reconciled?" : "Which requirement governs, or how should they be reconciled?"].join(" "),
-    context: "Until you answer, each conflicting requirement is disclosed with the review draft as not satisfied; delivery is not held for it. Your answer re-runs the stages it affects, including the checklist check.",
+    context: "Until you answer, each conflicting requirement is disclosed with the review draft as not satisfied; delivery is not held for it. Your answer re-runs the drafting from the start, including the checklist check.",
     status: "open",
   }
+}
+
+/** Each source conflict once, as its sorted pair of item ids, in a stable order. */
+function conflictPairs(rows: ChecklistUnresolvedFinding[]) {
+  return [...new Map(rows.flatMap(row => row.class === "source_conflict" ? (row.conflicting_item_ids ?? []).map(other => [row.item_id, other].toSorted()) : [])
+    .map(pair => [JSON.stringify(pair), pair])).values()].toSorted((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)))
+}
+
+/** A requirement as the gate's questions list it: its id, check and sources.
+ * The check is a model's words, so it goes through scopeField, as the scope
+ * question's open decisions do: questionQuotes reads only the rows the gate
+ * writes. The quotes are verbatim. */
+function checklistRequirement(id: string, item: ChecklistItem) {
+  return `${id}: ${sentence(scopeField(item.check))} Sources: ${item.source_refs.map(ref => `${ref.document} "${excerpt(ref.quote, GATE_EXCERPT)}"`).join(", ")}`
 }
 
 /** A refined parent whose reconciled coverage is adverse, with the coverage issues. */
@@ -240,7 +330,12 @@ function checklistUnresolvedParentItem(directory: string, { parent_id, item, sta
 }
 
 function checklistDocument(directory: string, item: ChecklistItem) {
-  return readLeanPlan(directory)?.documents.find(row => row.id === item.target.document || row.file === item.target.document)?.id
+  return plannedID(directory, item.target.document)
+}
+
+/** The planned document a checklist record names, by its id or its file. */
+function plannedID(directory: string, name: string) {
+  return readLeanPlan(directory)?.documents.find(row => row.id === name || row.file === name)?.id
 }
 
 function findingText(finding: ChecklistFinding) {
