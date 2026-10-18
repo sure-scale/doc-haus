@@ -1,7 +1,7 @@
 import type { ChecklistFindingClass } from "./checklist-classify"
 import type { ChecklistFinding, ChecklistItem } from "./checklist-contract"
 import { CHECKLIST_COVERAGE_ISSUES, type ChecklistCoverageIssue } from "./checklist-flow"
-import { checklistOutputState, type ChecklistOpenFinding, type ChecklistUnresolvedFinding, type ChecklistUnresolvedParent } from "./stages"
+import { checklistOutputState, handedBackItems, type ChecklistOpenFinding, type ChecklistUnresolvedFinding, type ChecklistUnresolvedParent } from "./stages"
 import { readChangeReview, deferredFindingItems } from "./change-pipeline"
 import { renderNotesCoverage } from "../../lib/notes-coverage-report"
 import { hasOpenItemMarker } from "../../lib/open-items"
@@ -17,7 +17,7 @@ import { answeredScopeQuestion, GATE_EXCERPT, keyedQuestionID, openScopeQuestion
 import { LEAN_MAX_SUBSTANTIVE_REPAIRS, readRepairRound, repairedChecklistItems } from "./repairs"
 import { requestedFilesItems } from "./requested-files"
 import { withheldChecklistRepair } from "./requests"
-import { isReviewStage, currentOpenItems, readLeanText, readLeanJson, readLeanState, readQuestions, type LeanState, type OpenItem, type Question } from "./state"
+import { isReviewStage, currentOpenItems, handedBack, readLeanText, readLeanJson, readLeanState, readQuestions, type LeanState, type OpenItem, type Question } from "./state"
 
 // Final legal gate: the only place an open item blocks delivery. It covers every
 // planned document; each item is settled against the final body of the
@@ -123,7 +123,7 @@ export function finalGate(directory: string): GateResult {
   // Adverse checklist findings lead: the lawyer's list of items may be capped.
   const unresolved = checked?.valid ? [...checked.unresolved.map(row => checklistUnresolvedItem(directory, leanState, row, conflict?.id)),
     ...checked.unresolvedParents.map(row => checklistUnresolvedParentItem(directory, row))] : []
-  const items = [...unresolved, ...[...currentOpenItems(directory), ...deferredFindingItems(directory), ...coverageItems(directory), ...requestedFilesItems(directory)].map(item => settle(item, context)), ...semantic, ...projected]
+  const items = [...unresolved, ...[...currentOpenItems(directory), ...deferredFindingItems(directory), ...coverageItems(directory), ...requestedFilesItems(directory), ...handedBackItems(directory)].map(item => settle(item, context)), ...semantic, ...projected]
   if (checked && !checked.valid) items.push(openItem("checklist-check", "omission", "Effective checklist findings or source-unit coverage are incomplete or stale, or a check or its reinspection failed; see checklist/report.md.", {}))
   // Focused checks can correctly preserve a source-dependent open issue
   // without requesting a missing answer or inventing a disclosure. Such a
@@ -751,6 +751,10 @@ function settle(item: OpenItem, context: SettleContext): OpenItem {
   const disclosed = (resolution: string): OpenItem => ({ ...item, status: "disclosed", resolution })
   const open = (resolution: string): OpenItem => ({ ...item, status: "open", resolution })
   const named = context.notes.includes(item.id)
+  // A question the lawyer handed back is carried by the disclosure of the
+  // choice made in its place (handedBackItems), never as the lawyer's answer.
+  const asked = item.kind === "question" && item.ref.question_id ? context.questions.get(item.ref.question_id) : undefined
+  if (asked && handedBack(asked)) return resolved("left to the drafting to decide; the drafting notes must disclose the choice made, which the lawyer has not made")
   // Drafting and review findings are re-derived from the final body at apply.
   if (item.stage === "draft" || isReviewStage(item.stage)) return resolved("superseded by the check of the final body")
   if (item.kind === "research_gap") return named ? disclosed("legal research limitation named in the drafting notes") : open("the drafting notes do not disclose this legal research limitation")

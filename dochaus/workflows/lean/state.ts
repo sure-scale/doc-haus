@@ -99,6 +99,9 @@ export type Question = {
   document?: DocID
   status: "open" | "answered"
   answer?: string
+  /** Set when the lawyer handed the question back for the drafting to decide:
+   * it is then answered with no answer text, as a choice the lawyer has not made. */
+  answer_kind?: "decide_for_me"
   answered_at?: string
 }
 
@@ -283,7 +286,7 @@ export function keepAskedQuestions(questions: Question[], items: OpenItem[], kep
 }
 
 export class LeanQuestionError extends Error {
-  constructor(message: string, readonly code: "not_found" | "invalid_answer") {
+  constructor(message: string, readonly code: "not_found" | "invalid_answer" | "already_answered" | "not_delegable") {
     super(message)
   }
 }
@@ -300,9 +303,31 @@ export function answerQuestion(directory: string, questionID: string, answer: st
   const questions = readQuestions(directory)
   const target = questions.find(question => question.id === questionID)
   if (!target) throw new LeanQuestionError("No such question in this matter's lean drafting run.", "not_found")
-  const answered: Question = { ...target, status: "answered", answer: text, answered_at: new Date().toISOString() }
+  // A real answer replaces an earlier hand-back.
+  const { answer_kind: _handedBack, ...asked } = target
+  const answered: Question = { ...asked, status: "answered", answer: text, answered_at: new Date().toISOString() }
   writeQuestions(directory, questions.map(question => question.id === questionID ? answered : question))
   return answered
+}
+
+/** The lawyer hands an open model-asked question back for the drafting to
+ * decide. Keyed questions (package scope, requested files, checklist conflict)
+ * are read as settled once answered, so they cannot be handed back. */
+export function delegateQuestion(directory: string, questionID: string) {
+  const questions = readQuestions(directory)
+  const target = questions.find(question => question.id === questionID)
+  if (!target) throw new LeanQuestionError("No such question in this matter's lean drafting run.", "not_found")
+  if (!questionID.startsWith("q-")) throw new LeanQuestionError("This question needs the lawyer's own answer; it cannot be left to the drafting to decide.", "not_delegable")
+  if (target.status === "answered") throw new LeanQuestionError("This question is already answered.", "already_answered")
+  const { answer: _answer, ...asked } = target
+  const delegated: Question = { ...asked, status: "answered", answer_kind: "decide_for_me", answered_at: new Date().toISOString() }
+  writeQuestions(directory, questions.map(question => question.id === questionID ? delegated : question))
+  return delegated
+}
+
+/** A question the lawyer left to the drafting to decide and has not since answered. */
+export function handedBack(question: Question) {
+  return question.status === "answered" && question.answer_kind === "decide_for_me"
 }
 
 /** Every answered question, ordered by id: questions.json's own order moves

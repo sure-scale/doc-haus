@@ -7,7 +7,7 @@ import { LEAN_PROMPT_VERSION, stageInputs } from "./stages"
 import { checklistRepairItems, declinedChecklistRepair, LEAN_MAX_SUBSTANTIVE_REPAIRS, readRepairRound, startRepairRound } from "./repairs"
 import { snapshotRead } from "./quotes"
 import type { ChecklistItem } from "./checklist-contract"
-import { LeanQuestionError, hashStageInputs, answerQuestion, leanDir, readLeanJson, readLeanText, writeLeanText, type LeanState, type OpenItem } from "./state"
+import { LeanQuestionError, hashStageInputs, answerQuestion, delegateQuestion, leanDir, readLeanJson, readLeanText, writeLeanText, type LeanState, type OpenItem } from "./state"
 
 // Lawyer requests to a lean drafting run. Continue and answer POSTs only append a
 // request file; the lean runner is the single writer of the run's state and
@@ -17,7 +17,7 @@ import { LeanQuestionError, hashStageInputs, answerQuestion, leanDir, readLeanJs
 // order, and moved to requests/done/ with its outcome.
 
 export type ChecklistRefinementSelection = { parent_id: string; scope: "source_collection" | "cited_sources" | "target_body" }
-export type LeanRequest = { kind: "continue" } | { kind: "answer"; question_id: string; answer: string } | { kind: "update"; text: string } | { kind: "clarification"; text: string } | { kind: "refine_checklist"; parents: ChecklistRefinementSelection[] }
+export type LeanRequest = { kind: "continue" } | { kind: "answer"; question_id: string; answer: string } | { kind: "answer"; question_id: string; decide_for_me: true } | { kind: "update"; text: string } | { kind: "clarification"; text: string } | { kind: "refine_checklist"; parents: ChecklistRefinementSelection[] }
 export type StoredLeanRequest = LeanRequest & { id: string; received_at: string }
 export type DrainOutcome = { answered: number; updated: number; repairRound: boolean }
 
@@ -81,7 +81,8 @@ export function drainLeanRequests(directory: string, stopped?: LeanState): Drain
     unlinkSync(file)
     appendLeanEvent(directory, { stage: "run", event: "request_processed", request_id: name.replace(/\.json$/, ""), outcome: outcome.status })
     return {
-      answered: total.answered + (outcome.status === "answered" ? 1 : 0),
+      // A hand-back restarts the run like an answer, but is not human context.
+      answered: total.answered + (["answered", "delegated"].includes(outcome.status) ? 1 : 0),
       updated: total.updated + (["included", "clarification_included"].includes(outcome.status) ? 1 : 0),
       repairRound: total.repairRound || outcome.status === "repair_round",
     }
@@ -111,6 +112,10 @@ function processRequest(directory: string, request: unknown, stopped: LeanState 
   }
   if (isAnswer(request)) {
     try {
+      if (!("answer" in request)) {
+        delegateQuestion(directory, request.question_id)
+        return { status: "delegated" }
+      }
       answerQuestion(directory, request.question_id, request.answer)
       return { status: "answered" }
     } catch (error) {
@@ -173,8 +178,10 @@ function isContinue(value: unknown): value is { kind: "continue" } {
   return record(value) && value.kind === "continue"
 }
 
-function isAnswer(value: unknown): value is { kind: "answer"; question_id: string; answer: string } {
-  return record(value) && value.kind === "answer" && typeof value.question_id === "string" && typeof value.answer === "string"
+/** An answer carries exactly one of the lawyer's text or a hand-back. */
+function isAnswer(value: unknown): value is Extract<LeanRequest, { kind: "answer" }> {
+  return record(value) && value.kind === "answer" && typeof value.question_id === "string" &&
+    (typeof value.answer === "string" ? !("decide_for_me" in value) : value.decide_for_me === true && !("answer" in value))
 }
 
 function record(value: unknown): value is Record<string, unknown> {

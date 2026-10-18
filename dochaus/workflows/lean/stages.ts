@@ -31,11 +31,12 @@ import {
 } from "./checks"
 import { reviewStages, FIRST_DOCUMENT, planActingFor, operativeDocument, operativePlan, plannedDocument, readLeanPlan, stepDocument, stepStage, type StepID } from "./plan"
 import { completedDocumentsText, packageCompositionBlock } from "./prompts"
-import { matterSourceBasis, matterSourceIDs } from "./quotes"
+import { matterSourceBasis, matterSourceIDs, openItem } from "./quotes"
 import { documentRepairs, readRepairRound } from "./repairs"
 import {
   isReviewStage,
   answeredQuestionsText,
+  handedBack,
   hashStageInputs,
   leanFile,
   readLeanText,
@@ -412,7 +413,17 @@ export function stageOutputValid(directory: string, step: StepID) {
 
 /** Open items the drafting notes must disclose. */
 export function disclosableItems(directory: string): OpenItem[] {
-  return [...readOpenItems(directory).filter(item => DISCLOSED_STAGES.includes(item.stage)), ...deferredFindingItems(directory), ...coverageItems(directory), ...requestedFilesItems(directory)]
+  return [...readOpenItems(directory).filter(item => DISCLOSED_STAGES.includes(item.stage)), ...deferredFindingItems(directory), ...coverageItems(directory), ...requestedFilesItems(directory), ...handedBackItems(directory)]
+}
+
+/** One item per question the lawyer handed back: the drafting notes say what
+ * was chosen and why, as a choice the lawyer has not made. Each id keys on the
+ * question's text and id, so the item stands until the lawyer answers. */
+export function handedBackItems(directory: string): OpenItem[] {
+  return readQuestions(directory).filter(handedBack).map(question => openItem("finalize", "omission",
+    `The lawyer left this question to the drafting to decide instead of answering it: ${question.question.trim()} ` +
+    "The draft makes that choice on professional judgment; the lawyer has not made it. " +
+    "The lawyer should confirm what was chosen and why, or answer the question.", { repair_target: "memo", question_id: question.id }))
 }
 
 function ensureNewline(text: string) {
