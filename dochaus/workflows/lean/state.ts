@@ -360,10 +360,13 @@ export function handedBackQuestionsText(directory: string) {
 }
 
 /** The hand-backs as prompts show them beside the lawyer's answers, or "" with
- * none: choices the drafting makes and discloses, never the lawyer's answers. */
+ * none: choices the drafting makes for the client and discloses, never the
+ * lawyer's answers. The body carries each choice cleanly; the notes disclose it. */
 export function handedBackBlock(directory: string) {
   const text = handedBackQuestionsText(directory)
   return text ? "The lawyer left these questions to the drafting to decide instead of answering them; do not ask them again. Each is a choice the drafting makes on professional judgment and discloses as one the lawyer has not made. " +
+    "Decide each as the lawyer for the party the lawyer acts for would: follow the instructions and the documents; where they leave the point open or conflict, choose what best serves that party within them, or what is even-handed when the request names no party. " +
+    "Apply each choice made as clean operative wording, with no confirmation marker, rejected alternative or precedence clause between the alternatives; the drafting notes give the reason and the alternative. " +
     `None is an agreed term, an answered decision or a settled dependency; record and review each as a drafting choice.\n${text}` : ""
 }
 

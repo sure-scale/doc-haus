@@ -417,14 +417,15 @@ export function disclosableItems(directory: string): OpenItem[] {
 }
 
 /** One item per question the lawyer handed back: the drafting notes say what
- * was chosen and why, or that the draft leaves it open, as a point the lawyer
- * has not decided. The text never reads the spine, so each id keys on the
- * question's text and id alone and the item stands until the lawyer answers. */
+ * was chosen, why and the alternative, or that the draft leaves it open, as a
+ * point still to confirm. Worded for any reader of the notes, the lawyer or the
+ * client. The text never reads the spine, so each id keys on the question's
+ * text and id alone and the item stands until the lawyer answers. */
 export function handedBackItems(directory: string): OpenItem[] {
   return readQuestions(directory).filter(handedBack).map(question => openItem("finalize", "omission",
-    `The lawyer left this question to the drafting to decide instead of answering it: ${question.question.trim()} The lawyer has not decided it. ` +
-    "Say what the drafting chose and why, or that the draft leaves it open where the sources do not give what is needed. " +
-    "The lawyer should confirm the choice or answer the question.", { repair_target: "memo", question_id: question.id }))
+    `This question was left to the drafting to decide: ${question.question.trim()} ` +
+    "Say what the drafting chose, why and the alternative it did not take, or that the draft leaves it open where the sources do not give what is needed, " +
+    "and that the point still needs confirmation or an answer.", { repair_target: "memo", question_id: question.id }))
 }
 
 function ensureNewline(text: string) {

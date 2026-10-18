@@ -37,6 +37,10 @@ const SOURCE_RULES = [
   "- A preference is a drafting choice needed to fulfil the requested purpose, within the requested scope. For a new substantive choice not settled by instructions or answers, draft balanced wording and add a visible [open item: confirm ...] marker in the same paragraph saying what was chosen. Do not add confirmation markers to settled decisions or ordinary wording that creates no new substantive choice. A drafted choice is not an invented fact; the marker goes with the drafted wording, never in its place.",
 ]
 
+/** The exception to the confirmation marker rule above, only with a hand-back:
+ * the drafting notes disclose that choice instead (handedBackItems). */
+const HANDED_BACK_RULE = "- A point left to the drafting takes no confirmation marker: draft the choice made for it as clean operative wording, without the rejected alternative or a precedence clause between the alternatives."
+
 /** The first prompt of a step. `outline` asks the first draft step for the plan
  * of every document instead of drafting from the saved plan. */
 export function stagePrompt(directory: string, step: StepID, options: { outline?: boolean; contextOnly?: boolean } = {}) {
@@ -83,7 +87,7 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
       "This is a lean drafting run. Plan the substantive document bodies to draft, then draft each in parts. The workflow generates delivery artifacts from those bodies.",
       request, spineBlock, answerBlock, handedBlock, sources,
       tagged("output_contract", [
-        ...SOURCE_RULES,
+        ...SOURCE_RULES, ...(handed ? [HANDED_BACK_RULE] : []),
         "- Delivery capabilities: for every planned body the workflow renders the final Word document and generates its tracked redline; one final drafting-notes memo accompanies the package. A request for a redline/comparison or ordinary drafting notes is fulfilled by those generated artifacts, not by another planned body. Set Compare against on the revised body to select a supplied original for comparison. Plan a separate substantive memo only when the request requires its own distinct audience, purpose or analysis beyond the accompanying drafting notes; a different delivery format does not create another substantive document. Do not draft simulated tracked text as a separate comparison document.",
         "- Write one line \"Memo: <its name in the request's own words>\" before the first \"# \" title only when the request asks for a memo or note to accompany the documents; otherwise leave it out. Do not also plan the memo it names as a \"# \" document.",
         "- These rules apply to every part you draft later.",
@@ -114,7 +118,7 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
       ...(plannedDocument(directory, document)?.purpose ? [`This document is for: ${plannedDocument(directory, document)!.purpose}`] : []),
       request, spineBlock, acting, answerBlock, handedBlock, sources, composition, finished,
       tagged("output_contract", [
-        ...SOURCE_RULES,
+        ...SOURCE_RULES, ...(handed ? [HANDED_BACK_RULE] : []),
         ...(finished ? ["- Carry accepted source-supported change explanations into this document when its purpose calls for advice or a summary. Explain the original issue, consequence, proposed solution and remaining decision. Verify the actual final wording and source context; an earlier explanation is not authority and may need correction. This document must agree with the finished documents above in their final wording: names, defined terms, figures, dates and cross-references."] : []),
         ...(template ? [`- This document is drafted from the matter document "${template}" as its template. Carry every part of it that the outline does not leave out, adapted to this matter.`] : []),
         ...(plannedDocument(directory, document)?.mode === "revise" ? ["- Preserve unaffected source wording, operative clauses and their qualifications. Revise only what the request, evidence and accepted proposals justify; explain substantive omissions. Advice or a summary does not replace operative wording in the revised document. Read the full original part before editing it."] : []),

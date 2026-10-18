@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test"
 import { createHash } from "node:crypto"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { acceptChangePlan } from "./change-pipeline"
@@ -11,6 +11,7 @@ import { focusedChangeReviewInputs } from "./focused-change-review"
 import { finalGate, type GateResult } from "./gate"
 import { intakeQuestions } from "./intake"
 import { leanSteps, readLeanPlan, writeLeanPlan } from "./plan"
+import { stagePrompt } from "./prompts"
 import { openItem, withSourceSnapshot } from "./quotes"
 import { requestedFilesPrompt } from "./requested-files"
 import { drainLeanRequests, enqueueLeanRequest, queuedAnswerIDs, type LeanRequest, type StoredLeanRequest } from "./requests"
@@ -203,6 +204,14 @@ test("without a hand-back the answers text and every step's inputs are unchanged
 // and discloses. Neither shows a timestamp.
 const LAW = "Which law should govern the supply note?"
 const LEFT = "Left to the drafting (not the lawyer's answers):"
+// How every stage given a hand-back decides it and applies it in the body.
+const DECIDE = "Decide each as the lawyer for the party the lawyer acts for would: follow the instructions and the documents; where they leave the point open or conflict, choose what best serves that party within them, or what is even-handed when the request names no party."
+const APPLY = "Apply each choice made as clean operative wording, with no confirmation marker, rejected alternative or precedence clause between the alternatives; the drafting notes give the reason and the alternative."
+// The drafting rule for other unsettled choices, and its exception for a hand-back.
+const MARKER_RULE = "- A preference is a drafting choice needed to fulfil the requested purpose, within the requested scope. For a new substantive choice not settled by instructions or answers, draft balanced wording and add a visible [open item: confirm ...] marker in the same paragraph saying what was chosen. Do not add confirmation markers to settled decisions or ordinary wording that creates no new substantive choice. A drafted choice is not an invented fact; the marker goes with the drafted wording, never in its place."
+const NO_MARKER = "- A point left to the drafting takes no confirmation marker: draft the choice made for it as clean operative wording, without the rejected alternative or a precedence clause between the alternatives."
+// The spine, which makes the choice, records it with the wording it takes.
+const SPINE_CHOICE = 'kind "drafting-choice" stating the choice made, decided as above, why, and the operative wording it takes, citing sources'
 
 test("the answers text lists only the lawyer's answers; hand-backs are listed apart, without timestamps", () => {
   const directory = matter()
@@ -218,6 +227,8 @@ test("the answers text lists only the lawyer's answers; hand-backs are listed ap
   expect(block).not.toMatch(/2026|controlling|lawyer's answers:/)
   // Downstream steps record and review it as a drafting choice, never as settled.
   expect(block).toContain("None is an agreed term, an answered decision or a settled dependency; record and review each as a drafting choice.")
+  // Each is decided for the client within the instructions and documents, and applied cleanly.
+  for (const rule of [DECIDE, APPLY]) expect(block).toContain(rule)
   // A hand-back keys every step through "answers", as an answer does.
   expect(stageInputs(directory, "intake").find(part => part.name === "answers")!.bytes).toBe(`${answeredQuestionsText(directory)}\nLeft to the drafting:\n- [q-cap] Q: Should liability be capped?`)
 })
@@ -274,6 +285,13 @@ test("every prompt given the lawyer's answers also lists the hand-back, apart fr
   expect(requestedFilesPrompt(directory, readLeanPlan(directory)!.documents, "memo")).toContain(block)
   // Every drafting part after the first gets it in its section handoff.
   expect(prompts.filter(prompt => prompt.agent === AGENT.draft && prompt.text.includes("Section handoff")).every(prompt => prompt.text.includes(block))).toBe(true)
+  // The spine, which makes the choice, and the draft, review and changes
+  // stages decide it for the client and apply it as clean operative wording.
+  for (const agent of [AGENT.spine, AGENT.draft, AGENT.review, AGENT["review-independent"], AGENT["review-wording"], AGENT["review-client-disadvantage"], AGENT.changes])
+    expect([agent, prompts.some(prompt => prompt.agent === agent && prompt.text.includes(DECIDE) && prompt.text.includes(APPLY))]).toEqual([agent, true])
+  // Each draft prompt that carries the drafting rules carries the hand-back's exception right after the marker rule.
+  const ruled = prompts.filter(prompt => prompt.agent === AGENT.draft && prompt.text.includes(MARKER_RULE))
+  expect([ruled.length > 0, ruled.every(prompt => prompt.text.includes(`${MARKER_RULE}\n${NO_MARKER}`))]).toEqual([true, true])
   for (const prompt of prompts) {
     expect([prompt.agent, prompt.text.includes("A: undefined")]).toEqual([prompt.agent, false])
     // Listed once, in its own block: never among the answers that control.
@@ -293,6 +311,7 @@ test("every prompt given the lawyer's answers also lists the hand-back, apart fr
   // The spine is told how to record the hand-back, and the notes' open item
   // for it carries what the spine chose, so the memo can say what and why.
   expect(prompts.find(prompt => prompt.agent === AGENT.spine)!.text).toContain(`"question_id"`)
+  expect(prompts.find(prompt => prompt.agent === AGENT.spine)!.text).toContain(SPINE_CHOICE)
   const [item] = handedBackItems(directory)
   expect(notes).toContain(`- ${item!.id}: ${item!.detail}\n  Drafting spine (drafting-choice): ${CHOSEN}`)
 }, 120_000)
@@ -311,6 +330,23 @@ test("the focused change review lists the hand-back apart from the actual answer
   expect(answers).toContain("Singapore law.")
   expect(answers).not.toContain(left)
 }, 120_000)
+
+test("only a hand-back is drafted without a confirmation marker; other unsettled choices keep the marker rule", () => {
+  const directory = matter()
+  writeLeanPlan(directory, [{ title: "Supply note", purpose: "Supply note", file: "supply-note.docx", parts: [{ heading: "Delivery", scope: "Delivery terms" }] }])
+  writeQuestions(directory, [
+    { id: "q-law", stage: "intake", question: LAW, context: "Legal basis.", status: "answered", answer: "Singapore law.", answered_at: "2026-10-18T09:00:00.000Z" },
+    { id: "q-late", stage: "intake", question: QUESTION, context: "The terms are silent.", status: "open" },
+  ])
+  const drafts = () => [stagePrompt(directory, "d1.draft", { outline: true }), stagePrompt(directory, "d1.draft")]
+  for (const prompt of drafts()) expect([prompt.includes(MARKER_RULE), prompt.includes(NO_MARKER), prompt.includes(APPLY)]).toEqual([true, false, false])
+  delegateQuestion(directory, "q-late")
+  for (const prompt of drafts()) expect([prompt.includes(`${MARKER_RULE}\n${NO_MARKER}`), prompt.includes(APPLY)]).toEqual([true, true])
+  // The draft agent's own rules keep the marker rule and state the exception.
+  const agent = readFileSync(new URL("../../agent/lean-draft.md", import.meta.url), "utf8")
+  expect(agent).toContain("- A preference is a drafting choice a competent drafter would make from the request, the documents and ordinary practice. Draft that choice and add a visible [open item: confirm ...] marker in the same paragraph saying what was chosen. A drafted choice is not an invented fact; the marker goes with the drafted wording, never in its place.\n")
+  expect(agent).toContain("- A point the prompt lists as left to the drafting takes no confirmation marker: draft the choice made for it as clean operative wording, without the rejected alternative or a precedence clause between the alternatives.\n")
+})
 
 test("intake re-asking a handed-back question is told it was left to the drafting, not answered", () => {
   const directory = matter()
@@ -342,6 +378,7 @@ test("the spine accepts a hand-back recorded once as a drafting choice or an ope
   expect(checkEvidence(directory, "spine", spine(CHOICE))).toEqual([])
   expect(checkEvidence(directory, "spine", spine({ ...CHOICE, kind: "open-item", detail: "Whether late delivery carries a remedy needs a commercial term the sources do not give; the body keeps its placeholder." }))).toEqual([])
   expect(evidencePrompt(directory, "spine")).toContain(`"question_id"`)
+  for (const rule of [DECIDE, APPLY, SPINE_CHOICE]) expect(evidencePrompt(directory, "spine")).toContain(rule)
 })
 
 test("the spine rejects a hand-back left out, recorded as a decision, recorded twice or under an id that is not a hand-back", () => {
@@ -366,8 +403,9 @@ test("the spine rejects a hand-back left out, recorded as a decision, recorded t
 test("the disclosure item asks for the choice made or the point left open, and does not depend on the spine", () => {
   const directory = spineMatter("handed back")
   const [item] = handedBackItems(directory)
-  expect(item!.detail).toBe(`The lawyer left this question to the drafting to decide instead of answering it: ${QUESTION} The lawyer has not decided it. ` +
-    "Say what the drafting chose and why, or that the draft leaves it open where the sources do not give what is needed. The lawyer should confirm the choice or answer the question.")
+  // Worded for any reader of the notes, the lawyer or the client.
+  expect(item!.detail).toBe(`This question was left to the drafting to decide: ${QUESTION} Say what the drafting chose, why and the alternative it did not take, ` +
+    "or that the draft leaves it open where the sources do not give what is needed, and that the point still needs confirmation or an answer.")
   // A spine that leaves the question open yields the same item, id included.
   writeLeanText(directory, "spine.json", JSON.stringify(spine({ ...CHOICE, kind: "open-item" })))
   expect(handedBackItems(directory)).toEqual([item!])
