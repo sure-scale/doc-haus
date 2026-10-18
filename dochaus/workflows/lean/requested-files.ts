@@ -464,9 +464,10 @@ const savedFile = (row: unknown) => record(row) && Array.isArray(row.holds) && r
  * with no document combined, and a requested name must be the name
  * registration takes for that file. A name the run could not confirm
  * (`refused_name`) always gives an item, whatever file is delivered: the item
- * says the run could not confirm it in the lawyer's words, never that the
- * lawyer gave it, and adds that the run delivers .docx files only when that
- * name is a format's or another format's file name. Each item quotes the
+ * says the run could not use it as the file's name, never that the lawyer
+ * gave it or that the lawyer's words lack it, and adds that the run delivers
+ * .docx files only when that name is a format's or another format's file
+ * name. Each item quotes the
  * lawyer's words, says what they ask for and every file the run delivers
  * instead, by all it holds, and belongs to the drafting notes,
  * so a repair goes to the notes writer. Once the lawyer has answered a
@@ -576,7 +577,7 @@ export function requestedFilesItems(directory: string): OpenItem[] {
       : " The lawyer should confirm how these files are to be delivered."
     return [openItem("finalize", "omission", `Requested files: the lawyer's words ${lawyerQuote(file.quote)} ask for ${what}` +
       (refused === undefined ? `, but the run delivers ${delivers}.`
-        : `, but the run could not confirm "${refused}" as its name in those words${format ? " and delivers .docx files only" : ""}; it delivers ${delivers}.`) +
+        : `, but the run could not use "${refused}" as its name${format ? " and delivers .docx files only" : ""}; it delivers ${delivers}.`) +
       `${reason}${closing}`, { repair_target: "memo" })]
   })
   return [...new Map(items.map(row => [row.id, row])).values()]

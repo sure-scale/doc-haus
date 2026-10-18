@@ -779,7 +779,7 @@ describe("requested files items", () => {
   test("a name the run could not confirm is disclosed with the file delivered, whatever that file's name", () => {
     const refused = { ...file(["d1"], TRANSFER), refused_name: "Kestrel Transfer Form.docx" }
     const unconfirmed = (name: string, delivered: string) => item(`the lawyer's words "${TRANSFER}" [source: request] ask for "Share transfer form" as a file of its own, ` +
-      `but the run could not confirm "${name}" as its name in those words; it delivers "Share transfer form" in "${delivered}".`)
+      `but the run could not use "${name}" as its name; it delivers "Share transfer form" in "${delivered}".`)
     expect(requestedFilesItems(saved(ELSEWHERE, record(refused)))).toEqual([unconfirmed("Kestrel Transfer Form.docx", "Share transfer form.docx")])
     // Delivered under the name the lawyer's words give, or under that very name, it is still disclosed: the run could not confirm it.
     expect(requestedFilesItems(saved(AS_ASKED, record(refused)))).toEqual([unconfirmed("Kestrel Transfer Form.docx", "Kestrel Transfer.docx")])
@@ -794,7 +794,7 @@ describe("requested files items", () => {
     expect(parsed).toEqual({ issues: [], value: stated({ ...file(["d1"], words), refused_name: "PDF" }) })
     writeRequestedFiles(directory, record(...parsed.value!.files))
     expect(requestedFilesItems(directory)).toEqual([item(`the lawyer's words "${words}" [source: request] ask for "Share transfer form" as a file of its own, ` +
-      'but the run could not confirm "PDF" as its name in those words and delivers .docx files only; it delivers "Share transfer form" in "Kestrel Transfer.docx".')])
+      'but the run could not use "PDF" as its name and delivers .docx files only; it delivers "Share transfer form" in "Kestrel Transfer.docx".')])
   })
 
   test("a refused name gives an item, though the file delivered is named after the end of a longer name the lawyer's words give", () => {
@@ -805,7 +805,7 @@ describe("requested files items", () => {
     expect(parsed).toEqual({ issues: [], value: stated({ ...file(["d1"], words), refused_name: "Kestrel Share Transfer.docx" }) })
     writeRequestedFiles(directory, record(...parsed.value!.files))
     expect(requestedFilesItems(directory)).toEqual([item(`the lawyer's words "${words}" [source: request] ask for "Share transfer form" as a file of its own, ` +
-      'but the run could not confirm "Kestrel Share Transfer.docx" as its name in those words; it delivers "Share transfer form" in "Share transfer form.docx".')])
+      'but the run could not use "Kestrel Share Transfer.docx" as its name; it delivers "Share transfer form" in "Share transfer form.docx".')])
   })
 
   test("every name the run could not confirm gives one item, whatever the lawyer's words say and the plan delivers", () => {
@@ -819,7 +819,7 @@ describe("requested files items", () => {
       const items = requestedFilesItems(directory)
       const delivered = documents === AS_ASKED ? "Kestrel Transfer.docx" : "Share transfer form.docx"
       expect({ quote, name, details: items.map(row => row.detail) }).toEqual({ quote, name, details: [item(`the lawyer's words "${quote}" [source: request] ask for "Share transfer form" as a file of its own, ` +
-        `but the run could not confirm "${name}" as its name in those words${format ? " and delivers .docx files only" : ""}; it delivers "Share transfer form" in "${delivered}".`).detail] })
+        `but the run could not use "${name}" as its name${format ? " and delivers .docx files only" : ""}; it delivers "Share transfer form" in "${delivered}".`).detail] })
     }
   })
 
@@ -829,7 +829,7 @@ describe("requested files items", () => {
     let directory = saved(AS_ASKED, record({ ...file(["d1"], v2), refused_name: "Kestrel Transfer.pdf" }))
     writeLeanText(directory, "request.md", `${BOTH}. ${PACK}. ${v2}.`)
     expect(requestedFilesItems(directory)).toEqual([item(`the lawyer's words "${v2}" [source: request] ask for "Share transfer form" as a file of its own, ` +
-      'but the run could not confirm "Kestrel Transfer.pdf" as its name in those words and delivers .docx files only; it delivers "Share transfer form" in "Kestrel Transfer.docx".')])
+      'but the run could not use "Kestrel Transfer.pdf" as its name and delivers .docx files only; it delivers "Share transfer form" in "Kestrel Transfer.docx".')])
     // The lawyer asks for Kestrel Transfer.doc; the last attempt gives the bare stem, which code makes a Word file's name.
     const doc = "Deliver the share transfer form separately and save it as Kestrel Transfer.doc"
     directory = saved()
@@ -838,7 +838,7 @@ describe("requested files items", () => {
     expect(last).toEqual({ issues: [], value: stated({ ...file(["d1"], doc), refused_name: "Kestrel Transfer.docx" }) })
     writeRequestedFiles(directory, record(...last.value!.files))
     expect(requestedFilesItems(directory)).toEqual([item(`the lawyer's words "${doc}" [source: request] ask for "Share transfer form" as a file of its own, ` +
-      'but the run could not confirm "Kestrel Transfer.docx" as its name in those words; it delivers "Share transfer form" in "Kestrel Transfer.docx".')])
+      'but the run could not use "Kestrel Transfer.docx" as its name; it delivers "Share transfer form" in "Kestrel Transfer.docx".')])
   })
 
   test("a format given as a name is refused at once and disclosed, wherever the lawyer's words hold it", () => {
@@ -850,14 +850,14 @@ describe("requested files items", () => {
     expect(parsed).toEqual({ issues: [], value: stated({ ...file(["d1"], ready), refused_name: "PDF" }) })
     writeRequestedFiles(directory, record(...parsed.value!.files))
     expect(requestedFilesItems(directory)).toEqual([item(`the lawyer's words "${ready}" [source: request] ask for "Share transfer form" as a file of its own, ` +
-      'but the run could not confirm "PDF" as its name in those words and delivers .docx files only; it delivers "Share transfer form" in "Kestrel Transfer.docx".')])
+      'but the run could not use "PDF" as its name and delivers .docx files only; it delivers "Share transfer form" in "Kestrel Transfer.docx".')])
     // Asked for after a naming word, it is disclosed alike.
     const save = "Deliver the share transfer form separately and save it as a PDF"
     for (const name of ["PDF", "a PDF"]) {
       const saving = saved(AS_ASKED, record({ ...file(["d1"], save), refused_name: name }))
       writeLeanText(saving, "request.md", `${BOTH}. ${PACK}. ${save}.`)
       expect(requestedFilesItems(saving)).toEqual([item(`the lawyer's words "${save}" [source: request] ask for "Share transfer form" as a file of its own, ` +
-        `but the run could not confirm "${name}" as its name in those words and delivers .docx files only; it delivers "Share transfer form" in "Kestrel Transfer.docx".`)])
+        `but the run could not use "${name}" as its name and delivers .docx files only; it delivers "Share transfer form" in "Kestrel Transfer.docx".`)])
     }
   })
 
@@ -871,12 +871,12 @@ describe("requested files items", () => {
       const quote = TRANSFER.replace(".docx", extension)
       const name = `Kestrel Transfer${extension}`
       expect(words(quote, name)).toEqual([item(`the lawyer's words "${quote}" [source: request] ask for "Share transfer form" as a file of its own, ` +
-        `but the run could not confirm "${name}" as its name in those words and delivers .docx files only; it delivers "Share transfer form" in "Kestrel Transfer.docx".`)])
+        `but the run could not use "${name}" as its name and delivers .docx files only; it delivers "Share transfer form" in "Kestrel Transfer.docx".`)])
     }
     // A format the reply gives alone, where the lawyer's words give it only as a name's extension, is disclosed alike.
     const quote = TRANSFER.replace(".docx", ".pdf")
     expect(words(quote, "PDF")).toEqual([item(`the lawyer's words "${quote}" [source: request] ask for "Share transfer form" as a file of its own, ` +
-      'but the run could not confirm "PDF" as its name in those words and delivers .docx files only; it delivers "Share transfer form" in "Kestrel Transfer.docx".')])
+      'but the run could not use "PDF" as its name and delivers .docx files only; it delivers "Share transfer form" in "Kestrel Transfer.docx".')])
   })
 
   test("a refused name in another format the lawyer's words do not give is disclosed as unconfirmed, never as a format the lawyer asked for", () => {
@@ -887,11 +887,11 @@ describe("requested files items", () => {
     writeRequestedFiles(directory, record(...last.value!.files))
     // Delivered under the name the lawyer gave, it is still disclosed, whatever name the reply gave.
     expect(requestedFilesItems(directory)).toEqual([item(`the lawyer's words "${TRANSFER}" [source: request] ask for "Share transfer form" as a file of its own, ` +
-      'but the run could not confirm "Kestrel Transfer.pdf" as its name in those words and delivers .docx files only; it delivers "Share transfer form" in "Kestrel Transfer.docx".')])
+      'but the run could not use "Kestrel Transfer.pdf" as its name and delivers .docx files only; it delivers "Share transfer form" in "Kestrel Transfer.docx".')])
     expect(requestedFilesItems(saved(AS_ASKED, record({ ...file(["d1"], TRANSFER), refused_name: "Kestrel Form.pdf" })))).toEqual([item(`the lawyer's words "${TRANSFER}" [source: request] ask for "Share transfer form" as a file of its own, ` +
-      'but the run could not confirm "Kestrel Form.pdf" as its name in those words and delivers .docx files only; it delivers "Share transfer form" in "Kestrel Transfer.docx".')])
+      'but the run could not use "Kestrel Form.pdf" as its name and delivers .docx files only; it delivers "Share transfer form" in "Kestrel Transfer.docx".')])
     expect(requestedFilesItems(saved(ELSEWHERE, record({ ...file(["d1"], TRANSFER), refused_name: "Kestrel Form.pdf" })))).toEqual([item(`the lawyer's words "${TRANSFER}" [source: request] ask for "Share transfer form" as a file of its own, ` +
-      'but the run could not confirm "Kestrel Form.pdf" as its name in those words and delivers .docx files only; it delivers "Share transfer form" in "Share transfer form.docx".')])
+      'but the run could not use "Kestrel Form.pdf" as its name and delivers .docx files only; it delivers "Share transfer form" in "Share transfer form.docx".')])
   })
 
   test("a name refused on an earlier attempt stays disclosed when the last attempt gives none, until a name passes", () => {
@@ -904,7 +904,7 @@ describe("requested files items", () => {
     expect(last).toEqual({ issues: [], value: stated(file(["memo", "d2"], PACK, "Kestrel Board Pack.docx"), { ...file(["d1"], TRANSFER), refused_name: "Kestrel Transfer Form.docx" }) })
     writeRequestedFiles(directory, record(...last.value!.files))
     expect(requestedFilesItems(directory)).toEqual([item(`the lawyer's words "${TRANSFER}" [source: request] ask for "Share transfer form" as a file of its own, ` +
-      'but the run could not confirm "Kestrel Transfer Form.docx" as its name in those words; it delivers "Share transfer form" in "Share transfer form.docx".')])
+      'but the run could not use "Kestrel Transfer Form.docx" as its name; it delivers "Share transfer form" in "Share transfer form.docx".')])
     // A later name the lawyer's words give clears it.
     expect(parse("Kestrel Transfer.docx")).toEqual({ issues: [], value: ASKED })
     expect(parse(null, true)).toEqual({ issues: [], value: stated(file(["memo", "d2"], PACK, "Kestrel Board Pack.docx"), file(["d1"], TRANSFER)) })
