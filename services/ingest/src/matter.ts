@@ -12,8 +12,10 @@ import { dataPaths } from "../../engine/src/data-paths"
 // session to via the x-opencode-directory header.
 
 // Resolved per call so a changed WORKSPACE_ROOT is honoured, not pinned by
-// whichever module imported this file first. WORKSPACE_ROOT is the boot value.
-const workspaceRoot = () => dataPaths(path.resolve(import.meta.dir, "../../.."), process.env, path.join(process.cwd(), "workspace")).workspace
+// whichever module imported this file first. Every reader of the workspace
+// (matters, preferences, playbooks, skills, agents) goes through this.
+// WORKSPACE_ROOT is the boot value.
+export const workspaceRoot = () => dataPaths(path.resolve(import.meta.dir, "../../.."), process.env, path.join(process.cwd(), "workspace")).workspace
 export const WORKSPACE_ROOT = workspaceRoot()
 
 // reference is the firm's own client-matter number (e.g. "2026-0042"), shown in
@@ -396,7 +398,7 @@ export function listJurisdictions() {
 // leading frontmatter block. The web app reads this to offer the playbook choices
 // for a matter; the engine binds one via matter.json.
 const SKILL_DIR = path.join(path.dirname(JURISDICTION_DIR), "skill")
-const PLAYBOOK_DIR = () => path.join(workspaceRoot(), ".playbooks")
+export const PLAYBOOK_DIR = () => path.join(workspaceRoot(), ".playbooks")
 
 export type Playbook = {
   name: string

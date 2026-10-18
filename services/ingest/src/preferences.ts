@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import path from "node:path"
-import { WORKSPACE_ROOT } from "./matter"
+import { workspaceRoot } from "./matter"
 import { DEFAULT_DRAFTING, normalizeApprovedSources, normalizePreferences, renderInstructions, type DraftingPreferences } from "../../../dochaus/lib/drafting-preferences"
 
 export { DEFAULT_DRAFTING, type DraftingPreferences, type RateOverride, type TelemetryPreferences } from "../../../dochaus/lib/drafting-preferences"
@@ -8,9 +8,7 @@ export { DEFAULT_DRAFTING, type DraftingPreferences, type RateOverride, type Tel
 // Structured preferences are the shared source for settings and model context.
 // Keep a rendered markdown export alongside them for inspection. The engine
 // renders the JSON/defaults on every turn, so reading Settings need not write.
-// WORKSPACE_ROOT is read lazily (like skill.ts) so it is not pinned by whichever
-// module imported matter.ts first.
-const PREFS_DIR = () => path.join(process.env.WORKSPACE_ROOT ?? WORKSPACE_ROOT, ".preferences")
+const PREFS_DIR = () => path.join(workspaceRoot(), ".preferences")
 const JSON_FILE = () => path.join(PREFS_DIR(), "preferences.json")
 const INSTRUCTIONS_FILE = () => path.join(PREFS_DIR(), "drafting.md")
 

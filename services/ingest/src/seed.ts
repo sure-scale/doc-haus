@@ -16,7 +16,7 @@ import {
 } from "docx"
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, copyFileSync } from "node:fs"
 import path from "node:path"
-import { createMatter, listMatters, WORKSPACE_ROOT } from "./matter"
+import { createMatter, listMatters, PLAYBOOK_DIR } from "./matter"
 import { ingestDocument } from "./ingest"
 import { seedTemplates } from "./template"
 
@@ -46,7 +46,7 @@ import { seedTemplates } from "./template"
 const PLAYBOOKS_SRC = path.join(import.meta.dir, "..", "..", "..", "dochaus", "playbooks")
 
 export function seedPlaybooks() {
-  const playbooksDir = path.join(WORKSPACE_ROOT, ".playbooks")
+  const playbooksDir = PLAYBOOK_DIR()
   const marker = path.join(playbooksDir, ".seeded")
   const seeded = new Set(existsSync(marker) ? readFileSync(marker, "utf8").split("\n").filter(Boolean) : [])
   const fresh = readdirSync(PLAYBOOKS_SRC)

@@ -1,14 +1,14 @@
 import { Hono } from "hono"
 import path from "node:path"
 import { mkdirSync } from "node:fs"
-import { listPlaybooks, WORKSPACE_ROOT } from "./matter"
+import { listPlaybooks, workspaceRoot } from "./matter"
 
 // Source uploads live outside the discoverable skills directory. They only
 // become selectable playbooks after the lawyer submits the builder's import.
 export function playbookLibraryRoutes() {
   const app = new Hono()
-  // Read per request (like skill.ts) so the directory follows WORKSPACE_ROOT.
-  const libraryDir = () => path.join(process.env.WORKSPACE_ROOT ?? WORKSPACE_ROOT, ".playbook-library")
+  // Read per request so the directory follows WORKSPACE_ROOT.
+  const libraryDir = () => path.join(workspaceRoot(), ".playbook-library")
   app.get("/playbooks/library", (c) => {
     const dir = libraryDir()
     mkdirSync(dir, { recursive: true })
