@@ -267,8 +267,8 @@ function plainWordsSection(directory: string, known: string[], heading: string, 
 
 /** Each unresolved or left-open checklist finding as a line for
  * plainWordsSection: its requirement, why it is unmet and its sources, each
- * named by its matter file name (the request as "request") with its quote and
- * no locator, which is an internal path or note. A finding whose
+ * named as the lawyer knows it (sourceName) with its quote and no locator,
+ * which is an internal path or note. A finding whose
  * item cannot be found takes its requirement from its detail, cut of its
  * conflict list, or falls back to that detail. Why it is unmet is a plain
  * status for its class, or that it was left open, then its reason. A checked
@@ -288,15 +288,16 @@ function findingEntries(directory: string, findings: OpenItem[], known: string[]
   return findings.map(finding => (hold: (text: string) => string) => {
     const id = finding.ref.checklist_item ?? finding.id
     const item = items.get(id)
-    // Each source is named as the lawyer knows it, by its matter file name or
-    // as the request, with its quote. A locator is the check's working
-    // reference (an extracted-text path and line range, a retrieval note) and
-    // is not shown, so a passage cited twice is named once.
-    const cited = new Map((item?.source_refs ?? []).map(ref => {
-      const quote = `"${ref.quote}"`.replace(/\s+/g, " ")
-      return [`${ref.document}\n${quote}`, { document: ref.document, quote }] as const
-    }))
-    const sources = [...cited.values()].map(ref => `${ref.document}: ${hold(ref.quote)}`)
+    // Each source is named as the lawyer knows it (sourceName), with its quote.
+    // A locator is the check's working reference (an extracted-text path and
+    // line range, a retrieval note) and is not shown, so a passage cited twice
+    // in one source, as conflictKey compares quotes, is named once, as first cited.
+    const cited = new Map<string, string>()
+    for (const ref of item?.source_refs ?? []) {
+      const key = `${ref.document}\n${normalize(ref.quote)}`
+      if (!cited.has(key)) cited.set(key, `${sourceName(ref.document)}: ${hold(`"${ref.quote.replace(/\s+/g, " ").trim()}"`)}`)
+    }
+    const sources = [...cited.values()]
     const detail = finding.detail.replace(/ Conflicting checklist items: \S+(?:, \S+)*\.$/, "")
     // Why the requirement is unmet, chosen by what the gate item is: a checked
     // finding has a class, one left open is its own kind, a refined parent has
@@ -320,6 +321,16 @@ function findingEntries(directory: string, findings: OpenItem[], known: string[]
     const conflict = (conflicted.has(id) || detail !== finding.detail) && finding.ref.checklist_class !== "source_conflict" ? " It conflicts with another requirement." : ""
     return `- ${text}${conflict}${sources.length ? ` Source: ${sources.join("; ")}` : ""}`
   })
+}
+
+/** A cited source as the lawyer knows it: a matter file or web page by its own
+ * name, the request as "request", and the bound firm playbook (its
+ * "playbook:" source id) by the label the matter shows for it, its name
+ * without "playbook-" in capitals, as a playbook. */
+function sourceName(document: string) {
+  if (!document.startsWith("playbook:")) return document
+  const label = document.slice("playbook:".length).replace(/^playbook-/, "").toUpperCase()
+  return label ? `${label} playbook` : "firm playbook"
 }
 
 /** What a memo finding's class means for the reader and what the lawyer should

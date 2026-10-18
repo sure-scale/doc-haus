@@ -341,22 +341,31 @@ test("a memo finding keeps its source quote whole and names the requirement and 
     .toBe(`- The note states the delivery period. ${OMISSION} Reason: It conflicts with another requirement, which requires 60 days; a paragraph omits it. Limitation: Comments not inspected. Source: request: "${quote}"`)
 })
 
-test("a finding names each matter source by its file name with its quote, never the extracted-text path, line range or retrieval note it was located by", () => {
+test("a finding names each source as the lawyer knows it with its quote, once per passage, never the extracted-text path, line range or retrieval note it was located by", () => {
   const directory = checklistMatter()
-  const extracted = "sources/supply-terms-docx-0123456789ab.txt lines 1-26"
   const terms = (quote: string, locator: string) => ({ document: "supply-terms.docx", locator, quote })
-  const item = { ...ITEMS[0]!.item, source_refs: [terms("Delivery: within thirty days of the order.", extracted),
-    terms("Delivery:  within thirty days\nof the order.", "Preamble"), terms("Risk passes on delivery.", "full source text read-document view=source offset 0"),
+  const item = { ...ITEMS[0]!.item, source_refs: [terms("Delivery: within thirty days of the order.", "sources/supply-terms-docx-0123456789ab.txt lines 1-26"),
+    terms("Delivery:  within thirty days\nof the order.", "Preamble"),
+    // The same passage, its first version with a curly apostrophe and edge spaces.
+    terms(" The Buyer\u2019s risk passes on delivery. ", "full source text read-document view=source offset 0"), terms("The Buyer's risk passes on delivery.", "clause 4"),
+    // The same words in another source stay that source's.
+    { document: "order-form.docx", locator: "sources/order-form-docx-0123456789ab.txt lines 1-9", quote: "The Buyer's risk passes on delivery." },
+    { document: "playbook:playbook-supply", locator: "read-document playbook:playbook-supply lines 1-3", quote: "Accept delivery periods up to thirty days." },
+    { document: "https://example.com/supply-guidance", locator: "webfetch offset 0", quote: "Delivery periods over thirty days are unusual." },
     ...ITEMS[0]!.item.source_refs] }
   writeLeanText(directory, "checklist/extraction.json", JSON.stringify({ expected_sources: ["request"], sources: [{ key: "request", status: "succeeded", items: [{ id: "c1", item }, ITEMS[1]!] }] }))
   saveFindings(directory, [finding("c1"), finding("c2", { status: "satisfied" })])
-  // Was `Source: supply-terms.docx, sources/supply-terms-docx-0123456789ab.txt lines 1-26: "…"; supply-terms.docx, Preamble: "…"; …`.
-  const line = `- The note states the delivery period. ${OMISSION} Reason: Paragraph omits it. Limitation: Comments not inspected. Source: supply-terms.docx: "Delivery: within thirty days of the order."; supply-terms.docx: "Risk passes on delivery."; request: "Deliver within thirty days of the order."`
-  expect(deliveredNotes(directory, finalGate(directory))!.split("\n")).toContain(line)
+  // Was `Source: supply-terms.docx, sources/supply-terms-docx-0123456789ab.txt lines 1-26: "…"; supply-terms.docx, Preamble: "…"; …`,
+  // then `… supply-terms.docx: " The Buyer’s risk passes on delivery. "; supply-terms.docx: "The Buyer's risk passes on delivery."; … playbook:playbook-supply: "…"`.
+  const line = `- The note states the delivery period. ${OMISSION} Reason: Paragraph omits it. Limitation: Comments not inspected. Source: supply-terms.docx: "Delivery: within thirty days of the order."; supply-terms.docx: "The Buyer\u2019s risk passes on delivery."; order-form.docx: "The Buyer's risk passes on delivery."; SUPPLY playbook: "Accept delivery periods up to thirty days."; https://example.com/supply-guidance: "Delivery periods over thirty days are unusual."; request: "Deliver within thirty days of the order."`
+  const internal = ["sources/", ".txt", "lines 1-", "Preamble", "view=source", "offset 0", "clause 4", "playbook:playbook", "read-document", "webfetch", REQUEST_LOCATOR]
+  const notes = deliveredNotes(directory, finalGate(directory))!
+  expect(notes.split("\n")).toContain(line)
+  for (const text of internal) expect(notes).not.toContain(text)
   requestMemo(directory)
-  const delivered = deliveredNotes(directory, finalGate(directory))!
-  expect(delivered.split("\n").at(-2)).toBe(line)
-  for (const text of ["sources/", ".txt", "lines 1-26", "Preamble", "view=source", "offset 0", REQUEST_LOCATOR]) expect(delivered).not.toContain(text)
+  const memo = deliveredNotes(directory, finalGate(directory))!
+  expect(memo.split("\n").at(-2)).toBe(line)
+  for (const text of internal) expect(memo).not.toContain(text)
 })
 
 test("a memo finding's status says, in plain words for each class, what is not confirmed and what to check, never the stage that left it", () => {
