@@ -64,6 +64,14 @@ describe("requested files prompt", () => {
     expect(plain.replace(tagged("request", REQUEST), "")).not.toMatch(/\bmemo\b/)
     expect(plain).toContain('Reply with the JSON object only: {"stated":true,"files":[{"holds":["planned id"],"name":"file name or null","quote":"..."}]}.')
   })
+
+  test("named files are all the files asked for: each planned document, and the memo when one is planned, goes in the named file the words attach it to", () => {
+    const directory = prepared()
+    const rule = (contents: string) => `- Named files are all the files the lawyer asks to receive: when the lawyer's words name the files to deliver, put ${contents} ` +
+      "in the named file the lawyer's words attach it to; leave one out of every file only when the words leave it out of every named file."
+    expect(requestedFilesPrompt(directory, DOCUMENTS, MEMO)).toContain(rule("each planned document and the memo"))
+    expect(requestedFilesPrompt(directory, DOCUMENTS, undefined)).toContain(rule("each planned document"))
+  })
 })
 
 describe("parse requested files", () => {

@@ -306,7 +306,7 @@ describe("plan coverage observability", () => {
     ])
   }, 60_000)
 
-  test("the coverage jobs' sessions appear in the draft step's session_ids after the outline's", async () => {
+  test("the coverage jobs' sessions, then the files job's, appear in the draft step's session_ids after the outline's", async () => {
     const { directory, state } = prepared()
     const model = scriptedModel({ [AGENT.draft]: outliner(ONE, TWO), [AGENT.coverage]: () => ACTS })
     const progress = (patch: Partial<LeanStageState>) => { updateLeanStage(directory, readLeanState(directory)!, "d1.draft", patch) }
@@ -315,6 +315,9 @@ describe("plan coverage observability", () => {
     const outline = model.prompts.find(prompt => prompt.agent === AGENT.draft)!.sessionID
     const covered = [...new Set(model.prompts.filter(prompt => prompt.agent === AGENT.coverage).map(prompt => prompt.sessionID))]
     expect(covered).toHaveLength(2)
-    expect(readLeanState(directory)!.stages["d1.draft"]).toMatchObject({ session_id: outline, session_ids: [outline, ...covered] })
+    // The revised outline plans two documents, so the files job reads it too.
+    const filed = [...new Set(model.prompts.filter(prompt => prompt.agent === AGENT.files).map(prompt => prompt.sessionID))]
+    expect(filed).toHaveLength(1)
+    expect(readLeanState(directory)!.stages["d1.draft"]).toMatchObject({ session_id: outline, session_ids: [outline, ...covered, ...filed] })
   }, 60_000)
 })

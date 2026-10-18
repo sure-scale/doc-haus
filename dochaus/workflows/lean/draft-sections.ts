@@ -1,3 +1,4 @@
+import { rmSync } from "node:fs"
 import { playbookSelectionIssues } from "./playbook-review"
 import { TOOL_SYNTAX_ISSUE, printedToolCall } from "./checks"
 import { appendLeanEvent, leanElapsedMs } from "./events"
@@ -5,6 +6,10 @@ import { matterSourceIDs } from "./quotes"
 import { memoNotesFile } from "./deliverables"
 import { LEAN_COVERAGE_SCHEMA, coveragePlanHash, coveragePrompt, coverageScopeQuestion, parseCoverage, planCoverageCurrent, planCoverageIssues, type CoverageAct, type LeanCoverage } from "./package-coverage"
 import { answeredScopeQuestion, openScopeQuestion } from "./package-scope"
+import {
+  LEAN_REQUESTED_FILES_SCHEMA, parseRequestedFiles, requestedFilesIssues, requestedFilesPrompt, requestedFilesQuestion, withRequestedNames, writeRequestedFiles,
+  type RequestedFiles,
+} from "./requested-files"
 import {
   FIRST_DOCUMENT, headingText, normalizedHeading, parsePlan, plannedDocument, readLeanPlan, withDocumentIDs, writeLeanPlan,
   type ActingFor, type DocID, type LeanOutline, type PlannedDocument, type PlannedPart, type StepID,
@@ -22,7 +27,7 @@ import {
   stepSessionTitle,
   type LeanDeps,
 } from "./stages"
-import { answeredQuestionsText, readLeanText, readOpenItems, readQuestions, writeLeanText, type LeanStageState, type LeanState, type OpenItem, type Question } from "./state"
+import { answeredQuestionsText, leanFile, readLeanText, readOpenItems, readQuestions, writeLeanText, type LeanStageState, type LeanState, type OpenItem, type Question } from "./state"
 import { outlineCoverageIssues, partCarries, plannedContract, type TemplateContract } from "./template-contract"
 import { contractGaps, draftBody, draftGapIssues, type DraftPart } from "./template-coverage"
 import { countWords, headingUnits, tokens } from "./template-structure"
@@ -50,6 +55,15 @@ import { countWords, headingUnits, tokens } from "./template-structure"
 // package-scope question is open, the step asks none of its own: it saves the
 // plan, the act is disclosed, and the open question stays the one to answer. A
 // coverage reply that never passed its check (unchecked) does not stop the step.
+// When the outline plans a memo or more than one document, a files job in its
+// own session then reads which files the lawyer's words ask to receive
+// (requested-files.ts). Where the plan does not deliver them so, the issues go
+// back to the outline session for at most PLAN_FILES_REVISIONS revised
+// outlines; a mismatch still left stops the step, with no plan saved, on one
+// question to the lawyer, asked once. Code never changes the plan's delivery
+// shape, but gives the plan the file names the lawyer's words give, and saves
+// the files in requested-files.json beside the plan. A files reply that never
+// passed its check leaves no record and does not stop the step.
 // When a document is drafted from a matter document as its template, the
 // outline is admitted only once its coverage contract accounts for every
 // top-level part of the template (template-contract.ts); each part is told
@@ -72,6 +86,8 @@ type Coverage = { acts?: CoverageAct[]; issues: string[] }
 
 /** Revised outlines the coverage job's issues may ask for before the plan is saved. */
 export const PLAN_COVERAGE_REVISIONS = 2
+/** Revised outlines the files job's issues may ask for before the plan is saved. */
+export const PLAN_FILES_REVISIONS = 2
 
 /** The saved plan is followed (planBasisCurrent) and, unless it was written by
  * hand, its coverage record checked this very plan (planCoverageCurrent, which
@@ -94,7 +110,7 @@ export async function runDraftStage(
   // A new stage attempt cannot retrieve a partial draft from an older attempt.
   writeLeanText(directory, `${document}/draft-in-progress.md`, "")
   const agent = LEAN_STAGE_AGENTS.draft
-  // The coverage jobs' sessions join the outline's, so the step reports each of its sessions.
+  // The coverage and files jobs' sessions join the outline's, so the step reports each of its sessions.
   const sessionIDs: string[] = []
   // Created when first prompted: a refresh that keeps the draft never prompts it.
   let drafting: Promise<string> | undefined
@@ -168,6 +184,20 @@ export async function runDraftStage(
     return { status: "blocked", outputs: ["coverage.json"], openItems: [], questions: [question],
       reason: `${step}: the document plan leaves an instructed act without a document its parties execute; drafting waits for your answer on the package's scope.` }
   }
+  // The files job, like the coverage job, reads the plan in a fresh session of
+  // its own, and only when the plan has a memo or more than one document to
+  // put in files. A reply that never passed its check gives no files.
+  const filing = async (documents: PlannedDocument[], memo: string | undefined): Promise<RequestedFiles | undefined> => {
+    if (memo === undefined && documents.length < 2) return
+    const filesAgent = LEAN_STAGE_AGENTS.files
+    const id = await deps.sessions.createSession({
+      directory, parentID: state.owner_session_id, agent: filesAgent, title: stepSessionTitle(directory, step, "draft: files"), model: state.model, permissions: LEAN_CHILD_PERMISSIONS,
+    })
+    sessionIDs.push(id)
+    progress({ ...(sessionIDs.length === 1 ? { session_id: id } : {}), session_ids: [...sessionIDs] })
+    const checked = await exchange({ id, agent: filesAgent })("files", requestedFilesPrompt(directory, documents, memo), (reply, final) => parseRequestedFiles(reply, directory, documents, memo, { final }))
+    return checked.value
+  }
   // A plan whose outline basis is current is followed as it stands, including a
   // lawyer's edits; only its coverage record is refreshed when it no longer
   // matches the plan.
@@ -200,12 +230,50 @@ export async function runDraftStage(
       value = next
       coverage = await covering(withDocumentIDs(value.documents))
     }
+    // The files the lawyer's words ask for are read from the settled outline.
+    // Where its deliverables do not deliver them so, the issues go back to the
+    // outline session as a revision request, unless the lawyer has already been
+    // asked about this very mismatch: a revision never overrides the answer. The
+    // record is the lawyer's packaging, not the plan's, so the job reads the plan
+    // again only when the planned documents or the memo change.
+    const filed = (outline: LeanOutline) => JSON.stringify([outline.documents.map(row => row.title), outline.memo ?? null])
+    let filedFor = filed(value)
+    let requested = await filing(withDocumentIDs(value.documents), value.memo)
+    let files = requested ? requestedFilesIssues(withDocumentIDs(value.documents), value.memo, requested).issues : []
+    for (let revision = 1; requested && requestedFilesQuestion(directory, requested, withDocumentIDs(value.documents), files) && revision <= PLAN_FILES_REVISIONS; revision++) {
+      delete best.value
+      const revised = await ask<LeanOutline>(`outline files revision ${revision}/${PLAN_FILES_REVISIONS}`, retryPrompt("draft", files), checkOutline, 0, files)
+      const next = revised.value ?? best.value
+      if (!next) continue
+      const checked = coveragePlanHash(withDocumentIDs(value.documents), value.acting_for)
+      value = next
+      if (coveragePlanHash(withDocumentIDs(value.documents), value.acting_for) !== checked) coverage = await covering(withDocumentIDs(value.documents))
+      if (filed(value) !== filedFor) {
+        filedFor = filed(value)
+        requested = await filing(withDocumentIDs(value.documents), value.memo)
+      }
+      files = requested ? requestedFilesIssues(withDocumentIDs(value.documents), value.memo, requested).issues : []
+    }
     const documents = withDocumentIDs(value.documents)
     recordCoverage(documents, value.acting_for, coverage)
     const blocked = scopeBlock(documents, coverage)
     if (blocked) return blocked
-    // A memo the request asks for is the run's notes, named for the request.
-    writeLeanPlan(directory, value.documents, basis, value.acting_for, value.memo ? { name: value.memo, file: memoNotesFile(value.documents, value.memo) } : undefined)
+    // A mismatch the revisions leave is the lawyer's call, asked once; once
+    // asked, the plan is saved as it stands and the record discloses the files
+    // it does not deliver as asked (requestedFilesItems).
+    const question = requested && requestedFilesQuestion(directory, requested, documents, files)
+    if (question) return { status: "blocked", outputs: ["coverage.json"], openItems: [], questions: [question],
+      reason: `${step}: the document plan does not deliver the files the lawyer's words ask for; drafting waits for your answer on how they are delivered.` }
+    // A memo the request asks for is the run's notes, named for the request, and
+    // a file the lawyer's words name takes that name.
+    const memo = value.memo ? { name: value.memo, file: memoNotesFile(value.documents, value.memo) } : undefined
+    const named = requested && withRequestedNames(value.documents, memo, requested)
+    if (requested && named) {
+      writeRequestedFiles(directory, { schema: LEAN_REQUESTED_FILES_SCHEMA, basis, stated: requested.stated, files: requested.files })
+      appendLeanEvent(directory, { stage: "draft", document, event: "requested_files", step: "files", outcome: requested.stated ? "stated" : "not_stated", issues: files,
+        ...(named.applied.length ? { reason: named.applied.join("; ") } : {}) })
+    } else rmSync(leanFile(directory, "requested-files.json"), { force: true })
+    writeLeanPlan(directory, named?.documents ?? value.documents, basis, value.acting_for, memo && { name: memo.name, file: named?.notes_file ?? memo.file })
   } else if (document === FIRST_DOCUMENT && !planIsCurrent(directory)) {
     const saved = readLeanPlan(directory)!
     const coverage = await covering(saved.documents)

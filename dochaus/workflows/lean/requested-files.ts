@@ -64,6 +64,8 @@ export function requestedFilesPrompt(directory: string, documents: PlannedDocume
       "\"name\": the file name exactly as the lawyer writes it, ending in .docx, adding only .docx to a name the lawyer gives without it, or null when the lawyer gives no name; " +
       "\"quote\": the lawyer's exact words that ask for this file, copied verbatim, including the words that give its name.",
       `- Put each planned document${memo ? " and the memo" : ""} in one file at most. List only the files the lawyer's words ask for, and in each only what those words put in it.`,
+      `- Named files are all the files the lawyer asks to receive: when the lawyer's words name the files to deliver, put each planned document${memo ? " and the memo" : ""} ` +
+      "in the named file the lawyer's words attach it to; leave one out of every file only when the words leave it out of every named file.",
       `- ${filesShape(Boolean(memo))}`,
       "- Read-only tools are available; file-writing and publication tools are unavailable. The run saves and checks the reply.",
     ].join("\n")),

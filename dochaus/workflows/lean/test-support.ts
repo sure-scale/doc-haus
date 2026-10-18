@@ -54,6 +54,8 @@ export function scriptedModel(replies: Record<string, Reply>) {
         "lean-checklist-extract": () => JSON.stringify({ items: [] }),
         // The outline's coverage job finds no lawyer instruction to account for.
         [AGENT.coverage]: () => JSON.stringify({ acts: [] }),
+        // The outline's files job finds no lawyer instruction on the files to deliver.
+        [AGENT.files]: () => JSON.stringify({ stated: false, files: [] }),
         [AGENT["change-plan"]]: () => JSON.stringify({ shared_decisions: [], groups: [], dismissed: [], questions: [] }),
         [AGENT["change-prepare"]]: () => JSON.stringify({ amendments: [], questions: [] }),
         [AGENT["change-review"]]: () => JSON.stringify({ status: "pass", findings: [], limitations: [] }),
