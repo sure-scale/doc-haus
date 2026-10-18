@@ -1,4 +1,5 @@
 import { draftingStyleWarningsBlock } from "./style-warnings"
+import { requestedMemo } from "./deliverables"
 import { currentDocumentArtifacts } from "../../lib/current-document-artifacts"
 import { checklistProducerInputs } from "./checklist-source-context"
 import { existsSync, readFileSync } from "node:fs"
@@ -42,7 +43,7 @@ export function changePlanPrompt(directory: string, document: DocID) {
   return [
     stagePrompt(directory, `${document}.change-plan`, { contextOnly: true }),
     `<draft_paragraphs>\n${readParagraphs(directory, document).map(row => `[${row.pid}] ${row.text}`).join("\n\n")}\n</draft_paragraphs>`,
-    draftingStyleWarningsBlock(readParagraphs(directory, document)),
+    draftingStyleWarningsBlock(readParagraphs(directory, document), { memo: Boolean(requestedMemo(directory)) }),
     `<findings>\n${reviewStages(directory, document).map(stage => `${stage}:\n${readLeanText(directory, `${document}/${stage}.md`) ?? "Missing review"}`).join("\n\n")}\n</findings>`,
     ...changesRepairSections(directory, document),
     ...(readChangePlan(directory, document) ? [`<previous_review_dispositions>\n${reviewDispositionText(directory, document)}\n</previous_review_dispositions>`, "Retain still-material prior dispositions in your replacement plan. Resolve or reject them only when current evidence or settled instructions supply the reason; do not lose deferred advice during a wording repair."] : []),

@@ -123,7 +123,7 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
       `This is a lean drafting run. Independently review the draft${named} below against the lawyer's request and the matter's sources.`,
       tagged("review_focus", isReviewStage(stage) ? REVIEW_FOCUS[stage] : ""),
       request, spineBlock, acting, answerBlock, sources, planned, composition, outline, finished, paragraphs,
-      ...(stage === "review-wording" ? [draftingStyleWarningsBlock(readParagraphs(directory, document))] : []),
+      ...(stage === "review-wording" ? [draftingStyleWarningsBlock(readParagraphs(directory, document), { memo: Boolean(requestedMemo(directory)) })] : []),
       tagged("output_contract", [
         "- Check the draft against the request and the sources (search-document, read-document, verify-quote).",
         ...(assigned ? [`- Review only this document. Content the request assigns to ${assigned} is not missing from this one; do not report it here.`] : []),
@@ -293,7 +293,7 @@ function documentSections(directory: string, document: DocID, items: OpenItem[])
     tagged("comparison_baseline", comparisonDescription(directory, document)),
     tagged("native_export", JSON.stringify(nativeExportEvidence(directory, document), null, 2)),
     tagged("final_body", finalBodyParagraphs(directory, document).map(row => `[${row.pid}] ${row.text}`).join("\n\n")),
-    draftingStyleWarningsBlock(finalBodyParagraphs(directory, document), requestedMemo(directory) ? "memo" : "notes"),
+    draftingStyleWarningsBlock(finalBodyParagraphs(directory, document), { final: true, memo: Boolean(requestedMemo(directory)) }),
     tagged("applied_changes", JSON.stringify(appliedChangeEvidence(directory, document), null, 2)),
     tagged("review_dispositions", reviewDispositionText(directory, document)),
     tagged("unapplied_changes", [

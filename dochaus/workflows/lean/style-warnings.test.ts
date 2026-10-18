@@ -56,6 +56,7 @@ test("style advisories reach wording review, planning and final notes without bl
     expect(prompt).toContain("numbers must be plain numerals")
     expect(prompt).toContain("Preserve exact source quotations")
     expect(prompt).toContain("Never add an open-item marker")
+    expect(prompt).toContain("the final notes will disclose surviving warnings.")
   }
   expect(stagePrompt(directory, "d1.review-independent")).not.toContain("<drafting_style_warnings>")
 
@@ -101,6 +102,11 @@ test("style advisories reach wording review, planning and final notes without bl
   const memoPrompt = stagePrompt(directory, "finalize")
   expect(memoPrompt).toContain("numbers must be plain numerals")
   expect(memoPrompt).not.toContain("appends these retained style advisories")
+  for (const prompt of [stagePrompt(directory, "d1.review-wording"), changePlanPrompt(directory, "d1")]) {
+    expect(prompt).toContain("numbers must be plain numerals")
+    expect(prompt).toContain("Retain a deviation when source fidelity or express instructions require it; surviving warnings are not listed in the requested memo.")
+    expect(prompt).not.toContain("the final notes will disclose surviving warnings")
+  }
   const memo = `# Cover memo\n\nThe source explanation says "thirty (30) days from June 11, 2026."`
   expect((await acceptStageReply(directory, "finalize", memo)).issues).toEqual([])
   expect(readLeanText(directory, "drafting-notes.md")).toBe(`${memo}\n`)
