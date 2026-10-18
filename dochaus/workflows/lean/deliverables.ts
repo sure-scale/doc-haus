@@ -241,31 +241,43 @@ function producedFiles(directory: string, delivered = false, deliveryPlan = read
   ]
 }
 
-/** The names, lowercased, a plan delivers files under at its request, as
- * registration names them: each requested file of producedFiles (a document's
- * body or redline file, the notes file) and the combined file
- * (combinedDelivery). `document` is null for the notes. */
-export function requestedNames(directory: string, plan: LeanPlan) {
+/** The names, lowercased, registration gives a plan's files in a matter that
+ * holds none of them: each named file of producedFiles, in order, takes the
+ * first name registration tries (openNames) that no earlier file took, as the
+ * earlier file's registered copy would refuse it; null when none is left. The
+ * combined file (combinedDelivery), never registered, keeps its name. `wanted`
+ * is the name before any suffix; `requested`, whether the plan requests it.
+ * Nothing is read from or written to the matter. */
+export function plannedRegistration(directory: string, plan: LeanPlan) {
+  const key = (name: string) => `${name}.docx`.toLocaleLowerCase()
+  const produced = producedFiles(directory, false, plan)
+  const closed = closedNames(directory, produced, plan)
+  const taken = new Set<string>()
+  const files = produced.flatMap((item): PlannedName[] => {
+    if (item.name === null) return []
+    const name = openNames(item.name, closed(item, item.name)).map(name => name.toLocaleLowerCase()).find(name => !taken.has(name)) ?? null
+    if (name) taken.add(name)
+    return [{ kind: item.kind, document: item.document, wanted: key(item.name), name, requested: Boolean(item.requested) }]
+  })
   const combined = combinedDelivery(directory, plan)
-  return [
-    ...producedFiles(directory, false, plan).flatMap(row => row.requested && row.name ? [{ document: row.document, name: `${row.name}.docx`.toLocaleLowerCase() }] : []),
-    ...(combined ? [{ document: combined.document, name: `${combined.name}.docx`.toLocaleLowerCase() }] : []),
-  ]
+  return combined ? [...files, { kind: "combined", document: combined.document, wanted: key(combined.name), name: key(combined.name), requested: true }] : files
 }
+
+type PlannedName = { kind: LeanDocumentKind | "combined"; document: DocID | null; wanted: string; name: string | null; requested: boolean }
 
 /** The names, lowercased, a file's registration may not take: a name another
  * file was requested under; a combined document's "<stem>.docx", the file built
  * at download (combinedDelivery); and, for a requested memo, every planned
  * document's name. The memo is named after a planned document (memoNotesFile),
  * so it can repeat a body, clean or redline name; it then yields and takes the
- * next suffix. */
-function closedNames(directory: string, produced: Produced[]) {
+ * next suffix. `plan` is the saved plan unless given. */
+function closedNames(directory: string, produced: Produced[], plan = readLeanPlan(directory)) {
   const key = (name: string) => `${name}.docx`.toLocaleLowerCase()
-  const memo = requestedMemo(directory) !== undefined
+  const memo = requestedMemo(directory, plan) !== undefined
   const yields = (row: Produced) => memo && row.document === null
   const requested = produced.flatMap(row => row.requested && row.name && !yields(row) ? [key(row.name)] : [])
   const documents = produced.flatMap(row => row.document !== null && row.name ? [key(row.name)] : [])
-  const combined = combinedDelivery(directory)
+  const combined = combinedDelivery(directory, plan)
   return (item: Produced, name: string) => new Set([
     ...requested.filter(other => !item.requested || other !== key(name)),
     ...(combined ? [key(combined.name)] : []),
@@ -286,8 +298,14 @@ function deliverableNames(stem: string) {
   return Array.from({ length: MAX_NAME_SUFFIX }, (_, index) => `${stem}${index ? ` (${index + 1})` : ""}.docx`)
 }
 
+/** The names registration tries for a file, in order: "<stem>.docx",
+ * "<stem> (2).docx" and on, without its closed names (closedNames). */
+function openNames(stem: string, closed: Set<string>) {
+  return deliverableNames(stem).filter(name => !closed.has(name.toLocaleLowerCase()))
+}
+
 /** Tries this run's earlier deliverable name first, then "<title>.docx",
- * "<title> (2).docx" and on, skipping closed names (closedNames). A name is
+ * "<title> (2).docx" and on, skipping closed names (openNames). A name is
  * usable when its file is absent (create), holds these exact bytes, or still
  * holds the bytes this run registered there. */
 async function registerOnce(
@@ -300,9 +318,8 @@ async function registerOnce(
   owned: LeanDocument[],
   closed: Set<string>,
 ): Promise<string> {
-  const names = deliverableNames(stem)
+  const names = openNames(stem, closed)
   for (const name of [...new Set([...(prior?.deliverable && names.includes(prior.deliverable) ? [prior.deliverable] : []), ...names])]) {
-    if (closed.has(name.toLocaleLowerCase())) continue
     const target = path.join(directory, name)
     const current = existsSync(target) ? createHash("sha256").update(readFileSync(target)).digest("hex") : null
     const usable = current === null || current === sha256 || owned.some(row => row.deliverable === name && current === row.sha256)
