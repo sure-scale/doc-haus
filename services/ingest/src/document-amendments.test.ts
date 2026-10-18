@@ -872,7 +872,7 @@ test("accepted changes to a completed run's body are appended to its drafting no
     expect((await ingest.request(`${matter.route}/redlines/${rejected}/reject`,{method:"POST"})).status).toBe(200)
     expect(sha256(await Bun.file(notes).bytes())).toBe(sha256(prepared))
 
-    expect(await matter.acceptResult(first)).toEqual({status:200,body:{ok:true,notes_updated:true}})
+    expect(await matter.acceptResult(first)).toEqual({status:200,body:{ok:true,redline_updated:true,notes_updated:true}})
     expect((await createDocxRevision(await Bun.file(body).bytes())).markdown).toContain("within forty-five days")
     expect(await notesText(notes)).toEqual([...preparedNotes,notesHeading,notesIntro,supplyEntries[0]])
     // The notes' own pending proposal targets an unchanged paragraph and stays valid.
@@ -913,7 +913,7 @@ test("Accept all records every accepted body change in one notes revision, dated
       body:JSON.stringify({name:"Supply note.docx",instructions:"Update the stated terms."})})).json() as {proposed:number}).proposed).toBe(2)
     const response = await ingest.request(`${matter.route}/redlines/accept-all?name=${encodeURIComponent("Supply note.docx")}`,{method:"POST"})
     expect(response.status).toBe(200)
-    expect(await response.json()).toEqual({ok:true,accepted:2,notes_updated:true})
+    expect(await response.json()).toEqual({ok:true,accepted:2,redline_updated:true,notes_updated:true})
     expect(await notesText(notes,zoneDay(offsetZone))).toEqual([...preparedNotes,notesHeading,notesIntro,...supplyEntries])
     expect(readWorkingDocx(matter.dir,notes)?.source_sha256).toBe(sha256(await Bun.file(notes).bytes()))
     expect(registeredDeliverables(matter.dir)).toEqual(runFiles)
@@ -949,8 +949,9 @@ test("an accept or Accept all into a completed run's body rebuilds its delivered
       const ids = (await (await ingest.request(`${matter.route}/documents/amendments`,{method:"POST",headers:{"content-type":"application/json"},
         body:JSON.stringify({name:"Supply note.docx",instructions:"Update the stated terms."})})).json() as {redline_ids:number[]}).redline_ids
       expect(ids).toHaveLength(all ? 2 : 1)
-      if (all) expect((await ingest.request(`${matter.route}/redlines/accept-all?name=${encodeURIComponent("Supply note.docx")}`,{method:"POST"})).status).toBe(200)
-      else expect(await matter.accept(ids[0]!)).toBe(200)
+      const response = all ? await ingest.request(`${matter.route}/redlines/accept-all?name=${encodeURIComponent("Supply note.docx")}`,{method:"POST"}) : undefined
+      expect(response ? {status:response.status,body:await response.json()} : await matter.acceptResult(ids[0]!))
+        .toEqual({status:200,body:{ok:true,...(all ? {accepted:2} : {}),redline_updated:true,notes_updated:true}})
 
       const accepted = await Bun.file(body).bytes()
       expect(texts(accepted).join("\n")).toContain("Payment is due within fourteen days of delivery.")
@@ -958,10 +959,13 @@ test("an accept or Accept all into a completed run's body rebuilds its delivered
       // The delivered redline reads, once its tracked changes are accepted, as the accepted body.
       const rebuilt = await Bun.file(redline).bytes()
       expect(texts(rebuilt)).toEqual(texts(accepted))
-      // It still shows the run's own change with its explanation, and now the lawyer's.
+      // It still shows the run's own change with its explanation. The lawyer's
+      // accepted change shows as a tracked change only: explanation comments are
+      // the run's own (the notes addendum records the accepted change's reason).
       const revisions = readDocxRevisionText(rebuilt)
       expect(revisions.inserted_text.join(" ")).toContain(runChange)
       expect(revisions.inserted_text.join(" ")).toContain("fourteen days")
+      expect(readDocxComments(rebuilt).map((row) => row.text)).toEqual(readDocxComments(delivered).map((row) => row.text))
       expect(readDocxComments(rebuilt).map((row) => row.text).join("\n")).toContain(runComment)
       // The run's revisions keep their dates.
       const dates = (bytes:Uint8Array) => [...strFromU8(unzipSync(bytes)["word/document.xml"]!).matchAll(/<w:(?:ins|del)\b[^>]*\bw:date="([^"]+)"/g)].map((match) => match[1])
@@ -994,6 +998,79 @@ test("an accept or Accept all into a completed run's body rebuilds its delivered
   }
 },120000)
 
+test("a delivered redline left as it was never undoes the accepted body change, and the accept says why", async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-redline-skip-"))
+  const engine = syntheticEngine(() => ({amendments:supplyChanges.slice(1,2),open_items:[]}),firstCandidate)
+  const ingest = await isolatedIngest(temporary,engine.server)
+  const redlineName = "Supply note - redline.docx"
+  const prepare = async (route:string) => (await (await ingest.request(`${route}/documents/amendments`,{method:"POST",headers:{"content-type":"application/json"},
+    body:JSON.stringify({name:"Supply note.docx",instructions:"Update the payment term."})})).json() as {redline_ids:number[]}).redline_ids
+  const skipped = (reason:string) => ({status:200,body:{ok:true,redline_updated:false,redline_skip_reason:reason,notes_updated:true}})
+  const accepted = async (dir:string) => (await createDocxRevision(await Bun.file(path.join(dir,"Supply note.docx")).bytes())).markdown
+  try {
+    await ingest.start("only")
+    // The run's apply outcome is unreadable: the redline is not built, before the body commits.
+    const unbuilt = await ingest.matter("Redline not rebuilt")
+    await completedLeanRun(unbuilt.dir)
+    const before = await Bun.file(path.join(unbuilt.dir,redlineName)).bytes()
+    const [unbuiltId] = await prepare(unbuilt.route)
+    rmSync(path.join(unbuilt.dir,".dochaus/lean/d1/apply.json"))
+    expect(await unbuilt.acceptResult(unbuiltId!)).toEqual(skipped("rebuild_failed"))
+    expect(unbuilt.status(unbuiltId!)).toBe("accepted")
+    expect(await accepted(unbuilt.dir)).toContain("within fourteen days")
+    expect(sha256(await Bun.file(path.join(unbuilt.dir,redlineName)).bytes())).toBe(sha256(before))
+
+    // The delivered redline was removed.
+    const missing = await ingest.matter("Redline removed")
+    await completedLeanRun(missing.dir)
+    const [missingId] = await prepare(missing.route)
+    expect((await ingest.request(`${missing.route}/documents?name=${encodeURIComponent(redlineName)}`,{method:"DELETE"})).status).toBe(200)
+    expect(await missing.acceptResult(missingId!)).toEqual(skipped("redline_missing"))
+    expect(existsSync(path.join(missing.dir,redlineName))).toBe(false)
+
+    // A source now holds the redline's name.
+    const replaced = await ingest.matter("Source under the redline name")
+    await completedLeanRun(replaced.dir)
+    const [replacedId] = await prepare(replaced.route)
+    expect((await ingest.request(`${replaced.route}/documents?name=${encodeURIComponent(redlineName)}`,{method:"DELETE"})).status).toBe(200)
+    const source = path.join(replaced.dir,redlineName)
+    const sourceBytes = await Packer.toBuffer(new Document({sections:[{children:[new Paragraph("Client markup of the supply note.")]}]}))
+    await Bun.write(source,sourceBytes)
+    const db = openDb(replaced.dir)
+    try {db.run("INSERT INTO documents (doc_path, name, created_at) VALUES (?, ?, ?)",[source,redlineName,2])} finally {db.close()}
+    expect(await replaced.acceptResult(replacedId!)).toEqual(skipped("redline_not_deliverable"))
+    expect(sha256(await Bun.file(source).bytes())).toBe(sha256(sourceBytes))
+
+    // A proposal on the redline itself, as the agent's redline tools record, is pending.
+    const held = await ingest.matter("Redline proposal pending")
+    await completedLeanRun(held.dir)
+    const heldBefore = await Bun.file(path.join(held.dir,redlineName)).bytes()
+    const [heldId] = await prepare(held.route)
+    const proposals = openDb(held.dir)
+    try {
+      proposals.run("INSERT INTO redlines (doc_path,doc_name,scope,find_text,old_text,new_text,author,review_comment,anchor_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        [path.join(held.dir,redlineName),redlineName,"phrase","Delivery","Delivery","Delivery period","Review","",null,Date.now()])
+    } finally {proposals.close()}
+    expect(await held.acceptResult(heldId!)).toEqual(skipped("pending_redline_proposals"))
+    expect(sha256(await Bun.file(path.join(held.dir,redlineName)).bytes())).toBe(sha256(heldBefore))
+
+    // The run's delivery summary lists no redline.
+    const unlisted = await ingest.matter("Redline not delivered")
+    await completedLeanRun(unlisted.dir)
+    const summaryFile = path.join(unlisted.dir,".dochaus/lean/documents.json")
+    const summary = await Bun.file(summaryFile).json() as {documents:{kind:string}[]}
+    await Bun.write(summaryFile,JSON.stringify({...summary,documents:summary.documents.filter((row) => row.kind !== "redline")}))
+    const [unlistedId] = await prepare(unlisted.route)
+    expect(await unlisted.acceptResult(unlistedId!)).toEqual(skipped("redline_not_delivered"))
+
+    const log = await Bun.file(path.join(temporary,"ingest-only.log")).text()
+    for (const reason of ["rebuild_failed","redline_missing","redline_not_deliverable","pending_redline_proposals","redline_not_delivered"])
+      expect(log).toMatch(new RegExp(`delivered redline not rebuilt \\{[^}]*run: "ses_owner"[^}]*reason: "${reason}"`))
+  } finally {
+    await ingest.stop();engine.server.stop(true);await rm(temporary,{recursive:true,force:true})
+  }
+},120000)
+
 test("a notes addendum that cannot be written never undoes the accepted body change", async () => {
   const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-notes-fail-"))
   const engine = syntheticEngine(() => ({amendments:supplyChanges.slice(0,1),open_items:[]}),firstCandidate)
@@ -1008,7 +1085,7 @@ test("a notes addendum that cannot be written never undoes the accepted body cha
     await completedLeanRun(missing.dir)
     const [removedId] = await prepare(missing.route)
     rmSync(path.join(missing.dir,"Supply note - drafting notes.docx"))
-    expect(await missing.acceptResult(removedId)).toEqual({status:200,body:{ok:true,notes_updated:false,notes_skip_reason:"notes_missing"}})
+    expect(await missing.acceptResult(removedId)).toEqual({status:200,body:{ok:true,redline_updated:true,notes_updated:false,notes_skip_reason:"notes_missing"}})
     expect((await createDocxRevision(await Bun.file(path.join(missing.dir,"Supply note.docx")).bytes())).markdown).toContain("within forty-five days")
     expect(missing.status(removedId)).toBe("accepted")
     expect(existsSync(path.join(missing.dir,"Supply note - drafting notes.docx"))).toBe(false)
@@ -1027,7 +1104,7 @@ test("a notes addendum that cannot be written never undoes the accepted body cha
       } finally {db.close()}
     })()
     const [heldId] = await prepare(held.route)
-    expect(await held.acceptResult(heldId)).toEqual({status:200,body:{ok:true,notes_updated:false,notes_skip_reason:"pending_notes_proposals"}})
+    expect(await held.acceptResult(heldId)).toEqual({status:200,body:{ok:true,redline_updated:true,notes_updated:false,notes_skip_reason:"pending_notes_proposals"}})
     expect(held.status(heldId)).toBe("accepted")
     expect(sha256(await Bun.file(notes).bytes())).toBe(sha256(prepared))
     expect(readWorkingDocx(held.dir,notes)).toBeUndefined()
@@ -1042,7 +1119,7 @@ test("a notes addendum that cannot be written never undoes the accepted body cha
     const [failedId] = await prepare(unreadable.route)
     chmodSync(locked,0o000)
     try {
-      expect(await unreadable.acceptResult(failedId)).toEqual({status:200,body:{ok:true,notes_updated:false,notes_skip_reason:"write_failed"}})
+      expect(await unreadable.acceptResult(failedId)).toEqual({status:200,body:{ok:true,redline_updated:true,notes_updated:false,notes_skip_reason:"write_failed"}})
     } finally {chmodSync(locked,0o644)}
     expect((await createDocxRevision(await Bun.file(path.join(unreadable.dir,"Supply note.docx")).bytes())).markdown).toContain("within forty-five days")
     expect(unreadable.status(failedId)).toBe("accepted")
@@ -1105,7 +1182,7 @@ test("only a body accept of a completed run touches its notes, and only while th
     await Bun.write(source,sourceBytes)
     const db = openDb(replaced.dir)
     try {db.run("INSERT INTO documents (doc_path, name, created_at) VALUES (?, ?, ?)",[source,notesName,2])} finally {db.close()}
-    expect(await replaced.acceptResult(onBody)).toEqual({status:200,body:{ok:true,notes_updated:false,notes_skip_reason:"notes_not_deliverable"}})
+    expect(await replaced.acceptResult(onBody)).toEqual({status:200,body:{ok:true,redline_updated:true,notes_updated:false,notes_skip_reason:"notes_not_deliverable"}})
     expect(replaced.status(onBody)).toBe("accepted")
     expect(sha256(await Bun.file(source).bytes())).toBe(sha256(sourceBytes))
     expect(readWorkingDocx(replaced.dir,source)).toBeUndefined()
