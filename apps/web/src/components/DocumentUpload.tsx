@@ -139,7 +139,7 @@ export default function DocumentUpload({
   const working = uploads.filter((u) => u.status === "queued" || u.status === "uploading" || u.status === "reading").length
 
   const timeline = [
-    ...drafted.flatMap((group): DraftedOutput[] => [group.main, ...group.extras, ...(group.combined ? [{ name: group.combined, role: "draft" as const }] : [])]).map((output) => {
+    ...drafted.flatMap((group): DraftedOutput[] => [group.main, ...group.extras, ...(group.combined ? [{ name: group.combined, role: "combined" as const }] : [])]).map((output) => {
       const document = generated.find((document) => document.name === output.name)!
       return {
         key: `draft:${output.name}`,

@@ -350,6 +350,18 @@ test("a combined document's one file leads its group only once both its parts ar
   const documents = [...names, "Supply note.docx"].map((name, id) => ({ id, name, doc_path: name, created_at: 1_760_000_000_000 + id * 60_000, role: "deliverable" as const }))
   const listed = renderToStaticMarkup(createElement(DocumentUpload, { matterId: "m", documents, onUploaded: () => {}, onView: () => {}, drafting: combined }))
   for (const name of [...names, "Supply note.docx"]) expect(listed.split(`download="${name}"`)).toHaveLength(2)
+  // Its label says what it is, as its parts' labels do; a label the lawyer chose still wins.
+  const labelOf = (html: string, name: string) => {
+    const select = html.split(`aria-label="Label for ${name}"`)[1]?.split("</select>")[0] ?? ""
+    return [select.match(/<option value="([a-z]+)" selected="">([^<]+)</)?.slice(1)]
+  }
+  expect(labelOf(listed, "Supply note.docx")).toEqual([["combined", "Combined"]])
+  expect(listed).toContain('class="document-label-badge is-combined"')
+  expect(names.map((name) => labelOf(listed, name))).toEqual([[["draft", "Draft"]], [["redline", "Redline"]], [["notes", "Notes"]]])
+  const chosen = documents.map((document) => (document.name === "Supply note.docx" ? { ...document, label: "final" as const } : document))
+  const relabelled = renderToStaticMarkup(createElement(DocumentUpload, { matterId: "m", documents: chosen, onUploaded: () => {}, onView: () => {}, drafting: combined }))
+  expect(labelOf(relabelled, "Supply note.docx")).toEqual([["final", "Final"]])
+  expect(relabelled).not.toContain(">Combined</option>")
 })
 
 test("a combined file belongs to the exact body and notes ingest names, never to another \"- clean\" row", () => {

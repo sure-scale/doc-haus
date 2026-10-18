@@ -292,7 +292,8 @@ export function openItemsSentence(status: LeanDraftingStatus) {
   return `Open items: ${list}.`
 }
 
-export type DraftedOutput = { name: string; role: "draft" | "redline" | "notes" }
+/** "combined": a combined document's one file, saved in the matter at delivery. */
+export type DraftedOutput = { name: string; role: "draft" | "redline" | "notes" | "combined" }
 export type DraftedGroup = {
   main: DraftedOutput
   extras: DraftedOutput[]
@@ -303,7 +304,7 @@ export type DraftedGroup = {
   combined?: string
 }
 
-export const OUTPUT_ROLE: Record<DraftedOutput["role"], string> = { draft: "Draft", redline: "Redline", notes: "Notes" }
+export const OUTPUT_ROLE: Record<DraftedOutput["role"], string> = { draft: "Draft", redline: "Redline", notes: "Notes", combined: "Combined" }
 
 /** The Word files a completed run delivered: each drafted document with its
  * redline beneath it; the drafting notes (by their row kind, whatever their

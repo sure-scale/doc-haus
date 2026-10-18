@@ -6,7 +6,9 @@ import { useToast } from "./Toast"
 export default function DocumentLabelBadge({ matterId, name, label, onChanged }: {
   matterId: string
   name: string
-  label: DocumentLabel
+  /** "combined" names a saved combined file the lawyer has not labelled; it is
+   * shown, never saved, since a label the lawyer chooses is one of the four. */
+  label: DocumentLabel | "combined"
   onChanged: () => void
 }) {
   const [saving, setSaving] = useState(false)
@@ -31,6 +33,7 @@ export default function DocumentLabelBadge({ matterId, name, label, onChanged }:
           }
         }}
       >
+        {label === "combined" && <option value="combined">Combined</option>}
         <option value="draft">Draft</option>
         <option value="redline">Redline</option>
         <option value="notes">Notes</option>
