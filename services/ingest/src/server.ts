@@ -1119,14 +1119,16 @@ function deliveredRedlineName(delivered: NonNullable<ReturnType<typeof delivered
 // and written once the body has committed (writeDeliveredRedline): only the
 // redline write itself can then fail after the body. Like the notes addendum,
 // this runs inside the accept's lock set, which holds the redline's lock
-// (runRedlineLock), and goes through the same revision writer; revisions already
+// (runRedlineLock; when that read finds none, each step takes the lock and the
+// write checks the redline again), and goes through the same revision writer;
+// a revision upload waits on the body's lock. Revisions already
 // in the delivered redline keep their dates. Best-effort: the accepted body
 // stands, and the accept response says whether the redline was rebuilt or why
 // not (logged too). Nothing is returned when the accepted file is no delivered
 // body of a completed run, which has no redline to rebuild.
 type RedlineSkipReason = "redline_not_delivered" | "redline_missing" | "redline_not_deliverable" | "pending_redline_proposals" | "rebuild_failed" | "write_failed"
 type RedlineRebuild = { redline_updated: true } | { redline_updated: false; redline_skip_reason: RedlineSkipReason }
-type PreparedRedline = { directory: string; run: string; name: string; prior: string; bytes: Uint8Array } | RedlineRebuild | undefined
+type PreparedRedline = { directory: string; body: string; run: string; name: string; prior: string; bytes: Uint8Array } | RedlineRebuild | undefined
 function redlineSkipped(directory: string, run: string | undefined, reason: RedlineSkipReason, error?: unknown): RedlineRebuild {
   console.warn("[redline] delivered redline not rebuilt",
     { run, matter_ref: draftingTraceReference(directory), reason, ...(error === undefined ? {} : diagnosticErrorMetadata(error)) })
@@ -1142,44 +1144,61 @@ async function prepareDeliveredRedline(directory: string, body: string, final: U
     const name = deliveredRedlineName(delivered)
     if (!name) return redlineSkipped(directory, run, "redline_not_delivered")
     return await withArtifactMutationLocksAsync(directory, [name, ".dochaus/source-corpus"], async (): Promise<PreparedRedline> => {
-      const file = path.join(directory, name)
-      if (!existsSync(file)) return redlineSkipped(directory, run, "redline_missing")
-      const db = openDb(directory)
-      const [role, pending] = (() => { try { return [getDocumentRole(db, file), listPendingRedlines(db, file)] as const } finally { db.close() } })()
-      // A file that has since taken the redline's name, such as a source, is never written.
-      if (role !== "deliverable") return redlineSkipped(directory, run, "redline_not_deliverable")
-      // The agent's tracked-changes and redline tools can propose changes to the
-      // redline file itself; never invalidate one the lawyer has yet to review.
-      // Proposals take the file's artifact lock, which the accept holds.
-      if (pending.length) return redlineSkipped(directory, run, "pending_redline_proposals")
-      const prior = await Bun.file(file).bytes()
+      const blocked = redlineBlocked(directory, name)
+      if (blocked) return redlineSkipped(directory, run, blocked)
+      const prior = await Bun.file(path.join(directory, name)).bytes()
       const rebuilt = await documentRedline(directory, delivered.document, final)
       const bytes = withStableRevisionDates(rebuilt.bytes, new Date().toISOString(), prior)
-      return { directory, run: delivered.run, name, prior: createHash("sha256").update(prior).digest("hex"), bytes }
+      return { directory, body, run: delivered.run, name, prior: createHash("sha256").update(prior).digest("hex"), bytes }
     })
   } catch (error) {
     return redlineSkipped(directory, run, "rebuild_failed", error)
   }
 }
 
-/** Writes a prepared redline once the body has committed; the redline must still
- * hold the bytes it was built against. */
+/** Writes a prepared redline once the body has committed. The redline's lock may
+ * have been released since it was built (runRedlineLock is read before the
+ * accept locks), so the name and the redline file are checked again under it:
+ * the name must still be the body's delivered redline, the file must still hold
+ * the bytes it was built against (the write's prior hash) and take no change
+ * proposed in between. */
 async function writeDeliveredRedline(prepared: PreparedRedline): Promise<RedlineRebuild | undefined> {
   if (!prepared || "redline_updated" in prepared) return prepared
-  const { directory, run, name, prior, bytes } = prepared
+  const { directory, body, run, name, prior, bytes } = prepared
   try {
-    await withArtifactMutationLocksAsync(directory, [name, ".dochaus/source-corpus"], () =>
-      writeDocumentRevision(directory, name, Buffer.from(bytes), [], prior))
-    return { redline_updated: true }
+    return await withArtifactMutationLocksAsync(directory, [name, ".dochaus/source-corpus"], async (): Promise<RedlineRebuild> => {
+      const delivered = deliveredRunBody(directory, body)
+      if (!delivered || deliveredRedlineName(delivered) !== name) return redlineSkipped(directory, run, "redline_not_delivered")
+      const blocked = redlineBlocked(directory, name)
+      if (blocked) return redlineSkipped(directory, run, blocked)
+      await writeDocumentRevision(directory, name, Buffer.from(bytes), [], prior)
+      return { redline_updated: true }
+    })
   } catch (error) {
     return redlineSkipped(directory, run, "write_failed", error)
   }
 }
 
+/** Why the delivered redline `name` must be left as it is, read under its lock;
+ * undefined when it may be rebuilt. */
+function redlineBlocked(directory: string, name: string): RedlineSkipReason | undefined {
+  const file = path.join(directory, name)
+  if (!existsSync(file)) return "redline_missing"
+  const db = openDb(directory)
+  const [role, pending] = (() => { try { return [getDocumentRole(db, file), listPendingRedlines(db, file)] as const } finally { db.close() } })()
+  // A file that has since taken the redline's name, such as a source, is never written.
+  if (role !== "deliverable") return "redline_not_deliverable"
+  // The agent's tracked-changes and redline tools can propose changes to the
+  // redline file itself; never invalidate one the lawyer has yet to review.
+  // Proposals take the file's artifact lock, which this check runs under.
+  if (pending.length) return "pending_redline_proposals"
+}
+
 /** The delivered redline of a completed run's accepted body, as the extra lock
  * an accept takes with its body's, so the body write and the redline rebuild
  * form one critical section. Read before locking; empty when the accepted file
- * is no such body or its redline is not delivered under a plain name. */
+ * is no such body or its redline is not delivered under a plain name, so the
+ * redline write checks its name and file again under its own lock. */
 function runRedlineLock(directory: string, body: string): string[] {
   try {
     const delivered = deliveredRunBody(directory, body)
