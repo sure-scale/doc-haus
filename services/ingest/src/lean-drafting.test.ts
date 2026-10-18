@@ -220,6 +220,46 @@ describe("lean drafting start and Continue", () => {
     expect(readQuestions(directory)[0]).toMatchObject({ status: "answered", answer: "The buyer." })
     expect(leanDraftingStatus(directory)).toMatchObject({ questions: [{ id: "q1", status: "answered" }], pending_requests: 0, queued_answer_ids: [] })
   })
+
+  test("a question can be handed back instead of answered: the body carries exactly one of answer or decide_for_me, and admission refuses what the drain would", async () => {
+    const directory = matter()
+    const model = heldModel()
+    const routes = leanDraftingRoutes({ directory: () => directory, deps: () => model.deps })
+    const post = (qid: string, body: unknown) =>
+      routes.request(`/m1/lean/questions/${qid}`, { method: "POST", body: JSON.stringify(body), headers: { "content-type": "application/json" } })
+    const refusal = async (qid: string, body: unknown) => {
+      const response = await post(qid, body)
+      return { status: response.status, code: (await response.json()).code }
+    }
+
+    await startLeanDraftingRun(directory, { request: "Draft the agreement.", agent: "draft", model: MODEL }, model.deps)
+    writeQuestions(directory, [
+      { id: "q-cost", stage: "intake", question: "Which party bears the cost?", context: "", status: "open" },
+      { id: "q-law", stage: "intake", question: "Which law governs?", context: "", status: "answered", answer: "Singapore law.", answered_at: "2026-10-18T09:00:00.000Z" },
+      { id: "package-scope-d1", stage: "draft", question: "Is the side letter in scope?", context: "", status: "open" },
+    ])
+    try {
+      for (const body of [{ answer: "The buyer.", decide_for_me: true }, { answer: "The buyer.", decide_for_me: false }, {}, { decide_for_me: false }, { decide_for_me: "true" }, null, []])
+        expect(await refusal("q-cost", body)).toEqual({ status: 400, code: "invalid_answer" })
+      expect(await refusal("q-unknown", { decide_for_me: true })).toEqual({ status: 404, code: "not_found" })
+      expect(await refusal("q-law", { decide_for_me: true })).toEqual({ status: 409, code: "already_answered" })
+      expect(await refusal("package-scope-d1", { decide_for_me: true })).toEqual({ status: 409, code: "not_delegable" })
+      expect(pendingLeanRequests(directory)).toEqual([])
+
+      const queued = await post("q-cost", { decide_for_me: true })
+      expect(queued.status).toBe(202)
+      expect(await queued.json()).toMatchObject({ mode: "queued", status: { pending_requests: 1, queued_answer_ids: ["q-cost"] } })
+      const [name] = pendingLeanRequests(directory)
+      const { id: _id, received_at: _received, ...request } = JSON.parse(readFileSync(path.join(leanDir(directory), "requests", name!), "utf8"))
+      expect(request).toEqual({ kind: "answer", question_id: "q-cost", decide_for_me: true })
+    } finally { model.release() }
+
+    await leanDraftingIdle(directory)
+    const handed = leanDraftingStatus(directory)!.questions.find(question => question.id === "q-cost")!
+    expect(handed).toMatchObject({ status: "answered", answer_kind: "decide_for_me", answered_at: expect.any(String) })
+    expect(handed).not.toHaveProperty("answer")
+    expect(leanDraftingStatus(directory)!.questions.find(question => question.id === "q-law")).not.toHaveProperty("answer_kind")
+  })
 })
 
 describe("a new drafting request on a matter that already has a lean run", () => {

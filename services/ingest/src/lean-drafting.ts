@@ -10,7 +10,7 @@ import { combinedParts, readLeanDocuments, requestedMemo, type LeanDocuments } f
 import { sha256File } from "../../../dochaus/lib/lineage"
 import { lastLeanEventAt } from "../../../dochaus/workflows/lean/events"
 import { readLeanPlan } from "../../../dochaus/workflows/lean/plan"
-import { enqueueLeanRequest, pendingLeanRequests, leanUserUpdates, queuedAnswerIDs, isChecklistRefinement } from "../../../dochaus/workflows/lean/requests"
+import { enqueueLeanRequest, pendingLeanRequests, leanUserUpdates, queuedAnswerIDs, isChecklistRefinement, type LeanRequest } from "../../../dochaus/workflows/lean/requests"
 import { runLean, stageInputSha, stopLeanRun } from "../../../dochaus/workflows/lean/runner"
 import { leanSteps } from "../../../dochaus/workflows/lean/plan"
 import { withSourceSnapshot } from "../../../dochaus/workflows/lean/quotes"
@@ -110,17 +110,29 @@ export function resumeLeanDraftingRun(directory: string, deps: LeanDeps = defaul
   return { profile: "lean" as const, mode: "queued" as const, request_id: request.id, status: leanDraftingStatus(directory) }
 }
 
-/** Queues the lawyer's answer to an open question. The coordinator records it
- * at its next stage boundary and re-runs the stages that consume answers. */
-export function answerLeanQuestion(directory: string, questionID: string, answer: unknown, deps: LeanDeps = defaultDeps()) {
+/** Queues the lawyer's answer to a question, or its hand-back for the drafting
+ * to decide: the body carries exactly one of `answer` text or
+ * `decide_for_me: true`. The coordinator records it at its next stage boundary
+ * and re-runs the stages that consume answers. A hand-back the drain would
+ * refuse (delegateQuestion) is refused here first; the drain checks it again. */
+export function answerLeanQuestion(directory: string, questionID: string, input: unknown, deps: LeanDeps = defaultDeps()) {
   if (!leanStateExists(directory)) return undefined
   refuseStopped(readLeanState(directory))
-  const text = validateAnswerText(typeof answer === "string" ? answer : "")
-  if (!readQuestions(directory).some(question => question.id === questionID))
-    throw new LeanQuestionError("No such question in this matter's lean drafting run.", "not_found")
-  const request = enqueueLeanRequest(directory, { kind: "answer", question_id: questionID, answer: text })
+  const body = input && typeof input === "object" && !Array.isArray(input) ? input as Record<string, unknown> : {}
+  if ("decide_for_me" in body && (body.decide_for_me !== true || "answer" in body))
+    throw new LeanQuestionError("Send either answer text or decide_for_me: true.", "invalid_answer")
+  const request: Extract<LeanRequest, { kind: "answer" }> = "decide_for_me" in body
+    ? { kind: "answer", question_id: questionID, decide_for_me: true }
+    : { kind: "answer", question_id: questionID, answer: validateAnswerText(typeof body.answer === "string" ? body.answer : "") }
+  const question = readQuestions(directory).find(question => question.id === questionID)
+  if (!question) throw new LeanQuestionError("No such question in this matter's lean drafting run.", "not_found")
+  if ("decide_for_me" in request) {
+    if (!questionID.startsWith("q-")) throw new LeanQuestionError("This question needs the lawyer's own answer; it cannot be left to the drafting to decide.", "not_delegable")
+    if (question.status === "answered") throw new LeanQuestionError("This question is already answered.", "already_answered")
+  }
+  const queued = enqueueLeanRequest(directory, request)
   if (!running.has(directory)) launch(directory, deps)
-  return { profile: "lean" as const, mode: "queued" as const, request_id: request.id, status: leanDraftingStatus(directory) }
+  return { profile: "lean" as const, mode: "queued" as const, request_id: queued.id, status: leanDraftingStatus(directory) }
 }
 
 /** One synchronous read of the run: every step key it takes shares one read of
@@ -342,11 +354,11 @@ export function leanDraftingRoutes(options: { directory: (id: string) => string;
   })
   app.post("/:id/lean/questions/:qid", async (c) => {
     const directory = options.directory(c.req.param("id"))
-    const input: { answer?: unknown } = await c.req.json().catch(() => ({}))
-    const queued = guard(() => answerLeanQuestion(directory, c.req.param("qid"), input.answer, deps()))
+    const input: unknown = await c.req.json().catch(() => null)
+    const queued = guard(() => answerLeanQuestion(directory, c.req.param("qid"), input, deps()))
     if (queued instanceof LeanDraftingConflictError) return c.json({ error: queued.message, code: queued.code }, 409)
     if (queued instanceof LeanQuestionError)
-      return c.json({ error: queued.message, code: queued.code }, queued.code === "not_found" ? 404 : 400)
+      return c.json({ error: queued.message, code: queued.code }, queued.code === "not_found" ? 404 : queued.code === "invalid_answer" ? 400 : 409)
     if (!queued) return c.json({ error: "This matter has no lean drafting run.", code: "lean_run_not_found" }, 404)
     return c.json(queued, 202)
   })
