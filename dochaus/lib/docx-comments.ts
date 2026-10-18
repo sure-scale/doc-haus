@@ -303,7 +303,7 @@ export function exportDocxComments(bytes: Uint8Array, comments: DocxComment[]) {
     const id = String(allocation.next++)
     const start = doc.createElementNS(W, "w:commentRangeStart")
     start.setAttributeNS(W, "w:id", id)
-    // The range runs from the first to the last member with accepted text;
+    // The range runs from the first to the last member with accepted content;
     // only deleted content follows before the accepted paragraph mark.
     const properties = childElements(target.first, "pPr")[0]
     target.first.insertBefore(start, properties ? properties.nextSibling : target.first.firstChild)
@@ -391,6 +391,13 @@ function paragraphPIDs(paragraph: Element) {
       return name.startsWith("_dh_") ? [name.slice(4)] : []
     })
 }
+/** Content outside a deletion survives acceptance: text, or any other run
+ * content such as a drawing. A comment reference is review markup. */
+function hasAcceptedContent(paragraph: Element) {
+  return acceptedText(paragraph).length > 0 || elements(paragraph, W, "r").some(run => owningParagraph(run) === paragraph && !inDeletedContent(run)
+    && Array.from(run.childNodes).some(child => child.nodeType === 1
+      && !((child as Element).namespaceURI === W && ["rPr", "commentReference"].includes((child as Element).localName))))
+}
 /** A deleted or moved-away paragraph mark joins this paragraph to the next on acceptance. */
 function joinsNext(paragraph: Element) {
   return childElements(paragraph, "pPr").some(properties => childElements(properties, "rPr")
@@ -412,7 +419,7 @@ function previousElement(node: Node) {
 /** One row per accepted paragraph. A w:p whose mark is deleted merges with its
  * next sibling w:p on acceptance, so those siblings are one row and numbering
  * equals the accepted document's. A row's `nodes` are its members with
- * accepted text; deletion-only members keep their own deleted anchors and
+ * accepted content; deletion-only members keep their own deleted anchors and
  * pointers. `open` marks a deleted mark with no following sibling paragraph,
  * whose accepted extent is unknown. */
 function acceptedParagraphs(doc: Document) {
@@ -426,7 +433,7 @@ function acceptedParagraphs(doc: Document) {
     owner.set(node, group ?? groups.at(-1)!)
   }
   return groups.map(group => {
-    const nodes = group.filter(node => acceptedText(node).length > 0)
+    const nodes = group.filter(hasAcceptedContent)
     return { nodes, first: nodes[0]!, last: nodes.at(-1)!, text: nodes.map(acceptedText).join(""), open: joinsNext(group.at(-1)!) }
   }).filter(row => row.text.length > 0).map((row, index) => ({ ...row, index, pids: row.nodes.flatMap(paragraphPIDs) }))
 }

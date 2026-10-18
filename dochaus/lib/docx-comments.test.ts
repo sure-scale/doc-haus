@@ -312,6 +312,23 @@ describe("native Word comment export", () => {
     expect(readDocxRevisionProperties(output.bytes)).toEqual(readDocxRevisionProperties(source))
   })
 
+  test("covers joined members with live content but no text in the joined paragraph's range and pointers", () => {
+    const mark = `<w:pPr><w:rPr><w:del w:id="1"/></w:rPr></w:pPr>`
+    // A leading and a trailing chain member each hold only a drawing, which survives acceptance.
+    const source = withBody(clean, `<w:p>${mark}<w:r><w:drawing/></w:r></w:p><w:p>${mark}<w:r><w:t>Figure caption.</w:t></w:r></w:p>`
+      + `<w:p><w:bookmarkStart w:id="14" w:name="_dh_p444444444444"/><w:r><w:drawing/></w:r></w:p>`)
+    const rows = readDocxCommentParagraphs(source)
+    expect(rows).toEqual([{ paragraph_index: 0, paragraph_text: "Figure caption.", pids: ["p444444444444"] }])
+    const output = exportDocxComments(source, [comment("figure", { paragraph_index: 0, paragraph_text: "Figure caption." })])
+    expect(output.attached).toEqual([{ id: "figure", comment_id: "0", paragraph_index: 0, paragraph_text: "Figure caption." }])
+    const body = Array.from(parse(xml(output.bytes, "word/document.xml")).getElementsByTagNameNS(W, "p"))
+    expect(body.map(node => ["commentRangeStart", "commentRangeEnd", "commentReference"].map(name => node.getElementsByTagNameNS(W, name).length)))
+      .toEqual([[1, 0, 0], [0, 0, 0], [0, 1, 1]])
+    expect(readDocxComments(output.bytes)[0].markers.map(marker => [marker.paragraph_index, marker.xml_paragraph_index, marker.accepted_paragraph_text, marker.pids]))
+      .toEqual([[0, 0, "Figure caption.", ["p444444444444"]], [0, 2, "Figure caption.", ["p444444444444"]], [0, 2, "Figure caption.", ["p444444444444"]]])
+    expect(readDocxCommentParagraphs(output.bytes)).toEqual(rows)
+  })
+
   test("shares exact native paragraph positions, separators and active pointers with attachment", () => {
     const source = withBody(clean, `<w:p/><w:p><w:del w:id="1"><w:r><w:delText>Deleted.</w:delText></w:r></w:del></w:p>`
       + `<w:p><w:bookmarkStart w:id="2" w:name="_dh_p123456789abc"/><w:r><w:t>Before</w:t><w:tab/><w:t>tab.</w:t><w:br/><w:t>Next line.</w:t></w:r><w:bookmarkEnd w:id="2"/></w:p>`
