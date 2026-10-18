@@ -35,9 +35,12 @@ test("review resolution wrappers submit exact routes and reject server failures"
   await expect(actions[0]!.call()).rejects.toThrow("Could not resolve tracked changes (503)")
 })
 
-test("accept wrappers return only the drafting-notes outcome", async () => {
-  response = Response.json({ ok: true, accepted: 2, notes_updated: false, notes_skip_reason: "write_failed" })
-  expect(await acceptAllRedlines("matter", "Draft.docx")).toEqual({ notes_updated: false, notes_skip_reason: "write_failed" })
-  response = Response.json({ ok: true, notes_updated: true })
-  expect(await acceptRedline("matter", 7)).toEqual({ notes_updated: true })
+test("accept wrappers return only the drafting-notes and redline outcomes", async () => {
+  response = Response.json({ ok: true, accepted: 2, redline_updated: true, notes_updated: false, notes_skip_reason: "write_failed" })
+  expect(await acceptAllRedlines("matter", "Draft.docx")).toEqual({ redline_updated: true, notes_updated: false, notes_skip_reason: "write_failed" })
+  response = Response.json({ ok: true, redline_updated: false, redline_skip_reason: "rebuild_failed", notes_updated: true })
+  expect(await acceptRedline("matter", 7)).toEqual({ redline_updated: false, redline_skip_reason: "rebuild_failed", notes_updated: true })
+  // Each outcome is read on its own.
+  response = Response.json({ ok: true, redline_updated: false, redline_skip_reason: "write_failed" })
+  expect(await acceptRedline("matter", 7)).toEqual({ redline_updated: false, redline_skip_reason: "write_failed" })
 })

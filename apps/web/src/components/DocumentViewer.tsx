@@ -137,8 +137,9 @@ export default function DocumentViewer({
     setBusy(key)
     setError(undefined)
     try {
-      const notice = notesNotUpdatedNotice(await action(), key === "all")
-      if (notice) toast("warning", notice)
+      const result = await action()
+      for (const notice of [notesNotUpdatedNotice(result, key === "all"), redlineNotUpdatedNotice(result)])
+        if (notice) toast("warning", notice)
       onChanged?.()
       setReload((n) => n + 1)
     } catch (cause) {
@@ -421,6 +422,23 @@ export function notesNotUpdatedNotice(result: AcceptResult | void, all = false) 
   if (result?.notes_updated !== false) return
   const reason = result.notes_skip_reason && notesSkipReasons[result.notes_skip_reason]
   return `${all ? "Changes" : "Change"} accepted. The drafting notes were not updated${reason ? `: ${reason}` : ""}.`
+}
+
+// An accept into a drafting run's body also rebuilds the run's delivered redline
+// from the accepted body. When that could not happen the accept still stands and
+// the redline shows the body as it was; say so.
+const redlineSkipReasons: Record<string, string> = {
+  redline_not_delivered: "the run has no delivered redline",
+  redline_missing: "the redline file is no longer in the matter",
+  redline_not_deliverable: "the redline file is no longer a delivered document",
+  pending_redline_proposals: "the redline has pending proposed changes",
+  rebuild_failed: "it could not be rebuilt from the accepted document",
+  write_failed: "the redline file could not be saved",
+}
+export function redlineNotUpdatedNotice(result: AcceptResult | void) {
+  if (result?.redline_updated !== false) return
+  const reason = result.redline_skip_reason && redlineSkipReasons[result.redline_skip_reason]
+  return `The redline was not updated${reason ? `: ${reason}` : ""}.`
 }
 
 // File glyph, name and a quiet status line. The pending count stays visible on
