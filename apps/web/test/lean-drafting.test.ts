@@ -28,6 +28,7 @@ import {
 import { draftingTurnRecoveryMode } from "../src/components/chat/drafting-recovery"
 import { draftingStatusLabel } from "../src/components/matter/MatterRail"
 import { delegableQuestion, handedBackQuestions, leanContinueAvailable, leanRunStopped, leanRunTakesUpdates, leanSettledItems, leanSettledSummary, runPosition, stepGroups, openQuestions } from "../src/components/drafting/model"
+import QuestionDock from "../src/components/drafting/QuestionDock"
 import Questions from "../src/components/drafting/Questions"
 import { runOutcome } from "../src/components/narration/outcome"
 import RunHeader, { runHeadline } from "../src/components/drafting/RunHeader"
@@ -364,7 +365,10 @@ test("the question card shows how many are answered and Send waits for an answer
   expect(calls).toHaveLength(0)
 })
 
-function questionCard(questions: LeanQuestion[], extra: { answered?: number; handedBack?: number; error?: string } = {}) {
+function questionCard(
+  questions: LeanQuestion[],
+  extra: { answered?: number; handedBack?: LeanQuestion[]; error?: string; errorFor?: string } = {},
+) {
   respond({ answers: {}, revision: 0 })
   return renderToStaticMarkup(
     createElement(Questions, {
@@ -376,6 +380,7 @@ function questionCard(questions: LeanQuestion[], extra: { answered?: number; han
       titles: new Map(),
       busy: false,
       error: extra.error ?? "",
+      errorFor: extra.errorFor,
       titleId: "q-title",
       onClose: () => {},
       onSend: async () => false,
@@ -388,10 +393,14 @@ test("Decide for me is offered, with an empty answer, only on an open question t
   const asked = { ...blockedQuestion.questions[0]!, status: "open" as const }
   expect(asked.id.startsWith("q-")).toBe(true)
   const html = questionCard([asked])
-  // Enabled while the answer box is empty; Send still waits for an answer.
-  expect(html).toMatch(/<button type="button" aria-describedby="[^"]+">Decide for me<\/button>/)
+  // Never over a typed answer: until saved answers load the box may hold one, so
+  // Decide waits like Send. It is enabled only while the box is empty (browser check).
+  expect(html).toContain("Loading saved answers…")
+  expect(html).toMatch(/<button type="button" aria-describedby="[^"]+" disabled="">Decide for me<\/button>/)
   expect(html).toMatch(/<button class="primary" type="button" disabled="">Send answer<\/button>/)
-  expect(html).toContain("You&#x27;ll get a review draft that says what was chosen and why.")
+  // Decide and Send stay together when the actions wrap.
+  expect(html).toMatch(/<span class="question-send"><button[^>]*>Decide for me<\/button><button class="primary"/)
+  expect(html).toContain("You&#x27;ll get a review draft that says what was chosen and why, or what is still open.")
 
   // A keyed question settles the run's scope and needs the lawyer's own answer.
   const keyed = questionCard([{ ...asked, id: "package-scope-d1" }])
@@ -425,7 +434,7 @@ test("a recorded hand-back reads as left to the drafter, not as an empty answer"
   expect(handedBackQuestions(status).map((question) => question.id)).toEqual([first.id])
   expect(openQuestions(status).map((question) => question.id)).toEqual(["q-open"])
 
-  const html = questionCard(openQuestions(status), { answered: 2, handedBack: handedBackQuestions(status).length })
+  const html = questionCard(openQuestions(status), { answered: 2, handedBack: handedBackQuestions(status) })
   expect(html).toContain("1 answered, 1 left to the drafter, 1 to answer")
   expect(html.match(/class="question-dot is-answered is-delegated"/g)).toHaveLength(1)
   expect(html.match(/class="question-dot is-answered"/g)).toHaveLength(1)
@@ -443,8 +452,78 @@ test("a refused hand-back surfaces as a plain message", async () => {
   respond({ error: "This drafting run was stopped.", code: "lean_run_stopped" }, 409)
   await expect(decideLeanQuestion("matter-a", question.id)).rejects.toThrow("This drafting run was stopped.")
 
-  const html = questionCard([{ ...question, status: "open" }], { error: "This question is already answered." })
-  expect(html).toContain('<div class="msg-error" role="alert">This question is already answered.</div>')
+  // A refusal shows with the question it is about, never under another one.
+  const open = { ...question, status: "open" as const }
+  const other = { ...open, id: "q-other", question: "Who bears the cost of storage?" }
+  const refused = questionCard([open, other], { error: "This question is already answered.", errorFor: open.id })
+  expect(refused).toContain('<div class="msg-error" role="alert">This question is already answered.</div>')
+  expect(questionCard([other, open], { error: "This question is already answered.", errorFor: open.id })).not.toContain("msg-error")
+  expect(questionCard([open], { error: "This drafting run was stopped." })).not.toContain("msg-error")
+})
+
+test("a question left to the drafter can still be answered from the question card", () => {
+  const status = structuredClone(blockedQuestion) as LeanDraftingStatus
+  const first = status.questions[0]!
+  status.questions = [{ ...first, status: "answered", answer_kind: "decide_for_me" }]
+  const left = handedBackQuestions(status)
+  expect(left.map((question) => question.id)).toEqual([first.id])
+  expect(openQuestions(status)).toEqual([])
+
+  // The card shows it as left to the drafter; its answer box posts the normal answer.
+  const card = questionCard([], { answered: 1, handedBack: left })
+  expect(card).toContain("Left to the drafter")
+  expect(card).toContain(first.question)
+  expect(card).toContain("Your answer")
+  expect(card).toMatch(/<button class="primary" type="button" disabled="">Answer instead<\/button>/)
+  expect(card).not.toContain("Decide for me")
+  expect(card).not.toContain("Send answer")
+
+  // With questions still asked, the left one follows them and is not offered back again.
+  const asked = { ...first, id: "q-open", question: "Who bears the cost of storage?" }
+  const mixed = questionCard([asked], { answered: 1, handedBack: left })
+  expect(mixed).toContain("Question 1 of 2")
+  expect(mixed).toContain("Who bears the cost of storage?")
+  expect(mixed).toContain("Decide for me")
+  expect(mixed).not.toContain("Left to the drafter")
+
+  // The dock stays while a question is left to the drafter, so the lawyer can still answer it.
+  const dock = (questions: LeanQuestion[], handedBack: LeanQuestion[]) =>
+    renderToStaticMarkup(
+      createElement(QuestionDock, {
+        matterId: "m", ownerSessionID: "s", questions, answered: 1, handedBack, titles: new Map(), busy: false, error: "",
+        onSend: async () => true, onDecide: async () => true,
+      }),
+    )
+  const review = dock([], left)
+  expect(review).toContain("1 question left to the drafter")
+  expect(review).toMatch(/aria-haspopup="dialog"[^>]*>Review</)
+  const both = dock([asked], left)
+  expect(both).toContain("The drafting run has a question for you")
+  expect(both).toMatch(/aria-haspopup="dialog"[^>]*>Answer</)
+  expect(dock([], [])).toBe("")
+  // A stopped run asks nothing and offers nothing back.
+  expect(handedBackQuestions({ ...status, stopped: true })).toEqual([])
+})
+
+test("a hand-back received but not yet recorded counts as left to the drafter, not answered", () => {
+  const status = structuredClone(blockedQuestion) as LeanDraftingStatus
+  const first = status.questions[0]!
+  status.questions = [
+    { ...first, status: "open" },
+    { ...first, id: "q-later", status: "open", question: "Who bears the cost of storage?" },
+    { ...first, id: "q-taken-back", status: "answered", answer_kind: "decide_for_me" },
+  ]
+  status.queued_answer_ids = [first.id, "q-taken-back"]
+  status.queued_handed_back_ids = [first.id]
+  expect(openQuestions(status).map((question) => question.id)).toEqual(["q-later"])
+  // The queued hand-back is left to the drafter; the recorded one has a real answer queued.
+  expect(handedBackQuestions(status).map((question) => question.id)).toEqual([first.id])
+  const html = questionCard(openQuestions(status), { answered: 2, handedBack: handedBackQuestions(status) })
+  expect(html).toContain("1 answered, 1 left to the drafter, 1 to answer")
+
+  // An older ingest names no queued hand-backs: only recorded ones count, as before.
+  const older = { ...status, queued_handed_back_ids: undefined }
+  expect(handedBackQuestions(older).map((question) => question.id)).toEqual(["q-taken-back"])
 })
 
 test("a durably queued answer stops being asked before the coordinator applies it", () => {

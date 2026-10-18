@@ -487,10 +487,11 @@ export default function ChatPanel({
           ownerSessionID={run.owner_session_id}
           questions={asked}
           answered={run.questions.length - asked.length}
-          handedBack={handedBackQuestions(run).length}
+          handedBack={handedBackQuestions(run)}
           titles={new Map((run.plan?.documents ?? []).map((row) => [row.id, cleanTitle(row.title)]))}
           busy={actions.busy}
           error={actions.error}
+          errorFor={actions.errorFor}
           onSend={(question, answer) => actions.answer(question.id, answer)}
           onDecide={(question) => actions.decide(question.id)}
         />

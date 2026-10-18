@@ -257,9 +257,11 @@ button.question-dock-cta:focus-visible {
   background: var(--accent);
 }
 
-/* Settled, but left to the drafter rather than answered. */
+/* Settled, but left to the drafter rather than answered: a hollow diamond. */
 .question-dot.is-delegated {
+  border-radius: 1px;
   background: transparent;
+  transform: rotate(45deg) scale(0.86);
 }
 
 .question-dot.is-current {
@@ -310,11 +312,35 @@ button.question-dock-cta:focus-visible {
 
 .question-actions {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
   gap: 12px;
   margin-top: 12px;
+}
+
+/* Decide for me and Send stay together on one line. */
+.question-send {
+  display: flex;
+  flex: none;
+  gap: 8px;
+}
+
+.question-send button {
+  white-space: nowrap;
+}
+
+.question-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.question-left .question-dot {
+  flex: none;
 }
 
 .question-delegate-hint {
@@ -340,7 +366,7 @@ button.question-dock-cta:focus-visible {
   margin-top: 10px;
 }
 
-.question-actions button {
+.question-actions button.primary {
   flex: none;
   white-space: nowrap;
 }

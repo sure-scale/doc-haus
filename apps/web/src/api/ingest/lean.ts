@@ -96,6 +96,9 @@ export type LeanDraftingStatus = {
   pending_requests: number
   /** Answers durably received, waiting for the coordinator to consume them. */
   queued_answer_ids?: string[]
+  /** The queued_answer_ids whose request is a hand-back (Decide for me) rather
+   * than answer text; absent from an older ingest. */
+  queued_handed_back_ids?: string[]
   updates?: { kind?: "clarification"; id: string; text: string; status: "queued" | "included"; progress?: "received" | "applying" | "applied" | "requires-rework" }[]
   open_items: LeanOpenItem[]
   questions: LeanQuestion[]

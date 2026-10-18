@@ -489,7 +489,7 @@ test("a delivered run with questions left counts them in the header and docks th
 
   const dock = (questions: LeanQuestion[]) =>
     renderToStaticMarkup(
-      createElement(QuestionDock, { matterId: "m", questions, answered: 0, titles: new Map(), busy: false, error: "", onSend: async () => true }),
+      createElement(QuestionDock, { matterId: "m", ownerSessionID: "s", questions, answered: 0, handedBack: [], titles: new Map(), busy: false, error: "", onSend: async () => true, onDecide: async () => true }),
     )
   const one = dock(openQuestions(status))
   expect(one).toContain("The drafting run has a question for you")

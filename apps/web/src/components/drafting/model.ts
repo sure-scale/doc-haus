@@ -136,10 +136,18 @@ export function delegableQuestion(question: LeanQuestion) {
   return question.status === "open" && question.id.startsWith("q-")
 }
 
-/** The questions the lawyer handed back, as the run recorded them: answered,
- * with no answer text. */
+/** The questions left to the drafter: hand-backs the run recorded (answered,
+ * with no answer text) and hand-backs received but not yet recorded. A real
+ * answer received for a recorded hand-back takes it back. An older ingest does
+ * not say which received requests are hand-backs; only recorded ones count. */
 export function handedBackQuestions(status: LeanDraftingStatus) {
-  return status.questions.filter((question) => question.status === "answered" && question.answer_kind === "decide_for_me")
+  if (leanRunStopped(status)) return []
+  const received = status.queued_handed_back_ids
+  const handed = new Set(received)
+  const answering = new Set(received ? status.queued_answer_ids : [])
+  return status.questions.filter((question) =>
+    handed.has(question.id) ||
+    (question.status === "answered" && question.answer_kind === "decide_for_me" && !answering.has(question.id)))
 }
 
 /** Every stop short of completion is recoverable from the run header (Continue or an
