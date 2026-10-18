@@ -118,9 +118,13 @@ export function settleApply(changes: ChangeList, result: ApplyResult | undefined
  * A requested memo is delivered with only its "[ref: …]" markers removed, so
  * there an item is disclosed by its id inside a marker, and a run id, planned
  * document id or recorded change id written anywhere else, which would reach
- * the reader, is retried. On the last attempt (`final`) such an id alone does
- * not fail the notes: they are saved as the model wrote them, never rewritten,
- * and every other check still applies. */
+ * the reader, is retried. So is a placeholder in the notes' own text, a gap
+ * no open item records. The notes may quote a body placeholder exactly as its
+ * open item records it, and neither a "[ref: …]" marker, an item's id, quoted
+ * text nor an editorial mark (EDITORIAL_MARK) is a placeholder of their own.
+ * On the last attempt (`final`) such an id or placeholder alone does not fail
+ * the notes: they are saved as the model wrote them, never rewritten, and
+ * every other check still applies. */
 export function checkDraftingNotes(directory: string, content: string, items: OpenItem[], options: { final?: boolean } = {}): StageCheck {
   const shape = documentShapeIssues(content, "drafting notes")
   if (shape.length) return { issues: shape, openItems: [] }
@@ -129,7 +133,8 @@ export function checkDraftingNotes(directory: string, content: string, items: Op
   const undisclosed = items.filter(item => memo
     ? !markers.some(marker => standingID(item.id).test(marker))
     : !content.includes(item.id)).map(item => item.id)
-  const delivered = memo ? withoutRefMarkers(content) : ""
+  const unmarked = withoutRefMarkers(content)
+  const delivered = memo ? unmarked : ""
   const ids = memo && !options.final
   const stray = ids ? runItemIDs(directory, items).filter(id => readerVisibleID(id) && standingID(id).test(delivered)) : []
   // A planned document's short id ("d1") is internal in a memo too: the reader
@@ -140,6 +145,10 @@ export function checkDraftingNotes(directory: string, content: string, items: Op
   const strayDocuments = ids ? (readLeanPlan(directory)?.documents ?? []).map(row => row.id).filter(id => standingID(id).test(prose)) : []
   // So is a recorded change id ("a1"): the reader knows a change by its effect.
   const strayChanges = ids ? runChangeIDs(directory, items).filter(id => standingID(id).test(prose)) : []
+  const recorded = new Set(items.flatMap(item => item.ref.placeholder ? [item.ref.placeholder.toLowerCase()] : []))
+  const own = items.reduce((text, item) => text.replaceAll(item.id, " "), unmarked).replace(QUOTED, " ")
+  const gaps = options.final ? [] : textPlaceholders(own)
+    .filter(placeholder => !recorded.has(placeholder.toLowerCase()) && !EDITORIAL_MARK.test(placeholder))
   const misquoted = sourceQuotes(content).filter(quote => !quoteFound(directory, quote))
   const unsupported = [...new Set(citationRowsForLeanText(directory, "drafting-notes.md", content)
     .filter(row => row.status === "unsupported").map(row => row.citation_text))]
@@ -159,12 +168,23 @@ export function checkDraftingNotes(directory: string, content: string, items: Op
       ...(strayChanges.length
         ? [`These change ids appear outside a "[ref: …]" marker: ${strayChanges.join(", ")}. The memo is for the reader: describe each change by what it does, not its id.`]
         : []),
+      ...(gaps.length
+        ? [`The drafting notes leave these placeholders in their own text: ${gaps.join(", ")}. State the point in words, or quote the body's placeholder exactly as its open item records it.`]
+        : []),
       ...misquoted.map(quote => quoteMissIssue(directory, "The drafting notes", quote)),
       ...unsupported.map(citation => `The drafting notes cite "${citation}", which no matter source, research row or verified authority supports. Remove the citation or describe the point as needing research.`),
     ],
     openItems: [],
   }
 }
+
+/** Text in straight or curly double quotes. */
+const QUOTED = /"[^"\n]*"|\u201c[^\u201d\n]*\u201d/g
+
+/** An editorial mark in quoted or cited text records an edit already made, not
+ * text to supply: a bracket holding only "sic" or an edit's past participle
+ * ("added", "inserted", "supplied", "omitted"), optionally after "emphasis". */
+const EDITORIAL_MARK = /^\[\s*(?:(?:emphasis\s+)?(?:added|inserted|supplied|omitted)|sic)\s*\]$/i
 
 /** Text the memo check does not read as prose: quoted text (the memo's verified
  * quotes), a footnote marker "[^d1]", a citation such as "3(d1)" or
@@ -173,7 +193,7 @@ export function checkDraftingNotes(directory: string, content: string, items: Op
  * parentheses after a sub-division ("Sub-paragraph (a1)"). Any other token
  * after a locator word is prose: "the clause a1 adds", "the new clause (a1)"
  * and "Part d2" name an internal id. */
-const NOT_PROSE = [/"[^"\n]*"|\u201c[^\u201d\n]*\u201d/g, /\[\^[^\]\n]*\]/g, /(?<=[A-Za-z0-9)]\()[^)\n]*\)/g,
+const NOT_PROSE = [QUOTED, /\[\^[^\]\n]*\]/g, /(?<=[A-Za-z0-9)]\()[^)\n]*\)/g,
   /(?<![\w'\u2019])(?:(?:section|regulation|paragraph|clause|schedule|article|part|rule)s?\b|(?:ss?|regs?|paras?|cl|sch|arts?)\.)[ \t]*(?:\(?\d[^\s(),;]*\)?|(?<=sub-[a-z]+[ \t]*)\([^\s(),;]+\))/gi]
 
 /** A "[ref: …]" or "[refs: …]" marker, as withoutRefMarkers (delivered-memo.ts)
@@ -251,8 +271,7 @@ export function finalBodyItems(directory: string, rows: ParagraphRow[]) {
 }
 
 export function bodyOpenItems(directory: string, stage: StageID, content: string) {
-  const prose = content.split("\n").filter(line => !/^\s*_{3,}\s*$/.test(line)).join("\n")
-  const placeholders = [...new Set([...draftingPlaceholders(prose), ...openItemMarkers(prose)])]
+  const placeholders = textPlaceholders(content)
   const citations = [...new Map(citationRowsForLeanText(directory, `${stage}.md`, content)
     .filter(row => row.status === "unsupported").map(row => [row.normalized_key, row.citation_text])).values()]
   return [
@@ -261,6 +280,13 @@ export function bodyOpenItems(directory: string, stage: StageID, content: string
       `No matter source, research row or verified authority supports the citation "${citation}".`, { citation })),
     ...quoteMissItems(directory, stage, content),
   ]
+}
+
+/** The drafting placeholders and open-item markers in `content`; a line of
+ * underscores only (a signature or blank line) is none. */
+function textPlaceholders(content: string) {
+  const prose = content.split("\n").filter(line => !/^\s*_{3,}\s*$/.test(line)).join("\n")
+  return [...new Set([...draftingPlaceholders(prose), ...openItemMarkers(prose)])]
 }
 
 function documentShapeIssues(content: string, noun: "document" | "drafting notes") {
