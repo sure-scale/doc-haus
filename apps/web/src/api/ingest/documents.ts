@@ -74,7 +74,8 @@ export function documentContentUrl(id: string, name: string): string {
 }
 
 // A combined document's one file (its requested memo, then the draft), which
-// ingest composes from the registered draft and memo on each download.
+// ingest builds from the registered draft and memo on each download, the same
+// bytes as the file saved in the matter at delivery.
 export function combinedDocumentUrl(id: string): string {
   return `${INGEST_URL}/matters/${id}/documents/combined`
 }

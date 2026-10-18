@@ -296,9 +296,10 @@ export type DraftedOutput = { name: string; role: "draft" | "redline" | "notes" 
 export type DraftedGroup = {
   main: DraftedOutput
   extras: DraftedOutput[]
-  /** The one file this draft is delivered as with the requested memo, which
-   * ingest composes on download: the group's primary download, with the draft
-   * and the memo listed beneath it. Never a matter file. */
+  /** The one file this draft is delivered as with the requested memo, saved in
+   * the matter at delivery and rebuilt when a change is accepted into the draft
+   * or the memo: the group's primary download, with the draft and the memo
+   * listed beneath it. */
   combined?: string
 }
 
@@ -344,13 +345,18 @@ function combinedBody(status: LeanDraftingStatus, documents: LeanDocument[]) {
 /** The matter's generated files as drafted groups: what the run's status names
  * first, then any other deliverable by the run's naming ("<name> - redline",
  * "<name> - drafting notes"), so files from earlier runs group the same way.
- * A combined file is composed at download, not a matter file, so it is left out. */
-export function deliverableGroups(names: string[], status: LeanDraftingStatus | undefined) {
+ * A combined file is saved in the matter at delivery; while it is, it stays on
+ * its draft's group, never a draft of its own. */
+export function deliverableGroups(names: string[], status: LeanDraftingStatus | undefined): DraftedGroup[] {
   const present = new Set(names)
   const known = draftedGroups(status)
     .filter((group) => present.has(group.main.name))
-    .map((group) => ({ main: group.main, extras: group.extras.filter((output) => present.has(output.name)) }))
-  const placed = new Set(known.flatMap((group) => [group.main.name, ...group.extras.map((output) => output.name)]))
+    .map((group): DraftedGroup => ({
+      main: group.main,
+      extras: group.extras.filter((output) => present.has(output.name)),
+      ...(group.combined && present.has(group.combined) ? { combined: group.combined } : {}),
+    }))
+  const placed = new Set(known.flatMap((group) => [group.main.name, ...group.extras.map((output) => output.name), ...(group.combined ? [group.combined] : [])]))
   const rest = names.filter((name) => !placed.has(name))
   const grouped = rest
     .filter((name) => outputRole(name) === "draft")

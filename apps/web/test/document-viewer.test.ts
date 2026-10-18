@@ -1,8 +1,8 @@
-import { describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
 import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
-import { DownloadActions, notesNotUpdatedNotice, redlineNotUpdatedNotice, staleExportNotice } from "../src/components/DocumentViewer"
-import type { Redline } from "../src/api/ingest/redlines"
+import { combinedNotUpdatedNotice, DownloadActions, notesNotUpdatedNotice, redlineNotUpdatedNotice, staleExportNotice } from "../src/components/DocumentViewer"
+import { acceptAllRedlines, acceptRedline, type Redline } from "../src/api/ingest/redlines"
 
 const proposal = (id: number, stale?: true): Redline => ({
   id, doc_name: "working.docx", scope: "phrase", find_text: "thirty days", old_text: "thirty days", new_text: "forty-five days",
@@ -60,5 +60,31 @@ describe("drafting notes after an accept", () => {
     expect(notesNotUpdatedNotice({ notes_updated: true })).toBeUndefined()
     expect(notesNotUpdatedNotice({})).toBeUndefined()
     expect(notesNotUpdatedNotice(undefined)).toBeUndefined()
+  })
+})
+
+describe("the saved combined file after an accept", () => {
+  const originalFetch = globalThis.fetch
+  afterEach(() => { globalThis.fetch = originalFetch })
+
+  test("an accept reports whether the combined file was rebuilt, and an accept without one reports nothing", async () => {
+    const answer = (body: unknown) => { globalThis.fetch = (async () => Response.json(body)) as unknown as typeof fetch }
+    answer({ ok: true, notes_updated: true, combined_updated: false, combined_skip_reason: "build_refused" })
+    expect(await acceptRedline("m", 1)).toEqual({ notes_updated: true, combined_updated: false, combined_skip_reason: "build_refused" })
+    answer({ ok: true, accepted: 2, combined_updated: true })
+    expect(await acceptAllRedlines("m", "Supply note - clean.docx")).toEqual({ combined_updated: true })
+    answer({ ok: true, notes_updated: true, redline_updated: true })
+    expect(await acceptRedline("m", 1)).not.toHaveProperty("combined_updated")
+  })
+
+  test("a combined file left as it was is named in plain words; anything else says nothing", () => {
+    expect(combinedNotUpdatedNotice({ combined_updated: false, combined_skip_reason: "build_refused" })).toBe(
+      "The combined file was not updated: the memo and the draft can no longer be combined. Download them separately.")
+    expect(combinedNotUpdatedNotice({ combined_updated: false, combined_skip_reason: "combined_changed" })).toBe(
+      "The combined file was not updated: the combined file has changes of its own, which are kept.")
+    expect(combinedNotUpdatedNotice({ combined_updated: false, combined_skip_reason: "unknown_reason" })).toBe("The combined file was not updated.")
+    expect(combinedNotUpdatedNotice({ combined_updated: true })).toBeUndefined()
+    expect(combinedNotUpdatedNotice({ notes_updated: false })).toBeUndefined()
+    expect(combinedNotUpdatedNotice(undefined)).toBeUndefined()
   })
 })

@@ -338,9 +338,18 @@ test("a combined document's one file leads its group only once both its parts ar
   }
   expect(beneath).not.toContain("is-main")
 
-  // The matter's files are the files the run registered; the combined file is composed at download.
+  // The matter's files are the files the run registered. The combined file saved among them stays on its
+  // draft's group, never a draft of its own; until it is saved, the group has none.
   const names = ["Supply note - clean.docx", "Supply note - redline.docx", "Supply note - cover note.docx"]
   expect(deliverableGroups(names, combined)).toStrictEqual([{ main: body, extras: [redline, memoNotes] }])
+  expect(deliverableGroups([...names, "Supply note.docx"], combined)).toStrictEqual([{ main: body, extras: [redline, memoNotes], combined: "Supply note.docx" }])
+  // Without its run's status the saved file groups as any other file, as before.
+  expect(deliverableGroups([...names, "Supply note.docx"], undefined).filter((group) => group.main.name === "Supply note.docx")).toHaveLength(1)
+
+  // The matter's document list shows the saved combined file in exactly one row, beside its parts.
+  const documents = [...names, "Supply note.docx"].map((name, id) => ({ id, name, doc_path: name, created_at: 1_760_000_000_000 + id * 60_000, role: "deliverable" as const }))
+  const listed = renderToStaticMarkup(createElement(DocumentUpload, { matterId: "m", documents, onUploaded: () => {}, onView: () => {}, drafting: combined }))
+  for (const name of [...names, "Supply note.docx"]) expect(listed.split(`download="${name}"`)).toHaveLength(2)
 })
 
 test("a combined file belongs to the exact body and notes ingest names, never to another \"- clean\" row", () => {

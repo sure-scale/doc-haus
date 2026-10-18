@@ -52,7 +52,7 @@ export default function DraftedList({
   )
 }
 
-/** Saves a combined document's one file, composed by ingest on request; a
+/** Saves a combined document's one file, built by ingest on request; a
  * refusal (a part gone, or memo content the file cannot carry) shows as an
  * error toast, like other failed file actions. */
 export function useCombinedDownload(matterId: string) {
@@ -76,7 +76,9 @@ export function useCombinedDownload(matterId: string) {
   return { busy, download }
 }
 
-/** The combined file is not a matter file, so it has no viewer; it downloads only. */
+/** The combined file downloads through ingest's combined route, which builds
+ * the bytes saved in the matter, so a part that no longer builds is refused
+ * rather than an out-of-date file served. */
 function CombinedRow({ matterId, name }: { matterId: string; name: string }) {
   const { busy, download } = useCombinedDownload(matterId)
   return (
