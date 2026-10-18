@@ -150,6 +150,22 @@ export function handedBackQuestions(status: LeanDraftingStatus) {
     (question.status === "answered" && question.answer_kind === "decide_for_me" && !answering.has(question.id)))
 }
 
+/** The note under the chat while requests wait for the run to take them. A
+ * hand-back is not an answer, so it is named as a question left to the drafter. */
+export function queuedNote(status: LeanDraftingStatus) {
+  const queued = status.queued_answer_ids ?? []
+  if (!queued.length) return undefined
+  const handedIds = new Set(status.queued_handed_back_ids)
+  const handed = queued.filter((id) => handedIds.has(id)).length
+  const answers = queued.length - handed
+  if (!handed) return answers === 1
+    ? "Answer received — it will be included when drafting resumes."
+    : "Answers received — they will be included when drafting resumes."
+  const left = handed === 1 ? "Question left" : "Questions left"
+  if (!answers) return `${left} to the drafter to decide — ${handed === 1 ? "it" : "they"} will be handled when drafting resumes.`
+  return `${answers === 1 ? "Answer received" : "Answers received"} and ${handed === 1 ? "a question" : "questions"} left to the drafter to decide — ${queued.length === 2 ? "both" : "they"} will be handled when drafting resumes.`
+}
+
 /** Every stop short of completion is recoverable from the run header (Continue or an
  * answer), so it reads as paused, never as an error. */
 export function runState(status: LeanDraftingStatus): RunState {
