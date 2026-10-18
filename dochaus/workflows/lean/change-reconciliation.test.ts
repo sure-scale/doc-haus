@@ -264,15 +264,17 @@ test("slices with nothing to reconcile make no model call, and results keep job 
  expect(readChangeList(dir,"d1")!.explanations!.map(row=>[row.id,row.pid])).toEqual([["i1",first],["i2",last]])
 })
 const splitFiller="The supplier keeps the delivery schedule under review. ".repeat(7).trim()
-function splitGoal(dir: string, extra = 0) {
+function splitGoal(dir: string, extra = 0, adjust: (earlier: ChangeList, prepared: ChangeList, first: { pid: string; sha256: string }) => void = () => {}) {
  const filler=splitFiller
  const rows=provisions(dir,Array.from({length:40+extra},(_,index)=>`Initial provision ${index+1}. ${filler}`)),goal=rows.slice(0,40)
- writeLeanText(dir,"d1/changes.json",JSON.stringify(changes(goal.map((row,index)=>op(row,`Earlier correction ${index+1}. ${filler}`)))))
- save(dir,inputs([{id:"whole",pids:goal.map(row=>row.pid)}],[changes(goal.map((row,index)=>op(row,`Prepared correction ${index+1}. ${filler}`)))]))
+ const earlier=changes(goal.map((row,index)=>op(row,`Earlier correction ${index+1}. ${filler}`))),prepared=changes(goal.map((row,index)=>op(row,`Prepared correction ${index+1}. ${filler}`)))
+ adjust(earlier,prepared,goal[0]!)
+ writeLeanText(dir,"d1/changes.json",JSON.stringify(earlier))
+ save(dir,inputs([{id:"whole",pids:goal.map(row=>row.pid)}],[prepared]))
  return rows
 }
-function dependent(pid: string, on: string) {
- return scriptedModel({"lean-changes":prompt=>{const listed=targets(prompt);return JSON.stringify({amendments:listed.filter(row=>row!==pid).map(row=>({pid:row,updated:`Reconciled correction for ${row}.`,reason:"Combined supported effect.",sources:support})),questions:[],dependencies:listed.includes(pid)?[{pid,depends_on:[on],issue:"The renamed term must match the definition reconciled elsewhere."}]:[]})}})
+function dependent(pid: string, on: string, reporter = pid) {
+ return scriptedModel({"lean-changes":prompt=>{const listed=targets(prompt),reports=listed.includes(reporter);return JSON.stringify({amendments:listed.filter(row=>!reports||row!==pid).map(row=>({pid:row,updated:`Reconciled correction for ${row}.`,reason:"Combined supported effect.",sources:support})),questions:[],dependencies:reports?[{pid,depends_on:[on],issue:"The renamed term must match the definition reconciled elsewhere."}]:[]})}})
 }
 test("a sliced job's dependency on another slice of the same goal withholds that change and keeps its earlier one instead of failing",async()=>{
  const dir=matter(),rows=splitGoal(dir),model=dependent(rows[0]!.pid,rows[39]!.pid),result=await reconcile(dir,model.port)
@@ -281,10 +283,61 @@ test("a sliced job's dependency on another slice of the same goal withholds that
  const accepted=readChangeList(dir,"d1")!
  expect(accepted.amendments.map(row=>[row.pid,row.updated])).toEqual(rows.map((row,index)=>[row.pid,index?`Reconciled correction for ${row.pid}.`:`Earlier correction 1. ${splitFiller}`]))
  expect(accepted.withheld!.map(row=>[row.amendment.pid,row.amendment.updated,row.issues])).toEqual([[rows[0]!.pid,`Prepared correction 1. ${splitFiller}`,[expect.stringContaining("depends on another paragraph of the same edit")]]])
+ expect(accepted.withheld![0]!.issues[0]).toContain('It depends on the paragraph beginning "Initial provision 40. The supplier keeps the delivery…". Reason given: The renamed term must match the definition reconciled elsewhere.')
+ expect(accepted.withheld![0]!.issues[0]).not.toContain(rows[39]!.pid)
+ for(const prompt of model.prompts)expect(prompt.text).not.toContain("dependencies holds a newly discovered cross-component dependency")
  expect("openItems" in result&&result.openItems.filter(item=>item.kind==="unapplied_amendment").map(item=>item.ref.pid)).toEqual([rows[0]!.pid])
 })
 test("a sliced job's dependency outside its own goal still stops the run",async()=>{
  const dir=matter(),rows=splitGoal(dir,1),before=JSON.stringify(readChangeList(dir,"d1"))
  const result=await reconcile(dir,dependent(rows[0]!.pid,rows[40]!.pid).port)
  expect(result.status).toBe("failed");expect(JSON.stringify(readChangeList(dir,"d1"))).toBe(before)
+})
+test("a sliced job cannot defer a paragraph that has no new change to withhold; the run stops instead of losing the report",async()=>{
+ const shapes:[string,Parameters<typeof splitGoal>[2],boolean][]=[
+  ["no candidate",(earlier,prepared)=>{earlier.amendments.shift();prepared.amendments.shift()},false],
+  ["earlier change only",(_,prepared)=>{prepared.amendments.shift()},false],
+  ["prepared change equal to the earlier one",(earlier,prepared)=>{prepared.amendments[0]={...earlier.amendments[0]!}},false],
+  ["paragraph listed in another job",()=>{},true],
+ ]
+ for(const [name,adjust,elsewhere] of shapes){
+  const dir=matter(),rows=splitGoal(dir,0,adjust),before=JSON.stringify(readChangeList(dir,"d1"))
+  const model=elsewhere?dependent(rows[39]!.pid,rows[38]!.pid,rows[0]!.pid):dependent(rows[0]!.pid,rows[39]!.pid)
+  const result=await reconcile(dir,model.port)
+  expect([name,result.status]).toEqual([name,"failed"]);expect(JSON.stringify(readChangeList(dir,"d1"))).toBe(before)
+ }
+})
+test("a sliced job's deferred paragraph with only a prepared change has it withheld, not applied",async()=>{
+ const dir=matter(),rows=splitGoal(dir,0,earlier=>{earlier.amendments.shift()}),result=await reconcile(dir,dependent(rows[0]!.pid,rows[39]!.pid).port)
+ expect(result.status).toBe("done")
+ const accepted=readChangeList(dir,"d1")!
+ expect(accepted.amendments.some(row=>row.pid===rows[0]!.pid)).toBe(false)
+ expect(accepted.withheld!.map(row=>[row.amendment.pid,row.amendment.updated])).toEqual([[rows[0]!.pid,`Prepared correction 1. ${splitFiller}`]])
+})
+test("a sliced job's deferred paragraph keeps its earlier withheld row once beside the new one",async()=>{
+ const dir=matter(),rows=splitGoal(dir,0,(earlier,_,first)=>{earlier.withheld=[{amendment:op(first,"Unverified intent."),issues:["Source support unresolved."]}]})
+ const result=await reconcile(dir,dependent(rows[0]!.pid,rows[39]!.pid).port)
+ expect(result.status).toBe("done")
+ expect(readChangeList(dir,"d1")!.withheld!.map(row=>[row.amendment.updated,row.issues.length])).toEqual([["Unverified intent.",1],[`Prepared correction 1. ${splitFiller}`,1]])
+})
+test("a paragraph too large for one bounded step keeps its earlier retained-initial disposition",async()=>{
+ const dir=matter(),rows=provisions(dir,["Initial provision 1.",tooLong]),long=rows[1]!
+ const retained={pid:long.pid,reason:"The source supports the initial provision.",sources:support}
+ writeLeanText(dir,"d1/changes.json",JSON.stringify({...changes([op(rows[0]!,"Earlier first correction.")]),retained_initial:[retained]}))
+ save(dir,inputs([{id:"one",pids:rows.map(row=>row.pid)}],[changes([op(rows[0]!,"New first correction."),op(long,"New shortened provision.")])]))
+ const result=await reconcile(dir,echo().port),accepted=readChangeList(dir,"d1")!
+ expect(result.status).toBe("done");expect(accepted.retained_initial).toEqual([retained])
+ expect(accepted.withheld!.map(row=>[row.amendment.pid,row.amendment.updated])).toEqual([[long.pid,"New shortened provision."]])
+})
+test("failure reasons list jobs in document order whichever job fails first",async()=>{
+ const dir=matter(),filler="The supplier keeps the delivery schedule under review. ".repeat(7)
+ const rows=provisions(dir,Array.from({length:200},(_,index)=>`Initial provision ${index+1}. ${filler}`)),first=rows[0]!.pid
+ writeLeanText(dir,"d1/changes.json",JSON.stringify(changes(rows.map((row,index)=>op(row,`Earlier correction ${index+1}. ${filler}`)))))
+ save(dir,inputs([{id:"whole",pids:rows.map(row=>row.pid)}],[changes(rows.map((row,index)=>op(row,`Prepared correction ${index+1}. ${filler}`)))]))
+ const model=scriptedModel({"lean-changes":()=>JSON.stringify({amendments:[],questions:[],dependencies:["The change depends on another document."]})})
+ const port={...model.port,prompt:async(input:Parameters<typeof model.port.prompt>[0])=>{if(input.text.includes(`"pid":"${first}"`))await Bun.sleep(25);return model.port.prompt(input)}}
+ const result=await reconcile(dir,port)
+ expect(result.status).toBe("failed")
+ const parts=[...((result as {reason:string}).reason.matchAll(/whole part (\d+) of/g))].map(match=>Number(match[1]))
+ expect(parts.length).toBeGreaterThan(2);expect(parts).toEqual(parts.toSorted((a,b)=>a-b))
 })

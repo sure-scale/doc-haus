@@ -99,9 +99,9 @@ function reconciliationPrompts(directory: string, document: DocID) {
       `<shared_dependencies>\n${JSON.stringify(plan?.shared_decisions ?? [])}\n</shared_dependencies>`,
       `<initial_targets>\n${JSON.stringify(paragraphs.filter(row => pids.has(row.pid)))}\n</initial_targets>`,
       `<competing_operations_and_explanations>\n${JSON.stringify(component.changes)}\n</competing_operations_and_explanations>`,
-      ...(sliced ? [`This job covers only the listed initial targets; separate bounded jobs reconcile the other paragraphs these goals name, and separate jobs never establish consistency. Their prepared operations are in read-record .dochaus/lean/${document}/change-preparation.json, in the groups entry for each goal id: follow them where a listed target must agree with another paragraph, such as a defined term, a cross-reference or moved text. If a listed target cannot be reconciled without the result for such a paragraph, return {"pid":"listed initial pid","depends_on":["that paragraph's pid"],"issue":"specific reason"} in dependencies instead of an operation for it: its proposed change is withheld for the lawyer and the rest of this job continues.`] : []),
+      ...(sliced ? [`This job covers only the listed initial targets; separate bounded jobs reconcile the other paragraphs these goals name, and separate jobs never establish consistency. Their prepared operations are in read-record .dochaus/lean/${document}/change-preparation.json, in the groups entry for each goal id: follow them where a listed target must agree with another paragraph, such as a defined term, a cross-reference or moved text. If a listed target's proposed change cannot be reconciled without the result for such a paragraph, return {"pid":"listed initial pid","depends_on":["that paragraph's pid"],"issue":"specific reason"} in dependencies instead of an operation for it: its proposed change is withheld for the lawyer and the rest of this job continues.`] : []),
       `Original source inventory: ${sources}. Use search-document/read-document view=source with exact filename. Current documents use view=current_body, comments/deleted_text separately. Read-record .dochaus/lean/${document}/paragraphs.json supplies initial targets. Retrieve only necessary conditions or related document passages. Other components are not amendment targets.`,
-      'Return {"amendments":[{"pid":"listed initial pid","operation":"replace|delete|split (omit for replace)","updated":"complete replacement text, or array for split","reason":"combined supported effect","sources":[{"source_id":"canonical source or request","quote":"exact words"}]}],"explanations":[{"pid":"listed initial pid","reason":"actual source-to-initial revision, corrected for resulting effect","sources":[]}],"questions":[{"pid":"listed initial pid","question":"indispensable unresolved human decision","context":"why needed"}],"dependencies":[]}. Also return "retained_initial":[{"pid":"listed initial pid","reason":"source-grounded reason an earlier operation is rejected and initial wording retained","sources":[{"source_id":"canonical source or request","quote":"exact words"}]}] when withdrawing an earlier operation; this is a recorded disposition, never a no-op edit. Every listed candidate PID needs a resulting operation, explicit retained_initial disposition, or an explicit dependencies entry explaining why it cannot safely be reconciled. dependencies holds a newly discovered cross-component dependency or unsupported candidate needing renewed source adjudication; name affected PIDs/components and specific issue. Such work stops publication, never silently drops an operation. Source questions retain visible [open item: ...] carriers. Unsupported drafting judgment retains a new visible confirmation marker. Do not emit no-op edits to create comments. Never turn missing approval into adoption. No file writes.',
+      'Return {"amendments":[{"pid":"listed initial pid","operation":"replace|delete|split (omit for replace)","updated":"complete replacement text, or array for split","reason":"combined supported effect","sources":[{"source_id":"canonical source or request","quote":"exact words"}]}],"explanations":[{"pid":"listed initial pid","reason":"actual source-to-initial revision, corrected for resulting effect","sources":[]}],"questions":[{"pid":"listed initial pid","question":"indispensable unresolved human decision","context":"why needed"}],"dependencies":[]}. Also return "retained_initial":[{"pid":"listed initial pid","reason":"source-grounded reason an earlier operation is rejected and initial wording retained","sources":[{"source_id":"canonical source or request","quote":"exact words"}]}] when withdrawing an earlier operation; this is a recorded disposition, never a no-op edit. Every listed candidate PID needs a resulting operation, explicit retained_initial disposition, or an explicit dependencies entry explaining why it cannot safely be reconciled. ' + (sliced ? "Apart from such a same-goal entry, dependencies holds a newly discovered dependency outside these goals" : "dependencies holds a newly discovered cross-component dependency") + ' or unsupported candidate needing renewed source adjudication; name affected PIDs/components and specific issue. Such work stops publication, never silently drops an operation. Source questions retain visible [open item: ...] carriers. Unsupported drafting judgment retains a new visible confirmation marker. Do not emit no-op edits to create comments. Never turn missing approval into adoption. No file writes.',
     ].join("\n\n")
   }
 }
@@ -170,6 +170,8 @@ export async function runChangeReconciliation(directory: string, state: LeanStat
   // A job's result fills its own index, so order and ids do not depend on which job finishes first.
   const results: (ChangeList | undefined)[] = []
   const failures: string[] = []
+  // Job failures, like results, keep job order.
+  const failed: string[][] = []
   const counts = { next: 0, calls: 0, attempts: 0, sessions: [] as string[] }
   const jobs: { component: Component; at: number }[] = []
   for (const component of work.conflicts) {
@@ -185,9 +187,10 @@ export async function runChangeReconciliation(directory: string, state: LeanStat
   }
   await Promise.all(Array.from({ length: Math.min(4, jobs.length) }, async () => {
     for (;;) {
-      const job = jobs[counts.next++]
+      const at = counts.next++, job = jobs[at]
       if (!job) return
       const { component } = job
+      const fail = (reason: string) => (failed[at] ??= []).push(`${component.id}: ${reason}`)
       try {
         const initialPrompt = reconciliationPrompt(directory, document, component)
         const agent = LEAN_STAGE_AGENTS.changes
@@ -203,11 +206,12 @@ export async function runChangeReconciliation(directory: string, state: LeanStat
           const answered = performance.now()
           const parsed = parseJsonObject(reply)
           const reported = parsed.ok && Array.isArray(parsed.value.dependencies) ? parsed.value.dependencies : []
-          const deferred = deferredParagraphs(component, reported)
-          if (!deferred) { failures.push(`${component.id}: bounded dependency reconciliation required: ${JSON.stringify(reported)}`); break }
+          const paragraphs = readParagraphs(directory, document)
+          const deferred = deferredParagraphs(component, reported, paragraphs)
+          if (!deferred) { fail(`bounded dependency reconciliation required: ${JSON.stringify(reported)}`); break }
           const pids = component.pids.filter(pid => !deferred.has(pid))
           const value = parsed.ok && deferred.size ? withoutParagraphs(parsed.value, deferred) : parsed.ok ? parsed.value : undefined
-          const check = checkChanges(directory, deferred.size && value ? JSON.stringify(value) : reply, readParagraphs(directory, document).filter(row => pids.includes(row.pid)), { document, withholdUnverified: index === LEAN_MAX_RETRIES })
+          const check = checkChanges(directory, deferred.size && value ? JSON.stringify(value) : reply, paragraphs.filter(row => pids.includes(row.pid)), { document, withholdUnverified: index === LEAN_MAX_RETRIES })
           issues = [...check.issues, ...(check.changes ? uniqueReplacementIssues(check.changes) : []), ...(value ? retainedInitialIssues(directory, pids, value) : [])]
           if (check.changes) for (const pid of new Set([...component.changes.amendments, ...(component.changes.withheld ?? []).map(row => row.amendment)].map(row => row.pid).filter(pid => !deferred.has(pid)))) {
             if (![...check.changes.amendments, ...(check.changes.withheld ?? []).map(row => row.amendment), ...(value && Array.isArray(value.retained_initial) ? value.retained_initial.filter(record) : [])].some(row => row.pid === pid)) issues.push(`[${pid}] candidate was omitted; reconcile it or return a specific dependency limitation.`)
@@ -219,14 +223,15 @@ export async function runChangeReconciliation(directory: string, state: LeanStat
           progress({ feedback: issues })
           if (!issues.length && check.changes) {
             const reconciled = { ...check.changes, retained_initial: value ? value.retained_initial as ChangeList["retained_initial"] : [], withheld: [...(component.changes.withheld ?? []).filter(row => !deferred.has(row.amendment.pid) && !check.changes!.amendments.some(accepted => accepted.pid === row.amendment.pid) && !(value && Array.isArray(value.retained_initial) && value.retained_initial.some(disposition => record(disposition) && disposition.pid === row.amendment.pid))), ...(check.changes.withheld ?? [])] }
-            results[job.at] = combine([reconciled, ...[...deferred].map(pid => unreconciledParagraph(component, pid, DEPENDS_ELSEWHERE, false))])
+            results[job.at] = combine([reconciled, ...deferred.values()])
             break
           }
-          if (index === LEAN_MAX_RETRIES) failures.push(`${component.id}: ${issues.join(" ")}`)
+          if (index === LEAN_MAX_RETRIES) fail(issues.join(" "))
         }
-      } catch (error) { failures.push(`${component.id}: ${error instanceof Error ? error.message : String(error)}`) }
+      } catch (error) { fail(error instanceof Error ? error.message : String(error)) }
     }
   }))
+  failures.push(...failed.flat())
   drainLeanRequests(directory)
   if (key !== hashStageInputs(step, LEAN_PROMPT_VERSION, stageInputs(directory, step))) return { status: "restart" as const }
   if (failures.length) return { status: "failed" as const, reason: `${step}: ${failures.join(" ")}` }
@@ -245,15 +250,35 @@ export async function runChangeReconciliation(directory: string, state: LeanStat
   return { status: check.changes.questions.length ? "blocked" as const : "done" as const, outputs: stepOutputs(step), openItems, questions: check.changes.questions, ...(check.changes.questions.length ? { reason: "Waiting for your answers before applying reconciled amendments." } : {}) }
 }
 
-/** A sliced job may defer a listed paragraph that depends on another paragraph
- * of its own component, reconciled in a separate job; that paragraph's change
- * is withheld. Any other reported dependency returns undefined and stops the run. */
-function deferredParagraphs(component: Component, dependencies: unknown[]) {
+/** A sliced job may defer a listed paragraph whose proposed change depends on
+ * another paragraph of its own component, reconciled in a separate job: that
+ * change is withheld, naming the dependency and the reported reason in plain
+ * words. A report that would withhold nothing new, or any other dependency,
+ * returns undefined and stops the run, so no reported dependency is lost. */
+function deferredParagraphs(component: Component, dependencies: unknown[], paragraphs: { pid: string; text: string }[]) {
   const listed = new Set(component.pids), elsewhere = new Set(component.groups.flatMap(group => group.pids).filter(pid => !listed.has(pid)))
-  const pids = dependencies.map(row => record(row) && typeof row.pid === "string" && listed.has(row.pid) && Array.isArray(row.depends_on) && row.depends_on.length && row.depends_on.every(pid => typeof pid === "string" && elsewhere.has(pid)) ? row.pid : undefined)
-  return pids.every(pid => pid !== undefined) ? new Set(pids) : undefined
+  const reports = new Map<string, { on: Set<string>; issues: Set<string> }>()
+  for (const row of dependencies) {
+    if (!record(row) || typeof row.pid !== "string" || !Array.isArray(row.depends_on) || !row.depends_on.length || !row.depends_on.every(pid => typeof pid === "string" && elsewhere.has(pid))) return undefined
+    const report = reports.get(row.pid) ?? { on: new Set<string>(), issues: new Set<string>() }
+    row.depends_on.forEach(pid => report.on.add(pid as string))
+    if (typeof row.issue === "string" && row.issue.trim()) report.issues.add(row.issue.trim())
+    reports.set(row.pid, report)
+  }
+  const opening = (pid: string) => {
+    const words = paragraphs.find(row => row.pid === pid)?.text.split(/\s+/).filter(Boolean) ?? []
+    return `the paragraph beginning "${words.slice(0, 8).join(" ")}${words.length > 8 ? "…" : ""}"`
+  }
+  const deferred = new Map<string, ChangeList>()
+  for (const [pid, report] of reports) {
+    const reason = `${DEPENDS_ELSEWHERE} It depends on ${[...report.on].map(opening).join(" and ")}.${report.issues.size ? ` Reason given: ${[...report.issues].join(" ")}` : ""}`
+    const unreconciled = unreconciledParagraph(component, pid, reason, false)
+    if (unreconciled.withheld!.length <= (component.changes.withheld ?? []).filter(row => row.amendment.pid === pid).length) return undefined
+    deferred.set(pid, unreconciled)
+  }
+  return deferred
 }
-function withoutParagraphs(value: Record<string, unknown>, pids: Set<string>): Record<string, unknown> {
+function withoutParagraphs(value: Record<string, unknown>, pids: ReadonlyMap<string, unknown>): Record<string, unknown> {
   const keep = (rows: unknown) => Array.isArray(rows) ? rows.filter(row => !(record(row) && typeof row.pid === "string" && pids.has(row.pid))) : rows
   return { ...value, amendments: keep(value.amendments), explanations: keep(value.explanations), retained_initial: keep(value.retained_initial), questions: keep(value.questions), dependencies: [] }
 }
