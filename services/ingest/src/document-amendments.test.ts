@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, rm } from "node:fs/promises"
 import { chmodSync, existsSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { strFromU8, unzipSync } from "fflate"
+import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { AlignmentType, Document, Footer, Header, LevelFormat, Packer, Paragraph, Table, TableCell, TableRow, TextRun } from "docx"
 import { paragraphTargets, withParagraphPointers } from "../../../dochaus/lib/drafting-amendment"
 import { openDb, getDocumentRole, getRedline, listDocuments, listSourceDocuments, upsertDocument } from "./db"
@@ -824,6 +824,20 @@ async function completedLeanRun(directory:string) {
   return deps
 }
 const runFiles = ["Supply note - drafting notes.docx","Supply note - redline.docx","Supply note.docx"]
+// A copy of `bytes` whose main body gains one Word revision that changes no
+// accepted text: a formatting change on the first paragraph, or an inserted
+// empty paragraph.
+function withTextlessRevision(bytes:Uint8Array,kind:"formatting" | "paragraph_mark") {
+  const parts = unzipSync(bytes)
+  const xml = strFromU8(parts["word/document.xml"]!)
+  const stamp = 'w:author="Reviewer" w:date="2026-01-01T00:00:00Z"'
+  const at = kind === "formatting" ? xml.indexOf("</w:pPr>") : xml.lastIndexOf("<w:sectPr")
+  expect(at).toBeGreaterThan(0)
+  const revision = kind === "formatting" ? `<w:pPrChange w:id="9001" ${stamp}><w:pPr/></w:pPrChange>`
+    : `<w:p><w:pPr><w:rPr><w:ins w:id="9002" ${stamp}/></w:rPr></w:pPr></w:p>`
+  parts["word/document.xml"] = strToU8(xml.slice(0,at)+revision+xml.slice(at))
+  return zipSync(parts)
+}
 const notesHeading = "Changes accepted after these notes were prepared"
 const notesIntro = "These changes were accepted in Word after the final check. The final check was not re-run on them. Changes accepted while the notes could not be updated are not listed."
 const preparedNotes = ["Drafting notes","The draft states the delivery period from the supply terms."]
@@ -995,6 +1009,17 @@ test("an accept or Accept all into a completed run's body rebuilds its delivered
         .toEqual([["body","Supply note.docx","accepted_revision"],["redline",redlineName,"accepted_revision"]])
       expect(registeredDeliverables(matter.dir)).toEqual(runFiles)
       expect(sha256(await Bun.file(redline).bytes())).toBe(sha256(rebuilt))
+      // A redline whose only tracked changes leave the text as it is, such as a
+      // formatting change or an inserted empty paragraph, still reads as the body.
+      for (const kind of ["formatting","paragraph_mark"] as const) {
+        const textless = withTextlessRevision(accepted,kind)
+        expect(readDocxRevisionText(textless)).toEqual({inserted_text:[],deleted_text:[]})
+        await Bun.write(redline,textless)
+        const kept = await recordLeanDocuments(matter.dir,deps,true)
+        expect(kept.documents.find((row) => row.kind === "redline")).toMatchObject({deliverable:redlineName,conflict:"accepted_revision"})
+        expect(sha256(await Bun.file(redline).bytes())).toBe(sha256(textless))
+      }
+      expect(registeredDeliverables(matter.dir)).toEqual(runFiles)
       // A file that is not a redline of the kept body, here a clean copy of the
       // body saved under the redline's name, is not the run's: delivery leaves it
       // and registers the run's redline under the next free name.
@@ -1041,7 +1066,7 @@ test("a delivered redline left as it was never undoes the accepted body change, 
 
     // A source now holds the redline's name.
     const replaced = await ingest.matter("Source under the redline name")
-    await completedLeanRun(replaced.dir)
+    const replacedDeps = await completedLeanRun(replaced.dir)
     const [replacedId] = await prepare(replaced.route)
     expect((await ingest.request(`${replaced.route}/documents?name=${encodeURIComponent(redlineName)}`,{method:"DELETE"})).status).toBe(200)
     const source = path.join(replaced.dir,redlineName)
@@ -1051,6 +1076,15 @@ test("a delivered redline left as it was never undoes the accepted body change, 
     try {db.run("INSERT INTO documents (doc_path, name, created_at) VALUES (?, ?, ?)",[source,redlineName,2])} finally {db.close()}
     expect(await replaced.acceptResult(replacedId!)).toEqual(skipped("redline_not_deliverable"))
     expect(sha256(await Bun.file(source).bytes())).toBe(sha256(sourceBytes))
+    // Nor does a later delivery take that source for the run's redline, even one
+    // holding tracked changes that read as the accepted body.
+    const lookalike = withTextlessRevision(await Bun.file(path.join(replaced.dir,"Supply note.docx")).bytes(),"formatting")
+    await Bun.write(source,lookalike)
+    const redelivered = await recordLeanDocuments(replaced.dir,replacedDeps,true)
+    expect(redelivered.documents.find((row) => row.kind === "redline")?.deliverable).toBe("Supply note - redline (2).docx")
+    expect(sha256(await Bun.file(source).bytes())).toBe(sha256(lookalike))
+    const roles = openDb(replaced.dir)
+    try {expect(getDocumentRole(roles,source)).toBe("source")} finally {roles.close()}
 
     // A proposal on the redline itself, as the agent's redline tools record, is pending.
     const held = await ingest.matter("Redline proposal pending")
