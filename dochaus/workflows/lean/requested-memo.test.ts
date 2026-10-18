@@ -27,7 +27,7 @@ const JUDGED = "The supplier shall deliver the goods in good condition [open ite
 const MEMO_OPENING = 'The request asks for a memo to accompany the drafted documents, "cover memo". Write the drafting notes as that memo.'
 const MEMO_ORDER = "Lead with the discrepancies found and the choices made, then give the recommendations and the open points, in plain language."
 const NOTES_OPENING = "This is a lean drafting run. Write the drafting notes that go to the lawyer with the drafted documents."
-const NAME_EVERY_ID = "- Name every open item by its exact id and say what the lawyer needs to do about it."
+const MARKER_RULE = 'end that statement with the item\'s exact id as a trailing "[ref: <id>]"'
 
 const outline = (line: string) => `Acting for: not stated\n${line}\n# Supply note\n## Delivery`
 /** The scripted drafter whose outline reply carries this Memo line. */
@@ -147,15 +147,14 @@ describe("the requested memo's notes file", () => {
 })
 
 describe("finalize in memo mode", () => {
-  test("writes the notes as the memo with ref markers; without a memo the prompt, plan and finalize inputs are as before", () => {
+  test("writes the notes as the memo; with or without a memo the notes carry ref markers, and without one the plan and finalize inputs are as before", () => {
     const directory = matter()
     const plan = writeLeanPlan(directory, [DOCUMENT])
     expect(readLeanText(directory, "plan.json")).toBe(`${JSON.stringify({ schema: plan.schema, documents: plan.documents, acting_for: undefined, basis: undefined }, null, 2)}\n`)
     const notes = stagePrompt(directory, "finalize")
     const notesInputs = stageInputs(directory, "finalize").map(row => row.name)
     expect(notes).toContain(NOTES_OPENING)
-    expect(notes).toContain(NAME_EVERY_ID)
-    expect(notes).not.toContain("[ref:")
+    expect(notes).toContain(MARKER_RULE)
     expect(notesInputs).not.toContain("requested-memo-contract")
     expect(stagePrompt(directory, "d1.draft", { outline: true })).toContain("Write one line \"Memo: <its name in the request's own words>\" before the first \"# \" title only when the request asks for a memo or note to accompany the documents")
 
@@ -163,23 +162,23 @@ describe("finalize in memo mode", () => {
     const memo = stagePrompt(directory, "finalize")
     expect(memo).toContain(MEMO_OPENING)
     expect(memo).toContain(MEMO_ORDER)
-    expect(memo).toContain('end that statement with the item\'s exact id as a trailing "[ref: <id>]"')
-    // Only the opening, the open-item rule and the notes file's planned name
-    // differ; every other contract line stays.
+    expect(memo).toContain(MARKER_RULE)
+    // Only the opening and the notes file's planned name differ; every other
+    // contract line, the ref-marker rule included, stays.
     const memoLines = new Set(memo.split("\n"))
-    expect(notes.split("\n").filter(line => !memoLines.has(line))).toEqual([NOTES_OPENING, expect.stringContaining('"planned_filename": "Supply note - drafting notes.docx"'), NAME_EVERY_ID])
+    expect(notes.split("\n").filter(line => !memoLines.has(line))).toEqual([NOTES_OPENING, expect.stringContaining('"planned_filename": "Supply note - drafting notes.docx"')])
     expect(stageInputs(directory, "finalize").map(row => row.name)).toEqual([...notesInputs.slice(0, notesInputs.indexOf("drafting-notes-contract") + 1), "requested-memo-contract", ...notesInputs.slice(notesInputs.indexOf("drafting-notes-contract") + 1)])
   })
 
-  test("the notes check accepts each id in a ref marker and asks for one in its retry", () => {
+  test("with or without a memo the notes check accepts each id in a ref marker and asks for one in its retry", () => {
     const directory = matter()
     const item = openItem("apply", "placeholder", "Confirm the condition standard chosen.", { document: "d1" })
+    const retry = `do not mention these open items: ${item.id}. Say what each is and what the lawyer needs to do about it, ending that statement with its exact id as "[ref: <id>]".`
     writeLeanPlan(directory, [DOCUMENT])
-    expect(checkDraftingNotes(directory, "# Drafting notes\n\nThe draft states the delivery period.\n", [item]).issues.join(" "))
-      .toContain(`do not mention these open items: ${item.id}. Name each id and say what the lawyer needs to do about it.`)
+    expect(checkDraftingNotes(directory, "# Drafting notes\n\nThe draft states the delivery period.\n", [item]).issues.join(" ")).toContain(retry)
+    expect(checkDraftingNotes(directory, `# Drafting notes\n\n- The condition standard is for the lawyer to confirm. [ref: ${item.id}]\n`, [item]).issues).toEqual([])
     writeLeanPlan(directory, [DOCUMENT], undefined, undefined, { name: "cover memo", file: memoNotesFile([DOCUMENT], "cover memo") })
-    expect(checkDraftingNotes(directory, "# Cover memo\n\nThe draft states the delivery period.\n", [item]).issues.join(" "))
-      .toContain(`do not mention these open items: ${item.id}. Say what each is and what the lawyer needs to do about it, ending that statement with its exact id as "[ref: <id>]".`)
+    expect(checkDraftingNotes(directory, "# Cover memo\n\nThe draft states the delivery period.\n", [item]).issues.join(" ")).toContain(retry)
     expect(checkDraftingNotes(directory, `# Cover memo\n\n- The condition standard is for the lawyer to confirm. [ref: ${item.id}]\n`, [item]).issues).toEqual([])
   })
 })
@@ -202,7 +201,7 @@ describe("a requested memo through the run", () => {
     const marker = readOpenItems(directory).find(item => item.kind === "placeholder" && item.stage === "apply")!
     const [prompt, retry] = finalizePrompts(model)
     expect(prompt).toContain(MEMO_OPENING)
-    expect(prompt).not.toContain(NAME_EVERY_ID)
+    expect(prompt).toContain(MARKER_RULE)
     expect(retry).toContain(`do not mention these open items: ${marker.id}. Say what each is`)
     expect(readLeanText(directory, "drafting-notes.md")).toContain(`[ref: ${marker.id}]`)
     expect(readLeanJson(directory, "gate.json") as GateResult).toMatchObject({ status: "pass", blocking: [] })
@@ -239,7 +238,7 @@ describe("a requested memo through the run", () => {
     expect(readLeanPlan(directory)).not.toHaveProperty("memo")
     const [prompt] = finalizePrompts(model)
     expect(prompt).toContain(NOTES_OPENING)
-    expect(prompt).toContain(NAME_EVERY_ID)
+    expect(prompt).toContain(MARKER_RULE)
     expect(notesRow(directory)?.deliverable).toBe("Supply note - drafting notes.docx")
   }, 120_000)
 })

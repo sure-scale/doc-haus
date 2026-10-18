@@ -1,13 +1,13 @@
 import type { ChecklistFindingClass } from "./checklist-classify"
 import type { ChecklistFinding, ChecklistItem } from "./checklist-contract"
 import { CHECKLIST_COVERAGE_ISSUES, type ChecklistCoverageIssue } from "./checklist-flow"
-import { checklistOutputState, type ChecklistOpenFinding, type ChecklistOutputState, type ChecklistUnresolvedFinding, type ChecklistUnresolvedParent } from "./stages"
+import { checklistOutputState, type ChecklistOpenFinding, type ChecklistUnresolvedFinding, type ChecklistUnresolvedParent } from "./stages"
 import { readChangeReview, deferredFindingItems } from "./change-pipeline"
 import { renderNotesCoverage } from "../../lib/notes-coverage-report"
 import { hasOpenItemMarker } from "../../lib/open-items"
 import { draftingPlaceholders } from "../../lib/placeholder-resolution"
 import { normalize } from "../../lib/quote-verify"
-import { finalBodyParagraphs, standingIDPattern, type ApplyResult } from "./checks"
+import { CITED, finalBodyParagraphs, readerIDs, standingIDPattern, type ApplyResult } from "./checks"
 import { memoMode, runItemIDs, withoutInternalIDs, withoutRefMarkers } from "./delivered-memo"
 import { FIRST_DOCUMENT, readLeanPlan, type DocID } from "./plan"
 import { readPackageReview } from "./package-review"
@@ -44,8 +44,9 @@ import { isReviewStage, currentOpenItems, readLeanText, readLeanJson, readLeanSt
 //   checklist/checks.json, which the gate already reads;
 // - a completed checklist finding that remains adverse (and a refined parent
 //   whose coverage is adverse) is never a pass: it is disclosed, with the class
-//   its verified fields establish, ahead of every other item, and ahead of the
-//   drafting notes in the notes delivered with the draft;
+//   its verified fields establish, ahead of every other item, and in plain
+//   words in the notes delivered with the draft: ahead of the drafting notes,
+//   or closing a requested memo;
 // - source conflicts among those findings are put to the lawyer as one
 //   question, which the gate asks after the walk: it pauses nothing, and each
 //   conflict stays disclosed until the answer re-runs the stages it reaches;
@@ -165,67 +166,108 @@ export function finalGate(directory: string): GateResult {
   }
 }
 
-/** The notes delivered with a review draft that has unresolved checklist
- * findings. The drafting notes are written before the checklist check, so they
- * cannot list its findings. Undefined when there is no such finding and no
- * requested memo: the drafting notes are then delivered as written.
+/** The notes delivered with the draft: the drafting notes as the reader gets
+ * them (notesForReader), with any unresolved checklist findings in plain
+ * words. The drafting notes are written before the checklist check, so they
+ * cannot list its findings. Undefined when there are neither drafting notes
+ * nor such a finding.
  *
- * Without a requested memo, the findings lead: each with its checklist item,
- * the source it records, its class, reason and limitation (the gate's own
- * disclosure), then the drafting notes unchanged.
- *
- * A requested memo is always delivered from here, without its "[ref: …]"
- * markers, and it comes first: its own title and body, then a closing section
- * that discloses each finding as a requirement not confirmed as met, worded
- * from the checklist item's requirement and source quotes rather than the
- * checker's detail, so its lines name no internal id: no checklist item,
- * conflict list, request locator or paragraph pointer. */
+ * The findings lead the drafting notes, or close a requested memo after its
+ * own title and body. Each is disclosed as a requirement not confirmed as met,
+ * worded from the checklist item's requirement and source quotes rather than
+ * the checker's detail (findingEntries), so its lines name no internal id: no
+ * checklist item, conflict list, request locator or paragraph pointer. */
 export function deliveredNotes(directory: string, gate: GateResult): string | undefined {
-  const memo = memoMode(directory)
   const drafted = readLeanText(directory, "drafting-notes.md")
+  const read = drafted === undefined ? undefined : titled(directory, notesForReader(directory, drafted, gate.items))
   const findings = gate.items.filter(item => item.kind === "checklist_unresolved")
-  if (!findings.length) return memo && drafted !== undefined ? withoutRefMarkers(drafted) : undefined
-  const checked = checklistOutputState(directory)
-  const items = new Map<string, ChecklistItem>([...checked.unresolved.map(row => [row.item_id, row.item] as const),
-    ...checked.unresolvedParents.map(row => [row.parent_id, row.item] as const)])
-  if (memo) return memoWithFindings(directory, gate, drafted, findings, items, checked)
-  const entries = findings.map(finding => {
-    const id = finding.ref.checklist_item ?? finding.id
-    const sources = (items.get(id)?.source_refs ?? []).map(ref => `${ref.document}, ${ref.locator}: "${ref.quote}"`)
-    return `- ${id}: ${finding.detail}${sources.length ? ` Source: ${sources.join("; ")}` : ""}`.replace(/\s+/g, " ").trim()
-  })
-  return ["# Checklist findings not satisfied", "",
-    "These checklist requirements were not established as satisfied. Each is disclosed with this review draft for review; none is treated as satisfied.", "",
-    ...entries, "", drafted ?? ""].join("\n")
+  if (!findings.length) return read
+  const known = runItemIDs(directory, gate.items)
+  const section = (heading: string, intro: string) => plainWordsSection(directory, known, heading, intro, findingEntries(directory, findings, known))
+  const body = read ?? ""
+  if (!memoMode(directory)) return [...section("# Checklist findings not satisfied",
+    "These checklist requirements were not established as satisfied. Each is disclosed with this review draft for review; none is treated as satisfied."), "", body].join("\n")
+  const memo = body.trimEnd()
+  return [...(memo ? [memo, ""] : []),
+    ...section("## Requirements not confirmed as met", "These requirements were not confirmed as met in this draft and need the lawyer's review."), ""].join("\n")
 }
 
-/** A requested memo as delivered with its unresolved checklist findings: the
- * memo first, without its markers, then one closing section listing each
- * finding by its requirement and source quotes. The request's locators
- * (internal paths) give way to its label. A finding whose item cannot be found
- * takes its requirement from its detail, cut of its conflict list, or falls
- * back to that detail. Each line gives the requirement, why it is unmet (a
- * plain status for its class, then its reason) and its sources. A checked
- * finding's reason is its own recorded reason, limitation and open decisions;
- * a refined parent's is one plain reason for each kind of coverage issue it
- * records, once each and in order, or one plain reason that part of it is
- * unmet when it records none. A planned document's id in that wording
- * becomes the document's title. A finding that conflicts with another
- * requirement says so, without naming either. Each line still loses any known
- * run id. Its source quotes and the titles put in for ids are held aside from
- * both passes and put back after them, so each reaches the reader as written:
- * quotation marks inside one pair with nothing else on the line. */
-function memoWithFindings(directory: string, gate: GateResult, drafted: string | undefined, findings: OpenItem[], items: Map<string, ChecklistItem>, checked: ChecklistOutputState) {
-  const known = runItemIDs(directory, gate.items)
+/** The drafting notes as the reader gets them: without their "[ref: …]"
+ * markers, and with no id the notes check keeps from the reader (readerIDs,
+ * with `items`). A line naming a planned document by its id names it by its
+ * title (withDocumentTitles, with the notes as this memo or these notes), and
+ * every other such id goes (withoutInternalIDs). A citation, footnote marker
+ * or locator's number outside a quotation (CITED) is held aside from both, as
+ * the check reads it, so "3(d1)" stays as written; quotations are kept as
+ * withoutInternalIDs keeps them, except one holding only such an id, which goes
+ * as the id does (a planned document's by its title). Notes the check passed
+ * name none of these ids elsewhere, so beyond their markers and such a
+ * quotation only notes saved on a last attempt, or kept on a resume, change;
+ * every unchanged line keeps its exact text. */
+export function notesForReader(directory: string, text: string, items: OpenItem[]) {
+  const ids = readerIDs(directory, items)
   const documents = readLeanPlan(directory)?.documents ?? []
-  const conflicted = new Set(checked.unresolved.filter(row => row.conflicting_item_ids?.length).map(row => row.item_id))
-  const recorded = new Map(checked.unresolved.map(row => [row.item_id, row.finding]))
-  const parents = new Map(checked.unresolvedParents.map(row => [row.parent_id, row]))
-  const entries = findings.map(finding => {
+  const planned = documents.length ? new RegExp(standingIDPattern(documents.map(row => row.id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"))) : undefined
+  const self = memoMode(directory) ? "this memo" : "these notes"
+  // Held text stands as n U+FDEE between two U+FDEF, as in plainWordsSection.
+  const held: string[] = []
+  const hold = (text: string) => `\uFDEF${"\uFDEE".repeat(held.push(text))}\uFDEF`
+  const lines = withoutRefMarkers(text).split("\n").map(line => {
+    const kept = line.split(/("[^"\n]*"|\u201c[^\u201d\n]*\u201d)/).map((part, index) => index % 2 ? part : CITED.reduce((part, mask) => part.replace(mask, hold), part)).join("")
+    return planned?.test(kept) ? withDocumentTitles(kept, documents, ids, hold, self) : kept
+  })
+  return withoutInternalIDs(lines.join("\n"), ids).replace(/\uFDEF(\uFDEE+)\uFDEF/g, (_, count: string) => held[count.length - 1]!)
+}
+
+/** The notes as the reader gets them, under a plain title for what they are
+ * when they have no heading of their own: notes saved on a last attempt, or
+ * kept on a resume, may lose their only heading with its markers and ids. So
+ * the delivered notes are never empty, as the gate's validity requires. */
+function titled(directory: string, notes: string) {
+  if (/^#{1,6}[ \t]+\S/m.test(notes)) return notes
+  return `# ${memoMode(directory) ? "Memo" : "Drafting notes"}\n\n${notes.replace(/^(?:[ \t]*\r?\n)+/, "")}`
+}
+
+/** One section of the delivered notes in plain words: `heading`, the sentence
+ * `intro` saying what it lists, then one line per entry. Each line names a
+ * planned document by its title in place of its id, and the notes themselves
+ * as this memo or these notes, then loses any `known` run id. The text an
+ * entry holds aside (`hold`, such as its source quotes) and the titles put in
+ * for ids are kept from both passes and put back after them, so each reaches
+ * the reader as written: quotation marks inside one pair with nothing else on
+ * the line. */
+function plainWordsSection(directory: string, known: string[], heading: string, intro: string, entries: ((hold: (text: string) => string) => string)[]) {
+  const documents = readLeanPlan(directory)?.documents ?? []
+  const self = memoMode(directory) ? "this memo" : "these notes"
+  return [heading, "", intro, "", ...entries.map(entry => {
     // The n-th text held aside stands as n U+FDEE between two U+FDEF:
     // noncharacters, never in document text, that neither pass reads.
     const held: string[] = []
     const hold = (text: string) => `\uFDEF${"\uFDEE".repeat(held.push(text))}\uFDEF`
+    const line = entry(hold).replace(/\s+/g, " ").trim()
+    return withoutInternalIDs(withDocumentTitles(line, documents, known, hold, self), known).replace(/\uFDEF(\uFDEE+)\uFDEF/g, (_, count: string) => held[count.length - 1]!)
+  })]
+}
+
+/** Each unresolved checklist finding as a line for plainWordsSection: its
+ * requirement, why it is unmet and its sources. The request's locators
+ * (internal paths) give way to its label. A finding whose item cannot be found
+ * takes its requirement from its detail, cut of its conflict list, or falls
+ * back to that detail. Why it is unmet is a plain status for its class, then
+ * its reason. A checked finding's reason is its own recorded reason,
+ * limitation and open decisions; a refined parent's is one plain reason for
+ * each kind of coverage issue it records, once each and in order, or one plain
+ * reason that part of it is unmet when it records none. A finding that
+ * conflicts with another requirement says so, without naming either. Its
+ * source quotes are held aside. */
+function findingEntries(directory: string, findings: OpenItem[], known: string[]) {
+  const checked = checklistOutputState(directory)
+  const items = new Map<string, ChecklistItem>([...checked.unresolved.map(row => [row.item_id, row.item] as const),
+    ...checked.unresolvedParents.map(row => [row.parent_id, row.item] as const)])
+  const conflicted = new Set(checked.unresolved.filter(row => row.conflicting_item_ids?.length).map(row => row.item_id))
+  const recorded = new Map(checked.unresolved.map(row => [row.item_id, row.finding]))
+  const parents = new Map(checked.unresolvedParents.map(row => [row.parent_id, row]))
+  return findings.map(finding => (hold: (text: string) => string) => {
     const id = finding.ref.checklist_item ?? finding.id
     const item = items.get(id)
     const sources = (item?.source_refs ?? []).map(ref => `${ref.document === "request" || ref.locator.startsWith(".dochaus/") ? ref.document
@@ -248,13 +290,8 @@ function memoWithFindings(directory: string, gate: GateResult, drafted: string |
     const text = requirement ? `${requirement}${why ? ` ${why}` : ""}` : detail
     // A source-conflict status already says so.
     const conflict = (conflicted.has(id) || detail !== finding.detail) && finding.ref.checklist_class !== "source_conflict" ? " It conflicts with another requirement." : ""
-    const line = `- ${text}${conflict}${sources.length ? ` Source: ${sources.join("; ")}` : ""}`.replace(/\s+/g, " ").trim()
-    return withoutInternalIDs(withDocumentTitles(line, documents, known, hold), known).replace(/\uFDEF(\uFDEE+)\uFDEF/g, (_, count: string) => held[count.length - 1]!)
+    return `- ${text}${conflict}${sources.length ? ` Source: ${sources.join("; ")}` : ""}`
   })
-  const body = withoutRefMarkers(drafted ?? "").trimEnd()
-  return [...(body ? [body, ""] : []), "## Requirements not confirmed as met", "",
-    "These requirements were not confirmed as met in this draft and need the lawyer's review.", "",
-    ...entries, ""].join("\n")
 }
 
 /** What a memo finding's class means for the reader and what the lawyer should
@@ -378,8 +415,9 @@ const PHRASE_HEAD = new RegExp(String.raw`(?:\b(?:[Ii]n|[Oo]n|[Aa]t|[Tt]o|[Bb]y|
  * acronym's ("GDPR.") may. A quotation, straight or curly, holding only
  * planned ids ("d2", “d1/d3”) names them; other quoted text is left to the id
  * removal that follows. Each title put in goes through `hold`, which keeps it
- * whole through that removal. */
-function withDocumentTitles(line: string, documents: { id: string; title: string }[], known: string[], hold: (title: string) => string) {
+ * whole through that removal. "This memo" here is `self`, the name the notes
+ * give themselves: "this memo" in a requested memo, otherwise "these notes". */
+function withDocumentTitles(line: string, documents: { id: string; title: string }[], known: string[], hold: (title: string) => string, self: string) {
   const titles = new Map(documents.filter(row => row.title.trim()).map(row => {
     const [, article = "the", rest] = /^(?:(the|an?)[ \t]+)?(.*)$/i.exec(row.title.trim())!
     return [row.id, { article: article.toLowerCase(), rest: rest! }]
@@ -431,12 +469,12 @@ function withDocumentTitles(line: string, documents: { id: string; title: string
       const joints = shown.map(row => row.joint)
       if (shown.length > 1 && shown.at(-1) !== rows.at(-1)) joints[joints.length - 1] = rows.at(-1)!.joint
       const lead = shown.length === rows.length ? "" : rows.some(row => /\bor\b/.test(row.joint)) ? "or " : "and "
-      return `${space}(${lead}${shown.map((row, index) => `${index ? memoJoint(joints[index]!, shown[index - 1]!.label, row.label) : ""}${row.label === "notes" ? "this memo" : row.label}`).join("")})`
+      return `${space}(${lead}${shown.map((row, index) => `${index ? memoJoint(joints[index]!, shown[index - 1]!.label, row.label) : ""}${row.label === "notes" ? self : row.label}`).join("")})`
     })
     .replace(memo, (match, offset: number, text: string) => {
       const parts = match.split(/([/\u2013-])/)
       if (!parts.includes("notes") || parts.every((part, index) => index % 2 || part === "notes")) return match
-      const run = parts.map((part, index) => index % 2 ? memoJoint(part, parts[index - 1]!, parts[index + 1]!) : part === "notes" ? "this memo" : part).join("")
+      const run = parts.map((part, index) => index % 2 ? memoJoint(part, parts[index - 1]!, parts[index + 1]!) : part === "notes" ? self : part).join("")
       return parts[0] === "notes" ? opening(text.slice(0, offset), run) : run
     })
     .replace(range, (match, first: string, joint: string, last: string, offset: number, text: string) => {

@@ -5,22 +5,23 @@ import { readLeanPlan, type DocID } from "./plan"
 import { readRepairRound } from "./repairs"
 import { readLeanJson, readOpenItems, type OpenItem } from "./state"
 
-// When the request asks for a memo, the drafting notes are written as that
-// memo, each internal item reference a trailing "[ref: <id>]". The working
-// drafting-notes.md and .docx keep those markers: the notes check, the gate and
-// the checklist check read them. Only the notes delivered at the gate drop
-// them, and the lines the gate composes there name no internal id. Without a
-// requested memo the delivered notes are unchanged.
+// The drafting notes, and the memo they are written as when the request asks
+// for one, refer to each open item in plain words with a trailing
+// "[ref: <id>]". The working drafting-notes.md and .docx keep those markers:
+// the notes check, the gate and the checklist check read them. Only the notes
+// delivered at the gate drop them, and the lines the gate composes there name
+// no internal id.
 
 /** Whether the run's notes are delivered as a requested memo. */
 export function memoMode(directory: string) {
   return Boolean(requestedMemo(directory))
 }
 
-const REF = String.raw`\[[ \t]*[Rr]efs?[ \t]*:[^\]\n]*\]`
+/** A "[ref: …]" or "[refs: …]" marker, in any case. */
+const REF = String.raw`\[[ \t]*[Rr][Ee][Ff][Ss]?[ \t]*:[^\]\n]*\]`
 
-/** The memo as delivered: every "[ref: …]" marker removed whole. Its prose is
- * otherwise kept; the notes check keeps ids out of it. */
+/** The notes as delivered: every "[ref: …]" marker removed whole. Their prose
+ * is otherwise kept; the notes check keeps ids out of it. */
 export function withoutRefMarkers(text: string) {
   return withoutInternalIDs(text, [])
 }
@@ -48,7 +49,7 @@ export function withoutInternalIDs(text: string, ids: Iterable<string>) {
   const inline = new RegExp(`[ \\t]*${REF}`, "g")
   const quoted = new RegExp(`${known ? `("${run}"|\\u201c${run}\\u201d)|` : ""}"[^"\\n]*"|\\u201c[^\\u201d\\n]*\\u201d`, "g")
   const label = id && new RegExp(`^(?:[ \\t]*${id}[ \\t]*[,;]?)+[ \\t]*(?:[:\\u2013\\u2014]|-(?=[ \\t]|$)|$)[ \\t]*`)
-  const bracketed = id && new RegExp(`[ \\t]*[([][ \\t]*(?:(?:[Ss]ee(?:[ \\t]+also)?|[Cc]f\\.|[Ii]ds?|[Rr]efs?)[ \\t]*:?[ \\t]*)?${id}(?:(?:${joint}|[ \\t]*;[ \\t]*)${id})*[ \\t]*[)\\]]`, "g")
+  const bracketed = id && new RegExp(`[ \\t]*[([][ \\t]*(?:(?:[Ss]ee(?:[ \\t]+also)?|[Cc]f\\.|[Ii]ds?|[Rr][Ee][Ff][Ss]?)[ \\t]*:?[ \\t]*)?${id}(?:(?:${joint}|[ \\t]*;[ \\t]*)${id})*[ \\t]*[)\\]]`, "g")
   const listed = id && new RegExp(`${id}(?:${joint}${id})*`, "g")
   const each = new RegExp(standingIDPattern(known), "g")
   return text.split("\n").flatMap(line => {
@@ -182,7 +183,7 @@ export function changeListIDs(directory: string, document: DocID) {
  * stranded separators and the spacing left behind. */
 function tidy(text: string) {
   return text
-    .replace(/[ \t]*[([][ \t]*(?:(?:[Ss]ee(?:[ \t]+also)?|[Cc]f\.|[Ii]ds?|[Rr]efs?)[ \t]*:?[ \t]*)?(?:[,;][ \t]*)*[)\]]/g, "")
+    .replace(/[ \t]*[([][ \t]*(?:(?:[Ss]ee(?:[ \t]+also)?|[Cc]f\.|[Ii]ds?|[Rr][Ee][Ff][Ss]?)[ \t]*:?[ \t]*)?(?:[,;][ \t]*)*[)\]]/g, "")
     .replace(/([,;])(?:[ \t]*[,;])+/g, "$1")
     .replace(/([([])[ \t]*[,;][ \t]*/g, "$1")
     .replace(/[ \t]*[,;:]+[ \t]*(?=[.!?)\]])/g, "")

@@ -746,7 +746,7 @@ describe("final attempt: fix wave 2", () => {
     const record: LeanCoverage = { schema: LEAN_COVERAGE_SCHEMA, plan: coveragePlanHash(plan.documents, plan.acting_for), status: issues.length ? "uncovered" : "covered", acts, issues }
     writeLeanText(directory, "coverage.json", `${JSON.stringify(record, null, 2)}\n`)
     const items = coverageItems(directory)
-    const notes = ["# Drafting notes", "", "The committee resolution records the approval.", "", ...items.map(item => `- ${item.id}: ${item.detail}`)].join("\n")
+    const notes = ["# Drafting notes", "", "The committee resolution records the approval.", "", ...items.map(item => `- ${item.detail.replace(/\bd\d+ (?=")/g, "")} [ref: ${item.id}]`)].join("\n")
     expect(checkDraftingNotes(directory, notes, disclosableItems(directory)).issues).toEqual([])
     return items.map(item => item.detail)
   }

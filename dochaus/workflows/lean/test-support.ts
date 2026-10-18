@@ -129,13 +129,14 @@ export const changes: Reply = prompt => JSON.stringify({
 
 export const noChanges: Reply = () => JSON.stringify({ amendments: [], questions: [] })
 
-// Names every open item id the coordinator lists, in every document's block, as
-// the drafting-notes contract asks.
+// Discloses every open item the coordinator lists, in every document's block,
+// as the drafting-notes contract asks: in words, each ending with its id in a
+// trailing "[ref: <id>]".
 export const draftingNotes: Reply = prompt => {
   const blocks = [...prompt.matchAll(/<open_items>\n([\s\S]*?)\n<\/open_items>/g)].map(match => match[1]!)
   const ids = blocks.flatMap(block => [...block.matchAll(/^- (\S+):/gm)].map(match => match[1]))
   return ["# Drafting notes", "", "The draft states the delivery period from the supply terms.", "",
-    ...ids.map(id => `- ${id}: the lawyer must resolve this before the draft is used.`)].join("\n")
+    ...ids.map(id => `- The lawyer must resolve this before the draft is used. [ref: ${id}]`)].join("\n")
 }
 
 export const happyPath: Record<string, Reply> = { [AGENT.draft]: drafter(DRAFT), [AGENT.review]: review, [AGENT.changes]: changes, [AGENT.finalize]: draftingNotes }

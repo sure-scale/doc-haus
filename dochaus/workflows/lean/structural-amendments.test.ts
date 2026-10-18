@@ -70,7 +70,7 @@ function replies() {
       const blocks = [...prompt.matchAll(/<open_items>\n([\s\S]*?)\n<\/open_items>/g)].map(match => match[1]!)
       const ids = blocks.flatMap(block => [...block.matchAll(/^- (\S+):/gm)].map(match => match[1]))
       return ["# Drafting notes", "", DELETE_REASON, SPLIT_REASON, REPLACE_REASON,
-        ...ids.map(id => `- ${id}: the lawyer must review the disclosed limitation before use.`)].join("\n\n")
+        ...ids.map(id => `- The lawyer must review the disclosed limitation before use. [ref: ${id}]`)].join("\n\n")
     },
   }
 }

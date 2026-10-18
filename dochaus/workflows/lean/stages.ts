@@ -60,14 +60,15 @@ export const LEAN_PROMPT_VERSION = "lean-17-advice-scope"
 const OUTLINE_CONTRACT = "document-executing-parties-memo-6"
 const DELIVERY_REVIEW_CONTRACT = "grounded-delivery-selection-4"
 const STRUCTURAL_AMENDMENT_CONTRACT = "explicit-paragraph-cardinality-1"
-const DRAFTING_NOTES_CONTRACT = "lawyer-facing-notes-placeholders-2"
+const DRAFTING_NOTES_CONTRACT = "lawyer-facing-notes-plain-refs-3"
 /** Keys finalize only when the notes are a requested memo (the plan has a
  * memo name), so runs without one keep their finalize key. */
 const REQUESTED_MEMO_CONTRACT = "requested-memo-titles-7"
-/** Keys the gate, whose questions are written in code: a change to how it
- * words or keys one re-runs a done gate, so an open question it asked takes
- * the current form. */
-const GATE_CONTRACT = "quote-keyed-conflict-question-1"
+/** Keys the gate, whose questions and delivered notes are written in code: a
+ * change to how it words or keys a question, or how it composes the delivered
+ * notes, re-runs a done gate, so an open question it asked takes the current
+ * form and the delivered notes are written again. */
+const GATE_CONTRACT = "reader-notes-delivery-2"
 export const LEAN_MAX_RETRIES = 3
 
 export const LEAN_STAGE_AGENTS = {
@@ -334,8 +335,9 @@ export async function acceptStageReply(directory: string, step: StepID, reply: s
     return { issues: [], openItems: check.openItems, outputs: stepOutputs(step), questions: check.changes.questions }
   }
   // On the last attempt a requested memo that names an internal id in its prose,
-  // or notes that leave a placeholder of their own, are saved as the model wrote
-  // them; earlier attempts retry them.
+  // notes that leave a placeholder of their own, or notes whose only heading is
+  // an id or a marker, are saved as the model wrote them; earlier attempts retry
+  // them.
   const check = checkDraftingNotes(directory, reply, disclosableItems(directory), { final: options.final })
   if (check.issues.length) return { ...check, outputs: [] }
   const advisory = draftingStyleAdvisoryNotes([
@@ -388,12 +390,15 @@ export function stageOutputValid(directory: string, step: StepID) {
     if (!readLeanText(directory, `${document}/change-plan.json`)) return true
     return !uniqueReplacementIssues(list).length && !checkChanges(directory, text(`${document}/changes.json`), readParagraphs(directory, document), { document }).issues.length
   }
-  // Saved notes are judged as a last attempt judges them: an internal id in a
-  // memo's prose or a placeholder of the notes' own was retry feedback, not a
-  // defect of the saved notes, so it does not re-run them; any other failed check does.
+  // Saved notes are judged as a last attempt judges them: an internal id in
+  // their prose, a placeholder of their own or a heading made only of ids or
+  // markers was retry feedback, not a defect of the saved notes, so it does not
+  // re-run them; any other failed check does.
   if (stage === "finalize") return !checkDraftingNotes(directory, text("drafting-notes.md"), disclosableItems(directory), { final: true }).issues.length
-  // A passed gate with unresolved checklist findings delivers them in its notes.
-  if (stage === "gate") return !(readLeanJson(directory, "gate.json") as { items?: OpenItem[] } | undefined)?.items?.some(item => item.kind === "checklist_unresolved") ||
+  // A passed gate delivers the drafting notes, and any unresolved checklist
+  // findings, in its own notes (deliveredNotes).
+  if (stage === "gate") return !(existsSync(leanFile(directory, "drafting-notes.md")) ||
+    (readLeanJson(directory, "gate.json") as { items?: OpenItem[] } | undefined)?.items?.some(item => item.kind === "checklist_unresolved")) ||
     [DELIVERED_NOTES.docx, DELIVERED_NOTES.markdown].every(name => existsSync(leanFile(directory, name)))
   return true
 }

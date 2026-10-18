@@ -1,26 +1,27 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { Database } from "bun:sqlite"
-import { readFileSync } from "node:fs"
+import { existsSync, readFileSync, rmSync } from "node:fs"
 import path from "node:path"
 import { readDocxCommentParagraphs } from "../../lib/docx-comments"
 import { checkDraftingNotes, readChangeList } from "./checks"
-import { memoNotesFile } from "./deliverables"
+import { DELIVERED_NOTES, memoNotesFile } from "./deliverables"
 import { runItemIDs, withoutRefMarkers } from "./delivered-memo"
+import { deliveredNotes, notesForReader, type GateResult } from "./gate"
 import { readLeanPlan, writeLeanPlan } from "./plan"
 import { stagePrompt } from "./prompts"
 import { openItem } from "./quotes"
 import { runLean } from "./runner"
 import { acceptStageReply, disclosableItems, LEAN_MAX_RETRIES, stageOutputValid } from "./stages"
-import { leanFile, readLeanState, readLeanText, writeLeanText, writeOpenItems } from "./state"
-import { AGENT, DRAFT, DRAFTED, cleanupMatters, drafter, happyPath, matter, pidOf, sameSession, scriptedModel, type Reply } from "./test-support"
+import { leanFile, readLeanJson, readLeanState, readLeanText, writeLeanText, writeOpenItems } from "./state"
+import { AGENT, DRAFT, DRAFTED, cleanupMatters, drafter, draftingNotes, happyPath, matter, pidOf, sameSession, scriptedModel, type Reply } from "./test-support"
 
-// In a requested memo an internal id may appear only inside a "[ref: …]"
-// marker: delivery removes those markers and nothing else, so an id anywhere
-// else would reach the reader. The drafting-notes check holds an item as
+// In the drafting notes, a requested memo or not, an internal id may appear
+// only inside a "[ref: …]" marker. The drafting-notes check holds an item as
 // disclosed only by its id in a marker and retries a run id written outside
-// one. On the last attempt an internal id alone does not fail the notes: they
-// are saved as the model wrote them. Without a requested memo the check is
-// unchanged.
+// one. On the last attempt an internal id alone does not fail the notes, which
+// are saved as the model wrote them, and without a requested memo an item's
+// whole id anywhere in them discloses it. Delivery removes the markers and
+// every id the check keeps from the reader, so neither reaches the lawyer.
 
 afterEach(cleanupMatters)
 
@@ -59,12 +60,13 @@ const addSource = (directory: string, name: string, text: string) => {
 /** A supply note run with a requested cover memo whose finalize model writes
  * the same memo on every attempt: its title, then `lines` for the open item
  * ids its prompt lists. A retry in the same session does not list them again.
- * `written` is the memo the model last wrote; `model` resumes the run. */
-async function stubbornMemoRun(lines: (ids: string[]) => string[], replies: Record<string, Reply> = {}) {
+ * `written` is the memo the model last wrote; `model` resumes the run. With
+ * `withMemo` false no memo is requested and the notes keep the same text. */
+async function stubbornMemoRun(lines: (ids: string[]) => string[], replies: Record<string, Reply> = {}, withMemo = true) {
   const directory = matter()
-  writeLeanText(directory, "request.md", "Draft a short supply note from the supply terms, with a cover memo on the open points.")
+  if (withMemo) writeLeanText(directory, "request.md", "Draft a short supply note from the supply terms, with a cover memo on the open points.")
   const draft = drafter(DRAFT)
-  const memoDrafter: Reply = (prompt, index) => draft(prompt, index).replace("Acting for: not stated", "Acting for: not stated\nMemo: cover memo")
+  const memoDrafter: Reply = (prompt, index) => withMemo ? draft(prompt, index).replace("Acting for: not stated", "Acting for: not stated\nMemo: cover memo") : draft(prompt, index)
   let ids: string[] = [], written = ""
   const stubborn: Reply = prompt => {
     const blocks = [...prompt.matchAll(/<open_items>\n([\s\S]*?)\n<\/open_items>/g)]
@@ -88,6 +90,21 @@ describe("a requested memo", () => {
     const notes = memo(`No authority was found for the delivery period; confirm it before use. [ref: ${GAP.id}]`,
       `- The condition standard is for the lawyer to confirm. [ref: ${CONDITION.id}]`)
     expect(checkDraftingNotes(directory, notes, [GAP, CONDITION]).issues).toEqual([])
+  })
+
+  test("on the last attempt an item's bare id in prose does not disclose it: a memo still needs its marker", () => {
+    const directory = memoMatter()
+    const notes = memo(`- ${CONDITION.id}: the condition standard is for the lawyer to confirm.`, `No authority was found for the delivery period. [ref: ${GAP.id}]`)
+    expect(checkDraftingNotes(directory, notes, [GAP, CONDITION], { final: true }).issues).toEqual([MISSING([CONDITION.id])])
+  })
+
+  test("a marker written in any case discloses its ids, and delivery removes it", () => {
+    const directory = memoMatter()
+    for (const marker of [`[REF: ${GAP.id}] [Refs: ${CONDITION.id}]`, `[REFS: ${GAP.id}; ${CONDITION.id}]`, `[rEf: ${GAP.id}, ${CONDITION.id}]`]) {
+      const notes = memo(`The delivery period and the condition standard are for the lawyer to confirm. ${marker}`)
+      expect(checkDraftingNotes(directory, notes, [GAP, CONDITION]).issues).toEqual([])
+      expect(withoutRefMarkers(notes)).toBe(memo("The delivery period and the condition standard are for the lawyer to confirm."))
+    }
   })
 
   test("one refs marker discloses several ids, in each marker form delivery removes", () => {
@@ -147,9 +164,9 @@ describe("a requested memo", () => {
     const ids = disclosableItems(directory).map(item => item.id)
     expect(ids.length).toBeGreaterThan(0)
     expect(readLeanText(directory, "drafting-notes.md")).toBe(written)
-    // Delivery removes only the markers.
-    const delivered = readLeanText(directory, "delivered-notes.md")!
-    for (const id of ids) expect(delivered).toContain(`- ${id}: The lawyer must resolve this before the draft is used.\n`)
+    // Delivery removes the markers and the ids the model kept in its prose.
+    expect(readLeanText(directory, "delivered-notes.md")).toBe(memo("The draft follows the supply terms.", "",
+      ...ids.map(() => "- The lawyer must resolve this before the draft is used.")))
     expect(stageOutputValid(directory, "finalize")).toBe(true)
   }, 120_000)
 })
@@ -217,16 +234,17 @@ describe("a recorded change id in a requested memo", () => {
       .toEqual([CHANGE_STRAY(["a1", "a2", "a3"])])
   })
 
-  test("without a requested memo the notes may name it", () => {
+  test("without a requested memo it is retried the same way, for the notes' reader", () => {
     const directory = changeMatter(false)
-    const notes = ["# Drafting notes", "", `- Change a1 was applied and w1 withheld; ${GAP.id} and ${CONDITION.id} are open.`, ""].join("\n")
-    expect(checkDraftingNotes(directory, notes, [GAP, CONDITION]).issues).toEqual([])
+    const notes = ["# Drafting notes", "", `- Change a1 was applied and w1 withheld. ${disclosed}`, ""].join("\n")
+    expect(checkDraftingNotes(directory, notes, [GAP, CONDITION]).issues)
+      .toEqual([CHANGE_STRAY(["a1", "w1"]).replace("The memo is for the reader", "The notes are for the reader")])
   })
 
-  test("the memo prompt asks for changes by what they do; the notes prompt is unchanged", () => {
+  test("the finalize prompt asks for changes by what they do, with or without a memo", () => {
     const rule = "describe each change by what it does, never by its change id"
     expect(stagePrompt(changeMatter(), "finalize")).toContain(rule)
-    expect(stagePrompt(changeMatter(false), "finalize")).not.toContain(rule)
+    expect(stagePrompt(changeMatter(false), "finalize")).toContain(rule)
   })
 
   test("the ids matched are the change-list ids the run records, in runItemIDs' order, then each open item's amendment", () => {
@@ -288,9 +306,8 @@ describe("a recorded change id in a requested memo", () => {
     expect(readChangeList(directory, "d1")?.amendments.map(row => row.id)).toEqual(["a1"])
     expect(readLeanState(directory)?.stages.finalize?.attempts).toBe(LEAN_MAX_RETRIES + 1)
     expect(readLeanText(directory, "drafting-notes.md")).toBe(written)
-    const delivered = readLeanText(directory, "delivered-notes.md")!
-    expect(delivered).toContain("The delivery clause now states the period (a1).\n")
-    expect(delivered).not.toContain("[ref")
+    // Delivery removes the markers and the change id the model kept.
+    expect(readLeanText(directory, "delivered-notes.md")).toBe(memo("The delivery clause now states the period.", ""))
   }, 120_000)
 })
 
@@ -341,16 +358,17 @@ describe("a planned document id in a requested memo", () => {
       .toEqual([DOCUMENT_STRAY(["d1", "d2"])])
   })
 
-  test("without a requested memo the notes may name it", () => {
+  test("without a requested memo it is retried the same way, for the notes' reader", () => {
     const directory = twoDocuments(false)
-    const notes = ["# Drafting notes", "", `- d1 and d2 are drafted; ${GAP.id} and ${CONDITION.id} are open.`, ""].join("\n")
-    expect(checkDraftingNotes(directory, notes, [GAP, CONDITION]).issues).toEqual([])
+    const notes = ["# Drafting notes", "", `- d1 and d2 are drafted. ${disclosed}`, ""].join("\n")
+    expect(checkDraftingNotes(directory, notes, [GAP, CONDITION]).issues)
+      .toEqual([DOCUMENT_STRAY(["d1", "d2"]).replace("The memo is for the reader", "The notes are for the reader")])
   })
 
-  test("the memo prompt asks for documents by title or file name; the notes prompt is unchanged", () => {
+  test("the finalize prompt asks for documents by title or file name, with or without a memo", () => {
     const rule = "name each document by its title or file name, never by its internal id"
     expect(stagePrompt(twoDocuments(), "finalize")).toContain(rule)
-    expect(stagePrompt(twoDocuments(false), "finalize")).not.toContain(rule)
+    expect(stagePrompt(twoDocuments(false), "finalize")).toContain(rule)
   })
 
   // The model keeps a document id where the check reads prose: opening a list
@@ -395,9 +413,10 @@ describe("a planned document id in a requested memo", () => {
     expect(run.status).toBe("completed")
     expect(readLeanState(directory)?.stages.finalize?.attempts).toBe(LEAN_MAX_RETRIES + 1)
     expect(readLeanText(directory, "drafting-notes.md")).toBe(written)
-    const delivered = readLeanText(directory, "delivered-notes.md")!
-    expect(delivered).toContain("\nd1 now states the delivery period.\n")
-    expect(delivered).not.toContain("[ref")
+    // Delivery names the document the model kept by its id by its title.
+    const delivered = memo("The Supply note now states the delivery period.", "")
+    expect(readLeanText(directory, "delivered-notes.md")).toBe(delivered)
+    expect(docxText(readFileSync(leanFile(directory, DELIVERED_NOTES.docx)))).toBe("Cover memo\nThe Supply note now states the delivery period.")
     // A resume keeps the saved memo: finalize is not asked again.
     const calls = model.count(AGENT.finalize)
     expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
@@ -406,23 +425,207 @@ describe("a planned document id in a requested memo", () => {
   }, 120_000)
 })
 
-describe("without a requested memo the check is unchanged", () => {
-  const OLD_MISSING = (ids: string[]) => `The drafting notes do not mention these open items: ${ids.join(", ")}. Name each id and say what the lawyer needs to do about it.`
-  /** The check as it was: every item id anywhere in the notes. */
-  const before = (content: string, ids: string[]) => {
-    const missing = ids.filter(id => !content.includes(id))
-    return missing.length ? [OLD_MISSING(missing)] : []
-  }
+// Without a requested memo the drafting notes refer to open items exactly as a
+// memo does: the web Open Items panel shows each item's detail, not its id, so
+// an id in the delivered notes would point the lawyer at nothing.
+describe("without a requested memo", () => {
+  const NOTES_READER = (issue: string) => issue.replace("The memo is for the reader", "The notes are for the reader")
+  const notes = (...lines: string[]) => ["# Drafting notes", "", ...lines, ""].join("\n")
+  const disclosed = `[refs: ${GAP.id}; ${CONDITION.id}]`
 
   for (const plan of ["none", "notes file only"] as const)
-    test(`plan with ${plan === "none" ? "no memo" : "a notes file but no memo"}`, () => {
+    test(`a bare item id is retried for its marker and as a stray id: plan with ${plan === "none" ? "no memo" : "a notes file but no memo"}`, () => {
       const directory = memoMatter(plan)
-      const prose = ["# Drafting notes", "", `- ${CONDITION.id}: confirm the condition standard chosen in paragraph ${PID}.`, `- Requirement ${CHECKLIST_ID} is open.`, ""].join("\n")
-      expect(checkDraftingNotes(directory, prose, [CONDITION]).issues).toEqual([])
-      expect(checkDraftingNotes(directory, prose, [CONDITION]).issues).toEqual(before(prose, [CONDITION.id]))
-      expect(checkDraftingNotes(directory, prose, [GAP, CONDITION]).issues).toEqual([OLD_MISSING([GAP.id])])
-      expect(checkDraftingNotes(directory, prose, [GAP, CONDITION]).issues).toEqual(before(prose, [GAP.id, CONDITION.id]))
+      const prose = notes(`- ${CONDITION.id}: confirm the condition standard chosen in paragraph ${PID}.`, `- Requirement ${CHECKLIST_ID} is open.`,
+        `- No authority was found for the delivery period. [ref: ${GAP.id}]`)
+      expect(checkDraftingNotes(directory, prose, [GAP, CONDITION]).issues).toEqual([MISSING([CONDITION.id]), NOTES_READER(STRAY([CONDITION.id, PID, CHECKLIST_ID]))])
+      expect(checkDraftingNotes(directory, notes(`- The condition standard chosen is for the lawyer to confirm. ${disclosed}`), [GAP, CONDITION]).issues).toEqual([])
     })
+
+  test("a planned document id or a change id in prose is retried, and passes on the last attempt", () => {
+    const directory = memoMatter("none")
+    const prose = notes(`- The supply note (d1) carries change a1. ${disclosed}`)
+    expect(checkDraftingNotes(directory, prose, [GAP, CONDITION]).issues).toEqual([
+      'These document ids appear outside a "[ref: …]" marker: d1. The notes are for the reader: name each document by its title or file name, not its id.',
+      'These change ids appear outside a "[ref: …]" marker: a1. The notes are for the reader: describe each change by what it does, not its id.',
+    ])
+    expect(checkDraftingNotes(directory, prose, [GAP, CONDITION], { final: true }).issues).toEqual([])
+    // On the last attempt an item's bare id discloses it, as the gate reads the notes.
+    expect(checkDraftingNotes(directory, notes(`- ${GAP.id} and ${CONDITION.id} are open.`), [GAP, CONDITION], { final: true }).issues).toEqual([])
+  })
+
+  test("on the last attempt an item's bare id discloses it only whole, not inside a longer id", () => {
+    const directory = memoMatter("none")
+    expect(checkDraftingNotes(directory, notes(`- ${GAP.id}1 and ${CONDITION.id}-2 are open.`), [GAP, CONDITION], { final: true }).issues).toEqual([MISSING([GAP.id, CONDITION.id])])
+    expect(checkDraftingNotes(directory, notes(`- ${GAP.id} and ${CONDITION.id} are open.`), [GAP, CONDITION], { final: true }).issues).toEqual([])
+  })
+
+  const HEADLESS = 'The drafting notes have no heading once their "[ref: …]" markers and internal ids are removed. Begin with a "# " title in words, and say each point in words before the marker that ends it.'
+
+  test("notes left without a heading once their markers and ids are removed are retried before the last attempt, then saved and delivered under a plain title", async () => {
+    for (const plan of ["none", "memo"] as const) {
+      const directory = memoMatter(plan)
+      writeOpenItems(directory, [GAP, CONDITION])
+      for (const text of [`# [ref: ${GAP.id}]\n\n[ref: ${CONDITION.id}]\n`, `# [ref: ${GAP.id}]\n\nThe delivery period is open. [ref: ${CONDITION.id}]\n`]) {
+        expect(checkDraftingNotes(directory, text, [GAP, CONDITION]).issues).toEqual([HEADLESS])
+        expect(checkDraftingNotes(directory, text, [GAP, CONDITION], { final: true }).issues).toEqual([])
+        expect((await acceptStageReply(directory, "finalize", text, { final: true })).issues).toEqual([])
+        // Saved, they are judged as the last attempt judged them: a resume keeps them.
+        expect(stageOutputValid(directory, "finalize")).toBe(true)
+        const title = plan === "memo" ? "# Memo" : "# Drafting notes"
+        expect(deliveredNotes(directory, { items: [GAP, CONDITION] } as unknown as GateResult))
+          .toBe(text.includes("delivery") ? `${title}\n\nThe delivery period is open.\n` : `${title}\n\n`)
+      }
+    }
+    // Without a memo an item's bare id in the heading discloses it on the last attempt.
+    expect(checkDraftingNotes(memoMatter("none"), `# ${GAP.id}\n\n- [ref: ${CONDITION.id}]\n`, [GAP, CONDITION], { final: true }).issues).toEqual([])
+  })
+
+  test("delivery keeps a citation, a footnote marker, a locator's number and a quotation as written, and removes every other id", () => {
+    const directory = memoMatter("none")
+    writeLeanText(directory, "d1/changes.json", JSON.stringify({ amendments: [{ id: "a1", pid: PID, existing_sha256: "sha", updated: "The supplier shall deliver the goods promptly.", reason: "Drafting judgment.", sources: [] }],
+      questions: [], shared_paragraphs: [] }))
+    const text = notes(`- Rule 3(d1), Section 3(1)(a1) and clause 12.1(d) apply[^a1]; the source says "d1 and a1 stand". [ref: ${GAP.id}]`,
+      `- The supply note (d1) states the period (a1); the delivery paragraph (${PID}) is open. [ref: ${CONDITION.id}]`)
+    expect(notesForReader(directory, text, [GAP, CONDITION])).toBe(notes(`- Rule 3(d1), Section 3(1)(a1) and clause 12.1(d) apply[^a1]; the source says "d1 and a1 stand".`,
+      "- The supply note states the period; the delivery paragraph is open."))
+  })
+
+  test("the finalize prompt asks for each open item in words with a trailing ref marker", () => {
+    const prompt = stagePrompt(memoMatter("none"), "finalize")
+    expect(prompt).toContain('- Say what each open item is and what the lawyer needs to do about it, and end that statement with the item\'s exact id as a trailing "[ref: <id>]". Write internal ids only in these markers')
+    expect(prompt).not.toContain("Name every open item by its exact id")
+  })
+
+  /** A supply note run with no memo whose applied change leaves an open item;
+   * finalize first names it by its bare id and the document by its id, then
+   * as the contract asks. */
+  async function notesRun() {
+    const directory = matter()
+    let first = ""
+    const finalize: Reply = (prompt, index) => {
+      first ||= prompt
+      const written = draftingNotes(first, index)
+      return index ? written : `${written.replace(/^- (.*) \[ref: (\S+)\]$/gm, "- $2: $1")}\n\nThe supply note (d1) states the delivery period.`
+    }
+    const model = scriptedModel({ ...happyPath, [AGENT.finalize]: finalize,
+      [AGENT.changes]: sameSession(prompt => JSON.stringify({ amendments: [{ pid: pidOf(prompt, DRAFTED),
+        updated: "The supplier shall deliver the goods in good condition [open item: confirm the condition standard chosen].", reason: "Drafting judgment.", sources: [] }], questions: [] })) })
+    const run = await runLean(directory, { sessions: model.port })
+    return { directory, run, model }
+  }
+
+  test("through the run, the delivered notes name no item or document id and the gate discloses every item", async () => {
+    const { directory, run, model } = await notesRun()
+    expect(run.status).toBe("completed")
+    expect(model.count(AGENT.finalize)).toBe(2)
+    const ids = disclosableItems(directory).map(item => item.id)
+    expect(ids.length).toBeGreaterThan(0)
+    expect(readLeanText(directory, "drafting-notes.md")).toContain(`[ref: ${ids[0]}]`)
+    const gate = readLeanJson(directory, "gate.json") as GateResult
+    expect(gate).toMatchObject({ status: "pass", blocking: [] })
+    expect(gate.disclosed.map(item => item.id).toSorted()).toEqual(ids.toSorted())
+    const markdown = readLeanText(directory, DELIVERED_NOTES.markdown)!
+    const docx = docxText(readFileSync(leanFile(directory, DELIVERED_NOTES.docx)))
+    for (const delivered of [markdown, docx]) {
+      expect(delivered).toContain("The lawyer must resolve this before the draft is used.")
+      expect(delivered).not.toContain("[ref")
+      for (const id of ids) expect(delivered).not.toContain(id)
+      expect(delivered).not.toMatch(/\bd1\b/)
+    }
+  }, 120_000)
+
+  test("through the run, notes that keep bare ids on their last attempt are delivered with none", async () => {
+    const { directory, run, written } = await stubbornMemoRun(ids => ["The supply note (d1) now states the delivery period (a1).", "",
+      ...ids.map(id => `- ${id}: The lawyer must resolve this before the draft is used.`)], {
+      [AGENT.changes]: sameSession(prompt => JSON.stringify({ amendments: [{ pid: pidOf(prompt, DRAFTED),
+        updated: "The supplier shall deliver the goods in good condition [open item: confirm the condition standard chosen].", reason: "Drafting judgment.", sources: [] }], questions: [] })),
+    }, false)
+    expect(run.status).toBe("completed")
+    expect(readLeanState(directory)?.stages.finalize?.attempts).toBe(LEAN_MAX_RETRIES + 1)
+    const ids = disclosableItems(directory).map(item => item.id)
+    expect(ids.length).toBeGreaterThan(0)
+    expect(readLeanText(directory, "drafting-notes.md")).toBe(written)
+    expect((readLeanJson(directory, "gate.json") as GateResult).disclosed.map(item => item.id).toSorted()).toEqual(ids.toSorted())
+    const delivered = memo("The supply note now states the delivery period.", "", ...ids.map(() => "- The lawyer must resolve this before the draft is used."))
+    expect(readLeanText(directory, DELIVERED_NOTES.markdown)).toBe(delivered)
+    expect(docxText(readFileSync(leanFile(directory, DELIVERED_NOTES.docx)))).toBe(delivered.trim().replace(/^# /, "").replace(/\n+(?:- )?/g, "\n"))
+  }, 120_000)
+
+  test("through the run, notes made only of markers are retried, and the gate's delivered notes are written and kept on resume", async () => {
+    const directory = matter()
+    let first = ""
+    const finalize: Reply = (prompt, index) => {
+      first ||= prompt
+      const written = draftingNotes(first, index)
+      return index ? written : written.replace(/^# .*$/m, "# [ref: notes]").replace(/^- .* (\[ref: \S+\])$/gm, "$1")
+    }
+    const model = scriptedModel({ ...happyPath, [AGENT.finalize]: finalize,
+      [AGENT.changes]: sameSession(prompt => JSON.stringify({ amendments: [{ pid: pidOf(prompt, DRAFTED),
+        updated: "The supplier shall deliver the goods in good condition [open item: confirm the condition standard chosen].", reason: "Drafting judgment.", sources: [] }], questions: [] })) })
+    expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+    expect(model.count(AGENT.finalize)).toBe(2)
+    expect(readLeanText(directory, DELIVERED_NOTES.markdown)).toContain("The lawyer must resolve this before the draft is used.")
+    expect(existsSync(leanFile(directory, DELIVERED_NOTES.docx))).toBe(true)
+    expect(stageOutputValid(directory, "gate")).toBe(true)
+    const calls = model.count(AGENT.finalize)
+    expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+    expect(model.count(AGENT.finalize)).toBe(calls)
+  }, 120_000)
+
+  /** A supply note run with no memo whose finalize model heads the notes with
+   * only a marker on every attempt: they are saved on the last. */
+  async function headlessRun() {
+    const directory = matter()
+    let first = ""
+    const finalize: Reply = (prompt, index) => {
+      first ||= prompt
+      return draftingNotes(first, index).replace(/^# .*$/m, "# [ref: notes]")
+    }
+    const model = scriptedModel({ ...happyPath, [AGENT.finalize]: finalize,
+      [AGENT.changes]: sameSession(prompt => JSON.stringify({ amendments: [{ pid: pidOf(prompt, DRAFTED),
+        updated: "The supplier shall deliver the goods in good condition [open item: confirm the condition standard chosen].", reason: "Drafting judgment.", sources: [] }], questions: [] })) })
+    const run = await runLean(directory, { sessions: model.port })
+    return { directory, run, model }
+  }
+
+  test("through the run, notes whose only heading is a marker on every attempt are saved on the last and delivered under a plain title", async () => {
+    const { directory, run, model } = await headlessRun()
+    expect(run.status).toBe("completed")
+    expect(model.count(AGENT.finalize)).toBe(LEAN_MAX_RETRIES + 1)
+    const saved = readLeanText(directory, "drafting-notes.md")!
+    expect(saved).toStartWith("# [ref: notes]\n")
+    const delivered = `# Drafting notes\n\n${withoutRefMarkers(saved).replace(/^(?:[ \t]*\n)+/, "")}`
+    expect(delivered).toContain("The lawyer must resolve this before the draft is used.")
+    expect(readLeanText(directory, DELIVERED_NOTES.markdown)).toBe(delivered)
+    expect(docxText(readFileSync(leanFile(directory, DELIVERED_NOTES.docx)))).toStartWith("Drafting notes\nThe draft states the delivery period")
+    expect(stageOutputValid(directory, "gate")).toBe(true)
+  }, 120_000)
+
+  test("a resume keeps notes saved on their last attempt without a heading of their own, and their delivered notes", async () => {
+    const { directory, model } = await headlessRun()
+    const saved = readLeanText(directory, "drafting-notes.md")
+    const delivered = readLeanText(directory, DELIVERED_NOTES.markdown)
+    expect(stageOutputValid(directory, "finalize")).toBe(true)
+    const calls = model.count(AGENT.finalize)
+    expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+    expect(model.count(AGENT.finalize)).toBe(calls)
+    expect(readLeanText(directory, "drafting-notes.md")).toBe(saved)
+    expect(readLeanText(directory, DELIVERED_NOTES.markdown)).toBe(delivered)
+    expect(stageOutputValid(directory, "gate")).toBe(true)
+  }, 120_000)
+
+  test("a passed gate whose delivered notes are missing is not valid, so a resume delivers them again", async () => {
+    const { directory, model } = await notesRun()
+    expect(stageOutputValid(directory, "gate")).toBe(true)
+    const delivered = readLeanText(directory, DELIVERED_NOTES.markdown)
+    rmSync(leanFile(directory, DELIVERED_NOTES.docx))
+    expect(stageOutputValid(directory, "gate")).toBe(false)
+    expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+    expect(existsSync(leanFile(directory, DELIVERED_NOTES.docx))).toBe(true)
+    expect(readLeanText(directory, DELIVERED_NOTES.markdown)).toBe(delivered)
+    expect(stageOutputValid(directory, "gate")).toBe(true)
+  }, 120_000)
 })
 
 describe("a planned document id inside a quotation, a citation, a footnote marker or a locator's number", () => {
@@ -452,12 +655,12 @@ describe("a placeholder in the drafting notes' own text", () => {
   const HOLE = openItem("apply", "placeholder", "The body contains the placeholder [insert date].", { document: "d1", placeholder: "[insert date]" })
   const NOTES_PLACEHOLDER = (placeholders: string[]) =>
     `The drafting notes leave these placeholders in their own text: ${placeholders.join(", ")}. State the point in words, or quote the body's placeholder exactly as its open item records it.`
-  /** Notes that disclose GAP and HOLE as the mode asks, after `line`. A memo's
-   * marker may also name an id the run no longer lists; delivery removes it. */
+  /** Notes that disclose GAP and HOLE in ref markers, after `line`. A marker
+   * may also name an id the run no longer lists; delivery removes it. */
   const notes = (withMemo: boolean, line: string) => withMemo
     ? memo(line, `No authority was found for the delivery period. [refs: ${GAP.id}; apply:placeholder:0123456789ab]`,
       `The body keeps [INSERT DATE] for the start date; supply it. [ref: ${HOLE.id}]`)
-    : ["# Drafting notes", "", line, `- ${GAP.id}: research the delivery period.`, `- [${HOLE.id}]: the body keeps [insert date]; supply the start date.`, ""].join("\n")
+    : ["# Drafting notes", "", line, `- Research the delivery period. [ref: ${GAP.id}]`, `- The body keeps [insert date]; supply the start date. [ref: ${HOLE.id}]`, ""].join("\n")
 
   for (const withMemo of [false, true])
     test(`is retried ${withMemo ? "in a requested memo" : "without a requested memo"}; a quoted open placeholder, an id and a ref marker are not`, () => {
@@ -491,7 +694,7 @@ describe("a placeholder in the drafting notes' own text", () => {
     })
   }
 
-  test("a ref marker without a requested memo is not one", () => {
+  test("a ref marker naming an id the run no longer lists is not one", () => {
     const directory = memoMatter("none")
     expect(checkDraftingNotes(directory, notes(false, "An earlier point is closed. [ref: apply:placeholder:0123456789ab]"), [GAP, HOLE]).issues).toEqual([])
   })
