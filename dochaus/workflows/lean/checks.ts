@@ -118,9 +118,10 @@ export function settleApply(changes: ChangeList, result: ApplyResult | undefined
  * A requested memo is delivered with only its "[ref: …]" markers removed, so
  * there an item is disclosed by its id inside a marker, and a run id, planned
  * document id or recorded change id written anywhere else, which would reach
- * the reader, is retried. So is a placeholder in the notes' own text (the
- * delivered memo's, without its markers), a gap no open item records; the
- * notes may quote a body placeholder exactly as its open item records it.
+ * the reader, is retried. So is a placeholder in the notes' own text, a gap
+ * no open item records. The notes may quote a body placeholder exactly as its
+ * open item records it, and neither a "[ref: …]" marker, an item's id, quoted
+ * text nor an editorial mark (EDITORIAL_MARK) is a placeholder of their own.
  * On the last attempt (`final`) such an id or placeholder alone does not fail
  * the notes: they are saved as the model wrote them, never rewritten, and
  * every other check still applies. */
@@ -132,7 +133,8 @@ export function checkDraftingNotes(directory: string, content: string, items: Op
   const undisclosed = items.filter(item => memo
     ? !markers.some(marker => standingID(item.id).test(marker))
     : !content.includes(item.id)).map(item => item.id)
-  const delivered = memo ? withoutRefMarkers(content) : ""
+  const unmarked = withoutRefMarkers(content)
+  const delivered = memo ? unmarked : ""
   const ids = memo && !options.final
   const stray = ids ? runItemIDs(directory, items).filter(id => readerVisibleID(id) && standingID(id).test(delivered)) : []
   // A planned document's short id ("d1") is internal in a memo too: the reader
@@ -143,10 +145,10 @@ export function checkDraftingNotes(directory: string, content: string, items: Op
   const strayDocuments = ids ? (readLeanPlan(directory)?.documents ?? []).map(row => row.id).filter(id => standingID(id).test(prose)) : []
   // So is a recorded change id ("a1"): the reader knows a change by its effect.
   const strayChanges = ids ? runChangeIDs(directory, items).filter(id => standingID(id).test(prose)) : []
-  // An item's id ("apply:placeholder:…"), in a marker or not, is no placeholder.
   const recorded = new Set(items.flatMap(item => item.ref.placeholder ? [item.ref.placeholder.toLowerCase()] : []))
-  const gaps = options.final ? [] : textPlaceholders(items.reduce((text, item) => text.replaceAll(item.id, " "), memo ? delivered : content))
-    .filter(placeholder => !recorded.has(placeholder.toLowerCase()))
+  const own = items.reduce((text, item) => text.replaceAll(item.id, " "), unmarked).replace(QUOTED, " ")
+  const gaps = options.final ? [] : textPlaceholders(own)
+    .filter(placeholder => !recorded.has(placeholder.toLowerCase()) && !EDITORIAL_MARK.test(placeholder))
   const misquoted = sourceQuotes(content).filter(quote => !quoteFound(directory, quote))
   const unsupported = [...new Set(citationRowsForLeanText(directory, "drafting-notes.md", content)
     .filter(row => row.status === "unsupported").map(row => row.citation_text))]
@@ -176,6 +178,14 @@ export function checkDraftingNotes(directory: string, content: string, items: Op
   }
 }
 
+/** Text in straight or curly double quotes. */
+const QUOTED = /"[^"\n]*"|\u201c[^\u201d\n]*\u201d/g
+
+/** An editorial mark in quoted or cited text records an edit already made, not
+ * text to supply: a bracket holding only "sic" or an edit's past participle
+ * ("added", "inserted", "supplied", "omitted"), optionally after "emphasis". */
+const EDITORIAL_MARK = /^\[\s*(?:(?:emphasis\s+)?(?:added|inserted|supplied|omitted)|sic)\s*\]$/i
+
 /** Text the memo check does not read as prose: quoted text (the memo's verified
  * quotes), a footnote marker "[^d1]", a citation such as "3(d1)" or
  * "3(1)(a1)", and the number a locator word gives. That number starts with a
@@ -183,7 +193,7 @@ export function checkDraftingNotes(directory: string, content: string, items: Op
  * parentheses after a sub-division ("Sub-paragraph (a1)"). Any other token
  * after a locator word is prose: "the clause a1 adds", "the new clause (a1)"
  * and "Part d2" name an internal id. */
-const NOT_PROSE = [/"[^"\n]*"|\u201c[^\u201d\n]*\u201d/g, /\[\^[^\]\n]*\]/g, /(?<=[A-Za-z0-9)]\()[^)\n]*\)/g,
+const NOT_PROSE = [QUOTED, /\[\^[^\]\n]*\]/g, /(?<=[A-Za-z0-9)]\()[^)\n]*\)/g,
   /(?<![\w'\u2019])(?:(?:section|regulation|paragraph|clause|schedule|article|part|rule)s?\b|(?:ss?|regs?|paras?|cl|sch|arts?)\.)[ \t]*(?:\(?\d[^\s(),;]*\)?|(?<=sub-[a-z]+[ \t]*)\([^\s(),;]+\))/gi]
 
 /** A "[ref: …]" or "[refs: …]" marker, as withoutRefMarkers (delivered-memo.ts)

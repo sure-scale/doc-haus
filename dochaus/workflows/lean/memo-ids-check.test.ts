@@ -446,7 +446,8 @@ describe("a planned document id inside a quotation, a citation, a footnote marke
 // The notes are lawyer-facing text: a placeholder of their own is a gap no open
 // item records, so it is retried. Quoting a body placeholder exactly as its open
 // item records it is disclosure, not a gap; an id, in a "[ref: …]" marker or
-// not, is not a placeholder.
+// not, is not a placeholder; nor is quoted text or an editorial mark that
+// records an edit already made ("[emphasis added]", "[sic]").
 describe("a placeholder in the drafting notes' own text", () => {
   const HOLE = openItem("apply", "placeholder", "The body contains the placeholder [insert date].", { document: "d1", placeholder: "[insert date]" })
   const NOTES_PLACEHOLDER = (placeholders: string[]) =>
@@ -470,7 +471,29 @@ describe("a placeholder in the drafting notes' own text", () => {
 
   test("a line of underscores only is not a placeholder, as in the body", () => {
     const directory = memoMatter("none")
-    expect(checkDraftingNotes(directory, notes(false, "Signed:\n\n______________"), [GAP, HOLE]).issues).toEqual([])
+    expect(checkDraftingNotes(directory, notes(false, "Signed:\n\n______________\n\nThe notice period is [insert period]."), [GAP, HOLE]).issues)
+      .toEqual([NOTES_PLACEHOLDER(["[insert period]"])])
+  })
+
+  for (const withMemo of [false, true]) {
+    const mode = withMemo ? "in a requested memo" : "without a requested memo"
+    const check = (line: string) => checkDraftingNotes(memoMatter(withMemo ? "memo" : "none"), notes(withMemo, line), [GAP, HOLE]).issues
+
+    test(`an editorial mark is not one ${mode}; a blank for text to supply is`, () => {
+      expect(check("Quoting the source, the notes mark [emphasis added], [Emphasis Inserted], [emphasis supplied], [inserted], [sic] and [omitted].")).toEqual([])
+      expect(check("The rent is [to be inserted]; the text [inserted by the parties] stands.")).toEqual([NOTES_PLACEHOLDER(["[to be inserted]", "[inserted by the parties]"])])
+    })
+
+    test(`a quoted blank is not one ${mode}; the same blank unquoted, or a blank reference, is`, () => {
+      expect(check('The lease says "rent of [to be inserted]" and \u201cthe term is [insert term]\u201d; the draft keeps neither blank.')).toEqual([])
+      expect(check("The lease leaves the rent [to be inserted].")).toEqual([NOTES_PLACEHOLDER(["[to be inserted]"])])
+      expect(check("Clause [A] and Section [Governing law] need the lawyer's numbering.")).toEqual([NOTES_PLACEHOLDER(["Clause [A]", "Section [Governing law]"])])
+    })
+  }
+
+  test("a ref marker without a requested memo is not one", () => {
+    const directory = memoMatter("none")
+    expect(checkDraftingNotes(directory, notes(false, "An earlier point is closed. [ref: apply:placeholder:0123456789ab]"), [GAP, HOLE]).issues).toEqual([])
   })
 
   test("on the last attempt it does not fail the notes, which are saved as written", async () => {
