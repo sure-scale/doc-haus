@@ -152,7 +152,7 @@ export function stepSessionTitle(directory: string, step: StepID, detail: string
 }
 
 /** Outputs a step may leave unwritten: a plan written by hand has no coverage
- * record, and a plan whose files job did not run or pass has no requested-files
+ * record, and a plan whose files job did not run has no requested-files
  * record. Restoring a step whose snapshot lacks one removes it. */
 export const OPTIONAL_OUTPUTS = ["coverage.json", "requested-files.json"]
 

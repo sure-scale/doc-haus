@@ -1,8 +1,9 @@
 import path from "node:path"
 import { sha256File } from "../../lib/lineage"
-import { normalize } from "../../lib/quote-verify"
+import { normalize, normalizeWithMap } from "../../lib/quote-verify"
 import { TOOL_SYNTAX_ISSUE, printedToolCall, record } from "./checks"
 import { combinedDelivery, deliveryArtifactEvidence, deliveryStem, memoNotesFile, plannedRegistration, readLeanDocuments, requestedMemo } from "./deliverables"
+import { NAMING_WORDS } from "./delivery-selection"
 import { plainFileName, readLeanPlan, type DocID, type PlannedDocument } from "./plan"
 import { tagged } from "./prompts"
 import { REQUEST_SOURCE, excerpt, instructionFound, lawyerWords, matterSourceIDs, openItem, quoteMissIssue } from "./quotes"
@@ -22,23 +23,28 @@ import { answeredQuestionsText, readLeanJson, readLeanText, readQuestions, short
 // grounded names to the plan. A shape the run cannot build (several documents
 // in one file, or the memo after its document) is no revision issue; like any
 // file the final plan does not deliver as asked, it reaches the lawyer as an
-// open item derived from the record (requestedFilesItems), never stored.
+// open item derived from the record (requestedFilesItems), never stored. A job
+// whose reply never passed its check is recorded as unchecked, and disclosed
+// the same way.
 
 export const LEAN_REQUESTED_FILES_SCHEMA = "dochaus.lean.requested-files/1"
 
 /** One file the lawyer asks to receive: the planned ids, and "memo" for the
- * memo, it holds in the order the lawyer places them; its name as the lawyer
- * gives it, or null; and the lawyer's exact words that ask for it. A name the
- * last attempt gave but the lawyer's words did not confirm is kept as
- * `refused_name`, beside a null name, for disclosure only. */
+ * memo, it holds, in the lawyer's order or, where the lawyer's words set none,
+ * with the memo first; its name in the lawyer's own spelling, or null; and the
+ * lawyer's exact words that ask for it. A name a reply gave for these words but
+ * the lawyer's words did not confirm is kept as `refused_name`, beside a null
+ * name, for disclosure only. */
 export type RequestedFile = { holds: string[]; name: string | null; quote: string; refused_name?: string }
 /** `stated` is false, with no files, when the lawyer's words do not say how the
  * planned documents and memo are delivered as files. */
 export type RequestedFiles = { stated: boolean; files: RequestedFile[] }
 /** The record of the plan whose basis is `basis`, read for the planned titles
- * and memo name in `planned` (requestedFilesPlanned). */
+ * and memo name in `planned` (requestedFilesPlanned). With `status`
+ * "unchecked", the files job's reply never passed its check, so it is not known
+ * which files the lawyer's words ask for: `stated` is false, with no files. */
 export type LeanRequestedFiles = {
-  schema: typeof LEAN_REQUESTED_FILES_SCHEMA; basis: string; planned: { titles: string[]; memo: string | null }; stated: boolean; files: RequestedFile[]
+  schema: typeof LEAN_REQUESTED_FILES_SCHEMA; basis: string; planned: { titles: string[]; memo: string | null }; status?: "unchecked"; stated: boolean; files: RequestedFile[]
 }
 
 type Checked<T> = { issues: string[]; value?: T }
@@ -70,7 +76,7 @@ export function requestedFilesPrompt(directory: string, documents: PlannedDocume
       `- When those words say which files the lawyer wants to receive, what goes in each file or what a file is named, reply "stated": true and list each file they ask for. When they do not, reply {"stated":false,"files":[]}.`,
       `- For each file give "holds": the ids of the planned documents${memo ? ' and "memo" for the memo' : ""} that the lawyer's words put in that file` +
       `${memo ? ', in the order the words place them in the file, with "memo" first when the words set no order' : ""}; ` +
-      "\"name\": the file name exactly as the lawyer writes it, ending in .docx, adding only .docx to a name the lawyer gives without it, or null when the lawyer gives no name; " +
+      "\"name\": the file name exactly as the lawyer writes it, or null when the lawyer gives no name; " +
       "\"quote\": the lawyer's exact words that ask for this file, copied verbatim, including the words that give its name.",
       `- Put each planned document${memo ? " and the memo" : ""} in one file at most. List only the files the lawyer's words ask for, and in each only what those words put in it.`,
       "- A file the lawyer's words name as the output of the whole request holds everything the request asks for; a file they name for one document holds only that document. " +
@@ -83,14 +89,18 @@ export function requestedFilesPrompt(directory: string, documents: PlannedDocume
 
 /** Reads the job's reply and grounds each file: its quote in the lawyer's own
  * words (instructionFound), a name as a plain Word file name the lawyer's text
- * gives where the quote stands (nameGrounded), its holds as planned ids or
- * "memo" when a memo is planned, each in one file at most. Every defect is
- * retry feedback; the files are returned only when none is left. On the last
- * attempt (`final`) a refused name becomes null, kept as `refused_name` for
- * disclosure, and a file whose quote is refused is dropped, so nothing
- * ungrounded is kept; with every file dropped the lawyer's words are taken as
- * not stating the files. Any other defect still fails the last attempt. */
-export function parseRequestedFiles(reply: string, directory: string, documents: PlannedDocument[], memo: string | undefined, { final = false } = {}): Checked<RequestedFiles> {
+ * gives where the quote stands (nameGrounded), kept in the lawyer's spelling,
+ * its holds as planned ids or "memo" when a memo is planned, each in one file
+ * at most. A name given without an extension is a Word file's: code adds
+ * ".docx". Every defect is retry feedback; the files are returned only when
+ * none is left. On the last attempt (`final`) a refused name becomes null, kept
+ * as `refused_name` for disclosure; any other defect, a quote that is not the
+ * lawyer's words included, still fails it, as the coverage check's does, and
+ * the job is then unchecked. `refused` carries refused names across one job's
+ * attempts, by quote: a later reply that gives these words no name keeps the
+ * refused one for disclosure, until a reply gives them a name that passes. */
+export function parseRequestedFiles(reply: string, directory: string, documents: PlannedDocument[], memo: string | undefined,
+  { final = false, refused = new Map<string, string>() }: { final?: boolean; refused?: Map<string, string> } = {}): Checked<RequestedFiles> {
   if (printedToolCall(reply)) return { issues: [TOOL_SYNTAX_ISSUE] }
   const shape = filesShape(memo !== undefined)
   let value: unknown
@@ -105,22 +115,29 @@ export function parseRequestedFiles(reply: string, directory: string, documents:
     if (!record(row) || !Array.isArray(row.holds) || !row.holds.length || !row.holds.every(id => typeof id === "string" && id.trim()) ||
       !(row.name == null || typeof row.name === "string") || typeof row.quote !== "string" || !row.quote.trim())
       return void issues.push(`${where} needs "holds" as a nonempty list of planned ids${memo !== undefined ? ' or "memo"' : ""}, "name" as a file name or null, and a nonempty "quote" string. ${shape}`)
-    const file: RequestedFile = { holds: [...new Set((row.holds as string[]).map(id => id.trim()))], name: typeof row.name === "string" && row.name.trim() ? row.name.trim() : null, quote: row.quote.trim() }
-    const grounded = instructionFound(directory, file.quote)
-    if (!grounded) {
-      if (final) return
-      issues.push(quoteMissIssue(directory, where, { quote: file.quote, source_id: REQUEST_SOURCE }, "json"))
-    }
-    // A name is held to its quote once the quote is the lawyer's words.
-    const refused = !grounded || file.name === null ? undefined
-      : !/\.docx$/i.test(file.name) || !plainFileName(file.name)
-        ? `${where} gives the name "${file.name}", which is not a plain Word file name. Give the file name as the lawyer writes it, ending in .docx, without a folder or Markdown, or null when the lawyer gives none.`
-      : !nameGrounded(directory, file.quote, file.name)
-        ? `${where} gives the name "${file.name}", but its quote does not give that name. Quote the lawyer's words that name this file, and give the name exactly as they write it, adding only .docx to a name given without it, or null when the lawyer gives none.`
-      : undefined
-    if (refused && final) Object.assign(file, { name: null, refused_name: file.name })
-    else if (refused) issues.push(refused)
+    const given = typeof row.name === "string" ? row.name.trim() : ""
+    const name = !given ? null : /\.\p{L}[\p{L}\p{N}]{0,4}$/u.test(given) ? given : `${given}.docx`
+    const file: RequestedFile = { holds: [...new Set((row.holds as string[]).map(id => id.trim()))], name, quote: row.quote.trim() }
     rows.push({ index, file })
+    if (!instructionFound(directory, file.quote)) return void issues.push(quoteMissIssue(directory, where, { quote: file.quote, source_id: REQUEST_SOURCE }, "json"))
+    // A name is held to its quote once the quote is the lawyer's words.
+    const key = normalize(file.quote).toLowerCase()
+    if (name === null) {
+      if (refused.has(key)) file.refused_name = refused.get(key)
+      return
+    }
+    const plain = /\.docx$/i.test(name) && plainFileName(name)
+    const spelled = plain ? nameGrounded(directory, file.quote, name) : undefined
+    if (spelled) {
+      refused.delete(key)
+      file.name = spelled
+      return
+    }
+    refused.set(key, name)
+    if (final) return void Object.assign(file, { name: null, refused_name: name })
+    issues.push(!plain
+      ? `${where} gives the name "${given}", which is not a plain Word file name. Give the file name as the lawyer writes it, without a folder or Markdown, or null when the lawyer gives none.`
+      : `${where} gives the name "${given}", but its quote does not give that name. Quote the lawyer's words that name this file, and give the name exactly as they write it, or null when the lawyer gives none.`)
   })
   const ids = documents.map(document => document.id as string)
   const places = new Map<string, number[]>()
@@ -135,39 +152,61 @@ export function parseRequestedFiles(reply: string, directory: string, documents:
   return { issues, value: rows.length ? { stated: true, files: rows.map(row => row.file) } : { stated: false, files: [] } }
 }
 
-// Word characters, for a name's edges; a name given without ".docx" follows a
-// naming word and ends where the lawyer's words end it, as deliveryNameQuoted
-// grounds a title (but on the lawyer's text: the quote's end is no edge).
+// A name's edges in the lawyer's text, read as instructionFound reads it
+// (normalize: curly quotation marks straight, whitespace runs one space). A
+// name starts at the text's start, after a space, a colon, or an opening
+// quotation mark, bracket or Markdown mark; an apostrophe opens a name only
+// outside a word. A name given without ".docx" follows a naming word
+// (NAMING_WORDS, as deliveryNameQuoted grounds a title) and ends at a line
+// break, a clause mark, a colon, a closing quotation mark or bracket, a full
+// stop before a space, a closing mark or the end, or a dash between spaces.
 const WORD = /[\p{L}\p{N}_]/u
-const TITLED = /(?:^|[^\p{L}\p{N}_])(?:titled|entitled|named|called|with the title)\s+["']?$/u
-const TITLE_END = /^(?:$|[,;!?"']|\.(?:\s|$))/
+const NAME_OPENS = /["«(\[*`:]/
+const NAME_END = /^(?:$|[,;!?:"'»)\]]|\.(?:["'»)\]]|\s|$)|\s[-–—](?:\s|$))/
+const LINE_END = /^[^\S\r\n]*[\r\n]/
 
-/** Whether the lawyer's words (lawyerWords, compared as instructionFound
- * compares them: whitespace and case aside) give `name` where they hold
- * `quote`: its stem (the name without ".docx") starts inside the quoted words
- * at a word edge of the lawyer's text and is followed there by ".docx", or,
- * given without it, follows a naming word inside the quote and ends at a
- * sentence or clause mark. So a name cut short at its end from a longer name is
- * refused, a quote may run on past the name, and a line break inside the name
- * does not matter. Not caught: a ".docx" name cut short at its start at a
- * space, which leaves a name the lawyer's words also end with ".docx"; where
- * such a name starts, no rule of the text says. */
+/** Lower case where it keeps the text's length, so offsets still map. */
+const fold = (text: string) => text.replace(/[\s\S]/gu, char => {
+  const lower = char.toLowerCase()
+  return lower.length === char.length ? lower : char
+})
+
+/** The name in the lawyer's own spelling when the lawyer's words
+ * (lawyerWords, compared as instructionFound compares them: whitespace and case
+ * aside) give `name` where they hold `quote`; undefined otherwise. Its stem
+ * (the name without ".docx") starts inside the quoted words at a name's start
+ * in the lawyer's text and is followed there by ".docx", or, given without it,
+ * follows a naming word inside the quote and ends at a name's end. So a name cut
+ * short from a longer name is refused, a quote may run on past the name, and a
+ * line break inside the name does not matter. The spelling is the lawyer's text
+ * from the stem's start, whitespace runs one space, with ".docx" as the lawyer
+ * writes it or added. Not caught, since no rule of the text says where such a
+ * name starts or ends: a ".docx" name cut short at its start at a space, which
+ * leaves a name the lawyer's words also end with ".docx", and a name given
+ * without ".docx" cut short at a full stop and a space or at a comma. */
 function nameGrounded(directory: string, quote: string, name: string) {
-  const stem = normalize(name.replace(/\.docx$/i, "")).toLowerCase()
-  const words = normalize(quote).toLowerCase()
-  if (!stem || !words) return false
-  return lawyerWords(directory).some(raw => {
-    const text = normalize(raw).toLowerCase()
+  const stem = fold(normalize(name.replace(/\.docx$/i, "")))
+  const words = fold(normalize(quote))
+  if (!stem || !words) return
+  // Built here: delivery-selection.ts and this module import each other through the stage table.
+  const naming = new RegExp(String.raw`(?:^|[^\p{L}\p{N}_])(?:${NAMING_WORDS})\s+["'«]?$`, "u")
+  for (const raw of lawyerWords(directory)) {
+    const { text: normal, map } = normalizeWithMap(raw)
+    const text = fold(normal)
+    const starts = (at: number) => at === 0 || text[at - 1] === " " || NAME_OPENS.test(text[at - 1]!) ||
+      (text[at - 1] === "'" && !WORD.test(text[at - 2] ?? ""))
     for (let start = text.indexOf(words); start >= 0; start = text.indexOf(words, start + 1)) {
       const end = start + words.length
       for (let at = text.indexOf(stem, start); at >= 0 && at < end; at = text.indexOf(stem, at + 1)) {
-        if (WORD.test(text[at - 1] ?? "")) continue
-        const after = text.slice(at + stem.length)
-        if (/^\.docx(?![\p{L}\p{N}_])/u.test(after) || (at + stem.length <= end && TITLED.test(text.slice(start, at)) && TITLE_END.test(after))) return true
+        if (!starts(at)) continue
+        const close = at + stem.length
+        const spelled = (to: number) => raw.slice(map[at], map[to - 1]! + 1).replace(/\s+/g, " ")
+        if (/^\.docx(?![\p{L}\p{N}_])/u.test(text.slice(close))) return spelled(close + 5)
+        if (close <= end && naming.test(text.slice(start, at)) && (NAME_END.test(text.slice(close)) || LINE_END.test(raw.slice(map[close - 1]! + 1))))
+          return `${spelled(close)}.docx`
       }
     }
-    return false
-  })
+  }
 }
 
 /** What a recorded file asks of the plan: the memo with one document, the memo
@@ -355,6 +394,7 @@ export function writeRequestedFiles(directory: string, saved: LeanRequestedFiles
 export function readRequestedFiles(directory: string): LeanRequestedFiles | undefined {
   const value = readLeanJson(directory, RECORD_FILE)
   if (!record(value) || value.schema !== LEAN_REQUESTED_FILES_SCHEMA || typeof value.basis !== "string" || typeof value.stated !== "boolean" ||
+    !(value.status === undefined || (value.status === "unchecked" && !value.stated)) ||
     !record(value.planned) || !Array.isArray(value.planned.titles) || !value.planned.titles.every(title => typeof title === "string") ||
     !(value.planned.memo === null || typeof value.planned.memo === "string") ||
     !Array.isArray(value.files) || !value.files.every(savedFile) || (!value.stated && value.files.length)) return
@@ -369,23 +409,29 @@ const savedFile = (row: unknown) => record(row) && Array.isArray(row.holds) && r
  * lawyer asked, derived from the record and never stored. Only a record of the
  * saved plan counts: same basis, and read for the plan's titles and memo
  * (requestedFilesPlanned); a plan written or edited by hand, or with no such
- * record, gives none. A file the run cannot build (fileShape) always gives
+ * record, gives none. An unchecked record gives one item, as the coverage
+ * check's does: the run could not confirm which files the lawyer's words ask to
+ * receive. A file the run cannot build (fileShape) always gives
  * one. Otherwise each file is compared with the names registration gives the
  * plan's files (plannedRegistration): the memo with one document must be that
  * document's combined file (combinedDelivery), one document alone must not be
  * combined, the memo alone must be delivered with no document combined, and a
  * requested name, or one the run could not confirm, must be that file's name,
- * free of a matter file the run did not write. Each item quotes the lawyer's
+ * free of a matter file the run did not write (the lawyer's accepted Word
+ * revision of the run's file is the run's). Each item quotes the lawyer's
  * words, says what they ask for and every file the run delivers instead, by all
  * it holds, and belongs to the drafting notes, so a repair goes to the notes
  * writer. Once the lawyer has answered the question on these words
- * (questionID), an item on a file that question covered cites the answer. Each
+ * (questionID), an item on a file that question quoted cites the answer. Each
  * id keys on the item's content. */
 export function requestedFilesItems(directory: string): OpenItem[] {
   const plan = readLeanPlan(directory)
   const saved = readRequestedFiles(directory)
-  if (!plan || plan.basis === undefined || !saved || saved.basis !== plan.basis || !saved.stated ||
+  if (!plan || plan.basis === undefined || !saved || saved.basis !== plan.basis ||
     JSON.stringify(saved.planned) !== JSON.stringify(requestedFilesPlanned(plan.documents, plan.memo))) return []
+  if (saved.status === "unchecked") return [openItem("finalize", "omission", "Requested files could not be checked: the check of the lawyer's words for the files they ask to receive gave no usable result, " +
+    "so the run could not confirm which files the lawyer's words ask to receive or what each holds. The lawyer should confirm how the files are to be delivered.", { repair_target: "memo" })]
+  if (!saved.stated) return []
   const registered = plannedRegistration(directory, plan)
   // Registration names are lowercased; the run's evidence keeps their spelling.
   const spellings = new Map<string, string>(deliveryArtifactEvidence(directory).map(row =>
@@ -406,7 +452,7 @@ export function requestedFilesItems(directory: string): OpenItem[] {
       ? `${planned.slice(0, -5)}${row.name.slice(row.wanted.length - 5)}` : row.name
     const titled = document ? title(document) ?? null : null
     const current = kind === "combined" ? null : sha256File(path.join(directory, spelled))?.sha256
-    const owned = rows.some(other => other.title === titled && other.deliverable?.toLocaleLowerCase() === row.name && other.sha256 === current)
+    const owned = rows.some(other => other.title === titled && other.deliverable?.toLocaleLowerCase() === row.name && (other.sha256 === current || other.conflict === "accepted_revision"))
     const stem = row.wanted.slice(0, -5).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
     const earlier = rows.find(other => other.kind === kind && other.title === titled && other.deliverable &&
       new RegExp(`^${stem}(?: \\(\\d+\\))?\\.docx$`).test(other.deliverable.toLocaleLowerCase()) && other.deliverable.toLocaleLowerCase() !== row.name)?.deliverable
@@ -425,7 +471,12 @@ export function requestedFilesItems(directory: string): OpenItem[] {
   const nameKey = (name: string) => `${deliveryStem({ title: "", file: name })}.docx`.toLocaleLowerCase()
   const lawyerQuote = (words: string) => `"${words.replace(/\s+/g, " ").trim()}"` + (matterSourceIDs(directory).includes(REQUEST_SOURCE) ? "" : ` [source: ${REQUEST_SOURCE}]`)
   const id = questionID(directory)
-  const answered = readQuestions(directory).some(question => question.id === id && question.status === "answered")
+  // The words the answered question quoted (requestedFilesQuestion); a later
+  // job may quote them more or less fully.
+  const flat = (words: string) => normalize(words).toLowerCase()
+  const quoted = readQuestions(directory).filter(question => question.id === id && question.status === "answered")
+    .flatMap(question => [...question.question.matchAll(/Your words "(.*?)" ask for /g)].map(match => flat(match[1]!.replace(/…$/, ""))))
+  const answered = (quote: string) => quoted.some(words => words.includes(flat(quote)) || flat(quote).includes(words))
   const items = saved.files.flatMap(file => {
     const check = fileCheck(file, plan.documents, memo !== undefined)
     const shape = fileShape(file)
@@ -443,7 +494,7 @@ export function requestedFilesItems(directory: string): OpenItem[] {
     const reason = shape ? "" : file.holds.filter(held => held !== MEMO).length > 1 ? " The run cannot put more than one document in one file."
       : " The run can join the memo and a document in one file only with the memo first."
     const refused = file.name === null && file.refused_name !== undefined && !named
-    const closing = answered && !check.unsupported && check.planned
+    const closing = answered(file.quote) && !check.unsupported && check.planned
       ? ` The lawyer answered the requested-files question ${id}; the plan drawn up with that answer still delivers them so.`
       : " The lawyer should confirm how these files are to be delivered."
     return [openItem("finalize", "omission", `Requested files: the lawyer's words ${lawyerQuote(file.quote)} ask for ${asked(file, held => plan.documents.find(row => row.id === held))}` +

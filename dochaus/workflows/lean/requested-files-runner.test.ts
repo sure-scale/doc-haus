@@ -241,24 +241,49 @@ describe("requested files through the run", () => {
     expect(deliverables.names).toEqual(expect.arrayContaining(["Kestrel Release.docx", "Kestrel Advice.docx"]))
   }, 120_000)
 
-  test("a files reply that never passes its check leaves no record, is recorded as unchecked and asks nothing; the plan is saved as before", async () => {
+  test("a files reply that never passes its check is recorded as unchecked and disclosed, and asks nothing; the plan is saved as before", async () => {
     const directory = prepared()
     // A record left from an earlier outline of the same inputs is not this plan's.
     writeRequestedFiles(directory, { schema: LEAN_REQUESTED_FILES_SCHEMA, basis: outlineBasis(directory), planned: PLANNED, stated: true, files: [PACKED] })
     const model = scriptedModel(replies({ [AGENT.draft]: outliner(BODY), [AGENT.files]: () => "The lawyer asks for one file." }))
     expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
 
-    // Every allowed attempt in the one files session, then no record, revision or question.
+    // Every allowed attempt in the one files session, then no revision or question.
     expect(filesSessions(model)).toHaveLength(1)
     expect(model.count(AGENT.files)).toBe(LEAN_MAX_RETRIES + 1)
     expect(new Set(model.prompts.filter(prompt => prompt.agent === AGENT.files).map(prompt => prompt.sessionID)).size).toBe(1)
     expect(revisions(model)).toEqual([])
-    expect(readRequestedFiles(directory)).toBeUndefined()
-    expect(requestedFilesItems(directory)).toEqual([])
+    const plan = readLeanPlan(directory)!
+    expect(readRequestedFiles(directory)).toEqual({ schema: LEAN_REQUESTED_FILES_SCHEMA, basis: plan.basis!, planned: PLANNED, status: "unchecked", stated: false, files: [] })
     expect(filesEvents(directory)).toEqual([expect.objectContaining({ stage: "draft", document: "d1", step: "files", outcome: "unchecked",
-      reason: "The files job's reply did not pass its check, so the files the lawyer asks to receive are not recorded; the plan delivers its files as outlined." })])
+      reason: "The files job's reply did not pass its check, so the files the lawyer asks to receive could not be confirmed; the plan delivers its files as outlined and the drafting notes say so." })])
     expect(filesEvents(directory)[0]).not.toHaveProperty("issues")
     expect(readQuestions(directory)).toEqual([])
     expect(readLeanText(directory, "plan.json")).toBe(planned(BODY, REQUEST, directory))
+
+    // The lawyer is told the files could not be confirmed.
+    const items = requestedFilesItems(directory)
+    expect(items).toEqual([expect.objectContaining({ stage: "finalize", kind: "omission", ref: expect.objectContaining({ repair_target: "memo" }) })])
+    expect(items[0]!.detail).toStartWith("Requested files could not be checked:")
+    expect(readLeanText(directory, "drafting-notes.md")).toContain(`[ref: ${items[0]!.id}]`)
+    expect(gateOf(directory)).toMatchObject({ status: "pass", blocking: [] })
+    expect(gateOf(directory).disclosed).toContainEqual(expect.objectContaining({ id: items[0]!.id, status: "disclosed" }))
+  }, 120_000)
+
+  test("a name refused on one attempt and dropped on the next is still disclosed", async () => {
+    const directory = prepared()
+    const refused = "Kestrel Release Bundle.docx"
+    const files: Reply = (_text, index) => JSON.stringify({ stated: true, files: [{ ...PACKED, name: index === 0 ? refused : null }] })
+    const model = scriptedModel(replies({ [AGENT.draft]: outliner(COMBINED), [AGENT.files]: files }))
+    expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+
+    expect(model.count(AGENT.files)).toBe(2)
+    expect(readRequestedFiles(directory)).toMatchObject({ stated: true, files: [{ ...PACKED, name: null, refused_name: refused }] })
+    const items = requestedFilesItems(directory)
+    expect(items).toHaveLength(1)
+    expect(items[0]!.detail).toBe(`Requested files: the lawyer's words "${PACK}" [source: request] ask for the memo and "Release letter" in one file and name this file; ` +
+      `the run could not confirm the name "${refused}" in those words and delivers the memo and "Release letter" in one file named "Release letter.docx". ` +
+      "The lawyer should confirm how these files are to be delivered.")
+    expect(gateOf(directory).disclosed).toContainEqual(expect.objectContaining({ id: items[0]!.id, status: "disclosed" }))
   }, 120_000)
 })

@@ -61,13 +61,19 @@ function distinctFiles(rows: DeliverySelection[]) {
   return new Set(rows.map(row => row.file.toLocaleLowerCase())).size === rows.length
 }
 
+/** The words, in lower case, after which the lawyer's instructions give a
+ * file's name or a Word output's title, as a regular-expression alternation;
+ * the name follows them after whitespace. requested-files.ts grounds a name
+ * given without ".docx" on the same words. */
+export const NAMING_WORDS = String.raw`titled|entitled|named|called|with\s+the\s+title|name\s+(?:it|the\s+file|this\s+file)|call\s+(?:it|the\s+file)|save\s+(?:it\s+)?as|file\s*name:`
+
 /** Naming intent and artifact roles belong to the semantic reviewer. The
  * checker only grounds the literal name; adding Word's extension to an
  * explicitly stated title does not require a model to invent another name. */
 export function deliveryNameQuoted(quote: string, file: string) {
   if (quote.includes(file)) return true
   const title = file.slice(0, -5).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-  const named = new RegExp(`\\b(?:titled|entitled|named|called|with the title)\\s+["“'‘]?(${title})(?=$|[,;!?]|\\.(?:\\s|$)|["”'’])`, "gi")
+  const named = new RegExp(`\\b(?:${NAMING_WORDS})\\s+["“'‘]?(${title})(?=$|[,;!?]|\\.(?:\\s|$)|["”'’])`, "gi")
   return [...quote.matchAll(named)].some(match => match[1] === file.slice(0, -5))
 }
 

@@ -65,8 +65,8 @@ import { countWords, headingUnits, tokens } from "./template-structure"
 // saved, on one question to the lawyer, asked once. Code never changes the
 // plan's delivery shape, but gives the plan the file names the lawyer's words
 // give, and saves the files in requested-files.json beside the plan. A files
-// reply that never passed its check leaves no record, is logged as unchecked
-// and does not stop the step.
+// reply that never passed its check is recorded and logged as unchecked, is
+// disclosed in the drafting notes and does not stop the step.
 // When a document is drafted from a matter document as its template, the
 // outline is admitted only once its coverage contract accounts for every
 // top-level part of the template (template-contract.ts); each part is told
@@ -190,7 +190,9 @@ export async function runDraftStage(
   // The files job, like the coverage job, reads the plan in a fresh session of
   // its own, and only when the plan has a memo or more than one document to
   // put in files; undefined when it is not asked. A reply that never passed its
-  // check gives no files. Errors from the session calls propagate.
+  // check gives no files. A name refused on one attempt is carried, by quote,
+  // to the later ones (parseRequestedFiles). Errors from the session calls
+  // propagate.
   const filing = async (documents: PlannedDocument[], memo: string | undefined): Promise<Checked<RequestedFiles> | undefined> => {
     if (memo === undefined && documents.length < 2) return
     const filesAgent = LEAN_STAGE_AGENTS.files
@@ -199,7 +201,8 @@ export async function runDraftStage(
     })
     sessionIDs.push(id)
     progress({ ...(sessionIDs.length === 1 ? { session_id: id } : {}), session_ids: [...sessionIDs] })
-    return exchange({ id, agent: filesAgent })("files", requestedFilesPrompt(directory, documents, memo), (reply, final) => parseRequestedFiles(reply, directory, documents, memo, { final }))
+    const refused = new Map<string, string>()
+    return exchange({ id, agent: filesAgent })("files", requestedFilesPrompt(directory, documents, memo), (reply, final) => parseRequestedFiles(reply, directory, documents, memo, { final, refused }))
   }
   // A plan whose outline basis is current is followed as it stands, including a
   // lawyer's edits; only its coverage record is refreshed when it no longer
@@ -274,11 +277,12 @@ export async function runDraftStage(
       writeRequestedFiles(directory, { schema: LEAN_REQUESTED_FILES_SCHEMA, basis, planned: requestedFilesPlanned(named.documents, value.memo), stated: requested.stated, files: requested.files })
       appendLeanEvent(directory, { stage: "draft", document, event: "requested_files", step: "files", outcome: requested.stated ? "stated" : "not_stated", issues: files,
         ...(named.applied.length ? { reason: named.applied.join("; ") } : {}) })
-    } else {
-      rmSync(leanFile(directory, "requested-files.json"), { force: true })
-      if (filed) appendLeanEvent(directory, { stage: "draft", document, event: "requested_files", step: "files", outcome: "unchecked",
-        reason: "The files job's reply did not pass its check, so the files the lawyer asks to receive are not recorded; the plan delivers its files as outlined." })
-    }
+    } else if (filed) {
+      // Disclosed from the record (requestedFilesItems), as an unchecked coverage record is.
+      writeRequestedFiles(directory, { schema: LEAN_REQUESTED_FILES_SCHEMA, basis, planned: requestedFilesPlanned(value.documents, value.memo), status: "unchecked", stated: false, files: [] })
+      appendLeanEvent(directory, { stage: "draft", document, event: "requested_files", step: "files", outcome: "unchecked",
+        reason: "The files job's reply did not pass its check, so the files the lawyer asks to receive could not be confirmed; the plan delivers its files as outlined and the drafting notes say so." })
+    } else rmSync(leanFile(directory, "requested-files.json"), { force: true })
     writeLeanPlan(directory, named?.documents ?? value.documents, basis, value.acting_for, memo && { name: memo.name, file: named?.notes_file ?? memo.file })
   } else if (document === FIRST_DOCUMENT && !planIsCurrent(directory)) {
     const saved = readLeanPlan(directory)!

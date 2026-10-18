@@ -26,8 +26,8 @@ export type LeanEventName =
   /** The draft step's recorded requested files: whether the lawyer's words state
    * them as `outcome` ("stated" or "not_stated"), the mismatches the outline
    * still leaves as `issues`, and the file names given to the plan as `reason`;
-   * or "unchecked", with no record and the reason, when the files job's reply
-   * never passed its check. */
+   * or "unchecked", with an unchecked record and the reason, when the files
+   * job's reply never passed its check. */
   | "requested_files"
 
 export type LeanEvent = {

@@ -23,6 +23,9 @@ test("an explicit Word output title supplies the exact basename without inventin
   for (const instruction of [
     "Create an editable Word draft in this matter titled Supply Review, with an open-items list.",
     'Provide the clean document with the title "Supply Review" for review.',
+    "Create an editable Word draft and name the file Supply Review, with an open-items list.",
+    "Create an editable Word draft. Save it as Supply Review.",
+    "Create an editable Word draft. File name: Supply Review",
   ]) {
     writeLeanText(directory, "request.md", instruction)
     expect(checkDeliverySelections(directory, [{ ...selection, instruction_quote: instruction }])).toEqual([])
