@@ -204,39 +204,60 @@ export function elidedParts(quote: string): string[] | undefined {
 export const MAX_OMITTED = 300
 
 /** Omitted words that would negate, limit or condition the words around them:
- * negation, exclusion, restriction and condition. "No." before a number
- * abbreviates "number" and negates nothing. */
-const QUALIFIER = /\b(?:not|no(?!\.\s?\d)|never|nor|neither|none|nothing|cannot|without|except|unless|save|only|subject\s+to|provided|notwithstanding|other\s+than|otherwise\s+than|rather\s+than|excluding|apart\s+from|solely|exclusively|if|to\s+the\s+extent|in\s+the\s+event)\b|n't\b/i
+ * negation, exclusion, restriction, limit and condition. "No." before a number
+ * abbreviates "number" and negates nothing. A fixed list cannot name every
+ * word that changes a meaning: a verb hand-off ("undertakes to", "is required
+ * to"), a condition ("where", "when", "until", "after") or a multiplier
+ * ("twice") still passes and is left to semantic review. */
+const QUALIFIER = /\b(?:not|no(?!\.\s?\d)|never|nor|neither|none|nothing|cannot|without|except|unless|save|only|subject\s+to|provided|notwithstanding|other\s+than|otherwise\s+than|rather\s+than|excluding|apart\s+from|solely|exclusively|if|to\s+the\s+extent|in\s+the\s+event|up\s+to|at\s+least|a\s+maximum\s+of|a\s+minimum\s+of)\b|n't\b/i
 
-/** An omitted amount: a currency sign or a percentage. */
-const AMOUNT = /[£$€¥]\s?\d|\d\s?%|\bper\s?cent\b/i
+/** The boilerplate aside "(if any)", which conditions nothing. */
+const IF_ANY = /\(if any\)/gi
 
-/** An omitted modal verb. Where the passage after the omission continues the
- * sentence, the omission may hand that verb to another subject or modal. */
-const MODAL = /\b(?:shall|may|must|will|should)\b/i
+/** An omitted amount: a currency sign, a percentage or a number grouped in
+ * thousands ("5,000,000"). */
+const AMOUNT = /[£$€¥]\s?\d|\d\s?%|\bper\s?cent\b|\b\d{1,3}(?:,\d{3})+\b/i
+
+/** An omitted currency code before an amount ("GBP 5"); upper case, so it is
+ * tested on the source as written. */
+const CURRENCY_CODE = /\b[A-Z]{3}\s?\d/
+
+/** A list item label: "(c)", "4.", "iv)", "(A)", "A.", "(IV)" or decimal
+ * numbering "1.1", "3.2.1". */
+const LABEL = String.raw`(?:\(?(?:[a-z0-9]{1,4}|[A-Z]|[IVX]{1,4})[.)]|\d+(?:\.\d+)+\.?)`
+
+/** An omission that ends on a modal verb (shall, may, must, will, should),
+ * which may be followed by adverbs, one comma-set aside, a colon or a list
+ * item label. Where the passage after the omission continues the sentence,
+ * the omission hands that verb to another subject or modal. A modal earlier
+ * in the omission ("as the parties may agree") hands over nothing. */
+const MODAL_END = new RegExp(String.raw`\b(?:shall|may|must|will|should)\b(?:\s+\p{L}+ly\b|\s*,[^,]{1,80},)*[\s:]*(?:${LABEL}\s*)?$`, "iu")
 
 /** An omission that ends on a bare "non" or "un" prefix of the next word
- * ("non exclusive", "un- limited"), the hyphen also written as an en dash. */
-const DROPPED_PREFIX = /(?:^|[^\p{L}\p{N}])(?:non|un)[-\u2013]?\s*$/iu
+ * ("non exclusive", "un- limited", "non - exclusive"), dashes folded to "-". */
+const DROPPED_PREFIX = /(?:^|[^\p{L}\p{N}])(?:non|un)\s*-?\s*$/iu
 
-/** A passage that resumes at a list item label: "(c) ", "4. ", "iv) ". */
-const LIST_LABEL = /^\(?[a-z0-9ivx]{1,4}[.)]\s/
+/** A passage that resumes at a list item label: "(c) ", "4. ", "(A) ", "1.1 ". */
+const LIST_LABEL = new RegExp(`^${LABEL}\\s`)
 
-/** Word's hyphen and non-breaking hyphen (U+2010, U+2011), which a page shows
- * as "-". */
-const HYPHENS = /[\u2010\u2011]/g
+/** Word's hyphen and non-breaking hyphen (U+2010, U+2011), the figure dash, en
+ * dash and minus sign (U+2012, U+2013, U+2212), which a page shows as or in
+ * place of "-". Not the em dash, which sets off an aside. */
+const HYPHENS = /[\u2010-\u2013\u2212]/g
 
 /** Whether every passage appears in `raw`, normalized like a quotation (and
- * case-insensitively with `ignoreCase`; hyphens folded to "-"), in the quoted
+ * case-insensitively with `ignoreCase`; HYPHENS folded to "-"), in the quoted
  * order, each starting after the previous one ends, and the ellipsis only
  * shortens the source:
  * - each passage is long enough (SHORT_QUOTE) to identify its place on its own
  *   and begins and ends on whole words of the source (insideWord);
  * - each omission between passages is short (MAX_OMITTED), stays within one
  *   paragraph (no blank line in the raw text, unless the next passage resumes
- *   at a list item label) and drops no negation, qualification, amount or
- *   word prefix that changes the meaning (QUALIFIER, AMOUNT, DROPPED_PREFIX),
- *   nor a modal verb when the next passage continues the sentence (MODAL).
+ *   at a list item label that begins a line of the source) and drops no
+ *   negation, qualification, amount or word prefix that changes the meaning
+ *   (QUALIFIER, AMOUNT, CURRENCY_CODE, DROPPED_PREFIX), nor ends on a modal
+ *   verb when the next passage, past any list item label, continues the
+ *   sentence (MODAL_END).
  * Every place a passage appears is tried, not only the first. */
 export function partsInOrder(raw: string, parts: string[], options: { unescapeMarkdown?: boolean; ignoreCase?: boolean } = {}) {
   if (!parts.length || parts.some(part => part.length < SHORT_QUOTE)) return false
@@ -246,9 +267,12 @@ export function partsInOrder(raw: string, parts: string[], options: { unescapeMa
   const wanted = parts.map(part => part.replace(HYPHENS, "-")).map(part => options.ignoreCase ? lowerChars(part) : part)
   const omissionAllowed = (from: number, to: number, next: string) => {
     const omitted = text.slice(from, to)
-    if (QUALIFIER.test(omitted) || AMOUNT.test(omitted) || DROPPED_PREFIX.test(omitted)) return false
-    if (MODAL.test(omitted) && /^\p{Ll}/u.test(next)) return false
-    return LIST_LABEL.test(next) || !/\n[^\S\n]*\n/.test(raw.slice(map[from - 1]! + 1, map[to]))
+    const source = raw.slice(map[from - 1]! + 1, map[to])
+    if (QUALIFIER.test(omitted.replace(IF_ANY, "")) || AMOUNT.test(omitted) || CURRENCY_CODE.test(source) || DROPPED_PREFIX.test(omitted)) return false
+    if (MODAL_END.test(omitted) && /^\p{Ll}/u.test(next.replace(LIST_LABEL, ""))) return false
+    // The whitespace before the next passage, as written in the source.
+    const labelStartsLine = LIST_LABEL.test(next) && raw.slice(map[to - 1]!, map[to]).includes("\n")
+    return labelStartsLine || !/\n[^\S\n]*\n/.test(source)
   }
   // A failed (passage, start) pair fails the same way from any earlier placement.
   const failed = new Set<string>()

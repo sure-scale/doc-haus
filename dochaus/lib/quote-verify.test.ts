@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite"
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { verifyQuote, type QuoteChunk } from "./quote-verify"
+import { elidedParts, partsInOrder, verifyQuote, type QuoteChunk } from "./quote-verify"
 
 const directories: string[] = []
 afterEach(() => directories.splice(0).forEach(directory => rmSync(directory, { recursive: true, force: true })))
@@ -39,4 +39,11 @@ test("whitespace gaps retain source offsets and existing normalization including
   const check = fixture([chunk(text.slice(0, split - 2), 0, "first"), chunk(text.slice(split, split + 10), split, "second"), chunk(text.slice(split + 5), split + 5, "overlap")])
   expect(check('"Alpha". Beta gamma delta')).toMatchObject({ found: true, hits: [{ charStart: 0, charEnd: text.length }] })
   expect(check('"Alpha". Beta changed delta').found).toBe(false)
+})
+
+test("a quotation matched without regard to case still reads a currency code as written", () => {
+  const request = (amount: string) => `Please cap the liability at ${amount} the charges paid in the year before the claim.`
+  const parts = elidedParts("please cap the liability at … the charges paid in the year before the claim")!
+  expect(partsInOrder(request("the greater of GBP 500000 and"), parts, { ignoreCase: true })).toBe(false)
+  expect(partsInOrder(request("the amount, for 30 days, of"), parts, { ignoreCase: true })).toBe(true)
 })
