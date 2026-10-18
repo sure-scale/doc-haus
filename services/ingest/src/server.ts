@@ -628,9 +628,16 @@ app.post("/matters/:id/documents/revisions", async (c) => {
     return c.json({ error: `The filename extension is not valid for a ${role} document.` }, 400)
   try {
     const priorSha256 = c.req.header("x-document-prior-sha256")
-    if (readWorkingDocx(dir,target.docPath) && !/^[a-f0-9]{64}$/.test(priorSha256 ?? ""))
-      return c.json({error:"Provide the exact current Word hash in x-document-prior-sha256 before replacing an accepted revision."},409)
-    return c.json(await writeDocumentRevision(dir, target.name, Buffer.from(await file.arrayBuffer()),[],priorSha256))
+    const bytes = Buffer.from(await file.arrayBuffer())
+    // Under the document's lock, which an accept holds from building its run's
+    // delivered redline to writing it, so a revision never lands in between. The
+    // revision writer takes the same lock; taking it here also keeps the
+    // precondition below and the working-revision update under it.
+    return await withArtifactMutationLocksAsync(dir, [target.name, ".dochaus/source-corpus"], async () => {
+      if (readWorkingDocx(dir,target.docPath) && !/^[a-f0-9]{64}$/.test(priorSha256 ?? ""))
+        return c.json({error:"Provide the exact current Word hash in x-document-prior-sha256 before replacing an accepted revision."},409)
+      return c.json(await writeDocumentRevision(dir, target.name, bytes,[],priorSha256))
+    })
   } catch (error) {
     if (error instanceof SourceDocumentConflictError || error instanceof DeliverableConflictError)
       return c.json({ error: error.message }, 409)

@@ -460,7 +460,18 @@ test("a revision-API edit or a removed pointer stales only the proposals on thos
       {paragraph:periodParagraphs[0],xml:(xml) => xml.replace("five days","four days")},
       {paragraph:periodParagraphs[2],xml:(xml) => xml.replace(/<w:bookmark(?:Start|End)\b[^>]*\/>/g,"")},
     ])
-    expect((await ingest.request(`${matter.route}/documents/revisions`,{method:"POST",headers:{"x-document-prior-sha256":sha256(original)},body:wordForm(revised)})).status).toBe(200)
+    // The upload waits while the document's lock is held, as an accept holds it
+    // from building the run's delivered redline to writing it.
+    let upload:Promise<number> | undefined
+    let uploaded = false
+    await withArtifactMutationLocksAsync(matter.dir,["working.docx"],async () => {
+      upload = ingest.request(`${matter.route}/documents/revisions`,{method:"POST",headers:{"x-document-prior-sha256":sha256(original)},body:wordForm(revised)})
+        .then((response) => {uploaded=true;return response.status})
+      await Bun.sleep(750)
+      expect(uploaded).toBe(false)
+      expect(sha256(await Bun.file(matter.file).bytes())).toBe(sha256(original))
+    })
+    expect(await upload).toBe(200)
     const current = await Bun.file(matter.file).bytes()
     // The revision write mints a fresh pointer; the stored one now names nothing.
     const after = await paragraphTargets(current)
