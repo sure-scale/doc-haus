@@ -318,7 +318,10 @@ export function answeredQuestionsText(directory: string) {
     .join("\n")
 }
 
-export function shortHash(text: string, length = 10) {
+/** The default length of shortHash, which the run's minted ids carry. */
+export const SHORT_HASH_LENGTH = 10
+
+export function shortHash(text: string, length = SHORT_HASH_LENGTH) {
   return createHash("sha1").update(text).digest("hex").slice(0, length)
 }
 

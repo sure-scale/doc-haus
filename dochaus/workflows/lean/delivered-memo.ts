@@ -3,7 +3,7 @@ import { finalBodyParagraphs, readChangeList, readParagraphs, record, standingID
 import { requestedMemo } from "./deliverables"
 import { readLeanPlan, type DocID } from "./plan"
 import { readRepairRound } from "./repairs"
-import { readLeanJson, readOpenItems, readQuestions, type OpenItem } from "./state"
+import { SHORT_HASH_LENGTH, readLeanJson, readOpenItems, readQuestions, type OpenItem } from "./state"
 
 // The drafting notes, and the memo they are written as when the request asks
 // for one, refer to each open item in plain words with a trailing
@@ -72,11 +72,11 @@ export function withoutInternalIDs(text: string, ids: Iterable<string>) {
 const QUOTE = "\uFDD0"
 
 /** The id the run gives a question it asks: a fixed lowercase prefix and a
- * ten-character hash (shortHash), as intake and the change steps mint "q-…",
+ * hash of shortHash's default length, as intake and the change steps mint "q-…",
  * and the package-scope, requested-files and checklist-conflict questions
  * theirs. The model never chooses one. A question saved under an id of any
  * other form, such as a word, is not matched, so no ordinary word is. */
-const MINTED_QUESTION_ID = /^[a-z]+(?:-[a-z]+)*-[0-9a-f]{10}$/
+const MINTED_QUESTION_ID = new RegExp(`^[a-z]+(?:-[a-z]+)*-[0-9a-f]{${SHORT_HASH_LENGTH}}$`)
 
 /** Whether `id` has the form the run gives its own question ids. */
 export function mintedQuestionID(id: string) {
