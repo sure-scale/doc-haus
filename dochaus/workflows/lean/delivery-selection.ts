@@ -21,7 +21,8 @@ export function checkDeliverySelections(directory: string, value: unknown): stri
     }
     if (typeof row.file !== "string" || !/^[^\\/:*?"<>|`\x00-\x1f]+\.docx$/i.test(row.file) || row.file !== row.file.trim()) return ["Delivery file must be the requested Word filename, without a folder path."]
     if (typeof row.instruction_quote !== "string" || !instructionFound(directory, row.instruction_quote)) return [NOT_QUOTED]
-    if (deliveryNameQuoted(directory, row.instruction_quote, row.file)) return []
+    // A name the quote spells with its extension is a name, even in format words.
+    if (deliveryNameQuoted(directory, row.instruction_quote, row.file) || row.instruction_quote.includes(row.file)) return []
     // A format the lawyer's words ask for, or a name in another format, is no file to select.
     const stem = row.file.slice(0, -5)
     if (formatStem(stem) || OTHER_FORMAT.test(stem))

@@ -85,6 +85,11 @@ const EARLIER: [string, string, string][] = [
   ["Deliver the form as Closing Set/Kestrel Transfer.docx.", "Deliver the form as Closing Set/Kestrel Transfer.docx", "Kestrel Transfer.docx"],
   ["One file only—Kestrel Transfer.docx.", "One file only—Kestrel Transfer.docx", "Kestrel Transfer.docx"],
   ["Deliver the form as _Kestrel Transfer.docx_.", "Deliver the form as _Kestrel Transfer.docx_", "Kestrel Transfer.docx"],
+  // A name in format words, spelled with .docx where the shared grammar starts no name.
+  ["Save the form as _Word Document.docx_.", "Save the form as _Word Document.docx_", "Word Document.docx"],
+  ["Deliver the form as Closing Set/Word Document.docx.", "Deliver the form as Closing Set/Word Document.docx", "Word Document.docx"],
+  ["One file only—Word Document.docx.", "One file only—Word Document.docx", "Word Document.docx"],
+  ["Save the copy as _PDF Copy.docx_.", "Save the copy as _PDF Copy.docx_", "PDF Copy.docx"],
 ]
 
 test("package review accepts every name the earlier literal or titled check accepted, and still names a format", () => {

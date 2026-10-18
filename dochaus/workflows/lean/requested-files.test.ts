@@ -295,6 +295,7 @@ describe("parse requested files", () => {
       [`${words} and save it as a Word doc.`, `${words} and save it as a Word doc`, "a Word doc.docx", false],
       [`${words} and name the file docx.`, `${words} and name the file docx`, "docx.docx", false],
       [`${words} and save it as Kestrel Transfer.doc.`, `${words} and save it as Kestrel Transfer.doc`, "Kestrel Transfer.doc.docx", false],
+      [`${words} and save it as Kestrel Transfer.pdf.`, `${words} and save it as Kestrel Transfer.pdf`, "Kestrel Transfer.pdf.docx", false],
     ]
     // Every name the files job grounds, package review accepts; it also accepts what its earlier literal or titled check did.
     for (const [request, quote, name, grounded] of cases) {
