@@ -145,14 +145,15 @@ export function lawyerWords(directory: string) {
 }
 
 /** Actionable retry feedback for one unverified quote. When the words are in a
- * different matter document, that document is named. */
-export function quoteMissIssue(directory: string, where: string, quote: SourceQuote, format: "prose" | "json" = "prose") {
+ * different matter document, that document is named. `verb` agrees with a
+ * plural `where` ("The drafting notes quote"). */
+export function quoteMissIssue(directory: string, where: string, quote: SourceQuote, format: "prose" | "json" = "prose", verb = "quotes") {
   const elsewhere = [...new Set(verifyQuote({ directory, quote: quote.quote }).hits.map(hit => hit.doc))]
     .filter(doc => doc !== quote.source_id)
   return [
     quote.source_id === REQUEST_SOURCE && !matterSourceIDs(directory).includes(REQUEST_SOURCE)
-      ? `${where} quotes "${excerpt(quote.quote)}" as from "${REQUEST_SOURCE}", but those words are not in the request, user updates or any one of the lawyer's answers.`
-      : `${where} quotes "${excerpt(quote.quote)}" as from "${quote.source_id}", but those words are not in that document.`,
+      ? `${where} ${verb} "${excerpt(quote.quote)}" as from "${REQUEST_SOURCE}", but those words are not in the request, user updates or any one of the lawyer's answers.`
+      : `${where} ${verb} "${excerpt(quote.quote)}" as from "${quote.source_id}", but those words are not in that document.`,
     elsewhere.length
       ? `They do appear in ${elsewhere.map(doc => `"${doc}"`).join(", ")}; cite that document if it is the source you meant.`
       : format === "json"

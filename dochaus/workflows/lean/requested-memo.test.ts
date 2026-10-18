@@ -215,6 +215,8 @@ describe("finalize in memo mode", () => {
     const agent = AGENT_RULES()
     expect(agent).toContain('- Your final reply is the text the prompt asks for, in Markdown, beginning with a "# " title, and nothing else.')
     expect(agent.toLowerCase()).not.toContain("your final reply is the drafting notes")
+    expect(agent).toContain("- When a prompt says your reply did not pass a check, reply again with the complete corrected text.")
+    expect(agent.toLowerCase()).not.toContain("corrected notes")
     expect(agent).toContain("Outside a requested memo, also assess the actual native comparison and its selected baseline")
     expect(agent).toContain("- Explain what each drafted document does and, outside a requested memo, what changed in its review.")
   })
@@ -237,7 +239,7 @@ describe("finalize in memo mode", () => {
       'The drafting notes have no heading once their "[ref: …]" markers and internal ids are removed.',
       "The drafting notes do not mention these open items:",
       "The drafting notes leave these placeholders in their own text: [insert period].",
-      'The drafting notes quotes "the goods arrive daily" as from "supply-terms.docx"',
+      'The drafting notes quote "the goods arrive daily" as from "supply-terms.docx"',
       'The drafting notes cite "https://example.com/delivery-rule",',
     ])
     writeLeanPlan(directory, [DOCUMENT], undefined, undefined, { name: "cover memo", file: memoNotesFile([DOCUMENT], "cover memo") })

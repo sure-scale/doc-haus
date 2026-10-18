@@ -179,7 +179,7 @@ export function checkDraftingNotes(directory: string, content: string, items: Op
       ...(gaps.length
         ? [`The ${noun} ${memo ? "leaves" : "leave"} these placeholders in ${memo ? "its" : "their"} own text: ${gaps.join(", ")}. State the point in words, or quote the body's placeholder exactly as its open item records it.`]
         : []),
-      ...misquoted.map(quote => quoteMissIssue(directory, `The ${noun}`, quote)),
+      ...misquoted.map(quote => quoteMissIssue(directory, `The ${noun}`, quote, "prose", memo ? "quotes" : "quote")),
       ...unsupported.map(citation => `The ${noun} ${memo ? "cites" : "cite"} "${citation}", which no matter source, research row or verified authority supports. Remove the citation or describe the point as needing research.`),
     ],
     openItems: [],
