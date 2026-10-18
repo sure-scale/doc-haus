@@ -461,13 +461,14 @@ describe("without a requested memo", () => {
   })
 
   const HEADLESS = 'The drafting notes have no heading once their "[ref: …]" markers and internal ids are removed. Begin with a "# " title in words, and say each point in words before the marker that ends it.'
+  const MEMO_HEADLESS = 'The memo has no heading once its "[ref: …]" markers and internal ids are removed. Begin with a "# " title in words, and say each point in words before the marker that ends it.'
 
   test("notes left without a heading once their markers and ids are removed are retried before the last attempt, then saved and delivered under a plain title", async () => {
     for (const plan of ["none", "memo"] as const) {
       const directory = memoMatter(plan)
       writeOpenItems(directory, [GAP, CONDITION])
       for (const text of [`# [ref: ${GAP.id}]\n\n[ref: ${CONDITION.id}]\n`, `# [ref: ${GAP.id}]\n\nThe delivery period is open. [ref: ${CONDITION.id}]\n`]) {
-        expect(checkDraftingNotes(directory, text, [GAP, CONDITION]).issues).toEqual([HEADLESS])
+        expect(checkDraftingNotes(directory, text, [GAP, CONDITION]).issues).toEqual([plan === "memo" ? MEMO_HEADLESS : HEADLESS])
         expect(checkDraftingNotes(directory, text, [GAP, CONDITION], { final: true }).issues).toEqual([])
         expect((await acceptStageReply(directory, "finalize", text, { final: true })).issues).toEqual([])
         // Saved, they are judged as the last attempt judged them: a resume keeps them.
@@ -653,8 +654,8 @@ describe("a planned document id inside a quotation, a citation, a footnote marke
 // records an edit already made ("[emphasis added]", "[sic]").
 describe("a placeholder in the drafting notes' own text", () => {
   const HOLE = openItem("apply", "placeholder", "The body contains the placeholder [insert date].", { document: "d1", placeholder: "[insert date]" })
-  const NOTES_PLACEHOLDER = (placeholders: string[]) =>
-    `The drafting notes leave these placeholders in their own text: ${placeholders.join(", ")}. State the point in words, or quote the body's placeholder exactly as its open item records it.`
+  const NOTES_PLACEHOLDER = (placeholders: string[], withMemo = false) =>
+    `${withMemo ? "The memo leaves these placeholders in its" : "The drafting notes leave these placeholders in their"} own text: ${placeholders.join(", ")}. State the point in words, or quote the body's placeholder exactly as its open item records it.`
   /** Notes that disclose GAP and HOLE in ref markers, after `line`. A marker
    * may also name an id the run no longer lists; delivery removes it. */
   const notes = (withMemo: boolean, line: string) => withMemo
@@ -665,11 +666,11 @@ describe("a placeholder in the drafting notes' own text", () => {
   for (const withMemo of [false, true])
     test(`is retried ${withMemo ? "in a requested memo" : "without a requested memo"}; a quoted open placeholder, an id and a ref marker are not`, () => {
       const directory = memoMatter(withMemo ? "memo" : "none")
-      expect(checkDraftingNotes(directory, notes(withMemo, "The notice period is [insert period]."), [GAP, HOLE]).issues).toEqual([NOTES_PLACEHOLDER(["[insert period]"])])
+      expect(checkDraftingNotes(directory, notes(withMemo, "The notice period is [insert period]."), [GAP, HOLE]).issues).toEqual([NOTES_PLACEHOLDER(["[insert period]"], withMemo)])
       expect(checkDraftingNotes(directory, notes(withMemo, "The notice period follows the source."), [GAP, HOLE]).issues).toEqual([])
       // The same bracket is a gap of the notes when no open item records it.
       expect(checkDraftingNotes(directory, notes(withMemo, "The notice period follows the source."), [GAP, { ...HOLE, ref: { document: "d1" } }]).issues)
-        .toEqual([NOTES_PLACEHOLDER([withMemo ? "[INSERT DATE]" : "[insert date]"])])
+        .toEqual([NOTES_PLACEHOLDER([withMemo ? "[INSERT DATE]" : "[insert date]"], withMemo)])
     })
 
   test("a line of underscores only is not a placeholder, as in the body", () => {
@@ -684,13 +685,13 @@ describe("a placeholder in the drafting notes' own text", () => {
 
     test(`an editorial mark is not one ${mode}; a blank for text to supply is`, () => {
       expect(check("Quoting the source, the notes mark [emphasis added], [Emphasis Inserted], [emphasis supplied], [inserted], [sic] and [omitted].")).toEqual([])
-      expect(check("The rent is [to be inserted]; the text [inserted by the parties] stands.")).toEqual([NOTES_PLACEHOLDER(["[to be inserted]", "[inserted by the parties]"])])
+      expect(check("The rent is [to be inserted]; the text [inserted by the parties] stands.")).toEqual([NOTES_PLACEHOLDER(["[to be inserted]", "[inserted by the parties]"], withMemo)])
     })
 
     test(`a quoted blank is not one ${mode}; the same blank unquoted, or a blank reference, is`, () => {
       expect(check('The lease says "rent of [to be inserted]" and \u201cthe term is [insert term]\u201d; the draft keeps neither blank.')).toEqual([])
-      expect(check("The lease leaves the rent [to be inserted].")).toEqual([NOTES_PLACEHOLDER(["[to be inserted]"])])
-      expect(check("Clause [A] and Section [Governing law] need the lawyer's numbering.")).toEqual([NOTES_PLACEHOLDER(["Clause [A]", "Section [Governing law]"])])
+      expect(check("The lease leaves the rent [to be inserted].")).toEqual([NOTES_PLACEHOLDER(["[to be inserted]"], withMemo)])
+      expect(check("Clause [A] and Section [Governing law] need the lawyer's numbering.")).toEqual([NOTES_PLACEHOLDER(["Clause [A]", "Section [Governing law]"], withMemo)])
     })
   }
 
@@ -704,7 +705,7 @@ describe("a placeholder in the drafting notes' own text", () => {
     writeOpenItems(directory, [GAP, HOLE])
     const reply = notes(true, "The notice period is [insert period].")
     // Before the last attempt the issue is retried and nothing is saved.
-    expect((await acceptStageReply(directory, "finalize", reply)).issues).toEqual([NOTES_PLACEHOLDER(["[insert period]"])])
+    expect((await acceptStageReply(directory, "finalize", reply)).issues).toEqual([NOTES_PLACEHOLDER(["[insert period]"], true)])
     expect(readLeanText(directory, "drafting-notes.md")).toBeUndefined()
     // On the last attempt the notes are accepted and saved as written; a resume keeps them.
     expect((await acceptStageReply(directory, "finalize", reply, { final: true })).issues).toEqual([])

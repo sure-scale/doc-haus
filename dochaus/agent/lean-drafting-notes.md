@@ -33,6 +33,6 @@ How to work:
 
 Output contract:
 
-- Your final reply is the drafting notes in Markdown, beginning with a "# " title, and nothing else.
+- Your final reply is the text the prompt asks for, in Markdown, beginning with a "# " title, and nothing else.
 - You have read tools only. No file, edit or publication tool is available; the run saves and checks your reply.
 - When a prompt says your reply did not pass a check, reply again with the complete corrected notes.

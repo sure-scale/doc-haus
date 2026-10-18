@@ -133,11 +133,13 @@ export function settleApply(changes: ChangeList, result: ApplyResult | undefined
  * notes saved without one are delivered under a plain title (deliveredNotes),
  * so they are never delivered empty. */
 export function checkDraftingNotes(directory: string, content: string, items: OpenItem[], options: { final?: boolean } = {}): StageCheck {
-  const shape = documentShapeIssues(content, "drafting notes")
+  // Every retry names the reply as the prompt does: a requested memo is the memo.
+  const memo = memoMode(directory)
+  const noun = memo ? "memo" : "drafting notes"
+  const shape = documentShapeIssues(content, noun)
   if (shape.length) return { issues: shape, openItems: [] }
   if (!options.final && !/^#{1,6}[ \t]+\S/m.test(notesForReader(directory, content, items)))
-    return { issues: ['The drafting notes have no heading once their "[ref: …]" markers and internal ids are removed. Begin with a "# " title in words, and say each point in words before the marker that ends it.'], openItems: [] }
-  const memo = memoMode(directory)
+    return { issues: [`The ${noun} ${memo ? "has" : "have"} no heading once ${memo ? "its" : "their"} "[ref: …]" markers and internal ids are removed. Begin with a "# " title in words, and say each point in words before the marker that ends it.`], openItems: [] }
   const markers = [...content.matchAll(REF_MARKER)].map(match => match[1]!)
   const undisclosed = items.filter(item => !markers.some(marker => standingID(item.id).test(marker)) && !(options.final && !memo && standingID(item.id).test(content)))
     .map(item => item.id)
@@ -163,7 +165,7 @@ export function checkDraftingNotes(directory: string, content: string, items: Op
   return {
     issues: [
       ...(undisclosed.length
-        ? [`${memo ? "The memo does" : "The drafting notes do"} not mention these open items: ${undisclosed.join(", ")}. Say what each is and what needs to be done about it, ending that statement with its exact id as "[ref: <id>]".`]
+        ? [`The ${noun} ${memo ? "does" : "do"} not mention these open items: ${undisclosed.join(", ")}. Say what each is and what needs to be done about it, ending that statement with its exact id as "[ref: <id>]".`]
         : []),
       ...(stray.length
         ? [`These internal ids appear outside a "[ref: …]" marker: ${stray.join(", ")}. ${reader} for the reader: describe each point in words and keep each id only in the marker that ends its statement.`]
@@ -175,10 +177,10 @@ export function checkDraftingNotes(directory: string, content: string, items: Op
         ? [`These change ids appear outside a "[ref: …]" marker: ${strayChanges.join(", ")}. ${reader} for the reader: describe each change by what it does, not its id.`]
         : []),
       ...(gaps.length
-        ? [`The drafting notes leave these placeholders in their own text: ${gaps.join(", ")}. State the point in words, or quote the body's placeholder exactly as its open item records it.`]
+        ? [`The ${noun} ${memo ? "leaves" : "leave"} these placeholders in ${memo ? "its" : "their"} own text: ${gaps.join(", ")}. State the point in words, or quote the body's placeholder exactly as its open item records it.`]
         : []),
-      ...misquoted.map(quote => quoteMissIssue(directory, "The drafting notes", quote)),
-      ...unsupported.map(citation => `The drafting notes cite "${citation}", which no matter source, research row or verified authority supports. Remove the citation or describe the point as needing research.`),
+      ...misquoted.map(quote => quoteMissIssue(directory, `The ${noun}`, quote)),
+      ...unsupported.map(citation => `The ${noun} ${memo ? "cites" : "cite"} "${citation}", which no matter source, research row or verified authority supports. Remove the citation or describe the point as needing research.`),
     ],
     openItems: [],
   }
@@ -307,10 +309,10 @@ function textPlaceholders(content: string) {
   return [...new Set([...draftingPlaceholders(prose), ...openItemMarkers(prose)])]
 }
 
-function documentShapeIssues(content: string, noun: "document" | "drafting notes") {
+function documentShapeIssues(content: string, noun: "document" | "drafting notes" | "memo") {
   if (!content.trim()) return [`The reply was empty. Reply with the complete ${noun} in Markdown.`]
   return [
-    ...(!/^#{1,6}\s+\S/m.test(content) ? [`The ${noun} ${noun === "document" ? "has" : "have"} no Markdown heading. Begin with a "# " title and use headings for its parts.`] : []),
+    ...(!/^#{1,6}\s+\S/m.test(content) ? [`The ${noun} ${noun === "drafting notes" ? "have" : "has"} no Markdown heading. Begin with a "# " title and use headings for its parts.`] : []),
     ...(printedToolCall(content) ? [TOOL_SYNTAX_ISSUE] : []),
   ]
 }
