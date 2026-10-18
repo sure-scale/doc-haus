@@ -21,10 +21,12 @@ export function checkDeliverySelections(directory: string, value: unknown): stri
     }
     if (typeof row.file !== "string" || !/^[^\\/:*?"<>|`\x00-\x1f]+\.docx$/i.test(row.file) || row.file !== row.file.trim()) return ["Delivery file must be the requested Word filename, without a folder path."]
     if (typeof row.instruction_quote !== "string" || !instructionFound(directory, row.instruction_quote)) return [NOT_QUOTED]
-    // A format the lawyer's words ask for is no file to select.
-    if (!deliveryNameQuoted(directory, row.instruction_quote, row.file)) return [formatStem(row.file.slice(0, -5))
-      ? `Delivery file "${row.file}" names a format, not a file. Words that ask only for a format give no file name; return no delivery row for them.` : NOT_QUOTED]
-    return []
+    if (deliveryNameQuoted(directory, row.instruction_quote, row.file)) return []
+    // A format the lawyer's words ask for, or a name in another format, is no file to select.
+    const stem = row.file.slice(0, -5)
+    if (formatStem(stem) || OTHER_FORMAT.test(stem))
+      return [`Delivery file "${row.file}" names a format, not a file. Words that ask only for a format give no file name; return no delivery row for them.`]
+    return quotedOrTitled(row.instruction_quote, row.file) ? [] : [NOT_QUOTED]
   })
   if (issues.length) return issues
   const rows = value as DeliverySelection[]
@@ -83,6 +85,11 @@ export function formatStem(stem: string) {
   return FORMAT_STEM.test(stem.trim())
 }
 
+/** The extensions of common document, text, sheet and slide formats other than
+ * Word's own: a name's ending only counts as an extension when it is one. Code
+ * only, never a prompt. */
+export const OTHER_FORMAT = /\.(?:doc|docm|dot|dotx|dotm|rtf|odt|wpd|pages|pdf|xps|epub|txt|md|html?|xml|xlsx?|xlsm|csv|ods|pptx?|odp)$/i
+
 // One grammar of a name's edges in the lawyer's text, for the files job
 // (requested-files.ts) and package review alike, read as instructionFound reads
 // it (normalize: curly quotation marks straight, whitespace runs one space). A
@@ -111,7 +118,8 @@ const fold = (text: string) => text.replace(/[\s\S]/gu, char => {
  * inside the quoted words at a name's start and is followed there by the
  * extension, which makes it a name even when its words also name a format; or,
  * a Word file's given without ".docx", it follows a naming word inside the
- * quote and ends at a name's end, and is then no format's name (formatStem). So
+ * quote and ends at a name's end, and is then no format's name (formatStem) and
+ * ends in no other format's extension (OTHER_FORMAT). So
  * a name cut short from a longer name is refused, a quote may run on past the
  * name, and a line break inside the name does not matter. The spelling is
  * `raw` from the stem's start, whitespace runs one space, with the extension as
@@ -120,13 +128,15 @@ const fold = (text: string) => text.replace(/[\s\S]/gu, char => {
  * space, which leaves a name the lawyer's words also end with its extension,
  * and a name given without ".docx" cut short at a full stop and a space or at a
  * comma. The grammar is not widened further: a name it does not ground reaches
- * the lawyer as a disclosed item. */
+ * the lawyer as a disclosed item. Package review accepts what this grammar
+ * grounds or what its earlier literal or titled check accepted
+ * (deliveryNameQuoted, quotedOrTitled). */
 export function* spelledNames(raw: string, quote: string, stem: string, extension: string) {
   const name = fold(normalize(stem))
   const words = fold(normalize(quote))
   const ending = extension.toLowerCase()
   if (!name || !words) return
-  const titled = ending === ".docx" && !formatStem(name)
+  const titled = ending === ".docx" && !formatStem(name) && !OTHER_FORMAT.test(name)
   const { text: normal, map } = normalizeWithMap(raw)
   const text = fold(normal)
   const starts = (at: number) => at === 0 || text[at - 1] === " " || NAME_OPENS.test(text[at - 1]!) ||
@@ -148,11 +158,26 @@ export function* spelledNames(raw: string, quote: string, stem: string, extensio
  * checker only grounds the literal name, by the files job's grammar
  * (spelledNames) in the lawyer's words: adding Word's extension to an
  * explicitly stated title does not require a model to invent another name.
- * Unlike the files job, which keeps the lawyer's spelling of a name given in
- * another case, the selection must be that spelling, as it names the file
- * delivered. */
+ * The selection matches the lawyer's spelling as instructionFound compares
+ * text (normalize: quotation marks and whitespace aside), in the lawyer's case:
+ * unlike the files job, which keeps the lawyer's spelling of a name given in
+ * another case, it names the file delivered. A name this refuses is still
+ * accepted where the earlier check accepted it (quotedOrTitled), unless it
+ * names a format; so package review is never stricter than before, and every
+ * name the files job grounds is accepted. */
 export function deliveryNameQuoted(directory: string, quote: string, file: string) {
-  return lawyerWords(directory).some(raw => [...spelledNames(raw, quote, file.slice(0, -5), ".docx")].includes(file))
+  const name = normalize(file)
+  return lawyerWords(directory).some(raw => [...spelledNames(raw, quote, file.slice(0, -5), ".docx")].some(spelled => normalize(spelled) === name))
+}
+
+/** The earlier check, on the quote alone: the quote holds the file name, or a
+ * naming word in it gives the name as a title ending at the quote's end, a
+ * clause mark, a full stop or a closing quotation mark. */
+function quotedOrTitled(quote: string, file: string) {
+  if (quote.includes(file)) return true
+  const title = file.slice(0, -5).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  const named = new RegExp(`\\b(?:titled|entitled|named|called|with the title)\\s+["“'‘]?(${title})(?=$|[,;!?]|\\.(?:\\s|$)|["”'’])`, "gi")
+  return [...quote.matchAll(named)].some(match => match[1] === file.slice(0, -5))
 }
 
 /** Only the delivery metadata changes. Stable document ids, source foundations,

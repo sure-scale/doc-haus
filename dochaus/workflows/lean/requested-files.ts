@@ -4,7 +4,7 @@ import { normalize } from "../../lib/quote-verify"
 import { TOOL_SYNTAX_ISSUE, printedToolCall, record } from "./checks"
 import { readWorkingDocx } from "../../lib/working-docx"
 import { combinedDelivery, deliveryArtifactEvidence, deliveryStem, memoNotesFile, plannedRegistration, readLeanDocuments, redlineOfBody, requestedMemo } from "./deliverables"
-import { formatStem, spelledNames } from "./delivery-selection"
+import { OTHER_FORMAT, formatStem, spelledNames } from "./delivery-selection"
 import { plainFileName, readLeanPlan, type DocID, type PlannedDocument } from "./plan"
 import { tagged } from "./prompts"
 import { REQUEST_SOURCE, excerpt, instructionFound, lawyerWords, matterSourceIDs, openItem, quoteMissIssue } from "./quotes"
@@ -169,11 +169,6 @@ export function parseRequestedFiles(reply: string, directory: string, documents:
   if (issues.length) return { issues }
   return { issues, value: rows.length ? { stated: true, files: rows.map(row => row.file) } : { stated: false, files: [] } }
 }
-
-/** The extensions of common document, text, sheet and slide formats other than
- * Word's own: a name's ending only counts as an extension when it is one. Code
- * only, never a prompt. */
-const OTHER_FORMAT = /\.(?:doc|docm|dot|dotx|dotm|rtf|odt|wpd|pages|pdf|xps|epub|txt|md|html?|xml|xlsx?|xlsm|csv|ods|pptx?|odp)$/i
 
 /** A name without its ".docx" or other format's extension. */
 const nameStem = (name: string) => name.replace(/\.docx$/i, "").replace(OTHER_FORMAT, "")

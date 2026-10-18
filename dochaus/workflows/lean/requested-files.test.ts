@@ -276,7 +276,7 @@ describe("parse requested files", () => {
 
   test("the files job and package review ground a name by one grammar", () => {
     const words = "Deliver the share transfer form separately"
-    // The lawyer's words, the quote, the Word file name, and whether that name is grounded.
+    // The lawyer's words, the quote, the Word file name, and whether the files job grounds that name.
     const cases: [string, string, string, boolean][] = [
       [`${words} as Kestrel Transfer.docx.`, `${words} as Kestrel Transfer.docx`, "Kestrel Transfer.docx", true],
       [`${words}, titled Kestrel Transfer.`, `${words}, titled Kestrel Transfer`, "Kestrel Transfer.docx", true],
@@ -294,13 +294,16 @@ describe("parse requested files", () => {
       [`${words} and save it as PDF.`, `${words} and save it as PDF`, "PDF.docx", false],
       [`${words} and save it as a Word doc.`, `${words} and save it as a Word doc`, "a Word doc.docx", false],
       [`${words} and name the file docx.`, `${words} and name the file docx`, "docx.docx", false],
+      [`${words} and save it as Kestrel Transfer.doc.`, `${words} and save it as Kestrel Transfer.doc`, "Kestrel Transfer.doc.docx", false],
     ]
+    // Every name the files job grounds, package review accepts; it also accepts what its earlier literal or titled check did.
     for (const [request, quote, name, grounded] of cases) {
       const directory = prepared(request)
       writeLeanPlan(directory, [outline("Share transfer form")])
       const files = parseRequestedFiles(reply(true, file(["d1"], quote, name)), directory, DOCUMENTS, MEMO)
       const review = checkDeliverySelections(directory, [{ document: "d1", role: "body", file: name, instruction_quote: quote }])
-      expect({ request, files: files.value?.files[0]?.name === name, review: review.length === 0 }).toEqual({ request, files: grounded, review: grounded })
+      expect({ request, files: files.value?.files[0]?.name === name }).toEqual({ request, files: grounded })
+      if (grounded) expect({ request, review }).toEqual({ request, review: [] })
     }
     // Intended difference: the files job keeps the lawyer's spelling of a name given in another case, while
     // package review, which selects the file delivered, takes the lawyer's spelling only.
