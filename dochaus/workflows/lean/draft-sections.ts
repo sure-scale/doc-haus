@@ -27,7 +27,7 @@ import {
   stepSessionTitle,
   type LeanDeps,
 } from "./stages"
-import { answeredQuestionsText, handedBackBlock, leanFile, readLeanText, readOpenItems, readQuestions, writeLeanText, type LeanStageState, type LeanState, type OpenItem, type Question } from "./state"
+import { answeredQuestionsText, handedBackBlock, leanFile, LEFT_TO_DRAFTING, readLeanText, readOpenItems, readQuestions, writeLeanText, type LeanStageState, type LeanState, type OpenItem, type Question } from "./state"
 import { outlineCoverageIssues, partCarries, plannedContract, type TemplateContract } from "./template-contract"
 import { contractGaps, draftBody, draftGapIssues, type DraftPart } from "./template-coverage"
 import { countWords, headingUnits, tokens } from "./template-structure"
@@ -378,7 +378,7 @@ function sectionHandoff(directory: string, document: DocID) {
     ...(files.length ? [`Working evidence records available with read: ${files.map(name => `.dochaus/lean/${name}`).join(", ")}. These are retrieval guides, not independent authority; verify underlying matter passages and use only research approved by research-review.`] : []),
     ...(updates ? [`Current user updates, in arrival order (explicit later changes control; tentative suggestions are not settled decisions):\n${updates}`] : []),
     ...(answers ? [`Answered decisions — apply these and do not ask them again without new contrary evidence:\n${answers}`] : []),
-    ...(handed ? [handed] : []),
+    ...(handed ? [`${LEFT_TO_DRAFTING}\n${handed}`] : []),
   ].join("\n\n")
 }
 

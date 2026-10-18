@@ -310,15 +310,25 @@ export function answerQuestion(directory: string, questionID: string, answer: st
   return answered
 }
 
+/** Refuses a hand-back of `target`, the stored question `questionID` names,
+ * unless it is an open model-asked question: not_found, not_delegable (keyed
+ * questions — package scope, requested files, checklist conflict — are read as
+ * settled once answered) or already_answered (answered, or already handed back). */
+export function assertDelegable(target: Question | undefined, questionID: string): asserts target is Question {
+  if (!target) throw new LeanQuestionError("No such question in this matter's lean drafting run.", "not_found")
+  if (!questionID.startsWith("q-")) throw new LeanQuestionError("This question needs the lawyer's own answer; it cannot be left to the drafting to decide.", "not_delegable")
+  if (handedBack(target)) throw new LeanQuestionError("This question was already left to the drafting to decide.", "already_answered")
+  if (target.status === "answered") throw new LeanQuestionError("This question is already answered.", "already_answered")
+}
+
 /** The lawyer hands an open model-asked question back for the drafting to
- * decide. Keyed questions (package scope, requested files, checklist conflict)
- * are read as settled once answered, so they cannot be handed back. */
+ * decide (assertDelegable). A replayed hand-back, applied before a restart
+ * stopped the drain, is already recorded and changes nothing. */
 export function delegateQuestion(directory: string, questionID: string) {
   const questions = readQuestions(directory)
   const target = questions.find(question => question.id === questionID)
-  if (!target) throw new LeanQuestionError("No such question in this matter's lean drafting run.", "not_found")
-  if (!questionID.startsWith("q-")) throw new LeanQuestionError("This question needs the lawyer's own answer; it cannot be left to the drafting to decide.", "not_delegable")
-  if (target.status === "answered") throw new LeanQuestionError("This question is already answered.", "already_answered")
+  if (target && handedBack(target)) return target
+  assertDelegable(target, questionID)
   const { answer: _answer, ...asked } = target
   const delegated: Question = { ...asked, status: "answered", answer_kind: "decide_for_me", answered_at: new Date().toISOString() }
   writeQuestions(directory, questions.map(question => question.id === questionID ? delegated : question))
@@ -353,8 +363,13 @@ export function handedBackQuestionsText(directory: string) {
  * none: choices the drafting makes and discloses, never the lawyer's answers. */
 export function handedBackBlock(directory: string) {
   const text = handedBackQuestionsText(directory)
-  return text ? `The lawyer left these questions to the drafting to decide instead of answering them; do not ask them again. Each is a choice the drafting makes on professional judgment and discloses as one the lawyer has not made.\n${text}` : ""
+  return text ? "The lawyer left these questions to the drafting to decide instead of answering them; do not ask them again. Each is a choice the drafting makes on professional judgment and discloses as one the lawyer has not made. " +
+    `None is an agreed term, an answered decision or a settled dependency; record and review each as a drafting choice.\n${text}` : ""
 }
+
+/** The heading of handedBackBlock where a prompt lists it after the answers
+ * under plain headings rather than tags. */
+export const LEFT_TO_DRAFTING = "Left to the drafting (not the lawyer's answers):"
 
 /** The "answers" input of every step's key. A hand-back keys it as an answer
  * does, so it reruns from intake; without one it is the answers text alone. */
