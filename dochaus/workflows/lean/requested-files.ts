@@ -2,6 +2,7 @@ import path from "node:path"
 import { sha256File } from "../../lib/lineage"
 import { normalize, normalizeWithMap } from "../../lib/quote-verify"
 import { TOOL_SYNTAX_ISSUE, printedToolCall, record } from "./checks"
+import { readWorkingDocx } from "../../lib/working-docx"
 import { combinedDelivery, deliveryArtifactEvidence, deliveryStem, memoNotesFile, plannedRegistration, readLeanDocuments, requestedMemo } from "./deliverables"
 import { NAMING_WORDS } from "./delivery-selection"
 import { plainFileName, readLeanPlan, type DocID, type PlannedDocument } from "./plan"
@@ -17,10 +18,14 @@ import { answeredQuestionsText, readLeanJson, readLeanText, readQuestions, short
 // contents in the plan. The record is the lawyer's packaging, never the plan's,
 // and holds the planned titles and memo it was read for. Code does not rewrite
 // the plan's delivery shape: requestedFilesIssues gives the outline revision
-// feedback in the outline's own terms, and requestedFilesQuestion asks the
-// lawyer about a mismatch the revisions leave, once for the lawyer's words as
-// they stand. A file name is no planning judgement, so withRequestedNames gives
-// grounded names to the plan. A shape the run cannot build (several documents
+// feedback in the outline's own terms, with the planned documents each issue
+// concerns, and requestedFilesQuestion asks the lawyer about a mismatch the
+// revisions leave, once for the lawyer's words as they stand. The memo asked
+// for with a document planned as a redline goes to the lawyer with no
+// revision. Once the lawyer has answered a requested-files question, no
+// revision is asked for (requestedFilesRevision), and only words no answered
+// question listed are asked about. A file name is no planning judgement, so
+// withRequestedNames gives grounded names to the plan. A shape the run cannot build (several documents
 // in one file, or the memo after its document) is no revision issue; like any
 // file the final plan does not deliver as asked, it reaches the lawyer as an
 // open item derived from the record (requestedFilesItems), never stored. A job
@@ -48,6 +53,10 @@ export type LeanRequestedFiles = {
 }
 
 type Checked<T> = { issues: string[]; value?: T }
+/** An outline revision issue on a recorded file: its feedback, the planned
+ * documents whose "Deliverable:" lines it asks to change, and, with `ask`, a
+ * mismatch that goes to the lawyer with no revision. */
+export type FilesIssue = { issue: string; documents: DocID[]; ask: boolean }
 
 const MEMO = "memo"
 const RECORD_FILE = "requested-files.json"
@@ -231,34 +240,39 @@ function buildable(file: RequestedFile, ids: string[], memo: boolean) {
  * is planned): unsupported when the plan cannot build it (buildable);
  * otherwise, when the plan's deliverables do not deliver it as asked, the
  * outline revision `issue` and how the plan delivers it instead (`planned`). */
-function fileCheck(file: RequestedFile, documents: PlannedDocument[], memo: boolean): { unsupported: true } | { unsupported: false; issue?: string; planned?: string } {
+function fileCheck(file: RequestedFile, documents: PlannedDocument[], memo: boolean): { unsupported: true } | { unsupported: false; issue?: FilesIssue; planned?: string } {
   const shape = buildable(file, documents.map(document => document.id), memo)
   if (!shape) return { unsupported: true }
   const target = shape.document && documents.find(document => document.id === shape.document)
   const words = `The lawyer's words "${excerpt(file.quote)}"`
   const combined = documents.filter(document => document.deliverable === "combined" && document !== target)
   const body = (document: PlannedDocument) => `"Deliverable: body" under "${document.title}"`
+  const revise = (issue: string, changed: PlannedDocument[]): FilesIssue => ({ issue, documents: changed.map(document => document.id), ask: false })
   if (target && shape.memo) {
-    const redline = target.deliverable === "redline"
-    const changes = [...(target.deliverable !== "combined" ? [`"Deliverable: combined" under "${target.title}"${redline ? ' in place of "Deliverable: redline"' : ""}`] : []), ...combined.map(body)]
-    // The run joins the memo only with a document's clean text.
-    return !changes.length ? { unsupported: false } : {
+    // The run joins the memo only with a document's clean text; whether a
+    // document planned as a redline is delivered so instead is the lawyer's call.
+    if (target.deliverable === "redline") return {
       unsupported: false,
-      issue: `${words} ask for the memo and "${target.title}" in one file` +
-        `${redline ? `, but the plan delivers "${target.title}" as a redline, and the run joins the memo only with a document's clean text` : ""}. Write ${serialList(changes)}.`,
+      issue: { issue: `${words} ask for the memo and "${target.title}" in one file; the plan delivers "${target.title}" as a redline, which cannot be joined with the memo.`, documents: [], ask: true },
+      planned: `"${target.title}" as a redline and the memo ${combined.length ? `in one file with ${titles(combined)}` : "as a file of its own"}`,
+    }
+    const changed = [...(target.deliverable !== "combined" ? [target] : []), ...combined]
+    return !changed.length ? { unsupported: false } : {
+      unsupported: false,
+      issue: revise(`${words} ask for the memo and "${target.title}" in one file. ` +
+        `Write ${serialList([...(target.deliverable !== "combined" ? [`"Deliverable: combined" under "${target.title}"`] : []), ...combined.map(body)])}.`, changed),
       planned: target.deliverable === "combined" ? `the memo in one file with ${titles(combined)} as well`
-        : redline ? `"${target.title}" as a redline and the memo ${combined.length ? `in one file with ${titles(combined)}` : "as a file of its own"}`
         : combined.length ? `the memo in one file with ${titles(combined)}, and "${target.title}" as a file of its own` : `the memo and "${target.title}" as separate files`,
     }
   }
   if (target) return target.deliverable !== "combined" ? { unsupported: false } : {
     unsupported: false,
-    issue: `${words} ask for "${target.title}" in a file of its own, without the memo. Write "Deliverable: body" under "${target.title}" in place of "Deliverable: combined".`,
+    issue: revise(`${words} ask for "${target.title}" in a file of its own, without the memo. Write "Deliverable: body" under "${target.title}" in place of "Deliverable: combined".`, [target]),
     planned: `"${target.title}" in one file with the memo`,
   }
   return !combined.length ? { unsupported: false } : {
     unsupported: false,
-    issue: `${words} ask for the memo in a file of its own. Write ${serialList(combined.map(body))} in place of "Deliverable: combined".`,
+    issue: revise(`${words} ask for the memo in a file of its own. Write ${serialList(combined.map(body))} in place of "Deliverable: combined".`, combined),
     planned: `the memo in one file with ${titles(combined)}`,
   }
 }
@@ -267,11 +281,13 @@ function fileCheck(file: RequestedFile, documents: PlannedDocument[], memo: bool
  * recorded files, in the outline's own terms, quoting the lawyer's words and
  * naming documents by title: the memo with one document needs that document
  * combined and no other; one document alone, or the memo alone, needs no
- * document combined with the memo. A file the plan cannot build gives no issue,
- * since no revision builds it; its index is in `unsupported`, for disclosure.
- * Nothing when the lawyer's words do not state the files. */
+ * document combined with the memo. Each issue carries the planned documents
+ * whose deliverables it asks to change. The memo with a document planned as a
+ * redline is an issue for the lawyer only (`ask`). A file the plan cannot build
+ * gives no issue, since no revision builds it; its index is in `unsupported`,
+ * for disclosure. Nothing when the lawyer's words do not state the files. */
 export function requestedFilesIssues(documents: PlannedDocument[], memo: string | undefined, requested: RequestedFiles) {
-  const issues: string[] = []
+  const issues: FilesIssue[] = []
   const unsupported: number[] = []
   if (requested.stated) requested.files.forEach((file, index) => {
     const check = fileCheck(file, documents, memo !== undefined)
@@ -279,6 +295,21 @@ export function requestedFilesIssues(documents: PlannedDocument[], memo: string 
     else if (check.issue) issues.push(check.issue)
   })
   return { issues, unsupported }
+}
+
+/** What a files revision request says before its issues. */
+export const FILES_REVISION_SCOPE = 'These issues concern only how the outline delivers its files: change only the "Deliverable:" and "File:" lines, ' +
+  'and keep every title, part and the "Memo:" line exactly as they are.'
+
+/** The outline revision request for `issues` (requestedFilesIssues): the issues
+ * a revision may settle, after FILES_REVISION_SCOPE, and the planned documents
+ * they concern, the only ones whose delivery is taken from the revision.
+ * Undefined when no issue is a revision's, or once the lawyer has answered any
+ * requested-files question: a revision never overrides an answer. */
+export function requestedFilesRevision(directory: string, issues: FilesIssue[]) {
+  const revisable = issues.filter(row => !row.ask)
+  if (!revisable.length || answeredFiles(directory).any) return
+  return { feedback: [FILES_REVISION_SCOPE, ...revisable.map(row => row.issue)], documents: new Set(revisable.flatMap(row => row.documents)) }
 }
 
 /** The plan's file names with each grounded name the record gives: a file of
@@ -346,21 +377,37 @@ export function withRequestedNames<T extends { title: string; file?: string; del
 const questionID = (directory: string) =>
   `${QUESTION_ID}${shortHash(JSON.stringify([readLeanText(directory, "request.md") ?? "", readLeanText(directory, "updated-notes.md") ?? ""]))}`
 
+/** The answered requested-files questions (requestedFilesQuestion), on the
+ * lawyer's words as they stand or as they stood: whether there is any, and the
+ * one that listed the words `quote`, which a later job may quote more or less
+ * fully. */
+function answeredFiles(directory: string) {
+  const flat = (words: string) => normalize(words).toLowerCase()
+  const answered = readQuestions(directory).filter(question => question.id.startsWith(QUESTION_ID) && question.status === "answered")
+    .map(question => ({ id: question.id, quoted: [...question.question.matchAll(/Your words "(.*?)" ask for /g)].map(match => flat(match[1]!.replace(/…$/, ""))) }))
+  return {
+    any: answered.length > 0,
+    listing: (quote: string) => answered.find(question => question.quoted.some(words => words.includes(flat(quote)) || flat(quote).includes(words)))?.id,
+  }
+}
+
 /** The lawyer's question on files the outline's revisions still do not
  * deliver as the record asks (`issues`, from requestedFilesIssues on the same
  * documents): the lawyer's words, what they ask for, by title, "the memo" and
  * file name, and how the plan delivers it instead. It is asked once for the
  * lawyer's words as they stand (questionID): undefined when there is no issue
  * or that question is already open or answered, since a later job may quote
- * the same words differently. */
-export function requestedFilesQuestion(directory: string, requested: RequestedFiles, documents: PlannedDocument[], issues: string[]): Question | undefined {
+ * the same words differently. Words an answered question listed are not asked
+ * about again, even once an update changes the lawyer's words. */
+export function requestedFilesQuestion(directory: string, requested: RequestedFiles, documents: PlannedDocument[], issues: FilesIssue[]): Question | undefined {
   if (!issues.length) return
   const id = questionID(directory)
   if (readQuestions(directory).some(question => question.id === id)) return
+  const answered = answeredFiles(directory)
   // Issues arise only for files whose memo is planned.
   const lines = requested.files.flatMap(file => {
     const check = fileCheck(file, documents, true)
-    return check.unsupported || !check.planned ? []
+    return check.unsupported || !check.planned || answered.listing(file.quote) ? []
       : [`Your words "${excerpt(file.quote)}" ask for ${asked(file, id => documents.find(document => document.id === id))}, but the document plan delivers ${check.planned}.`]
   })
   if (!lines.length) return
@@ -408,22 +455,23 @@ const savedFile = (row: unknown) => record(row) && Array.isArray(row.holds) && r
 /** The open items for recorded files the saved plan does not deliver as the
  * lawyer asked, derived from the record and never stored. Only a record of the
  * saved plan counts: same basis, and read for the plan's titles and memo
- * (requestedFilesPlanned); a plan written or edited by hand, or with no such
- * record, gives none. An unchecked record gives one item, as the coverage
- * check's does: the run could not confirm which files the lawyer's words ask to
- * receive. A file the run cannot build (fileShape) always gives
- * one. Otherwise each file is compared with the names registration gives the
- * plan's files (plannedRegistration): the memo with one document must be that
- * document's combined file (combinedDelivery), one document alone must not be
- * combined, the memo alone must be delivered with no document combined, and a
- * requested name, or one the run could not confirm, must be that file's name,
- * free of a matter file the run did not write (the lawyer's accepted Word
- * revision of the run's file is the run's). Each item quotes the lawyer's
- * words, says what they ask for and every file the run delivers instead, by all
- * it holds, and belongs to the drafting notes, so a repair goes to the notes
- * writer. Once the lawyer has answered the question on these words
- * (questionID), an item on a file that question quoted cites the answer. Each
- * id keys on the item's content. */
+ * (requestedFilesPlanned). A plan written by hand, which records no basis, or
+ * one with no such record gives none; a hand edit that keeps the basis, the
+ * titles and the memo is still checked against the lawyer's words. An
+ * unchecked record gives one item, as the coverage check's does: the run could
+ * not confirm which files the lawyer's words ask to receive. A file the run
+ * cannot build (fileShape) always gives one, as does the memo asked for with a
+ * document planned as a redline. Otherwise each file is compared with the
+ * names registration gives the plan's files (plannedRegistration): the memo
+ * with one document must be that document's combined file (combinedDelivery),
+ * one document alone must not be combined, the memo alone must be delivered
+ * with no document combined, and a requested name, or one the run could not
+ * confirm, must be the name registration takes for that file. Each item quotes
+ * the lawyer's words, says what they ask for and every file the run delivers
+ * instead, by all it holds, and belongs to the drafting notes, so a repair goes
+ * to the notes writer. Once the lawyer has answered a requested-files question
+ * that listed these words, the item cites that answer. Each id keys on the
+ * item's content. */
 export function requestedFilesItems(directory: string): OpenItem[] {
   const plan = readLeanPlan(directory)
   const saved = readRequestedFiles(directory)
@@ -440,10 +488,16 @@ export function requestedFilesItems(directory: string): OpenItem[] {
   const combined = combinedDelivery(directory, plan)
   const memo = requestedMemo(directory, plan)
   const title = (id: string) => plan.documents.find(row => row.id === id)?.title
-  // The file the run delivers `kind` of `document` as: its registered name and
-  // its spelling, with registration's suffix; and whether a matter file the run
-  // did not write holds that name (`foreign`), as registration then takes
-  // another, with the run's own earlier name for it when the summary has one.
+  // The file the run delivers `kind` of `document` as, by its registered name
+  // and spelling, in the order registration tries names (registerOnce): the
+  // run's earlier delivery of it under this name or a suffixed one while that
+  // file is still the run's, else the planned name, with registration's suffix,
+  // while that file is the run's. A file there that is not the run's (`held`)
+  // makes registration take a name not known before it registers (`name` and
+  // `spelled` null). A file is the run's when absent, holding the bytes the run
+  // registered there for this document, or holding the lawyer's accepted Word
+  // revision of them (acceptedRevisionName), as the notes are once an accept
+  // adds their addendum, before the summary is next written.
   const delivery = (kind: string, document: DocID | null) => {
     const row = registered.find(other => other.kind === kind && other.document === document)
     if (!row?.name) return null
@@ -451,12 +505,19 @@ export function requestedFilesItems(directory: string): OpenItem[] {
     const spelled = planned && row.wanted === planned.toLocaleLowerCase() && row.name.startsWith(row.wanted.slice(0, -5))
       ? `${planned.slice(0, -5)}${row.name.slice(row.wanted.length - 5)}` : row.name
     const titled = document ? title(document) ?? null : null
-    const current = kind === "combined" ? null : sha256File(path.join(directory, spelled))?.sha256
-    const owned = rows.some(other => other.title === titled && other.deliverable?.toLocaleLowerCase() === row.name && (other.sha256 === current || other.conflict === "accepted_revision"))
+    if (kind === "combined") return { kind, title: titled, name: row.name, spelled, held: undefined }
+    const runs = (name: string) => {
+      const current = sha256File(path.join(directory, name))?.sha256
+      return !current || rows.some(other => other.title === titled && other.deliverable?.toLocaleLowerCase() === name.toLocaleLowerCase() &&
+        (other.sha256 === current || other.conflict === "accepted_revision" || Boolean(readWorkingDocx(directory, path.join(directory, other.deliverable)))))
+    }
     const stem = row.wanted.slice(0, -5).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+    const others = new Set(registered.flatMap(other => other === row ? [] : [other.wanted, ...other.name ? [other.name] : []]))
     const earlier = rows.find(other => other.kind === kind && other.title === titled && other.deliverable &&
-      new RegExp(`^${stem}(?: \\(\\d+\\))?\\.docx$`).test(other.deliverable.toLocaleLowerCase()) && other.deliverable.toLocaleLowerCase() !== row.name)?.deliverable
-    return { kind, title: titled, name: row.name, spelled, foreign: Boolean(current) && !owned, earlier }
+      new RegExp(`^${stem}(?: \\(\\d+\\))?\\.docx$`).test(other.deliverable.toLocaleLowerCase()) && !others.has(other.deliverable.toLocaleLowerCase()))?.deliverable
+    const held = runs(spelled) ? undefined : spelled
+    if (earlier && runs(earlier)) return { kind, title: titled, name: earlier.toLocaleLowerCase(), spelled: earlier, held }
+    return held ? { kind, title: titled, name: null, spelled: null, held } : { kind, title: titled, name: row.name, spelled, held }
   }
   const deliveredIn = (id: string) => {
     if (id === MEMO) return !memo ? null : combined ? delivery("combined", combined.document) : delivery("drafting_notes", null)
@@ -465,37 +526,33 @@ export function requestedFilesItems(directory: string): OpenItem[] {
   }
   const describe = (file: NonNullable<ReturnType<typeof delivery>>) => {
     const what = file.kind === "combined" ? `the memo and "${file.title}"` : file.kind === "drafting_notes" ? "the memo" : `"${file.title}"${file.kind === "redline" ? " as a redline" : ""}`
-    if (file.foreign) return `${what} in ${file.earlier ? `"${file.earlier}"` : "a file of another name"}, since a matter file the run did not write already holds "${file.spelled}"`
-    return file.kind === "combined" ? `${what} in one file named "${file.spelled}"` : `${what} in "${file.spelled}"`
+    const where = file.spelled === null ? "a file of another name" : file.kind === "combined" ? `one file named "${file.spelled}"` : `"${file.spelled}"`
+    return `${what} in ${where}${file.held ? `, since a file already in the matter holds the name "${file.held}"` : ""}`
   }
   const nameKey = (name: string) => `${deliveryStem({ title: "", file: name })}.docx`.toLocaleLowerCase()
   const lawyerQuote = (words: string) => `"${words.replace(/\s+/g, " ").trim()}"` + (matterSourceIDs(directory).includes(REQUEST_SOURCE) ? "" : ` [source: ${REQUEST_SOURCE}]`)
-  const id = questionID(directory)
-  // The words the answered question quoted (requestedFilesQuestion); a later
-  // job may quote them more or less fully.
-  const flat = (words: string) => normalize(words).toLowerCase()
-  const quoted = readQuestions(directory).filter(question => question.id === id && question.status === "answered")
-    .flatMap(question => [...question.question.matchAll(/Your words "(.*?)" ask for /g)].map(match => flat(match[1]!.replace(/…$/, ""))))
-  const answered = (quote: string) => quoted.some(words => words.includes(flat(quote)) || flat(quote).includes(words))
+  const answered = answeredFiles(directory)
   const items = saved.files.flatMap(file => {
     const check = fileCheck(file, plan.documents, memo !== undefined)
     const shape = fileShape(file)
     const target = shape && deliveredIn(shape.document ?? MEMO)
     const given = file.name ?? file.refused_name
-    const named = given === undefined || Boolean(target && !target.foreign && target.name === nameKey(given))
+    const named = given === undefined || Boolean(target?.name && target.name === nameKey(given))
     if (!check.unsupported && !check.issue && named) return []
     const files = new Map<string, NonNullable<ReturnType<typeof delivery>>>()
     for (const held of file.holds) {
       const delivered = deliveredIn(held)
-      if (delivered) files.set(delivered.name, delivered)
+      if (delivered) files.set(`${delivered.kind}:${delivered.title}`, delivered)
     }
     const phrases = [...[...files.values()].map(describe), ...(file.holds.includes(MEMO) && !memo ? ["no memo"] : [])]
     const delivers = phrases.length ? serialList(phrases) : "none of them"
-    const reason = shape ? "" : file.holds.filter(held => held !== MEMO).length > 1 ? " The run cannot put more than one document in one file."
+    const reason = !shape ? file.holds.filter(held => held !== MEMO).length > 1 ? " The run cannot put more than one document in one file."
       : " The run can join the memo and a document in one file only with the memo first."
+      : !check.unsupported && check.issue?.ask ? " The run cannot join the memo with a redline." : ""
     const refused = file.name === null && file.refused_name !== undefined && !named
-    const closing = answered(file.quote) && !check.unsupported && check.planned
-      ? ` The lawyer answered the requested-files question ${id}; the plan drawn up with that answer still delivers them so.`
+    const by = answered.listing(file.quote)
+    const closing = by && !check.unsupported && check.planned
+      ? ` The lawyer answered the requested-files question ${by}; the plan drawn up with that answer still delivers them so.`
       : " The lawyer should confirm how these files are to be delivered."
     return [openItem("finalize", "omission", `Requested files: the lawyer's words ${lawyerQuote(file.quote)} ask for ${asked(file, held => plan.documents.find(row => row.id === held))}` +
       (refused ? ` and name this file; the run could not confirm the name "${file.refused_name}" in those words and delivers ${delivers}.` : `, but the run delivers ${delivers}.`) +

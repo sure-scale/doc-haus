@@ -7,7 +7,7 @@ import { memoNotesFile } from "./deliverables"
 import { LEAN_COVERAGE_SCHEMA, coveragePlanHash, coveragePrompt, coverageScopeQuestion, parseCoverage, planCoverageCurrent, planCoverageIssues, type CoverageAct, type LeanCoverage } from "./package-coverage"
 import { answeredScopeQuestion, openScopeQuestion } from "./package-scope"
 import {
-  LEAN_REQUESTED_FILES_SCHEMA, parseRequestedFiles, requestedFilesIssues, requestedFilesPlanned, requestedFilesPrompt, requestedFilesQuestion, withRequestedNames, writeRequestedFiles,
+  LEAN_REQUESTED_FILES_SCHEMA, parseRequestedFiles, requestedFilesIssues, requestedFilesPlanned, requestedFilesPrompt, requestedFilesQuestion, requestedFilesRevision, withRequestedNames, writeRequestedFiles,
   type RequestedFiles,
 } from "./requested-files"
 import {
@@ -59,10 +59,12 @@ import { countWords, headingUnits, tokens } from "./template-structure"
 // question stops the step, a files job in its own session then reads which
 // files the lawyer's words ask to receive (requested-files.ts). Where the plan
 // does not deliver them so, the issues go back to the outline session for at
-// most PLAN_FILES_REVISIONS revised outlines, from which only the documents'
-// deliverables and file names are taken, and only while the documents and the
-// memo stay as planned; a mismatch still left stops the step, with no plan
-// saved, on one question to the lawyer, asked once. Code never changes the
+// most PLAN_FILES_REVISIONS revised outlines, from which only the deliverables
+// and file names of the documents the issues concern are taken, and only while
+// the documents and the memo stay as planned; a mismatch still left, or the
+// memo asked for with a document planned as a redline, stops the step, with no
+// plan saved, on one question to the lawyer, asked once. Once the lawyer has
+// answered such a question, no revision is asked for. Code never changes the
 // plan's delivery shape, but gives the plan the file names the lawyer's words
 // give, and saves the files in requested-files.json beside the plan. A files
 // reply that never passed its check is recorded and logged as unchecked, is
@@ -241,25 +243,30 @@ export async function runDraftStage(
     const blocked = scopeBlock(covered, coverage)
     if (blocked) return blocked
     // The files the lawyer's words ask for are read from the covered outline.
-    // Where its deliverables do not deliver them so, the issues go back to the
-    // outline session as a revision request, unless the lawyer has already been
-    // asked about this very mismatch: a revision never overrides the answer. A
-    // revision settles delivery only: its documents' deliverables and file names
-    // are taken when it plans the same titles, in order, and the same memo, and
-    // otherwise it is spent and the outline kept. Neither job reads what it
-    // changes, so neither is asked again.
+    // Where its deliverables do not deliver them so, the issues a revision may
+    // settle go back to the outline session as a revision request, unless the
+    // lawyer has already been asked about this very mismatch or has answered a
+    // question on the requested files: a revision never overrides an answer. A
+    // revision settles delivery only: the deliverables and file names of the
+    // documents its issues concern are taken when it plans the same titles, in
+    // order, and the same memo, spelled alike, and otherwise it is spent and the
+    // outline kept. Neither job reads what it changes, so neither is asked again.
     const filed = await filing(covered, value.memo)
     const requested = filed?.value
-    const contents = (outline: LeanOutline) => JSON.stringify([outline.documents.map(row => row.title), outline.memo ?? null])
+    const contents = (outline: LeanOutline) => JSON.stringify([outline.documents.map(row => normalizedHeading(row.title)), outline.memo ? normalizedHeading(outline.memo) : null])
     const delivered = ({ deliverable: _deliverable, file: _file, ...row }: LeanOutline["documents"][number], revised: LeanOutline["documents"][number]) =>
       ({ ...row, ...(revised.deliverable ? { deliverable: revised.deliverable } : {}), ...(revised.file ? { file: revised.file } : {}) })
     let files = requested ? requestedFilesIssues(covered, value.memo, requested).issues : []
-    for (let revision = 1; requested && requestedFilesQuestion(directory, requested, withDocumentIDs(value.documents), files) && revision <= PLAN_FILES_REVISIONS; revision++) {
+    const revising = (documents: LeanOutline["documents"]) =>
+      requested && requestedFilesQuestion(directory, requested, withDocumentIDs(documents), files) ? requestedFilesRevision(directory, files) : undefined
+    for (let revision = 1, revise = revising(value.documents); requested && revise && revision <= PLAN_FILES_REVISIONS; revision++, revise = revising(value.documents)) {
       delete best.value
-      const revised = await ask<LeanOutline>(`outline files revision ${revision}/${PLAN_FILES_REVISIONS}`, retryPrompt("draft", files), checkOutline, 0, files)
+      const revised = await ask<LeanOutline>(`outline files revision ${revision}/${PLAN_FILES_REVISIONS}`, retryPrompt("draft", revise.feedback), checkOutline, 0, revise.feedback)
       const next = revised.value ?? best.value
       if (!next || contents(next) !== contents(value)) continue
-      value = { ...value, documents: value.documents.map((row, index) => delivered(row, next.documents[index]!)) }
+      const concerned = revise.documents
+      const ids: DocID[] = withDocumentIDs(value.documents).map(row => row.id)
+      value = { ...value, documents: value.documents.map((row, index) => concerned.has(ids[index]!) ? delivered(row, next.documents[index]!) : row) }
       files = requestedFilesIssues(withDocumentIDs(value.documents), value.memo, requested).issues
     }
     const documents = withDocumentIDs(value.documents)
@@ -275,7 +282,7 @@ export async function runDraftStage(
     const named = requested && withRequestedNames(value.documents, memo, requested)
     if (requested && named) {
       writeRequestedFiles(directory, { schema: LEAN_REQUESTED_FILES_SCHEMA, basis, planned: requestedFilesPlanned(named.documents, value.memo), stated: requested.stated, files: requested.files })
-      appendLeanEvent(directory, { stage: "draft", document, event: "requested_files", step: "files", outcome: requested.stated ? "stated" : "not_stated", issues: files,
+      appendLeanEvent(directory, { stage: "draft", document, event: "requested_files", step: "files", outcome: requested.stated ? "stated" : "not_stated", issues: files.map(row => row.issue),
         ...(named.applied.length ? { reason: named.applied.join("; ") } : {}) })
     } else if (filed) {
       // Disclosed from the record (requestedFilesItems), as an unchecked coverage record is.
