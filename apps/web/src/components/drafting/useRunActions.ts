@@ -2,6 +2,7 @@ import { useRef, useState } from "react"
 import { humanizeError } from "../../api/ingest/errors"
 import {
   answerLeanQuestion,
+  decideLeanQuestion,
   pauseLeanDraftingRun,
   resumeLeanDraftingRun,
   refineLeanChecklist,
@@ -76,6 +77,8 @@ export default function useRunActions(
         : Promise.resolve(false),
     answer: (questionID: string, answer: string) =>
       matterId ? queue(() => answerLeanQuestion(matterId, questionID, answer)) : Promise.resolve(false),
+    decide: (questionID: string) =>
+      matterId ? queue(() => decideLeanQuestion(matterId, questionID)) : Promise.resolve(false),
   }
 }
 

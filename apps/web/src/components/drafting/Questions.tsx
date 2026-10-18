@@ -1,31 +1,37 @@
 import { useAnswerDrafts } from "../../use-answer-drafts"
 import AnswerDraftStatus from "../AnswerDraftStatus"
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useId, useRef, useState } from "react"
 import type { LeanQuestion } from "../../api/ingest/lean"
 import { ModalClose } from "../ModalHeader"
+import { delegableQuestion } from "./model"
 
 // The run's open questions, one at a time with an "N of M" counter and how many
 // are answered, inside the question dialog. Answers in progress are kept per
 // run on the server. Once saved, answers survive dialog closure and reload.
 // Each answer is the lawyer's own: there is no
-// default or suggested answer. The cursor sits in the answer field of whichever
-// question is showing.
+// default or suggested answer. A question the run's model asked can instead be
+// handed back with Decide for me; the count calls it left to the drafter. The
+// cursor sits in the answer field of whichever question is showing.
 export default function Questions({
   matterId,
   ownerSessionID,
   questions,
   answered,
+  handedBack = 0,
   titles,
   busy,
   error,
   titleId,
   onClose,
   onSend,
+  onDecide,
 }: {
   matterId: string
   ownerSessionID: string
   questions: LeanQuestion[]
   answered: number
+  /** How many of the answered questions the lawyer handed back. */
+  handedBack?: number
   titles: Map<string, string>
   busy: boolean
   error: string
@@ -33,7 +39,9 @@ export default function Questions({
   titleId: string
   onClose: () => void
   onSend: (question: LeanQuestion, answer: string) => Promise<boolean>
+  onDecide: (question: LeanQuestion) => Promise<boolean>
 }) {
+  const hintId = useId()
   const drafts = useAnswerDrafts(matterId, `lean.${ownerSessionID}`, `dh.lean.answers.${matterId}`)
   const [index, setIndex] = useState(0)
   const field = useRef<HTMLTextAreaElement>(null)
@@ -51,9 +59,16 @@ export default function Questions({
   const about = question.document && titles.size > 1 ? titles.get(question.document) : undefined
   const fieldId = `lean-answer-${question.id}`
   const total = answered + questions.length
+  const delegated = Math.min(handedBack, answered)
+  const delegable = delegableQuestion(question)
 
   async function send() {
     if (!(await onSend(question, draft))) return
+    drafts.set(question.id, undefined)
+  }
+
+  async function decide() {
+    if (!(await onDecide(question))) return
     drafts.set(question.id, undefined)
   }
 
@@ -83,11 +98,16 @@ export default function Questions({
         <div className="question-progress">
           <span className="question-dots" aria-hidden>
             {Array.from({ length: total }, (_, i) => (
-              <span key={i} className={`question-dot${i < answered ? " is-answered" : ""}${i === answered + at ? " is-current" : ""}`} />
+              <span
+                key={i}
+                className={`question-dot${i < answered ? " is-answered" : ""}${i >= answered - delegated && i < answered ? " is-delegated" : ""}${i === answered + at ? " is-current" : ""}`}
+              />
             ))}
           </span>
           <span>
-            {answered} answered, {questions.length} left
+            {delegated
+              ? `${answered - delegated} answered, ${delegated} left to the drafter, ${questions.length} to answer`
+              : `${answered} answered, ${questions.length} left`}
           </span>
         </div>
       )}
@@ -120,10 +140,20 @@ export default function Questions({
         <span className="question-keys" aria-hidden>
           ⌘/Ctrl+Enter to send
         </span>
+        {delegable && (
+          <button type="button" aria-describedby={hintId} disabled={busy} onClick={decide}>
+            Decide for me
+          </button>
+        )}
         <button className="primary" type="button" disabled={busy || !drafts.loaded || !draft.trim()} onClick={send}>
           {busy ? "Sending…" : "Send answer"}
         </button>
       </div>
+      {delegable && (
+        <p id={hintId} className="question-delegate-hint">
+          You'll get a review draft that says what was chosen and why.
+        </p>
+      )}
     </section>
   )
 }

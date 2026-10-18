@@ -1,4 +1,4 @@
-import type { LeanDocument, LeanDraftingStatus, LeanOpenItem, LeanStageStatus } from "../../api/ingest/lean"
+import type { LeanDocument, LeanDraftingStatus, LeanOpenItem, LeanQuestion, LeanStageStatus } from "../../api/ingest/lean"
 
 // Pure view model for the drafting run header: plain step names, steps grouped per
 // planned document, the run's state in four words, and open items grouped by
@@ -127,6 +127,19 @@ export function openQuestions(status: LeanDraftingStatus) {
   if (leanRunStopped(status)) return []
   const queued = new Set(status.queued_answer_ids ?? [])
   return status.questions.filter((question) => question.status === "open" && !queued.has(question.id))
+}
+
+/** An open question the run's model asked (a `q-` id) can be handed back for
+ * the drafting to decide. Any other question settles the run's scope and needs
+ * the lawyer's own answer. */
+export function delegableQuestion(question: LeanQuestion) {
+  return question.status === "open" && question.id.startsWith("q-")
+}
+
+/** The questions the lawyer handed back, as the run recorded them: answered,
+ * with no answer text. */
+export function handedBackQuestions(status: LeanDraftingStatus) {
+  return status.questions.filter((question) => question.status === "answered" && question.answer_kind === "decide_for_me")
 }
 
 /** Every stop short of completion is recoverable from the run header (Continue or an

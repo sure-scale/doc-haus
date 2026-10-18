@@ -257,6 +257,11 @@ button.question-dock-cta:focus-visible {
   background: var(--accent);
 }
 
+/* Settled, but left to the drafter rather than answered. */
+.question-dot.is-delegated {
+  background: transparent;
+}
+
 .question-dot.is-current {
   background: var(--warn);
 }
@@ -305,10 +310,18 @@ button.question-dock-cta:focus-visible {
 
 .question-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
   gap: 12px;
   margin-top: 12px;
+}
+
+.question-delegate-hint {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: right;
 }
 
 .question-keys {
@@ -327,7 +340,7 @@ button.question-dock-cta:focus-visible {
   margin-top: 10px;
 }
 
-.question-actions button.primary {
+.question-actions button {
   flex: none;
   white-space: nowrap;
 }

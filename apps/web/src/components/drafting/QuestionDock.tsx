@@ -7,10 +7,12 @@ export default function QuestionDock(props: {
   ownerSessionID: string
   questions: LeanQuestion[]
   answered: number
+  handedBack: number
   titles: Map<string, string>
   busy: boolean
   error: string
   onSend: (question: LeanQuestion, answer: string) => Promise<boolean>
+  onDecide: (question: LeanQuestion) => Promise<boolean>
 }) {
   return (
     <QuestionDockShell
