@@ -4,6 +4,7 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { mergeAuthorityLedgerEntries } from "../lib/authority-ledger"
 import { buildCitationCheckReport, formatCitationCheckSummary, writeCitationCheckReport } from "../lib/citation-check"
+import { citationRowsForArtifact } from "../lib/citation-extraction"
 
 function matter() {
   return mkdtempSync(path.join(tmpdir(), "citation-check-"))
@@ -222,5 +223,28 @@ describe("formatCitationCheckSummary", () => {
     const summary = formatCitationCheckSummary(report)
 
     expect(summary).toContain("No citation-like references found")
+  })
+})
+
+describe("case-name support matching", () => {
+  // A case name, cited bare or after a signal, matches only where it begins a
+  // word of the support text: at its start, or after a space, punctuation or
+  // an opening parenthesis, never inside a longer name.
+  const rows = (cited: string, supportText: string) => {
+    const dir = matter()
+    writeFileSync(path.join(dir, "draft.md"), `The court decided ${cited}, on notice.\n`)
+    const index = [{ normalized_text: supportText, support: { kind: "source-artifact" as const, id: "source-artifact:s1", status: "verified" as const } }]
+    return citationRowsForArtifact(dir, "draft.md", index).map(row => [row.citation_text, row.status])
+  }
+
+  test("a case name inside a longer name is unsupported", () => {
+    expect(rows("Down v. Merrow", "ashdown v. merrow, 12 synth. 34 (2020)")).toEqual([["Down v. Merrow", "unsupported"]])
+    expect(rows("Merrow, 12 Synth. 34", "ashmerrow, 12 synth. 34 (2020)")).toEqual([["Merrow, 12 Synth. 34", "unsupported"]])
+  })
+
+  test("a case name at the start of the support text or after punctuation is supported", () => {
+    for (const supportText of ["down v. merrow, 12 synth. 34", "the leading case (down v. merrow) applies", "see notice; down v. merrow", "held:down v. merrow", "as held in down v. merrow"])
+      expect(rows("Down v. Merrow", supportText)).toEqual([["Down v. Merrow", "verified"]])
+    expect(rows("Merrow, 12 Synth. 34", "ashdown v. merrow, 12 synth. 34 (2020)")).toEqual([["Merrow, 12 Synth. 34", "verified"]])
   })
 })
