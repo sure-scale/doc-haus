@@ -252,6 +252,66 @@ describe("native Word comment export", () => {
     expect(revisions(xml(preserved, "word/document.xml"))).toEqual(revisions(xml(compared, "word/document.xml")))
   })
 
+  test("refuses to restore an existing comment whose original paragraph has a pending deleted paragraph mark", async () => {
+    const original = exportDocxComments(withBody(clean, `<w:p><w:pPr><w:rPr><w:del w:id="90" w:author="Earlier reviewer"/></w:rPr></w:pPr>`
+      + `<w:r><w:t xml:space="preserve">Alpha </w:t></w:r></w:p><w:p><w:r><w:t>Beta.</w:t></w:r></w:p><w:p><w:r><w:t>Notice is five days.</w:t></w:r></w:p>`),
+      [{ id: "existing", anchor: { paragraph_text: "Alpha Beta." }, author: "Counterparty counsel", text: "Confirm this term." }]).bytes
+    const modified = withBody(clean, `<w:p><w:r><w:t>Alpha Beta.</w:t></w:r></w:p><w:p><w:r><w:t>Notice is seven days.</w:t></w:r></w:p>`)
+    const compared = await compareDocxWithPointers(original, modified, { authorName: "doc.haus review" })
+    // Premise: the comparator accepts the original's pending revision, so both sides number two accepted paragraphs.
+    expect(xml(compared, "word/document.xml")).not.toContain("Earlier reviewer")
+    expect(readDocxCommentParagraphs(original).map(row => row.paragraph_text)).toEqual(["Alpha Beta.", "Notice is five days."])
+    expect(readDocxCommentParagraphs(compared).map(row => row.paragraph_text)).toEqual(["Alpha Beta.", "Notice is seven days."])
+    // Restoring would carry the pending deletion into the redline as this comparison's tracked change.
+    expect(() => preserveDocxComments(original, compared)).toThrow("original_comment_range_was_edited")
+  }, 120000)
+
+  test("joins a deleted paragraph mark across body-level range, proofing and permission markup", () => {
+    const markups = [`<w:bookmarkEnd w:id="50"/>`, `<w:commentRangeStart w:id="51"/>`, `<w:moveToRangeEnd w:id="52"/>`, `<w:proofErr w:type="gramEnd"/>`, `<w:permStart w:id="53"/>`]
+    const sources = markups.map(markup => withBody(clean, `<w:p><w:pPr><w:rPr><w:del w:id="1"/></w:rPr></w:pPr><w:r><w:t xml:space="preserve">Alpha </w:t></w:r></w:p>`
+      + `${markup}<w:p><w:r><w:t>Beta.</w:t></w:r></w:p><w:p><w:r><w:t>Later.</w:t></w:r></w:p>`))
+    expect(sources.map(source => readDocxCommentParagraphs(source).map(row => [row.paragraph_index, row.paragraph_text])))
+      .toEqual(markups.map(() => [[0, "Alpha Beta."], [1, "Later."]]))
+    expect(sources.map(source => {
+      const output = exportDocxComments(source, [comment("joined", { paragraph_index: 0, paragraph_text: "Alpha Beta." }), comment("later", { paragraph_index: 1, paragraph_text: "Later." })])
+      return [output.attached.map(row => [row.id, row.paragraph_index]), output.unresolved]
+    })).toEqual(markups.map(() => [[["joined", 0], ["later", 1]], []]))
+  })
+
+  test("keeps deleted-paragraph comments and pointers on members without accepted text outside the joined paragraph", () => {
+    const mark = `<w:pPr><w:rPr><w:del w:id="1"/></w:rPr></w:pPr>`
+    // A deletion-only middle member, then a deletion-only last member whose paragraph mark ends the joined paragraph.
+    const source = withBody(clean, `<w:p>${mark}<w:bookmarkStart w:id="11" w:name="_dh_p111111111111"/><w:r><w:t xml:space="preserve">Alpha </w:t></w:r></w:p>`
+      + `<w:p>${mark}<w:bookmarkStart w:id="12" w:name="_dh_p222222222222"/><w:del w:id="2"><w:r><w:delText>Removed middle.</w:delText></w:r></w:del></w:p>`
+      + `<w:p><w:bookmarkStart w:id="13" w:name="_dh_p333333333333"/><w:r><w:t>Beta.</w:t></w:r></w:p>`
+      + `<w:p>${mark}<w:r><w:t>Gamma.</w:t></w:r></w:p><w:p><w:del w:id="3"><w:r><w:delText>Removed last.</w:delText></w:r></w:del></w:p>`)
+    const rows = readDocxCommentParagraphs(source)
+    expect(rows).toEqual([{ paragraph_index: 0, paragraph_text: "Alpha Beta.", pids: ["p111111111111", "p333333333333"] },
+      { paragraph_index: 1, paragraph_text: "Gamma.", pids: [] }])
+    const output = exportDocxComments(source, [comment("middle", { deleted_paragraph_text: "Removed middle." }),
+      comment("last", { deleted_paragraph_text: "Removed last." }), comment("joined", { paragraph_index: 0, paragraph_text: "Alpha Beta." }),
+      comment("gamma", { paragraph_index: 1, paragraph_text: "Gamma." })])
+    expect(output.unresolved).toEqual([])
+    expect(output.attached).toEqual([
+      { id: "middle", comment_id: "0", paragraph_index: 1, paragraph_text: "Removed middle.", anchor_kind: "deleted" },
+      { id: "last", comment_id: "1", paragraph_index: 4, paragraph_text: "Removed last.", anchor_kind: "deleted" },
+      { id: "joined", comment_id: "2", paragraph_index: 0, paragraph_text: "Alpha Beta." },
+      { id: "gamma", comment_id: "3", paragraph_index: 1, paragraph_text: "Gamma." },
+    ])
+    validateNative(unzipSync(output.bytes), ["0", "1", "2", "3"])
+    const joined = (xmlIndex: number) => [0, xmlIndex, "Alpha Beta.", "", ["p111111111111", "p333333333333"]]
+    expect(readDocxComments(output.bytes).map(row => [row.comment_id, row.markers.map(marker =>
+      [marker.paragraph_index, marker.xml_paragraph_index, marker.accepted_paragraph_text, marker.deleted_paragraph_text, marker.pids])])).toEqual([
+      ["0", Array(3).fill([null, 1, "", "Removed middle.", ["p222222222222"]])],
+      ["1", Array(3).fill([null, 4, "", "Removed last.", []])],
+      ["2", [joined(0), joined(2), joined(2)]],
+      ["3", Array(3).fill([1, 3, "Gamma.", "", []])],
+    ])
+    expect(readDocxCommentParagraphs(output.bytes)).toEqual(rows)
+    expect(readDocxRevisionText(output.bytes)).toEqual(readDocxRevisionText(source))
+    expect(readDocxRevisionProperties(output.bytes)).toEqual(readDocxRevisionProperties(source))
+  })
+
   test("shares exact native paragraph positions, separators and active pointers with attachment", () => {
     const source = withBody(clean, `<w:p/><w:p><w:del w:id="1"><w:r><w:delText>Deleted.</w:delText></w:r></w:del></w:p>`
       + `<w:p><w:bookmarkStart w:id="2" w:name="_dh_p123456789abc"/><w:r><w:t>Before</w:t><w:tab/><w:t>tab.</w:t><w:br/><w:t>Next line.</w:t></w:r><w:bookmarkEnd w:id="2"/></w:p>`
