@@ -1,31 +1,28 @@
-import { afterEach, describe, expect, setSystemTime, spyOn, test } from "bun:test"
+import { afterEach, describe, expect, spyOn, test } from "bun:test"
 import { createHash } from "node:crypto"
-import { lstatSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
-import * as combinedDocx from "../../../dochaus/lib/combined-docx"
 import { withParagraphPointers } from "../../../dochaus/lib/drafting-amendment"
 import { renderMarkdownToDocx } from "../../../dochaus/lib/render"
 import * as deliverables from "../../../dochaus/workflows/lean/deliverables"
 import { memoNotesFile, readLeanDocuments, recordLeanDocuments } from "../../../dochaus/workflows/lean/deliverables"
 import { writeLeanPlan, type PlannedDocument } from "../../../dochaus/workflows/lean/plan"
-import { initLeanState, leanFile, readLeanState, writeLeanBytes, writeLeanState, writeLeanText } from "../../../dochaus/workflows/lean/state"
+import { initLeanState, readLeanState, writeLeanBytes, writeLeanState, writeLeanText } from "../../../dochaus/workflows/lean/state"
 import { leanFixtureMatter, scriptedLeanModel } from "../../../dochaus/workflows/lean/test-support"
 import { ownedDeliverable, readSystemDocx, systemDocxKey } from "../../../dochaus/lib/system-docx"
-import { combinedOutputRoutes } from "./combined-output"
-import { attachmentDocumentDisposition } from "./content-disposition"
 import { openDb } from "./db"
 import { writeDeliverableRevision } from "./deliverable"
 import { leanDraftingStatus } from "./lean-drafting"
 import { registerLeanDeliverable } from "./lean-deliverables"
 
-// The combined download: a document planned as "combined" with a requested memo
-// is downloaded as the one file its delivery saved and registered, as that file
-// is now; an accept into its body or notes rebuilds it while the system's last
-// write of it is unchanged. Real registration through the matter registry;
-// nothing is scripted but the model port, which registration never calls.
+// The combined file: a document planned as "combined" with a requested memo is
+// delivered as the one file its delivery saved and registered; an accept into
+// its body or notes rebuilds it while the system's last write of it is
+// unchanged. Real registration through the matter registry; nothing is
+// scripted but the model port, which registration never calls.
 
 const directories: string[] = []
 afterEach(() => directories.splice(0).forEach(directory => rmSync(directory, { recursive: true, force: true })))
@@ -57,8 +54,14 @@ async function deliveredMatter(documents: Document[] | null, memo = true) {
     writeLeanText(directory, "drafting-notes.md", `${MEMO}\n`)
     await recordLeanDocuments(directory, { sessions: scriptedLeanModel().port, registerDeliverable: registerLeanDeliverable }, true)
   }
-  const app = combinedOutputRoutes(id => { expect(id).toBe("combined-matter"); return directory })
-  return { directory, download: () => app.request("/matters/combined-matter/documents/combined") }
+  return { directory }
+}
+
+/** The combined file the matter's status reports, as saved in the matter. */
+function savedCombined(directory: string) {
+  const file = leanDraftingStatus(directory)?.combined_output?.file
+  if (!file) throw new Error("no combined file is reported")
+  return new Uint8Array(readFileSync(path.join(directory, file)))
 }
 
 function documentText(bytes: Uint8Array) {
@@ -73,134 +76,69 @@ function rewriteDocumentXml(directory: string, name: string, change: (xml: strin
   writeFileSync(file, zipSync({ ...parts, "word/document.xml": strToU8(change(strFromU8(parts["word/document.xml"]!))) }))
 }
 
-/** Everything the route could write: every entry in the matter at any depth,
- * dot directories included (the run's files and the registry live under
- * .dochaus). A file is its size, sha256 and modification time, a link its
- * target, a directory its path. A directory's own time is left out: a download
- * takes and drops its parts' mutation locks, which touches only the lock
- * root's time. So is the content of SQLite's shared-memory index ("-shm"),
- * which every reader of the registry updates (macOS SQLite keeps it between
- * connections); the registry and its write-ahead log are compared in full. */
-function tree(directory: string, relative = ""): Record<string, unknown> {
-  const entries: Record<string, unknown> = {}
-  for (const name of readdirSync(path.join(directory, relative)).toSorted()) {
-    const entry = path.join(relative, name)
-    const file = path.join(directory, entry)
-    const stat = lstatSync(file, { bigint: true })
-    if (stat.isSymbolicLink()) entries[entry] = { link: readlinkSync(file) }
-    else if (stat.isDirectory()) Object.assign(entries, { [entry]: "directory" }, tree(directory, entry))
-    else if (name.endsWith(".db-shm")) entries[entry] = "sqlite shared-memory index"
-    else entries[entry] = { size: stat.size, sha256: createHash("sha256").update(readFileSync(file)).digest("hex"), mtime: stat.mtimeNs }
-  }
-  return entries
-}
-
-/** The response to `request`, which must leave the matter's tree as it was. */
-async function readOnly(directory: string, request: () => Response | Promise<Response>) {
-  const before = tree(directory)
-  const response = await request()
-  expect(tree(directory)).toEqual(before)
-  return response
-}
-
 test("without a combined document there is no combined file", async () => {
   for (const documents of [null, [SUPPLY], [{ ...COMBINED, deliverable: "body" as const }], [COMBINED, { ...SIDE, deliverable: "combined" as const }]]) {
     const f = await deliveredMatter(documents)
-    const response = await f.download()
-    expect(response.status).toBe(404)
-    expect(await response.json()).toEqual({ error: "no_combined_output" })
     expect(leanDraftingStatus(f.directory)?.combined_output).toBeNull()
   }
   // A combined document without a requested memo is delivered as its body.
   const unrequested = await deliveredMatter([COMBINED], false)
-  expect((await unrequested.download()).status).toBe(404)
   expect(leanDraftingStatus(unrequested.directory)?.combined_output).toBeNull()
 }, 60_000)
 
-test("a combined document downloads as one file, memo first: the file its delivery saved in the matter; nothing is written", async () => {
+test("a combined document is saved in the matter as one file, memo first, and registered", async () => {
   const f = await deliveredMatter([COMBINED])
   expect(leanDraftingStatus(f.directory)?.combined_output).toEqual(COMBINED_OUTPUT)
   expect(readLeanDocuments(f.directory)?.documents.map(row => row.deliverable))
     .toEqual(["supply-pack - clean.docx", "supply-pack - redline.docx", "supply-pack - cover memo.docx", null, "supply-pack.docx"])
-  const before = tree(f.directory)
-  // The snapshot reaches below the top level: the registry and the run's files.
-  expect(Object.keys(before)).toEqual(expect.arrayContaining([
-    path.join(".dochaus", "legal.db"),
-    path.relative(f.directory, leanFile(f.directory, "documents.json")),
-    path.relative(f.directory, leanFile(f.directory, "d1/body-applied.docx")),
-  ]))
-
-  const response = await f.download()
-  expect(response.status).toBe(200)
-  expect(response.headers.get("content-type")).toBe("application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-  expect(response.headers.get("content-disposition")).toBe(`attachment; filename="supply-pack.docx"; filename*=UTF-8''supply-pack.docx`)
-  const downloaded = new Uint8Array(await response.arrayBuffer())
-  const xml = documentText(downloaded)
+  const xml = documentText(savedCombined(f.directory))
   expect(xml.indexOf("Memo marker")).toBeGreaterThan(-1)
   expect(xml.indexOf("Memo marker")).toBeLessThan(xml.indexOf("Body marker"))
-
-  expect(tree(f.directory)).toEqual(before)
-  // The download is the combined file the run saved in the matter, byte for byte.
-  expect(Object.keys(before)).toContain("supply-pack.docx")
-  expect(downloaded).toEqual(new Uint8Array(readFileSync(path.join(f.directory, "supply-pack.docx"))))
 }, 60_000)
 
-test("the checklist's combined row names, types and builds exactly the file the download delivers", async () => {
+test("the checklist's combined row names, types and builds exactly the file saved in the matter", async () => {
   // Delivered without a gate, so the registered parts are the run's own copies.
   const f = await deliveredMatter([COMBINED])
   const row = deliverables.deliveryArtifactEvidence(f.directory, { build: true }).at(-1)
   if (row?.kind !== "combined") throw new Error("no combined row")
-  const response = await readOnly(f.directory, f.download)
-  expect(response.status).toBe(200)
-  const bytes = new Uint8Array(await response.arrayBuffer())
   expect(row.download_filename).toBe("supply-pack.docx")
-  expect(response.headers.get("content-disposition")).toBe(attachmentDocumentDisposition(row.download_filename))
-  expect(response.headers.get("content-type")).toBe(row.content_type)
+  expect(row.content_type).toBe("application/vnd.openxmlformats-officedocument.wordprocessingml.document")
   expect(row.files_delivered).toBe(1)
-  expect(row.built_at_check).toMatchObject({ sha256: createHash("sha256").update(bytes).digest("hex"), paragraphs_equal_memo_then_body: true })
+  expect(row.built_at_check).toMatchObject({ sha256: createHash("sha256").update(savedCombined(f.directory)).digest("hex"), paragraphs_equal_memo_then_body: true })
 }, 60_000)
 
 test("a combined document without its registered notes offers no combined file", async () => {
   const f = await deliveredMatter([COMBINED])
   const summary = readLeanDocuments(f.directory)!
   writeLeanText(f.directory, "documents.json", `${JSON.stringify({ ...summary, documents: summary.documents.filter(row => row.kind !== "drafting_notes") }, null, 2)}\n`)
-  const response = await readOnly(f.directory, f.download)
-  expect(response.status).toBe(404)
-  expect(await response.json()).toEqual({ error: "no_combined_output" })
   expect(leanDraftingStatus(f.directory)?.combined_output).toBeNull()
 }, 60_000)
 
 test("with several planned documents the memo is paired with the combined document's own body", async () => {
   const f = await deliveredMatter([SIDE, COMBINED])
   expect(leanDraftingStatus(f.directory)?.combined_output).toEqual({ ...COMBINED_OUTPUT, document: "d2" })
-  const response = await f.download()
-  expect(response.status).toBe(200)
-  const xml = documentText(new Uint8Array(await response.arrayBuffer()))
+  const xml = documentText(savedCombined(f.directory))
   expect(xml).toContain("Memo marker")
   expect(xml).toContain("Body marker")
   expect(xml).not.toContain("Side marker")
 }, 60_000)
 
-test("the delivery records the bytes it saved as the combined file, and the download serves that file as it is now", async () => {
+test("the delivery records the bytes it saved as the combined file, and any other write removes that record", async () => {
   const f = await deliveredMatter([COMBINED])
   const file = path.join(f.directory, "supply-pack.docx")
   const recorded = readSystemDocx(f.directory, "supply-pack.docx")
   expect(recorded).toEqual({ version: 1, sha256: createHash("sha256").update(readFileSync(file)).digest("hex") })
   expect(ownedDeliverable(f.directory, "supply-pack.docx")).toBe(true)
-  // A change written into the saved file itself is served, and the file is then no longer the system's.
+  // A change written into the saved file itself is kept, and the file is then no longer the system's.
   rewriteDocumentXml(f.directory, "supply-pack.docx", xml => xml.replace("Memo marker", "Lawyer marker"))
   await writeDeliverableRevision(f.directory, "supply-pack.docx", readFileSync(file))
   expect(readSystemDocx(f.directory, "supply-pack.docx")).toBeUndefined()
-  const saved = new Uint8Array(readFileSync(file))
-  const response = await readOnly(f.directory, f.download)
-  expect(response.status).toBe(200)
-  expect(response.headers.get("content-disposition")).toBe(attachmentDocumentDisposition("supply-pack.docx"))
-  const downloaded = new Uint8Array(await response.arrayBuffer())
-  expect(downloaded).toEqual(saved)
-  expect(documentText(downloaded)).toContain("Lawyer marker")
-  // A part written outside an accept leaves the saved file, and so the download, as they were.
+  expect(ownedDeliverable(f.directory, "supply-pack.docx")).toBe(false)
+  const saved = savedCombined(f.directory)
+  expect(documentText(saved)).toContain("Lawyer marker")
+  // A part written outside an accept leaves the saved file as it was.
   rewriteDocumentXml(f.directory, "supply-pack - clean.docx", xml => xml.replace("Body marker", "Revised marker"))
-  expect(new Uint8Array(await (await f.download()).arrayBuffer())).toEqual(saved)
+  expect(savedCombined(f.directory)).toEqual(saved)
 }, 60_000)
 
 test("without a registered combined row nothing is offered, and no file is guessed from the name", async () => {
@@ -209,8 +147,6 @@ test("without a registered combined row nothing is offered, and no file is guess
   writeLeanText(f.directory, "documents.json", `${JSON.stringify({ ...summary, documents: summary.documents.filter(row => row.kind !== "combined") }, null, 2)}\n`)
   // The file the run saved is still in the matter under the name the plan gives it.
   expect(readFileSync(path.join(f.directory, "supply-pack.docx")).length).toBeGreaterThan(0)
-  const response = await readOnly(f.directory, f.download)
-  expect({ status: response.status, body: await response.json() }).toEqual({ status: 404, body: { error: "no_combined_output" } })
   expect(leanDraftingStatus(f.directory)?.combined_output).toBeNull()
 }, 60_000)
 
@@ -221,10 +157,7 @@ async function blockedRerun(directory: string, notes: string) {
   await recordLeanDocuments(directory, { sessions: scriptedLeanModel().port, registerDeliverable: registerLeanDeliverable }, false)
 }
 
-async function refused(f: { directory: string; download: () => Response | Promise<Response> }) {
-  const response = await f.download()
-  expect(response.status).toBe(404)
-  expect(await response.json()).toEqual({ error: "no_combined_output" })
+function refused(f: { directory: string }) {
   expect(leanDraftingStatus(f.directory)?.combined_output).toBeNull()
 }
 
@@ -232,92 +165,73 @@ test("combined output is reported once both parts are delivered, not from the pl
   const f = await deliveredMatter(null)
   writeLeanPlan(f.directory, [COMBINED], undefined, undefined, { name: "cover memo", file: memoNotesFile([COMBINED], "cover memo") })
   expect(leanDraftingStatus(f.directory)?.combined_output).toBeNull()
-  expect((await f.download()).status).toBe(404)
 
   const delivered = await deliveredMatter([COMBINED])
   expect(leanDraftingStatus(delivered.directory)?.combined_output).toEqual(COMBINED_OUTPUT)
-  expect((await delivered.download()).status).toBe(200)
 }, 60_000)
 
-test("an earlier delivery under another plan is not served as the combined file", async () => {
+test("an earlier delivery under another plan is not reported as the combined file", async () => {
   // Run 1 delivered the document as its body, without a memo; a re-outline
   // then asks for it combined with a memo under the same title and file name.
   const f = await deliveredMatter([{ ...COMBINED, deliverable: "body" }], false)
   expect(readLeanDocuments(f.directory)?.documents.map(row => row.deliverable))
     .toEqual(["supply-pack.docx", "supply-pack - redline.docx", "supply-pack - drafting notes.docx", null])
   writeLeanPlan(f.directory, [COMBINED], undefined, undefined, { name: "cover memo", file: memoNotesFile([COMBINED], "cover memo") })
-  await refused(f)
+  refused(f)
   // Still refused after run 2 stops at its gate with the same body.
   await blockedRerun(f.directory, MEMO)
-  await refused(f)
+  refused(f)
 }, 60_000)
 
-test("a combined file renamed after delivery is not served from the file delivered under the old name", async () => {
+test("a combined file renamed after delivery is not reported from the file delivered under the old name", async () => {
   const f = await deliveredMatter([COMBINED])
   writeLeanPlan(f.directory, [{ ...COMBINED, file: "supply-final.docx" }], undefined, undefined, { name: "cover memo", file: memoNotesFile([COMBINED], "cover memo") })
-  await refused(f)
+  refused(f)
   const renamed = [{ ...COMBINED, file: "supply-final.docx" }]
   writeLeanPlan(f.directory, renamed, undefined, undefined, { name: "cover memo", file: memoNotesFile(renamed, "cover memo") })
-  await refused(f)
+  refused(f)
 }, 60_000)
 
 test("parts delivered for a document the plan has since retitled or moved are not paired", async () => {
   // The same file and memo under another title: the body was drafted for the old one.
   const retitled = await deliveredMatter([COMBINED])
   writeLeanPlan(retitled.directory, [{ ...COMBINED, title: "Supply schedule" }], undefined, undefined, { name: "cover memo", file: memoNotesFile([COMBINED], "cover memo") })
-  await refused(retitled)
+  refused(retitled)
   // The same document planned second: its parts were delivered as the first.
   const moved = await deliveredMatter([COMBINED])
   const plan = [SIDE, COMBINED]
   writeLeanPlan(moved.directory, plan, undefined, undefined, { name: "cover memo", file: memoNotesFile(plan, "cover memo") })
-  await refused(moved)
+  refused(moved)
 }, 60_000)
 
 test("a rerun stopped at its gate with changed notes has no combined file until it is delivered", async () => {
   const f = await deliveredMatter([COMBINED])
   await blockedRerun(f.directory, `${MEMO}\n\nChanged.`)
   expect(readLeanDocuments(f.directory)?.documents.map(row => [row.kind, row.deliverable])).toContainEqual(["drafting_notes", null])
-  await refused(f)
+  refused(f)
 }, 60_000)
 
-describe("combined download and rebuild: matter boundary, lock, contention and ownership", () => {
+describe("combined file rebuild: lock, contention and ownership", () => {
   const BODY_NAME = "supply-pack - clean.docx"
   const NOTES_NAME = "supply-pack - cover memo.docx"
   const SAVED = "supply-pack.docx"
 
   /** Holds `names`' mutation locks from an async context of its own, so a
-   * request started by the test still waits for them, until `release`; then
-   * runs `inside` under the held locks before letting them go. */
-  async function holdLocks(directory: string, names: string[], inside: () => Promise<void> = async () => {}) {
+   * request started by the test still waits for them, until `release`. */
+  async function holdLocks(directory: string, names: string[]) {
     let release!: () => void
     const released = new Promise<void>(resolve => { release = resolve })
     let held!: () => void
     const holding = new Promise<void>(resolve => { held = resolve })
-    const done = withArtifactMutationLocksAsync(directory, names, async () => { held(); await released; await inside() })
+    const done = withArtifactMutationLocksAsync(directory, names, async () => { held(); await released })
     await holding
     return { release: () => { release(); return done } }
   }
 
-  test("the download serves the saved file as it is: parts that cannot be read or combined change nothing, and nothing is built", async () => {
-    const f = await deliveredMatter([COMBINED])
-    const saved = new Uint8Array(readFileSync(path.join(f.directory, SAVED)))
-    rewriteDocumentXml(f.directory, NOTES_NAME, xml => xml.replace("<w:body>", "<w:body><w:p"))
-    writeFileSync(path.join(f.directory, BODY_NAME), "not a Word package")
-    const build = spyOn(combinedDocx, "buildCombinedFile")
-    try {
-      const response = await readOnly(f.directory, f.download)
-      expect(response.status).toBe(200)
-      expect(new Uint8Array(await response.arrayBuffer())).toEqual(saved)
-      expect(build).not.toHaveBeenCalled()
-    } finally {
-      build.mockRestore()
-    }
-  }, 60_000)
-
-  test("names other than plain matter file names offer no combined file", async () => {
+  test("names other than plain matter file names give no combined file", async () => {
     // combinedParts only returns names registration gives, which are plain;
-    // the route holds every name to a plain one on its own. A relative or
-    // absolute alias of a registered file is not one.
+    // registeredCombinedParts holds every name to a plain one on its own. A
+    // relative or absolute alias of a registered file is not one.
     const f = await deliveredMatter([COMBINED])
     const parts = deliverables.combinedParts(f.directory)!
     expect(parts).toEqual({ document: "d1", name: "supply-pack", file: SAVED, body: BODY_NAME, notes: NOTES_NAME })
@@ -325,8 +239,7 @@ describe("combined download and rebuild: matter boundary, lock, contention and o
       for (const name of [`./${parts[part]}`, `sub/../${parts[part]}`, path.join(f.directory, parts[part]), "..", `../${path.basename(f.directory)}/${parts[part]}`]) {
         const stand = spyOn(deliverables, "combinedParts").mockReturnValue({ ...parts, [part]: name })
         try {
-          const response = await readOnly(f.directory, f.download)
-          expect({ name, status: response.status, body: await response.json() }).toEqual({ name, status: 404, body: { error: "no_combined_output" } })
+          expect({ name, output: leanDraftingStatus(f.directory)?.combined_output }).toEqual({ name, output: null })
         } finally {
           stand.mockRestore()
         }
@@ -337,92 +250,9 @@ describe("combined download and rebuild: matter boundary, lock, contention and o
       const outside = await deliveredMatter([COMBINED])
       const summary = readLeanDocuments(outside.directory)!
       writeLeanText(outside.directory, "documents.json", `${JSON.stringify({ ...summary, documents: summary.documents.map(row => row.kind === "combined" ? { ...row, deliverable: name } : row) }, null, 2)}\n`)
-      const response = await readOnly(outside.directory, outside.download)
-      expect({ name, status: response.status }).toEqual({ name, status: 404 })
+      expect({ name, output: leanDraftingStatus(outside.directory)?.combined_output }).toEqual({ name, output: null })
     }
-    expect((await f.download()).status).toBe(200)
-  }, 60_000)
-
-  test("a saved combined file that is gone, that a source now holds, or whose registry is gone is refused without writing", async () => {
-    const missing = async (f: { directory: string; download: () => Response | Promise<Response> }) => {
-      const response = await readOnly(f.directory, f.download)
-      expect(response.status).toBe(409)
-      expect(await response.json()).toEqual({ error: "combined_file_missing", message: "The combined file is no longer in the matter." })
-    }
-    const gone = await deliveredMatter([COMBINED])
-    unlinkSync(path.join(gone.directory, SAVED))
-    await missing(gone)
-
-    const taken = await deliveredMatter([COMBINED])
-    const db = openDb(taken.directory)
-    try {
-      expect(db.run("UPDATE documents SET role = 'source' WHERE name = ?", [SAVED]).changes).toBe(1)
-    } finally {
-      db.close()
-    }
-    await missing(taken)
-
-    // Without a registry nothing is registered, and none is created.
-    const unregistered = await deliveredMatter([COMBINED])
-    for (const file of ["legal.db", "legal.db-wal", "legal.db-shm"]) rmSync(path.join(unregistered.directory, ".dochaus", file), { force: true })
-    await missing(unregistered)
-  }, 60_000)
-
-  test("a saved combined file linked out of the matter, or to another file in it, is refused and never read", async () => {
-    const f = await deliveredMatter([COMBINED])
-    const outside = mkdtempSync(path.join(tmpdir(), "dochaus-combined-outside-"))
-    directories.push(outside)
-    const elsewhere = path.join(outside, "elsewhere.docx")
-    writeFileSync(elsewhere, (await renderMarkdownToDocx("# Elsewhere\n\nOutside marker.")).bytes)
-    unlinkSync(path.join(f.directory, SAVED))
-    symlinkSync(elsewhere, path.join(f.directory, SAVED))
-    const response = await readOnly(f.directory, f.download)
-    expect(response.status).toBe(409)
-    expect(await response.text()).not.toContain("Outside marker")
-
-    // A link to another registered file in the matter is no alias for it.
-    const alias = await deliveredMatter([COMBINED])
-    unlinkSync(path.join(alias.directory, SAVED))
-    symlinkSync(BODY_NAME, path.join(alias.directory, SAVED))
-    const aliased = await readOnly(alias.directory, alias.download)
-    expect(aliased.status).toBe(409)
-    expect(await aliased.json()).toEqual({ error: "combined_file_missing", message: "The combined file is no longer in the matter." })
-  }, 60_000)
-
-  test("a download waits for a write in progress on the saved file, then serves what it wrote", async () => {
-    const f = await deliveredMatter([COMBINED])
-    const registered = readFileSync(path.join(f.directory, SAVED))
-    const revised = Buffer.from(zipSync({ ...unzipSync(registered), "word/document.xml": strToU8(documentText(registered).replace("Memo marker", "Revised memo line")) }))
-    const hold = await holdLocks(f.directory, [SAVED], async () => { await writeDeliverableRevision(f.directory, SAVED, revised) })
-    let settled = false
-    const download = Promise.resolve(f.download()).then(response => { settled = true; return response })
-    await Bun.sleep(300)
-    expect(settled).toBe(false)
-    await hold.release()
-    const response = await download
-    expect(response.status).toBe(200)
-    expect(new Uint8Array(await response.arrayBuffer())).toEqual(new Uint8Array(revised))
-  }, 60_000)
-
-  test("a saved file held past the lock wait is reported busy and retryable", async () => {
-    const f = await deliveredMatter([COMBINED])
-    const hold = await holdLocks(f.directory, [SAVED])
-    try {
-      const before = tree(f.directory)
-      const download = Promise.resolve(f.download())
-      await Bun.sleep(200)
-      // Past the directory lock's 30 s wait without sleeping through it.
-      setSystemTime(new Date(Date.now() + 31_000))
-      const response = await download
-      expect(response.status).toBe(503)
-      expect(response.headers.get("retry-after")).toBe("5")
-      expect(await response.json()).toEqual({ error: "combined_file_busy", message: "The combined file is being updated. Try again in a moment." })
-      expect(tree(f.directory)).toEqual(before)
-    } finally {
-      setSystemTime()
-      await hold.release()
-    }
-    expect((await f.download()).status).toBe(200)
+    expect(leanDraftingStatus(f.directory)?.combined_output).toEqual(COMBINED_OUTPUT)
   }, 60_000)
 
   /** Runs `run` against an ingest server of its own, on a workspace of its own. */
@@ -500,7 +330,6 @@ describe("combined download and rebuild: matter boundary, lock, contention and o
       // While the notes are held, the accept writes nothing, not even the body.
       const hold = await holdLocks(matter.dir, [NOTES_NAME])
       const accepting = request(`${route}/redlines/${id}/accept`, { method: "POST" })
-      const downloading = request(`${route}/documents/combined`)
       for (const until = Date.now() + 3_000; Date.now() < until;) {
         expect(readFileSync(bodyFile)).toEqual(prepared)
         expect(readFileSync(path.join(matter.dir, SAVED))).toEqual(savedBefore)
@@ -512,20 +341,10 @@ describe("combined download and rebuild: matter boundary, lock, contention and o
       expect({ status: accepted.status, body: await accepted.json() })
         .toEqual({ status: 200, body: { ok: true, notes_updated: true, redline_updated: false, redline_skip_reason: "rebuild_failed", combined_updated: true } })
 
-      // The download that waited with it pairs the body and the notes from one side of the accept.
-      const waited = await downloading
-      expect(waited.status).toBe(200)
-      const pair = documentText(new Uint8Array(await waited.arrayBuffer()))
-      expect(pair.includes("within ten days")).toBe(pair.includes(ADDENDUM))
-
-      const after = await request(`${route}/documents/combined`)
-      expect(after.status).toBe(200)
-      const bytes = new Uint8Array(await after.arrayBuffer())
-      const xml = documentText(bytes)
+      // The rebuilt file pairs the accepted body with the notes that record it, memo first.
+      const xml = documentText(readFileSync(path.join(matter.dir, SAVED)))
       expect(xml).toContain(ADDENDUM)
       expect(xml.indexOf(ADDENDUM)).toBeLessThan(xml.indexOf("within ten days"))
-      // The saved combined file is the download, byte for byte.
-      expect(bytes).toEqual(new Uint8Array(readFileSync(path.join(matter.dir, SAVED))))
     })
   }, 120_000)
 
@@ -537,15 +356,11 @@ describe("combined download and rebuild: matter boundary, lock, contention and o
       expect({ status: accepted.status, body: await accepted.json() }).toEqual({ status: 200, body: {
         ok: true, accepted: 1, notes_updated: true, redline_updated: false, redline_skip_reason: "rebuild_failed", combined_updated: true,
       } })
-      const download = await request(`${matter.route}/documents/combined`)
-      expect(download.status).toBe(200)
-      const bytes = new Uint8Array(await download.arrayBuffer())
-      expect(documentText(bytes)).toContain("within ten days")
-      expect(bytes).toEqual(new Uint8Array(readFileSync(path.join(matter.dir, SAVED))))
+      expect(documentText(readFileSync(path.join(matter.dir, SAVED)))).toContain("within ten days")
     })
   }, 120_000)
 
-  test("a combined file saved under a numbered name is the one an accept rebuilds and the download names", async () => {
+  test("a combined file saved under a numbered name is the one an accept rebuilds and the status names", async () => {
     await withIngest(async request => {
       const matter = await completedMatter(request)
       await request(`${matter.route}/redlines/${propose(matter.dir, SAVED, "Memo marker", "Lawyer marker")}/accept`, { method: "POST" })
@@ -558,11 +373,8 @@ describe("combined download and rebuild: matter boundary, lock, contention and o
       const body = status!.body
       const response = await request(`${matter.route}/redlines/${propose(matter.dir, body)}/accept`, { method: "POST" })
       expect(await response.json()).toMatchObject({ ok: true, combined_updated: true })
-      const download = await request(`${matter.route}/documents/combined`)
-      expect(download.headers.get("content-disposition")).toBe(attachmentDocumentDisposition(numbered))
-      const bytes = new Uint8Array(await download.arrayBuffer())
-      expect(documentText(bytes)).toContain("within ten days")
-      expect(bytes).toEqual(new Uint8Array(readFileSync(path.join(matter.dir, numbered))))
+      expect(leanDraftingStatus(matter.dir)?.combined_output?.file).toBe(numbered)
+      expect(documentText(readFileSync(path.join(matter.dir, numbered)))).toContain("within ten days")
       expect(readFileSync(path.join(matter.dir, SAVED))).toEqual(accepted)
     })
   }, 120_000)
@@ -579,7 +391,7 @@ describe("combined download and rebuild: matter boundary, lock, contention and o
     })
   }, 120_000)
 
-  test("an accept whose combined file cannot be rebuilt says so, and the file saved before it is still the one served", async () => {
+  test("an accept whose combined file cannot be rebuilt says so, and the file saved before it is kept", async () => {
     await withIngest(async request => {
       const matter = await completedMatter(request)
       // Registered notes the combined file cannot carry.
@@ -592,12 +404,9 @@ describe("combined download and rebuild: matter boundary, lock, contention and o
       const accepted = await request(`${matter.route}/redlines/${id}/accept`, { method: "POST" })
       expect(accepted.status).toBe(200)
       expect(await accepted.json()).toMatchObject({ ok: true, combined_updated: false, combined_skip_reason: "build_refused" })
-      // The accepted body stands; the file saved before it is left as it was, and the download serves it as it is.
+      // The accepted body stands; the file saved before it is left as it was.
       expect(documentText(readFileSync(path.join(matter.dir, BODY_NAME)))).toContain("within ten days")
       expect(readFileSync(path.join(matter.dir, SAVED))).toEqual(saved)
-      const download = await request(`${matter.route}/documents/combined`)
-      expect(download.status).toBe(200)
-      expect(new Uint8Array(await download.arrayBuffer())).toEqual(new Uint8Array(saved))
     })
   }, 120_000)
 
@@ -608,11 +417,7 @@ describe("combined download and rebuild: matter boundary, lock, contention and o
       form.append("file", new File([(await renderMarkdownToDocx(BODY.replace("delivers the goods", "delivers the goods by rail"))).bytes], BODY_NAME))
       const uploaded = await request(`${matter.route}/documents/revisions`, { method: "POST", body: form })
       expect({ status: uploaded.status, body: await uploaded.json() }).toMatchObject({ status: 200, body: { combined_updated: true } })
-      const download = await request(`${matter.route}/documents/combined`)
-      expect(download.status).toBe(200)
-      const bytes = new Uint8Array(await download.arrayBuffer())
-      expect(documentText(bytes)).toContain("by rail")
-      expect(bytes).toEqual(new Uint8Array(readFileSync(path.join(matter.dir, SAVED))))
+      expect(documentText(readFileSync(path.join(matter.dir, SAVED)))).toContain("by rail")
     })
   }, 120_000)
 
@@ -636,41 +441,85 @@ describe("combined download and rebuild: matter boundary, lock, contention and o
       const accepted = await request(`${matter.route}/redlines/${id}/accept`, { method: "POST" })
       expect({ status: accepted.status, body: await accepted.json() })
         .toEqual({ status: 200, body: { ok: true, notes_updated: true, redline_updated: false, redline_skip_reason: "rebuild_failed" } })
-      expect((await request(`${matter.route}/documents/combined`)).status).toBe(404)
+      expect(leanDraftingStatus(matter.dir)?.combined_output).toBeNull()
     })
   }, 120_000)
 
   const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex")
 
-  test("a rebuild skipped for a proposal on the combined file is made by the next accept once the proposal is resolved", async () => {
+  test("a rebuild skipped for a proposal on the combined file is made when that proposal is rejected, one by one or all at once", async () => {
     await withIngest(async request => {
       const matter = await completedMatter(request)
       const saved = path.join(matter.dir, SAVED)
-      const accept = async (id: number) => (await request(`${matter.route}/redlines/${id}/accept`, { method: "POST" })).json()
-      expect(await accept(propose(matter.dir, BODY_NAME))).toMatchObject({ ok: true, combined_updated: true })
+      const resolve = async (route: string) => {
+        const response = await request(`${matter.route}/redlines/${route}`, { method: "POST" })
+        return { status: response.status, body: await response.json() }
+      }
+      expect(await resolve(`${propose(matter.dir, BODY_NAME)}/accept`)).toMatchObject({ status: 200, body: { ok: true, combined_updated: true } })
+      // A reject while nothing was skipped writes nothing and reports nothing about the combined file.
+      const current = readFileSync(saved)
+      expect(await resolve(`${propose(matter.dir, BODY_NAME, "Body marker", "Other marker")}/reject`)).toEqual({ status: 200, body: { ok: true } })
+      expect(readFileSync(saved)).toEqual(current)
+
       // A change proposed on the combined file itself holds the next rebuild back.
       const onCombined = propose(matter.dir, SAVED, "Memo marker", "Memo note")
-      const held = readFileSync(saved)
-      expect(await accept(propose(matter.dir, BODY_NAME, "the supplier", "the seller")))
-        .toMatchObject({ ok: true, combined_updated: false, combined_skip_reason: "pending_combined_proposals" })
-      expect(readFileSync(saved)).toEqual(held)
-      expect((await request(`${matter.route}/redlines/${onCombined}/reject`, { method: "POST" })).status).toBe(200)
-      // The file still holds the bytes ingest wrote, so the next accept rebuilds it with every change since.
-      expect(await accept(propose(matter.dir, BODY_NAME, "Body marker", "Main marker"))).toMatchObject({ ok: true, combined_updated: true })
+      expect(await resolve(`${propose(matter.dir, BODY_NAME, "the supplier", "the seller")}/accept`))
+        .toMatchObject({ status: 200, body: { ok: true, combined_updated: false, combined_skip_reason: "pending_combined_proposals" } })
+      expect(readFileSync(saved)).toEqual(current)
+      // Rejecting it makes the skipped rebuild, from the parts as they are now.
+      expect(await resolve(`${onCombined}/reject`)).toEqual({ status: 200, body: { ok: true, combined_updated: true } })
       const rebuilt = readFileSync(saved)
       expect(documentText(rebuilt)).toContain("the seller")
-      expect(documentText(rebuilt)).toContain("Main marker")
+      expect(documentText(rebuilt)).not.toContain("Memo note")
       expect(readSystemDocx(matter.dir, SAVED)).toEqual({ version: 1, sha256: sha256(rebuilt) })
-      // A change written to the file outside doc.haus is then kept.
+
+      // Likewise when every change on the combined file is rejected at once.
+      propose(matter.dir, SAVED, "Memo marker", "Memo note")
+      expect(await resolve(`${propose(matter.dir, BODY_NAME, "Body marker", "Main marker")}/accept`))
+        .toMatchObject({ status: 200, body: { ok: true, combined_updated: false, combined_skip_reason: "pending_combined_proposals" } })
+      expect(readFileSync(saved)).toEqual(rebuilt)
+      expect(await resolve(`reject-all?name=${encodeURIComponent(SAVED)}`)).toEqual({ status: 200, body: { ok: true, rejected: 1, combined_updated: true } })
+      const all = readFileSync(saved)
+      expect(documentText(all)).toContain("Main marker")
+      expect(readSystemDocx(matter.dir, SAVED)).toEqual({ version: 1, sha256: sha256(all) })
+
+      // A change written to the file outside doc.haus is then kept, by an accept and by a reject.
       rewriteDocumentXml(matter.dir, SAVED, xml => xml.replace("Memo marker", "Outside marker"))
       const outside = readFileSync(saved)
-      expect(await accept(propose(matter.dir, BODY_NAME, "delivers the goods", "delivers the goods by rail")))
-        .toMatchObject({ ok: true, combined_updated: false, combined_skip_reason: "combined_changed" })
+      expect(await resolve(`${propose(matter.dir, BODY_NAME, "delivers the goods", "delivers the goods by rail")}/accept`))
+        .toMatchObject({ status: 200, body: { ok: true, combined_updated: false, combined_skip_reason: "combined_changed" } })
+      expect(await resolve(`${propose(matter.dir, SAVED, "Outside marker", "Inside marker")}/reject`))
+        .toEqual({ status: 200, body: { ok: true, combined_updated: false, combined_skip_reason: "combined_changed" } })
       expect(readFileSync(saved)).toEqual(outside)
     })
   }, 120_000)
 
-  test("a change the lawyer accepts into the combined file is kept by later accepts and is what the download serves", async () => {
+  test("a combined file rebuilt after an accept is still the system's: a rerun's delivery replaces it in place", async () => {
+    await withIngest(async request => {
+      const matter = await completedMatter(request)
+      const saved = path.join(matter.dir, SAVED)
+      const accepted = await request(`${matter.route}/redlines/${propose(matter.dir, BODY_NAME)}/accept`, { method: "POST" })
+      expect(await accepted.json()).toMatchObject({ ok: true, combined_updated: true })
+      const rebuilt = readFileSync(saved)
+      expect(documentText(rebuilt)).toContain("within ten days")
+      expect(readSystemDocx(matter.dir, SAVED)).toEqual({ version: 1, sha256: sha256(rebuilt) })
+
+      // A rerun delivers new parts; its combined file goes to the same name.
+      const rerun = (await renderMarkdownToDocx(BODY.replace("Body marker", "Rerun marker"))).bytes
+      writeLeanBytes(matter.dir, "d1/body-applied.docx", rerun)
+      writeLeanBytes(matter.dir, "d1/redline.docx", rerun)
+      await recordLeanDocuments(matter.dir, { sessions: scriptedLeanModel().port, registerDeliverable: registerLeanDeliverable }, true)
+      expect(leanDraftingStatus(matter.dir)?.combined_output?.file).toBe(SAVED)
+      expect(readLeanDocuments(matter.dir)!.documents.filter(row => row.kind === "combined").map(row => row.deliverable)).toEqual([SAVED])
+      const delivered = readFileSync(saved)
+      expect(documentText(delivered)).toContain("Rerun marker")
+      expect(delivered).not.toEqual(rebuilt)
+      expect(readSystemDocx(matter.dir, SAVED)).toEqual({ version: 1, sha256: sha256(delivered) })
+      expect(existsSync(path.join(matter.dir, "supply-pack (2).docx"))).toBe(false)
+    })
+  }, 120_000)
+
+  test("a change the lawyer accepts into the combined file is kept by later accepts", async () => {
     await withIngest(async request => {
       const matter = await completedMatter(request)
       const saved = path.join(matter.dir, SAVED)
@@ -681,9 +530,6 @@ describe("combined download and rebuild: matter boundary, lock, contention and o
       const part = await request(`${matter.route}/redlines/${propose(matter.dir, BODY_NAME)}/accept`, { method: "POST" })
       expect(await part.json()).toMatchObject({ ok: true, combined_updated: false, combined_skip_reason: "combined_changed" })
       expect(readFileSync(saved)).toEqual(accepted)
-      const download = await request(`${matter.route}/documents/combined`)
-      expect(download.status).toBe(200)
-      expect(new Uint8Array(await download.arrayBuffer())).toEqual(new Uint8Array(accepted))
       // The accept removed the record of the system's write.
       expect(readSystemDocx(matter.dir, SAVED)).toBeUndefined()
     })

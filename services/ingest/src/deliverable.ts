@@ -14,7 +14,7 @@ import { commitDocumentWriteAsync } from "./atomic-document-write"
 import { MatterDocumentIdentityError, resolveMatterDocumentTarget } from "./document-identity"
 import { sha256File } from "../../../dochaus/lib/lineage"
 import { readWorkingDocx } from "../../../dochaus/lib/working-docx"
-import { forgetSystemDocx, recordSystemDocx } from "../../../dochaus/lib/system-docx"
+import { forgetSystemDocx, recordSystemDocx, replaceableDeliverable } from "../../../dochaus/lib/system-docx"
 import { withParagraphPointers } from "../../../dochaus/lib/drafting-amendment"
 import {
   beginDocumentMutation,
@@ -39,7 +39,10 @@ export function deliverableDocumentName(fileName: string) {
 // outputs, ingest's rebuild of a saved combined file): the registry transaction
 // that writes it records the sha256 of the bytes stored (system-docx.ts). Every
 // other write removes that record, so only an unchanged system write may be
-// written over again by the system.
+// written over again by the system. A replace with `owned` set also requires,
+// under this write's lock, that the file is still the system's to write over
+// (replaceableDeliverable), so a write or proposal made after the caller looked
+// is never overwritten.
 export async function writeDeliverable(
   matterDir: string,
   fileName: string,
@@ -47,7 +50,7 @@ export async function writeDeliverable(
   options: {
     precondition?:
       | { kind: "create" }
-      | { kind: "replace"; prior_sha256: string }
+      | { kind: "replace"; prior_sha256: string; owned?: boolean }
     system?: boolean
   } = {},
 ) {
@@ -73,6 +76,10 @@ export async function writeDeliverable(
       )
         throw new DeliverableConflictError(
           `Cannot replace generated deliverable ${target.name} because its prior identity changed.`,
+        )
+      if (options.precondition?.kind === "replace" && options.precondition.owned && !replaceableDeliverable(matterDir, target.name))
+        throw new DeliverableConflictError(
+          `Cannot replace ${target.name}: it changed since the system saved it or has changes pending review.`,
         )
       const bytes = name.toLowerCase().endsWith(".docx") ? Buffer.from(withParagraphPointers(buffer)) : buffer
       return await persistDeliverable(db, matterDir, target, bytes, options.system)

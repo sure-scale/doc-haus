@@ -211,7 +211,7 @@ function changedAfterCheck(directory: string, gate: unknown, documents: LeanDocu
 
 /** Derived, never stored: the one file a combined document downloads as, once
  * the summary registers it and both its parts under the current plan's names
- * (registeredCombinedParts; the download route also checks the registry), with
+ * (registeredCombinedParts), with
  * the document's id, the combined file's registered matter name ("<name>.docx"
  * or a " (n)" suffix) and the exact registered names of its body and notes, so a
  * client matches those rows rather than guessing them from the name. Null

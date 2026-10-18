@@ -2,7 +2,7 @@ import { playbookLibraryRoutes } from "./playbook-library"
 import { updateRoutes, managedUpdateOwner } from "./updater"
 import { RepoUpdater } from "../../../scripts/updater"
 import { documentCopyRoutes } from "./document-copy"
-import { combinedOutputRoutes, registeredCombinedParts } from "./combined-output"
+import { registeredCombinedParts } from "./combined-output"
 import { documentLabelRoutes } from "./document-labels"
 import { answerDraftRoutes } from "./answer-drafts"
 import { readEngineSettings, patchEngineConfig, engineConfigFile } from "./engine-config"
@@ -75,7 +75,7 @@ import { MatterDocumentIdentityError, resolveMatterDocumentTarget, documentRegis
 import { recoverDocumentMutations } from "./document-mutation"
 import { appendAcceptedChangesToNotes } from "./notes-addendum"
 import { readLeanDocuments } from "../../../dochaus/workflows/lean/deliverables"
-import { ownedDeliverable } from "../../../dochaus/lib/system-docx"
+import { replaceableDeliverable } from "../../../dochaus/lib/system-docx"
 import { buildCombinedFile } from "../../../dochaus/lib/combined-docx"
 import { readLeanState } from "../../../dochaus/workflows/lean/state"
 import { documentRedline } from "../../../dochaus/workflows/lean/apply-stage"
@@ -600,10 +600,6 @@ app.post("/matters/:id/deliverables", async (c) => {
 
 app.route("/", documentCopyRoutes(matterDir))
 
-// A combined document's one requested file: the registered file saved in the
-// matter, served as it is; see combined-output.ts.
-app.route("/", combinedOutputRoutes(matterDir))
-
 // Persist an edit to an already registered document while preserving its role.
 // Editing a generated deliverable must never promote it into source retrieval.
 app.post("/matters/:id/documents/revisions", async (c) => {
@@ -919,17 +915,25 @@ app.post("/matters/:id/redlines/:rid/reject", async (c) => {
   const row = getRedline(initialDb, Number(c.req.param("rid")))
   initialDb.close()
   if (!row || row.status !== "pending") return c.json({ error: "Redline not found or already resolved" }, 404)
-  return withArtifactMutationLocksAsync(dir, [row.doc_name], async () => {
+  return withArtifactMutationLocksAsync(dir, [row.doc_name, ...rejectCombinedLock(dir, row.doc_path)], async () => {
     const db = openDb(dir)
+    let current: RedlineRow | null
     try {
-      const current = getRedline(db, row.id)
-      if (!current || current.status !== "pending")
-        return c.json({ error: "Redline not found or already resolved" }, 404)
-      setRedlineStatus(db, current.id, "rejected")
-      return c.json({ ok: true })
+      current = getRedline(db, row.id)
     } finally {
       db.close()
     }
+    if (!current || current.status !== "pending")
+      return c.json({ error: "Redline not found or already resolved" }, 404)
+    // As an accept does: a rebuild of the saved combined file skipped earlier is made now.
+    const combined = await prepareCombinedFile(dir, current.doc_path, { rejected: true })
+    const update = openDb(dir)
+    try {
+      setRedlineStatus(update, current.id, "rejected")
+    } finally {
+      update.close()
+    }
+    return c.json({ ok: true, ...await rebuildCombinedFile(combined) })
   })
 })
 
@@ -974,16 +978,25 @@ app.post("/matters/:id/redlines/reject-all", async (c) => {
   const name = matterDocumentName(requested) ?? deliverableDocumentName(requested)
   if (!name) return c.json({ error: "The document filename or extension is not supported." }, 400)
   const file = path.join(dir, name)
-  return withArtifactMutationLocksAsync(dir, [name], async () => {
+  return withArtifactMutationLocksAsync(dir, [name, ...rejectCombinedLock(dir, file)], async () => {
     if (!existsSync(path.join(dir, ".dochaus", "legal.db"))) return c.json({ ok: true, rejected: 0 })
     const db = openDb(dir)
+    let rows: RedlineRow[]
     try {
-      const rows = listPendingRedlines(db, file)
-      db.transaction(() => rows.forEach((row) => setRedlineStatus(db, row.id, "rejected")))()
-      return c.json({ ok: true, rejected: rows.length })
+      rows = listPendingRedlines(db, file)
     } finally {
       db.close()
     }
+    if (!rows.length) return c.json({ ok: true, rejected: 0 })
+    // As accept-all does: a rebuild of the saved combined file skipped earlier is made now.
+    const combined = await prepareCombinedFile(dir, file, { rejected: true })
+    const update = openDb(dir)
+    try {
+      update.transaction(() => rows.forEach((row) => setRedlineStatus(update, row.id, "rejected")))()
+    } finally {
+      update.close()
+    }
+    return c.json({ ok: true, rejected: rows.length, ...await rebuildCombinedFile(combined) })
   })
 })
 
@@ -1020,8 +1033,8 @@ function documentRevisionBytes(directory: string, name: string, input: Buffer) {
 // only the checked draft. The run's delivery summary links its body and notes;
 // nothing new is stored. This runs after the body write has committed, inside
 // the accept's lock set, which already holds the notes lock (runNotesLock), so
-// a combined download never pairs the accepted body with the notes from before
-// it; the nested lock calls here re-enter the held locks. The
+// a rebuild of the saved combined file never pairs the accepted body with the
+// notes from before it; the nested lock calls here re-enter the held locks. The
 // notes go through the same revision writer as an accepted Word change, so they
 // keep their name and a later delivery neither writes over nor forks them.
 // Best-effort: the accepted body stands, a skipped addendum is logged and
@@ -1225,15 +1238,19 @@ function runRedlineLock(directory: string, body: string): string[] {
 // combined file and both parts are in the accept's or upload's lock set
 // (runCombinedLock). Only a file the system wrote and nothing has written since
 // is rewritten: the file must hold exactly the bytes recorded by the system's
-// last write of it (ownedDeliverable: the delivery's registration or an earlier
-// rebuild). A lawyer's accept into the combined file, a revision uploaded in its
+// last write of it (the delivery's registration or an earlier rebuild), with no
+// proposal on it pending: replaceableDeliverable, the rule a run's save over
+// the file follows too. A lawyer's accept into the combined file, a revision uploaded in its
 // place or a change made outside doc.haus removes or breaks that record, and the
 // file is then kept as it is. The rebuild is written with paragraph pointers as
 // the run's save gives them (the saved file's where the text is unchanged) and
 // recorded, by the bytes written, as the system's own write, so a rebuild
 // skipped for any reason (a pending proposal on the combined file, a refused
 // build, a failed write) leaves the file the system's and the next accept or
-// upload tries again. Under the file's lock the
+// upload tries again. A reject of a proposal on the combined file or a part
+// tries again too (the same prepare and rebuild), so a rebuild held back by the
+// proposal is made once it is rejected; as the reject changes no part, it
+// writes only when the build differs from the saved file. Under the file's lock the
 // rebuild checks again that the run is completed and still registers this
 // combined file with these parts, as the redline write does. Best-effort like
 // the redline: the accepted body stands, and the response says whether the
@@ -1241,7 +1258,7 @@ function runRedlineLock(directory: string, body: string): string[] {
 // completed run registered a combined file or the change touched neither part.
 type CombinedSkipReason = "combined_missing" | "combined_not_deliverable" | "pending_combined_proposals" | "combined_changed" | "build_refused" | "rebuild_failed" | "write_failed"
 type CombinedRebuild = { combined_updated: true } | { combined_updated: false; combined_skip_reason: CombinedSkipReason }
-type PreparedCombined = { directory: string; accepted: string; file: string; body: string; notes: string; parts?: string; error?: unknown }
+type PreparedCombined = { directory: string; accepted: string; file: string; body: string; notes: string; rejected: boolean; parts?: string; error?: unknown }
 
 function combinedSkipped(directory: string, reason: CombinedSkipReason, detail: Record<string, unknown> = {}): CombinedRebuild {
   console.warn("[redline] combined file not rebuilt", { matter_ref: draftingTraceReference(directory), reason, ...detail })
@@ -1252,14 +1269,16 @@ function combinedSkipped(directory: string, reason: CombinedSkipReason, detail: 
  * a completed run's registered combined row and its parts under plain names,
  * when the accepted file is one of the parts or a delivered body whose notes
  * addendum changes the memo. Undefined otherwise, as for the run's redline and
- * notes (deliveredRunBody, runNotesLock). */
-function registeredCombined(directory: string, accepted: string) {
+ * notes (deliveredRunBody, runNotesLock). With `rejected`, for a reject, the
+ * combined file itself counts too: rejecting a proposal on it may free a
+ * rebuild it held back. */
+function registeredCombined(directory: string, accepted: string, rejected = false) {
   const summary = readLeanDocuments(directory)
   if (readLeanState(directory)?.status !== "completed" || summary?.status !== "completed") return
   const parts = registeredCombinedParts(directory, summary.documents)
   if (!parts) return
   const identity = documentRegistryIdentity(accepted)
-  const part = [parts.body, parts.notes].some((name) => documentRegistryIdentity(path.join(directory, name)) === identity)
+  const part = [parts.body, parts.notes, ...(rejected ? [parts.file] : [])].some((name) => documentRegistryIdentity(path.join(directory, name)) === identity)
   return part || deliveredRunBody(directory, accepted) ? { file: parts.file, body: parts.body, notes: parts.notes } : undefined
 }
 
@@ -1267,9 +1286,9 @@ function registeredCombined(directory: string, accepted: string) {
  * its writes and the combined rebuild form one critical section. Read before
  * locking; empty when the accept changes no saved combined file's part, or a
  * name is a link, so the rebuild checks the file again under its own lock. */
-function runCombinedLock(directory: string, accepted: string): string[] {
+function runCombinedLock(directory: string, accepted: string, rejected = false): string[] {
   try {
-    const combined = registeredCombined(directory, accepted)
+    const combined = registeredCombined(directory, accepted, rejected)
     const names = combined ? [combined.file, combined.body, combined.notes] : []
     return names.every((name) => readDocumentTarget(directory, name)) ? names : []
   } catch {
@@ -1277,15 +1296,24 @@ function runCombinedLock(directory: string, accepted: string): string[] {
   }
 }
 
+/** A reject's extra locks: the saved combined file and its parts, with the
+ * source corpus lock the rebuild takes, when the rejected file is one of them. */
+function rejectCombinedLock(directory: string, rejected: string): string[] {
+  const names = runCombinedLock(directory, rejected, true)
+  return names.length ? [...names, ".dochaus/source-corpus"] : []
+}
+
 const sha256Hex = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex")
 
 /** Before the accept writes anything: the saved combined file it may rebuild and
  * the sha256 of its parts as they are now, so the rebuild runs only when the
- * accept changed one. */
-async function prepareCombinedFile(directory: string, accepted: string): Promise<PreparedCombined | undefined> {
+ * accept changed one. With `rejected`, before a reject: the rebuild runs
+ * whatever the parts, and writes only a build that differs from the saved file. */
+async function prepareCombinedFile(directory: string, accepted: string, options: { rejected?: boolean } = {}): Promise<PreparedCombined | undefined> {
+  const rejected = options.rejected ?? false
   let combined: ReturnType<typeof registeredCombined>
   try {
-    combined = registeredCombined(directory, accepted)
+    combined = registeredCombined(directory, accepted, rejected)
   } catch (error) {
     combinedSkipped(directory, "rebuild_failed", diagnosticErrorMetadata(error))
     return
@@ -1296,10 +1324,10 @@ async function prepareCombinedFile(directory: string, accepted: string): Promise
     return await withArtifactMutationLocksAsync(directory, [file, body, notes, ".dochaus/source-corpus"], async (): Promise<PreparedCombined> => {
       // A link is never read or written as the combined file or one of its parts.
       if (![file, body, notes].every((name) => readDocumentTarget(directory, name))) throw new Error("A combined file part is a link, not a matter document.")
-      return { directory, accepted, file, body, notes, parts: (await combinedPartsSha256(directory, body, notes)).key }
+      return { directory, accepted, file, body, notes, rejected, parts: (await combinedPartsSha256(directory, body, notes)).key }
     })
   } catch (error) {
-    return { directory, accepted, file, body, notes, error }
+    return { directory, accepted, file, body, notes, rejected, error }
   }
 }
 
@@ -1310,7 +1338,8 @@ async function combinedPartsSha256(directory: string, body: string, notes: strin
 
 /** After the accept's writes: rebuilds the prepared combined file from its parts
  * as written, when they changed, the run still registers it and the system's
- * last write of it is unchanged. */
+ * last write of it is unchanged. After a reject: the same, when the build
+ * differs from the saved file (a rebuild skipped earlier); nothing otherwise. */
 async function rebuildCombinedFile(prepared: PreparedCombined | undefined): Promise<CombinedRebuild | undefined> {
   if (!prepared) return
   const { directory, accepted, file, body, notes } = prepared
@@ -1320,18 +1349,22 @@ async function rebuildCombinedFile(prepared: PreparedCombined | undefined): Prom
     return await withArtifactMutationLocksAsync(directory, [file, body, notes, ".dochaus/source-corpus"], async (): Promise<CombinedRebuild | undefined> => {
       if (![file, body, notes].every((name) => readDocumentTarget(directory, name))) throw new Error("A combined file part is a link, not a matter document.")
       const { key, memoBytes, bodyBytes } = await combinedPartsSha256(directory, body, notes)
-      if (prepared.parts === key) return
+      if (prepared.parts === key && !prepared.rejected) return
       // The run or its summary may have changed since the accept read them.
-      const current = registeredCombined(directory, accepted)
+      const current = registeredCombined(directory, accepted, prepared.rejected)
       if (current?.file !== file || current.body !== body || current.notes !== notes) return combinedSkipped(directory, "combined_not_deliverable")
       const blocked = combinedBlocked(directory, file)
       if (blocked) return combinedSkipped(directory, blocked)
       const saved = await Bun.file(path.join(directory, file)).bytes()
-      if (!ownedDeliverable(directory, file)) return combinedSkipped(directory, "combined_changed")
+      // Pending proposals were ruled out above (combinedBlocked), so a refusal here is a change to the file.
+      if (!replaceableDeliverable(directory, file)) return combinedSkipped(directory, "combined_changed")
       const built = buildCombinedFile({ memo: memoBytes, body: bodyBytes })
       if ("refused" in built) return combinedSkipped(directory, "build_refused", { refused: built.refused, ...(built.part ? { part: built.part } : {}) })
       // Paragraph pointers as the run's save gives them, the saved file's where the text is unchanged.
-      await writeDeliverableRevision(directory, file, Buffer.from(withParagraphPointers(built.bytes, saved)), { priorSha256: sha256Hex(saved), system: true })
+      const bytes = Buffer.from(withParagraphPointers(built.bytes, saved))
+      // A reject changed no part: a saved file that already holds the build was not skipped.
+      if (prepared.rejected && bytes.equals(saved)) return
+      await writeDeliverableRevision(directory, file, bytes, { priorSha256: sha256Hex(saved), system: true })
       return { combined_updated: true }
     })
   } catch (error) {
