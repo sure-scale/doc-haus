@@ -6,6 +6,7 @@ import { openItemMarkers } from "../../lib/open-items"
 import { draftingPlaceholders } from "../../lib/placeholder-resolution"
 import { normalize } from "../../lib/quote-verify"
 import { changeListIDs, memoMode, runItemIDs, withoutRefMarkers } from "./delivered-memo"
+import { notesForReader } from "./gate"
 import { excerpt, openItem, quoteFound, quoteMissIssue, quoteMissItems, sourceQuotes } from "./quotes"
 import { readLeanPlan, type DocID } from "./plan"
 import { readLeanJson, type OpenItem, type Question, type StageID } from "./state"
@@ -122,16 +123,22 @@ export function settleApply(changes: ChangeList, result: ApplyResult | undefined
  * notes' own text, a gap no open item records. The notes may quote a body
  * placeholder exactly as its open item records it, and neither a "[ref: …]"
  * marker, an item's id, quoted text nor an editorial mark (EDITORIAL_MARK) is a
- * placeholder of their own. On the last attempt (`final`) an item's id anywhere
- * in the notes discloses it, as the gate reads them, and such an id or
+ * placeholder of their own. On the last attempt (`final`) such an id or
  * placeholder alone does not fail the notes: they are saved as the model wrote
- * them, never rewritten, and every other check still applies. */
+ * them, never rewritten, and every other check still applies; delivery keeps
+ * the ids from the reader (deliveredNotes). Without a requested memo an item's
+ * whole id anywhere in them then discloses it, as the gate reads them; a memo
+ * still needs its marker. On every attempt the notes must keep a heading once
+ * delivery has removed their markers and ids (notesForReader), so they are
+ * never delivered empty. */
 export function checkDraftingNotes(directory: string, content: string, items: OpenItem[], options: { final?: boolean } = {}): StageCheck {
   const shape = documentShapeIssues(content, "drafting notes")
   if (shape.length) return { issues: shape, openItems: [] }
+  if (!/^#{1,6}[ \t]+\S/m.test(notesForReader(directory, content, items)))
+    return { issues: ['The drafting notes have no heading once their "[ref: …]" markers and internal ids are removed. Begin with a "# " title in words, and say each point in words before the marker that ends it.'], openItems: [] }
   const memo = memoMode(directory)
   const markers = [...content.matchAll(REF_MARKER)].map(match => match[1]!)
-  const undisclosed = items.filter(item => !markers.some(marker => standingID(item.id).test(marker)) && !(options.final && content.includes(item.id)))
+  const undisclosed = items.filter(item => !markers.some(marker => standingID(item.id).test(marker)) && !(options.final && !memo && standingID(item.id).test(content)))
     .map(item => item.id)
   const delivered = withoutRefMarkers(content)
   const ids = !options.final
@@ -194,9 +201,21 @@ const EDITORIAL_MARK = /^\[\s*(?:(?:emphasis\s+)?(?:added|inserted|supplied|omit
 const NOT_PROSE = [QUOTED, /\[\^[^\]\n]*\]/g, /(?<=[A-Za-z0-9)]\()[^)\n]*\)/g,
   /(?<![\w'\u2019])(?:(?:section|regulation|paragraph|clause|schedule|article|part|rule)s?\b|(?:ss?|regs?|paras?|cl|sch|arts?)\.)[ \t]*(?:\(?\d[^\s(),;]*\)?|(?<=sub-[a-z]+[ \t]*)\([^\s(),;]+\))/gi]
 
-/** A "[ref: …]" or "[refs: …]" marker, as withoutRefMarkers (delivered-memo.ts)
- * removes it; group 1 is its ids, one or several separated by "," or ";". */
-const REF_MARKER = /\[[ \t]*[Rr]efs?[ \t]*:([^\]\n]*)\]/g
+/** The text NOT_PROSE masks other than quotations: delivery keeps it as
+ * written, so a citation's number is never read as an id. */
+export const CITED = NOT_PROSE.slice(1)
+
+/** A "[ref: …]" or "[refs: …]" marker in any case, as withoutRefMarkers
+ * (delivered-memo.ts) removes it; group 1 is its ids, one or several separated
+ * by "," or ";". */
+const REF_MARKER = /\[[ \t]*refs?[ \t]*:([^\]\n]*)\]/gi
+
+/** The ids the notes check keeps out of the reader's text: each run id no
+ * lawyer would write as prose (readerVisibleID), each planned document's id
+ * and each recorded change id. Delivery removes the same ids (notesForReader). */
+export function readerIDs(directory: string, items: OpenItem[]) {
+  return [...new Set([...runItemIDs(directory, items).filter(readerVisibleID), ...(readLeanPlan(directory)?.documents ?? []).map(row => row.id), ...runChangeIDs(directory, items)])]
+}
 
 /** The change ids the run records for its planned documents (each change
  * list's amendments, withheld amendments and explanations) and the amendment

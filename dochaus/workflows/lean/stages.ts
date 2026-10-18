@@ -64,10 +64,11 @@ const DRAFTING_NOTES_CONTRACT = "lawyer-facing-notes-plain-refs-3"
 /** Keys finalize only when the notes are a requested memo (the plan has a
  * memo name), so runs without one keep their finalize key. */
 const REQUESTED_MEMO_CONTRACT = "requested-memo-titles-7"
-/** Keys the gate, whose questions are written in code: a change to how it
- * words or keys one re-runs a done gate, so an open question it asked takes
- * the current form. */
-const GATE_CONTRACT = "quote-keyed-conflict-question-1"
+/** Keys the gate, whose questions and delivered notes are written in code: a
+ * change to how it words or keys a question, or how it composes the delivered
+ * notes, re-runs a done gate, so an open question it asked takes the current
+ * form and the delivered notes are written again. */
+const GATE_CONTRACT = "reader-notes-delivery-2"
 export const LEAN_MAX_RETRIES = 3
 
 export const LEAN_STAGE_AGENTS = {

@@ -7,7 +7,7 @@ import { renderNotesCoverage } from "../../lib/notes-coverage-report"
 import { hasOpenItemMarker } from "../../lib/open-items"
 import { draftingPlaceholders } from "../../lib/placeholder-resolution"
 import { normalize } from "../../lib/quote-verify"
-import { finalBodyParagraphs, standingIDPattern, type ApplyResult } from "./checks"
+import { CITED, finalBodyParagraphs, readerIDs, standingIDPattern, type ApplyResult } from "./checks"
 import { memoMode, runItemIDs, withoutInternalIDs, withoutRefMarkers } from "./delivered-memo"
 import { FIRST_DOCUMENT, readLeanPlan, type DocID } from "./plan"
 import { readPackageReview } from "./package-review"
@@ -166,11 +166,11 @@ export function finalGate(directory: string): GateResult {
   }
 }
 
-/** The notes delivered with the draft: the drafting notes without their
- * "[ref: …]" markers, with any unresolved checklist findings in plain words.
- * The drafting notes are written before the checklist check, so they cannot
- * list its findings. Undefined when there are neither drafting notes nor such
- * a finding.
+/** The notes delivered with the draft: the drafting notes as the reader gets
+ * them (notesForReader), with any unresolved checklist findings in plain
+ * words. The drafting notes are written before the checklist check, so they
+ * cannot list its findings. Undefined when there are neither drafting notes
+ * nor such a finding.
  *
  * The findings lead the drafting notes, or close a requested memo after its
  * own title and body. Each is disclosed as a requirement not confirmed as met,
@@ -179,16 +179,42 @@ export function finalGate(directory: string): GateResult {
  * checklist item, conflict list, request locator or paragraph pointer. */
 export function deliveredNotes(directory: string, gate: GateResult): string | undefined {
   const drafted = readLeanText(directory, "drafting-notes.md")
+  const read = drafted === undefined ? undefined : notesForReader(directory, drafted, gate.items)
   const findings = gate.items.filter(item => item.kind === "checklist_unresolved")
-  if (!findings.length) return drafted === undefined ? undefined : withoutRefMarkers(drafted)
+  if (!findings.length) return read
   const known = runItemIDs(directory, gate.items)
   const section = (heading: string, intro: string) => plainWordsSection(directory, known, heading, intro, findingEntries(directory, findings, known))
-  const body = withoutRefMarkers(drafted ?? "")
+  const body = read ?? ""
   if (!memoMode(directory)) return [...section("# Checklist findings not satisfied",
     "These checklist requirements were not established as satisfied. Each is disclosed with this review draft for review; none is treated as satisfied."), "", body].join("\n")
   const memo = body.trimEnd()
   return [...(memo ? [memo, ""] : []),
     ...section("## Requirements not confirmed as met", "These requirements were not confirmed as met in this draft and need the lawyer's review."), ""].join("\n")
+}
+
+/** The drafting notes as the reader gets them: without their "[ref: …]"
+ * markers, and with no id the notes check keeps from the reader (readerIDs,
+ * with `items`). A line naming a planned document by its id names it by its
+ * title (withDocumentTitles, with the notes as this memo or these notes), and
+ * every other such id goes (withoutInternalIDs). A citation, footnote marker
+ * or locator's number outside a quotation (CITED) is held aside from both, as
+ * the check reads it, so "3(d1)" stays as written; quotations are kept as
+ * withoutInternalIDs keeps them. Notes the check passed name none of these ids
+ * elsewhere, so only notes saved on a last attempt, or kept on a resume,
+ * change beyond their markers; every unchanged line keeps its exact text. */
+export function notesForReader(directory: string, text: string, items: OpenItem[]) {
+  const ids = readerIDs(directory, items)
+  const documents = readLeanPlan(directory)?.documents ?? []
+  const planned = documents.length ? new RegExp(standingIDPattern(documents.map(row => row.id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"))) : undefined
+  const self = memoMode(directory) ? "this memo" : "these notes"
+  // Held text stands as n U+FDEE between two U+FDEF, as in plainWordsSection.
+  const held: string[] = []
+  const hold = (text: string) => `\uFDEF${"\uFDEE".repeat(held.push(text))}\uFDEF`
+  const lines = withoutRefMarkers(text).split("\n").map(line => {
+    const kept = line.split(/("[^"\n]*"|\u201c[^\u201d\n]*\u201d)/).map((part, index) => index % 2 ? part : CITED.reduce((part, mask) => part.replace(mask, hold), part)).join("")
+    return planned?.test(kept) ? withDocumentTitles(kept, documents, ids, hold, self) : kept
+  })
+  return withoutInternalIDs(lines.join("\n"), ids).replace(/\uFDEF(\uFDEE+)\uFDEF/g, (_, count: string) => held[count.length - 1]!)
 }
 
 /** One section of the delivered notes in plain words: `heading`, the sentence
