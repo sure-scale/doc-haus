@@ -432,13 +432,13 @@ test("without a registered combined row no combined file is offered", () => {
   expect(page(result(other))).toContain(download("Supply note - clean.docx"))
 })
 
-test("an earlier combined file the summary lists stays a combined file beside the new one, never a draft of its own", () => {
+test("an earlier combined file the summary lists is the combined file from an earlier run beside the new one, never a draft of its own", () => {
   // The lawyer kept changes in the combined file under the requested name; the new one took "(2)".
   const earlier: LeanDocument = { kind: "combined", document: "d1", title: "Supply note", path: "Supply note.docx", sha256: "b".repeat(64), deliverable: "Supply note.docx" }
   const status = memoRun({ combined: true, body: "Supply note - clean (2).docx", file: "Supply note (2).docx", rows: [earlier] })
   const body = { name: "Supply note - clean (2).docx", role: "draft" }
   const redline = { name: "Supply note - redline.docx", role: "redline" }
-  const kept = { main: { name: "Supply note.docx", role: "combined" }, extras: [] }
+  const kept = { main: { name: "Supply note.docx", role: "earlier_combined" }, extras: [] }
   expect(draftedGroups(status)).toStrictEqual([{ main: body, extras: [redline, memoNotes], combined: "Supply note (2).docx" }, kept])
   const names = ["Supply note - clean.docx", "Supply note - clean (2).docx", "Supply note - redline.docx", "Supply note - cover note.docx", "Supply note.docx", "Supply note (2).docx"]
   expect(deliverableGroups(names, status)).toStrictEqual([
@@ -448,13 +448,54 @@ test("an earlier combined file the summary lists stays a combined file beside th
   ])
   const documents = names.map((name, id) => ({ id, name, doc_path: name, created_at: 1_760_000_000_000 + id * 60_000, role: "deliverable" as const }))
   const listed = renderToStaticMarkup(createElement(DocumentUpload, { matterId: "m", documents, onUploaded: () => {}, onView: () => {}, drafting: status }))
-  for (const name of ["Supply note.docx", "Supply note (2).docx"]) {
-    const select = listed.split(`aria-label="Label for ${name}"`)[1]?.split("</select>")[0] ?? ""
-    expect(select).toContain('<option value="combined" selected="">Combined</option>')
-  }
+  const select = (name: string) => listed.split(`aria-label="Label for ${name}"`)[1]?.split("</select>")[0] ?? ""
+  expect(select("Supply note (2).docx")).toContain('<option value="combined" selected="">Combined</option>')
+  expect(select("Supply note.docx")).toContain('<option value="earlier_combined" selected="">Earlier combined</option>')
+  // The result card's file list names it the same way; it downloads as the matter file it is, never as the memo and draft in one.
+  const card = resultCard(status)
+  expect(card).toContain('<span class="drafted-tag is-earlier_combined">Earlier combined</span>')
+  expect(card).not.toContain("<h4>Supply note.docx</h4>")
+  expect(card).not.toContain(`aria-label="Download Supply note.docx" ${ONE_FILE}`)
+  expect(card).toContain(`aria-label="Download Supply note (2).docx" ${ONE_FILE}`)
   // The file's name alone does not make it a combined file: without its summary row it is not one.
   const unlisted = memoRun({ combined: true, body: "Supply note - clean (2).docx", file: "Supply note (2).docx" })
   expect(deliverableGroups(names, unlisted).flatMap((group) => [group.main, ...group.extras]).find((output) => output.name === "Supply note.docx")?.role).not.toBe("combined")
+})
+
+test("a file a combined row names that is not this run's saved combined file is the combined file from an earlier run, never a draft", () => {
+  const names = ["Supply note - clean.docx", "Supply note - redline.docx", "Supply note - cover note.docx", "Supply note.docx"]
+  const roleOf = (status: LeanDraftingStatus) =>
+    deliverableGroups(names, status).flatMap((group) => [group.main, ...group.extras]).find((output) => output.name === "Supply note.docx")?.role
+  const labelOf = (status: LeanDraftingStatus, label?: "final") => {
+    const documents = names.map((name, id) => ({ id, name, doc_path: name, created_at: 1_760_000_000_000 + id * 60_000, role: "deliverable" as const, ...(label && name === "Supply note.docx" ? { label } : {}) }))
+    const listed = renderToStaticMarkup(createElement(DocumentUpload, { matterId: "m", documents, onUploaded: () => {}, onView: () => {}, drafting: status }))
+    const select = listed.split(`aria-label="Label for Supply note.docx"`)[1]?.split("</select>")[0] ?? ""
+    return select.match(/<option value="([a-z_]+)" selected="">([^<]+)</)?.slice(1)
+  }
+  // This run did not save its combined file: the build was refused, the save failed, or the lawyer's
+  // revision holds the name. The file there is an earlier run's, and ingest reports no combined file.
+  const unsaved: LeanDocument = { kind: "combined", document: "d1", title: "Supply note", path: "Supply note.docx", sha256: "a".repeat(64), deliverable: null }
+  const held = lean({ ...memoRun({ combined: true, saved: null, rows: [unsaved] }), combined_output: null })
+  // A rerun stopped at its gate keeps the earlier run's file, which it has not delivered again.
+  const delivered: LeanDocument = { ...unsaved, deliverable: "Supply note.docx" }
+  const stopped = memoRun({ combined: true, saved: null, rows: [delivered] })
+  const blocked = lean({ ...stopped, status: "blocked", documents: { ...stopped.documents!, status: "blocked" }, combined_output: null })
+  const unsavedFailed = lean({ ...held, status: "failed", documents: { ...held.documents!, status: "blocked" } })
+  for (const status of [held, blocked, unsavedFailed]) {
+    expect(draftedGroups(status).some((group) => group.combined)).toBe(false)
+    expect(roleOf(status)).toBe("earlier_combined")
+    expect(labelOf(status)).toEqual(["earlier_combined", "Earlier combined"])
+    // A label the lawyer chose still wins.
+    expect(labelOf(status, "final")).toEqual(["final", "Final"])
+  }
+  // The panel offers the file as the matter file it is, never as the memo and draft in one.
+  const listed = renderToStaticMarkup(createElement(DocumentUpload, {
+    matterId: "m", documents: names.map((name, id) => ({ id, name, doc_path: name, created_at: 1_760_000_000_000 + id, role: "deliverable" as const })),
+    onUploaded: () => {}, onView: () => {}, drafting: held,
+  }))
+  expect(listed).not.toContain(ONE_FILE)
+  // Without a summary row naming it, a file of that name is not one.
+  expect(roleOf(lean({ ...held, documents: { ...held.documents!, documents: held.documents!.documents.filter((row) => row.kind !== "combined") } }))).toBe("draft")
 })
 
 test("a requested memo is named wherever the run would say drafting notes", () => {

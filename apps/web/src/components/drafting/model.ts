@@ -292,8 +292,10 @@ export function openItemsSentence(status: LeanDraftingStatus) {
   return `Open items: ${list}.`
 }
 
-/** "combined": a combined document's one file, saved in the matter at delivery. */
-export type DraftedOutput = { name: string; role: "draft" | "redline" | "notes" | "combined" }
+/** "combined": a combined document's one file, saved in the matter at delivery.
+ * "earlier_combined": a file a combined row of the summary names that is not
+ * the one this run saved (an earlier run's, kept under its name). */
+export type DraftedOutput = { name: string; role: "draft" | "redline" | "notes" | "combined" | "earlier_combined" }
 export type DraftedGroup = {
   main: DraftedOutput
   extras: DraftedOutput[]
@@ -303,7 +305,7 @@ export type DraftedGroup = {
   combined?: string
 }
 
-export const OUTPUT_ROLE: Record<DraftedOutput["role"], string> = { draft: "Draft", redline: "Redline", notes: "Notes", combined: "Combined" }
+export const OUTPUT_ROLE: Record<DraftedOutput["role"], string> = { draft: "Draft", redline: "Redline", notes: "Notes", combined: "Combined", earlier_combined: "Earlier combined" }
 
 /** The Word files a completed run delivered: each drafted document with its
  * redline beneath it; the drafting notes (by their row kind, whatever their
@@ -317,7 +319,7 @@ export function draftedGroups(status: LeanDraftingStatus | undefined): DraftedGr
   const combined = combinedBody(status, documents)
   const earlier = documents
     .filter((row) => row.kind === "combined" && row.deliverable !== combined?.file)
-    .map((row): DraftedGroup => ({ main: { name: row.deliverable!, role: "combined" }, extras: [] }))
+    .map((row): DraftedGroup => ({ main: { name: row.deliverable!, role: "earlier_combined" }, extras: [] }))
   const groups = documents
     .filter((row) => row.kind === "body")
     .map((body): DraftedGroup => ({
@@ -353,8 +355,10 @@ function combinedBody(status: LeanDraftingStatus, documents: LeanDocument[]) {
  * first, then any other deliverable by the run's naming ("<name> - redline",
  * "<name> - drafting notes"), so files from earlier runs group the same way.
  * A combined file is one only by the summary's row for it, never by its name:
- * the run's current one stays on its draft's group, an earlier one is a
- * combined file of its own, and neither is a draft of its own. */
+ * the run's current one stays on its draft's group; any other file a combined
+ * row names, whatever the run's state (its build refused, nothing saved, the
+ * name held by the lawyer's revision), is an earlier one in a row of its own;
+ * neither is a draft of its own. */
 export function deliverableGroups(names: string[], status: LeanDraftingStatus | undefined): DraftedGroup[] {
   const present = new Set(names)
   const known = draftedGroups(status)
@@ -365,7 +369,9 @@ export function deliverableGroups(names: string[], status: LeanDraftingStatus | 
       ...(group.combined && present.has(group.combined) ? { combined: group.combined } : {}),
     }))
   const placed = new Set(known.flatMap((group) => [group.main.name, ...group.extras.map((output) => output.name), ...(group.combined ? [group.combined] : [])]))
-  const rest = names.filter((name) => !placed.has(name))
+  const earlier = earlierCombined(status)
+  const kept = names.filter((name) => !placed.has(name) && earlier.has(name)).map((name): DraftedGroup => ({ main: { name, role: "earlier_combined" }, extras: [] }))
+  const rest = names.filter((name) => !placed.has(name) && !earlier.has(name))
   const grouped = rest
     .filter((name) => outputRole(name) === "draft")
     .map(
@@ -381,8 +387,16 @@ export function deliverableGroups(names: string[], status: LeanDraftingStatus | 
   const groups = [...known, ...grouped]
   // One draft keeps its notes beneath it, as a one-document run delivers them.
   if (groups.length === 1 && loose.every((output) => output.role === "notes"))
-    return [{ ...groups[0]!, extras: [...groups[0]!.extras, ...loose] }]
-  return [...groups, ...loose.map((main) => ({ main, extras: [] }))]
+    return [{ ...groups[0]!, extras: [...groups[0]!.extras, ...loose] }, ...kept]
+  return [...groups, ...loose.map((main) => ({ main, extras: [] })), ...kept]
+}
+
+/** The files the summary's combined rows name (each row's saved file, else the
+ * name it was to take) that no other row delivers, in any state of the run. */
+function earlierCombined(status: LeanDraftingStatus | undefined) {
+  const rows = status?.documents?.documents ?? []
+  const others = new Set(rows.filter((row) => row.kind !== "combined").flatMap((row) => row.deliverable ?? []))
+  return new Set(rows.filter((row) => row.kind === "combined").map((row) => row.deliverable ?? row.path).filter((name) => !others.has(name)))
 }
 
 const REDLINE = / - redline(\.[a-z]+)$/i

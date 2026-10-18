@@ -6,15 +6,17 @@ import { useToast } from "./Toast"
 export default function DocumentLabelBadge({ matterId, name, label, onChanged }: {
   matterId: string
   name: string
-  /** "combined" names a saved combined file the lawyer has not labelled; it is
-   * shown, never saved, since a label the lawyer chooses is one of the four. */
-  label: DocumentLabel | "combined"
+  /** "combined" names a saved combined file the lawyer has not labelled, and
+   * "earlier_combined" one from an earlier run; each is shown, never saved,
+   * since a label the lawyer chooses is one of the four. */
+  label: DocumentLabel | "combined" | "earlier_combined"
   onChanged: () => void
 }) {
   const [saving, setSaving] = useState(false)
   const toast = useToast()
   return (
-    <span className={`document-label-badge is-${label}`} aria-busy={saving || undefined}>
+    <span className={`document-label-badge is-${label}`} aria-busy={saving || undefined}
+      title={label === "earlier_combined" ? "The combined file from an earlier run" : undefined}>
       <select
         style={{ color: "#176b50", WebkitTextFillColor: "#176b50" }}
         aria-label={`Label for ${name}`}
@@ -34,6 +36,7 @@ export default function DocumentLabelBadge({ matterId, name, label, onChanged }:
         }}
       >
         {label === "combined" && <option value="combined">Combined</option>}
+        {label === "earlier_combined" && <option value="earlier_combined">Earlier combined</option>}
         <option value="draft">Draft</option>
         <option value="redline">Redline</option>
         <option value="notes">Notes</option>
