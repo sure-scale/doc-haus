@@ -53,11 +53,12 @@ import { isReviewStage, currentOpenItems, handedBack, readLeanText, readLeanJson
 // - source conflicts among those findings are put to the lawyer as one
 //   question, which the gate asks after the walk: it pauses nothing, and each
 //   conflict stays disclosed until the answer re-runs the stages it reaches;
-// - a conflict the lawyer already handed back to the drafting (a disclosed
-//   hand-back whose spine choice cites both sides of it, delegatedConflict),
-//   whether between two findings or an open finding and the passage it
-//   records as contradicting it, is disclosed with that hand-back and not
-//   asked again; it is never met, and a real answer asks it again;
+// - a conflict the lawyer may already have handed back to the drafting (a
+//   disclosed hand-back whose spine choice cites exactly its passages,
+//   handedBackHint), whether between two findings or an open finding and the
+//   passage it records as contradicting it, is still asked: the question that
+//   asks it only adds a plain hint, since matching passages cannot show the
+//   choice settled the point; it is never met;
 // - an instruction (a directive item) the checklist check left open may be
 //   carried by no planned document, which disclosure alone cannot settle; the
 //   gate puts those no answered package-scope question has shown to the lawyer
@@ -125,21 +126,13 @@ export function finalGate(directory: string): GateResult {
   const checklistState = leanState?.stages["checklist-check"]
   const checked = checklistState && (checklistState.status !== "pending" || readLeanJson(directory, "checklist/extraction.json") !== undefined)
     ? checklistOutputState(directory) : undefined
-  // A conflict a disclosed hand-back's choice is about is disclosed with that
-  // hand-back and not asked again (delegatedConflict).
+  // A conflict a disclosed hand-back's choice may be about is asked all the
+  // same; the question only says so (handedBackHint).
   const handedBackChoiceItems = handedBackItems(directory).map(item => settle(item, context))
-  const delegated = delegatedConflict(directory, handedBackChoiceItems)
-  const conflict = checked?.valid ? checklistConflictQuestion(conflictItemPairs(checked.unresolved).filter(([a, b]) => !delegated(a!.source_refs, b!.source_refs)),
-    [...context.questions.values()]) : undefined
-  // Each item a source conflict names refers to the conflict question, or,
-  // when every conflict naming it is delegated, to the hand-back.
-  const paired = new Map<string, string | undefined>()
-  if (checked?.valid) for (const row of checked.unresolved) if (row.class === "source_conflict") for (const other of row.conflicting_items ?? []) {
-    const id = delegated(row.item.source_refs, other.item.source_refs) ?? conflict?.id
-    for (const item of [row.item_id, other.id]) if (!paired.has(item) || id === conflict?.id) paired.set(item, id)
-  }
+  const handedBackTo = handedBackHint(directory, handedBackChoiceItems)
+  const conflict = checked?.valid ? checklistConflictQuestion(conflictItemPairs(checked.unresolved), [...context.questions.values()], handedBackTo) : undefined
   // Adverse checklist findings lead: the lawyer's list of items may be capped.
-  const unresolved = checked?.valid ? [...checked.unresolved.map(row => checklistUnresolvedItem(directory, leanState, row, paired.get(row.item_id) ?? conflict?.id)),
+  const unresolved = checked?.valid ? [...checked.unresolved.map(row => checklistUnresolvedItem(directory, leanState, row, conflict?.id)),
     ...checked.unresolvedParents.map(row => checklistUnresolvedParentItem(directory, row))] : []
   const items = [...unresolved, ...[...currentOpenItems(directory), ...deferredFindingItems(directory), ...coverageItems(directory), ...requestedFilesItems(directory)].map(item => settle(item, context)),
     ...handedBackChoiceItems, ...semantic, ...projected]
@@ -152,8 +145,9 @@ export function finalGate(directory: string): GateResult {
   // the conflict question names a conflicting one, the scope question the rest
   // the plan may leave out.
   const checklistOpen = checklistState?.status === "done" && checked?.valid && checked.open
-  const handed = (row: ChecklistOpenFinding) => delegated(row.item.source_refs, row.finding.conflicting_source_refs ?? [])
-  const scoped = checklistOpen ? checked.openFindings.filter(row => instructionLeftOpen(directory, row) && !paired.has(row.item_id) && !handed(row)) : []
+  const paired = new Set(checked?.valid ? checked.unresolved.flatMap(row => row.class === "source_conflict" && row.conflicting_items?.length
+    ? [row.item_id, ...row.conflicting_items.map(other => other.id)] : []) : [])
+  const scoped = checklistOpen ? checked.openFindings.filter(row => instructionLeftOpen(directory, row) && !paired.has(row.item_id)) : []
   // The scope question covers the instructions no answered scope question has
   // settled (scopeAnswers). None is asked once two of the gate's own are
   // answered, or while another stage's is open. An instruction refers to an
@@ -166,9 +160,9 @@ export function finalGate(directory: string): GateResult {
   const parties = gateScopeParties(directory)
   const shows = (question: Question, row: ChecklistOpenFinding) => scopeQuestionShows(question, quotes(row), parties(quotes(row)))
   const settled = scopeAnswers(scoped, quotes, asked.filter(answeredScopeQuestion), "gate", shows)
-  const scope = otherOpen ? undefined : packageScopeQuestion(settled.ask, settled.id)
+  const scope = otherOpen ? undefined : packageScopeQuestion(settled.ask, settled.id, row => handedBackTo(row.item.source_refs, row.finding.conflicting_source_refs ?? []))
   const scopeAsks = (row: ChecklistOpenFinding) => settled.by(row)[0] ?? (otherOpen && shows(otherOpen, row) ? otherOpen : scope)
-  const asks = (row: ChecklistOpenFinding) => paired.has(row.item_id) ? paired.get(row.item_id) : handed(row) ?? (scoped.includes(row) ? scopeAsks(row)?.id : undefined)
+  const asks = (row: ChecklistOpenFinding) => paired.has(row.item_id) ? conflict?.id : scoped.includes(row) ? scopeAsks(row)?.id : undefined
   if (checklistOpen) items.push(...checked.openFindings.map(row => checklistOpenItem(directory, row, asks(row))))
   const questions = [conflict, scope].filter((row): row is Question => row !== undefined)
   const blocking = items.filter(item => item.status === "open")
@@ -586,9 +580,10 @@ function instructionLeftOpen(directory: string, { item, finding }: ChecklistOpen
  * instructions an answered package-scope question settled (scopeAnswers), and
  * asks none once two of the gate's own are answered or while another stage's
  * is open. */
-function packageScopeQuestion(rows: ChecklistOpenFinding[], id: string): Question | undefined {
+function packageScopeQuestion(rows: ChecklistOpenFinding[], id: string, hinted: (row: ChecklistOpenFinding) => boolean): Question | undefined {
   if (!rows.length) return undefined
   const several = rows.length > 1
+  const hints = rows.flatMap(row => hinted(row) ? [`${several ? `The instruction "${row.item.check.trim().replace(/[.!?]+$/, "")}"` : "This instruction"} ${HANDED_BACK_HINT}`] : [])
   return {
     id,
     stage: "gate",
@@ -596,7 +591,8 @@ function packageScopeQuestion(rows: ChecklistOpenFinding[], id: string): Questio
       ...rows.map(({ item_id, item, finding }) => `${checklistRequirement(item_id, item)} ${finding.open_decisions?.length
         ? `Open decisions: ${sentence(finding.open_decisions.map(row => scopeField(row.trim())).join("; "))}` : "No open decision recorded; state what is missing."}`),
       `${several ? "For each, answer" : "Answer"} the open decisions above (supply any missing fact or approval they name). If the package should carry it, say in which document; otherwise say it is outside this request.`].join(" "),
-    context: `Until a later check settles ${several ? "these instructions, they are" : "this instruction, it is"} disclosed with the review draft as left open; delivery is not held for ${several ? "them" : "it"}. Your answer re-runs the drafting from the start, including the document plan and the checklist check.`,
+    context: [`Until a later check settles ${several ? "these instructions, they are" : "this instruction, it is"} disclosed with the review draft as left open; delivery is not held for ${several ? "them" : "it"}. Your answer re-runs the drafting from the start, including the document plan and the checklist check.`,
+      ...hints, ...(hints.length ? [HANDED_BACK_UNANSWERED] : [])].join(" "),
     status: "open",
   }
 }
@@ -644,8 +640,7 @@ function checklistUnresolvedItem(directory: string, state: LeanState | undefined
 
 const CHECKLIST_CONFLICT_QUESTION = "checklist-conflict-"
 
-/** One question for every source conflict among the adverse findings
- * (conflictItemPairs) that no hand-back covers (delegatedConflict), so the
+/** One question for every source conflict among the adverse findings, so the
  * lawyer settles them together: each pair by its two requirements, each with
  * its check and sources, never an internal item id. Its id keys on each
  * requirement's source documents and verbatim quotes (conflictKey), never on
@@ -654,10 +649,14 @@ const CHECKLIST_CONFLICT_QUESTION = "checklist-conflict-"
  * before its id was keyed so, under item ids, still stands for these
  * conflicts when its text showed exactly these pairs of sources
  * (legacyConflictPairs): its answer is the lawyer's own to the same question,
- * so it is not asked again. */
-function checklistConflictQuestion(pairs: ChecklistItem[][], asked: Question[]): Question | undefined {
+ * so it is not asked again. A pair a disclosed hand-back's choice may be
+ * about (handedBackHint) is asked all the same; only the context says so, in
+ * plain words, so the id and the text legacy answers are read from stay as
+ * they are. */
+function checklistConflictQuestion(pairs: ChecklistItem[][], asked: Question[], hinted: (first: Passage[], second: Passage[]) => boolean): Question | undefined {
   if (!pairs.length) return undefined
   const several = pairs.length > 1
+  const hints = pairs.flatMap(([a, b], index) => hinted(a!.source_refs, b!.source_refs) ? [`${several ? `Pair ${index + 1}` : "This conflict"} ${HANDED_BACK_HINT}`] : [])
   const keyed = keyedQuestionID(CHECKLIST_CONFLICT_QUESTION, pairs.map(pair => JSON.stringify(pair.map(conflictKey))))
   const shown = sourcePairsKey(pairs.map(pair => pair.map(checklistSources)))
   const legacy = asked.some(question => question.id === keyed) ? undefined : asked.find(question => question.status === "answered" && question.stage === "gate" &&
@@ -668,7 +667,8 @@ function checklistConflictQuestion(pairs: ChecklistItem[][], asked: Question[]):
     question: [several ? `Checklist requirements taken from the sources conflict, in ${pairs.length} pairs.` : "Two checklist requirements taken from the sources conflict.",
       ...pairs.map(([a, b], index) => `${several ? `Pair ${index + 1}, first` : "First"}: ${requirementText(a!)} Second: ${requirementText(b!)}`),
       several ? "For each pair, which requirement governs, or how should they be reconciled?" : "Which requirement governs, or how should they be reconciled?"].join(" "),
-    context: `Until a later check no longer finds ${several ? "these conflicts, they are" : "this conflict, it is"} disclosed with the review draft; delivery is not held for ${several ? "them" : "it"}. Your answer re-runs the drafting from the start, including the checklist check.`,
+    context: [`Until a later check no longer finds ${several ? "these conflicts, they are" : "this conflict, it is"} disclosed with the review draft; delivery is not held for ${several ? "them" : "it"}. Your answer re-runs the drafting from the start, including the checklist check.`,
+      ...hints, ...(hints.length ? [HANDED_BACK_UNANSWERED] : [])].join(" "),
     status: "open",
   }
 }
@@ -683,20 +683,24 @@ function conflictKey(item: ChecklistItem) {
 
 type Passage = { document: string; quote: string }
 
-/** The standing hand-back a conflict between two sides' cited passages was
- * left to: the choice the spine made in the lawyer's place
- * (handedBackChoices) cites a passage on each side and none that neither side
- * cites, and the delivered notes disclose that hand-back (its handedBackItems
- * entry settled as disclosed). The lawyer has already handed that choice back,
- * so the conflict is disclosed with it, not asked again. It is never met: the
- * finding stays disclosed and the package a review draft. A real answer ends
- * the hand-back and the conflict is asked again. */
-function delegatedConflict(directory: string, choices: OpenItem[]) {
+const HANDED_BACK_HINT = "may be a point you left to the drafting earlier; the drafting notes describe the choice made."
+const HANDED_BACK_UNANSWERED = "Leaving this question unanswered keeps the draft as drafted."
+
+/** Whether a conflict between two sides' cited passages may be one the lawyer
+ * left to the drafting: a choice the spine made in the lawyer's place
+ * (handedBackChoices; a drafting-choice, never an open item, which makes no
+ * choice) cites exactly its passages, each side's lying within one the choice
+ * cites and each the choice cites holding one of theirs, and the delivered
+ * notes disclose that hand-back (its handedBackItems entry settled as
+ * disclosed). Matching passages cannot show that the choice settled this
+ * point, so this only adds a plain hint to the question that asks it; the
+ * finding stays disclosed and the package a review draft. */
+function handedBackHint(directory: string, choices: OpenItem[]) {
   const disclosed = new Set(choices.flatMap(item => item.status === "disclosed" && item.ref.question_id ? [item.ref.question_id] : []))
-  const cited = [...handedBackChoices(directory)].flatMap(([id, entry]) => disclosed.has(id) ? [{ id, evidence: choicePassages(entry) }] : [])
-  return (first: Passage[], second: Passage[]) => cited.find(({ evidence }) =>
-    evidence.every(passage => [...first, ...second].some(ref => samePassage(ref, passage))) &&
-    [first, second].every(side => evidence.some(passage => side.some(ref => samePassage(ref, passage)))))?.id
+  const cited = [...handedBackChoices(directory)].flatMap(([id, entry]) => disclosed.has(id) && entry.kind === "drafting-choice" ? [choicePassages(entry)] : [])
+  return (first: Passage[], second: Passage[]) => first.length > 0 && second.length > 0 && cited.some(evidence => evidence.length > 0 &&
+    [...first, ...second].every(side => evidence.some(passage => within(side, passage))) &&
+    evidence.every(passage => [...first, ...second].some(side => within(side, passage))))
 }
 
 /** The passages a spine choice cites, read defensively from the saved spine. */
@@ -706,13 +710,13 @@ function choicePassages(entry: DraftingEntry): Passage[] {
     typeof row.source_id === "string" && typeof row.quote === "string" && normalize(row.quote) ? [{ document: row.source_id, quote: row.quote }] : [])
 }
 
-/** Two cited passages of one source are the same passage when, normalized,
- * they are equal or one holds the other and the shorter is at least
- * SHORT_QUOTE long. */
-function samePassage(a: Passage, b: Passage) {
-  if (a.document !== b.document) return false
-  const [x = "", y = ""] = [normalize(a.quote), normalize(b.quote)].toSorted((p, q) => p.length - q.length)
-  return x === y || (x.length >= SHORT_QUOTE && y.includes(x))
+/** A side's cited passage lies within a passage of the same source a choice
+ * cites when, normalized, the two are equal, or the choice's holds the side's
+ * and the side's is at least SHORT_QUOTE long. */
+function within(side: Passage, choice: Passage) {
+  if (side.document !== choice.document) return false
+  const [inner, outer] = [normalize(side.quote), normalize(choice.quote)]
+  return inner === outer || (inner.length >= SHORT_QUOTE && outer.includes(inner))
 }
 
 /** Each source conflict once, as its two requirements, in a stable order: by
