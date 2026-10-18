@@ -74,7 +74,8 @@ import {
 import { MatterDocumentIdentityError, resolveMatterDocumentTarget, documentRegistryIdentity } from "./document-identity"
 import { recoverDocumentMutations } from "./document-mutation"
 import { appendAcceptedChangesToNotes } from "./notes-addendum"
-import { readLeanDocuments } from "../../../dochaus/workflows/lean/deliverables"
+import { combinedParts, readLeanDocuments } from "../../../dochaus/workflows/lean/deliverables"
+import { buildCombinedFile } from "../../../dochaus/lib/combined-docx"
 import { readLeanState } from "../../../dochaus/workflows/lean/state"
 import { documentRedline } from "../../../dochaus/workflows/lean/apply-stage"
 
@@ -881,12 +882,13 @@ app.post("/matters/:id/redlines/:rid/accept", async (c) => {
   const row = getRedline(initialDb, Number(c.req.param("rid")))
   initialDb.close()
   if (!row || row.status !== "pending") return c.json({ error: "Redline not found or already resolved" }, 404)
-  return withArtifactMutationLocksAsync(dir, [row.doc_name, ...runRedlineLock(dir, row.doc_path), ...runNotesLock(dir), ".dochaus/source-corpus"], async () => {
+  return withArtifactMutationLocksAsync(dir, [row.doc_name, ...runRedlineLock(dir, row.doc_path), ...runNotesLock(dir), ...runCombinedLock(dir, row.doc_path), ".dochaus/source-corpus"], async () => {
     const db = openDb(dir)
     const current = getRedline(db, row.id)
     db.close()
     if (!current || current.status !== "pending")
       return c.json({ error: "Redline not found or already resolved" }, 404)
+    const combined = await prepareCombinedFile(dir, current.doc_path)
     let redline: PreparedRedline
     try {
       const original = await Bun.file(current.doc_path).bytes()
@@ -902,7 +904,8 @@ app.post("/matters/:id/redlines/:rid/accept", async (c) => {
       console.warn("[redline] acceptance refused",diagnosticErrorMetadata(error))
       return c.json({error:"Acceptance could not be confirmed. Refresh the document and change list before trying again."},409)
     }
-    return c.json({ ok: true, ...await writeDeliveredRedline(redline), ...await recordAcceptedChangesInRunNotes(dir, row.doc_path, [current]) })
+    // In order: the redline, the notes addendum, then the combined file built from the parts as written.
+    return c.json({ ok: true, ...await writeDeliveredRedline(redline), ...await recordAcceptedChangesInRunNotes(dir, row.doc_path, [current]), ...await rebuildCombinedFile(combined) })
   })
 })
 
@@ -934,13 +937,14 @@ app.post("/matters/:id/redlines/accept-all", async (c) => {
   const name = matterDocumentName(requested) ?? deliverableDocumentName(requested)
   if (!name) return c.json({ error: "The document filename or extension is not supported." }, 400)
   const file = path.join(dir, name)
-  return withArtifactMutationLocksAsync(dir, [name, ...runRedlineLock(dir, file), ...runNotesLock(dir), ".dochaus/source-corpus"], async () => {
+  return withArtifactMutationLocksAsync(dir, [name, ...runRedlineLock(dir, file), ...runNotesLock(dir), ...runCombinedLock(dir, file), ".dochaus/source-corpus"], async () => {
     if (!existsSync(file) || !existsSync(path.join(dir, ".dochaus", "legal.db")))
       return c.json({ ok: true, accepted: 0 })
     const db = openDb(dir)
     const rows = listPendingRedlines(db, file)
     db.close()
     if (!rows.length) return c.json({ ok: true, accepted: 0 })
+    const combined = await prepareCombinedFile(dir, file)
     let redline: PreparedRedline
     try {
       const original = await Bun.file(file).bytes()
@@ -956,7 +960,7 @@ app.post("/matters/:id/redlines/accept-all", async (c) => {
       console.warn("[redline] batch acceptance refused",diagnosticErrorMetadata(error))
       return c.json({error:"Batch acceptance could not be confirmed. Refresh the document and change list before trying again."},409)
     }
-    return c.json({ ok: true, accepted: rows.length, ...await writeDeliveredRedline(redline), ...await recordAcceptedChangesInRunNotes(dir, file, rows) })
+    return c.json({ ok: true, accepted: rows.length, ...await writeDeliveredRedline(redline), ...await recordAcceptedChangesInRunNotes(dir, file, rows), ...await rebuildCombinedFile(combined) })
   })
 })
 
@@ -1207,6 +1211,131 @@ function runRedlineLock(directory: string, body: string): string[] {
   } catch {
     return []
   }
+}
+
+// A change accepted into a part of a lean run's saved combined file (combinedParts:
+// its document's body, or the requested memo's notes, which the notes addendum
+// for any delivered body also changes) rebuilds that file from the parts as
+// written (buildCombinedFile), so it never goes stale against them and stays the
+// file the combined download builds. The combined file and both parts are in
+// the accept's lock set (runCombinedLock). Only a file the run saved is
+// rewritten: the copy its delivery listed, or one an earlier accept rebuilt (the
+// bytes buildCombinedFile gives the parts as they were before this accept), never
+// a file changed or accepted into since. The file is written as built, as the
+// delivery registers it, with no working revision of its own. Best-effort like
+// the redline: the accepted body stands, and the accept response says whether
+// the combined file was rebuilt or why not (logged too); a refused build leaves
+// the earlier file, which the download then refuses rather than serves. Nothing
+// is returned when no combined file is registered or the accept changed neither
+// part.
+type CombinedSkipReason = "combined_missing" | "combined_not_deliverable" | "pending_combined_proposals" | "combined_changed" | "build_refused" | "rebuild_failed" | "write_failed"
+type CombinedRebuild = { combined_updated: true } | { combined_updated: false; combined_skip_reason: CombinedSkipReason }
+type PreparedCombined = { directory: string; file: string; body: string; notes: string; parts?: string; prior?: string; skip?: CombinedSkipReason; error?: unknown }
+
+function combinedSkipped(directory: string, reason: CombinedSkipReason, detail: Record<string, unknown> = {}): CombinedRebuild {
+  console.warn("[redline] combined file not rebuilt", { matter_ref: draftingTraceReference(directory), reason, ...detail })
+  return { combined_updated: false, combined_skip_reason: reason }
+}
+
+/** The saved combined file the accept of `accepted` (a matter path) may change:
+ * the summary's registered combined row and its parts under plain names, when
+ * the accepted file is one of the parts or a delivered body whose notes addendum
+ * changes the memo. Undefined otherwise. */
+function registeredCombined(directory: string, accepted: string) {
+  const summary = readLeanDocuments(directory)
+  const parts = summary && combinedParts(directory, summary.documents)
+  const row = parts && summary.documents.find((row) => row.kind === "combined" && row.deliverable === parts.file)
+  if (!parts || !row || [parts.file, parts.body, parts.notes].some((name) => deliverableDocumentName(name) !== name)) return
+  const identity = documentRegistryIdentity(accepted)
+  const part = [parts.body, parts.notes].some((name) => documentRegistryIdentity(path.join(directory, name)) === identity)
+  return part || deliveredRunBody(directory, accepted) ? { file: parts.file, body: parts.body, notes: parts.notes, sha256: row.sha256 } : undefined
+}
+
+/** The saved combined file and its parts, as the extra locks an accept takes so
+ * its writes and the combined rebuild form one critical section. Read before
+ * locking; empty when the accept changes no saved combined file's part, or a
+ * name is a link, so the rebuild checks the file again under its own lock. */
+function runCombinedLock(directory: string, accepted: string): string[] {
+  try {
+    const combined = registeredCombined(directory, accepted)
+    const names = combined ? [combined.file, combined.body, combined.notes] : []
+    return names.every((name) => readDocumentTarget(directory, name)) ? names : []
+  } catch {
+    return []
+  }
+}
+
+const sha256Hex = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex")
+
+/** Before the accept writes anything: the saved combined file it may rebuild,
+ * with the sha256 of its parts and of the file as they are now. A file that may
+ * not be rewritten (combinedBlocked, or neither the delivery's copy nor the
+ * build of the current parts) is recorded as the rebuild's reason to skip,
+ * reported only if the accept then changes a part. */
+async function prepareCombinedFile(directory: string, accepted: string): Promise<PreparedCombined | undefined> {
+  let combined: ReturnType<typeof registeredCombined>
+  try {
+    combined = registeredCombined(directory, accepted)
+  } catch (error) {
+    combinedSkipped(directory, "rebuild_failed", diagnosticErrorMetadata(error))
+    return
+  }
+  if (!combined) return
+  const { file, body, notes } = combined
+  try {
+    return await withArtifactMutationLocksAsync(directory, [file, body, notes, ".dochaus/source-corpus"], async (): Promise<PreparedCombined> => {
+      // A link is never read or written as the combined file or one of its parts.
+      if (![file, body, notes].every((name) => readDocumentTarget(directory, name))) throw new Error("A combined file part is a link, not a matter document.")
+      const [memoBytes, bodyBytes] = await Promise.all([Bun.file(path.join(directory, notes)).bytes(), Bun.file(path.join(directory, body)).bytes()])
+      const parts = `${sha256Hex(memoBytes)}:${sha256Hex(bodyBytes)}`
+      const skip = combinedBlocked(directory, file)
+      if (skip) return { directory, file, body, notes, parts, skip }
+      const prior = sha256Hex(await Bun.file(path.join(directory, file)).bytes())
+      const built = prior === combined.sha256 ? undefined : buildCombinedFile({ memo: memoBytes, body: bodyBytes })
+      if (built && !("bytes" in built && sha256Hex(built.bytes) === prior)) return { directory, file, body, notes, parts, skip: "combined_changed" }
+      return { directory, file, body, notes, parts, prior }
+    })
+  } catch (error) {
+    return { directory, file, body, notes, skip: "rebuild_failed", error }
+  }
+}
+
+/** After the accept's writes: rebuilds the prepared combined file from its parts
+ * as written, when they changed. The file must still hold the bytes it held
+ * before the accept (the write's prior hash). */
+async function rebuildCombinedFile(prepared: PreparedCombined | undefined): Promise<CombinedRebuild | undefined> {
+  if (!prepared) return
+  const { directory, file, body, notes } = prepared
+  // The parts could not be read before the accept, so whether it changed them is unknown.
+  if (!prepared.parts) return combinedSkipped(directory, "rebuild_failed", diagnosticErrorMetadata(prepared.error))
+  try {
+    return await withArtifactMutationLocksAsync(directory, [file, body, notes, ".dochaus/source-corpus"], async (): Promise<CombinedRebuild | undefined> => {
+      const [memoBytes, bodyBytes] = await Promise.all([Bun.file(path.join(directory, notes)).bytes(), Bun.file(path.join(directory, body)).bytes()])
+      if (prepared.parts === `${sha256Hex(memoBytes)}:${sha256Hex(bodyBytes)}`) return
+      if (prepared.skip || !prepared.prior) return combinedSkipped(directory, prepared.skip ?? "combined_changed")
+      const blocked = combinedBlocked(directory, file)
+      if (blocked) return combinedSkipped(directory, blocked)
+      const built = buildCombinedFile({ memo: memoBytes, body: bodyBytes })
+      if ("refused" in built) return combinedSkipped(directory, "build_refused", { refused: built.refused, ...(built.part ? { part: built.part } : {}) })
+      await writeDeliverableRevision(directory, file, Buffer.from(built.bytes), { priorSha256: prepared.prior })
+      return { combined_updated: true }
+    })
+  } catch (error) {
+    return combinedSkipped(directory, "write_failed", diagnosticErrorMetadata(error))
+  }
+}
+
+/** Why the saved combined file `name` must be left as it is, read under its
+ * lock; undefined when it may be rebuilt. */
+function combinedBlocked(directory: string, name: string): CombinedSkipReason | undefined {
+  const file = path.join(directory, name)
+  if (!existsSync(file)) return "combined_missing"
+  const db = openDb(directory)
+  const [role, pending] = (() => { try { return [getDocumentRole(db, file), listPendingRedlines(db, file)] as const } finally { db.close() } })()
+  if (role !== "deliverable") return "combined_not_deliverable"
+  if (pending.length) return "pending_combined_proposals"
+  // The lawyer's accepted Word changes into the combined file itself are never written over.
+  if (readWorkingDocx(directory, file)) return "combined_changed"
 }
 
 function registeredDocumentName(requested: string) {

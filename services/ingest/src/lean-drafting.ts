@@ -210,12 +210,13 @@ function changedAfterCheck(directory: string, gate: unknown, documents: LeanDocu
 
 /** Derived, never stored: the one file a combined document downloads as, once
  * the summary lists both its parts under the current plan's names (combinedParts;
- * the download route also checks the registry), with the document's id and the
- * exact registered names of its body and notes, so a client matches those rows
- * rather than guessing them from the name. Null otherwise. */
+ * the download route also checks the registry), with the document's id, the
+ * combined file's matter name (combinedParts' `file`: "<name>.docx" or a " (n)"
+ * suffix) and the exact registered names of its body and notes, so a client
+ * matches those rows rather than guessing them from the name. Null otherwise. */
 function combinedOutput(directory: string): { document: string; name: string; file: string; body: string; notes: string } | null {
   const parts = combinedParts(directory)
-  return parts ? { document: parts.document, name: parts.name, file: `${parts.name}.docx`, body: parts.body, notes: parts.notes } : null
+  return parts ? { document: parts.document, name: parts.name, file: parts.file, body: parts.body, notes: parts.notes } : null
 }
 
 /** The run's planned documents without their parts, or null before the outline. */
