@@ -31,7 +31,7 @@ const CHECKLIST_ID = "source-0123456789ab-3"
 const GAP = openItem("research", "research_gap", "No authority was found for the delivery period.", { document: "d1" })
 const CONDITION = openItem("apply", "placeholder", "Confirm the condition standard chosen.", { document: "d1", amendment_id: "a1" })
 const MISSING = (ids: string[]) =>
-  `The drafting notes do not mention these open items: ${ids.join(", ")}. Say what each is and what needs to be done about it, ending that statement with its exact id as "[ref: <id>]".`
+  `The memo does not mention these open items: ${ids.join(", ")}. Say what each is and what needs to be done about it, ending that statement with its exact id as "[ref: <id>]".`
 const STRAY = (ids: string[]) =>
   `These internal ids appear outside a "[ref: …]" marker: ${ids.join(", ")}. The memo is for the reader: describe each point in words and keep each id only in the marker that ends its statement.`
 
@@ -429,7 +429,7 @@ describe("a planned document id in a requested memo", () => {
 // memo does: the web Open Items panel shows each item's detail, not its id, so
 // an id in the delivered notes would point the lawyer at nothing.
 describe("without a requested memo", () => {
-  const NOTES_READER = (issue: string) => issue.replace("The memo is for the reader", "The notes are for the reader")
+  const NOTES_READER = (issue: string) => issue.replace("The memo is for the reader", "The notes are for the reader").replace("The memo does not", "The drafting notes do not")
   const notes = (...lines: string[]) => ["# Drafting notes", "", ...lines, ""].join("\n")
   const disclosed = `[refs: ${GAP.id}; ${CONDITION.id}]`
 
@@ -438,7 +438,7 @@ describe("without a requested memo", () => {
       const directory = memoMatter(plan)
       const prose = notes(`- ${CONDITION.id}: confirm the condition standard chosen in paragraph ${PID}.`, `- Requirement ${CHECKLIST_ID} is open.`,
         `- No authority was found for the delivery period. [ref: ${GAP.id}]`)
-      expect(checkDraftingNotes(directory, prose, [GAP, CONDITION]).issues).toEqual([MISSING([CONDITION.id]), NOTES_READER(STRAY([CONDITION.id, PID, CHECKLIST_ID]))])
+      expect(checkDraftingNotes(directory, prose, [GAP, CONDITION]).issues).toEqual([NOTES_READER(MISSING([CONDITION.id])), NOTES_READER(STRAY([CONDITION.id, PID, CHECKLIST_ID]))])
       expect(checkDraftingNotes(directory, notes(`- The condition standard chosen is for the lawyer to confirm. ${disclosed}`), [GAP, CONDITION]).issues).toEqual([])
     })
 
@@ -456,7 +456,7 @@ describe("without a requested memo", () => {
 
   test("on the last attempt an item's bare id discloses it only whole, not inside a longer id", () => {
     const directory = memoMatter("none")
-    expect(checkDraftingNotes(directory, notes(`- ${GAP.id}1 and ${CONDITION.id}-2 are open.`), [GAP, CONDITION], { final: true }).issues).toEqual([MISSING([GAP.id, CONDITION.id])])
+    expect(checkDraftingNotes(directory, notes(`- ${GAP.id}1 and ${CONDITION.id}-2 are open.`), [GAP, CONDITION], { final: true }).issues).toEqual([NOTES_READER(MISSING([GAP.id, CONDITION.id]))])
     expect(checkDraftingNotes(directory, notes(`- ${GAP.id} and ${CONDITION.id} are open.`), [GAP, CONDITION], { final: true }).issues).toEqual([])
   })
 

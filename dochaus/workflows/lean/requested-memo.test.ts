@@ -207,12 +207,13 @@ describe("finalize in memo mode", () => {
   test("with or without a memo the notes check accepts each id in a ref marker and asks for one in its retry", () => {
     const directory = matter()
     const item = openItem("apply", "placeholder", "Confirm the condition standard chosen.", { document: "d1" })
-    const retry = `do not mention these open items: ${item.id}. Say what each is and what needs to be done about it, ending that statement with its exact id as "[ref: <id>]".`
+    // The retry names the reply as the prompt does.
+    const retry = `mention these open items: ${item.id}. Say what each is and what needs to be done about it, ending that statement with its exact id as "[ref: <id>]".`
     writeLeanPlan(directory, [DOCUMENT])
-    expect(checkDraftingNotes(directory, "# Drafting notes\n\nThe draft states the delivery period.\n", [item]).issues.join(" ")).toContain(retry)
+    expect(checkDraftingNotes(directory, "# Drafting notes\n\nThe draft states the delivery period.\n", [item]).issues.join(" ")).toContain(`The drafting notes do not ${retry}`)
     expect(checkDraftingNotes(directory, `# Drafting notes\n\n- The condition standard is for the lawyer to confirm. [ref: ${item.id}]\n`, [item]).issues).toEqual([])
     writeLeanPlan(directory, [DOCUMENT], undefined, undefined, { name: "cover memo", file: memoNotesFile([DOCUMENT], "cover memo") })
-    expect(checkDraftingNotes(directory, "# Cover memo\n\nThe draft states the delivery period.\n", [item]).issues.join(" ")).toContain(retry)
+    expect(checkDraftingNotes(directory, "# Cover memo\n\nThe draft states the delivery period.\n", [item]).issues.join(" ")).toContain(`The memo does not ${retry}`)
     expect(checkDraftingNotes(directory, `# Cover memo\n\n- The condition standard is for the lawyer to confirm. [ref: ${item.id}]\n`, [item]).issues).toEqual([])
   })
 })
@@ -236,7 +237,7 @@ describe("a requested memo through the run", () => {
     const [prompt, retry] = finalizePrompts(model)
     expect(prompt).toContain(MEMO_OPENING)
     expect(prompt).toContain(MARKER_RULE)
-    expect(retry).toContain(`do not mention these open items: ${marker.id}. Say what each is`)
+    expect(retry).toContain(`The memo does not mention these open items: ${marker.id}. Say what each is`)
     expect(readLeanText(directory, "drafting-notes.md")).toContain(`[ref: ${marker.id}]`)
     expect(readLeanJson(directory, "gate.json") as GateResult).toMatchObject({ status: "pass", blocking: [] })
     expect((readLeanJson(directory, "gate.json") as GateResult).disclosed).toEqual([expect.objectContaining({ id: marker.id, status: "disclosed" })])
