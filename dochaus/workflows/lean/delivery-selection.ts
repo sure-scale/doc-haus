@@ -1,4 +1,4 @@
-import { memoAnchor, memoNotesFile } from "./deliverables"
+import { combinedDelivery, memoAnchor, memoNotesFile } from "./deliverables"
 import { readLeanPlan, type DocID } from "./plan"
 import { instructionFound } from "./quotes"
 
@@ -25,8 +25,21 @@ export function checkDeliverySelections(directory: string, value: unknown): stri
   if (issues.length) return issues
   const rows = value as DeliverySelection[]
   if (new Set(rows.map(row => row.document)).size !== rows.length) issues.push("The plan supports one named primary artifact per document and one name for the run's notes. Report conflicting or additional requested outputs as a package finding rather than choosing silently.")
-  if (new Set(rows.map(row => row.file.toLocaleLowerCase())).size !== rows.length) issues.push("Distinct named primary artifacts need distinct filenames. Report a conflicting naming instruction as a package finding.")
+  if (!distinctFiles(rows)) {
+    // The combined file is the combined document's body row alone; a notes row
+    // under its name is a selection error, not a conflicting instruction.
+    const combined = combinedDelivery(directory)
+    const body = combined && rows.find(row => row.document === combined.document && row.role === "body")
+    const notes = body && rows.find(row => row.role === "drafting_notes" && row.file.toLocaleLowerCase() === body.file.toLocaleLowerCase())
+    issues.push(body && notes && distinctFiles(rows.filter(row => row !== notes))
+      ? `"${body.file}" is the one file that holds the memo and document ${body.document}. Select it by one row only: document "${body.document}", role body, file "${body.file}". Code builds it from the memo and the clean body at download; give no drafting_notes row for it.`
+      : "Distinct named primary artifacts need distinct filenames. Report a conflicting naming instruction as a package finding.")
+  }
   return issues
+}
+
+function distinctFiles(rows: DeliverySelection[]) {
+  return new Set(rows.map(row => row.file.toLocaleLowerCase())).size === rows.length
 }
 
 /** Naming intent and artifact roles belong to the semantic reviewer. The

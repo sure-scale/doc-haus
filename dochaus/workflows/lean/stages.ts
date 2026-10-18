@@ -58,7 +58,7 @@ import {
 
 export const LEAN_PROMPT_VERSION = "lean-17-advice-scope"
 const OUTLINE_CONTRACT = "document-executing-parties-memo-6"
-const DELIVERY_REVIEW_CONTRACT = "grounded-delivery-selection-3"
+const DELIVERY_REVIEW_CONTRACT = "grounded-delivery-selection-4"
 const STRUCTURAL_AMENDMENT_CONTRACT = "explicit-paragraph-cardinality-1"
 const DRAFTING_NOTES_CONTRACT = "lawyer-facing-source-comparison-notes-1"
 /** Keys finalize only when the notes are a requested memo (the plan has a

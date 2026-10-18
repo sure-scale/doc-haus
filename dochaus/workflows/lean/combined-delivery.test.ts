@@ -4,6 +4,7 @@ import path from "node:path"
 import { renderMarkdownToDocx } from "../../lib/render"
 import { combinedDelivery, combinedParts, memoNotesFile, recordLeanDocuments } from "./deliverables"
 import { checkDeliverySelections, selectedDeliveryPlan } from "./delivery-selection"
+import { packageReviewPrompt } from "./package-review"
 import { writeLeanPlan, type PlannedDocument } from "./plan"
 import { writeLeanBytes, writeLeanText } from "./state"
 import { cleanupMatters, matter, registering, scriptedModel } from "./test-support"
@@ -250,5 +251,45 @@ describe("package review's selection on a combined document", () => {
     // A memo file not named this way is left alone.
     writeLeanPlan(directory, documents, undefined, undefined, { name: "cover memo", file: "schedule - cover memo.docx" })
     expect(selectedDeliveryPlan(directory, [{ ...selection("body"), document: "d2" }])).toMatchObject({ memo: "cover memo", notes_file: "schedule - cover memo.docx" })
+  })
+
+  const PACKAGE_FINDING = "Distinct named primary artifacts need distinct filenames. Report a conflicting naming instruction as a package finding."
+  const notesRow = { document: null, role: "drafting_notes" as const, file: "Supply Pack Final.docx", instruction_quote: INSTRUCTION }
+
+  test("a notes row beside the body row under the combined file's name is refused with the one-row rule, not as a package finding", () => {
+    const directory = matter()
+    writeLeanText(directory, "request.md", `${INSTRUCTION}.`)
+    writeLeanPlan(directory, [COMBINED], undefined, undefined, memo([COMBINED]))
+    expect(checkDeliverySelections(directory, [notesRow, selection("body")])).toEqual([
+      '"Supply Pack Final.docx" is the one file that holds the memo and document d1. Select it by one row only: document "d1", role body, file "Supply Pack Final.docx". Code builds it from the memo and the clean body at download; give no drafting_notes row for it.',
+    ])
+  })
+
+  test("any other repeated file name keeps the package-finding refusal", () => {
+    // Two documents under one name in a combined package.
+    const combined = matter()
+    writeLeanText(combined, "request.md", `${INSTRUCTION}.`)
+    const documents: Document[] = [COMBINED, SCHEDULE]
+    writeLeanPlan(combined, documents, undefined, undefined, memo(documents))
+    expect(checkDeliverySelections(combined, [selection("body"), { ...selection("body"), document: "d2" }])).toEqual([PACKAGE_FINDING])
+    // A notes row under a redline row's name.
+    expect(checkDeliverySelections(combined, [notesRow, selection("redline")])).toEqual([PACKAGE_FINDING])
+    // The same two rows without a combined document.
+    const plain = matter()
+    writeLeanText(plain, "request.md", `${INSTRUCTION}.`)
+    writeLeanPlan(plain, [SUPPLY], undefined, undefined, memo([SUPPLY]))
+    expect(checkDeliverySelections(plain, [notesRow, selection("body")])).toEqual([PACKAGE_FINDING])
+  })
+
+  test("the selection contract states the one-row rule only for a combined package", () => {
+    const rule = 'The requested file that holds the memo and document d1 is selected by one row: document "d1", role body, the requested file name. Code builds that file from the memo and the clean body at download, so give no drafting_notes row for it.'
+    const combined = matter()
+    writeLeanPlan(combined, [COMBINED], undefined, undefined, memo([COMBINED]))
+    expect(packageReviewPrompt(combined)).toContain(rule)
+    const plain = matter()
+    writeLeanPlan(plain, [SUPPLY], undefined, undefined, memo([SUPPLY]))
+    expect(packageReviewPrompt(plain)).not.toContain("holds the memo and document")
+    writeLeanPlan(plain, [COMBINED])
+    expect(packageReviewPrompt(plain)).not.toContain("holds the memo and document")
   })
 })
