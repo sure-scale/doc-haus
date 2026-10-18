@@ -163,6 +163,9 @@ test("each combined refusal reads as a plain reason, and an unreadable Word file
   expect(await refuse(409, { error: "unsupported_memo_namespace", message })).toBe(
     `${prefix}the memo uses Word formatting the combined file cannot carry. Download the draft and the memo separately.`,
   )
+  // A refusal the map does not name reads as the route's plain message, never its code.
+  const failed = "The combined file could not be built. Download the draft and the memo separately."
+  expect(await refuse(409, { error: "build_failed", message: failed })).toBe(failed)
   // A memo refusal the map does not name yet still reads plainly.
   expect(await refuse(409, { error: "unsupported_memo_footnotes", message })).toBe(
     `${prefix}the memo holds content the combined file cannot carry. Download the draft and the memo separately.`,

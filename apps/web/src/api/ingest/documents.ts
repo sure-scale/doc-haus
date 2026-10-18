@@ -95,17 +95,20 @@ const COMBINED_REFUSALS = new Map([
 // invalid_docx_package / invalid_docx_xml name the part ingest could not read.
 const UNREADABLE_PART = new Map([["body", "the draft"], ["memo", "the memo"]])
 
-/** The combined file's contents; a refusal rejects with its reason. */
+/** The combined file's contents; a refusal rejects with its reason: the plain
+ * reason above for a code it names, else the route's plain `message`, else its
+ * error or status. */
 export async function fetchCombinedDocument(id: string, name: string): Promise<Blob> {
   const res = await fetch(combinedDocumentUrl(id))
   if (!res.ok) {
-    const body = (await res.json().catch(() => undefined)) as { error?: unknown; part?: unknown } | undefined
+    const body = (await res.json().catch(() => undefined)) as { error?: unknown; part?: unknown; message?: unknown } | undefined
     const error = typeof body?.error === "string" ? body.error : `Could not download ${name} (${res.status})`
     const part = typeof body?.part === "string" ? UNREADABLE_PART.get(body.part) : undefined
     const reason = ["invalid_docx_package", "invalid_docx_xml"].includes(error)
       ? `${part ?? "the draft or the memo"} could not be read as a Word document. Open it in Word, save it again, and try again.`
       : COMBINED_REFUSALS.get(error) ?? (error.startsWith("unsupported_memo_") ? COMBINED_REFUSALS.get("unsupported_memo_dependency") : undefined)
-    throw new Error(reason ? `Could not download ${name}: ${reason}` : error)
+    const message = typeof body?.message === "string" && body.message.trim() ? body.message : undefined
+    throw new Error(reason ? `Could not download ${name}: ${reason}` : message ?? error)
   }
   return res.blob()
 }
