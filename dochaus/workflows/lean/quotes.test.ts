@@ -48,6 +48,8 @@ describe("lean elided quotation matching", () => {
     expect(issues(directory, "The supplier shall deliver the goods ... Payment is due in full on delivery")).toEqual([])
     expect(issues(directory, "... entitles the buyer to a credit. Payment is due in full")).toEqual([])
     expect(issues(directory, "Draft a short supply note \u2026 from the supply terms", "request")).toEqual([])
+    // The lawyer's words are matched without regard to case, as quoteFound does.
+    expect(issues(directory, "draft a short supply note \u2026 from the supply terms", "request")).toEqual([])
   })
 
   test("reordered, too short or absent passages are still refused with the plain miss", () => {
@@ -114,6 +116,16 @@ describe("lean elided quotation limits", () => {
     expect(verified(directory, "The Customer's liability under this Agreement is …limited in amount for breach of confidentiality.")).toBe(false)
     expect(verified(directory, "The licence granted under this Agreement is non … and non-transferable.")).toBe(false)
     expect(verified(directory, "The licence granted under this Agreement is … and non-transferable.")).toBe(true)
+    // The start of a passage is checked on its own: "ir" is no prefix the
+    // omission rule knows.
+    expect(verified(matter("The licence granted under this Agreement is irrevocable and perpetual within the Territory."),
+      "The licence granted under this Agreement is … revocable and perpetual within the Territory")).toBe(false)
+    // Word text carries a non-breaking hyphen (U+2011) where the page shows "-";
+    // a faithful quotation verifies with either hyphen.
+    const nonBreaking = matter("The licence granted under this Agreement is non‑exclusive and is limited to the Territory.")
+    expect(verified(nonBreaking, "… exclusive and is limited to the Territory")).toBe(false)
+    for (const hyphen of ["‑", "-"])
+      expect(verified(nonBreaking, `The licence granted under this Agreement is non${hyphen}exclusive … limited to the Territory`)).toBe(true)
   })
 
   test("an omission holding a negation or qualification is refused", () => {
@@ -121,11 +133,35 @@ describe("lean elided quotation limits", () => {
     expect(verified(directory, "The Supplier shall be liable … for indirect or consequential losses")).toBe(false)
     expect(verified(directory, "The Seller hereby agrees that it shall … indemnify the Buyer for third-party claims")).toBe(false)
     for (const omitted of ["not", "never", "only", "in no event", "nor", "neither", "none of", "without delay", "except samples", "unless rejected",
-      "save as agreed", "subject to clause 4", "provided that stock lasts", "notwithstanding clause 4", "cannot", "won't"])
+      "save as agreed", "subject to clause 4", "provided that stock lasts", "notwithstanding clause 4", "cannot", "won't",
+      "other than samples", "excluding samples", "apart from samples", "otherwise than in bulk", "rather than samples", "solely", "exclusively",
+      "if stock is available", "to the extent stock is available", "in the event stock is available"])
       expect([omitted, verified(matter(PURCHASE(omitted)), PURCHASE_QUOTE)]).toEqual([omitted, false])
     expect(verified(matter(PURCHASE(NEUTRAL)), PURCHASE_QUOTE)).toBe(true)
+    // Whole words only: "gift" and "different" hold no "if".
+    expect(verified(matter(PURCHASE("packed in gift boxes for the different regions")), PURCHASE_QUOTE)).toBe(true)
     // "No." before a number abbreviates "number"; it negates nothing.
     expect(verified(matter(PURCHASE("listed in schedule No. 4")), PURCHASE_QUOTE)).toBe(true)
+  })
+
+  test("an omission holding an amount is refused", () => {
+    for (const omitted of ["less 5%", "less 5 %", "less 5 per cent", "less 5 percent", "up to £500", "up to $ 500", "up to €500", "up to ¥500"])
+      expect([omitted, verified(matter(PURCHASE(omitted)), PURCHASE_QUOTE)]).toEqual([omitted, false])
+    const cap = (amount: string) => `The Supplier's aggregate liability under this Agreement is capped at ${amount} the Charges paid in the twelve months before the claim.`
+    const quote = "The Supplier's aggregate liability under this Agreement is capped at … the Charges paid in the twelve months before the claim"
+    expect(verified(matter(cap("150% of")), quote)).toBe(false)
+    expect(verified(matter(cap("the greater of £5,000,000 and")), quote)).toBe(false)
+    expect(verified(matter(cap("the amount of")), quote)).toBe(true)
+  })
+
+  test("an omission that hands a sentence's verb to another subject or modal is refused", () => {
+    expect(verified(matter("The Customer under this Agreement may request additional services from time to time. The Supplier shall provide the additional services within ten days."),
+      "The Customer under this Agreement may … provide the additional services within ten days")).toBe(false)
+    expect(verified(matter("The Buyer may inspect the goods on delivery and the Seller shall replace any defective goods within ten days of notice."),
+      "The Buyer may inspect the goods … replace any defective goods within ten days of notice")).toBe(false)
+    // A modal may be omitted where the next passage begins a sentence of its own.
+    expect(verified(matter("The Buyer may inspect the goods on delivery and the Seller shall replace them. Notice of a defect is given in writing."),
+      "The Buyer may inspect the goods … Notice of a defect is given in writing")).toBe(true)
   })
 
   test("an omission that drops a non- or un- prefix from the next word is refused", () => {
@@ -133,7 +169,19 @@ describe("lean elided quotation limits", () => {
       "The licence granted under this Agreement is non exclusive and is limited to the Territory.",
       "The licence granted under this Agreement is non-\nexclusive and is limited to the Territory.",
       "The licence granted under this Agreement is un- conditional and is limited to the Territory.",
-    ]) expect(verified(matter(source), `The licence granted under this Agreement is … ${source.includes("un-") ? "conditional" : "exclusive"} and is limited to the Territory`)).toBe(false)
+      // Word's non-breaking hyphen and hyphen, and an en dash, stand for "-".
+      "The licence granted under this Agreement is non‑exclusive and is limited to the Territory.",
+      "The licence granted under this Agreement is non‐exclusive and is limited to the Territory.",
+      "The licence granted under this Agreement is non–exclusive and is limited to the Territory.",
+    ]) expect([source, verified(matter(source), `The licence granted under this Agreement is … ${source.includes("un-") ? "conditional" : "exclusive"} and is limited to the Territory`)]).toEqual([source, false])
+  })
+
+  test("an omission may skip list items that Word writes as separate paragraphs", () => {
+    // Converted Word text ends every paragraph, each list item included, with a blank line.
+    const items = "The Supplier shall, at its own cost:\n\n(a) deliver the goods to the Site;\n\n(b) install the goods; and\n\n(c) invoice the Customer monthly in arrears.\n\n"
+    expect(verified(matter(items), "The Supplier shall, at its own cost: … (c) invoice the Customer monthly in arrears")).toBe(true)
+    // Without a list label to resume at, the omission still may not cross a paragraph.
+    expect(verified(matter(items), "The Supplier shall, at its own cost: … invoice the Customer monthly in arrears")).toBe(false)
   })
 
   test("an omission longer than a short run or crossing a paragraph break is refused", () => {

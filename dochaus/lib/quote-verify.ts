@@ -203,32 +203,52 @@ export function elidedParts(quote: string): string[] | undefined {
  * not the distance between two parts of a document. */
 export const MAX_OMITTED = 300
 
-/** Omitted words that would negate, limit or condition the words around them.
- * "No." before a number abbreviates "number" and negates nothing. */
-const QUALIFIER = /\b(?:not|no(?!\.\s?\d)|never|nor|neither|none|nothing|cannot|without|except|unless|save|only|subject\s+to|provided|notwithstanding)\b|n't\b/i
+/** Omitted words that would negate, limit or condition the words around them:
+ * negation, exclusion, restriction and condition. "No." before a number
+ * abbreviates "number" and negates nothing. */
+const QUALIFIER = /\b(?:not|no(?!\.\s?\d)|never|nor|neither|none|nothing|cannot|without|except|unless|save|only|subject\s+to|provided|notwithstanding|other\s+than|otherwise\s+than|rather\s+than|excluding|apart\s+from|solely|exclusively|if|to\s+the\s+extent|in\s+the\s+event)\b|n't\b/i
+
+/** An omitted amount: a currency sign or a percentage. */
+const AMOUNT = /[£$€¥]\s?\d|\d\s?%|\bper\s?cent\b/i
+
+/** An omitted modal verb. Where the passage after the omission continues the
+ * sentence, the omission may hand that verb to another subject or modal. */
+const MODAL = /\b(?:shall|may|must|will|should)\b/i
 
 /** An omission that ends on a bare "non" or "un" prefix of the next word
- * ("non exclusive", "un- limited"). */
-const DROPPED_PREFIX = /(?:^|[^\p{L}\p{N}])(?:non|un)-?\s*$/iu
+ * ("non exclusive", "un- limited"), the hyphen also written as an en dash. */
+const DROPPED_PREFIX = /(?:^|[^\p{L}\p{N}])(?:non|un)[-\u2013]?\s*$/iu
+
+/** A passage that resumes at a list item label: "(c) ", "4. ", "iv) ". */
+const LIST_LABEL = /^\(?[a-z0-9ivx]{1,4}[.)]\s/
+
+/** Word's hyphen and non-breaking hyphen (U+2010, U+2011), which a page shows
+ * as "-". */
+const HYPHENS = /[\u2010\u2011]/g
 
 /** Whether every passage appears in `raw`, normalized like a quotation (and
- * case-insensitively with `ignoreCase`), in the quoted order, each starting
- * after the previous one ends, and the ellipsis only shortens the source:
+ * case-insensitively with `ignoreCase`; hyphens folded to "-"), in the quoted
+ * order, each starting after the previous one ends, and the ellipsis only
+ * shortens the source:
  * - each passage is long enough (SHORT_QUOTE) to identify its place on its own
  *   and begins and ends on whole words of the source (insideWord);
  * - each omission between passages is short (MAX_OMITTED), stays within one
- *   paragraph (no blank line in the raw text) and drops no negation,
- *   qualification or word prefix that changes the meaning (QUALIFIER,
- *   DROPPED_PREFIX).
+ *   paragraph (no blank line in the raw text, unless the next passage resumes
+ *   at a list item label) and drops no negation, qualification, amount or
+ *   word prefix that changes the meaning (QUALIFIER, AMOUNT, DROPPED_PREFIX),
+ *   nor a modal verb when the next passage continues the sentence (MODAL).
  * Every place a passage appears is tried, not only the first. */
 export function partsInOrder(raw: string, parts: string[], options: { unescapeMarkdown?: boolean; ignoreCase?: boolean } = {}) {
   if (!parts.length || parts.some(part => part.length < SHORT_QUOTE)) return false
   const normalized = normalizeWithMap(raw, options)
-  const { text, map } = options.ignoreCase ? lowerWithMap(normalized) : normalized
-  const wanted = options.ignoreCase ? parts.map(lowerChars) : parts
-  const omissionAllowed = (from: number, to: number) => {
+  const folded = { text: normalized.text.replace(HYPHENS, "-"), map: normalized.map }
+  const { text, map } = options.ignoreCase ? lowerWithMap(folded) : folded
+  const wanted = parts.map(part => part.replace(HYPHENS, "-")).map(part => options.ignoreCase ? lowerChars(part) : part)
+  const omissionAllowed = (from: number, to: number, next: string) => {
     const omitted = text.slice(from, to)
-    return !QUALIFIER.test(omitted) && !DROPPED_PREFIX.test(omitted) && !/\n[^\S\n]*\n/.test(raw.slice(map[from - 1]! + 1, map[to]))
+    if (QUALIFIER.test(omitted) || AMOUNT.test(omitted) || DROPPED_PREFIX.test(omitted)) return false
+    if (MODAL.test(omitted) && /^\p{Ll}/u.test(next)) return false
+    return LIST_LABEL.test(next) || !/\n[^\S\n]*\n/.test(raw.slice(map[from - 1]! + 1, map[to]))
   }
   // A failed (passage, start) pair fails the same way from any earlier placement.
   const failed = new Set<string>()
@@ -238,7 +258,7 @@ export function partsInOrder(raw: string, parts: string[], options: { unescapeMa
     for (let at = text.indexOf(part, from); at !== -1; at = text.indexOf(part, at + 1)) {
       if (index > 0 && at - from > MAX_OMITTED) break
       if (insideWord(text, at) || insideWord(text, at + part.length)) continue
-      if (index > 0 && !omissionAllowed(from, at)) continue
+      if (index > 0 && !omissionAllowed(from, at, parts[index]!)) continue
       if (index === wanted.length - 1 || place(index + 1, at + part.length)) return true
     }
     failed.add(`${index}:${from}`)
