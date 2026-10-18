@@ -257,8 +257,9 @@ for (const [label, scripted] of [
 
 // Unresolved findings reach the lawyer in the delivered notes: the gate puts
 // them first, in plain words, then the drafting notes without their markers,
-// and the notes deliverable carries that file under its usual name. With none,
-// the drafting notes alone are delivered, without their markers.
+// and the notes deliverable carries that file under its usual name. With none
+// and no requirement left open, the drafting notes alone are delivered,
+// without their markers.
 const notesRows = (directory: string) => readLeanDocuments(directory)!.documents.filter(row => row.document === null).map(row => [row.kind, row.path, row.deliverable])
 const NOTES_NAME = "Supply note - drafting notes.docx"
 
@@ -402,10 +403,14 @@ test("a declined checklist repair is disclosed with the adjudicator's reason, no
   expect(report(directory)).not.toContain("Delivery blocked")
 }, 120000)
 
+const LEFT_OPEN = "# Checklist requirements left open"
+const OPEN_LINE = "- The requested supply note is drafted. Status: left open in this draft; settle what is left open and check the draft against it. Reason: Focused result open. Limitation: Comments not inspected."
+
 test("informational open finding remains open in report while permitting review draft workflow", async () => {
   const directory = matter()
+  const deliverables = registering()
   const scripted = model(directory, "open")
-  expect((await runLean(directory, { sessions: scripted.port })).status).toBe("completed")
+  expect((await runLean(directory, { sessions: scripted.port, registerDeliverable: deliverables.registerDeliverable })).status).toBe("completed")
   expect(readLeanJson(directory, "checklist/checks.json")).toMatchObject({ checks: [{ finding: { status: "open" } }] })
   // The finding stays open, non-blocking and unchanged; it is disclosed rather
   // than coerced to a pass or to a generic blocking omission.
@@ -417,6 +422,35 @@ test("informational open finding remains open in report while permitting review 
   expect(gate.items).toContainEqual(gate.disclosed[0])
   expect(readOpenItems(directory).some(item => item.kind === "checklist_open")).toBe(false)
   expect(readFileSync(leanFile(directory, "checklist/report.md"), "utf8")).toContain("Status: open")
+  // A lawyer who reads only the delivered notes learns of it too: it leads
+  // them in plain words, with no id, and they are registered under the notes'
+  // own name.
+  const notes = readFileSync(leanFile(directory, "drafting-notes.md"), "utf8")
+  const delivered = readFileSync(leanFile(directory, "delivered-notes.md"), "utf8")
+  expect(delivered.startsWith(`${LEFT_OPEN}\n`)).toBe(true)
+  expect(delivered.endsWith(notes)).toBe(true)
+  expect(delivered.split("\n").filter(line => line.startsWith("- ")).map(line => line.split(" Source: ")[0])).toEqual([OPEN_LINE])
+  for (const id of checklistIDs(directory)) expect(delivered).not.toContain(id)
+  const docx = readFileSync(leanFile(directory, "delivered-notes.docx"))
+  expect(readDocxCommentParagraphs(docx).map(row => row.paragraph_text)).toContain(LEFT_OPEN.slice(2))
+  expect(notesRows(directory)).toEqual([["drafting_notes", ".dochaus/lean/delivered-notes.docx", NOTES_NAME], ["drafting_notes_markdown", ".dochaus/lean/delivered-notes.md", null]])
+  expect(readFileSync(path.join(directory, NOTES_NAME))).toEqual(docx)
+  expect(stageOutputValid(directory, "gate")).toBe(true)
+}, 120000)
+
+test("a requirement left open on one gate pass and met on the next leaves the delivered notes", async () => {
+  const directory = matter()
+  const deliverables = registering()
+  expect((await runLean(directory, { sessions: model(directory, "open").port, registerDeliverable: deliverables.registerDeliverable })).status).toBe("completed")
+  expect(readFileSync(leanFile(directory, "delivered-notes.md"), "utf8")).toStartWith(`${LEFT_OPEN}\n`)
+  // A current Word change to the notes re-runs the check, which now finds the requirement met.
+  writeLeanBytes(directory, "drafting-notes.docx", (await renderMarkdownToDocx("# Current notes\n\nChanged current Word content.")).bytes)
+  expect((await runLean(directory, { sessions: model(directory).port, registerDeliverable: deliverables.registerDeliverable })).status).toBe("completed")
+  expect(readLeanJson(directory, "gate.json")).toMatchObject({ status: "pass", delivery: "execution_ready", disclosed: [] })
+  const delivered = readFileSync(leanFile(directory, "delivered-notes.md"), "utf8")
+  expect(delivered).toBe(readFileSync(leanFile(directory, "drafting-notes.md"), "utf8"))
+  expect(delivered).not.toContain("left open")
+  expect(readFileSync(path.join(directory, NOTES_NAME))).toEqual(readFileSync(leanFile(directory, "delivered-notes.docx")))
 }, 120000)
 
 // After inspection, a requirement whose only open question is whether the

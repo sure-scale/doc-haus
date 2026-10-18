@@ -41,7 +41,8 @@ import { isReviewStage, currentOpenItems, readLeanText, readLeanJson, readLeanSt
 // - a checklist finding left open (a requirement the focused check could not
 //   establish, or one with decisions still open) stays non-blocking and is
 //   disclosed here with its recorded reason and limitation, derived from
-//   checklist/checks.json, which the gate already reads;
+//   checklist/checks.json, which the gate already reads, and in plain words in
+//   the notes delivered with the draft, after any adverse finding;
 // - a completed checklist finding that remains adverse (and a refined parent
 //   whose coverage is adverse) is never a pass: it is disclosed, with the class
 //   its verified fields establish, ahead of every other item, and in plain
@@ -167,29 +168,43 @@ export function finalGate(directory: string): GateResult {
 }
 
 /** The notes delivered with the draft: the drafting notes as the reader gets
- * them (notesForReader), with any unresolved checklist findings in plain
- * words. The drafting notes are written before the checklist check, so they
- * cannot list its findings. Undefined when there are neither drafting notes
- * nor such a finding.
+ * them (notesForReader), with any unresolved checklist findings and any
+ * disclosed requirements the checklist check left open in plain words. The
+ * drafting notes are written before the checklist check, so they cannot list
+ * its findings. Undefined when there are neither drafting notes nor such a
+ * finding.
  *
  * The findings lead the drafting notes, or close a requested memo after its
- * own title and body. Each is disclosed as a requirement not confirmed as met,
- * worded from the checklist item's requirement and source quotes rather than
- * the checker's detail (findingEntries), so its lines name no internal id: no
- * checklist item, conflict list, request locator or paragraph pointer. */
+ * own title and body: the unresolved ones first, then those left open, each in
+ * its own section. An unresolved one is disclosed as a requirement not
+ * confirmed as met, one left open as left open; each is worded from the
+ * checklist item's requirement and source quotes rather than the checker's
+ * detail (findingEntries), so its lines name no internal id: no checklist
+ * item, conflict list, request locator or paragraph pointer. */
 export function deliveredNotes(directory: string, gate: GateResult): string | undefined {
   const drafted = readLeanText(directory, "drafting-notes.md")
   const read = drafted === undefined ? undefined : titled(directory, notesForReader(directory, drafted, gate.items))
-  const findings = gate.items.filter(item => item.kind === "checklist_unresolved")
-  if (!findings.length) return read
+  const unresolved = gate.items.filter(item => item.kind === "checklist_unresolved")
+  // A requirement left open is listed only while the checklist output still
+  // holds it open: one a later check settled is not read back from an earlier
+  // gate's detail.
+  const leftOpen = gate.items.filter(item => item.kind === "checklist_open" && item.status === "disclosed")
+  const held = new Set(leftOpen.length ? checklistOutputState(directory).openFindings.map(row => row.item_id) : [])
+  const open = leftOpen.filter(item => held.has(item.ref.checklist_item ?? item.id))
+  if (!unresolved.length && !open.length) return read
   const known = runItemIDs(directory, gate.items)
-  const section = (heading: string, intro: string) => plainWordsSection(directory, known, heading, intro, findingEntries(directory, findings, known))
+  // A section, with the blank line after it, only when it lists a finding.
+  const section = (findings: OpenItem[], heading: string, intro: string) => findings.length
+    ? [...plainWordsSection(directory, known, heading, intro, findingEntries(directory, findings, known)), ""] : []
   const body = read ?? ""
-  if (!memoMode(directory)) return [...section("# Checklist findings not satisfied",
-    "These checklist requirements were not established as satisfied. Each is disclosed with this review draft for review; none is treated as satisfied."), "", body].join("\n")
+  if (!memoMode(directory)) return [...section(unresolved, "# Checklist findings not satisfied",
+    "These checklist requirements were not established as satisfied. Each is disclosed with this review draft; none is treated as satisfied."),
+  ...section(open, "# Checklist requirements left open",
+    "These checklist requirements were left open. Each is disclosed with this review draft; none is treated as satisfied."), body].join("\n")
   const memo = body.trimEnd()
   return [...(memo ? [memo, ""] : []),
-    ...section("## Requirements not confirmed as met", "These requirements were not confirmed as met in this draft and need the lawyer's review."), ""].join("\n")
+    ...section(unresolved, "## Requirements not confirmed as met", "These requirements were not confirmed as met in this draft and need the lawyer's review."),
+    ...section(open, "## Requirements left open", "These requirements were left open in this draft and need the lawyer's review.")].join("\n")
 }
 
 /** The drafting notes as the reader gets them: without their "[ref: …]"
@@ -249,23 +264,24 @@ function plainWordsSection(directory: string, known: string[], heading: string, 
   })]
 }
 
-/** Each unresolved checklist finding as a line for plainWordsSection: its
- * requirement, why it is unmet and its sources. The request's locators
- * (internal paths) give way to its label. A finding whose item cannot be found
- * takes its requirement from its detail, cut of its conflict list, or falls
- * back to that detail. Why it is unmet is a plain status for its class, then
- * its reason. A checked finding's reason is its own recorded reason,
- * limitation and open decisions; a refined parent's is one plain reason for
- * each kind of coverage issue it records, once each and in order, or one plain
- * reason that part of it is unmet when it records none. A finding that
- * conflicts with another requirement says so, without naming either. Its
- * source quotes are held aside. */
+/** Each unresolved or left-open checklist finding as a line for
+ * plainWordsSection: its requirement, why it is unmet and its sources. The
+ * request's locators (internal paths) give way to its label. A finding whose
+ * item cannot be found takes its requirement from its detail, cut of its
+ * conflict list, or falls back to that detail. Why it is unmet is a plain
+ * status for its class, or that it was left open, then its reason. A checked
+ * finding's reason is its own recorded reason, limitation and open decisions;
+ * a refined parent's is one plain reason for each kind of coverage issue it
+ * records, once each and in order, or one plain reason that part of it is
+ * unmet when it records none. A finding that conflicts with another
+ * requirement says so, without naming either. Its source quotes are held
+ * aside. */
 function findingEntries(directory: string, findings: OpenItem[], known: string[]) {
   const checked = checklistOutputState(directory)
-  const items = new Map<string, ChecklistItem>([...checked.unresolved.map(row => [row.item_id, row.item] as const),
+  const items = new Map<string, ChecklistItem>([...[...checked.unresolved, ...checked.openFindings].map(row => [row.item_id, row.item] as const),
     ...checked.unresolvedParents.map(row => [row.parent_id, row.item] as const)])
   const conflicted = new Set(checked.unresolved.filter(row => row.conflicting_item_ids?.length).map(row => row.item_id))
-  const recorded = new Map(checked.unresolved.map(row => [row.item_id, row.finding]))
+  const recorded = new Map([...checked.unresolved, ...checked.openFindings].map(row => [row.item_id, row.finding]))
   const parents = new Map(checked.unresolvedParents.map(row => [row.parent_id, row]))
   return findings.map(finding => (hold: (text: string) => string) => {
     const id = finding.ref.checklist_item ?? finding.id
@@ -274,14 +290,17 @@ function findingEntries(directory: string, findings: OpenItem[], known: string[]
       : `${ref.document}, ${ref.locator}`}: ${hold(`"${ref.quote}"`.replace(/\s+/g, " "))}`)
     const detail = finding.detail.replace(/ Conflicting checklist items: \S+(?:, \S+)*\.$/, "")
     // Why the requirement is unmet, chosen by what the gate item is: a checked
-    // finding has a class, a refined parent has none. Each takes its reason
-    // from the checklist output the gate was built from; only an item that
-    // output no longer holds is read back from its detail.
+    // finding has a class, one left open is its own kind, a refined parent has
+    // neither. Each takes its reason from the checklist output the gate was
+    // built from; only an unresolved item that output no longer holds is read
+    // back from its detail (deliveredNotes lists one left open only while the
+    // output holds it).
+    const open = finding.kind === "checklist_open"
     const kind = finding.ref.checklist_class
-    const own = kind ? recorded.get(id) : undefined
-    const parent = kind ? undefined : parents.get(id)
-    const read = own || parent ? undefined : readMemoFinding(detail, !kind, known)
-    const status = memoStatus(kind, parent?.status ?? read?.coverage)
+    const own = kind || open ? recorded.get(id) : undefined
+    const parent = kind || open ? undefined : parents.get(id)
+    const read = own || parent || open ? undefined : readMemoFinding(detail, !kind, known)
+    const status = open ? MEMO_OPEN_STATUS : memoStatus(kind, parent?.status ?? read?.coverage)
     const reasons = own ? [findingText(own).join(" ").replace(/^Finding: /, "")]
       : parent ? (parent.issue_kinds.length ? parent.issue_kinds.map(issue => MEMO_COVERAGE_REASON[issue]) : [MEMO_PARENT_REASON]) : read?.reasons ?? []
     const reason = [...new Set(reasons)].join(" ")
@@ -303,6 +322,10 @@ const MEMO_STATUS: Record<ChecklistFindingClass, string> = {
   not_inspectable: "Status: cannot be confirmed from the document text; check it directly.",
   departure: "Status: the draft departs from it on purpose; check that the departure is intended.",
 }
+
+/** The plain status of a requirement the checklist check left open: neither
+ * met nor unmet, with what is left open for the lawyer to settle. */
+const MEMO_OPEN_STATUS = "Status: left open in this draft; settle what is left open and check the draft against it."
 
 /** A memo finding's plain status: by its class, or for a refined parent by its
  * reconciled coverage; none when neither is recorded. */

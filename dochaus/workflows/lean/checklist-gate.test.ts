@@ -1,11 +1,13 @@
 import { afterEach, expect, test } from "bun:test"
+import { renderMarkdownToDocx } from "../../lib/render"
 import type { ChecklistFinding, ChecklistItem } from "./checklist-contract"
 import { checklistRefinementSourceBasis } from "./checklist-flow"
-import { deliveredNotes, finalGate } from "./gate"
+import { DELIVERED_NOTES } from "./deliverables"
+import { deliveredNotes, finalGate, notesCoverageReport } from "./gate"
 import { writeLeanPlan } from "./plan"
 import { openItem } from "./quotes"
-import { checklistOutputState } from "./stages"
-import { readLeanState, updateLeanStage, writeLeanText } from "./state"
+import { checklistOutputState, stageOutputValid } from "./stages"
+import { readLeanState, updateLeanStage, writeLeanBytes, writeLeanText } from "./state"
 import { cleanupMatters, matter } from "./test-support"
 
 // The checklist's saved output as the final gate reads it. Integrity failures
@@ -149,14 +151,60 @@ test("unresolved findings lead the delivered notes in plain words with their sou
   expect(deliveredNotes(directory, finalGate(directory))).toBe(notes)
 })
 
-test("with no unresolved finding the drafting notes are delivered without their markers", () => {
-  const directory = checklistMatter([{ item_id: "c1", finding: finding("c1", "open") }, { item_id: "c2", finding: finding("c2", "satisfied") }])
+test("with no finding and no memo the delivered notes are the drafting notes, byte for byte", () => {
+  const directory = checklistMatter([{ item_id: "c1", finding: finding("c1", "satisfied") }, { item_id: "c2", finding: finding("c2", "satisfied") }])
   writeLeanText(directory, "drafting-notes.md", NOTES)
   const gate = finalGate(directory)
-  expect(gate.delivery).toBe("review_draft")
+  expect(gate.items.filter(item => item.stage === "checklist-check")).toEqual([])
   expect(deliveredNotes(directory, gate)).toBe(NOTES)
+})
+
+// A requirement left open is listed in the delivered notes as an unresolved
+// finding is, in plain words with no id, in its own section after theirs.
+const LEFT_OPEN = ["# Checklist requirements left open", "",
+  "These checklist requirements were left open. Each is disclosed with this review draft; none is treated as satisfied.", ""]
+const OPEN_STATUS = "Status: left open in this draft; settle what is left open and check the draft against it."
+
+test("a requirement left open leads the delivered notes in plain words, with no id; the drafting notes follow without their markers", () => {
+  const directory = checklistMatter([{ item_id: "c1", finding: finding("c1", "open") }, { item_id: "c2", finding: finding("c2", "satisfied") }])
   writeLeanText(directory, "drafting-notes.md", "# Drafting notes\n\nThe draft states the delivery period. [ref: c1]\n")
-  expect(deliveredNotes(directory, gate)).toBe("# Drafting notes\n\nThe draft states the delivery period.\n")
+  const gate = finalGate(directory)
+  expect(gate.delivery).toBe("review_draft")
+  expect(unresolvedItems(gate)).toEqual([])
+  const delivered = deliveredNotes(directory, gate)!
+  expect(delivered).toBe([...LEFT_OPEN,
+    `- The note states the delivery period. ${OPEN_STATUS} Reason: Focused result open. Limitation: Comments not inspected. Source: request: "Deliver within thirty days of the order."`, "",
+    NOTES].join("\n"))
+  expect(delivered).not.toMatch(/\bc[12]\b|\[ref|Finding:|Checklist requirement left open/)
+})
+
+test("unresolved findings lead the delivered notes, the requirements left open follow, then the drafting notes", () => {
+  const directory = checklistMatter([{ item_id: "c1", finding: finding("c1", "unsatisfied") },
+    { item_id: "c2", finding: finding("c2", "open", { open_decisions: ["Whether payment falls due on dispatch"] }) }])
+  writeLeanText(directory, "drafting-notes.md", NOTES)
+  const delivered = deliveredNotes(directory, finalGate(directory))!
+  expect(delivered.endsWith(NOTES)).toBe(true)
+  expect(delivered.split("\n").filter(line => line.startsWith("# "))).toEqual(["# Checklist findings not satisfied", LEFT_OPEN[0], "# Drafting notes"])
+  expect(delivered.split("\n").filter(line => line.startsWith("- "))).toEqual([
+    `- The note states the delivery period. Status: not met in this draft; check whether the draft should be changed to meet it. Reason: Focused result unsatisfied. Limitation: Comments not inspected. Source: request: "Deliver within thirty days of the order."`,
+    `- The note states when payment falls due. ${OPEN_STATUS} Reason: Focused result open. Limitation: Comments not inspected. Open decisions: Whether payment falls due on dispatch. Source: request: "Payment is due on delivery."`,
+  ])
+})
+
+test("without drafting notes or a memo, requirements left open alone are delivered, and the gate's output needs them", async () => {
+  const directory = checklistMatter([{ item_id: "c1", finding: finding("c1", "open") }, { item_id: "c2", finding: finding("c2", "satisfied") }])
+  const gate = finalGate(directory)
+  expect(gate.disclosed.map(item => item.kind)).toEqual(["checklist_open"])
+  const delivered = deliveredNotes(directory, gate)
+  expect(delivered).toBe([...LEFT_OPEN,
+    `- The note states the delivery period. ${OPEN_STATUS} Reason: Focused result open. Limitation: Comments not inspected. Source: request: "Deliver within thirty days of the order."`, "", ""].join("\n"))
+  // The gate's validity asks for the delivered notes whenever it writes them.
+  writeLeanText(directory, "gate.json", JSON.stringify(gate))
+  writeLeanText(directory, "drafting-notes-coverage.md", notesCoverageReport(gate))
+  expect(stageOutputValid(directory, "gate")).toBe(false)
+  writeLeanText(directory, DELIVERED_NOTES.markdown, delivered!)
+  writeLeanBytes(directory, DELIVERED_NOTES.docx, (await renderMarkdownToDocx(delivered!)).bytes)
+  expect(stageOutputValid(directory, "gate")).toBe(true)
 })
 
 test("an informational open finding stays a checklist_open disclosure of a review draft", () => {

@@ -175,8 +175,9 @@ const KIND_LABELS: Record<string, string> = {
 }
 
 /** Where a disclosed item is recorded for the lawyer. An open checklist finding
- * is disclosed by the final check itself, not by the drafting notes; an
- * unresolved one is a requirement the delivered draft does not satisfy. */
+ * is disclosed by the final check itself, which lists it in the notes
+ * delivered with the draft, not in the drafting notes; an unresolved one is a
+ * requirement the delivered draft does not satisfy. */
 export function openItemTag(item: LeanOpenItem) {
   if (item.status !== "disclosed") return undefined
   if (item.kind === "checklist_unresolved") return "Not satisfied"
