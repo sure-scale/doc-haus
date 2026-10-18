@@ -64,7 +64,7 @@ function distinctFiles(rows: DeliverySelection[]) {
 /** Naming intent and artifact roles belong to the semantic reviewer. The
  * checker only grounds the literal name; adding Word's extension to an
  * explicitly stated title does not require a model to invent another name. */
-function deliveryNameQuoted(quote: string, file: string) {
+export function deliveryNameQuoted(quote: string, file: string) {
   if (quote.includes(file)) return true
   const title = file.slice(0, -5).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
   const named = new RegExp(`\\b(?:titled|entitled|named|called|with the title)\\s+["“'‘]?(${title})(?=$|[,;!?]|\\.(?:\\s|$)|["”'’])`, "gi")

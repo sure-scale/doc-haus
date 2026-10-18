@@ -92,6 +92,8 @@ export const LEAN_STAGE_AGENTS = {
   finalize: "lean-drafting-notes",
   // A job of the outline, not a stage: it checks the planned package against the instructions.
   coverage: "lean-coverage",
+  // A job of the outline, not a stage: it reads the files the lawyer asks to receive.
+  files: "lean-files",
 } as const
 
 export type PermissionRule = { action: string; resource: string; effect: "allow" | "deny" | "ask" }
