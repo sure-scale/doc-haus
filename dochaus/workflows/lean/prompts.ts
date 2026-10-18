@@ -293,7 +293,7 @@ function documentSections(directory: string, document: DocID, items: OpenItem[])
     tagged("comparison_baseline", comparisonDescription(directory, document)),
     tagged("native_export", JSON.stringify(nativeExportEvidence(directory, document), null, 2)),
     tagged("final_body", finalBodyParagraphs(directory, document).map(row => `[${row.pid}] ${row.text}`).join("\n\n")),
-    draftingStyleWarningsBlock(finalBodyParagraphs(directory, document), true),
+    draftingStyleWarningsBlock(finalBodyParagraphs(directory, document), requestedMemo(directory) ? "memo" : "notes"),
     tagged("applied_changes", JSON.stringify(appliedChangeEvidence(directory, document), null, 2)),
     tagged("review_dispositions", reviewDispositionText(directory, document)),
     tagged("unapplied_changes", [

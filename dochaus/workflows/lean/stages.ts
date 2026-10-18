@@ -345,7 +345,9 @@ export async function acceptStageReply(directory: string, step: StepID, reply: s
   // them.
   const check = checkDraftingNotes(directory, reply, disclosableItems(directory), { final: options.final })
   if (check.issues.length) return { ...check, outputs: [] }
-  const advisory = draftingStyleAdvisoryNotes([
+  // A requested memo is delivered as written: it is not linted against the
+  // preferences and gets no appendix.
+  const advisory = requestedMemo(directory) ? "" : draftingStyleAdvisoryNotes([
     ...(readLeanPlan(directory)?.documents ?? []).map(row => ({ title: row.title, rows: finalBodyParagraphs(directory, row.id) })),
     { title: "Drafting notes", rows: [{ pid: "drafting-notes", text: reply }] },
   ])

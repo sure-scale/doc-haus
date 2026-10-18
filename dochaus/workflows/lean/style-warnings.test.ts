@@ -92,4 +92,19 @@ test("style advisories reach wording review, planning and final notes without bl
   expect(retainedWordNote).toContain("Drafting notes: numbers must be plain numerals")
   expect((await acceptStageReply(directory, "finalize", "# Drafting notes\n\nThe delivery terms use the selected formats.")).issues).toEqual([])
   expect(readLeanText(directory, "drafting-notes.md")).not.toContain("## Drafting style advisories")
+
+  // Plain notes above lint their own quotation. A requested memo is delivered
+  // as written: its quotations are not linted and no appendix is added, while
+  // the final-body warnings still reach the memo writer.
+  writeLeanText(directory, "d1/paragraphs-applied.json", JSON.stringify(rows))
+  writeLeanPlan(directory, [{ title: "Supply note", purpose: "Record supplied terms", parts: [{ heading: "Delivery", scope: "Delivery" }] }], undefined, undefined, { name: "cover memo", file: "Supply note - cover memo.docx" })
+  const memoPrompt = stagePrompt(directory, "finalize")
+  expect(memoPrompt).toContain("numbers must be plain numerals")
+  expect(memoPrompt).not.toContain("appends these retained style advisories")
+  const memo = `# Cover memo\n\nThe source explanation says "thirty (30) days from June 11, 2026."`
+  expect((await acceptStageReply(directory, "finalize", memo)).issues).toEqual([])
+  expect(readLeanText(directory, "drafting-notes.md")).toBe(`${memo}\n`)
+  const memoWord = (await paragraphRows(leanFile(directory, "drafting-notes.docx"))).map(row => row.text).join("\n")
+  expect(memoWord).toContain('The source explanation says "thirty (30) days from June 11, 2026."')
+  expect(memoWord).not.toContain("per firm preferences")
 })

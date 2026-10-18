@@ -12,14 +12,16 @@ export function draftingStyleWarnings(rows: { pid: string; text: string }[]) {
   })
 }
 
-export function draftingStyleWarningsBlock(rows: { pid: string; text: string }[], final = false) {
+/** `final` is the notes the warnings feed: plain notes get the appendix below; a
+ * requested memo is delivered as written, without it. */
+export function draftingStyleWarningsBlock(rows: { pid: string; text: string }[], final: false | "notes" | "memo" = false) {
   const warnings = draftingStyleWarnings(rows)
   if (!warnings.length) return ""
   return [
     "<drafting_style_warnings>",
     "These date/number preference checks are advisory presentation feedback, not evidence of a legal defect or an unanswered substantive decision. Preserve numeric values, dates and meaning. Preserve exact source quotations and wording the lawyer expressly instructed you to retain; a warning alone does not authorise changing them. Never add an open-item marker or ask a human question solely for a style deviation.",
     final
-      ? "These warnings concern the actual final body. The runner appends these retained style advisories to the drafting notes. Explain any intentional retention when supported, naming the document and relevant wording without internal paragraph identifiers; do not duplicate the advisory list. Distinguish a retained quotation or expressly preserved wording from an uncorrected style preference; do not claim the style was corrected when the final text still differs."
+      ? `These warnings concern the actual final body.${final === "notes" ? " The runner appends these retained style advisories to the drafting notes." : ""} Explain any intentional retention when supported, naming the document and relevant wording without internal paragraph identifiers${final === "notes" ? "; do not duplicate the advisory list" : ""}. Distinguish a retained quotation or expressly preserved wording from an uncorrected style preference; do not claim the style was corrected when the final text still differs.`
       : "Assess safe presentation corrections against the saved preferences, source evidence and settled instructions in the existing wording review and amendment flow. Distinguish presentation from substantive changes. Retain a deviation when source fidelity or express instructions require it; the final notes will disclose surviving warnings.",
     JSON.stringify(warnings, null, 2),
     "</drafting_style_warnings>",
