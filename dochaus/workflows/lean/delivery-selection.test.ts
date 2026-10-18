@@ -90,6 +90,11 @@ const EARLIER: [string, string, string][] = [
   ["Deliver the form as Closing Set/Word Document.docx.", "Deliver the form as Closing Set/Word Document.docx", "Word Document.docx"],
   ["One file only—Word Document.docx.", "One file only—Word Document.docx", "Word Document.docx"],
   ["Save the copy as _PDF Copy.docx_.", "Save the copy as _PDF Copy.docx_", "PDF Copy.docx"],
+  // A title in a format's words, or ending in another format's extension, after a naming word.
+  ["Prepare a document titled Word.", "titled Word", "Word.docx"],
+  ["Prepare a note called Text.", "called Text", "Text.docx"],
+  ["Prepare a note entitled Pages.", "entitled Pages", "Pages.docx"],
+  ["Prepare a note titled Notes.pdf.", "titled Notes.pdf.", "Notes.pdf.docx"],
 ]
 
 test("package review accepts every name the earlier literal or titled check accepted, and still names a format", () => {

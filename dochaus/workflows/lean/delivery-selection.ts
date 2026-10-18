@@ -21,13 +21,15 @@ export function checkDeliverySelections(directory: string, value: unknown): stri
     }
     if (typeof row.file !== "string" || !/^[^\\/:*?"<>|`\x00-\x1f]+\.docx$/i.test(row.file) || row.file !== row.file.trim()) return ["Delivery file must be the requested Word filename, without a folder path."]
     if (typeof row.instruction_quote !== "string" || !instructionFound(directory, row.instruction_quote)) return [NOT_QUOTED]
-    // A name the quote spells with its extension is a name, even in format words.
-    if (deliveryNameQuoted(directory, row.instruction_quote, row.file) || row.instruction_quote.includes(row.file)) return []
+    // A name the quote spells with its extension, or one the earlier check
+    // accepted, is a name, even in format words: package review is never
+    // stricter than before.
+    if (deliveryNameQuoted(directory, row.instruction_quote, row.file) || quotedOrTitled(row.instruction_quote, row.file)) return []
     // A format the lawyer's words ask for, or a name in another format, is no file to select.
     const stem = row.file.slice(0, -5)
     if (formatStem(stem) || OTHER_FORMAT.test(stem))
       return [`Delivery file "${row.file}" names a format, not a file. Words that ask only for a format give no file name; return no delivery row for them.`]
-    return quotedOrTitled(row.instruction_quote, row.file) ? [] : [NOT_QUOTED]
+    return [NOT_QUOTED]
   })
   if (issues.length) return issues
   const rows = value as DeliverySelection[]
