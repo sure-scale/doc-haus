@@ -375,6 +375,20 @@ describe("combined download hardening: refusal codes, matter boundary, lock scop
     })
   }, 60_000)
 
+  test("a build that fails for any other reason is refused in plain words, not as a server error", async () => {
+    const f = await deliveredMatter([COMBINED])
+    const failing = spyOn(combinedDocx, "buildCombinedFile").mockReturnValue({ refused: "build_failed" })
+    try {
+      const response = await readOnly(f.directory, f.download)
+      expect({ status: response.status, body: await response.json() }).toEqual({ status: 409, body: {
+        error: "build_failed",
+        message: "The combined file could not be built. Download the draft and the memo separately.",
+      } })
+    } finally {
+      failing.mockRestore()
+    }
+  }, 60_000)
+
   test("part names other than plain matter file names are refused before any read", async () => {
     // combinedParts only returns names registration gives, which are plain;
     // the route holds its parts to plain names on its own. A relative or
@@ -696,6 +710,34 @@ describe("combined download hardening: refusal codes, matter boundary, lock scop
         error: "unsupported_memo_dependency",
         message: "The memo holds content the combined file cannot carry. Download the draft and the memo separately.",
       } })
+    })
+  }, 120_000)
+
+  test("a new revision of a part uploaded in place rebuilds the saved combined file", async () => {
+    await withIngest(async request => {
+      const matter = await completedMatter(request)
+      const form = new FormData()
+      form.append("file", new File([(await renderMarkdownToDocx(BODY.replace("delivers the goods", "delivers the goods by rail"))).bytes], BODY_NAME))
+      const uploaded = await request(`${matter.route}/documents/revisions`, { method: "POST", body: form })
+      expect({ status: uploaded.status, body: await uploaded.json() }).toMatchObject({ status: 200, body: { combined_updated: true } })
+      const download = await request(`${matter.route}/documents/combined`)
+      expect(download.status).toBe(200)
+      const bytes = new Uint8Array(await download.arrayBuffer())
+      expect(documentText(bytes)).toContain("by rail")
+      expect(bytes).toEqual(new Uint8Array(readFileSync(path.join(matter.dir, SAVED))))
+    })
+  }, 120_000)
+
+  test("a run that is not completed has its saved combined file left as it is, like its redline and notes", async () => {
+    await withIngest(async request => {
+      for (const status of ["running", "blocked", "failed"] as const) {
+        const matter = await completedMatter(request)
+        writeLeanState(matter.dir, { ...readLeanState(matter.dir)!, status })
+        const saved = readFileSync(path.join(matter.dir, SAVED))
+        const accepted = await request(`${matter.route}/redlines/${propose(matter.dir, BODY_NAME)}/accept`, { method: "POST" })
+        expect({ status, code: accepted.status, body: await accepted.json() }).toEqual({ status, code: 200, body: { ok: true } })
+        expect(readFileSync(path.join(matter.dir, SAVED))).toEqual(saved)
+      }
     })
   }, 120_000)
 

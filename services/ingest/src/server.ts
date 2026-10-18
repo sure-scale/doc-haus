@@ -633,11 +633,14 @@ app.post("/matters/:id/documents/revisions", async (c) => {
     // Under the document's lock, which an accept holds from building its run's
     // delivered redline to writing it, so a revision never lands in between. The
     // revision writer takes the same lock; taking it here also keeps the
-    // precondition below and the working-revision update under it.
-    return await withArtifactMutationLocksAsync(dir, [target.name, ".dochaus/source-corpus"], async () => {
+    // precondition below and the working-revision update under it. A revision
+    // of a part of the run's saved combined file rebuilds that file as an accept
+    // does, under the same extra locks (runCombinedLock).
+    return await withArtifactMutationLocksAsync(dir, [target.name, ...runCombinedLock(dir, target.docPath), ".dochaus/source-corpus"], async () => {
       if (readWorkingDocx(dir,target.docPath) && !/^[a-f0-9]{64}$/.test(priorSha256 ?? ""))
         return c.json({error:"Provide the exact current Word hash in x-document-prior-sha256 before replacing an accepted revision."},409)
-      return c.json(await writeDocumentRevision(dir, target.name, bytes,[],priorSha256))
+      const combined = await prepareCombinedFile(dir, target.docPath)
+      return c.json({ ...await writeDocumentRevision(dir, target.name, bytes,[],priorSha256), ...await rebuildCombinedFile(combined) })
     })
   } catch (error) {
     if (error instanceof SourceDocumentConflictError || error instanceof DeliverableConflictError)
@@ -1213,21 +1216,22 @@ function runRedlineLock(directory: string, body: string): string[] {
   }
 }
 
-// A change accepted into a part of a lean run's saved combined file (combinedParts:
-// its document's body, or the requested memo's notes, which the notes addendum
-// for any delivered body also changes) rebuilds that file from the parts as
+// A change accepted into a part of a completed lean run's saved combined file
+// (combinedParts: its document's body, or the requested memo's notes, which the
+// notes addendum for any delivered body also changes), or a revision uploaded in
+// place of a part (/documents/revisions), rebuilds that file from the parts as
 // written (buildCombinedFile), so it never goes stale against them and stays the
 // file the combined download builds. The combined file and both parts are in
-// the accept's lock set (runCombinedLock). Only a file the run saved is
+// the accept's or upload's lock set (runCombinedLock). Only a file the run saved is
 // rewritten: the copy its delivery listed, or one an earlier accept rebuilt (the
 // bytes buildCombinedFile gives the parts as they were before this accept), never
 // a file changed or accepted into since. The file is written as built, as the
 // delivery registers it, with no working revision of its own. Best-effort like
-// the redline: the accepted body stands, and the accept response says whether
+// the redline: the accepted body stands, and the response says whether
 // the combined file was rebuilt or why not (logged too); a refused build leaves
 // the earlier file, which the download then refuses rather than serves. Nothing
-// is returned when no combined file is registered or the accept changed neither
-// part.
+// is returned when no completed run registered a combined file or the change
+// touched neither part.
 type CombinedSkipReason = "combined_missing" | "combined_not_deliverable" | "pending_combined_proposals" | "combined_changed" | "build_refused" | "rebuild_failed" | "write_failed"
 type CombinedRebuild = { combined_updated: true } | { combined_updated: false; combined_skip_reason: CombinedSkipReason }
 type PreparedCombined = { directory: string; file: string; body: string; notes: string; parts?: string; prior?: string; skip?: CombinedSkipReason; error?: unknown }
@@ -1238,12 +1242,14 @@ function combinedSkipped(directory: string, reason: CombinedSkipReason, detail: 
 }
 
 /** The saved combined file the accept of `accepted` (a matter path) may change:
- * the summary's registered combined row and its parts under plain names, when
- * the accepted file is one of the parts or a delivered body whose notes addendum
- * changes the memo. Undefined otherwise. */
+ * a completed run's registered combined row and its parts under plain names,
+ * when the accepted file is one of the parts or a delivered body whose notes
+ * addendum changes the memo. Undefined otherwise, as for the run's redline and
+ * notes (deliveredRunBody, runNotesLock). */
 function registeredCombined(directory: string, accepted: string) {
   const summary = readLeanDocuments(directory)
-  const parts = summary && combinedParts(directory, summary.documents)
+  if (readLeanState(directory)?.status !== "completed" || summary?.status !== "completed") return
+  const parts = combinedParts(directory, summary.documents)
   const row = parts && summary.documents.find((row) => row.kind === "combined" && row.deliverable === parts.file)
   if (!parts || !row || [parts.file, parts.body, parts.notes].some((name) => deliverableDocumentName(name) !== name)) return
   const identity = documentRegistryIdentity(accepted)
