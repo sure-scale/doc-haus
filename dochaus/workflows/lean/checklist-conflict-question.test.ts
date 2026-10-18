@@ -8,7 +8,7 @@ import { leanSteps, writeLeanPlan } from "./plan"
 import { changesRepairSections } from "./repairs"
 import { enqueueLeanRequest } from "./requests"
 import { runLean, stageInputSha } from "./runner"
-import { LEAN_PROMPT_VERSION, stageInputs } from "./stages"
+import { handedBackItems, LEAN_PROMPT_VERSION, stageInputs } from "./stages"
 import { answerQuestion, hashStageInputs, readLeanJson, readLeanState, readQuestions, replaceStageQuestions, shortHash, updateLeanStage, writeLeanText, writeQuestions, type Question } from "./state"
 import { cleanupMatters, happyPath, matter, scriptedModel } from "./test-support"
 
@@ -95,6 +95,25 @@ test("findings without a source conflict ask nothing and keep their delivery", (
   const satisfied = checklistMatter([finding("c1", "satisfied"), finding("c2", "satisfied")])
   expect(finalGate(satisfied)).toMatchObject({ status: "pass", delivery: "execution_ready" })
   expect(finalGate(satisfied).questions).toBeUndefined()
+})
+
+test("a conflict the lawyer handed back to the drafting is disclosed with that hand-back and not asked again; a real answer asks it", () => {
+  const directory = checklistMatter([conflict("c1", "Payment is due on delivery."), conflict("c2", "Deliver within thirty days of the order.")])
+  const handed: Question = { id: "q-terms", stage: "intake", question: "Which term governs?", context: "", status: "answered", answer_kind: "decide_for_me", answered_at: "2026-01-01T00:00:00.000Z" }
+  writeQuestions(directory, [handed])
+  // The spine's choice in its place cites both requirements' sources, and the
+  // drafting notes disclose the hand-back.
+  writeLeanText(directory, "spine.json", JSON.stringify({ entries: [{ kind: "drafting-choice", question_id: handed.id, detail: "Choice: payment on delivery governs.",
+    evidence: ["Deliver within thirty days of the order.", "Payment is due on delivery."].map(quote => ({ source_id: "request", quote })), limitations: ["The lawyer has not made this choice."] }], limitations: [] }))
+  writeLeanText(directory, "drafting-notes.md", handedBackItems(directory).map(item => item.id).join("\n"))
+  const gate = finalGate(directory)
+  // Never met: both stay adverse findings, disclosed with the hand-back.
+  expect(gate).toMatchObject({ status: "pass", delivery: "review_draft_with_findings", blocking: [] })
+  expect(gate.questions).toBeUndefined()
+  expect(gate.disclosed.filter(item => item.kind === "checklist_unresolved").map(item => [item.ref.checklist_class, item.ref.question_id]))
+    .toEqual([["source_conflict", handed.id], ["source_conflict", handed.id]])
+  answerQuestion(directory, handed.id, "Payment on delivery governs.")
+  expect(finalGate(directory).questions!.map(row => row.id)).toEqual([expect.stringMatching(/^checklist-conflict-/)])
 })
 
 test("an answer to the conflict question re-keys the checklist check and reaches its source instructions", () => {

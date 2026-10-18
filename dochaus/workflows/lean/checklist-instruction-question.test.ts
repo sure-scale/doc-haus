@@ -8,7 +8,7 @@ import { PACKAGE_SCOPE_QUESTION, packageScopeQuestionID, scopeQuestionShows } fr
 import { leanSteps, readLeanPlan, writeLeanPlan, type PlannedDocument } from "./plan"
 import { enqueueLeanRequest } from "./requests"
 import { runLean, stageInputSha } from "./runner"
-import { outlineBasis } from "./stages"
+import { handedBackItems, outlineBasis } from "./stages"
 import { answerQuestion, leanFile, readLeanJson, readLeanState, readQuestions, replaceStageQuestions, updateLeanStage, writeLeanText, writeQuestions, type Question } from "./state"
 import { AGENT, cleanupMatters, happyPath, matter, scriptedModel } from "./test-support"
 
@@ -263,6 +263,70 @@ test("an instruction left open that a source conflict names is asked only in the
   const only = finalGate(checklistMatter([finding("c1", "unsatisfied", { conflicting_source_refs: [ref("Payment is due on delivery.")] }), left("c2"), finding("c3", "satisfied")], items))
   expect(only.questions!.map(row => row.id)).toEqual([conflict!.id])
   expect(leftOpen(only).map(item => item.ref.question_id)).toEqual([conflict!.id])
+})
+
+// A question the lawyer handed back to the drafting, the spine's choice made
+// in its place citing `evidence` from the request, and drafting notes that
+// disclose the hand-back unless `disclosed` is false.
+const HANDED: Question = { id: "q-period", stage: "intake", question: "Which delivery period applies?", context: "", status: "answered", answer_kind: "decide_for_me", answered_at: "2026-01-01T00:00:00.000Z" }
+function handedBackChoice(directory: string, evidence: string[], disclosed = true) {
+  writeQuestions(directory, [HANDED])
+  writeLeanText(directory, "spine.json", JSON.stringify({ entries: [{ kind: "drafting-choice", question_id: HANDED.id, detail: "Choice: the note uses the longer period.",
+    evidence: evidence.map(quote => ({ source_id: "request", quote })), limitations: ["The lawyer has not made this choice."] }], limitations: [] }))
+  writeLeanText(directory, "drafting-notes.md", disclosed ? handedBackItems(directory).map(item => item.id).join("\n") : "")
+  return directory
+}
+
+test("an instruction left open against a passage it conflicts with is disclosed with the hand-back whose choice cites both, not asked again; a real answer asks it", () => {
+  const SHORTER = "Deliver within twenty days of the order."
+  const against = () => finding("c1", "open", { open_decisions: [SCOPE], conflicting_source_refs: [ref(SHORTER)] })
+  const choice = [PERIOD.source_refs[0]!.quote, SHORTER]
+  const gate = finalGate(handedBackChoice(checklistMatter([against(), left("c2")]), choice))
+  expect(gate).toMatchObject({ status: "pass", delivery: "review_draft", blocking: [] })
+  // Only c2 is asked; c1's disclosure refers to the hand-back, which stays
+  // disclosed as a choice the lawyer has not made.
+  expect(gate.questions).toHaveLength(1)
+  expect(gate.questions![0]!.question).toContain("c2:")
+  expect(gate.questions![0]!.question).not.toContain(PERIOD.check)
+  expect(leftOpen(gate).map(item => item.ref.question_id)).toEqual([HANDED.id, gate.questions![0]!.id])
+  expect(gate.disclosed.filter(item => item.stage === "finalize").map(item => item.ref.question_id)).toEqual([HANDED.id])
+  // Alone it asks nothing and is never met: the package stays a review draft.
+  const alone = handedBackChoice(checklistMatter([against(), finding("c2", "satisfied")]), choice)
+  expect(finalGate(alone)).toMatchObject({ status: "pass", delivery: "review_draft", blocking: [] })
+  expect(finalGate(alone).questions).toBeUndefined()
+  expect(leftOpen(finalGate(alone))).toEqual([expect.objectContaining({ ref: { checklist_item: "c1", document: "d1", question_id: HANDED.id } })])
+  // A choice citing one side only, or a passage the conflict does not cite,
+  // is not about this conflict; nor is an instruction with no conflict
+  // recorded. Each is asked.
+  const asked = (directory: string) => finalGate(directory).questions?.map(row => row.question).join("\n") ?? ""
+  for (const evidence of [[choice[0]!], [SHORTER], [...choice, PAYMENT.source_refs[0]!.quote], []])
+    expect(asked(handedBackChoice(checklistMatter([against(), finding("c2", "satisfied")]), evidence))).toContain(PERIOD.check)
+  expect(asked(handedBackChoice(checklistMatter([left("c1"), finding("c2", "satisfied")]), choice))).toContain(PERIOD.check)
+  // A hand-back the notes do not disclose blocks the gate and covers nothing.
+  const silent = finalGate(handedBackChoice(checklistMatter([against(), finding("c2", "satisfied")]), choice, false))
+  expect(silent.status).toBe("blocked")
+  expect(silent.questions![0]!.question).toContain(PERIOD.check)
+  // A real answer ends the hand-back: the instruction is asked again.
+  answerQuestion(alone, HANDED.id, "Thirty days.")
+  expect(asked(alone)).toContain(PERIOD.check)
+})
+
+test("a source conflict a disclosed hand-back's choice covers asks nothing; an instruction it names refers to the hand-back, the rest share the scope question", () => {
+  const items = [...ITEMS, { id: "c3", item: ADDRESS }]
+  const directory = handedBackChoice(checklistMatter([finding("c1", "unsatisfied", { conflicting_source_refs: [ref("Payment is due on delivery.")] }), left("c2"), left("c3")], items),
+    ["Deliver within thirty days of the order.", "Payment is due on delivery."])
+  const gate = finalGate(directory)
+  expect(gate).toMatchObject({ status: "pass", delivery: "review_draft_with_findings", blocking: [] })
+  const [scope, ...rest] = gate.questions!
+  expect(rest).toEqual([])
+  expect(scope!.id.startsWith(PACKAGE_SCOPE_QUESTION)).toBe(true)
+  expect(scope!.question).toContain("c3: The note names the delivery address.")
+  expect(scope!.question).not.toContain("c2")
+  expect(gate.disclosed.find(item => item.kind === "checklist_unresolved")!.ref).toMatchObject({ checklist_item: "c1", question_id: HANDED.id })
+  expect(leftOpen(gate).map(item => item.ref.question_id)).toEqual([HANDED.id, scope!.id])
+  // A real answer ends the hand-back: the conflict is asked again.
+  answerQuestion(directory, HANDED.id, "Payment governs.")
+  expect(finalGate(directory).questions!.map(row => row.id)[0]).toMatch(/^checklist-conflict-/)
 })
 
 test("no scope question is asked while the checklist check is not done, even with an instruction left open in its output on disk", () => {

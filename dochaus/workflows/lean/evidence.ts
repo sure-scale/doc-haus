@@ -11,6 +11,18 @@ export type Discrepancy = EvidenceEntry & { material: boolean; status: "resolved
  * read against stored question state; only these two kinds carry one. */
 export type DraftingEntry = EvidenceEntry & ({ kind: "decision" | "recommendation" | "requirement" | "fact" } | { kind: "drafting-choice"; question_id: string } | { kind: "open-item"; question_id?: string })
 
+/** The spine entry of each standing hand-back, by question id; ids come from
+ * stored question state, and the checked spine holds one entry for each.
+ * Prompts show it beside the item that refers to it; the gate reads the
+ * passages it cites. */
+export function handedBackChoices(directory: string) {
+  const handed = new Set(readQuestions(directory).filter(handedBack).map(question => question.id))
+  const spine = readLeanJson(directory, "spine.json") as { entries?: unknown } | undefined
+  const entries: unknown[] = Array.isArray(spine?.entries) ? spine.entries : []
+  return new Map(entries.flatMap(entry => typeof entry === "object" && entry !== null && "question_id" in entry && typeof entry.question_id === "string" && handed.has(entry.question_id)
+    ? [[entry.question_id, entry as DraftingEntry] as const] : []))
+}
+
 /** These are drafting aids, never substitutes for canonical source retrieval. */
 export function checkEvidence(directory: string, stage: EvidenceStage, value: unknown): string[] {
   if (!record(value) || !Array.isArray(value.entries) || !strings(value.limitations)) return ["Return JSON with entries and limitations arrays."]
