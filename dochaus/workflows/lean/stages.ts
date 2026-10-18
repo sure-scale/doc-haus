@@ -212,11 +212,13 @@ export function stageInputs(directory: string, step: StepID, options: { repairCo
     ...(updates && !inputs.some(part => part.name === "updated-notes.md") ? [{ name: "updated-notes.md", bytes: updates }] : [])]
 }
 
-/** The questions a step's key reads. The gate's open question is asked after
- * the walk, so it re-keys no step before it; its answer, like any other, keys
- * every step through "answers". */
-function keyedQuestions(directory: string) {
-  return JSON.stringify(readQuestions(directory).filter(question => question.stage !== "gate" || question.status === "answered"))
+/** The questions a step's key reads, in id order: a step replacing its
+ * questions reorders questions.json without changing any question. The gate's
+ * open question is asked after the walk, so it re-keys no step before it; its
+ * answer, like any other, keys every step through "answers". */
+function keyedQuestions(directory: string, gate = false) {
+  return JSON.stringify(readQuestions(directory).filter(question => gate || question.stage !== "gate" || question.status === "answered")
+    .toSorted((a, b) => a.id.localeCompare(b.id)))
 }
 
 function baseStageInputs(directory: string, step: StepID, options: { repairContext?: false }): { name: string; bytes: string | Uint8Array }[] {
@@ -238,7 +240,7 @@ function baseStageInputs(directory: string, step: StepID, options: { repairConte
       { name: "questions", bytes: keyedQuestions(directory) }]
   if (step === "gate")
     return [...planned.flatMap(id => [file(`${id}/paragraphs-applied.json`), file(`${id}/apply.json`), file(`${id}/change-review.json`)]),
-      file("package-review.json"), file("checklist/refinements.json"), file("checklist/checks.json"), file("drafting-notes.md"), file("open-items.json"), file("questions.json"),
+      file("package-review.json"), file("checklist/refinements.json"), file("checklist/checks.json"), file("drafting-notes.md"), file("open-items.json"), { name: "questions.json", bytes: keyedQuestions(directory, true) },
       // A finding's disclosure says whether a repair round ran for it.
       file("repairs.json")]
   const document = stepDocument(step) ?? FIRST_DOCUMENT

@@ -74,6 +74,13 @@ test("HTTP redline decisions preserve rejected bytes and publish an accepted, re
     expect(pending.map(row => ({ id: row.id, status: row.status }))).toEqual([
       { id: acceptedID, status: "pending" }, { id: rejectedID, status: "pending" },
     ])
+    // A supported name with no matter file is no document: an empty change list
+    // and no redlined view, never a server error.
+    const missing = "missing-pack.docx"
+    const missingList = await request(`${redlines}?name=${missing}`)
+    expect(missingList.status).toBe(200)
+    expect(await missingList.json()).toEqual([])
+    expect((await request(`/matters/${matter.id}/documents/redlined?name=${missing}`)).status).toBe(404)
     const dx = await docxodus()
     const comparison = await request(`/matters/${matter.id}/documents/redlined?name=${name}`)
     expect(comparison.status).toBe(200)

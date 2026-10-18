@@ -31,6 +31,7 @@ import {
   type LeanModel,
   type LeanState,
 } from "../../../dochaus/workflows/lean/state"
+import { deliverableDocumentName } from "./deliverable"
 import { registerLeanDeliverable } from "./lean-deliverables"
 
 // Web wiring for the lean drafting profile. Start creates the owner session and
@@ -184,6 +185,13 @@ function draftingUpdates(directory: string, state: LeanState) {
     : stale ? "requires-rework" as const : undefined }))
 }
 
+/** Hash of a delivered draft read inside the matter: a plain document name,
+ * opened without following links, regular files only. Anything else reads as
+ * missing, the same as an absent file. */
+function matterFileSha(directory: string, name: string) {
+  try { return sha256File(path.join(directory, name))?.sha256 } catch { return undefined }
+}
+
 /** Delivered drafts whose matter file no longer holds the bytes the final check
  * saw: a change accepted after delivery, or a newer output kept from replacing
  * such a change. Disclosure only: the check is not re-run and its verdict is
@@ -191,8 +199,8 @@ function draftingUpdates(directory: string, state: LeanState) {
 function changedAfterCheck(directory: string, gate: unknown, documents: LeanDocuments | null) {
   if (documents?.status !== "completed") return null
   const changed = documents.documents.flatMap(row => {
-    if (row.kind !== "body" || !row.deliverable || row.deliverable !== path.basename(row.deliverable)) return []
-    const current = sha256File(path.join(directory, row.deliverable))?.sha256
+    if (row.kind !== "body" || !row.deliverable || !deliverableDocumentName(row.deliverable)) return []
+    const current = matterFileSha(directory, row.deliverable)
     return row.conflict || (current && current !== row.sha256) ? [row.deliverable] : []
   })
   if (!changed.length) return null

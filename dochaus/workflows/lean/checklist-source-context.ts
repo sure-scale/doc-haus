@@ -6,7 +6,7 @@ import { readRegularFile } from "../../lib/regular-file"
 import { checklistProducerInputSchema, type ChecklistProducerInput, type ChecklistSourceReference } from "./checklist-contract"
 import { readLeanPlan } from "./plan"
 import { leanUserUpdates } from "./requests"
-import { readLeanText, readQuestions } from "./state"
+import { answeredQuestions, readLeanText } from "./state"
 
 const sourceIndexSchema = z.object({ sources: z.array(z.object({ document: z.string().min(1), extracted_text: z.string().min(1) })) })
 
@@ -24,8 +24,10 @@ export function checklistProducerInputs(directory: string): { key: string; input
     ...leanUserUpdates(directory).filter(update => update.status === "included" && update.kind !== "clarification").map(update => ({
       document: "request", locator: `.dochaus/lean/requests/done/${update.id}.json /text`, quote: update.text,
     })),
-    ...readQuestions(directory).flatMap((question, index) => question.status === "answered" && question.answer?.trim() ? [{
-      document: "request", locator: `.dochaus/lean/questions.json /questions/${index}/answer (${question.id})`, quote: question.answer,
+    // Keyed on the question id, never its position: questions.json is
+    // reordered when a step's questions replace its earlier ones.
+    ...answeredQuestions(directory).flatMap(question => question.answer?.trim() ? [{
+      document: "request", locator: `.dochaus/lean/questions.json answer (${question.id})`, quote: question.answer,
     }] : []),
   ]
   const indexBytes = readRegularFile(path.join(directory, "source-index.json"))

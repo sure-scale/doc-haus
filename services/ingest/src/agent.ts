@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import path from "node:path"
-import { WORKSPACE_ROOT } from "./matter"
+import { workspaceRoot } from "./matter"
 import { DOCHAUS_DIR, NAME_RE, RESERVED_NAMES, listWorkflows } from "./workflow"
 import { disabledAgents, setAgentDisabled } from "./engine-config"
 
@@ -14,7 +14,7 @@ import { disabledAgents, setAgentDisabled } from "./engine-config"
 
 // The agent-builder chat runs in this directory (engine sessions are
 // directory-scoped, mirroring WORKFLOWS_DIR).
-export const AGENTS_DIR = () => path.join(process.env.WORKSPACE_ROOT ?? WORKSPACE_ROOT, ".agents")
+export const AGENTS_DIR = () => path.join(workspaceRoot(), ".agents")
 
 const REGISTRY_FILE = () => path.join(DOCHAUS_DIR(), "agents.json")
 const AGENT_DIR = () => path.join(DOCHAUS_DIR(), "agent")
