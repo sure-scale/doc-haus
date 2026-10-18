@@ -341,6 +341,24 @@ test("a memo finding keeps its source quote whole and names the requirement and 
     .toBe(`- The note states the delivery period. ${OMISSION} Reason: It conflicts with another requirement, which requires 60 days; a paragraph omits it. Limitation: Comments not inspected. Source: request: "${quote}"`)
 })
 
+test("a finding names each matter source by its file name with its quote, never the extracted-text path, line range or retrieval note it was located by", () => {
+  const directory = checklistMatter()
+  const extracted = "sources/supply-terms-docx-0123456789ab.txt lines 1-26"
+  const terms = (quote: string, locator: string) => ({ document: "supply-terms.docx", locator, quote })
+  const item = { ...ITEMS[0]!.item, source_refs: [terms("Delivery: within thirty days of the order.", extracted),
+    terms("Delivery:  within thirty days\nof the order.", "Preamble"), terms("Risk passes on delivery.", "full source text read-document view=source offset 0"),
+    ...ITEMS[0]!.item.source_refs] }
+  writeLeanText(directory, "checklist/extraction.json", JSON.stringify({ expected_sources: ["request"], sources: [{ key: "request", status: "succeeded", items: [{ id: "c1", item }, ITEMS[1]!] }] }))
+  saveFindings(directory, [finding("c1"), finding("c2", { status: "satisfied" })])
+  // Was `Source: supply-terms.docx, sources/supply-terms-docx-0123456789ab.txt lines 1-26: "…"; supply-terms.docx, Preamble: "…"; …`.
+  const line = `- The note states the delivery period. ${OMISSION} Reason: Paragraph omits it. Limitation: Comments not inspected. Source: supply-terms.docx: "Delivery: within thirty days of the order."; supply-terms.docx: "Risk passes on delivery."; request: "Deliver within thirty days of the order."`
+  expect(deliveredNotes(directory, finalGate(directory))!.split("\n")).toContain(line)
+  requestMemo(directory)
+  const delivered = deliveredNotes(directory, finalGate(directory))!
+  expect(delivered.split("\n").at(-2)).toBe(line)
+  for (const text of ["sources/", ".txt", "lines 1-26", "Preamble", "view=source", "offset 0", REQUEST_LOCATOR]) expect(delivered).not.toContain(text)
+})
+
 test("a memo finding's status says, in plain words for each class, what is not confirmed and what to check, never the stage that left it", () => {
   const memo = checklistMatter()
   requestMemo(memo)
