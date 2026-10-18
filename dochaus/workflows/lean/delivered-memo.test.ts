@@ -215,7 +215,7 @@ test("a requested memo delivered without findings keeps each quotation whole on 
     `The schedule defines “Goods , Services” as "the goods  listed".`, ""].join("\n"))
 })
 
-const REQUEST_LOCATOR = ".dochaus/lean/questions.json /questions/0/answer (delivery-start)"
+const REQUEST_LOCATOR = ".dochaus/lean/questions.json answer (delivery-start)"
 const PID = "p0123456789ab"
 const requirement = (check: string, quote: string, locator: string): ChecklistItem =>
   ({ check, basis: "directive", source_refs: [{ document: "request", locator, quote }], qualifications: [], target: { document: "d1", role: "Supply note", treatment: "operative" } })
@@ -244,7 +244,7 @@ function checklistMatter() {
 // The notes delivered without a requested memo, byte for byte as they were
 // before the memo's findings moved to its end: the findings lead, each with
 // its id and full detail, then the drafting notes unchanged.
-const PLAIN_DELIVERED = "# Checklist findings not satisfied\n\nThese checklist requirements were not established as satisfied. Each is disclosed with this review draft for review; none is treated as satisfied.\n\n- c1: Checklist requirement unresolved (conflicts with another source requirement): The note states the delivery period. Finding: Paragraph p0123456789ab omits it. Limitation: Comments not inspected. Conflicting checklist items: c2. Source: request, .dochaus/lean/questions.json /questions/0/answer (delivery-start): \"Deliver within thirty days of the order.\"\n- c2: Checklist requirement unresolved (omission; no repair round ran): The note states when delivery starts. Finding: Paragraph p0123456789ab omits it. Limitation: Comments not inspected. Source: request, request.md: \"Deliver within ten days of the order.\"\n\n# Cover memo\n\nThe delivery period follows the order. [ref: c2]\n"
+const PLAIN_DELIVERED = "# Checklist findings not satisfied\n\nThese checklist requirements were not established as satisfied. Each is disclosed with this review draft for review; none is treated as satisfied.\n\n- c1: Checklist requirement unresolved (conflicts with another source requirement): The note states the delivery period. Finding: Paragraph p0123456789ab omits it. Limitation: Comments not inspected. Conflicting checklist items: c2. Source: request, .dochaus/lean/questions.json answer (delivery-start): \"Deliver within thirty days of the order.\"\n- c2: Checklist requirement unresolved (omission; no repair round ran): The note states when delivery starts. Finding: Paragraph p0123456789ab omits it. Limitation: Comments not inspected. Source: request, request.md: \"Deliver within ten days of the order.\"\n\n# Cover memo\n\nThe delivery period follows the order. [ref: c2]\n"
 const MEMO_FINDINGS = ["## Requirements not confirmed as met", "",
   "These requirements were not confirmed as met in this draft and need the lawyer's review.", ""]
 // A memo finding's status in plain words: what is not confirmed and what the

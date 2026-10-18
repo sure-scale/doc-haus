@@ -67,6 +67,21 @@ test("included lawyer updates and actual answers stay separate from original tex
   expect(JSON.stringify(jobs)).not.toContain("QUEUED TEXT")
 })
 
+test("each answer keeps an id-keyed locator in a stable order however questions.json is ordered", () => {
+  const { directory, put } = prepare()
+  const answered = (id: string) => ({ id, question: `Question ${id}?`, status: "answered", answer: `Answer ${id}.` })
+  const open = { id: "q0", question: "Open question?", status: "open" }
+  put(".dochaus/lean/questions.json", JSON.stringify({ questions: [open, answered("q2"), answered("q1")] }))
+  const before = checklistProducerInputs(directory)
+  expect(before.at(-1)!.input.instructions).toEqual([
+    { document: "request", locator: ".dochaus/lean/questions.json answer (q1)", quote: "Answer q1." },
+    { document: "request", locator: ".dochaus/lean/questions.json answer (q2)", quote: "Answer q2." },
+  ])
+  // Answered questions first, as a step's question rewrite leaves them.
+  put(".dochaus/lean/questions.json", JSON.stringify({ questions: [answered("q1"), answered("q2"), open] }))
+  expect(checklistProducerInputs(directory)).toEqual(before)
+})
+
 test("generated artifacts and drafting assumptions never become producer evidence", () => {
   const { directory, put } = prepare()
   const baseline = checklistProducerInputs(directory)
