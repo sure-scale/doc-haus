@@ -7,6 +7,7 @@ import { classifyChecklistFinding, type ChecklistFindingClass } from "./checklis
 import { acceptChangePlan, acceptChangeReview, preparationOutputValid, readChangePlan, readChangeReview, deferredFindingItems, reviewDispositionText, uniqueReplacementIssues } from "./change-pipeline"
 import { comparisonBasis } from "./comparison"
 import { checkPackageReview, readPackageReview } from "./package-review"
+import { coverageItems, planCoverageCurrent } from "./package-coverage"
 import { DELIVERED_NOTES } from "./deliverables"
 import { evidenceOutputValid } from "./evidence"
 import { researchOutputValid } from "./research"
@@ -56,7 +57,7 @@ import {
 // one planned document keep their files under that document's id (d1/, d2/...).
 
 export const LEAN_PROMPT_VERSION = "lean-14"
-const OUTLINE_CONTRACT = "document-playbook-selection-3"
+const OUTLINE_CONTRACT = "document-executing-parties-4"
 const DELIVERY_REVIEW_CONTRACT = "grounded-delivery-selection-3"
 const STRUCTURAL_AMENDMENT_CONTRACT = "explicit-paragraph-cardinality-1"
 const DRAFTING_NOTES_CONTRACT = "lawyer-facing-source-comparison-notes-1"
@@ -81,6 +82,8 @@ export const LEAN_STAGE_AGENTS = {
   changes: "lean-changes",
   merge: "lean-merge",
   finalize: "lean-drafting-notes",
+  // A job of the outline, not a stage: it checks the planned package against the instructions.
+  coverage: "lean-coverage",
 } as const
 
 export type PermissionRule = { action: string; resource: string; effect: "allow" | "deny" | "ask" }
@@ -137,8 +140,12 @@ export function stepSessionTitle(directory: string, step: StepID, detail: string
   return title ? `Lean drafting: ${title}: ${detail}` : `Lean drafting: ${detail}`
 }
 
+/** Outputs a step may leave unwritten: a plan written by hand has no coverage
+ * record. Restoring a step whose snapshot lacks one removes it. */
+export const OPTIONAL_OUTPUTS = ["coverage.json"]
+
 /** Output files of one step, relative to the lean directory. The first
- * document's draft also saves the run's plan. */
+ * document's draft also saves the run's plan and its coverage record. */
 export function stepOutputs(step: StepID): string[] {
   if (step === "discrepancy" || step === "spine" || step === "package-review") return [`${step}.json`]
   if (step === "checklist-check") return ["checklist/extraction.json", "checklist/refinements.json", "checklist/checks.json", "checklist/report.md"]
@@ -148,7 +155,7 @@ export function stepOutputs(step: StepID): string[] {
   const document = stepDocument(step)
   const at = (names: string[]) => names.map(name => `${document}/${name}`)
   const stage = stepStage(step)
-  if (stage === "draft") return [...(document === FIRST_DOCUMENT ? ["plan.json"] : []), ...at(["draft.md", "body.docx", "paragraphs.json"])]
+  if (stage === "draft") return [...(document === FIRST_DOCUMENT ? ["plan.json", "coverage.json"] : []), ...at(["draft.md", "body.docx", "paragraphs.json"])]
   if (isReviewStage(stage)) return at([`${stage}.md`])
   if (stage === "change-plan") return at(["change-plan.json"])
   if (stage === "change-prepare") return at(["change-preparation.json"])
@@ -253,8 +260,9 @@ export function outlineBasis(directory: string) {
 }
 
 /** A saved plan is followed unless it records a different outline basis. A plan
- * that records none was written by hand and is followed as it is. */
-export function planIsCurrent(directory: string) {
+ * that records none was written by hand and is followed as it is. Whether its
+ * coverage check is current too is planCoverageCurrent (package-coverage.ts). */
+export function planBasisCurrent(directory: string) {
   const plan = readLeanPlan(directory)
   return Boolean(plan) && (plan?.basis === undefined || plan.basis === outlineBasis(directory))
 }
@@ -330,6 +338,13 @@ export async function paragraphRows(docxPath: string): Promise<ParagraphRow[]> {
   return Object.entries(await ensureParagraphPointers(docxPath)).map(([pid, text]) => ({ pid, sha256: paragraphSha256(text), text }))
 }
 
+/** A draft step's saved document is planned, passes the draft check and has its paragraphs. */
+export function draftOutputValid(directory: string, step: StepID) {
+  const document = stepDocument(step) ?? FIRST_DOCUMENT
+  return stepOutputs(step).every(name => OPTIONAL_OUTPUTS.includes(name) || existsSync(leanFile(directory, name))) && Boolean(plannedDocument(directory, document)) &&
+    !checkDraft(directory, readLeanText(directory, `${document}/draft.md`) ?? "").issues.length && readParagraphs(directory, document).length > 0
+}
+
 /** Pure re-check of a completed step's saved output, used before skipping it on
  * resume. A lawyer's edit that still passes is kept; one that does not re-runs. */
 export function stageOutputValid(directory: string, step: StepID) {
@@ -337,16 +352,17 @@ export function stageOutputValid(directory: string, step: StepID) {
   if (step === "package-review") return Boolean(readPackageReview(directory))
   if (step === "discrepancy" || step === "spine") return evidenceOutputValid(directory, step)
   if (step === "intake" || step === "research" || step === "research-review") return researchOutputValid(directory, step)
-  if (!stepOutputs(step).every(name => existsSync(leanFile(directory, name)))) return false
+  if (!stepOutputs(step).every(name => OPTIONAL_OUTPUTS.includes(name) || existsSync(leanFile(directory, name)))) return false
   const text = (name: string) => readLeanText(directory, name) ?? ""
   const stage = stepStage(step)
   const document = stepDocument(step) ?? FIRST_DOCUMENT
   if (stage === "change-plan") return Boolean(readChangePlan(directory, document))
   if (stage === "change-prepare") return preparationOutputValid(directory, document)
   if (stage === "change-review") return Boolean(readChangeReview(directory, document))
-  if (stage === "draft")
-    return Boolean(plannedDocument(directory, document)) && !checkDraft(directory, text(`${document}/draft.md`)).issues.length &&
-      readParagraphs(directory, document).length > 0
+  // The first document's draft step also settles the plan's coverage: a missing,
+  // unreadable or earlier plan's record re-runs it, which checks the saved plan
+  // again and keeps a draft already done from the same inputs (draftOutputValid).
+  if (stage === "draft") return draftOutputValid(directory, step) && (document !== FIRST_DOCUMENT || planCoverageCurrent(directory))
   if (isReviewStage(stage)) return !checkReview(directory, text(`${document}/${stage}.md`), readParagraphs(directory, document)).issues.length
   if (stage === "changes") {
     const pids = new Set(readParagraphs(directory, document).map(row => row.pid))
@@ -364,7 +380,7 @@ export function stageOutputValid(directory: string, step: StepID) {
 
 /** Open items the drafting notes must disclose. */
 export function disclosableItems(directory: string): OpenItem[] {
-  return [...readOpenItems(directory).filter(item => DISCLOSED_STAGES.includes(item.stage)), ...deferredFindingItems(directory)]
+  return [...readOpenItems(directory).filter(item => DISCLOSED_STAGES.includes(item.stage)), ...deferredFindingItems(directory), ...coverageItems(directory)]
 }
 
 function ensureNewline(text: string) {

@@ -86,6 +86,10 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
         "(a document that refers to or depends on another comes after it): one \"# \" line with that document's title, then one line saying what " +
         "the document is for, then one \"## \" line per top-level part of that document in order, each followed by one line saying what the part covers. " +
         "Do not draft the text yet.",
+        "- Under each title write \"Executed by: <party>; <party>\" naming each party who executes that document, as the request or sources name them, or \"Executed by: none\" for a document that takes no legal act. Leave the line out when neither says who executes it. " +
+        "Plan no document the instructions leave out of this package. For each legal act the instructions direct, unless they leave out the document of the party who can take it, " +
+        "plan the act in a document that party executes, adding a companion document where none is planned.",
+        "- An answer that leaves a point undecided keeps the instructions as they stand: plan every act they direct. It does not license narrowing the package.",
         "- Under each title write \"Mode: revise\" when revising a supplied original, otherwise \"Mode: new\". For a revision, name the supplied original with Compare against and retain it as the drafting foundation. Also write \"Deliverable: redline\" when the requested named artifact is an annotated markup/comparison, otherwise \"Deliverable: body\". These select the requested artifact role; filenames do not determine it.",
         '- Inspect the supplied documents and bound library guidance before outlining. Decide which are playbooks or drafting guidance from their contents, scope and the request, not filenames alone. Under each title add Playbook review: {"sources":[{"source_id":"exact canonical guidance source","quote":"exact source words establishing its scope or a relevant position"}],"reason":"why this guidance applies to this body"}. Select all applicable guidance, and use sources: [] with a reason when none applies. An uploaded playbook stays a matter source; do not publish it to the shared library. This schedules a dedicated check after drafting only for selected bodies. Read the whole guidance later; these quotes select sources, not an exhaustive position list.',
         "- Titles become document text. Each part's ## label identifies the drafting job. Its label is also its visible heading by default; add Display heading: <publication heading> immediately under that label to use a different heading, or Display heading: none when the document should flow straight into that part's text. Choose presentation suited to the requested document. For a revision preserve the original heading structure unless the instructions require a structural change. Put internal source mappings and planning explanations in scope notes, not in visible headings or operative wording. Keep client advice in its own appropriate explanatory artifact rather than appending it to an operative agreement.",
@@ -285,6 +289,6 @@ function attribute(text: string) {
   return text.replaceAll("\"", "'")
 }
 
-function tagged(name: string, body: string) {
+export function tagged(name: string, body: string) {
   return `<${name}>\n${body.trim()}\n</${name}>`
 }

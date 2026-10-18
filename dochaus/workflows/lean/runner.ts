@@ -204,7 +204,9 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
       // against checklist results for Word bytes that have since changed.
       if (stage === "gate" && state.stages["checklist-check"]?.input_sha !== stageInputSha(directory, "checklist-check")) return undefined
       const key = stageInputSha(directory, step)
-      return { key, unchanged: recorded?.status === "done" && recorded.input_sha === key && stageOutputValid(directory, step) && (step !== "package-review" || readPackageReview(directory)?.status === "pass") && (stage !== "change-review" || !document || readChangeReview(directory, document)?.status === "pass") }
+      // Done from these very inputs; the saved output decides whether it is skipped.
+      const current = recorded?.status === "done" && recorded.input_sha === key
+      return { key, current, unchanged: current && stageOutputValid(directory, step) && (step !== "package-review" || readPackageReview(directory)?.status === "pass") && (stage !== "change-review" || !document || readChangeReview(directory, document)?.status === "pass") }
     })
     if (!decision) return { state, restart: true }
     settled.push(step)
@@ -276,7 +278,7 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
     }
     if (prefetched && prefetched.inputSha !== inputSha) await prefetched.reply.catch(() => undefined)
     prepared.delete(step)
-    const result = await runStep(directory, state, step, deps, progress, planned, prefetched?.inputSha === inputSha ? prefetched : undefined, reinspectChecklist)
+    const result = await runStep(directory, state, step, deps, progress, planned, prefetched?.inputSha === inputSha ? prefetched : undefined, reinspectChecklist, decision.current)
       .catch((error: unknown): StageRun => error instanceof ChecklistRefreshRestart ? { status: "restart" } : ({ status: "failed", reason: `${step}: stopped by a runtime error: ${message(directory, error)}` }))
     // Whatever the step returned once paused (helpers turn a refused prompt into
     // their own failure) is not accepted; the step is run again on Continue.
@@ -514,7 +516,7 @@ export function stageInputSha(directory: string, step: StepID) {
   return withSourceSnapshot(() => hashStageInputs(step, LEAN_PROMPT_VERSION, stageInputs(directory, step)))
 }
 
-function runStep(directory: string, state: LeanState, step: StepID, deps: LeanDeps, progress: Progress, planned: () => void | Promise<void>, prepared?: PreparedReview, reinspectChecklist = false): Promise<StageRun> {
+function runStep(directory: string, state: LeanState, step: StepID, deps: LeanDeps, progress: Progress, planned: () => void | Promise<void>, prepared?: PreparedReview, reinspectChecklist = false, current = false): Promise<StageRun> {
   const stage = stepStage(step)
   const document = stepDocument(step)
   if (stage === "apply" && document) return runApply(directory, state, deps, document)
@@ -524,7 +526,7 @@ function runStep(directory: string, state: LeanState, step: StepID, deps: LeanDe
   if (stage === "change-review" && document && focusedChecklistRepairs(directory, document)) return runFocusedChangeReview(directory, state, deps, document, progress)
   if (stage === "changes" && document && focusedChecklistRepairs(directory, document)) return runChangeReconciliation(directory, state, deps, document, progress)
   if (stage === "change-prepare" && document) return runChangePreparation(directory, state, deps, document, progress)
-  if (stage === "draft" && document) return runDraftStage(directory, state, deps, progress, document, planned)
+  if (stage === "draft" && document) return runDraftStage(directory, state, deps, progress, document, planned, current)
   return runModelStage(directory, state, step, deps, progress, prepared)
 }
 
@@ -582,8 +584,8 @@ function followPlan(directory: string, state: LeanState) {
 
 async function runGate(directory: string): Promise<StageRun> {
   // The gate's checks are synchronous: they share one source read. Its
-  // question replaces the one it asked before, or withdraws it.
-  const { gate: { question, ...gate }, notes } = withSourceSnapshot(() => {
+  // questions replace the ones it asked before, or withdraw them.
+  const { gate: { questions = [], ...gate }, notes } = withSourceSnapshot(() => {
     const gate = finalGate(directory)
     return { gate, notes: deliveredNotes(directory, gate) }
   })
@@ -601,7 +603,6 @@ async function runGate(directory: string): Promise<StageRun> {
       writeLeanText(directory, DELIVERED_NOTES.markdown, notes)
     }
   } else for (const name of [DELIVERED_NOTES.markdown, DELIVERED_NOTES.docx]) rmSync(leanFile(directory, name), { force: true })
-  const questions = question ? [question] : []
   if (gate.status === "pass") return { status: "done", outputs: stepOutputs("gate"), openItems: [], questions }
   return {
     status: "blocked",

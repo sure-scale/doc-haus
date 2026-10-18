@@ -8,7 +8,7 @@ import { enqueueLeanRequest } from "./requests"
 import { restoreLeanStage } from "./restore-stage"
 import { stagePrompt } from "./prompts"
 import { runLean } from "./runner"
-import { LEAN_PROMPT_VERSION, stageInputs } from "./stages"
+import { LEAN_PROMPT_VERSION, LEAN_STAGE_AGENTS, stageInputs } from "./stages"
 import { hashStageInputs, leanFile, readLeanJson, readOpenItems, readQuestions, writeLeanText } from "./state"
 import {
   AGENT, APPLIED, DRAFT, DRAFTED, LETTER, QUESTION, SUPPORT, changes, changesFirst, cleanupMatters, drafter, draftingNotes, happyPath, listed, matter, pidIn,
@@ -119,7 +119,8 @@ describe("lean drafting with several documents", () => {
     const directory = matter()
     const model = scriptedModel(happyPath)
     expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
-    model.prompts.forEach(prompt => {
+    // The coverage check reads the plan itself; drafting and review prompts show no list.
+    model.prompts.filter(prompt => prompt.agent !== LEAN_STAGE_AGENTS.coverage).forEach(prompt => {
       expect(prompt.text).not.toContain("<planned_documents>")
       expect(prompt.text).not.toContain(REVIEW_SCOPE)
       expect(prompt.text).not.toContain(CHANGES_SCOPE)

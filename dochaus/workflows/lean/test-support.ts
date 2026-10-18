@@ -45,6 +45,8 @@ export function scriptedModel(replies: Record<string, Reply>) {
         // Ordinary drafting regression fixtures assert no source-derived items.
         // Dedicated checklist lifecycle fixtures provide positive items/checks.
         "lean-checklist-extract": () => JSON.stringify({ items: [] }),
+        // The outline's coverage job finds no lawyer instruction to account for.
+        [AGENT.coverage]: () => JSON.stringify({ acts: [] }),
         [AGENT["change-plan"]]: () => JSON.stringify({ shared_decisions: [], groups: [], dismissed: [], questions: [] }),
         [AGENT["change-prepare"]]: () => JSON.stringify({ amendments: [], questions: [] }),
         [AGENT["change-review"]]: () => JSON.stringify({ status: "pass", findings: [], limitations: [] }),

@@ -29,12 +29,15 @@ export type LeftOutPart = { part: string; reason: string }
  * template parts its "Left out:" lines leave out on purpose; `file` is the file
  * name the request asks the document to be delivered under, from a "File:" line.
  * `mode` distinguishes a revision foundation from a new document; `deliverable`
- * assigns the requested filename to the body or annotated redline. Legacy plans
+ * assigns the requested filename to the body or annotated redline.
+ * `executed_by` names the parties who execute the document, from an
+ * "Executed by:" line; an empty list says it takes no legal act, and an absent
+ * one that the outline did not say. Legacy plans
  * without these fields retain their existing behaviour. The title is the
  * document's own title and never carries the file name. */
 export type PlaybookReview = { sources: { source_id: string; quote: string }[]; reason: string }
 export type PlannedDocument = {
-  id: DocID; title: string; purpose: string; parts: PlannedPart[]; playbook_review?: PlaybookReview; mode?: "new" | "revise"; deliverable?: "body" | "redline"; template?: string; comparison?: string; left_out?: LeftOutPart[]; file?: string
+  id: DocID; title: string; purpose: string; parts: PlannedPart[]; playbook_review?: PlaybookReview; mode?: "new" | "revise"; deliverable?: "body" | "redline"; template?: string; comparison?: string; left_out?: LeftOutPart[]; file?: string; executed_by?: string[]
 }
 export type ActingFor = { party: string; stated: boolean }
 export type LeanPlan = { schema: "dochaus.lean.plan/1"; documents: PlannedDocument[]; acting_for?: ActingFor; basis?: string; notes_file?: string }
@@ -79,11 +82,14 @@ export function readLeanPlan(directory: string): LeanPlan | undefined {
 }
 
 export function writeLeanPlan(directory: string, documents: Omit<PlannedDocument, "id">[], basis?: string, actingFor?: ActingFor): LeanPlan {
-  const plan: LeanPlan = {
-    schema: LEAN_PLAN_SCHEMA, documents: documents.map((document, index) => ({ id: `d${index + 1}`, ...document })), acting_for: actingFor, basis,
-  }
+  const plan: LeanPlan = { schema: LEAN_PLAN_SCHEMA, documents: withDocumentIDs(documents), acting_for: actingFor, basis }
   writeLeanText(directory, "plan.json", `${JSON.stringify(plan, null, 2)}\n`)
   return plan
+}
+
+/** Outline documents with the ids the plan gives them: d1..dK in drafting order. */
+export function withDocumentIDs(documents: Omit<PlannedDocument, "id">[]): PlannedDocument[] {
+  return documents.map((document, index) => ({ id: `d${index + 1}`, ...document }))
 }
 
 export function plannedDocument(directory: string, id: DocID): PlannedDocument | undefined {
@@ -123,7 +129,8 @@ export function earlierDocuments(directory: string, id: DocID): PlannedDocument[
 /** Reads the outline reply: an "Acting for:" line before the first title, then
  * each "# " line starts a document, the plain lines under it before its first
  * part are its purpose (a "Template:" line among them names the matter document
- * it is drafted from, a "File:" line the file name the request gives it), and
+ * it is drafted from, a "File:" line the file name the request gives it, an
+ * "Executed by:" line the parties who execute it, "none" for none), and
  * each "## " line under it is a part with the lines below as its scope note. A
  * "Left out:" line anywhere under a title records a template part left out on
  * purpose and why. Only mechanical defects are
@@ -134,12 +141,14 @@ export function earlierDocuments(directory: string, id: DocID): PlannedDocument[
  * stands, not stated. A requested file name is held to the same standard: it
  * must be one the request gives, and a title must not carry a file name or
  * Markdown; both are retry feedback, and on the last attempt a file name the
- * request does not give is dropped and the title kept without Markdown code marks. */
+ * request does not give is dropped and the title kept without Markdown code marks.
+ * A missing "Executed by:" line is not an issue; the package-coverage check
+ * holds the parties it names to the request and sources. */
 export function parsePlan(reply: string, request?: string): Checked<LeanOutline> {
   if (!reply.trim()) return { issues: [`The reply was empty. ${OUTLINE_SHAPE}`] }
   if (printedToolCall(reply)) return { issues: [TOOL_SYNTAX_ISSUE] }
   const documents: {
-    title: string; purpose: string[]; playbook_review?: PlaybookReview; mode?: "new" | "revise"; deliverable?: "body" | "redline"; template?: string; comparison?: string; file?: string; left_out: LeftOutPart[]; parts: { heading: string; scope: string[]; display_heading?: string }[]
+    title: string; purpose: string[]; playbook_review?: PlaybookReview; mode?: "new" | "revise"; deliverable?: "body" | "redline"; template?: string; comparison?: string; file?: string; executed_by?: string[]; left_out: LeftOutPart[]; parts: { heading: string; scope: string[]; display_heading?: string }[]
   }[] = []
   const acting: string[] = []
   const selectionIssues: string[] = []
@@ -160,6 +169,7 @@ export function parsePlan(reply: string, request?: string): Checked<LeanOutline>
     const deliverable = /^[-*]?\s*deliverable\s*:\s*(body|redline)\s*$/i.exec(plain)?.[1]?.toLowerCase() as "body" | "redline" | undefined
     const leftOut = /^[-*]?\s*left\s+out\s*:\s*(.+)$/i.exec(plain)?.[1]
     const file = /^[-*]?\s*file(?:\s+name)?\s*:\s*(.+)$/i.exec(plain)?.[1]?.replace(/^["'`“]+|["'`”.]+$/g, "").trim()
+    const executed = /^executed\s+by\s*:\s*(.*)$/i.exec(line.replace(/^[-*]\s+/, "").replace(/[*`]/g, ""))?.[1]
     const playbook = /^[-*]?\s*playbook review\s*:\s*(.+)$/i.exec(line)?.[1]
     const displayHeading = /^display heading\s*:\s*(.*)$/i.exec(line)?.[1]
     if (playbook && current && !current.parts.length) {
@@ -177,6 +187,7 @@ export function parsePlan(reply: string, request?: string): Checked<LeanOutline>
     else if (template && current && !current.parts.length) current.template = template
     else if (comparison && current && !current.parts.length) current.comparison = comparison
     else if (file && current && !current.parts.length) current.file = file
+    else if (executed !== undefined && current && !current.parts.length) current.executed_by = executingParties(executed, current.executed_by)
     else if (leftOut && current) current.left_out.push(leftOutPart(leftOut))
     else if (line && !line.startsWith("#") && current)
       (current.parts.at(-1)?.scope ?? current.purpose).push(line.replace(/^[-*]\s+/, ""))
@@ -218,6 +229,7 @@ export function parsePlan(reply: string, request?: string): Checked<LeanOutline>
         ...(document.comparison ? { comparison: document.comparison } : {}),
         ...(document.template ? { template: document.template } : {}),
         ...(document.left_out.length ? { left_out: document.left_out } : {}),
+        ...(document.executed_by ? { executed_by: document.executed_by } : {}),
         ...(files[index]?.name && !repeatedFiles.includes(files[index].name) ? { file: files[index].name } : {}),
       })),
       acting_for: party !== undefined && !ungrounded ? { party, stated: true } : NOT_STATED,
@@ -274,19 +286,86 @@ const OUTLINE_SHAPE = "Reply with the outline: for each document, one \"# \" tit
 const ACTING_FOR_MISSING = "The outline has no \"Acting for:\" line. Before the first \"# \" title, write \"Acting for: <party>\" when the request says " +
   "which party the lawyer acts for, otherwise \"Acting for: not stated\"; then the complete outline."
 
+/** A party answer without wrapping brackets or quotes and a trailing
+ * explanation: a final bracket that opens with a lower-case word or a quotation
+ * mark, or what follows a semicolon or a dash before a lower-case word ("Acme \u2013
+ * the seller"). A dash or bracket that continues the name stays, as in
+ * "Heron \u2013 Vale LLP" or "Acme Ltd (UK)", and so does a bracket the name closes. */
+function partyText(text: string) {
+  return text.trim().replace(/[.\s]+$/, "").replace(/\s+(?:\((?=[\p{Ll}"'\u201C\u2018])[^()]*\)|\[(?=[\p{Ll}"'\u201C\u2018])[^\]]*\])[.\s]*$/u, "")
+    .replace(/\s*(?:;|\s-\s+(?=\p{Ll})|[\u2013\u2014]\s*(?=\p{Ll})).*$/u, "")
+    .replace(/^[[("'\u201C\u2018<]+/, "").replace(/(?<![([][^()[\]]*)[\])"'\u201D\u2019>]+$/, "").replace(/[.:\s]+$/, "").trim()
+}
+
+/** "none" as the whole answer, not the first word of a name such as "None Corp":
+ * only an explanation, a closing bracket or quote, or nothing follows it. */
+const NONE = /^none\s*(?:$|[;.,:()[\]"\u201D>])/i
+const NON_ANSWER = /^(?:(?:not|none)\s+(?:stated|specified|given|known|clear|applicable|named|identified|provided)|no\s+(?:party|parties|one)|nobody|unknown|unspecified|unclear|unnamed|n[/.]?a|tb[cd]|to\s+be\s+(?:confirmed|determined))\b/i
+
 /** The party an "Acting for:" line names, or undefined when the line gives a
  * non-answer. Wrapping brackets or quotes and a trailing explanation are not
  * part of the name. */
 function statedParty(text: string) {
-  const party = text.trim().replace(/\s+(?:\([^()]*\)|\[[^\]]*\])[.\s]*$/, "").replace(/\s*(?:;|\s[-\u2013\u2014]\s|[\u2013\u2014]).*$/, "")
-    .replace(/^[[("'\u201C\u2018<]+|[\])"'\u201D\u2019>]+$/g, "").replace(/[.:\s]+$/, "").trim()
-  if (!party || /^(?:not\s+(?:stated|specified|given|known|clear)|unknown|unspecified|unclear|none|n\/?a)\b/i.test(party)) return undefined
-  return party
+  const party = partyText(text)
+  return !party || NONE.test(party) || NON_ANSWER.test(party) ? undefined : party
 }
 
-function namedIn(request: string, party: string) {
-  const fold = (text: string) => text.normalize("NFC").replace(/[\u2018\u2019]/g, "'").replace(/\s+/g, " ").trim().toLowerCase()
-  return fold(request).includes(fold(party).replace(/^the /, ""))
+/** An "Executed by:" line's parties, added to any the document already
+ * declares under the same name: "none" declares none, and a non-answer
+ * declares nothing. */
+function executingParties(text: string, declared?: string[]) {
+  if (NONE.test(partyText(text))) return declared ?? []
+  const parties = [...declared ?? []]
+  for (const party of text.split(";").flatMap(part => statedParty(part) ?? []))
+    if (nameKey(party) && !parties.some(name => nameKey(name) === nameKey(party))) parties.push(party)
+  return parties.length || declared ? parties : undefined
+}
+
+/** Case, whitespace, quotation marks and the punctuation . , ; : do not count:
+ * "Acme, Inc." folds to "acme inc". Curly apostrophes fold to "'". */
+const foldName = (text: string) =>
+  text.normalize("NFC").replace(/[\u2018\u2019]/g, "'").replace(/["\u201C\u201D.,;:]/g, " ").replace(/\s+/g, " ").trim().toLowerCase()
+
+/** Common spellings of a legal form that ends a name, as foldName folds them,
+ * longest first; the first of each form's spellings stands for it. */
+const LEGAL_FORMS = [["ltd", "limited"], ["inc", "incorporated"], ["co", "company"], ["corp", "corporation"], ["llc", "l l c"], ["llp", "l l p"], ["lp", "l p"], ["plc", "p l c"]]
+  .flatMap(spellings => spellings.map(spelling => ({ spelling, spellings }))).toSorted((a, b) => b.spelling.length - a.spelling.length)
+
+/** A folded name without a leading "the", split into the words before its
+ * trailing legal forms and each form's spellings, in order. A form word alone
+ * is a name, not a form: "the Company" is "company". */
+function nameParts(party: string) {
+  let head = foldName(party).replace(/^the /, "")
+  const forms: string[][] = []
+  for (;;) {
+    const form = LEGAL_FORMS.find(row => head.endsWith(` ${row.spelling}`))
+    if (!form) return { head, forms }
+    head = head.slice(0, -form.spelling.length - 1)
+    forms.unshift(form.spellings)
+  }
+}
+
+/** A party's name as compared: case, whitespace, quotation marks, the
+ * punctuation . , ; :, a leading "the" and how a trailing legal form is spelled
+ * do not count. The form does: "Acme Ltd." is "Acme Limited" but not "Acme LLC". */
+export function nameKey(party: string) {
+  const { head, forms } = nameParts(party)
+  return [head, ...forms.map(spellings => spellings[0])].join(" ")
+}
+
+const WORD = "[\\p{L}\\p{M}\\p{N}]"
+const WORD_START = new RegExp(`^${WORD}`, "u")
+const WORD_END = new RegExp(`${WORD}$`, "u")
+
+/** Whether `text` names `party` as whole words, compared as nameKey does: the
+ * name does not start or end inside a word, so "Ann" is not named by "Hannah".
+ * An empty name is named nowhere. */
+export function namedIn(text: string, party: string) {
+  const { head, forms } = nameParts(party)
+  if (!head) return false
+  const key = [head.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), ...forms.map(spellings => `(?:${spellings.join("|")})`)].join(" ")
+  const pattern = (WORD_START.test(head) ? `(?<!${WORD})` : "") + key + (forms.length || WORD_END.test(head) ? `(?!${WORD})` : "")
+  return new RegExp(pattern, "u").test(foldName(text))
 }
 
 const actingForUngrounded = (party: string) =>
@@ -306,6 +385,7 @@ function isPlannedDocument(value: unknown): value is PlannedDocument {
     (row.playbook_review === undefined || isPlaybookReview(row.playbook_review)) &&
     (row.mode === undefined || ["new", "revise"].includes(row.mode)) && (row.deliverable === undefined || ["body", "redline"].includes(row.deliverable)) &&
     (row.comparison === undefined || typeof row.comparison === "string") && (row.template === undefined || typeof row.template === "string") && (row.file === undefined || typeof row.file === "string") &&
+    (row.executed_by === undefined || (Array.isArray(row.executed_by) && row.executed_by.every(party => typeof party === "string"))) &&
     (row.left_out === undefined || (Array.isArray(row.left_out) && row.left_out.every(item => typeof item?.part === "string" && typeof item.reason === "string")))
 }
 
