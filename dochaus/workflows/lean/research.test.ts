@@ -142,3 +142,19 @@ test("long canonical source text is readable beyond JSON clipping with focused s
   expect(researchPrompt(directory, "research-review")).toContain("reject that finding with the access limitation")
   expect(checkResearch(directory, { ...research, findings: [{ ...research.findings[0], quote: "Invented wording" }] })).not.toEqual([])
 })
+
+test("research with no findings sends the reviewer no source-context reading or locators", () => {
+  const directory = matter()
+  const notNeeded = { status: "not-needed", findings: [], limitations: ["The request reproduces supplied terms; no external authority is needed."] }
+  const accepted = acceptResearchReply(directory, "research", JSON.stringify(notNeeded))
+  expect(accepted.issues).toEqual([])
+  expect(accepted.openItems).toEqual([])
+  const prompt = researchPrompt(directory, "research-review")
+  expect(prompt).not.toContain("research-context.txt")
+  expect(prompt).not.toContain("read locators")
+  expect(prompt).toContain('{"approved":[]')
+  const research = retrieved(directory)
+  expect(acceptResearchReply(directory, "research", JSON.stringify(research)).issues).toEqual([])
+  expect(researchPrompt(directory, "research-review")).toContain("research-context.txt")
+  expect(researchPrompt(directory, "research-review")).toContain("Focused read locators")
+})
