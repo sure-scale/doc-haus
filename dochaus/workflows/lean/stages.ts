@@ -335,8 +335,9 @@ export async function acceptStageReply(directory: string, step: StepID, reply: s
     return { issues: [], openItems: check.openItems, outputs: stepOutputs(step), questions: check.changes.questions }
   }
   // On the last attempt a requested memo that names an internal id in its prose,
-  // or notes that leave a placeholder of their own, are saved as the model wrote
-  // them; earlier attempts retry them.
+  // notes that leave a placeholder of their own, or notes whose only heading is
+  // an id or a marker, are saved as the model wrote them; earlier attempts retry
+  // them.
   const check = checkDraftingNotes(directory, reply, disclosableItems(directory), { final: options.final })
   if (check.issues.length) return { ...check, outputs: [] }
   const advisory = draftingStyleAdvisoryNotes([
@@ -390,8 +391,9 @@ export function stageOutputValid(directory: string, step: StepID) {
     return !uniqueReplacementIssues(list).length && !checkChanges(directory, text(`${document}/changes.json`), readParagraphs(directory, document), { document }).issues.length
   }
   // Saved notes are judged as a last attempt judges them: an internal id in
-  // their prose or a placeholder of their own was retry feedback, not a defect
-  // of the saved notes, so it does not re-run them; any other failed check does.
+  // their prose, a placeholder of their own or a heading made only of ids or
+  // markers was retry feedback, not a defect of the saved notes, so it does not
+  // re-run them; any other failed check does.
   if (stage === "finalize") return !checkDraftingNotes(directory, text("drafting-notes.md"), disclosableItems(directory), { final: true }).issues.length
   // A passed gate delivers the drafting notes, and any unresolved checklist
   // findings, in its own notes (deliveredNotes).

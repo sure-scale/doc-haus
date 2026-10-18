@@ -6,7 +6,7 @@ import { readDocxCommentParagraphs } from "../../lib/docx-comments"
 import { checkDraftingNotes, readChangeList } from "./checks"
 import { DELIVERED_NOTES, memoNotesFile } from "./deliverables"
 import { runItemIDs, withoutRefMarkers } from "./delivered-memo"
-import { notesForReader, type GateResult } from "./gate"
+import { deliveredNotes, notesForReader, type GateResult } from "./gate"
 import { readLeanPlan, writeLeanPlan } from "./plan"
 import { stagePrompt } from "./prompts"
 import { openItem } from "./quotes"
@@ -462,16 +462,23 @@ describe("without a requested memo", () => {
 
   const HEADLESS = 'The drafting notes have no heading once their "[ref: …]" markers and internal ids are removed. Begin with a "# " title in words, and say each point in words before the marker that ends it.'
 
-  test("notes left without a heading once their markers and ids are removed are retried, even on the last attempt", async () => {
-    const directory = memoMatter("none")
-    writeOpenItems(directory, [GAP, CONDITION])
-    for (const text of [`# [ref: ${GAP.id}]\n\n[ref: ${CONDITION.id}]\n`, `# ${GAP.id}\n\n- [ref: ${CONDITION.id}]\n`])
-      for (const final of [false, true]) expect(checkDraftingNotes(directory, text, [GAP, CONDITION], { final }).issues).toEqual([HEADLESS])
-    // Saved notes the reader would get empty are no valid output: a resume writes them again.
-    expect((await acceptStageReply(directory, "finalize", notes(`- The delivery period and the condition standard are open. ${disclosed}`), { final: true })).issues).toEqual([])
-    expect(stageOutputValid(directory, "finalize")).toBe(true)
-    writeLeanText(directory, "drafting-notes.md", `# [ref: ${GAP.id}]\n\n[ref: ${CONDITION.id}]\n`)
-    expect(stageOutputValid(directory, "finalize")).toBe(false)
+  test("notes left without a heading once their markers and ids are removed are retried before the last attempt, then saved and delivered under a plain title", async () => {
+    for (const plan of ["none", "memo"] as const) {
+      const directory = memoMatter(plan)
+      writeOpenItems(directory, [GAP, CONDITION])
+      for (const text of [`# [ref: ${GAP.id}]\n\n[ref: ${CONDITION.id}]\n`, `# [ref: ${GAP.id}]\n\nThe delivery period is open. [ref: ${CONDITION.id}]\n`]) {
+        expect(checkDraftingNotes(directory, text, [GAP, CONDITION]).issues).toEqual([HEADLESS])
+        expect(checkDraftingNotes(directory, text, [GAP, CONDITION], { final: true }).issues).toEqual([])
+        expect((await acceptStageReply(directory, "finalize", text, { final: true })).issues).toEqual([])
+        // Saved, they are judged as the last attempt judged them: a resume keeps them.
+        expect(stageOutputValid(directory, "finalize")).toBe(true)
+        const title = plan === "memo" ? "# Memo" : "# Drafting notes"
+        expect(deliveredNotes(directory, { items: [GAP, CONDITION] } as unknown as GateResult))
+          .toBe(text.includes("delivery") ? `${title}\n\nThe delivery period is open.\n` : `${title}\n\n`)
+      }
+    }
+    // Without a memo an item's bare id in the heading discloses it on the last attempt.
+    expect(checkDraftingNotes(memoMatter("none"), `# ${GAP.id}\n\n- [ref: ${CONDITION.id}]\n`, [GAP, CONDITION], { final: true }).issues).toEqual([])
   })
 
   test("delivery keeps a citation, a footnote marker, a locator's number and a quotation as written, and removes every other id", () => {
@@ -564,6 +571,48 @@ describe("without a requested memo", () => {
     const calls = model.count(AGENT.finalize)
     expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
     expect(model.count(AGENT.finalize)).toBe(calls)
+  }, 120_000)
+
+  /** A supply note run with no memo whose finalize model heads the notes with
+   * only a marker on every attempt: they are saved on the last. */
+  async function headlessRun() {
+    const directory = matter()
+    let first = ""
+    const finalize: Reply = (prompt, index) => {
+      first ||= prompt
+      return draftingNotes(first, index).replace(/^# .*$/m, "# [ref: notes]")
+    }
+    const model = scriptedModel({ ...happyPath, [AGENT.finalize]: finalize,
+      [AGENT.changes]: sameSession(prompt => JSON.stringify({ amendments: [{ pid: pidOf(prompt, DRAFTED),
+        updated: "The supplier shall deliver the goods in good condition [open item: confirm the condition standard chosen].", reason: "Drafting judgment.", sources: [] }], questions: [] })) })
+    const run = await runLean(directory, { sessions: model.port })
+    return { directory, run, model }
+  }
+
+  test("through the run, notes whose only heading is a marker on every attempt are saved on the last and delivered under a plain title", async () => {
+    const { directory, run, model } = await headlessRun()
+    expect(run.status).toBe("completed")
+    expect(model.count(AGENT.finalize)).toBe(LEAN_MAX_RETRIES + 1)
+    const saved = readLeanText(directory, "drafting-notes.md")!
+    expect(saved).toStartWith("# [ref: notes]\n")
+    const delivered = `# Drafting notes\n\n${withoutRefMarkers(saved).replace(/^(?:[ \t]*\n)+/, "")}`
+    expect(delivered).toContain("The lawyer must resolve this before the draft is used.")
+    expect(readLeanText(directory, DELIVERED_NOTES.markdown)).toBe(delivered)
+    expect(docxText(readFileSync(leanFile(directory, DELIVERED_NOTES.docx)))).toStartWith("Drafting notes\nThe draft states the delivery period")
+    expect(stageOutputValid(directory, "gate")).toBe(true)
+  }, 120_000)
+
+  test("a resume keeps notes saved on their last attempt without a heading of their own, and their delivered notes", async () => {
+    const { directory, model } = await headlessRun()
+    const saved = readLeanText(directory, "drafting-notes.md")
+    const delivered = readLeanText(directory, DELIVERED_NOTES.markdown)
+    expect(stageOutputValid(directory, "finalize")).toBe(true)
+    const calls = model.count(AGENT.finalize)
+    expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+    expect(model.count(AGENT.finalize)).toBe(calls)
+    expect(readLeanText(directory, "drafting-notes.md")).toBe(saved)
+    expect(readLeanText(directory, DELIVERED_NOTES.markdown)).toBe(delivered)
+    expect(stageOutputValid(directory, "gate")).toBe(true)
   }, 120_000)
 
   test("a passed gate whose delivered notes are missing is not valid, so a resume delivers them again", async () => {

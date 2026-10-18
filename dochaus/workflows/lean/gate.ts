@@ -179,7 +179,7 @@ export function finalGate(directory: string): GateResult {
  * checklist item, conflict list, request locator or paragraph pointer. */
 export function deliveredNotes(directory: string, gate: GateResult): string | undefined {
   const drafted = readLeanText(directory, "drafting-notes.md")
-  const read = drafted === undefined ? undefined : notesForReader(directory, drafted, gate.items)
+  const read = drafted === undefined ? undefined : titled(directory, notesForReader(directory, drafted, gate.items))
   const findings = gate.items.filter(item => item.kind === "checklist_unresolved")
   if (!findings.length) return read
   const known = runItemIDs(directory, gate.items)
@@ -199,9 +199,11 @@ export function deliveredNotes(directory: string, gate: GateResult): string | un
  * every other such id goes (withoutInternalIDs). A citation, footnote marker
  * or locator's number outside a quotation (CITED) is held aside from both, as
  * the check reads it, so "3(d1)" stays as written; quotations are kept as
- * withoutInternalIDs keeps them. Notes the check passed name none of these ids
- * elsewhere, so only notes saved on a last attempt, or kept on a resume,
- * change beyond their markers; every unchanged line keeps its exact text. */
+ * withoutInternalIDs keeps them, except one holding only such an id, which goes
+ * as the id does (a planned document's by its title). Notes the check passed
+ * name none of these ids elsewhere, so beyond their markers and such a
+ * quotation only notes saved on a last attempt, or kept on a resume, change;
+ * every unchanged line keeps its exact text. */
 export function notesForReader(directory: string, text: string, items: OpenItem[]) {
   const ids = readerIDs(directory, items)
   const documents = readLeanPlan(directory)?.documents ?? []
@@ -215,6 +217,15 @@ export function notesForReader(directory: string, text: string, items: OpenItem[
     return planned?.test(kept) ? withDocumentTitles(kept, documents, ids, hold, self) : kept
   })
   return withoutInternalIDs(lines.join("\n"), ids).replace(/\uFDEF(\uFDEE+)\uFDEF/g, (_, count: string) => held[count.length - 1]!)
+}
+
+/** The notes as the reader gets them, under a plain title for what they are
+ * when they have no heading of their own: notes saved on a last attempt, or
+ * kept on a resume, may lose their only heading with its markers and ids. So
+ * the delivered notes are never empty, as the gate's validity requires. */
+function titled(directory: string, notes: string) {
+  if (/^#{1,6}[ \t]+\S/m.test(notes)) return notes
+  return `# ${memoMode(directory) ? "Memo" : "Drafting notes"}\n\n${notes.replace(/^(?:[ \t]*\r?\n)+/, "")}`
 }
 
 /** One section of the delivered notes in plain words: `heading`, the sentence

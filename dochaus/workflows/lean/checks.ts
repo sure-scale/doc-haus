@@ -128,13 +128,14 @@ export function settleApply(changes: ChangeList, result: ApplyResult | undefined
  * them, never rewritten, and every other check still applies; delivery keeps
  * the ids from the reader (deliveredNotes). Without a requested memo an item's
  * whole id anywhere in them then discloses it, as the gate reads them; a memo
- * still needs its marker. On every attempt the notes must keep a heading once
- * delivery has removed their markers and ids (notesForReader), so they are
- * never delivered empty. */
+ * still needs its marker. Before the last attempt the notes must also keep a
+ * heading once delivery has removed their markers and ids (notesForReader);
+ * notes saved without one are delivered under a plain title (deliveredNotes),
+ * so they are never delivered empty. */
 export function checkDraftingNotes(directory: string, content: string, items: OpenItem[], options: { final?: boolean } = {}): StageCheck {
   const shape = documentShapeIssues(content, "drafting notes")
   if (shape.length) return { issues: shape, openItems: [] }
-  if (!/^#{1,6}[ \t]+\S/m.test(notesForReader(directory, content, items)))
+  if (!options.final && !/^#{1,6}[ \t]+\S/m.test(notesForReader(directory, content, items)))
     return { issues: ['The drafting notes have no heading once their "[ref: …]" markers and internal ids are removed. Begin with a "# " title in words, and say each point in words before the marker that ends it.'], openItems: [] }
   const memo = memoMode(directory)
   const markers = [...content.matchAll(REF_MARKER)].map(match => match[1]!)
