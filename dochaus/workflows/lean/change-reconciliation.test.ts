@@ -135,3 +135,39 @@ test("a requested memo reaches the conflict prompt; without one it is unchanged"
  const block=packageCompositionBlock(dir,"d1"),memo=prompt()
  expect(block).toStartWith("<package_composition>\n");expect(memo.split(block).length-1).toBe(1);expect(memo.replace(`\n\n${block}`,"")).toBe(without);expect(without).not.toContain("package_composition")
 })
+
+function targets(prompt: string): string[] {
+ return (JSON.parse(/<initial_targets>\n(.*)\n<\/initial_targets>/s.exec(prompt)![1]!) as { pid: string }[]).map(row => row.pid)
+}
+function provisions(directory: string, texts: string[]) {
+ const rows = texts.map((text, index) => ({ pid: `p${(index + 1).toString(16).padStart(12, "0")}`, text, sha256: paragraphSha256(text) }))
+ writeLeanPlan(directory, [{ title: "Record", purpose: "Record supplied terms", file: "record.docx", parts: [{ heading: "Terms", scope: "Terms" }] }])
+ writeLeanText(directory, "d1/paragraphs.json", JSON.stringify(rows))
+ return rows
+}
+function op(row: { pid: string; sha256: string }, updated: string) { return { id: "a1", pid: row.pid, existing_sha256: row.sha256, updated, reason: "Carry supplied instruction.", sources: support } }
+test("an oversized conflict component is reconciled in bounded slices, never refused",async()=>{
+ const dir=matter(),filler="The supplier keeps the delivery schedule under review. ".repeat(7)
+ const rows=provisions(dir,Array.from({length:200},(_,index)=>`Initial provision ${index+1}. ${filler}`))
+ writeLeanText(dir,"d1/changes.json",JSON.stringify(changes(rows.map((row,index)=>op(row,`Earlier correction ${index+1}. ${filler}`)))))
+ save(dir,inputs([{id:"whole",pids:rows.map(row=>row.pid)}],[changes(rows.map((row,index)=>op(row,`Prepared correction ${index+1}. ${filler}`)))]))
+ const model=scriptedModel({"lean-changes":prompt=>JSON.stringify({amendments:targets(prompt).map(pid=>({pid,updated:`Reconciled correction for ${pid}.`,reason:"Combined supported effect.",sources:support})),questions:[],dependencies:[]})})
+ const result=await runChangeReconciliation(dir,readLeanState(dir)!,{sessions:model.port},"d1",()=>{})
+ expect(result.status).toBe("done");expect(model.prompts.length).toBeGreaterThan(1)
+ for(const prompt of model.prompts)expect(prompt.text.length).toBeLessThanOrEqual(60_000)
+ const targeted=model.prompts.flatMap(prompt=>targets(prompt.text))
+ expect(targeted.toSorted()).toEqual(rows.map(row=>row.pid).toSorted())
+ expect(readChangeList(dir,"d1")!.amendments.map(row=>[row.pid,row.updated])).toEqual(rows.map(row=>[row.pid,`Reconciled correction for ${row.pid}.`]))
+})
+test("a paragraph too large for one bounded step keeps its earlier change and withholds the new one as an open item",async()=>{
+ const dir=matter(),rows=provisions(dir,["Initial provision 1.",`Long provision. ${"The supplier keeps the delivery schedule under review. ".repeat(1200)}`])
+ writeLeanText(dir,"d1/changes.json",JSON.stringify(changes([op(rows[0]!,"Earlier first correction."),op(rows[1]!,"Earlier shortened provision.")])))
+ save(dir,inputs([{id:"one",pids:rows.map(row=>row.pid)}],[changes([op(rows[0]!,"New first correction."),op(rows[1]!,"New shortened provision.")])]))
+ const model=scriptedModel({"lean-changes":prompt=>JSON.stringify({amendments:targets(prompt).map(pid=>({pid,updated:"Combined first correction.",reason:"Combined supported effect.",sources:support})),questions:[],dependencies:[]})})
+ const result=await runChangeReconciliation(dir,readLeanState(dir)!,{sessions:model.port},"d1",()=>{})
+ expect(result.status).toBe("done");expect(model.prompts).toHaveLength(1);expect(targets(model.prompts[0]!.text)).toEqual([rows[0]!.pid])
+ const accepted=readChangeList(dir,"d1")!
+ expect(accepted.amendments.map(row=>[row.pid,row.updated])).toEqual([[rows[0]!.pid,"Combined first correction."],[rows[1]!.pid,"Earlier shortened provision."]])
+ expect(accepted.withheld?.map(row=>[row.amendment.pid,row.amendment.updated])).toEqual([[rows[1]!.pid,"New shortened provision."]])
+ expect("openItems" in result&&result.openItems.filter(item=>item.kind==="unapplied_amendment").map(item=>[item.ref.pid,item.detail])).toEqual([[rows[1]!.pid,expect.stringContaining("too large to reconcile in one bounded step")]])
+})
