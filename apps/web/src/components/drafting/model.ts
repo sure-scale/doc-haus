@@ -297,10 +297,9 @@ export type DraftedOutput = { name: string; role: "draft" | "redline" | "notes" 
 export type DraftedGroup = {
   main: DraftedOutput
   extras: DraftedOutput[]
-  /** The one file this draft is delivered as with the requested memo, saved in
-   * the matter at delivery and rebuilt when a change is accepted into the draft
-   * or the memo: the group's primary download, with the draft and the memo
-   * listed beneath it. */
+  /** The one file this draft is delivered as with the requested memo: the
+   * combined file the run saved in the matter, as its summary lists it. The
+   * group's primary download, with the draft and the memo listed beneath it. */
   combined?: string
 }
 
@@ -310,11 +309,15 @@ export const OUTPUT_ROLE: Record<DraftedOutput["role"], string> = { draft: "Draf
  * redline beneath it; the drafting notes (by their row kind, whatever their
  * name, such as a requested memo's) sit under the draft when the run made one
  * document, otherwise in their own row. A combined document's draft carries
- * the one file it downloads as. */
+ * the one file it downloads as; any other combined file the summary lists (an
+ * earlier one kept under its name) closes the list in a row of its own. */
 export function draftedGroups(status: LeanDraftingStatus | undefined): DraftedGroup[] {
   if (status?.documents?.status !== "completed") return []
   const documents = status.documents.documents.filter((row) => row.deliverable)
   const combined = combinedBody(status, documents)
+  const earlier = documents
+    .filter((row) => row.kind === "combined" && row.deliverable !== combined?.file)
+    .map((row): DraftedGroup => ({ main: { name: row.deliverable!, role: "combined" }, extras: [] }))
   const groups = documents
     .filter((row) => row.kind === "body")
     .map((body): DraftedGroup => ({
@@ -327,27 +330,31 @@ export function draftedGroups(status: LeanDraftingStatus | undefined): DraftedGr
   const notes = documents
     .filter((row) => row.kind === "drafting_notes" || row.kind === "drafting_notes_markdown")
     .map((row): DraftedOutput => ({ name: row.deliverable!, role: "notes" }))
-  if (groups.length === 1) return [{ ...groups[0]!, extras: [...groups[0]!.extras, ...notes] }]
-  return [...groups, ...notes.map((main) => ({ main, extras: [] }))]
+  if (groups.length === 1) return [{ ...groups[0]!, extras: [...groups[0]!.extras, ...notes] }, ...earlier]
+  return [...groups, ...notes.map((main) => ({ main, extras: [] })), ...earlier]
 }
 
-/** The draft a combined document's one file is built from. Ingest reports the
- * file only once the run delivered both parts, with the document's id and the
- * exact names it registered the body and notes under; only rows that are
- * exactly those parts carry the file, so no other "- clean" row is guessed at. */
+/** The draft a combined document's one file belongs to. Ingest reports the
+ * file with the document's id and the exact names it registered the body and
+ * notes under; the file is offered only while the summary lists it as the
+ * document's registered combined row under that name, and only rows that are
+ * exactly those parts carry it, so no file is taken for the combined one by
+ * its name and no other "- clean" row is guessed at. */
 function combinedBody(status: LeanDraftingStatus, documents: LeanDocument[]) {
   const output = status.combined_output
   if (!output) return undefined
+  const saved = documents.some((row) => row.kind === "combined" && row.document === output.document && row.deliverable === output.file)
   const body = documents.find((row) => row.kind === "body" && row.document === output.document && row.deliverable === output.body)
   const notes = documents.some((row) => row.kind === "drafting_notes" && row.deliverable === output.notes)
-  return body && notes ? { body, file: output.file } : undefined
+  return saved && body && notes ? { body, file: output.file } : undefined
 }
 
 /** The matter's generated files as drafted groups: what the run's status names
  * first, then any other deliverable by the run's naming ("<name> - redline",
  * "<name> - drafting notes"), so files from earlier runs group the same way.
- * A combined file is saved in the matter at delivery; while it is, it stays on
- * its draft's group, never a draft of its own. */
+ * A combined file is one only by the summary's row for it, never by its name:
+ * the run's current one stays on its draft's group, an earlier one is a
+ * combined file of its own, and neither is a draft of its own. */
 export function deliverableGroups(names: string[], status: LeanDraftingStatus | undefined): DraftedGroup[] {
   const present = new Set(names)
   const known = draftedGroups(status)

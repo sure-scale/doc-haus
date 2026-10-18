@@ -1,7 +1,5 @@
-import { useState, type ReactNode } from "react"
-import { documentContentUrl, fetchCombinedDocument } from "../../api/ingest/documents"
-import { humanizeError } from "../../api/ingest/errors"
-import { useToast } from "../Toast"
+import type { ReactNode } from "react"
+import { documentContentUrl } from "../../api/ingest/documents"
 import { OUTPUT_ROLE, type DraftedGroup, type DraftedOutput } from "./model"
 
 // The Word files a drafting run produced: each draft with its redline (and, for
@@ -52,35 +50,9 @@ export default function DraftedList({
   )
 }
 
-/** Saves a combined document's one file, built by ingest on request; a
- * refusal (a part gone, or memo content the file cannot carry) shows as an
- * error toast, like other failed file actions. */
-export function useCombinedDownload(matterId: string) {
-  const toast = useToast()
-  const [busy, setBusy] = useState(false)
-  async function download(name: string) {
-    setBusy(true)
-    try {
-      const url = URL.createObjectURL(await fetchCombinedDocument(matterId, name))
-      const a = document.createElement("a")
-      a.href = url
-      a.download = name
-      a.click()
-      URL.revokeObjectURL(url)
-    } catch (error) {
-      toast("error", humanizeError(error, `Could not download ${name}.`))
-    } finally {
-      setBusy(false)
-    }
-  }
-  return { busy, download }
-}
-
-/** The combined file downloads through ingest's combined route, which builds
- * the bytes saved in the matter, so a part that no longer builds is refused
- * rather than an out-of-date file served. */
+/** The combined file downloads as the file saved in the matter, as every
+ * other row does. */
 function CombinedRow({ matterId, name }: { matterId: string; name: string }) {
-  const { busy, download } = useCombinedDownload(matterId)
   return (
     <div className="drafted-row is-main">
       <FileIcon />
@@ -93,16 +65,15 @@ function CombinedRow({ matterId, name }: { matterId: string; name: string }) {
           <span className="drafted-tag is-combined">Memo and draft</span>
         </div>
       </div>
-      <button
-        type="button"
+      <a
         className="icon-btn drafted-download"
-        disabled={busy}
-        onClick={() => download(name)}
+        href={documentContentUrl(matterId, name)}
+        download={name}
         aria-label={`Download ${name}`}
         title="Download the memo and the draft as one .docx"
       >
         <DownloadIcon />
-      </button>
+      </a>
     </div>
   )
 }

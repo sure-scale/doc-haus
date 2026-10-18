@@ -73,46 +73,6 @@ export function documentContentUrl(id: string, name: string): string {
   return `${INGEST_URL}/matters/${id}/documents/content?name=${encodeURIComponent(name)}`
 }
 
-// A combined document's one file (its requested memo, then the draft), which
-// ingest builds from the registered draft and memo on each download, the same
-// bytes as the file saved in the matter at delivery.
-export function combinedDocumentUrl(id: string): string {
-  return `${INGEST_URL}/matters/${id}/documents/combined`
-}
-
-// The combined route's refusals, in plain words. A busy part is reported once,
-// never retried here.
-const SEPARATELY = "Download the draft and the memo separately."
-const COMBINED_REFUSALS = new Map([
-  ["no_combined_output", "this drafting run has no combined file."],
-  ["combined_parts_missing", "the draft or the memo it is built from is no longer in the matter."],
-  ["empty_memo", "the memo has no text to place before the draft."],
-  ["unsupported_memo_dependency", `the memo holds content the combined file cannot carry. ${SEPARATELY}`],
-  ["unsupported_memo_numbering", `the memo uses list numbering the combined file cannot carry. ${SEPARATELY}`],
-  ["unsupported_memo_namespace", `the memo uses Word formatting the combined file cannot carry. ${SEPARATELY}`],
-  ["combined_parts_busy", "the draft or the memo is being updated. Try again shortly."],
-])
-// invalid_docx_package / invalid_docx_xml name the part ingest could not read.
-const UNREADABLE_PART = new Map([["body", "the draft"], ["memo", "the memo"]])
-
-/** The combined file's contents; a refusal rejects with its reason: the plain
- * reason above for a code it names, else the route's plain `message`, else its
- * error or status. */
-export async function fetchCombinedDocument(id: string, name: string): Promise<Blob> {
-  const res = await fetch(combinedDocumentUrl(id))
-  if (!res.ok) {
-    const body = (await res.json().catch(() => undefined)) as { error?: unknown; part?: unknown; message?: unknown } | undefined
-    const error = typeof body?.error === "string" ? body.error : `Could not download ${name} (${res.status})`
-    const part = typeof body?.part === "string" ? UNREADABLE_PART.get(body.part) : undefined
-    const reason = ["invalid_docx_package", "invalid_docx_xml"].includes(error)
-      ? `${part ?? "the draft or the memo"} could not be read as a Word document. Open it in Word, save it again, and try again.`
-      : COMBINED_REFUSALS.get(error) ?? (error.startsWith("unsupported_memo_") ? COMBINED_REFUSALS.get("unsupported_memo_dependency") : undefined)
-    const message = typeof body?.message === "string" && body.message.trim() ? body.message : undefined
-    throw new Error(reason ? `Could not download ${name}: ${reason}` : message ?? error)
-  }
-  return res.blob()
-}
-
 export async function setDocumentLabel(id: string, name: string, label: DocumentLabel): Promise<void> {
   const res = await fetch(`${INGEST_URL}/matters/${id}/documents/label`, {
     method: "PATCH",
