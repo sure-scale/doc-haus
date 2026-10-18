@@ -190,3 +190,24 @@ test("an answer's source locator survives a later step rewriting questions.json:
   expect((await runLean(directory, { sessions: idle.port })).status).toBe("completed")
   expect(idle.prompts).toHaveLength(0)
 }, 180000)
+
+test("a rewrite that only reorders questions.json re-keys no step: finalize, change-review and the gate stay current and a resume makes no call", async () => {
+  const directory = matter()
+  expect((await runLean(directory, { sessions: conflictModel().port })).status).toBe("completed")
+  const [conflict] = readQuestions(directory)
+  const answered = (id: string): Question => ({ id, stage: "gate", question: `Does ${id} apply?`, context: "", status: "answered", answer: `${id} applies.` })
+  writeQuestions(directory, [conflict!, answered("gate-b"), answered("gate-a")])
+  expect((await runLean(directory, { sessions: conflictModel().port })).status).toBe("completed")
+  const steps = leanSteps(directory).filter(step => step === "finalize" || step === "gate" || step.endsWith(".change-review"))
+  expect(steps.length).toBe(3)
+  const keys = () => steps.map(step => stageInputSha(directory, step))
+  const before = { keys: keys(), questions: readQuestions(directory) }
+  writeQuestions(directory, before.questions.toReversed())
+  expect(keys()).toEqual(before.keys)
+  const settled = readLeanState(directory)!
+  expect(leanSteps(directory).filter(step => settled.stages[step]?.input_sha !== stageInputSha(directory, step))).toEqual([])
+  const idle = scriptedModel({})
+  expect((await runLean(directory, { sessions: idle.port })).status).toBe("completed")
+  expect(idle.prompts).toHaveLength(0)
+  expect(readQuestions(directory).toSorted((a, b) => a.id.localeCompare(b.id))).toEqual(before.questions.toSorted((a, b) => a.id.localeCompare(b.id)))
+}, 180000)
