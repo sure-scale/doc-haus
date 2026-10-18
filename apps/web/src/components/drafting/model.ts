@@ -1,4 +1,4 @@
-import type { LeanDraftingStatus, LeanOpenItem, LeanStageStatus } from "../../api/ingest/lean"
+import type { LeanDocument, LeanDraftingStatus, LeanOpenItem, LeanStageStatus } from "../../api/ingest/lean"
 
 // Pure view model for the drafting run header: plain step names, steps grouped per
 // planned document, the run's state in four words, and open items grouped by
@@ -35,6 +35,21 @@ export function stepName(step: string) {
   return STEP_NAMES[stage] ?? sentence(stage)
 }
 
+/** A step of this run: as stepName, except that a run whose notes are the
+ * requested memo names its notes step after that memo. */
+export function runStepName(status: Pick<LeanDraftingStatus, "memo">, step: string) {
+  return step === "finalize" && status.memo?.trim() ? notesWording(status.memo).label : stepName(step)
+}
+
+/** What the run's notes are called: the memo the lawyer asked for, by the name
+ * the plan gives it ("Cover memo", "the cover memo"), else the drafting notes.
+ * `label` starts a line or names a row; `phrase` runs within a sentence. */
+export function notesWording(memo: string | null | undefined) {
+  const name = memo?.trim()
+  if (!name) return { label: "Drafting notes", phrase: "the drafting notes" }
+  return { label: `${name.charAt(0).toUpperCase()}${name.slice(1)}`, phrase: `the ${name}` }
+}
+
 /** A planned title as the lawyer should read it: no markdown code ticks. */
 export function cleanTitle(title: string) {
   return title.replace(/`/g, "").replace(/\s+/g, " ").trim()
@@ -49,7 +64,7 @@ export function stepGroups(status: LeanDraftingStatus) {
   const planned = status.plan?.documents ?? []
   return Object.entries(status.stages).reduce<StepGroup[]>((groups, [key, row]) => {
     const id = key.includes(".") ? key.slice(0, key.indexOf(".")) : PREPARATION_STEPS.includes(key) ? "preparation" : "run"
-    const step = { key, name: stepName(key), row }
+    const step = { key, name: runStepName(status, key), row }
     const last = groups.at(-1)
     if (last?.id === id) {
       last.steps.push(step)
@@ -80,11 +95,11 @@ export function runPosition(status: LeanDraftingStatus) {
   const step = currentStep(status)
   if (!step) return undefined
   const dot = step.key.indexOf(".")
-  if (dot === -1) return { text: `${PREPARATION_STEPS.includes(step.key) ? "Preparation" : "Finishing"} · ${stepName(step.key)}` }
+  if (dot === -1) return { text: `${PREPARATION_STEPS.includes(step.key) ? "Preparation" : "Finishing"} · ${runStepName(status, step.key)}` }
   const planned = status.plan?.documents ?? []
   const at = planned.findIndex((row) => row.id === step.key.slice(0, dot))
-  if (at === -1 || planned.length < 2) return { text: stepName(step.key) }
-  return { text: `Document ${at + 1} of ${planned.length} · ${stepName(step.key)}`, document: cleanTitle(planned[at]!.title) }
+  if (at === -1 || planned.length < 2) return { text: runStepName(status, step.key) }
+  return { text: `Document ${at + 1} of ${planned.length} · ${runStepName(status, step.key)}`, document: cleanTitle(planned[at]!.title) }
 }
 
 export type RunState = "running" | "input" | "paused" | "done"
@@ -277,16 +292,26 @@ export function openItemsSentence(status: LeanDraftingStatus) {
 }
 
 export type DraftedOutput = { name: string; role: "draft" | "redline" | "notes" }
-export type DraftedGroup = { main: DraftedOutput; extras: DraftedOutput[] }
+export type DraftedGroup = {
+  main: DraftedOutput
+  extras: DraftedOutput[]
+  /** The one file this draft is delivered as with the requested memo, which
+   * ingest composes on download: the group's primary download, with the draft
+   * and the memo listed beneath it. Never a matter file. */
+  combined?: string
+}
 
 export const OUTPUT_ROLE: Record<DraftedOutput["role"], string> = { draft: "Draft", redline: "Redline", notes: "Notes" }
 
 /** The Word files a completed run delivered: each drafted document with its
- * redline beneath it; the drafting notes sit under the draft when the run made
- * one document, otherwise in their own row. */
-export function draftedGroups(status: LeanDraftingStatus | undefined) {
+ * redline beneath it; the drafting notes (by their row kind, whatever their
+ * name, such as a requested memo's) sit under the draft when the run made one
+ * document, otherwise in their own row. A combined document's draft carries
+ * the one file it downloads as. */
+export function draftedGroups(status: LeanDraftingStatus | undefined): DraftedGroup[] {
   if (status?.documents?.status !== "completed") return []
   const documents = status.documents.documents.filter((row) => row.deliverable)
+  const combined = combinedBody(status, documents)
   const groups = documents
     .filter((row) => row.kind === "body")
     .map((body): DraftedGroup => ({
@@ -294,6 +319,7 @@ export function draftedGroups(status: LeanDraftingStatus | undefined) {
       extras: documents
         .filter((row) => row.kind === "redline" && row.document === body.document)
         .map((row) => ({ name: row.deliverable!, role: "redline" })),
+      ...(body === combined?.body ? { combined: combined.file } : {}),
     }))
   const notes = documents
     .filter((row) => row.kind === "drafting_notes" || row.kind === "drafting_notes_markdown")
@@ -302,14 +328,27 @@ export function draftedGroups(status: LeanDraftingStatus | undefined) {
   return [...groups, ...notes.map((main) => ({ main, extras: [] }))]
 }
 
+/** The draft a combined document's one file is built from. Ingest reports the
+ * file only once the run delivered both parts, with the document's id and the
+ * exact names it registered the body and notes under; only rows that are
+ * exactly those parts carry the file, so no other "- clean" row is guessed at. */
+function combinedBody(status: LeanDraftingStatus, documents: LeanDocument[]) {
+  const output = status.combined_output
+  if (!output) return undefined
+  const body = documents.find((row) => row.kind === "body" && row.document === output.document && row.deliverable === output.body)
+  const notes = documents.some((row) => row.kind === "drafting_notes" && row.deliverable === output.notes)
+  return body && notes ? { body, file: output.file } : undefined
+}
+
 /** The matter's generated files as drafted groups: what the run's status names
  * first, then any other deliverable by the run's naming ("<name> - redline",
- * "<name> - drafting notes"), so files from earlier runs group the same way. */
+ * "<name> - drafting notes"), so files from earlier runs group the same way.
+ * A combined file is composed at download, not a matter file, so it is left out. */
 export function deliverableGroups(names: string[], status: LeanDraftingStatus | undefined) {
   const present = new Set(names)
   const known = draftedGroups(status)
     .filter((group) => present.has(group.main.name))
-    .map((group) => ({ ...group, extras: group.extras.filter((output) => present.has(output.name)) }))
+    .map((group) => ({ main: group.main, extras: group.extras.filter((output) => present.has(output.name)) }))
   const placed = new Set(known.flatMap((group) => [group.main.name, ...group.extras.map((output) => output.name)]))
   const rest = names.filter((name) => !placed.has(name))
   const grouped = rest
@@ -359,14 +398,15 @@ export function leanSettledItems(status: LeanDraftingStatus) {
   return ran && Array.isArray(status.gate?.items) ? status.gate.items : null
 }
 
-export function leanSettledSummary(items: LeanOpenItem[]) {
+/** `memo` is the run's requested memo, which the disclosed items are written in. */
+export function leanSettledSummary(items: LeanOpenItem[], memo?: string | null) {
   const count = (state: LeanOpenItem["status"]) => items.filter((item) => item.status === state).length
   const checklist = items.filter((item) => item.status === "disclosed" && item.kind === "checklist_open").length
   const unresolved = items.filter((item) => item.status === "disclosed" && item.kind === "checklist_unresolved").length
   const parts = [
     [count("open"), "still blocking"],
     [unresolved, "not satisfied (unresolved checklist findings)"],
-    [count("disclosed") - checklist - unresolved, "disclosed in the drafting notes"],
+    [count("disclosed") - checklist - unresolved, `disclosed in ${notesWording(memo).phrase}`],
     [checklist, "left open by the checklist check"],
     [count("resolved"), "resolved"],
   ] as const

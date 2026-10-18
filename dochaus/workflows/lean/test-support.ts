@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import { readLeanPlan, writeLeanPlan } from "./plan"
 import { LEAN_STAGE_AGENTS, type LeanDeps, type StageSessionPort } from "./stages"
 import { initLeanState } from "./state"
 
@@ -29,6 +30,12 @@ export function matter(sourceText = SOURCE_TEXT) {
   directories.push(directory)
   initLeanState(directory, { request: "Draft a short supply note from the supply terms.", ownerSessionID: "ses_owner", model: { providerID: "test", modelID: "scripted" } })
   return directory
+}
+
+/** The current plan, now also naming a requested memo, as an outline does. */
+export function requestMemo(directory: string) {
+  const plan = readLeanPlan(directory)!
+  writeLeanPlan(directory, plan.documents.map(({ id, ...document }) => document), plan.basis, plan.acting_for, { name: "cover memo", file: "cover memo.docx" })
 }
 
 export function scriptedModel(replies: Record<string, Reply>) {

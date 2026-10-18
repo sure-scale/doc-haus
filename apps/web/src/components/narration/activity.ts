@@ -1,7 +1,7 @@
 import type { Part } from "../../api/session-view"
 import type { LeanDraftingStatus } from "../../api/ingest/lean"
 import { basename, stepLabel } from "../chat/step-labels"
-import { checklistFindingsCount, unresolvedFindingsPhrase } from "../drafting/model"
+import { checklistFindingsCount, notesWording, unresolvedFindingsPhrase } from "../drafting/model"
 
 // The deterministic half of the drafting narration: plain activity lines read
 // from the stage sessions' streamed parts and from the run's stage rows. No
@@ -187,33 +187,40 @@ export function stageMilestones(status: LeanDraftingStatus): ActivityLine[] {
     if (row.status === "running" && working)
       return [{ ...line, state: "running" as const, text: `${stepActivityLabel(status, step)}${row.attempts > 1 ? " (trying again)" : ""}` }]
     if (row.status === "running" || row.status === "pending")
-      return [{ ...line, state: "paused" as const, text: `Paused while ${during(step)}`, until: Date.parse(status.updated_at) }]
+      return [{ ...line, state: "paused" as const, text: `Paused while ${during(step, status.memo)}`, until: Date.parse(status.updated_at) }]
     const until = row.finished_at ? Date.parse(row.finished_at) : undefined
     // A final check that delivered unresolved checklist findings did not pass
     // clean; flagged, it stays outside the folded activity.
     const findings = step === "gate" && row.status === "done" ? checklistFindingsCount(status) : undefined
     if (findings !== undefined)
       return [{ ...line, state: "done" as const, text: `Final check: review draft with ${unresolvedFindingsPhrase(findings)}`, until, flag: true }]
-    if (row.status === "done") return [{ ...line, state: "done" as const, text: words(step).done, until }]
+    if (row.status === "done") return [{ ...line, state: "done" as const, text: words(step, status.memo).done, until }]
     if (row.status === "failed" && !stoppedByTechnicalProblem(status))
-      return [{ ...line, state: "error" as const, text: `Stopped while ${during(step)}`, until }]
+      return [{ ...line, state: "error" as const, text: `Stopped while ${during(step, status.memo)}`, until }]
     return [{ ...line, state: "paused" as const, text: pauseText(status, step, row.status), until }]
   })
 }
 
 function pauseText(status: LeanDraftingStatus, step: string, state: string) {
-  if (state === "failed") return `Paused while ${during(step)} after a technical problem`
-  if (step !== "gate") return `Paused while ${during(step)}`
+  if (state === "failed") return `Paused while ${during(step, status.memo)} after a technical problem`
+  if (step !== "gate") return `Paused while ${during(step, status.memo)}`
   const blocking = status.gate?.blocking.length ?? status.open_items.filter((item) => item.status === "open").length
   return `Final check found ${blocking} open item${blocking === 1 ? "" : "s"} to resolve`
 }
 
-function words(step: string) {
-  return STAGES[step.split(".").at(-1) ?? step] ?? { during: step, done: `Finished ${step}` }
+/** A stage in words; the notes step of a run whose notes are the requested
+ * memo (`memo`) names that memo. */
+function words(step: string, memo?: string | null) {
+  const stage = step.split(".").at(-1) ?? step
+  if (stage === "finalize" && memo?.trim()) {
+    const notes = notesWording(memo)
+    return { during: `writing ${notes.phrase}`, done: `${notes.label} written` }
+  }
+  return STAGES[stage] ?? { during: step, done: `Finished ${step}` }
 }
 
-function during(step: string) {
-  return words(step).during
+function during(step: string, memo?: string | null) {
+  return words(step, memo).during
 }
 
 /** A line for the run starting or stopping work between two polls: a resume
@@ -223,7 +230,7 @@ export function runTransition(prev: LeanDraftingStatus, next: LeanDraftingStatus
   if (isWorking(prev) === isWorking(next)) return undefined
   if (isWorking(next)) {
     const step = activeStep(next)
-    return { state: "done" as const, text: step ? `Resumed, picking up with ${during(step)}` : "Resumed" }
+    return { state: "done" as const, text: step ? `Resumed, picking up with ${during(step, next.memo)}` : "Resumed" }
   }
   if (next.status !== "running") return undefined
   return {
@@ -248,7 +255,7 @@ export function activeStep(status: LeanDraftingStatus) {
 }
 
 /** A plain label for a step while it runs, e.g. "Drafting" or "Reviewing the draft". */
-export function stepActivityLabel(_status: LeanDraftingStatus, step: string) {
-  const text = during(step)
+export function stepActivityLabel(status: LeanDraftingStatus, step: string) {
+  const text = during(step, status.memo)
   return `${text[0]!.toUpperCase()}${text.slice(1)}`
 }

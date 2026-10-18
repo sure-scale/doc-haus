@@ -5,6 +5,7 @@ import {
   findingsConsequence,
   leanContinueAvailable,
   leanRunStopped,
+  notesWording,
   openQuestions,
   unresolvedFindingsPhrase,
 } from "../drafting/model"
@@ -99,7 +100,7 @@ export function resultChecks(status: LeanDraftingStatus): ResultCheck[] {
       ? { tone: "warn", text: `${unverified} requirement${unverified === 1 ? "" : "s"} left open by the checklist check` }
       : undefined,
     other
-      ? { tone: "neutral", text: `${other} other item${other === 1 ? "" : "s"} in the drafting notes` }
+      ? { tone: "neutral", text: `${other} other item${other === 1 ? "" : "s"} in ${notesWording(status.memo).phrase}` }
       : undefined,
   ]
   return checks.filter((check) => check !== undefined)

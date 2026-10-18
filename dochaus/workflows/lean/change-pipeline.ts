@@ -8,7 +8,7 @@ import { askedQuestions, checkChanges, parseJsonObject, questionIssues } from ".
 import { finalBodyParagraphs, readChangeList, readParagraphs, record, type ChangeList } from "./checks"
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { reviewStages, earlierDocuments, readLeanPlan, type DocID } from "./plan"
-import { stagePrompt, retryPrompt } from "./prompts"
+import { packageCompositionBlock, stagePrompt, retryPrompt } from "./prompts"
 import { matterSourceIDs, openItem, quoteFound, quoteMissIssue } from "./quotes"
 import { changesRepairSections, documentRepairs } from "./repairs"
 import { drainLeanRequests } from "./requests"
@@ -166,10 +166,12 @@ export function deferredFindingItems(directory: string) {
 export function changePreparationPrompt(directory: string, document: DocID, plan: ChangePlan, group: ChangeGroup) {
   const pids = new Set(group.pids)
   const prior = readChangeList(directory, document)
+  const composition = packageCompositionBlock(directory, document)
   return [
     ...(documentRepairs(directory, document)?.items.every(item => item.stage === "checklist-check") ? [
       "Prepare ONE accepted repair group using only its goals, source passages, listed initial paragraphs and related prior changes below. Original instructions and actual human answers determine scope; generated plans/research limits are not client waivers. Flagging, proposing and adopting are different actions. Preserve genuine uncertainty and do not invent approval or authority.",
       `<original_instructions_and_actual_answers>\n${JSON.stringify(checklistProducerInputs(directory).filter(row => row.key === "request").flatMap(row => [...row.input.passages, ...row.input.instructions]))}\n</original_instructions_and_actual_answers>`,
+      ...(composition ? [composition] : []),
       `Canonical uploaded originals: search-document/read-document view=source with exact source identity. Current generated documents: view=current_body with planned document ID; comments/deleted_text are separate views. Unavailable means no search occurred; lexical no hits is not absence. Read consecutive paragraphs around necessary definitions/exceptions, and related documents only when needed. Initial draft mapping: read-record .dochaus/lean/${document}/paragraphs.json. Current context records: .dochaus/lean/checklist-context/${document}.json. Prior amendments: .dochaus/lean/${document}/changes.json. Inspect only necessary records.`,
     ] : [stagePrompt(directory, `${document}.change-prepare`, { contextOnly: true })]),
     `<adjudicated_dependencies_not_independent_authority>\n${plan.shared_decisions.join("\n")}\n</adjudicated_dependencies_not_independent_authority>`,

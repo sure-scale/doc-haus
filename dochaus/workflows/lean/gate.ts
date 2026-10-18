@@ -1,12 +1,14 @@
 import type { ChecklistFindingClass } from "./checklist-classify"
 import type { ChecklistFinding, ChecklistItem } from "./checklist-contract"
-import { checklistOutputState, type ChecklistOpenFinding, type ChecklistUnresolvedFinding, type ChecklistUnresolvedParent } from "./stages"
+import { CHECKLIST_COVERAGE_ISSUES, type ChecklistCoverageIssue } from "./checklist-flow"
+import { checklistOutputState, type ChecklistOpenFinding, type ChecklistOutputState, type ChecklistUnresolvedFinding, type ChecklistUnresolvedParent } from "./stages"
 import { readChangeReview, deferredFindingItems } from "./change-pipeline"
 import { renderNotesCoverage } from "../../lib/notes-coverage-report"
 import { hasOpenItemMarker } from "../../lib/open-items"
 import { draftingPlaceholders } from "../../lib/placeholder-resolution"
 import { normalize } from "../../lib/quote-verify"
-import { finalBodyParagraphs, type ApplyResult } from "./checks"
+import { finalBodyParagraphs, standingIDPattern, type ApplyResult } from "./checks"
+import { memoMode, runItemIDs, withoutInternalIDs, withoutRefMarkers } from "./delivered-memo"
 import { FIRST_DOCUMENT, readLeanPlan, type DocID } from "./plan"
 import { readPackageReview } from "./package-review"
 import { coverageCarries, coverageItems, gateScopeParties } from "./package-coverage"
@@ -163,17 +165,29 @@ export function finalGate(directory: string): GateResult {
 }
 
 /** The notes delivered with a review draft that has unresolved checklist
- * findings: those findings first, each with its checklist item, the source it
- * records, its class, reason and limitation (the gate's own disclosure), then
- * the drafting notes unchanged. The drafting notes are written before the
- * checklist check, so they cannot list its findings. Undefined when there is
- * no such finding: the drafting notes are then delivered as written. */
+ * findings. The drafting notes are written before the checklist check, so they
+ * cannot list its findings. Undefined when there is no such finding and no
+ * requested memo: the drafting notes are then delivered as written.
+ *
+ * Without a requested memo, the findings lead: each with its checklist item,
+ * the source it records, its class, reason and limitation (the gate's own
+ * disclosure), then the drafting notes unchanged.
+ *
+ * A requested memo is always delivered from here, without its "[ref: …]"
+ * markers, and it comes first: its own title and body, then a closing section
+ * that discloses each finding as a requirement not confirmed as met, worded
+ * from the checklist item's requirement and source quotes rather than the
+ * checker's detail, so its lines name no internal id: no checklist item,
+ * conflict list, request locator or paragraph pointer. */
 export function deliveredNotes(directory: string, gate: GateResult): string | undefined {
+  const memo = memoMode(directory)
+  const drafted = readLeanText(directory, "drafting-notes.md")
   const findings = gate.items.filter(item => item.kind === "checklist_unresolved")
-  if (!findings.length) return
+  if (!findings.length) return memo && drafted !== undefined ? withoutRefMarkers(drafted) : undefined
   const checked = checklistOutputState(directory)
   const items = new Map<string, ChecklistItem>([...checked.unresolved.map(row => [row.item_id, row.item] as const),
     ...checked.unresolvedParents.map(row => [row.parent_id, row.item] as const)])
+  if (memo) return memoWithFindings(directory, gate, drafted, findings, items, checked)
   const entries = findings.map(finding => {
     const id = finding.ref.checklist_item ?? finding.id
     const sources = (items.get(id)?.source_refs ?? []).map(ref => `${ref.document}, ${ref.locator}: "${ref.quote}"`)
@@ -181,7 +195,265 @@ export function deliveredNotes(directory: string, gate: GateResult): string | un
   })
   return ["# Checklist findings not satisfied", "",
     "These checklist requirements were not established as satisfied. Each is disclosed with this review draft for review; none is treated as satisfied.", "",
-    ...entries, "", readLeanText(directory, "drafting-notes.md") ?? ""].join("\n")
+    ...entries, "", drafted ?? ""].join("\n")
+}
+
+/** A requested memo as delivered with its unresolved checklist findings: the
+ * memo first, without its markers, then one closing section listing each
+ * finding by its requirement and source quotes. The request's locators
+ * (internal paths) give way to its label. A finding whose item cannot be found
+ * takes its requirement from its detail, cut of its conflict list, or falls
+ * back to that detail. Each line gives the requirement, why it is unmet (a
+ * plain status for its class, then its reason) and its sources. A checked
+ * finding's reason is its own recorded reason, limitation and open decisions;
+ * a refined parent's is one plain reason for each kind of coverage issue it
+ * records, once each and in order, or one plain reason that part of it is
+ * unmet when it records none. A planned document's id in that wording
+ * becomes the document's title. A finding that conflicts with another
+ * requirement says so, without naming either. Each line still loses any known
+ * run id. Its source quotes and the titles put in for ids are held aside from
+ * both passes and put back after them, so each reaches the reader as written:
+ * quotation marks inside one pair with nothing else on the line. */
+function memoWithFindings(directory: string, gate: GateResult, drafted: string | undefined, findings: OpenItem[], items: Map<string, ChecklistItem>, checked: ChecklistOutputState) {
+  const known = runItemIDs(directory, gate.items)
+  const documents = readLeanPlan(directory)?.documents ?? []
+  const conflicted = new Set(checked.unresolved.filter(row => row.conflicting_item_ids?.length).map(row => row.item_id))
+  const recorded = new Map(checked.unresolved.map(row => [row.item_id, row.finding]))
+  const parents = new Map(checked.unresolvedParents.map(row => [row.parent_id, row]))
+  const entries = findings.map(finding => {
+    // The n-th text held aside stands as n U+FDEE between two U+FDEF:
+    // noncharacters, never in document text, that neither pass reads.
+    const held: string[] = []
+    const hold = (text: string) => `\uFDEF${"\uFDEE".repeat(held.push(text))}\uFDEF`
+    const id = finding.ref.checklist_item ?? finding.id
+    const item = items.get(id)
+    const sources = (item?.source_refs ?? []).map(ref => `${ref.document === "request" || ref.locator.startsWith(".dochaus/") ? ref.document
+      : `${ref.document}, ${ref.locator}`}: ${hold(`"${ref.quote}"`.replace(/\s+/g, " "))}`)
+    const detail = finding.detail.replace(/ Conflicting checklist items: \S+(?:, \S+)*\.$/, "")
+    // Why the requirement is unmet, chosen by what the gate item is: a checked
+    // finding has a class, a refined parent has none. Each takes its reason
+    // from the checklist output the gate was built from; only an item that
+    // output no longer holds is read back from its detail.
+    const kind = finding.ref.checklist_class
+    const own = kind ? recorded.get(id) : undefined
+    const parent = kind ? undefined : parents.get(id)
+    const read = own || parent ? undefined : readMemoFinding(detail, !kind, known)
+    const status = memoStatus(kind, parent?.status ?? read?.coverage)
+    const reasons = own ? [findingText(own).join(" ").replace(/^Finding: /, "")]
+      : parent ? (parent.issue_kinds.length ? parent.issue_kinds.map(issue => MEMO_COVERAGE_REASON[issue]) : [MEMO_PARENT_REASON]) : read?.reasons ?? []
+    const reason = [...new Set(reasons)].join(" ")
+    const requirement = item ? sentence(item.check) : read?.requirement
+    const why = [status, reason ? `Reason: ${reason}` : ""].filter(Boolean).join(" ")
+    const text = requirement ? `${requirement}${why ? ` ${why}` : ""}` : detail
+    // A source-conflict status already says so.
+    const conflict = (conflicted.has(id) || detail !== finding.detail) && finding.ref.checklist_class !== "source_conflict" ? " It conflicts with another requirement." : ""
+    const line = `- ${text}${conflict}${sources.length ? ` Source: ${sources.join("; ")}` : ""}`.replace(/\s+/g, " ").trim()
+    return withoutInternalIDs(withDocumentTitles(line, documents, known, hold), known).replace(/\uFDEF(\uFDEE+)\uFDEF/g, (_, count: string) => held[count.length - 1]!)
+  })
+  const body = withoutRefMarkers(drafted ?? "").trimEnd()
+  return [...(body ? [body, ""] : []), "## Requirements not confirmed as met", "",
+    "These requirements were not confirmed as met in this draft and need the lawyer's review.", "",
+    ...entries, ""].join("\n")
+}
+
+/** What a memo finding's class means for the reader and what the lawyer should
+ * check, in place of the workflow's own label, which names its stages. */
+const MEMO_STATUS: Record<ChecklistFindingClass, string> = {
+  omission: "Status: not met in this draft; check whether the draft should be changed to meet it.",
+  missing_inspection: "Status: could not be confirmed from the draft; check the draft against it.",
+  source_conflict: "Status: conflicts with another requirement in the sources; check which one governs.",
+  not_inspectable: "Status: cannot be confirmed from the document text; check it directly.",
+  departure: "Status: the draft departs from it on purpose; check that the departure is intended.",
+}
+
+/** A memo finding's plain status: by its class, or for a refined parent by its
+ * reconciled coverage; none when neither is recorded. */
+function memoStatus(kind: ChecklistFindingClass | undefined, coverage: ChecklistUnresolvedParent["status"] | undefined) {
+  if (kind) return MEMO_STATUS[kind]
+  return coverage === "unsatisfied" ? MEMO_STATUS.omission : coverage === "indeterminate" ? MEMO_STATUS.missing_inspection : ""
+}
+
+/** Why a refined parent is unmet, in plain words for each kind of coverage
+ * issue it records, saying only what that issue says, without the checker's
+ * terms or the ids of the checks it names. */
+const MEMO_COVERAGE_REASON: Record<ChecklistCoverageIssue, string> = {
+  scope: "The checks it was broken into are incomplete or do not match it.",
+  no_finding: "A check of part of it did not complete.",
+  inspect: "Whether part of it was carried out, or applies, could not be confirmed from the draft.",
+  adoption_evidence: "No current text or file in the draft shows that part of it was adopted.",
+  deferred_property: "Part of it depends on a document-wide property that was not decided.",
+}
+
+/** Why a refined parent is unmet when it records no coverage issue: one of the
+ * checks it was broken into is itself unmet or unconfirmed. */
+const MEMO_PARENT_REASON = "Part of it was not confirmed as met."
+
+/** A memo finding read back from its gate detail, for an item the checklist
+ * output no longer holds: its coverage, its requirement and its reasons. The
+ * detail's builder wrote the requirement first and the reason field ("Finding:"
+ * for a checked finding, "Coverage:" for a refined parent) after it, so the
+ * field is found from the end, and a requirement that itself names such a
+ * field stays whole. */
+function readMemoFinding(detail: string, parent: boolean, known: string[]) {
+  const [, label, rest] = /^Checklist requirement unresolved(?: across its refined checks)? \(([^)]*)\): (.*)$/.exec(detail) ?? []
+  if (rest === undefined) return undefined
+  const coverage = label === "not satisfied" ? "unsatisfied" as const : label === "could not be established" ? "indeterminate" as const : undefined
+  const field = parent ? " Coverage: " : " Finding: "
+  const at = rest.lastIndexOf(field)
+  if (at < 0) {
+    const requirement = parent ? rest.replace(/ A refined check remains adverse\.$/, "") : rest
+    return { coverage, requirement, reasons: requirement === rest ? [] : [MEMO_PARENT_REASON] }
+  }
+  const recorded = rest.slice(at + field.length)
+  return { coverage, requirement: rest.slice(0, at), reasons: parent ? recorded.split(/(?<=[.!?]) +/).map(issue => memoCoverageReason(issue, known)) : [recorded] }
+}
+
+/** One coverage issue read back from a refined parent's detail: the plain
+ * reason for its kind when it has the form its producer writes, else the issue
+ * as written, without a leading run id that only names the check it concerns. */
+function memoCoverageReason(issue: string, known: string[]) {
+  const kinds = Object.keys(CHECKLIST_COVERAGE_ISSUES) as (keyof typeof CHECKLIST_COVERAGE_ISSUES)[]
+  const kind = kinds.find(kind => {
+    const text = CHECKLIST_COVERAGE_ISSUES[kind]
+    return issue.endsWith(` ${text}`) && (kind === "deferred_property" ? /^[^\s:]+: [^\s:,]+(?:, [^\s:,]+)*$/ : /^[^\s:]+:$/).test(issue.slice(0, -text.length - 1))
+  })
+  if (kind) return MEMO_COVERAGE_REASON[kind]
+  const [, label, rest] = /^([^\s:]+): (.+)$/.exec(issue) ?? []
+  const text = label && known.includes(label.split("/")[0]!) ? rest! : issue
+  return `${text.charAt(0).toUpperCase()}${text.slice(1)}`
+}
+
+/** The determiners that lead a document's title in place of its article. */
+const DETERMINERS = String.raw`[Tt]he|[Aa]n?|[Tt]his|[Tt]hese|[Tt]hose|[Ee]ach|[Ee]very|[Aa]ny|[Ii]ts|[Tt]heir|[Oo]ur|[Yy]our|[Ww]hose`
+
+/** A determiner ending the text before an id, or a possessive: the title then
+ * takes no article. One modifier may stand between the determiner and the id
+ * ("the inspected d1", "each delivered d1"); determinerLeads decides when that
+ * word is not the id's. */
+const DETERMINER = new RegExp(String.raw`\b(?:${DETERMINERS})[ \t]+(?:(?!(?:is|are|was|were|be|to|of|in|on|for|with|by|from|as|at|and|or|not|than|that|which)[ \t])[a-z-]+[ \t]+)?$|'s[ \t]+$`)
+
+/** Whether a determiner (DETERMINER) leads the id after `before`. The one
+ * modifier is not the id's when it heads a phrase of its own (PHRASE_HEAD), so
+ * the id keeps its article; any other modifier is the id's ("under the
+ * executed d1 is", "the inspected d1,"). */
+function determinerLeads(before: string) {
+  return DETERMINER.test(before) && !PHRASE_HEAD.test(before)
+}
+
+/** A modifier slot holding the head of its own phrase: after a preposition and
+ * a determiner, one of the closed set of nouns that, so placed, open a clause
+ * (complex subordinators: "in the event d1 and d2 are signed", "to the extent
+ * d2's terms are silent", "in each case", "by the time"); or a plural noun the
+ * ids stand beside ("the documents d1 and d2"), which no singular title takes
+ * as a modifier. A word ending "-ss" or "-us" is not counted as plural. */
+const PHRASE_HEAD = new RegExp(String.raw`(?:\b(?:[Ii]n|[Oo]n|[Aa]t|[Tt]o|[Bb]y|[Ff]or|[Ff]rom|[Ww]ith|[Oo]f|[Uu]nder|[Uu]pon)[ \t]+(?:${DETERMINERS})[ \t]+(?:event|extent|case|time|degree|moment)|\b(?:${DETERMINERS})[ \t]+[a-z-]*[a-rtv-z]s)[ \t]+$`)
+
+/** A finding's wording with each planned document id, written by the checklist
+ * for its own use, as the reader knows that document: by its title. Two ids
+ * joined by an en dash ("d1–d3"), not in a longer run of joined ids, are a
+ * range: every planned document from the first to the last in plan order,
+ * named as one list ("the A, the B and the C") whose first title takes the
+ * article a single id would. Two different ids joined by a hyphen ("d1-d3")
+ * name just those two ("the A and the C"). Range ends that are reversed or the
+ * same, a range over an untitled document and ids joined by "/" are each
+ * named. A planned id joined by "/" or a dash to another of the run's `known`
+ * ids (a change, a paragraph pointer, an untitled document) is joined to it by
+ * "and" instead, so its title stands apart and the id removal names that id by
+ * its kind. "notes" joined to a planned id by "/" or a dash is this memo, joined
+ * to that document by "and" ("the A and this memo"). An id joined by a hyphen
+ * to a word ("d1-specific") qualifies it and becomes the title alone. A
+ * parenthesis holding only target ids (a planned document's, or "notes" for
+ * the memo itself) labels the words before it: it is dropped when it names
+ * only the memo, and otherwise names its documents ("notes" as this memo) but
+ * the one whose title stands just before it; the others are then joined to
+ * that title ("the A (and the B)"), not read as another name for it. Ids
+ * joined by a dash there stay one label. An id between a determiner and a
+ * capitalized name ("the d1 Lease") labels that name and follows it as its
+ * title, unless the name already gives the title. Every other id becomes the
+ * title, led by its own article or "the" unless a determiner leads it
+ * (determinerLeads), and capitalized where a sentence or a field starts. A
+ * period after an abbreviation, dotted ("e.g.") or a lowercase or
+ * capitalized word with no vowel ("cl.", "v.", "Sch."), ends no sentence; an
+ * acronym's ("GDPR.") may. A quotation, straight or curly, holding only
+ * planned ids ("d2", “d1/d3”) names them; other quoted text is left to the id
+ * removal that follows. Each title put in goes through `hold`, which keeps it
+ * whole through that removal. */
+function withDocumentTitles(line: string, documents: { id: string; title: string }[], known: string[], hold: (title: string) => string) {
+  const titles = new Map(documents.filter(row => row.title.trim()).map(row => {
+    const [, article = "the", rest] = /^(?:(the|an?)[ \t]+)?(.*)$/i.exec(row.title.trim())!
+    return [row.id, { article: article.toLowerCase(), rest: rest! }]
+  }))
+  if (!titles.size) return line
+  const alternation = (rows: string[]) => rows.toSorted((a, b) => b.length - a.length).map(id => id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")
+  const ids = alternation([...titles.keys()])
+  // A titled id and the other run ids the id removal names, joined in one run.
+  const any = alternation([...titles.keys(), ...known.filter(id => id.length > 1 && id !== "notes" && !titles.has(id))])
+  const mixed = new RegExp(String.raw`(?<![\w:./-])(?:${any})(?:[/\u2013-](?:${any}))+(?![\w-]|[.:/]\w)`, "g")
+  const joined = new RegExp(String.raw`${any}|[/\u2013-]`, "g")
+  const label = `(?:${ids}|notes)`
+  const labels = new RegExp(String.raw`[ \t]*\(${label}(?:[ \t]*,[ \t]*(?:(?:and|or)[ \t]+)?${label}|[ \t]+(?:and|or|&)[ \t]+${label}|[/\u2013-]${label})*\)`, "g")
+  const memo = new RegExp(String.raw`(?<![\w:./-])${label}(?:[/\u2013-]${label})+(?![\w-]|[.:/]\w)`, "g")
+  const standing = new RegExp(String.raw`(${standingIDPattern(ids)})([ \t]+[A-Z][\w'-]*(?:[ \t]+[A-Z\d][\w'-]*(?:\.\d+)*)*)?`, "g")
+  const range = new RegExp(String.raw`(?<![/\u2013-])(${standingIDPattern(ids)})([\u2013-])(${standingIDPattern(ids)})(?![/\u2013-][a-z]\d)`, "g")
+  const compound = new RegExp(String.raw`(?<![\w:./-])(${ids})-(?=[a-z]{2,}\b(?!-?\d))`, "g")
+  const order = documents.map(row => row.id)
+  // A title led by its own article or "the", or by the determiner before it;
+  // its opening letter capitalized where a sentence or a field starts.
+  const named = (id: string, led: boolean) => {
+    const { article, rest } = titles.get(id)!
+    return led ? rest : `${article} ${rest}`
+  }
+  const opening = (before: string, text: string) =>
+    /^(?:-[ \t]+)?$|(?:(?<!\.[A-Za-z]|\b[^\W\da-zAEIOUY_]?[^\W\dA-Zaeiouy_]+)\.|[!?]|Reason:|Limitation:|Open decisions:)[ \t]+$/.test(before) ? text[0]!.toUpperCase() + text.slice(1) : text
+  // Joints written "/" or with a dash between the memo and a document read "and".
+  const memoJoint = (joint: string, left: string, right: string) => (left === "notes" || right === "notes") && /^[/\u2013-]$/.test(joint) ? " and " : joint
+  // A quotation holding only planned ids is those ids, its marks dropped.
+  const quoted = new RegExp(String.raw`^(?:${ids})(?:[/\u2013-](?:${ids}))*$`)
+  const unquoted = line.replace(/"[^"\n]*"|\u201c[^\u201d\n]*\u201d/g, quote => quoted.test(quote.slice(1, -1)) ? quote.slice(1, -1) : quote)
+  return unquoted.split(/("[^"\n]*"|\u201c[^\u201d\n]*\u201d)/).map((part, index) => index % 2 ? part : part
+    .replace(mixed, run => {
+      const parts = run.match(joined)!
+      return parts.map((part, index) => index % 2 && titles.has(parts[index - 1]!) !== titles.has(parts[index + 1]!) ? " and " : part).join("")
+    })
+    .replace(labels, (match, offset: number, text: string) => {
+      // Its labels, each with the joint before it; ids joined by a dash are
+      // one, but the memo is not part of a range.
+      const [, space, inside] = /^([ \t]*)\((.*)\)$/.exec(match)!
+      const parts = inside!.split(/([ \t]*,[ \t]*(?:(?:and|or)[ \t]+)?|[ \t]+(?:and|or|&)[ \t]+|\/|[\u2013-](?=notes\b)|(?<=\bnotes)[\u2013-])/)
+      const rows = parts.flatMap((label, index) => index % 2 ? [] : [{ joint: index ? parts[index - 1]! : "", label }])
+      if (rows.every(row => row.label === "notes")) return ""
+      const before = text.slice(0, offset).toLowerCase()
+      const shown = rows.filter(row => !titles.has(row.label) || !before.endsWith(titles.get(row.label)!.rest.toLowerCase()))
+      if (!shown.length) return ""
+      // Labels left after the title's own is dropped join that title, and the
+      // list keeps its last joint.
+      const joints = shown.map(row => row.joint)
+      if (shown.length > 1 && shown.at(-1) !== rows.at(-1)) joints[joints.length - 1] = rows.at(-1)!.joint
+      const lead = shown.length === rows.length ? "" : rows.some(row => /\bor\b/.test(row.joint)) ? "or " : "and "
+      return `${space}(${lead}${shown.map((row, index) => `${index ? memoJoint(joints[index]!, shown[index - 1]!.label, row.label) : ""}${row.label === "notes" ? "this memo" : row.label}`).join("")})`
+    })
+    .replace(memo, (match, offset: number, text: string) => {
+      const parts = match.split(/([/\u2013-])/)
+      if (!parts.includes("notes") || parts.every((part, index) => index % 2 || part === "notes")) return match
+      const run = parts.map((part, index) => index % 2 ? memoJoint(part, parts[index - 1]!, parts[index + 1]!) : part === "notes" ? "this memo" : part).join("")
+      return parts[0] === "notes" ? opening(text.slice(0, offset), run) : run
+    })
+    .replace(range, (match, first: string, joint: string, last: string, offset: number, text: string) => {
+      const run = joint === "-" ? (first === last ? [] : [first, last]) : order.slice(order.indexOf(first), order.indexOf(last) + 1)
+      if (run.length < 2 || !run.every(id => titles.has(id))) return match
+      const before = text.slice(0, offset)
+      const led = determinerLeads(before)
+      const list = run.map((id, index) => named(id, led && !index))
+      return hold(opening(before, `${list.slice(0, -1).join(", ")} and ${list.at(-1)}`))
+    })
+    .replace(compound, (_, id: string, offset: number, text: string) => `${hold(opening(text.slice(0, offset), titles.get(id)!.rest))}-`)
+    .replace(standing, (_, id: string, name: string | undefined, offset: number, text: string) => {
+      const before = text.slice(0, offset), after = text.slice(offset + id.length)
+      const { article, rest } = titles.get(id)!
+      const led = determinerLeads(before)
+      if (led && name) return after.trimStart().toLowerCase().startsWith(rest.toLowerCase()) ? name.trimStart() : `${name.trimStart()} (${hold(`${article} ${rest}`)})`
+      return `${hold(opening(before, named(id, led)))}${name ?? ""}`
+    })).join("")
 }
 
 /** The drafting-notes coverage report for the gate: every item with its outcome, and
@@ -270,6 +542,12 @@ export function checklistFindingLabel(directory: string, state: LeanState | unde
 
 const UNRESOLVED = "not established as satisfied; disclosed with the review draft"
 
+/** The other checklist items an adverse finding conflicts with, as its
+ * disclosure names them. */
+function conflictText(ids: string[] | undefined) {
+  return ids?.length ? `Conflicting checklist items: ${ids.join(", ")}.` : ""
+}
+
 /** A completed finding that remains adverse, disclosed with its class and its
  * own recorded reason and limitation. It is never a pass and never blocks. A
  * source conflict refers to the gate's question on it. */
@@ -277,7 +555,7 @@ function checklistUnresolvedItem(directory: string, state: LeanState | undefined
   const { item_id, item, finding, class: kind, conflicting_item_ids } = row
   const document = checklistDocument(directory, item)
   const detail = [`Checklist requirement unresolved (${checklistFindingLabel(directory, state, row)}): ${sentence(item.check)}`, ...findingText(finding),
-    conflicting_item_ids?.length ? `Conflicting checklist items: ${conflicting_item_ids.join(", ")}.` : ""].filter(Boolean).join(" ")
+    conflictText(conflicting_item_ids)].filter(Boolean).join(" ")
   return { ...openItem("checklist-check", "checklist_unresolved", detail, { checklist_item: item_id, checklist_class: kind, ...(document ? { document } : {}),
     ...(kind === "source_conflict" && questionID ? { question_id: questionID } : {}) }),
     status: "disclosed", resolution: UNRESOLVED }

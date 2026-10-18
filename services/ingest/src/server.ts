@@ -2,6 +2,7 @@ import { playbookLibraryRoutes } from "./playbook-library"
 import { updateRoutes, managedUpdateOwner } from "./updater"
 import { RepoUpdater } from "../../../scripts/updater"
 import { documentCopyRoutes } from "./document-copy"
+import { combinedOutputRoutes } from "./combined-output"
 import { documentLabelRoutes } from "./document-labels"
 import { answerDraftRoutes } from "./answer-drafts"
 import { readEngineSettings, patchEngineConfig, engineConfigFile } from "./engine-config"
@@ -596,6 +597,10 @@ app.post("/matters/:id/deliverables", async (c) => {
 
 app.route("/", documentCopyRoutes(matterDir))
 
+// A combined document's one requested file, built from its registered body and
+// notes on each download; see combined-output.ts.
+app.route("/", combinedOutputRoutes(matterDir))
+
 // Persist an edit to an already registered document while preserving its role.
 // Editing a generated deliverable must never promote it into source retrieval.
 app.post("/matters/:id/documents/revisions", async (c) => {
@@ -868,8 +873,7 @@ app.post("/matters/:id/redlines/:rid/accept", async (c) => {
   const row = getRedline(initialDb, Number(c.req.param("rid")))
   initialDb.close()
   if (!row || row.status !== "pending") return c.json({ error: "Redline not found or already resolved" }, 404)
-  let accepted: RedlineRow[] = []
-  const response = await withArtifactMutationLocksAsync(dir, [row.doc_name, ".dochaus/source-corpus"], async () => {
+  return withArtifactMutationLocksAsync(dir, [row.doc_name, ...runNotesLock(dir), ".dochaus/source-corpus"], async () => {
     const db = openDb(dir)
     const current = getRedline(db, row.id)
     db.close()
@@ -884,15 +888,12 @@ app.post("/matters/:id/redlines/:rid/accept", async (c) => {
       if (stale || working && working.source_sha256 !== prior) return c.json({error:stale ?? "The working Word revision is inconsistent. Refresh it through the revision API."},409)
       const baked = await bake(original,[current],state)
       await writeDocumentRevision(dir,current.doc_name,Buffer.from(baked),[current.id],prior,current.target_json != null)
-      accepted = [current]
-      return c.json({ok:true})
     } catch (error) {
       console.warn("[redline] acceptance refused",diagnosticErrorMetadata(error))
       return c.json({error:"Acceptance could not be confirmed. Refresh the document and change list before trying again."},409)
     }
+    return c.json({ ok: true, ...await recordAcceptedChangesInRunNotes(dir, row.doc_path, [current]) })
   })
-  const notes = await recordAcceptedChangesInRunNotes(dir, row.doc_path, accepted)
-  return notes ? c.json({ ok: true, ...notes }) : response
 })
 
 app.post("/matters/:id/redlines/:rid/reject", async (c) => {
@@ -923,8 +924,7 @@ app.post("/matters/:id/redlines/accept-all", async (c) => {
   const name = matterDocumentName(requested) ?? deliverableDocumentName(requested)
   if (!name) return c.json({ error: "The document filename or extension is not supported." }, 400)
   const file = path.join(dir, name)
-  let accepted: RedlineRow[] = []
-  const response = await withArtifactMutationLocksAsync(dir, [name, ".dochaus/source-corpus"], async () => {
+  return withArtifactMutationLocksAsync(dir, [name, ...runNotesLock(dir), ".dochaus/source-corpus"], async () => {
     if (!existsSync(file) || !existsSync(path.join(dir, ".dochaus", "legal.db")))
       return c.json({ ok: true, accepted: 0 })
     const db = openDb(dir)
@@ -939,15 +939,12 @@ app.post("/matters/:id/redlines/accept-all", async (c) => {
       const stale = rows.map((row) => redlineStaleReason(row,state,Boolean(working))).find(Boolean)
       if (stale || working && working.source_sha256 !== prior) return c.json({error:stale ?? "The working Word revision is inconsistent. Refresh it through the revision API."},409)
       await writeDocumentRevision(dir,name,Buffer.from(await bake(original,rows,state)),rows.map((row) => row.id),prior,rows.some((row) => row.target_json != null))
-      accepted = rows
-      return c.json({ok:true,accepted:rows.length})
     } catch (error) {
       console.warn("[redline] batch acceptance refused",diagnosticErrorMetadata(error))
       return c.json({error:"Batch acceptance could not be confirmed. Refresh the document and change list before trying again."},409)
     }
+    return c.json({ ok: true, accepted: rows.length, ...await recordAcceptedChangesInRunNotes(dir, file, rows) })
   })
-  const notes = await recordAcceptedChangesInRunNotes(dir, file, accepted)
-  return notes ? c.json({ ok: true, accepted: accepted.length, ...notes }) : response
 })
 
 app.post("/matters/:id/redlines/reject-all", async (c) => {
@@ -994,8 +991,10 @@ async function writeDocumentRevision(
 // Changes accepted into the body of a completed lean run are appended to that
 // run's registered drafting notes (notes-addendum.ts), which otherwise describe
 // only the checked draft. The run's delivery summary links its body and notes;
-// nothing new is stored. This runs after the body write has committed and its
-// lock is released, so the notes lock is never taken inside the body lock. The
+// nothing new is stored. This runs after the body write has committed, inside
+// the accept's lock set, which already holds the notes lock (runNotesLock), so
+// a combined download never pairs the accepted body with the notes from before
+// it; the nested lock calls here re-enter the held locks. The
 // notes go through the same revision writer as an accepted Word change, so they
 // keep their name and a later delivery neither writes over nor forks them.
 // Best-effort: the accepted body stands, a skipped addendum is logged and
@@ -1052,6 +1051,21 @@ async function recordAcceptedChangesInRunNotes(directory: string, body: string, 
     })
   } catch (error) {
     return skipped("write_failed", error)
+  }
+}
+
+/** The completed run's delivered notes, as the extra lock an accept takes with
+ * its body's so the body write and the notes addendum form one critical section.
+ * Read before locking; empty when there are no such notes or they are a link,
+ * which the addendum then skips. */
+function runNotesLock(directory: string): string[] {
+  try {
+    const summary = readLeanDocuments(directory)
+    if (readLeanState(directory)?.status !== "completed" || summary?.status !== "completed") return []
+    const notes = summary.documents.find((row) => row.kind === "drafting_notes")?.deliverable
+    return notes && deliverableDocumentName(notes) === notes && readDocumentTarget(directory, notes) ? [notes] : []
+  } catch {
+    return []
   }
 }
 

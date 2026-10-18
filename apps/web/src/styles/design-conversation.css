@@ -544,13 +544,15 @@
   white-space: nowrap;
 }
 
-.design-conversation .result-document-actions > a {
+.design-conversation .result-document-actions > a,
+.design-conversation .result-document-actions > button.result-download {
   font-size: 12px;
   color: var(--text-secondary);
   text-underline-offset: 4px;
 }
 
-.design-conversation .result-document-actions > a:hover {
+.design-conversation .result-document-actions > a:hover,
+.design-conversation .result-document-actions > button.result-download:hover:not(:disabled) {
   color: var(--accent);
   text-decoration: underline;
 }

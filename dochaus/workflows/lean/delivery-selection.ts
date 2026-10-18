@@ -1,3 +1,4 @@
+import { memoAnchor, memoNotesFile } from "./deliverables"
 import { readLeanPlan, type DocID } from "./plan"
 import { instructionFound } from "./quotes"
 
@@ -39,7 +40,15 @@ function deliveryNameQuoted(quote: string, file: string) {
 }
 
 /** Only the delivery metadata changes. Stable document ids, source foundations,
- * drafting intent and all operative parts remain the accepted plan's values. */
+ * drafting intent and all operative parts remain the accepted plan's values.
+ * A selected notes name replaces the notes file and never turns on a memo; a
+ * requested memo keeps its name. Without one, a memo file still named as
+ * memoNotesFile names it is named again after its anchor document (memoAnchor,
+ * chosen on the plan), so it follows a rename of that document's body file only;
+ * a redline selection, a selection on another document or any other memo file
+ * leaves it. A body selection on a combined document names the combined
+ * file and keeps it combined; a redline selection still makes it a redline
+ * deliverable. */
 export function selectedDeliveryPlan(directory: string, selections: DeliverySelection[]) {
   const plan = readLeanPlan(directory)
   if (!plan) return
@@ -47,9 +56,16 @@ export function selectedDeliveryPlan(directory: string, selections: DeliverySele
   const notes = selections.find(row => row.role === "drafting_notes")
   const documents = plan.documents.map(row => {
     const selection = selected.get(row.id)
-    return selection && (row.file !== selection.file || (row.deliverable ?? "body") !== selection.role)
-      ? { ...row, file: selection.file, deliverable: selection.role } : row
+    if (!selection) return row
+    const role = row.deliverable === "combined" && selection.role === "body" ? "combined" : selection.role
+    return row.file !== selection.file || (row.deliverable ?? "body") !== role ? { ...row, file: selection.file, deliverable: role } : row
   })
-  return documents.some((row, index) => row !== plan.documents[index]) || (notes && notes.file !== plan.notes_file)
-    ? { ...plan, documents, ...(notes ? { notes_file: notes.file } : {}) } : undefined
+  // The memo follows only a rename of its plan-time anchor document's body
+  // file, never a redline file or another document.
+  const anchor = memoAnchor(plan.documents)
+  const renamed = documents.find(row => row.id === anchor?.id)
+  const follows = !notes && plan.memo && anchor && renamed && plan.notes_file === memoNotesFile(plan.documents, plan.memo)
+  const notesFile = notes ? notes.file : follows && renamed.deliverable !== "redline" ? memoNotesFile([renamed], plan.memo!) : plan.notes_file
+  return documents.some((row, index) => row !== plan.documents[index]) || notesFile !== plan.notes_file
+    ? { ...plan, documents, ...(notesFile !== undefined ? { notes_file: notesFile } : {}) } : undefined
 }

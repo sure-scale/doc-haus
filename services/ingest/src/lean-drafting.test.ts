@@ -30,8 +30,15 @@ import {
   leanDraftingStatus,
   startLeanDraftingRun,
 } from "./lean-drafting"
+import { renderMarkdownToDocx } from "../../../dochaus/lib/render"
+import { memoNotesFile, recordLeanDocuments } from "../../../dochaus/workflows/lean/deliverables"
+import { writeLeanPlan, type PlannedDocument } from "../../../dochaus/workflows/lean/plan"
+import { writeLeanBytes } from "../../../dochaus/workflows/lean/state"
+import { scriptedLeanModel } from "../../../dochaus/workflows/lean/test-support"
+import { openDb } from "./db"
 import { writeDeliverable, writeDeliverableRevision } from "./deliverable"
 import { acceptedWorkingDocxUpdate } from "./document-amendments"
+import { registerLeanDeliverable } from "./lean-deliverables"
 
 // The coordinator, state files and routes are real; only the model behind the
 // engine session port is scripted.
@@ -833,3 +840,47 @@ test("checker events time the model wait and the check as numbers, never content
   expect(status.last_progress_at >= events.at(-1)!.at).toBe(true)
   expect(status.last_progress_at >= status.updated_at).toBe(true)
 }, 120_000)
+
+const SUPPLY_NOTE: Omit<PlannedDocument, "id"> = { title: "Supply note", purpose: "Operative terms", parts: [{ heading: "Delivery", scope: "Delivery terms" }] }
+const SUPPLY_PACK: Omit<PlannedDocument, "id"> = { ...SUPPLY_NOTE, file: "supply-pack.docx", deliverable: "combined" }
+
+/** The run's outputs for one planned document, registered as matter deliverables. */
+async function deliverRun(directory: string) {
+  const body = (await renderMarkdownToDocx("# Supply note\n\n## Delivery\n\nThe supplier delivers the goods.")).bytes
+  writeLeanBytes(directory, "d1/body-applied.docx", body)
+  writeLeanBytes(directory, "d1/redline.docx", body)
+  const notes = "# Cover memo\n\nThe start date needs confirmation."
+  writeLeanBytes(directory, "drafting-notes.docx", (await renderMarkdownToDocx(notes)).bytes)
+  writeLeanText(directory, "drafting-notes.md", `${notes}\n`)
+  await recordLeanDocuments(directory, { sessions: scriptedLeanModel().port, registerDeliverable: registerLeanDeliverable }, true)
+}
+
+test("status names the requested memo and a combined document's delivered parts by their exact registered names", async () => {
+  const directory = leanFixtureMatter("lean-combined-status-", dir => openDb(dir).close())
+  directories.push(directory)
+  // Before the outline: no memo, no combined file.
+  expect(leanDraftingStatus(directory)).toMatchObject({ memo: null, combined_output: null })
+  writeLeanPlan(directory, [SUPPLY_PACK], undefined, undefined, { name: "cover memo", file: memoNotesFile([SUPPLY_PACK], "cover memo") })
+  // Planned with the memo but not delivered: the memo is named, no combined file yet.
+  expect(leanDraftingStatus(directory)).toMatchObject({ memo: "cover memo", combined_output: null })
+  // An older run's file holds the body's first name, so the body registers under its next free name.
+  writeFileSync(path.join(directory, "supply-pack - clean.docx"), "an older run's body")
+  await deliverRun(directory)
+  const status = leanDraftingStatus(directory)!
+  expect(status.memo).toBe("cover memo")
+  expect(status.combined_output).toEqual({
+    document: "d1",
+    name: "supply-pack",
+    file: "supply-pack.docx",
+    body: "supply-pack - clean (2).docx",
+    notes: "supply-pack - cover memo.docx",
+  })
+}, 60_000)
+
+test("a run without a requested memo reports no memo and no combined file", async () => {
+  const directory = leanFixtureMatter("lean-plain-status-", dir => openDb(dir).close())
+  directories.push(directory)
+  writeLeanPlan(directory, [SUPPLY_NOTE])
+  await deliverRun(directory)
+  expect(leanDraftingStatus(directory)).toMatchObject({ memo: null, combined_output: null })
+}, 60_000)

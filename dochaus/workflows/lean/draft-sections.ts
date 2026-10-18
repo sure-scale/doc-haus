@@ -2,13 +2,14 @@ import { playbookSelectionIssues } from "./playbook-review"
 import { TOOL_SYNTAX_ISSUE, printedToolCall } from "./checks"
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { matterSourceIDs } from "./quotes"
+import { memoNotesFile } from "./deliverables"
 import { LEAN_COVERAGE_SCHEMA, coveragePlanHash, coveragePrompt, coverageScopeQuestion, parseCoverage, planCoverageCurrent, planCoverageIssues, type CoverageAct, type LeanCoverage } from "./package-coverage"
 import { answeredScopeQuestion, openScopeQuestion } from "./package-scope"
 import {
   FIRST_DOCUMENT, headingText, normalizedHeading, parsePlan, plannedDocument, readLeanPlan, withDocumentIDs, writeLeanPlan,
   type ActingFor, type DocID, type LeanOutline, type PlannedDocument, type PlannedPart, type StepID,
 } from "./plan"
-import { actingForBlock, retryPrompt, stagePrompt } from "./prompts"
+import { actingForBlock, packageCompositionBlock, retryPrompt, stagePrompt } from "./prompts"
 import {
   LEAN_CHILD_PERMISSIONS,
   LEAN_MAX_RETRIES,
@@ -203,7 +204,8 @@ export async function runDraftStage(
     recordCoverage(documents, value.acting_for, coverage)
     const blocked = scopeBlock(documents, coverage)
     if (blocked) return blocked
-    writeLeanPlan(directory, value.documents, basis, value.acting_for)
+    // A memo the request asks for is the run's notes, named for the request.
+    writeLeanPlan(directory, value.documents, basis, value.acting_for, value.memo ? { name: value.memo, file: memoNotesFile(value.documents, value.memo) } : undefined)
   } else if (document === FIRST_DOCUMENT && !planIsCurrent(directory)) {
     const saved = readLeanPlan(directory)!
     const coverage = await covering(saved.documents)
@@ -233,7 +235,8 @@ export async function runDraftStage(
       ? { source: contract.source, parts: carried.carried.map(unit => unit.label), left: carried.left.map(unit => unit.label) }
       : undefined)
     const brief = sectionHandoff(directory, document)
-    const text = [index > 0 ? "" : outlined ? actingForBlock(directory) : stagePrompt(directory, step), brief, section].filter(Boolean).join("\n\n")
+    // The outline's session saw the run context before the plan named a memo.
+    const text = [...(index > 0 ? [] : outlined ? [actingForBlock(directory), packageCompositionBlock(directory, document)] : [stagePrompt(directory, step)]), brief, section].filter(Boolean).join("\n\n")
     const written = await ask(label, text, reply => checkSection(reply, plan, index))
     if (!written.value) return failed(`${label} "${part.heading}"`, written.issues)
     drafted.push({ part: index, text: written.value })

@@ -5,8 +5,9 @@ import { type ChangePlan, type ChangePreparation } from "./change-pipeline"
 import { type ChangeList, readChangeList } from "./checks"
 import { checkChanges } from "./change-checks"
 import { writeLeanPlan } from "./plan"
+import { packageCompositionBlock } from "./prompts"
 import { readLeanState, writeLeanText } from "./state"
-import { cleanupMatters, matter, scriptedModel, SOURCE, SUPPORT } from "./test-support"
+import { cleanupMatters, matter, requestMemo, scriptedModel, SOURCE, SUPPORT } from "./test-support"
 const p1 = "p111111111111", p2 = "p222222222222", p3 = "p333333333333"
 const support = [SUPPORT[0]!]
 afterEach(cleanupMatters)
@@ -125,4 +126,12 @@ test("withdrawing a prior operation requires a nonempty verified canonical sourc
  const model=scriptedModel({"lean-changes":()=>JSON.stringify({amendments:[],questions:[],retained_initial:[{pid:p1,reason:"Source-grounded restoration of initial wording.",sources:call++===0?[]:call===2?[{source_id:SOURCE,quote:"Invented words absent from source."}]:support}]})})
  const result=await runChangeReconciliation(dir,readLeanState(dir)!,{sessions:model.port},"d1",()=>{})
  expect(result.status).toBe("done");expect(model.prompts).toHaveLength(3);expect(model.prompts[1]!.text).toContain("source-grounded reason");expect(model.prompts[2]!.text).toContain("supporting quote is not verified");expect(readChangeList(dir,"d1")!.retained_initial?.[0]?.sources).toEqual(support)
+})
+test("a requested memo reaches the conflict prompt; without one it is unchanged",()=>{
+ const dir=setup(),input=inputs([{id:"one",pids:[p1]}],[changes([amendment(p1,"New proposal.")])]);writeLeanText(dir,"d1/changes.json",JSON.stringify(changes([amendment(p1,"Earlier proposal.")])));save(dir,input)
+ const prompt=()=>reconciliationPrompt(dir,"d1",reconciliationWork(dir,"d1",input.plan,input.preparation).conflicts[0]!)
+ const without=prompt()
+ requestMemo(dir)
+ const block=packageCompositionBlock(dir,"d1"),memo=prompt()
+ expect(block).toStartWith("<package_composition>\n");expect(memo.split(block).length-1).toBe(1);expect(memo.replace(`\n\n${block}`,"")).toBe(without);expect(without).not.toContain("package_composition")
 })
