@@ -14,7 +14,7 @@ import { changePlanPrompt, changeReviewPrompt, readChangeReview, runChangePrepar
 import { packageReviewPrompt, readPackageReview } from "./package-review"
 import { LEAN_MAX_SUBSTANTIVE_REPAIRS, checklistRepairItems, readRepairRound, repairedChecklistItems, startRepairRound } from "./repairs"
 import { acceptEvidenceReply, evidencePrompt } from "./evidence"
-import { researchPermissions, acceptResearchReply, researchPrompt } from "./research"
+import { researchPermissions, acceptResearchReply, researchPrompt, startResearchGapRound } from "./research"
 import { runApply } from "./apply-stage"
 import { DELIVERED_NOTES, forgetUnplannedDocuments, recordLeanDocuments } from "./deliverables"
 import { runDraftStage } from "./draft-sections"
@@ -221,6 +221,8 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
         if (repair) return repair
       }
       appendLeanEvent(directory, { stage, document, event: "skipped", check_ms })
+      // A review accepted before a crash may still owe its gap round.
+      if (step === "research-review" && startResearchGapRound(directory)) return { state, restart: true }
       continue
     }
     const prefetched = prepared.get(step)
@@ -300,6 +302,8 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
     snapshotStage(directory, state.revision, step, result.outputs)
     // These steps write some of their own inputs (the gate its question); their key is taken again.
     state = updateLeanStage(directory, state, step, { status: result.status, input_sha: step === "checklist-check" || step === "gate" ? stageInputSha(directory, step) : inputSha, outputs: result.outputs, finished_at: now() })
+    // Researchable gaps from the first review of this research go back to it once.
+    if (step === "research-review" && result.status === "done" && startResearchGapRound(directory)) return { state, restart: true }
     if (stage === "change-review" && document && readChangeReview(directory, document)?.status === "changes-required") {
       const review = readChangeReview(directory, document)!
       if ((readRepairRound(directory)?.substantive_attempts ?? 0) >= LEAN_MAX_SUBSTANTIVE_REPAIRS)

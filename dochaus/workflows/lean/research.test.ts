@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test"
-import { writeFileSync } from "node:fs"
+import { existsSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import { createHash } from "node:crypto"
 import { preserveResearchSourceSnapshot } from "../../lib/research-source-snapshot"
@@ -10,8 +10,8 @@ import { quoteFound } from "./quotes"
 import { enqueueLeanRequest } from "./requests"
 import { runLean } from "./runner"
 import { stageInputs } from "./stages"
-import { leanFile, readLeanState, readLeanText, readQuestions, replaceStageOpenItems, writeLeanState, writeLeanText } from "./state"
-import { AGENT, cleanupMatters, happyPath, matter, scriptedModel } from "./test-support"
+import { leanFile, readLeanState, readLeanText, readOpenItems, readQuestions, replaceStageOpenItems, writeLeanState, writeLeanText } from "./state"
+import { AGENT, cleanupMatters, happyPath, matter, scriptedModel, type Reply } from "./test-support"
 
 afterEach(cleanupMatters)
 
@@ -59,7 +59,7 @@ test("retrieved text verifies exact quotations, while URLs, fabricated quotes an
   expect(checkResearch(directory, { ...research, findings: [{ ...research.findings[0], snapshot: "0".repeat(64) }] })).not.toEqual([])
   expect(acceptResearchReply(directory, "research", JSON.stringify(research)).issues).toEqual([])
   expect(approvedResearch(directory)).toEqual([])
-  expect(acceptResearchReply(directory, "research-review", JSON.stringify({ approved: ["r1"], rejected: [], limitations: ["Currency unconfirmed"] })).issues).toEqual([])
+  expect(acceptResearchReply(directory, "research-review", JSON.stringify({ approved: ["r1"], rejected: [], limitations: ["Currency unconfirmed"], gaps: [] })).issues).toEqual([])
   expect(approvedResearch(directory)).toHaveLength(1)
   expect(quoteFound(directory, { source_id: research.findings[0]!.url, quote: research.findings[0]!.quote })).toBe(true)
   expect(quoteFound(directory, { source_id: research.findings[0]!.url, quote: "Invented text" })).toBe(false)
@@ -81,13 +81,13 @@ test("research verifier rejects unsupported proposition without making it drafti
   const directory = matter()
   const research = retrieved(directory)
   acceptResearchReply(directory, "research", JSON.stringify(research))
-  const accepted = acceptResearchReply(directory, "research-review", JSON.stringify({ approved: [], rejected: [{ id: "r1", reason: "Not applicable to this jurisdiction" }], limitations: [] }))
+  const accepted = acceptResearchReply(directory, "research-review", JSON.stringify({ approved: [], rejected: [{ id: "r1", reason: "Not applicable to this jurisdiction" }], limitations: [], gaps: [] }))
   expect(accepted.issues).toEqual([])
   replaceStageOpenItems(directory, "research-review", null, accepted.openItems)
   expect(approvedResearch(directory)).toEqual([])
   writeLeanText(directory, "research-review.json", JSON.stringify({ approved: ["r1"], rejected: [] }))
   expect(approvedResearch(directory)).toEqual([])
-  acceptResearchReply(directory, "research-review", JSON.stringify({ approved: [], rejected: [{ id: "r1", reason: "Not applicable" }], limitations: [] }))
+  acceptResearchReply(directory, "research-review", JSON.stringify({ approved: [], rejected: [{ id: "r1", reason: "Not applicable" }], limitations: [], gaps: [] }))
   expect(researchHandoff(directory)).toContain("Not applicable")
   writeFileSync(path.join(directory, ".dochaus/context-manifest.jsonl"), JSON.stringify({ entry_id: "earlier-fetch", event: "source_fetch", url: research.findings[0]!.url }) + "\n")
   expect(citationRowsForText(directory, "draft", research.findings[0]!.url)[0]?.status).toBe("verified")
@@ -142,3 +142,105 @@ test("long canonical source text is readable beyond JSON clipping with focused s
   expect(researchPrompt(directory, "research-review")).toContain("reject that finding with the access limitation")
   expect(checkResearch(directory, { ...research, findings: [{ ...research.findings[0], quote: "Invented wording" }] })).not.toEqual([])
 })
+
+const GAP = { issue: "Authority on remedies for late delivery under these supply terms has not been retrieved.", affects: "Remedy wording in the delivery clause." }
+const LATER = { issue: "Authority on the timing of payment default under these supply terms has not been retrieved.", affects: "Payment clause default wording." }
+const reviewed = (gaps: { issue: string; affects: string }[]) => JSON.stringify({ approved: [], rejected: [], limitations: [], gaps })
+// Each research pass reports in its own words, so its review sees new research.
+const researched: Reply = (_, index) => JSON.stringify({ status: "not-needed", findings: [], limitations: [`Research pass ${index + 1} relied on the supplied terms only.`] })
+const researchAgents = (agents: string[]) => agents.filter(agent => agent === AGENT.research || agent === AGENT["research-review"])
+
+test("research review reports researchable gaps separately and the checker validates their shape", () => {
+  const directory = matter()
+  acceptResearchReply(directory, "research", JSON.stringify(retrieved(directory)))
+  expect(acceptResearchReply(directory, "research-review", JSON.stringify({ approved: ["r1"], rejected: [], limitations: [] })).issues).not.toEqual([])
+  expect(acceptResearchReply(directory, "research-review", JSON.stringify({ approved: ["r1"], rejected: [], limitations: [], gaps: [{ issue: "Unretrieved authority", affects: "" }] })).issues).not.toEqual([])
+  expect(acceptResearchReply(directory, "research-review", JSON.stringify({ approved: ["r1"], rejected: [], limitations: [], gaps: ["Unretrieved authority"] })).issues).not.toEqual([])
+  const accepted = acceptResearchReply(directory, "research-review", JSON.stringify({ approved: ["r1"], rejected: [], limitations: [], gaps: [GAP] }))
+  expect(accepted.issues).toEqual([])
+  expect(accepted.openItems).toEqual([expect.objectContaining({ kind: "research_gap", detail: expect.stringContaining(GAP.issue) })])
+  expect(researchHandoff(directory)).toContain(GAP.affects)
+  expect(researchPrompt(directory, "research-review")).toContain('"gaps"')
+  // A review saved before gaps were reported remains valid.
+  writeLeanText(directory, "research-review.json", JSON.stringify({ approved: ["r1"], rejected: [], limitations: [] }))
+  expect(approvedResearch(directory)).toHaveLength(1)
+})
+
+test("first review gaps reach research once as targeted issues before the plan", async () => {
+  const directory = matter()
+  const model = scriptedModel({ ...happyPath, [AGENT.research]: researched, [AGENT["research-review"]]: (_, index) => reviewed(index ? [] : [GAP]) })
+  expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+  expect(researchAgents(model.sessions.map(row => row.agent))).toEqual([AGENT.research, AGENT["research-review"], AGENT.research, AGENT["research-review"]])
+  const agents = model.sessions.map(row => row.agent)
+  expect(agents.lastIndexOf(AGENT["research-review"])).toBeLessThan(agents.indexOf(AGENT.spine))
+  const prompts = model.prompts.filter(row => row.agent === AGENT.research).map(row => row.text)
+  expect(prompts[0]).not.toContain(GAP.issue)
+  expect(prompts[1]).toContain(GAP.issue)
+  expect(prompts[1]).toContain(GAP.affects)
+  expect(stageInputs(directory, "research").filter(part => part.name === "research-gaps").map(part => part.bytes)).toEqual([JSON.stringify([GAP])])
+  expect(readOpenItems(directory).filter(item => item.kind === "research_gap")).toEqual([])
+}, 120_000)
+
+test("second review gaps are disclosed without a further research round", async () => {
+  const directory = matter()
+  const model = scriptedModel({ ...happyPath, [AGENT.research]: researched, [AGENT["research-review"]]: (_, index) => reviewed([index ? LATER : GAP]) })
+  expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+  expect(model.count(AGENT.research)).toBe(2)
+  expect(model.count(AGENT["research-review"])).toBe(2)
+  const gaps = readOpenItems(directory).filter(item => item.kind === "research_gap")
+  expect(gaps.map(item => item.detail)).toEqual([expect.stringContaining(LATER.issue)])
+  expect(finalGate(directory)).toMatchObject({ delivery: "review_draft", disclosed: expect.arrayContaining([expect.objectContaining({ kind: "research_gap", detail: expect.stringContaining(LATER.issue) })]) })
+}, 120_000)
+
+test("a review without gaps keeps the research steps and inputs unchanged", async () => {
+  const directory = matter()
+  const model = scriptedModel(happyPath)
+  expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+  expect(model.sessions.map(row => row.agent).slice(0, 5)).toEqual([AGENT.discrepancy, AGENT.intake, AGENT.research, AGENT["research-review"], AGENT.spine])
+  expect(model.count(AGENT.research)).toBe(1)
+  expect(model.count(AGENT["research-review"])).toBe(1)
+  expect(stageInputs(directory, "research").map(part => part.name)).not.toContain("research-gaps")
+  expect(existsSync(leanFile(directory, "research-gaps.json"))).toBe(false)
+}, 120_000)
+
+test("a resumed or repeated run with unchanged inputs repeats no research round", async () => {
+  const directory = matter()
+  const failing = scriptedModel({ ...happyPath, [AGENT["research-review"]]: () => reviewed([GAP]),
+    [AGENT.research]: (_, index) => {
+      if (index) throw new Error("Research provider connection lost.")
+      return JSON.stringify({ status: "not-needed", findings: [], limitations: ["This fixture requests a note from supplied terms only."] })
+    } })
+  expect((await runLean(directory, { sessions: failing.port })).status).toBe("failed")
+  expect(failing.count(AGENT["research-review"])).toBe(1)
+  enqueueLeanRequest(directory, { kind: "continue" })
+  const resumed = scriptedModel({ ...happyPath, [AGENT.research]: researched, [AGENT["research-review"]]: () => reviewed([LATER]) })
+  expect((await runLean(directory, { sessions: resumed.port })).status).toBe("completed")
+  expect(researchAgents(resumed.sessions.map(row => row.agent))).toEqual([AGENT.research, AGENT["research-review"]])
+  expect(resumed.prompts.find(row => row.agent === AGENT.research)?.text).toContain(GAP.issue)
+  enqueueLeanRequest(directory, { kind: "continue" })
+  const repeated = scriptedModel({})
+  expect((await runLean(directory, { sessions: repeated.port })).status).toBe("completed")
+  expect(repeated.sessions).toEqual([])
+}, 120_000)
+
+test("a later package-review research repair still reaches research after the gap round", async () => {
+  const directory = matter()
+  const model = scriptedModel({ ...happyPath, [AGENT.research]: researched,
+    [AGENT["research-review"]]: (_, index) => reviewed(index ? [] : [GAP]),
+    [AGENT["package-review"]]: (_, index) => JSON.stringify(index ? { status: "pass", delivery: [], findings: [], limitations: [] } : {
+      status: "changes-required", delivery: [], findings: [{ target: "research", detail: "Resolve the newly identified authority applicability issue from actual sources." }], limitations: [],
+    }),
+  })
+  expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+  expect(model.count(AGENT.research)).toBe(3)
+  expect(model.count(AGENT["research-review"])).toBe(3)
+  expect(model.prompts.filter(row => row.agent === AGENT.research).at(-1)?.text).toContain("newly identified authority applicability")
+}, 120_000)
+
+test("research unchanged by the gap round keeps its review and that review's disclosed gaps", async () => {
+  const directory = matter()
+  const model = scriptedModel({ ...happyPath, [AGENT["research-review"]]: () => reviewed([GAP]) })
+  expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+  expect(researchAgents(model.sessions.map(row => row.agent))).toEqual([AGENT.research, AGENT["research-review"], AGENT.research])
+  expect(readOpenItems(directory).filter(item => item.kind === "research_gap").map(item => item.detail)).toEqual([expect.stringContaining(GAP.issue)])
+}, 120_000)

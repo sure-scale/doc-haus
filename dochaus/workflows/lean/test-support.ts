@@ -67,7 +67,7 @@ export function scriptedModel(replies: Record<string, Reply>) {
         [AGENT["package-review"]]: () => JSON.stringify({ status: "pass", findings: [], limitations: [], delivery: [] }),
         [AGENT.intake]: () => JSON.stringify({ ready: true, jurisdiction: "No external legal determination needed for this supplied-source fixture", scope: "Reproduce supplied terms only" }),
         [AGENT.research]: () => JSON.stringify({ status: "not-needed", findings: [], limitations: ["This fixture requests a note from supplied terms only."] }),
-        [AGENT["research-review"]]: () => JSON.stringify({ approved: [], rejected: [], limitations: [] }),
+        [AGENT["research-review"]]: () => JSON.stringify({ approved: [], rejected: [], limitations: [], gaps: [] }),
       }
       const reply = replies[input.agent] ?? preparation[input.agent]
       if (!reply) throw new Error(`No scripted reply for ${input.agent}.`)
