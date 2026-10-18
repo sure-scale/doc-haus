@@ -96,7 +96,7 @@ test("only a substantive spine entry without matter support becomes an open item
   expect(accepted.issues).toEqual([])
   expect(accepted.openItems).toHaveLength(substantive.length)
   for (const [index, item] of accepted.openItems.entries()) {
-    expect(item).toMatchObject({ stage: "spine", kind: "omission", status: "open", ref: { repair_target: "memo" } })
+    expect(item).toMatchObject({ stage: "spine", kind: "unsupported_choice", status: "open", ref: { repair_target: "memo" } })
     expect(item.detail).toContain(substantive[index]!.detail)
     expect(item.detail).toContain(substantive[index]!.limitations[0]!)
     expect(item.detail).not.toMatch(/spine|stage|evidence|entr(y|ies)|limitations/i)
@@ -111,7 +111,7 @@ test("an evidence-less spine decision is disclosed in the notes, held by the fin
   const model = scriptedModel({ ...happyPath, [AGENT.spine]: () => JSON.stringify({ entries: [UNSUPPORTED, SUPPORTED], limitations: [] }) })
   expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
   const items = readOpenItems(directory).filter(item => item.stage === "spine")
-  expect(items.map(row => [row.kind, row.ref])).toEqual([["omission", { repair_target: "memo" }]])
+  expect(items.map(row => [row.kind, row.ref])).toEqual([["unsupported_choice", { repair_target: "memo" }]])
   const item = items[0]!
   expect(item.detail).toContain(UNSUPPORTED.detail)
   expect(item.detail).toContain(UNSUPPORTED.limitations[0]!)

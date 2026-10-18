@@ -56,7 +56,7 @@ export type LeanState = {
   stages: Partial<Record<StepID, LeanStageState>>
 }
 
-export type OpenItemKind = "research_gap" | "quote_miss" | "citation_unsupported" | "placeholder" | "unapplied_amendment" | "question" | "omission" | "template_removal" | "checklist_open" | "checklist_unresolved"
+export type OpenItemKind = "research_gap" | "quote_miss" | "citation_unsupported" | "placeholder" | "unapplied_amendment" | "question" | "omission" | "unsupported_choice" | "template_removal" | "checklist_open" | "checklist_unresolved"
 
 export type OpenItem = {
   id: string

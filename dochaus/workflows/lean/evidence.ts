@@ -41,13 +41,13 @@ export function acceptEvidenceReply(directory: string, stage: EvidenceStage, rep
 }
 
 /** The drafting choices no matter source or verified research supports: each
- * rests on its recorded limitation alone, so the drafting notes must name it
- * (an omission, settled at the final gate by the notes naming it). Only the
- * notes are repaired for it, never a body. A fact is not a choice. */
+ * is in the draft but rests on its recorded limitation alone, so the final
+ * gate holds it open until the drafting notes name it. Only the notes are
+ * repaired for it, never a body. A fact is not a choice. */
 function unsupportedChoices(entries: DraftingEntry[]): OpenItem[] {
   return entries.flatMap(entry => {
     const basis = CHOICE_BASIS[entry.kind]
-    return basis && !entry.evidence.length ? [openItem("spine", "omission",
+    return basis && !entry.evidence.length ? [openItem("spine", "unsupported_choice",
       `${sentence(entry.detail)} No supplied source or verified research ${basis}. Limitation: ${entry.limitations.map(sentence).join(" ")}`,
       { repair_target: "memo" })] : []
   })

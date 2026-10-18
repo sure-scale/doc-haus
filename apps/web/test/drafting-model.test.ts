@@ -100,6 +100,11 @@ test("open items group by kind in first-seen order and cap across groups", () =>
     ["placeholder", 1, 2],
   ])
   expect(capGroups(groups, 5).flatMap((group) => group.items)).toHaveLength(5)
+  // A drafting choice made without a supporting source is in the draft, not left out of it.
+  expect(groupOpenItems([item("f", "unsupported_choice"), item("g", "omission")]).map((group) => group.label)).toEqual([
+    "Drafting choices no source supports",
+    "Points left out",
+  ])
 })
 
 test("attention items follow the final check once it ran for this pass", () => {
