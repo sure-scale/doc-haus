@@ -163,7 +163,7 @@ export function checkDraftingNotes(directory: string, content: string, items: Op
   return {
     issues: [
       ...(undisclosed.length
-        ? [`The drafting notes do not mention these open items: ${undisclosed.join(", ")}. Say what each is and what the lawyer needs to do about it, ending that statement with its exact id as "[ref: <id>]".`]
+        ? [`The drafting notes do not mention these open items: ${undisclosed.join(", ")}. Say what each is and what needs to be done about it, ending that statement with its exact id as "[ref: <id>]".`]
         : []),
       ...(stray.length
         ? [`These internal ids appear outside a "[ref: …]" marker: ${stray.join(", ")}. ${reader} for the reader: describe each point in words and keep each id only in the marker that ends its statement.`]

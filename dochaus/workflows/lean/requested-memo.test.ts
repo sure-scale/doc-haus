@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
+import { readFileSync } from "node:fs"
 import { checkDraftingNotes } from "./checks"
 import { memoNotesFile, readLeanDocuments, requestedMemo } from "./deliverables"
 import { checkDeliverySelections, selectedDeliveryPlan } from "./delivery-selection"
@@ -24,10 +25,14 @@ const REQUEST = "Draft a short supply note from the supply terms, with a cover m
 const DOCUMENT = { title: "Supply note", purpose: "Operative terms", parts: [{ heading: "Delivery", scope: "Delivery terms" }] }
 const DELIVERY = "The supplier shall deliver the goods."
 const JUDGED = "The supplier shall deliver the goods in good condition [open item: confirm the condition standard chosen]."
-const MEMO_OPENING = 'The request asks for a memo to accompany the drafted documents, "cover memo". Write the drafting notes as that memo.'
+const MEMO_OPENING = 'The request asks for a memo to accompany the drafted documents, "cover memo". Write that memo.'
 const MEMO_ORDER = "Lead with the discrepancies found and the choices made, then give the recommendations and the open points, in plain language."
 const NOTES_OPENING = "This is a lean drafting run. Write the drafting notes that go to the lawyer with the drafted documents."
 const MARKER_RULE = 'end that statement with the item\'s exact id as a trailing "[ref: <id>]"'
+const FINAL_NOT_PROCESS = "Describe the final documents and decisions, not how this run produced them."
+/** How plain notes describe review changes and the redline's coverage. */
+const REVIEW_CHANGE_RULES = ["Identify any requested comparison not covered by that baseline as outstanding.", "Use change_origin to distinguish source-to-initial-draft revisions from later review amendments"]
+const NEUTRAL_ACTOR = ["Say what each open item is and what needs to be done about it", "say what was chosen and that the choice needs confirmation"]
 
 const outline = (line: string) => `Acting for: not stated\n${line}\n# Supply note\n## Delivery`
 /** The scripted drafter whose outline reply carries this Memo line. */
@@ -163,17 +168,46 @@ describe("finalize in memo mode", () => {
     expect(memo).toContain(MEMO_OPENING)
     expect(memo).toContain(MEMO_ORDER)
     expect(memo).toContain(MARKER_RULE)
-    // Only the opening and the notes file's planned name differ; every other
-    // contract line, the ref-marker rule included, stays.
+    // Only the opening, the notes file's planned name, the plain notes' review-change
+    // rules and the reply's name differ; every other contract line, the ref-marker
+    // rule included, stays.
     const memoLines = new Set(memo.split("\n"))
-    expect(notes.split("\n").filter(line => !memoLines.has(line))).toEqual([NOTES_OPENING, expect.stringContaining('"planned_filename": "Supply note - drafting notes.docx"')])
+    expect(notes.split("\n").filter(line => !memoLines.has(line))).toEqual([NOTES_OPENING, expect.stringContaining('"planned_filename": "Supply note - drafting notes.docx"'),
+      ...REVIEW_CHANGE_RULES.map(rule => expect.stringContaining(rule)), expect.stringContaining("Reply with the drafting notes"), expect.stringContaining("saved as the drafting notes")])
     expect(stageInputs(directory, "finalize").map(row => row.name)).toEqual([...notesInputs.slice(0, notesInputs.indexOf("drafting-notes-contract") + 1), "requested-memo-contract", ...notesInputs.slice(notesInputs.indexOf("drafting-notes-contract") + 1)])
+  })
+
+  test("a memo describes the final documents, not how this run produced them; plain notes keep their review-change rules; neither names who acts", () => {
+    const directory = matter()
+    writeLeanPlan(directory, [DOCUMENT])
+    const notes = stagePrompt(directory, "finalize")
+    writeLeanPlan(directory, [DOCUMENT], undefined, undefined, { name: "cover memo", file: memoNotesFile([DOCUMENT], "cover memo") })
+    const memo = stagePrompt(directory, "finalize")
+    expect(memo).toContain(FINAL_NOT_PROCESS)
+    expect(notes).not.toContain(FINAL_NOT_PROCESS)
+    for (const rule of REVIEW_CHANGE_RULES) {
+      expect(notes).toContain(rule)
+      expect(memo).not.toContain(rule)
+    }
+    expect(memo).not.toContain("drafting notes")
+    // The delivery map names each planned file, the reply's own included, and
+    // says nothing of its status or registration.
+    const delivery = (prompt: string) => JSON.parse(/<delivery_artifacts>\n([\s\S]*?)\n<\/delivery_artifacts>/.exec(prompt)![1]!) as Record<string, unknown>[]
+    expect(delivery(memo)).toContainEqual({ kind: "drafting_notes", document: null, planned_filename: memoNotesFile([DOCUMENT], "cover memo") })
+    for (const prompt of [notes, memo]) {
+      for (const row of delivery(prompt)) expect(Object.keys(row)).toEqual(["kind", "document", "planned_filename"])
+      for (const words of ["pending rendering", "not yet written", "registration"]) expect(prompt).not.toContain(words)
+    }
+    const agent = readFileSync(new URL("../../agent/lean-drafting-notes.md", import.meta.url), "utf8")
+    for (const text of [notes, memo, agent])
+      for (const words of ["the lawyer must confirm", "what the lawyer needs to do", "lawyer confirmation"]) expect(text).not.toContain(words)
+    for (const prompt of [notes, memo]) for (const rule of NEUTRAL_ACTOR) expect(prompt).toContain(rule)
   })
 
   test("with or without a memo the notes check accepts each id in a ref marker and asks for one in its retry", () => {
     const directory = matter()
     const item = openItem("apply", "placeholder", "Confirm the condition standard chosen.", { document: "d1" })
-    const retry = `do not mention these open items: ${item.id}. Say what each is and what the lawyer needs to do about it, ending that statement with its exact id as "[ref: <id>]".`
+    const retry = `do not mention these open items: ${item.id}. Say what each is and what needs to be done about it, ending that statement with its exact id as "[ref: <id>]".`
     writeLeanPlan(directory, [DOCUMENT])
     expect(checkDraftingNotes(directory, "# Drafting notes\n\nThe draft states the delivery period.\n", [item]).issues.join(" ")).toContain(retry)
     expect(checkDraftingNotes(directory, `# Drafting notes\n\n- The condition standard is for the lawyer to confirm. [ref: ${item.id}]\n`, [item]).issues).toEqual([])

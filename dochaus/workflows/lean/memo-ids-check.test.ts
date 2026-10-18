@@ -31,7 +31,7 @@ const CHECKLIST_ID = "source-0123456789ab-3"
 const GAP = openItem("research", "research_gap", "No authority was found for the delivery period.", { document: "d1" })
 const CONDITION = openItem("apply", "placeholder", "Confirm the condition standard chosen.", { document: "d1", amendment_id: "a1" })
 const MISSING = (ids: string[]) =>
-  `The drafting notes do not mention these open items: ${ids.join(", ")}. Say what each is and what the lawyer needs to do about it, ending that statement with its exact id as "[ref: <id>]".`
+  `The drafting notes do not mention these open items: ${ids.join(", ")}. Say what each is and what needs to be done about it, ending that statement with its exact id as "[ref: <id>]".`
 const STRAY = (ids: string[]) =>
   `These internal ids appear outside a "[ref: …]" marker: ${ids.join(", ")}. The memo is for the reader: describe each point in words and keep each id only in the marker that ends its statement.`
 
@@ -493,7 +493,7 @@ describe("without a requested memo", () => {
 
   test("the finalize prompt asks for each open item in words with a trailing ref marker", () => {
     const prompt = stagePrompt(memoMatter("none"), "finalize")
-    expect(prompt).toContain('- Say what each open item is and what the lawyer needs to do about it, and end that statement with the item\'s exact id as a trailing "[ref: <id>]". Write internal ids only in these markers')
+    expect(prompt).toContain('- Say what each open item is and what needs to be done about it, and end that statement with the item\'s exact id as a trailing "[ref: <id>]". Write internal ids only in these markers')
     expect(prompt).not.toContain("Name every open item by its exact id")
   })
 

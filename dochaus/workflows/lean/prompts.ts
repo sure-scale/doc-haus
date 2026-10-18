@@ -250,14 +250,17 @@ function draftingNotesSections(directory: string, request: string) {
   const loose = items.filter(item => !item.ref.document || !planned.has(item.ref.document))
   const questions = readQuestions(directory)
   const memo = requestedMemo(directory)
+  const reply = memo ? "the memo" : "the drafting notes"
   return [
     memo
-      ? `This is a lean drafting run. The request asks for a memo to accompany the drafted documents, "${memo.name}". Write the drafting notes as that memo.`
+      ? `This is a lean drafting run. The request asks for a memo to accompany the drafted documents, "${memo.name}". Write that memo.`
       : "This is a lean drafting run. Write the drafting notes that go to the lawyer with the drafted documents.",
     tagged("required_repairs", (readRepairRound(directory)?.items ?? []).filter(item => item.stage === "package-review" || item.ref.repair_target === "memo").map(item => `- ${item.detail}`).join("\n") || "None."),
     request, actingForBlock(directory), answeredQuestionsText(directory) ? tagged("answers", answeredQuestionsText(directory)) : "",
     tagged("sources", matterSourceIDs(directory).join("\n")),
-    tagged("delivery_artifacts", JSON.stringify(deliveryArtifactEvidence(directory), null, 2)),
+    // Names only: the reply is one of these files, and their status and
+    // registration describe the run, not the documents.
+    tagged("delivery_artifacts", JSON.stringify(deliveryArtifactEvidence(directory), ["kind", "document", "planned_filename", "download_filename", "contains", "order", "role"], 2)),
     tagged("drafting_spine", readLeanText(directory, "spine.json") ?? "None."),
     tagged("discrepancies", readLeanText(directory, "discrepancy.json") ?? "None."),
     ...plan.map(row => `<document id="${row.id}" title="${attribute(row.title)}">\n${documentSections(directory, row.id, items).join("\n\n")}\n</document>`),
@@ -269,18 +272,19 @@ function draftingNotesSections(directory: string, request: string) {
       "- Retain the material deferred findings and relevant optional recommendations in review_dispositions, explaining their consequence and remaining action in the appropriate advice or notes. Do not describe deferred research as verified law, a recommendation as agreed wording, or a rejected suggestion as an outstanding mandatory change. The final body and applied records determine what was implemented. Legacy decisions are navigation; inspect underlying review and sources when their disposition is unclear.",
       "- Organise the notes by material issues and decisions, tied to the final document and relevant wording. Explain the effect, source basis, applied resolution and remaining action; distinguish agreed terms from choices requiring confirmation.",
       "- Read the final bodies below before making any statement about what they contain, omit or change. The final wording controls; review findings and proposed amendments are history, not proof that a change was applied. Check sources with the available read/search tools whenever the basis is unclear.",
-      "- delivery_artifacts projects the bodies, comparisons and generated drafting-notes Word file from the same naming logic registration uses. planned_file, planned_role and planned_filename are the model's selections, not proof of what the user requested; compare them with the instructions. The notes file is the output you are writing, so its pending rendering is normal. A generated note can fulfill an explanatory-note request when its audience, content and naming fit that instruction; a distinct client advice function must be fulfilled by its own appropriate body. Do not describe an explanatory artifact as missing merely because it has no separately planned body. Registration may suffix names to preserve existing matter documents.",
-      "- The final body is clean accepted text; native_export describes the separate comparison file, naming plan (registration occurs after package review; this internal phase is not a client open item or outstanding lawyer action), and actual review-amendment application counts and separate withheld-proposal counts. Use that record for artifact presence and to check any statement about which review amendments were applied, unapplied or withheld; do not report the counts themselves. Keep source support and legal effect separate. Do not infer export absence from clean body text or fabricate application status from an empty list of explanatory records.\n- Describe each delivered redline using its stated comparison baseline below. Do not imply that template reuse selects an original comparison source. Identify any requested comparison not covered by that baseline as outstanding.",
-      "- Explain what each drafted document does. Use change_origin to distinguish source-to-initial-draft revisions from later review amendments; an initial revision is not a change made during review.",
+      "- delivery_artifacts lists the planned Word files: the bodies, their redlines and the file your reply becomes. planned_file, planned_role and planned_filename are the model's selections, not proof of what the user requested; compare them with the instructions.",
+      "- The final body is clean accepted text; native_export describes the separate comparison file and actual review-amendment application counts and separate withheld-proposal counts. Use that record for artifact presence and to check any statement about which review amendments were applied, unapplied or withheld; do not report the counts themselves. Keep source support and legal effect separate. Do not infer export absence from clean body text or fabricate application status from an empty list of explanatory records.",
+      "- Describe each delivered redline using its stated comparison baseline below." + (memo ? "" : " Do not imply that template reuse selects an original comparison source. Identify any requested comparison not covered by that baseline as outstanding."),
+      "- Explain what each drafted document does." + (memo ? "" : " Use change_origin to distinguish source-to-initial-draft revisions from later review amendments; an initial revision is not a change made during review."),
       "- State whom the documents were drafted for or, where the request did not say, that it did not and the drafting is even-handed.",
-      ...(memo ? ["- These notes are the requested memo; title it as that memo. Lead with the discrepancies found and the choices made, then give the recommendations and the open points, in plain language. The memo carries only what these records show."] : []),
-      "- Say what each open item is and what the lawyer needs to do about it, and end that statement with the item's exact id as a trailing \"[ref: <id>]\". Write internal ids only in these markers, and name each document by its title or file name, never by its internal id; describe each change by what it does, never by its change id.",
-      "- For each marked drafted default, say what was chosen and that the lawyer must confirm it.",
-      "- Use applied_changes.evidence_basis and the actual sources array to describe a change’s evidential basis. application_mode describes only how text was applied; code, merged or already_applied says nothing about source support. Where source passages are provided, assess them before claiming support or a gap. For no-source-passage changes, disclose drafting judgment or a view of the law and the required lawyer confirmation. Do not invent an open-item marker or confirmation requirement that the final body and evidence do not show.",
+      ...(memo ? ["- Title your reply as that memo. Lead with the discrepancies found and the choices made, then give the recommendations and the open points, in plain language. Describe the final documents and decisions, not how this run produced them. The memo carries only what these records show."] : []),
+      "- Say what each open item is and what needs to be done about it, and end that statement with the item's exact id as a trailing \"[ref: <id>]\". Write internal ids only in these markers, and name each document by its title or file name, never by its internal id; describe each change by what it does, never by its change id.",
+      "- For each marked drafted default, say what was chosen and that the choice needs confirmation.",
+      "- Use applied_changes.evidence_basis and the actual sources array to describe a change’s evidential basis. application_mode describes only how text was applied; code, merged or already_applied says nothing about source support. Where source passages are provided, assess them before claiming support or a gap. For no-source-passage changes, disclose drafting judgment or a view of the law and that it needs confirmation. Do not invent an open-item marker or confirmation requirement that the final body and evidence do not show.",
       "- operation describes the requested amendment; result_paragraphs reports its actual final wording after reconciliation. An empty result records deletion; surviving paragraphs can supersede an earlier deletion request. Describe the actual result and disclose unresolved or superseded explanations honestly.",
       "- Quote sources only word for word as \"exact words\" [source: document name], and cite only authority supported by matter sources or the approved legal research handoff.",
-      "- Reply with the drafting notes in Markdown only, beginning with a \"# \" title.",
-      "- Read-only tools are available; file-writing tools are unavailable. Your final reply is saved as the drafting notes.",
+      `- Reply with ${reply} in Markdown only, beginning with a "# " title.`,
+      `- Read-only tools are available; file-writing tools are unavailable. Your final reply is saved as ${reply}.`,
     ].join("\n")),
   ]
 }
@@ -291,7 +295,7 @@ function documentSections(directory: string, document: DocID, items: OpenItem[])
   const apply = readLeanJson(directory, `${document}/apply.json`) as ApplyResult | undefined
   return [
     tagged("comparison_baseline", comparisonDescription(directory, document)),
-    tagged("native_export", JSON.stringify(nativeExportEvidence(directory, document), null, 2)),
+    tagged("native_export", JSON.stringify(nativeExportEvidence(directory, document), (key, value) => key === "delivery_registration" ? undefined : value, 2)),
     tagged("final_body", finalBodyParagraphs(directory, document).map(row => `[${row.pid}] ${row.text}`).join("\n\n")),
     draftingStyleWarningsBlock(finalBodyParagraphs(directory, document), { final: true, memo: Boolean(requestedMemo(directory)) }),
     tagged("applied_changes", JSON.stringify(appliedChangeEvidence(directory, document), null, 2)),
