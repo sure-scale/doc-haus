@@ -7,7 +7,7 @@ import { memoNotesFile } from "./deliverables"
 import { LEAN_COVERAGE_SCHEMA, coveragePlanHash, coveragePrompt, coverageScopeQuestion, parseCoverage, planCoverageCurrent, planCoverageIssues, type CoverageAct, type LeanCoverage } from "./package-coverage"
 import { answeredScopeQuestion, openScopeQuestion } from "./package-scope"
 import {
-  LEAN_REQUESTED_FILES_SCHEMA, parseRequestedFiles, requestedFilesIssues, requestedFilesPrompt, requestedFilesQuestion, withRequestedNames, writeRequestedFiles,
+  LEAN_REQUESTED_FILES_SCHEMA, parseRequestedFiles, requestedFilesIssues, requestedFilesPlanned, requestedFilesPrompt, requestedFilesQuestion, withRequestedNames, writeRequestedFiles,
   type RequestedFiles,
 } from "./requested-files"
 import {
@@ -269,7 +269,7 @@ export async function runDraftStage(
     const memo = value.memo ? { name: value.memo, file: memoNotesFile(value.documents, value.memo) } : undefined
     const named = requested && withRequestedNames(value.documents, memo, requested)
     if (requested && named) {
-      writeRequestedFiles(directory, { schema: LEAN_REQUESTED_FILES_SCHEMA, basis, stated: requested.stated, files: requested.files })
+      writeRequestedFiles(directory, { schema: LEAN_REQUESTED_FILES_SCHEMA, basis, planned: requestedFilesPlanned(named.documents, value.memo), stated: requested.stated, files: requested.files })
       appendLeanEvent(directory, { stage: "draft", document, event: "requested_files", step: "files", outcome: requested.stated ? "stated" : "not_stated", issues: files,
         ...(named.applied.length ? { reason: named.applied.join("; ") } : {}) })
     } else rmSync(leanFile(directory, "requested-files.json"), { force: true })

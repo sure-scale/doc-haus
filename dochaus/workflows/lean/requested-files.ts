@@ -1,37 +1,45 @@
+import path from "node:path"
+import { sha256File } from "../../lib/lineage"
+import { normalize } from "../../lib/quote-verify"
 import { TOOL_SYNTAX_ISSUE, printedToolCall, record } from "./checks"
-import { combinedDelivery, deliveryArtifactEvidence, deliveryStem, memoNotesFile, plannedRegistration, requestedMemo } from "./deliverables"
-import { deliveryNameQuoted } from "./delivery-selection"
-import { normalizedHeading, plainFileName, readLeanPlan, type DocID, type PlannedDocument } from "./plan"
+import { combinedDelivery, deliveryArtifactEvidence, deliveryStem, memoNotesFile, plannedRegistration, readLeanDocuments, requestedMemo } from "./deliverables"
+import { plainFileName, readLeanPlan, type DocID, type PlannedDocument } from "./plan"
 import { tagged } from "./prompts"
-import { REQUEST_SOURCE, excerpt, instructionFound, matterSourceIDs, openItem, quoteMissIssue } from "./quotes"
+import { REQUEST_SOURCE, excerpt, instructionFound, lawyerWords, matterSourceIDs, openItem, quoteMissIssue } from "./quotes"
 import { answeredQuestionsText, readLeanJson, readLeanText, readQuestions, shortHash, writeLeanText, type OpenItem, type Question } from "./state"
 
 // Requested files: which files the lawyer asks to receive, and which planned
 // documents and the memo go in each. One focused job reads the lawyer's words
-// (request, updates and answers) beside the planned documents and memo;
-// parseRequestedFiles grounds each file in the lawyer's exact words, its name in
-// those words and its contents in the plan. The record is the lawyer's
-// packaging, never the plan's. Code does not rewrite the plan's delivery shape:
-// requestedFilesIssues gives the outline revision feedback in the outline's own
-// terms, and requestedFilesQuestion asks the lawyer about a mismatch the
-// revisions leave. A file name is no planning judgement, so withRequestedNames
-// gives grounded names to the plan. A shape the run cannot build (several
-// documents in one file, the memo after its document or with a redline) is no
-// revision issue; like any file the final plan does not deliver as asked, it
-// reaches the lawyer as an open item derived from the record
-// (requestedFilesItems), never stored.
+// (request, updates and answers) beside the planned documents' ids and titles
+// and the memo; parseRequestedFiles grounds each file in the lawyer's exact
+// words, its name in the lawyer's own text where those words stand and its
+// contents in the plan. The record is the lawyer's packaging, never the plan's,
+// and holds the planned titles and memo it was read for. Code does not rewrite
+// the plan's delivery shape: requestedFilesIssues gives the outline revision
+// feedback in the outline's own terms, and requestedFilesQuestion asks the
+// lawyer about a mismatch the revisions leave, once for the lawyer's words as
+// they stand. A file name is no planning judgement, so withRequestedNames gives
+// grounded names to the plan. A shape the run cannot build (several documents
+// in one file, or the memo after its document) is no revision issue; like any
+// file the final plan does not deliver as asked, it reaches the lawyer as an
+// open item derived from the record (requestedFilesItems), never stored.
 
 export const LEAN_REQUESTED_FILES_SCHEMA = "dochaus.lean.requested-files/1"
 
 /** One file the lawyer asks to receive: the planned ids, and "memo" for the
  * memo, it holds in the order the lawyer places them; its name as the lawyer
- * gives it, or null; and the lawyer's exact words that ask for it. */
-export type RequestedFile = { holds: string[]; name: string | null; quote: string }
+ * gives it, or null; and the lawyer's exact words that ask for it. A name the
+ * last attempt gave but the lawyer's words did not confirm is kept as
+ * `refused_name`, beside a null name, for disclosure only. */
+export type RequestedFile = { holds: string[]; name: string | null; quote: string; refused_name?: string }
 /** `stated` is false, with no files, when the lawyer's words do not say how the
  * planned documents and memo are delivered as files. */
 export type RequestedFiles = { stated: boolean; files: RequestedFile[] }
-/** The record of the plan whose basis is `basis`. */
-export type LeanRequestedFiles = { schema: typeof LEAN_REQUESTED_FILES_SCHEMA; basis: string; stated: boolean; files: RequestedFile[] }
+/** The record of the plan whose basis is `basis`, read for the planned titles
+ * and memo name in `planned` (requestedFilesPlanned). */
+export type LeanRequestedFiles = {
+  schema: typeof LEAN_REQUESTED_FILES_SCHEMA; basis: string; planned: { titles: string[]; memo: string | null }; stated: boolean; files: RequestedFile[]
+}
 
 type Checked<T> = { issues: string[]; value?: T }
 
@@ -54,8 +62,8 @@ export function requestedFilesPrompt(directory: string, documents: PlannedDocume
     tagged("request", readLeanText(directory, "request.md") ?? ""),
     updates ? tagged("user_updates", `Later instructions from the lawyer, in arrival order. An explicit later change supersedes the earlier instruction on that point.\n\n${updates}`) : "",
     answers ? tagged("answers", `The lawyer's answers; they remain controlling:\n${answers}`) : "",
-    tagged("planned_documents", "The documents the run drafts, by id. Their titles, files and deliverables are the plan's own choices, not the lawyer's words.\n" +
-      JSON.stringify(documents.map(filesView), null, 2)),
+    tagged("planned_documents", "The documents the run drafts, by id. Their titles are the plan's own choices, not the lawyer's words.\n" +
+      JSON.stringify(documents.map(document => ({ id: document.id, title: document.title })), null, 2)),
     memo ? tagged("planned_memo", `The run also writes the memo the lawyer asks for, planned as "${memo}". In "holds", write it as "memo".`) : "",
     tagged("output_contract", [
       "- Answer from the request, the lawyer's updates and answers only.",
@@ -65,23 +73,21 @@ export function requestedFilesPrompt(directory: string, documents: PlannedDocume
       "\"name\": the file name exactly as the lawyer writes it, ending in .docx, adding only .docx to a name the lawyer gives without it, or null when the lawyer gives no name; " +
       "\"quote\": the lawyer's exact words that ask for this file, copied verbatim, including the words that give its name.",
       `- Put each planned document${memo ? " and the memo" : ""} in one file at most. List only the files the lawyer's words ask for, and in each only what those words put in it.`,
-      `- Named files are all the files the lawyer asks to receive: when the lawyer's words name the files to deliver, put each planned document${memo ? " and the memo" : ""} ` +
-      "in the named file the lawyer's words attach it to; leave one out of every file only when the words leave it out of every named file.",
+      "- A file the lawyer's words name as the output of the whole request holds everything the request asks for; a file they name for one document holds only that document. " +
+      `Put a planned document${memo ? " or the memo" : ""} in a file only where the lawyer's words place it.`,
       `- ${filesShape(Boolean(memo))}`,
       "- Read-only tools are available; file-writing and publication tools are unavailable. The run saves and checks the reply.",
     ].join("\n")),
   ].filter(Boolean).join("\n\n")
 }
 
-const filesView = (document: PlannedDocument) =>
-  ({ id: document.id, title: document.title, ...(document.file ? { file: document.file } : {}), deliverable: document.deliverable ?? "body" })
-
 /** Reads the job's reply and grounds each file: its quote in the lawyer's own
- * words (instructionFound), a name as a plain Word file name its quote gives
- * (deliveryNameQuoted), its holds as planned ids or "memo" when a memo is
- * planned, each in one file at most. Every defect is retry feedback; the files
- * are returned only when none is left. On the last attempt (`final`) a refused
- * name becomes null and a file whose quote is refused is dropped, so nothing
+ * words (instructionFound), a name as a plain Word file name the lawyer's text
+ * gives where the quote stands (nameGrounded), its holds as planned ids or
+ * "memo" when a memo is planned, each in one file at most. Every defect is
+ * retry feedback; the files are returned only when none is left. On the last
+ * attempt (`final`) a refused name becomes null, kept as `refused_name` for
+ * disclosure, and a file whose quote is refused is dropped, so nothing
  * ungrounded is kept; with every file dropped the lawyer's words are taken as
  * not stating the files. Any other defect still fails the last attempt. */
 export function parseRequestedFiles(reply: string, directory: string, documents: PlannedDocument[], memo: string | undefined, { final = false } = {}): Checked<RequestedFiles> {
@@ -109,10 +115,10 @@ export function parseRequestedFiles(reply: string, directory: string, documents:
     const refused = !grounded || file.name === null ? undefined
       : !/\.docx$/i.test(file.name) || !plainFileName(file.name)
         ? `${where} gives the name "${file.name}", which is not a plain Word file name. Give the file name as the lawyer writes it, ending in .docx, without a folder or Markdown, or null when the lawyer gives none.`
-      : !deliveryNameQuoted(file.quote, file.name)
+      : !nameGrounded(directory, file.quote, file.name)
         ? `${where} gives the name "${file.name}", but its quote does not give that name. Quote the lawyer's words that name this file, and give the name exactly as they write it, adding only .docx to a name given without it, or null when the lawyer gives none.`
       : undefined
-    if (refused && final) file.name = null
+    if (refused && final) Object.assign(file, { name: null, refused_name: file.name })
     else if (refused) issues.push(refused)
     rows.push({ index, file })
   })
@@ -129,6 +135,41 @@ export function parseRequestedFiles(reply: string, directory: string, documents:
   return { issues, value: rows.length ? { stated: true, files: rows.map(row => row.file) } : { stated: false, files: [] } }
 }
 
+// Word characters, for a name's edges; a name given without ".docx" follows a
+// naming word and ends where the lawyer's words end it, as deliveryNameQuoted
+// grounds a title (but on the lawyer's text: the quote's end is no edge).
+const WORD = /[\p{L}\p{N}_]/u
+const TITLED = /(?:^|[^\p{L}\p{N}_])(?:titled|entitled|named|called|with the title)\s+["']?$/u
+const TITLE_END = /^(?:$|[,;!?"']|\.(?:\s|$))/
+
+/** Whether the lawyer's words (lawyerWords, compared as instructionFound
+ * compares them: whitespace and case aside) give `name` where they hold
+ * `quote`: its stem (the name without ".docx") starts inside the quoted words
+ * at a word edge of the lawyer's text and is followed there by ".docx", or,
+ * given without it, follows a naming word inside the quote and ends at a
+ * sentence or clause mark. So a name cut short at its end from a longer name is
+ * refused, a quote may run on past the name, and a line break inside the name
+ * does not matter. Not caught: a ".docx" name cut short at its start at a
+ * space, which leaves a name the lawyer's words also end with ".docx"; where
+ * such a name starts, no rule of the text says. */
+function nameGrounded(directory: string, quote: string, name: string) {
+  const stem = normalize(name.replace(/\.docx$/i, "")).toLowerCase()
+  const words = normalize(quote).toLowerCase()
+  if (!stem || !words) return false
+  return lawyerWords(directory).some(raw => {
+    const text = normalize(raw).toLowerCase()
+    for (let start = text.indexOf(words); start >= 0; start = text.indexOf(words, start + 1)) {
+      const end = start + words.length
+      for (let at = text.indexOf(stem, start); at >= 0 && at < end; at = text.indexOf(stem, at + 1)) {
+        if (WORD.test(text[at - 1] ?? "")) continue
+        const after = text.slice(at + stem.length)
+        if (/^\.docx(?![\p{L}\p{N}_])/u.test(after) || (at + stem.length <= end && TITLED.test(text.slice(start, at)) && TITLE_END.test(after))) return true
+      }
+    }
+    return false
+  })
+}
+
 /** What a recorded file asks of the plan: the memo with one document, the memo
  * first; one document alone; or the memo alone. Undefined for a shape no plan
  * builds: several documents in one file, or the memo after its document. */
@@ -139,24 +180,35 @@ function fileShape(file: RequestedFile): { document?: DocID; memo: boolean } | u
   return { document: documents[0], memo }
 }
 
+/** A recorded file's shape (fileShape) when an outline with these document ids
+ * and memo (`memo`: whether one is planned) can build it: its document planned
+ * and its memo planned. Undefined otherwise. */
+function buildable(file: RequestedFile, ids: string[], memo: boolean) {
+  const shape = fileShape(file)
+  return shape && (!shape.document || ids.includes(shape.document)) && (!shape.memo || memo) ? shape : undefined
+}
+
 /** A recorded file against an outline's documents and memo (`memo`: whether one
- * is planned): unsupported when the plan cannot build it (fileShape, a
- * document not planned, the memo not planned or joined to a redline);
+ * is planned): unsupported when the plan cannot build it (buildable);
  * otherwise, when the plan's deliverables do not deliver it as asked, the
  * outline revision `issue` and how the plan delivers it instead (`planned`). */
 function fileCheck(file: RequestedFile, documents: PlannedDocument[], memo: boolean): { unsupported: true } | { unsupported: false; issue?: string; planned?: string } {
-  const shape = fileShape(file)
-  const target = shape?.document && documents.find(document => document.id === shape.document)
-  if (!shape || (shape.document && !target) || (shape.memo && !memo) || (shape.memo && target && target.deliverable === "redline")) return { unsupported: true }
+  const shape = buildable(file, documents.map(document => document.id), memo)
+  if (!shape) return { unsupported: true }
+  const target = shape.document && documents.find(document => document.id === shape.document)
   const words = `The lawyer's words "${excerpt(file.quote)}"`
   const combined = documents.filter(document => document.deliverable === "combined" && document !== target)
   const body = (document: PlannedDocument) => `"Deliverable: body" under "${document.title}"`
   if (target && shape.memo) {
-    const changes = [...(target.deliverable !== "combined" ? [`"Deliverable: combined" under "${target.title}"`] : []), ...combined.map(body)]
+    const redline = target.deliverable === "redline"
+    const changes = [...(target.deliverable !== "combined" ? [`"Deliverable: combined" under "${target.title}"${redline ? ' in place of "Deliverable: redline"' : ""}`] : []), ...combined.map(body)]
+    // The run joins the memo only with a document's clean text.
     return !changes.length ? { unsupported: false } : {
       unsupported: false,
-      issue: `${words} ask for the memo and "${target.title}" in one file. Write ${serialList(changes)}.`,
+      issue: `${words} ask for the memo and "${target.title}" in one file` +
+        `${redline ? `, but the plan delivers "${target.title}" as a redline, and the run joins the memo only with a document's clean text` : ""}. Write ${serialList(changes)}.`,
       planned: target.deliverable === "combined" ? `the memo in one file with ${titles(combined)} as well`
+        : redline ? `"${target.title}" as a redline and the memo ${combined.length ? `in one file with ${titles(combined)}` : "as a file of its own"}`
         : combined.length ? `the memo in one file with ${titles(combined)}, and "${target.title}" as a file of its own` : `the memo and "${target.title}" as separate files`,
     }
   }
@@ -192,54 +244,80 @@ export function requestedFilesIssues(documents: PlannedDocument[], memo: string 
 
 /** The plan's file names with each grounded name the record gives: a file of
  * one document, alone or after the memo, names that document's file; a file of
- * the memo alone names the notes file. A name is skipped, and noted, when
- * another planned file would have the same name (compared as the plan parser
- * compares file names); every name asked for twice is skipped. A file the plan
- * cannot build (fileShape) names nothing. Without a name of its own, a notes
- * file still named after its document (memoNotesFile) is named again after the
+ * the memo alone names the notes file. Names are compared as registration
+ * compares them (deliveryStem, lowercased). The lawyer's name displaces another
+ * document's outline file name, which then falls back to its title, and says
+ * so. It is skipped, and noted, when a name the plan does not choose has it: a
+ * document's title-derived name or the notes file's (unless the memo's own file
+ * is named); every name asked for twice is skipped. A file the plan cannot
+ * build (buildable) names nothing. Without a name of its own, a notes file
+ * still named after its document (memoNotesFile) is named again after the
  * named documents. Documents are identified by position (withDocumentIDs). */
 export function withRequestedNames<T extends { title: string; file?: string; deliverable?: string }>(
   documents: T[], memo: { name: string; file: string } | undefined, requested: RequestedFiles,
 ): { documents: T[]; notes_file: string | undefined; applied: string[] } {
-  type Wanted = { target: number | typeof MEMO; name: string }
-  const wanted = requested.stated ? requested.files.flatMap((file): Wanted[] => {
-    const shape = fileShape(file)
-    if (!shape || file.name === null) return []
-    if (!shape.document) return memo ? [{ target: MEMO, name: file.name }] : []
-    const index = documents.findIndex((_, at) => `d${at + 1}` === shape.document)
-    return index < 0 ? [] : [{ target: index, name: file.name }]
+  type Target = number | typeof MEMO
+  const ids = documents.map((_, index) => `d${index + 1}`)
+  const wanted = requested.stated ? requested.files.flatMap((file): { target: Target; name: string }[] => {
+    const shape = buildable(file, ids, memo !== undefined)
+    return !shape || file.name === null ? [] : [{ target: shape.document ? ids.indexOf(shape.document) : MEMO, name: file.name }]
   }) : []
-  const names = [...documents.flatMap((document, index) => wanted.find(row => row.target === index)?.name ?? document.file ?? []), ...wanted.filter(row => row.target === MEMO).map(row => row.name)]
-  const repeated = (name: string) => names.filter(other => normalizedHeading(other) === normalizedHeading(name)).length > 1
-  const applied: string[] = []
-  const label = (target: number | typeof MEMO) => target === MEMO ? "the memo" : `"${documents[target]!.title}"`
-  const given = wanted.filter(row => {
-    if (repeated(row.name)) applied.push(`"${row.name}" not given to ${label(row.target)}: another planned file has that name`)
-    else if (row.name !== (row.target === MEMO ? memo?.file : documents[row.target]!.file)) {
-      applied.push(`${label(row.target)}: file "${row.name}"`)
-      return true
+  const key = (name: string) => deliveryStem({ title: "", file: name }).toLocaleLowerCase()
+  const skipped = new Set(wanted.filter(row => wanted.some(other => other !== row && key(other.name) === key(row.name))))
+  // Each skip can restore an outline name or change the notes file's, so the
+  // names are worked out again until no given name clashes.
+  for (;;) {
+    const given = wanted.filter(row => !skipped.has(row))
+    const holder = (name: string) => given.find(row => key(row.name) === key(name))
+    const named = documents.map((document, index) => {
+      const name = given.find(row => row.target === index)?.name
+      if (name) return { ...document, file: name }
+      if (!document.file || !holder(document.file)) return document
+      const { file: _file, ...rest } = document
+      return rest as T
+    })
+    const name = given.find(row => row.target === MEMO)?.name
+    const notes = name ?? (!memo ? `${deliveryStem(named[0] ?? { title: "Draft" })} - drafting notes.docx`
+      : memo.file === memoNotesFile(documents, memo.name) ? memoNotesFile(named, memo.name) : memo.file)
+    const fixed = [
+      ...named.flatMap((document, index) => document.file ? [] : [{ target: index as Target, key: deliveryStem({ title: document.title }).toLocaleLowerCase() }]),
+      ...(name ? [] : [{ target: MEMO as Target, key: key(notes) }]),
+    ]
+    const clashes = given.filter(row => fixed.some(other => other.target !== row.target && other.key === key(row.name)))
+    if (clashes.length) {
+      for (const row of clashes) skipped.add(row)
+      continue
     }
-    return false
-  })
-  const named = documents.map((document, index) => {
-    const name = given.find(row => row.target === index)?.name
-    return name ? { ...document, file: name } : document
-  })
-  const notes = given.find(row => row.target === MEMO)?.name
-  const notesFile = !memo ? undefined : notes ?? (memo.file === memoNotesFile(documents, memo.name) ? memoNotesFile(named, memo.name) : memo.file)
-  return { documents: named, notes_file: notesFile, applied }
+    const label = (target: Target) => target === MEMO ? "the memo" : `"${documents[target]!.title}"`
+    const applied = [
+      ...wanted.flatMap(row => skipped.has(row) ? [`"${row.name}" not given to ${label(row.target)}: another planned file has that name`]
+        : row.name !== (row.target === MEMO ? memo?.file : documents[row.target]!.file) ? [`${label(row.target)}: file "${row.name}"`] : []),
+      ...documents.flatMap((document, index) => {
+        const by = document.file && !given.some(row => row.target === index) ? holder(document.file) : undefined
+        return by ? [`"${document.title}": outline file "${document.file}" dropped, as the lawyer's words give that name to ${label(by.target)}`] : []
+      }),
+    ]
+    return { documents: named, notes_file: memo ? notes : undefined, applied }
+  }
 }
+
+/** The id of the requested-files question on the lawyer's words as they stand:
+ * the request and the lawyer's updates. An answer or a later job's quoting does
+ * not change it; an update does. */
+const questionID = (directory: string) =>
+  `${QUESTION_ID}${shortHash(JSON.stringify([readLeanText(directory, "request.md") ?? "", readLeanText(directory, "updated-notes.md") ?? ""]))}`
 
 /** The lawyer's question on files the outline's revisions still do not
  * deliver as the record asks (`issues`, from requestedFilesIssues on the same
  * documents): the lawyer's words, what they ask for, by title, "the memo" and
- * file name, and how the plan delivers it instead. It is asked once in a run:
- * undefined when there is no issue or a requested-files question is already
- * open or answered, since a later job may quote the same words differently. */
+ * file name, and how the plan delivers it instead. It is asked once for the
+ * lawyer's words as they stand (questionID): undefined when there is no issue
+ * or that question is already open or answered, since a later job may quote
+ * the same words differently. */
 export function requestedFilesQuestion(directory: string, requested: RequestedFiles, documents: PlannedDocument[], issues: string[]): Question | undefined {
   if (!issues.length) return
-  if (readQuestions(directory).some(question => question.id.startsWith(QUESTION_ID))) return
-  const id = `${QUESTION_ID}${shortHash(JSON.stringify([requested.files.map(file => file.quote), issues]))}`
+  const id = questionID(directory)
+  if (readQuestions(directory).some(question => question.id === id)) return
   // Issues arise only for files whose memo is planned.
   const lines = requested.files.flatMap(file => {
     const check = fileCheck(file, documents, true)
@@ -264,6 +342,11 @@ function asked(file: RequestedFile, planned: (id: string) => { title: string } |
   return `${serialList(parts)} ${how}`
 }
 
+/** The planned titles, in order, and memo name a record is read for. */
+export function requestedFilesPlanned(documents: { title: string }[], memo: string | undefined): LeanRequestedFiles["planned"] {
+  return { titles: documents.map(document => document.title), memo: memo ?? null }
+}
+
 export function writeRequestedFiles(directory: string, saved: LeanRequestedFiles) {
   writeLeanText(directory, RECORD_FILE, `${JSON.stringify(saved, null, 2)}\n`)
 }
@@ -272,62 +355,100 @@ export function writeRequestedFiles(directory: string, saved: LeanRequestedFiles
 export function readRequestedFiles(directory: string): LeanRequestedFiles | undefined {
   const value = readLeanJson(directory, RECORD_FILE)
   if (!record(value) || value.schema !== LEAN_REQUESTED_FILES_SCHEMA || typeof value.basis !== "string" || typeof value.stated !== "boolean" ||
+    !record(value.planned) || !Array.isArray(value.planned.titles) || !value.planned.titles.every(title => typeof title === "string") ||
+    !(value.planned.memo === null || typeof value.planned.memo === "string") ||
     !Array.isArray(value.files) || !value.files.every(savedFile) || (!value.stated && value.files.length)) return
   return value as LeanRequestedFiles
 }
 
 const savedFile = (row: unknown) => record(row) && Array.isArray(row.holds) && row.holds.length > 0 &&
-  row.holds.every(id => id === MEMO || (typeof id === "string" && /^d[1-9]\d*$/.test(id))) && (row.name === null || typeof row.name === "string") && typeof row.quote === "string"
+  row.holds.every(id => id === MEMO || (typeof id === "string" && /^d[1-9]\d*$/.test(id))) && (row.name === null || typeof row.name === "string") && typeof row.quote === "string" &&
+  (row.refused_name === undefined || typeof row.refused_name === "string")
 
 /** The open items for recorded files the saved plan does not deliver as the
  * lawyer asked, derived from the record and never stored. Only a record of the
- * saved plan counts (same basis); a plan written by hand, or with no such
- * record, gives none. A file the run cannot build (fileShape, or the memo
- * joined to a redline) always gives one. Otherwise each file is compared with
- * the names registration gives the plan's files (plannedRegistration): the
- * memo with one document must be that document's combined file
- * (combinedDelivery), one document alone must not be combined, the memo alone
- * must be delivered with no document combined, and a requested name must be
- * that file's name. Each item quotes the lawyer's words, says what they ask for
- * and which files the run delivers instead, and belongs to the drafting notes,
- * so a repair goes to the notes writer. Each id keys on the item's content. */
+ * saved plan counts: same basis, and read for the plan's titles and memo
+ * (requestedFilesPlanned); a plan written or edited by hand, or with no such
+ * record, gives none. A file the run cannot build (fileShape) always gives
+ * one. Otherwise each file is compared with the names registration gives the
+ * plan's files (plannedRegistration): the memo with one document must be that
+ * document's combined file (combinedDelivery), one document alone must not be
+ * combined, the memo alone must be delivered with no document combined, and a
+ * requested name, or one the run could not confirm, must be that file's name,
+ * free of a matter file the run did not write. Each item quotes the lawyer's
+ * words, says what they ask for and every file the run delivers instead, by all
+ * it holds, and belongs to the drafting notes, so a repair goes to the notes
+ * writer. Once the lawyer has answered the question on these words
+ * (questionID), an item on a file that question covered cites the answer. Each
+ * id keys on the item's content. */
 export function requestedFilesItems(directory: string): OpenItem[] {
   const plan = readLeanPlan(directory)
   const saved = readRequestedFiles(directory)
-  if (!plan || plan.basis === undefined || !saved || saved.basis !== plan.basis || !saved.stated) return []
+  if (!plan || plan.basis === undefined || !saved || saved.basis !== plan.basis || !saved.stated ||
+    JSON.stringify(saved.planned) !== JSON.stringify(requestedFilesPlanned(plan.documents, plan.memo))) return []
   const registered = plannedRegistration(directory, plan)
   // Registration names are lowercased; the run's evidence keeps their spelling.
-  const spelled = new Map(deliveryArtifactEvidence(directory).map(row => {
-    const name = "download_filename" in row ? row.download_filename : row.planned_filename
-    return [name.toLocaleLowerCase(), name] as const
-  }))
+  const spellings = new Map<string, string>(deliveryArtifactEvidence(directory).map(row =>
+    [`${row.kind}:${row.document}`, "download_filename" in row ? row.download_filename : row.planned_filename]))
+  const rows = readLeanDocuments(directory)?.documents ?? []
   const combined = combinedDelivery(directory, plan)
   const memo = requestedMemo(directory, plan)
-  const registeredAs = (kind: string, document: DocID | null) => registered.find(row => row.kind === kind && row.document === document)?.name ?? null
+  const title = (id: string) => plan.documents.find(row => row.id === id)?.title
+  // The file the run delivers `kind` of `document` as: its registered name and
+  // its spelling, with registration's suffix; and whether a matter file the run
+  // did not write holds that name (`foreign`), as registration then takes
+  // another, with the run's own earlier name for it when the summary has one.
+  const delivery = (kind: string, document: DocID | null) => {
+    const row = registered.find(other => other.kind === kind && other.document === document)
+    if (!row?.name) return null
+    const planned = spellings.get(`${kind}:${document}`)
+    const spelled = planned && row.wanted === planned.toLocaleLowerCase() && row.name.startsWith(row.wanted.slice(0, -5))
+      ? `${planned.slice(0, -5)}${row.name.slice(row.wanted.length - 5)}` : row.name
+    const titled = document ? title(document) ?? null : null
+    const current = kind === "combined" ? null : sha256File(path.join(directory, spelled))?.sha256
+    const owned = rows.some(other => other.title === titled && other.deliverable?.toLocaleLowerCase() === row.name && other.sha256 === current)
+    const stem = row.wanted.slice(0, -5).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+    const earlier = rows.find(other => other.kind === kind && other.title === titled && other.deliverable &&
+      new RegExp(`^${stem}(?: \\(\\d+\\))?\\.docx$`).test(other.deliverable.toLocaleLowerCase()) && other.deliverable.toLocaleLowerCase() !== row.name)?.deliverable
+    return { kind, title: titled, name: row.name, spelled, foreign: Boolean(current) && !owned, earlier }
+  }
   const deliveredIn = (id: string) => {
-    if (id === MEMO) return !memo ? null : combined ? registeredAs("combined", combined.document) : registeredAs("drafting_notes", null)
+    if (id === MEMO) return !memo ? null : combined ? delivery("combined", combined.document) : delivery("drafting_notes", null)
     const document = plan.documents.find(row => row.id === id)
-    return !document ? null : combined?.document === document.id ? registeredAs("combined", document.id) : registeredAs(document.deliverable === "redline" ? "redline" : "body", document.id)
+    return !document ? null : combined?.document === document.id ? delivery("combined", document.id) : delivery(document.deliverable === "redline" ? "redline" : "body", document.id)
+  }
+  const describe = (file: NonNullable<ReturnType<typeof delivery>>) => {
+    const what = file.kind === "combined" ? `the memo and "${file.title}"` : file.kind === "drafting_notes" ? "the memo" : `"${file.title}"${file.kind === "redline" ? " as a redline" : ""}`
+    if (file.foreign) return `${what} in ${file.earlier ? `"${file.earlier}"` : "a file of another name"}, since a matter file the run did not write already holds "${file.spelled}"`
+    return file.kind === "combined" ? `${what} in one file named "${file.spelled}"` : `${what} in "${file.spelled}"`
   }
   const nameKey = (name: string) => `${deliveryStem({ title: "", file: name })}.docx`.toLocaleLowerCase()
   const lawyerQuote = (words: string) => `"${words.replace(/\s+/g, " ").trim()}"` + (matterSourceIDs(directory).includes(REQUEST_SOURCE) ? "" : ` [source: ${REQUEST_SOURCE}]`)
+  const id = questionID(directory)
+  const answered = readQuestions(directory).some(question => question.id === id && question.status === "answered")
   const items = saved.files.flatMap(file => {
+    const check = fileCheck(file, plan.documents, memo !== undefined)
     const shape = fileShape(file)
-    const target = shape?.document ? plan.documents.find(row => row.id === shape.document) : undefined
-    const reason = !shape ? file.holds.filter(id => id !== MEMO).length > 1 ? " The run cannot put more than one document in one file." : " The run can join the memo and a document in one file only with the memo first."
-      : shape.memo && target?.deliverable === "redline" ? " The run can join the memo and a document in one file only with the document's clean text, not its redline." : ""
-    const delivered = !reason && shape && (!shape.document || target) && (!shape.memo || memo) &&
-      (shape.memo && target ? combined?.document === target.id : target ? combined?.document !== target.id : !combined) &&
-      (file.name === null || deliveredIn(target?.id ?? MEMO) === nameKey(file.name))
-    if (delivered) return []
-    const files = new Map<string, string[]>()
-    for (const id of file.holds) {
-      const name = deliveredIn(id)
-      if (name) files.set(name, [...files.get(name) ?? [], id === MEMO ? "the memo" : `"${plan.documents.find(row => row.id === id)!.title}"`])
+    const target = shape && deliveredIn(shape.document ?? MEMO)
+    const given = file.name ?? file.refused_name
+    const named = given === undefined || Boolean(target && !target.foreign && target.name === nameKey(given))
+    if (!check.unsupported && !check.issue && named) return []
+    const files = new Map<string, NonNullable<ReturnType<typeof delivery>>>()
+    for (const held of file.holds) {
+      const delivered = deliveredIn(held)
+      if (delivered) files.set(delivered.name, delivered)
     }
-    const phrases = [...[...files].map(([name, parts]) => `${serialList(parts)} in "${spelled.get(name) ?? name}"`), ...(file.holds.includes(MEMO) && !memo ? ["no memo"] : [])]
-    return [openItem("finalize", "omission", `Requested files: the lawyer's words ${lawyerQuote(file.quote)} ask for ${asked(file, id => plan.documents.find(row => row.id === id))}, ` +
-      `but the run delivers ${phrases.length ? serialList(phrases) : "none of them"}.${reason} The lawyer should confirm how these files are to be delivered.`, { repair_target: "memo" })]
+    const phrases = [...[...files.values()].map(describe), ...(file.holds.includes(MEMO) && !memo ? ["no memo"] : [])]
+    const delivers = phrases.length ? serialList(phrases) : "none of them"
+    const reason = shape ? "" : file.holds.filter(held => held !== MEMO).length > 1 ? " The run cannot put more than one document in one file."
+      : " The run can join the memo and a document in one file only with the memo first."
+    const refused = file.name === null && file.refused_name !== undefined && !named
+    const closing = answered && !check.unsupported && check.planned
+      ? ` The lawyer answered the requested-files question ${id}; the plan drawn up with that answer still delivers them so.`
+      : " The lawyer should confirm how these files are to be delivered."
+    return [openItem("finalize", "omission", `Requested files: the lawyer's words ${lawyerQuote(file.quote)} ask for ${asked(file, held => plan.documents.find(row => row.id === held))}` +
+      (refused ? ` and name this file; the run could not confirm the name "${file.refused_name}" in those words and delivers ${delivers}.` : `, but the run delivers ${delivers}.`) +
+      `${reason}${closing}`, { repair_target: "memo" })]
   })
   return [...new Map(items.map(row => [row.id, row])).values()]
 }
