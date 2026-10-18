@@ -8,7 +8,7 @@ import { OTHER_FORMAT, formatStem, spelledNames } from "./delivery-selection"
 import { plainFileName, readLeanPlan, type DocID, type PlannedDocument } from "./plan"
 import { tagged } from "./prompts"
 import { REQUEST_SOURCE, excerpt, instructionFound, lawyerWords, matterSourceIDs, openItem, quoteMissIssue } from "./quotes"
-import { answeredQuestionsText, readLeanJson, readLeanText, readQuestions, shortHash, writeLeanText, type OpenItem, type Question } from "./state"
+import { answeredQuestionsText, handedBackBlock, readLeanJson, readLeanText, readQuestions, shortHash, writeLeanText, type OpenItem, type Question } from "./state"
 
 // Requested files: which files the lawyer asks to receive, and which planned
 // documents and the memo go in each. One focused job reads the lawyer's words
@@ -77,6 +77,7 @@ export function requestedFilesPrompt(directory: string, documents: PlannedDocume
     tagged("request", readLeanText(directory, "request.md") ?? ""),
     updates ? tagged("user_updates", `Later instructions from the lawyer, in arrival order. An explicit later change supersedes the earlier instruction on that point.\n\n${updates}`) : "",
     answers ? tagged("answers", `The lawyer's answers; they remain controlling:\n${answers}`) : "",
+    handedBackBlock(directory) ? tagged("left_to_drafting", handedBackBlock(directory)) : "",
     tagged("planned_documents", "The documents the run drafts, by id. Their titles are the plan's own choices, not the lawyer's words.\n" +
       JSON.stringify(documents.map(document => ({ id: document.id, title: document.title })), null, 2)),
     memo ? tagged("planned_memo", `The run also writes the memo the lawyer asks for, planned as "${memo}". In "holds", write it as "memo".`) : "",

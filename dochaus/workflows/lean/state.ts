@@ -336,11 +336,31 @@ export function answeredQuestions(directory: string) {
   return readQuestions(directory).filter(question => question.status === "answered").toSorted((a, b) => a.id.localeCompare(b.id))
 }
 
-/** Canonical text of every human answer; an input to every drafting stage. */
+/** Canonical text of every lawyer's answer; an input to every drafting stage.
+ * A question handed back has no answer: handedBackQuestionsText lists it. */
 export function answeredQuestionsText(directory: string) {
-  return answeredQuestions(directory)
+  return answeredQuestions(directory).filter(question => !handedBack(question))
     .map(question => `- [${question.id}] Q: ${question.question}\n  A: ${question.answer}`)
     .join("\n")
+}
+
+/** Canonical text of every question the lawyer handed back, by id like the answers. */
+export function handedBackQuestionsText(directory: string) {
+  return answeredQuestions(directory).filter(handedBack).map(question => `- [${question.id}] Q: ${question.question}`).join("\n")
+}
+
+/** The hand-backs as prompts show them beside the lawyer's answers, or "" with
+ * none: choices the drafting makes and discloses, never the lawyer's answers. */
+export function handedBackBlock(directory: string) {
+  const text = handedBackQuestionsText(directory)
+  return text ? `The lawyer left these questions to the drafting to decide instead of answering them; do not ask them again. Each is a choice the drafting makes on professional judgment and discloses as one the lawyer has not made.\n${text}` : ""
+}
+
+/** The "answers" input of every step's key. A hand-back keys it as an answer
+ * does, so it reruns from intake; without one it is the answers text alone. */
+export function answersInput(directory: string) {
+  const text = handedBackQuestionsText(directory)
+  return text ? [answeredQuestionsText(directory), `Left to the drafting:\n${text}`].filter(Boolean).join("\n") : answeredQuestionsText(directory)
 }
 
 export function shortHash(text: string, length = 10) {

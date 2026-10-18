@@ -9,7 +9,7 @@ import { finalBodyParagraphs } from "./checks"
 import { readLeanPlan, type DocID } from "./plan"
 import { matterSourceIDs } from "./quotes"
 import { researchHandoff } from "./research"
-import { answeredQuestionsText, readLeanJson, readLeanText } from "./state"
+import { answeredQuestionsText, handedBackBlock, readLeanJson, readLeanText } from "./state"
 
 export type PackageReview = {
   status: "pass" | "changes-required"
@@ -31,6 +31,7 @@ export function packageReviewPrompt(directory: string) {
     `<drafting_spine>\n${readLeanText(directory, "spine.json") ?? ""}\n</drafting_spine>`,
     `<discrepancies>\n${readLeanText(directory, "discrepancy.json") ?? ""}\n</discrepancies>`,
     `<answers>\n${answeredQuestionsText(directory)}\n</answers>`,
+    ...(handedBackBlock(directory) ? [`<left_to_drafting>\n${handedBackBlock(directory)}\n</left_to_drafting>`] : []),
     `<sources>\n${matterSourceIDs(directory).join("\n")}\n</sources>`,
     `<delivery_artifacts>\n${JSON.stringify(deliveryArtifactEvidence(directory), null, 2)}\n</delivery_artifacts>`,
     `<legal_research>\n${researchHandoff(directory)}\n</legal_research>`,

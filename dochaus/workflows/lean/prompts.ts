@@ -10,7 +10,7 @@ import { reviewStages, FIRST_DOCUMENT, earlierDocuments, planActingFor, operativ
 import { REQUEST_SOURCE, matterSourceIDs } from "./quotes"
 import { readRepairRound, changesRepairSections } from "./repairs"
 import { disclosableItems } from "./stages"
-import { isReviewStage, answeredQuestionsText, readLeanJson, readLeanText, readQuestions, type OpenItem, type StageID } from "./state"
+import { isReviewStage, answeredQuestionsText, handedBack, handedBackBlock, readLeanJson, readLeanText, readQuestions, type OpenItem, type StageID } from "./state"
 import { plannedContract } from "./template-contract"
 
 // Prompts of the lean model steps. Each step's first prompt carries everything
@@ -53,6 +53,8 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
   const spine = readLeanText(directory, "spine.json")
   const spineBlock = spine ? tagged("drafting_spine", "Source-linked drafting decisions and unresolved points. Retrieve the underlying evidence as needed; this handoff does not replace it.\n" + spine) : ""
   const answerBlock = answers ? tagged("answers", `The lawyer answered these decisions; their answers remain controlling and must not be re-asked under narrower or different wording:\n${answers}`) : ""
+  const handed = handedBackBlock(directory)
+  const handedBlock = handed ? tagged("left_to_drafting", handed) : ""
   const sources = tagged("sources", [
     "Matter documents (use these exact names with search-document and read-document, and as source names):",
     ...matterSourceIDs(directory).map(name => `- ${name}`),
@@ -74,11 +76,11 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
   // What the scope guards say other output owns: another planned document, the memo.
   const assigned = [planned ? "another planned document" : "", composition ? "the accompanying memo" : ""].filter(Boolean).join(" or ")
   const outline = tagged("document_outline", JSON.stringify(operativeDocument(plannedDocument(directory, document))))
-  if (options.contextOnly) return [request, spineBlock, acting, answerBlock, sources, planned, composition, outline, finished].filter(Boolean).join("\n\n")
+  if (options.contextOnly) return [request, spineBlock, acting, answerBlock, handedBlock, sources, planned, composition, outline, finished].filter(Boolean).join("\n\n")
   const sections: Partial<Record<StageID, string[]>> = {
     draft: options.outline ? [
       "This is a lean drafting run. Plan the substantive document bodies to draft, then draft each in parts. The workflow generates delivery artifacts from those bodies.",
-      request, spineBlock, answerBlock, sources,
+      request, spineBlock, answerBlock, handedBlock, sources,
       tagged("output_contract", [
         ...SOURCE_RULES,
         "- Delivery capabilities: for every planned body the workflow renders the final Word document and generates its tracked redline; one final drafting-notes memo accompanies the package. A request for a redline/comparison or ordinary drafting notes is fulfilled by those generated artifacts, not by another planned body. Set Compare against on the revised body to select a supplied original for comparison. Plan a separate substantive memo only when the request requires its own distinct audience, purpose or analysis beyond the accompanying drafting notes; a different delivery format does not create another substantive document. Do not draft simulated tracked text as a separate comparison document.",
@@ -109,7 +111,7 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
     ] : [
       `This is a lean drafting run. You draft "${title ?? document}", one of the documents the request asks for, in parts: one part per reply.`,
       ...(plannedDocument(directory, document)?.purpose ? [`This document is for: ${plannedDocument(directory, document)!.purpose}`] : []),
-      request, spineBlock, acting, answerBlock, sources, composition, finished,
+      request, spineBlock, acting, answerBlock, handedBlock, sources, composition, finished,
       tagged("output_contract", [
         ...SOURCE_RULES,
         ...(finished ? ["- Carry accepted source-supported change explanations into this document when its purpose calls for advice or a summary. Explain the original issue, consequence, proposed solution and remaining decision. Verify the actual final wording and source context; an earlier explanation is not authority and may need correction. This document must agree with the finished documents above in their final wording: names, defined terms, figures, dates and cross-references."] : []),
@@ -122,7 +124,7 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
     review: [
       `This is a lean drafting run. Independently review the draft${named} below against the lawyer's request and the matter's sources.`,
       tagged("review_focus", isReviewStage(stage) ? REVIEW_FOCUS[stage] : ""),
-      request, spineBlock, acting, answerBlock, sources, planned, composition, outline, finished, paragraphs,
+      request, spineBlock, acting, answerBlock, handedBlock, sources, planned, composition, outline, finished, paragraphs,
       ...(stage === "review-wording" ? [draftingStyleWarningsBlock(readParagraphs(directory, document))] : []),
       tagged("output_contract", [
         "- Check the draft against the request and the sources (search-document, read-document, verify-quote).",
@@ -154,7 +156,7 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
         const finding = readLeanText(directory, `${document}/${stage}.md`)
         return finding ? `${stage}:\n${finding}` : ""
       }).filter(Boolean).join("\n\n"))]), ...changesRepairSections(directory, document),
-      spineBlock, acting, answerBlock, sources, planned, composition, outline, finished,
+      spineBlock, acting, answerBlock, handedBlock, sources, planned, composition, outline, finished,
       tagged("output_contract", [
         "Reply with exactly one JSON object and nothing else:",
         '{"amendments":[{"pid":"<pid from the draft>","updated":"<full new text of that paragraph>","reason":"<why it changes>","sources":[{"source_id":"<exact document name, or request>","quote":"<words copied exactly from that source>"}]}],"questions":[{"id":"<id of an open question you are repeating; omit for a new one>","pid":"<pid of the paragraph whose text depends on the answer>","question":"<what only the lawyer can decide>","context":"<why it matters>"}]}',
@@ -256,13 +258,14 @@ function draftingNotesSections(directory: string, request: string) {
       : "This is a lean drafting run. Write the drafting notes that go to the lawyer with the drafted documents.",
     tagged("required_repairs", (readRepairRound(directory)?.items ?? []).filter(item => item.stage === "package-review" || item.ref.repair_target === "memo").map(item => `- ${item.detail}`).join("\n") || "None."),
     request, actingForBlock(directory), answeredQuestionsText(directory) ? tagged("answers", answeredQuestionsText(directory)) : "",
+    handedBackBlock(directory) ? tagged("left_to_drafting", handedBackBlock(directory)) : "",
     tagged("sources", matterSourceIDs(directory).join("\n")),
     tagged("delivery_artifacts", JSON.stringify(deliveryArtifactEvidence(directory), null, 2)),
     tagged("drafting_spine", readLeanText(directory, "spine.json") ?? "None."),
     tagged("discrepancies", readLeanText(directory, "discrepancy.json") ?? "None."),
     ...plan.map(row => `<document id="${row.id}" title="${attribute(row.title)}">\n${documentSections(directory, row.id, items).join("\n\n")}\n</document>`),
     loose.length ? tagged("open_items", openItemLines(loose)) : "",
-    tagged("questions", questions.map(question => `- ${question.id} (${question.status}): ${question.question}${question.answer ? `\n  Answer: ${question.answer}` : ""}`).join("\n") || "None."),
+    tagged("questions", questions.map(question => `- ${question.id} (${handedBack(question) ? "left to the drafting" : question.status}): ${question.question}${question.answer ? `\n  Answer: ${question.answer}` : ""}`).join("\n") || "None."),
     tagged("output_contract", [
       "- Follow the lawyer's explanation-detail, formality and house-style preferences when writing the notes. Translate the supplied records into their practical meaning rather than copying workflow field names, raw paths or stage status. Retain source support, comparison baselines, applied/unapplied outcomes, limitations and every required open-item id. Name documents where this helps locate them.",
       "- Separate actual unresolved instructions, corrections and decisions from professional review before issue. Do not turn settled instructions or internal output-handling steps into new confirmation requirements.",

@@ -35,7 +35,7 @@ import { matterSourceBasis, matterSourceIDs, openItem } from "./quotes"
 import { documentRepairs, readRepairRound } from "./repairs"
 import {
   isReviewStage,
-  answeredQuestionsText,
+  answersInput,
   handedBack,
   hashStageInputs,
   leanFile,
@@ -215,7 +215,7 @@ export function stageInputs(directory: string, step: StepID, options: { repairCo
     ...(!["discrepancy", "intake", "research", "research-review", "spine"].includes(step) ? ["discrepancy.json", "spine.json"].map(name => ({ name, bytes: readLeanText(directory, name) ?? "" })) : []),
     ...(clarifications.length && ["checklist-check", "package-review", "gate"].includes(step) ? [{ name: "inspection-clarifications", bytes: JSON.stringify(clarifications) }] : []),
     { name: "source-content", bytes: matterSourceBasis(directory) },
-    ...(!inputs.some(part => part.name === "answers") ? [{ name: "answers", bytes: answeredQuestionsText(directory) }] : []),
+    ...(!inputs.some(part => part.name === "answers") ? [{ name: "answers", bytes: answersInput(directory) }] : []),
     ...(updates && !inputs.some(part => part.name === "updated-notes.md") ? [{ name: "updated-notes.md", bytes: updates }] : [])]
 }
 
@@ -230,7 +230,7 @@ function keyedQuestions(directory: string, gate = false) {
 
 function baseStageInputs(directory: string, step: StepID, options: { repairContext?: false }): { name: string; bytes: string | Uint8Array }[] {
   const file = (name: string) => ({ name, bytes: existsSync(leanFile(directory, name)) ? readFileSync(leanFile(directory, name)) : "" })
-  const answers = { name: "answers", bytes: answeredQuestionsText(directory) }
+  const answers = { name: "answers", bytes: answersInput(directory) }
   const sources = { name: "sources", bytes: matterSourceIDs(directory).join("\n") }
   const planned = readLeanPlan(directory)?.documents.map(row => row.id) ?? []
   if (step === "checklist-check") return [{ name: "checklist-refinement-contract", bytes: "source-unit-refinement-1" }, { name: "checklist-refinement-selection", bytes: JSON.stringify(checklistRefinementSelections(directory)) }, file("checklist/refinements.json"), file("request.md"), file("plan.json"), file("checklist/extraction.json"), file("drafting-notes.docx"), file("research-context.txt"), ...planned.flatMap(id => [file(`${id}/body.docx`), file(`${id}/body-applied.docx`), file(`${id}/redline.docx`), file(`${id}/review-independent.md`), file(`${id}/changes.json`), file(`${id}/apply.json`)])]
@@ -291,7 +291,7 @@ export function planBasisCurrent(directory: string) {
 function outlineInputs(directory: string) {
   const request = leanFile(directory, "request.md")
   const updates = readLeanText(directory, "updated-notes.md")
-  return [{ name: "drafting-preferences", bytes: readFirmDraftingPreferences() }, { name: "source-content", bytes: matterSourceBasis(directory) }, { name: "answers", bytes: answeredQuestionsText(directory) }, ...(updates ? [{ name: "updated-notes.md", bytes: updates }] : []), { name: "request.md", bytes: existsSync(request) ? readFileSync(request) : "" }, { name: "sources", bytes: matterSourceIDs(directory).join("\n") }]
+  return [{ name: "drafting-preferences", bytes: readFirmDraftingPreferences() }, { name: "source-content", bytes: matterSourceBasis(directory) }, { name: "answers", bytes: answersInput(directory) }, ...(updates ? [{ name: "updated-notes.md", bytes: updates }] : []), { name: "request.md", bytes: existsSync(request) ? readFileSync(request) : "" }, { name: "sources", bytes: matterSourceIDs(directory).join("\n") }]
 }
 
 /** Checks a model reply and, when it passes, writes the step's output files. */

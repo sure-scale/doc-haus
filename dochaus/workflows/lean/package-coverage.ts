@@ -4,7 +4,7 @@ import { FIRST_DOCUMENT, nameKey, namedIn, readLeanPlan, type ActingFor, type Do
 import { tagged } from "./prompts"
 import { EXCERPT, REQUEST_SOURCE, excerpt, lawyerWords, matterSourceIDs, openItem, quoteFound, quoteMissIssue } from "./quotes"
 import { answeredScopeQuestion, scopeAnswers, scopeField, scopeQuestionShows, type ScopeParties } from "./package-scope"
-import { answeredQuestionsText, hashStageInputs, readLeanJson, readLeanText, readQuestions, type OpenItem, type Question } from "./state"
+import { answeredQuestionsText, handedBackBlock, hashStageInputs, readLeanJson, readLeanText, readQuestions, type OpenItem, type Question } from "./state"
 import { sourceText } from "./template-structure"
 
 // Package coverage: an instructed act needs an instrument executed by the
@@ -59,6 +59,7 @@ export function coveragePrompt(directory: string, documents: PlannedDocument[]) 
     tagged("request", readLeanText(directory, "request.md") ?? ""),
     updates ? tagged("user_updates", `Later instructions from the lawyer, in arrival order. An explicit later change supersedes the earlier instruction on that point.\n\n${updates}`) : "",
     answers ? tagged("answers", `The lawyer's answers; they remain controlling:\n${answers}`) : "",
+    handedBackBlock(directory) ? tagged("left_to_drafting", handedBackBlock(directory)) : "",
     tagged("sources", [
       "Matter documents (use these exact names with search-document and read-document, and as source names):",
       ...matterSourceIDs(directory).map(name => `- ${name}`),
