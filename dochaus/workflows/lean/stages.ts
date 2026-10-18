@@ -70,7 +70,7 @@ const REQUESTED_MEMO_CONTRACT = "requested-memo-titles-7"
  * change to how it words or keys a question, or how it composes the delivered
  * notes, re-runs a done gate, so an open question it asked takes the current
  * form and the delivered notes are written again. */
-const GATE_CONTRACT = "checklist-open-delivery-5"
+const GATE_CONTRACT = "checklist-open-delivery-6"
 export const LEAN_MAX_RETRIES = 3
 
 export const LEAN_STAGE_AGENTS = {

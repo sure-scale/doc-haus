@@ -152,8 +152,8 @@ test("assertDelegable admits only an open model-asked question", () => {
 
 // Inputs pinned on the code before hand-backs existed; hashed under a fixed
 // label so a prompt version change does not move them. The gate's also keys
-// its contract, bumped when a disclosed hand-back's choice citing exactly a
-// conflict's passages began to add a hint to the question that asks it.
+// its contract, bumped when the hint a disclosed hand-back's choice adds to
+// the question that asks its conflict was reworded and narrowed.
 const ANSWERS = "- [package-scope-d1] Q: Which documents are in scope?\n  A: Only the supply note.\n- [q-law] Q: Which law should govern?\n  A: Singapore law."
 const INPUTS: Record<string, string> = {
   "discrepancy": "8dac7eefaf1e988e35ffbe6c7f765a951943e9b1299546a9b94dc10e99950a72",
@@ -174,7 +174,7 @@ const INPUTS: Record<string, string> = {
   "finalize": "b38c29092265887c63cf0e8a96bac1cd40201575a9344dca65628f3adedef462",
   "checklist-check": "bf9d2570d825f9efdf7d09b08a635561362fda11c11812346212a16ead317e10",
   "package-review": "dde115af0ba46b8cb1ecf9bf7eb0c40aff3b78f4d6be9e0f0da3dff2d5d4066f",
-  "gate": "c78f7ca377d1059d5103685c568313a68492859f15486a1d0ce5c7bc9dc42863",
+  "gate": "5a2eea841b0446e2f2581f98994cdf7cb6d0e669da0a5e7d4d28b096f964ef25",
 }
 
 test("without a hand-back the answers text and every step's inputs are unchanged", () => {

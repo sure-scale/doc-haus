@@ -98,17 +98,17 @@ test("findings without a source conflict ask nothing and keep their delivery", (
 })
 
 // A question the lawyer handed back to the drafting, the spine's entry made in
-// its place citing `evidence` from the request, and drafting notes that
-// disclose the hand-back unless `disclosed` is false.
+// its place citing `evidence` from `source` (the request unless named), and
+// drafting notes that disclose the hand-back unless `disclosed` is false.
 const HANDED: Question = { id: "q-terms", stage: "intake", question: "Which term governs?", context: "", status: "answered", answer_kind: "decide_for_me", answered_at: "2026-01-01T00:00:00.000Z" }
-function handBack(directory: string, evidence: string[], { disclosed = true, kind = "drafting-choice" } = {}) {
+function handBack(directory: string, evidence: string[], { disclosed = true, kind = "drafting-choice", source = "request" } = {}) {
   writeQuestions(directory, [HANDED])
   writeLeanText(directory, "spine.json", JSON.stringify({ entries: [{ kind, question_id: HANDED.id, detail: "Choice: the note follows the first source.",
-    evidence: evidence.map(quote => ({ source_id: "request", quote })), limitations: ["The lawyer has not made this choice."] }], limitations: [] }))
+    evidence: evidence.map(quote => ({ source_id: source, quote })), limitations: ["The lawyer has not made this choice."] }], limitations: [] }))
   writeLeanText(directory, "drafting-notes.md", disclosed ? handedBackItems(directory).map(item => item.id).join("\n") : "")
   return directory
 }
-const HINT = "may be a point you left to the drafting earlier; the drafting notes describe the choice made."
+const HINT = "may be a point you asked us to decide earlier; the notes delivered with the draft describe the choice made."
 const UNANSWERED = "Leaving this question unanswered keeps the draft as drafted."
 const PRICE = "Unit price: 100 per unit"
 const EMAIL = "We propose 120 per unit."
@@ -136,11 +136,20 @@ test("a conflict the lawyer may have handed back is still asked, once and under 
   expect(gate.disclosed.filter(item => item.kind === "checklist_unresolved").map(item => item.ref.question_id)).toEqual([plain.id, plain.id])
   expect(gate.disclosed.filter(item => item.stage === "finalize").map(item => item.ref.question_id)).toEqual([HANDED.id])
   // A choice citing one side only, a passage neither side cites, no passage,
-  // an open item rather than a choice, an undisclosed hand-back and a real
+  // the same words in another source, an open item rather than a choice, a
+  // side with open decisions of its own, an undisclosed hand-back and a real
   // answer give no hint; the question is asked the same way.
   const hinted = (directory: string) => finalGate(directory).questions![0]!.context.includes(HINT)
   for (const evidence of [[BOTH[0]!], [BOTH[1]!], [...BOTH, "Deliver to the buyer's warehouse."], []]) expect(hinted(handBack(conflicts(), evidence))).toBe(false)
+  expect(hinted(handBack(conflicts(), BOTH, { source: "term-sheet" }))).toBe(false)
   expect(hinted(handBack(conflicts(), BOTH, { kind: "open-item" }))).toBe(false)
+  // The open decisions an adverse side records are asked in no question, so
+  // the hint would read as settling them.
+  const undecided = () => checklistMatter([finding("c1", "unsatisfied", { conflicting_source_refs: [ref("Payment is due on delivery.")],
+    open_decisions: ["The delivery address is not given in the sources"] }), conflict("c2", "Deliver within thirty days of the order.")])
+  const asked = finalGate(undecided()).questions!
+  expect(asked.map(row => row.id)).toEqual([plain.id])
+  expect(finalGate(handBack(undecided(), BOTH)).questions).toEqual(asked)
   const silent = finalGate(handBack(conflicts(), BOTH, { disclosed: false }))
   expect(silent.status).toBe("blocked")
   expect(silent.questions![0]).toEqual(plain)
@@ -173,7 +182,7 @@ test("a choice whose passages do not match the conflict's exactly gives no hint:
     expect(finalGate(handBack(checklistMatter(exact.findings, exact.items), evidence)).questions![0]!.context).toContain(`This conflict ${HINT}`)
 })
 
-test("among several conflicts the hint names only the pair the choice matches; an answered question is not asked again once the hand-back is disclosed", () => {
+test("among several conflicts the hint names only the pair the choice matches, and says nothing of leaving the question unanswered; an answered question is not asked again once the hand-back is disclosed", () => {
   const TEN = "Deliver within ten days of the order.", FORTY = "Deliver within forty days of the order."
   const price = sides({ check: "Price is 100 per unit.", quotes: [PRICE] }, { check: "Price is 120 per unit.", quotes: [EMAIL] })
   const items = [...price.items, { id: "c3", item: requirement("Deliver within ten days.", TEN) }, { id: "c4", item: requirement("Deliver within forty days.", FORTY) }]
@@ -188,7 +197,10 @@ test("among several conflicts the hint names only the pair the choice matches; a
   writeLeanText(directory, "drafting-notes.md", handedBackItems(directory).map(item => item.id).join("\n"))
   const again = finalGate(directory).questions!
   expect(again.map(row => row.id)).toEqual([first.id])
-  expect(again[0]!.context).toBe(`${first.context} Pair ${pair} ${HINT} ${UNANSWERED}`)
+  // Leaving the question unanswered would leave the other pair as drafted
+  // too, which no choice settled: that sentence is kept for a question every
+  // part of which a choice may have settled.
+  expect(again[0]!.context).toBe(`${first.context} Pair ${pair} ${HINT}`)
   replaceStageQuestions(directory, "gate", null, again)
   expect(readQuestions(directory).filter(row => row.status === "open")).toEqual([])
   expect(readQuestions(directory).find(row => row.id === first.id)).toMatchObject({ status: "answered", context: first.context })

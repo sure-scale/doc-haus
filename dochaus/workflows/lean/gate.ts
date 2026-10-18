@@ -58,7 +58,9 @@ import { isReviewStage, currentOpenItems, handedBack, readLeanText, readLeanJson
 //   handedBackHint), whether between two findings or an open finding and the
 //   passage it records as contradicting it, is still asked: the question that
 //   asks it only adds a plain hint, since matching passages cannot show the
-//   choice settled the point; it is never met;
+//   choice settled the point; it is never met. A pair with a side whose
+//   finding records open decisions of its own gets no hint: no question asks
+//   them, and the hint would read as settling them;
 // - an instruction (a directive item) the checklist check left open may be
 //   carried by no planned document, which disclosure alone cannot settle; the
 //   gate puts those no answered package-scope question has shown to the lawyer
@@ -130,7 +132,14 @@ export function finalGate(directory: string): GateResult {
   // same; the question only says so (handedBackHint).
   const handedBackChoiceItems = handedBackItems(directory).map(item => settle(item, context))
   const handedBackTo = handedBackHint(directory, handedBackChoiceItems)
-  const conflict = checked?.valid ? checklistConflictQuestion(conflictItemPairs(checked.unresolved), [...context.questions.values()], handedBackTo) : undefined
+  // A conflict's side may record open decisions of its own, which the conflict
+  // question does not ask and which keep the side out of the scope question:
+  // its pair gets no hint, which would read as settling them. A side is known
+  // by its requirement, as conflictItemPairs knows it.
+  const undecided = new Set(checked?.valid ? [...checked.unresolved, ...checked.openFindings]
+    .flatMap(row => row.finding.open_decisions?.length ? [JSON.stringify(row.item)] : []) : [])
+  const conflict = checked?.valid ? checklistConflictQuestion(conflictItemPairs(checked.unresolved), [...context.questions.values()],
+    (first, second) => !undecided.has(JSON.stringify(first)) && !undecided.has(JSON.stringify(second)) && handedBackTo(first.source_refs, second.source_refs)) : undefined
   // Adverse checklist findings lead: the lawyer's list of items may be capped.
   const unresolved = checked?.valid ? [...checked.unresolved.map(row => checklistUnresolvedItem(directory, leanState, row, conflict?.id)),
     ...checked.unresolvedParents.map(row => checklistUnresolvedParentItem(directory, row))] : []
@@ -592,7 +601,7 @@ function packageScopeQuestion(rows: ChecklistOpenFinding[], id: string, hinted: 
         ? `Open decisions: ${sentence(finding.open_decisions.map(row => scopeField(row.trim())).join("; "))}` : "No open decision recorded; state what is missing."}`),
       `${several ? "For each, answer" : "Answer"} the open decisions above (supply any missing fact or approval they name). If the package should carry it, say in which document; otherwise say it is outside this request.`].join(" "),
     context: [`Until a later check settles ${several ? "these instructions, they are" : "this instruction, it is"} disclosed with the review draft as left open; delivery is not held for ${several ? "them" : "it"}. Your answer re-runs the drafting from the start, including the document plan and the checklist check.`,
-      ...hints, ...(hints.length ? [HANDED_BACK_UNANSWERED] : [])].join(" "),
+      ...hints, ...(hints.length === rows.length ? [HANDED_BACK_UNANSWERED] : [])].join(" "),
     status: "open",
   }
 }
@@ -650,13 +659,13 @@ const CHECKLIST_CONFLICT_QUESTION = "checklist-conflict-"
  * conflicts when its text showed exactly these pairs of sources
  * (legacyConflictPairs): its answer is the lawyer's own to the same question,
  * so it is not asked again. A pair a disclosed hand-back's choice may be
- * about (handedBackHint) is asked all the same; only the context says so, in
- * plain words, so the id and the text legacy answers are read from stay as
- * they are. */
-function checklistConflictQuestion(pairs: ChecklistItem[][], asked: Question[], hinted: (first: Passage[], second: Passage[]) => boolean): Question | undefined {
+ * about (`hinted`) is asked all the same; only the context says so, in plain
+ * words, so the id and the text legacy answers are read from stay as they
+ * are. */
+function checklistConflictQuestion(pairs: ChecklistItem[][], asked: Question[], hinted: (first: ChecklistItem, second: ChecklistItem) => boolean): Question | undefined {
   if (!pairs.length) return undefined
   const several = pairs.length > 1
-  const hints = pairs.flatMap(([a, b], index) => hinted(a!.source_refs, b!.source_refs) ? [`${several ? `Pair ${index + 1}` : "This conflict"} ${HANDED_BACK_HINT}`] : [])
+  const hints = pairs.flatMap(([a, b], index) => hinted(a!, b!) ? [`${several ? `Pair ${index + 1}` : "This conflict"} ${HANDED_BACK_HINT}`] : [])
   const keyed = keyedQuestionID(CHECKLIST_CONFLICT_QUESTION, pairs.map(pair => JSON.stringify(pair.map(conflictKey))))
   const shown = sourcePairsKey(pairs.map(pair => pair.map(checklistSources)))
   const legacy = asked.some(question => question.id === keyed) ? undefined : asked.find(question => question.status === "answered" && question.stage === "gate" &&
@@ -668,7 +677,7 @@ function checklistConflictQuestion(pairs: ChecklistItem[][], asked: Question[], 
       ...pairs.map(([a, b], index) => `${several ? `Pair ${index + 1}, first` : "First"}: ${requirementText(a!)} Second: ${requirementText(b!)}`),
       several ? "For each pair, which requirement governs, or how should they be reconciled?" : "Which requirement governs, or how should they be reconciled?"].join(" "),
     context: [`Until a later check no longer finds ${several ? "these conflicts, they are" : "this conflict, it is"} disclosed with the review draft; delivery is not held for ${several ? "them" : "it"}. Your answer re-runs the drafting from the start, including the checklist check.`,
-      ...hints, ...(hints.length ? [HANDED_BACK_UNANSWERED] : [])].join(" "),
+      ...hints, ...(hints.length === pairs.length ? [HANDED_BACK_UNANSWERED] : [])].join(" "),
     status: "open",
   }
 }
@@ -683,7 +692,11 @@ function conflictKey(item: ChecklistItem) {
 
 type Passage = { document: string; quote: string }
 
-const HANDED_BACK_HINT = "may be a point you left to the drafting earlier; the drafting notes describe the choice made."
+// The hint uses the product's "Decide for me" terms and names the notes as
+// delivered with the draft, so it holds when they are a memo. The closing
+// sentence is added only when every pair or instruction the question asks is
+// hinted, so it never seems to cover one no hand-back's choice is about.
+const HANDED_BACK_HINT = "may be a point you asked us to decide earlier; the notes delivered with the draft describe the choice made."
 const HANDED_BACK_UNANSWERED = "Leaving this question unanswered keeps the draft as drafted."
 
 /** Whether a conflict between two sides' cited passages may be one the lawyer
