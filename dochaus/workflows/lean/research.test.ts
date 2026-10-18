@@ -9,8 +9,10 @@ import { finalGate } from "./gate"
 import { quoteFound } from "./quotes"
 import { enqueueLeanRequest } from "./requests"
 import { runLean } from "./runner"
-import { stageInputs } from "./stages"
-import { leanFile, readLeanState, readLeanText, readOpenItems, readQuestions, replaceStageOpenItems, writeLeanState, writeLeanText } from "./state"
+import type { StepID } from "./plan"
+import { readRepairRound } from "./repairs"
+import { LEAN_PROMPT_VERSION, researchBasis, stageInputs } from "./stages"
+import { hashStageInputs, leanFile, readLeanJson, readLeanState, readLeanText, readOpenItems, readQuestions, replaceStageOpenItems, writeLeanState, writeLeanText } from "./state"
 import { AGENT, cleanupMatters, happyPath, matter, scriptedModel, type Reply } from "./test-support"
 
 afterEach(cleanupMatters)
@@ -138,13 +140,15 @@ test("long canonical source text is readable beyond JSON clipping with focused s
   expect(readable).toContain("Context after the provision")
   const extracted = projected.split("Canonical extracted text:\n")[1]!.split("End of source text.")[0]!.replaceAll("\n", "")
   expect(extracted).toBe(text)
-  expect(researchPrompt(directory, "research-review")).toContain("research-context.txt")
-  expect(researchPrompt(directory, "research-review")).toContain("reject that finding with the access limitation")
+  expect(researchPrompt(directory, "research-review", researchBasis(directory))).toContain("research-context.txt")
+  expect(researchPrompt(directory, "research-review", researchBasis(directory))).toContain("reject that finding with the access limitation")
   expect(checkResearch(directory, { ...research, findings: [{ ...research.findings[0], quote: "Invented wording" }] })).not.toEqual([])
 })
 
 const GAP = { issue: "Authority on remedies for late delivery under these supply terms has not been retrieved.", affects: "Remedy wording in the delivery clause." }
 const LATER = { issue: "Authority on the timing of payment default under these supply terms has not been retrieved.", affects: "Payment clause default wording." }
+const GAP_TEXT = `${GAP.issue} Affects: ${GAP.affects}`
+const targeted = (issues: unknown[]) => `New authority issues requiring targeted research: ${JSON.stringify(issues)}\n`
 const reviewed = (gaps: { issue: string; affects: string }[]) => JSON.stringify({ approved: [], rejected: [], limitations: [], gaps })
 // Each research pass reports in its own words, so its review sees new research.
 const researched: Reply = (_, index) => JSON.stringify({ status: "not-needed", findings: [], limitations: [`Research pass ${index + 1} relied on the supplied terms only.`] })
@@ -158,9 +162,11 @@ test("research review reports researchable gaps separately and the checker valid
   expect(acceptResearchReply(directory, "research-review", JSON.stringify({ approved: ["r1"], rejected: [], limitations: [], gaps: ["Unretrieved authority"] })).issues).not.toEqual([])
   const accepted = acceptResearchReply(directory, "research-review", JSON.stringify({ approved: ["r1"], rejected: [], limitations: [], gaps: [GAP] }))
   expect(accepted.issues).toEqual([])
-  expect(accepted.openItems).toEqual([expect.objectContaining({ kind: "research_gap", detail: expect.stringContaining(GAP.issue) })])
-  expect(researchHandoff(directory)).toContain(GAP.affects)
-  expect(researchPrompt(directory, "research-review")).toContain('"gaps"')
+  expect(accepted.openItems).toEqual([expect.objectContaining({ stage: "research-review", kind: "research_gap", detail: GAP_TEXT })])
+  expect(JSON.parse(researchHandoff(directory)).limitations).toEqual(["Currency remains to be confirmed", GAP_TEXT])
+  const prompt = researchPrompt(directory, "research-review", researchBasis(directory))
+  expect(prompt).toContain("A failed or unavailable provider, an inaccessible source, incomplete extraction and currency limits are limitations; a gap is material authority not yet retrieved that a targeted retrieval could find and on which a drafting choice depends.")
+  expect(prompt).toContain('"limitations":["other remaining legal research limits the lawyer must see"],"gaps":[{"issue":"material authority not yet retrieved","affects":"the drafting choice that depends on it"}]}.')
   // A review saved before gaps were reported remains valid.
   writeLeanText(directory, "research-review.json", JSON.stringify({ approved: ["r1"], rejected: [], limitations: [] }))
   expect(approvedResearch(directory)).toHaveLength(1)
@@ -174,9 +180,11 @@ test("first review gaps reach research once as targeted issues before the plan",
   const agents = model.sessions.map(row => row.agent)
   expect(agents.lastIndexOf(AGENT["research-review"])).toBeLessThan(agents.indexOf(AGENT.spine))
   const prompts = model.prompts.filter(row => row.agent === AGENT.research).map(row => row.text)
-  expect(prompts[0]).not.toContain(GAP.issue)
-  expect(prompts[1]).toContain(GAP.issue)
-  expect(prompts[1]).toContain(GAP.affects)
+  expect(prompts[0]).toContain(`${targeted([])}Previously verified research when repairing a new authority issue: No targeted research repair.\n`)
+  // The round's research also receives the first pass's research with the gap as a limit.
+  const handoff = JSON.stringify({ findings: [], limitations: ["Research pass 1 relied on the supplied terms only.", GAP_TEXT] }, null, 2)
+  expect(prompts[1]).toContain(`${targeted([GAP])}Previously verified research when repairing a new authority issue: ${handoff}\n`)
+  expect(readLeanJson(directory, "research-gaps.json")).toEqual({ basis: researchBasis(directory), gaps: [GAP] })
   expect(stageInputs(directory, "research").filter(part => part.name === "research-gaps").map(part => part.bytes)).toEqual([JSON.stringify([GAP])])
   expect(readOpenItems(directory).filter(item => item.kind === "research_gap")).toEqual([])
 }, 120_000)
@@ -243,4 +251,68 @@ test("research unchanged by the gap round keeps its review and that review's dis
   expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
   expect(researchAgents(model.sessions.map(row => row.agent))).toEqual([AGENT.research, AGENT["research-review"], AGENT.research])
   expect(readOpenItems(directory).filter(item => item.kind === "research_gap").map(item => item.detail)).toEqual([expect.stringContaining(GAP.issue)])
+}, 120_000)
+
+test("a review accepted with gaps before a crash starts its one round when the review is skipped on resume", async () => {
+  const directory = matter()
+  expect((await runLean(directory, { sessions: scriptedModel(happyPath).port })).status).toBe("completed")
+  // The review was accepted with gaps; the run stopped before the round was written.
+  writeLeanText(directory, "research-review.json", `${reviewed([GAP])}\n`)
+  expect(existsSync(leanFile(directory, "research-gaps.json"))).toBe(false)
+  enqueueLeanRequest(directory, { kind: "continue" })
+  const resumed = scriptedModel({ ...happyPath, [AGENT.research]: researched })
+  expect((await runLean(directory, { sessions: resumed.port })).status).toBe("completed")
+  expect(researchAgents(resumed.sessions.map(row => row.agent))).toEqual([AGENT.research, AGENT["research-review"]])
+  expect(resumed.prompts.find(row => row.agent === AGENT.research)?.text).toContain(targeted([GAP]))
+  expect(readLeanJson(directory, "research-gaps.json")).toEqual({ basis: researchBasis(directory), gaps: [GAP] })
+  enqueueLeanRequest(directory, { kind: "continue" })
+  const repeated = scriptedModel({})
+  expect((await runLean(directory, { sessions: repeated.port })).status).toBe("completed")
+  expect(repeated.sessions).toEqual([])
+}, 120_000)
+
+test("an existing run whose saved review predates gaps keeps its research keys and re-runs nothing", async () => {
+  const directory = matter()
+  expect((await runLean(directory, { sessions: scriptedModel(happyPath).port })).status).toBe("completed")
+  // The run as saved before gaps were reported: its review has no gaps field,
+  // and research's key had no gap input.
+  const { gaps, ...saved } = readLeanJson(directory, "research-review.json") as Record<string, unknown>
+  expect(gaps).toEqual([])
+  writeLeanText(directory, "research-review.json", `${JSON.stringify(saved, null, 2)}\n`)
+  const legacy = readLeanState(directory)!
+  writeLeanState(directory, { ...legacy, stages: Object.fromEntries(Object.entries(legacy.stages).map(([step, row]) => [step, row?.status === "done"
+    ? { ...row, input_sha: hashStageInputs(step as StepID, LEAN_PROMPT_VERSION, stageInputs(directory, step as StepID).filter(part => part.name !== "research-gaps")) } : row])) })
+  const keys = (({ research, "research-review": review }) => [research?.input_sha, review?.input_sha])(readLeanState(directory)!.stages)
+  enqueueLeanRequest(directory, { kind: "continue" })
+  const resumed = scriptedModel({})
+  expect((await runLean(directory, { sessions: resumed.port })).status).toBe("completed")
+  expect(resumed.sessions).toEqual([])
+  expect((({ research, "research-review": review }) => [research?.input_sha, review?.input_sha])(readLeanState(directory)!.stages)).toEqual(keys)
+  expect(existsSync(leanFile(directory, "research-gaps.json"))).toBe(false)
+}, 120_000)
+
+test("a package-review research repair after the gap round gives the new basis one round, then discloses its gaps", async () => {
+  const directory = matter()
+  const REMAINING = { issue: "Authority on the effect of a late termination notice under these supply terms has not been retrieved.", affects: "Termination notice wording." }
+  const model = scriptedModel({ ...happyPath, [AGENT.research]: researched,
+    // The first review of each basis names gaps, and so does the review of the repair's round.
+    [AGENT["research-review"]]: (_, index) => reviewed([[GAP], [], [LATER], [REMAINING]][index]!),
+    [AGENT["package-review"]]: (_, index) => JSON.stringify(index ? { status: "pass", delivery: [], findings: [], limitations: [] } : {
+      status: "changes-required", delivery: [], findings: [{ target: "research", detail: "Resolve the newly identified authority applicability issue from actual sources." }], limitations: [],
+    }),
+  })
+  expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+  expect(model.count(AGENT.research)).toBe(4)
+  expect(model.count(AGENT["research-review"])).toBe(4)
+  const repairs = readRepairRound(directory)!.items.filter(item => item.ref.repair_target === "research")
+  expect(repairs.map(item => item.detail)).toEqual(["Resolve the newly identified authority applicability issue from actual sources."])
+  const prompts = model.prompts.filter(row => row.agent === AGENT.research).map(row => row.text)
+  expect(prompts.map(text => text.split("\n").find(line => line.startsWith("New authority issues requiring targeted research: ")))).toEqual(
+    [[], [GAP], repairs, [...repairs, LATER]].map(issues => targeted(issues).trimEnd()))
+  expect(readLeanJson(directory, "research-gaps.json")).toEqual({ basis: researchBasis(directory), gaps: [LATER] })
+  expect(readOpenItems(directory).filter(item => item.kind === "research_gap").map(item => item.detail)).toEqual([`${REMAINING.issue} Affects: ${REMAINING.affects}`])
+  enqueueLeanRequest(directory, { kind: "continue" })
+  const repeated = scriptedModel({})
+  expect((await runLean(directory, { sessions: repeated.port })).status).toBe("completed")
+  expect(repeated.sessions).toEqual([])
 }, 120_000)

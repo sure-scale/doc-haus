@@ -218,6 +218,13 @@ export function stageInputs(directory: string, step: StepID, options: { repairCo
     ...(updates && !inputs.some(part => part.name === "updated-notes.md") ? [{ name: "updated-notes.md", bytes: updates }] : [])]
 }
 
+/** Research's key without its gap round: the round belongs to this basis. A
+ * change to research's other inputs (an answer, an instruction, a repair
+ * round's authority issue) leaves an earlier round stale. */
+export function researchBasis(directory: string) {
+  return hashStageInputs("research", LEAN_PROMPT_VERSION, stageInputs(directory, "research", { researchGaps: false }))
+}
+
 /** The questions a step's key reads, in id order: a step replacing its
  * questions reorders questions.json without changing any question. The gate's
  * open question is asked after the walk, so it re-keys no step before it; its
@@ -240,7 +247,7 @@ function baseStageInputs(directory: string, step: StepID, options: { repairConte
   if (step === "package-review") return [file("checklist/refinements.json"), file("checklist/checks.json"), file("checklist/report.md"), file("request.md"), file("plan.json"), file("drafting-notes.md"), ...planned.flatMap(id => [file(`${id}/paragraphs.json`), file(`${id}/paragraphs-applied.json`), file(`${id}/apply.json`), file(`${id}/changes.json`), file(`${id}/redline.docx`), ...(plannedDocument(directory, id)?.playbook_review?.sources.length ? [file(`${id}/review-playbook.md`)] : [])]), file("open-items.json")]
   if (step === "research") {
     // Without a gap round the key is unchanged.
-    const gaps = options.researchGaps === false ? undefined : currentResearchGaps(directory)
+    const gaps = options.researchGaps === false ? undefined : currentResearchGaps(directory, researchBasis(directory))
     return [...outlineInputs(directory), file("intake.json"), { name: "research-repairs", bytes: JSON.stringify(readRepairRound(directory)?.items.filter(item => item.ref.repair_target === "research") ?? []) },
       ...(gaps?.length ? [{ name: "research-gaps", bytes: JSON.stringify(gaps) }] : [])]
   }
