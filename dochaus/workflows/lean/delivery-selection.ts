@@ -1,4 +1,4 @@
-import { memoAnchor, memoNotesFile, plannedRegistration } from "./deliverables"
+import { combinedDelivery, memoAnchor, memoNotesFile, plannedRegistration } from "./deliverables"
 import { readLeanPlan, type DocID, type PlannedDocument } from "./plan"
 import { instructionFound } from "./quotes"
 
@@ -80,7 +80,10 @@ function deliveryNameQuoted(quote: string, file: string) {
  * a redline selection, a selection on another document or any other memo file
  * leaves it. A body selection on a combined document names the combined
  * file and keeps it combined; a redline selection still makes it a redline
- * deliverable. Applying the reply again changes nothing. */
+ * deliverable. A body row that renames the combined file onto the saved notes
+ * name, without a notes row, gives the memo its default name (memoNotesFile)
+ * again: that name is the combined file's alone. Applying the reply again
+ * changes nothing. */
 export function selectedDeliveryPlan(directory: string, selections: DeliverySelection[]) {
   const plan = readLeanPlan(directory)
   if (!plan) return
@@ -97,7 +100,13 @@ export function selectedDeliveryPlan(directory: string, selections: DeliverySele
   const anchor = memoAnchor(plan.documents)
   const renamed = documents.find(row => row.id === anchor?.id)
   const follows = !notes && plan.memo && anchor && renamed && plan.notes_file === memoNotesFile(plan.documents, plan.memo)
-  const notesFile = notes ? notes.file : follows && renamed.deliverable !== "redline" ? memoNotesFile([renamed], plan.memo!) : plan.notes_file
+  // A pass's notes row may have saved the name a later body row gives the combined file.
+  const combined = combinedDelivery(directory, plan)?.document
+  const onto = combined && selected.get(combined)
+  const reclaimed = !notes && onto?.role === "body" && onto.file !== plan.documents.find(row => row.id === combined)?.file
+    && onto.file.toLocaleLowerCase() === plan.notes_file?.toLocaleLowerCase()
+  const notesFile = notes ? notes.file : reclaimed ? memoNotesFile(documents, plan.memo!)
+    : follows && renamed.deliverable !== "redline" ? memoNotesFile([renamed], plan.memo!) : plan.notes_file
   return documents.some((row, index) => row !== plan.documents[index]) || notesFile !== plan.notes_file
     ? { ...plan, documents, ...(notesFile !== undefined ? { notes_file: notesFile } : {}) } : undefined
 }
