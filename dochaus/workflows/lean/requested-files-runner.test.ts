@@ -5,6 +5,7 @@ import { PLAN_FILES_REVISIONS } from "./draft-sections"
 import { readLeanEvents } from "./events"
 import type { GateResult } from "./gate"
 import { parsePlan, readLeanPlan, writeLeanPlan } from "./plan"
+import { PACKAGE_SCOPE_QUESTION } from "./package-scope"
 import { enqueueLeanRequest } from "./requests"
 import { LEAN_REQUESTED_FILES_SCHEMA, readRequestedFiles, requestedFilesItems, writeRequestedFiles, type RequestedFile } from "./requested-files"
 import { runLean } from "./runner"
@@ -62,6 +63,7 @@ const revisions = (model: Model) => model.prompts.filter(prompt => prompt.agent 
 const outlinePrompt = (model: Model) => model.prompts.find(prompt => prompt.agent === AGENT.draft)!
 const partPrompts = (model: Model) => model.prompts.filter(prompt => /^Draft part \d+ of /m.test(prompt.text))
 const filesSessions = (model: Model) => model.sessions.filter(session => session.agent === AGENT.files)
+const coverageSessions = (model: Model) => model.sessions.filter(session => session.agent === AGENT.coverage)
 const filesEvents = (directory: string) => readLeanEvents(directory).filter(row => row.event === "requested_files")
 const gateOf = (directory: string) => readLeanJson(directory, "gate.json") as GateResult
 /** The plan the outline gives as code saved it before the files job. */
@@ -83,6 +85,8 @@ describe("requested files through the run", () => {
     // One files job, in a fresh session of its own; one revision, in the outline's session, carrying its one issue.
     expect(filesSessions(model)).toEqual([expect.objectContaining({ title: "Lean drafting: draft: files", permissions: LEAN_CHILD_PERMISSIONS })])
     expect(model.count(AGENT.files)).toBe(1)
+    // The revision changes only the delivery, so the coverage job is not asked again either.
+    expect(coverageSessions(model)).toHaveLength(1)
     expect(revisions(model)).toEqual([expect.objectContaining({ sessionID: outlinePrompt(model).sessionID })])
     expect(revisions(model)[0]!.text.split("\n").filter(line => line.startsWith("- "))).toEqual([
       `- The lawyer's words "${PACK}" ask for the memo and "Release letter" in one file. Write "Deliverable: combined" under "Release letter".`,
@@ -100,6 +104,53 @@ describe("requested files through the run", () => {
     expect(requestedFilesItems(directory)).toEqual([])
     expect(readQuestions(directory)).toEqual([])
     expect(gateOf(directory)).toMatchObject({ status: "pass", disclosed: [], blocking: [] })
+  }, 120_000)
+
+  test("a files revision that also renames a document is not adopted: it is spent, and the next revision starts from the earlier outline", async () => {
+    const directory = prepared()
+    const renamed = outline("Memo: cover memo", "# Release pack letter", "Deliverable: combined", "## Release", "The release.")
+    // The first revision renames the document as it combines it; the second only combines it.
+    const draft: Reply = text => !text.startsWith(REVISE) ? outliner(BODY)(text, 0) : revisions(model).length === 1 ? renamed : COMBINED
+    const model = scriptedModel(replies({ [AGENT.draft]: draft, [AGENT.files]: filesOf(PACKED) }))
+    expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+
+    const issue = `- The lawyer's words "${PACK}" ask for the memo and "Release letter" in one file. Write "Deliverable: combined" under "Release letter".`
+    expect(revisions(model).map(prompt => prompt.text.split("\n").filter(line => line.startsWith("- ")))).toEqual([[issue], [issue]])
+    expect(readLeanPlan(directory)!.documents).toEqual([expect.objectContaining({ id: "d1", title: "Release letter", deliverable: "combined", file: "Kestrel Release Pack.docx" })])
+    expect(coverageSessions(model)).toHaveLength(1)
+    expect(filesSessions(model)).toHaveLength(1)
+    expect(readRequestedFiles(directory)).toMatchObject({ planned: PLANNED, files: [PACKED] })
+  }, 120_000)
+
+  test("from a files revision only the delivery is adopted: a part it also changes is not, and neither job is asked again", async () => {
+    const directory = prepared()
+    const reworked = outline("Memo: cover memo", "# Release letter", "Deliverable: combined", "## Release terms", "The release terms.")
+    const model = scriptedModel(replies({ [AGENT.draft]: outliner(BODY, reworked), [AGENT.files]: filesOf(PACKED) }))
+    expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+
+    expect(revisions(model)).toHaveLength(1)
+    const plan = readLeanPlan(directory)!
+    expect(plan.documents).toEqual([expect.objectContaining({ id: "d1", title: "Release letter", deliverable: "combined", file: "Kestrel Release Pack.docx" })])
+    expect(plan.documents[0]!.parts.map(part => part.heading)).toEqual(["Release"])
+    expect(coverageSessions(model)).toHaveLength(1)
+    expect(filesSessions(model)).toHaveLength(1)
+  }, 120_000)
+
+  test("a coverage scope question stops the step before the files job is asked", async () => {
+    const request = "Prepare the papers so that the Orchard Committee approves the revised schedule, and a release letter for Kestrel Works with a cover memo."
+    const directory = prepared(request)
+    const act = { act: "approve the revised schedule", source: "request", quote: "the Orchard Committee approves the revised schedule", parties: ["the Orchard Committee"], document: "d1" }
+    const misplaced = outline("Memo: cover memo", letter("Executed by: Kestrel Works"))
+    const model = scriptedModel(replies({ [AGENT.draft]: outliner(misplaced), [AGENT.coverage]: () => JSON.stringify({ acts: [act] }) }))
+    const state = await runLean(directory, { sessions: model.port })
+
+    expect(state.status).toBe("blocked")
+    expect(state.stages["d1.draft"]).toMatchObject({ status: "blocked", outputs: ["coverage.json"] })
+    expect(readQuestions(directory)).toEqual([expect.objectContaining({ id: expect.stringMatching(new RegExp(`^${PACKAGE_SCOPE_QUESTION}`)), stage: "draft", status: "open" })])
+    expect(filesSessions(model)).toEqual([])
+    expect(model.count(AGENT.files)).toBe(0)
+    expect(filesEvents(directory)).toEqual([])
+    expect(existsSync(leanFile(directory, "plan.json"))).toBe(false)
   }, 120_000)
 
   test("an outline still not combined after the revisions blocks the run on one question; answered, the plan is saved, nothing is asked again and the file is disclosed", async () => {
@@ -190,7 +241,7 @@ describe("requested files through the run", () => {
     expect(deliverables.names).toEqual(expect.arrayContaining(["Kestrel Release.docx", "Kestrel Advice.docx"]))
   }, 120_000)
 
-  test("a files reply that never passes its check leaves no record and asks nothing; the plan is saved as before", async () => {
+  test("a files reply that never passes its check leaves no record, is recorded as unchecked and asks nothing; the plan is saved as before", async () => {
     const directory = prepared()
     // A record left from an earlier outline of the same inputs is not this plan's.
     writeRequestedFiles(directory, { schema: LEAN_REQUESTED_FILES_SCHEMA, basis: outlineBasis(directory), planned: PLANNED, stated: true, files: [PACKED] })
@@ -204,7 +255,9 @@ describe("requested files through the run", () => {
     expect(revisions(model)).toEqual([])
     expect(readRequestedFiles(directory)).toBeUndefined()
     expect(requestedFilesItems(directory)).toEqual([])
-    expect(filesEvents(directory)).toEqual([])
+    expect(filesEvents(directory)).toEqual([expect.objectContaining({ stage: "draft", document: "d1", step: "files", outcome: "unchecked",
+      reason: "The files job's reply did not pass its check, so the files the lawyer asks to receive are not recorded; the plan delivers its files as outlined." })])
+    expect(filesEvents(directory)[0]).not.toHaveProperty("issues")
     expect(readQuestions(directory)).toEqual([])
     expect(readLeanText(directory, "plan.json")).toBe(planned(BODY, REQUEST, directory))
   }, 120_000)

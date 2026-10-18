@@ -38,6 +38,8 @@ type ToolPart = Extract<Part, { type: "tool" }>
 const RUN_FILES: Record<string, string> = {
   "request.md": "your request",
   "plan.json": "the drafting plan",
+  "coverage.json": "the plan coverage check",
+  "requested-files.json": "the requested files",
   "draft.md": "the working draft",
   "review.md": "the review notes",
   "review-playbook.md": "the playbook review notes",
