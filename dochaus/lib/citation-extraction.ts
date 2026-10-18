@@ -161,7 +161,8 @@ function extractCitations(text: string): CitationCandidate[] {
 function matchCitations(text: string, pattern: RegExp, kind: CitationCandidate["kind"]): CitationCandidate[] {
   return [...text.matchAll(pattern)]
     .map((match) => {
-      const citation_text = trimCitation(match[0])
+      const trimmed = trimCitation(match[0])
+      const citation_text = kind === "url" ? trimmed : trimmed.replace(LEADING_SIGNAL, "")
       const start = (match.index ?? 0) + match[0].indexOf(citation_text)
       return {
         citation_text,
@@ -173,6 +174,11 @@ function matchCitations(text: string, pattern: RegExp, kind: CitationCandidate["
     })
     .filter((candidate) => candidate.citation_text && candidate.normalized_key)
 }
+
+/** A capitalized signal or preposition opening the sentence before a name
+ * ("In Smith v. Jones", "See Smith v. Jones") is not part of the name; kept, it
+ * makes the citation key miss the authority it names. */
+const LEADING_SIGNAL = /^(?:(?:See|Accord|Cf\.|Compare|Contra|But|In|Under|Per|Following|Applying|Citing|Unlike|Like|As|After|Since|The)[ \t]+)+(?=[A-Z])/
 
 function rangesOverlap(a: CitationCandidate, b: CitationCandidate) {
   return a.start < b.end && b.start < a.end

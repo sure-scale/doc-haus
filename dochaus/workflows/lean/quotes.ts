@@ -3,7 +3,7 @@ import { approvedResearch, researchSource } from "./research"
 import { Database } from "bun:sqlite"
 import { existsSync } from "node:fs"
 import path from "node:path"
-import { normalize, verifyQuote } from "../../lib/quote-verify"
+import { elidedParts, normalize, partsInOrder, verifyElidedQuote, verifyQuote } from "../../lib/quote-verify"
 import type { DocID } from "./plan"
 import { leanUserUpdates } from "./requests"
 import { readLeanText, readQuestions, shortHash, type OpenItem, type StageID } from "./state"
@@ -136,6 +136,24 @@ export function instructionFound(directory: string, quote: string) {
   return words.length > 0 && lawyerWords(directory).some(text => normalize(text).toLowerCase().includes(words))
 }
 
+/** A quotation in prose ('"words" [source: id]') may omit words with an
+ * ellipsis, as a lawyer would: it passes when quoteFound does, or when each
+ * passage the ellipsis separates is in the one named source, in the quoted
+ * order, and long enough to verify on its own. A JSON quote field keeps the
+ * verbatim contract of quoteFound, since its consumers locate those words. */
+export function proseQuoteFound(directory: string, quote: SourceQuote) {
+  if (quoteFound(directory, quote)) return true
+  const parts = elidedParts(quote.quote)
+  if (!parts) return false
+  if (/^https?:\/\//.test(quote.source_id)) return approvedResearch(directory).some(row => row.url === quote.source_id &&
+    partsInOrder(normalize(researchSource(directory, row.snapshot)?.text ?? ""), parts))
+  if (quote.source_id === REQUEST_SOURCE && !matterSourceIDs(directory).includes(REQUEST_SOURCE)) {
+    const lower = parts.map(part => part.toLowerCase())
+    return lawyerWords(directory).some(text => partsInOrder(normalize(text).toLowerCase(), lower))
+  }
+  return verifyElidedQuote({ directory, parts, document: quote.source_id })
+}
+
 /** The request, each included update and each answer, quoted one at a time so a
  * quotation never runs across two of them. The questions are the model's words
  * and are not included. */
@@ -164,7 +182,7 @@ export function quoteMissIssue(directory: string, where: string, quote: SourceQu
 /** Open items for quotations in `text` that the named source does not contain. */
 export function quoteMissItems(directory: string, stage: StageID, text: string, ref: OpenItem["ref"] = {}) {
   return sourceQuotes(text)
-    .filter(quote => !quoteFound(directory, quote))
+    .filter(quote => !proseQuoteFound(directory, quote))
     .map(quote => openItem(stage, "quote_miss", `Quoted text was not found verbatim in source "${quote.source_id}".`,
       { ...ref, source_id: quote.source_id, quote: quote.quote }))
 }

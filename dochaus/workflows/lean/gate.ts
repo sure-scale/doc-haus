@@ -12,7 +12,7 @@ import { memoMode, runItemIDs, withoutInternalIDs, withoutRefMarkers } from "./d
 import { FIRST_DOCUMENT, readLeanPlan, type DocID } from "./plan"
 import { readPackageReview } from "./package-review"
 import { coverageCarries, coverageItems, gateScopeParties } from "./package-coverage"
-import { excerpt, quoteFound, openItem } from "./quotes"
+import { excerpt, proseQuoteFound, openItem } from "./quotes"
 import { answeredScopeQuestion, GATE_EXCERPT, keyedQuestionID, openScopeQuestion, scopeAnswers, scopeField, scopeQuestionShows } from "./package-scope"
 import { LEAN_MAX_SUBSTANTIVE_REPAIRS, readRepairRound, repairedChecklistItems } from "./repairs"
 import { requestedFilesItems } from "./requested-files"
@@ -779,7 +779,7 @@ function settle(item: OpenItem, context: SettleContext): OpenItem {
   }
   const text = item.ref.placeholder ?? item.ref.citation ?? item.ref.quote
   if (!inBody(final, text, item.ref.pid)) return resolved("no longer in the final body")
-  if (item.kind === "quote_miss" && item.ref.quote && quoteFound(context.directory, { quote: item.ref.quote, source_id: item.ref.source_id ?? "" }))
+  if (item.kind === "quote_miss" && item.ref.quote && proseQuoteFound(context.directory, { quote: item.ref.quote, source_id: item.ref.source_id ?? "" }))
     return resolved("re-verified against the source")
   if (item.kind === "placeholder")
     return named ? disclosed("placeholder in the body; named in the drafting notes") : open("the drafting notes do not name this placeholder")

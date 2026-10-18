@@ -5,6 +5,7 @@ import { createHash } from "node:crypto"
 import { preserveResearchSourceSnapshot } from "../../lib/research-source-snapshot"
 import { citationRowsForLeanText, citationRowsForText } from "../../lib/citation-extraction"
 import { acceptResearchReply, approvedResearch, checkResearch, researchHandoff, researchPermissions, researchPrompt, researchContextLocators } from "./research"
+import { checkDraftingNotes } from "./checks"
 import { finalGate } from "./gate"
 import { quoteFound } from "./quotes"
 import { enqueueLeanRequest } from "./requests"
@@ -141,4 +142,28 @@ test("long canonical source text is readable beyond JSON clipping with focused s
   expect(researchPrompt(directory, "research-review")).toContain("research-context.txt")
   expect(researchPrompt(directory, "research-review")).toContain("reject that finding with the access limitation")
   expect(checkResearch(directory, { ...research, findings: [{ ...research.findings[0], quote: "Invented wording" }] })).not.toEqual([])
+})
+
+test("drafting notes may cite an approved authority by name after a signal word and quote it with an ellipsis", () => {
+  const directory = matter()
+  const text = "The tenant must keep the premises insured against the listed risks (see the schedule; Ashdown v. Merrow, 12 Synth. 34 [2020]). A subtenant is bound by the same insurance covenant."
+  const research = retrieved(directory, text)
+  research.findings[0]!.citation = "Ashdown v. Merrow, 12 Synth. 34 (2020)"
+  expect(acceptResearchReply(directory, "research", JSON.stringify(research)).issues).toEqual([])
+  expect(acceptResearchReply(directory, "research-review", JSON.stringify({ approved: ["r1"], rejected: [], limitations: [] })).issues).toEqual([])
+  const url = research.findings[0]!.url
+  const notes = (body: string) => checkDraftingNotes(directory, `# Drafting notes\n\n${body}`, []).issues
+  const elided = "The tenant must keep the premises insured against the listed risks \u2026 A subtenant is bound by the same insurance covenant"
+  expect(notes(`In Ashdown v. Merrow, the court held that "${elided}" [source: ${url}].`)).toEqual([])
+  expect(notes(`See Ashdown v. Merrow, 12 Synth. 34 (2020), for the insurance covenant.`)).toEqual([])
+  expect(citationRowsForLeanText(directory, "drafting-notes.md", "In Ashdown v. Merrow, the covenant binds.").map(row => [row.citation_text, row.status]))
+    .toEqual([["Ashdown v. Merrow", "verified"]])
+  // An authority research did not approve is still refused under its own name.
+  expect(notes("In Ashdown v. Kestrel, the covenant binds.")).toEqual([
+    `The drafting notes cite "Ashdown v. Kestrel", which no matter source, research row or verified authority supports. Remove the citation or describe the point as needing research.`,
+  ])
+  const reordered = "A subtenant is bound by the same insurance covenant \u2026 The tenant must keep the premises insured"
+  const refused = notes(`The covenant reads "${reordered}" [source: ${url}].`)
+  expect(refused).toHaveLength(1)
+  expect(refused[0]).toContain(`quotes "${reordered}" as from "${url}", but those words are not in that document.`)
 })

@@ -151,12 +151,7 @@ function findHits(docName: string, chunks: QuoteChunk[], needle: string, options
   // append only the uncovered suffix of overlapping chunks, then search the
   // normalized whole and map the match back to raw offsets to find
   // the covering chunks.
-  const raw = chunks.reduce(
-    (acc, c) => c.char_start > acc.length
-      ? acc + " ".repeat(c.char_start - acc.length) + c.text
-      : acc + c.text.slice(Math.max(0, acc.length - c.char_start)),
-    "",
-  )
+  const raw = documentText(chunks)
   const normalized = normalizeWithMap(raw, options)
   const at = normalized.text.indexOf(needle)
   if (at === -1) return
@@ -179,4 +174,61 @@ function findHits(docName: string, chunks: QuoteChunk[], needle: string, options
       verbatim: raw.slice(first.char_start, end),
     },
   ]
+}
+
+/** A document's raw text rebuilt from its chunks in char_start order. */
+function documentText(chunks: QuoteChunk[]) {
+  return chunks.reduce(
+    (acc, c) => c.char_start > acc.length
+      ? acc + " ".repeat(c.char_start - acc.length) + c.text
+      : acc + c.text.slice(Math.max(0, acc.length - c.char_start)),
+    "",
+  )
+}
+
+/** The normalized passages of a quotation that marks omitted words with an
+ * ellipsis ("..." or "…"), or undefined when it marks none. An ellipsis at
+ * either end omits words outside the quotation and leaves no passage there. */
+export function elidedParts(quote: string): string[] | undefined {
+  const parts = normalize(quote).split(/\s*(?:\.{3}|\u2026)\s*/)
+  if (parts.length < 2) return
+  return parts.filter((part, index) => part || (index > 0 && index < parts.length - 1))
+}
+
+/** Whether every passage appears in `text` in the quoted order without
+ * overlapping, each long enough (SHORT_QUOTE) to identify its place on its own. */
+export function partsInOrder(text: string, parts: string[]) {
+  if (!parts.length || parts.some(part => part.length < SHORT_QUOTE)) return false
+  let from = 0
+  for (const part of parts) {
+    const at = text.indexOf(part, from)
+    if (at === -1) return false
+    from = at + part.length
+  }
+  return true
+}
+
+/** Whether a quotation's elided passages (elidedParts) all appear, in order, in
+ * the one named document: an indexed matter document or the bound playbook. */
+export function verifyElidedQuote(args: { directory: string; parts: string[]; document: string }) {
+  const playbook = boundPlaybook(args.directory)
+  const texts = args.document.startsWith("playbook:")
+    ? playbook?.text && args.document === playbook.source_id ? [playbook.text] : []
+    : indexedText(args.directory, args.document)
+  return texts.some(raw => [{}, { unescapeMarkdown: true }]
+    .some(options => partsInOrder(normalizeWithMap(raw, options).text, args.parts)))
+}
+
+function indexedText(directory: string, document: string): string[] {
+  const dbPath = path.join(directory, ".dochaus", "legal.db")
+  if (!existsSync(dbPath)) return []
+  const db = new Database(dbPath, { readonly: true })
+  try {
+    const chunks = db
+      .query("SELECT section, text, char_start, char_end FROM chunks WHERE doc_name = ? ORDER BY char_start")
+      .all(document) as QuoteChunk[]
+    return chunks.length ? [documentText(chunks)] : []
+  } finally {
+    db.close()
+  }
 }
