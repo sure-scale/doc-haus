@@ -133,9 +133,13 @@ jobs:
       - name: Test public regression support
         working-directory: dochaus
         run: bun test templates/optional.test.ts test/product-boundary-guard.test.ts test/product-boundary.test.ts test/native-trace.test.ts test/lean-observation.test.ts test/prompt-assets.test.ts test/research-source-snippets.test.ts test/legal-tool-approval.test.ts plugin/legal/provider-capture.test.ts
+      - name: Test redline preview attribution and document search scopes
+        working-directory: dochaus
+        # Synthetic Word files and indexes in temporary matters; no network or model.
+        run: bun test test/redline-preview-attribution.test.ts test/search-document-filters.test.ts --timeout 30000
       - name: Test research scope and connector consent
         working-directory: dochaus
-        run: bun test test/drafting-preferences.test.ts test/research-scope.test.ts test/research-source-fetch.test.ts test/research-mcp.test.ts
+        run: bun test test/drafting-preferences.test.ts test/research-scope.test.ts test/research-source-fetch.test.ts test/research-source-exa.test.ts test/research-mcp.test.ts
       - name: Test web model selection and proxy
         working-directory: apps/web
         run: bun test test --timeout 30000
