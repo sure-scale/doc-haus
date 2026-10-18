@@ -71,11 +71,16 @@ function distinctFiles(rows: DeliverySelection[]) {
  * the name follows them after whitespace. */
 const NAMING_WORDS = String.raw`titled|entitled|named|called|with\s+the\s+title|(?:name|call|title)\s+(?:it|(?:the|this)\s+(?:file|document|draft))|save\s+(?:(?:it|(?:the|this)\s+(?:file|document|draft))\s+)?as|file\s*name:`
 
+/** A format's name, as formatStem reads it. */
+const FORMAT = String.raw`(?:(?:ms|microsoft)\s+)?(?:word|docx?|pdf|rtf|odt|wpd|wordperfect|pages|xps|epub|te?xt|plain\s+text|md|markdown|html?|xml|excel|xlsx?|csv|ods|powerpoint|pptx?|odp)`
+const FORMAT_STEM = new RegExp(String.raw`^(?:(?:an?\s+)?${FORMAT}(?:\s+(?:docx?|document|file|format|version|copy))?(?:\s*\(\s*\.?${FORMAT}\s*\))?)?$`, "i")
+
 /** Whether a file name's stem is a format's name rather than a name: words
- * that ask for a format never name a file. An empty stem is Word's own format
+ * that ask for a format never name a file, nor do they with a format's
+ * extension or name after them in brackets. An empty stem is Word's own format
  * too: ".docx" alone names no file. Code only, never a prompt. */
 export function formatStem(stem: string) {
-  return /^(?:(?:an?\s+)?(?:(?:ms|microsoft)\s+)?(?:word|docx?|pdf|rtf|odt|wpd|wordperfect|pages|xps|epub|te?xt|plain\s+text|md|markdown|html?|xml|excel|xlsx?|csv|ods|powerpoint|pptx?|odp)(?:\s+(?:docx?|document|file|format|version|copy))?)?$/i.test(stem.trim())
+  return FORMAT_STEM.test(stem.trim())
 }
 
 // One grammar of a name's edges in the lawyer's text, for the files job

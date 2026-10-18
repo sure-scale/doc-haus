@@ -23,7 +23,7 @@ import { answeredQuestionsText, readLeanJson, readLeanText, readQuestions, short
 // revisions leave, once for the lawyer's words as they stand. The memo asked
 // for with a document planned as a redline goes to the lawyer with no
 // revision. Once the lawyer has answered a requested-files question, no
-// revision is asked for (requestedFilesRevision), and only words no answered
+// revision is asked for (requestedFilesRevision), and only files no answered
 // question listed are asked about. A file name is no planning judgement, so
 // withRequestedNames gives grounded names to the plan. A shape the run cannot build (several documents
 // in one file, or the memo after its document) is no revision issue; like any
@@ -356,18 +356,21 @@ const questionID = (directory: string) =>
 
 /** The answered requested-files questions (requestedFilesQuestion), on the
  * lawyer's words as they stand or as they stood: whether there is any, and the
- * words, as an answered question listed them, that hold or are held in the
- * words `quote`, which a later job may quote more or less fully; `same` when
- * the question listed them as `quote` gives them. */
+ * words, as an answered question listed them for the file `files` describes
+ * (asked), that hold or are held in the words `quote`, which a later job may
+ * quote more or less fully; `same` when the question listed them as `quote`
+ * gives them. Words that ask for several files are listed for each file the
+ * question asked about, never for another file they ask for. */
 function answeredFiles(directory: string) {
   const flat = (words: string) => normalize(words.replace(/…$/, "")).toLowerCase()
   const answered = readQuestions(directory).filter(question => question.id.startsWith(QUESTION_ID) && question.status === "answered")
-  const listed = answered.flatMap(question => [...question.question.matchAll(/Your words "(.*?)" ask for /g)].map(match => match[1]!.replace(/…$/, "")))
+  const listed = answered.flatMap(question => [...question.question.matchAll(/Your words "(.*?)" ask for (.*?), but the document plan delivers /g)]
+    .map(match => ({ words: match[1]!.replace(/…$/, ""), files: match[2]! })))
   return {
     any: answered.length > 0,
-    listing: (quote: string) => {
-      const words = listed.find(words => flat(words).includes(flat(quote)) || flat(quote).includes(flat(words)))
-      return words === undefined ? undefined : { words, same: flat(words) === flat(excerpt(quote)) }
+    listing: (quote: string, files: string) => {
+      const row = listed.find(row => flat(row.files) === flat(files) && (flat(row.words).includes(flat(quote)) || flat(quote).includes(flat(row.words))))
+      return row === undefined ? undefined : { words: row.words, same: flat(row.words) === flat(excerpt(quote)) }
     },
   }
 }
@@ -378,8 +381,9 @@ function answeredFiles(directory: string) {
  * file name, and how the plan delivers it instead. It is asked once for the
  * lawyer's words as they stand (questionID): undefined when there is no issue
  * or that question is already open or answered, since a later job may quote
- * the same words differently. Words an answered question listed are not asked
- * about again, even once an update changes the lawyer's words. */
+ * the same words differently. A file an answered question listed, by the
+ * lawyer's words and what they ask for, is not asked about again, even once an
+ * update changes the lawyer's words. */
 export function requestedFilesQuestion(directory: string, requested: RequestedFiles, documents: PlannedDocument[], issues: FilesIssue[]): Question | undefined {
   if (!issues.length) return
   const id = questionID(directory)
@@ -388,8 +392,9 @@ export function requestedFilesQuestion(directory: string, requested: RequestedFi
   // Issues arise only for files whose memo is planned.
   const listed = requested.files.flatMap(file => {
     const check = fileCheck(file, documents, true)
-    return check.unsupported || !check.planned || answered.listing(file.quote) ? []
-      : [{ ask: Boolean(check.issue?.ask), line: `Your words "${excerpt(file.quote)}" ask for ${asked(file, id => documents.find(document => document.id === id))}, but the document plan delivers ${check.planned}.` }]
+    const what = asked(file, id => documents.find(document => document.id === id))
+    return check.unsupported || !check.planned || answered.listing(file.quote, what) ? []
+      : [{ ask: Boolean(check.issue?.ask), line: `Your words "${excerpt(file.quote)}" ask for ${what}, but the document plan delivers ${check.planned}.` }]
   })
   if (!listed.length) return
   // An issue for the lawyer only is the memo with a redline, which the run cannot join.
@@ -453,9 +458,9 @@ const savedFile = (row: unknown) => record(row) && Array.isArray(row.holds) && r
  * the lawyer's words, says what they ask for and every file the run delivers
  * instead, by all it holds, and belongs to the drafting notes, so a repair goes
  * to the notes writer. Once the lawyer has answered a requested-files question
- * that listed these words, the item cites that answer in plain words, quoting
- * the words it listed when they are more or fewer than the item's. Each id
- * keys on the item's content. */
+ * that listed these words for this file, the item cites that answer in plain
+ * words, quoting the words it listed when they are more or fewer than the
+ * item's. Each id keys on the item's content. */
 export function requestedFilesItems(directory: string): OpenItem[] {
   const plan = readLeanPlan(directory)
   const saved = readRequestedFiles(directory)
@@ -480,10 +485,12 @@ export function requestedFilesItems(directory: string): OpenItem[] {
   // makes registration take a name not known before it registers (`name`
   // null), and is described alike before and after it registers (`spelled`
   // null). A file is the run's when absent, holding the bytes the run
-  // registered there for this document, holding the lawyer's accepted Word
+  // registered there for this document, or holding the lawyer's accepted Word
   // revision of them (acceptedRevisionName), as the notes are once an accept
-  // adds their addendum, before the summary is next written, or holding the
-  // redline an accept into its body rebuilt there (redlineOfBody).
+  // adds their addendum, before the summary is next written. A redline whose
+  // body is kept at an accepted revision is kept as registration keeps it
+  // (keptRedlineName): only while the file is the redline an accept into that
+  // body rebuilt there (redlineOfBody), whatever its row records.
   const delivery = (kind: string, document: DocID | null) => {
     const row = registered.find(other => other.kind === kind && other.document === document)
     if (!row?.name) return null
@@ -492,16 +499,18 @@ export function requestedFilesItems(directory: string): OpenItem[] {
       ? `${planned.slice(0, -5)}${row.name.slice(row.wanted.length - 5)}` : row.name
     const titled = document ? title(document) ?? null : null
     if (kind === "combined") return { kind, title: titled, name: row.name, spelled, held: undefined }
+    const accepted = (name: string) => Boolean(readWorkingDocx(directory, path.join(directory, name)))
     const runs = (name: string) => {
       const current = sha256File(path.join(directory, name))?.sha256
       return !current || rows.some(other => other.title === titled && other.deliverable?.toLocaleLowerCase() === name.toLocaleLowerCase() &&
-        (other.sha256 === current || other.conflict === "accepted_revision" || Boolean(readWorkingDocx(directory, path.join(directory, other.deliverable))) ||
-          (other.kind === "redline" && rebuilt(other.document, other.deliverable))))
+        (other.sha256 === current || (other.kind === "redline" ? keptRedline(other.document, other.deliverable)
+          : other.conflict === "accepted_revision" || accepted(other.deliverable))))
     }
-    // A redline rebuilt from its document's body kept at the lawyer's accepted revision.
-    const rebuilt = (document: DocID | null, name: string) => {
+    // A redline at its own accepted revision, or, with its document's body kept
+    // at the lawyer's accepted revision, the redline rebuilt from that body.
+    const keptRedline = (document: DocID | null, name: string) => {
       const body = rows.find(other => other.kind === "body" && other.document === document && other.title === titled)?.deliverable
-      return Boolean(body && readWorkingDocx(directory, path.join(directory, body)) && redlineOfBody(directory, name, body))
+      return body && accepted(body) ? redlineOfBody(directory, name, body) : accepted(name)
     }
     const stem = row.wanted.slice(0, -5).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
     const others = new Set(registered.flatMap(other => other === row ? [] : [other.wanted, ...other.name ? [other.name] : []]))
@@ -546,12 +555,13 @@ export function requestedFilesItems(directory: string): OpenItem[] {
       : " The run can join the memo and a document in one file only with the memo first."
       : !check.unsupported && check.issue?.ask ? " The run cannot join the memo with a redline." : ""
     const refused = file.name === null && file.refused_name !== undefined && !named
-    const listed = answered.listing(file.quote)
+    const what = asked(file, held => plan.documents.find(row => row.id === held))
+    const listed = answered.listing(file.quote, what)
     const closing = listed && !check.unsupported && check.planned
       ? ` The lawyer answered the question about ${listed.same ? "these files" : `the files the words ${lawyerQuote(listed.words)} ask for`}; ` +
         "the plan drawn up with that answer still delivers them so."
       : " The lawyer should confirm how these files are to be delivered."
-    return [openItem("finalize", "omission", `Requested files: the lawyer's words ${lawyerQuote(file.quote)} ask for ${asked(file, held => plan.documents.find(row => row.id === held))}` +
+    return [openItem("finalize", "omission", `Requested files: the lawyer's words ${lawyerQuote(file.quote)} ask for ${what}` +
       (!refused ? `, but the run delivers ${delivers}.`
         : quoted && (OTHER_FORMAT.test(file.refused_name!) || formatStem(nameStem(file.refused_name!))) ? ` and give it as "${file.refused_name}"; the run delivers .docx files only and delivers ${delivers}.`
         : ` and name this file; the run could not confirm the name "${file.refused_name}" in those words and delivers ${delivers}.`) +

@@ -56,6 +56,8 @@ test("an explicit Word output title supplies the exact basename without inventin
     ["Create an editable Word draft and save it as a Word doc.", "a Word doc.docx"],
     ["Create an editable Word draft and save it as Word docx.", "Word docx.docx"],
     ["Create an editable Word draft and name the file docx.", "docx.docx"],
+    ["Create an editable Word draft and save it as Word (.docx).", "Word (.docx).docx"],
+    ["Create an editable Word draft. Save it as PDF (.pdf).", "PDF (.pdf).docx"],
   ]) {
     writeLeanText(directory, "request.md", instruction!)
     expect(checkDeliverySelections(directory, [{ ...selection, file: file!, instruction_quote: instruction! }]))

@@ -244,7 +244,7 @@ describe("parse requested files", () => {
   })
 
   test("a format is no name: a format given as a file's name is refused at once, and no refused name is made up", () => {
-    for (const [words, name] of [["save it as PDF", "PDF"], ["save it as a PDF file", "a PDF file"], ["name the file rtf", "rtf"]]) {
+    for (const [words, name] of [["save it as PDF", "PDF"], ["save it as a PDF file", "a PDF file"], ["name the file rtf", "rtf"], ["save it as PDF (.pdf)", "PDF (.pdf)"]]) {
       const quote = `Deliver the share transfer form separately and ${words}`
       const directory = prepared(`${quote}.`)
       expect(parseRequestedFiles(reply(true, file(["d1"], quote, name)), directory, DOCUMENTS, MEMO))
@@ -255,7 +255,8 @@ describe("parse requested files", () => {
 
   test("Word's own format given as a file's name asks for what the run delivers: no name, nothing refused and no item", () => {
     for (const [words, name] of [["save as Word", "Word"], ["save it as a Word document", "a Word document"], ["save it as a Word document", "Word document.docx"], ["name the file docx", "docx"],
-      ["save it as a Word doc", "a Word doc"], ["save it as Word docx", "Word docx"], ["save it as .docx", ".docx"]]) {
+      ["save it as a Word doc", "a Word doc"], ["save it as Word docx", "Word docx"], ["save it as .docx", ".docx"],
+      ["save it as Word (.docx)", "Word (.docx)"], ["save it as Word (.docx)", "Word (.docx).docx"]]) {
       const quote = `Deliver the share transfer form separately and ${words}`
       const directory = prepared(`${quote}.`)
       for (const final of [false, true])
@@ -592,6 +593,29 @@ describe("requested files items", () => {
     ])
   })
 
+  test("of two files the same words ask for, an answer is cited only for the one its question asked about", () => {
+    const words = "Send the cover memo on its own and the board minute as Kestrel Minute.docx"
+    const shared = record(file(["memo"], words), file(["d2"], words, "Kestrel Minute.docx"))
+    const directory = saved([outline("Share transfer form"), outline("Board minute", { file: "Kestrel Minute.docx", deliverable: "combined" })], shared)
+    writeLeanText(directory, "request.md", `Prepare a share transfer form and a board minute for Kestrel Works. ${words}.`)
+    // Asked over an earlier outline that joined the memo with the transfer form, the question lists only the memo's file.
+    const earlier = [planned("d1", "Share transfer form", { deliverable: "combined" }), planned("d2", "Board minute")]
+    const question = requestedFilesQuestion(directory, shared, earlier, requestedFilesIssues(earlier, MEMO, shared).issues)!
+    expect(question.question).not.toContain('ask for "Board minute"')
+    writeQuestions(directory, [{ ...question, status: "answered", answer: "As planned.", answered_at: "2026-10-18T00:00:00.000Z" }])
+    const delivered = 'but the run delivers the memo and "Board minute" in one file named "Kestrel Minute.docx".'
+    expect(requestedFilesItems(directory)).toEqual([
+      item(`the lawyer's words "${words}" [source: request] ask for the memo as a file of its own, ${delivered}`, ANSWERED),
+      item(`the lawyer's words "${words}" [source: request] ask for "Board minute" as a file named "Kestrel Minute.docx", ${delivered}`),
+    ])
+    // Once an update changes the lawyer's words, the file no answered question asked about is asked about.
+    writeLeanText(directory, "updated-notes.md", "<!-- update-1 -->\nAlso prepare a resignation letter.\n\n")
+    const current = [planned("d1", "Share transfer form"), planned("d2", "Board minute", { file: "Kestrel Minute.docx", deliverable: "combined" })]
+    expect(requestedFilesQuestion(directory, shared, current, requestedFilesIssues(current, MEMO, shared).issues)!.question).toBe(
+      `Your words "${words}" ask for "Board minute" as a file named "Kestrel Minute.docx", but the document plan delivers "Board minute" in one file with the memo. ` +
+      "Do you want it delivered as your words ask, or as planned? If neither, say how it should be delivered.")
+  })
+
   test("a document delivered under another name gives an item naming the file delivered", () => {
     const directory = saved([outline("Share transfer form"), AS_ASKED[1]!])
     expect(requestedFilesItems(directory)).toEqual([item(`the lawyer's words "${TRANSFER}" [source: request] ask for "Share transfer form" as a file named "Kestrel Transfer.docx", ` +
@@ -657,22 +681,36 @@ describe("requested files items", () => {
     const original = (await renderMarkdownToDocx("# Share transfer form\n\nThe transferor transfers ten shares.")).bytes
     const accepted = (await renderMarkdownToDocx("# Share transfer form\n\nThe transferor transfers twelve shares.")).bytes
     // The accept rewrites the body and rebuilds the redline in place; the summary still holds the bytes first registered.
+    const rebuilt = await (await docxodus()).compareDocuments(original, accepted, { authorName: "Reviewer" })
     writeFileSync(clean, accepted)
-    writeFileSync(redline, await (await docxodus()).compareDocuments(original, accepted, { authorName: "Reviewer" }))
+    writeFileSync(redline, rebuilt)
     const db = new Database(path.join(directory, ".dochaus", "legal.db"), { create: true })
     db.run("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
     db.run("CREATE TABLE IF NOT EXISTS documents (doc_path TEXT, role TEXT)")
-    db.query("INSERT INTO meta (key, value) VALUES (?, ?)").run(workingDocxKey(directory, clean), JSON.stringify({ version: 1, source_sha256: "1".repeat(64), projection_sha256: "2".repeat(64) }))
+    const revision = JSON.stringify({ version: 1, source_sha256: "1".repeat(64), projection_sha256: "2".repeat(64) })
+    db.query("INSERT INTO meta (key, value) VALUES (?, ?)").run(workingDocxKey(directory, clean), revision)
     for (const name of [clean, redline]) db.query("INSERT INTO documents (doc_path, role) VALUES (?, 'deliverable')").run(name)
-    db.close()
     const row = (kind: string, file: string, deliverable: string) => ({ kind, document: "d1", title: "Share transfer form", path: `.dochaus/lean/d1/${file}`, sha256: "0".repeat(64), deliverable })
-    writeLeanText(directory, "documents.json", JSON.stringify({ schema: "dochaus.lean.documents/2", status: "completed",
-      documents: [row("body", "body-applied.docx", "Kestrel Transfer - clean.docx"), row("redline", "redline.docx", "Kestrel Transfer.docx")] }))
+    const summary = (redlineRow: object) => writeLeanText(directory, "documents.json", JSON.stringify({ schema: "dochaus.lean.documents/2", status: "completed",
+      documents: [row("body", "body-applied.docx", "Kestrel Transfer - clean.docx"), redlineRow] }))
+    summary(row("redline", "redline.docx", "Kestrel Transfer.docx"))
     expect(requestedFilesItems(directory)).toEqual([])
     // A file there that is no redline of the body is not the run's.
     writeFileSync(redline, accepted)
-    expect(requestedFilesItems(directory)).toEqual([item(`the lawyer's words "${TRANSFER}" [source: request] ask for "Share transfer form" as a file named "Kestrel Transfer.docx", ` +
-      'but the run delivers "Share transfer form" as a redline in a file of another name, since a file already in the matter holds the name "Kestrel Transfer.docx".')])
+    const held = [item(`the lawyer's words "${TRANSFER}" [source: request] ask for "Share transfer form" as a file named "Kestrel Transfer.docx", ` +
+      'but the run delivers "Share transfer form" as a redline in a file of another name, since a file already in the matter holds the name "Kestrel Transfer.docx".')]
+    expect(requestedFilesItems(directory)).toEqual(held)
+    // A redline row that records the kept accept owns the file no more than registration does: only while it is a redline of the body.
+    summary({ ...row("redline", "redline.docx", "Kestrel Transfer.docx"), conflict: "accepted_revision" })
+    expect(requestedFilesItems(directory)).toEqual(held)
+    writeFileSync(redline, rebuilt)
+    expect(requestedFilesItems(directory)).toEqual([])
+    // With its body no longer kept, a redline is kept at its own accepted Word revision, as registration keeps it.
+    writeFileSync(redline, accepted)
+    db.query("DELETE FROM meta WHERE key = ?").run(workingDocxKey(directory, clean))
+    db.query("INSERT INTO meta (key, value) VALUES (?, ?)").run(workingDocxKey(directory, redline), revision)
+    db.close()
+    expect(requestedFilesItems(directory)).toEqual([])
   })
 
   test("each delivered file is described by all it holds", () => {
