@@ -41,7 +41,8 @@ const NUMBERING = { rel: `${O}/numbering`, file: "word/numbering.xml", root: "nu
   type: "application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml" }
 
 /** The one build of the combined file, for the copy a lean run saves in the
- * matter and for each download: combineMemoAndBody's bytes, or the code of a
+ * matter and for ingest's rebuild of that copy after a change to a part (the
+ * download serves the saved file): combineMemoAndBody's bytes, or the code of a
  * build it refuses. The code is its own (empty_memo, unsupported_memo_*),
  * invalid_docx_xml for any XML error, invalid_docx_package for a zip error
  * (fflate's numeric code), else build_failed; for an unreadable package,

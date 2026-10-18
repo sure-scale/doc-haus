@@ -4,7 +4,8 @@ import { createHash } from "node:crypto"
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { forgetSystemDocx, ownedDeliverable, readSystemDocx, recordSystemDocx, systemDocxKey } from "./system-docx"
+import { recordRedline } from "./redlines"
+import { forgetSystemDocx, ownedDeliverable, readSystemDocx, recordSystemDocx, replaceableDeliverable, systemDocxKey } from "./system-docx"
 
 const directories: string[] = []
 afterEach(() => directories.splice(0).forEach(directory => rmSync(directory, { recursive: true, force: true })))
@@ -71,4 +72,31 @@ test("a record that is not the system write record is refused on read and owns n
     // Never the system's to write over.
     expect(ownedDeliverable(directory, "Pack.docx")).toBe(false)
   }
+})
+
+test("the system may write over its own unchanged write only while no proposal on the file is pending", () => {
+  const directory = matter()
+  writeFileSync(path.join(directory, "Pack.docx"), "system bytes")
+  writeFileSync(path.join(directory, "Other.docx"), "system bytes")
+  registry(directory, db => {
+    recordSystemDocx(db, directory, "Pack.docx", sha256("system bytes"))
+    recordSystemDocx(db, directory, "Other.docx", sha256("system bytes"))
+  })
+  // A registry without proposals has none pending.
+  expect(replaceableDeliverable(directory, "Pack.docx")).toBe(true)
+  recordRedline(directory, { docPath: "Pack.docx", docName: "Pack.docx", scope: "phrase", findText: "system", oldText: "system", newText: "lawyer", author: "reviewer", reviewComment: "", anchorId: "p000000000001" })
+  expect(ownedDeliverable(directory, "Pack.docx")).toBe(true)
+  expect(replaceableDeliverable(directory, "Pack.docx")).toBe(false)
+  expect(replaceableDeliverable(directory, path.join(directory, "Pack.docx"))).toBe(false)
+  // A proposal on another file does not hold this one.
+  expect(replaceableDeliverable(directory, "Other.docx")).toBe(true)
+  // Once the lawyer resolves it, the file is the system's again.
+  registry(directory, db => db.run("UPDATE redlines SET status = 'rejected'"))
+  expect(replaceableDeliverable(directory, "Pack.docx")).toBe(true)
+  // A file that is not the system's own is not, proposals or not.
+  writeFileSync(path.join(directory, "Pack.docx"), "edited bytes")
+  expect(replaceableDeliverable(directory, "Pack.docx")).toBe(false)
+  // Nor is one whose proposals cannot be read.
+  registry(directory, db => { db.run("DROP TABLE redlines"); db.run("CREATE TABLE redlines (id INTEGER)") })
+  expect(replaceableDeliverable(directory, "Other.docx")).toBe(false)
 })

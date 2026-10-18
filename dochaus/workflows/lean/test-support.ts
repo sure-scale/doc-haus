@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { withParagraphPointers } from "../../lib/drafting-amendment"
-import { recordSystemDocx } from "../../lib/system-docx"
+import { recordSystemDocx, replaceableDeliverable } from "../../lib/system-docx"
 import { readWorkingDocx } from "../../lib/working-docx"
 import { readLeanPlan, writeLeanPlan } from "./plan"
 import { LEAN_STAGE_AGENTS, type LeanDeps, type StageSessionPort } from "./stages"
@@ -171,18 +171,20 @@ export function pidIn(prompt: string, start: string) {
 /** Registers deliverables as the ingest service does (registerLeanDeliverable):
  * a create needs the name free and a replace the sha256 of the file there now;
  * a source, a file holding the lawyer's accepted Word revision or a failed
- * precondition is refused (undefined). A Word file is stored with its paragraph
- * pointers, and the sha256 of the stored bytes is recorded in the registry as
- * the system's own write (system-docx.ts). `calls` lists every attempt, with
- * the sha256 it was to replace. */
+ * precondition is refused (undefined), as is a replace with `owned` of a file
+ * that is no longer the system's to write over (replaceableDeliverable). A
+ * Word file is stored with its paragraph pointers, and the sha256 of the stored
+ * bytes is recorded in the registry as the system's own write (system-docx.ts).
+ * `calls` lists every attempt, with the sha256 it was to replace. */
 export function registering() {
   const names: string[] = []
   const calls: [string, string | null][] = []
-  const registerDeliverable: NonNullable<LeanDeps["registerDeliverable"]> = async (directory, name, bytes, prior) => {
+  const registerDeliverable: NonNullable<LeanDeps["registerDeliverable"]> = async (directory, name, bytes, prior, options) => {
     calls.push([name, prior])
     const file = path.join(directory, name)
     const current = existsSync(file) ? sha256Hex(readFileSync(file)) : null
     if (current !== prior || readWorkingDocx(directory, file) || registeredSource(directory, file)) return undefined
+    if (prior && options?.owned && !replaceableDeliverable(directory, name)) return undefined
     const stored = name.toLowerCase().endsWith(".docx") ? withParagraphPointers(bytes) : bytes
     writeFileSync(file, stored)
     const db = new Database(path.join(directory, ".dochaus", "legal.db"))

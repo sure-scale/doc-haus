@@ -58,3 +58,29 @@ export function ownedDeliverable(directory: string, name: string) {
     return false
   }
 }
+
+/** Whether the system may write over the matter file `name`: it is still the
+ * system's own last write (ownedDeliverable) and no proposal on it is pending,
+ * since replacing a deliverable drops the proposals the lawyer has not yet
+ * reviewed. The one rule for a run's save over the saved combined file and for
+ * ingest's rebuild of it. A registry that cannot be read is not. Reads only. */
+export function replaceableDeliverable(directory: string, name: string) {
+  try {
+    return ownedDeliverable(directory, name) && !pendingProposals(directory, name)
+  } catch {
+    return false
+  }
+}
+
+/** Whether a redline proposal on the matter file `name` is pending. */
+function pendingProposals(directory: string, name: string) {
+  const file = path.join(directory, ".dochaus", "legal.db")
+  if (!existsSync(file)) return false
+  const db = new Database(file, { readonly: true })
+  try {
+    if (!db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='redlines'").get()) return false
+    const identity = canonicalArtifactIdentity(directory, name)
+    return (db.query("SELECT doc_path FROM redlines WHERE status = 'pending'").all() as { doc_path: string }[])
+      .some(row => canonicalArtifactIdentity(directory, row.doc_path) === identity)
+  } finally { db.close() }
+}

@@ -7,7 +7,7 @@ import { buildCombinedFile } from "../../lib/combined-docx"
 import { readDocxCommentParagraphs, readDocxRevisionProperties } from "../../lib/docx-comments"
 import { withParagraphPointers } from "../../lib/drafting-amendment"
 import { sha256File } from "../../lib/lineage"
-import { ownedDeliverable } from "../../lib/system-docx"
+import { ownedDeliverable, replaceableDeliverable } from "../../lib/system-docx"
 import { readWorkingDocx } from "../../lib/working-docx"
 import { appendLeanEvent } from "./events"
 import { readLeanPlan, type DocID, type LeanPlan } from "./plan"
@@ -37,12 +37,13 @@ import { leanFile, readLeanJson, writeLeanBytes, writeLeanText, type OpenItem } 
 // With a combined document (combinedDelivery), the file built from its two
 // registered parts (buildCombinedFile) is then registered under the requested
 // name. The system replaces a file there only while the summary lists it as
-// the combined file and it still holds exactly the bytes the system last wrote
-// there, by the registry's record of its own writes (system-docx.ts); a run's
-// save and ingest's rebuild after an accept into a part both record theirs.
-// Any other file under the name is kept, and listed as an earlier combined
-// file when a delivery saved it there, and the new file takes the next free
-// name, as a body does. When the build is refused, the file under the name
+// the combined file, it still holds exactly the bytes the system last wrote
+// there, by the registry's record of its own writes (system-docx.ts), and no
+// proposal on it is pending review (replaceableDeliverable, checked again under
+// the write's lock); a run's save and ingest's rebuild after an accept into a
+// part both record theirs. Any other file under the name is kept, and listed
+// as an earlier combined file when a delivery saved it there, and the new file
+// takes the next free name, as a body does. When the build is refused, the file under the name
 // holds the lawyer's accepted Word revision or no name is free, it is not
 // saved: a finalize item the notes disclose says so (combinedFileItems).
 
@@ -79,7 +80,7 @@ export const DOCX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.
 // The fixed wording of every delivery row: what code sets, and what a row made
 // before delivery cannot show.
 const PLAIN_CODE_SETS = "Code sets this file's name (registration's naming logic on the current plan and matter files; registration may add \" (n)\" to keep an existing matter document) and its Word format."
-const COMBINED_CODE_SETS = "Code sets this file's name (registration's naming logic on the current plan; registration adds \" (n)\" to keep another file that has the name), its Word format and its part order: the memo, a section break, then the body from a new page. Once the final gate passes, code builds it from the two registered parts and saves it in the matter; the download serves the saved file. The system replaces a file under the name only while it still holds, unchanged, the combined file the system last saved there. When the build is refused, the file of that name holds the lawyer's accepted Word changes, or no numbered name is free, it is not saved, and a finalize item says so."
+const COMBINED_CODE_SETS = "Code sets this file's name (registration's naming logic on the current plan; registration adds \" (n)\" to keep another file that has the name), its Word format and its part order: the memo, a section break, then the body from a new page. Once the final gate passes, code builds it from the two registered parts and saves it in the matter; the download serves the saved file. The system replaces a file under the name only while it still holds, unchanged, the combined file the system last saved there, with no change pending review. When the build is refused, the file of that name holds the lawyer's accepted Word changes, or no numbered name is free, it is not saved, and a finalize item says so."
 const NOT_COVERED = "Not covered: Word changes accepted after delivery, changes the final gate makes to the notes, and rendered layout."
 const NOT_WRITTEN = "not yet written"
 
@@ -253,12 +254,14 @@ function earlierCombined(delivery: CombinedDelivery, rows: LeanDocument[]) {
  * `row`, the run's own. Once the gate passed, the file built from the two parts
  * as registered (registeredParts on this run's `documents`) is registered under
  * the first name it may take (combinedOutcome): replacing the file the system
- * saved there, or under the next free name, keeping the file there. A file not
+ * saved there, which must still be the system's under the write's lock, or
+ * under the next free name, keeping the file there. A file not
  * saved keeps the run's earlier row (`prior`) without a deliverable, or, when
  * the matter failed to take it, a row without a deliverable under the name
  * registration gave it, so a retry takes that name again, as a body's row keeps
  * its name. At a stop before delivery, the earlier row is kept, delivered only
- * while both parts are and its file is still there. `failure` says why the file
+ * while both parts are and its file still holds the system's last write of it
+ * (ownedDeliverable). `failure` says why the file
  * is not saved when the gate's notes did not disclose it (combinedFileItems). */
 async function combinedRow(directory: string, deps: LeanDeps, register: boolean, delivery: CombinedDelivery, documents: LeanDocument[], rows: LeanDocument[]): Promise<{ kept: LeanDocument[]; row?: LeanDocument; failure?: string }> {
   const earlier = earlierCombined(delivery, rows)
@@ -267,7 +270,7 @@ async function combinedRow(directory: string, deps: LeanDeps, register: boolean,
   const kept = (name: string | undefined) => keptCombined(directory, earlier, [...(name ? [name] : []), ...others.flatMap(row => row.deliverable ?? [])])
   const parts = registeredParts(directory, documents)
   if (!register || !deps.registerDeliverable)
-    return { kept: kept(prior?.path), row: prior && { ...prior, deliverable: parts && present(directory, prior.path) ? prior.deliverable : null } }
+    return { kept: kept(prior?.path), row: prior && { ...prior, deliverable: parts && present(directory, prior.path) && ownedDeliverable(directory, prior.path) ? prior.deliverable : null } }
   const unsaved = (failure?: string) => ({ kept: kept(prior?.path), row: prior && { ...prior, deliverable: null }, ...(failure ? { failure } : {}) })
   const read = (file: string) => new Uint8Array(readFileSync(path.join(directory, file)))
   const outcome = combinedOutcome(directory, delivery, parts && { memo: read(parts.notes), body: read(parts.body) }, earlier, others)
@@ -280,7 +283,8 @@ async function combinedRow(directory: string, deps: LeanDeps, register: boolean,
   const row = (name: string, deliverable: string | null): LeanDocument => ({ kind: "combined", document: delivery.document, title: delivery.title, path: name, sha256: outcome.sha256, deliverable })
   const save = async (name: string, current: string | null) => {
     try {
-      return await deps.registerDeliverable!(directory, name, outcome.bytes, current)
+      // A file the system replaces must still be its own, checked again under the write's lock.
+      return await deps.registerDeliverable!(directory, name, outcome.bytes, current, current ? { owned: true } : undefined)
     } catch (error) {
       return error instanceof Error ? error : new Error(String(error))
     }
@@ -294,16 +298,19 @@ async function combinedRow(directory: string, deps: LeanDeps, register: boolean,
   return { kept: kept(outcome.first.name), row: row(outcome.first.name, null), failure: `The combined file "${outcome.first.name}" is not saved in the matter: the matter refused it.` }
 }
 
-/** The earlier combined files (`earlier`) still in the matter: each row's file,
- * unless a source or one of the names `taken` (the run's own file, or another
- * output's), listed under its name with its deliverable. The run keeps these
- * files; it never removes a matter document. */
+/** The earlier combined files (`earlier`) still in the matter: each row's
+ * delivered file, unless a source or one of the names `taken` (the run's own
+ * file, or another output's), listed under its name with its deliverable. A row
+ * without a deliverable lists no file: whatever holds that name now, a delivery
+ * did not save it there. The run keeps these files; it never removes a matter
+ * document. */
 function keptCombined(directory: string, earlier: LeanDocument[], taken: string[]) {
   const closed = new Set(taken.map(name => name.toLocaleLowerCase()))
   const kept = new Map<string, LeanDocument>()
   for (const row of earlier) {
-    const name = row.deliverable ?? row.path
-    if (closed.has(name.toLocaleLowerCase()) || !present(directory, name) || sourceName(directory, name)) continue
+    // A row without a deliverable names no file a delivery saved: the file now under that name is not the run's.
+    const name = row.deliverable
+    if (!name || closed.has(name.toLocaleLowerCase()) || !present(directory, name) || sourceName(directory, name)) continue
     kept.delete(name.toLocaleLowerCase())
     kept.set(name.toLocaleLowerCase(), { ...row, path: name, deliverable: name })
   }
@@ -387,9 +394,10 @@ type CombinedName = { name: string; current: string | null }
  * on, without combinedClosed), each with the sha256 of the file it replaces
  * (null when no file has the name). A name with a file is usable only while the
  * system may replace that file: the summary lists it as this combined file
- * (`earlier`) and as no other output (`others`), it is not a source, and it
- * still holds exactly the bytes the system last wrote there (ownedDeliverable,
- * the registry's record). Any other file there is kept. Read lazily. */
+ * (`earlier`) and as no other output (`others`), it is not a source, it still
+ * holds exactly the bytes the system last wrote there (the registry's record)
+ * and no proposal on it is pending review (replaceableDeliverable). Any other
+ * file there is kept. Read lazily. */
 function* combinedNames(directory: string, delivery: CombinedDelivery, earlier: LeanDocument[], others: LeanDocument[]): Generator<CombinedName, void> {
   const names = openNames(delivery.name, combinedClosed(directory, delivery))
   const prior = earlier.at(-1)?.path
@@ -403,7 +411,7 @@ function* combinedNames(directory: string, delivery: CombinedDelivery, earlier: 
       continue
     }
     const combined = earlier.some(row => row.path.toLocaleLowerCase() === key) && !others.some(row => row.deliverable?.toLocaleLowerCase() === key)
-    const current = combined && !sourceName(directory, name) && ownedDeliverable(directory, name) ? sha256File(path.join(directory, name))?.sha256 : undefined
+    const current = combined && !sourceName(directory, name) && replaceableDeliverable(directory, name) ? sha256File(path.join(directory, name))?.sha256 : undefined
     if (current) yield { name, current }
   }
 }
@@ -427,7 +435,7 @@ function combinedOutcome(directory: string, delivery: CombinedDelivery, parts: {
   if ("refused" in built) return unsaved(built.part ? `the ${built.part === "memo" ? "memo" : "draft"} could not be read as a Word document` : COMBINED_REFUSALS[built.refused] ?? "the file could not be built")
   const rest = combinedNames(directory, delivery, earlier, others)
   const first = rest.next()
-  if (first.done) return unsaved("another file already has that name, which the run keeps (it replaces only a combined file it saved there that still holds what it saved), " +
+  if (first.done) return unsaved("another file already has that name, which the run keeps (it replaces only a combined file it saved there that still holds what it saved, with no change pending review), " +
     `and other files already have each numbered name the run can give the new file, up to "${delivery.name} (${MAX_NAME_SUFFIX}).docx"`)
   // Paragraph pointers as registration gives them, the replaced file's where the text is unchanged.
   const bytes = withParagraphPointers(built.bytes, first.value.current ? readFileSync(path.join(directory, first.value.name)) : undefined)

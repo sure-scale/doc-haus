@@ -133,9 +133,11 @@ export type LeanDeps = {
   pause?: AbortSignal
   /** Registers one finished file as a matter deliverable under `fileName`:
    * created when `priorSha256` is null, otherwise replacing a file that must
-   * still hold exactly those bytes. Returns the matter-relative path, or
-   * undefined when that name is held by a document the run must not overwrite. */
-  registerDeliverable?: (directory: string, fileName: string, bytes: Uint8Array, priorSha256: string | null) => Promise<string | undefined>
+   * still hold exactly those bytes; with `owned`, it must also still be the
+   * system's to write over (replaceableDeliverable), checked under the write's
+   * lock. Returns the matter-relative path, or undefined when that name is held
+   * by a document the run must not overwrite. */
+  registerDeliverable?: (directory: string, fileName: string, bytes: Uint8Array, priorSha256: string | null, options?: { owned?: boolean }) => Promise<string | undefined>
 }
 
 export { engineSessionPort } from "./session-port"

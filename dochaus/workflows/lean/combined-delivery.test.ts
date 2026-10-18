@@ -6,6 +6,7 @@ import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import { buildCombinedFile } from "../../lib/combined-docx"
 import { withParagraphPointers } from "../../lib/drafting-amendment"
+import { pendingRedlinesForDoc, recordRedline } from "../../lib/redlines"
 import { renderMarkdownToDocx } from "../../lib/render"
 import { forgetSystemDocx, ownedDeliverable, recordSystemDocx } from "../../lib/system-docx"
 import { workingDocxKey } from "../../lib/working-docx"
@@ -24,8 +25,9 @@ import { cleanupMatters, matter, registering, scriptedModel } from "./test-suppo
 // the memo's name; once both are registered, the combined file built from them
 // (buildCombinedFile) is registered under the requested name. A rerun replaces
 // that file only while it holds the bytes the system last saved there (the
-// registry's record of its own write, system-docx.ts); any other file there is
-// kept and the new one takes the next free name. Real registration path; the
+// registry's record of its own write, system-docx.ts) and no proposal on it is
+// pending review; any other file there is kept and the new one takes the next
+// free name. Real registration path; the
 // registry writes are local and record the system's writes as ingest does
 // (registering).
 
@@ -529,6 +531,84 @@ describe("the combined file saved in the matter", () => {
     expect(existsSync(path.join(directory, "supply-pack (2).docx"))).toBe(false)
   }, 60_000)
 
+  /** A redline proposal on the matter file `name`, pending the lawyer's review. */
+  function propose(directory: string, name: string) {
+    recordRedline(directory, { docPath: name, docName: name, scope: "phrase", findText: "goods", oldText: "goods", newText: "products", author: "reviewer", reviewComment: "", anchorId: "p000000000001" })
+  }
+  const pendingOn = (directory: string, name: string) => pendingRedlinesForDoc(directory, name).length
+
+  test("a proposal pending on the combined file the system saved: a rerun keeps that file and the proposal, and saves the new one under the next free name", async () => {
+    const directory = matter()
+    writeLeanPlan(directory, [COMBINED], undefined, undefined, memo([COMBINED]))
+    await writeCopies(directory, COPIES)
+    await deliver(directory)
+    const [first] = combinedRows(directory)
+    const delivered = matterFile(directory, "supply-pack.docx")
+    propose(directory, "supply-pack.docx")
+    await writeCopies(directory, { "d1/body-applied.docx": "# Supply note\n\nThe supplier delivers the goods each week." })
+
+    expect(disclosableItems(directory)).toEqual([])
+    expect(deliveryArtifactEvidence(directory).at(-1)).toMatchObject({ kind: "combined", download_filename: "supply-pack (2).docx" })
+    const { calls, rows } = await deliver(directory)
+    expect(calls.map(([name]) => name)).not.toContain("supply-pack.docx")
+    expect(rows).toContainEqual(["combined", "d1", "supply-pack (2).docx"])
+    expect(matterFile(directory, "supply-pack.docx")).toEqual(delivered)
+    expect(pendingOn(directory, "supply-pack.docx")).toBe(1)
+    // The file is kept and listed as an earlier combined file, as a lawyer's change to it is.
+    expect(combinedRows(directory)).toEqual([first, expect.objectContaining({ path: "supply-pack (2).docx", deliverable: "supply-pack (2).docx" })])
+  }, 60_000)
+
+  test("a save that fails leaves no delivered combined file: a file the lawyer then puts under that name is kept and never listed as a combined file", async () => {
+    const directory = matter()
+    writeLeanPlan(directory, [COMBINED], undefined, undefined, memo([COMBINED]))
+    await writeCopies(directory, COPIES)
+    const registration = registering()
+    const failing: NonNullable<LeanDeps["registerDeliverable"]> = async (directory, name, bytes, current) => {
+      if (name === "supply-pack.docx") throw new Error("disk full")
+      return registration.registerDeliverable(directory, name, bytes, current)
+    }
+    await expect(recordLeanDocuments(directory, { sessions: scriptedModel({}).port, registerDeliverable: failing }, true)).rejects.toThrow("disk full")
+    expect(combinedRows(directory)).toEqual([expect.objectContaining({ path: "supply-pack.docx", deliverable: null })])
+    const own = await docx("# Supply pack\n\nA synthetic file the lawyer saved under this name.")
+    writeFileSync(path.join(directory, "supply-pack.docx"), own)
+
+    const { rows } = await deliver(directory)
+    expect(rows).toContainEqual(["combined", "d1", "supply-pack (2).docx"])
+    expect(matterFile(directory, "supply-pack.docx")).toEqual(own)
+    expect(combinedRows(directory)).toEqual([expect.objectContaining({ path: "supply-pack (2).docx", deliverable: "supply-pack (2).docx" })])
+  }, 60_000)
+
+  test("a stop at the gate after an accept into the combined file itself: the summary no longer lists that file as the run's delivered combined file", async () => {
+    const directory = matter()
+    writeLeanPlan(directory, [COMBINED], undefined, undefined, memo([COMBINED]))
+    await writeCopies(directory, COPIES)
+    await deliver(directory)
+    const accepted = await acceptIntoCombined(directory)
+    await recordLeanDocuments(directory, { sessions: scriptedModel({}).port }, false)
+    expect(combinedRows(directory)).toEqual([expect.objectContaining({ path: "supply-pack.docx", deliverable: null })])
+    expect(matterFile(directory, "supply-pack.docx")).toEqual(accepted)
+  }, 60_000)
+
+  test("a combined file another write saves between the run's check and its save is kept: the save is refused under the write's lock and the file takes the next free name", async () => {
+    const directory = matter()
+    writeLeanPlan(directory, [COMBINED], undefined, undefined, memo([COMBINED]))
+    await writeCopies(directory, COPIES)
+    await deliver(directory)
+    const delivered = matterFile(directory, "supply-pack.docx")
+    await writeCopies(directory, { "d1/body-applied.docx": "# Supply note\n\nThe supplier delivers the goods each week." })
+
+    const registration = registering()
+    // Another write saves the same bytes after the run found the file its own.
+    const racing: NonNullable<LeanDeps["registerDeliverable"]> = async (directory, name, bytes, current, options) => {
+      if (name === "supply-pack.docx" && current) registry(directory, db => forgetSystemDocx(db, directory, path.join(directory, name)))
+      return registration.registerDeliverable(directory, name, bytes, current, options)
+    }
+    const summary = await recordLeanDocuments(directory, { sessions: scriptedModel({}).port, registerDeliverable: racing }, true)
+    expect(registration.calls).toContainEqual(["supply-pack.docx", sha256(delivered)])
+    expect(summary.documents.filter(row => row.kind === "combined").map(row => row.deliverable)).toEqual(["supply-pack.docx", "supply-pack (2).docx"])
+    expect(matterFile(directory, "supply-pack.docx")).toEqual(delivered)
+  }, 60_000)
+
   test("the next free name skips a name another planned output is requested under, while that output is not yet written", async () => {
     const directory = matter()
     const documents: Document[] = [COMBINED, { ...SCHEDULE, file: "supply-pack (2).docx", deliverable: "body" }]
@@ -563,7 +643,7 @@ describe("the combined file saved in the matter", () => {
     }
     await writeCopies(directory, REVISED_MEMO)
 
-    const item = unsaved("another file already has that name, which the run keeps (it replaces only a combined file it saved there that still holds what it saved), " +
+    const item = unsaved("another file already has that name, which the run keeps (it replaces only a combined file it saved there that still holds what it saved, with no change pending review), " +
       'and other files already have each numbered name the run can give the new file, up to "supply-pack (9).docx"')
     expect(disclosableItems(directory)).toEqual([item])
     // Registration finds the same item, which the gate's notes disclose.
