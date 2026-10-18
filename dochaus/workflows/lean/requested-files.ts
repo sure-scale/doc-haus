@@ -37,6 +37,7 @@ type Checked<T> = { issues: string[]; value?: T }
 
 const MEMO = "memo"
 const RECORD_FILE = "requested-files.json"
+const QUESTION_ID = "requested-files-"
 
 const filesShape = (memo: boolean) =>
   `Reply with the JSON object only: {"stated":true,"files":[{"holds":["${memo ? "planned id or memo" : "planned id"}"],"name":"file name or null","quote":"..."}]}.`
@@ -232,13 +233,13 @@ export function withRequestedNames<T extends { title: string; file?: string; del
 /** The lawyer's question on files the outline's revisions still do not
  * deliver as the record asks (`issues`, from requestedFilesIssues on the same
  * documents): the lawyer's words, what they ask for, by title, "the memo" and
- * file name, and how the plan delivers it instead. Its id keys on the record's
- * quotes and the issues, so it is asked once: undefined when there is no issue
- * or a question with that id is already open or answered. */
+ * file name, and how the plan delivers it instead. It is asked once in a run:
+ * undefined when there is no issue or a requested-files question is already
+ * open or answered, since a later job may quote the same words differently. */
 export function requestedFilesQuestion(directory: string, requested: RequestedFiles, documents: PlannedDocument[], issues: string[]): Question | undefined {
   if (!issues.length) return
-  const id = `requested-files-${shortHash(JSON.stringify([requested.files.map(file => file.quote), issues]))}`
-  if (readQuestions(directory).some(question => question.id === id)) return
+  if (readQuestions(directory).some(question => question.id.startsWith(QUESTION_ID))) return
+  const id = `${QUESTION_ID}${shortHash(JSON.stringify([requested.files.map(file => file.quote), issues]))}`
   // Issues arise only for files whose memo is planned.
   const lines = requested.files.flatMap(file => {
     const check = fileCheck(file, documents, true)

@@ -225,6 +225,9 @@ describe("requested files question", () => {
     writeQuestions(directory, [{ ...question, status: "answered", answer: "As planned.", answered_at: "2026-10-18T00:00:00.000Z" }])
     expect(requestedFilesQuestion(directory, ASKED, DOCUMENTS, issues)).toBeUndefined()
     expect(requestedFilesQuestion(directory, ASKED, DOCUMENTS, [])).toBeUndefined()
+    // A later job quoting the same words differently is not asked again either.
+    const requoted = { ...ASKED, files: ASKED.files.map(file => ({ ...file, quote: `${file.quote} ` })) }
+    expect(requestedFilesQuestion(directory, requoted, DOCUMENTS, requestedFilesIssues(DOCUMENTS, MEMO, requoted).issues)).toBeUndefined()
   })
 
   test("several mismatches are asked together", () => {

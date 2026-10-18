@@ -125,7 +125,9 @@ describe("requested files through the run", () => {
     expect(readQuestions(directory)).toEqual(asked)
 
     enqueueLeanRequest(directory, { kind: "answer", question_id: asked[0]!.id, answer: ANSWER })
-    const answered = scriptedModel(replies({ [AGENT.draft]: outliner(BODY), [AGENT.files]: filesOf(PACKED) }))
+    // The job may quote the lawyer's words differently on the new outline.
+    const requoted: RequestedFile = { ...PACKED, quote: "all in one file named Kestrel Release Pack.docx" }
+    const answered = scriptedModel(replies({ [AGENT.draft]: outliner(BODY), [AGENT.files]: filesOf(requoted) }))
     expect((await runLean(directory, { sessions: answered.port })).status).toBe("completed")
     // The outline is drawn up again with the answer; the mismatch already asked
     // about is neither revised against the answer nor asked again.
@@ -136,12 +138,12 @@ describe("requested files through the run", () => {
     expect(plan).toMatchObject({ basis: outlineBasis(directory), notes_file: "Kestrel Release Pack - cover memo.docx" })
     expect(plan.documents).toEqual([expect.objectContaining({ id: "d1", file: "Kestrel Release Pack.docx" })])
     expect(plan.documents[0]).not.toHaveProperty("deliverable")
-    expect(readRequestedFiles(directory)).toMatchObject({ basis: plan.basis, files: [PACKED] })
+    expect(readRequestedFiles(directory)).toMatchObject({ basis: plan.basis, files: [requoted] })
 
     // The file not delivered as asked is disclosed in the drafting notes.
     const items = requestedFilesItems(directory)
     expect(items).toEqual([expect.objectContaining({ stage: "finalize", kind: "omission", ref: expect.objectContaining({ repair_target: "memo" }) })])
-    expect(items[0]!.detail).toContain(`the lawyer's words "${PACK}" [source: request] ask for the memo and "Release letter" in one file named "Kestrel Release Pack.docx"`)
+    expect(items[0]!.detail).toContain(`the lawyer's words "${requoted.quote}" [source: request] ask for the memo and "Release letter" in one file named "Kestrel Release Pack.docx"`)
     expect(disclosableItems(directory)).toContainEqual(items[0])
     expect(readLeanText(directory, "drafting-notes.md")).toContain(`[ref: ${items[0]!.id}]`)
     expect(gateOf(directory)).toMatchObject({ status: "pass", blocking: [] })
