@@ -808,7 +808,7 @@ app.get("/matters/:id/redlines", async (c) => {
   if (!name) return c.json([])
   return withArtifactMutationLocksAsync(dir, [name], async () => {
     const target = readDocumentTarget(dir, name)
-    if (!target) return c.json([])
+    if (!target || !existsSync(target.docPath)) return c.json([])
     const db = openDb(dir)
     try {
       const rows = listPendingRedlines(db, target.docPath)
