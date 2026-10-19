@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite"
 import path from "node:path"
 import { parsePlan, type PlannedPart } from "./plan"
 import { templateContract } from "./template-contract"
-import { draftBody } from "./template-coverage"
+import type { Body } from "./template-coverage"
 import { tokens } from "./template-structure"
 import { matter } from "./test-support"
 
@@ -84,4 +84,31 @@ export function bodyOf(parts: PlannedPart[], ...texts: string[]) {
     const at = parts.findIndex(part => tokens(part.heading).join(" ") === tokens(heading(text).replace(/^##\s+/, "")).join(" "))
     return at < 0 ? { text } : { part: at, text }
   }))
+}
+
+/** The body of a draft assembled from Markdown parts, for measuring without a
+ * render. A part with no outlined position belongs to no outlined part. */
+export function draftBody(parts: { part?: number; text: string }[]): Body {
+  return parts.reduce<Body>((acc, part) => {
+    const rows = textParagraphs(part.text)
+    return {
+      paragraphs: [...acc.paragraphs, ...rows],
+      partOf: [...acc.partOf, ...rows.map(() => part.part)],
+      headings: part.part === undefined || !rows.length ? acc.headings : new Set([...acc.headings, acc.paragraphs.length]),
+    }
+  }, { paragraphs: [], partOf: [], headings: new Set() })
+}
+
+/** Paragraphs of a Markdown draft as the rendered document will hold them:
+ * each heading, list item and table row on its own, other lines joined until a
+ * blank line. */
+export function textParagraphs(markdown: string) {
+  return markdown.split(/\r?\n/).reduce<{ rows: string[]; open: boolean }>((acc, raw) => {
+    const line = raw.trim()
+    if (!line) return { ...acc, open: false }
+    const block = /^(?:#{1,6}\s|[-*+]\s|\d+[.)]\s|\|)/.test(line)
+    const text = line.replace(/^#{1,6}\s+/, "").replace(/^[-*+]\s+/, "").replace(/\*+/g, "").trim()
+    if (acc.open && !block) return { rows: [...acc.rows.slice(0, -1), `${acc.rows.at(-1)} ${text}`], open: true }
+    return { rows: [...acc.rows, text], open: !/^#{1,6}\s/.test(line) }
+  }, { rows: [], open: false }).rows
 }

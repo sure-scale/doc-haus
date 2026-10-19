@@ -559,12 +559,12 @@ test("a hand-back moves no question: each keeps its number, and the current dot 
   expect(dots(mixed)).toEqual(["question-dot is-answered", "question-dot is-answered is-delegated", "question-dot is-current"])
 })
 
-test("on a finished draft, a question left to the drafter says that answering it runs the drafting again", () => {
+test("on a finished draft, a question left to the drafter says that answering it amends the drafted documents without redrafting them", () => {
   const status = structuredClone(blockedQuestion) as LeanDraftingStatus
   const first = status.questions[0]!
   status.questions = [{ ...first, status: "answered", answer_kind: "decide_for_me" }]
   const left = handedBackQuestions(status)
-  const note = "This draft is finished. Answering now runs the drafting again with your answer."
+  const note = "This draft is finished. Answering now reviews the drafted documents with your answer and amends them where needed; they are not redrafted."
   const finished = questionCard([], { answered: 1, handedBack: left, done: true })
   expect(finished).toContain(note)
   expect(finished).toMatch(/<button class="primary" type="button" aria-describedby="[^"]+" disabled="">Answer instead<\/button>/)

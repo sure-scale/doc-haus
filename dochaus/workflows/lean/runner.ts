@@ -20,7 +20,7 @@ import { DELIVERED_NOTES, forgetUnplannedDocuments, recordLeanDocuments } from "
 import { runDraftStage } from "./draft-sections"
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { checklistFindingLabel, deliveredNotes, finalGate, notesCoverageReport } from "./gate"
-import { readLeanPlan, reviewStages, leanSteps, stepDocument, stepStage, type StepID } from "./plan"
+import { leanPlanIssue, readLeanPlan, reviewStages, leanSteps, stepDocument, stepStage, type StepID } from "./plan"
 import { retryPrompt, stagePrompt } from "./prompts"
 import { excerpt, inDocument, openItem, withSourceSnapshot } from "./quotes"
 import { checklistRefinementSelections, drainLeanRequests, pendingLeanRequests, withheldChecklistRepair } from "./requests"
@@ -137,6 +137,11 @@ export async function runLean(directory: string, deps: LeanDeps): Promise<LeanSt
  * earliest step that consumes the answer runs next. The step list is read
  * again at every boundary because the first draft writes the plan. */
 async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDeps, reinspectChecklist = false): Promise<PassResult> {
+  // A plan.json that is there but is not a plan is the lawyer's to correct: the
+  // run neither follows it, plans over it nor drafts again from it.
+  const unreadable = leanPlanIssue(directory)
+  if (unreadable) return { state: writeLeanState(directory, { ...initial, status: "blocked",
+    stop_reason: `.dochaus/lean/plan.json is not a valid document plan: ${unreadable}. Correct it, then Continue.` }) }
   const preferences = readFirmDraftingPreferences()
   const preferenceChange = { observed: false }
   const preferencesChanged = () => preferenceChange.observed ||= readFirmDraftingPreferences() !== preferences
@@ -207,7 +212,7 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
       const key = stageInputSha(directory, step)
       // Done from these very inputs; the saved output decides whether it is skipped.
       const current = recorded?.status === "done" && recorded.input_sha === key
-      return { key, current, unchanged: current && stageOutputValid(directory, step) && (step !== "package-review" || readPackageReview(directory)?.status === "pass") && (stage !== "change-review" || !document || readChangeReview(directory, document)?.status === "pass") }
+      return { key, unchanged: current && stageOutputValid(directory, step) && (step !== "package-review" || readPackageReview(directory)?.status === "pass") && (stage !== "change-review" || !document || readChangeReview(directory, document)?.status === "pass") }
     })
     if (!decision) return { state, restart: true }
     settled.push(step)
@@ -230,7 +235,7 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
     const currentPrefetch = prefetched?.inputSha === inputSha
     if (!currentPrefetch) appendLeanEvent(directory, { stage, document, event: "started", check_ms })
     state = updateLeanStage(directory, state, step, {
-      status: "running", input_sha: null, outputs: [], session_ids: [], session_id: currentPrefetch ? prefetched.sessionID : null, attempts: 0, calls: 0, feedback: [], started_at: currentPrefetch ? state.stages[step]?.started_at ?? now() : now(), finished_at: null,
+      status: "running", ...unkeyed(step), outputs: [], session_ids: [], session_id: currentPrefetch ? prefetched.sessionID : null, attempts: 0, calls: 0, feedback: [], started_at: currentPrefetch ? state.stages[step]?.started_at ?? now() : now(), finished_at: null,
     })
     const progress: Progress = patch => {
       state = updateLeanStage(directory, state, step, patch)
@@ -281,13 +286,13 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
     }
     if (prefetched && prefetched.inputSha !== inputSha) await prefetched.reply.catch(() => undefined)
     prepared.delete(step)
-    const result = await runStep(directory, state, step, deps, progress, planned, prefetched?.inputSha === inputSha ? prefetched : undefined, reinspectChecklist, decision.current)
+    const result = await runStep(directory, state, step, deps, progress, planned, prefetched?.inputSha === inputSha ? prefetched : undefined, reinspectChecklist, recorded)
       .catch((error: unknown): StageRun => error instanceof ChecklistRefreshRestart ? { status: "restart" } : ({ status: "failed", reason: `${step}: stopped by a runtime error: ${message(directory, error)}` }))
     // Whatever the step returned once paused (helpers turn a refused prompt into
     // their own failure) is not accepted; the step is run again on Continue.
     if (paused()) return { state: settlePause(directory, state), paused: true }
     if (result.status === "restart" || preferencesChanged()) {
-      state = updateLeanStage(directory, state, step, { status: "pending", input_sha: null, outputs: [], finished_at: null })
+      state = updateLeanStage(directory, state, step, { status: "pending", ...unkeyed(step), outputs: [], finished_at: null })
       return { state, restart: true }
     }
     appendLeanEvent(directory, result.status === "failed"
@@ -302,7 +307,8 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
       replaceStageQuestions(directory, stage, document ?? null, result.questions.map(question => document ? { ...question, document } : question))
     snapshotStage(directory, state.revision, step, result.outputs)
     // These steps write some of their own inputs (the gate its question); their key is taken again.
-    state = updateLeanStage(directory, state, step, { status: result.status, input_sha: step === "checklist-check" || step === "gate" ? stageInputSha(directory, step) : inputSha, outputs: result.outputs, finished_at: now() })
+    // A draft row already holds the key its accepted draft was drafted from (runDraftStage).
+    state = updateLeanStage(directory, state, step, { status: result.status, input_sha: step === "checklist-check" || step === "gate" ? stageInputSha(directory, step) : stage === "draft" ? state.stages[step]?.input_sha ?? null : inputSha, outputs: result.outputs, finished_at: now() })
     // Researchable gaps from the first review of this research go back to it once.
     if (step === "research-review" && result.status === "done" && startResearchGapRound(directory, researchBasis(directory))) return { state, restart: true }
     if (stage === "change-review" && document && readChangeReview(directory, document)?.status === "changes-required") {
@@ -417,7 +423,13 @@ function settlePause(directory: string, fallback: LeanState): LeanState {
  * session and attempts stay for inspection. Other steps are returned as they are. */
 function unfinished(stages: LeanState["stages"]) {
   return Object.fromEntries(Object.entries(stages).map(([step, row]) => [step, row?.status === "running"
-    ? { ...row, status: "pending", input_sha: null, outputs: [], finished_at: null } : row])) as LeanState["stages"]
+    ? { ...row, status: "pending", ...unkeyed(step as StepID), outputs: [], finished_at: null } : row])) as LeanState["stages"]
+}
+
+/** A step that is not done has no key, except a draft step: its row keeps the
+ * key of its accepted draft, which the step keeps while that key is current. */
+function unkeyed(step: StepID): { input_sha?: null } {
+  return stepStage(step) === "draft" ? {} : { input_sha: null }
 }
 
 /** The lawyer stopped a run no coordinator is working on (the caller checks):
@@ -521,18 +533,32 @@ export function stageInputSha(directory: string, step: StepID) {
   return withSourceSnapshot(() => hashStageInputs(step, LEAN_PROMPT_VERSION, stageInputs(directory, step)))
 }
 
-function runStep(directory: string, state: LeanState, step: StepID, deps: LeanDeps, progress: Progress, planned: () => void | Promise<void>, prepared?: PreparedReview, reinspectChecklist = false, current = false): Promise<StageRun> {
+/** `recorded` is the step's state before this run of it. */
+function runStep(directory: string, state: LeanState, step: StepID, deps: LeanDeps, progress: Progress, planned: () => void | Promise<void>, prepared?: PreparedReview, reinspectChecklist = false, recorded?: LeanStageState): Promise<StageRun> {
   const stage = stepStage(step)
   const document = stepDocument(step)
-  if (stage === "apply" && document) return runApply(directory, state, deps, document)
+  if (stage === "apply" && document) return runApply(directory, state, document)
   if (stage === "gate") return runGate(directory)
   if (stage === "checklist-check") return runChecklistStage(directory, state, deps, reinspectChecklist)
-  if (stage === "change-plan" && document && focusedChecklistRepairs(directory, document)) return runFocusedRepairAdjudication(directory, state, deps, document, progress)
+  if (stage === "change-plan" && document && !roundPlanned(directory, state, recorded) && focusedChecklistRepairs(directory, document)) return runFocusedRepairAdjudication(directory, state, deps, document, progress)
   if (stage === "change-review" && document && focusedChecklistRepairs(directory, document)) return runFocusedChangeReview(directory, state, deps, document, progress)
   if (stage === "changes" && document && focusedChecklistRepairs(directory, document)) return runChangeReconciliation(directory, state, deps, document, progress)
   if (stage === "change-prepare" && document) return runChangePreparation(directory, state, deps, document, progress)
-  if (stage === "draft" && document) return runDraftStage(directory, state, deps, progress, document, planned, current)
+  if (stage === "draft" && document) return runDraftStage(directory, state, deps, progress, document, planned)
   return runModelStage(directory, state, step, deps, progress, prepared)
+}
+
+/** Whether the current repair round has been planned: this change plan was
+ * accepted after the round was requested, or the checklist re-check that ends
+ * the round has settled since. The checklist round is why the change plan runs
+ * only until its focused adjudication is accepted; a later re-key (an answer,
+ * an update, an earlier document's amendment) plans the new findings
+ * ordinarily, with the round's checklist findings beside them, and stays
+ * ordinary if that plan is itself paused, failed or blocked. */
+function roundPlanned(directory: string, state: LeanState, recorded: LeanStageState | undefined) {
+  const round = readRepairRound(directory)
+  const since = (row: LeanStageState | undefined, settled: string[]) => Boolean(round && row && settled.includes(row.status) && row.finished_at && row.finished_at > round.requested_at)
+  return since(recorded, ["done"]) || since(state.stages["checklist-check"], ["done", "blocked"])
 }
 
 /** One child session; the first prompt carries the step's inputs, each retry the

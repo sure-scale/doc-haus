@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { writeLeanPlan } from "./plan"
 import { outlineCoverageIssues, templateContract } from "./template-contract"
-import { contractGaps, draftBody, templateItems, textParagraphs } from "./template-coverage"
-import { PARTS, TEMPLATE_TEXT, TITLE, contractOf, heading } from "./template-test-support"
+import { contractGaps, templateItems } from "./template-coverage"
+import { PARTS, TEMPLATE_TEXT, TITLE, contractOf, draftBody, heading, textParagraphs } from "./template-test-support"
 import { cleanupMatters } from "./test-support"
 
 // Placement across the planned documents, and what a Left out line records,

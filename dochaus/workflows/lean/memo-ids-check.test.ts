@@ -179,7 +179,7 @@ describe("a recorded change id in a requested memo", () => {
    * amendment w1 and an explanation i1, as the change checks number them. */
   function changeMatter(withMemo = true) {
     const directory = memoMatter(withMemo ? "memo" : "none")
-    writeLeanText(directory, "d1/changes.json", JSON.stringify({ amendments: ["a1", "a2", "a3"].map(amendment), questions: [], shared_paragraphs: [],
+    writeLeanText(directory, "d1/changes.json", JSON.stringify({ amendments: ["a1", "a2", "a3"].map(amendment), questions: [],
       withheld: [{ amendment: amendment("w1"), issues: ["Quote not found."] }], explanations: [{ id: "i1", pid: PID, reason: "Initial revision.", sources: [] }] }))
     return directory
   }
@@ -251,7 +251,7 @@ describe("a recorded change id in a requested memo", () => {
     const directory = changeMatter()
     writeLeanPlan(directory, [DOCUMENT, { title: "Supply agreement", purpose: "Full terms", parts: [{ heading: "Price", scope: "Price terms" }] }], undefined, undefined,
       { name: "cover memo", file: memoNotesFile([DOCUMENT], "cover memo") })
-    writeLeanText(directory, "d2/changes.json", JSON.stringify({ amendments: ["a1", "a4"].map(amendment), questions: [], shared_paragraphs: [],
+    writeLeanText(directory, "d2/changes.json", JSON.stringify({ amendments: ["a1", "a4"].map(amendment), questions: [],
       withheld: [{ amendment: amendment("w2"), issues: ["Quote not found."] }], explanations: [{ id: "i2", pid: PID, reason: "Initial revision.", sources: [] }] }))
     const pending = openItem("apply", "unapplied_amendment", "Amendment a9 was not applied.", { document: "d2", amendment_id: "a9" })
     const listed = ["a1", "a2", "a3", "w1", "i1", "a4", "w2", "i2"]
@@ -484,7 +484,7 @@ describe("without a requested memo", () => {
   test("delivery keeps a citation, a footnote marker, a locator's number and a quotation as written, and removes every other id", () => {
     const directory = memoMatter("none")
     writeLeanText(directory, "d1/changes.json", JSON.stringify({ amendments: [{ id: "a1", pid: PID, existing_sha256: "sha", updated: "The supplier shall deliver the goods promptly.", reason: "Drafting judgment.", sources: [] }],
-      questions: [], shared_paragraphs: [] }))
+      questions: [] }))
     const text = notes(`- Rule 3(d1), Section 3(1)(a1) and clause 12.1(d) apply[^a1]; the source says "d1 and a1 stand". [ref: ${GAP.id}]`,
       `- The supply note (d1) states the period (a1); the delivery paragraph (${PID}) is open. [ref: ${CONDITION.id}]`)
     expect(notesForReader(directory, text, [GAP, CONDITION])).toBe(notes(`- Rule 3(d1), Section 3(1)(a1) and clause 12.1(d) apply[^a1]; the source says "d1 and a1 stand".`,

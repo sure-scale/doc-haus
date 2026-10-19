@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { existsSync, readFileSync, rmSync } from "node:fs"
-import { PLAN_COVERAGE_REVISIONS, planIsCurrent, runDraftStage } from "./draft-sections"
+import { PLAN_COVERAGE_REVISIONS, runDraftStage } from "./draft-sections"
 import { readLeanEvents } from "./events"
-import { LEAN_COVERAGE_SCHEMA, coveragePlanHash, readLeanCoverage, type CoverageAct } from "./package-coverage"
+import { LEAN_COVERAGE_SCHEMA, coveragePlanHash, planCoverageCurrent, readLeanCoverage, type CoverageAct } from "./package-coverage"
 import { readLeanPlan, writeLeanPlan } from "./plan"
 import { LEAN_MAX_RETRIES, disclosableItems, outlineBasis } from "./stages"
 import { PACKAGE_SCOPE_QUESTION } from "./package-scope"
@@ -61,7 +61,7 @@ describe("plan coverage at the outline step", () => {
     expect(readLeanCoverage(directory)).toEqual({
       schema: LEAN_COVERAGE_SCHEMA, plan: coveragePlanHash(plan.documents, plan.acting_for), status: "covered", acts: [act], issues: [],
     })
-    expect(planIsCurrent(directory)).toBe(true)
+    expect(planCoverageCurrent(directory)).toBe(true)
     // The coverage job runs in a fresh child session of the run's owner.
     expect(coverageSessions(model)).toEqual([expect.objectContaining({ parentID: "ses_owner", title: expect.stringContaining("draft: coverage") })])
     expect(revisions(model)).toEqual([])
@@ -150,7 +150,7 @@ describe("plan coverage at the outline step", () => {
     expect(new Set([outline.sessionID, ...covered]).size).toBe(3)
     expect(readLeanPlan(directory)!.documents.map(row => row.title)).toEqual(["Committee resolution", "Release letter"])
     expect(readLeanCoverage(directory)).toMatchObject({ status: "covered", acts: [act], issues: [] })
-    expect(planIsCurrent(directory)).toBe(true)
+    expect(planCoverageCurrent(directory)).toBe(true)
   }, 60_000)
 
   test("a coverage reply that never passes its check is recorded as unchecked and the plan is still saved", async () => {
@@ -213,16 +213,16 @@ describe("plan coverage at the outline step", () => {
     const { directory } = prepared()
     const parts = [{ heading: "Terms", scope: "" }]
     const plan = writeLeanPlan(directory, [{ title: "Release letter", purpose: "", parts }], outlineBasis(directory))
-    expect(planIsCurrent(directory)).toBe(false)
+    expect(planCoverageCurrent(directory)).toBe(false)
     const record = { schema: LEAN_COVERAGE_SCHEMA, plan: coveragePlanHash(plan.documents, plan.acting_for), status: "covered", acts: [], issues: [] }
     writeLeanText(directory, "coverage.json", JSON.stringify(record))
-    expect(planIsCurrent(directory)).toBe(true)
+    expect(planCoverageCurrent(directory)).toBe(true)
     writeLeanText(directory, "coverage.json", JSON.stringify({ ...record, plan: "0".repeat(64) }))
-    expect(planIsCurrent(directory)).toBe(false)
+    expect(planCoverageCurrent(directory)).toBe(false)
     writeLeanText(directory, "coverage.json", "{")
     expect(readLeanCoverage(directory)).toBeUndefined()
     writeLeanPlan(directory, [{ title: "Release letter", purpose: "", parts }])
-    expect(planIsCurrent(directory)).toBe(true)
+    expect(planCoverageCurrent(directory)).toBe(true)
   })
 
   test("a plan whose basis is current but whose coverage record is stale is followed as it stands and only rechecked", async () => {
@@ -235,16 +235,17 @@ describe("plan coverage at the outline step", () => {
     expect(model.prompts.some(prompt => prompt.text.includes("Reply now with the outline only"))).toBe(false)
     expect(readFileSync(leanFile(directory, "plan.json"), "utf8")).toBe(saved)
     expect(readLeanCoverage(directory)).toMatchObject({ status: "covered", acts: [act] })
-    expect(planIsCurrent(directory)).toBe(true)
+    expect(planCoverageCurrent(directory)).toBe(true)
   }, 60_000)
 
   test("a refresh that keeps the existing draft creates no draft session, only the coverage session", async () => {
     const { directory, state } = prepared()
-    expect((await run(directory, state, scriptedModel({ [AGENT.draft]: outliner(TWO), [AGENT.coverage]: () => ACTS }))).status).toBe("done")
+    // The step records its accepted draft's key on its row, as the runner keeps it.
+    const progress = (patch: Partial<LeanStageState>) => { updateLeanStage(directory, readLeanState(directory)!, "d1.draft", patch) }
+    expect((await runDraftStage(directory, state, { sessions: scriptedModel({ [AGENT.draft]: outliner(TWO), [AGENT.coverage]: () => ACTS }).port }, progress, "d1", () => {})).status).toBe("done")
     rmSync(leanFile(directory, "coverage.json"))
     const model = scriptedModel({ [AGENT.draft]: outliner(TWO), [AGENT.coverage]: () => ACTS })
-    const progress = (patch: Partial<LeanStageState>) => { updateLeanStage(directory, readLeanState(directory)!, "d1.draft", patch) }
-    const kept = await runDraftStage(directory, state, { sessions: model.port }, progress, "d1", () => {}, true)
+    const kept = await runDraftStage(directory, readLeanState(directory)!, { sessions: model.port }, progress, "d1", () => {})
 
     expect(kept.status).toBe("done")
     expect(model.sessions.filter(session => session.agent === AGENT.draft)).toEqual([])
@@ -262,21 +263,31 @@ describe("plan coverage at the outline step", () => {
     expect(coverageSessions(model)).toHaveLength(1)
   }, 60_000)
 
-  for (const [name, at] of [["pause", 0], ["restart", 1]] as const)
-    test(`a ${name} thrown from coverage job ${at + 1} propagates and leaves coverage.json and plan.json as they were`, async () => {
-      const { directory, state } = prepared()
-      await run(directory, state, scriptedModel({ [AGENT.draft]: outliner(TWO), [AGENT.coverage]: () => ACTS }))
-      // A changed request makes the saved plan stale, so the step outlines again.
-      writeLeanText(directory, "request.md", `${REQUEST} The release letter is short.`)
-      const before = ["coverage.json", "plan.json"].map(file => readFileSync(leanFile(directory, file), "utf8"))
-      const stop = new Error(`${name} requested`)
-      const model = scriptedModel({
-        [AGENT.draft]: outliner(ONE, TWO),
-        [AGENT.coverage]: (_, index) => { if (index === at) throw stop; return ACTS },
-      })
-      await expect(run(directory, state, model)).rejects.toBe(stop)
-      expect(["coverage.json", "plan.json"].map(file => readFileSync(leanFile(directory, file), "utf8"))).toEqual(before)
-    }, 60_000)
+  test("a pause thrown from a recheck's coverage job propagates and leaves coverage.json and plan.json as they were", async () => {
+    const { directory, state } = prepared()
+    await run(directory, state, scriptedModel({ [AGENT.draft]: outliner(TWO), [AGENT.coverage]: () => ACTS }))
+    // A stale coverage record makes the step recheck the saved plan.
+    writeLeanText(directory, "coverage.json", JSON.stringify({ ...readLeanCoverage(directory), plan: "0".repeat(64) }))
+    const before = ["coverage.json", "plan.json"].map(file => readFileSync(leanFile(directory, file), "utf8"))
+    const stop = new Error("pause requested")
+    const model = scriptedModel({ [AGENT.draft]: outliner(TWO), [AGENT.coverage]: () => { throw stop } })
+    await expect(run(directory, state, model)).rejects.toBe(stop)
+    expect(coverageSessions(model)).toHaveLength(1)
+    expect(["coverage.json", "plan.json"].map(file => readFileSync(leanFile(directory, file), "utf8"))).toEqual(before)
+  }, 60_000)
+
+  test("a restart thrown from the coverage job after a revision propagates and writes neither file", async () => {
+    const { directory, state } = prepared()
+    const stop = new Error("restart requested")
+    const model = scriptedModel({
+      [AGENT.draft]: outliner(ONE, TWO),
+      [AGENT.coverage]: (_, index) => { if (index === 1) throw stop; return ACTS },
+    })
+    await expect(run(directory, state, model)).rejects.toBe(stop)
+    expect(revisions(model)).toHaveLength(1)
+    expect(existsSync(leanFile(directory, "coverage.json"))).toBe(false)
+    expect(existsSync(leanFile(directory, "plan.json"))).toBe(false)
+  }, 60_000)
 
   test("a pause before any plan exists writes neither file", async () => {
     const { directory, state } = prepared()

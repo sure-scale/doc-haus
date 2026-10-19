@@ -119,7 +119,7 @@ describe("whom the lawyer acts for", () => {
     expect(namedIn("Wren Atelier Co. shall pay.", "the Company")).toBe(false)
   })
 
-  test("a hand-written plan without the slot is not stated, and the lawyer's edit of it re-keys every model step", async () => {
+  test("a hand-written plan without the slot is not stated, and the lawyer's edit of it re-keys every model step but the accepted draft", async () => {
     const directory = matter()
     expect((await runLean(directory, { sessions: scriptedModel(happyPath).port })).status).toBe("completed")
     const plan = readLeanPlan(directory)!
@@ -134,9 +134,11 @@ describe("whom the lawyer acts for", () => {
     writeLeanText(directory, "plan.json", `${JSON.stringify({ ...readLeanPlan(directory)!, acting_for: { party: "the buyer", stated: true } }, null, 2)}\n`)
     expect(planActingFor(directory)).toEqual({ party: "the buyer", stated: true })
     expect(stagePrompt(directory, "d1.review")).toContain(SIDED_REVIEW)
-    // Apply keys on the whole plan.json (it measures template coverage from the
-    // plan), so it re-keys too; it makes no model call.
-    expect(keys().map((key, index) => key !== before[index])).toEqual([true, true, true, true, true, false])
+    // The accepted draft is keyed on the outline contract and its own plan entry, not
+    // on whom the lawyer acts for. Apply keys on
+    // the whole plan.json (it measures template coverage from the plan), so it
+    // re-keys too; it makes no model call.
+    expect(keys().map((key, index) => key !== before[index])).toEqual([false, true, true, true, true, false])
   }, 120_000)
 })
 

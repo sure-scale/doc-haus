@@ -58,14 +58,17 @@ test("a memo-only round preserves completed upstream stages and draft, but repai
   expect(after.stages["d2.change-plan"]?.input_sha).not.toBe(before.stages["d2.change-plan"]?.input_sha)
 
   // A real subsequent upstream correction replaces, rather than unions, its
-  // retired input and propagates its changed final text to the memo draft.
+  // retired input and propagates its changed final text to the memo's change plan.
   const upstreamKey = stageInputSha(directory, "d1.change-plan")
+  const memoKey = stageInputSha(directory, "d2.change-plan")
   startRepairRound(directory, [finding(directory, "d1", "Add the supplied payment timing to delivery.")], true)
   expect(documentRepairs(directory, "d1")?.items.map(row => row.detail)).toEqual(["Add the supplied payment timing to delivery."])
   expect(readRepairRound(directory)?.document_contexts?.d1).toBeUndefined()
   expect(stageInputSha(directory, "d1.change-plan")).not.toBe(upstreamKey)
   expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
-  expect(stageInputSha(directory, "d2.draft")).not.toBe(memoDraft)
+  // The changed final text reaches the memo through its change plan; its accepted draft is kept.
+  expect(stageInputSha(directory, "d2.change-plan")).not.toBe(memoKey)
+  expect(stageInputSha(directory, "d2.draft")).toBe(memoDraft)
 }, 120_000)
 
 test("retained repair conditions expire on changed source or answered instructions", async () => {

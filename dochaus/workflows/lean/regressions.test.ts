@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { readFileSync, writeFileSync } from "node:fs"
+import { checkChanges } from "./change-checks"
 import { readChangeList, readParagraphs, settleApply } from "./checks"
 import { finalGate, type GateResult } from "./gate"
 import { enqueueLeanRequest } from "./requests"
@@ -17,21 +18,23 @@ import { AGENT, DRAFT, SOURCE, SUPPORT, changes, cleanupMatters, drafter, happyP
 
 afterEach(cleanupMatters)
 
-// Existing saved change lists can contain overlapping paragraph proposals.
-// Exercise their legacy apply/notes boundary directly: new runLean batches must
-// first consolidate replacements, so they cannot reach these merge outcomes.
+// A change list applied without review can hold overlapping paragraph
+// proposals. Exercise that apply/notes boundary directly: runLean batches
+// consolidate replacements before change-review, so they never reach it.
 async function applyLegacyList(directory: string, model: ReturnType<typeof scriptedModel>, draft = DRAFT) {
   const plan = parsePlan(`Acting for: not stated\n${draft}`)
   expect(plan.issues).toEqual([])
   writeLeanPlan(directory, plan.value!.documents)
   const rendered = await acceptStageReply(directory, "d1.draft", draft)
   expect(rendered.issues).toEqual([])
-  const changes = await acceptStageReply(directory, "d1.changes", await model.port.prompt({
+  // Written directly: the changes step refuses two amendments to one paragraph.
+  const changes = checkChanges(directory, await model.port.prompt({
     directory, sessionID: "ses_legacy_changes", agent: AGENT.changes, text: stagePrompt(directory, "d1.changes"),
-  }))
+  }), readParagraphs(directory, "d1"), { document: "d1" })
   expect(changes.issues).toEqual([])
+  writeLeanText(directory, "d1/changes.json", `${JSON.stringify(changes.changes, null, 2)}\n`)
   replaceStageOpenItems(directory, "changes", "d1", changes.openItems)
-  const applied = await runApply(directory, readLeanState(directory)!, { sessions: model.port }, "d1")
+  const applied = await runApply(directory, readLeanState(directory)!, "d1")
   expect(applied.status).toBe("done")
   if (applied.status !== "done") throw new Error(applied.reason)
   replaceStageOpenItems(directory, "apply", "d1", applied.openItems)
@@ -58,13 +61,9 @@ const gateOf = (directory: string) => readLeanJson(directory, "gate.json") as Ga
 const quiet = { [AGENT.review]: () => "No corrections are needed.", [AGENT.changes]: noChanges }
 
 describe("applier outcomes are visible open items", () => {
-  test("conflicting edits to one paragraph: the merger keeps the first, the second is unapplied with the applier's detail and disclosed", async () => {
+  test("conflicting edits to one paragraph: apply keeps the first, the second is unapplied with the applier's detail and disclosed", async () => {
     const directory = matter()
-    const model = scriptedModel({
-      ...happyPath,
-      [AGENT.changes]: twoEdits("The supplier shall deliver the goods within ten days."),
-      [AGENT.merge]: prompt => `<paragraph>${/<current>(.*)<\/current>/.exec(prompt)![1]}</paragraph>`,
-    })
+    const model = scriptedModel({ ...happyPath, [AGENT.changes]: twoEdits("The supplier shall deliver the goods within ten days.") })
     const state = await applyLegacyList(directory, model)
 
     expect(readLeanJson(directory, "d1/apply.json")).toMatchObject({ applied: [{ id: "a1" }], unapplied: [{ id: "a2" }] })
@@ -76,11 +75,11 @@ describe("applier outcomes are visible open items", () => {
     expect(gateOf(directory)).toMatchObject({ status: "pass", delivery: "review_draft", disclosed: [expect.objectContaining({ id: item.id })] })
   }, 120_000)
 
-  test("an unusable merge leaves the edit unapplied; drafting notes that stop naming it block the gate", async () => {
+  test("an overlapping edit is left unapplied; drafting notes that stop naming it block the gate", async () => {
     const directory = matter()
-    const model = scriptedModel({ ...happyPath, [AGENT.changes]: twoEdits("The supplier shall promptly deliver the goods."), [AGENT.merge]: () => "line one\nline two" })
+    const model = scriptedModel({ ...happyPath, [AGENT.changes]: twoEdits("The supplier shall promptly deliver the goods.") })
     expect((await applyLegacyList(directory, model)).status).toBe("done")
-    expect(readLeanJson(directory, "d1/apply.json")).toMatchObject({ unapplied: [{ id: "a2", reason: "merge_failed" }] })
+    expect(readLeanJson(directory, "d1/apply.json")).toMatchObject({ unapplied: [{ id: "a2", reason: "stale" }] })
     expect(gateOf(directory)).toMatchObject({ status: "pass", delivery: "review_draft" })
 
     writeFileSync(leanFile(directory, "drafting-notes.md"), "# Drafting notes\n\nNothing to report.\n")
@@ -289,7 +288,8 @@ describe("questions for the lawyer", () => {
     enqueueLeanRequest(directory, { kind: "answer", question_id: question!.id, answer: "No remedy." })
     const answered = scriptedModel({ ...happyPath, [AGENT.changes]: asking("Is a remedy for late delivery wanted?", true) })
     const state = await runLean(directory, { sessions: answered.port })
-    expect(answered.counts()).toEqual([3, 1, 1, 1])
+    // The answer reaches the accepted draft through its review and changes; no redraft.
+    expect(answered.counts()).toEqual([0, 1, 1, 1])
     expect(state.status).toBe("completed")
     expect(readQuestions(directory)).toEqual([expect.objectContaining({ id: question!.id, status: "answered", answer: "No remedy." })])
     expect(gateOf(directory)).toMatchObject({ status: "pass", delivery: "execution_ready" })

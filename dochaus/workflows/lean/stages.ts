@@ -29,7 +29,8 @@ import {
   type ParagraphRow,
   type StageCheck,
 } from "./checks"
-import { reviewStages, FIRST_DOCUMENT, planActingFor, operativeDocument, operativePlan, plannedDocument, readLeanPlan, stepDocument, stepStage, type StepID } from "./plan"
+import { reviewStages, FIRST_DOCUMENT, planActingFor, operativeDocument, operativePlan, plannedDocument, readLeanPlan, stepDocument, stepStage, type PlannedDocument, type StepID } from "./plan"
+import { templateSource } from "./template-contract"
 import { completedDocumentsText, packageCompositionBlock } from "./prompts"
 import { matterSourceBasis, matterSourceIDs, openItem } from "./quotes"
 import { documentRepairs, readRepairRound } from "./repairs"
@@ -90,7 +91,6 @@ export const LEAN_STAGE_AGENTS = {
   "change-prepare": "lean-change-prepare",
   "change-review": "lean-change-review",
   changes: "lean-changes",
-  merge: "lean-merge",
   finalize: "lean-drafting-notes",
   // A job of the outline, not a stage: it checks the planned package against the instructions.
   coverage: "lean-coverage",
@@ -187,20 +187,21 @@ export function stepOutputs(step: StepID): string[] {
 const DISCLOSED_STAGES: StageID[] = ["research", "research-review", "change-plan", "change-prepare", "changes", "apply"]
 
 /** Named inputs of each step: everything its prompt or code step reads. Their
- * content hash is the step's resume key and nothing more. Answers are inputs of
- * every step, including the outline: an answer can change the basis of earlier
- * drafting and review, so those steps must be revisited before applying changes.
- * Every draft is keyed on its own plan entry, so a lawyer's edit of the plan
- * redrafts the documents whose entry changed, whatever their position.
- * An earlier document's final text and accepted explanations are keyed into
- * every later stage that consumes them, including drafting; changing either
- * revisits that dependent work. The changes step's own previous output and open questions
- * are shown to it but are not inputs, so its output never changes its own key.
- * Whom the lawyer acts for is an input of every model step (finalize reads it
- * through plan.json), so a lawyer's edit of it redrafts and re-reviews. The
- * planned documents' ids, titles and purposes are inputs of review and changes,
- * which are scoped by them; an edit of a document's parts re-keys neither. */
+ * content hash is the step's resume key and nothing more. A document's accepted
+ * draft (its body.docx and paragraphs.json) is final for the run, so a draft
+ * step is keyed only on the outline contract and what it reads of its own plan
+ * entry (draftedEntry): a lawyer's edit of that entry, or a renumbered plan that
+ * gives its id to another document, drafts it again. Answers, updates,
+ * research, an earlier document's final text and accepted explanations, and
+ * whom the lawyer acts for reach a drafted document as amendments through its
+ * review and change-plan keys. Answers are inputs of every other step. The
+ * changes step's own previous output
+ * and open questions are shown to it but are not inputs, so its output never
+ * changes its own key. The planned documents' ids, titles and purposes are
+ * inputs of review and changes, which are scoped by them; an edit of a
+ * document's parts re-keys neither. */
 export function stageInputs(directory: string, step: StepID, options: { repairContext?: false; researchGaps?: false } = {}): { name: string; bytes: string | Uint8Array }[] {
+  if (stepStage(step) === "draft") return [{ name: "outline-contract", bytes: OUTLINE_CONTRACT }, { name: "plan-entry", bytes: JSON.stringify(draftedEntry(plannedDocument(directory, stepDocument(step) ?? FIRST_DOCUMENT))) }]
   const updates = readLeanText(directory, "updated-notes.md")
   const clarifications = leanClarifications(directory)
   const inputs = baseStageInputs(directory, step, options)
@@ -276,7 +277,6 @@ function baseStageInputs(directory: string, step: StepID, options: { repairConte
   const composed = composition ? [{ name: "package-composition", bytes: composition }] : []
   const stage = stepStage(step)
   const repairs = options.repairContext === false || !["change-plan", "change-prepare", "changes", "change-review"].includes(stage) ? undefined : documentRepairs(directory, document)
-  if (stage === "draft") return [{ name: "outline-contract", bytes: OUTLINE_CONTRACT }, ...outlineInputs(directory), { name: "plan-entry", bytes: JSON.stringify(operativeDocument(plannedDocument(directory, document))) }, acting, ...composed, ...(planned.indexOf(document) > 0 ? [finished] : [])]
   if (isReviewStage(stage)) return [{ name: "playbook-selection", bytes: JSON.stringify(plannedDocument(directory, document)?.playbook_review ?? null) }, file("request.md"), at("paragraphs.json"), sources, finished, acting, scope, ...composed]
   if (stage === "change-prepare") return [file("request.md"), entry, at("paragraphs.json"), at("change-plan.json"), answers, sources, finished, acting, scope, ...composed, { name: "repairs", bytes: JSON.stringify(repairs ?? null) }]
   if (stage === "change-review") return [...(repairs?.items.every(item => item.stage === "checklist-check") ? [{ name: "focused-review-contract", bytes: "prepared-dependency-component-review-2-proposed-body" }] : []), { name: "review-contract", bytes: "phase-aware-owned-body-review-2" }, file("request.md"), entry, at("paragraphs.json"), at("changes.json"), at("change-plan.json"), at("change-preparation.json"), ...reviewStages(directory, document).map(stage => at(`${stage}.md`)), answers, sources, finished, acting, scope, ...composed, { name: "questions", bytes: keyedQuestions(directory) }, { name: "repairs", bytes: JSON.stringify(repairs ?? null) }]
@@ -289,17 +289,11 @@ function baseStageInputs(directory: string, step: StepID, options: { repairConte
   return [at("body.docx"), at("changes.json"), at("change-review.json"), { name: "operative-plan", bytes: JSON.stringify(operativePlan(readLeanPlan(directory))) }, sources, { name: "comparison-original", bytes: comparisonBasis(directory, document) }]
 }
 
-/** Hash of what the outline is built from: the request and the matter's sources. */
+/** Hash of what the outline is built from: the request and the matter's
+ * sources. A saved plan records it as its basis, which marks an outlined plan
+ * and ties the requested-files record to it; once saved, the plan is followed. */
 export function outlineBasis(directory: string) {
   return hashStageInputs(`${FIRST_DOCUMENT}.draft`, LEAN_PROMPT_VERSION, [{ name: "outline-contract", bytes: OUTLINE_CONTRACT }, ...outlineInputs(directory), ...["research.json", "research-review.json"].map(name => ({ name, bytes: readLeanText(directory, name) ?? "" }))])
-}
-
-/** A saved plan is followed unless it records a different outline basis. A plan
- * that records none was written by hand and is followed as it is. Whether its
- * coverage check is current too is planCoverageCurrent (package-coverage.ts). */
-export function planBasisCurrent(directory: string) {
-  const plan = readLeanPlan(directory)
-  return Boolean(plan) && (plan?.basis === undefined || plan.basis === outlineBasis(directory))
 }
 
 function outlineInputs(directory: string) {
@@ -353,7 +347,7 @@ export async function acceptStageReply(directory: string, step: StepID, reply: s
   }
   if (stage === "changes") {
     const check = checkChanges(directory, reply, readParagraphs(directory, document), { withholdUnverified: options.final, document })
-    const issues = [...check.issues, ...(check.changes && readLeanText(directory, `${document}/change-plan.json`) ? uniqueReplacementIssues(check.changes) : [])]
+    const issues = [...check.issues, ...(check.changes ? uniqueReplacementIssues(check.changes) : [])]
     if (issues.length || !check.changes) return { issues, openItems: [], outputs: [] }
     writeLeanText(directory, `${document}/changes.json`, `${JSON.stringify(check.changes, null, 2)}\n`)
     return { issues: [], openItems: check.openItems, outputs: stepOutputs(step), questions: check.changes.questions }
@@ -381,11 +375,19 @@ export async function paragraphRows(docxPath: string): Promise<ParagraphRow[]> {
   return Object.entries(await ensureParagraphPointers(docxPath)).map(([pid, text]) => ({ pid, sha256: paragraphSha256(text), text }))
 }
 
-/** A draft step's saved document is planned, passes the draft check and has its paragraphs. */
+/** A draft step's accepted document: planned, with its Word body and its paragraphs. */
+/** What a document's draft prompt and code read of its plan entry: its title,
+ * purpose and parts, its mode, the template it is drawn from and the template
+ * parts it leaves out. Its file and deliverable (which package review rewrites),
+ * executing parties and guidance selection are not read by the draft. */
+function draftedEntry(entry: PlannedDocument | undefined) {
+  if (!entry) return null
+  return { title: entry.title, purpose: entry.purpose, parts: entry.parts, mode: entry.mode, template: templateSource(entry), left_out: entry.left_out }
+}
+
 export function draftOutputValid(directory: string, step: StepID) {
   const document = stepDocument(step) ?? FIRST_DOCUMENT
-  return stepOutputs(step).every(name => OPTIONAL_OUTPUTS.includes(name) || existsSync(leanFile(directory, name))) && Boolean(plannedDocument(directory, document)) &&
-    !checkDraft(directory, readLeanText(directory, `${document}/draft.md`) ?? "").issues.length && readParagraphs(directory, document).length > 0
+  return Boolean(plannedDocument(directory, document)) && existsSync(leanFile(directory, `${document}/body.docx`)) && readParagraphs(directory, document).length > 0
 }
 
 /** Pure re-check of a completed step's saved output, used before skipping it on
@@ -395,23 +397,22 @@ export function stageOutputValid(directory: string, step: StepID) {
   if (step === "package-review") return Boolean(readPackageReview(directory))
   if (step === "discrepancy" || step === "spine") return evidenceOutputValid(directory, step)
   if (step === "intake" || step === "research" || step === "research-review") return researchOutputValid(directory, step)
-  if (!stepOutputs(step).every(name => OPTIONAL_OUTPUTS.includes(name) || existsSync(leanFile(directory, name)))) return false
-  const text = (name: string) => readLeanText(directory, name) ?? ""
   const stage = stepStage(step)
   const document = stepDocument(step) ?? FIRST_DOCUMENT
+  // The first document's draft step also settles the plan's coverage: a missing,
+  // unreadable or earlier plan's record re-runs it, which checks the saved plan
+  // again and keeps the accepted draft (draftOutputValid).
+  if (stage === "draft") return draftOutputValid(directory, step) && (document !== FIRST_DOCUMENT || planCoverageCurrent(directory))
+  if (!stepOutputs(step).every(name => OPTIONAL_OUTPUTS.includes(name) || existsSync(leanFile(directory, name)))) return false
+  const text = (name: string) => readLeanText(directory, name) ?? ""
   if (stage === "change-plan") return Boolean(readChangePlan(directory, document))
   if (stage === "change-prepare") return preparationOutputValid(directory, document)
   if (stage === "change-review") return Boolean(readChangeReview(directory, document))
-  // The first document's draft step also settles the plan's coverage: a missing,
-  // unreadable or earlier plan's record re-runs it, which checks the saved plan
-  // again and keeps a draft already done from the same inputs (draftOutputValid).
-  if (stage === "draft") return draftOutputValid(directory, step) && (document !== FIRST_DOCUMENT || planCoverageCurrent(directory))
   if (isReviewStage(stage)) return !checkReview(directory, text(`${document}/${stage}.md`), readParagraphs(directory, document)).issues.length
   if (stage === "changes") {
     const pids = new Set(readParagraphs(directory, document).map(row => row.pid))
     const list = readChangeList(directory, document)
     if (!list?.amendments.every(amendment => pids.has(amendment.pid))) return false
-    if (!readLeanText(directory, `${document}/change-plan.json`)) return true
     return !uniqueReplacementIssues(list).length && !checkChanges(directory, text(`${document}/changes.json`), readParagraphs(directory, document), { document }).issues.length
   }
   // Saved notes are judged as a last attempt judges them: an internal id in

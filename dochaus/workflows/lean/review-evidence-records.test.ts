@@ -10,7 +10,7 @@ afterEach(cleanupMatters)
 
 const passage = [{ source_id: "instructions.txt", quote: "Keep the register digitally." }]
 const paragraph = (pid: string, text: string): ParagraphRow => ({ pid, text, sha256: `hash-${pid}` })
-const changes = (amendments: Amendment[] = [], explanations: ChangeExplanation[] = []): ChangeList => ({ amendments, explanations, questions: [], shared_paragraphs: [] })
+const changes = (amendments: Amendment[] = [], explanations: ChangeExplanation[] = []): ChangeList => ({ amendments, explanations, questions: [] })
 
 test("record evidence uses reconciled current wording and document order for replacements and splits", () => {
   const list = changes([
@@ -18,13 +18,13 @@ test("record evidence uses reconciled current wording and document order for rep
     { id: "split", pid: "p2", existing_sha256: "before", operation: "split", updated: ["Proposed first.", "Proposed second."], reason: "Separate the duties.", sources: passage },
   ])
   const apply: ApplyResult = { applied: [
-    { id: "replace", pid: "p1", mode: "merged" },
+    { id: "replace", pid: "p1", mode: "code" },
     { id: "split", pid: "p2", mode: "code", result_pids: ["p2b", "p2"] },
   ], unapplied: [] }
   const current = [paragraph("other", "Unchanged."), paragraph("p1", "Reconciled replacement."), paragraph("p2", "Reconciled first."), paragraph("p2b", "Reconciled second.")]
   const before = structuredClone({ list, apply, current })
   const evidence = appliedChangeEvidenceFromRecords(list, apply, current, [])
-  expect(evidence[0]).toMatchObject({ operation: "replace", application_mode: "merged", result_paragraphs: [{ pid: "p1", text: "Reconciled replacement." }] })
+  expect(evidence[0]).toMatchObject({ operation: "replace", application_mode: "code", result_paragraphs: [{ pid: "p1", text: "Reconciled replacement." }] })
   expect(evidence[1]).toMatchObject({ operation: "split", application_mode: "code", result_paragraphs: [
     { pid: "p2", text: "Reconciled first." }, { pid: "p2b", text: "Reconciled second." },
   ] })
@@ -41,7 +41,7 @@ test("deletion evidence retains initial text separately from later reconciled re
   ])
   const apply: ApplyResult = { applied: [
     { id: "delete", pid: "p1", mode: "code", result_pids: [] },
-    { id: "retained", pid: "p2", mode: "merged", result_pids: ["p2"] },
+    { id: "retained", pid: "p2", mode: "code", result_pids: ["p2"] },
     { id: "missing-original", pid: "p3", mode: "code", result_pids: [] },
   ], unapplied: [] }
   const evidence = appliedChangeEvidenceFromRecords(list, apply, [paragraph("p2", "Later reconciliation retained this wording.")], [paragraph("p1", "Original deleted instruction."), paragraph("p2", "Original retained instruction.")])
@@ -60,21 +60,21 @@ test("an explicit empty result list never falls back to the original paragraph i
 test("source support stays distinct from application mode and native comment status", () => {
   const list = changes([
     { id: "code", pid: "p1", existing_sha256: "before", updated: "Code result.", reason: "Supported change.", sources: passage },
-    { id: "merged", pid: "p2", existing_sha256: "before", updated: "Merged proposal.", reason: "Another supported change.", sources: passage },
+    { id: "differs", pid: "p2", existing_sha256: "before", updated: "Differing proposal.", reason: "Another supported change.", sources: passage },
     { id: "already", pid: "p3", existing_sha256: "before", updated: "Existing result.", reason: "Unsupported change.", sources: [] },
   ])
   const attached = { id: "already", comment_id: "c1", paragraph_index: 2, paragraph_text: "Existing result.", text: "An attached explanation does not supply a source." }
-  const unresolved = { id: "merged", reason: "Final wording differs from the proposal.", text: "Proposed explanation." }
+  const unresolved = { id: "differs", reason: "Final wording differs from the proposal.", text: "Proposed explanation." }
   const apply: ApplyResult = { applied: [
     { id: "code", pid: "p1", mode: "code" },
-    { id: "merged", pid: "p2", mode: "merged" },
+    { id: "differs", pid: "p2", mode: "code" },
     { id: "already", pid: "p3", mode: "already_applied" },
     { id: "absent", pid: "p4", mode: "code" },
   ], unapplied: [{ id: "not-applied", pid: "p5", reason: "stale" }], comments: {
     author: "Doc.Haus", attached: [attached], unresolved: [unresolved, { id: "already", reason: "Earlier unresolved record.", text: "Earlier explanation." }],
   } }
   const evidence = appliedChangeEvidenceFromRecords(list, apply, [], [])
-  expect(evidence.map(row => row.application_mode)).toEqual(["code", "merged", "already_applied", "code"])
+  expect(evidence.map(row => row.application_mode)).toEqual(["code", "code", "already_applied", "code"])
   expect(evidence.map(row => row.evidence_basis)).toEqual(["source-passages-provided", "source-passages-provided", "no-source-passage", "amendment-unavailable"])
   expect(evidence[0].native_comment).toEqual({ status: "unavailable" })
   expect(evidence[1].native_comment).toEqual({ status: "unresolved", ...unresolved })

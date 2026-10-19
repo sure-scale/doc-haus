@@ -44,21 +44,26 @@ test("unchanged, equivalent defaults and operational-only saves skip accepted st
   }
 }, 120_000)
 
-test("house style and posture changes revisit completed model work and code outputs", async () => {
+test("house style and posture changes revisit completed model work but the accepted draft, and code outputs", async () => {
   const directory = matter()
   let prior = await runLean(directory, { sessions: scriptedModel(happyPath).port })
   expect(prior.status).toBe("completed")
   for (const preferences of [{ houseStyle: "Use active voice." }, { houseStyle: "Use active voice.", posture: "client-favorable" }]) {
     const keys = new Map(leanSteps(directory).map(step => [step, stageInputSha(directory, step)]))
     save(preferences)
-    for (const step of leanSteps(directory)) expect(stageInputSha(directory, step)).not.toBe(keys.get(step)!)
+    // The accepted draft is keyed on the outline contract and its own plan entry; the change reaches it through its review.
+    for (const step of leanSteps(directory)) {
+      if (step.endsWith(".draft")) expect(stageInputSha(directory, step)).toBe(keys.get(step)!)
+      else expect(stageInputSha(directory, step)).not.toBe(keys.get(step)!)
+    }
     const revised = scriptedModel(happyPath)
     const state = await runLean(directory, { sessions: revised.port })
     expect(state.status).toBe("completed")
     for (const agent of [AGENT.discrepancy, AGENT.intake, AGENT.research, AGENT["research-review"], AGENT.spine,
-      AGENT.draft, AGENT.review, AGENT["review-independent"], AGENT["review-wording"], AGENT["review-client-disadvantage"],
+      AGENT.review, AGENT["review-independent"], AGENT["review-wording"], AGENT["review-client-disadvantage"],
       AGENT["change-plan"], AGENT.changes, AGENT["change-review"], AGENT.finalize, AGENT["package-review"]])
       expect(revised.prompts.map(row => row.agent)).toContain(agent)
+    expect(revised.count(AGENT.draft)).toBe(0)
     expect(state.stages["d1.apply"]?.input_sha).not.toBe(prior.stages["d1.apply"]?.input_sha)
     expect(state.stages.finalize?.input_sha).not.toBe(prior.stages.finalize?.input_sha)
     prior = state

@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { mergeParts, sectionPrompt } from "./draft-sections"
+import { sectionPrompt } from "./draft-sections"
 import { parsePlan } from "./plan"
 import { documentTemplate, expectedWords, outlineCoverageIssues, partCarries, templateContract } from "./template-contract"
-import { contractGaps, draftBody, rowsBody } from "./template-coverage"
+import { contractGaps, rowsBody } from "./template-coverage"
 import { parseTemplateUnits, sourceText } from "./template-structure"
 import { PARTS, PLAIN_TEXT, TEMPLATE, TEMPLATE_TEXT, TITLE, bodyOf, contractOf, heading, insertChunks, templateMatter } from "./template-test-support"
 import { cleanupMatters, matter } from "./test-support"
@@ -242,55 +242,17 @@ describe("template coverage", () => {
     expect(gaps(rows(sections.filter(block => block[0] !== "2. Delivery")))).toEqual([["2 Delivery", "missing"]])
   })
 
-  test("revised parts revise the part they read as in place under its own heading; a left-out template part is added after the part before it", () => {
+  test("a part drafted in a small share of its template words is thin, also where one outlined part carries two template parts", () => {
     const built = contractOf(TEMPLATE_TEXT, OUTLINE)
-    const outline = built.documents[0]!
-    const drafted = [PARTS.scope, PARTS.charges, PARTS.credits, PARTS.duration, PARTS.annexA].map((text, part) => ({ part, text }))
-    const revised = `## Charges\n\n${PARTS.charges.split("\n\n")[1]} Invoices are sent monthly.`
-    const merged = mergeParts(`${revised}\n\n${PARTS.annexB}`, outline, drafted, built.contract, new Set([6]))
-    expect(merged.issues).toEqual([])
-    expect(merged.value!.map(part => [part.part, heading(part.text)])).toEqual([
-      [0, "## 1. Scope of Work"], [1, "## 2. Charges"], [2, "## 3. Service Credits"], [3, "## 4. Duration"], [4, "## Annex A – Help Desk Services"],
-      [undefined, "## Annex B – Charging Schedule"],
-    ])
-    const short = contractOf(TEMPLATE_TEXT, [TITLE, ...[PARTS.scope, PARTS.charges, PARTS.duration, PARTS.annexA, PARTS.annexB].map(heading)].join("\n"))
-    const parts = [PARTS.scope, PARTS.charges, PARTS.duration, PARTS.annexA, PARTS.annexB].map((text, part) => ({ part, text }))
-    expect(mergeParts(PARTS.credits, short.documents[0]!, parts, short.contract, new Set([3])).value!.map(part => heading(part.text)))
-      .toEqual([PARTS.scope, PARTS.charges, PARTS.credits, PARTS.duration, PARTS.annexA, PARTS.annexB].map(heading))
-    expect(mergeParts("## Notices\n\nNotices are given in writing.", outline, drafted, built.contract, new Set([6])).issues)
-      .toEqual(['The part "Notices" is neither a part of the outline nor a template part the draft leaves out. Begin each revised part with its exact "## " heading from the outline, or head a new part with the template part it carries.'])
-    expect(mergeParts("## 3. Service Credits\n\nCredits apply.", outline, drafted, built.contract, new Set([6])).issues)
-      .toEqual(['The revised part "3. Service Credits" is much shorter than before. Reply with its complete text, keeping what it already carries.'])
-  })
-
-  test("a reworded heading for a part the draft falls short on revises that part rather than adding the clause twice", () => {
-    const built = contractOf(TEMPLATE_TEXT, OUTLINE)
-    const drafted = [PARTS.scope, PARTS.charges, "## 3. Service Credits\n\nCredits apply as agreed.", PARTS.duration, PARTS.annexA, PARTS.annexB]
-      .map((text, part) => ({ part, text }))
-    const gaps = contractGaps(built.contract, draftBody(drafted))
-    expect(gaps.map(gap => [gap.unit.label, gap.gap])).toEqual([["3 Service Credits", "thin"]])
-    const merged = mergeParts(`## 3. Service Credits and Remedies\n\n${PARTS.credits.split("\n\n")[1]}`, built.documents[0]!, drafted, built.contract,
-      new Set(gaps.map(gap => gap.unit.index)))
-    expect(merged.value!.map(part => [part.part, heading(part.text)])).toEqual(drafted.map(part => [part.part, heading(part.text)]))
-    expect(merged.value![2]!.text).toBe(`## 3. Service Credits\n\n${PARTS.credits.split("\n\n")[1]}`)
-    expect(contractGaps(built.contract, draftBody(merged.value!))).toEqual([])
-  })
-
-  test("a reply heading only some of what a part's heading names is an issue, and the part keeps its text", () => {
+    expect(gapsOf(built, PARTS.scope, PARTS.charges, "## 3. Service Credits\n\nCredits apply as agreed.", PARTS.duration, PARTS.annexA, PARTS.annexB))
+      .toEqual([["3 Service Credits", "thin"]])
     const hire = ["EQUIPMENT HIRE AGREEMENT",
       "1. Equipment\nThe owner hires to the hirer the items of equipment described in the order, each in working condition and fit for its normal purpose, together with any manuals, keys and accessories supplied with it. The hirer takes the equipment as described and may not substitute other items without consent.",
       "2. Hire Charges\nThe hirer pays the weekly hire charge set out in the order, invoiced in advance at the start of each week, with any part week charged pro rata at the daily rate. Charges exclude sales taxes, which the hirer pays in addition at the rate in force, and are payable in full without set off.",
       "3. Late Payment\nIf the hirer does not pay an invoice when it falls due, the owner may charge interest on the unpaid amount at the agreed rate from the due date until payment, may suspend further deliveries until the account is paid, and may recover its reasonable costs of collecting the debt.",
     ]
-    const built = contractOf(hire.join("\n\n"), ["# Equipment hire agreement", "## 1. Equipment", "## 2. Hire Charges and Late Payment"].join("\n"), "hire.docx")
-    const drafted = [`## 1. Equipment\n\n${hire[1]!.split("\n")[1]}`, "## 2. Hire Charges and Late Payment\n\nThe hirer pays the weekly charge. Unpaid invoices carry interest at the agreed rate."]
-      .map((text, part) => ({ part, text }))
-    const gaps = contractGaps(built.contract, draftBody(drafted))
-    expect(gaps.map(gap => [gap.unit.label, gap.gap])).toEqual([["2 Hire Charges", "thin"], ["3 Late Payment", "thin"]])
-    const merged = mergeParts(`## 2. Hire Charges\n\n${hire[2]!.split("\n")[1]}`, built.documents[0]!, drafted, built.contract, new Set(gaps.map(gap => gap.unit.index)))
-    expect(merged).toEqual({ issues: [
-      'The part "2. Hire Charges" covers only some of the part "2. Hire Charges and Late Payment". ' +
-      'Reply with that part under its exact "## " heading from the outline and its complete text, keeping what it already carries.',
-    ] })
+    const combined = contractOf(hire.join("\n\n"), ["# Equipment hire agreement", "## 1. Equipment", "## 2. Hire Charges and Late Payment"].join("\n"), "hire.docx")
+    expect(gapsOf(combined, `## 1. Equipment\n\n${hire[1]!.split("\n")[1]}`, "## 2. Hire Charges and Late Payment\n\nThe hirer pays the weekly charge. Unpaid invoices carry interest at the agreed rate."))
+      .toEqual([["2 Hire Charges", "thin"], ["3 Late Payment", "thin"]])
   })
 })

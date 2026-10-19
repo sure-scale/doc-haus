@@ -157,7 +157,8 @@ test("assertDelegable admits only an open model-asked question", () => {
 // Inputs pinned on the code before hand-backs existed; hashed under a fixed
 // label so a prompt version change does not move them. The gate's also keys
 // its contract, bumped when the hint a disclosed hand-back's choice adds to
-// the question that asks its conflict was reworded and narrowed.
+// the question that asks its conflict was reworded and narrowed. A draft's
+// keys its outline contract and what it reads of its own plan entry, never answers.
 const ANSWERS = "- [package-scope-d1] Q: Which documents are in scope?\n  A: Only the supply note.\n- [q-law] Q: Which law should govern?\n  A: Singapore law."
 const INPUTS: Record<string, string> = {
   "discrepancy": "8dac7eefaf1e988e35ffbe6c7f765a951943e9b1299546a9b94dc10e99950a72",
@@ -165,7 +166,7 @@ const INPUTS: Record<string, string> = {
   "research": "64a0d22c3dd780907955b2e56b3122b94ea72101092d694f899a15e2af0cb13b",
   "research-review": "f30467728cba33fbf89ff10cfba8903cd7aa9647cbd6849d4a3caf293f27a65b",
   "spine": "c038d3823819fc2e8ef176dc1cb855fd7f7a87e1fe077efb1c2aee41f922e076",
-  "d1.draft": "c9433207902f01fa193b87e4cb2d1bb14fbbd0eed6eeed767579bd51c0247881",
+  "d1.draft": "4eb720a791b22d697b04a4d87572ca5b34e62b3f66f9f7f7ce63af7cf0f42be2",
   "d1.review": "e80f5bbe084c8ef90d2864358d2caafa09139822584fb0f12cb14d0976e76416",
   "d1.review-independent": "9f1fe22f3e0db01ef5fffe96a09ddf917b5e371a89c58988eb875bcfbbae4aa4",
   "d1.review-wording": "7f86222090d292207f576968b1171dab74bedab8cf5dbc4e3593752d2584b6f5",

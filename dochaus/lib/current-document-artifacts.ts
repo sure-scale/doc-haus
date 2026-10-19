@@ -5,7 +5,7 @@ import { LEAN_PROMPT_VERSION, stageInputs } from "../workflows/lean/stages"
 import type { DocID } from "../workflows/lean/plan"
 
 /** Current artifacts follow the accepted apply's initial-draft ancestry, never timestamps.
- * Prior applied/redline files remain on disk as history after a new draft. */
+ * Applied/redline files no current apply accepted remain on disk as history. */
 export function currentDocumentArtifacts(directory: string, document: DocID): { body?: string; redline?: string; applied: boolean; warning?: string } {
   const step = `${document}.apply` as const
   const accepted = readLeanState(directory)?.stages[step]

@@ -14,7 +14,7 @@ import { changesRepairSections, documentRepairs } from "./repairs"
 import { drainLeanRequests } from "./requests"
 import { approvedResearch } from "./research"
 import { LEAN_CHILD_PERMISSIONS, LEAN_MAX_RETRIES, LEAN_PROMPT_VERSION, LEAN_STAGE_AGENTS, stageInputs, stepSessionTitle, type LeanDeps } from "./stages"
-import { handedBack, hashStageInputs, leanFile, readLeanJson, readLeanState, readLeanText, readQuestions, writeLeanText, type LeanState, type LeanStageState, type Question } from "./state"
+import { handedBack, hashStageInputs, leanFile, readLeanJson, readLeanText, readQuestions, writeLeanText, type LeanState, type LeanStageState, type Question } from "./state"
 
 export type ChangeGroup = {
   id: string
@@ -261,9 +261,9 @@ export function projectedChangeParagraphs(directory: string, document: DocID) {
   return paragraphs.flatMap(row => (amendments.get(row.pid) ?? [row.text]).map(text => ({ ...row, text })))
 }
 
-/** A dependent document can be redrafted after an earlier-body repair. Keep
- * its saved findings as challenges, without projecting the old change list
- * onto different initial paragraphs. Strict semantic projection stays above. */
+/** The body a semantic repair refers to: for a checklist repair, focused
+ * context from the current Word body; otherwise the projected body before
+ * apply, or the applied final body after it. */
 export function repairBodyText(directory: string, document: DocID, projected: boolean, actualWord = false) {
   if (actualWord) {
     const file = currentDocumentArtifacts(directory, document).body
@@ -288,14 +288,7 @@ export function repairBodyText(directory: string, document: DocID, projected: bo
         : "No affected current paragraph was located uniquely. Retrieve the relevant current text before deciding; do not guess a paragraph or treat missing inspection as a body defect.",
     ].join("\n\n")
   }
-  const paragraphs = readParagraphs(directory, document)
-  const current = new Map(paragraphs.map(row => [row.pid, row.sha256]))
-  const changes = readChangeList(directory, document)
-  const matches = changes && !uniqueReplacementIssues(changes).length && changes.amendments.every(row => current.get(row.pid) === row.existing_sha256) &&
-    (projected || readLeanState(directory)?.stages[`${document}.apply`]?.input_sha === hashStageInputs(`${document}.apply`, LEAN_PROMPT_VERSION, stageInputs(directory, `${document}.apply`)))
-  const rows = matches ? projected ? projectedChangeParagraphs(directory, document) : finalBodyParagraphs(directory, document) : paragraphs
-  return [!matches ? "The saved change or applied body is from an earlier draft or is not a current accepted result. The current initial draft follows. Reassess saved findings against this draft and the sources; prior paragraph pointers are not current amendment targets. Do not transfer an old amendment by guessing its location." : "",
-    rows.map(row => `[${row.pid}] ${row.text}`).join("\n\n")].filter(Boolean).join("\n\n")
+  return (projected ? projectedChangeParagraphs(directory, document) : finalBodyParagraphs(directory, document)).map(row => `[${row.pid}] ${row.text}`).join("\n\n")
 }
 
 export function changeReviewPrompt(directory: string, document: DocID) {

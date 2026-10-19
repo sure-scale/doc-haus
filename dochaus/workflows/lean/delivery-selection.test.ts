@@ -307,7 +307,7 @@ test("delivery instructions require user provenance and cannot alter source foun
   expect(checkDeliverySelections(directory, [{ ...selection, file: "counterfeit.docx", instruction_quote: "Deliver the clean output as counterfeit.docx." }]).join(" ")).toContain("actual instructions")
 })
 
-test("delivery metadata refreshes notes and package review while operative source choices still rekey drafting", async () => {
+test("delivery metadata refreshes notes and package review while operative source choices still rekey the change steps", async () => {
   const directory = matter()
   const original = (await renderMarkdownToDocx(`# Source\n\n${SOURCE_TEXT}`)).bytes
   writeFileSync(path.join(directory, SOURCE), original)
@@ -326,7 +326,9 @@ test("delivery metadata refreshes notes and package review while operative sourc
   expect(stageInputSha(directory, "finalize")).not.toBe(before.get("finalize")!)
   expect(stageInputSha(directory, "package-review")).not.toBe(before.get("package-review")!)
   writeLeanPlan(directory, [{ ...document, comparison: "another-source.docx" }], "stable-basis", { party: "Buyer", stated: true })
-  for (const stage of ["draft", "change-plan", "change-prepare", "changes", "change-review", "apply"] as const)
+  // A new-mode draft does not read the comparison, so its key stands; the change steps carry the new comparison.
+  expect(stageInputSha(directory, "d1.draft")).toBe(before.get("d1.draft")!)
+  for (const stage of ["change-plan", "change-prepare", "changes", "change-review", "apply"] as const)
     expect(stageInputSha(directory, `d1.${stage}`)).not.toBe(before.get(`d1.${stage}`)!)
 })
 

@@ -591,7 +591,9 @@ function instructionLeftOpen(directory: string, { item, finding }: ChecklistOpen
 
 /** The gate's backstop for instructions the checklist check left open: one
  * question asking, for each, whether the package carries it and in which
- * document, or whether it is outside this request. The plan-side route for
+ * planned document, or whether it is outside this request; a document the
+ * saved plan lacks needs this draft stopped, if unfinished, and a new one,
+ * planned from the start. The plan-side route for
  * instructed acts is the package-coverage check before drafting; this asks
  * only what reached the gate still open. Its `id`, from scopeAnswers, keys
  * on the verbatim instruction quotes, never on extraction-ordinal item ids, so
@@ -609,8 +611,8 @@ function packageScopeQuestion(rows: ChecklistOpenFinding[], id: string, hinted: 
     question: [`The checklist check left ${several ? "these instructions" : "this instruction"} open, so the package may not carry ${several ? "them" : "it"}:`,
       ...rows.map(({ item_id, item, finding }) => `${checklistRequirement(item_id, item)} ${finding.open_decisions?.length
         ? `Open decisions: ${sentence(finding.open_decisions.map(row => scopeField(row.trim())).join("; "))}` : "No open decision recorded; state what is missing."}`),
-      `${several ? "For each, answer" : "Answer"} the open decisions above (supply any missing fact or approval they name). If the package should carry it, say in which document; otherwise say it is outside this request.`].join(" "),
-    context: [`Until a later check settles ${several ? "these instructions, they are" : "this instruction, it is"} disclosed with the review draft as left open; delivery is not held for ${several ? "them" : "it"}. Your answer re-runs the drafting from the start, including the document plan and the checklist check.`,
+      `${several ? "For each, answer" : "Answer"} the open decisions above (supply any missing fact or approval they name). If the package should carry it, say which planned document carries it; otherwise say it is outside this request.`].join(" "),
+    context: [`Until a later check settles ${several ? "these instructions, they are" : "this instruction, it is"} disclosed with the review draft as left open; delivery is not held for ${several ? "them" : "it"}. Your answer re-runs the stages that use it, including the checklist check; the document plan is kept as saved, and a drafted document changes only by amendment. A document the plan does not have is not added: to add one, stop this draft with "Stop draft" if it has not finished, then start a new one, which plans the package from the start.`,
       ...hints, ...(hints.length === rows.length ? [HANDED_BACK_UNANSWERED] : [])].join(" "),
     status: "open",
   }
@@ -686,7 +688,7 @@ function checklistConflictQuestion(pairs: ChecklistItem[][], asked: Question[], 
     question: [several ? `Checklist requirements taken from the sources conflict, in ${pairs.length} pairs.` : "Two checklist requirements taken from the sources conflict.",
       ...pairs.map(([a, b], index) => `${several ? `Pair ${index + 1}, first` : "First"}: ${requirementText(a!)} Second: ${requirementText(b!)}`),
       several ? "For each pair, which requirement governs, or how should they be reconciled?" : "Which requirement governs, or how should they be reconciled?"].join(" "),
-    context: [`Until a later check no longer finds ${several ? "these conflicts, they are" : "this conflict, it is"} disclosed with the review draft; delivery is not held for ${several ? "them" : "it"}. Your answer re-runs the drafting from the start, including the checklist check.`,
+    context: [`Until a later check no longer finds ${several ? "these conflicts, they are" : "this conflict, it is"} disclosed with the review draft; delivery is not held for ${several ? "them" : "it"}. Your answer re-runs the stages that use it, including the checklist check; a drafted document changes only by amendment.`,
       ...hints, ...(hints.length === pairs.length ? [HANDED_BACK_UNANSWERED] : [])].join(" "),
     status: "open",
   }

@@ -45,7 +45,7 @@ test("every step key inside one snapshot equals a fresh read and the key its fin
   expect(resumed.prompts).toHaveLength(0)
 }, 120_000)
 
-test("a source revised between step boundaries re-keys every later step and asks stale prefetched reviews again", async () => {
+test("a source revised between step boundaries re-keys every later step but the accepted draft and asks stale prefetched reviews again", async () => {
   const directory = matter()
   const scripted = scriptedModel(happyPath)
   const revised = { done: false }
@@ -68,7 +68,8 @@ test("a source revised between step boundaries re-keys every later step and asks
   const revisedAt = steps.indexOf("d1.review")
   for (const [index, step] of steps.slice(0, steps.indexOf("checklist-check")).entries()) {
     expect(first.stages[step]?.status).toBe("done")
-    if (index <= revisedAt) expect(first.stages[step]!.input_sha).not.toBe(stageInputSha(directory, step))
+    // The accepted draft is keyed on the outline contract and its own plan entry; the revision reaches it through its review.
+    if (index <= revisedAt && !step.endsWith(".draft")) expect(first.stages[step]!.input_sha).not.toBe(stageInputSha(directory, step))
     else expect(first.stages[step]!.input_sha).toBe(stageInputSha(directory, step))
   }
   // Each prefetched review keyed on the original text was asked again, not accepted.

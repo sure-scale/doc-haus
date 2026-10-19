@@ -3,9 +3,9 @@ import { existsSync, readFileSync } from "node:fs"
 import { normalize } from "../../lib/quote-verify"
 import type { ChecklistCheckerInput, ChecklistProducerInput } from "./checklist-contract"
 import { CHECKLIST_JOB_AGENTS } from "./checklist-job"
-import { PLAN_COVERAGE_REVISIONS, planIsCurrent, runDraftStage } from "./draft-sections"
+import { PLAN_COVERAGE_REVISIONS, runDraftStage } from "./draft-sections"
 import { finalGate } from "./gate"
-import { LEAN_COVERAGE_SCHEMA, coverageItems, coveragePlanHash, coverageScopeQuestion, planCoverageIssues, readLeanCoverage, type CoverageAct } from "./package-coverage"
+import { LEAN_COVERAGE_SCHEMA, coverageItems, coveragePlanHash, coverageScopeQuestion, planCoverageCurrent, planCoverageIssues, readLeanCoverage, type CoverageAct } from "./package-coverage"
 import { PACKAGE_SCOPE_QUESTION, packageScopeQuestionID } from "./package-scope"
 import { readLeanPlan, writeLeanPlan, type PlannedDocument } from "./plan"
 import { EXCERPT } from "./quotes"
@@ -19,8 +19,8 @@ import { AGENT, cleanupMatters, draftingNotes, matter, noChanges, scriptedModel,
 // still leaves an instructed act without a document executed by the parties
 // who must take it after the allowed revisions, the step asks the lawyer one
 // package-scope question and stops before saving the plan. The question blocks
-// the walk until it is answered; the answer is part of the outline basis, so
-// the outline is drawn up again with it, and the run asks no second scope
+// the walk until it is answered; with no plan saved, the outline is drawn up
+// again with the answer, and the run asks no second scope
 // question about an act that answered question showed, at the plan step or at
 // the gate; an act it did not show gets one more question. Re-quoting a shown
 // act as a shorter span of the instruction it showed does not count as new;
@@ -118,8 +118,8 @@ describe("the plan step's package-scope question", () => {
       "add a document, or change a planned one", "outside this request"])
       expect(question!.question).toContain(text)
     expect(question!.context).toContain("Drafting waits for your answer")
-    // An answer re-plans the package, so the context says it replaces edits to the saved plan.
-    expect(question!.context).toContain("so the plan is drawn up again with it before any part is drafted, replacing any edits to the saved plan.")
+    // No plan is saved yet, so the plan is drawn up with the answer.
+    expect(question!.context).toContain("The document plan is drawn up with your answer before any part is drafted.")
     // The plan is not saved; the coverage record keeps what was found.
     expect(planSaved(directory)).toBe(false)
     expect(readLeanCoverage(directory)).toMatchObject({ status: "uncovered", acts: [act], issues: [expect.stringContaining(MISPLACED)] })
@@ -168,7 +168,7 @@ describe("the plan step's package-scope question", () => {
     expect(revisions(answered)).toHaveLength(PLAN_COVERAGE_REVISIONS)
     expect(readLeanPlan(directory)).toMatchObject({ basis: outlineBasis(directory), documents: [expect.objectContaining({ title: "Release letter" })] })
     expect(readLeanCoverage(directory)).toMatchObject({ status: "uncovered", acts: [act] })
-    expect(planIsCurrent(directory)).toBe(true)
+    expect(planCoverageCurrent(directory)).toBe(true)
     expect(partPrompts(answered)).toHaveLength(1)
     // One scope question in the run: the answered one, kept as answered.
     expect(readQuestions(directory)).toEqual([expect.objectContaining({ id: SCOPE_ID, stage: "draft", status: "answered", answer: ANSWER })])
@@ -193,13 +193,18 @@ describe("the plan step's package-scope question", () => {
     const directory = prepared()
     const plan = writeLeanPlan(directory, [{ title: "Release letter", purpose: "", parts: [{ heading: "Terms", scope: "" }], executed_by: ["Kestrel Works"] }], outlineBasis(directory))
     const saved = readFileSync(leanFile(directory, "plan.json"), "utf8")
-    expect(planIsCurrent(directory)).toBe(false)
+    expect(planCoverageCurrent(directory)).toBe(false)
     const model = scriptedModel({ [AGENT.draft]: outliner(TWO), [AGENT.coverage]: () => ACTS })
     const result = await runStep(directory, model)
 
     expect(result).toMatchObject({ status: "blocked", outputs: ["coverage.json"], openItems: [], reason: expect.stringContaining("d1.draft") })
     expect(result.status === "blocked" && result.questions).toEqual([expect.objectContaining({ id: SCOPE_ID, stage: "draft", status: "open",
       question: expect.stringContaining('taken by "the Orchard Committee"') })])
+    // The plan is saved, so the question offers no new document: stopping this draft and starting a new one adds one.
+    const [asked] = result.status === "blocked" ? result.questions! : []
+    expect(asked!.question).toEndWith("Which planned document, executed by those parties, should carry it, or is it outside this request?")
+    expect(asked!.question).not.toContain("add a document")
+    expect(asked!.context).toContain('to add a document, stop this draft with "Stop draft", then start a new one, which plans the package from the start.')
     // No outline was asked for and no part drafted: the plan stands as saved.
     expect(model.count(AGENT.draft)).toBe(0)
     expect(model.count(AGENT.coverage)).toBe(1)
@@ -228,7 +233,7 @@ describe("the plan step's package-scope question", () => {
     expect(readQuestions(directory)).toEqual([expect.objectContaining({ id: SCOPE_ID, stage: "draft", status: "answered", answer: ANSWER })])
   }, 180_000)
 
-  test("while the gate's scope question is open, a re-plan that leaves an act uncovered asks no second one: the act is disclosed and answering the open question unblocks the run", async () => {
+  test("while the gate's scope question is open, a recheck of an edited plan that leaves an act uncovered asks no second one and keeps the draft: the act is disclosed and answering the open question unblocks the run", async () => {
     const directory = prepared()
     // The plan carries every act at first; the checklist check leaves the instruction open, so the gate asks.
     expect((await runLean(directory, { sessions: scriptedModel(replies({ ...openChecklist, [AGENT.coverage]: () => JSON.stringify({ acts: [] }) })).port })).status).toBe("completed")
@@ -237,17 +242,21 @@ describe("the plan step's package-scope question", () => {
     expect(asked!.id.startsWith(PACKAGE_SCOPE_QUESTION)).toBe(true)
     expect(asked!.id).not.toBe(SCOPE_ID)
 
-    // The lawyer sends an update instead of answering; the plan drawn up again leaves the act uncovered.
-    enqueueLeanRequest(directory, { kind: "update", text: "Use plain English throughout." })
+    // The lawyer edits the saved plan's executing parties instead of answering; its recheck
+    // leaves the act uncovered, and the draft reads nothing the edit changes.
+    const plan = readLeanJson(directory, "plan.json") as { documents: PlannedDocument[] }
+    writeLeanText(directory, "plan.json", `${JSON.stringify({ ...plan, documents: plan.documents.map(row => ({ ...row, executed_by: ["Kestrel Works", "the Heron Trust"] })) }, null, 2)}\n`)
+    const body = readFileSync(leanFile(directory, "d1/body.docx"))
     const updated = scriptedModel(replies(openChecklist))
     const second = await runLean(directory, { sessions: updated.port })
     expect(second.status).toBe("completed")
-    expect(revisions(updated)).toHaveLength(PLAN_COVERAGE_REVISIONS)
+    expect(updated.count(AGENT.draft)).toBe(0)
+    expect(readFileSync(leanFile(directory, "d1/body.docx"))).toEqual(body)
     // One scope question in the run: the open one, still the question to answer.
     expect(readQuestions(directory)).toEqual([expect.objectContaining({ id: asked!.id, stage: "gate", status: "open" })])
     // The plan is saved with the act recorded as uncovered, and the act is disclosed with the review draft.
     expect(readLeanCoverage(directory)).toMatchObject({ status: "uncovered", acts: [act] })
-    expect(planIsCurrent(directory)).toBe(true)
+    expect(planCoverageCurrent(directory)).toBe(true)
     const gate = readLeanJson(directory, "gate.json") as { status: string; disclosed: { kind: string; detail: string }[] }
     expect(gate.status).toBe("pass")
     expect(gate.disclosed).toContainEqual(expect.objectContaining({ kind: "omission", detail: expect.stringContaining(`directed by "${APPROVE}" [source: request]`) }))
@@ -339,7 +348,7 @@ describe("the plan step's package-scope question", () => {
       context: "", status: "answered", answer: ANSWER }])
     const [approval, deposit] = coverageItems(directory)
     expect(approval!.detail).toContain(`directed by "${APPROVE}"`)
-    expect(approval!.detail).toContain(`The lawyer answered the package-scope question ${SCOPE_ID}; the plan drawn up with that answer still leaves this act so.`)
+    expect(approval!.detail).toContain(`The lawyer answered the package-scope question ${SCOPE_ID}; the plan still leaves this act so.`)
     // The deposit's release was not in that question: plain uncovered wording.
     expect(deposit!.detail).toContain(`directed by "${DEPOSIT}"`)
     expect(deposit!.detail).toEndWith("no planned document carries it.")
@@ -551,7 +560,7 @@ describe("scope asker termination: fix wave 3", () => {
     const gate = readLeanJson(directory, "gate.json") as { status: string; disclosed: { kind: string; detail: string }[] }
     expect(gate.status).toBe("pass")
     expect(gate.disclosed).toContainEqual(expect.objectContaining({ kind: "omission",
-      detail: expect.stringContaining(`The lawyer answered the package-scope question ${question!.id}; the plan drawn up with that answer still leaves this act so.`) }))
+      detail: expect.stringContaining(`The lawyer answered the package-scope question ${question!.id}; the plan still leaves this act so.`) }))
   }, 180_000)
 
   test("through the run: answers the coverage job quotes back as new acts bring one more question, then a disclosure; the run ends after two answers", async () => {

@@ -24,7 +24,9 @@ export const LEAN_MAX_SUBSTANTIVE_REPAIRS = 5
 type DocumentRepairContext = { round: number; items: OpenItem[]; basis: string }
 export type RepairRound = { round: number; requested_at: string; items: OpenItem[]; substantive_attempts?: number; checklist_items?: string[]; document_contexts?: Partial<Record<DocID, DocumentRepairContext>> }
 
-const REPAIRABLE_DRAFT_KINDS = new Set<OpenItem["kind"]>(["quote_miss", "citation_unsupported"])
+// A template part the rendered draft falls short on is an omission
+// (draftTemplateItems): the draft is not rewritten for it, so the change cycle repairs it.
+const REPAIRABLE_DRAFT_KINDS = new Set<OpenItem["kind"]>(["quote_miss", "citation_unsupported", "omission"])
 
 export function readRepairRound(directory: string): RepairRound | undefined {
   const value = readLeanJson(directory, "repairs.json")
@@ -121,6 +123,7 @@ export function changesRepairSections(directory: string, document: DocID) {
     defects.length ? tagged("required_repairs", [
       "Each item is a defect the draft still has. Fix each one with an amendment to the paragraph named:",
       "quote the source exactly, remove the unsupported point, or replace it with a visible [open item: what is needed] marker.",
+      "For a template part missing or cut short in the draft, which names no paragraph, add the missing wording from the template: split the paragraph the part belongs after, or replace a paragraph of the part with its full wording.",
       "For an unanswered question, repeat it with its \"id\" and the \"pid\" of the paragraph it affects, and put a visible [open item: ...] marker in that paragraph.",
       ...defects.map(item => `- ${item.id} ${pidLabel(item, paragraphs)}: ${item.detail}${quoteLabel(item)}`),
     ].join("\n")) : "",
@@ -178,7 +181,9 @@ function ofDocument(item: OpenItem, document: DocID) {
 }
 
 function pidLabel(item: OpenItem, paragraphs: ParagraphRow[]) {
-  if (item.ref.pid) return paragraphs.some(row => row.pid === item.ref.pid) ? `[${item.ref.pid}]` : "(earlier draft paragraph; reassess the finding in the current draft)"
+  // The draft step's only omission is a template gap (draftTemplateItems): it names a part, not a paragraph.
+  if (item.stage === "draft" && item.kind === "omission") return "(template part missing or cut short in the draft)"
+  if (item.ref.pid) return paragraphs.some(row => row.pid === item.ref.pid) ? `[${item.ref.pid}]` : "(not an initial draft paragraph; reassess the finding in the current draft)"
   const needle = normalize(item.ref.quote ?? item.ref.citation ?? "")
   const pid = needle ? paragraphs.find(row => normalize(row.text).includes(needle))?.pid : undefined
   return pid ? `[${pid}]` : "(paragraph not located)"

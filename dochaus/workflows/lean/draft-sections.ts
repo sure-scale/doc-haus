@@ -1,6 +1,6 @@
 import { rmSync } from "node:fs"
 import { playbookSelectionIssues } from "./playbook-review"
-import { TOOL_SYNTAX_ISSUE, printedToolCall } from "./checks"
+import { TOOL_SYNTAX_ISSUE, checkDraft, printedToolCall, readParagraphs } from "./checks"
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { matterSourceIDs } from "./quotes"
 import { memoNotesFile } from "./deliverables"
@@ -22,20 +22,19 @@ import {
   acceptStageReply,
   draftOutputValid,
   outlineBasis,
-  planBasisCurrent,
   stepOutputs,
   stepSessionTitle,
   type LeanDeps,
 } from "./stages"
-import { answeredQuestionsText, handedBackBlock, leanFile, LEFT_TO_DRAFTING, readLeanText, readOpenItems, readQuestions, writeLeanText, type LeanStageState, type LeanState, type OpenItem, type Question } from "./state"
-import { outlineCoverageIssues, partCarries, plannedContract, type TemplateContract } from "./template-contract"
-import { contractGaps, draftBody, draftGapIssues, type DraftPart } from "./template-coverage"
-import { countWords, headingUnits, tokens } from "./template-structure"
+import { answeredQuestionsText, handedBackBlock, leanFile, LEFT_TO_DRAFTING, readLeanText, readQuestions, writeLeanText, type LeanStageState, type LeanState, type OpenItem, type Question } from "./state"
+import { stageInputSha } from "./runner"
+import { outlineCoverageIssues, partCarries, plannedContract } from "./template-contract"
+import { draftTemplateItems } from "./template-coverage"
 
 // Sectioned draft step. A long document can need more tokens than one model
 // reply may carry, so the draft agent writes one part per reply in the same
 // child session, so native history carries the parts already written. When the
-// run has no current plan, the first document's session starts with the outline
+// run has no plan, the first document's session starts with the outline
 // of every document the request asks for, which code saves as the run's plan;
 // otherwise each document's session starts from its planned entry and the final
 // text of the documents before it. Each reply is checked on its own and retried with the checker's
@@ -71,13 +70,12 @@ import { countWords, headingUnits, tokens } from "./template-structure"
 // disclosed in the drafting notes and does not stop the step.
 // When a document is drafted from a matter document as its template, the
 // outline is admitted only once its coverage contract accounts for every
-// top-level part of the template (template-contract.ts); each part is told
+// top-level part of the template (template-contract.ts), and each part is told
 // which template parts it carries and which parts inside them the outline
-// leaves out, and, once all parts are written, the same session is asked for
-// the parts that leave a carried template part out or carry only a small share
-// of it (template-coverage.ts). These checks never fail the step: after the
-// allowed retries the reply with the fewest gaps is kept, and the apply step
-// records any gap left in the final body as an open item.
+// leaves out. A carried template part the rendered draft leaves out, or
+// carries only a small share of (template-coverage.ts), is an open item of the
+// step: the draft is never rewritten for it, the change cycle receives it as a
+// required repair, and the apply step records any gap left in the final body.
 
 export type DraftOutline = { title: string; parts: PlannedPart[] }
 
@@ -94,13 +92,6 @@ export const PLAN_COVERAGE_REVISIONS = 2
 /** Revised outlines the files job's issues may ask for before the plan is saved. */
 export const PLAN_FILES_REVISIONS = 2
 
-/** The saved plan is followed (planBasisCurrent) and, unless it was written by
- * hand, its coverage record checked this very plan (planCoverageCurrent, which
- * the first document's draft step also needs to count as done on resume). */
-export function planIsCurrent(directory: string) {
-  return planBasisCurrent(directory) && planCoverageCurrent(directory)
-}
-
 export async function runDraftStage(
   directory: string,
   state: LeanState,
@@ -108,8 +99,6 @@ export async function runDraftStage(
   progress: (patch: Partial<LeanStageState>) => void,
   document: DocID,
   planned: () => void | Promise<void>,
-  /** The step was done from these very inputs; only its saved output was found wanting. */
-  current = false,
 ): Promise<DraftStageRun> {
   const step: StepID = `${document}.draft`
   // A new stage attempt cannot retrieve a partial draft from an older attempt.
@@ -179,12 +168,12 @@ export async function runDraftStage(
   // package-scope question has settled (none is asked when all were, or once
   // two of the step's own are answered; coverageItems discloses the rest), and
   // none while another stage's is still open. An unchecked coverage reply never
-  // asks.
-  const scopeBlock = (documents: PlannedDocument[], coverage: Coverage): DraftStageRun | undefined => {
+  // asks. Asked about a `saved` plan, it offers no new document.
+  const scopeBlock = (documents: PlannedDocument[], coverage: Coverage, saved = false): DraftStageRun | undefined => {
     if (!coverage.acts || !coverage.issues.length) return
     const questions = readQuestions(directory)
     if (openScopeQuestion(questions, "draft")) return
-    const question = coverageScopeQuestion(coverage.acts, documents, questions.filter(answeredScopeQuestion))
+    const question = coverageScopeQuestion(coverage.acts, documents, questions.filter(answeredScopeQuestion), { saved })
     if (!question) return
     return { status: "blocked", outputs: ["coverage.json"], openItems: [], questions: [question],
       reason: `${step}: the document plan leaves an instructed act without a document its parties execute; drafting waits for your answer on the package's scope.` }
@@ -206,10 +195,9 @@ export async function runDraftStage(
     const refused = new Map<string, string>()
     return exchange({ id, agent: filesAgent })("files", requestedFilesPrompt(directory, documents, memo), (reply, final) => parseRequestedFiles(reply, directory, documents, memo, { final, refused }))
   }
-  // A plan whose outline basis is current is followed as it stands, including a
-  // lawyer's edits; only its coverage record is refreshed when it no longer
-  // matches the plan.
-  const outlined = document === FIRST_DOCUMENT && !planBasisCurrent(directory)
+  // Once saved, the plan is followed as it stands, including a lawyer's edits;
+  // only its coverage record is refreshed when it no longer matches the plan.
+  const outlined = document === FIRST_DOCUMENT && !readLeanPlan(directory)
   if (outlined) {
     const basis = outlineBasis(directory)
     // The lawyer's own words ground requested file names and the memo; a
@@ -294,28 +282,33 @@ export async function runDraftStage(
         reason: "The files job's reply did not pass its check, so the files the lawyer asks to receive could not be confirmed; the plan delivers its files as outlined and the drafting notes say so." })
     } else rmSync(leanFile(directory, "requested-files.json"), { force: true })
     writeLeanPlan(directory, named?.documents ?? value.documents, basis, value.acting_for, memo && { name: memo.name, file: named?.notes_file ?? memo.file })
-  } else if (document === FIRST_DOCUMENT && !planIsCurrent(directory)) {
+  } else if (document === FIRST_DOCUMENT && !planCoverageCurrent(directory)) {
     const saved = readLeanPlan(directory)!
     const coverage = await covering(saved.documents)
     recordCoverage(saved.documents, saved.acting_for, coverage)
-    const blocked = scopeBlock(saved.documents, coverage)
+    const blocked = scopeBlock(saved.documents, coverage, true)
     if (blocked) return blocked
-    // When only the coverage record was out of date (a lawyer's edit to another
-    // document's entry, say), the draft already done from these inputs is kept
-    // with its open items.
-    if (current && draftOutputValid(directory, step)) {
-      await planned()
-      return { status: "done", outputs: stepOutputs(step), openItems: readOpenItems(directory).filter(item => item.stage === "draft" && item.ref.document === document) }
-    }
+  }
+  // A saved plan's accepted draft is final for the run (a new run starts from
+  // an empty lean folder): a step re-run after a coverage refresh, after the
+  // question it stopped for is answered, or after a pause, keeps it while it
+  // was accepted from this very key. The step's row keeps that key (the runner
+  // never clears a draft row's input_sha), so a plan entry the lawyer edited or
+  // renumbered, or a new prompt version, drafts it again. Its open items are
+  // derived from its saved text as at acceptance, since a pause or a stopped
+  // recheck can leave the record without them.
+  if (!outlined && draftOutputValid(directory, step) && state.stages[step]?.input_sha === stageInputSha(directory, step)) {
+    await planned()
+    return { status: "done", outputs: stepOutputs(step), openItems: [...checkDraft(directory, readLeanText(directory, `${document}/draft.md`) ?? "").openItems, ...draftTemplateItems(directory, document, readParagraphs(directory, document))] }
   }
   const plan = plannedDocument(directory, document)
   if (!plan) return { status: "failed", reason: `${step}: the run's plan has no document ${document}.` }
   // Await source-only extraction for fresh and existing plans before any body part.
   await planned()
+  const key = stageInputSha(directory, step)
   const contract = plannedContract(directory, document)
   const carries = contract ? partCarries(contract, plan.parts.length) : []
-  const drafted: DraftPart[] = []
-  const snapshot = (parts: DraftPart[]) => writeLeanText(directory, `${document}/draft-in-progress.md`, assembleDraft(plan, parts.map(part => part.text), false))
+  const drafted: string[] = []
   for (const [index, part] of plan.parts.entries()) {
     const label = `part ${index + 1}/${plan.parts.length}`
     const carried = carries[index]
@@ -327,16 +320,17 @@ export async function runDraftStage(
     const text = [...(index > 0 ? [] : outlined ? [actingForBlock(directory), packageCompositionBlock(directory, document)] : [stagePrompt(directory, step)]), brief, section].filter(Boolean).join("\n\n")
     const written = await ask(label, text, reply => checkSection(reply, plan, index))
     if (!written.value) return failed(`${label} "${part.heading}"`, written.issues)
-    drafted.push({ part: index, text: written.value })
-    snapshot(drafted)
+    drafted.push(written.value)
+    writeLeanText(directory, `${document}/draft-in-progress.md`, assembleDraft(plan, drafted, false))
   }
-  const parts = contract ? await completeTemplateParts(ask, plan, contract, drafted, snapshot) : drafted
   const presentation = plan.parts.some(part => part.display_heading !== undefined)
-    ? { source: assembleDraft(plan, parts.map(part => part.text), false), parts: parts.map(part => ({ heading: headingText(part.text.split("\n")[0]!.replace(/^##\s+/, "")), display_heading: part.part === undefined ? undefined : plan.parts[part.part]?.display_heading, part: part.part })) }
+    ? { source: assembleDraft(plan, drafted, false), parts: drafted.map((text, part) => ({ heading: headingText(text.split("\n")[0]!.replace(/^##\s+/, "")), display_heading: plan.parts[part]?.display_heading, part })) }
     : undefined
-  const accepted = await acceptStageReply(directory, step, assembleDraft(plan, parts.map(part => part.text)), { presentation })
+  const accepted = await acceptStageReply(directory, step, assembleDraft(plan, drafted), { presentation })
   if (accepted.issues.length) return failed("assembled document", accepted.issues)
-  return { status: "done", outputs: accepted.outputs, openItems: accepted.openItems, questions: accepted.questions }
+  // Recorded with the body, so a pause or restart before the step settles keeps it.
+  progress({ input_sha: key })
+  return { status: "done", outputs: accepted.outputs, openItems: [...accepted.openItems, ...draftTemplateItems(directory, document, readParagraphs(directory, document))], questions: accepted.questions }
 }
 
 export function sectionPrompt(outline: DraftOutline, index: number, template?: { source: string; parts: string[]; left?: string[] }) {
@@ -409,92 +403,6 @@ export function checkSection(reply: string, outline: DraftOutline, index: number
     ...(!rest.some(line => line.trim() && !/^#{1,6}\s/.test(line.trim())) ? [`The part "${heading}" has no text under its heading.`] : []),
   ]
   return issues.length ? { issues } : { issues, value: text }
-}
-
-/** The completeness exchange: when the assembled parts leave a carried
- * template part out or carry only a small share of it, the same session is
- * asked for the revised parts (mergeParts). Of the drafts so far, the one with
- * the fewest gaps is kept (the latest of equals), and each reply is merged onto
- * it; a reply that cannot be read leaves it as it was. */
-async function completeTemplateParts(
-  ask: <T>(label: string, text: string, check: (reply: string) => Checked<T>) => Promise<Checked<T>>,
-  outline: DraftOutline,
-  contract: TemplateContract,
-  drafted: DraftPart[],
-  snapshot: (parts: DraftPart[]) => void,
-) {
-  const first = contractGaps(contract, draftBody(drafted))
-  if (!first.length) return drafted
-  const best = { parts: drafted, gaps: first }
-  await ask("completeness", [
-    `Compared with its template "${contract.source}", the draft of "${outline.title}" falls short:`,
-    ...draftGapIssues(contract, first).map(issue => `- ${issue}`),
-  ].join("\n"), reply => {
-    const merged = mergeParts(reply, outline, best.parts, contract, new Set(best.gaps.map(gap => gap.unit.index)))
-    if (!merged.value) return merged
-    const gaps = contractGaps(contract, draftBody(merged.value))
-    if (gaps.length <= best.gaps.length) {
-      Object.assign(best, { parts: merged.value, gaps })
-      snapshot(best.parts)
-    }
-    return { issues: draftGapIssues(contract, gaps), value: merged.value }
-  })
-  return best.parts
-}
-
-/** Reads revised parts ("## " heading, then text) into the parts so far. A
- * part whose heading reads as an existing part's (numbering, case and spacing
- * aside), or names a template part the draft falls short on and every template
- * part an existing part's heading names, revises that part in place under its
- * own heading; a part headed with such a template part that no existing
- * heading names is added after the last part carrying an earlier template
- * part. A heading naming only some of what an existing part's heading names,
- * any other heading, or a revised part with less than half the words it had,
- * is an issue, so no drafted text is replaced by a reply about part of it. */
-export function mergeParts(reply: string, outline: DraftOutline, parts: DraftPart[], contract: TemplateContract, gapped: Set<number>): Checked<DraftPart[]> {
-  if (!reply.trim()) return { issues: ["The reply was empty. Reply with the revised parts, each beginning with its \"## \" heading."] }
-  if (printedToolCall(reply)) return { issues: [TOOL_SYNTAX_ISSUE] }
-  const sections = reply.replace(/\r\n/g, "\n").split(/\n(?=##\s)/).map(text => text.trim()).filter(text => /^##\s+\S/.test(text))
-  if (!sections.length) return { issues: ["The reply has no part. Begin each revised part with its \"## \" heading."] }
-  const headingOf = (text: string) => headingText((text.split("\n")[0] ?? "").replace(/^##\s+/, ""))
-  const shape = sections.flatMap(text => {
-    const rest = text.split("\n").slice(1)
-    return [
-      ...(rest.some(line => /^#\s+\S/.test(line.trim())) ? [`The part "${headingOf(text)}" contains a "# " title line; use "### " or lower headings inside a part.`] : []),
-      ...(!rest.some(line => line.trim() && !/^#{1,6}\s/.test(line.trim())) ? [`The part "${headingOf(text)}" has no text under its heading.`] : []),
-    ]
-  })
-  if (shape.length) return { issues: shape }
-  const key = (text: string) => tokens(headingOf(text)).join(" ")
-  const carries = partCarries(contract, outline.parts.length).map(row => row.carried.map(unit => unit.index))
-  const carriedBy = (part: DraftPart) => part.part === undefined ? [...headingUnits(headingOf(part.text), contract.units)] : carries[part.part] ?? []
-  type Merged = { parts: DraftPart[]; issues: string[] }
-  // A revision keeps the part's own heading line, so the outline still finds it.
-  const revise = (acc: Merged, at: number, text: string): Merged => {
-    const before = acc.parts[at]!.text
-    if (countWords(text) * 2 < countWords(before))
-      return { ...acc, issues: [...acc.issues, `The revised part "${headingOf(text)}" is much shorter than before. Reply with its complete text, keeping what it already carries.`] }
-    const revised = `${before.split("\n")[0]}\n\n${text.split("\n").slice(1).join("\n").trim()}`
-    return { ...acc, parts: acc.parts.map((part, index) => index === at ? { ...part, text: revised } : part) }
-  }
-  const merged = sections.reduce<Merged>((acc, text) => {
-    const at = acc.parts.findIndex(part => key(part.text) === key(text))
-    if (at >= 0) return revise(acc, at, text)
-    const named = [...headingUnits(headingOf(text), contract.units)].filter(index => gapped.has(index))
-    if (!named.length)
-      return { ...acc, issues: [...acc.issues, `The part "${headingOf(text)}" is neither a part of the outline nor a template part the draft leaves out. ` +
-        "Begin each revised part with its exact \"## \" heading from the outline, or head a new part with the template part it carries."] }
-    const headed = acc.parts.findIndex(part => named.some(index => headingUnits(headingOf(part.text), contract.units).has(index)))
-    if (headed >= 0) {
-      const names = headingUnits(headingOf(text), contract.units)
-      if ([...headingUnits(headingOf(acc.parts[headed]!.text), contract.units)].every(index => names.has(index))) return revise(acc, headed, text)
-      return { ...acc, issues: [...acc.issues, `The part "${headingOf(text)}" covers only some of the part "${headingOf(acc.parts[headed]!.text)}". ` +
-        "Reply with that part under its exact \"## \" heading from the outline and its complete text, keeping what it already carries."] }
-    }
-    const after = acc.parts.findLastIndex(part => carriedBy(part).some(index => index < Math.min(...named)))
-    return { ...acc, parts: [...acc.parts.slice(0, after + 1), { text }, ...acc.parts.slice(after + 1)] }
-  }, { parts, issues: [] })
-  return merged.issues.length ? { issues: merged.issues } : { issues: [], value: merged.parts }
 }
 
 export function assembleDraft(outline: DraftOutline, parts: string[], presentation = true) {
