@@ -34,13 +34,15 @@ export type IngestResult = {
 // What an upload does when a source of the same name is already in the matter:
 // replace it, or keep both by storing the upload under the next free name
 // ("Name (2).docx"), returned as the result's `name`. Without a choice the
-// upload is refused with SourceExistsError, so a lawyer's file is never
-// replaced silently.
+// upload is refused with DocumentExistsError, so a lawyer's file is never
+// replaced silently. A generated deliverable is never replaced by an upload;
+// only keep both stores beside it.
 export type ExistingSourceChoice = "replace" | "keep-both"
 
-export class SourceExistsError extends Error {
-  // The stored name of the source already in the matter.
-  constructor(readonly existing: string, message: string) {
+// A document of the upload's name is already in the matter: an uploaded source
+// or a generated deliverable. `existing` is its stored name.
+export class DocumentExistsError extends Error {
+  constructor(readonly existing: string, readonly role: "source" | "deliverable", message: string) {
     super(message)
   }
 }
@@ -64,7 +66,7 @@ export function uploadDocument(
     xhr.ontimeout = () => reject(new DOMException("Upload timed out", "TimeoutError"))
     xhr.onload = () => {
       const res = new Response(xhr.responseText, { status: xhr.status })
-      const exists = sourceExists(xhr.status, xhr.responseText)
+      const exists = documentExists(xhr.status, xhr.responseText)
       if (exists) return reject(exists)
       if (!res.ok) return ingestError(res, `Could not read ${file.name}`).then((message) => reject(new Error(message)))
       return res.json().then(resolve, reject)
@@ -73,12 +75,13 @@ export function uploadDocument(
   })
 }
 
-function sourceExists(status: number, text: string) {
+function documentExists(status: number, text: string) {
   if (status !== 409) return
   try {
     const body = JSON.parse(text) as { code?: unknown; name?: unknown; error?: unknown }
-    if (body.code !== "source_exists" || typeof body.name !== "string") return
-    return new SourceExistsError(body.name, typeof body.error === "string" ? body.error : `${body.name} is already in this matter.`)
+    const role = body.code === "source_exists" ? "source" : body.code === "deliverable_exists" ? "deliverable" : undefined
+    if (!role || typeof body.name !== "string") return
+    return new DocumentExistsError(body.name, role, typeof body.error === "string" ? body.error : `${body.name} is already in this matter.`)
   } catch {
     return
   }

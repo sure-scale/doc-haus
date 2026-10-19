@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react"
-import { deleteDocument, SourceExistsError, uploadDocument, type Document, type ExistingSourceChoice } from "../api/ingest/documents"
+import { deleteDocument, DocumentExistsError, uploadDocument, type Document, type ExistingSourceChoice } from "../api/ingest/documents"
 import { humanizeError } from "../api/ingest/errors"
 import type { LeanDraftingStatus } from "../api/ingest/lean"
 import { formatDate, formatDateTime, formatTime } from "../lib/format"
@@ -18,9 +18,10 @@ type Upload = {
   error?: string
   // A wrong file type cannot succeed on retry, so the row offers Remove only.
   retryable?: boolean
-  // A source of this name is already in the matter (its stored name); the row
-  // asks the lawyer to replace it or keep both, and the choice is sent on retry.
-  existing?: string
+  // A document of this name is already in the matter. The row asks the lawyer to
+  // replace an uploaded source or keep both, or to keep both beside a generated
+  // deliverable, and the choice is sent on retry.
+  existing?: { name: string; role: "source" | "deliverable" }
   choice?: ExistingSourceChoice
 }
 
@@ -308,10 +309,10 @@ export default function DocumentUpload({
   )
 }
 
-// A same-name clash asks the lawyer to replace the existing source or keep both;
-// any other failure can be retried.
+// A same-name clash asks the lawyer what to do with the existing document; any
+// other failure can be retried.
 export function failedUpload(error: unknown, file: File): Partial<Upload> {
-  if (error instanceof SourceExistsError) return { status: "exists", existing: error.existing }
+  if (error instanceof DocumentExistsError) return { status: "exists", existing: { name: error.existing, role: error.role } }
   return { status: "failed", error: humanizeError(error, `Could not read ${file.name}.`), retryable: true }
 }
 
@@ -323,6 +324,7 @@ const UPLOAD_LABEL: Record<Upload["status"], string> = {
   failed: "Not added",
   exists: "Already in this matter. Replace it or keep both?",
 }
+const DELIVERABLE_EXISTS = "A document created by Doc.Haus has this name. Keep both?"
 
 export function UploadRow({ upload, onRetry, onChoose, onDismiss }: {
   upload: Upload
@@ -339,7 +341,9 @@ export function UploadRow({ upload, onRetry, onChoose, onDismiss }: {
         <span className="upload-name">{upload.file.name}</span>
       </div>
       <div className="doc-row-meta">
-        <span className="upload-status">{upload.error ?? UPLOAD_LABEL[upload.status]}</span>
+        <span className="upload-status">
+          {upload.error ?? (upload.existing?.role === "deliverable" ? DELIVERABLE_EXISTS : UPLOAD_LABEL[upload.status])}
+        </span>
         {upload.status === "failed" && (
           <span className="upload-actions">
             {upload.retryable && (
@@ -354,14 +358,16 @@ export function UploadRow({ upload, onRetry, onChoose, onDismiss }: {
         )}
         {upload.status === "exists" && (
           <span className="upload-actions">
-            <button
-              type="button"
-              className="icon-btn danger"
-              title={`Replace ${upload.existing} with this file — the current file is overwritten`}
-              onClick={() => onChoose("replace")}
-            >
-              Replace
-            </button>
+            {upload.existing?.role === "source" && (
+              <button
+                type="button"
+                className="icon-btn danger"
+                title={`Replace ${upload.existing.name} with this file — the current file is overwritten`}
+                onClick={() => onChoose("replace")}
+              >
+                Replace
+              </button>
+            )}
             <button type="button" className="icon-btn" title="Add this file under a new name and keep both" onClick={() => onChoose("keep-both")}>
               Keep both
             </button>

@@ -1,24 +1,36 @@
 import { expect, test } from "bun:test"
 import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
-import { SourceExistsError } from "../src/api/ingest/documents"
+import { DocumentExistsError } from "../src/api/ingest/documents"
 import { failedUpload, UploadRow } from "../src/components/DocumentUpload"
 
 const file = new File(["theirs"], "Agreement.docx")
 const row = (upload: Parameters<typeof UploadRow>[0]["upload"]) => {
   const html = renderToStaticMarkup(createElement(UploadRow, { upload, onRetry: () => {}, onChoose: () => {}, onDismiss: () => {} }))
   return {
-    status: html.match(/<span class="upload-status">([^<]*)<\/span>/)?.[1],
+    status: html.match(/<span class="upload-status">([^<]*)<\/span>/)?.[1]?.trim(),
     buttons: [...html.matchAll(/<button[^>]*>([\s\S]*?)<\/button>/g)].map(([, label]) => label!.trim()),
   }
 }
 
 test("a same-name upload asks the lawyer to replace the existing file, keep both or cancel", () => {
-  const exists = failedUpload(new SourceExistsError("Agreement.docx", "Agreement.docx is already in this matter."), file)
-  expect(exists).toEqual({ status: "exists", existing: "Agreement.docx" })
+  const exists = failedUpload(new DocumentExistsError("Agreement.docx", "source", "Agreement.docx is already in this matter."), file)
+  expect(exists).toEqual({ status: "exists", existing: { name: "Agreement.docx", role: "source" } })
   expect(row({ key: 1, file, status: "queued", ...exists })).toEqual({
     status: "Already in this matter. Replace it or keep both?",
     buttons: ["Replace", "Keep both", "Cancel"],
+  })
+})
+
+test("a returned draft named like a generated document can only be kept beside it", () => {
+  const exists = failedUpload(
+    new DocumentExistsError("Agreement.docx", "deliverable", "Cannot replace generated deliverable Agreement.docx with a source document."),
+    file,
+  )
+  expect(exists).toEqual({ status: "exists", existing: { name: "Agreement.docx", role: "deliverable" } })
+  expect(row({ key: 3, file, status: "queued", ...exists })).toEqual({
+    status: "A document created by Doc.Haus has this name. Keep both?",
+    buttons: ["Keep both", "Cancel"],
   })
 })
 
