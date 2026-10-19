@@ -11,7 +11,7 @@ import { readRepairRound, startRepairRound } from "./repairs"
 import { enqueueLeanRequest } from "./requests"
 import { runLean, stageInputSha } from "./runner"
 import { stagePrompt } from "./prompts"
-import { leanFile, readLeanState, writeLeanState, writeLeanText } from "./state"
+import { leanFile, readLeanState, readLeanText, writeLeanState, writeLeanText } from "./state"
 import { AGENT, DRAFT, SOURCE, SOURCE_TEXT, cleanupMatters, drafter, happyPath, matter, registering, scriptedModel } from "./test-support"
 
 afterEach(cleanupMatters)
@@ -146,7 +146,9 @@ test("normal Continue re-runs a failed package review without reopening accepted
   const directory = matter()
   const instruction = "Create an editable Word draft titled Supply Review, with open items."
   writeLeanText(directory, "request.md", instruction)
-  const invalid = scriptedModel({ ...happyPath, [AGENT["package-review"]]: () => JSON.stringify({ status: "pass", findings: [], limitations: [], delivery: [{ document: "d1", role: "body", file: "Guessed Review.docx", instruction_quote: instruction }] }) })
+  // A pass with a finding fails on every attempt; an ungrounded delivery row
+  // no longer does (it is withheld on the last one).
+  const invalid = scriptedModel({ ...happyPath, [AGENT["package-review"]]: () => JSON.stringify({ status: "pass", findings: [{ detail: "The notes misdescribe the delivery period." }], limitations: [], delivery: [] }) })
   const failed = await runLean(directory, { sessions: invalid.port })
   expect(failed.status).toBe("failed")
   expect(invalid.count(AGENT["package-review"])).toBe(4)
@@ -163,6 +165,29 @@ test("normal Continue re-runs a failed package review without reopening accepted
   expect(readFileSync(leanFile(directory, "checklist/checks.json"))).toEqual(checklist)
   for (const stage of DOC_STAGES) expect(result.stages[`d1.${stage}`]?.input_sha).toBe(stages[`d1.${stage}`]?.input_sha)
   expect(readLeanDocuments(directory)?.documents.find(row => row.kind === "body")?.deliverable).toBe("Supply Review.docx")
+}, 120_000)
+
+test("a delivery rename the lawyer never asked for is withheld on the last package-review attempt and the run delivers", async () => {
+  const directory = matter()
+  const request = "Draft a short supply note from the supply terms."
+  writeLeanText(directory, "request.md", request)
+  const control = matter()
+  writeLeanText(control, "request.md", request)
+  expect((await runLean(control, { sessions: scriptedModel(happyPath).port, ...registering() })).status).toBe("completed")
+  const rename = { document: "d1", role: "body", file: "Supply terms note.docx", instruction_quote: request }
+  const model = scriptedModel({ ...happyPath, [AGENT["package-review"]]: () => JSON.stringify({ status: "pass", findings: [], limitations: [], delivery: [rename] }) })
+  const result = await runLean(directory, { sessions: model.port, ...registering() })
+  expect(result.status).toBe("completed")
+  expect(model.count(AGENT["package-review"])).toBe(4)
+  const retries = model.prompts.filter(row => row.agent === AGENT["package-review"]).slice(1)
+  for (const retry of retries) expect(retry.text).toContain("return no delivery row for it")
+  expect(readPackageReview(directory)).toEqual({ status: "pass", findings: [], delivery: [],
+    limitations: ["Supply terms note.docx: no naming instruction in the lawyer's words; the planned name stands"],
+    withheld_delivery: [{ document: "d1", role: "body", file: "Supply terms note.docx", cause: "not_quoted", reason: "no naming instruction in the lawyer's words", asked: false }] })
+  // The planned name stands, and the withheld row reaches the lawyer as no item or notes text.
+  const delivered = (at: string) => readLeanDocuments(at)?.documents.map(row => [row.kind, row.deliverable])
+  expect(delivered(directory)).toEqual(delivered(control))
+  for (const name of ["gate.json", "open-items.json", "drafting-notes.md"]) expect(readLeanText(directory, name) ?? "").not.toContain("Supply terms note")
 }, 120_000)
 
 test("grounded final artifact selection corrects delivery without regenerating sound body or comparison", async () => {

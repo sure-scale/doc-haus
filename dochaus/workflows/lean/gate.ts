@@ -10,7 +10,7 @@ import { normalize } from "../../lib/quote-verify"
 import { CITED, finalBodyParagraphs, readerIDs, standingIDPattern, type ApplyResult } from "./checks"
 import { memoMode, runItemIDs, withoutInternalIDs, withoutRefMarkers } from "./delivered-memo"
 import { FIRST_DOCUMENT, readLeanPlan, type DocID } from "./plan"
-import { readPackageReview } from "./package-review"
+import { isWithheldDeliveryItem, readPackageReview, withheldDeliveryItems } from "./package-review"
 import { coverageCarries, coverageItems, gateScopeParties } from "./package-coverage"
 import { excerpt, proseQuoteFound, openItem } from "./quotes"
 import { answeredScopeQuestion, GATE_EXCERPT, keyedQuestionID, openScopeQuestion, scopeAnswers, scopeField, scopeQuestionShows } from "./package-scope"
@@ -123,7 +123,9 @@ export function finalGate(directory: string): GateResult {
   // Adverse checklist findings lead: the lawyer's list of items may be capped.
   const unresolved = checked?.valid ? [...checked.unresolved.map(row => checklistUnresolvedItem(directory, leanState, row, conflict?.id)),
     ...checked.unresolvedParents.map(row => checklistUnresolvedParentItem(directory, row))] : []
-  const items = [...unresolved, ...[...currentOpenItems(directory), ...deferredFindingItems(directory), ...coverageItems(directory), ...requestedFilesItems(directory)].map(item => settle(item, context)), ...semantic, ...projected]
+  // A file name in the instructions the package review withheld is disclosed with the
+  // draft, never blocking it: the notes were written before that review.
+  const items = [...unresolved, ...[...currentOpenItems(directory), ...deferredFindingItems(directory), ...coverageItems(directory), ...requestedFilesItems(directory)].map(item => settle(item, context)), ...semantic, ...projected, ...withheldDeliveryItems(directory)]
   if (checked && !checked.valid) items.push(openItem("checklist-check", "omission", "Effective checklist findings or source-unit coverage are incomplete or stale, or a check or its reinspection failed; see checklist/report.md.", {}))
   // Focused checks can correctly preserve a source-dependent open issue
   // without requesting a missing answer or inventing a disclosure. Such a
@@ -170,14 +172,15 @@ export function finalGate(directory: string): GateResult {
 
 /** The notes delivered with the draft: the drafting notes as the reader gets
  * them (notesForReader), with any unresolved checklist findings and any
- * disclosed requirements the checklist check left open in plain words. The
- * drafting notes are written before the checklist check, so they cannot list
- * its findings. Undefined when there are neither drafting notes nor such a
- * finding.
+ * disclosed requirements the checklist check left open in plain words, and
+ * any file name in the instructions the package review could not apply
+ * (withheldDeliveryItems), in its item's words. The drafting notes are written
+ * before the checklist check and the package review, so they cannot list
+ * these. Undefined when there are neither drafting notes nor such an item.
  *
  * The findings lead the drafting notes, or close a requested memo after its
- * own title and body: the unresolved ones first, then those left open, each in
- * its own section. An unresolved one is disclosed as a requirement not
+ * own title and body: the unresolved ones first, then those left open, then
+ * the file names not applied, each in its own section. An unresolved one is disclosed as a requirement not
  * confirmed as met, one left open as left open; each is worded from the
  * checklist item's requirement and source quotes rather than the checker's
  * detail (findingEntries), so its lines name no internal id: no checklist
@@ -192,20 +195,26 @@ export function deliveredNotes(directory: string, gate: GateResult): string | un
   const leftOpen = gate.items.filter(item => item.kind === "checklist_open" && item.status === "disclosed")
   const held = new Set(leftOpen.length ? checklistOutputState(directory).openFindings.map(row => row.item_id) : [])
   const open = leftOpen.filter(item => held.has(item.ref.checklist_item ?? item.id))
-  if (!unresolved.length && !open.length) return read
+  const names = gate.items.filter(isWithheldDeliveryItem)
+  if (!unresolved.length && !open.length && !names.length) return read
   const known = runItemIDs(directory, gate.items)
   // A section, with the blank line after it, only when it lists a finding.
   const section = (findings: OpenItem[], heading: string, intro: string) => findings.length
     ? [...plainWordsSection(directory, known, heading, intro, findingEntries(directory, findings, known)), ""] : []
+  // A file name not applied is listed in its item's own words.
+  const named = (heading: string, intro: string) => names.length
+    ? [...plainWordsSection(directory, known, heading, intro, names.map(item => (hold: (text: string) => string) => `- ${hold(item.detail)}`)), ""] : []
   const body = read ?? ""
   if (!memoMode(directory)) return [...section(unresolved, "# Checklist findings not satisfied",
     "These checklist requirements were not established as satisfied. Each is disclosed with this review draft; none is treated as satisfied."),
   ...section(open, "# Checklist requirements left open",
-    "These checklist requirements were left open. Each is disclosed with this review draft; none is treated as satisfied."), body].join("\n")
+    "These checklist requirements were left open. Each is disclosed with this review draft; none is treated as satisfied."),
+  ...named("# File names not applied", "These names in your instructions could not be applied. Each is disclosed with this review draft."), body].join("\n")
   const memo = body.trimEnd()
   return [...(memo ? [memo, ""] : []),
     ...section(unresolved, "## Requirements not confirmed as met", "These requirements were not confirmed as met in this draft and need the lawyer's review."),
-    ...section(open, "## Requirements left open", "These requirements were left open in this draft and need the lawyer's review.")].join("\n")
+    ...section(open, "## Requirements left open", "These requirements were left open in this draft and need the lawyer's review."),
+    ...named("## File names not applied", "These names in your instructions could not be applied in this draft.")].join("\n")
 }
 
 /** The drafting notes as the reader gets them: without their "[ref: …]"
