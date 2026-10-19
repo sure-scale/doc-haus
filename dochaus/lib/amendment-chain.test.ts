@@ -5,7 +5,7 @@ import { expect, test } from "bun:test"
 import { mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { buildChains, resolveCurrentSection, supersededSections, verbatimSpan } from "./amendment-chain"
+import { buildChains, operativePassage, resolveCurrentSection, supersededSections, verbatimSpan, type SectionOpRow } from "./amendment-chain"
 
 function syntheticDb() {
   const dir = mkdtempSync(path.join(tmpdir(), "amend-helper-"))
@@ -349,6 +349,57 @@ test("resolveCurrentSection caps the following text at 3000 characters", () => {
   const resolved = resolveCurrentSection(db, chain!, "6")
   expect(resolved?.followingText).toBe(full.slice(statement.length, statement.length + 3000).trim())
   expect(resolved?.read).toEqual({ document: "Amendment No. 1", offset: 0, limit: statement.length + 3000 })
+  db.close()
+})
+
+test("no code-point position is given when indexed text has a gap before the op", () => {
+  // Unstored regions are padded one space per UTF-16 unit, so a code-point
+  // count across them can be wrong; the position is withheld instead.
+  const { db } = syntheticDb()
+  const statement = "Section 5 of the Agreement is hereby deleted in its entirety."
+  const tail = `2. Deletion. ${statement}\n`
+  seed(
+    db,
+    [
+      { path: "/m/base.docx", name: "Original Agreement", createdAt: 1 },
+      { path: "/m/am1.docx", name: "Amendment No. 1", createdAt: 2 },
+    ],
+    [
+      { docPath: "/m/am1.docx", section: "", text: "AMENDMENT NO. 1\n", charStart: 0, charEnd: 16 },
+      // chars 16..40 are not stored
+      { docPath: "/m/am1.docx", section: "2", text: tail, charStart: 40, charEnd: 40 + tail.length },
+    ],
+    [
+      { doc_path: "/m/am1.docx", doc_name: "Amendment No. 1", relation: "amends", target_name: "Original Agreement", char_start: 0, char_end: 15 },
+    ],
+    [
+      { doc_path: "/m/am1.docx", doc_name: "Amendment No. 1", section_label: "5", operation: "delete", char_start: 53, char_end: 53 + statement.length },
+    ],
+  )
+  const [chain] = buildChains(db)
+  const resolved = resolveCurrentSection(db, chain!, "5")
+  expect(resolved?.operativeText).toBe(statement)
+  expect(resolved?.read).toEqual({ document: "Amendment No. 1", offset: null, limit: null })
+  db.close()
+})
+
+test("operativePassage rebuilds each amending document once per shared cache", () => {
+  const { db } = syntheticDb()
+  collidingAmendment(db)
+  const [chain] = buildChains(db)
+  const ops = chain!.entries[0]!.ops
+  let chunkReads = 0
+  // operativePassage reads only through db.query; count the chunk reads.
+  const counting = {
+    query: (sql: string) => {
+      if (sql.includes("FROM chunks")) chunkReads++
+      return db.query(sql)
+    },
+  } as unknown as Database
+  const cache = new Map()
+  const passages = ops.map((op: SectionOpRow) => operativePassage(counting, op, ops, cache))
+  expect(passages.map((p) => p.operativeText)).toEqual(ops.map((op) => verbatimSpan(db, op.doc_path, op.char_start, op.char_end)))
+  expect(chunkReads).toBe(1)
   db.close()
 })
 

@@ -82,12 +82,15 @@ function resolveTarget(db: Database, target: RelationRow, docs: DocRow[], relati
 // structure-aware chunker carries a trailing overlap) overwrite the same region
 // instead of being appended twice. A chunk never truncates text an earlier,
 // longer chunk already placed. `covered` lists the merged [start, end) ranges
-// that stored chunk text actually fills; padding is not covered. Only chunks
-// starting before `before` are read.
-function indexedText(db: Database, docPath: string, before: number) {
-  const rows = db
-    .query("SELECT text, char_start FROM chunks WHERE doc_path = ? AND char_start < ? ORDER BY char_start")
-    .all(docPath, before) as { text: string; char_start: number }[]
+// that stored chunk text actually fills; padding is not covered. When `before`
+// is given, only chunks starting before it are read.
+export type IndexedText = { text: string; covered: [number, number][] }
+function indexedText(db: Database, docPath: string, before?: number): IndexedText {
+  const rows = (
+    before === undefined
+      ? db.query("SELECT text, char_start FROM chunks WHERE doc_path = ? ORDER BY char_start").all(docPath)
+      : db.query("SELECT text, char_start FROM chunks WHERE doc_path = ? AND char_start < ? ORDER BY char_start").all(docPath, before)
+  ) as { text: string; char_start: number }[]
   let text = ""
   const covered: [number, number][] = []
   for (const row of rows) {
@@ -107,11 +110,12 @@ function coveredUntil(covered: [number, number][], from: number) {
   return covered.find(([start, end]) => start <= from && from < end)?.[1] ?? from
 }
 
-// Unicode code points in text[from, to); positions past the rebuilt text count
-// one each. read-document offsets and limits count code points, while stored
-// chunk and op offsets are UTF-16 indexes.
+// Unicode code points in text[from, to). Callers count only stored text: a
+// padded gap holds one space per UTF-16 unit, so a count across it could be
+// wrong. Document readers (read-document) count offsets in code points, while
+// stored chunk and op offsets are UTF-16 indexes.
 function codePoints(text: string, from: number, to: number) {
-  return Array.from(text.slice(from, to)).length + Math.max(0, to - Math.max(from, text.length))
+  return Array.from(text.slice(from, to)).length
 }
 
 // The verbatim text at start..end of a document's extracted text, rebuilt from
@@ -126,7 +130,7 @@ export function verbatimSpan(db: Database, docPath: string, start: number, end: 
   return text.slice(start, end).trim() || null
 }
 
-// read-document reads at most this many code points per page.
+// A document reader (read-document) returns at most this many code points.
 const READ_LIMIT = 4000
 // How far past an operative statement the following text may run when no
 // later operative statement in the same document bounds it.
@@ -141,27 +145,39 @@ export type OperativePassage = {
   // it may hold the restated wording or unrelated clauses, and is never
   // verified as the resulting section text.
   followingText: string | null
-  // read-document arguments (code points) covering the statement and the text
-  // after it.
-  read: { document: string; offset: number; limit: number }
+  // Position of the statement and the text after it in the amending document,
+  // in code points (offset, and limit = length). Both are null when stored
+  // text is not contiguous from the document start through that range, since
+  // the count could then be wrong.
+  read: { document: string; offset: number | null; limit: number | null }
 }
 
 // The amending document's own words around one op, located purely by stored
 // offsets. `docOps` are that document's ops; the next one bounds the passage.
-export function operativePassage(db: Database, op: SectionOpRow, docOps: SectionOpRow[]): OperativePassage {
+// `texts` caches each document's rebuilt text across calls (one search call
+// may hit several passages superseded by the same amendment).
+export function operativePassage(
+  db: Database,
+  op: SectionOpRow,
+  docOps: SectionOpRow[],
+  texts = new Map<string, IndexedText>(),
+): OperativePassage {
   const next = Math.min(...docOps.filter((o) => o.char_start >= op.char_end).map((o) => o.char_start))
   const boundary = Math.min(next, op.char_end + FOLLOWING_CAP)
-  const { text, covered } = indexedText(db, op.doc_path, boundary)
+  const indexed = texts.get(op.doc_path) ?? indexedText(db, op.doc_path)
+  texts.set(op.doc_path, indexed)
+  const { text, covered } = indexed
   const anchored = op.char_start < op.char_end && coveredUntil(covered, op.char_start) >= op.char_end
   const readEnd = Math.max(op.char_end, Math.min(boundary, text.length))
   const followingEnd = anchored ? Math.min(readEnd, coveredUntil(covered, op.char_end)) : op.char_end
+  const positioned = coveredUntil(covered, 0) >= readEnd
   return {
     operativeText: anchored ? text.slice(op.char_start, op.char_end).trim() || null : null,
     followingText: text.slice(op.char_end, followingEnd).trim() || null,
     read: {
       document: op.doc_name,
-      offset: codePoints(text, 0, op.char_start),
-      limit: Math.min(READ_LIMIT, Math.max(1, codePoints(text, op.char_start, readEnd))),
+      offset: positioned ? codePoints(text, 0, op.char_start) : null,
+      limit: positioned ? Math.min(READ_LIMIT, Math.max(1, codePoints(text, op.char_start, readEnd))) : null,
     },
   }
 }
@@ -251,7 +267,7 @@ export function supersededSections(db: Database, chains: Chain[]): Map<string, M
 // Walk a chain newest-first for the given section label. Returns the first
 // matching amender's op (the operative one) with its operativePassage: the
 // verbatim statement at that op's offsets in the amending document, the text
-// that follows it there, and read-document arguments for both. That is the
+// that follows it there, and their code-point position. That is the
 // amendment's own wording ("Section 4 ... is hereby amended and restated ..."),
 // not the resulting text of the base section. The amender's chunks are never
 // looked up by label: an amendment's own §4 is a different clause from the

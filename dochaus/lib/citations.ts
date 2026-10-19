@@ -45,9 +45,10 @@ export type DocumentCitation = {
     operation: "amend" | "restate" | "delete" | "add"
     charStart: number
     charEnd: number
-    // read-document arguments (Unicode code points) covering the amender's
-    // operative statement and the text after it.
-    read?: { document: string; offset: number; limit: number }
+    // Position (Unicode code points) of the amender's operative statement and
+    // the text after it; offset and limit are null when the indexed text is
+    // incomplete and the position cannot be counted safely.
+    read?: { document: string; offset: number | null; limit: number | null }
   }
 }
 
@@ -59,9 +60,7 @@ export function formatCitations(citations: DocumentCitation[]) {
       const flag = c.flagged ? `\n${FLAGGED_PASSAGE_NOTE}` : ""
       const superseded = c.superseded_by
         ? `\n${SUPERSEDED_PASSAGE_NOTE}\n   superseded by: ${c.superseded_by.amenderName} (${c.superseded_by.operation}, chars ${c.superseded_by.charStart}..${c.superseded_by.charEnd})` +
-          (c.superseded_by.read
-            ? `\n   before quoting this passage as current, read the amendment's operative wording: read-document ${JSON.stringify(c.superseded_by.read)}`
-            : "")
+          (c.superseded_by.read ? `\n   ${supersededReadHint(c.superseded_by.read)}` : "")
         : ""
       const reason =
         c.reason === undefined
@@ -75,6 +74,16 @@ export function formatCitations(citations: DocumentCitation[]) {
     })
     .join("\n\n")
   return `${UNTRUSTED_EXCERPT_NOTICE}\n\n${body}`
+}
+
+// Tool-neutral: names the amending document and where its operative wording
+// sits, without assuming which reading tool the agent has.
+function supersededReadHint(read: { document: string; offset: number | null; limit: number | null }) {
+  const at =
+    read.offset === null || read.limit === null
+      ? `; its position is unavailable because the indexed text is incomplete.`
+      : ` at code-point offset ${read.offset} (${read.limit} characters).`
+  return `before quoting this passage as current, read the amendment's operative wording in ${read.document}${at}`
 }
 
 function displayExcerpt(excerpt: string) {

@@ -131,7 +131,9 @@ test("amender op span not recoverable from the index says the current text is no
   const result = await tool.execute({ section: "4" }, ctxFor(dir))
   expect(result).toMatch(/current text of §4 is not resolved/)
   expect(result).not.toMatch(/Operative wording of/)
-  expect(result).toContain('Next step: read-document {"document":"Amendment No. 1","offset":50,"limit":50}')
+  // The indexed text has a gap before the op, so no code-point position is given.
+  expect(result).toContain("Next step: read Amendment No. 1 around chars 50..100; its position is unavailable because the indexed text is incomplete.")
+  expect(result).not.toMatch(/read-document|code-point offset/)
 })
 
 test("amender's own same-numbered clause is never presented as the base section's current text", async () => {
@@ -168,7 +170,8 @@ test("amender's own same-numbered clause is never presented as the base section'
   // statement, labelled as unverified, never as the base section's text.
   expect(result).toContain(`${following}\n“4. Fees. Customer shall pay each invoice within forty-five (45) days.”\n4. Governing Law.`)
   expect(result.slice(0, result.indexOf(following))).not.toMatch(/Governing Law/)
-  expect(result).toContain(`Next step: read-document {"document":"Amendment No. 1","offset":${opStart},"limit":${full.length - opStart}}`)
+  expect(result).toContain(`Next step: read Amendment No. 1 from code-point offset ${opStart} (${full.length - opStart} characters)`)
+  expect(result).not.toMatch(/read-document/)
   expect(result.split(statement).length - 1).toBe(1)
 })
 

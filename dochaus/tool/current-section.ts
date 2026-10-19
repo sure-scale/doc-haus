@@ -7,8 +7,8 @@ import { buildChains, resolveCurrentSection, verbatimSpan, type Chain, type Sect
 // doc.haus current-section resolver. For a section label, walks the matter's
 // amendment chains newest-first and returns the verbatim operative wording of
 // whichever amender last touches that section (the stored op span), the text
-// that follows it in that amender located by position only, a read-document
-// call covering both, and the full lineage so the answer is auditable. It never
+// that follows it in that amender located by position only, the code-point
+// position of both, and the full lineage so the answer is auditable. It never
 // presents an amender's own clause as the base section's current text: the
 // resulting text is not recorded, and the output says so. Falls back honestly
 // when no chain exists, no amender touches the section, or the base document
@@ -105,7 +105,7 @@ function renderLineage(db: Database, chain: Chain, label: string, quotedAbove?: 
 
 export default tool({
   description:
-    'Trace a contract section across the matter\'s amendment chain — e.g. "what does Section 4 currently say?". Walks amendments newest-first and returns the latest amendment\'s verbatim operative wording for that section (amend/restate/add) — the amendment\'s statement, not the resulting section text — plus the text that follows it in the amendment (by position, unverified) and a read-document call, or reports the section deleted. Says when the current text is not resolved. Always cites the full lineage. Use get-section for raw text from one document without chain-walking.',
+    'Trace a contract section across the matter\'s amendment chain — e.g. "what does Section 4 currently say?". Walks amendments newest-first and returns the latest amendment\'s verbatim operative wording for that section (amend/restate/add) — the amendment\'s statement, not the resulting section text — plus the text that follows it in the amendment (by position, unverified) and where to read both, or reports the section deleted. Says when the current text is not resolved. Always cites the full lineage. Use get-section for raw text from one document without chain-walking.',
   args: {
     section: tool.schema.string().describe('Section label, e.g. "4" or "7.2(a)" or "EXHIBIT A".'),
     document: tool.schema
@@ -196,7 +196,12 @@ export default tool({
     db.close()
     const amender = resolved.amender.rel.doc_name
     const span = `chars ${op.char_start}..${op.char_end}`
-    const nextStep = `Next step: read-document ${JSON.stringify(read)}`
+    // Tool-neutral: names the document and position without assuming a tool.
+    const position =
+      read.offset === null || read.limit === null
+        ? null
+        : `from code-point offset ${read.offset} (${read.limit} characters)`
+    const unavailable = `around ${span}; its position is unavailable because the indexed text is incomplete.`
     const header =
       `=== Current state of §${args.section} (chain root: ${baseName}) ===\n` +
       `Latest operative source: ${amender} — ${conjugate(resolved.operation)} §${args.section}.\n\n`
@@ -204,7 +209,7 @@ export default tool({
       return (
         header +
         `Note: the current text of §${args.section} is not resolved — the amendment's operative wording at ${span} is not recoverable from the index.\n` +
-        `${nextStep} reads the amendment's text at that position.\n\n${lineage}`
+        `Next step: read ${amender} ${position ? `${position} to see the amendment's text at that position.` : unavailable}\n\n${lineage}`
       )
     }
     const following = followingText
@@ -216,7 +221,7 @@ export default tool({
       `${quote(operativeText)}\n\n` +
       following +
       `Note: the current text of §${args.section} is not resolved — the index records where the amendment operates, not the resulting section text.\n` +
-      `${nextStep} reads the statement and the text after it; confirm the resulting wording of §${args.section} there before quoting it as current.\n\n${lineage}`
+      `Next step: read ${amender} ${position ? `${position} — the statement and the text after it — and confirm the resulting wording of §${args.section} there before quoting it as current.` : unavailable}\n\n${lineage}`
     )
   },
 })
