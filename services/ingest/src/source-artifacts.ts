@@ -141,18 +141,22 @@ export async function healSourceArtifacts(matterDir: string, sourceRolledBack: b
 
 export function sourceArtifactsMatchRegistry(matterDir: string, suppliedDb?: Database) {
   const db = suppliedDb ?? openDb(matterDir)
-  const sources = (listSourceDocuments(db) as { doc_path: string; name: string }[])
-    .map((document): SourceRecord => {
-      const text = reconstructText(db, document.doc_path).trim()
-      return {
-        document: document.name,
-        doc_path: document.doc_path,
-        extracted_text: `sources/${sourceSlug(document.name)}.txt`,
-        text,
-        characters: text.length,
-      }
-    })
-  if (!suppliedDb) db.close()
+  let sources: SourceRecord[]
+  try {
+    sources = (listSourceDocuments(db) as { doc_path: string; name: string }[])
+      .map((document): SourceRecord => {
+        const text = reconstructText(db, document.doc_path).trim()
+        return {
+          document: document.name,
+          doc_path: document.doc_path,
+          extracted_text: `sources/${sourceSlug(document.name)}.txt`,
+          text,
+          characters: text.length,
+        }
+      })
+  } finally {
+    if (!suppliedDb) db.close()
+  }
   if (!sources.length) return SOURCE_ARTIFACT_PATHS.every((relative) => !existsSync(path.join(matterDir, relative)))
   if (SOURCE_ARTIFACT_PATHS.slice(0, 6).some((relative) => !existsSync(path.join(matterDir, relative)))) return false
   try {

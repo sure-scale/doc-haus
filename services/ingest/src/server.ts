@@ -1238,9 +1238,14 @@ for (const matter of listMatters()) {
   try {
     const recovery = await recoverDocumentMutations(matter.dir)
     const db = openDb(matter.dir)
-    const reembedded = await migrateEmbeddings(db)
-    const restructured = migrateStructure(db)
-    db.close()
+    let reembedded: number
+    let restructured: number
+    try {
+      reembedded = await migrateEmbeddings(db)
+      restructured = migrateStructure(db)
+    } finally {
+      db.close()
+    }
     await healSourceArtifacts(matter.dir, Boolean(recovery.sourceRolledBack))
     if (reembedded) console.log("chunks re-embedded", { count: reembedded, matter_ref: draftingTraceReference(matter.dir) })
     if (restructured) console.log("document structure extracted", { count: restructured, matter_ref: draftingTraceReference(matter.dir) })
