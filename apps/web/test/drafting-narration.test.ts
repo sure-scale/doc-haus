@@ -332,6 +332,10 @@ test("a provider or setup stop names the fix in Settings, and Continue resumes i
   expect(runOutcome(expired)).toEqual({ tone: "attention", text: PROVIDER_STOP_MESSAGES.auth })
   expect(stageMilestones(expired).at(-1)).toMatchObject({ state: "paused", text: "Paused while drafting: Settings need attention" })
   expect(runTransition(expired, running)).toEqual({ state: "done", text: "Resumed, picking up with drafting" })
+  const runKey = `run:failed:${expired.updated_at}`
+  const excerpt = buildExcerpt({ status: expired, plan: { keys: [runKey], focus: runKey, reason: "checkpoint" }, activity: [], now: 0 })
+  expect(excerpt).toContain("Run state: paused until Settings are fixed; the work so far is kept.")
+  expect(excerpt).toContain(`- The run settled: ${PROVIDER_STOP_MESSAGES.auth}`)
 })
 
 test("checkpoints cover finished stages, the plan, open questions and the run settling", () => {

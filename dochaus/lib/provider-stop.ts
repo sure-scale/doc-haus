@@ -4,7 +4,7 @@
 export type ProviderStopKind = "auth" | "setup" | "model"
 
 export const PROVIDER_STOP_MESSAGES: Record<ProviderStopKind, string> = {
-  auth: "The model provider refused its sign-in or account access. Reconnect the provider in Settings, then Continue resumes drafting.",
+  auth: "The model provider did not accept the saved sign-in. Reconnect the provider in Settings, then Continue resumes drafting.",
   setup: "Model setup is not finished. Complete setup in Settings, then Continue resumes drafting.",
   model: "The model this draft uses is not available from its provider. Reconnect the provider or enable the model in Settings, then Continue resumes drafting.",
 }
