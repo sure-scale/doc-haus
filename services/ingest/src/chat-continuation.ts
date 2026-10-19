@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto"
+import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
 import { engineV2Fetch } from "../../../dochaus/lib/engine-v2"
 import { openDb } from "./db"
 import { boundedEngineRequest, engineURL, serializeMatter, type EngineRequestOptions } from "./matter-session"
@@ -364,8 +365,18 @@ function input(claim: Claim) {
   return { kind: claim.kind as ChatContinuationInput["kind"], runId: claim.run_id, progressToken: claim.progress_token, sessionID: claim.session_id, messageID: claim.message_id }
 }
 
+// The status records what this service last saw of the engine; the engine
+// stays the truth, and the next call for the same claim reads it again. A
+// status write that finds the database locked (an upload commit holds the lock
+// for seconds) is skipped, so a turn the engine already accepted is never
+// reported as an error.
 function setClaimStatus(db: ReturnType<typeof openDb>, messageID: string, status: Claim["status"]) {
-  db.query("UPDATE continuation_dispatches SET status = ?, updated_at = ? WHERE message_id = ?").run(status, Date.now(), messageID)
+  try {
+    db.query("UPDATE continuation_dispatches SET status = ?, updated_at = ? WHERE message_id = ?").run(status, Date.now(), messageID)
+  } catch (error) {
+    if (!String((error as { code?: unknown }).code).startsWith("SQLITE_BUSY")) throw error
+    console.error("continuation status not recorded", diagnosticErrorMetadata(error))
+  }
 }
 
 async function engineJson(directory: string, endpoint: string, options: EngineRequestOptions): Promise<unknown> {
