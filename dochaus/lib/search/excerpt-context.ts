@@ -62,45 +62,70 @@ function definitionPreview(definition: string) {
   )
 }
 
-// Auto-resolve numbered cross-references appearing in the excerpts ("as set
-// forth in Section 8.3") against the citing document's own section labels, so
-// the model knows the referenced section is one get-section call away instead
-// of searching for it — or that it is not in the indexed text at all.
+// For numbered references in the excerpts ("Section 8.3"), report the citing
+// document's own section with a matching label, so the model knows such a
+// section is one get-section call away. A matching label is a fact about this
+// document, not a resolution: "Section 8.3 of the Credit Agreement" inside a
+// guarantee still matches the guarantee's 8.3. The note says so and leaves the
+// referent to the reading agent.
 const EXCERPT_REF_RE =
   /\b(Section|Article|Clause|Exhibit|Schedule|Annex|Appendix)\s+(\d+(?:\.\d+)*(?:\([a-z]+\))*|[A-Z](?![A-Za-z])|[IVXLC]+(?![A-Za-z]))/g
 
+// Ingest labels a numbered line ("8.3 Notices") by its number alone and an
+// unnumbered heading ("EXHIBIT B - FORM OF NOTICE") by its own text. A bare
+// number therefore records no kind beyond the section numbering itself, so only
+// Section/Clause references may match it; Article, Exhibit, Schedule, Annex and
+// Appendix match only a heading label that names that kind and label.
+const CLAUSE_NUMBER_LABEL = /^\d+(?:\.\d+)*$/
+const CLAUSE_NUMBER_KINDS = new Set(["Section", "Clause"])
+
+type LabelledSection = { section: string; structural_path: string }
+
+function matchingSection(sections: LabelledSection[], kind: string, label: string) {
+  const named = sections.find(({ section }) => {
+    const [first, second] = section.trim().split(/\s+/)
+    return first?.toUpperCase() === kind.toUpperCase() && second?.replace(/[.:;,–—-]+$/, "") === label
+  })
+  if (named || !CLAUSE_NUMBER_KINDS.has(kind)) return named
+  const numbered = sections.filter(({ section }) => CLAUSE_NUMBER_LABEL.test(section))
+  return numbered.find(({ section }) => section === label) ?? numbered.find(({ section }) => section.startsWith(`${label}.`))
+}
+
 export function attachCrossRefs(db: Database, ranked: Array<{ row: ChunkRow }>, scope: SearchScope) {
   const filter = scope.structural_path === undefined ? { sql: "", params: [] } : chunkScope(scope)
-  const resolved = ranked
+  const sectionsByDoc = new Map<string, LabelledSection[]>()
+  const sectionsOf = (docPath: string) => {
+    const cached = sectionsByDoc.get(docPath)
+    if (cached) return cached
+    const sections = db
+      .query(
+        "SELECT section, structural_path FROM chunks WHERE doc_path = ?" +
+          (filter.sql ? ` AND ${filter.sql}` : "") + " ORDER BY char_start",
+      )
+      .all(docPath, ...filter.params) as LabelledSection[]
+    sectionsByDoc.set(docPath, sections)
+    return sections
+  }
+  const notes = ranked
     .flatMap(({ row }) =>
       [...row.text.matchAll(EXCERPT_REF_RE)].map((m) => ({
-        docPath: row.doc_path,
-        docName: row.doc_name,
-        ownSection: row.section,
-        kind: m[1],
-        label: m[2],
+        row,
+        hit: matchingSection(sectionsOf(row.doc_path), m[1]!, m[2]!),
       })),
     )
-    .filter((ref) => ref.label !== ref.ownSection)
+    .filter(({ row, hit }) => hit && hit.section !== row.section)
     .filter(
-      (ref, i, all) => all.findIndex((o) => o.docPath === ref.docPath && o.kind === ref.kind && o.label === ref.label) === i,
+      ({ row, hit }, i, all) =>
+        all.findIndex((o) => o.row.doc_path === row.doc_path && o.hit!.section === hit!.section) === i,
     )
-    .map((ref) => ({
-      ...ref,
-      // EXCERPT_REF_RE labels cannot contain %/_ today; escape anyway so a
-      // widened ref pattern can never turn the label into a LIKE wildcard.
-      hit: db
-        .query(
-          "SELECT section FROM chunks WHERE doc_path = ?1 AND (section = ?2 OR section LIKE ?3 || '.%' ESCAPE '\\')" +
-            (filter.sql ? ` AND ${filter.sql}` : "") + " LIMIT 1",
-        )
-        .get(ref.docPath, ref.label, ref.label.replaceAll(/[\\%_]/g, "\\$&"), ...filter.params) as { section: string } | null,
-    }))
-    .filter((ref) => ref.hit)
     .slice(0, ATTACH_CAP)
-  if (!resolved.length) return ""
+    .map(({ row, hit }) => {
+      const heading = hit!.structural_path.split(" › ").at(-1)
+      return `- ${row.doc_name} has a section labelled "${hit!.section}"` + (heading && heading !== hit!.section ? `: ${heading}` : "")
+    })
+  if (!notes.length) return ""
   return (
-    `\n\nCross-references in these passages that resolve to indexed sections (fetch with the get-section tool):\n` +
-    resolved.map((ref) => `- ${ref.kind} ${ref.label} → section "${ref.hit!.section}" of ${ref.docName}`).join("\n")
+    `\n\nSections whose labels match references in these passages (a matching label does not show which document a reference means; fetch with the get-section tool):\n` +
+    notes.join("\n")
   )
 }

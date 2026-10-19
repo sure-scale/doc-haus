@@ -265,19 +265,60 @@ test("definitions, cross-reference hints and pending context respect an explicit
     expect(unfiltered.result!.output).toContain(childDefinition)
     expect(unfiltered.result!.output).toContain("outside-definition-")
     expect(unfiltered.result!.output).toContain("unproven-span-")
-    expect(unfiltered.result!.output).toContain("- Section 9 →")
+    expect(unfiltered.result!.output).toContain(`- source.docx has a section labelled "9": §9 Outside`)
     expect(unfiltered.result!.output).toContain(pendingText)
     expect(unfiltered.result!.metadata.pending).toHaveLength(1)
     expect(unfiltered.result!.metadata).not.toHaveProperty("pending_context")
     expect(filtered.result!.output).not.toContain("outside-definition-")
     expect(filtered.result!.output).not.toContain("unproven-span-")
     expect(filtered.result!.output).toContain(childDefinition)
-    expect(filtered.result!.output).not.toContain("- Section 9 →")
-    expect(filtered.result!.output).toContain("- Section 3.1 →")
+    expect(filtered.result!.output).not.toContain(`labelled "9"`)
+    expect(filtered.result!.output).toContain(`- source.docx has a section labelled "3.1": §3.1 Child`)
     expect(filtered.result!.output).not.toContain(pendingText)
     expect(filtered.result!.metadata.pending).toHaveLength(0)
     expect(filtered.result!.metadata.pending_context).toEqual({ status: "omitted", reason: "unassessed_for_structural_scope" })
     expect(filtered.result!.output).toContain("Pending redline context omitted for this structural scope; pending proposals have not been assessed.")
+  } finally {
+    rmSync(fixture.directory, { recursive: true, force: true })
+  }
+})
+
+test("section-label hints match the reference kind and state a label, not a referent", async () => {
+  const fixture = matter()
+  const document = fixture.addDocument("Guarantee.docx")
+  const root = "Doc(Guarantee.docx)"
+  // Labels in the shapes ingest records: a numbered line ("8.3 Notices") keeps
+  // only its number; an unnumbered heading keeps its own text.
+  const text = "needle The Guarantor complies with Section 8.3 of the Credit Agreement, Article 5 of the Regulation, Clause 4.1, Schedule 3, Annex B and Exhibit C."
+  fixture.addChunk(document, `${root} › §2 Guarantee`, text, 1, 0, "2")
+  fixture.addChunk(document, `${root} › §3 Representations`, "representations", 0.1, 1000, "3")
+  fixture.addChunk(document, `${root} › §4.1 Costs`, "costs", 0.1, 2000, "4.1")
+  fixture.addChunk(document, `${root} › §5 Payments`, "payments", 0.1, 3000, "5")
+  fixture.addChunk(document, `${root} › §8.3 Notices`, "notices", 0.1, 4000, "8.3")
+  fixture.addChunk(document, `${root} › EXHIBIT B - FORM OF NOTICE`, "form of notice", 0.1, 5000, "EXHIBIT B - FORM OF NOTICE")
+  fixture.addChunk(document, `${root} › Exhibit C`, "exhibit c", 0.1, 6000, "Exhibit C")
+  fixture.db.close()
+  try {
+    const [result] = await search(fixture.directory, [{ query: "needle", k: 1 }])
+    const output = result.result!.output
+    const hint = output.slice(output.lastIndexOf("\n\n") + 2)
+    // A numbered label records no kind: Schedule 3 and Article 5 are other
+    // numbering series, and Annex B is not the EXHIBIT B heading.
+    expect(hint).not.toContain(`"3"`)
+    expect(hint).not.toContain(`"5"`)
+    expect(hint).not.toContain("EXHIBIT B")
+    // The note states which labels the document has; the reading agent decides
+    // what each reference means (Section 8.3 here names another agreement).
+    expect(hint).not.toContain("→")
+    expect(hint).not.toMatch(/resolve/i)
+    expect(hint).toBe(
+      [
+        "Sections whose labels match references in these passages (a matching label does not show which document a reference means; fetch with the get-section tool):",
+        `- Guarantee.docx has a section labelled "8.3": §8.3 Notices`,
+        `- Guarantee.docx has a section labelled "4.1": §4.1 Costs`,
+        `- Guarantee.docx has a section labelled "Exhibit C"`,
+      ].join("\n"),
+    )
   } finally {
     rmSync(fixture.directory, { recursive: true, force: true })
   }
