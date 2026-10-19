@@ -76,9 +76,9 @@ never weaken a legal check.
   native session history plus Snapshot.
 - Keep one writer path for lean run state and the body docx: the lean workflow
   (dochaus/workflows/lean). Amendments, Continue requests and human answers are
-  queued and processed in order. Overlapping changes always go to the merge
-  agent and are never skipped; a change that cannot be applied becomes a
-  visible open item.
+  queued and processed in order. Overlapping changes are consolidated before
+  change-review and are never skipped; a change that cannot be applied becomes
+  a visible open item.
 - The lean profile is the drafting route and recovery is a re-run: a stage
   without a valid output re-runs from its inputs, completed stages are not
   repeated, and an unchanged state or a run stopped as blocked or failed cannot
