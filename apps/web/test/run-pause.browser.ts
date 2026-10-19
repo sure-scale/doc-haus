@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url"
 import blockedGate from "../../../dochaus/workflows/lean/fixtures/status-blocked-gate.json"
 import start from "../../../dochaus/workflows/lean/fixtures/start.json"
 
-const { chromium } = await import(process.env.PLAYWRIGHT_MODULE ?? "@playwright/test")
+const { chromium } = (await import(process.env.PLAYWRIGHT_MODULE ?? "@playwright/test")) as typeof import("@playwright/test")
 const directory = await mkdtemp(path.join(os.tmpdir(), "dochaus-pause-ui-"))
 const shots = process.env.RUN_PAUSE_SCREENSHOTS
 const working = start.status

@@ -7,7 +7,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import blockedGate from "../../../dochaus/workflows/lean/fixtures/status-blocked-gate.json"
 
-const { chromium } = await import(process.env.PLAYWRIGHT_MODULE ?? "@playwright/test")
+const { chromium } = (await import(process.env.PLAYWRIGHT_MODULE ?? "@playwright/test")) as typeof import("@playwright/test")
 const directory = await mkdtemp(path.join(os.tmpdir(), "dochaus-checklist-ui-"))
 const initial = {
   ...blockedGate,
@@ -27,7 +27,7 @@ function Harness() {
   const [status, setStatus] = useState(${JSON.stringify(initial)})
   const actions = useRunActions("matter-check", status, setStatus)
   window.runActions = actions
-  return createElement(RunHeader, { status, actions, own: true, onOpen: () => {} })
+  return createElement(RunHeader, { status, actions, own: true, onOpen: () => {}, onShowDrafts: () => {} })
 }
 createRoot(document.getElementById("root")).render(createElement(Harness))
 `)

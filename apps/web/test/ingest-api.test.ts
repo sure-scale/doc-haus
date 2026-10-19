@@ -1,12 +1,17 @@
 import { afterEach, expect, test } from "bun:test"
-import status from "../../../dochaus/workflows/lean/fixtures/status-completed.json"
+import completed from "../../../dochaus/workflows/lean/fixtures/status-completed.json"
 import { deleteMatterSession } from "../src/api/ingest/matters"
 import { dispatchMatterContinuation } from "../src/api/ingest/drafting-run"
 import { combinedDocumentUrl, fetchCombinedDocument, uploadDocument } from "../src/api/ingest/documents"
 import { INGEST_URL } from "../src/config"
 import { getDraftingStatus } from "../src/api/ingest/drafting-status"
+import type { LeanDraftingStatus } from "../src/api/ingest/lean"
 
+const status = completed as LeanDraftingStatus
 const originalFetch = globalThis.fetch
+
+// Bun's fetch type also carries preconnect; keep it so a stub is a whole fetch.
+const stubFetch = (respond: () => Promise<Response>): typeof fetch => Object.assign(respond, { preconnect: originalFetch.preconnect })
 const originalXhr = globalThis.XMLHttpRequest
 
 afterEach(() => {
@@ -16,7 +21,7 @@ afterEach(() => {
 
 test("slow status polls share one in-flight read per matter and release it on success or failure", async () => {
   const pending: Array<{ resolve: (response: Response) => void; reject: (error: Error) => void }> = []
-  globalThis.fetch = (() => new Promise<Response>((resolve, reject) => pending.push({ resolve, reject }))) as typeof fetch
+  globalThis.fetch = stubFetch(() => new Promise<Response>((resolve, reject) => pending.push({ resolve, reject })))
   const first = getDraftingStatus("slow-matter")
   const same = getDraftingStatus("slow-matter")
   const other = getDraftingStatus("other-matter")
@@ -53,10 +58,10 @@ test("conversation deletion goes through the matter service", async () => {
     },
   ])
 
-  globalThis.fetch = (async () => Response.json(
+  globalThis.fetch = stubFetch(async () => Response.json(
     { error: "This conversation owns an unfinished drafting run and cannot be deleted." },
     { status: 409 },
-  )) as typeof fetch
+  ))
   await expect(deleteMatterSession("matter-a", "ses_owner")).rejects.toThrow("unfinished drafting run")
 })
 
@@ -82,7 +87,7 @@ test("continuation dispatch goes through the matter backend and validates its cl
   })
   expect(JSON.parse(String(calls[0]?.init?.body))).toEqual(input)
 
-  globalThis.fetch = (async () => Response.json({ accepted: true }, { status: 200 })) as typeof fetch
+  globalThis.fetch = stubFetch(async () => Response.json({ accepted: true }, { status: 200 }))
   await expect(dispatchMatterContinuation("matter-a", input)).rejects.toThrow(
     "Workflow continuation dispatch response is invalid",
   )
@@ -129,7 +134,7 @@ test("a combined document downloads from ingest's combined route, and its refusa
   expect([...new Uint8Array(await file.arrayBuffer())]).toEqual([80, 75, 3, 4])
 
   const refuse = (status: number, body: unknown) => {
-    globalThis.fetch = (async () => Response.json(body, { status })) as typeof fetch
+    globalThis.fetch = stubFetch(async () => Response.json(body, { status }))
     return fetchCombinedDocument("matter-a", "Supply note.docx")
   }
   await expect(refuse(409, { error: "combined_parts_missing" })).rejects.toThrow(
@@ -141,13 +146,13 @@ test("a combined document downloads from ingest's combined route, and its refusa
   await expect(refuse(404, { error: "no_combined_output" })).rejects.toThrow("Could not download Supply note.docx: this drafting run has no combined file.")
   // Any other refusal keeps the route's own message.
   await expect(refuse(409, { error: "The matter is busy." })).rejects.toThrow("The matter is busy.")
-  globalThis.fetch = (async () => new Response("Internal Server Error", { status: 500 })) as typeof fetch
+  globalThis.fetch = stubFetch(async () => new Response("Internal Server Error", { status: 500 }))
   await expect(fetchCombinedDocument("matter-a", "Supply note.docx")).rejects.toThrow("Could not download Supply note.docx (500)")
 })
 
 test("each combined refusal reads as a plain reason, and an unreadable Word file names the draft or the memo", async () => {
   const refuse = (status: number, body: unknown) => {
-    globalThis.fetch = (async () => Response.json(body, { status })) as typeof fetch
+    globalThis.fetch = stubFetch(async () => Response.json(body, { status }))
     return fetchCombinedDocument("matter-a", "Supply note.docx").then(
       () => "downloaded",
       (error: Error) => error.message,
@@ -181,10 +186,10 @@ test("each combined refusal reads as a plain reason, and an unreadable Word file
   }
   // Busy is reported once; the client does not retry on its own.
   let calls = 0
-  globalThis.fetch = (async () => {
+  globalThis.fetch = stubFetch(async () => {
     calls++
     return Response.json({ error: "combined_parts_busy", message }, { status: 503, headers: { "Retry-After": "5" } })
-  }) as typeof fetch
+  })
   await expect(fetchCombinedDocument("matter-a", "Supply note.docx")).rejects.toThrow(
     `${prefix}the draft or the memo is being updated. Try again shortly.`,
   )

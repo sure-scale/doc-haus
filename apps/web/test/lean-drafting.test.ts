@@ -132,9 +132,9 @@ test("the run header says where the run is in one line and offers the one next s
   expect(runHeadline(lean(orphaned), now).title).toBe("Paused")
   expect(runHeadline(lean(failed), now, true).title).toBe("Resuming…")
 
-  const idle: RunActions = { busy: false, error: "", resuming: false, resume: async () => true, answer: async () => true }
+  const idle: RunActions = { busy: false, pausing: false, stopping: false, error: "", resuming: false, resume: async () => true, answer: async () => true, update: async () => true, refine: async () => true, pause: async () => true, stop: async () => true }
   const render = (fixture: unknown) =>
-    renderToStaticMarkup(createElement(RunHeader, { status: lean(fixture), actions: idle, own: true, onOpen: () => {} }))
+    renderToStaticMarkup(createElement(RunHeader, { status: lean(fixture), actions: idle, own: true, onOpen: () => {}, onShowDrafts: () => {} }))
   const done = render(completed)
   expect(done).toContain("Ready for review")
   expect(done).toContain("Open draft")
@@ -185,9 +185,9 @@ test("Pause posts the run's owner to the lean pause route and keeps refusals", a
 test("the header offers Pause only while the run is working; a paused run offers Continue", () => {
   const now = Date.parse(completed.updated_at)
   let paused = 0
-  const actions: RunActions = { busy: false, pausing: false, error: "", resuming: false, resume: async () => true, answer: async () => true, update: async () => true, refine: async () => true, pause: async () => (paused++, true) }
+  const actions: RunActions = { busy: false, pausing: false, stopping: false, error: "", resuming: false, resume: async () => true, answer: async () => true, update: async () => true, refine: async () => true, pause: async () => (paused++, true), stop: async () => true }
   const render = (status: LeanDraftingStatus, overrides: Partial<RunActions> = {}) =>
-    renderToStaticMarkup(createElement(RunHeader, { status, actions: { ...actions, ...overrides }, own: true, onOpen: () => {} }))
+    renderToStaticMarkup(createElement(RunHeader, { status, actions: { ...actions, ...overrides }, own: true, onOpen: () => {}, onShowDrafts: () => {} }))
   const working = render(lean(start.status))
   expect(working).toMatch(/<button type="button" class="run-head-cta">Pause drafting<\/button>/)
   expect(working).not.toContain("Continue drafting")

@@ -502,6 +502,7 @@ test("after a reload the run's own conversation shows the request, where the run
     narrating: false,
     failed: false,
     onForeignPart: () => {},
+    acceptsSession: () => false,
   }
   const render = (value: typeof narration, showRequest: boolean) =>
     renderToStaticMarkup(
