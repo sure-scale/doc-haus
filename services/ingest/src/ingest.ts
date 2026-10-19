@@ -1,4 +1,4 @@
-import { readdirSync } from "node:fs"
+import { existsSync, readdirSync } from "node:fs"
 import path from "node:path"
 import mammoth from "mammoth"
 import PostalMime from "postal-mime"
@@ -9,7 +9,7 @@ import { extractStructure, extractParties, migrateSections, migrateStructure, bu
 import { pdfToText } from "./pdf"
 import { detectInjection, normalizeExtractedText, scanDocxHiddenContent } from "./sanitize"
 import { stageSourceChange, writeSourceArtifacts } from "./source-artifacts"
-import { withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
+import { canonicalArtifactIdentity, withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
 import { chunkText } from "../../../dochaus/lib/chunk-text"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
 import { draftingTraceReference } from "../../../dochaus/lib/drafting-trace-identity"
@@ -30,8 +30,8 @@ const MATTER_DOCUMENT_EXTENSIONS = new Set([".docx", ".pdf", ".xlsx", ".eml"])
 
 export class SourceDocumentConflictError extends Error {}
 
-// The upload names a source already in the matter and the caller chose neither
-// replace nor keep both. `existing` is that source's stored name.
+// The upload names a source (or an unregistered file) already in the matter and
+// the caller chose neither replace nor keep both. `existing` is its stored name.
 export class SourceDocumentExistsError extends SourceDocumentConflictError {
   constructor(readonly existing: string) {
     super(`${existing} is already in this matter. Replace it, or keep both and add the upload under a new name.`)
@@ -46,9 +46,10 @@ export class DeliverableDocumentExistsError extends SourceDocumentConflictError 
   }
 }
 
-// What an upload does when a source of the same name is already registered:
-// refuse (the default, so a lawyer's file is never replaced silently), replace
-// it, or keep both by storing the upload under the next free name.
+// What an upload does when a source of the same name is already registered, or a
+// file of that name is already in the matter folder: refuse (the default, so a
+// lawyer's file is never replaced silently), replace it, or keep both by storing
+// the upload under the next free name.
 export type ExistingSourceChoice = "refuse" | "replace" | "keep-both"
 
 export function matterDocumentName(fileName: string) {
@@ -81,7 +82,9 @@ export async function ingestDocument(
 }
 
 // The requested name, or the first `Stem (n).ext` from 2 up that no matter file
-// or registered document holds, compared case-insensitively on every platform.
+// or registered document holds. Names compare by artifact identity, so a spelling
+// the filesystem resolves to the same file (such as a decomposed Unicode name on
+// macOS) is taken, and case-insensitively on every platform.
 function freeDocumentName(matterDir: string, name: string) {
   const db = openDb(matterDir)
   const registered = (() => {
@@ -91,12 +94,13 @@ function freeDocumentName(matterDir: string, name: string) {
       db.close()
     }
   })()
-  const taken = new Set([...readdirSync(matterDir), ...registered].map((entry) => entry.toLowerCase()))
+  const identity = (entry: string) => canonicalArtifactIdentity(matterDir, entry).toLowerCase()
+  const taken = new Set([...readdirSync(matterDir), ...registered].map(identity))
   const extension = path.extname(name)
   const stem = name.slice(0, -extension.length)
   for (let n = 1; ; n++) {
     const candidate = n === 1 ? name : `${stem} (${n})${extension}`
-    if (!taken.has(candidate.toLowerCase())) return candidate
+    if (!taken.has(identity(candidate))) return candidate
   }
 }
 
@@ -121,7 +125,8 @@ async function ingestDocumentLocked(
   if (role === "deliverable") throw new DeliverableDocumentExistsError(fileName)
   if (options.requireExistingSource && role !== "source")
     throw new SourceDocumentConflictError(`${fileName} is no longer a registered source document.`)
-  if (role === "source" && options.existing === "refuse") throw new SourceDocumentExistsError(fileName)
+  if (options.existing === "refuse" && (role === "source" || existsSync(docPath)))
+    throw new SourceDocumentExistsError(fileName)
 
   // Untrusted-document defense (issue #17): normalize away invisible Unicode, then
   // scan the visible text and the raw DOCX for injected instructions. Findings are
