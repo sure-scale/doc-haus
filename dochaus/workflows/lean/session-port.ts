@@ -41,7 +41,8 @@ export function engineSessionPort(options: { engineURL?: string; fetch?: typeof 
         body: JSON.stringify({ messageID, text: input.text, delivery: "queue" }),
         signal: AbortSignal.timeout(30_000),
       })
-      if (!admitted.ok) throw new Error(`The engine refused the ${input.agent} prompt (HTTP ${admitted.status}).`)
+      // Typed fields of a failure travel as the error's cause (providerStopKind).
+      if (!admitted.ok) throw new Error(`The engine refused the ${input.agent} prompt (HTTP ${admitted.status}).`, { cause: await admitted.json().catch(() => undefined) })
       // A pause that arrived while this prompt was being admitted found nothing
       // to interrupt yet; stop the admitted turn here instead.
       if (input.signal?.aborted) {
@@ -69,7 +70,8 @@ export function engineSessionPort(options: { engineURL?: string; fetch?: typeof 
           message.info.parentID === messageID)
         const failure = record(last) && record(last.info) && last.info.error ? last : undefined
         if (outcome !== "succeeded" || failure)
-          throw new Error(`The ${input.agent} session ended ${outcome}${failure && record(failure.info) ? `: ${JSON.stringify(failure.info.error)}` : ""}.`)
+          throw new Error(`The ${input.agent} session ended ${outcome}${failure && record(failure.info) ? `: ${JSON.stringify(failure.info.error)}` : ""}.`,
+            { cause: failure && record(failure.info) ? failure.info.error : undefined })
         return nativeStageResult(messages, messageID, input.agent)
       }
       throw new Error(`The ${input.agent} session did not finish within ${Math.round(timeoutMs / 60_000)} minutes.`)

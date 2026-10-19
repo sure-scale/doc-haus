@@ -1,6 +1,7 @@
 import { runFocusedChangeReview } from "./focused-change-review"
 import { readFirmDraftingPreferences } from "../../lib/drafting-preferences"
 import { DRAFTING_STOPPED_REASON } from "../../lib/drafting-update-admission"
+import { PROVIDER_STOP_MESSAGES, providerStopKind, type ProviderStopKind } from "../../lib/provider-stop"
 import { renderMarkdownToDocx } from "../../lib/render"
 import { existsSync, readFileSync, rmSync } from "node:fs"
 import { runChangeReconciliation } from "./change-reconciliation"
@@ -120,7 +121,7 @@ export async function runLean(directory: string, deps: LeanDeps): Promise<LeanSt
     pass.reinspectChecklist ||= pass.settled?.status === "blocked" && !pass.settled.paused_at && pass.settled.stages["checklist-check"]?.status === "blocked" &&
       pendingLeanRequests(directory).some(name => (readLeanJson(directory, `requests/${name}`) as { kind?: string } | undefined)?.kind === "continue")
     drainLeanRequests(directory, pass.settled)
-    const result: PassResult = await runPass(directory, writeLeanState(directory, { ...pass.state, status: "running", stop_reason: null, paused_at: undefined }), deps, pass.reinspectChecklist)
+    const result: PassResult = await runPass(directory, writeLeanState(directory, { ...pass.state, status: "running", stop_reason: null, paused_at: undefined, provider_stop: undefined }), deps, pass.reinspectChecklist)
       .catch((error: unknown) => deps.pause?.aborted
         ? { state: settlePause(directory, pass.state), paused: true }
         : { state: writeLeanState(directory, { ...(readLeanState(directory) ?? pass.state), status: "failed", stop_reason: `Drafting stopped by a runtime error: ${message(directory, error)}` }), restart: false })
@@ -142,6 +143,8 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
   const preferencesChanged = () => preferenceChange.observed ||= readFirmDraftingPreferences() !== preferences
   const pause = sourceDeps.pause
   const paused = () => pause?.aborted === true
+  // The first provider or setup failure of the pass, whatever a helper makes of it.
+  const provider: { stop?: ProviderStopKind } = {}
   // A pause interrupts every native session with a prompt in flight.
   const live = new Set<string>()
   const interruptLive = () => {
@@ -160,6 +163,9 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
     live.add(input.sessionID)
     try {
       return await untilPaused(sourceDeps.sessions.prompt(pause ? { ...input, signal: pause } : input), pause)
+    } catch (error) {
+      provider.stop ??= providerStopKind(error)
+      throw error
     } finally {
       live.delete(input.sessionID)
       if (paused()) throw new LeanPauseRequested()
@@ -290,6 +296,7 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
       state = updateLeanStage(directory, state, step, { status: "pending", input_sha: null, outputs: [], finished_at: null })
       return { state, restart: true }
     }
+    if (provider.stop) return { state: settleProviderStop(directory, state, provider.stop, step) }
     appendLeanEvent(directory, result.status === "failed"
       ? { stage, document, event: "failed", reason: result.reason }
       : { stage, document, event: result.status, outputs: result.outputs, reason: result.reason })
@@ -333,6 +340,7 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
     // A pause, then preference invalidation, takes precedence over that work.
     if (paused()) return { state: settlePause(directory, state), paused: true }
     if (preferencesChanged()) return { state, restart: true }
+    if (provider.stop) return { state: settleProviderStop(directory, state, provider.stop) }
     throw error
   } finally {
     pause?.removeEventListener("abort", interruptLive)
@@ -413,6 +421,15 @@ function settlePause(directory: string, fallback: LeanState): LeanState {
   return writeLeanState(directory, { ...latest, status: "blocked", stop_reason: LEAN_PAUSED_REASON, paused_at: now(), stages: unfinished(latest.stages) })
 }
 
+/** Retrying cannot fix a provider or setup failure: the run fails with the
+ * lawyer's fix (never the provider's own payload), at the step it reached. */
+function settleProviderStop(directory: string, state: LeanState, kind: ProviderStopKind, step?: StepID): LeanState {
+  const reason = PROVIDER_STOP_MESSAGES[kind]
+  appendLeanEvent(directory, { stage: step ? stepStage(step) : "run", document: step ? stepDocument(step) ?? undefined : undefined, event: "failed", reason })
+  const latest = step ? updateLeanStage(directory, state, step, { status: "failed", finished_at: now() }) : state
+  return writeLeanState(directory, { ...latest, status: "failed", stop_reason: step ? `${step}: ${reason}` : reason, provider_stop: kind })
+}
+
 /** A step left running, which no coordinator now works on, back to pending; its
  * session and attempts stay for inspection. Other steps are returned as they are. */
 function unfinished(stages: LeanState["stages"]) {
@@ -428,7 +445,7 @@ function unfinished(stages: LeanState["stages"]) {
  * marked done and no budget is reset. */
 export function stopLeanRun(directory: string, state: LeanState): LeanState {
   appendLeanEvent(directory, { stage: "run", event: "stopped", reason: DRAFTING_STOPPED_REASON })
-  return writeLeanState(directory, { ...state, status: "failed", stop_reason: DRAFTING_STOPPED_REASON, paused_at: undefined, stages: unfinished(state.stages) })
+  return writeLeanState(directory, { ...state, status: "failed", stop_reason: DRAFTING_STOPPED_REASON, paused_at: undefined, provider_stop: undefined, stages: unfinished(state.stages) })
 }
 
 async function ensureChecklistExtraction(directory: string, state: LeanState, deps: LeanDeps) {

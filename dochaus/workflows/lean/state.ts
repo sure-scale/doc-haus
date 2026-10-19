@@ -2,6 +2,7 @@ import { createHash } from "node:crypto"
 import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs"
 import path from "node:path"
 import { readDurableJson, writeDurableBytes } from "../../lib/durable-json"
+import type { ProviderStopKind } from "../../lib/provider-stop"
 import type { ChecklistFindingClass } from "./checklist-classify"
 import { HANDED_BACK_MEANING } from "./checklist-contract"
 import type { DocID, StepID } from "./plan"
@@ -49,6 +50,9 @@ export type LeanState = {
   /** Set while the run is blocked only because the lawyer paused it. Continue
    * then simply resumes: the pause is not a settled gate or checklist verdict. */
   paused_at?: string
+  /** Set while the run is failed only because the model provider or setup needs
+   * the lawyer's attention in Settings; Continue then resumes. */
+  provider_stop?: ProviderStopKind
   owner_session_id: string
   model: LeanModel | null
   created_at: string
