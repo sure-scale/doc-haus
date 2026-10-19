@@ -1,16 +1,21 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test"
-import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs"
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test"
+import { createHash } from "node:crypto"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { Document, Packer, Paragraph } from "docx"
-import { openDb } from "./db"
+import { getMeta, openDb } from "./db"
 import { extractDocumentText, ingestDocument } from "./ingest"
+import { createMatter } from "./matter"
 import { buildSectionPaths, documentSections, migrateSections, reconstructText, sectionize } from "./structure"
 
 // Every fixture below is invented parser test content: no actual person,
 // organization, transaction or obligation.
 
 type SectionRow = ReturnType<typeof documentSections>[number]
+
+const docx = async (paragraphs: string[]) =>
+  Buffer.from(await Packer.toBuffer(new Document({ sections: [{ children: paragraphs.map((text) => new Paragraph(text)) }] })))
 
 function expectTiling(rows: SectionRow[], length: number) {
   expect(rows.map((row) => row.ordinal)).toEqual(rows.map((_, index) => index + 1))
@@ -47,6 +52,19 @@ test("sections tile the canonical text, starting with the opening text", () => {
     },
   ])
   expect(documentSections("")).toEqual([])
+})
+
+test("sections tile text that does not end with a newline, and whitespace-only text has none", () => {
+  const text = ["Opening words before any heading.", "1. Scope", "Body."].join("\n")
+  const rows = documentSections(text)
+  expectTiling(rows, text.length)
+  expect(text.slice(rows[1]!.charStart, rows[1]!.charEnd)).toBe("1. Scope\nBody.")
+  // Leading blank lines belong to the first section rather than to no section.
+  const blankLead = "\n\n1. Scope\nBody."
+  const led = documentSections(blankLead)
+  expectTiling(led, blankLead.length)
+  expect(led.map((row) => row.label)).toEqual(["1"])
+  for (const blank of [" ", "\n", "\n\n", "  \n\t\n "]) expect(documentSections(blank)).toEqual([])
 })
 
 test("without Markdown headings the recorded hierarchy is the structural path chunks carry", () => {
@@ -127,10 +145,6 @@ describe("ingest records sections and the document revision", () => {
       { length: 30 },
       (_, i) =>
         `The ${topic} paragraph ${i + 1} records an invented step for parser regression testing and describes no actual person, organization or obligation.`,
-    )
-  const docx = async (paragraphs: string[]) =>
-    Buffer.from(
-      await Packer.toBuffer(new Document({ sections: [{ children: paragraphs.map((text) => new Paragraph(text)) }] })),
     )
   let directory = ""
   const sources: Record<string, Buffer> = {}
@@ -279,22 +293,28 @@ describe("ingest records sections and the document revision", () => {
     }
   })
 
-  test("a document's rev is the source-map sha256 prefix", () => {
-    const sourceMap = JSON.parse(readFileSync(path.join(directory, "source-map.json"), "utf8")) as {
-      documents: Array<{ doc_path: string; sha256: string }>
+  test("the backfill also reaches a document left without a rev and removes sections of no source document", () => {
+    const fresh = snapshot()
+    const notice = path.join(directory, "Synthetic Notice.docx")
+    const db = openDb(directory)
+    try {
+      expect(getMeta(db, "sections_version")).not.toBeNull()
+      expect(migrateSections(db)).toBe(0)
+      db.run(
+        "INSERT INTO sections (doc_path, doc_name, ordinal, depth, char_start, char_end, structure_source) VALUES (?, 'Removed.docx', 1, 1, 0, 10, 'sectionize')",
+        [path.join(directory, "Removed.docx")],
+      )
+      expect(migrateSections(db)).toBe(0)
+      expect(db.query("SELECT COUNT(*) AS n FROM sections WHERE doc_name = 'Removed.docx'").get()).toEqual({ n: 0 })
+      db.run("DELETE FROM sections WHERE doc_path = ?", [notice])
+      db.run("UPDATE chunks SET section_ordinal = NULL WHERE doc_path = ?", [notice])
+      db.run("UPDATE documents SET rev = NULL WHERE doc_path = ?", [notice])
+      expect(migrateSections(db)).toBe(1)
+      expect(migrateSections(db)).toBe(0)
+    } finally {
+      db.close()
     }
-    const { documents } = snapshot()
-    expect(documents).toHaveLength(3)
-    expect(documents).toEqual(
-      sourceMap.documents
-        .map((document) => ({
-          doc_path: document.doc_path,
-          name: path.basename(document.doc_path),
-          rev: document.sha256.slice(0, 12),
-        }))
-        .sort((a, b) => a.doc_path.localeCompare(b.doc_path)),
-    )
-    expect(documents.every((document) => /^[0-9a-f]{12}$/.test((document as { rev: string }).rev))).toBe(true)
+    expect(snapshot()).toEqual(fresh)
   })
 
   test("a matter indexed before sections existed gets them at start, equal to a fresh ingest", () => {
@@ -316,3 +336,156 @@ describe("ingest records sections and the document revision", () => {
     expect(snapshot()).toEqual(fresh)
   })
 })
+
+describe("a document's rev is the hash of the canonical text its spans index", () => {
+  let directory = ""
+  beforeAll(() => {
+    directory = realpathSync(mkdtempSync(path.join(tmpdir(), "dochaus-sections-rev-")))
+  })
+  afterAll(() => rmSync(directory, { recursive: true, force: true }))
+
+  test("documents that differ only by leading blank lines get different revs", async () => {
+    const body = ["NOTICE OF HANDOVER", "2. Transport", "The carrier moves the invented box."]
+    const plain = await docx(body)
+    const padded = await docx(["", ...body])
+    expect(await extractDocumentText("Padded Notice.docx", padded)).toBe(
+      "\n\n" + (await extractDocumentText("Plain Notice.docx", plain)),
+    )
+    await ingestDocument(directory, "Plain Notice.docx", plain)
+    await ingestDocument(directory, "Padded Notice.docx", padded)
+    const db = openDb(directory)
+    try {
+      const recorded = ["Plain Notice.docx", "Padded Notice.docx"].map((name) => {
+        const docPath = path.join(directory, name)
+        const canonical = reconstructText(db, docPath)
+        const { rev } = db.query("SELECT rev FROM documents WHERE doc_path = ?").get(docPath) as { rev: string }
+        expect(rev).toBe(createHash("sha256").update(canonical).digest("hex").slice(0, 12))
+        const rows = db
+          .query("SELECT label, heading, char_start, char_end FROM sections WHERE doc_path = ? ORDER BY ordinal")
+          .all(docPath) as Array<{ label: string | null; heading: string; char_start: number; char_end: number }>
+        expect(rows.map((row) => row.heading)).toEqual(["NOTICE OF HANDOVER", "Transport"])
+        // Each span starts at the start of its heading line in the canonical text.
+        for (const row of rows) {
+          expect(row.char_start === 0 || canonical[row.char_start - 1] === "\n").toBe(true)
+          const line = canonical.slice(row.char_start, row.char_end).split("\n")[0]!.trim()
+          expect(line.startsWith(row.label ?? row.heading) && line.endsWith(row.heading)).toBe(true)
+        }
+        return { rev, transport: rows[1]!.char_start }
+      })
+      // The same pointer would land two characters apart in the two documents.
+      expect(recorded[1]!.transport).toBe(recorded[0]!.transport + 2)
+      expect(recorded[1]!.rev).not.toBe(recorded[0]!.rev)
+    } finally {
+      db.close()
+    }
+  })
+})
+
+test("a failed sections backfill at ingest start is logged and the upload still records its own sections", async () => {
+  const directory = realpathSync(mkdtempSync(path.join(tmpdir(), "dochaus-sections-backfill-")))
+  const errors = spyOn(console, "error").mockImplementation(() => {})
+  try {
+    await ingestDocument(directory, "First Notice.docx", await docx(["1. Scope", "The invented scope."]))
+    const first = path.join(directory, "First Notice.docx")
+    const setup = openDb(directory)
+    const before = setup.query("SELECT ordinal, char_start, char_end FROM sections WHERE doc_path = ?").all(first)
+    expect(before.length).toBeGreaterThan(0)
+    // The backfill re-records the first document, which this trigger refuses.
+    setup.run(
+      "CREATE TRIGGER refuse_first BEFORE INSERT ON sections WHEN new.doc_name = 'First Notice.docx' BEGIN SELECT RAISE(ABORT, 'synthetic sections failure'); END",
+    )
+    setup.run("DELETE FROM meta WHERE key = 'sections_version'")
+    setup.close()
+
+    await ingestDocument(directory, "Second Notice.docx", await docx(["2. Transport", "The invented box moves."]))
+    expect(errors.mock.calls.some(([message]) => String(message).includes("sections backfill failed"))).toBe(true)
+    const db = openDb(directory)
+    try {
+      const second = path.join(directory, "Second Notice.docx")
+      expect(db.query("SELECT label FROM sections WHERE doc_path = ?").all(second)).toEqual([{ label: "2" }])
+      expect(db.query("SELECT rev FROM documents WHERE doc_path = ?").get(second)).toEqual({ rev: expect.stringMatching(/^[0-9a-f]{12}$/) })
+      // The failed backfill rolled back whole and runs again at the next start.
+      expect(db.query("SELECT ordinal, char_start, char_end FROM sections WHERE doc_path = ?").all(first)).toEqual(before)
+      expect(getMeta(db, "sections_version")).toBeNull()
+      db.run("DROP TRIGGER refuse_first")
+      expect(migrateSections(db)).toBe(2)
+    } finally {
+      db.close()
+    }
+  } finally {
+    errors.mockRestore()
+    rmSync(directory, { recursive: true, force: true })
+  }
+}, 60_000)
+
+test("legal.db connections wait for a competing writer instead of failing at once", () => {
+  const directory = realpathSync(mkdtempSync(path.join(tmpdir(), "dochaus-sections-busy-")))
+  try {
+    const db = openDb(directory)
+    expect(db.query("PRAGMA busy_timeout").get()).toEqual({ timeout: 5000 })
+    db.close()
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test("a sections backfill failure at service start still heals the matter's source artifacts", async () => {
+  const temporary = realpathSync(mkdtempSync(path.join(tmpdir(), "dochaus-sections-boot-")))
+  const workspace = path.join(temporary, "workspace")
+  const config = path.join(temporary, "config")
+  mkdirSync(workspace)
+  mkdirSync(config)
+  writeFileSync(path.join(config, "opencode.json"), "{}\n")
+  const previous = process.env.WORKSPACE_ROOT
+  process.env.WORKSPACE_ROOT = workspace
+  let dir: string
+  try {
+    dir = createMatter("Synthetic boot matter").dir
+  } finally {
+    if (previous === undefined) delete process.env.WORKSPACE_ROOT
+    else process.env.WORKSPACE_ROOT = previous
+  }
+  const engine = Bun.serve({ port: 0, fetch: () => new Response("No engine in this test", { status: 503 }) })
+  const probe = Bun.serve({ port: 0, fetch: () => new Response() })
+  const port = probe.port
+  probe.stop(true)
+  const serviceLog = path.join(temporary, "ingest.log")
+  let service: ReturnType<typeof Bun.spawn> | undefined
+  try {
+    await ingestDocument(dir, "Synthetic Notice.docx", await docx(["1. Scope", "The invented scope."]))
+    const sourceMap = path.join(dir, "source-map.json")
+    expect(existsSync(sourceMap)).toBe(true)
+    const db = openDb(dir)
+    db.run("CREATE TRIGGER refuse_sections BEFORE INSERT ON sections BEGIN SELECT RAISE(ABORT, 'synthetic sections failure'); END")
+    db.run("DELETE FROM meta WHERE key = 'sections_version'")
+    db.close()
+    rmSync(sourceMap)
+
+    service = Bun.spawn([process.execPath, "run", "src/server.ts"], {
+      cwd: path.resolve(import.meta.dir, ".."),
+      env: {
+        ...process.env,
+        WORKSPACE_ROOT: workspace,
+        DOCHAUS_DIR: config,
+        DOCHAUS_RUNTIME_DIR: path.join(temporary, "runtime"),
+        INGEST_PORT: String(port),
+        INGEST_HOST: "127.0.0.1",
+        OPENCODE_URL: `http://127.0.0.1:${engine.port}`,
+      },
+      stdout: Bun.file(serviceLog),
+      stderr: Bun.file(serviceLog),
+    })
+    const deadline = Date.now() + 30_000
+    while (!(await fetch(`http://127.0.0.1:${port}/matters`).then((response) => response.ok).catch(() => false))) {
+      if (Date.now() >= deadline) throw new Error(`Ingest startup failed:\n${readFileSync(serviceLog, "utf8")}`)
+      await Bun.sleep(50)
+    }
+    expect(readFileSync(serviceLog, "utf8")).toContain("matter migration failed")
+    expect(existsSync(sourceMap)).toBe(true)
+  } finally {
+    service?.kill()
+    await service?.exited
+    engine.stop(true)
+    rmSync(temporary, { recursive: true, force: true })
+  }
+}, 60_000)

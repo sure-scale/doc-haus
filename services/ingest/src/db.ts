@@ -11,6 +11,12 @@ export function openDb(matterDir: string): Database {
   const dir = path.join(matterDir, ".dochaus")
   mkdirSync(dir, { recursive: true })
   const db = new Database(path.join(dir, "legal.db"))
+  // Wait up to 5 s for another connection's write lock (the engine's writers,
+  // or a startup or ingest backfill that rewrites a matter's rows in one
+  // transaction) instead of failing at once with SQLITE_BUSY. That covers the
+  // longest such transaction measured on a large matter while still surfacing
+  // a lock that is never released as an error rather than a hung request.
+  db.run("PRAGMA busy_timeout = 5000")
   db.run("PRAGMA journal_mode = WAL")
   db.run("CREATE TABLE IF NOT EXISTS answer_drafts (scope TEXT PRIMARY KEY, answers TEXT NOT NULL, revision INTEGER NOT NULL)")
   // injection_report: JSON-encoded prompt-injection findings from ingest-time
@@ -70,10 +76,11 @@ export function openDb(matterDir: string): Database {
     db.run("ALTER TABLE chunks ADD COLUMN structural_path TEXT NOT NULL DEFAULT ''")
   if (!hasColumn(db, "chunks", "party")) db.run("ALTER TABLE chunks ADD COLUMN party TEXT NOT NULL DEFAULT ''")
   // Recorded structure (see the sections table below). rev: the first 12 hex
-  // digits of the sha256 that source-map.json records for a source document's
-  // text; deliverables have none. section_ordinal: the section the chunk was cut
-  // from. Rows the sections backfill (structure.ts migrateSections) has not yet
-  // reached hold NULL.
+  // digits of the sha256 of a source document's canonical text, the untrimmed
+  // text rebuilt from its chunks (structure.ts reconstructText) that chunk
+  // offsets and section spans index; deliverables have none. section_ordinal:
+  // the section the chunk was cut from. Rows the sections backfill (structure.ts
+  // migrateSections) has not yet reached hold NULL.
   if (!hasColumn(db, "documents", "rev")) db.run("ALTER TABLE documents ADD COLUMN rev TEXT")
   if (!hasColumn(db, "chunks", "section_ordinal")) db.run("ALTER TABLE chunks ADD COLUMN section_ordinal INTEGER")
   // Small key-value table for index-level facts that aren't rows — currently

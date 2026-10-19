@@ -9,6 +9,8 @@ import { pdfToText } from "./pdf"
 import { detectInjection, normalizeExtractedText, scanDocxHiddenContent } from "./sanitize"
 import { writeSourceArtifacts } from "./source-artifacts"
 import { withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
+import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
+import { draftingTraceReference } from "../../../dochaus/lib/drafting-trace-identity"
 import { commitDocumentWriteAsync } from "./atomic-document-write"
 import { MatterDocumentIdentityError, resolveMatterDocumentTarget } from "./document-identity"
 import {
@@ -103,11 +105,18 @@ async function ingestDocumentLocked(
   try {
     // Never mix vectors from two embedding models in one matter — re-embed any
     // stale chunks before this document's are written (no-op on current DBs).
-    // Same for structure rows extracted by an older pattern version, and for
-    // sections recorded by an older version or not yet recorded.
+    // Same for structure rows extracted by an older pattern version. Sections
+    // recorded by an older version or not yet recorded are backfilled too, but
+    // nothing reads them across documents, so a failed backfill (rolled back
+    // whole, and retried at the next ingest or start) does not block this
+    // upload; this document's own sections are still recorded strictly below.
     await migrateEmbeddings(db)
     migrateStructure(db)
-    migrateSections(db)
+    try {
+      migrateSections(db)
+    } catch (error) {
+      console.error("sections backfill failed", { matter_ref: draftingTraceReference(matterDir), ...diagnosticErrorMetadata(error) })
+    }
     const paths = buildSectionPaths(fileName, sections)
     preparedChunks = await Promise.all(
       sections.flatMap((section) => {

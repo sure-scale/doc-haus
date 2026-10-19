@@ -15,6 +15,9 @@ type SourceRecord = {
   doc_path: string
   extracted_text: string
   characters: number
+  // The reconstructed text trimmed: sources/*.txt holds it plus one newline, and
+  // source-map.json's start_char/end_char and sha256 index and hash it (UTF-16),
+  // unlike chunk offsets, section spans and documents.rev, which use it untrimmed.
   text: string
 }
 
@@ -311,8 +314,8 @@ function buildSourceMap(sourceRows: SourceRecord[]) {
 // single line beyond 2000 characters mid-clause. Legal prose often emits an
 // entire clause or recital as one line, so the file is soft-wrapped at spaces
 // (see wrapForReadability). The authoritative offsets live in source-map.json
-// (char ranges into the reconstructed extracted text), never in these
-// read-only files; identifier values are read from the unwrapped slice.
+// (char ranges into the trimmed reconstructed text, see SourceRecord), never in
+// these read-only files; identifier values are read from the unwrapped slice.
 function sourceChunkFiles(sourceRows: SourceRecord[], sourceMap: ReturnType<typeof buildSourceMap>) {
   const textByDocument = new Map(sourceRows.map((source) => [source.document, source.text]))
   return sourceMap.documents.flatMap((document) => {

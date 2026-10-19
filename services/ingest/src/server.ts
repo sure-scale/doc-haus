@@ -1416,25 +1416,36 @@ for (const matter of listMatters()) {
   if (!existsSync(path.join(matter.dir, ".dochaus", "legal.db"))) continue
   // One corrupt or externally-locked matter DB must not abort the whole
   // service; that matter just stays un-migrated until its next ingest.
+  const matterRef = draftingTraceReference(matter.dir)
+  let recovery: Awaited<ReturnType<typeof recoverDocumentMutations>>
   try {
-    const recovery = await recoverDocumentMutations(matter.dir)
+    recovery = await recoverDocumentMutations(matter.dir)
+  } catch (e) {
+    console.error("matter recovery failed", { matter_ref: matterRef, ...diagnosticErrorMetadata(e) })
+    continue
+  }
+  try {
     const db = openDb(matter.dir)
-    let reembedded: number
-    let restructured: number
-    let sectioned: number
     try {
-      reembedded = await migrateEmbeddings(db)
-      restructured = migrateStructure(db)
-      sectioned = migrateSections(db)
+      const reembedded = await migrateEmbeddings(db)
+      if (reembedded) console.log("chunks re-embedded", { count: reembedded, matter_ref: matterRef })
+      const restructured = migrateStructure(db)
+      if (restructured) console.log("document structure extracted", { count: restructured, matter_ref: matterRef })
+      const sectioned = migrateSections(db)
+      if (sectioned) console.log("document sections recorded", { count: sectioned, matter_ref: matterRef })
     } finally {
       db.close()
     }
-    await healSourceArtifacts(matter.dir, Boolean(recovery.sourceRolledBack))
-    if (reembedded) console.log("chunks re-embedded", { count: reembedded, matter_ref: draftingTraceReference(matter.dir) })
-    if (restructured) console.log("document structure extracted", { count: restructured, matter_ref: draftingTraceReference(matter.dir) })
-    if (sectioned) console.log("document sections recorded", { count: sectioned, matter_ref: draftingTraceReference(matter.dir) })
   } catch (e) {
-    console.error("matter migration failed", { matter_ref: draftingTraceReference(matter.dir), ...diagnosticErrorMetadata(e) })
+    console.error("matter migration failed", { matter_ref: matterRef, ...diagnosticErrorMetadata(e) })
+  }
+  // The source artifacts derive from the chunks, not from the migrated rows, so
+  // a failed migration (rolled back, retried next start) does not stop them
+  // being healed.
+  try {
+    await healSourceArtifacts(matter.dir, Boolean(recovery.sourceRolledBack))
+  } catch (e) {
+    console.error("source artifact heal failed", { matter_ref: matterRef, ...diagnosticErrorMetadata(e) })
   }
 }
 

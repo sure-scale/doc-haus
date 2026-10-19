@@ -366,8 +366,11 @@ type SectionRow = {
 // section with no numbered parent belongs to the innermost Markdown heading
 // still open. Nothing else is inferred from the text.
 export function documentSections(text: string) {
-  // The reconstructed text ends with the newline sectionize counts after the
-  // last line; sectionize the text before it so the last span ends with the text.
+  // The reconstructed text normally ends with the newline sectionize counts
+  // after the last line; sectionize the text before it so the last span ends
+  // with the text. Text without that newline still counts one past its end, and
+  // leading blank lines sectionize drops belong to no section, so the first span
+  // starts at 0 and the last ends at text.length below: the spans tile the text.
   const sections = sectionize(text.endsWith("\n") ? text.slice(0, -1) : text)
   const rows: SectionRow[] = []
   const numbered: Array<{ number: string; row: SectionRow }> = []
@@ -385,8 +388,8 @@ export function documentSections(text: string) {
       depth: (parent?.depth ?? 0) + 1,
       label: section.number,
       heading: section.opening ? null : section.title,
-      charStart: section.charStart,
-      charEnd: section.charEnd,
+      charStart: rows.length ? section.charStart : 0,
+      charEnd: Math.min(section.charEnd, text.length),
       structureSource: level ? "markdown" : "sectionize",
     }
     if (section.number) numbered.push({ number: section.number, row })
@@ -517,27 +520,40 @@ export function recordSections(db: Database, docPath: string, docName: string) {
   db.run("UPDATE documents SET rev = ? WHERE doc_path = ?", [revision(text), docPath])
 }
 
-// The first 12 hex digits of the sha256 that source-map.json records for the
-// document, which hashes the same reconstructed text trimmed.
+// The first 12 hex digits of the sha256 of the canonical text: the untrimmed
+// reconstructed text that chunk offsets, section spans and citation checks all
+// index. A span is valid only under the rev it was issued with, so any change
+// to that text, leading or trailing whitespace included, changes the rev.
 function revision(text: string) {
-  return createHash("sha256").update(text.trim()).digest("hex").slice(0, 12)
+  return createHash("sha256").update(text).digest("hex").slice(0, 12)
 }
 
-// Bump whenever documentSections changes so existing matters re-record at next
-// boot (server.ts) or ingest (ingest.ts).
+// Bump when sectionize, its heading patterns or the derivation of the recorded
+// rows (documentSections, recordSections, revision) change, so existing matters
+// re-record at next boot (server.ts) or ingest (ingest.ts).
 const SECTIONS_VERSION = "1"
 
-// Backfill matters indexed before sections were recorded (or before the current
-// SECTIONS_VERSION). Like the structure backfill it reads the chunks, which is
-// what ingest records from too, so a backfilled document matches a fresh
-// ingest. One transaction never leaves a matter half-recorded.
+// Backfill matters indexed before sections were recorded or before the current
+// SECTIONS_VERSION, plus any source document still without a rev, and drop
+// sections no source document owns. Like the structure backfill it reads the
+// chunks, which is what ingest records from too, so a backfilled document
+// matches a fresh ingest. One transaction never leaves a matter half-recorded.
+// With nothing to do it costs the single query below.
 export function migrateSections(db: Database) {
-  if (getMeta(db, "sections_version") === SECTIONS_VERSION) return 0
-  const docs = db.query("SELECT doc_path, name FROM documents WHERE role = 'source'").all() as Array<{
-    doc_path: string
-    name: string
-  }>
+  const state = db
+    .query(
+      `SELECT (SELECT value FROM meta WHERE key = 'sections_version') AS version,
+        EXISTS (SELECT 1 FROM documents WHERE role = 'source' AND rev IS NULL) AS unrecorded,
+        EXISTS (SELECT 1 FROM sections WHERE doc_path NOT IN (SELECT doc_path FROM documents WHERE role = 'source')) AS orphaned`,
+    )
+    .get() as { version: string | null; unrecorded: number; orphaned: number }
+  const current = state.version === SECTIONS_VERSION
+  if (current && !state.unrecorded && !state.orphaned) return 0
+  const docs = db
+    .query(`SELECT doc_path, name FROM documents WHERE role = 'source'${current ? " AND rev IS NULL" : ""}`)
+    .all() as Array<{ doc_path: string; name: string }>
   db.transaction(() => {
+    db.run("DELETE FROM sections WHERE doc_path NOT IN (SELECT doc_path FROM documents WHERE role = 'source')")
     for (const doc of docs) recordSections(db, doc.doc_path, doc.name)
     setMeta(db, "sections_version", SECTIONS_VERSION)
   })()
