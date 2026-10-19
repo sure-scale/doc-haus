@@ -489,3 +489,74 @@ test("a sections backfill failure at service start still heals the matter's sour
     rmSync(temporary, { recursive: true, force: true })
   }
 }, 60_000)
+
+describe("chunk index maintenance", () => {
+  let directory = ""
+  beforeAll(() => {
+    directory = realpathSync(mkdtempSync(path.join(tmpdir(), "dochaus-sections-index-")))
+  })
+  afterAll(() => rmSync(directory, { recursive: true, force: true }))
+
+  test("a document's chunks are read in offset order through an index", () => {
+    const db = openDb(directory)
+    try {
+      const plan = (
+        db
+          .query("EXPLAIN QUERY PLAN SELECT id, text, char_start FROM chunks WHERE doc_path = ? ORDER BY char_start, id")
+          .all("synthetic.docx") as Array<{ detail: string }>
+      )
+        .map((row) => row.detail)
+        .join("\n")
+      expect(plan).toMatch(/USING INDEX/)
+      expect(plan).not.toMatch(/TEMP B-TREE/)
+    } finally {
+      db.close()
+    }
+  })
+
+  test("the lexical index follows chunk text but not a section ordinal", () => {
+    // A database from before: its update trigger fired on any column.
+    const older = openDb(directory)
+    older.run("DROP TRIGGER chunks_fts_au")
+    older.run(`CREATE TRIGGER chunks_fts_au AFTER UPDATE ON chunks BEGIN
+      INSERT INTO chunks_fts(chunks_fts, rowid, text, section, doc_name) VALUES ('delete', old.id, old.text, old.section, old.doc_name);
+      INSERT INTO chunks_fts(rowid, text, section, doc_name) VALUES (new.id, new.text, new.section, new.doc_name);
+    END`)
+    older.close()
+    const db = openDb(directory)
+    try {
+      const id = Number(
+        db.run(
+          "INSERT INTO chunks (document_id, doc_path, doc_name, section, chunk_index, text, char_start, char_end, embedding) VALUES (1, 'synthetic.docx', 'synthetic.docx', '1', 0, 'invented alpha clause', 0, 21, x'')",
+        ).lastInsertRowid,
+      )
+      const match = (term: string) =>
+        (db.query("SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH ?").all(term) as Array<{ rowid: number }>).map(
+          (row) => row.rowid,
+        )
+      expect(match("alpha")).toEqual([id])
+      db.run("UPDATE chunks SET text = 'invented omega clause' WHERE id = ?", [id])
+      expect(match("alpha")).toEqual([])
+      expect(match("omega")).toEqual([id])
+      // A section ordinal write changes the one chunk row and nothing else: no
+      // trigger rewrites the row's lexical index entry.
+      const changes = () => (db.query("SELECT total_changes() AS n").get() as { n: number }).n
+      const before = changes()
+      db.run("UPDATE chunks SET section_ordinal = 1 WHERE id = ?", [id])
+      expect(changes() - before).toBe(1)
+      expect(match("omega")).toEqual([id])
+    } finally {
+      db.close()
+    }
+    // Reopening keeps one current trigger rather than adding or reverting it.
+    openDb(directory).close()
+    const reopened = openDb(directory)
+    try {
+      expect(
+        reopened.query("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'chunks'").get(),
+      ).toEqual({ n: 3 })
+    } finally {
+      reopened.close()
+    }
+  })
+})

@@ -544,7 +544,8 @@ export function migrateSections(db: Database) {
     .query(
       `SELECT (SELECT value FROM meta WHERE key = 'sections_version') AS version,
         EXISTS (SELECT 1 FROM documents WHERE role = 'source' AND rev IS NULL) AS unrecorded,
-        EXISTS (SELECT 1 FROM sections WHERE doc_path NOT IN (SELECT doc_path FROM documents WHERE role = 'source')) AS orphaned`,
+        EXISTS (SELECT 1 FROM (SELECT DISTINCT doc_path FROM sections) AS s WHERE NOT EXISTS
+          (SELECT 1 FROM documents AS d WHERE d.doc_path = s.doc_path AND d.role = 'source')) AS orphaned`,
     )
     .get() as { version: string | null; unrecorded: number; orphaned: number }
   const current = state.version === SECTIONS_VERSION

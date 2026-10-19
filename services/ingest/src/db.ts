@@ -156,18 +156,27 @@ export function openDb(matterDir: string): Database {
       INSERT INTO chunks_fts(chunks_fts, rowid, text, section, doc_name) VALUES ('delete', old.id, old.text, old.section, old.doc_name);
     END
   `)
-  db.run(`
-    CREATE TRIGGER IF NOT EXISTS chunks_fts_au AFTER UPDATE ON chunks BEGIN
+  // Only the indexed columns re-index a row: embedding and section_ordinal
+  // writes (the embedding and sections backfills) leave the index alone.
+  // Databases created with the earlier any-column trigger get this one in its
+  // place; the definition check keeps a current database's schema untouched.
+  const updateTrigger = `CREATE TRIGGER chunks_fts_au AFTER UPDATE OF text, section, doc_name ON chunks BEGIN
       INSERT INTO chunks_fts(chunks_fts, rowid, text, section, doc_name) VALUES ('delete', old.id, old.text, old.section, old.doc_name);
       INSERT INTO chunks_fts(rowid, text, section, doc_name) VALUES (new.id, new.text, new.section, new.doc_name);
-    END
-  `)
+    END`
+  const currentUpdateTrigger = db.query("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'chunks_fts_au'").get() as
+    | { sql: string }
+    | null
+  if (currentUpdateTrigger?.sql !== updateTrigger) {
+    db.run("DROP TRIGGER IF EXISTS chunks_fts_au")
+    db.run(updateTrigger)
+  }
   // Backfill databases that predate the FTS table, and self-heal any drift (a
   // crash between table creation and indexing, or chunks written or updated
   // while the triggers did not exist or did not match the index). Drift is not
   // always a row-count mismatch: a desynced external-content index can hold the
   // right number of rows with the wrong tokens, and then any trigger-driven
-  // 'delete' (e.g. the embedding-migration UPDATE) throws SQLITE_CORRUPT
+  // 'delete' (e.g. a chunk text UPDATE) throws SQLITE_CORRUPT
   // ("database disk image is malformed") even though the file is intact. FTS5's
   // own 'integrity-check' command compares the index against the chunks table
   // and is the only complete drift probe; 'rebuild' atomically reindexes.
@@ -266,6 +275,10 @@ export function openDb(matterDir: string): Database {
     )
   `)
   db.run("CREATE UNIQUE INDEX IF NOT EXISTS sections_doc_ordinal ON sections(doc_path, ordinal)")
+  // A document's chunks in offset order (reconstructText, recordSections and the
+  // per-document deletes); without it each read scans every chunk in the matter,
+  // so a whole-matter backfill grows with the square of its size.
+  db.run("CREATE INDEX IF NOT EXISTS chunks_doc_offset ON chunks(doc_path, char_start)")
   db.run("CREATE INDEX IF NOT EXISTS defined_terms_term ON defined_terms(term)")
   db.run("CREATE INDEX IF NOT EXISTS section_refs_doc ON section_refs(doc_path)")
   db.run("CREATE INDEX IF NOT EXISTS section_ops_doc ON section_ops(doc_path)")
