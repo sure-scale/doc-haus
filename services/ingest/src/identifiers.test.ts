@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { extractIdentifiers, renderIdentifiersMarkdown, type IdentifierChunk } from "./identifiers"
+import { extractIdentifiers, fileOffset, renderIdentifiersMarkdown, type IdentifierChunk } from "./identifiers"
 
 // Authored synthetic procurement examples. Names, contact details and case IDs
 // are invented for extraction tests; no client or court document was used.
@@ -265,6 +265,31 @@ describe("extractIdentifiers", () => {
     )
     expect(normalizedRow).toBeDefined()
     expect(normalizedRow!.context).toContain("Taylor R. Morgan")
+  })
+})
+
+describe("wrapped chunk files", () => {
+  test("fileOffset moves an offset past every line break inserted at or before it", () => {
+    expect(fileOffset(5, [])).toBe(5)
+    expect(fileOffset(999, [1000, 2000])).toBe(999)
+    expect(fileOffset(1000, [1000, 2000])).toBe(1001)
+    expect(fileOffset(2500, [1000, 2000])).toBe(2502)
+  })
+
+  test("extracts values from the source text and locates them in the wrapped file", () => {
+    // The file hard-cuts the run of x's (a line break inserted before source
+    // offset 5) and turns three spaces into line breaks, two of them inside names.
+    const text = "xxxxxxxxxx Taylor Morgan signed. The notice was signed by Morgan Ellis for Example Procurement Services today."
+    const file = "xxxxx\nxxxxx\nTaylor Morgan signed. The notice was signed by Morgan\nEllis for Example Procurement\nServices today."
+    const line3 = "Taylor Morgan signed. The notice was signed by Morgan"
+    const chunk: IdentifierChunk = { id: "doc-c001", document: "doc", text, file: { text: file, inserted: [5] } }
+    const rows = extractIdentifiers([chunk]).rows
+    const located = (type: string) => rows.filter((row) => row.type === type).map((row) => [row.value, row.line, row.context])
+    expect(located("person")).toEqual([
+      ["Taylor Morgan", 3, line3],
+      ["Morgan Ellis", 3, line3],
+    ])
+    expect(located("organization")).toEqual([["Morgan Ellis for Example Procurement Services", 3, line3]])
   })
 })
 

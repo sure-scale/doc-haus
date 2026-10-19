@@ -283,4 +283,62 @@ describe("source artifacts", () => {
       rmSync(dir, { recursive: true, force: true })
     }
   })
+
+  test("reads identifier values from the unwrapped source and points them at chunk file lines", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "dochaus-source-artifacts-"))
+    try {
+      // Authored synthetic text; the names are invented. Each wrapped line ends
+      // exactly at the cap so the space after it becomes the line break.
+      const pad = (length: number) => "the parties agree to these terms ".repeat(40).slice(0, length)
+      const fill = (head: string, tail: string) => `${head}${pad(READ_LINE_CAP - head.length - tail.length)}${tail}`
+      const first = fill("", " signed by Morgan")
+      const second = fill("Ellis ", " for Example Procurement")
+      const prose = `${first} ${second} Services today. ${pad(200)}.`
+      const cut = `${"y".repeat(2 * READ_LINE_CAP)} Taylor Morgan signed.`
+      const text = `${prose}\n\n${cut}`
+
+      const db = openDb(dir)
+      const docPath = path.join(dir, "Names.docx")
+      const documentId = upsertDocument(db, docPath, "Names.docx", Date.now(), null)
+      insertChunk(db, {
+        documentId,
+        docPath,
+        docName: "Names.docx",
+        section: "1",
+        structuralPath: "Names",
+        party: "",
+        chunkIndex: 0,
+        text,
+        charStart: 0,
+        charEnd: text.length,
+        embedding: new Float32Array([1, 2, 3]),
+        flagged: false,
+      })
+      db.close()
+
+      await writeSourceArtifacts(dir)
+      const sourceMap = await Bun.file(path.join(dir, "source-map.json")).json() as {
+        documents: Array<{ chunks: Array<{ id: string; text_path: string }> }>
+      }
+      const fileLines = new Map(await Promise.all(sourceMap.documents[0]!.chunks.map(async (chunk) =>
+        [chunk.id, (await Bun.file(path.join(dir, chunk.text_path)).text()).split("\n")] as const)))
+      const { rows } = await Bun.file(path.join(dir, "matter-identifiers.json")).json() as {
+        rows: Array<{ type: string; value: string; chunk_id: string; line: number; context: string }>
+      }
+      // The line a reader opens for a row starts with its context and holds the start of its value.
+      const opened = (row: (typeof rows)[number]) => fileLines.get(row.chunk_id)![row.line - 1]
+      const people = rows.filter((row) => row.type === "person" && /Ellis|Taylor/.test(row.value))
+      expect(people.map((row) => [row.value, opened(row)])).toEqual([
+        ["Morgan Ellis", first],
+        ["Taylor Morgan", "Taylor Morgan signed."],
+      ])
+      expect(people.every((row) => opened(row)!.startsWith(row.context.replace(/\u2026$/, "")))).toBe(true)
+      const organizations = rows.filter((row) => row.type === "organization")
+      expect(organizations.some((row) => row.value.includes("\n"))).toBe(false)
+      expect(organizations.filter((row) => row.value.endsWith("Example Procurement Services")).map(opened)).toEqual([second])
+      expect(sourceArtifactsMatchRegistry(dir)).toBe(true)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })
