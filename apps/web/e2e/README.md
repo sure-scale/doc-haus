@@ -70,3 +70,18 @@ list, that the composer stays inside the chat card and clear of the matter
 status bar, that Send is the element under its own centre and takes a real
 pointer click, and that the narrow window has no horizontal overflow. The click's request is answered by the
 fixture; nothing reaches a live run.
+
+Run the completed-run Open items regression with the same environment:
+
+```sh
+PLAYWRIGHT_BASE_URL=http://127.0.0.1:5189 \
+DOCHAUS_EVIDENCE_DIR=/tmp/doc-haus-open-items-evidence \
+bun apps/web/e2e/run-open-items.ts
+```
+
+It opens Details on a completed run with 21 synthetic open items at
+1440×1000, 1280×720 and 400×860, shows them all, then reads the Details
+scroller just past the Open items summary and to its end. At each position the
+summary must stay in view at the scroller's top edge and be the element under
+its own centre, and a real pointer click there must fold the list. It sends no
+writes.

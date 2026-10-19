@@ -273,16 +273,29 @@ button.run-head-toggle[aria-expanded="true"]::after {
   margin-top: 10px;
 }
 
+/* Open Details scroll under the header's title row, so the summary, the only
+   way to fold a long list, stays at the top of that scroller while it is read:
+   at its edge, not below its 12px top padding. Opaque, in the header's own
+   colour, so rows pass beneath it. */
 .open-items > summary {
+  position: sticky;
+  top: -12px;
+  z-index: 1;
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 4px 0;
+  background: var(--accent-tint);
   color: var(--muted);
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
   list-style: none;
+}
+
+.run-head.is-input .open-items > summary,
+.run-head.is-paused .open-items > summary {
+  background: var(--warn-soft);
 }
 
 .open-items > summary::-webkit-details-marker {
