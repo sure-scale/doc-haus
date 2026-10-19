@@ -1,3 +1,4 @@
+import { adviseQuestions } from "./advise"
 import { runFocusedChangeReview } from "./focused-change-review"
 import { readFirmDraftingPreferences } from "../../lib/drafting-preferences"
 import { DRAFTING_STOPPED_REASON } from "../../lib/drafting-update-admission"
@@ -297,9 +298,15 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
       state = updateLeanStage(directory, state, step, { status: "failed", finished_at: now() })
       return { state: writeLeanState(directory, { ...state, status: "failed", stop_reason: result.reason }) }
     }
+    // Every question the step asks is advised before anything from the step is recorded.
+    const questions = result.questions && await adviseQuestions(directory, state, step, deps, result.questions.map(question => document ? { ...question, document } : question))
+    if (paused()) return { state: settlePause(directory, state), paused: true }
+    if (preferencesChanged()) {
+      state = updateLeanStage(directory, state, step, { status: "pending", input_sha: null, outputs: [], finished_at: null })
+      return { state, restart: true }
+    }
     replaceStageOpenItems(directory, stage, document ?? null, document ? result.openItems.map(item => inDocument(item, document)) : result.openItems)
-    if (result.questions)
-      replaceStageQuestions(directory, stage, document ?? null, result.questions.map(question => document ? { ...question, document } : question))
+    if (questions) replaceStageQuestions(directory, stage, document ?? null, questions)
     snapshotStage(directory, state.revision, step, result.outputs)
     // These steps write some of their own inputs (the gate its question); their key is taken again.
     state = updateLeanStage(directory, state, step, { status: result.status, input_sha: step === "checklist-check" || step === "gate" ? stageInputSha(directory, step) : inputSha, outputs: result.outputs, finished_at: now() })

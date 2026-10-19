@@ -6,7 +6,7 @@ import { paragraphShowsOpenItem } from "./gate"
 import { approvedResearch } from "./research"
 import { REQUEST_SOURCE, excerpt, matterSourceIDs, openItem, proseQuoteFound, quoteFound, quoteMissIssue, sourceQuotes } from "./quotes"
 import type { DocID } from "./plan"
-import { readQuestions, shortHash, type Question } from "./state"
+import { questionKindIssues, readQuestions, shortHash, type Question, type QuestionKind } from "./state"
 
 // Admission of the changes step's reply: the change list is parsed, checked
 // against the draft's paragraphs, its quotations and its markers, and either
@@ -168,8 +168,9 @@ function amendmentQuoteIssues(directory: string, amendment: Amendment, index: nu
 export function questionIssues(item: unknown, index: number, rows: Map<string, ParagraphRow>, asked: Map<string, Question>) {
   const at = `questions[${index}]`
   if (!record(item) || typeof item.question !== "string" || !item.question.trim())
-    return [`${at} must be {question, pid, context?, id?} with a non-empty question.`]
+    return [`${at} must be {question, kind, pid, context?, id?} with a non-empty question.`]
   return [
+    ...questionKindIssues(item, at),
     ...(item.context !== undefined && typeof item.context !== "string" ? [`${at}.context must be text.`] : []),
     ...(given(item.id) && (typeof item.id !== "string" || !asked.has(item.id.trim()))
       ? [`${at}.id ${JSON.stringify(item.id)} is not a question asked so far; omit "id" for a new question.`] : []),
@@ -216,6 +217,7 @@ export function askedQuestions(items: Record<string, unknown>[], asked: Map<stri
       context: typeof item.context === "string" ? item.context.trim() : "",
       ...(pid ? { pid } : {}),
       status: "open" as const,
+      kind: item.kind as QuestionKind,
     }
   })
 }

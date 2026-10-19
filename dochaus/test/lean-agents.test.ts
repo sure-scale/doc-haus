@@ -29,7 +29,7 @@ const TOOLS = [
 ]
 
 test("each lean stage agent loads as a hidden subagent whose own rules allow only the coordinator's read tools", () => {
-  expect(agents.toSorted()).toEqual(["lean-change-plan", "lean-change-prepare", "lean-change-review", "lean-changes", "lean-coverage", "lean-discrepancy", "lean-draft", "lean-drafting-notes", "lean-files", "lean-intake", "lean-package-review", "lean-research-review", "lean-review", "lean-review-client-disadvantage", "lean-review-independent", "lean-review-playbook", "lean-review-wording", "lean-spine"])
+  expect(agents.toSorted()).toEqual(["lean-advise", "lean-change-plan", "lean-change-prepare", "lean-change-review", "lean-changes", "lean-coverage", "lean-discrepancy", "lean-draft", "lean-drafting-notes", "lean-files", "lean-intake", "lean-package-review", "lean-research-review", "lean-review", "lean-review-client-disadvantage", "lean-review-independent", "lean-review-playbook", "lean-review-wording", "lean-spine"])
   for (const id of agents) {
     const agent = loadAgent(id)
     expect(agent.mode).toBe("subagent")

@@ -128,7 +128,7 @@ test("planner question pauses before preparation; canonical answer survives rest
   const directory = matter(), question = "Which agreed delivery instruction should govern?"
   const model = scriptedModel({ ...replies(), [AGENT["change-plan"]]: prompt => {
     const value = JSON.parse(plan(prompt, 0))
-    return JSON.stringify({ ...value, questions: [{ pid: value.groups[0].pids[0], question, context: "Conflicting material instructions need a decision." }] })
+    return JSON.stringify({ ...value, questions: [{ pid: value.groups[0].pids[0], question, kind: "instruction", context: "Conflicting material instructions need a decision." }] })
   } })
   expect((await runLean(directory, { sessions: model.port })).status).toBe("blocked")
   expect(model.count(AGENT["change-prepare"])).toBe(0)
@@ -281,7 +281,7 @@ test("parallel worker questions are unioned under preparation and pause reconcil
     const context = contexts.get(sessionID)!, delivery = context.includes('"id": "delivery"')
     const original = delivery ? "The supplier shall deliver the goods." : "Payment timing remains to be agreed."
     const pid = pidOf(context, original), question = delivery ? "Which delivery instruction is authorised?" : "Which payment instruction is authorised?"
-    return JSON.stringify({ amendments: [{ pid, updated: `${original} [open item: ${question}]`, reason: "Shows a newly identified essential unanswered decision.", sources: delivery ? SUPPORT : PAYMENT_SUPPORT }], questions: [{ pid, question, context: "A newly discovered instruction conflict requires the lawyer's decision." }] })
+    return JSON.stringify({ amendments: [{ pid, updated: `${original} [open item: ${question}]`, reason: "Shows a newly identified essential unanswered decision.", sources: delivery ? SUPPORT : PAYMENT_SUPPORT }], questions: [{ pid, question, kind: "instruction", context: "A newly discovered instruction conflict requires the lawyer's decision." }] })
   } })
   expect((await runLean(directory, { sessions: model.port })).status).toBe("blocked")
   const questions = readQuestions(directory).filter(row => row.status === "open")

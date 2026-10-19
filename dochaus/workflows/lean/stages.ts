@@ -43,6 +43,7 @@ import {
   readLeanJson,
   readOpenItems,
   readQuestions,
+  questionContent,
   writeLeanBytes,
   writeLeanText,
   type LeanModel,
@@ -58,7 +59,7 @@ import {
 // goes to the pointer applier as data, addressed by paragraph pointer. Steps of
 // one planned document keep their files under that document's id (d1/, d2/...).
 
-export const LEAN_PROMPT_VERSION = "lean-17-advice-scope"
+export const LEAN_PROMPT_VERSION = "lean-18-advised-questions"
 const OUTLINE_CONTRACT = "document-executing-parties-memo-6"
 const DELIVERY_REVIEW_CONTRACT = "grounded-delivery-selection-4"
 const STRUCTURAL_AMENDMENT_CONTRACT = "explicit-paragraph-cardinality-1"
@@ -95,6 +96,8 @@ export const LEAN_STAGE_AGENTS = {
   coverage: "lean-coverage",
   // A job of the outline, not a stage: it reads the files the lawyer asks to receive.
   files: "lean-files",
+  // A job of the asking step, not a stage: it advises on one question before it is recorded.
+  advise: "lean-advise",
 } as const
 
 export type PermissionRule = { action: string; resource: string; effect: "allow" | "deny" | "ask" }
@@ -226,13 +229,14 @@ export function researchBasis(directory: string) {
   return hashStageInputs("research", LEAN_PROMPT_VERSION, stageInputs(directory, "research", { researchGaps: false }))
 }
 
-/** The questions a step's key reads, in id order: a step replacing its
- * questions reorders questions.json without changing any question. The gate's
+/** The questions a step's key reads, in id order, by their content
+ * (questionContent): a step replacing its questions reorders questions.json,
+ * and advising one adds to it, without changing any question. The gate's
  * open question is asked after the walk, so it re-keys no step before it; its
  * answer, like any other, keys every step through "answers". */
 function keyedQuestions(directory: string, gate = false) {
   return JSON.stringify(readQuestions(directory).filter(question => gate || question.stage !== "gate" || question.status === "answered")
-    .toSorted((a, b) => a.id.localeCompare(b.id)))
+    .toSorted((a, b) => a.id.localeCompare(b.id)).map(questionContent))
 }
 
 function baseStageInputs(directory: string, step: StepID, options: { repairContext?: false; researchGaps?: false }): { name: string; bytes: string | Uint8Array }[] {

@@ -45,7 +45,7 @@ function spineChoosing(directory: string): Reply {
 async function handedBack() {
   const directory = matter()
   const model = scriptedModel({ ...quiet, [AGENT.spine]: spineChoosing(directory), [AGENT.intake]: (_prompt, index) => index === 0
-    ? JSON.stringify({ questions: [{ question: QUESTION, context: "The supplied terms are silent on late delivery." }] })
+    ? JSON.stringify({ questions: [{ question: QUESTION, kind: "judgment", context: "The supplied terms are silent on late delivery." }] })
     : JSON.stringify({ ready: true, jurisdiction: "Singapore law", scope: "Supplied terms" }) })
   expect((await runLean(directory, { sessions: model.port })).status).toBe("blocked")
   const id = readQuestions(directory)[0]!.id
@@ -159,6 +159,8 @@ test("assertDelegable admits only an open model-asked question", () => {
 // its contract, bumped when the hint a disclosed hand-back's choice adds to
 // the question that asks its conflict was reworded and narrowed. A draft's
 // keys its outline contract alone, since an accepted draft is never redrafted.
+// Change-review, finalize and the gate were re-pinned when stage keys stopped
+// carrying when a question was answered (and its kind, options and advice).
 const ANSWERS = "- [package-scope-d1] Q: Which documents are in scope?\n  A: Only the supply note.\n- [q-law] Q: Which law should govern?\n  A: Singapore law."
 const INPUTS: Record<string, string> = {
   "discrepancy": "8dac7eefaf1e988e35ffbe6c7f765a951943e9b1299546a9b94dc10e99950a72",
@@ -174,12 +176,12 @@ const INPUTS: Record<string, string> = {
   "d1.change-plan": "27e6854d53eef220e0881676aa0ea75d3dd349ddf1a4f2dadab7d7905790946f",
   "d1.change-prepare": "0e65f05f5cdbac92e874b5150ac1dd21f355a34be5b6a1b918b1be46f580591f",
   "d1.changes": "332ce3588588c3dc6fd37068e9202f5612a4e6a9f21d9632e0e2b15a7bba5271",
-  "d1.change-review": "d5ab00d1b03fbfa3aa4104202872c85bd8d96bb8e4acffdb112d70d32ea87924",
+  "d1.change-review": "a0507849a8675a5bee6aeb4099030ae99b4a13d0c0377a8cdf0a1aa7cde59e60",
   "d1.apply": "3fc66df6877ed50af811c9f7a5bbdf1ccb1c269dc8b176cf392941cd2da83149",
-  "finalize": "b38c29092265887c63cf0e8a96bac1cd40201575a9344dca65628f3adedef462",
+  "finalize": "fcb7ded51c54fad4bb3fd616ba57fbdfe8aa15a2dc1becf5ec5df4e69b537793",
   "checklist-check": "bf9d2570d825f9efdf7d09b08a635561362fda11c11812346212a16ead317e10",
   "package-review": "dde115af0ba46b8cb1ecf9bf7eb0c40aff3b78f4d6be9e0f0da3dff2d5d4066f",
-  "gate": "5a2eea841b0446e2f2581f98994cdf7cb6d0e669da0a5e7d4d28b096f964ef25",
+  "gate": "0950183c873a0bd663d5367c064a7013025084deb8884311b2f38a54fcb8e229",
 }
 
 test("without a hand-back the answers text and every step's inputs are unchanged", () => {
@@ -267,7 +269,7 @@ test("a hand-back changes the intake key, as an answer does", () => {
 async function answeredAndHandedBack() {
   const directory = matter()
   const model = scriptedModel({ ...quiet, [AGENT.spine]: spineChoosing(directory), [AGENT.intake]: (_prompt, index) => index === 0
-    ? JSON.stringify({ questions: [{ question: QUESTION, context: "The supplied terms are silent on late delivery." }, { question: LAW, context: "The terms name no governing law." }] })
+    ? JSON.stringify({ questions: [{ question: QUESTION, kind: "judgment", context: "The supplied terms are silent on late delivery." }, { question: LAW, kind: "instruction", context: "The terms name no governing law." }] })
     : JSON.stringify({ ready: true, jurisdiction: "Singapore law", scope: "Supplied terms" }) })
   expect((await runLean(directory, { sessions: model.port })).status).toBe("blocked")
   const id = (text: string) => readQuestions(directory).find(question => question.question === text)!.id
@@ -379,7 +381,7 @@ test("intake re-asking a handed-back question is told it was left to the drafter
   const directory = matter()
   writeQuestions(directory, [{ id: "q-cap", stage: "intake", question: "Should liability be capped?", context: "The terms are silent.", status: "open" }])
   delegateQuestion(directory, "q-cap")
-  const reply = JSON.stringify({ questions: [{ question: "Should liability be capped?", context: "Still silent." }] })
+  const reply = JSON.stringify({ questions: [{ question: "Should liability be capped?", kind: "judgment", context: "Still silent." }] })
   const issues = intakeQuestions(directory, reply)!.issues.join(" ")
   expect(issues).toContain("left that question to the drafter to decide")
   expect(issues).not.toContain("lawyer's answer")
@@ -471,7 +473,7 @@ test("no prompt, agent rule or retry message says a point was left to the drafti
   const { question_id: _id, ...unkeyed } = CHOICE
   const issues = [spine({ ...CHOICE, kind: "other" }), spine(unkeyed), spine(CHOICE, { ...fact, question_id: "q-other" }), spine({ ...CHOICE, kind: "decision" })]
     .flatMap(value => checkEvidence(directory, "spine", value))
-  issues.push(...intakeQuestions(directory, JSON.stringify({ questions: [{ question: QUESTION, context: "Still silent." }] }))!.issues)
+  issues.push(...intakeQuestions(directory, JSON.stringify({ questions: [{ question: QUESTION, kind: "judgment", context: "Still silent." }] }))!.issues)
   expect(issues).toHaveLength(7)
   for (const issue of issues) expect([issue, TO_DRAFTER.test(issue), TO_DRAFTING.test(issue)]).toEqual([issue, true, false])
 }, 120_000)

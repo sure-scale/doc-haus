@@ -192,7 +192,8 @@ function extractionInputs(directory: string, deps: ChecklistJobDeps) {
   return jobs.map(job => ({ ...job, input_sha: shortHash(JSON.stringify(["checklist-extraction-1", deps.model, basis, buildChecklistProducerPrompt(job.input)]), 40) }))
 }
 
-async function parallel<T>(jobs: T[], work: (job: T, index: number) => Promise<void>) {
+/** Runs `work` over `jobs`, at most four at a time. */
+export async function parallel<T>(jobs: T[], work: (job: T, index: number) => Promise<void>) {
   const next = { index: 0 }
   await Promise.all(Array.from({ length: Math.min(4, jobs.length) }, async () => {
     for (;;) {

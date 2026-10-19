@@ -11,7 +11,7 @@ import { reviewStages, FIRST_DOCUMENT, earlierDocuments, planActingFor, operativ
 import { REQUEST_SOURCE, matterSourceIDs } from "./quotes"
 import { readRepairRound, changesRepairSections } from "./repairs"
 import { disclosableItems } from "./stages"
-import { isReviewStage, answeredQuestionsText, handedBack, handedBackBlock, handedBackNotesBlock, readLeanJson, readLeanText, readQuestions, type OpenItem, type StageID } from "./state"
+import { QUESTION_KIND_CONTRACT, isReviewStage, answeredQuestionsText, handedBack, handedBackBlock, handedBackNotesBlock, readLeanJson, readLeanText, readQuestions, type OpenItem, type StageID } from "./state"
 import { plannedContract } from "./template-contract"
 
 // Prompts of the lean model steps. Each step's first prompt carries everything
@@ -164,7 +164,8 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
       spineBlock, acting, answerBlock, handedBlock, sources, planned, composition, outline, finished,
       tagged("output_contract", [
         "Reply with exactly one JSON object and nothing else:",
-        '{"amendments":[{"pid":"<pid from the draft>","updated":"<full new text of that paragraph>","reason":"<why it changes>","sources":[{"source_id":"<exact document name, or request>","quote":"<words copied exactly from that source>"}]}],"questions":[{"id":"<id of an open question you are repeating; omit for a new one>","pid":"<pid of the paragraph whose text depends on the answer>","question":"<what only the lawyer can decide>","context":"<why it matters>"}]}',
+        '{"amendments":[{"pid":"<pid from the draft>","updated":"<full new text of that paragraph>","reason":"<why it changes>","sources":[{"source_id":"<exact document name, or request>","quote":"<words copied exactly from that source>"}]}],"questions":[{"id":"<id of an open question you are repeating; omit for a new one>","pid":"<pid of the paragraph whose text depends on the answer>","question":"<what only the lawyer can decide>","kind":"<fact|instruction|judgment>","context":"<why it matters>"}]}',
+        `- ${QUESTION_KIND_CONTRACT}`,
         '- Also return "explanations":[{"pid":"initial draft paragraph where the change is explained","reason":"actual source-to-initial-draft substantive change, rationale and consequence","sources":[{"source_id":"canonical source or request","quote":"exact supporting words"}]}]. Review the supplied original against the initial draft and explain every material initial revision, including omissions. These are separate comment records, not body text or amendments; never submit an identical replacement merely to create a comment. Anchor a removed provision’s explanation to its related surviving paragraph and explicitly identify the omission. Retain still-valid explanations during repair and correct them against the projected final text. Where no initial source comparison exists, this array may be empty.',
         "- One amendment replaces the whole text of one existing paragraph and stays one paragraph. To add wording, extend the most closely related paragraph. To remove a whole paragraph, use operation delete with an empty updated string and supporting source or settled-instruction passages. To split one initial paragraph into several, use operation split with updated as an array of at least two complete nonempty single-paragraph strings. Keep the initial pid as the operation target; the runner supplies distinct final pids. Empty replacement strings never imply deletion. Unsupported or uncertain deletion retains the wording with a new [open item: confirm ...] marker instead. Do not collapse a split or discard any accepted effect.",
         ...(finished ? ["- Amend only paragraphs of the draft below. The finished documents are shown for agreement and cannot be amended here."] : []),
@@ -182,7 +183,7 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
   return (sections[isReviewStage(stage) ? "review" : stage] ?? []).filter(Boolean).join("\n\n")
 }
 
-export function retryPrompt(stage: StageID, issues: string[]) {
+export function retryPrompt(stage: StageID | "advise", issues: string[]) {
   return [
     `Your reply did not pass the ${stage} checks:`,
     ...issues.map(issue => `- ${issue}`),

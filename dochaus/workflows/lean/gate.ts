@@ -613,6 +613,9 @@ function packageScopeQuestion(rows: ChecklistOpenFinding[], id: string, hinted: 
     context: [`Until a later check settles ${several ? "these instructions, they are" : "this instruction, it is"} disclosed with the review draft as left open; delivery is not held for ${several ? "them" : "it"}. Your answer re-runs the drafting from the start, including the document plan and the checklist check.`,
       ...hints, ...(hints.length === rows.length ? [HANDED_BACK_UNANSWERED] : [])].join(" "),
     status: "open",
+    // Besides the package's scope, it always asks for the open decisions' missing facts or approvals.
+    kind: "scope",
+    mixed: true,
   }
 }
 
@@ -689,6 +692,7 @@ function checklistConflictQuestion(pairs: ChecklistItem[][], asked: Question[], 
     context: [`Until a later check no longer finds ${several ? "these conflicts, they are" : "this conflict, it is"} disclosed with the review draft; delivery is not held for ${several ? "them" : "it"}. Your answer re-runs the drafting from the start, including the checklist check.`,
       ...hints, ...(hints.length === pairs.length ? [HANDED_BACK_UNANSWERED] : [])].join(" "),
     status: "open",
+    kind: "conflict",
   }
 }
 

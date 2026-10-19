@@ -101,7 +101,7 @@ test("a hand-back runs through the queue, its checks and the gate to a review dr
     [AGENT.spine]: spine(directory),
     [AGENT.finalize]: memo(),
     [AGENT.intake]: (_prompt, index) => index === 0
-      ? JSON.stringify({ questions: [{ question: QUESTION, context: "The supplied terms are silent on late delivery." }] })
+      ? JSON.stringify({ questions: [{ question: QUESTION, kind: "judgment", context: "The supplied terms are silent on late delivery." }] })
       : JSON.stringify({ ready: true, jurisdiction: "Singapore law", scope: "Supplied terms" }),
   })
   const run = () => runLean(directory, { sessions: model.port, registerDeliverable: deliverables.registerDeliverable })

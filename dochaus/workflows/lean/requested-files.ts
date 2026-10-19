@@ -414,6 +414,8 @@ export function requestedFilesQuestion(directory: string, requested: RequestedFi
     question: [...listed.map(row => row.line), ...redline, `${listed.length > 1 ? "For each, do" : "Do"} you want it delivered as your words ask, or as planned? If neither, say how it should be delivered.`].join(" "),
     context: "Drafting waits for your answer. Your answer becomes part of the document plan's basis, so the plan is drawn up again with it before any part is drafted, replacing any edits to the saved plan.",
     status: "open",
+    kind: "file_name",
+    options: [{ id: "o1", text: "As my words ask" }, { id: "o2", text: "As planned" }],
   }
 }
 

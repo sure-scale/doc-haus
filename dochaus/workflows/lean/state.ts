@@ -101,6 +101,29 @@ export type OpenItem = {
   applier_detail?: Record<string, string>
 }
 
+/** What a question asks the lawyer for. A model asking stage names fact,
+ * instruction or judgment (MODEL_QUESTION_KINDS); code sets the others. */
+export type QuestionKind = "fact" | "instruction" | "judgment" | "scope" | "conflict" | "file_name"
+export const MODEL_QUESTION_KINDS = ["fact", "instruction", "judgment"] as const
+/** How a model asking stage states a question's kind, in its output contract. */
+export const QUESTION_KIND_CONTRACT = 'Give each question a "kind": "fact" when it asks for a fact about the matter that only the lawyer can supply or confirm, "instruction" when it asks what the lawyer\'s instructions mean or require, "judgment" when it asks for a choice the instructions and sources leave to professional judgment.'
+
+/** Retry feedback unless a model asking stage said what its question asks for. */
+export function questionKindIssues(item: Record<string, unknown>, at: string) {
+  return (MODEL_QUESTION_KINDS as readonly unknown[]).includes(item.kind) ? [] : [`${at}.kind must be "fact", "instruction" or "judgment". ${QUESTION_KIND_CONTRACT}`]
+}
+
+/** One answer the lawyer may pick; code assigns the ids o1..oN. */
+export type QuestionOption = { id: string; text: string }
+
+/** The advisor's view of an open question (advise.ts): a recommended option
+ * with its reason and code-verified supporting passages, or why no option is
+ * recommended. `options` are the advisor's own, absent when the question has
+ * options of its own. It is never an answer. */
+export type QuestionAdvice =
+  | { options?: QuestionOption[]; recommendation: { option: string; rationale: string; basis: { source_id: string; quote: string }[] } }
+  | { options?: QuestionOption[]; unavailable: { reason: string; reason_code?: "advisor_failed" } }
+
 export type Question = {
   id: string
   stage: StageID
@@ -116,9 +139,20 @@ export type Question = {
    * it is then answered with no answer text, as a choice the lawyer has not made. */
   answer_kind?: "decide_for_me"
   answered_at?: string
+  kind?: QuestionKind
+  /** A scope question that also asks the lawyer for missing facts or approvals. */
+  mixed?: true
+  /** The answers code offers for the question, beside the lawyer's own words. */
+  options?: QuestionOption[]
+  /** Set on every question recorded since advice was introduced. */
+  advice?: QuestionAdvice
 }
 
 export const LEAN_STATE_SCHEMA = "dochaus.lean.state/2"
+/** questions.json's format. Open questions of another format were asked
+ * without advice: they are left out when read, so the step that asked them
+ * asks them again, advised; answered questions are always kept. */
+export const LEAN_QUESTIONS_SCHEMA = "dochaus.lean.questions/2"
 const FIRST_STEPS: StepID[] = ["discrepancy", "intake", "research", "research-review", "spine", "d1.draft", "d1.review", "d1.review-independent", "d1.review-wording", "d1.review-client-disadvantage", "d1.change-plan", "d1.change-prepare", "d1.changes", "d1.change-review", "d1.apply", "finalize", "checklist-check", "package-review", "gate"]
 
 /** Runtime error text recorded in the run (stop reasons, events, apply results)
@@ -258,11 +292,21 @@ export function writeOpenItems(directory: string, items: OpenItem[]) {
 
 export function readQuestions(directory: string): Question[] {
   const value = readLeanJson(directory, "questions.json")
-  return record(value) && Array.isArray(value.questions) ? value.questions.filter(isQuestion) : []
+  if (!record(value) || !Array.isArray(value.questions)) return []
+  const current = value.schema === LEAN_QUESTIONS_SCHEMA
+  return value.questions.filter(isQuestion).filter(question => current || question.status === "answered")
 }
 
 export function writeQuestions(directory: string, questions: Question[]) {
-  writeLeanText(directory, "questions.json", `${JSON.stringify({ questions }, null, 2)}\n`)
+  writeLeanText(directory, "questions.json", `${JSON.stringify({ schema: LEAN_QUESTIONS_SCHEMA, questions }, null, 2)}\n`)
+}
+
+/** A question as stage keys and later stages' prompts read it: its asking and
+ * answer, without how it is classified, offered or advised, or when it was
+ * answered. */
+export function questionContent(question: Question) {
+  const { kind: _kind, mixed: _mixed, options: _options, advice: _advice, answered_at: _answeredAt, ...content } = question
+  return content
 }
 
 /** Questions a step asks replace its earlier open questions. Answered
@@ -294,6 +338,8 @@ export function keepAskedQuestions(questions: Question[], items: OpenItem[], kep
     return [{
       id: question.id, stage: asker.stage, question: question.question, context: question.context,
       ...(asker.ref.pid ? { pid: asker.ref.pid } : {}), ...(asker.ref.document ? { document: asker.ref.document } : {}), status: question.status,
+      ...(question.kind ? { kind: question.kind } : {}), ...(question.mixed ? { mixed: question.mixed } : {}),
+      ...(question.options ? { options: question.options } : {}), ...(question.advice ? { advice: question.advice } : {}),
     }]
   })
 }

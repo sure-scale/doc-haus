@@ -101,7 +101,7 @@ describe("the marker must be new to the amendment", () => {
 
 describe("an amendment that changes only markers", () => {
   const CONFIRMED = "The supplier shall deliver the goods [open item: confirm the delivery period chosen]."
-  const QUESTION = { question: "Is delivery to be made in instalments?", pid: P1 }
+  const QUESTION = { question: "Is delivery to be made in instalments?", kind: "judgment", pid: P1 }
 
   test("adding a marker to a paragraph that already shows one is an issue, even with a question for it", () => {
     const updated = "The supplier shall deliver the goods [open item: confirm the delivery period chosen] [open item: whether delivery is in instalments]."
@@ -282,7 +282,7 @@ describe("a question whose marker only a withheld amendment carried", () => {
   const QUESTION = "Which condition standard applies to delivered goods?"
 
   test("is still asked, refers to the withheld amendment, and is no retry issue on the last attempt", () => {
-    const content = reply([{ pid: P1, updated: JUDGED, reason: "Drafting judgment.", sources: MISQUOTED }], [{ pid: P1, question: QUESTION }])
+    const content = reply([{ pid: P1, updated: JUDGED, reason: "Drafting judgment.", sources: MISQUOTED }], [{ pid: P1, question: QUESTION, kind: "judgment" }])
     expect(checkChanges(matter(), content, PARAGRAPHS).issues.length).toBeGreaterThan(0)
     const check = checkChanges(matter(), content, PARAGRAPHS, { withholdUnverified: true })
     expect(check.issues).toEqual([])
@@ -297,7 +297,7 @@ describe("a question whose marker only a withheld amendment carried", () => {
     const directory = matter()
     const changes = sameSession(prompt => reply(
       [{ pid: pidOf(prompt, DELIVERY), updated: JUDGED, reason: "Drafting judgment.", sources: MISQUOTED }],
-      [{ pid: pidOf(prompt, DELIVERY), question: QUESTION }]))
+      [{ pid: pidOf(prompt, DELIVERY), question: QUESTION, kind: "judgment" }]))
     const model = scriptedModel({ ...happyPath, [AGENT.changes]: changes })
     const state = await runLean(directory, { sessions: model.port })
 
@@ -346,8 +346,8 @@ describe("a marked judgment amendment through the run", () => {
 })
 
 describe("prompt version", () => {
-  test("the contract change is lean-17-advice-scope, and a run keyed under lean-16-repair-composition re-runs every model step", async () => {
-    expect(LEAN_PROMPT_VERSION).toBe("lean-17-advice-scope")
+  test("the contract change is lean-18-advised-questions, and a run keyed under lean-17-advice-scope re-runs every model step", async () => {
+    expect(LEAN_PROMPT_VERSION).toBe("lean-18-advised-questions")
     const directory = matter()
     expect((await runLean(directory, { sessions: scriptedModel(happyPath).port })).status).toBe("completed")
     const idle = scriptedModel({})
@@ -358,7 +358,7 @@ describe("prompt version", () => {
     writeLeanState(directory, {
       ...state,
       stages: Object.fromEntries(Object.entries(state.stages).map(([step, row]) =>
-        [step, { ...row!, input_sha: hashStageInputs(step as StepID, "lean-16-repair-composition", stageInputs(directory, step as StepID)) }])),
+        [step, { ...row!, input_sha: hashStageInputs(step as StepID, "lean-17-advice-scope", stageInputs(directory, step as StepID)) }])),
     })
     const rerun = scriptedModel(happyPath)
     expect((await runLean(directory, { sessions: rerun.port })).status).toBe("completed")

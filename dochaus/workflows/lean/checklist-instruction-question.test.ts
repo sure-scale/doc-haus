@@ -620,10 +620,10 @@ test("an instruction left open completes the run with one open gate question; re
   const idle = scriptedModel({})
   expect((await runLean(directory, { sessions: idle.port })).status).toBe("completed")
   expect(idle.prompts).toHaveLength(0)
-  // A gate re-run asks the same question once.
+  // A gate re-run asks the same question once, advised afresh.
   updateLeanStage(directory, readLeanState(directory)!, "gate", { status: "pending", input_sha: null, outputs: [], finished_at: null })
   expect((await runLean(directory, { sessions: idle.port })).status).toBe("completed")
-  expect(idle.prompts).toHaveLength(0)
+  expect(idle.prompts.map(row => row.agent)).toEqual([AGENT.advise])
   expect(readQuestions(directory)).toEqual([question])
   // The saved plan is followed and the accepted draft kept: the answer reaches
   // the document through its review, and the checklist check receives it. The

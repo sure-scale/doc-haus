@@ -98,7 +98,7 @@ describe("lean drafting when a finished document's steps change", () => {
   test("a question repeated by id without a paragraph keeps the earlier paragraph only in the same document", () => {
     const directory = matter()
     writeQuestions(directory, [{ id: "q-earlier", stage: "changes", question: QUESTION, context: CONTEXT, pid: "p000000000001", document: "d1", status: "open" }])
-    const reply = JSON.stringify({ amendments: [], questions: [{ id: "q-earlier", question: QUESTION }] })
+    const reply = JSON.stringify({ amendments: [], questions: [{ id: "q-earlier", question: QUESTION, kind: "judgment" }] })
     const rows = [{ pid: "p000000000002", sha256: "0".repeat(64), text: "Delivery follows the supply note." }]
     const asked = (document: "d1" | "d2") => checkChanges(directory, reply, rows, { withholdUnverified: true, document }).changes?.questions
 

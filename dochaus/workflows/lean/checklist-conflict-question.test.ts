@@ -10,7 +10,7 @@ import { enqueueLeanRequest } from "./requests"
 import { runLean, stageInputSha } from "./runner"
 import { handedBackItems, LEAN_PROMPT_VERSION, stageInputs } from "./stages"
 import { answerQuestion, hashStageInputs, readLeanJson, readLeanState, readQuestions, replaceStageQuestions, shortHash, updateLeanStage, writeLeanText, writeQuestions, type Question } from "./state"
-import { cleanupMatters, happyPath, matter, scriptedModel } from "./test-support"
+import { AGENT, cleanupMatters, happyPath, matter, scriptedModel } from "./test-support"
 
 // A source conflict among the disclosed checklist findings becomes one batched
 // question, asked by the gate after the walk. It pauses nothing: the run
@@ -209,7 +209,7 @@ test("among several conflicts the hint names only the pair the choice matches, a
 test("an answer to the conflict question re-keys the checklist check and reaches its source instructions", () => {
   const directory = checklistMatter([conflict("c1", "Payment is due on delivery."), finding("c2", "satisfied")])
   const question = finalGate(directory).questions![0]!
-  writeLeanText(directory, "questions.json", `${JSON.stringify({ questions: [question] }, null, 2)}\n`)
+  writeQuestions(directory, [question])
   const before = stageInputSha(directory, "checklist-check")
   // An open question is not yet an instruction.
   expect(checklistProducerInputs(directory).find(row => row.key === "request")!.input.instructions).toEqual([])
@@ -269,10 +269,10 @@ test("a source conflict completes the run with one open question; resume and a g
   const idle = scriptedModel({})
   expect((await runLean(directory, { sessions: idle.port })).status).toBe("completed")
   expect(idle.prompts).toHaveLength(0)
-  // A gate re-run asks the same question once.
+  // A gate re-run asks the same question once, advised afresh.
   updateLeanStage(directory, readLeanState(directory)!, "gate", { status: "pending", input_sha: null, outputs: [], finished_at: null })
   expect((await runLean(directory, { sessions: idle.port })).status).toBe("completed")
-  expect(idle.prompts).toHaveLength(0)
+  expect(idle.prompts.map(row => row.agent)).toEqual([AGENT.advise])
   expect(readQuestions(directory)).toEqual([question!])
   // The answer re-runs the stages that consume answers; the checklist check
   // receives it as a settled instruction. The conflict still reported stays
@@ -376,7 +376,8 @@ test("an open conflict question in the ordinal-id form is asked in the current f
   updateLeanStage(directory, readLeanState(directory)!, "gate", { input_sha: hashStageInputs("gate", LEAN_PROMPT_VERSION, earlier) })
   const idle = scriptedModel({})
   expect((await runLean(directory, { sessions: idle.port })).status).toBe("completed")
-  expect(idle.prompts).toHaveLength(0)
+  // The question in its current form is a new card, so it is advised.
+  expect(idle.prompts.map(row => row.agent)).toEqual([AGENT.advise])
   expect(readQuestions(directory)).toEqual([question!])
 }, 180000)
 
