@@ -459,9 +459,9 @@ test("an earlier combined file the summary lists is the combined file from an ea
   // The lawyer kept changes in the combined file under the requested name; the new one took "(2)".
   const earlier: LeanDocument = { kind: "combined", document: "d1", title: "Supply note", path: "Supply note.docx", sha256: "b".repeat(64), deliverable: "Supply note.docx" }
   const status = memoRun({ combined: true, body: "Supply note - clean (2).docx", file: "Supply note (2).docx", rows: [earlier] })
-  const body = { name: "Supply note - clean (2).docx", role: "draft" }
-  const redline = { name: "Supply note - redline.docx", role: "redline" }
-  const kept = { main: { name: "Supply note.docx", role: "earlier_combined" }, extras: [] }
+  const body: DraftedOutput = { name: "Supply note - clean (2).docx", role: "draft" }
+  const redline: DraftedOutput = { name: "Supply note - redline.docx", role: "redline" }
+  const kept: DraftedGroup = { main: { name: "Supply note.docx", role: "earlier_combined" }, extras: [] }
   expect(draftedGroups(status)).toStrictEqual([{ main: body, extras: [redline, memoNotes], combined: "Supply note (2).docx" }, kept])
   const names = ["Supply note - clean.docx", "Supply note - clean (2).docx", "Supply note - redline.docx", "Supply note - cover note.docx", "Supply note.docx", "Supply note (2).docx"]
   expect(deliverableGroups(names, status)).toStrictEqual([
