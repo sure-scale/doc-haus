@@ -8,6 +8,7 @@ import path from "node:path"
 import { Document, InsertedTextRun, Packer, Paragraph, TextRun } from "docx"
 import { strFromU8, unzipSync } from "fflate"
 import { recordRedlineProposal } from "../../../dochaus/lib/redlines"
+import { compareVersions } from "../../../dochaus/lib/version-compare"
 
 // GET /matters/:id/compare against an isolated ingest service. Fixtures are
 // neutral synthetic paragraphs built in code. Comparing needs no generation
@@ -23,6 +24,7 @@ const NOTICES = "Notices are given in writing."
 const MEETING = "The parties meet once each quarter."
 
 type Hunk = { id: string; kind: string; location: { scope: string; paragraph: number; side: string }; before?: string; after?: string; untracked: boolean }
+type Proposal = { id: string; kind: string; text: string; author: string; outcome: string; untracked?: string; location: Hunk["location"] }
 type Comparison = {
   left: { name: string; label: string; trackedChanges: { count: number; authors: string[] }; pendingProposals: number }
   right: { name: string; label: string; trackedChanges: { count: number; authors: string[] }; pendingProposals: number }
@@ -30,6 +32,7 @@ type Comparison = {
   attribution: string
   changes: Hunk[]
   untracked: Hunk[]
+  proposals: Proposal[]
   blacklineName: string
 }
 
@@ -170,6 +173,7 @@ test("format=json reports the paragraph changes, the untracked edits and both in
   // With no tracked changes in right, every difference was made without tracking.
   expect(result.untracked.map(({ id: _id, ...hunk }) => hunk)).toEqual(result.changes.map(({ id: _id, ...hunk }) => hunk))
   expect(result.untracked.map(hunk => hunk.id)).toEqual(["U1", "U2"])
+  expect(result.proposals).toEqual([])
 })
 
 test("a return with tracked changes discloses them and lists only the untracked edit", async () => {
@@ -179,6 +183,18 @@ test("a return with tracked changes discloses them and lists only the untracked 
     { kind: "modified", before: PAYMENT, after: "Payment is due within sixty days of invoice." },
   ])
   expect(result.changes.map(hunk => hunk.after)).toContain(`${NOTICES} Email counts as writing.`)
+})
+
+test("format=json carries the library's outcome for each of left's tracked proposals unchanged", async () => {
+  // Left tracks Pat's insertion; right is plain text without it, so it was undone without tracking.
+  const result = await (await compare({ left: TRACKED, right: RETURNED, format: "json" })).json() as Comparison
+  const read = (name: string) => readFile(path.join(matter.dir, name)).then(bytes => new Uint8Array(bytes))
+  const direct = await compareVersions({ bytes: await read(TRACKED), label: "Tracked return" }, { bytes: await read(RETURNED), label: "Returned draft" },
+    { ignoreFormatting: true, detectMoves: true, headersFooters: true }, new Date().toISOString())
+  expect(result.proposals).toEqual(direct.proposals)
+  const reversed = result.untracked.find(hunk => hunk.before === `${NOTICES} Email counts as writing.`)!
+  expect(result.proposals).toEqual([{ id: "P1", kind: "inserted", text: " Email counts as writing.", author: "Pat Reviewer", outcome: "undone",
+    untracked: reversed.id, location: { scope: "body", paragraph: 5, side: "left" } }])
 })
 
 test("format=docx (the default) returns the Word blackline inline, or as an attachment with download=1", async () => {

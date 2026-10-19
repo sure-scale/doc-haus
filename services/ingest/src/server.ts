@@ -887,10 +887,11 @@ app.get("/matters/:id/documents/redlined", async (c) => {
 
 // Compare two versions of a matter document, left (the earlier) with right (the
 // later): a Word Compare-style blackline (format=docx, the default) or its
-// paragraph changes and the edits right made without tracked changes
-// (format=json). The stored bytes are compared; pending doc.haus proposals are
-// counted, not applied. Read only: no model call and nothing written to the matter,
-// so no artifact lock (it would create its lock folder): document writes replace
+// paragraph changes, the edits right made without tracked changes and what
+// became of each of left's tracked proposals (format=json). The stored bytes
+// are compared; pending doc.haus proposals are counted, not applied. Read
+// only: no model call and nothing written to the matter, so no artifact lock
+// (it would create its lock folder): document writes replace
 // the whole file by rename, so each read sees one complete version, and legal.db
 // is opened read-only, never created or migrated.
 app.get("/matters/:id/compare", async (c) => {
@@ -949,6 +950,7 @@ app.get("/matters/:id/compare", async (c) => {
       attribution: comparison.attribution,
       changes: comparison.changes,
       untracked: comparison.untracked,
+      proposals: comparison.proposals,
       blacklineName,
     })
   return new Response(new Uint8Array(comparison.blackline), {

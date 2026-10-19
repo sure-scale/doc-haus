@@ -7,8 +7,10 @@ import { docxodus } from "./docxodus"
 // left → right with every pending tracked change in either file accepted first.
 // A second pass compares that same accepted left with right after accepting only
 // the proposals of ours it still carries and rejecting its other revisions, which
-// leaves exactly the edits right made without tracking. Pure: no model call, no
-// file writes.
+// leaves exactly the edits right made without tracking. Each of left's own
+// pending proposals is reported as still pending, accepted or undone without
+// tracking, from those same revisions and edits. Pure: no model call, no file
+// writes.
 
 export type CompareOptions = { ignoreFormatting: boolean; detectMoves: boolean; headersFooters: boolean }
 
@@ -34,6 +36,21 @@ export type ChangeHunk = {
 
 export type SideRevisions = { count: number; authors: string[] }
 
+/** What became of one of left's pending tracked insertions or deletions in right. */
+export type ProposalOutcome = {
+  /** P1, P2… in left's document order. */
+  id: string
+  kind: "inserted" | "deleted"
+  /** The proposed inserted text, or the text proposed for deletion. */
+  text: string
+  author: string
+  outcome: "pending" | "accepted" | "undone"
+  /** For an undone proposal: the U-id of the untracked edit that reversed it. */
+  untracked?: string
+  /** Where it sits in left; paragraph 0 if not located. */
+  location: ChangeLocation
+}
+
 export type VersionComparison = {
   blackline: Uint8Array
   changes: ChangeHunk[]
@@ -41,6 +58,7 @@ export type VersionComparison = {
   attribution: "authors" | "label"
   left: SideRevisions
   right: SideRevisions
+  proposals: ProposalOutcome[]
 }
 
 type Dx = Awaited<ReturnType<typeof docxodus>>
@@ -77,7 +95,9 @@ export async function compareVersions(
   // left and, on the right, received.
   const leftView = leftInputs.length ? await dx.docxDiffAcceptRevisions(left.bytes) : left.bytes
   const rightView = rightInputs.length ? await dx.docxDiffAcceptRevisions(right.bytes) : right.bytes
-  const received = rightInputs.length ? await dx.docxDiffRejectRevisions(leftInputs.length ? acceptOurs(dx, left.bytes, right.bytes) : right.bytes) : right.bytes
+  const sentRevisions = leftInputs.length ? listRevisions(dx, left.bytes) : []
+  const carried = rightInputs.length && leftInputs.length ? acceptOurs(dx, sentRevisions, right.bytes) : { bytes: right.bytes, ours: [] }
+  const received = rightInputs.length ? await dx.docxDiffRejectRevisions(carried.bytes) : right.bytes
   const settings = { preAcceptInputRevisions: true, authorForRevisions: right.label, detectMoves: options.detectMoves,
     compareHeadersFooters: options.headersFooters, dateTimeForRevisions: new Date(date).toISOString().replace(/\.\d{3}Z$/, "Z") }
   const compared = await dx.docxDiffCompareProducts(left.bytes, right.bytes, settings, ["redline", "revisions"])
@@ -111,34 +131,69 @@ export async function compareVersions(
   const disclosed = (rows: InputRevision[]) => ({ count: rows.length, authors: unique(rows.map(row => row.author)) })
   const exported = ({ left: _left, right: _right, ...hunk }: Hunk): ChangeHunk => hunk
   return { blackline: attribution === "authors" ? relabelled! : plain, changes: changes.map(exported), untracked: untracked.map(exported),
-    attribution, left: disclosed(leftInputs), right: disclosed(rightInputs) }
+    attribution, left: disclosed(leftInputs), right: disclosed(rightInputs), proposals: await outcomes(left.bytes, sentRevisions, carried.ours, untracked) }
 }
 
-// Right with the proposals of ours it still carries accepted, as left's view has
-// them. A revision is ours when its type, author, date and text equal one
-// pending in left. If any accept is refused, right comes back unchanged and the
-// check rejects every revision.
-function acceptOurs(dx: Dx, left: Uint8Array, right: Uint8Array) {
-  const key = (row: ListedRevision) => JSON.stringify([row.type, row.author, row.date ?? "", row.text])
-  const sent = dx.openDocxSession(left, { persistAnchorIds: false })
-  const pending = new Map<string, number>()
+// A revision is ours when its type, author, date and text equal one pending in left.
+const revisionKey = (row: ListedRevision) => JSON.stringify([row.type, row.author, row.date ?? "", row.text])
+const tally = (rows: ListedRevision[]) => {
+  const counts = new Map<string, number>()
+  for (const row of rows) counts.set(revisionKey(row), (counts.get(revisionKey(row)) ?? 0) + 1)
+  return counts
+}
+
+function listRevisions(dx: Dx, bytes: Uint8Array) {
+  const session = dx.openDocxSession(bytes, { persistAnchorIds: false })
   try {
-    for (const row of sent.listRevisions()) pending.set(key(row), (pending.get(key(row)) ?? 0) + 1)
-  } finally {
-    sent.close()
-  }
-  const session = dx.openDocxSession(right, { persistAnchorIds: false })
-  try {
-    const ours = session.listRevisions().filter(row => {
-      const count = pending.get(key(row)) ?? 0
-      pending.set(key(row), count - 1)
-      return count > 0
-    })
-    if (!ours.length) return right
-    return ours.every(row => session.acceptRevision(row.id).success) ? session.save() : right
+    return session.listRevisions()
   } finally {
     session.close()
   }
+}
+
+// Right with the proposals of ours it still carries accepted, as left's view has
+// them, and those carried revisions. If any accept is refused, right's bytes come
+// back unchanged and the check rejects every revision.
+function acceptOurs(dx: Dx, sent: ListedRevision[], right: Uint8Array) {
+  const pending = tally(sent)
+  const session = dx.openDocxSession(right, { persistAnchorIds: false })
+  try {
+    const ours = session.listRevisions().filter(row => {
+      const count = pending.get(revisionKey(row)) ?? 0
+      pending.set(revisionKey(row), count - 1)
+      return count > 0
+    })
+    if (!ours.length) return { bytes: right, ours }
+    return { bytes: ours.every(row => session.acceptRevision(row.id).success) ? session.save() : right, ours }
+  } finally {
+    session.close()
+  }
+}
+
+// What became of each of left's pending insertions and deletions: pending while
+// right carries it as ours; undone when an untracked edit reverses it (the first
+// whose before holds the inserted text and whose after does not, or the other
+// way round for deleted text); otherwise accepted, its effect in right. Format,
+// move and paragraph-mark revisions are not proposals. Located in left's own
+// bytes, which its revision anchors address.
+async function outcomes(left: Uint8Array, sent: ListedRevision[], ours: ListedRevision[], untracked: Hunk[]): Promise<ProposalOutcome[]> {
+  const proposed = sent.filter(row => (row.type === "insert" || row.type === "delete") && row.family !== "paragraph_mark" && row.text.replace(/¶$/, ""))
+  if (!proposed.length) return []
+  const anchor = (row: ListedRevision) => row.anchorId ?? row.affectedAnchors[0]?.id
+  const located = await side(left, proposed.flatMap(row => anchor(row) ?? []))
+  const carried = tally(ours)
+  const flat = (text = "") => text.replace(/[¶\s]+/g, " ").trim()
+  return proposed.map((row, index) => {
+    const count = carried.get(revisionKey(row)) ?? 0
+    carried.set(revisionKey(row), count - 1)
+    const text = flat(row.text)
+    const [gone, back] = row.type === "insert" ? (["before", "after"] as const) : (["after", "before"] as const)
+    const reversal = count > 0 ? undefined : untracked.find(hunk => flat(hunk[gone]).includes(text) && !flat(hunk[back]).includes(text))
+    const block = located.get(anchor(row) ?? "")
+    return { id: `P${index + 1}`, kind: row.type === "insert" ? "inserted" : "deleted", text: row.text.replace(/¶$/, ""), author: row.author,
+      outcome: count > 0 ? "pending" : reversal ? "undone" : "accepted", ...reversal && { untracked: reversal.id },
+      location: block ? { ...block.location, side: "left" } : { scope: scopeOf(row.scope), paragraph: 0, side: "left" } }
+  })
 }
 
 // The re-labelled blackline must still reject to left and accept to right, both

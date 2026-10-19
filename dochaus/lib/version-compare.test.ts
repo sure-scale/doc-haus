@@ -150,6 +150,7 @@ test("a planted untracked edit in a returned draft is the only untracked edit, l
   const result = await compare(left, right)
 
   expect(result.left).toEqual({ count: 0, authors: [] })
+  expect(result.proposals).toEqual([])
   expect(result.right.authors).toEqual(["Pat Reviewer"])
   expect(result.right.count).toBeGreaterThanOrEqual(4)
   expect(result.untracked).toEqual([{ id: "U1", kind: "modified", untracked: true, before: C.p21, after: C.p21.replace("30 days", "45 days"),
@@ -223,6 +224,28 @@ test("an untracked edit beside our pending proposal in the same paragraph flags 
   expect(result.changes.map(hunk => [hunk.after, hunk.untracked])).toEqual([
     [C.d11 + INSERTED, false], [working + OURS, true], [C.d13a, false], [C.p24a + "withhold" + C.p24b, false]])
   expect(result.untracked.map(({ kind, before, after }) => ({ kind, before, after }))).toEqual([{ kind: "modified", before: C.d12 + OURS, after: working + OURS }])
+})
+
+test("each of our pending proposals is reported as accepted, undone without tracking or still pending, in document order", async () => {
+  // Ours: an insertion they accepted as plain text, a deletion they undid
+  // without tracking and an insertion they kept pending. Theirs: Pat's tracked
+  // change and one planted untracked edit.
+  const LATER = " Invoices are issued monthly."
+  const left = body(), right = plant(tracked())
+  left[3] = para(run(C.d11) + ins(INSERTED, US))
+  left[5] = para(run(C.d13a) + del(C.d13b, US))
+  left[9] = para(run(C.p23) + ins(LATER, US))
+  right[3] = p(C.d11 + INSERTED)
+  right[5] = p(C.d13a + C.d13b)
+  right[9] = para(run(C.p23) + ins(LATER, US))
+  const result = await compare(sent(left), sent(right))
+  expect(result.untracked.map(({ id, before, after }) => ({ id, before, after }))).toEqual([
+    { id: "U1", before: C.d13a, after: C.d13a + C.d13b }, { id: "U2", before: C.p21, after: C.p21.replace("30 days", "45 days") }])
+  expect(result.proposals).toEqual([
+    { id: "P1", kind: "inserted", text: INSERTED, author: US.author, outcome: "accepted", location: { scope: "body", paragraph: 4, side: "left", heading: C.h1 } },
+    { id: "P2", kind: "deleted", text: C.d13b, author: US.author, outcome: "undone", untracked: "U1", location: { scope: "body", paragraph: 6, side: "left", heading: C.h1 } },
+    { id: "P3", kind: "inserted", text: LATER, author: US.author, outcome: "pending", location: { scope: "body", paragraph: 10, side: "left", heading: C.h2 } },
+  ])
 })
 
 test("revisions are re-attributed only when unambiguous: identical text by two reviewers keeps the side label", async () => {
