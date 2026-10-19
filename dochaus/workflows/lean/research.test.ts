@@ -305,6 +305,30 @@ test("research review reports researchable gaps separately and the checker valid
   expect(approvedResearch(directory)).toHaveLength(1)
 })
 
+test("review gaps, which the lawyer and the drafter read, are retried by field when they name an internal file, and kept as written on the last attempt", () => {
+  const directory = matter()
+  acceptResearchReply(directory, "research", JSON.stringify(retrieved(directory)))
+  const leak = "Metadata in .dochaus/research-sources/ only."
+  const named = (field: string) => `${field} names an internal workflow file. The lawyer reads this text: describe the gap in words, without file paths.`
+  const leaky = [GAP, { issue: leak, affects: GAP.affects }, { issue: GAP.issue, affects: "The clause drafted from research-context.txt." }]
+  expect(acceptResearchReply(directory, "research-review", JSON.stringify({ approved: ["r1"], rejected: [], limitations: [], gaps: leaky })).issues)
+    .toEqual([named("gaps[1].issue"), named("gaps[2].affects")])
+  expect(readLeanText(directory, "research-review.json")).toBeUndefined()
+  const final = acceptResearchReply(directory, "research-review", JSON.stringify({ approved: ["r1"], rejected: [], limitations: [], gaps: [leaky[1]] }), { final: true })
+  expect(final.issues).toEqual([])
+  expect(final.openItems.map(item => item.detail)).toEqual([`${leak} Affects: ${GAP.affects}`])
+})
+
+test("a review gap corrected on retry reaches research and the lawyer in the corrected words", async () => {
+  const directory = matter()
+  const leaky = { issue: "Authority beyond .dochaus/lean/research-context.txt has not been retrieved.", affects: GAP.affects }
+  const model = scriptedModel({ ...happyPath, [AGENT.research]: researched, [AGENT["research-review"]]: (_, index) => reviewed(index === 0 ? [leaky] : index === 1 ? [GAP] : [LATER]) })
+  expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+  expect(model.prompts.filter(row => row.agent === AGENT["research-review"])[1]?.text).toContain("gaps[0].issue names an internal workflow file")
+  expect(readLeanJson(directory, "research-gaps.json")).toEqual({ basis: researchBasis(directory), gaps: [GAP] })
+  expect(readOpenItems(directory).filter(item => item.kind === "research_gap").map(item => item.detail)).toEqual([`${LATER.issue} Affects: ${LATER.affects}`])
+}, 120_000)
+
 test("first review gaps reach research once as targeted issues before the plan", async () => {
   const directory = matter()
   const model = scriptedModel({ ...happyPath, [AGENT.research]: researched, [AGENT["research-review"]]: (_, index) => reviewed(index ? [] : [GAP]) })

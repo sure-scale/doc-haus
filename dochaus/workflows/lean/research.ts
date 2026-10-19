@@ -154,13 +154,14 @@ export function researchContextLocators(directory: string) {
  * .dochaus/research-sources/<snapshot>.json), also without the leading folder. */
 const INTERNAL_PATHS = [".dochaus/", ".dochaus\\", "research-context.txt", "research-sources/", "research-sources\\"]
 
-/** Limitations and rejection reasons become research open items the lawyer
- * reads; a finding's jurisdiction and currency reach the drafter and the
- * drafting notes through researchHandoff. An internal file path in that text is
- * retried, naming the field but not the path, because checker feedback reaches
- * the narrator. Finding text is checked at the research stage, where it is
- * written: the reviewer only selects ids and cannot change it. The prompt still
- * gives the reviewer the paths it reads; the model's words are never rewritten.
+/** Limitations, rejection reasons and review gaps become research open items
+ * the lawyer reads; a finding's jurisdiction and currency, and a gap's issue and
+ * what it affects, reach the drafter and the drafting notes through
+ * researchHandoff. An internal file path in that text is retried, naming the
+ * field but not the path, because checker feedback reaches the narrator.
+ * Finding text is checked at the research stage, where it is written: the
+ * reviewer only selects ids and cannot change it. The prompt still gives the
+ * reviewer the paths it reads; the model's words are never rewritten.
  * This is retry feedback, not a defect of saved research: checkResearch and
  * checkReview, which re-check saved output on resume, do not apply it. */
 function internalPathIssues(stage: "research" | "research-review", value: unknown) {
@@ -169,7 +170,8 @@ function internalPathIssues(stage: "research" | "research-review", value: unknow
   const texts: [string, unknown][] = [...rows(value.limitations).map((text, index): [string, unknown] => [`limitations[${index}]`, text]),
     ...stage === "research"
       ? rows(value.findings).flatMap((row, index) => record(row) ? (["jurisdiction", "currentness", "limitations"] as const).map((key): [string, unknown] => [`findings[${index}].${key}`, row[key]]) : [])
-      : rows(value.rejected).map((row, index): [string, unknown] => [`rejected[${index}].reason`, record(row) ? row.reason : undefined])]
+      : [...rows(value.rejected).map((row, index): [string, unknown] => [`rejected[${index}].reason`, record(row) ? row.reason : undefined]),
+        ...rows(value.gaps).flatMap((row, index) => record(row) ? (["issue", "affects"] as const).map((key): [string, unknown] => [`gaps[${index}].${key}`, row[key]]) : [])]]
   return texts.flatMap(([where, text]) => typeof text === "string" && INTERNAL_PATHS.some(name => text.toLowerCase().includes(name))
     ? [`${where} names an internal workflow file. The lawyer reads this text: describe the gap in words, without file paths.`] : [])
 }
