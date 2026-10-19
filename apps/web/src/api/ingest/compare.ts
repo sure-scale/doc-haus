@@ -66,7 +66,7 @@ export type ComparisonJson = {
 export function compareUrl(
   matterId: string,
   params: CompareParams,
-  { format = "docx", download = false }: { format?: "json" | "docx"; download?: boolean } = {},
+  { format = "docx" }: { format?: "json" | "docx" } = {},
 ): string {
   const flag = (value: boolean | undefined) => (value === false ? "0" : "1")
   const query: [string, string | undefined][] = [
@@ -78,7 +78,6 @@ export function compareUrl(
     ["moves", flag(params.detectMoves)],
     ["headers", flag(params.headersFooters)],
     ["format", format],
-    ["download", download ? "1" : undefined],
   ]
   const search = query.flatMap(([key, value]) => (value === undefined ? [] : [`${key}=${encodeURIComponent(value)}`])).join("&")
   return `${INGEST_URL}/matters/${encodeURIComponent(matterId)}/compare?${search}`

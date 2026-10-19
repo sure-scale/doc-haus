@@ -5,7 +5,7 @@ import { INGEST_URL } from "../src/config"
 import { compareUrl, fetchBlacklineBytes, fetchComparison, type ChangeHunk, type ComparisonJson } from "../src/api/ingest/compare"
 import { choiceParams, compareCandidates } from "../src/components/CompareDialog"
 import CompareDialog from "../src/components/CompareDialog"
-import { ComparePanel, hunkLocation } from "../src/components/BlacklineViewer"
+import BlacklineViewer, { ComparePanel, hunkLocation, saveDocx } from "../src/components/BlacklineViewer"
 import CompareView from "../src/components/chat/CompareView"
 import { toTurns } from "../src/components/chat/turn-model"
 import DocumentUpload from "../src/components/DocumentUpload"
@@ -28,7 +28,6 @@ describe("compare client", () => {
     expect(compareUrl("m-1", { ...params, leftLabel: "  ", ignoreFormatting: false, detectMoves: false, headersFooters: false }, { format: "json" })).toBe(
       `${INGEST_URL}/matters/m-1/compare?left=Our%20draft.docx&right=Their%20draft%20(2).docx&ignoreFormatting=0&moves=0&headers=0&format=json`,
     )
-    expect(compareUrl("m-1", params, { download: true })).toEndWith("&format=docx&download=1")
   })
 
   test("reads the comparison JSON and the blackline bytes from the same route", async () => {
@@ -163,6 +162,35 @@ describe("blackline side panel", () => {
     const html = panel(comparison({ untracked: [hunk("U1", true, { after: "word ".repeat(200) })] }))
     expect(html).toContain("…")
     expect(html).toContain("Show all")
+  })
+})
+
+describe("blackline download", () => {
+  test("waits for the fetched blackline instead of linking to the route", () => {
+    const html = renderToStaticMarkup(createElement(BlacklineViewer, { matterId: "m-1", params, onClose: () => {} }))
+    expect(html).toMatch(/<button disabled="" title="Download the blackline/)
+    expect(html).not.toContain("download=1")
+  })
+
+  test("saves the bytes already on screen as a Word file under the blackline's name", async () => {
+    const anchor = { href: "", download: "", clicks: 0, click() { this.clicks++ } }
+    const blobs: Blob[] = []
+    const revoked: string[] = []
+    const { createObjectURL, revokeObjectURL } = URL
+    const original = globalThis.document
+    URL.createObjectURL = (blob: Blob) => `blob:${blobs.push(blob)}`
+    URL.revokeObjectURL = (url: string) => void revoked.push(url)
+    globalThis.document = { createElement: () => anchor } as unknown as typeof globalThis.document
+    try {
+      saveDocx(new Uint8Array([80, 75, 3, 4]), "Blackline - Our draft vs Their draft.docx")
+    } finally {
+      Object.assign(URL, { createObjectURL, revokeObjectURL })
+      globalThis.document = original
+    }
+    expect(anchor).toMatchObject({ href: "blob:1", download: "Blackline - Our draft vs Their draft.docx", clicks: 1 })
+    expect(blobs[0]!.type).toBe("application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+    expect(new Uint8Array(await blobs[0]!.arrayBuffer())).toEqual(new Uint8Array([80, 75, 3, 4]))
+    expect(revoked).toEqual(["blob:1"])
   })
 })
 

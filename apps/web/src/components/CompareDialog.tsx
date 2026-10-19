@@ -78,6 +78,12 @@ export default function CompareDialog({
   // A fresh upload is picked before the matter's list has reloaded.
   if (other && !candidates.includes(other)) candidates.unshift(other)
 
+  // An upload in flight lands in the matter either way; stay open until it
+  // does, so the new file is picked here rather than added unseen.
+  function close() {
+    if (!upload) onClose()
+  }
+
   function pick(next: string) {
     setOther(next)
     setOtherLabel(fileStem(next))
@@ -136,9 +142,9 @@ export default function CompareDialog({
   const [left, right] = thisSide === "left" ? [mine, theirs] : [theirs, mine]
 
   return (
-    <div className="viewer-overlay" onClick={onClose}>
+    <div className="viewer-overlay" onClick={close}>
       <div className="picker-panel compare-dialog" role="dialog" aria-modal="true" aria-labelledby="compare-dialog-title" onClick={(e) => e.stopPropagation()}>
-        <ModalHeader title={<span id="compare-dialog-title">Compare versions</span>} onClose={onClose} />
+        <ModalHeader title={<span id="compare-dialog-title">Compare versions</span>} onClose={close} />
         <form
           className="picker-body compare-form"
           onSubmit={(event) => {
@@ -180,7 +186,7 @@ export default function CompareDialog({
             </p>
           )}
           <div className="compare-actions">
-            <button type="button" onClick={onClose}>
+            <button type="button" onClick={close} disabled={upload !== undefined}>
               Cancel
             </button>
             <button type="submit" className="primary" disabled={!other || upload !== undefined}>

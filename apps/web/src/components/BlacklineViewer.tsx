@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { useDocxodus } from "docxodus/react"
 import {
   compareUrl,
@@ -20,6 +20,9 @@ import { ModalClose } from "./ModalHeader"
 // is generated on demand and never saved into the matter.
 export default function BlacklineViewer({ matterId, params, onClose }: { matterId: string; params: CompareParams; onClose: () => void }) {
   const { isReady, error: wasmError, convertToHtml } = useDocxodus("/wasm/")
+  const panel = useRef<HTMLDivElement>(null)
+  // The fetched blackline, painted on screen and saved by Download.
+  const [blackline, setBlackline] = useState<Uint8Array>()
   const [html, setHtml] = useState<string>()
   const [renderError, setRenderError] = useState<string>()
   const [comparison, setComparison] = useState<ComparisonJson>()
@@ -43,40 +46,53 @@ export default function BlacklineViewer({ matterId, params, onClose }: { matterI
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key])
 
+  // Move focus into the dialog and hand it back to whatever opened it.
+  useLayoutEffect(() => {
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    panel.current?.querySelector<HTMLButtonElement>(".modal-close")?.focus({ preventScroll: true })
+    return () => {
+      if (opener?.isConnected) opener.focus({ preventScroll: true })
+    }
+  }, [])
+
+  // Fetched apart from the viewer runtime, so the blackline can be downloaded
+  // even when it cannot be painted.
   useEffect(() => {
-    if (!isReady) return
     let cancelled = false
+    setBlackline(undefined)
     setHtml(undefined)
     setRenderError(undefined)
-    fetchBlacklineBytes(matterId, params)
-      .then((bytes) => convertToHtml(bytes, DOCX_RENDER_OPTIONS))
-      .then(
-        (out) => !cancelled && setHtml(out),
-        (cause) => !cancelled && setRenderError(humanizeError(cause, "Could not show the blackline.")),
-      )
+    fetchBlacklineBytes(matterId, params).then(
+      (bytes) => !cancelled && setBlackline(bytes),
+      (cause) => !cancelled && setRenderError(humanizeError(cause, "Could not show the blackline.")),
+    )
     return () => {
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isReady, key])
+  }, [key])
 
-  // The route serves the same blackline as an attachment; the browser saves it
-  // under the route's file name.
-  function download() {
-    const a = document.createElement("a")
-    a.href = compareUrl(matterId, params, { download: true })
-    a.download = name
-    a.click()
-  }
+  useEffect(() => {
+    if (!isReady || !blackline) return
+    let cancelled = false
+    convertToHtml(blackline, DOCX_RENDER_OPTIONS).then(
+      (out) => !cancelled && setHtml(out),
+      (cause) => !cancelled && setRenderError(humanizeError(cause, "Could not show the blackline.")),
+    )
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isReady, blackline])
 
   const failed = renderError ?? (wasmError && `Viewer failed to load: ${wasmError.message}`)
   return (
     <div className="viewer-overlay" onClick={onClose}>
-      <div className="viewer-panel document-reader blackline-reader" role="dialog" aria-modal="true" aria-label={name} onClick={(e) => e.stopPropagation()}>
+      <div ref={panel} className="viewer-panel document-reader blackline-reader" role="dialog" aria-modal="true" aria-label={name} onClick={(e) => e.stopPropagation()}>
         <div className="viewer-bar">
           <ViewerTitle name={name} kind={`Blackline: ${params.left} → ${params.right}`} />
           <div className="viewer-bar-actions">
-            <button onClick={download} disabled={Boolean(renderError)} title="Download the blackline as a Word file with tracked changes">
+            <button onClick={() => blackline && saveDocx(blackline, name)} disabled={!blackline} title="Download the blackline as a Word file with tracked changes">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <path d="M12 4v11" />
                 <path d="m7 10 5 5 5-5" />
@@ -118,6 +134,20 @@ export default function BlacklineViewer({ matterId, params, onClose }: { matterI
       </div>
     </div>
   )
+}
+
+// Save the blackline already on screen rather than asking the route again: the
+// file matches what the lawyer reviewed, and a refusal can never be saved as a
+// .docx.
+export function saveDocx(bytes: Uint8Array, name: string) {
+  const url = URL.createObjectURL(
+    new Blob([bytes as BlobPart], { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" }),
+  )
+  const a = document.createElement("a")
+  a.href = url
+  a.download = name
+  a.click()
+  URL.revokeObjectURL(url)
 }
 
 const KIND: Record<ChangeHunk["kind"], string> = {
