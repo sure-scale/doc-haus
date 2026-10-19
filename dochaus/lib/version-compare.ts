@@ -5,10 +5,10 @@ import { docxodus } from "./docxodus"
 
 // Compares two versions of one Word document. The blackline is Word Compare's:
 // left → right with every pending tracked change in either file accepted first.
-// A second pass compares both files with their tracked changes rejected, which
-// leaves exactly the edits right made without tracking: proposals left sent
-// still pending, and still pending in right, cancel out. Pure: no model call,
-// no file writes.
+// A second pass compares that same accepted left with right after accepting only
+// the proposals of ours it still carries and rejecting its other revisions, which
+// leaves exactly the edits right made without tracking. Pure: no model call, no
+// file writes.
 
 export type CompareOptions = { ignoreFormatting: boolean; detectMoves: boolean; headersFooters: boolean }
 
@@ -46,6 +46,7 @@ export type VersionComparison = {
 type Dx = Awaited<ReturnType<typeof docxodus>>
 type DiffRevision = NonNullable<Awaited<ReturnType<Dx["docxDiffCompareProducts"]>>["revisions"]>[number]
 type InputRevision = Awaited<ReturnType<Dx["getRevisions"]>>[number]
+type ListedRevision = ReturnType<ReturnType<Dx["openDocxSession"]>["listRevisions"]>[number]
 type Hunk = ChangeHunk & { left: string[]; right: string[] }
 type Block = { location: Omit<ChangeLocation, "side">; text: string }
 
@@ -72,24 +73,18 @@ export async function compareVersions(
   const leftInputs = await dx.getRevisions(left.bytes)
   const rightInputs = await dx.getRevisions(right.bytes)
   // Comparisons pre-accept their inputs, so blackline anchors address
-  // accept-all(left) and accept-all(right); the check's inputs carry no
-  // revisions, so its anchors address reject-all(left) and reject-all(right).
+  // accept-all(left) and accept-all(right); the check reads that same accepted
+  // left and, on the right, received.
   const leftView = leftInputs.length ? await dx.docxDiffAcceptRevisions(left.bytes) : left.bytes
   const rightView = rightInputs.length ? await dx.docxDiffAcceptRevisions(right.bytes) : right.bytes
-  const original = leftInputs.length ? await dx.docxDiffRejectRevisions(left.bytes) : left.bytes
-  const received = rightInputs.length ? await dx.docxDiffRejectRevisions(right.bytes) : right.bytes
+  const received = rightInputs.length ? await dx.docxDiffRejectRevisions(leftInputs.length ? acceptOurs(dx, left.bytes, right.bytes) : right.bytes) : right.bytes
   const settings = { preAcceptInputRevisions: true, authorForRevisions: right.label, detectMoves: options.detectMoves,
     compareHeadersFooters: options.headersFooters, dateTimeForRevisions: new Date(date).toISOString().replace(/\.\d{3}Z$/, "Z") }
   const compared = await dx.docxDiffCompareProducts(left.bytes, right.bytes, settings, ["redline", "revisions"])
-  // With no tracked changes in either file, every difference is untracked: the check is the blackline's own comparison.
-  const checked = original === left.bytes && received === right.bytes ? compared
-    : await dx.docxDiffCompareProducts(original, received, settings, ["redline", "revisions"])
+  // With no tracked changes in right, every difference is untracked: the check is the blackline's own comparison.
+  const checked = received === right.bytes ? compared : await dx.docxDiffCompareProducts(leftView, received, settings, ["redline", "revisions"])
 
   const plain = options.ignoreFormatting ? withoutFormatChanges(compared.redline!) : compared.redline!
-  // Untracked revisions key by their offset in left's text. When left carries
-  // tracked changes the check reads reject-all(left) and the blackline
-  // accept-all(left), so an untracked edit after a left proposal may not key;
-  // relabel then refuses and the plain blackline keeps the side label.
   const relabelled = relabel(plain, checked.redline!, rightInputs, right.label)
   // Never ship a partially re-labelled file: on any miss, the plain Word Compare blackline.
   const attribution = relabelled && await roundTrips(relabelled, leftView, rightView, options.headersFooters) ? "authors" : "label"
@@ -97,17 +92,17 @@ export async function compareVersions(
   const changed = compared.revisions!.filter(row => !options.ignoreFormatting || row.revisionType !== "FormatChanged")
   const unchecked = checked.revisions!.filter(row => row.revisionType !== "FormatChanged")
   const anchors = (rows: DiffRevision[]) => rows.flatMap(row => [row.leftAnchor ?? [], row.rightAnchor ?? []].flat())
-  const leftSide = await side(leftView, anchors(original === leftView ? [...changed, ...unchecked] : changed))
+  const leftSide = await side(leftView, anchors([...changed, ...unchecked]))
   const rightSide = await side(rightView, anchors(received === rightView ? [...changed, ...unchecked] : changed))
-  const originalSide = original === leftView ? leftSide : await side(original, anchors(unchecked))
   const receivedSide = received === rightView ? rightSide : await side(received, anchors(unchecked))
-  const untracked = hunks(unchecked, originalSide, receivedSide, "U")
+  const untracked = hunks(unchecked, leftSide, receivedSide, "U")
   const changes = hunks(changed, leftSide, rightSide, "C")
   // A change holds an untracked edit when an untracked hunk shares its left
-  // paragraph or, for an inserted paragraph, its right one. Anchors are
-  // content-derived, so a paragraph reads the same in both passes unless a
-  // tracked change touches it. Derived the same way under both attributions, so
-  // the flag never depends on whether re-labelling held.
+  // paragraph or, for an inserted paragraph, its right one. Both passes read the
+  // same left; right anchors are content-derived, so an inserted paragraph reads
+  // the same in both unless a tracked change touches it. Derived the same way
+  // under both attributions, so the flag never depends on whether re-labelling
+  // held.
   const leftKeys = new Set(untracked.flatMap(hunk => hunk.left)), rightKeys = new Set(untracked.flatMap(hunk => hunk.right))
   for (const hunk of changes)
     hunk.untracked = hunk.left.length ? hunk.left.some(anchor => leftKeys.has(anchor)) : hunk.right.some(anchor => rightKeys.has(anchor))
@@ -117,6 +112,33 @@ export async function compareVersions(
   const exported = ({ left: _left, right: _right, ...hunk }: Hunk): ChangeHunk => hunk
   return { blackline: attribution === "authors" ? relabelled! : plain, changes: changes.map(exported), untracked: untracked.map(exported),
     attribution, left: disclosed(leftInputs), right: disclosed(rightInputs) }
+}
+
+// Right with the proposals of ours it still carries accepted, as left's view has
+// them. A revision is ours when its type, author, date and text equal one
+// pending in left. If any accept is refused, right comes back unchanged and the
+// check rejects every revision.
+function acceptOurs(dx: Dx, left: Uint8Array, right: Uint8Array) {
+  const key = (row: ListedRevision) => JSON.stringify([row.type, row.author, row.date ?? "", row.text])
+  const sent = dx.openDocxSession(left, { persistAnchorIds: false })
+  const pending = new Map<string, number>()
+  try {
+    for (const row of sent.listRevisions()) pending.set(key(row), (pending.get(key(row)) ?? 0) + 1)
+  } finally {
+    sent.close()
+  }
+  const session = dx.openDocxSession(right, { persistAnchorIds: false })
+  try {
+    const ours = session.listRevisions().filter(row => {
+      const count = pending.get(key(row)) ?? 0
+      pending.set(key(row), count - 1)
+      return count > 0
+    })
+    if (!ours.length) return right
+    return ours.every(row => session.acceptRevision(row.id).success) ? session.save() : right
+  } finally {
+    session.close()
+  }
 }
 
 // The re-labelled blackline must still reject to left and accept to right, both
@@ -225,9 +247,9 @@ function containerText(xml: string) {
   return node.localName === "tr" ? row(node) : node.localName === "tbl" ? childElements(node, "tr").map(row).join("\n") : paragraphs(node).join("\n")
 }
 
-// Re-labels the plain blackline. A revision whose key matches one in
-// compare(left, reject-all(right)) is an edit right made without tracking and is
-// labelled as such. Any other revision takes its input author (and date) only
+// Re-labels the plain blackline. A revision whose key matches one in the
+// check's comparison is an edit right made without tracking and is labelled as
+// such. Any other revision takes its input author (and date) only
 // when unambiguous: the right file has a single author, or its text matches
 // exactly one input revision. Otherwise it keeps the side label, as do
 // formatting changes. Returns nothing unless every untracked revision found its
@@ -273,8 +295,9 @@ function relabel(plain: Uint8Array, check: Uint8Array, inputs: InputRevision[], 
 }
 
 // Revision carriers in document order, keyed by part, kind, offset in left's
-// text and their own text. Both comparisons reject to left, so an edit right
-// made without tracking has the same key in the blackline and in the check.
+// text and their own text. Both comparisons reject to accept-all(left), so an
+// edit right made without tracking has the same key in the blackline and in the
+// check.
 function carriers(docs: Map<string, Document>) {
   const rows: { key: string; kind: "ins" | "del"; text: string; node: Element }[] = []
   for (const [part, doc] of docs) {

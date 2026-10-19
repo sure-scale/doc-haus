@@ -187,21 +187,42 @@ test("beside our own pending proposals, a planted untracked edit is the only unt
     location: { scope: "body", paragraph: 8, side: "right", heading: C.h2 } }])
   expect(result.changes.map(hunk => [hunk.after, hunk.untracked])).toEqual([
     [C.d11 + INSERTED, false], [C.d13a, false], [C.p21.replace("30 days", "45 days"), true], [C.p24a + "withhold" + C.p24b, false]])
-  // The check reads left before our proposal, the blackline after it, so the
-  // untracked edit past the proposal has no exact key: the side label holds.
-  expect(result.attribution).toBe("label")
+  // Both passes read left with our proposal accepted, so the untracked edit past it keys exactly.
+  expect(result.attribution).toBe("authors")
+  expect(texted(result.blackline).filter(row => row.author === `Not tracked (${RIGHT})`).map(row => row.text).toSorted()).toEqual(["30", "45"])
   expect(await rejected(result.blackline)).toEqual(await accepted(left))
   expect(await accepted(result.blackline)).toEqual(await accepted(right))
 })
 
-test("a proposal of ours they accepted without tracking is reported as untracked", async () => {
+test("a proposal of ours they accepted is not an untracked edit: the blackline shows no change there", async () => {
   const rows = tracked()
   rows[4] = p(C.d12 + OURS)
   const result = await compare(sent(proposed(body())), sent(rows))
-  expect(result.untracked).toEqual([{ id: "U1", kind: "modified", untracked: true, before: C.d12, after: C.d12 + OURS,
-    location: { scope: "body", paragraph: 5, side: "right", heading: C.h1 } }])
-  // Accepted on both sides, the blackline shows no change in that paragraph.
-  expect(result.changes.map(hunk => hunk.after)).toEqual([C.d11 + INSERTED, C.d13a, C.p24a + "withhold" + C.p24b])
+  expect(result.untracked).toEqual([])
+  expect(result.changes.map(hunk => [hunk.after, hunk.untracked])).toEqual([
+    [C.d11 + INSERTED, false], [C.d13a, false], [C.p24a + "withhold" + C.p24b, false]])
+})
+
+test("a proposal of ours they removed leaves no mark, so the deletion the blackline shows is untracked", async () => {
+  const rows = tracked()
+  rows[4] = p(C.d12)
+  const result = await compare(sent(proposed(body())), sent(rows))
+  expect(result.untracked.map(({ before, untracked }) => ({ before, untracked }))).toEqual([{ before: C.d12 + OURS, untracked: true }])
+  expect(["modified", "deleted"]).toContain(result.untracked[0]!.kind)
+  expect(result.changes.map(hunk => [hunk.before, hunk.untracked])).toEqual([
+    [C.d11, false], [C.d12 + OURS, true], [C.d13a + C.d13b, false], [C.p24a + C.p24w + C.p24b, false]])
+  expect(result.attribution).toBe("authors")
+  expect(texted(result.blackline).filter(row => row.text === OURS).map(row => [row.tag, row.author])).toEqual([["del", `Not tracked (${RIGHT})`]])
+})
+
+test("an untracked edit beside our pending proposal in the same paragraph flags that paragraph's change", async () => {
+  const rows = tracked()
+  const working = C.d12.replace("Business Day", "Working Day")
+  rows[4] = para(run(working) + ins(OURS, US))
+  const result = await compare(sent(proposed(body())), sent(rows))
+  expect(result.changes.map(hunk => [hunk.after, hunk.untracked])).toEqual([
+    [C.d11 + INSERTED, false], [working + OURS, true], [C.d13a, false], [C.p24a + "withhold" + C.p24b, false]])
+  expect(result.untracked.map(({ kind, before, after }) => ({ kind, before, after }))).toEqual([{ kind: "modified", before: C.d12 + OURS, after: working + OURS }])
 })
 
 test("revisions are re-attributed only when unambiguous: identical text by two reviewers keeps the side label", async () => {
