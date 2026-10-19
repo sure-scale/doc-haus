@@ -1,7 +1,8 @@
 import { afterAll, beforeAll, expect, test } from "bun:test"
+import { Database } from "bun:sqlite"
 import { createHash } from "node:crypto"
 import { existsSync } from "node:fs"
-import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, mkdir, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { Document, InsertedTextRun, Packer, Paragraph, TextRun } from "docx"
@@ -41,7 +42,7 @@ let base = ""
 let matter = { id: "", dir: "" }
 
 const request = (route: string, options?: RequestInit) => fetch(base + route, { ...options, signal: AbortSignal.timeout(60_000) })
-const compare = (query: Record<string, string>) => request(`/matters/${matter.id}/compare?${new URLSearchParams(query)}`)
+const compare = (query: Record<string, string>, id = matter.id) => request(`/matters/${id}/compare?${new URLSearchParams(query)}`)
 const failure = async (response: Response) => ({ status: response.status, body: await response.json() as { error: string; message: string } })
 
 const docx = async (paragraphs: Paragraph[]) => new Uint8Array(await Packer.toBuffer(new Document({ sections: [{ children: paragraphs }] })))
@@ -123,6 +124,16 @@ test("an unknown document, an unsupported name or a path outside the matter is n
   expect(existsSync(path.join(workspace, "no-such-matter"))).toBe(false)
 })
 
+test("a symbolic link in the matter, to a file outside it or to another document, is not_found, not a server error", async () => {
+  await writeFile(path.join(temporary, "Elsewhere.docx"), await plain("Outside every matter."))
+  await symlink(path.join(temporary, "Elsewhere.docx"), path.join(matter.dir, "Elsewhere link.docx"))
+  await symlink(path.join(matter.dir, SENT), path.join(matter.dir, "Sent alias.docx"))
+  for (const link of ["Elsewhere link.docx", "Sent alias.docx"]) {
+    expect(await failure(await compare({ left: link, right: RETURNED }))).toEqual({ status: 404, body: { error: "not_found", message: expect.any(String) } })
+    expect(await failure(await compare({ left: SENT, right: link }))).toEqual({ status: 404, body: { error: "not_found", message: expect.any(String) } })
+  }
+})
+
 test("a PDF on either side is not_docx and points to Convert to DOCX", async () => {
   for (const query of [{ left: "Notice.pdf", right: RETURNED }, { left: SENT, right: "Notice.pdf" }]) {
     const refused = await failure(await compare(query))
@@ -199,6 +210,18 @@ test("labels and turned-off options are reflected; the blackline keeps the file-
   expect(document).not.toContain('w:author="Returned draft"')
 })
 
+test("labels are kept to one line of at most 120 characters, as the compare tool allows", async () => {
+  const long = "R".repeat(200)
+  const query = { left: SENT, right: RETURNED, leftLabel: " Our\r\ndraft\t\u0007\u0085 v2 ", rightLabel: long }
+  const result = await (await compare({ ...query, format: "json" })).json() as Comparison
+  expect([result.left.label, result.right.label]).toEqual(["Our draft v2", "R".repeat(120)])
+  const blackline = await compare(query)
+  expect(blackline.status).toBe(200)
+  const document = strFromU8(unzipSync(new Uint8Array(await blackline.arrayBuffer()))["word/document.xml"]!)
+  expect(document).toContain("R".repeat(120))
+  expect(document).not.toContain("R".repeat(121))
+})
+
 test("a compare writes nothing to the matter and reports pending doc.haus proposals without applying them", async () => {
   // Every file and its bytes, except SQLite's shared-memory index, which any
   // reader of the registry rewrites; the database and its log must not change.
@@ -225,6 +248,45 @@ test("a compare writes nothing to the matter and reports pending doc.haus propos
   expect((await compare({ left: TRACKED, right: SENT })).status).toBe(200)
   expect((await compare({ left: TRACKED, right: SENT, download: "1" })).status).toBe(200)
   expect(await snapshot()).toEqual(before)
+})
+
+// A folder holding Word files that no upload has registered yet.
+const bareMatter = async (id: string) => {
+  const dir = path.join(workspace, id)
+  await mkdir(dir)
+  await writeFile(path.join(dir, SENT), await plain("1. Scope", SCOPE, PAYMENT))
+  await writeFile(path.join(dir, RETURNED), await plain("1. Scope", SCOPE, MEETING))
+  return dir
+}
+
+test("a compare in a matter with no .dochaus folder creates none", async () => {
+  const dir = await bareMatter("bare-compare-matter")
+  const result = await (await compare({ left: SENT, right: RETURNED, format: "json" }, "bare-compare-matter")).json() as Comparison
+  expect([result.left.pendingProposals, result.right.pendingProposals]).toEqual([0, 0])
+  expect((await compare({ left: SENT, right: RETURNED }, "bare-compare-matter")).status).toBe(200)
+  expect(existsSync(path.join(dir, ".dochaus"))).toBe(false)
+})
+
+test("a compare counts pending proposals from legal.db without migrating it", async () => {
+  // A registry holding only a proposal: the compare reads it as it is and adds no tables.
+  const dir = await bareMatter("proposal-only-compare-matter")
+  recordRedlineProposal(dir, {
+    docPath: path.join(dir, SENT), docName: SENT, scope: "phrase", findText: "thirty days", oldText: "thirty days",
+    newText: "forty-five days", author: "Test reviewer", reviewComment: "Review this proposed wording.", anchorId: "payment",
+  })
+  const tables = () => {
+    const db = new Database(path.join(dir, ".dochaus", "legal.db"), { readonly: true })
+    try {
+      return (db.query("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all() as { name: string }[]).map(row => row.name)
+    } finally {
+      db.close()
+    }
+  }
+  const before = tables()
+  const result = await (await compare({ left: SENT, right: RETURNED, format: "json" }, "proposal-only-compare-matter")).json() as Comparison
+  expect([result.left.pendingProposals, result.right.pendingProposals]).toEqual([1, 0])
+  expect(tables()).toEqual(before)
+  expect(before).not.toContain("documents")
 })
 
 test("a file that is not a readable Word document fails as compare_failed, not a server error", async () => {

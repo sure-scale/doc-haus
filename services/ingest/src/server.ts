@@ -60,6 +60,7 @@ import { readWorkingDocx } from "../../../dochaus/lib/working-docx"
 import { withParagraphPointers, withStableRevisionDates } from "../../../dochaus/lib/drafting-amendment"
 import { DocxTrackedRevisionsError } from "../../../dochaus/lib/docx-amendments"
 import { compareVersions } from "../../../dochaus/lib/version-compare"
+import { pendingRedlinesForDoc } from "../../../dochaus/lib/redlines"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
 import { draftingTraceReference } from "../../../dochaus/lib/drafting-trace-identity"
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
@@ -888,7 +889,10 @@ app.get("/matters/:id/documents/redlined", async (c) => {
 // later): a Word Compare-style blackline (format=docx, the default) or its
 // paragraph changes and the edits right made without tracked changes
 // (format=json). The stored bytes are compared; pending doc.haus proposals are
-// counted, not applied. Read only: no model call and nothing written to the matter.
+// counted, not applied. Read only: no model call and nothing written to the matter,
+// so no artifact lock (it would create its lock folder): document writes replace
+// the whole file by rename, so each read sees one complete version, and legal.db
+// is opened read-only, never created or migrated.
 app.get("/matters/:id/compare", async (c) => {
   const refuse = (status: 400 | 404 | 422, error: string, message: string) => c.json({ error, message }, status)
   const unknown = (name: string) => refuse(404, "not_found", `${name} is not a document in this matter.`)
@@ -899,57 +903,59 @@ app.get("/matters/:id/compare", async (c) => {
   const [leftName, rightName] = requested.map((name) => registeredDocumentName(name))
   if (!leftName) return unknown(requested[0])
   if (!rightName) return unknown(requested[1])
-  return withArtifactMutationLocksAsync(dir, [leftName, rightName], async () => {
-    const left = readDocumentTarget(dir, leftName)
-    const right = readDocumentTarget(dir, rightName)
-    if (!left || !existsSync(left.docPath)) return unknown(leftName)
-    if (!right || !existsSync(right.docPath)) return unknown(rightName)
-    for (const target of [left, right])
-      if (path.extname(target.name).toLowerCase() !== ".docx")
-        return refuse(400, "not_docx", `${target.name} is not a Word document. Use Convert to DOCX on it first, then compare the converted file.`)
-    if (left.identity === right.identity) return refuse(400, "same_document", `Both sides are ${left.name}. Choose two different documents.`)
-    const stem = (name: string) => path.parse(name).name
-    const label = (key: string, name: string) => c.req.query(key)?.trim() || stem(name)
-    const flag = (key: string) => c.req.query(key) !== "0"
-    const options = { ignoreFormatting: flag("ignoreFormatting"), detectMoves: flag("moves"), headersFooters: flag("headers") }
-    const labels = { left: label("leftLabel", left.name), right: label("rightLabel", right.name) }
-    const db = existsSync(path.join(dir, ".dochaus", "legal.db")) ? openDb(dir) : undefined
-    const pending = (() => {
-      if (!db) return { left: 0, right: 0 }
-      try {
-        return { left: listPendingRedlines(db, left.docPath).length, right: listPendingRedlines(db, right.docPath).length }
-      } finally {
-        db.close()
-      }
-    })()
-    const comparison = await compareVersions(
-      { bytes: await Bun.file(left.docPath).bytes(), label: labels.left },
-      { bytes: await Bun.file(right.docPath).bytes(), label: labels.right },
+  // A symbolic-link alias, inside or out of the matter, resolves to no target.
+  const left = readDocumentTarget(dir, leftName)
+  if (!left || !existsSync(left.docPath)) return unknown(leftName)
+  const right = readDocumentTarget(dir, rightName)
+  if (!right || !existsSync(right.docPath)) return unknown(rightName)
+  for (const target of [left, right])
+    if (path.extname(target.name).toLowerCase() !== ".docx")
+      return refuse(400, "not_docx", `${target.name} is not a Word document. Use Convert to DOCX on it first, then compare the converted file.`)
+  if (left.identity === right.identity) return refuse(400, "same_document", `Both sides are ${left.name}. Choose two different documents.`)
+  const stem = (name: string) => path.parse(name).name
+  // A label becomes a Word revision author: one line, capped as the compare tool caps it.
+  const oneLine = (text: string) => Array.from(text.replace(/[\p{Cc}\s]+/gu, " ").trim()).slice(0, 120).join("").trim()
+  const label = (key: string, name: string) => oneLine(c.req.query(key) ?? "") || oneLine(stem(name))
+  const flag = (key: string) => c.req.query(key) !== "0"
+  const options = { ignoreFormatting: flag("ignoreFormatting"), detectMoves: flag("moves"), headersFooters: flag("headers") }
+  const labels = { left: label("leftLabel", left.name), right: label("rightLabel", right.name) }
+  // A document deleted, or between the two renames of a replacement, since it was resolved.
+  const read = (file: string) => Bun.file(file).bytes().catch((error: unknown) => {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return undefined
+    throw error
+  })
+  const leftBytes = await read(left.docPath)
+  if (!leftBytes) return unknown(left.name)
+  const rightBytes = await read(right.docPath)
+  if (!rightBytes) return unknown(right.name)
+  const pending = { left: pendingRedlinesForDoc(dir, left.docPath).length, right: pendingRedlinesForDoc(dir, right.docPath).length }
+  const comparison = await compareVersions(
+    { bytes: leftBytes, label: labels.left },
+    { bytes: rightBytes, label: labels.right },
+    options,
+    new Date().toISOString(),
+  ).catch((error: unknown) => {
+    console.warn("[compare] comparison failed", diagnosticErrorMetadata(error))
+    return undefined
+  })
+  if (!comparison)
+    return refuse(422, "compare_failed", `${left.name} and ${right.name} could not be compared. One of them may be damaged or not a standard Word file: open it in Word, save it again and retry.`)
+  const blacklineName = `Blackline - ${stem(left.name)} vs ${stem(right.name)}.docx`
+  if (c.req.query("format") === "json")
+    return c.json({
+      left: { name: left.name, label: labels.left, trackedChanges: comparison.left, pendingProposals: pending.left },
+      right: { name: right.name, label: labels.right, trackedChanges: comparison.right, pendingProposals: pending.right },
       options,
-      new Date().toISOString(),
-    ).catch((error: unknown) => {
-      console.warn("[compare] comparison failed", diagnosticErrorMetadata(error))
-      return undefined
+      attribution: comparison.attribution,
+      changes: comparison.changes,
+      untracked: comparison.untracked,
+      blacklineName,
     })
-    if (!comparison)
-      return refuse(422, "compare_failed", `${left.name} and ${right.name} could not be compared. One of them may be damaged or not a standard Word file: open it in Word, save it again and retry.`)
-    const blacklineName = `Blackline - ${stem(left.name)} vs ${stem(right.name)}.docx`
-    if (c.req.query("format") === "json")
-      return c.json({
-        left: { name: left.name, label: labels.left, trackedChanges: comparison.left, pendingProposals: pending.left },
-        right: { name: right.name, label: labels.right, trackedChanges: comparison.right, pendingProposals: pending.right },
-        options,
-        attribution: comparison.attribution,
-        changes: comparison.changes,
-        untracked: comparison.untracked,
-        blacklineName,
-      })
-    return new Response(new Uint8Array(comparison.blackline), {
-      headers: {
-        "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "Content-Disposition": c.req.query("download") === "1" ? attachmentDocumentDisposition(blacklineName) : inlineDocumentDisposition(blacklineName),
-      },
-    })
+  return new Response(new Uint8Array(comparison.blackline), {
+    headers: {
+      "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "Content-Disposition": c.req.query("download") === "1" ? attachmentDocumentDisposition(blacklineName) : inlineDocumentDisposition(blacklineName),
+    },
   })
 })
 
