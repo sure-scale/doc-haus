@@ -11,7 +11,7 @@ import { coverageItems, planCoverageCurrent } from "./package-coverage"
 import { requestedFilesItems } from "./requested-files"
 import { DELIVERED_NOTES, requestedMemo } from "./deliverables"
 import { evidenceOutputValid } from "./evidence"
-import { researchOutputValid } from "./research"
+import { currentResearchGaps, researchOutputValid } from "./research"
 import { readFirmDraftingPreferences } from "../../lib/drafting-preferences"
 import { existsSync, readFileSync } from "node:fs"
 import { ensureParagraphPointers, paragraphSha256 } from "../../lib/drafting-amendment"
@@ -197,7 +197,7 @@ const DISCLOSED_STAGES: StageID[] = ["research", "research-review", "change-plan
  * through plan.json), so a lawyer's edit of it redrafts and re-reviews. The
  * planned documents' ids, titles and purposes are inputs of review and changes,
  * which are scoped by them; an edit of a document's parts re-keys neither. */
-export function stageInputs(directory: string, step: StepID, options: { repairContext?: false } = {}): { name: string; bytes: string | Uint8Array }[] {
+export function stageInputs(directory: string, step: StepID, options: { repairContext?: false; researchGaps?: false } = {}): { name: string; bytes: string | Uint8Array }[] {
   const updates = readLeanText(directory, "updated-notes.md")
   const clarifications = leanClarifications(directory)
   const inputs = baseStageInputs(directory, step, options)
@@ -218,6 +218,13 @@ export function stageInputs(directory: string, step: StepID, options: { repairCo
     ...(updates && !inputs.some(part => part.name === "updated-notes.md") ? [{ name: "updated-notes.md", bytes: updates }] : [])]
 }
 
+/** Research's key without its gap round: the round belongs to this basis. A
+ * change to research's other inputs (an answer, an instruction, a repair
+ * round's authority issue) leaves an earlier round stale. */
+export function researchBasis(directory: string) {
+  return hashStageInputs("research", LEAN_PROMPT_VERSION, stageInputs(directory, "research", { researchGaps: false }))
+}
+
 /** The questions a step's key reads, in id order: a step replacing its
  * questions reorders questions.json without changing any question. The gate's
  * open question is asked after the walk, so it re-keys no step before it; its
@@ -227,7 +234,7 @@ function keyedQuestions(directory: string, gate = false) {
     .toSorted((a, b) => a.id.localeCompare(b.id)))
 }
 
-function baseStageInputs(directory: string, step: StepID, options: { repairContext?: false }): { name: string; bytes: string | Uint8Array }[] {
+function baseStageInputs(directory: string, step: StepID, options: { repairContext?: false; researchGaps?: false }): { name: string; bytes: string | Uint8Array }[] {
   const file = (name: string) => ({ name, bytes: existsSync(leanFile(directory, name)) ? readFileSync(leanFile(directory, name)) : "" })
   const answers = { name: "answers", bytes: answeredQuestionsText(directory) }
   const sources = { name: "sources", bytes: matterSourceIDs(directory).join("\n") }
@@ -238,7 +245,12 @@ function baseStageInputs(directory: string, step: StepID, options: { repairConte
   if (step === "spine") return [...outlineInputs(directory), file("discrepancy.json"), file("intake.json"), file("research.json"), file("research-review.json")]
   // Applied deletion evidence includes the original paragraph's exact wording.
   if (step === "package-review") return [file("checklist/refinements.json"), file("checklist/checks.json"), file("checklist/report.md"), file("request.md"), file("plan.json"), file("drafting-notes.md"), ...planned.flatMap(id => [file(`${id}/paragraphs.json`), file(`${id}/paragraphs-applied.json`), file(`${id}/apply.json`), file(`${id}/changes.json`), file(`${id}/redline.docx`), ...(plannedDocument(directory, id)?.playbook_review?.sources.length ? [file(`${id}/review-playbook.md`)] : [])]), file("open-items.json")]
-  if (step === "research") return [...outlineInputs(directory), file("intake.json"), { name: "research-repairs", bytes: JSON.stringify(readRepairRound(directory)?.items.filter(item => item.ref.repair_target === "research") ?? []) }]
+  if (step === "research") {
+    // Without a gap round the key is unchanged.
+    const gaps = options.researchGaps === false ? undefined : currentResearchGaps(directory, researchBasis(directory))
+    return [...outlineInputs(directory), file("intake.json"), { name: "research-repairs", bytes: JSON.stringify(readRepairRound(directory)?.items.filter(item => item.ref.repair_target === "research") ?? []) },
+      ...(gaps?.length ? [{ name: "research-gaps", bytes: JSON.stringify(gaps) }] : [])]
+  }
   if (step === "research-review") return [...outlineInputs(directory), file("intake.json"), file("research.json"), file("research-context.txt")]
   if (step === "finalize")
     return [file("repairs.json"),file("request.md"), file("plan.json"), ...planned.flatMap(id => [file(`${id}/paragraphs.json`), file(`${id}/paragraphs-applied.json`), file(`${id}/changes.json`), file(`${id}/apply.json`), file(`${id}/redline.docx`)]),

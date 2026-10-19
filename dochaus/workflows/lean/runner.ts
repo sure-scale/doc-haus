@@ -14,7 +14,7 @@ import { changePlanPrompt, changeReviewPrompt, readChangeReview, runChangePrepar
 import { packageReviewPrompt, readPackageReview } from "./package-review"
 import { LEAN_MAX_SUBSTANTIVE_REPAIRS, checklistRepairItems, readRepairRound, repairedChecklistItems, startRepairRound } from "./repairs"
 import { acceptEvidenceReply, evidencePrompt } from "./evidence"
-import { researchPermissions, acceptResearchReply, researchPrompt } from "./research"
+import { researchPermissions, acceptResearchReply, researchPrompt, startResearchGapRound } from "./research"
 import { runApply } from "./apply-stage"
 import { DELIVERED_NOTES, forgetUnplannedDocuments, recordLeanDocuments } from "./deliverables"
 import { runDraftStage } from "./draft-sections"
@@ -30,6 +30,7 @@ import {
   LEAN_PROMPT_VERSION,
   LEAN_STAGE_AGENTS,
   acceptStageReply,
+  researchBasis,
   stageInputs,
   stageOutputValid,
   stepOutputs,
@@ -221,6 +222,8 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
         if (repair) return repair
       }
       appendLeanEvent(directory, { stage, document, event: "skipped", check_ms })
+      // A review accepted before a crash may still owe its gap round.
+      if (step === "research-review" && startResearchGapRound(directory, researchBasis(directory))) return { state, restart: true }
       continue
     }
     const prefetched = prepared.get(step)
@@ -300,6 +303,8 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
     snapshotStage(directory, state.revision, step, result.outputs)
     // These steps write some of their own inputs (the gate its question); their key is taken again.
     state = updateLeanStage(directory, state, step, { status: result.status, input_sha: step === "checklist-check" || step === "gate" ? stageInputSha(directory, step) : inputSha, outputs: result.outputs, finished_at: now() })
+    // Researchable gaps from the first review of this research go back to it once.
+    if (step === "research-review" && result.status === "done" && startResearchGapRound(directory, researchBasis(directory))) return { state, restart: true }
     if (stage === "change-review" && document && readChangeReview(directory, document)?.status === "changes-required") {
       const review = readChangeReview(directory, document)!
       if ((readRepairRound(directory)?.substantive_attempts ?? 0) >= LEAN_MAX_SUBSTANTIVE_REPAIRS)
@@ -562,7 +567,7 @@ async function runModelStage(directory: string, state: LeanState, step: StepID, 
       return { status: "failed", reason: `${step}: checker failed after ${LEAN_MAX_RETRIES} retries: ${accepted.issues.join(" ")}` }
     return attempt(index + 1, retryPrompt(stage, accepted.issues))
   }
-  return attempt(0, stage === "change-plan" && document ? changePlanPrompt(directory, document) : stage === "change-review" && document ? changeReviewPrompt(directory, document) : stage === "package-review" ? `${packageReviewPrompt(directory)}\n\nFocused checklist findings are saved at .dochaus/lean/checklist/report.md and checklist/checks.json; use targeted read-record lookup when relevant. Open findings remain unresolved, not satisfied. In that report, a "Disclosed, not satisfied" line is an unresolved finding: it is disclosed with the review draft, is not a blocker for this review to clear, and is never treated as satisfied. Do not re-run every checklist item in this package review.` : stage === "discrepancy" || stage === "spine" ? evidencePrompt(directory, stage) : stage === "intake" || stage === "research" || stage === "research-review" ? researchPrompt(directory, stage) : stagePrompt(directory, step))
+  return attempt(0, stage === "change-plan" && document ? changePlanPrompt(directory, document) : stage === "change-review" && document ? changeReviewPrompt(directory, document) : stage === "package-review" ? `${packageReviewPrompt(directory)}\n\nFocused checklist findings are saved at .dochaus/lean/checklist/report.md and checklist/checks.json; use targeted read-record lookup when relevant. Open findings remain unresolved, not satisfied. In that report, a "Disclosed, not satisfied" line is an unresolved finding: it is disclosed with the review draft, is not a blocker for this review to clear, and is never treated as satisfied. Do not re-run every checklist item in this package review.` : stage === "discrepancy" || stage === "spine" ? evidencePrompt(directory, stage) : stage === "intake" || stage === "research" || stage === "research-review" ? researchPrompt(directory, stage, researchBasis(directory)) : stagePrompt(directory, step))
 }
 
 /** The state's step rows follow the plan, whether the first draft wrote it or

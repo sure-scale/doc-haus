@@ -10,7 +10,7 @@ import { stagePrompt } from "./prompts"
 import { packageReviewPrompt } from "./package-review"
 import { researchPrompt } from "./research"
 import { matterSourceIDs } from "./quotes"
-import { stageInputs } from "./stages"
+import { researchBasis, stageInputs } from "./stages"
 import { hashStageInputs, initLeanState } from "./state"
 
 const roots: string[] = []
@@ -52,7 +52,7 @@ test("the selected library source is retrievable and quoted exactly without an i
 
 test("binding reaches early stages, document review and final package; changes invalidate dependent inputs", () => {
   const { directory, file } = fixture()
-  for (const prompt of [evidencePrompt(directory, "discrepancy"), evidencePrompt(directory, "spine"), researchPrompt(directory, "intake"), stagePrompt(directory, "d1.draft"), stagePrompt(directory, "d1.review-independent"), stagePrompt(directory, "d1.changes"), stagePrompt(directory, "finalize"), packageReviewPrompt(directory)]) expect(prompt).toContain("playbook:playbook-workshop")
+  for (const prompt of [evidencePrompt(directory, "discrepancy"), evidencePrompt(directory, "spine"), researchPrompt(directory, "intake", researchBasis(directory)), stagePrompt(directory, "d1.draft"), stagePrompt(directory, "d1.review-independent"), stagePrompt(directory, "d1.changes"), stagePrompt(directory, "finalize"), packageReviewPrompt(directory)]) expect(prompt).toContain("playbook:playbook-workshop")
   const before = hashStageInputs("d1.review-independent", "test", stageInputs(directory, "d1.review-independent"))
   writeFileSync(file, "The cancellation notice is now ten working days.")
   expect(hashStageInputs("d1.review-independent", "test", stageInputs(directory, "d1.review-independent"))).not.toBe(before)
