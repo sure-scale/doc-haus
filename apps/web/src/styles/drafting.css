@@ -247,7 +247,9 @@ button.run-head-toggle[aria-expanded="true"]::after {
   grid-template-rows: 1fr;
 }
 
+/* The open scroller's top padding; the Open items summary sticks above it. */
 .run-head-details-body {
+  --run-details-pad: 12px;
   min-height: 0;
   overflow: hidden;
 }
@@ -256,7 +258,7 @@ button.run-head-toggle[aria-expanded="true"]::after {
    their place in a card that fits the window. */
 .run-head-details.is-open .run-head-details-body {
   max-height: min(30dvh, 320px);
-  padding-top: 12px;
+  padding-top: var(--run-details-pad);
   overflow-y: auto;
   overscroll-behavior: contain;
 }
@@ -275,11 +277,11 @@ button.run-head-toggle[aria-expanded="true"]::after {
 
 /* Open Details scroll under the header's title row, so the summary, the only
    way to fold a long list, stays at the top of that scroller while it is read:
-   at its edge, not below its 12px top padding. Opaque, in the header's own
-   colour, so rows pass beneath it. */
+   at its edge, not below its top padding. Opaque, in the header's own colour,
+   so rows pass beneath it. */
 .open-items > summary {
   position: sticky;
-  top: -12px;
+  top: calc(-1 * var(--run-details-pad));
   z-index: 1;
   display: flex;
   align-items: center;

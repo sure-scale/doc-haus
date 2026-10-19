@@ -79,9 +79,10 @@ DOCHAUS_EVIDENCE_DIR=/tmp/doc-haus-open-items-evidence \
 bun apps/web/e2e/run-open-items.ts
 ```
 
-It opens Details on a completed run with 21 synthetic open items at
-1440×1000, 1280×720 and 400×860, shows them all, then reads the Details
-scroller just past the Open items summary and to its end. At each position the
-summary must stay in view at the scroller's top edge and be the element under
-its own centre, and a real pointer click there must fold the list. It sends no
-writes.
+It opens Details on a completed run and on a run paused at the final check,
+each with 21 synthetic open items, at 1440×1000, 1280×720 and 400×860, shows
+them all, then reads the Details scroller just past the Open items summary and
+to its end. At each position the summary must stay in view at the scroller's
+top edge, be the element under its own centre and have an opaque background in
+the run header's colour. A real pointer click just past the summary must fold
+the list. It sends no writes.
