@@ -137,14 +137,14 @@ const plural = (count: number, one: string, many = `${one}s`) => `${count} ${cou
 
 // Where a change sits: its part of the document, the nearest heading, then the
 // paragraph's own clause number or, failing one, its ordinal in the version the
-// text comes from.
+// text comes from. Paragraph 0 means the compare could not place it.
 export function hunkLocation(location: ChangeLocation, comparison: Pick<ComparisonJson, "left" | "right">) {
   const parts = [
     SCOPE[location.scope],
     location.heading,
-    location.number ?? `paragraph ${location.paragraph} in ${comparison[location.side].label}`,
+    location.number ?? (location.paragraph ? `paragraph ${location.paragraph} in ${comparison[location.side].label}` : undefined),
   ].filter(Boolean) as string[]
-  const text = parts.join(" · ")
+  const text = parts.join(" · ") || "Location not found"
   return text.charAt(0).toUpperCase() + text.slice(1)
 }
 

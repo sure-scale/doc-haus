@@ -158,6 +158,8 @@ describe("blackline side panel", () => {
   test("locations read as heading, clause number or paragraph, and long text is clipped with a way to expand", () => {
     expect(hunkLocation(hunk("C1", false).location, comparison())).toBe("2. Payment · 2.1")
     expect(hunkLocation({ scope: "footer", paragraph: 2, side: "left" }, comparison())).toBe("Footer · paragraph 2 in Our draft")
+    expect(hunkLocation({ scope: "footer", paragraph: 0, side: "left" }, comparison())).toBe("Footer")
+    expect(hunkLocation({ scope: "body", paragraph: 0, side: "right" }, comparison())).toBe("Location not found")
     const html = panel(comparison({ untracked: [hunk("U1", true, { after: "word ".repeat(200) })] }))
     expect(html).toContain("…")
     expect(html).toContain("Show all")

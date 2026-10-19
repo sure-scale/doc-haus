@@ -177,7 +177,9 @@ function where(location: Hunk["location"]) {
   return [
     location.number ? `no. ${location.number}` : "",
     location.heading ? `under ${JSON.stringify(location.heading)}` : "",
-    `${location.scope === "body" ? "" : `${location.scope} `}paragraph ${location.paragraph} of ${location.side}`,
+    location.paragraph
+      ? `${location.scope === "body" ? "" : `${location.scope} `}paragraph ${location.paragraph} of ${location.side}`
+      : `${location.scope === "body" ? "" : `${location.scope}, `}paragraph not located`,
   ].filter(Boolean).join(", ")
 }
 

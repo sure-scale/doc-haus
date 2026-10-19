@@ -132,6 +132,16 @@ test("edits made without tracked changes come first, then changes, with location
   })
 })
 
+test("a change the compare could not place says so instead of naming paragraph 0", async () => {
+  route(() => Response.json(comparison({
+    changes: [{ id: "C1", kind: "modified", location: { scope: "footer", paragraph: 0, side: "left" }, before: "Draft one", after: "Draft two", untracked: false }],
+    untracked: [],
+  })))
+  const output = (await run({})).output
+  expect(output).toContain("C1 · modified · footer, paragraph not located")
+  expect(output).not.toContain("paragraph 0")
+})
+
 test("pages follow an exact offset across untracked edits and changes", async () => {
   const hunk = (prefix: "U" | "C", index: number): Hunk => ({ id: `${prefix}${index}`, kind: "modified", location: { scope: "body", paragraph: index, side: "right" }, before: `Clause ${index} reads one way.`, after: `Clause ${index} reads another way.`, untracked: prefix === "U" })
   const untracked = Array.from({ length: 5 }, (_, i) => hunk("U", i + 1))
