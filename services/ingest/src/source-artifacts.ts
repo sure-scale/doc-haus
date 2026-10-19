@@ -63,7 +63,7 @@ export type StagedSourceArtifacts = { transaction: string; sources: SourceRevisi
 // `rebuild` re-derives the projection from sources already ingested (the
 // startup self-heal): lineage then records only the artifacts whose bytes
 // changed, as a rebuild rather than an upload. `staged`: a snapshot staged
-// before this commit (stageSourceUpload); it is installed when the registry
+// before this commit (stageSourceChange); it is installed when the registry
 // now lists exactly the sources it was staged from, and otherwise staged
 // again here from the registry.
 export async function writeSourceArtifacts(
@@ -74,7 +74,6 @@ export async function writeSourceArtifacts(
     settle?: () => void
     stampLineage?: boolean
     rebuild?: boolean
-    transactionDirectory?: string
     staged?: StagedSourceArtifacts
   } = {},
 ) {
@@ -85,7 +84,7 @@ export async function writeSourceArtifacts(
     .map((doc) => sourceRecord(doc.doc_path, doc.name, reconstructText(db, doc.doc_path)))
   if (!options.db) db.close()
 
-  const transaction = staged?.transaction ?? options.transactionDirectory ?? path.join(
+  const transaction = staged?.transaction ?? path.join(
     matterDir,
     ".dochaus",
     "source-artifact-transactions",
@@ -112,27 +111,29 @@ export async function writeSourceArtifacts(
   return { documents: snapshot.documents.length, chunks: snapshot.chunks, sourceDocuments: snapshot.documents }
 }
 
-// Stage, before an upload's write transaction, the snapshot its commit will
-// install: every other registered source as it is now, then `pending`, the
-// uploaded document with the untrimmed canonical text its chunks rebuild.
-// Extracting the whole matter's identifiers is most of a commit's time on a
-// large matter, and holding legal.db's write lock through it would make every
-// engine write wait or fail. The caller holds the matter's source-corpus lock
-// and passes the result to writeSourceArtifacts inside the transaction.
-export async function stageSourceUpload(
+// Stage, before a source upload's or delete's write transaction, the snapshot
+// its commit will install: every registered source other than `docPath` as it
+// is now, then for an upload `uploaded`, the document's name and the untrimmed
+// canonical text its chunks rebuild. Extracting the whole matter's identifiers
+// is most of a commit's time on a large matter, and holding legal.db's write
+// lock through it would make every engine write wait or fail. The caller holds
+// the matter's source-corpus lock and passes the result to
+// writeSourceArtifacts inside the transaction.
+export async function stageSourceChange(
   matterDir: string,
   db: Database,
   transaction: string,
-  pending: { doc_path: string; name: string; text: string },
+  docPath: string,
+  uploaded?: { name: string; text: string },
 ): Promise<StagedSourceArtifacts> {
-  // upsertDocument replaces every row of the uploaded document's identity, and
-  // the new row is listed last (it is created now).
-  const identity = documentRegistryIdentity(pending.doc_path)
+  // upsertDocument and deleteDocument both remove every row of the document's
+  // identity; an upload's new row is listed last (it is created now).
+  const identity = documentRegistryIdentity(docPath)
   const rows = [
     ...sourceRevisions(db)
       .filter((row) => documentRegistryIdentity(row.doc_path) !== identity)
       .map((row) => ({ doc_path: row.doc_path, name: row.name, text: reconstructText(db, row.doc_path) })),
-    pending,
+    ...(uploaded ? [{ doc_path: docPath, ...uploaded }] : []),
   ]
   const { chunks } = await stageSourceArtifacts(
     matterDir,

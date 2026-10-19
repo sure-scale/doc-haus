@@ -9,8 +9,8 @@ import { documentRegistryIdentity } from "./document-identity"
 
 // How long the startup connection waits for another connection's write lock.
 const STARTUP_BUSY_TIMEOUT_MS = 5000
-// How long an upload's commit connection waits for one.
-const UPLOAD_BUSY_TIMEOUT_MS = 500
+// How long a source-corpus commit connection waits for one.
+const COMMIT_BUSY_TIMEOUT_MS = 500
 // How long any other request connection waits for one: long enough for another
 // process's brief hold, short enough not to stall this event loop.
 const REQUEST_BUSY_TIMEOUT_MS = 200
@@ -33,20 +33,21 @@ const REQUEST_BUSY_TIMEOUT_MS = 200
 // so a lock can only belong to another process, which finishes while the
 // startup connection waits.
 //
-// upload: the connection a source upload commits through (ingest.ts). The
-// upload holds the matter's source-corpus lock, which every commit that keeps
-// the write lock across an await also takes, so no such commit runs in this
-// process meanwhile and a lock it meets belongs to another process. It waits
-// a little longer than other request connections, so an engine write of a few
-// milliseconds at that instant delays the upload instead of failing it.
-export function openDb(matterDir: string, options: { startup?: boolean; upload?: boolean } = {}): Database {
+// commit: the connection a source upload, a document delete or a deliverable
+// write commits through (ingest.ts, document-delete.ts, deliverable.ts). Each
+// holds the matter's source-corpus lock, which every commit that keeps the
+// write lock across an await also takes, so no such commit runs in this
+// process meanwhile and a lock it meets belongs to another process. It waits a
+// little longer than other request connections, so an engine write of a few
+// milliseconds at that instant delays the commit instead of failing it.
+export function openDb(matterDir: string, options: { startup?: boolean; commit?: boolean } = {}): Database {
   const dir = path.join(matterDir, ".dochaus")
   mkdirSync(dir, { recursive: true })
   const db = new Database(path.join(dir, "legal.db"))
   const busyTimeoutMs = options.startup
     ? STARTUP_BUSY_TIMEOUT_MS
-    : options.upload
-      ? UPLOAD_BUSY_TIMEOUT_MS
+    : options.commit
+      ? COMMIT_BUSY_TIMEOUT_MS
       : REQUEST_BUSY_TIMEOUT_MS
   db.run(`PRAGMA busy_timeout = ${busyTimeoutMs}`)
   db.run("PRAGMA journal_mode = WAL")

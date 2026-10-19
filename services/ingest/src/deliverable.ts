@@ -59,7 +59,7 @@ export async function writeDeliverable(
   return withArtifactMutationLocksAsync(matterDir, [name, ".dochaus/source-corpus"], async () => {
     await recoverDocumentMutations(matterDir)
     const target = deliverableTarget(matterDir, name)
-    const db = openDb(matterDir)
+    const db = openDb(matterDir, { commit: true })
     try {
       if (getDocumentRole(db, target.docPath) === "source")
         throw new DeliverableConflictError(`Cannot replace source document ${target.name} with a generated deliverable.`)
@@ -107,7 +107,7 @@ export async function copyWordDocument(matterDir: string, sourceName: string, fi
     await recoverDocumentMutations(matterDir)
     const original = deliverableTarget(matterDir, source)
     const target = deliverableTarget(matterDir, name)
-    const db = openDb(matterDir)
+    const db = openDb(matterDir, { commit: true })
     try {
       if (!getDocumentRole(db, original.docPath) || !existsSync(original.docPath) || !lstatSync(original.docPath).isFile())
         throw new DeliverableConflictError("The original must be an existing registered Word document in this matter.")
@@ -159,7 +159,7 @@ export async function writeDeliverableRevision(
   return withArtifactMutationLocksAsync(matterDir, [name, ".dochaus/source-corpus"], async () => {
     await recoverDocumentMutations(matterDir)
     const target = deliverableTarget(matterDir, name)
-    const db = openDb(matterDir)
+    const db = openDb(matterDir, { commit: true })
     try {
       if (getDocumentRole(db, target.docPath) !== "deliverable")
         throw new DeliverableConflictError(`${target.name} is not a generated deliverable.`)

@@ -2,12 +2,15 @@ import { tool } from "./legacy-definition"
 import { Database } from "bun:sqlite"
 import { existsSync } from "node:fs"
 import path from "node:path"
+import { chunkText } from "../lib/chunk-text"
 
 // doc.haus exact-text search. Greps the per-matter legal.db that
 // `services/ingest` populates: every occurrence of a literal string or JS
-// regular expression across the matter's chunk text, reported as the verbatim
-// line containing the match plus its location (document, section, absolute
-// character offset into the document's extracted text).
+// regular expression in each document's text as its chunks rebuild it
+// (lib/chunk-text), reported as the verbatim line containing the match plus its
+// location (document, section, absolute character offset into the document's
+// extracted text). Scanning the rebuilt text rather than each chunk lists a
+// match in the overlap two chunks share once and finds one that straddles them.
 //
 // Everything returned is text already stored in the database — nothing is
 // paraphrased or synthesized, so a hit is a fact and a miss is a miss. The
@@ -20,6 +23,11 @@ const LINE_CAP = 200
 
 type ChunkRow = { doc_name: string; section: string; text: string; char_start: number }
 
+// A literal pattern as a regular expression. Matching case-insensitively with
+// the `i` flag, unlike lower-casing the text, never changes the text's length,
+// so match offsets stay offsets into the document.
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+
 // The verbatim line (text between the surrounding newlines) containing a
 // match, windowed to <= LINE_CAP chars around the match when the line is long.
 function lineAt(text: string, index: number) {
@@ -29,16 +37,6 @@ function lineAt(text: string, index: number) {
   if (lineEnd - lineStart <= LINE_CAP) return text.slice(lineStart, lineEnd).trim()
   const start = Math.max(lineStart, index - 80)
   return text.slice(start, Math.min(lineEnd, start + LINE_CAP)).trim()
-}
-
-function literalMatches(text: string, needle: string) {
-  const matches: number[] = []
-  let index = text.indexOf(needle)
-  while (index !== -1) {
-    matches.push(index)
-    index = text.indexOf(needle, index + needle.length)
-  }
-  return matches
 }
 
 export default tool({
@@ -57,7 +55,6 @@ export default tool({
     ignoreCase: tool.schema.boolean().optional().describe("Case-insensitive matching (default true)"),
   },
   async execute(args, ctx) {
-    // An empty needle would never advance literalMatches' indexOf loop.
     if (!args.pattern) return "Pattern must not be empty."
 
     const dbPath = path.join(ctx.directory, ".dochaus", "legal.db")
@@ -68,22 +65,20 @@ export default tool({
     const ignoreCase = args.ignoreCase ?? true
     // The pattern is untrusted model output and RegExp() is the one genuine
     // parse boundary here — surface the engine's message verbatim.
-    let re: RegExp | null = null
-    if (args.regex) {
-      try {
-        re = new RegExp(args.pattern, ignoreCase ? "gi" : "g")
-      } catch (error) {
-        // Bun's constructor message already carries this prefix; don't double it.
-        const message = error instanceof Error ? error.message : String(error)
-        return message.startsWith("Invalid regular expression") ? message : `Invalid regular expression: ${message}`
-      }
+    let re: RegExp
+    try {
+      re = new RegExp(args.regex ? args.pattern : escapeRegExp(args.pattern), ignoreCase ? "gi" : "g")
+    } catch (error) {
+      // Bun's constructor message already carries this prefix; don't double it.
+      const message = error instanceof Error ? error.message : String(error)
+      return message.startsWith("Invalid regular expression") ? message : `Invalid regular expression: ${message}`
     }
 
     const db = new Database(dbPath, { readonly: true })
     const sql =
       "SELECT doc_name, section, text, char_start FROM chunks" +
       (args.document ? " WHERE doc_name = ?" : "") +
-      " ORDER BY doc_name, char_start"
+      " ORDER BY doc_name, char_start, rowid"
     const chunks = (args.document ? db.query(sql).all(args.document) : db.query(sql).all()) as ChunkRow[]
     db.close()
 
@@ -91,31 +86,39 @@ export default tool({
       return `No document named "${args.document}" is indexed in this matter. Omit the document argument to search the whole matter.`
     if (!chunks.length) return "No documents have been indexed for this matter yet."
 
-    const needle = ignoreCase ? args.pattern.toLowerCase() : args.pattern
+    const documents: { name: string; chunks: ChunkRow[] }[] = []
+    for (const chunk of chunks) {
+      const last = documents[documents.length - 1]
+      if (last?.name === chunk.doc_name) last.chunks.push(chunk)
+      else documents.push({ name: chunk.doc_name, chunks: [chunk] })
+    }
+
     const lines: string[] = []
     let scanned = 0
     let capped = false
-    for (const chunk of chunks) {
+    for (const document of documents) {
       if (lines.length >= MATCH_CAP) {
         capped = true
         break
       }
-      scanned++
-      // matchAll copies the regex, so no lastIndex state leaks across chunks,
-      // and it advances past zero-length matches on its own.
-      const found = re
-        ? [...chunk.text.matchAll(re)].map((m) => m.index)
-        : literalMatches(ignoreCase ? chunk.text.toLowerCase() : chunk.text, needle)
-      for (const index of found) {
+      const text = chunkText(document.chunks).text
+      // A match's section is that of the last chunk starting at or before it.
+      let chunk = 0
+      // matchAll copies the regex, so no lastIndex state leaks across
+      // documents, and it advances past zero-length matches on its own.
+      for (const match of text.matchAll(re)) {
         if (lines.length >= MATCH_CAP) {
           capped = true
           break
         }
-        lines.push(`${chunk.doc_name} [${chunk.section}] @ ${chunk.char_start + index}: ${lineAt(chunk.text, index)}`)
+        while (document.chunks[chunk + 1] && document.chunks[chunk + 1]!.char_start <= match.index) chunk++
+        lines.push(`${document.name} [${document.chunks[chunk]!.section}] @ ${match.index}: ${lineAt(text, match.index)}`)
       }
+      if (capped) break
+      scanned++
     }
 
-    const shown = re ? `regex /${args.pattern}/${ignoreCase ? "i" : ""}` : `"${args.pattern}"`
+    const shown = args.regex ? `regex /${args.pattern}/${ignoreCase ? "i" : ""}` : `"${args.pattern}"`
     const where = args.document ? ` in "${args.document}"` : ""
     if (!lines.length)
       return `No matches for ${shown}${where}. This tool only finds exact text; for meaning-based or paraphrased queries use the search-document tool.`
@@ -123,7 +126,7 @@ export default tool({
     // Offsets are character positions into the document's extracted text, the
     // same coordinate space as the structure tables and chunk offsets.
     const capNote = capped
-      ? `\n\nStopped at the ${MATCH_CAP}-match cap with ${chunks.length - scanned} of ${chunks.length} chunk(s) still unscanned — more matches may exist. Narrow the search with the document argument or a more specific pattern.`
+      ? `\n\nStopped at the ${MATCH_CAP}-match cap with ${documents.length - scanned} of ${documents.length} document(s) not fully scanned — more matches may exist. Narrow the search with the document argument or a more specific pattern.`
       : ""
     return `${lines.length} match(es) for ${shown}${where}:\n${lines.join("\n")}${capNote}`
   },
