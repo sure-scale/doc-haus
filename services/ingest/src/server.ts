@@ -1339,7 +1339,8 @@ async function combinedPartsSha256(directory: string, body: string, notes: strin
 /** After the accept's writes: rebuilds the prepared combined file from its parts
  * as written, when they changed, the run still registers it and the system's
  * last write of it is unchanged. After a reject: the same, when the build
- * differs from the saved file (a rebuild skipped earlier); nothing otherwise. */
+ * differs from the saved file (a rebuild skipped earlier); nothing otherwise,
+ * checked first, so a reject that owes no rebuild reports no skip. */
 async function rebuildCombinedFile(prepared: PreparedCombined | undefined): Promise<CombinedRebuild | undefined> {
   if (!prepared) return
   const { directory, accepted, file, body, notes } = prepared
@@ -1350,20 +1351,24 @@ async function rebuildCombinedFile(prepared: PreparedCombined | undefined): Prom
       if (![file, body, notes].every((name) => readDocumentTarget(directory, name))) throw new Error("A combined file part is a link, not a matter document.")
       const { key, memoBytes, bodyBytes } = await combinedPartsSha256(directory, body, notes)
       if (prepared.parts === key && !prepared.rejected) return
+      const target = path.join(directory, file)
+      const saved = existsSync(target) ? await Bun.file(target).bytes() : undefined
+      const built = buildCombinedFile({ memo: memoBytes, body: bodyBytes })
+      // Paragraph pointers as the run's save gives them, the saved file's where the text is unchanged.
+      const bytes = saved && !("refused" in built) ? Buffer.from(withParagraphPointers(built.bytes, saved)) : undefined
+      // A reject changed no part: a saved file that already holds the build owes
+      // no rebuild, so nothing is reported, whatever would hold one back.
+      if (prepared.rejected && saved && bytes?.equals(saved)) return
       // The run or its summary may have changed since the accept read them.
       const current = registeredCombined(directory, accepted, prepared.rejected)
       if (current?.file !== file || current.body !== body || current.notes !== notes) return combinedSkipped(directory, "combined_not_deliverable")
       const blocked = combinedBlocked(directory, file)
       if (blocked) return combinedSkipped(directory, blocked)
-      const saved = await Bun.file(path.join(directory, file)).bytes()
       // Pending proposals were ruled out above (combinedBlocked), so a refusal here is a change to the file.
       if (!replaceableDeliverable(directory, file)) return combinedSkipped(directory, "combined_changed")
-      const built = buildCombinedFile({ memo: memoBytes, body: bodyBytes })
       if ("refused" in built) return combinedSkipped(directory, "build_refused", { refused: built.refused, ...(built.part ? { part: built.part } : {}) })
-      // Paragraph pointers as the run's save gives them, the saved file's where the text is unchanged.
-      const bytes = Buffer.from(withParagraphPointers(built.bytes, saved))
-      // A reject changed no part: a saved file that already holds the build was not skipped.
-      if (prepared.rejected && bytes.equals(saved)) return
+      // combinedBlocked found the file, read above under this lock.
+      if (!saved || !bytes) return combinedSkipped(directory, "combined_missing")
       await writeDeliverableRevision(directory, file, bytes, { priorSha256: sha256Hex(saved), system: true })
       return { combined_updated: true }
     })

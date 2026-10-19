@@ -13,7 +13,7 @@ import { writeLeanPlan, type PlannedDocument } from "../../../dochaus/workflows/
 import { initLeanState, readLeanState, writeLeanBytes, writeLeanState, writeLeanText } from "../../../dochaus/workflows/lean/state"
 import { leanFixtureMatter, scriptedLeanModel } from "../../../dochaus/workflows/lean/test-support"
 import { ownedDeliverable, readSystemDocx, systemDocxKey } from "../../../dochaus/lib/system-docx"
-import { openDb } from "./db"
+import { getRedline, openDb, setRedlineStatus } from "./db"
 import { writeDeliverableRevision } from "./deliverable"
 import { leanDraftingStatus } from "./lean-drafting"
 import { registerLeanDeliverable } from "./lean-deliverables"
@@ -491,6 +491,50 @@ describe("combined file rebuild: lock, contention and ownership", () => {
       expect(await resolve(`${propose(matter.dir, SAVED, "Outside marker", "Inside marker")}/reject`))
         .toEqual({ status: 200, body: { ok: true, combined_updated: false, combined_skip_reason: "combined_changed" } })
       expect(readFileSync(saved)).toEqual(outside)
+    })
+  }, 120_000)
+
+  test("a reject that owes no rebuild reports nothing about the combined file, even while a change proposed on that file is pending", async () => {
+    await withIngest(async request => {
+      const matter = await completedMatter(request)
+      const saved = readFileSync(path.join(matter.dir, SAVED))
+      const onCombined = propose(matter.dir, SAVED, "Memo marker", "Other marker")
+      const resolve = async (route: string) => {
+        const response = await request(`${matter.route}/redlines/${route}`, { method: "POST" })
+        return { status: response.status, body: await response.json() }
+      }
+      expect(await resolve(`${propose(matter.dir, BODY_NAME, "Body marker", "Other marker")}/reject`)).toEqual({ status: 200, body: { ok: true } })
+      propose(matter.dir, NOTES_NAME, "Memo marker", "Other marker")
+      expect(await resolve(`reject-all?name=${encodeURIComponent(NOTES_NAME)}`)).toEqual({ status: 200, body: { ok: true, rejected: 1 } })
+      expect(readFileSync(path.join(matter.dir, SAVED))).toEqual(saved)
+      const db = openDb(matter.dir)
+      try { expect(getRedline(db, onCombined)?.status).toBe("pending") } finally { db.close() }
+    })
+  }, 120_000)
+
+  test("a reject of a change on a part of the combined file waits for the combined file's lock before it reads the change", async () => {
+    await withIngest(async request => {
+      const matter = await completedMatter(request)
+      const saved = readFileSync(path.join(matter.dir, SAVED))
+      const id = propose(matter.dir, BODY_NAME, "Body marker", "Other marker")
+      const status = () => {
+        const db = openDb(matter.dir)
+        try { return getRedline(db, id)?.status } finally { db.close() }
+      }
+      const hold = await holdLocks(matter.dir, [SAVED])
+      const rejecting = request(`${matter.route}/redlines/${id}/reject`, { method: "POST" })
+      for (const until = Date.now() + 1_500; Date.now() < until;) {
+        expect(status()).toBe("pending")
+        await Bun.sleep(50)
+      }
+      // A write holding that lock resolves the change meanwhile, as an accept into the body does.
+      const db = openDb(matter.dir)
+      try { setRedlineStatus(db, id, "accepted") } finally { db.close() }
+      await hold.release()
+      const rejected = await rejecting
+      expect({ status: rejected.status, body: await rejected.json() }).toEqual({ status: 404, body: { error: "Redline not found or already resolved" } })
+      expect(status()).toBe("accepted")
+      expect(readFileSync(path.join(matter.dir, SAVED))).toEqual(saved)
     })
   }, 120_000)
 
