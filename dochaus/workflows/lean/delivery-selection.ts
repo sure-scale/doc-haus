@@ -49,25 +49,48 @@ export function checkDeliverySelections(directory: string, value: unknown): stri
  * Rows that pass them may still conflict with each other
  * (checkDeliverySelections). */
 export function deliverySelectionIssues(directory: string, selection: unknown, documents: PlannedDocument[] = readLeanPlan(directory)?.documents ?? []): string[] {
-  if (!selection || typeof selection !== "object" || Array.isArray(selection)) return ["Each delivery selection needs document, role, file and instruction_quote."]
+  const refused = deliveryRowRefusal(directory, selection, documents)
+  return refused ? [refused.issue] : []
+}
+
+/** The check of a row's own that refuses it: its shape, a notes row's document,
+ * the document, the role, the file name, the quote or the name, or a format. */
+export type DeliveryRefusal = "selection" | "notes_document" | "document" | "role" | "file" | "not_quoted" | "format"
+
+/** Which of a row's own checks (deliverySelectionIssues) first refuses it, in
+ * their order, with that check's message; undefined when it passes them all. */
+export function deliveryRowRefusal(directory: string, selection: unknown, documents: PlannedDocument[] = readLeanPlan(directory)?.documents ?? []): { refusal: DeliveryRefusal; issue: string } | undefined {
+  if (!selection || typeof selection !== "object" || Array.isArray(selection)) return { refusal: "selection", issue: "Each delivery selection needs document, role, file and instruction_quote." }
   const row = selection as Partial<DeliverySelection>
   if (row.role === "drafting_notes") {
-    if (row.document !== null) return ["The run's drafting_notes artifact requires document null."]
+    if (row.document !== null) return { refusal: "notes_document", issue: "The run's drafting_notes artifact requires document null." }
   } else {
-    if (!documents.some(document => document.id === row.document)) return ["Delivery selection must name an existing final document id."]
-    if (row.role !== "body" && row.role !== "redline") return ["Delivery role must be body, redline or drafting_notes; select an existing artifact without changing its content or comparison source."]
+    if (!documents.some(document => document.id === row.document)) return { refusal: "document", issue: "Delivery selection must name an existing final document id." }
+    if (row.role !== "body" && row.role !== "redline") return { refusal: "role", issue: "Delivery role must be body, redline or drafting_notes; select an existing artifact without changing its content or comparison source." }
   }
-  if (typeof row.file !== "string" || !/^[^\\/:*?"<>|`\x00-\x1f]+\.docx$/i.test(row.file) || row.file !== row.file.trim()) return ["Delivery file must be the requested Word filename, without a folder path."]
-  if (typeof row.instruction_quote !== "string" || !instructionFound(directory, row.instruction_quote)) return [NOT_QUOTED]
+  if (typeof row.file !== "string" || !/^[^\\/:*?"<>|`\x00-\x1f]+\.docx$/i.test(row.file) || row.file !== row.file.trim()) return { refusal: "file", issue: "Delivery file must be the requested Word filename, without a folder path." }
+  if (typeof row.instruction_quote !== "string" || !instructionFound(directory, row.instruction_quote)) return { refusal: "not_quoted", issue: NOT_QUOTED }
   // A name the quote spells with its extension, or one the earlier check
   // accepted, is a name, even in format words: package review is never
   // stricter than before.
-  if (deliveryNameQuoted(directory, row.instruction_quote, row.file) || quotedOrTitled(row.instruction_quote, row.file)) return []
+  if (deliveryNameQuoted(directory, row.instruction_quote, row.file) || quotedOrTitled(row.instruction_quote, row.file)) return
   // A format the lawyer's words ask for, or a name in another format, is no file to select.
   const stem = row.file.slice(0, -5)
   if (formatStem(stem) || OTHER_FORMAT.test(stem))
-    return [`Delivery file "${row.file}" names a format, not a file. Words that ask only for a format give no file name; return no delivery row for them.`]
-  return [NOT_QUOTED]
+    return { refusal: "format", issue: `Delivery file "${row.file}" names a format, not a file. Words that ask only for a format give no file name; return no delivery row for them.` }
+  return { refusal: "not_quoted", issue: NOT_QUOTED }
+}
+
+/** Whether the lawyer's words give `file`, a Word file name, as a name, by the
+ * checks a row's name passes on its quote (deliveryNameQuoted,
+ * quotedOrTitled), or by the name itself, spelled with its extension, in the
+ * lawyer's words; whatever else refuses its row. A name's surrounding spaces
+ * aside. Code only, never a prompt. */
+export function deliveryNameGrounded(directory: string, quote: unknown, file: unknown) {
+  if (typeof file !== "string" || !/\.docx$/i.test(file.trim())) return false
+  const name = file.trim()
+  if (typeof quote === "string" && instructionFound(directory, quote) && (deliveryNameQuoted(directory, quote, name) || quotedOrTitled(quote, name))) return true
+  return deliveryNameQuoted(directory, name, name)
 }
 
 const NOT_QUOTED = "Delivery instruction_quote must quote the lawyer's actual instructions naming that output file or explicitly titling the Word output with its exact basename. Quote the actual naming instruction; source titles and input filenames do not themselves establish output intent. For an explicitly titled Word output, add only .docx to that title; do not guess, shorten or rename it. When the lawyer's words give that output no file name or explicit title, return no delivery row for it."

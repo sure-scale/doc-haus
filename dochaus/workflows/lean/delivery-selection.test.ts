@@ -182,7 +182,8 @@ test("a delivery rename the lawyer never asked for is withheld on the last packa
   const retries = model.prompts.filter(row => row.agent === AGENT["package-review"]).slice(1)
   for (const retry of retries) expect(retry.text).toContain("return no delivery row for it")
   expect(readPackageReview(directory)).toEqual({ status: "pass", findings: [], delivery: [],
-    limitations: ["Supply terms note.docx: no naming instruction in the lawyer's words; the planned name stands"] })
+    limitations: ["Supply terms note.docx: no naming instruction in the lawyer's words; the planned name stands"],
+    withheld_delivery: [{ document: "d1", role: "body", file: "Supply terms note.docx", cause: "not_quoted", reason: "no naming instruction in the lawyer's words", asked: false }] })
   // The planned name stands, and the withheld row reaches the lawyer as no item or notes text.
   const delivered = (at: string) => readLeanDocuments(at)?.documents.map(row => [row.kind, row.deliverable])
   expect(delivered(directory)).toEqual(delivered(control))

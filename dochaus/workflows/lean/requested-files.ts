@@ -477,12 +477,27 @@ const savedFile = (row: unknown) => record(row) && Array.isArray(row.holds) && r
  * the plan delivers the file as that question showed; otherwise the lawyer
  * should confirm it. Each id keys on the item's content. */
 export function requestedFilesItems(directory: string): OpenItem[] {
+  return [...new Map(requestedFilesRaised(directory).map(({ item }) => [item.id, item])).values()]
+}
+
+/** Whether a requested-files item (requestedFilesItems) is about a file the
+ * lawyer's words name `file`: its recorded name or the name the run could not
+ * use, compared as registration compares names. */
+export function requestedFilesItemNamed(directory: string, file: string) {
+  return requestedFilesRaised(directory).some(({ name }) => name !== undefined && requestedNameKey(name) === requestedNameKey(file))
+}
+
+const requestedNameKey = (name: string) => `${deliveryStem({ title: "", file: name })}.docx`.toLocaleLowerCase()
+
+/** Each requested-files item with the name its file records, recorded or
+ * refused, when it records one. */
+function requestedFilesRaised(directory: string): { item: OpenItem; name?: string }[] {
   const plan = readLeanPlan(directory)
   const saved = readRequestedFiles(directory)
   if (!plan || plan.basis === undefined || !saved || saved.basis !== plan.basis ||
     JSON.stringify(saved.planned) !== JSON.stringify(requestedFilesPlanned(plan.documents, plan.memo))) return []
-  if (saved.status === "unchecked") return [openItem("finalize", "omission", "Requested files could not be checked: the check of the lawyer's words for the files they ask to receive gave no usable result, " +
-    "so the run could not confirm which files the lawyer's words ask to receive or what each holds. The lawyer should confirm how the files are to be delivered.", { repair_target: "memo" })]
+  if (saved.status === "unchecked") return [{ item: openItem("finalize", "omission", "Requested files could not be checked: the check of the lawyer's words for the files they ask to receive gave no usable result, " +
+    "so the run could not confirm which files the lawyer's words ask to receive or what each holds. The lawyer should confirm how the files are to be delivered.", { repair_target: "memo" }) }]
   if (!saved.stated) return []
   const registered = plannedRegistration(directory, plan)
   // Registration names are lowercased; the run's evidence keeps their spelling.
@@ -545,7 +560,6 @@ export function requestedFilesItems(directory: string): OpenItem[] {
     const where = file.spelled === null ? "a file of another name" : file.kind === "combined" ? `one file named "${file.spelled}"` : `"${file.spelled}"`
     return `${what} in ${where}${file.held ? `, since a file already in the matter holds the name "${file.held}"` : ""}`
   }
-  const nameKey = (name: string) => `${deliveryStem({ title: "", file: name })}.docx`.toLocaleLowerCase()
   const lawyerQuote = (words: string) => `"${words.replace(/\s+/g, " ").trim()}"` + (matterSourceIDs(directory).includes(REQUEST_SOURCE) ? "" : ` [source: ${REQUEST_SOURCE}]`)
   const answered = answeredFiles(directory)
   const items = saved.files.flatMap(file => {
@@ -553,7 +567,7 @@ export function requestedFilesItems(directory: string): OpenItem[] {
     const shape = fileShape(file)
     const target = shape && deliveredIn(shape.document ?? MEMO)
     // A name the run could not confirm never counts as delivered as named.
-    const named = file.name !== null ? target?.name === nameKey(file.name) : file.refused_name === undefined
+    const named = file.name !== null ? target?.name === requestedNameKey(file.name) : file.refused_name === undefined
     if (!check.unsupported && !check.issue && named) return []
     const files = new Map<string, NonNullable<ReturnType<typeof delivery>>>()
     for (const held of file.holds) {
@@ -575,12 +589,13 @@ export function requestedFilesItems(directory: string): OpenItem[] {
       ? ` The lawyer answered the question about ${listed.same ? "these files" : `the files the words ${lawyerQuote(listed.words)} ask for`}; ` +
         "the plan drawn up with that answer still delivers them so."
       : " The lawyer should confirm how these files are to be delivered."
-    return [openItem("finalize", "omission", `Requested files: the lawyer's words ${lawyerQuote(file.quote)} ask for ${what}` +
+    const name = file.name ?? file.refused_name
+    return [{ ...(name !== undefined ? { name } : {}), item: openItem("finalize", "omission", `Requested files: the lawyer's words ${lawyerQuote(file.quote)} ask for ${what}` +
       (refused === undefined ? `, but the run delivers ${delivers}.`
         : `, but the run could not use "${refused}" as its name${format ? " and delivers .docx files only" : ""}; it delivers ${delivers}.`) +
-      `${reason}${closing}`, { repair_target: "memo" })]
+      `${reason}${closing}`, { repair_target: "memo" }) }]
   })
-  return [...new Map(items.map(row => [row.id, row])).values()]
+  return items
 }
 
 const titles = (documents: { title: string }[]) => serialList(documents.map(document => `"${document.title}"`))

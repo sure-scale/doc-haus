@@ -1,21 +1,47 @@
 import { leanClarifications } from "./requests"
 import { reviewDispositionText } from "./change-pipeline"
 import { boundPlaybookContext } from "../../lib/playbook-source"
-import { checkDeliverySelections, deliverySelectionIssues, type DeliverySelection } from "./delivery-selection"
+import { checkDeliverySelections, deliveryNameGrounded, deliveryRowRefusal, selectedDeliveryPlan, type DeliveryRefusal, type DeliverySelection } from "./delivery-selection"
 import { appliedChangeEvidence, nativeExportEvidence } from "./review-evidence"
 import { comparisonDescription } from "./comparison"
-import { combinedDelivery, deliveryArtifactEvidence, requestedMemo } from "./deliverables"
+import { combinedDelivery, deliveryArtifactEvidence, plannedRegistration, requestedMemo } from "./deliverables"
 import { finalBodyParagraphs } from "./checks"
 import { readLeanPlan, type DocID } from "./plan"
-import { matterSourceIDs } from "./quotes"
+import { excerpt, matterSourceIDs, openItem } from "./quotes"
 import { researchHandoff } from "./research"
-import { answeredQuestionsText, readLeanJson, readLeanText } from "./state"
+import { requestedFilesItemNamed } from "./requested-files"
+import { answeredQuestionsText, readLeanJson, readLeanText, type OpenItem } from "./state"
 
 export type PackageReview = {
   status: "pass" | "changes-required"
   findings: { target?: "body" | "memo" | "research"; document?: DocID; pid?: string; detail: string }[]
   limitations: string[]
   delivery: DeliverySelection[]
+  /** The delivery rows the last attempt withheld (withholdUngroundedDelivery);
+   * code writes them, never the reply. */
+  withheld_delivery?: WithheldDelivery[]
+}
+
+/** A delivery row the last attempt withheld: what it selects, as the reply
+ * gave it; why (`cause`, and `reason` in plain words); and whether the
+ * lawyer's words give its name (`asked`, deliveryNameGrounded). */
+export type WithheldDelivery = { document?: string | null; role?: string; file?: string; cause: WithheldCause; reason: string; asked: boolean }
+
+/** A row's own check that refuses it, or a conflict: with another row, with
+ * the notes' file name, or with another planned file's name. */
+export type WithheldCause = DeliveryRefusal | "conflict" | "notes_name" | "planned_name"
+
+const WITHHELD_REASON: Record<WithheldCause, string> = {
+  selection: "not a complete delivery selection",
+  notes_document: "a selection of the notes that names a document",
+  document: "names no planned document",
+  role: "names no role the run delivers",
+  file: "not a plain Word file name",
+  not_quoted: "no naming instruction in the lawyer's words",
+  format: "names a format, not a file",
+  conflict: "conflicts with another delivery selection",
+  notes_name: "the notes already have that file name",
+  planned_name: "another planned file already has that name",
 }
 
 /** The semantic reviewer reads the assembled bodies and accompanying memo,
@@ -81,28 +107,135 @@ export function checkPackageReview(directory: string, value: unknown): string[] 
 /** On the last attempt, delivery rows the check still refuses are withheld
  * rather than failing the run, as the changes stage withholds unverified
  * amendments: delivery only names existing artifacts, so without a row the
- * planned name stands. A row refused on its own is dropped; if the rows left
- * still conflict with each other, all are. Each dropped row is recorded as a
- * limitation of the saved review, not as an open item: a name the lawyer's words
- * do give reaches the plan through the files job, which discloses one it cannot
- * place (requestedFilesItems). A missing or non-list delivery is read as no
- * rename, with one limitation. Status and findings are never changed, so a
- * reply whose other parts fail the check still fails. */
+ * planned name stands. A row that repeats another's document, role and file is
+ * kept once. A row refused on its own is dropped, and so is each row that
+ * conflicts (deliveryConflicts); every other row is kept. Each dropped row is
+ * saved with why (withheld_delivery) and as a limitation; the gate discloses
+ * those the lawyer reads about (withheldDeliveryItems). A missing delivery, or
+ * one that is no list or row, is read as no rename, with one limitation; one
+ * row sent alone is read as a list of it. Status and findings are never
+ * changed, so a reply whose other parts fail the check still fails. */
 export function withholdUngroundedDelivery(directory: string, value: Record<string, unknown>): Record<string, unknown> {
   const { delivery, limitations } = value
   if (!Array.isArray(limitations)) return value
-  if (!Array.isArray(delivery)) return { ...value, delivery: [], limitations: [...limitations, "delivery field missing; planned names stand"] }
+  if (delivery === undefined || delivery === null || typeof delivery !== "object")
+    return { ...value, delivery: [], limitations: [...limitations, delivery === undefined ? "delivery field missing; planned names stand" : "delivery was not a list; planned names stand"] }
+  const rows: unknown[] = Array.isArray(delivery) ? delivery : [delivery]
   const documents = readLeanPlan(directory)?.documents ?? []
-  const grounded = delivery.filter(row => !deliverySelectionIssues(directory, row, documents).length)
-  const kept = checkDeliverySelections(directory, grounded).length ? [] : grounded
-  if (kept.length === delivery.length) return value
-  const named = (row: unknown) => {
-    const file = row && typeof row === "object" ? (row as { file?: unknown }).file : undefined
-    return typeof file === "string" && file.trim() ? file.trim() : "A delivery selection without a file name"
+  const refusals = rows.map(row => deliveryRowRefusal(directory, row, documents)?.refusal)
+  const fields = (row: unknown): Partial<Record<keyof DeliverySelection, unknown>> => row && typeof row === "object" && !Array.isArray(row) ? row : {}
+  const same = (one: unknown, other: unknown) => ["document", "role", "file"].every(key => fields(one)[key as keyof DeliverySelection] === fields(other)[key as keyof DeliverySelection])
+  const passing = rows.filter((row, index): row is DeliverySelection => !refusals[index] && rows.findIndex((other, at) => !refusals[at] && same(other, row)) === index)
+  const conflicts = deliveryConflicts(directory, passing)
+  const kept = passing.filter(row => !conflicts.has(row))
+  // A refused row selecting what a kept or conflicting row selects adds nothing.
+  const records = new Map(rows.flatMap((row, index): [string, WithheldDelivery][] => {
+    const cause = refusals[index] ?? conflicts.get(row as DeliverySelection)
+    if (!cause || (refusals[index] && passing.some(other => same(other, row)))) return []
+    const { document, role, file, instruction_quote } = fields(row)
+    const record: WithheldDelivery = {
+      ...(typeof document === "string" || document === null ? { document } : {}),
+      ...(typeof role === "string" ? { role } : {}),
+      ...(typeof file === "string" && file.trim() ? { file: file.trim() } : {}),
+      cause, reason: WITHHELD_REASON[cause], asked: deliveryNameGrounded(directory, instruction_quote, file),
+    }
+    return [[JSON.stringify(record), record]]
+  }))
+  const withheld = [...records.values()]
+  if (Array.isArray(delivery) && !withheld.length && kept.length === delivery.length) return value
+  return { ...value, delivery: kept,
+    limitations: [...limitations, ...withheld.map(row => `${row.file ?? "A delivery selection without a file name"}: ${row.reason}; the planned name stands`)],
+    ...(withheld.length ? { withheld_delivery: withheld } : {}) }
+}
+
+/** The rows, each passing its own checks, that conflict
+ * (checkDeliverySelections), and with what: while they do, each row that
+ * conflicts alone, with the name the notes keep or another planned file's
+ * name; then each pair that conflicts, with each other; then, if the rows left
+ * still conflict, all of them. */
+function deliveryConflicts(directory: string, rows: DeliverySelection[]) {
+  const found = new Map<DeliverySelection, "conflict" | "notes_name" | "planned_name">()
+  const conflict = (some: DeliverySelection[]) => checkDeliverySelections(directory, some).length > 0
+  if (!conflict(rows)) return found
+  const plan = readLeanPlan(directory)
+  for (const row of rows) if (conflict([row])) {
+    const files = plan ? plannedRegistration(directory, selectedDeliveryPlan(directory, [row]) ?? plan) : []
+    found.set(row, row.role !== "drafting_notes" && files.some(file => file.kind === "drafting_notes" && file.wanted === row.file.toLocaleLowerCase()) ? "notes_name" : "planned_name")
   }
-  return { ...value, delivery: kept, limitations: [...limitations, ...delivery.filter(row => !kept.includes(row)).map(row => grounded.includes(row)
-    ? `${named(row)}: conflicts with another delivery selection; the planned name stands`
-    : `${named(row)}: no naming instruction in the lawyer's words; the planned name stands`)] }
+  const rest = rows.filter(row => !found.has(row))
+  rest.forEach((row, index) => {
+    for (const other of rest.slice(index + 1)) if (conflict([row, other])) found.set(row, "conflict").set(other, "conflict")
+  })
+  const left = rest.filter(row => !found.has(row))
+  if (conflict(left)) for (const row of left) found.set(row, "conflict")
+  return found
+}
+
+/** Why a withheld row's name was not applied, as the lawyer reads it; none
+ * when the sentence already says it. */
+const WITHHELD_CLAUSE: Partial<Record<WithheldCause, (memo: boolean) => string>> = {
+  role: () => " because it does not say which file of that document it names",
+  file: () => " because it is not a usable Word file name",
+  conflict: () => " because it conflicts with another file name chosen for this package",
+  notes_name: memo => ` because ${memo ? "the memo already has" : "the drafting notes already have"} that name`,
+  planned_name: () => " because another file in this package already has that name",
+}
+
+/** The causes a row the lawyer's words give no name is withheld for without
+ * the lawyer reading about it: no name in their words, or a format's. */
+const QUIET_CAUSES = new Set<WithheldCause>(["selection", "not_quoted", "format"])
+
+/** The withheld delivery rows (withheld_delivery) the lawyer reads about, each
+ * as an item disclosed with the review draft, never blocking it: a row whose
+ * name the lawyer's words give (asked), or one refused for its document, role
+ * or file name, or for a conflict. A row refused only for its quote or as a
+ * format, with no name the lawyer gave, stays a limitation of the review.
+ * None is raised for a row with no file name, for a name the file the row
+ * selects already has (one selecting no planned file: any planned file), or
+ * for a name a requested-files item is about (requestedFilesItemNamed). Each
+ * says in one plain sentence the name, what it could not be applied to and the
+ * name that keeps; no id or stage. */
+export function withheldDeliveryItems(directory: string): OpenItem[] {
+  const withheld = readPackageReview(directory)?.withheld_delivery
+  const plan = readLeanPlan(directory)
+  if (!plan || !Array.isArray(withheld) || !withheld.length) return []
+  const evidence = deliveryArtifactEvidence(directory)
+  const spelled = (row: (typeof evidence)[number]) => "download_filename" in row ? row.download_filename : row.planned_filename
+  const plannedName = (kind: string, document: DocID | null) => {
+    const row = evidence.find(other => other.kind === kind && other.document === document)
+    return row && spelled(row)
+  }
+  const combined = combinedDelivery(directory, plan)
+  const memo = requestedMemo(directory, plan) !== undefined
+  const key = (name: string) => name.trim().toLocaleLowerCase()
+  const items = withheld.flatMap((row): OpenItem[] => {
+    if (!row || typeof row !== "object" || typeof row.cause !== "string" || !Object.hasOwn(WITHHELD_REASON, row.cause) ||
+      typeof row.file !== "string" || !row.file.trim()) return []
+    if (row.asked !== true && QUIET_CAUSES.has(row.cause)) return []
+    const notes = row.role === "drafting_notes" && row.document === null
+    const target = notes || row.role === "drafting_notes" ? undefined : plan.documents.find(document => document.id === row.document)
+    const planned = notes ? plannedName(combined ? "combined" : "drafting_notes", combined?.document ?? null)
+      : target && plannedName(combined?.document === target.id ? "combined" : target.deliverable === "redline" ? "redline" : "body", target.id)
+    const names = notes || target ? (planned ? [planned] : []) : evidence.map(spelled)
+    if (names.some(name => key(name) === key(row.file!)) || requestedFilesItemNamed(directory, row.file)) return []
+    const name = `"${excerpt(row.file.replace(/[\x00-\x1f\x7f]/g, " "), 120)}"`
+    const opening = row.asked === true ? `You asked for ${name}; it` : `The file name ${name}`
+    const clause = WITHHELD_CLAUSE[row.cause]?.(memo) ?? ""
+    const kept = planned ? `the file name "${planned}"` : undefined
+    const detail = notes ? `${opening} could not be applied to ${memo ? "the memo" : "the drafting notes"}${clause}, so ${memo ? `it keeps ${kept ?? "its planned name"}` : `they keep ${kept ?? "their planned name"}`}.`
+      : target ? `${opening} could not be applied to "${target.title}"${clause}, so that document keeps ${kept ?? "its planned name"}.`
+      : `${opening} could not be matched to a document in this package${clause}, so every file keeps its planned name.`
+    return [{ ...openItem("package-review", "omission", detail, target ? { document: target.id } : {}), status: "disclosed", resolution: WITHHELD_RESOLUTION }]
+  })
+  return [...new Map(items.map(item => [item.id, item])).values()]
+}
+
+const WITHHELD_RESOLUTION = "requested file name not applied; disclosed with the review draft"
+
+/** Whether a gate item is a withheld delivery row's (withheldDeliveryItems):
+ * the only package-review item disclosed rather than open. */
+export function isWithheldDeliveryItem(item: OpenItem) {
+  return item.stage === "package-review" && item.status === "disclosed"
 }
 
 export function readPackageReview(directory: string): PackageReview | undefined {
