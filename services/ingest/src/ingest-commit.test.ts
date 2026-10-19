@@ -425,13 +425,22 @@ type LineageRow = {
   content_sha256: string
   bytes: number
   run: string
-  provenance: { documents: string[]; document_mutation_id?: string }
+  provenance: { documents?: string[]; document_mutation_id?: string }
 }
 
 const lineageFile = (directory: string) => path.join(directory, ".dochaus", "lineage.jsonl")
 
 const lineageRows = (directory: string) =>
   readFileSync(lineageFile(directory), "utf8").trim().split("\n").map((line) => JSON.parse(line) as LineageRow)
+
+// The latest lineage row per artifact.
+const latestRows = (directory: string) => new Map(lineageRows(directory).map((row) => [row.artifact, row]))
+
+// Installed artifacts, with their bytes' hash and size, that `latest` does not
+// record: what a stamp must add. Empty when every artifact's latest row matches disk.
+function unrecorded(directory: string, latest = latestRows(directory)) {
+  return installedArtifacts(directory).filter(({ artifact, content_sha256 }) => latest.get(artifact)?.content_sha256 !== content_sha256)
+}
 
 // Every installed artifact an ingest stamps, with its bytes' hash and size.
 function installedArtifacts(directory: string) {
@@ -501,13 +510,15 @@ describe("a source mutation's lineage and replaced snapshot", () => {
   ] as const) {
     test(`${label} stamps lineage from the bytes it staged and removes the replaced snapshot off the event loop`, async () => {
       const before = lineageRows(directory).length
+      const latest = latestRows(directory)
       // The replaced snapshot is moved aside and removed off the event loop.
       expect(await observeSourceMutation(directory, mutate)).toEqual({ reads: [], snapshotRemovals: [] })
-      expect(
-        lineageRows(directory).slice(before)
-          .map(({ artifact, content_sha256, bytes }) => ({ artifact, content_sha256, bytes }))
-          .toSorted((left, right) => left.artifact.localeCompare(right.artifact)),
-      ).toEqual(installedArtifacts(directory))
+      // Only the artifacts the mutation changed are stamped, and each artifact's latest row matches disk.
+      const stamped = stampedSince(directory, before)
+      expect(stamped.length).toBeGreaterThan(0)
+      expect(stamped).toEqual(unrecorded(directory, latest))
+      expect(stamped.length).toBeLessThan(installedArtifacts(directory).length)
+      expect(unrecorded(directory)).toEqual([])
       expect(await transactionsSettled(directory)).toBe(true)
     }, 120_000)
   }
@@ -527,9 +538,9 @@ describe("a source mutation's lineage and replaced snapshot", () => {
         await mutate()
         const after = readFileSync(lineageFile(directory))
         const [first] = after.subarray(before.length).toString("utf8").trim().split("\n").map((line) => JSON.parse(line) as LineageRow)
-        // The stamp as an ingest always made it: every present artifact read and hashed from disk.
+        // The stamp as an ingest always made it: every changed artifact read and hashed from disk.
         writeFileSync(lineageFile(directory), before)
-        stampIngestLineage(directory, first!.provenance.documents, first!.run.slice("ingest:".length), first!.provenance.document_mutation_id)
+        stampIngestLineage(directory, first!.provenance.documents!, first!.run.slice("ingest:".length), first!.provenance.document_mutation_id)
         expect(readFileSync(lineageFile(directory)).equals(after)).toBe(true)
       }
     } finally {
@@ -577,6 +588,7 @@ describe("after a source mutation is interrupted", () => {
       writeCorpus(directory, 3)
       await writeSourceArtifacts(directory)
       const before = lineageRows(directory).length
+      const latest = latestRows(directory)
       const stop = spyOn(lineage, "stampIngestLineage").mockImplementation(() => {
         throw new Error("stopped before the stamp")
       })
@@ -587,7 +599,10 @@ describe("after a source mutation is interrupted", () => {
       }
       expect(lineageRows(directory).length).toBe(before)
       await recoverDocumentMutations(directory)
-      expect(stampedSince(directory, before)).toEqual(installedArtifacts(directory))
+      const stamped = stampedSince(directory, before)
+      expect(stamped.length).toBeGreaterThan(0)
+      expect(stamped).toEqual(unrecorded(directory, latest))
+      expect(unrecorded(directory)).toEqual([])
       expect(await transactionsSettled(directory)).toBe(true)
     } finally {
       rmSync(directory, { recursive: true, force: true })
@@ -609,10 +624,14 @@ describe("after a source mutation is interrupted", () => {
       const rebuilt = stampedSince(directory, before)
       expect(rebuilt.map(({ artifact }) => artifact)).toContain("source-index.json")
       expect(rebuilt).toEqual(installedArtifacts(directory).filter(({ artifact }) => rebuilt.some((row) => row.artifact === artifact)))
-      // After a rolled-back mutation the heal restages and stamps every artifact.
+      // After a rolled-back mutation the heal restages and stamps, as an ingest,
+      // every artifact whose latest row does not match it, legal.db included.
       before = lineageRows(directory).length
+      const latest = latestRows(directory)
+      expect(unrecorded(directory, latest).map(({ artifact }) => artifact)).toContain(".dochaus/legal.db")
       expect(await healSourceArtifacts(directory, true)).toBe("recovered")
-      expect(stampedSince(directory, before)).toEqual(installedArtifacts(directory))
+      expect(stampedSince(directory, before)).toEqual(unrecorded(directory, latest))
+      expect(unrecorded(directory)).toEqual([])
       expect(await transactionsSettled(directory)).toBe(true)
     } finally {
       rmSync(directory, { recursive: true, force: true })
