@@ -479,6 +479,8 @@ const savedFile = (row: unknown) => record(row) && Array.isArray(row.holds) && r
  * should confirm it. Each item refers to its file by the file's index in the
  * record (`requested_file`) and lists the names it says the run delivers that
  * file's contents in (`delivered_names`); its id keys on its content and these.
+ * A file the record lists more than once, alike in every field, gives one item,
+ * about its first listing.
  * With `told`, the items the gate's notes disclosed, only the items of the
  * files whose name the lawyer's words give or to which one of `told` refers;
  * an item that refers to no file, as a gate's record from before items carried
@@ -569,7 +571,13 @@ export function requestedFilesItems(directory: string, told?: OpenItem[]): OpenI
   const nameKey = (name: string) => `${deliveryStem({ title: "", file: name })}.docx`.toLocaleLowerCase()
   const lawyerQuote = (words: string) => `"${words.replace(/\s+/g, " ").trim()}"` + (matterSourceIDs(directory).includes(REQUEST_SOURCE) ? "" : ` [source: ${REQUEST_SOURCE}]`)
   const answered = answeredFiles(directory)
+  // A file the record lists twice, alike in every field, is one file: the first
+  // listing stands for both, so the notes have one item to disclose.
+  const entry = (file: RequestedFile) => JSON.stringify([file.holds, file.name, file.quote, file.refused_name ?? null])
+  const firsts = new Map<string, number>()
+  saved.files.forEach((file, index) => { if (!firsts.has(entry(file))) firsts.set(entry(file), index) })
   return saved.files.flatMap((file, index) => {
+    if (firsts.get(entry(file)) !== index) return []
     if (told && file.name === null && !told.some(item => item.ref.requested_file === index)) return []
     const check = fileCheck(file, plan.documents, memo !== undefined)
     const shape = fileShape(file)

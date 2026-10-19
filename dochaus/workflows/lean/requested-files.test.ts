@@ -666,6 +666,13 @@ describe("requested files items", () => {
       'but the run delivers "Share transfer form" in "Share transfer form.docx".', CONFIRM, 1)])
   })
 
+  test("a file the record lists twice, alike in every field, gives one item, about the first", () => {
+    const twice = file(["d1"], TRANSFER, "Kestrel Transfer.docx")
+    const directory = saved([outline("Share transfer form"), AS_ASKED[1]!], record(twice, { ...twice }))
+    expect(requestedFilesItems(directory)).toEqual([item(["Share transfer form.docx"], `the lawyer's words "${TRANSFER}" [source: request] ask for "Share transfer form" ` +
+      'as a file named "Kestrel Transfer.docx", but the run delivers "Share transfer form" in "Share transfer form.docx".')])
+  })
+
   test("a matter file the run did not write at the requested name is not delivery as asked", () => {
     const directory = saved()
     writeFileSync(path.join(directory, "Kestrel Transfer.docx"), "a synthetic document the lawyer saved")
