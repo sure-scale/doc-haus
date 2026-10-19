@@ -45,11 +45,12 @@ export type RequestedFile = { holds: string[]; name: string | null; quote: strin
  * planned documents and memo are delivered as files. */
 export type RequestedFiles = { stated: boolean; files: RequestedFile[] }
 /** The record of the plan whose basis is `basis`, read for the planned titles
- * and memo name in `planned` (requestedFilesPlanned). With `status`
- * "unchecked", the files job's reply never passed its check, so it is not known
- * which files the lawyer's words ask for: `stated` is false, with no files. */
+ * and memo name in `planned` (requestedFilesPlanned) and the lawyer's words in
+ * `words` (requestedFilesWords). With `status` "unchecked", the files job's
+ * reply never passed its check, so it is not known which files the lawyer's
+ * words ask for: `stated` is false, with no files. */
 export type LeanRequestedFiles = {
-  schema: typeof LEAN_REQUESTED_FILES_SCHEMA; basis: string; planned: { titles: string[]; memo: string | null }; status?: "unchecked"; stated: boolean; files: RequestedFile[]
+  schema: typeof LEAN_REQUESTED_FILES_SCHEMA; basis: string; words?: string; planned: { titles: string[]; memo: string | null }; status?: "unchecked"; stated: boolean; files: RequestedFile[]
 }
 
 type Checked<T> = { issues: string[]; value?: T }
@@ -66,6 +67,12 @@ const filesShape = (memo: boolean) =>
   `Reply with the JSON object only: {"stated":true,"files":[{"holds":["${memo ? "planned id or memo" : "planned id"}"],"name":"file name or null","quote":"..."}]}.`
 const STATED_WITH_FILES = '"stated" is false, but "files" lists files. Give "stated": true with the files the lawyer\'s words ask for, or "stated": false with "files": [].'
 const STATED_WITHOUT_FILES = '"stated" is true, but "files" is empty. List each file the lawyer\'s words ask for, or reply {"stated":false,"files":[]} when they do not say.'
+
+/** The content key of the lawyer's words the files job reads: the request, the
+ * later instructions and the answers. */
+export function requestedFilesWords(directory: string) {
+  return shortHash(JSON.stringify([readLeanText(directory, "request.md") ?? "", readLeanText(directory, "updated-notes.md")?.trim() ?? "", answeredQuestionsText(directory)]))
+}
 
 /** The job's one question, over the lawyer's words and the planned documents and memo. */
 export function requestedFilesPrompt(directory: string, documents: PlannedDocument[], memo: string | undefined) {
@@ -439,6 +446,7 @@ export function writeRequestedFiles(directory: string, saved: LeanRequestedFiles
 export function readRequestedFiles(directory: string): LeanRequestedFiles | undefined {
   const value = readLeanJson(directory, RECORD_FILE)
   if (!record(value) || value.schema !== LEAN_REQUESTED_FILES_SCHEMA || typeof value.basis !== "string" || typeof value.stated !== "boolean" ||
+    !(value.words === undefined || typeof value.words === "string") ||
     !(value.status === undefined || (value.status === "unchecked" && !value.stated)) ||
     !record(value.planned) || !Array.isArray(value.planned.titles) || !value.planned.titles.every(title => typeof title === "string") ||
     !(value.planned.memo === null || typeof value.planned.memo === "string") ||
