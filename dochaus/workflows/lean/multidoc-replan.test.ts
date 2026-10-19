@@ -130,6 +130,37 @@ describe("lean drafting when a finished document's steps change", () => {
     expect(existsSync(path.join(directory, "Covering letter (2).docx"))).toBe(false)
   }, 180_000)
 
+  // A plan.json the lawyer left unreadable is theirs to correct: the run stops naming it and
+  // its error, and neither outlines a plan over it nor drafts again.
+  for (const [name, broken, error] of [
+    ["does not parse", (text: string) => text.slice(0, text.lastIndexOf("}")), (text: string) => { try { JSON.parse(text) } catch (caught) { return (caught as Error).message } return "" }],
+    ["is not a valid plan", (text: string) => JSON.stringify({ ...JSON.parse(text), documents: [{ ...JSON.parse(text).documents[0], parts: [] }] }, null, 2), () => "document 1 is not a valid planned document"],
+  ] as const)
+    test(`a lawyer's plan.json that ${name} stops the run with the file and its error named; the plan and the drafted body stay as they were`, async () => {
+      const directory = matter()
+      expect((await runLean(directory, { sessions: scriptedModel(happyPath).port })).status).toBe("completed")
+      const original = readFileSync(leanFile(directory, "plan.json"), "utf8")
+      const edited = broken(original)
+      writeFileSync(leanFile(directory, "plan.json"), edited)
+      const body = sha(leanFile(directory, "d1/body.docx"))
+      const model = scriptedModel(happyPath)
+      const state = await runLean(directory, { sessions: model.port })
+
+      expect(state.status).toBe("blocked")
+      expect(state.stop_reason).toContain(".dochaus/lean/plan.json")
+      expect(state.stop_reason).toContain(error(edited))
+      expect(model.prompts).toEqual([])
+      expect(readFileSync(leanFile(directory, "plan.json"), "utf8")).toBe(edited)
+      expect(sha(leanFile(directory, "d1/body.docx"))).toBe(body)
+
+      // Once corrected, Continue goes on from the plan as it was, drafting nothing again.
+      writeFileSync(leanFile(directory, "plan.json"), original)
+      const resumed = scriptedModel(happyPath)
+      expect((await runLean(directory, { sessions: resumed.port })).status).toBe("completed")
+      expect(resumed.count(AGENT.draft)).toBe(0)
+      expect(sha(leanFile(directory, "d1/body.docx"))).toBe(body)
+    }, 180_000)
+
   test("a question repeated by id without a paragraph keeps the earlier paragraph only in the same document", () => {
     const directory = matter()
     writeQuestions(directory, [{ id: "q-earlier", stage: "changes", question: QUESTION, context: CONTEXT, pid: "p000000000001", document: "d1", status: "open" }])

@@ -1,5 +1,5 @@
 import { TOOL_SYNTAX_ISSUE, printedToolCall } from "./checks"
-import { REVIEW_STAGES, readLeanJson, writeLeanText, type ReviewStageID, type StageID } from "./state"
+import { REVIEW_STAGES, readLeanJson, readLeanText, writeLeanText, type ReviewStageID, type StageID } from "./state"
 
 // The run's plan: every document the request asks for, in drafting order, each
 // with its top-level parts. It comes from the draft agent's outline reply (one
@@ -80,12 +80,30 @@ export function isStepID(value: string): value is StepID {
 
 export function readLeanPlan(directory: string): LeanPlan | undefined {
   const value = readLeanJson(directory, "plan.json")
-  if (typeof value !== "object" || value === null || (value as LeanPlan).schema !== LEAN_PLAN_SCHEMA) return
+  return planIssue(value) ? undefined : value as LeanPlan
+}
+
+/** Why the saved plan.json is not a plan: its parse error or the first rule it
+ * breaks. Undefined when there is no plan.json or it is a valid plan. */
+export function leanPlanIssue(directory: string): string | undefined {
+  const text = readLeanText(directory, "plan.json")
+  if (text === undefined) return
+  try {
+    JSON.parse(text)
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error)
+  }
+  return planIssue(readLeanJson(directory, "plan.json"))
+}
+
+function planIssue(value: unknown): string | undefined {
+  if (typeof value !== "object" || value === null || (value as LeanPlan).schema !== LEAN_PLAN_SCHEMA) return `its schema is not "${LEAN_PLAN_SCHEMA}"`
   const documents = (value as LeanPlan).documents
-  if (!Array.isArray(documents) || !documents.length || !documents.every(isPlannedDocument)) return
+  if (!Array.isArray(documents) || !documents.length) return "it lists no documents"
+  const invalid = documents.findIndex(document => !isPlannedDocument(document))
+  if (invalid >= 0) return `document ${invalid + 1} is not a valid planned document`
   const memo = (value as LeanPlan).memo
-  if (memo !== undefined && (typeof memo !== "string" || !memo.trim())) return
-  return value as LeanPlan
+  if (memo !== undefined && (typeof memo !== "string" || !memo.trim())) return "its memo is not a name"
 }
 
 /** A requested memo is saved as its name and the notes file it is delivered

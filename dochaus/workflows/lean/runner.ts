@@ -20,7 +20,7 @@ import { DELIVERED_NOTES, forgetUnplannedDocuments, recordLeanDocuments } from "
 import { runDraftStage } from "./draft-sections"
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { checklistFindingLabel, deliveredNotes, finalGate, notesCoverageReport } from "./gate"
-import { readLeanPlan, reviewStages, leanSteps, stepDocument, stepStage, type StepID } from "./plan"
+import { leanPlanIssue, readLeanPlan, reviewStages, leanSteps, stepDocument, stepStage, type StepID } from "./plan"
 import { retryPrompt, stagePrompt } from "./prompts"
 import { excerpt, inDocument, openItem, withSourceSnapshot } from "./quotes"
 import { checklistRefinementSelections, drainLeanRequests, pendingLeanRequests, withheldChecklistRepair } from "./requests"
@@ -137,6 +137,11 @@ export async function runLean(directory: string, deps: LeanDeps): Promise<LeanSt
  * earliest step that consumes the answer runs next. The step list is read
  * again at every boundary because the first draft writes the plan. */
 async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDeps, reinspectChecklist = false): Promise<PassResult> {
+  // A plan.json that is there but is not a plan is the lawyer's to correct: the
+  // run neither follows it, plans over it nor drafts again from it.
+  const unreadable = leanPlanIssue(directory)
+  if (unreadable) return { state: writeLeanState(directory, { ...initial, status: "blocked",
+    stop_reason: `.dochaus/lean/plan.json is not a valid document plan: ${unreadable}. Correct it, then Continue.` }) }
   const preferences = readFirmDraftingPreferences()
   const preferenceChange = { observed: false }
   const preferencesChanged = () => preferenceChange.observed ||= readFirmDraftingPreferences() !== preferences
