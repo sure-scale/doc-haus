@@ -17,23 +17,22 @@ import { countWords, headingUnits, tokens, type TemplateUnit } from "./template-
 // under a renamed heading counts. Text inside square brackets (a placeholder or
 // an open-item marker) carries nothing. A part is missing when its region
 // carries no text, and thin when it carries less than a quarter of its template
-// words. Draft gaps go back to the draft step as retry feedback; the final body
-// records each gap that remains as an open item for the drafting notes, and a
-// part an applied amendment took out, or the outline left out, as a recorded
-// removal. Nothing here judges the text.
+// words. A gap in the rendered draft is an open item of the draft step, which
+// the change cycle receives as a required repair; the final body records each
+// gap that remains as an open item for the drafting notes, and a part an
+// applied amendment took out, or the outline left out, as a recorded removal.
+// Nothing here judges the text.
 
 /** A body to measure: its paragraphs, the outlined part each belongs to, and
  * the paragraphs that are outlined headings (the title and each part's). */
 export type Body = { paragraphs: string[]; partOf: (number | undefined)[]; headings: Set<number> }
 export type UnitMeasure = { unit: TemplateUnit; expected: number; drafted: number; region: number[]; gap?: "missing" | "thin" }
-export type DraftPart = { part?: number; text: string }
 
 /** Parts shorter than this in the template are not measured for length. */
 const MEASURED_PART_WORDS = 40
 /** A part drafted in less than 1/THIN_RATIO of its template words is thin. */
 const THIN_RATIO = 4
 const MAX_HEADING_WORDS = 12
-const MAX_LISTED = 12
 
 /** How the body carries each top-level template part the contract gives to
  * the document's own parts. */
@@ -76,19 +75,6 @@ export function contractGaps(contract: TemplateContract, body: Body) {
   return measureContract(contract, body).filter(row => row.gap)
 }
 
-/** The body of a draft assembled from its parts. A part with no outlined
- * position (one added for a template part) belongs to no outlined part. */
-export function draftBody(parts: DraftPart[]): Body {
-  return parts.reduce<Body>((acc, part) => {
-    const rows = textParagraphs(part.text)
-    return {
-      paragraphs: [...acc.paragraphs, ...rows],
-      partOf: [...acc.partOf, ...rows.map(() => part.part)],
-      headings: part.part === undefined || !rows.length ? acc.headings : new Set([...acc.headings, acc.paragraphs.length]),
-    }
-  }, { paragraphs: [], partOf: [], headings: new Set() })
-}
-
 /** The body of a rendered draft, or of its final text: the outlined headings
  * are found in the draft's paragraphs in order, and a final paragraph belongs
  * to the part its paragraph pointer had in the draft (a new one, to the part of
@@ -123,17 +109,18 @@ export function rowsBody(outline: { title: string; parts: PlannedPart[] }, draft
   }
 }
 
-/** Retry feedback for the draft step. */
-export function draftGapIssues(contract: TemplateContract, gaps: UnitMeasure[]) {
-  if (!gaps.length) return []
-  return [
-    ...gaps.slice(0, MAX_LISTED).map(gap => gap.gap === "missing"
-      ? `The template part "${gap.unit.label}" of "${contract.source}" is not in the draft.`
-      : `The template part "${gap.unit.label}" of "${contract.source}" is much shorter in the draft (about ${gap.drafted} words) than in the template (about ${gap.expected} words).`),
-    ...(gaps.length > MAX_LISTED ? [`${gaps.length - MAX_LISTED} more template parts are not in the draft or much shorter there.`] : []),
-    "Reply with the complete revised text of each part that should carry them, each beginning with its exact \"## \" heading from the outline; " +
-    "a template part no outlined part can hold goes in a new part with its own \"## \" heading. Carry the template's text, adapted to this matter.",
-  ]
+/** Open items of the draft step for the template parts its rendered body
+ * does not carry as its contract says. The draft is not rewritten for them:
+ * the change cycle receives them as required repairs, and the apply step
+ * records what the final body still lacks (templateItems). */
+export function draftTemplateItems(directory: string, document: DocID, rows: ParagraphRow[]): OpenItem[] {
+  const contract = plannedContract(directory, document)
+  const outline = plannedDocument(directory, document)
+  if (!contract || !outline) return []
+  return contractGaps(contract, rowsBody(outline, rows)).map(gap => openItem("draft", "omission", gap.gap === "missing"
+    ? `The template part "${gap.unit.label}" of "${contract.source}" is not in the draft.`
+    : `The template part "${gap.unit.label}" of "${contract.source}" is much shorter in the draft than in the template (about ${gap.expected} words).`,
+  { template_part: gap.unit.label, source_id: contract.source }))
 }
 
 /** Open items for the template parts the final body does not carry as its
@@ -172,20 +159,6 @@ export function templateItems(
     ref(gap.unit))
   })
   return [...leftOut, ...gaps]
-}
-
-/** Paragraphs of a Markdown draft as the rendered document will hold them:
- * each heading, list item and table row on its own, other lines joined until a
- * blank line. */
-export function textParagraphs(markdown: string) {
-  return markdown.split(/\r?\n/).reduce<{ rows: string[]; open: boolean }>((acc, raw) => {
-    const line = raw.trim()
-    if (!line) return { ...acc, open: false }
-    const block = /^(?:#{1,6}\s|[-*+]\s|\d+[.)]\s|\|)/.test(line)
-    const text = line.replace(/^#{1,6}\s+/, "").replace(/^[-*+]\s+/, "").replace(/\*+/g, "").trim()
-    if (acc.open && !block) return { rows: [...acc.rows.slice(0, -1), `${acc.rows.at(-1)} ${text}`], open: true }
-    return { rows: [...acc.rows, text], open: !/^#{1,6}\s/.test(line) }
-  }, { rows: [], open: false }).rows
 }
 
 function settle(unit: TemplateUnit, expected: number, drafted: number, region: number[], carried = drafted): UnitMeasure {
