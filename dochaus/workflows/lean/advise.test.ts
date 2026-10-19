@@ -102,6 +102,26 @@ describe("advising asked questions", () => {
     expect(advised[1]!.advice).toMatchObject({ recommendation: { option: "o1" } })
   })
 
+  test("an open question asked again with the same words and options keeps its advice; any change is advised again", async () => {
+    const directory = matter()
+    const kept = { options: [{ id: "o1", text: "Thirty days from the order date" }, { id: "o2", text: "Fourteen days from the order date" }],
+      recommendation: { option: "o1", rationale: "The supply terms set thirty days.", basis: BASIS } }
+    writeQuestions(directory, [{ ...QUESTION, advice: kept }, { ...FILES, advice: UNAVAILABLE }])
+    // Advised afresh, the options would read otherwise under the same ids.
+    const model = scriptedModel({ [AGENT.advise]: prompt => JSON.stringify(prompt.includes("As my words ask")
+      ? { recommendation: { option: 1, rationale: "The request names no file.", basis: [{ source_id: "request", quote: "short supply note" }] } }
+      : { ...VALID, options: [{ text: "Seven days" }, { text: "Ten days" }] }) })
+    const advise = (...questions: Question[]) => adviseQuestions(directory, readLeanState(directory)!, "intake", { sessions: model.port }, questions)
+    expect(await advise(QUESTION, FILES)).toEqual([{ ...QUESTION, advice: kept }, { ...FILES, advice: UNAVAILABLE }])
+    expect(model.count(AGENT.advise)).toBe(0)
+    const [reworded] = await advise({ ...QUESTION, question: "Which delivery period applies?" })
+    expect(model.count(AGENT.advise)).toBe(1)
+    expect(reworded!.advice).toMatchObject({ options: [{ id: "o1", text: "Seven days" }, { id: "o2", text: "Ten days" }] })
+    const [reoffered] = await advise({ ...FILES, options: [{ id: "o1", text: "As planned" }, { id: "o2", text: "As my words ask" }] })
+    expect(model.count(AGENT.advise)).toBe(2)
+    expect(reoffered!.advice).toMatchObject({ recommendation: { option: "o2" } })
+  })
+
   test("a question with its own options shows them to the advisor and keeps them", async () => {
     const directory = matter()
     const model = scriptedModel({ [AGENT.advise]: () => JSON.stringify({ recommendation: { option: 1, rationale: "The request names no file.", basis: [{ source_id: "request", quote: "short supply note" }] } }) })

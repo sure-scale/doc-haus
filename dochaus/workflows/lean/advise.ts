@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util"
 import { normalize } from "../../lib/quote-verify"
 import { parseJsonObject } from "./change-checks"
 import { parallel } from "./checklist-flow"
@@ -19,11 +20,20 @@ import { answeredQuestionsText, readLeanText, readQuestions, type LeanState, typ
 
 const ADVISOR_FAILED = "No checked recommendation is available for this question."
 
-/** `questions`, each one not already answered carrying its advice. */
+/** `questions`, each one not already answered carrying its advice. An open
+ * question asked again with the same words and code-given options keeps the
+ * advice it was recorded with: an option id is resolved when the answer is
+ * recorded, so the card the lawyer answers must not change under them. */
 export async function adviseQuestions(directory: string, state: LeanState, step: StepID, deps: LeanDeps, questions: Question[]): Promise<Question[]> {
-  const answered = new Set(readQuestions(directory).filter(question => question.status === "answered").map(question => question.id))
-  const advised = [...questions]
-  await parallel(questions.flatMap((question, index) => answered.has(question.id) ? [] : [index]), async index => {
+  const recorded = readQuestions(directory)
+  const answered = new Set(recorded.filter(question => question.status === "answered").map(question => question.id))
+  const open = new Map(recorded.filter(question => question.status === "open" && question.advice).map(question => [question.id, question]))
+  const kept = questions.map(question => {
+    const earlier = open.get(question.id)
+    return earlier && earlier.question === question.question && isDeepStrictEqual(earlier.options, question.options) ? earlier.advice : undefined
+  })
+  const advised = questions.map((question, index) => kept[index] ? { ...question, advice: kept[index] } : question)
+  await parallel(questions.flatMap((question, index) => answered.has(question.id) || kept[index] ? [] : [index]), async index => {
     advised[index] = { ...questions[index]!, advice: await adviseQuestion(directory, state, step, deps, questions[index]!) }
   })
   return advised
