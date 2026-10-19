@@ -461,23 +461,70 @@ describe("legal.db write lock", () => {
     return { release: () => (holder.run("ROLLBACK"), holder.close()) }
   }
 
-  test("a request connection opens and reads under another connection's write lock, and its own write fails at once", () => {
+  test("a request connection opens and reads under another connection's write lock, and its own write fails fast", () => {
     const lock = holdWriteLock()
     try {
-      // A wait here would block the event loop the lock holder needs to finish.
+      // A long wait here would block the event loop the lock holder needs to finish.
       const db = openDb(directory)
       try {
-        expect(db.query("PRAGMA busy_timeout").get()).toEqual({ timeout: 0 })
+        expect(db.query("PRAGMA busy_timeout").get()).toEqual({ timeout: 200 })
         expect(db.query("SELECT COUNT(*) AS n FROM chunks").get()).toEqual({ n: 0 })
+        const started = performance.now()
         expect(() =>
           db.run("INSERT INTO answer_drafts (scope, answers, revision) VALUES ('synthetic', '{}', 1)"),
         ).toThrow("database is locked")
+        expect(performance.now() - started).toBeLessThan(1000)
       } finally {
         db.close()
       }
     } finally {
       lock.release()
     }
+  }, 30_000)
+
+  // Another process's last connection checkpoints and removes the WAL as it
+  // closes, holding the database briefly; a request open in that moment waits
+  // it out instead of failing.
+  test("request opens never fail while another process opens, writes and closes in a loop", async () => {
+    const file = path.join(directory, ".dochaus", "legal.db")
+    const runMs = 2000
+    const writer = Bun.spawn(
+      [
+        process.execPath,
+        "-e",
+        `const { Database } = require("bun:sqlite")
+        const until = Date.now() + ${runMs}
+        let n = 0
+        while (Date.now() < until) {
+          const db = new Database(${JSON.stringify(file)})
+          db.run("PRAGMA busy_timeout = 2000")
+          db.run("PRAGMA journal_mode = WAL")
+          db.run("INSERT INTO meta (key, value) VALUES (?, '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value", ["synthetic-" + (n++ % 50)])
+          db.close()
+          Bun.sleepSync(2)
+        }`,
+      ],
+      { stderr: "pipe" },
+    )
+    let opens = 0
+    const failures: string[] = []
+    try {
+      const until = Date.now() + runMs
+      while (Date.now() < until) {
+        try {
+          openDb(directory).close()
+          opens++
+        } catch (error) {
+          failures.push(String((error as { code?: unknown }).code))
+        }
+        await Bun.sleep(1)
+      }
+    } finally {
+      await writer.exited
+    }
+    expect(writer.exitCode).toBe(0)
+    expect(opens).toBeGreaterThan(100)
+    expect(failures).toEqual([])
   }, 30_000)
 
   test("a held write lock is an error to the lexical index check, never drift", () => {

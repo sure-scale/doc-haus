@@ -9,25 +9,32 @@ import { documentRegistryIdentity } from "./document-identity"
 
 // How long the startup connection waits for another connection's write lock.
 const STARTUP_BUSY_TIMEOUT_MS = 5000
+// How long a request connection waits for a lock: long enough for another
+// process's brief hold, short enough not to stall this event loop.
+const REQUEST_BUSY_TIMEOUT_MS = 200
 
 // startup: the per-matter connection the service opens at boot, before it
-// listens, to run the compatibility migrations. Only it waits for a write lock
-// and checks the lexical index against the chunks (see ftsInSync below).
+// listens, to run the compatibility migrations. Only it waits seconds for a
+// write lock and checks the lexical index against the chunks (see ftsInSync
+// below).
 //
 // Every other connection serves a request in this process, where an ingest or
 // delete commit holds its write lock across awaited file writes. bun:sqlite
 // waits synchronously, so a request waiting for that lock would block the very
-// event loop the holder needs to finish: it could only stall the service and
-// then fail. A request connection therefore never waits; on a current
-// database opening it takes no write lock at all, so reads go on during a
-// commit and a competing write fails at once with SQLITE_BUSY. At startup no
-// request runs yet, so a lock can only belong to another process (the engine's
-// short legal.db writes), which finishes while the startup connection waits.
+// event loop the holder needs to finish: a long wait could only stall the
+// service and then fail. A request connection therefore waits only briefly;
+// on a current database opening it takes no write lock at all, so reads go on
+// during a commit and a competing write fails with SQLITE_BUSY after that short
+// wait. The wait covers another process's short holds: the engine's legal.db
+// writes, and the checkpoint its last connection runs as it closes, which
+// holds the database while it removes the WAL. At startup no request runs yet,
+// so a lock can only belong to another process, which finishes while the
+// startup connection waits.
 export function openDb(matterDir: string, options: { startup?: boolean } = {}): Database {
   const dir = path.join(matterDir, ".dochaus")
   mkdirSync(dir, { recursive: true })
   const db = new Database(path.join(dir, "legal.db"))
-  if (options.startup) db.run(`PRAGMA busy_timeout = ${STARTUP_BUSY_TIMEOUT_MS}`)
+  db.run(`PRAGMA busy_timeout = ${options.startup ? STARTUP_BUSY_TIMEOUT_MS : REQUEST_BUSY_TIMEOUT_MS}`)
   db.run("PRAGMA journal_mode = WAL")
   db.run("CREATE TABLE IF NOT EXISTS answer_drafts (scope TEXT PRIMARY KEY, answers TEXT NOT NULL, revision INTEGER NOT NULL)")
   // injection_report: JSON-encoded prompt-injection findings from ingest-time
