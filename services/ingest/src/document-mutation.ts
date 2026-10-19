@@ -15,7 +15,7 @@ import {
 } from "node:fs"
 import path from "node:path"
 import { listSourceDocuments, openDb } from "./db"
-import { recoverSourceArtifactTransaction } from "./source-artifacts"
+import { recoverSourceArtifactTransaction, removeDiscardedSnapshots } from "./source-artifacts"
 import { withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
 import { stampIngestLineage, type ArtifactHash } from "./lineage"
 
@@ -133,6 +133,7 @@ export async function recoverDocumentMutations(matterDir: string) {
 }
 
 async function recoverDocumentMutationsLocked(matterDir: string) {
+  await removeDiscardedSnapshots(matterDir)
   const entries = ["document-mutations", "source-mutations"].flatMap((name) => {
     const root = path.join(matterDir, ".dochaus", name)
     if (!existsSync(root)) return []

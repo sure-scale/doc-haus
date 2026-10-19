@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, setSystemTime, spyOn, test } from "bun:test"
 import { createHash } from "node:crypto"
 import * as fs from "node:fs"
+import * as fsPromises from "node:fs/promises"
 import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
@@ -9,6 +10,7 @@ import * as atomicWrite from "./atomic-document-write"
 import { deleteDocument, getMeta, insertChunk, openDb, setMeta, upsertDocument } from "./db"
 import { copyWordDocument, writeDeliverable, writeDeliverableRevision } from "./deliverable"
 import { deleteMatterDocument } from "./document-delete"
+import { recoverDocumentMutations } from "./document-mutation"
 import { MODEL } from "./embed"
 import * as identifierExtraction from "./identifiers"
 import { ingestDocument } from "./ingest"
@@ -532,6 +534,39 @@ describe("a source mutation's lineage and replaced snapshot", () => {
     } finally {
       random.mockRestore()
       setSystemTime()
+    }
+  }, 120_000)
+})
+
+// Every file under `root` whose bytes contain `text`, by its path in `root`.
+function filesHolding(root: string, text: string) {
+  if (!existsSync(root)) return []
+  return readdirSync(root, { recursive: true, encoding: "utf8" })
+    .filter((relative) => fs.statSync(path.join(root, relative)).isFile() && readFileSync(path.join(root, relative)).includes(text))
+    .toSorted()
+}
+
+describe("after a source mutation is interrupted", () => {
+  test("recovery removes a replaced snapshot whose removal was interrupted, with the deleted document's text", async () => {
+    const directory = realpathSync(mkdtempSync(path.join(tmpdir(), "dochaus-source-recovery-")))
+    try {
+      writeCorpus(directory, 3)
+      await writeSourceArtifacts(directory)
+      const deletedText = "Example Holdings 0 Ltd"
+      // The process stops before the replaced snapshot's background removal runs.
+      const removal = spyOn(fsPromises, "rm").mockImplementation((async () => undefined) as typeof fsPromises.rm)
+      try {
+        await deleteMatterDocument(directory, "Corpus 00.docx")
+      } finally {
+        removal.mockRestore()
+      }
+      const transactions = path.join(directory, ".dochaus", "source-artifact-transactions")
+      expect(filesHolding(transactions, deletedText).length).toBeGreaterThan(0)
+      await recoverDocumentMutations(directory)
+      expect(readdirSync(transactions)).toEqual([])
+      expect(filesHolding(directory, deletedText)).toEqual([])
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
     }
   }, 120_000)
 })

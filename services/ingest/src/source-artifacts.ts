@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite"
 import { createHash, randomUUID } from "node:crypto"
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { rm } from "node:fs/promises"
 import path from "node:path"
 import { isDeepStrictEqual } from "node:util"
@@ -332,11 +332,10 @@ function installSourceArtifactSnapshot(matterDir: string, transaction: string) {
       // The installed snapshot is authoritative. The replaced one (`backup`, a
       // file per prior chunk) leaves the transaction in one rename and is
       // removed off the event loop; removing it here held the loop for seconds
-      // on a large matter. Recovery never reads the moved directory, so it
-      // cannot meet a half-removed transaction. A leftover backup directory is
-      // harmless and can be removed by maintenance without rolling back a
-      // source corpus whose database settlement already succeeded.
-      const discarded = path.join(matterDir, ".dochaus", "source-artifact-transactions", `discarded-${randomUUID()}`)
+      // on a large matter. Recovery never restores from the moved directory,
+      // so it cannot meet a half-removed transaction; it removes one whose
+      // removal a stop or an error interrupted (removeDiscardedSnapshots).
+      const discarded = path.join(matterDir, ".dochaus", "source-artifact-transactions", `${DISCARDED}${randomUUID()}`)
       try {
         mkdirSync(path.dirname(discarded), { recursive: true })
         renameSync(transaction, discarded)
@@ -354,6 +353,19 @@ function installSourceArtifactSnapshot(matterDir: string, transaction: string) {
       recoverSourceArtifactTransaction(matterDir, transaction, false)
     },
   }
+}
+
+const DISCARDED = "discarded-"
+
+// Removes replaced snapshots whose background removal did not finish. They
+// hold the previous sources, a deleted document's text included. Recovery
+// calls this under the matter's source-corpus lock; a removal that fails again
+// is retried by the next recovery.
+export async function removeDiscardedSnapshots(matterDir: string) {
+  const root = path.join(matterDir, ".dochaus", "source-artifact-transactions")
+  if (!existsSync(root)) return
+  for (const entry of readdirSync(root))
+    if (entry.startsWith(DISCARDED)) await rm(path.join(root, entry), { recursive: true, force: true }).catch(() => undefined)
 }
 
 export function recoverSourceArtifactTransaction(
