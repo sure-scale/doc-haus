@@ -14,8 +14,16 @@ export type IdentifierRow = {
   context: string
 }
 
+// The version of matter-identifiers.json's extraction and shape; the one
+// value the extractor writes and the reader accepts. Bump it when either
+// changes: a stored file of another version is stale to the startup check
+// (source-artifacts.ts), so each matter extracts again at its next start and
+// matches from then on. 2: values are read from each chunk's unwrapped source
+// slice, so a soft-wrap line break no longer splits a name.
+export const IDENTIFIERS_SCHEMA_VERSION = 2
+
 export type MatterIdentifiers = {
-  schema_version: 1
+  schema_version: typeof IDENTIFIERS_SCHEMA_VERSION
   generated_at: string
   documents: number
   rows: IdentifierRow[]
@@ -112,7 +120,7 @@ export function extractIdentifiers(chunks: IdentifierChunk[]): MatterIdentifiers
   const documents = new Set(chunks.map((chunk) => chunk.document)).size
   const rows = chunks.flatMap(scanChunk)
   return {
-    schema_version: 1,
+    schema_version: IDENTIFIERS_SCHEMA_VERSION,
     generated_at: new Date().toISOString(),
     documents,
     rows: collapseInitialMiddleVariants(rows),

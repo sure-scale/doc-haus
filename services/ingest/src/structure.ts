@@ -546,7 +546,7 @@ export function recordSections(db: Database, docPath: string, docName: string) {
 // reconstructed text that chunk offsets, section spans and citation checks all
 // index. A span is valid only under the rev it was issued with, so any change
 // to that text, leading or trailing whitespace included, changes the rev.
-function revision(text: string) {
+export function revision(text: string) {
   return createHash("sha256").update(text).digest("hex").slice(0, 12)
 }
 

@@ -4,9 +4,16 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync 
 import path from "node:path"
 import { isDeepStrictEqual } from "node:util"
 import { listSourceDocuments, openDb } from "./db"
-import { extractIdentifiers, renderIdentifiersMarkdown, type IdentifierChunk, type MatterIdentifiers } from "./identifiers"
+import { documentRegistryIdentity } from "./document-identity"
+import {
+  extractIdentifiers,
+  IDENTIFIERS_SCHEMA_VERSION,
+  renderIdentifiersMarkdown,
+  type IdentifierChunk,
+  type MatterIdentifiers,
+} from "./identifiers"
 import { stampIngestLineage, stampSourceRebuildLineage } from "./lineage"
-import { reconstructText } from "./structure"
+import { reconstructText, revision } from "./structure"
 
 const MAX_SOURCE_CHUNK_CHARS = 4500
 
@@ -46,77 +53,49 @@ const SOURCE_ARTIFACT_PATHS = [
   "source-chunks",
 ] as const
 
+// A source document as the registry lists it, with its rev (see db.ts).
+type SourceRevision = { doc_path: string; name: string; rev: string | null }
+
+// A snapshot staged in `transaction` before the commit that installs it, and
+// the registry sources (listSourceDocuments order) it was staged from.
+export type StagedSourceArtifacts = { transaction: string; sources: SourceRevision[]; chunks: number }
+
 // `rebuild` re-derives the projection from sources already ingested (the
 // startup self-heal): lineage then records only the artifacts whose bytes
-// changed, as a rebuild rather than an upload.
+// changed, as a rebuild rather than an upload. `staged`: a snapshot staged
+// before this commit (stageSourceUpload); it is installed when the registry
+// now lists exactly the sources it was staged from, and otherwise staged
+// again here from the registry.
 export async function writeSourceArtifacts(
   matterDir: string,
   correlation?: string,
-  options: { db?: Database; settle?: () => void; stampLineage?: boolean; rebuild?: boolean; transactionDirectory?: string } = {},
+  options: {
+    db?: Database
+    settle?: () => void
+    stampLineage?: boolean
+    rebuild?: boolean
+    transactionDirectory?: string
+    staged?: StagedSourceArtifacts
+  } = {},
 ) {
-  const previousIdentifiers = await readMatterIdentifiers(matterDir)
   const db = options.db ?? openDb(matterDir)
-  const sources = (listSourceDocuments(db) as { doc_path: string; name: string }[])
-    .map((doc) => ({
-      document: doc.name,
-      doc_path: doc.doc_path,
-      extracted_text: `sources/${sourceSlug(doc.name)}.txt`,
-      text: reconstructText(db, doc.doc_path).trim(),
-    }))
-    .map((source) => ({ ...source, characters: source.text.length }))
+  const staged = options.staged
+  const current = staged && sameSources(sourceRevisions(db), staged.sources) ? staged : undefined
+  const sources = current ? [] : (listSourceDocuments(db) as { doc_path: string; name: string }[])
+    .map((doc) => sourceRecord(doc.doc_path, doc.name, reconstructText(db, doc.doc_path)))
   if (!options.db) db.close()
 
-  const documents = sources.map((s) => s.document)
-  const correlationId = correlation ?? `${options.rebuild ? "rebuild" : "ingest"}-${Date.now().toString(36)}`
-  const stampLineage = () => {
-    if (options.stampLineage === false) return
-    if (options.rebuild) stampSourceRebuildLineage(matterDir, documents, correlationId)
-    else stampIngestLineage(matterDir, documents, correlationId)
-  }
-  const transaction = options.transactionDirectory ?? path.join(
+  const transaction = staged?.transaction ?? options.transactionDirectory ?? path.join(
     matterDir,
     ".dochaus",
     "source-artifact-transactions",
     `${process.pid}-${randomUUID()}`,
   )
-  const staged = path.join(transaction, "staged")
-  mkdirSync(staged, { recursive: true })
-  if (!sources.length) {
-    settleSourceArtifactSnapshot(matterDir, transaction, options.settle)
-    stampLineage()
-    return { documents: 0, chunks: 0, sourceDocuments: documents }
-  }
-
-  const sourceMap = buildSourceMap(sources)
+  let snapshot: { documents: string[]; chunks: number }
   try {
-    mkdirSync(path.join(staged, "sources"), { recursive: true })
-    mkdirSync(path.join(staged, "source-chunks"), { recursive: true })
-    await Promise.all(sources.map((source) => Bun.write(path.join(staged, source.extracted_text), `${source.text}\n`)))
-    const chunkFiles = sourceChunkFiles(sources, sourceMap)
-    await writeSourceChunks(staged, chunkFiles)
-    await writeMatterIdentifiers(staged, chunkFiles, previousIdentifiers)
-    await Bun.write(path.join(staged, "source-ledger.json"), `${JSON.stringify(sourceMap, null, 2)}\n`)
-    await Bun.write(path.join(staged, "source-map.json"), `${JSON.stringify(sourceMap, null, 2)}\n`)
-    await Bun.write(path.join(staged, "source-map.md"), sourceMapMarkdown(sourceMap))
-    await Bun.write(
-      path.join(staged, "source-index.json"),
-      `${JSON.stringify(
-        {
-          source_ledger: "source-ledger.json",
-          source_map: "source-map.json",
-          source_map_markdown: "source-map.md",
-          source_chunk_directory: "source-chunks",
-          sources: sources.map((source) => ({
-            document: source.document,
-            doc_path: source.doc_path,
-            extracted_text: source.extracted_text,
-            characters: source.characters,
-          })),
-        },
-        null,
-        2,
-      )}\n`,
-    )
+    snapshot = current
+      ? { documents: current.sources.map((source) => source.name), chunks: current.chunks }
+      : await stageSourceArtifacts(matterDir, transaction, sources)
     settleSourceArtifactSnapshot(matterDir, transaction, options.settle)
   } catch (error) {
     if (
@@ -125,12 +104,113 @@ export async function writeSourceArtifacts(
     ) rmSync(transaction, { recursive: true, force: true })
     throw error
   }
-  stampLineage()
-  return {
-    documents: sources.length,
-    chunks: sourceMap.documents.reduce((sum, source) => sum + source.chunks.length, 0),
-    sourceDocuments: documents,
+  if (options.stampLineage !== false) {
+    const correlationId = correlation ?? `${options.rebuild ? "rebuild" : "ingest"}-${Date.now().toString(36)}`
+    if (options.rebuild) stampSourceRebuildLineage(matterDir, snapshot.documents, correlationId)
+    else stampIngestLineage(matterDir, snapshot.documents, correlationId)
   }
+  return { documents: snapshot.documents.length, chunks: snapshot.chunks, sourceDocuments: snapshot.documents }
+}
+
+// Stage, before an upload's write transaction, the snapshot its commit will
+// install: every other registered source as it is now, then `pending`, the
+// uploaded document with the untrimmed canonical text its chunks rebuild.
+// Extracting the whole matter's identifiers is most of a commit's time on a
+// large matter, and holding legal.db's write lock through it would make every
+// engine write wait or fail. The caller holds the matter's source-corpus lock
+// and passes the result to writeSourceArtifacts inside the transaction.
+export async function stageSourceUpload(
+  matterDir: string,
+  db: Database,
+  transaction: string,
+  pending: { doc_path: string; name: string; text: string },
+): Promise<StagedSourceArtifacts> {
+  // upsertDocument replaces every row of the uploaded document's identity, and
+  // the new row is listed last (it is created now).
+  const identity = documentRegistryIdentity(pending.doc_path)
+  const rows = [
+    ...sourceRevisions(db)
+      .filter((row) => documentRegistryIdentity(row.doc_path) !== identity)
+      .map((row) => ({ doc_path: row.doc_path, name: row.name, text: reconstructText(db, row.doc_path) })),
+    pending,
+  ]
+  const { chunks } = await stageSourceArtifacts(
+    matterDir,
+    transaction,
+    rows.map((row) => sourceRecord(row.doc_path, row.name, row.text)),
+  )
+  return {
+    transaction,
+    sources: rows.map((row) => ({ doc_path: row.doc_path, name: row.name, rev: revision(row.text) })),
+    chunks,
+  }
+}
+
+function sourceRevisions(db: Database) {
+  return db
+    .query("SELECT doc_path, name, rev FROM documents WHERE role = 'source' ORDER BY created_at")
+    .all() as SourceRevision[]
+}
+
+function sameSources(left: SourceRevision[], right: SourceRevision[]) {
+  return left.length === right.length && left.every((source, index) => {
+    const other = right[index]!
+    return source.doc_path === other.doc_path && source.name === other.name && source.rev === other.rev
+  })
+}
+
+// `text`: the document's untrimmed canonical text (see SourceRecord).
+function sourceRecord(docPath: string, name: string, text: string): SourceRecord {
+  const trimmed = text.trim()
+  return {
+    document: name,
+    doc_path: docPath,
+    extracted_text: `sources/${sourceSlug(name)}.txt`,
+    text: trimmed,
+    characters: trimmed.length,
+  }
+}
+
+// Write the snapshot of `sources` to `<transaction>/staged`, replacing anything
+// staged there before. No sources stage an empty snapshot, which removes the
+// projection when installed.
+async function stageSourceArtifacts(matterDir: string, transaction: string, sources: SourceRecord[]) {
+  const staged = path.join(transaction, "staged")
+  rmSync(staged, { recursive: true, force: true })
+  mkdirSync(staged, { recursive: true })
+  const documents = sources.map((source) => source.document)
+  if (!sources.length) return { documents, chunks: 0 }
+  const previousIdentifiers = await readMatterIdentifiers(matterDir)
+  const sourceMap = buildSourceMap(sources)
+  mkdirSync(path.join(staged, "sources"), { recursive: true })
+  mkdirSync(path.join(staged, "source-chunks"), { recursive: true })
+  await Promise.all(sources.map((source) => Bun.write(path.join(staged, source.extracted_text), `${source.text}\n`)))
+  const chunkFiles = sourceChunkFiles(sources, sourceMap)
+  await writeSourceChunks(staged, chunkFiles)
+  await writeMatterIdentifiers(staged, chunkFiles, previousIdentifiers)
+  await Bun.write(path.join(staged, "source-ledger.json"), `${JSON.stringify(sourceMap, null, 2)}\n`)
+  await Bun.write(path.join(staged, "source-map.json"), `${JSON.stringify(sourceMap, null, 2)}\n`)
+  await Bun.write(path.join(staged, "source-map.md"), sourceMapMarkdown(sourceMap))
+  await Bun.write(
+    path.join(staged, "source-index.json"),
+    `${JSON.stringify(
+      {
+        source_ledger: "source-ledger.json",
+        source_map: "source-map.json",
+        source_map_markdown: "source-map.md",
+        source_chunk_directory: "source-chunks",
+        sources: sources.map((source) => ({
+          document: source.document,
+          doc_path: source.doc_path,
+          extracted_text: source.extracted_text,
+          characters: source.characters,
+        })),
+      },
+      null,
+      2,
+    )}\n`,
+  )
+  return { documents, chunks: sourceMap.documents.reduce((sum, source) => sum + source.chunks.length, 0) }
 }
 
 // Startup heal for one matter (ingest server boot). Returns what it did.
@@ -147,16 +227,7 @@ export function sourceArtifactsMatchRegistry(matterDir: string, suppliedDb?: Dat
   let sources: SourceRecord[]
   try {
     sources = (listSourceDocuments(db) as { doc_path: string; name: string }[])
-      .map((document): SourceRecord => {
-        const text = reconstructText(db, document.doc_path).trim()
-        return {
-          document: document.name,
-          doc_path: document.doc_path,
-          extracted_text: `sources/${sourceSlug(document.name)}.txt`,
-          text,
-          characters: text.length,
-        }
-      })
+      .map((document) => sourceRecord(document.doc_path, document.name, reconstructText(db, document.doc_path)))
   } finally {
     if (!suppliedDb) db.close()
   }
@@ -191,9 +262,9 @@ export function sourceArtifactsMatchRegistry(matterDir: string, suppliedDb?: Dat
     // lacks a file and fails above. So an unchanged source corpus has the
     // identifiers it would get again, and re-running compromise over the whole
     // matter on every start (most of a large matter's start time) would only
-    // repeat them. A change to the extraction itself reaches a matter at its
-    // next source change, or at every next start if the change also moves
-    // MatterIdentifiers.schema_version.
+    // repeat them. A change to the extraction reaches existing matters through
+    // IDENTIFIERS_SCHEMA_VERSION: a file stored under another version does not
+    // decode below, so the next start rebuilds it once, and it matches after.
     const identifiers = decodeMatterIdentifiers(
       JSON.parse(readFileSync(path.join(matterDir, "matter-identifiers.json"), "utf8")),
     )
@@ -356,7 +427,7 @@ async function readMatterIdentifiers(matterDir: string): Promise<MatterIdentifie
 function decodeMatterIdentifiers(value: unknown): MatterIdentifiers | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return
   const data = value as Record<string, unknown>
-  if (data.schema_version !== 1 || typeof data.generated_at !== "string" || typeof data.documents !== "number" || !Array.isArray(data.rows)) return
+  if (data.schema_version !== IDENTIFIERS_SCHEMA_VERSION || typeof data.generated_at !== "string" || typeof data.documents !== "number" || !Array.isArray(data.rows)) return
   const generatedAt = Date.parse(data.generated_at)
   if (!Number.isFinite(generatedAt) || new Date(generatedAt).toISOString() !== data.generated_at) return
   return value as MatterIdentifiers
