@@ -27,7 +27,7 @@ export default function DraftingNarration({
   const status = narration.status
   if (!status || !narration.visible) return null
   const working = isWorking(status)
-  const blocks = narrationTimeline(narration.lines, narration.notes, working, status.plan?.documents)
+  const blocks = narrationTimeline(narration.lines, narration.notes, working, status.plan?.documents, status)
   // Fold only consecutive successful mechanical stages. Narrator prose,
   // thoughts, flagged findings and interrupted activity retain their original
   // positions outside the disclosure, including within an otherwise done run.

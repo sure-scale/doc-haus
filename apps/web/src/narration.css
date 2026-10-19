@@ -25,6 +25,18 @@
   animation: narration-in 150ms var(--ease-out) both;
 }
 
+/* An update written while the run was paused, kept as history once it resumes. */
+.narration-timeline > .narration-note.is-past {
+  border-left-color: var(--border);
+  color: var(--text-secondary);
+}
+
+.narration-note-past {
+  margin-bottom: 2px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
 /* Long updates show three lines, then More. */
 .narration-note-body.is-clamped {
   max-height: 4.65em;
