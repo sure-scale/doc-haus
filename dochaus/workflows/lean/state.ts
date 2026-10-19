@@ -336,7 +336,7 @@ export function delegateQuestion(directory: string, questionID: string) {
   return delegated
 }
 
-/** A question the lawyer left to the drafting to decide and has not since answered. */
+/** A question the lawyer left to the drafter to decide and has not since answered. */
 export function handedBack(question: Question) {
   return question.status === "answered" && question.answer_kind === "decide_for_me"
 }
@@ -384,7 +384,7 @@ export function handedBackNotesBlock(directory: string) {
 
 /** The heading of handedBackBlock where a prompt lists it after the answers
  * under plain headings rather than tags. */
-export const LEFT_TO_DRAFTING = "Left to the drafting (not the lawyer's answers):"
+export const LEFT_TO_DRAFTING = "Left to the drafter (not the lawyer's answers):"
 
 /** The "answers" input of every step's key. A hand-back keys it as an answer
  * does, so it reruns from intake; without one it is the answers text alone. */

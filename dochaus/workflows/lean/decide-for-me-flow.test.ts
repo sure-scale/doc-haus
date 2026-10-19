@@ -24,7 +24,7 @@ const MEMO_FILE = "Supply note - cover memo.docx"
 const QUESTION = "Should late delivery carry a remedy?"
 const CHOSEN = "Add no separate late-delivery remedy: the terms fix delivery within thirty days and the general law covers late performance."
 const ANSWER = "Yes: a price reduction of one percent for each week of late delivery."
-const DISCLOSED = "The lawyer left this to the drafting, which chose:"
+const DISCLOSED = "The lawyer left this to the drafter, which chose:"
 
 type SpineFault = "approved" | "uncovered" | "stale"
 type MemoFault = "uncovered"
@@ -58,7 +58,7 @@ function spine(directory: string): Reply {
 
 /** The memo: one plain-words line per listed open item, each ending in its
  * "[ref: <id>]" marker. An item carrying the spine's drafting choice is
- * disclosed as left to the drafting with what was chosen. A retry arrives in
+ * disclosed as left to the drafter with what was chosen. A retry arrives in
  * the same session, so the reply keeps reading the last full prompt. The fault
  * leaves out the hand-back's item. */
 function memo(): Reply {
@@ -136,8 +136,8 @@ test("a hand-back runs through the queue, its checks and the gate to a review dr
   const spines = since(start, AGENT.spine)
   expect(spines).toHaveLength(3)
   expect(spines[1]).toContain("Your reply did not pass the spine checks:")
-  expect(spines[1]).toContain(`- The entry with question_id "${id}" is kind "decision", but the lawyer left that question to the drafting and has not decided it. Record it as drafting-choice or open-item, never as a decision.`)
-  expect(spines[2]).toContain(`- The lawyer left this question to the drafting to decide: "${id}" "${QUESTION}". Record it in one spine entry with "question_id": "${id}": kind drafting-choice stating the choice made and why, or kind open-item when deciding it would need a fact the sources do not give.`)
+  expect(spines[1]).toContain(`- The entry with question_id "${id}" is kind "decision", but the lawyer left that question to the drafter and has not decided it. Record it as drafting-choice or open-item, never as a decision.`)
+  expect(spines[2]).toContain(`- The lawyer left this question to the drafter to decide: "${id}" "${QUESTION}". Record it in one spine entry with "question_id": "${id}": kind drafting-choice stating the choice made and why, or kind open-item when deciding it would need a fact the sources do not give.`)
   const [choice] = handedBackItems(directory)
   const finals = since(start, AGENT.finalize)
   expect(finals).toHaveLength(2)
@@ -197,7 +197,7 @@ test("a hand-back runs through the queue, its checks and the gate to a review dr
   const respined = since(answered, AGENT.spine)
   expect(respined).toHaveLength(2)
   expect(respined[0]).toContain(ANSWER)
-  expect(respined[0]).not.toContain("left these questions to the drafting")
+  expect(respined[0]).not.toContain("left these questions to the drafter")
   expect(respined[1]).toContain("- A spine entry kind must be decision, recommendation, requirement, fact or open-item.")
   expect((readLeanJson(directory, "spine.json") as { entries: { kind: string; question_id?: string }[] }).entries
     .filter(entry => entry.kind === "drafting-choice" || entry.question_id !== undefined)).toEqual([])

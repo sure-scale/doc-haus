@@ -295,7 +295,7 @@ describe("lean drafting start and Continue", () => {
       expect(await post("q-cost", { decide_for_me: true })).toMatchObject({ status: 409, body: { code: "already_answered", error: "This question is already answered." } })
 
       expect((await post("q-start", { decide_for_me: true })).status).toBe(202)
-      expect(await post("q-start", { decide_for_me: true })).toMatchObject({ status: 409, body: { code: "already_answered", error: "This question was already left to the drafting to decide." } })
+      expect(await post("q-start", { decide_for_me: true })).toMatchObject({ status: 409, body: { code: "already_answered", error: "This question was already left to the drafter to decide." } })
 
       expect((await post("q-notice", { decide_for_me: true })).status).toBe(202)
       const answered = await post("q-notice", { answer: "Thirty days." })

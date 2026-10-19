@@ -39,7 +39,7 @@ const SOURCE_RULES = [
 
 /** The exception to the confirmation marker rule above, only with a hand-back:
  * the drafting notes disclose that choice instead (handedBackItems). */
-const HANDED_BACK_RULE = "- A point left to the drafting takes no confirmation marker: draft the choice made for it as clean operative wording, without the rejected alternative or a precedence clause between the alternatives."
+const HANDED_BACK_RULE = "- A point left to the drafter takes no confirmation marker: draft the choice made for it as clean operative wording, without the rejected alternative or a precedence clause between the alternatives."
 
 /** The first prompt of a step. `outline` asks the first draft step for the plan
  * of every document instead of drafting from the saved plan. */

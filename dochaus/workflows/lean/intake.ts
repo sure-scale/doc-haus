@@ -23,7 +23,7 @@ export function intakeQuestions(directory: string, reply: string, stage: Questio
     if (answered.has(normalize(row.question)))
       return { issues: ["That question already has a lawyer's answer. Use the supplied answers and return readiness, or ask only a genuinely unresolved decision."] }
     if (left.has(normalize(row.question)))
-      return { issues: ["The lawyer left that question to the drafting to decide. Make the choice in drafting and return readiness, or ask only a genuinely unresolved decision."] }
+      return { issues: ["The lawyer left that question to the drafter to decide. Make the choice in drafting and return readiness, or ask only a genuinely unresolved decision."] }
     const id = `q-${shortHash(normalize(row.question))}`
     if (!questions.some(question => question.id === id))
       questions.push({ id, stage, question: row.question.trim(), context: row.context.trim(), status: "open" })
