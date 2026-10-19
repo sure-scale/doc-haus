@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite"
 import path from "node:path"
+import { chunkText, type ChunkTextRow } from "./chunk-text"
 
 // Shared chain semantics for the amendment surfaces (issue #69). Three tools
 // (amendment-chain, current-section, and the supersession pass inside
@@ -104,32 +105,17 @@ function resolveTarget(db: Database, target: RelationRow, docs: DocRow[], relati
   return { kind: "unmatched" }
 }
 
-// A document's extracted text rebuilt from its stored chunks the way
-// services/ingest/src/structure.ts reconstructText does: each chunk is written
-// at its own char_start, gaps are padded and overlapping chunks (the
-// structure-aware chunker carries a trailing overlap) overwrite the same region
-// instead of being appended twice. A chunk never truncates text an earlier,
-// longer chunk already placed. `covered` lists the merged [start, end) ranges
-// that stored chunk text actually fills; padding is not covered. When `before`
-// is given, only chunks starting before it are read.
+// A document's extracted text rebuilt from its stored chunks (chunkText), with
+// the [start, end) ranges stored chunk text fills; padding is not covered. When
+// `before` is given, only chunks starting before it are read.
 export type IndexedText = { text: string; covered: [number, number][] }
 function indexedText(db: Database, docPath: string, before?: number): IndexedText {
   const rows = (
     before === undefined
-      ? db.query("SELECT text, char_start FROM chunks WHERE doc_path = ? ORDER BY char_start").all(docPath)
-      : db.query("SELECT text, char_start FROM chunks WHERE doc_path = ? AND char_start < ? ORDER BY char_start").all(docPath, before)
-  ) as { text: string; char_start: number }[]
-  let text = ""
-  const covered: [number, number][] = []
-  for (const row of rows) {
-    if (row.char_start > text.length) text += " ".repeat(row.char_start - text.length)
-    text = text.slice(0, row.char_start) + row.text + text.slice(row.char_start + row.text.length)
-    const end = row.char_start + row.text.length
-    const last = covered[covered.length - 1]
-    if (last && row.char_start <= last[1]) last[1] = Math.max(last[1], end)
-    else covered.push([row.char_start, end])
-  }
-  return { text, covered }
+      ? db.query("SELECT text, char_start FROM chunks WHERE doc_path = ? ORDER BY char_start, rowid").all(docPath)
+      : db.query("SELECT text, char_start FROM chunks WHERE doc_path = ? AND char_start < ? ORDER BY char_start, rowid").all(docPath, before)
+  ) as ChunkTextRow[]
+  return chunkText(rows)
 }
 
 // End of the contiguous stored-text run that contains `from`, or `from` itself

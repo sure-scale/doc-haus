@@ -1,9 +1,10 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect, spyOn, test } from "bun:test"
 import { createHash } from "node:crypto"
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { insertChunk, openDb, upsertDocument } from "./db"
+import { deleteDocument, insertChunk, openDb, upsertDocument } from "./db"
+import * as identifierExtraction from "./identifiers"
 import { stampIngestLineage } from "./lineage"
 import { healSourceArtifacts, sourceArtifactsMatchRegistry, writeSourceArtifacts } from "./source-artifacts"
 
@@ -214,7 +215,7 @@ describe("source artifacts", () => {
       expect(existsSync(identifiersMdPath)).toBe(true)
 
       const parsed = await Bun.file(identifiersJsonPath).json()
-      expect(parsed.schema_version).toBe(1)
+      expect(parsed.schema_version).toBe(identifierExtraction.IDENTIFIERS_SCHEMA_VERSION)
       expect(parsed.rows.length).toBeGreaterThan(0)
       const values = parsed.rows.map((row: { value: string }) => row.value)
       expect(values).toEqual(expect.arrayContaining([
@@ -366,6 +367,154 @@ describe("source artifacts", () => {
     }
   })
 
+  test("the startup check reads identifiers stored with an unchanged source map instead of extracting them again", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "dochaus-source-artifacts-"))
+    try {
+      // Authored synthetic text; the names are invented.
+      const text = "ARTICLE 1\nMorgan Ellis signs for Example Procurement Services.\n\nARTICLE 2\nTaylor Morgan countersigns."
+      const db = openDb(dir)
+      const docPath = path.join(dir, "Names.docx")
+      insertChunk(db, {
+        documentId: upsertDocument(db, docPath, "Names.docx", Date.now(), null),
+        docPath,
+        docName: "Names.docx",
+        section: "1",
+        structuralPath: "Names",
+        party: "",
+        chunkIndex: 0,
+        text,
+        charStart: 0,
+        charEnd: text.length,
+        embedding: new Float32Array([1, 2, 3]),
+        flagged: false,
+      })
+      db.close()
+      await writeSourceArtifacts(dir)
+      const markdown = path.join(dir, "matter-identifiers.md")
+      const stored = readFileSync(markdown, "utf8")
+
+      const extract = spyOn(identifierExtraction, "extractIdentifiers")
+      try {
+        expect(sourceArtifactsMatchRegistry(dir)).toBe(true)
+        expect(await healSourceArtifacts(dir, false)).toBe("current")
+        expect(extract).not.toHaveBeenCalled()
+        // Markdown that no longer renders the stored identifiers is stale.
+        writeFileSync(markdown, `${stored}Edited.\n`)
+        expect(sourceArtifactsMatchRegistry(dir)).toBe(false)
+        writeFileSync(markdown, stored)
+        // A changed source no longer has the source map's sha256.
+        const changed = openDb(dir)
+        changed.run("UPDATE chunks SET text = replace(text, 'countersigns', 'also signs')")
+        changed.close()
+        expect(sourceArtifactsMatchRegistry(dir)).toBe(false)
+      } finally {
+        extract.mockRestore()
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("identifiers an earlier extraction version stored are extracted again at one start, then match", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "dochaus-source-artifacts-"))
+    try {
+      // Authored synthetic text; the names are invented.
+      const text = "ARTICLE 1\nMorgan Ellis signs for Example Procurement Services."
+      const db = openDb(dir)
+      const docPath = path.join(dir, "Names.docx")
+      insertChunk(db, {
+        documentId: upsertDocument(db, docPath, "Names.docx", Date.now(), null),
+        docPath,
+        docName: "Names.docx",
+        section: "1",
+        structuralPath: "Names",
+        party: "",
+        chunkIndex: 0,
+        text,
+        charStart: 0,
+        charEnd: text.length,
+        embedding: new Float32Array([1, 2, 3]),
+        flagged: false,
+      })
+      db.close()
+      await writeSourceArtifacts(dir)
+      // The file as version 1 (values read from the wrapped chunk files) stored it.
+      const file = path.join(dir, "matter-identifiers.json")
+      writeFileSync(file, `${JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), schema_version: 1 }, null, 2)}\n`)
+
+      const extract = spyOn(identifierExtraction, "extractIdentifiers")
+      try {
+        expect(await healSourceArtifacts(dir, false)).toBe("rebuilt")
+        expect(extract).toHaveBeenCalledTimes(1)
+        expect(JSON.parse(readFileSync(file, "utf8")).schema_version).toBe(identifierExtraction.IDENTIFIERS_SCHEMA_VERSION)
+        expect(await healSourceArtifacts(dir, false)).toBe("current")
+        expect(extract).toHaveBeenCalledTimes(1)
+      } finally {
+        extract.mockRestore()
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("an upload or delete parses only new documents and installs the identifiers a full extraction gives", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "dochaus-source-artifacts-"))
+    // Authored synthetic texts; the names are invented.
+    const addDocument = (name: string, text: string) => {
+      const db = openDb(dir)
+      const docPath = path.join(dir, name)
+      insertChunk(db, {
+        documentId: upsertDocument(db, docPath, name, Date.now(), null),
+        docPath,
+        docName: name,
+        section: "1",
+        structuralPath: name,
+        party: "",
+        chunkIndex: 0,
+        text,
+        charStart: 0,
+        charEnd: text.length,
+        embedding: new Float32Array([1, 2, 3]),
+        flagged: false,
+      })
+      db.close()
+    }
+    const identifiers = () => ({ ...JSON.parse(readFileSync(path.join(dir, "matter-identifiers.json"), "utf8")), generated_at: "" })
+    // The same corpus extracted with no stored identifiers to reuse.
+    const fullExtraction = async () => {
+      const installed = identifiers()
+      rmSync(path.join(dir, "matter-identifiers.json"))
+      await writeSourceArtifacts(dir, undefined, { rebuild: true })
+      expect(identifiers()).toEqual(installed)
+    }
+    try {
+      addDocument("Agreement.docx", "ARTICLE 1\nCounsel for Taylor Renee Morgan confirmed consent.")
+      addDocument("Notice.docx", "Taylor R. Morgan coordinates the fictional project.")
+      await writeSourceArtifacts(dir)
+      addDocument("Schedule.docx", "SCHEDULE 1\nMorgan Ellis of Example Research Institute approves the budget.")
+      const scan = spyOn(identifierExtraction, "scanChunk")
+      try {
+        await writeSourceArtifacts(dir)
+        expect(scan.mock.calls.map(([chunk]) => chunk.document)).toEqual(["Schedule.docx"])
+        await fullExtraction()
+        scan.mockClear()
+        const db = openDb(dir)
+        deleteDocument(db, path.join(dir, "Agreement.docx"))
+        db.close()
+        await writeSourceArtifacts(dir)
+        expect(scan).not.toHaveBeenCalled()
+        // Without the full middle name, the notice's row is its surface form again.
+        expect(identifiers().rows.filter((row: { type: string }) => row.type === "person").map((row: { value: string }) => row.value))
+          .toContain("Taylor R. Morgan")
+        await fullExtraction()
+      } finally {
+        scan.mockRestore()
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }, 30_000)
+
   test("the startup heal rebuilds earlier-wrap chunk files and stamps only what changed", async () => {
     const dir = mkdtempSync(path.join(tmpdir(), "dochaus-source-artifacts-"))
     try {
@@ -440,7 +589,7 @@ describe("source artifacts", () => {
     }
   })
 
-  test("the startup heal after a rolled-back mutation stamps every artifact as an ingest, legal.db included", async () => {
+  test("the startup heal after a rolled-back mutation stamps every changed artifact as an ingest, legal.db included", async () => {
     const dir = mkdtempSync(path.join(tmpdir(), "dochaus-source-artifacts-"))
     try {
       // Authored synthetic texts; no real matter data.

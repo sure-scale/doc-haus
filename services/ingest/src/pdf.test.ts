@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs"
 import path from "node:path"
 import { extractText, getDocumentProxy } from "unpdf"
 import { pdfToText, looksScanned, ocrPdfText } from "./pdf"
-import { sectionize } from "./ingest"
+import { sectionize } from "./structure"
 
 // Authored source and provenance are committed beside these generated fixtures.
 // The scan rasterizes only our text-layer fixture and has no embedded OCR text.

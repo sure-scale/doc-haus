@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite"
 import { existsSync } from "node:fs"
 import path from "node:path"
+import { chunkText } from "../../lib/chunk-text"
 
 // The headed parts of a matter document read as a template. Parts come from the
 // shape of the canonical source lines only: a numbered line with a short
@@ -48,16 +49,11 @@ export function sourceText(directory: string, sourceID: string) {
   if (!existsSync(file)) return ""
   const db = new Database(file, { readonly: true })
   try {
-    const chunks = db.query("SELECT section, text, char_start FROM chunks WHERE doc_name = ? ORDER BY char_start")
+    const chunks = db.query("SELECT section, text, char_start FROM chunks WHERE doc_name = ? ORDER BY char_start, rowid")
       .all(sourceID) as { section: string | null; text: string; char_start: number }[]
-    // Overlapping chunks contribute only their new text; a gap is padded to keep
-    // offsets, ending in a line break where a section opens.
-    return chunks.reduce((acc, chunk, at) => {
-      if (chunk.char_start < acc.length) return acc + chunk.text.slice(acc.length - chunk.char_start)
-      const gap = chunk.char_start - acc.length
-      const opens = at > 0 && chunk.section !== chunks[at - 1]!.section
-      return acc + (gap && opens ? `${" ".repeat(gap - 1)}\n` : " ".repeat(gap)) + chunk.text
-    }, "")
+    // A gap is padded to keep offsets, ending in a line break where a section opens.
+    return chunkText(chunks, (gap, at) =>
+      at > 0 && chunks[at]!.section !== chunks[at - 1]!.section ? `${" ".repeat(gap - 1)}\n` : " ".repeat(gap)).text
   } catch {
     return ""
   } finally {

@@ -7,10 +7,49 @@ import { documentRegistryIdentity } from "./document-identity"
 // directory so it is scoped to that matter. Source rows own searchable chunks;
 // deliverable rows exist only so generated files remain listable and viewable.
 
-export function openDb(matterDir: string): Database {
+// How long the startup connection waits for another connection's write lock.
+const STARTUP_BUSY_TIMEOUT_MS = 5000
+// How long a source-corpus commit connection waits for one.
+const COMMIT_BUSY_TIMEOUT_MS = 500
+// How long any other request connection waits for one: long enough for another
+// process's brief hold, short enough not to stall this event loop.
+const REQUEST_BUSY_TIMEOUT_MS = 200
+
+// startup: the per-matter connection the service opens at boot, before it
+// listens, to run the compatibility migrations. Only it waits seconds for a
+// write lock and checks the lexical index against the chunks (see ftsInSync
+// below).
+//
+// Every other connection serves a request in this process, where an ingest or
+// delete commit can hold its write lock across awaited file writes. bun:sqlite
+// waits synchronously, so a request waiting for that lock would block the very
+// event loop the holder needs to finish: a long wait could only stall the
+// service and then fail. A request connection therefore waits only briefly;
+// on a current database opening it takes no write lock at all, so reads go on
+// during a commit and a competing write fails with SQLITE_BUSY after that short
+// wait. The wait covers another process's short holds: the engine's legal.db
+// writes, and the checkpoint its last connection runs as it closes, which
+// holds the database while it removes the WAL. At startup no request runs yet,
+// so a lock can only belong to another process, which finishes while the
+// startup connection waits.
+//
+// commit: the connection a source upload, a document delete or a deliverable
+// write commits through (ingest.ts, document-delete.ts, deliverable.ts). Each
+// holds the matter's source-corpus lock, which every commit that keeps the
+// write lock across an await also takes, so no such commit runs in this
+// process meanwhile and a lock it meets belongs to another process. It waits a
+// little longer than other request connections, so an engine write of a few
+// milliseconds at that instant delays the commit instead of failing it.
+export function openDb(matterDir: string, options: { startup?: boolean; commit?: boolean } = {}): Database {
   const dir = path.join(matterDir, ".dochaus")
   mkdirSync(dir, { recursive: true })
   const db = new Database(path.join(dir, "legal.db"))
+  const busyTimeoutMs = options.startup
+    ? STARTUP_BUSY_TIMEOUT_MS
+    : options.commit
+      ? COMMIT_BUSY_TIMEOUT_MS
+      : REQUEST_BUSY_TIMEOUT_MS
+  db.run(`PRAGMA busy_timeout = ${busyTimeoutMs}`)
   db.run("PRAGMA journal_mode = WAL")
   db.run("CREATE TABLE IF NOT EXISTS answer_drafts (scope TEXT PRIMARY KEY, answers TEXT NOT NULL, revision INTEGER NOT NULL)")
   // injection_report: JSON-encoded prompt-injection findings from ingest-time
@@ -69,6 +108,14 @@ export function openDb(matterDir: string): Database {
   if (!hasColumn(db, "chunks", "structural_path"))
     db.run("ALTER TABLE chunks ADD COLUMN structural_path TEXT NOT NULL DEFAULT ''")
   if (!hasColumn(db, "chunks", "party")) db.run("ALTER TABLE chunks ADD COLUMN party TEXT NOT NULL DEFAULT ''")
+  // Recorded structure (see the sections table below). rev: the first 12 hex
+  // digits of the sha256 of a source document's canonical text, the untrimmed
+  // text rebuilt from its chunks (structure.ts reconstructText) that chunk
+  // offsets and section spans index; deliverables have none. section_ordinal:
+  // the section the chunk was cut from. Rows the sections backfill (structure.ts
+  // migrateSections) has not yet reached hold NULL.
+  if (!hasColumn(db, "documents", "rev")) db.run("ALTER TABLE documents ADD COLUMN rev TEXT")
+  if (!hasColumn(db, "chunks", "section_ordinal")) db.run("ALTER TABLE chunks ADD COLUMN section_ordinal INTEGER")
   // Small key-value table for index-level facts that aren't rows — currently
   // which embedding model wrote the chunk vectors (see embed.ts migration).
   db.run("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
@@ -114,50 +161,72 @@ export function openDb(matterDir: string): Database {
   // duplicated. The section label and document name are indexed alongside the
   // body so a query naming a clause ("Section 8.3") or a document matches that
   // clause's or document's own chunks directly.
-  // Databases indexed before doc_name was added carry a two-column chunks_fts;
-  // FTS5 has no ALTER, so drop and recreate (the rebuild below repopulates).
-  const ftsSql = (db.query("SELECT sql FROM sqlite_master WHERE name = 'chunks_fts'").get() as { sql: string } | null)
-    ?.sql
-  if (ftsSql && !ftsSql.includes("doc_name")) {
-    for (const trigger of ["chunks_fts_ai", "chunks_fts_ad", "chunks_fts_au"]) db.run(`DROP TRIGGER IF EXISTS ${trigger}`)
-    db.run("DROP TABLE chunks_fts")
-  }
-  db.run(`
-    CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
-      text, section, doc_name,
-      content='chunks', content_rowid='id',
-      tokenize='unicode61 remove_diacritics 2'
-    )
-  `)
   // Triggers keep the index in sync with every write path (insertChunk,
   // upsertDocument's delete-then-reinsert, deleteDocument). External-content
-  // FTS5 requires the special 'delete' insert form to unindex a row.
-  db.run(`
-    CREATE TRIGGER IF NOT EXISTS chunks_fts_ai AFTER INSERT ON chunks BEGIN
+  // FTS5 requires the special 'delete' insert form to unindex a row. Only the
+  // indexed columns re-index a row on update: embedding and section_ordinal
+  // writes (the embedding and sections backfills) leave the index alone.
+  const insertTrigger = `CREATE TRIGGER IF NOT EXISTS chunks_fts_ai AFTER INSERT ON chunks BEGIN
       INSERT INTO chunks_fts(rowid, text, section, doc_name) VALUES (new.id, new.text, new.section, new.doc_name);
-    END
-  `)
-  db.run(`
-    CREATE TRIGGER IF NOT EXISTS chunks_fts_ad AFTER DELETE ON chunks BEGIN
+    END`
+  const deleteTrigger = `CREATE TRIGGER IF NOT EXISTS chunks_fts_ad AFTER DELETE ON chunks BEGIN
       INSERT INTO chunks_fts(chunks_fts, rowid, text, section, doc_name) VALUES ('delete', old.id, old.text, old.section, old.doc_name);
-    END
-  `)
-  db.run(`
-    CREATE TRIGGER IF NOT EXISTS chunks_fts_au AFTER UPDATE ON chunks BEGIN
+    END`
+  const updateTrigger = `CREATE TRIGGER chunks_fts_au AFTER UPDATE OF text, section, doc_name ON chunks BEGIN
       INSERT INTO chunks_fts(chunks_fts, rowid, text, section, doc_name) VALUES ('delete', old.id, old.text, old.section, old.doc_name);
       INSERT INTO chunks_fts(rowid, text, section, doc_name) VALUES (new.id, new.text, new.section, new.doc_name);
-    END
-  `)
-  // Backfill databases that predate the FTS table, and self-heal any drift (a
-  // crash between table creation and indexing, or chunks written or updated
-  // while the triggers did not exist or did not match the index). Drift is not
-  // always a row-count mismatch: a desynced external-content index can hold the
-  // right number of rows with the wrong tokens, and then any trigger-driven
-  // 'delete' (e.g. the embedding-migration UPDATE) throws SQLITE_CORRUPT
+    END`
+  // Databases indexed before doc_name was added carry a two-column chunks_fts;
+  // FTS5 has no ALTER, so drop and recreate. An index this open creates, for
+  // such a database or one from before the index existed, is built from the
+  // chunks already stored and committed together with its triggers, so a chunk
+  // another process writes the moment it commits is indexed too.
+  const ftsSql = (db.query("SELECT sql FROM sqlite_master WHERE name = 'chunks_fts'").get() as { sql: string } | null)
+    ?.sql
+  if (!ftsSql?.includes("doc_name"))
+    db.transaction(() => {
+      for (const trigger of ["chunks_fts_ai", "chunks_fts_ad", "chunks_fts_au"]) db.run(`DROP TRIGGER IF EXISTS ${trigger}`)
+      if (ftsSql) db.run("DROP TABLE chunks_fts")
+      db.run(`
+        CREATE VIRTUAL TABLE chunks_fts USING fts5(
+          text, section, doc_name,
+          content='chunks', content_rowid='id',
+          tokenize='unicode61 remove_diacritics 2'
+        )
+      `)
+      db.run("INSERT INTO chunks_fts(chunks_fts) VALUES ('rebuild')")
+      for (const trigger of [insertTrigger, deleteTrigger, updateTrigger]) db.run(trigger)
+    })()
+  // A current index that lost a trigger gets it back here, and the startup
+  // check below heals what was written meanwhile. Databases created with the
+  // earlier any-column update trigger get the current one in its place; the
+  // definition check keeps a current database's schema untouched.
+  db.run(insertTrigger)
+  db.run(deleteTrigger)
+  const currentUpdateTrigger = db.query("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'chunks_fts_au'").get() as
+    | { sql: string }
+    | null
+  if (currentUpdateTrigger?.sql !== updateTrigger)
+    db.transaction(() => {
+      db.run("DROP TRIGGER IF EXISTS chunks_fts_au")
+      db.run(updateTrigger)
+    })()
+  // Self-heal drift at startup: chunks written or updated while the triggers
+  // did not exist or did not match the index, by an older build or tool. Drift
+  // is not always a row-count mismatch: a desynced external-content index can
+  // hold the right number of rows with the wrong tokens, and then any
+  // trigger-driven 'delete' (e.g. a chunk text UPDATE) throws SQLITE_CORRUPT
   // ("database disk image is malformed") even though the file is intact. FTS5's
   // own 'integrity-check' command compares the index against the chunks table
   // and is the only complete drift probe; 'rebuild' atomically reindexes.
-  if (!ftsInSync(db)) db.run("INSERT INTO chunks_fts(chunks_fts) VALUES ('rebuild')")
+  // The check scans the whole index and, being an INSERT, needs the write lock,
+  // so it runs once per matter at startup rather than on every request. Drift
+  // cannot arise later: the triggers are part of the schema, so every
+  // connection in every process maintains the index in the same transaction as
+  // the chunk write, and the index and trigger changes above are atomic. A
+  // database the service has not seen gets its index built when this open
+  // creates it.
+  if (options.startup && !ftsInSync(db)) db.run("INSERT INTO chunks_fts(chunks_fts) VALUES ('rebuild')")
   // Contract-structure tables: deterministic, regex-extracted facts about each
   // document (see structure.ts). Every row is a pointer (offsets) into the
   // document's extracted text plus the verbatim text at that pointer — nothing
@@ -226,6 +295,36 @@ export function openDb(matterDir: string): Database {
       char_end INTEGER NOT NULL
     )
   `)
+  // A source document's sections in document order, as ingest parsed them
+  // (structure.ts documentSections). Spans index the text rebuilt from the
+  // chunks (structure.ts reconstructText), in the chunk offsets' coordinates,
+  // and tile it: each section starts where the previous one ends, and a
+  // section's span is its own text up to the next heading of any depth, not its
+  // children's. ordinal counts from 1; parent_ordinal is NULL and depth 1 at the
+  // top level. label is the clause number and heading the heading text; both are
+  // NULL for the opening text before the first heading. structure_source names
+  // the parse that found the heading: 'sectionize' for a heading-shaped line,
+  // 'markdown' for a heading the extractor marked with #.
+  db.run(`
+    CREATE TABLE IF NOT EXISTS sections (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      doc_path TEXT NOT NULL,
+      doc_name TEXT NOT NULL,
+      ordinal INTEGER NOT NULL,
+      parent_ordinal INTEGER,
+      depth INTEGER NOT NULL,
+      label TEXT,
+      heading TEXT,
+      char_start INTEGER NOT NULL,
+      char_end INTEGER NOT NULL,
+      structure_source TEXT NOT NULL
+    )
+  `)
+  db.run("CREATE UNIQUE INDEX IF NOT EXISTS sections_doc_ordinal ON sections(doc_path, ordinal)")
+  // A document's chunks in offset order (reconstructText, recordSections and the
+  // per-document deletes); without it each read scans every chunk in the matter,
+  // so a whole-matter backfill grows with the square of its size.
+  db.run("CREATE INDEX IF NOT EXISTS chunks_doc_offset ON chunks(doc_path, char_start)")
   db.run("CREATE INDEX IF NOT EXISTS defined_terms_term ON defined_terms(term)")
   db.run("CREATE INDEX IF NOT EXISTS section_refs_doc ON section_refs(doc_path)")
   db.run("CREATE INDEX IF NOT EXISTS section_ops_doc ON section_ops(doc_path)")
@@ -260,13 +359,16 @@ export function openDb(matterDir: string): Database {
 
 // FTS5 reports an index/content mismatch only by throwing SQLITE_CORRUPT from
 // its 'integrity-check' command (rank=1 verifies against the content table);
-// there is no boolean API, so the catch is the result.
-function ftsInSync(db: Database) {
+// there is no boolean API, so that error is the result. Any other error, such
+// as SQLITE_BUSY while another connection holds the write lock, says nothing
+// about the index and is rethrown rather than read as drift.
+export function ftsInSync(db: Database) {
   try {
     db.run("INSERT INTO chunks_fts(chunks_fts, rank) VALUES ('integrity-check', 1)")
     return true
-  } catch {
-    return false
+  } catch (error) {
+    if ((error as { code?: unknown }).code?.toString().startsWith("SQLITE_CORRUPT")) return false
+    throw error
   }
 }
 
@@ -361,7 +463,7 @@ export function deleteDocument(db: Database, docPath: string) {
 
 function deleteDocumentIndexData(db: Database, docPath: string) {
   db.run("DELETE FROM chunks WHERE doc_path = ?", [docPath])
-  for (const table of ["defined_terms", "section_refs", "parties", "doc_relations", "section_ops"])
+  for (const table of ["defined_terms", "section_refs", "parties", "doc_relations", "section_ops", "sections"])
     db.run(`DELETE FROM ${table} WHERE doc_path = ?`, [docPath])
 }
 

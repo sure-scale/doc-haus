@@ -255,3 +255,21 @@ test("an unmatched base's stated name selects its chain", async () => {
   const missing = await tool.execute({ section: "9", document: "Lease" }, ctxFor(dir))
   expect(missing).toMatch(/^No section "9" in this matter\./)
 })
+
+test("a section split into overlapping chunks is returned once, verbatim, at its source offsets", async () => {
+  const { dir, db } = matter()
+  // Ingest repeats the trailing lines of a long section's chunk at the start
+  // of the next one; the returned text must still be the source text.
+  const lines = Array.from({ length: 30 }, (_, i) => `Paragraph ${i + 1} of an invented clause, describing no actual obligation at all.\n`)
+  const source = `4. Invented heading\n${lines.join("")}`
+  const first = source.slice(0, 1500)
+  const overlapStart = source.lastIndexOf("Paragraph", 1300)
+  const second = source.slice(overlapStart)
+  db.run("INSERT INTO documents (doc_path, name, created_at) VALUES (?, ?, ?)", [BASE, "Original Agreement", 1])
+  db.run("INSERT INTO chunks (doc_path, doc_name, section, text, char_start, char_end) VALUES (?, ?, ?, ?, ?, ?)", [BASE, "Original Agreement", "4", first, 0, first.length])
+  db.run("INSERT INTO chunks (doc_path, doc_name, section, text, char_start, char_end) VALUES (?, ?, ?, ?, ?, ?)", [BASE, "Original Agreement", "4", second, overlapStart, source.length])
+  db.close()
+
+  const result = await tool.execute({ section: "4" }, ctxFor(dir))
+  expect(result).toBe(`=== Original Agreement — § 4 (chars 0–${source.length}) ===\n${source}\n\nNote: no amendment chain in this matter.`)
+})

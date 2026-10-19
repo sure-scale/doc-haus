@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import nlp from "compromise"
 
 export type IdentifierType =
@@ -12,12 +13,29 @@ export type IdentifierRow = {
   chunk_id: string
   line: number
   context: string
+  // The value as the source wrote it, present when the matter-level collapse
+  // (collapseInitialMiddleVariants) replaced `value` with a longer form.
+  surface?: string
 }
 
+// The version of matter-identifiers.json's extraction and shape; the one
+// value the extractor writes and the reader accepts. Bump it when either
+// changes, since unchanged documents otherwise keep their stored rows: a
+// stored file of another version is stale to the startup check
+// (source-artifacts.ts), so each matter extracts again at its next start and
+// matches from then on. 2: values are read from each chunk's unwrapped source
+// slice, so a soft-wrap line break no longer splits a name. 3: `sources` keys
+// each document's rows, which a later extraction reuses while the document is
+// unchanged, and a collapsed row keeps its `surface`.
+export const IDENTIFIERS_SCHEMA_VERSION = 3
+
 export type MatterIdentifiers = {
-  schema_version: 1
+  schema_version: typeof IDENTIFIERS_SCHEMA_VERSION
   generated_at: string
   documents: number
+  // Each document, in extraction order, with the scan key (see scanKey) of
+  // the chunks its rows were read from.
+  sources: { document: string; sha256: string }[]
   rows: IdentifierRow[]
 }
 
@@ -108,15 +126,94 @@ const regexExtractors: RegexExtractor[] = [
   { type: "statute_citation", pattern: statuteCitationPattern },
 ]
 
-export function extractIdentifiers(chunks: IdentifierChunk[]): MatterIdentifiers {
-  const documents = new Set(chunks.map((chunk) => chunk.document)).size
-  const rows = chunks.flatMap(scanChunk)
+// The matter's identifiers, read from its chunks document by document (in the
+// order each document's first chunk appears). Parsing chunks with compromise
+// is nearly all of the time, so the rows of a document whose chunks are
+// unchanged since `previous` (the matter's stored extraction) are taken from
+// it: a document's rows depend only on what scanKey hashes, so they are the
+// rows parsing it again would give. The collapse then runs over every
+// document's rows, as in a full extraction, so the result is the same. The
+// extraction yields to the event loop after each document and each parsed
+// chunk, so a long one does not stall the service's other requests.
+export async function extractIdentifiers(chunks: IdentifierChunk[], previous?: MatterIdentifiers): Promise<MatterIdentifiers> {
+  const reusable = reusableRows(previous)
+  const sources: MatterIdentifiers["sources"] = []
+  const rows: IdentifierRow[] = []
+  for (const [document, documentChunks] of chunksByDocument(chunks)) {
+    const sha256 = scanKey(documentChunks)
+    sources.push({ document, sha256 })
+    const reused = reusable.get(sha256)
+    if (reused) for (const row of reused) rows.push(row)
+    else for (const chunk of documentChunks) {
+      for (const row of scanChunk(chunk)) rows.push(row)
+      await yieldToEventLoop()
+    }
+    await yieldToEventLoop()
+  }
   return {
-    schema_version: 1,
+    schema_version: IDENTIFIERS_SCHEMA_VERSION,
     generated_at: new Date().toISOString(),
-    documents,
+    documents: sources.length,
+    sources,
     rows: collapseInitialMiddleVariants(rows),
   }
+}
+
+function yieldToEventLoop() {
+  return new Promise<void>((resolve) => setImmediate(resolve))
+}
+
+function chunksByDocument(chunks: IdentifierChunk[]) {
+  const documents = new Map<string, IdentifierChunk[]>()
+  for (const chunk of chunks) {
+    const documentChunks = documents.get(chunk.document)
+    if (documentChunks) documentChunks.push(chunk)
+    else documents.set(chunk.document, [chunk])
+  }
+  return documents
+}
+
+// The sha256 of everything a document's rows are read from: the extraction
+// and compromise versions, and each chunk's id, document, source slice and
+// wrapped file (where line and context point).
+function scanKey(chunks: IdentifierChunk[]) {
+  const hash = createHash("sha256").update(JSON.stringify([IDENTIFIERS_SCHEMA_VERSION, nlp.version]))
+  for (const chunk of chunks) hash.update(JSON.stringify([chunk.id, chunk.document, chunk.text, chunk.file ?? null]))
+  return hash.digest("hex")
+}
+
+// Each document's rows in `previous` as scanning yielded them (before the
+// collapse), keyed by its scan key. A file whose rows are not exactly the rows
+// of its listed documents is not reused at all.
+function reusableRows(previous: MatterIdentifiers | undefined) {
+  const reusable = new Map<string, IdentifierRow[]>()
+  const sources: unknown = previous?.sources
+  if (!previous || !Array.isArray(previous.rows) || !Array.isArray(sources) || !sources.every(isSource)) return reusable
+  const rowsByDocument = new Map(sources.map((source) => [source.document, [] as IdentifierRow[]]))
+  if (rowsByDocument.size !== sources.length) return reusable
+  for (const row of previous.rows) {
+    const documentRows = isStoredRow(row) ? rowsByDocument.get(row.source) : undefined
+    if (!documentRows) return reusable
+    const { surface, ...scanned } = row
+    documentRows.push(surface === undefined ? scanned : { ...scanned, value: surface })
+  }
+  for (const source of sources) reusable.set(source.sha256, rowsByDocument.get(source.document)!)
+  return reusable
+}
+
+function isSource(value: unknown): value is MatterIdentifiers["sources"][number] {
+  if (!value || typeof value !== "object") return false
+  const source = value as Record<string, unknown>
+  return Object.keys(source).length === 2 && typeof source.document === "string" && typeof source.sha256 === "string"
+}
+
+function isStoredRow(value: unknown): value is IdentifierRow {
+  if (!value || typeof value !== "object") return false
+  const row = value as Record<string, unknown>
+  return Object.keys(row).length === ("surface" in row ? 7 : 6) &&
+    typeof row.type === "string" && typeof row.value === "string" && typeof row.source === "string" &&
+    typeof row.chunk_id === "string" && typeof row.line === "number" && typeof row.context === "string" &&
+    (!("surface" in row) || typeof row.surface === "string")
 }
 
 // Canonical-form normalization for person-name variants. When the same
@@ -124,9 +221,9 @@ export function extractIdentifiers(chunks: IdentifierChunk[]): MatterIdentifiers
 // middle name (same first + last word, single-initial middle matching the
 // first letter of a multi-letter middle), every variant row's Value column
 // is normalized to the longest form. The original surface form survives in
-// the Context column (source text is never rewritten); only the Value is
-// normalized so downstream stages reading the Value for atom pinning
-// always carry the full legal name.
+// the Context column (source text is never rewritten) and the row's
+// `surface`; only the Value is normalized so downstream stages reading the
+// Value for atom pinning always carry the full legal name.
 //
 // Conservative on purpose:
 //   - Two-word names (no middle) are never collapsed — there is no initial
@@ -183,10 +280,11 @@ function collapseInitialMiddleVariants(rows: IdentifierRow[]): IdentifierRow[] {
     }
   }
   if (!replacements.size) return rows
-  return rows.map((row) => (replacements.has(row) ? { ...row, value: replacements.get(row)! } : row))
+  return rows.map((row) => (replacements.has(row) ? { ...row, value: replacements.get(row)!, surface: row.value } : row))
 }
 
-function scanChunk(chunk: IdentifierChunk): IdentifierRow[] {
+// One chunk's rows, before the matter-level collapse.
+export function scanChunk(chunk: IdentifierChunk): IdentifierRow[] {
   const doc = nlp(chunk.text)
   const fromRegex = regexExtractors.flatMap((extractor) => extractFromRegex(chunk, extractor))
   const fromCompromise = compromiseSelectors.flatMap((selector) =>

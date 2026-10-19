@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
+import { Database } from "bun:sqlite"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
@@ -110,6 +111,39 @@ describe("chat continuation admission", () => {
     expect(f.state.posts).toBe(2)
     expect(f.state.body?.id).toBe(f.input.messageID)
     expect(await dispatchChatContinuation(f.directory, f.input, f.options)).toMatchObject({ attempted: false, exhausted: true, uncertain: true })
+  })
+
+  test("an accepted turn is reported as accepted when its status cannot be recorded", async () => {
+    const f = engine()
+    // Another connection takes the write lock while the engine admits the turn
+    // and keeps it past the claim status write, as an upload commit can.
+    let holder: Database | undefined
+    const options = {
+      ...f.options,
+      fetch: (async (request: RequestInfo | URL, init?: RequestInit) => {
+        const response = await fetch(request, init)
+        if (String(request instanceof Request ? request.url : request).endsWith("/prompt") && !holder) {
+          holder = new Database(path.join(f.directory, ".dochaus", "legal.db"))
+          holder.run("BEGIN IMMEDIATE")
+          holder.run("INSERT INTO meta (key, value) VALUES ('synthetic-lock', '1')")
+        }
+        return response
+      }) as typeof fetch,
+    }
+    try {
+      expect(await dispatchChatContinuation(f.directory, f.input, options))
+        .toMatchObject({ accepted: true, attempted: true, persisted: true, pending: true, uncertain: false })
+    } finally {
+      holder?.run("ROLLBACK")
+      holder?.close()
+    }
+    expect(holder).toBeDefined()
+    expect(f.state.posts).toBe(1)
+    // The claim stays claimed and the next call reconciles it from the engine.
+    expect(claims(f.directory)).toEqual([{ attempts: 1, status: "claimed" }])
+    expect(await dispatchChatContinuation(f.directory, f.input, f.options)).toMatchObject({ accepted: true, existing: true, persisted: true })
+    expect(f.state.posts).toBe(1)
+    expect(claims(f.directory)).toEqual([{ attempts: 1, status: "observed" }])
   })
 
   test("rejects a different payload for an already claimed message ID", async () => {

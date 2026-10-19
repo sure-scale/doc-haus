@@ -2,14 +2,14 @@ import { tool } from "./legacy-definition"
 import { Database } from "bun:sqlite"
 import { existsSync } from "node:fs"
 import path from "node:path"
+import { sectionPassages } from "../lib/chunk-text"
 
 // doc.haus deterministic section lookup. Reads the per-matter legal.db that
 // `services/ingest` populates and returns a section's text verbatim by
-// reassembling its chunks — the chunks of one section are contiguous slices of
-// the document's extracted text, so ordered concatenation reconstructs the
-// section exactly as ingested. Called without a section it returns the matter
-// outline (every document's section labels in document order) so the agent can
-// see structure before fetching. Nothing here is generated or paraphrased: a
+// rebuilding it from its chunks (sectionPassages) at the document's own
+// offsets. Called without a section it returns the matter outline (every
+// document's section labels in document order) so the agent can see structure
+// before fetching. Nothing here is generated or paraphrased: a
 // label that does not exist is reported as not found, never approximated, and
 // the agent is pointed at search-document as the fallback.
 //
@@ -27,7 +27,6 @@ type Chunk = {
   section: string
   text: string
   char_start: number
-  char_end: number
 }
 
 export default tool({
@@ -57,9 +56,9 @@ export default tool({
     }
 
     const scopedSql = (where: string) =>
-      `SELECT doc_name, section, text, char_start, char_end FROM chunks WHERE ${where}` +
+      `SELECT doc_name, section, text, char_start FROM chunks WHERE ${where}` +
       (args.document ? " AND doc_name = ?" : "") +
-      " ORDER BY doc_name, char_start"
+      " ORDER BY doc_name, char_start, id"
     const params = args.document ? [args.section, args.document] : [args.section]
     const exact = db.query(scopedSql("section = ? COLLATE NOCASE")).all(...params) as Chunk[]
     // Exact label missed — retry as prefix so "7" still surfaces 7.1–7.4 (the
@@ -79,36 +78,11 @@ export default tool({
     }
     db.close()
 
-    // Reassemble per (document, section): chunks of one section are contiguous
-    // slices of the extracted text, so in-order concatenation is verbatim.
-    const groups = new Map<string, Chunk[]>()
-    for (const chunk of chunks) {
-      // \x00 cannot appear in either field, so distinct (document, section)
-      // pairs can never collide into one group.
-      const key = `${chunk.doc_name}\x00${chunk.section}`
-      groups.set(key, [...(groups.get(key) ?? []), chunk])
-    }
-
-    const parts: string[] = []
-    let used = 0
-    let truncatedAt: Chunk | null = null
-    for (const rows of groups.values()) {
-      const kept = []
-      for (const row of rows) {
-        if (used + row.text.length > TEXT_CAP && parts.length + kept.length > 0) {
-          truncatedAt = row
-          break
-        }
-        kept.push(row)
-        used += row.text.length
-      }
-      if (kept.length) {
-        const first = kept[0]
-        const header = `=== ${first.doc_name} — § ${first.section} (chars ${first.char_start}–${kept[kept.length - 1].char_end}) ===`
-        parts.push(`${header}\n${kept.map((row) => row.text).join("")}`)
-      }
-      if (truncatedAt) break
-    }
+    const { passages, rest } = sectionPassages(chunks, TEXT_CAP)
+    const parts = passages.map(
+      (passage) =>
+        `=== ${passage.doc_name} — § ${passage.section} (chars ${passage.char_start}–${passage.char_start + passage.text.length}) ===\n${passage.text}`,
+    )
 
     const matchedLabels = [...new Set(chunks.map((chunk) => `${chunk.doc_name} § ${chunk.section}`))]
     const shownLabels =
@@ -118,8 +92,8 @@ export default tool({
     const prefixNote = exact.length
       ? ""
       : `No section labeled exactly "${args.section}". Matched by prefix: ${shownLabels}.\n\n`
-    const truncationNote = truncatedAt
-      ? `\n\n[Truncated at the ${TEXT_CAP}-character cap, on a chunk boundary before ${truncatedAt.doc_name} § ${truncatedAt.section} (char ${truncatedAt.char_start}). Call again with document: "${truncatedAt.doc_name}" and section: "${truncatedAt.section}" to fetch the rest, or use search-document for a specific passage.]`
+    const truncationNote = rest
+      ? `\n\n[Truncated at the ${TEXT_CAP}-character cap, on a chunk boundary before ${rest.doc_name} § ${rest.section} (char ${rest.char_start}). Call again with document: "${rest.doc_name}" and section: "${rest.section}" to fetch the rest, or use search-document for a specific passage.]`
       : ""
     return prefixNote + parts.join("\n\n") + truncationNote
   },

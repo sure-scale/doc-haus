@@ -15,9 +15,9 @@ import {
 } from "node:fs"
 import path from "node:path"
 import { listSourceDocuments, openDb } from "./db"
-import { recoverSourceArtifactTransaction } from "./source-artifacts"
+import { recoverSourceArtifactTransaction, removeDiscardedSnapshots } from "./source-artifacts"
 import { withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
-import { stampIngestLineage } from "./lineage"
+import { stampIngestLineage, type ArtifactHash } from "./lineage"
 
 type DocumentMutation = {
   version: 2
@@ -85,12 +85,18 @@ export function recordDocumentMutationLineageIntent(
   writeFileSync(mutation.lineageIntent, content, { flag: "wx" })
 }
 
-export function finalizeDocumentMutationLineage(db: Database, mutation: ActiveDocumentMutation) {
+// `files`: the hashes of the source snapshot this mutation installed, when the
+// caller staged it (recovery has none and hashes the installed files).
+export function finalizeDocumentMutationLineage(
+  db: Database,
+  mutation: ActiveDocumentMutation,
+  files?: ReadonlyMap<string, ArtifactHash>,
+) {
   if (!mutation.affects_source_projection || durableMutationPhaseExists(mutation, mutation.lineageSettled, "lineage-settled")) return
   settleDocumentMutationCommit(db, mutation)
   const intent = readDocumentMutationLineageIntent(db, mutation)
   db.run("PRAGMA wal_checkpoint(FULL)")
-  stampIngestLineage(mutation.matterDir, intent.documents, intent.correlation, mutation.mutation_id)
+  stampIngestLineage(mutation.matterDir, intent.documents, intent.correlation, mutation.mutation_id, files)
   writeDurableMutationPhase(mutation, mutation.lineageSettled, "lineage-settled")
 }
 
@@ -127,6 +133,7 @@ export async function recoverDocumentMutations(matterDir: string) {
 }
 
 async function recoverDocumentMutationsLocked(matterDir: string) {
+  await removeDiscardedSnapshots(matterDir)
   const entries = ["document-mutations", "source-mutations"].flatMap((name) => {
     const root = path.join(matterDir, ".dochaus", name)
     if (!existsSync(root)) return []

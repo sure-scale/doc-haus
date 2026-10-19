@@ -3,6 +3,7 @@ import { Database } from "bun:sqlite"
 import { existsSync } from "node:fs"
 import path from "node:path"
 import { buildChains, resolveCurrentSection, verbatimSpan, type Chain, type SectionOpRow } from "../lib/amendment-chain"
+import { sectionPassages } from "../lib/chunk-text"
 
 // doc.haus current-section resolver. For a section label, walks the matter's
 // amendment chains newest-first and returns the verbatim operative wording of
@@ -25,7 +26,7 @@ const TEXT_CAP = 20000
 // An operative statement is one sentence; clip a quote that is not.
 const QUOTE_CAP = 1000
 
-type Chunk = { doc_path: string; doc_name: string; section: string; text: string; char_start: number; char_end: number }
+type Chunk = { doc_path: string; doc_name: string; section: string; text: string; char_start: number }
 
 // Section text by label. `exclude` drops documents by path — amending
 // documents, whose own numbering is not the base document's.
@@ -33,7 +34,7 @@ function fallbackSectionText(db: Database, section: string, document: string | u
   const where = document ? "doc_name = ? AND section = ?" : "section = ?"
   const params = document ? [document, section] : [section]
   const rows = db
-    .query(`SELECT doc_path, doc_name, section, text, char_start, char_end FROM chunks WHERE ${where} ORDER BY doc_name, char_start`)
+    .query(`SELECT doc_path, doc_name, section, text, char_start FROM chunks WHERE ${where} ORDER BY doc_name, char_start, id`)
     .all(...params) as Chunk[]
   return rows.filter((row) => !exclude.has(row.doc_path))
 }
@@ -45,27 +46,12 @@ function quote(text: string) {
 }
 
 function renderChunks(rows: Chunk[]) {
-  const groups = new Map<string, Chunk[]>()
-  for (const row of rows) {
-    const key = `${row.doc_name}\x00${row.section}`
-    groups.set(key, [...(groups.get(key) ?? []), row])
-  }
-  const parts: string[] = []
-  let used = 0
-  for (const rows of groups.values()) {
-    const kept: Chunk[] = []
-    for (const row of rows) {
-      if (used + row.text.length > TEXT_CAP && parts.length + kept.length > 0) break
-      kept.push(row)
-      used += row.text.length
-    }
-    if (kept.length) {
-      const first = kept[0]!
-      const header = `=== ${first.doc_name} — § ${first.section} (chars ${first.char_start}–${kept[kept.length - 1]!.char_end}) ===`
-      parts.push(`${header}\n${kept.map((row) => row.text).join("")}`)
-    }
-  }
-  return parts.join("\n\n")
+  return sectionPassages(rows, TEXT_CAP)
+    .passages.map(
+      (passage) =>
+        `=== ${passage.doc_name} — § ${passage.section} (chars ${passage.char_start}–${passage.char_start + passage.text.length}) ===\n${passage.text}`,
+    )
+    .join("\n\n")
 }
 
 function conjugate(operation: "amend" | "restate" | "delete" | "add") {

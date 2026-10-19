@@ -37,7 +37,7 @@ import {
   writeDeliverableRevision,
 } from "./deliverable"
 import { EmbeddingModelUnavailableError, migrateEmbeddings } from "./embed"
-import { migrateStructure } from "./structure"
+import { migrateSections, migrateStructure } from "./structure"
 import { pdfToDocx } from "./convert"
 import { buildRedlined, bake, redlineState, redlineStaleReason, RedlinePreviewConflictError } from "./redline"
 import { listMatters, createMatter, getMatter, renameMatter, deleteMatter, recordConflicts, matterDir, listJurisdictions, listPlaybooks, updatePlaybook, deletePlaybook, PlaybookError, PLAYBOOK_DIR, type Conflicts } from "./matter"
@@ -1411,27 +1411,45 @@ const { seedPlaybooks } = await import("./seed")
 seedPlaybooks()
 
 // Run database compatibility migrations at startup: build/backfill the lexical
-// index and refresh vectors and structure when their versions change.
+// index and refresh vectors, structure and sections when their versions change.
 for (const matter of listMatters()) {
   if (!existsSync(path.join(matter.dir, ".dochaus", "legal.db"))) continue
   // One corrupt or externally-locked matter DB must not abort the whole
-  // service; that matter just stays un-migrated until its next ingest.
+  // service. A failed step is logged and retried at the next start; the
+  // migrations also run again at the matter's next ingest.
+  const matterRef = draftingTraceReference(matter.dir)
+  const recovery = await recoverDocumentMutations(matter.dir).catch((e) => {
+    console.error("matter recovery failed", { matter_ref: matterRef, ...diagnosticErrorMetadata(e) })
+  })
   try {
-    const recovery = await recoverDocumentMutations(matter.dir)
-    const db = openDb(matter.dir)
-    let reembedded: number
-    let restructured: number
+    // The startup open checks the lexical index against the chunks, and only
+    // it does, so it runs even when recovery failed: the index derives from
+    // the committed chunks alone. The migrations and the artifact heal wait for
+    // a recovered matter.
+    const db = openDb(matter.dir, { startup: true })
     try {
-      reembedded = await migrateEmbeddings(db)
-      restructured = migrateStructure(db)
+      if (recovery) {
+        const reembedded = await migrateEmbeddings(db)
+        if (reembedded) console.log("chunks re-embedded", { count: reembedded, matter_ref: matterRef })
+        const restructured = migrateStructure(db)
+        if (restructured) console.log("document structure extracted", { count: restructured, matter_ref: matterRef })
+        const sectioned = migrateSections(db)
+        if (sectioned) console.log("document sections recorded", { count: sectioned, matter_ref: matterRef })
+      }
     } finally {
       db.close()
     }
-    await healSourceArtifacts(matter.dir, Boolean(recovery.sourceRolledBack))
-    if (reembedded) console.log("chunks re-embedded", { count: reembedded, matter_ref: draftingTraceReference(matter.dir) })
-    if (restructured) console.log("document structure extracted", { count: restructured, matter_ref: draftingTraceReference(matter.dir) })
   } catch (e) {
-    console.error("matter migration failed", { matter_ref: draftingTraceReference(matter.dir), ...diagnosticErrorMetadata(e) })
+    console.error("matter migration failed", { matter_ref: matterRef, ...diagnosticErrorMetadata(e) })
+  }
+  if (!recovery) continue
+  // The source artifacts derive from the chunks, not from the migrated rows, so
+  // a failed migration (rolled back, retried next start) does not stop them
+  // being healed.
+  try {
+    await healSourceArtifacts(matter.dir, Boolean(recovery.sourceRolledBack))
+  } catch (e) {
+    console.error("source artifact heal failed", { matter_ref: matterRef, ...diagnosticErrorMetadata(e) })
   }
 }
 

@@ -9,6 +9,7 @@ import { boundPlaybook } from "./playbook-source"
 import { Database } from "bun:sqlite"
 import { existsSync } from "node:fs"
 import path from "node:path"
+import { chunkText } from "./chunk-text"
 
 export const SHORT_QUOTE = 20
 export const MAX_RENDERED_HITS = 5
@@ -126,7 +127,7 @@ function verifyIndexedQuote(args: { directory: string; quote: string; document?:
 
 function findHitsInDoc(db: Database, docName: string, needle: string): QuoteHit[] {
   const chunks = db
-    .query("SELECT section, text, char_start, char_end FROM chunks WHERE doc_name = ? ORDER BY char_start")
+    .query("SELECT section, text, char_start, char_end FROM chunks WHERE doc_name = ? ORDER BY char_start, rowid")
     .all(docName) as QuoteChunk[]
   return findHits(docName, chunks, needle, {}) ?? findHits(docName, chunks, needle, { unescapeMarkdown: true }) ?? []
 }
@@ -146,12 +147,9 @@ function findHits(docName: string, chunks: QuoteChunk[], needle: string, options
     ]
   }
   // The quote may straddle a chunk boundary: rebuild the document text
-  // (skipped gaps were whitespace-only at ingest, so pad with spaces to keep
-  // stored offsets valid — see reconstructText in services/ingest/src/structure.ts),
-  // append only the uncovered suffix of overlapping chunks, then search the
-  // normalized whole and map the match back to raw offsets to find
-  // the covering chunks.
-  const raw = documentText(chunks)
+  // (chunkText), then search the normalized whole and map the match back to
+  // raw offsets to find the covering chunks.
+  const raw = chunkText(chunks).text
   const normalized = normalizeWithMap(raw, options)
   const at = normalized.text.indexOf(needle)
   if (at === -1) return
@@ -176,15 +174,6 @@ function findHits(docName: string, chunks: QuoteChunk[], needle: string, options
   ]
 }
 
-/** A document's raw text rebuilt from its chunks in char_start order. */
-function documentText(chunks: QuoteChunk[]) {
-  return chunks.reduce(
-    (acc, c) => c.char_start > acc.length
-      ? acc + " ".repeat(c.char_start - acc.length) + c.text
-      : acc + c.text.slice(Math.max(0, acc.length - c.char_start)),
-    "",
-  )
-}
 
 /** An ellipsis: "...", "…" or spaced ". . .", optionally in square brackets;
  * a fourth dot (the period ending the sentence before it) is part of it. */
@@ -323,9 +312,9 @@ function indexedText(directory: string, document: string): string[] {
   const db = new Database(dbPath, { readonly: true })
   try {
     const chunks = db
-      .query("SELECT section, text, char_start, char_end FROM chunks WHERE doc_name = ? ORDER BY char_start")
+      .query("SELECT section, text, char_start, char_end FROM chunks WHERE doc_name = ? ORDER BY char_start, rowid")
       .all(document) as QuoteChunk[]
-    return chunks.length ? [documentText(chunks)] : []
+    return chunks.length ? [chunkText(chunks).text] : []
   } finally {
     db.close()
   }

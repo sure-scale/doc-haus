@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite"
-import { existsSync, mkdirSync } from "node:fs"
+import { existsSync } from "node:fs"
 import path from "node:path"
+import { openLegalDbForWrite } from "./legal-db"
 
 // Key-dates register for the record-key-date and key-dates tools: typed
 // renewal/termination/expiry/payment rows that reviews emit as a side-effect,
@@ -31,44 +32,44 @@ export function recordKeyDate(
     author: string
   },
 ) {
-  const dir = path.join(matterDir, ".dochaus")
-  mkdirSync(dir, { recursive: true })
-  const db = new Database(path.join(dir, "legal.db"))
-  db.run("PRAGMA journal_mode = WAL")
-  db.run(`
-    CREATE TABLE IF NOT EXISTS key_dates (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      doc_name TEXT NOT NULL,
-      kind TEXT NOT NULL,
-      date_iso TEXT,
-      date_formula TEXT,
-      notice_days INTEGER,
-      cancel_by_iso TEXT,
-      party TEXT,
-      quote TEXT NOT NULL,
-      reason TEXT NOT NULL,
-      author TEXT NOT NULL,
-      created_at INTEGER NOT NULL
+  const db = openLegalDbForWrite(matterDir)
+  try {
+    db.run(`
+      CREATE TABLE IF NOT EXISTS key_dates (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        doc_name TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        date_iso TEXT,
+        date_formula TEXT,
+        notice_days INTEGER,
+        cancel_by_iso TEXT,
+        party TEXT,
+        quote TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        author TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      )
+    `)
+    const result = db.run(
+      "INSERT INTO key_dates (doc_name, kind, date_iso, date_formula, notice_days, cancel_by_iso, party, quote, reason, author, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [
+        row.docName,
+        row.kind,
+        row.dateIso ?? null,
+        row.dateFormula ?? null,
+        row.noticeDays ?? null,
+        row.cancelByIso ?? null,
+        row.party ?? null,
+        row.quote,
+        row.reason,
+        row.author,
+        Date.now(),
+      ],
     )
-  `)
-  const result = db.run(
-    "INSERT INTO key_dates (doc_name, kind, date_iso, date_formula, notice_days, cancel_by_iso, party, quote, reason, author, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    [
-      row.docName,
-      row.kind,
-      row.dateIso ?? null,
-      row.dateFormula ?? null,
-      row.noticeDays ?? null,
-      row.cancelByIso ?? null,
-      row.party ?? null,
-      row.quote,
-      row.reason,
-      row.author,
-      Date.now(),
-    ],
-  )
-  db.close()
-  return Number(result.lastInsertRowid)
+    return Number(result.lastInsertRowid)
+  } finally {
+    db.close()
+  }
 }
 
 export type KeyDateRow = {
