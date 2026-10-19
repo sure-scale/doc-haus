@@ -148,12 +148,13 @@ test("the run header says where the run is in one line and offers the one next s
   expect(done).toContain("No open items remain.")
   const asked = render(blockedQuestion)
   // The question is answered from the dock above the composer; the header points there.
-  expect(asked).toContain("1 question remaining · Drafting resumes after all answers are received")
+  // A step's questions hold drafting until all are answered; each final-check answer re-runs it at once.
+  expect(asked).toContain("1 question remaining · Drafting continues as soon as it needs no other answer")
   // Decide for me answers with the recommendation, so a question it can take reads the same.
   const judgment = { kind: "judgment", advice: { options: [{ id: "o1", text: "No remedy" }, { id: "o2", text: "A remedy" }], recommendation: { option: "o2", rationale: "Asked for.", basis: [{ source_id: "request", quote: "a remedy" }] } } }
   const delegable = { ...blockedQuestion, questions: [...blockedQuestion.questions, { ...blockedQuestion.questions[0]!, ...judgment, id: "q-second", question: "Second?" }] }
   expect(delegableQuestion(lean(delegable).questions[1]!)).toBe(true)
-  expect(render(delegable)).toContain("2 questions remaining · Drafting resumes after all answers are received")
+  expect(render(delegable)).toContain("2 questions remaining · Drafting continues as soon as it needs no other answer")
   expect(asked).not.toMatch(/<button[^>]*>Answer/)
   expect(asked).not.toContain(blockedQuestion.questions[0]!.question)
   expect(asked).not.toContain("Continue drafting")

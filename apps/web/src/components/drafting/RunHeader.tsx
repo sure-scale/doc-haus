@@ -288,11 +288,13 @@ export function runHeadline(status: LeanDraftingStatus, now: number, resuming = 
     }
   if (state === "input") {
     // Decide for me answers with the recommendation, so every question waits on an answer.
+    // A step's questions hold drafting until all are answered; a final-check
+    // question holds nothing, so each answer to one re-runs drafting at once.
     const asks = openQuestions(status).length
     return {
       tone: "input",
       title: "Waiting for your answers",
-      meta: [`${asks === 1 ? "1 question" : `${asks} questions`} remaining · Drafting resumes after all answers are received`],
+      meta: [`${asks === 1 ? "1 question" : `${asks} questions`} remaining · Drafting continues as soon as it needs no other answer`],
     }
   }
   if (status.status === "running")
