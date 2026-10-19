@@ -1,5 +1,5 @@
 {
-  "version": 3,
-  "name": "2.0.1",
-  "notes": "Pause a draft and continue later from the same step. Drafts flag Word edits accepted after their final check, and requirements the checks can't settle become open items for your review instead of stalling the draft. Also a cleaner chat layout and every drafted document under Ready for review."
+  "version": 4,
+  "name": "2.0.2",
+  "notes": "Get the files you ask for: a named file, the memo and agreement in one file, or separate files, with anything the draft can't deliver flagged in the notes. Every question now comes with options and a recommendation, and Decide for me adopts it. A drafted document is never redrafted: later instructions and answers reach it as tracked amendments in Word. Also clearer stops when your model sign-in needs fixing in Settings, steadier large matters, and more reliable Word round-trips and redlines."
 }
