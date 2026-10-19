@@ -246,7 +246,7 @@ test("drafting notes may cite an approved authority by name after a signal word 
   const research = retrieved(directory, text)
   research.findings[0]!.citation = "Ashdown v. Merrow, 12 Synth. 34 (2020)"
   expect(acceptResearchReply(directory, "research", JSON.stringify(research)).issues).toEqual([])
-  expect(acceptResearchReply(directory, "research-review", JSON.stringify({ approved: ["r1"], rejected: [], limitations: [] })).issues).toEqual([])
+  expect(acceptResearchReply(directory, "research-review", JSON.stringify({ approved: ["r1"], rejected: [], limitations: [], gaps: [] })).issues).toEqual([])
   const url = research.findings[0]!.url
   const notes = (body: string) => checkDraftingNotes(directory, `# Drafting notes\n\n${body}`, []).issues
   // Leaving out the citations between two sentences is refused with the words
