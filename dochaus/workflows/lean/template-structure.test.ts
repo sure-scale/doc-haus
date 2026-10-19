@@ -69,6 +69,18 @@ describe("template structure", () => {
     expect(sourceText(directory, "overlap.docx")).toBe(TEMPLATE_TEXT)
   })
 
+  test("the source text keeps the next heading whole after a chunk stored with an extra newline past its section", () => {
+    // Chunks ingested before the chunker stopped counting one newline past a
+    // split section: the next chunk's text replaces that newline.
+    const directory = matter()
+    const cut = TEMPLATE_TEXT.indexOf("2. Charges")
+    insertChunks(directory, "older.docx", [
+      { section: "1", text: `${TEMPLATE_TEXT.slice(0, cut)}\n`, start: 0 },
+      { section: "2", text: TEMPLATE_TEXT.slice(cut), start: cut },
+    ])
+    expect(sourceText(directory, "older.docx")).toBe(TEMPLATE_TEXT)
+  })
+
   test("a divider above numbered clauses is not a part, a recital before them is, and each clause stays a part of its own", () => {
     const units = parseTemplateUnits(DIVIDED)
     expect(units.map(unit => unit.label)).toEqual(["MASTER SUPPLY TERMS", "BACKGROUND", "1 Orders", "2 Delivery", "3 Price", "4 Invoicing"])

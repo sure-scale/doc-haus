@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite"
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { elidedParts, elisionGap, verifyQuote, type QuoteChunk } from "./quote-verify"
+import { elidedParts, elisionGap, locateElidedQuote, verifyQuote, type QuoteChunk } from "./quote-verify"
 
 const directories: string[] = []
 afterEach(() => directories.splice(0).forEach(directory => rmSync(directory, { recursive: true, force: true })))
@@ -39,6 +39,24 @@ test("whitespace gaps retain source offsets and existing normalization including
   const check = fixture([chunk(text.slice(0, split - 2), 0, "first"), chunk(text.slice(split, split + 10), split, "second"), chunk(text.slice(split + 5), split + 5, "overlap")])
   expect(check('"Alpha". Beta gamma delta')).toMatchObject({ found: true, hits: [{ charStart: 0, charEnd: text.length }] })
   expect(check('"Alpha". Beta changed delta').found).toBe(false)
+})
+
+test("chunks stored with an extra newline past a split section keep the next heading whole", () => {
+  // Chunks ingested before the chunker stopped counting one newline past a
+  // split section: the section's last chunk ends with "\n" where the next
+  // heading's first character is, and the next chunk's text replaces it.
+  const text = "1. First\nAn invented clause, describing no actual obligation.\n2. Next clause\nMore invented text.\n"
+  const second = text.indexOf("describing")
+  const next = text.indexOf("2. Next")
+  const check = fixture([chunk(text.slice(0, second), 0, "1"), chunk(`${text.slice(second, next)}\n`, second, "1"), chunk(text.slice(next), next, "2")])
+  const directory = directories.at(-1)!
+  expect({
+    verified: check("describing no actual obligation. 2. Next clause"),
+    located: locateElidedQuote({ directory, parts: elidedParts("An invented clause, describing … obligation. 2. Next clause")!, document: "original.docx" }),
+  }).toMatchObject({
+    verified: { found: true, hits: [{ charStart: second, charEnd: text.length, verbatim: text.slice(second) }] },
+    located: { kind: "near", omitted: "no actual" },
+  })
 })
 
 test("an elided quotation located without regard to case or Markdown escapes shows the words left out as written", () => {
