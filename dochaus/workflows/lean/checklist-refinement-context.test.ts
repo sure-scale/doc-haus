@@ -46,11 +46,3 @@ test("duplicated chunk identities and missing canonical source text do not silen
   expect(() => buildChecklistRefinementContext(f.dir, { parent_id: "parent", scope: "source_collection" })).toThrow("not unique")
   rmSync(path.join(f.dir, "sources/guide.txt"));expect(() => buildChecklistRefinementContext(f.dir, { parent_id: "parent", scope: "source_collection" })).toThrow()
 })
-test("a question left to the drafting reaches refinement as the lawyer's instruction to decide it, and a parent citing it gets that instruction as its unit", () => {
-  const f = fixture(), without = buildChecklistRefinementContext(f.dir, { parent_id: "parent", scope: "source_collection" })
-  f.put(".dochaus/lean/questions.json", { questions: [{ id: "q-left", stage: "intake", question: "MODEL QUESTION", context: "", status: "answered", answer_kind: "decide_for_me" }] })
-  const handed = { document: "request", locator: ".dochaus/lean/questions.json left to the drafter (q-left) on the question: MODEL QUESTION", quote: "left to the drafter to decide" }
-  expect(buildChecklistRefinementContext(f.dir, { parent_id: "parent", scope: "source_collection" })).toEqual({ ...without, instructions: [...without.instructions, handed] })
-  f.item.source_refs.push(handed);f.save()
-  expect(buildChecklistRefinementContext(f.dir, { parent_id: "parent", scope: "cited_sources" }).units.map(unit => unit.passages[0].quote)).toEqual([f.texts[0], "left to the drafter to decide"])
-})

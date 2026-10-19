@@ -61,7 +61,7 @@ test("restoring keeps a question whose answer is still queued, and the next run 
   const directory = leanFixtureMatter("lean-restore-")
   directories.push(directory)
   const asking = sameSession((prompt, index) => JSON.stringify({
-    ...JSON.parse(changes(prompt, index)), questions: [{ question: "Should late delivery carry a remedy?", context: "The terms are silent." }],
+    ...JSON.parse(changes(prompt, index)), questions: [{ question: "Should late delivery carry a remedy?", kind: "judgment", context: "The terms are silent." }],
   }))
   const first = await runLean(directory, { sessions: scriptedLeanModel({ ...happyLeanReplies(), [LEAN_STAGE_AGENTS.changes]: asking }).port })
   expect(first.status).toBe("blocked")

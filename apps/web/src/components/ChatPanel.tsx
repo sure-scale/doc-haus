@@ -28,7 +28,7 @@ import { useChatActions } from "./chat/use-chat-actions"
 import { useStickToBottom } from "./chat/use-stick-to-bottom"
 import DraftingNarration from "./narration/DraftingNarration"
 import { useDraftingNarration } from "./narration/use-drafting-narration"
-import { cleanTitle, handedBackQuestions, leanRunTakesUpdates, openQuestions, queuedNote, updateProgressLabel } from "./drafting/model"
+import { cleanTitle, leanRunTakesUpdates, openQuestions, queuedNote, updateProgressLabel } from "./drafting/model"
 import SessionQuestions from "./chat/SessionQuestions"
 import QuestionDock from "./drafting/QuestionDock"
 import RunHeader from "./drafting/RunHeader"
@@ -483,14 +483,12 @@ export default function ChatPanel({
           ownerSessionID={run.owner_session_id}
           questions={asked}
           answered={run.questions.length - asked.length}
-          handedBack={handedBackQuestions(run)}
-          order={run.questions.map((question) => question.id)}
-          done={run.status === "completed"}
           titles={new Map((run.plan?.documents ?? []).map((row) => [row.id, cleanTitle(row.title)]))}
           busy={actions.busy}
           error={actions.error}
           errorFor={actions.errorFor}
           onSend={(question, answer) => actions.answer(question.id, answer)}
+          onChoose={(question, optionID) => actions.choose(question.id, optionID)}
           onDecide={(question) => actions.decide(question.id)}
         />
       )}

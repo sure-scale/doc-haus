@@ -30,10 +30,10 @@ function retrieved(directory: string, text = "A party must give written notice b
 
 test("unresolved jurisdiction pauses intake before research tools or drafting sessions exist", async () => {
   const directory = matter()
-  const model = scriptedModel({ ...happyPath, [AGENT.intake]: () => JSON.stringify({ questions: [{ question: "Which jurisdiction governs?", context: "The legal approach depends on the governing law." }] }) })
+  const model = scriptedModel({ ...happyPath, [AGENT.intake]: () => JSON.stringify({ questions: [{ question: "Which jurisdiction governs?", kind: "instruction", context: "The legal approach depends on the governing law." }] }) })
   const result = await runLean(directory, { sessions: model.port })
   expect(result.status).toBe("blocked")
-  expect(model.sessions.map(row => row.agent)).toEqual([AGENT.discrepancy, AGENT.intake])
+  expect(model.sessions.map(row => row.agent)).toEqual([AGENT.discrepancy, AGENT.intake, AGENT.advise])
   expect(model.sessions[0]?.permissions?.some(row => row.action === "official-source")).toBe(false)
   expect(model.count(AGENT.research)).toBe(0)
   expect(readQuestions(directory)[0]?.stage).toBe("intake")
@@ -41,7 +41,7 @@ test("unresolved jurisdiction pauses intake before research tools or drafting se
 
 test("supplied intake answer resumes research with the answer and invalidates research on later instruction", async () => {
   const directory = matter()
-  const initial = scriptedModel({ [AGENT.intake]: () => JSON.stringify({ questions: [{ question: "Which jurisdiction governs?", context: "Needed to research law" }] }) })
+  const initial = scriptedModel({ [AGENT.intake]: () => JSON.stringify({ questions: [{ question: "Which jurisdiction governs?", kind: "instruction", context: "Needed to research law" }] }) })
   await runLean(directory, { sessions: initial.port })
   enqueueLeanRequest(directory, { kind: "answer", question_id: readQuestions(directory)[0]!.id, answer: "Jurisdiction supplied by lawyer" })
   const model = scriptedModel(happyPath)

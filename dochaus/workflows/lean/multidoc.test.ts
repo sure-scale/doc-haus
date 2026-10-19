@@ -168,7 +168,7 @@ describe("lean drafting with several documents", () => {
       return JSON.stringify({
         amendments: [{ pid, updated: letter ? marked : "Delivery follows the supply note and the covering letter [open item: whether late delivery carries a remedy].",
           reason: "The remedy for late delivery is the lawyer's decision.", sources: SUPPORT }],
-        questions: [{ ...(id ? { id } : {}), pid, question: QUESTION, context: "The terms are silent." }],
+        questions: [{ ...(id ? { id } : {}), pid, question: QUESTION, kind: "judgment", context: "The terms are silent." }],
       })
     }
     const model = scriptedModel({ ...happyPath, [AGENT.draft]: drafter(DRAFT, LETTER, SCHEDULE), [AGENT.review]: reviewFirst, [AGENT.changes]: asking })
@@ -190,7 +190,7 @@ describe("lean drafting with several documents", () => {
       return JSON.stringify({
         amendments: [{ pid: pidIn(prompt, "The supplier shall deliver the goods\\."),
           updated: answered ? `${APPLIED.slice(0, -1)}, and late delivery carries no remedy.` : APPLIED, reason: "Delivery period.", sources: SUPPORT }],
-        questions: answered ? [] : [{ question: QUESTION, context: "The terms are silent." }],
+        questions: answered ? [] : [{ question: QUESTION, kind: "judgment", context: "The terms are silent." }],
       })
     }
     // The letter restates the supply note's delivery sentence, so its change list follows that wording.

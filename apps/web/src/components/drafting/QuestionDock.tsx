@@ -2,33 +2,24 @@ import type { LeanQuestion } from "../../api/ingest/lean"
 import QuestionDockShell from "../chat/QuestionDockShell"
 import Questions from "./Questions"
 
-// The run's questions for the lawyer. It stays while a question is left to the
-// drafter, so the lawyer can still answer it instead; with nothing asked, it
-// stays quiet.
+// The run's questions for the lawyer; with nothing asked, it shows nothing.
 export default function QuestionDock(props: {
   matterId: string
   ownerSessionID: string
   questions: LeanQuestion[]
   answered: number
-  handedBack: LeanQuestion[]
-  /** The run's question ids in the order it asked them. */
-  order?: string[]
-  /** The run finished. */
-  done?: boolean
   titles: Map<string, string>
   busy: boolean
   error: string
   errorFor?: string
   onSend: (question: LeanQuestion, answer: string) => Promise<boolean>
+  onChoose: (question: LeanQuestion, optionID: string) => Promise<boolean>
   onDecide: (question: LeanQuestion) => Promise<boolean>
 }) {
-  const left = props.handedBack.length
   return (
     <QuestionDockShell
       count={props.questions.length}
-      kept={left}
-      keptTitle={left === 1 ? "1 question left to the drafter" : `${left} questions left to the drafter`}
-      preview={(props.questions[0] ?? props.handedBack[0])?.question ?? ""}
+      preview={props.questions[0]?.question ?? ""}
       subject="The drafting run"
       renderQuestions={(titleId, onClose) => <Questions {...props} titleId={titleId} onClose={onClose} />}
     />

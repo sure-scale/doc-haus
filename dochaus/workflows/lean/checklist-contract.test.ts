@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { checklistFindingRecovery, checklistTextMeasuresMeaning, type ChecklistFinding, buildChecklistReinspectionPrompt, buildChecklistCheckerPrompt, buildChecklistProducerPrompt, buildChecklistRefinementPrompt, CHECKLIST_ITEM_SHAPE, HANDED_BACK_MEANING, handedBackRef, parseChecklistCheckerInput, parseChecklistExtraction, parseChecklistFinding, parseChecklistItem, type ChecklistItem } from "./checklist-contract"
+import { checklistFindingRecovery, checklistTextMeasuresMeaning, type ChecklistFinding, buildChecklistReinspectionPrompt, buildChecklistCheckerPrompt, buildChecklistProducerPrompt, buildChecklistRefinementPrompt, CHECKLIST_ITEM_SHAPE, parseChecklistCheckerInput, parseChecklistExtraction, parseChecklistFinding, parseChecklistItem, type ChecklistItem } from "./checklist-contract"
 
 const item: ChecklistItem = {
   check: "Check the proposed notice arrangement remains subject to confirmation.",
@@ -219,44 +219,4 @@ test("disclosure fields are optional typed finding fields, each named once in th
     'Only when status is unsatisfied, open or indeterminate, add "departure_disclosure" (evidence shape) for exact current draft or notes text stating that the draft deliberately departs from this item; otherwise omit it.',
   ]) expect(instructions.split(line)).toHaveLength(2)
   expect(buildChecklistProducerPrompt({ source: { document: "instruction.txt", role: "client instructions" }, passages: item.source_refs, instructions: [], targets: [{ document: "agreement.docx", role: "operative agreement" }], retrieval: "Use targeted lookup." })).not.toContain("indeterminate_cause")
-})
-
-// A question the lawyer left to the drafter reaches the checklist jobs as an
-// instruction row, in plain words; its meaning is written once in code, beside the job's input.
-test("a hand-back row carries its one meaning beside the input of every checklist job that sees it", () => {
-  const handed = handedBackRef("q-2", " Which figure applies? ")
-  expect(handed).toEqual({ document: "request", locator: ".dochaus/lean/questions.json left to the drafter (q-2) on the question: Which figure applies?", quote: "left to the drafter to decide" })
-  expect(HANDED_BACK_MEANING.trim().split(/\s+/).length).toBeLessThanOrEqual(96)
-  // The scope is pinned phrase by phrase in a built prompt: the hand-back settles
-  // only its own choice, for the lawyer's party, and every other check still runs.
-  const shown = buildChecklistCheckerPrompt({ ...packet, settled_instructions: [handed] })
-  for (const phrase of [
-    "for the party the lawyer acts for",
-    "Unless the lawyer has answered it, that settles only the choice between that question's alternatives;",
-    "the chosen alternative is still checked against every other instruction, source, playbook item and legal requirement.",
-    "state one alternative, or, where the sources cannot support one, leave it as a disclosed open point;",
-    "is not required by the hand-back.",
-  ]) expect(shown).toContain(phrase)
-  expect(shown).not.toContain("until the lawyer answers")
-  const once = (prompt: string, input: string) => {
-    expect(prompt.split(HANDED_BACK_MEANING)).toHaveLength(2)
-    expect(prompt).toContain(`${HANDED_BACK_MEANING}\n\n${input}:`)
-  }
-  const source = { source: { document: "instruction.txt", role: "client instructions" }, passages: item.source_refs, instructions: [], targets: [{ document: "agreement.docx", role: "operative agreement" }], retrieval: "Inline." }
-  expect(buildChecklistProducerPrompt(source)).not.toContain(HANDED_BACK_MEANING)
-  once(buildChecklistProducerPrompt({ ...source, instructions: [handed] }), "SOURCE_INPUT")
-  expect(buildChecklistCheckerPrompt(packet)).not.toContain(HANDED_BACK_MEANING)
-  once(buildChecklistCheckerPrompt({ ...packet, settled_instructions: [handed] }), "CHECK_INPUT")
-  // An item citing the hand-back carries it too, once, as does its reinspection.
-  const citing = { ...packet, item: { ...item, source_refs: [...item.source_refs, handed] } }
-  once(buildChecklistCheckerPrompt(citing), "CHECK_INPUT")
-  once(buildChecklistCheckerPrompt({ ...citing, settled_instructions: [handed] }), "CHECK_INPUT")
-  const previous = { item_id: packet.item_id, status: "unsatisfied" as const, reason: "Both figures are not kept.", evidence: [], source_refs: [handed], inspection_scope: "One paragraph.", limitation: "None." }
-  once(buildChecklistReinspectionPrompt(citing, previous), "CHECK_INPUT")
-  const unit = { parent_id: "parent", parent: item, source_unit: { id: "unit", role: "client instructions", passages: item.source_refs }, instructions: [], targets: [{ document: "agreement.docx", role: "operative agreement" }], retrieval: "Inline." }
-  expect(buildChecklistRefinementPrompt(unit)).not.toContain(HANDED_BACK_MEANING)
-  once(buildChecklistRefinementPrompt({ ...unit, instructions: [handed] }), "REFINEMENT_INPUT")
-  once(buildChecklistRefinementPrompt({ ...unit, source_unit: { ...unit.source_unit, passages: [handed] } }), "REFINEMENT_INPUT")
-  // Only the code-written row is a hand-back: the same words quoted from a source are not.
-  expect(buildChecklistCheckerPrompt({ ...packet, settled_instructions: [{ ...handed, locator: "request.md" }] })).not.toContain(HANDED_BACK_MEANING)
 })

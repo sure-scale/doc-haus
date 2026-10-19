@@ -1,7 +1,7 @@
 import { z } from "zod"
 import { checklistTargetAssignments } from "./checklist-target-context"
 import { checklistItemSchema, type ChecklistSourceReference } from "./checklist-contract"
-import { checklistJobInputs } from "./checklist-source-context"
+import { checklistProducerInputs } from "./checklist-source-context"
 import { readLeanJson } from "./state"
 import { normalizeWithMap } from "../../lib/quote-verify"
 import { readRegularFile } from "../../lib/regular-file"
@@ -24,7 +24,7 @@ export function buildChecklistRefinementContext(directory: string, options: { pa
   const matches = saved.sources.flatMap(source => source.items).filter(record => record.id === options.parent_id)
   if (matches.length !== 1) throw Error("Refinement parent must resolve to one preserved extraction item.")
   const parent = matches[0]!.item
-  const producer = checklistJobInputs(directory)
+  const producer = checklistProducerInputs(directory)
   const request = producer.find(job => job.key === "request")!.input
   const instructions = [...request.passages, ...request.instructions]
   if (options.scope === "target_body") return {

@@ -206,7 +206,7 @@ describe("lean drafting runner", () => {
 
   test("a question is never answered by the run; an answer repeats the review, not the accepted draft, and is not asked again", async () => {
     const directory = matter()
-    const asking = sameSession(prompt => JSON.stringify({ ...JSON.parse(changes(prompt, 0)), questions: [{ question: "Should late delivery carry a remedy?", context: "The terms are silent." }] }))
+    const asking = sameSession(prompt => JSON.stringify({ ...JSON.parse(changes(prompt, 0)), questions: [{ question: "Should late delivery carry a remedy?", kind: "judgment", context: "The terms are silent." }] }))
     const model = scriptedModel({ ...happyPath, [AGENT.changes]: asking })
     const blocked = await runLean(directory, { sessions: model.port })
 
