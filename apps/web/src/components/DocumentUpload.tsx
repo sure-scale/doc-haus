@@ -3,6 +3,7 @@ import { deleteDocument, SourceExistsError, uploadDocument, type Document, type 
 import { humanizeError } from "../api/ingest/errors"
 import type { LeanDraftingStatus } from "../api/ingest/lean"
 import { formatDate, formatDateTime, formatTime } from "../lib/format"
+import { CompareIcon } from "./CompareDialog"
 import DocumentLabelBadge from "./DocumentLabel"
 import DraftedList from "./drafting/DraftedList"
 import { deliverableGroups, type DraftedOutput } from "./drafting/model"
@@ -38,6 +39,7 @@ export default function DocumentUpload({
   onClose,
   incoming,
   onIncoming,
+  onCompare,
 }: {
   matterId: string
   documents: Document[]
@@ -48,6 +50,8 @@ export default function DocumentUpload({
   // Files added elsewhere (dropped on the composer) to upload through this list.
   incoming?: File[]
   onIncoming?: () => void
+  // Compare a Word file with another version of it.
+  onCompare?: (name: string) => void
 }) {
   const [uploads, setUploads] = useState<Upload[]>([])
   const [removing, setRemoving] = useState<string>()
@@ -151,7 +155,7 @@ export default function DocumentUpload({
       return {
         key: `draft:${output.name}`,
         createdAt: document.created_at,
-        content: <DraftedList matterId={matterId} groups={[{ main: output, extras: [] }]} onView={onView} pending={draftedPending} fresh={watched.current}
+        content: <DraftedList matterId={matterId} groups={[{ main: output, extras: [] }]} onView={onView} onCompare={onCompare} pending={draftedPending} fresh={watched.current}
           renderLabel={() => <>
             <time className="document-time" dateTime={new Date(document.created_at).toISOString()} title={`Saved to matter: ${formatDateTime(document.created_at)}`}>
               {formatTime(document.created_at)}
@@ -184,6 +188,11 @@ export default function DocumentUpload({
           <time className="document-time" dateTime={new Date(d.created_at).toISOString()} title={`Added to matter: ${formatDateTime(d.created_at)}`}>
             {formatTime(d.created_at)}
           </time>
+          {onCompare && /\.docx$/i.test(d.name) && (
+            <button className="doc-compare" onClick={() => onCompare(d.name)} title="Compare with another version" aria-label={`Compare ${d.name} with another version`}>
+              <CompareIcon />
+            </button>
+          )}
           {confirmId === d.id ? (
             <button
               className="icon-btn danger"

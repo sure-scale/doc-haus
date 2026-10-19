@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react"
 import { useParams, useSearchParams } from "react-router-dom"
+import type { CompareParams } from "../api/ingest/compare"
 import { humanizeError } from "../api/ingest/errors"
 import { getMatter, listJurisdictions, listPlaybooks, MatterNotFound, renameMatter, type Jurisdiction, type MatterDetail as Detail, type Playbook } from "../api/ingest/matters"
 import { listWorkflows, type CustomWorkflow } from "../api/ingest/library"
@@ -9,6 +10,8 @@ import { AUTO, WORKFLOWS } from "../agents"
 import DocumentsDrawer from "../components/matter/DocumentsDrawer"
 import { setDocumentsCount, setDocumentsDrawer, useDocumentsDrawer } from "../components/matter/documents-drawer"
 import DocumentViewer from "../components/DocumentViewer"
+import CompareDialog from "../components/CompareDialog"
+import BlacklineViewer from "../components/BlacklineViewer"
 import ChatPanel from "../components/ChatPanel"
 import ReviewGrid from "../components/ReviewGrid"
 import MatterHeader from "../components/matter/MatterHeader"
@@ -57,6 +60,11 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
   // The redline proposal to scroll to when the viewer opens, set when the user
   // follows a chat redline preview's "View in document" link (undefined otherwise).
   const [focusRedline, setFocusRedline] = useState<number>()
+  // The Word file being compared with another version (the dialog), and the
+  // comparison whose blackline is open. A compare started from the viewer
+  // returns to it when the dialog is cancelled.
+  const [comparing, setComparing] = useState<{ name: string; fromViewer?: boolean }>()
+  const [blackline, setBlackline] = useState<CompareParams>()
   // The title-area fields are inline-click-editable: clicking one swaps its label
   // for an input (or, for jurisdictions, the shared multi-select) seeded with the
   // current value. Each commit persists the whole matter via the ingest service
@@ -279,6 +287,7 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
               setFocusRedline(redlineId)
               setViewing(name)
             }}
+            onOpenBlackline={setBlackline}
             onDocumentsChanged={refresh}
             feed={drafting}
           />
@@ -305,6 +314,7 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
             setFocusRedline(undefined)
             setViewing(name)
           }}
+          onCompare={(name) => setComparing({ name })}
         />
       )}
 
@@ -318,6 +328,14 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
           onClose={() => setViewing(undefined)}
           onChanged={refresh}
           onConverted={(name) => setViewing(name)}
+          onCompare={
+            viewing.toLowerCase().endsWith(".docx")
+              ? () => {
+                  setComparing({ name: viewing, fromViewer: true })
+                  setViewing(undefined)
+                }
+              : undefined
+          }
           onSaveTemplate={
             viewing.toLowerCase().endsWith(".docx")
               ? () => {
@@ -333,6 +351,25 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
           }
         />
       )}
+
+      {comparing && (
+        <CompareDialog
+          matterId={matter.id}
+          name={comparing.name}
+          documents={matter.documents}
+          onUploaded={refresh}
+          onClose={() => {
+            setComparing(undefined)
+            if (comparing.fromViewer) setViewing(comparing.name)
+          }}
+          onCompare={(params) => {
+            setComparing(undefined)
+            setBlackline(params)
+          }}
+        />
+      )}
+
+      {blackline && <BlacklineViewer matterId={matter.id} params={blackline} onClose={() => setBlackline(undefined)} />}
     </>
   )
 }

@@ -1,4 +1,5 @@
 import type { Part } from "../../api/session-view"
+import type { CompareParams } from "../../api/ingest/compare"
 import type { Citation } from "../../api/opencode/parts"
 import type { Todo } from "../TodoView"
 import { basename, stepLabel } from "./step-labels"
@@ -15,6 +16,10 @@ export type Step =
 // link into the full tracked-changes review (see RedlineView, DocumentViewer).
 export type RedlineProposal = { id?: number; document: string; oldText: string; newText: string; comment?: string }
 
+// A comparison of two Word versions the compare-versions tool ran: what to send
+// back to the blackline route, plus the counts the turn's card reports.
+export type VersionCompare = Required<CompareParams> & { changes: number; untracked: number }
+
 // id is the server message id, carried on user turns so edit/retry can revert
 // the session back to that exact message. Optimistic turns added before a
 // finalize reload have no id, so their actions stay hidden until settled.
@@ -29,6 +34,9 @@ export type Turn = {
   // Documents the turn created (draft-document tool), as matter-relative names —
   // each renders as a card linking into the document viewer.
   drafts: string[]
+  // Versions the turn compared (compare-versions tool), each a card that opens
+  // the blackline view.
+  compares?: VersionCompare[]
   // The latest completeness self-audit checklist the turn streamed via the
   // upstream todowrite tool — draft mode's term/number/cross-reference audit or
   // the reviewer's per-area present/absent/deviating walk.
@@ -59,7 +67,7 @@ function contentOf(parts: Part[]) {
     .filter((p): p is Extract<Part, { type: "tool" }> => p.type === "tool")
     .filter((p) => p.tool === "search-document" && p.state.status === "completed")
     .flatMap((p) => ((p.state as { metadata?: { citations?: Citation[] } }).metadata?.citations ?? []))
-  return { text, citations, redlines: redlinesOf(parts), drafts: draftsOf(parts), todos: todosOf(parts) }
+  return { text, citations, redlines: redlinesOf(parts), drafts: draftsOf(parts), compares: comparesOf(parts), todos: todosOf(parts) }
 }
 
 // The upstream todowrite tool emits the WHOLE checklist on every call (it is a
@@ -89,6 +97,32 @@ function draftsOf(parts: Part[]): string[] {
     .flatMap((p) => {
       const document = (p.state as { metadata?: Record<string, unknown> }).metadata?.document
       return typeof document === "string" ? [basename(document)] : []
+    })
+}
+
+// The compare-versions tool stamps the comparison it ran on its metadata. Keep
+// only a complete record: anything else could open the wrong blackline.
+function comparesOf(parts: Part[]): VersionCompare[] {
+  return parts
+    .filter((p): p is Extract<Part, { type: "tool" }> => p.type === "tool")
+    .filter((p) => p.tool === "compare-versions" && p.state.status === "completed")
+    .flatMap((p) => {
+      const compare = (p.state as { metadata?: { compare?: unknown } }).metadata?.compare as Record<string, unknown> | undefined
+      const options = (compare?.options ?? {}) as Record<string, unknown>
+      const counts = (compare?.counts ?? {}) as Record<string, unknown>
+      const text = (value: unknown) => typeof value === "string" && value.length > 0
+      if (!compare || !text(compare.left) || !text(compare.right) || typeof counts.changes !== "number" || typeof counts.untracked !== "number") return []
+      return [{
+        left: compare.left as string,
+        right: compare.right as string,
+        leftLabel: text(compare.leftLabel) ? (compare.leftLabel as string) : "",
+        rightLabel: text(compare.rightLabel) ? (compare.rightLabel as string) : "",
+        ignoreFormatting: options.ignoreFormatting !== false,
+        detectMoves: options.detectMoves !== false,
+        headersFooters: options.headersFooters !== false,
+        changes: counts.changes,
+        untracked: counts.untracked,
+      }]
     })
 }
 
@@ -232,6 +266,7 @@ export function readTurn(parts: Map<string, Part>, roles: Map<string, string>, m
     citations,
     redlines: redlinesOf(work),
     drafts: draftsOf(work),
+    compares: comparesOf(work),
     todos,
     steps: partsToSteps(work, matter, all),
   }

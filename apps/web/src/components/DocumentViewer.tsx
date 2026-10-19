@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react"
-import { useDocxodus } from "docxodus/react"
+import { useDocxodus, type ConversionOptions } from "docxodus/react"
 import { CommentRenderMode } from "docxodus"
 import {
   fetchRedlinedBytes,
@@ -14,8 +14,20 @@ import {
 } from "../api/ingest/redlines"
 import { convertPdfToDocx, documentContentUrl } from "../api/ingest/documents"
 import { ModalClose } from "./ModalHeader"
+import { CompareIcon } from "./CompareDialog"
 import { focusCitationPassage, type CitationFocus } from "./citation-target"
 import { useToast } from "./Toast"
+
+// How a Word file with tracked changes is painted: insertions green, deletions
+// struck red, moves, headers and footers, comments in the margin. Shared with
+// the blackline view so both read the same way.
+export const DOCX_RENDER_OPTIONS: ConversionOptions = {
+  renderTrackedChanges: true,
+  showDeletedContent: true,
+  renderMoveOperations: true,
+  renderHeadersAndFooters: true,
+  commentRenderMode: CommentRenderMode.Margin,
+}
 
 // In-browser redline viewer. Fetches the matter's document with every pending
 // redline applied as native tracked changes and converts it to HTML with the WASM
@@ -32,6 +44,7 @@ export default function DocumentViewer({
   onChanged,
   onConverted,
   onSaveTemplate,
+  onCompare,
 }: {
   matterId: string
   name: string
@@ -50,6 +63,8 @@ export default function DocumentViewer({
   // with the prompt prefilled). DOCX only — the redline pipeline and templates
   // are DOCX-only. Omitted on surfaces that do not offer the action.
   onSaveTemplate?: () => void
+  // Compare this Word file with another version of it. DOCX only.
+  onCompare?: () => void
 }) {
   // PDFs render natively in an <iframe>; the docxodus WASM path and the redline
   // pipeline are DOCX-only. A PDF carries no redlines until it is converted.
@@ -87,13 +102,7 @@ export default function DocumentViewer({
       return new Uint8Array(await current.arrayBuffer())
     }), fetchRedlines(matterId, name)])
       .then(async ([bytes, changes]) => {
-        const out = await convertToHtml(bytes, {
-          renderTrackedChanges: true,
-          showDeletedContent: true,
-          renderMoveOperations: true,
-          renderHeadersAndFooters: true,
-          commentRenderMode: CommentRenderMode.Margin,
-        })
+        const out = await convertToHtml(bytes, DOCX_RENDER_OPTIONS)
         if (cancelled) return
         setHtml(out)
         setRedlines(changes)
@@ -245,7 +254,7 @@ export default function DocumentViewer({
               </svg>
               Request edits
             </button>
-            {onSaveTemplate && (
+            {(onSaveTemplate || onCompare) && (
               <details className="viewer-more-actions" ref={moreRef} onKeyDown={(event) => {
                 if (event.key !== "Escape" || !event.currentTarget.open) return
                 event.preventDefault()
@@ -261,16 +270,27 @@ export default function DocumentViewer({
                   </svg>
                 </summary>
                 <div className="viewer-more-menu">
-                  <button onClick={onSaveTemplate}>
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                      <rect x="8" y="8" width="13" height="13" rx="2" />
-                      <path d="M4 16V5a2 2 0 0 1 2-2h11" />
-                    </svg>
-                    <span>
-                      Save as template
-                      <small>Reusable copy with client details removed</small>
-                    </span>
-                  </button>
+                  {onCompare && (
+                    <button onClick={onCompare}>
+                      <CompareIcon size={16} />
+                      <span>
+                        Compare with…
+                        <small>Blackline against another version</small>
+                      </span>
+                    </button>
+                  )}
+                  {onSaveTemplate && (
+                    <button onClick={onSaveTemplate}>
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <rect x="8" y="8" width="13" height="13" rx="2" />
+                        <path d="M4 16V5a2 2 0 0 1 2-2h11" />
+                      </svg>
+                      <span>
+                        Save as template
+                        <small>Reusable copy with client details removed</small>
+                      </span>
+                    </button>
+                  )}
                 </div>
               </details>
             )}
@@ -461,7 +481,7 @@ export function combinedNotUpdatedNotice(result: AcceptResult | void) {
 
 // File glyph, name and a quiet status line. The pending count stays visible on
 // narrow screens, where the change list sits below the document.
-function ViewerTitle({ name, kind, pending = 0 }: { name: string; kind: string; pending?: number }) {
+export function ViewerTitle({ name, kind, pending = 0 }: { name: string; kind: string; pending?: number }) {
   return (
     <div className="viewer-title">
       <span className="viewer-file-icon" aria-hidden="true">

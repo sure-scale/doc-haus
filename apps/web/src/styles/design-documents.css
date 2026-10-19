@@ -269,3 +269,72 @@
 .document-label-badge select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .document-label-badge select:disabled { cursor: wait; opacity: .6; }
 .document-label-badge > svg { position: absolute; right: 5px; width: 8px; height: 8px; opacity: .55; pointer-events: none; }
+
+/* ---------- Compare versions ---------- */
+/* Row action beside remove in the documents drawer; revealed on hover like it. */
+.doc-compare { margin-left: auto; display: inline-flex; padding: 4px; border: none; background: none; color: var(--muted); cursor: pointer; opacity: 0; transition: opacity var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out); }
+.doc-row:hover .doc-compare,
+.doc-row:focus-within .doc-compare,
+.doc-compare:focus-visible { opacity: 1; }
+.doc-compare:hover:not(:disabled) { color: var(--accent); background: none; border: none; }
+.matter-files-collection .doc-compare + .doc-remove { margin-left: 0; }
+.drafted-compare { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; opacity: .65; }
+.drafted-row:hover .drafted-compare,
+.drafted-row:focus-within .drafted-compare { opacity: 1; }
+.docs-drawer .matter-files-collection .drafted-compare { position: absolute; top: 8px; right: 40px; background: var(--panel); border-color: var(--border); opacity: 0; }
+.docs-drawer .matter-files-collection .drafted-row:hover .drafted-compare,
+.docs-drawer .matter-files-collection .drafted-row:focus-within .drafted-compare { opacity: 1; }
+@media (hover: none) {
+  .doc-compare, .drafted-compare,
+  .docs-drawer .matter-files-collection .drafted-compare { opacity: 1; }
+  .docs-drawer .matter-files-collection .drafted-row:has(.drafted-compare) { padding-right: 76px; }
+}
+
+/* Dialog: this file fixed on one side, the other picked or uploaded. */
+.picker-panel.compare-dialog { max-width: 520px; }
+.compare-form { gap: 12px; padding: 16px 20px 20px; }
+.compare-side { display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg); }
+.compare-side-role { font-size: 11px; font-weight: 600; letter-spacing: var(--tracking-caps); text-transform: uppercase; color: var(--muted); }
+.compare-file { display: flex; align-items: center; gap: 8px; min-height: var(--ctl-h); min-width: 0; font-weight: 500; }
+.compare-file-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.compare-file-tag { flex: none; padding: 0 7px; border-radius: var(--radius-pill); background: var(--accent-soft); color: var(--accent); font-size: 11px; font-weight: 500; line-height: 18px; }
+.compare-pick { display: flex; flex-wrap: wrap; gap: 8px; }
+.compare-pick select { flex: 1 1 200px; min-width: 0; }
+.compare-label { margin-top: 2px; font-size: 12px; color: var(--muted); }
+.compare-side input { width: 100%; }
+.compare-swap { align-self: center; display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px; font-size: 12.5px; }
+.compare-swap svg { color: var(--muted); }
+.compare-hint { margin: 0; font-size: 12px; line-height: 1.5; color: var(--muted); }
+.compare-options { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 0; padding: 0; border: 0; }
+.compare-options legend { margin-bottom: 8px; padding: 0; font-size: 12px; font-weight: 600; color: var(--text-secondary); }
+.compare-options label { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
+.compare-error { margin: 0; font-size: 13px; color: var(--danger); }
+.compare-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+
+/* Blackline side panel: untracked edits first, then every change. */
+@media (min-width: 721px) {
+  .blackline-reader .compare-panel { width: 380px; }
+}
+.compare-panel .changes-head { gap: 4px; }
+.compare-sides-line { font-size: 12px; font-weight: 400; overflow-wrap: anywhere; }
+.compare-section { margin-bottom: 20px; }
+.compare-section h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 6px; font-family: var(--font-sans); font-size: 13px; font-weight: 600; color: var(--text); }
+.compare-count { padding: 0 7px; border-radius: var(--radius-pill); background: var(--bg-sunken); color: var(--text-secondary); font-size: 11px; line-height: 18px; }
+.compare-status { margin: 0 0 6px; font-size: 12.5px; line-height: 1.5; color: var(--text-secondary); }
+.compare-untracked { padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg); }
+.compare-untracked.is-warning { border-color: var(--warn-border); background: var(--warn-soft); }
+.compare-untracked.is-warning h3,
+.compare-untracked.is-warning .compare-status { color: var(--warn); }
+.compare-untracked.is-warning .compare-count { background: var(--warn); color: var(--text-on-accent); }
+.compare-untracked.is-info { border-color: transparent; background: var(--info-soft); }
+.compare-untracked.is-ok { border-color: var(--accent-border); background: var(--accent-tint); }
+.document-reader .compare-untracked .change-card { padding: 12px 0; background: transparent; }
+.document-reader .compare-untracked .change-card:last-child { padding-bottom: 0; border-bottom: 0; }
+.compare-hunk-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 4px; }
+.compare-untracked-tag { padding: 0 6px; border: 1px solid var(--warn-border); border-radius: 4px; background: var(--warn-soft); color: var(--warn); font-size: 11px; font-weight: 500; letter-spacing: 0; line-height: 16px; text-transform: none; }
+.document-reader .compare-hunk.is-untracked { padding-left: 12px; box-shadow: inset 3px 0 var(--warn); }
+.compare-hunk-location { margin-bottom: 8px; font-size: 12px; color: var(--text-secondary); overflow-wrap: anywhere; }
+.compare-more { margin: 2px 0 6px; font-size: 12px; }
+.compare-disclosures { padding-top: 12px; border-top: 1px solid var(--border); }
+.compare-disclosures p { margin: 0 0 6px; font-size: 12px; line-height: 1.5; color: var(--muted); }
+.compare-card .draft-icon { display: inline-flex; }
