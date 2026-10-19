@@ -2,6 +2,7 @@ import { useRef, useState } from "react"
 import { humanizeError } from "../../api/ingest/errors"
 import {
   answerLeanQuestion,
+  chooseLeanOption,
   decideLeanQuestion,
   pauseLeanDraftingRun,
   resumeLeanDraftingRun,
@@ -25,7 +26,7 @@ export default function useRunActions(
   // Pause and Stop settle the run; neither reads as resuming.
   const [halting, setHalting] = useState<"pause" | "stop">()
   const [error, setError] = useState("")
-  // The question a refused answer or hand-back was about: the question card
+  // The question a refused answer was about: the question card
   // shows the error only with that question.
   const [errorFor, setErrorFor] = useState<string>()
   // The run's updated_at when a request was accepted: until the run moves on
@@ -82,6 +83,8 @@ export default function useRunActions(
         : Promise.resolve(false),
     answer: (questionID: string, answer: string) =>
       matterId ? queue(() => answerLeanQuestion(matterId, questionID, answer), undefined, questionID) : Promise.resolve(false),
+    choose: (questionID: string, optionID: string) =>
+      matterId ? queue(() => chooseLeanOption(matterId, questionID, optionID), undefined, questionID) : Promise.resolve(false),
     decide: (questionID: string) =>
       matterId ? queue(() => decideLeanQuestion(matterId, questionID), undefined, questionID) : Promise.resolve(false),
   }

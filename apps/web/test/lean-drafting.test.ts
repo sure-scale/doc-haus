@@ -1,5 +1,6 @@
 import { draftingUpdateAdmission } from "../../../dochaus/lib/drafting-update-admission"
 import { afterEach, expect, test } from "bun:test"
+import path from "node:path"
 import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
 import { MemoryRouter } from "react-router-dom"
@@ -16,6 +17,7 @@ import { getDraftingStatus } from "../src/api/ingest/drafting-status"
 import { startDraftingRun } from "../src/api/ingest/drafting-run"
 import {
   answerLeanQuestion,
+  chooseLeanOption,
   decideLeanQuestion,
   isLeanDraftingStatus,
   leanDeliveredDocuments,
@@ -27,8 +29,7 @@ import {
 } from "../src/api/ingest/lean"
 import { draftingTurnRecoveryMode } from "../src/components/chat/drafting-recovery"
 import { draftingStatusLabel } from "../src/components/matter/MatterRail"
-import { delegableQuestion, handedBackQuestions, leanContinueAvailable, leanRunStopped, leanRunTakesUpdates, leanSettledItems, leanSettledSummary, runPosition, stepGroups, openQuestions } from "../src/components/drafting/model"
-import QuestionDock from "../src/components/drafting/QuestionDock"
+import { delegableQuestion, leanContinueAvailable, leanRunStopped, leanRunTakesUpdates, leanSettledItems, leanSettledSummary, runPosition, stepGroups, openQuestions } from "../src/components/drafting/model"
 import Questions from "../src/components/drafting/Questions"
 import { runOutcome } from "../src/components/narration/outcome"
 import RunHeader, { runHeadline } from "../src/components/drafting/RunHeader"
@@ -135,7 +136,7 @@ test("the run header says where the run is in one line and offers the one next s
   expect(runHeadline(lean(orphaned), now).title).toBe("Paused")
   expect(runHeadline(lean(failed), now, true).title).toBe("Resuming…")
 
-  const idle: RunActions = { busy: false, pausing: false, stopping: false, error: "", errorFor: undefined, resuming: false, resume: async () => true, answer: async () => true, decide: async () => true, update: async () => true, refine: async () => true, pause: async () => true, stop: async () => true }
+  const idle: RunActions = { busy: false, pausing: false, stopping: false, error: "", errorFor: undefined, resuming: false, resume: async () => true, answer: async () => true, choose: async () => true, decide: async () => true, update: async () => true, refine: async () => true, pause: async () => true, stop: async () => true }
   const render = (fixture: unknown) =>
     renderToStaticMarkup(createElement(RunHeader, { status: lean(fixture), actions: idle, own: true, onOpen: () => {}, onShowDrafts: () => {} }))
   const done = render(completed)
@@ -146,16 +147,13 @@ test("the run header says where the run is in one line and offers the one next s
   expect(done).toContain('aria-expanded="false"')
   expect(done).toContain("No open items remain.")
   const asked = render(blockedQuestion)
-  // The question is answered, or left to the drafter with Decide for me, from
-  // the dock above the composer; the header points there.
-  expect(asked).toContain("1 question remaining · Drafting resumes once it is answered or left to the drafter")
-  // A question Decide for me cannot take (one the run's model did not ask) waits on an answer.
-  const scope = (question: (typeof blockedQuestion.questions)[number], index: number) => ({ ...question, id: `scope-${index}`, question: `Scope ${index}?` })
-  expect(render({ ...blockedQuestion, questions: blockedQuestion.questions.map(scope) })).toContain("1 question remaining · Drafting resumes after all answers are received")
-  const mixed = render({ ...blockedQuestion, questions: [...blockedQuestion.questions, ...blockedQuestion.questions.map(scope)] })
-  expect(mixed).toContain("2 questions remaining · Drafting resumes once each is answered or, where Decide for me is offered, left to the drafter")
-  expect(render({ ...blockedQuestion, questions: [...blockedQuestion.questions, { ...blockedQuestion.questions[0]!, id: "q-second", question: "Second?" }] }))
-    .toContain("2 questions remaining · Drafting resumes once each is answered or left to the drafter")
+  // The question is answered from the dock above the composer; the header points there.
+  expect(asked).toContain("1 question remaining · Drafting resumes after all answers are received")
+  // Decide for me answers with the recommendation, so a question it can take reads the same.
+  const judgment = { kind: "judgment", advice: { options: [{ id: "o1", text: "No remedy" }, { id: "o2", text: "A remedy" }], recommendation: { option: "o2", rationale: "Asked for.", basis: [{ source_id: "request", quote: "a remedy" }] } } }
+  const delegable = { ...blockedQuestion, questions: [...blockedQuestion.questions, { ...blockedQuestion.questions[0]!, ...judgment, id: "q-second", question: "Second?" }] }
+  expect(delegableQuestion(lean(delegable).questions[1]!)).toBe(true)
+  expect(render(delegable)).toContain("2 questions remaining · Drafting resumes after all answers are received")
   expect(asked).not.toMatch(/<button[^>]*>Answer/)
   expect(asked).not.toContain(blockedQuestion.questions[0]!.question)
   expect(asked).not.toContain("Continue drafting")
@@ -201,7 +199,7 @@ test("Pause posts the run's owner to the lean pause route and keeps refusals", a
 test("the header offers Pause only while the run is working; a paused run offers Continue", () => {
   const now = Date.parse(completed.updated_at)
   let paused = 0
-  const actions: RunActions = { busy: false, pausing: false, stopping: false, error: "", errorFor: undefined, resuming: false, resume: async () => true, answer: async () => true, decide: async () => true, update: async () => true, refine: async () => true, pause: async () => (paused++, true), stop: async () => true }
+  const actions: RunActions = { busy: false, pausing: false, stopping: false, error: "", errorFor: undefined, resuming: false, resume: async () => true, answer: async () => true, choose: async () => true, decide: async () => true, update: async () => true, refine: async () => true, pause: async () => (paused++, true), stop: async () => true }
   const render = (status: LeanDraftingStatus, overrides: Partial<RunActions> = {}) =>
     renderToStaticMarkup(createElement(RunHeader, { status, actions: { ...actions, ...overrides }, own: true, onOpen: () => {}, onShowDrafts: () => {} }))
   const working = render(lean(start.status))
@@ -245,7 +243,7 @@ test("Stop posts the run's owner to the lean stop route and keeps refusals", asy
 test("a run nothing is working on offers Stop draft; a stopped run says so, asks nothing, offers no Continue and takes a new request", () => {
   const now = Date.parse(completed.updated_at)
   let stops = 0
-  const actions: RunActions = { busy: false, pausing: false, stopping: false, error: "", errorFor: undefined, resuming: false, resume: async () => true, answer: async () => true, decide: async () => true, update: async () => true, refine: async () => true, pause: async () => true, stop: async () => (stops++, true) }
+  const actions: RunActions = { busy: false, pausing: false, stopping: false, error: "", errorFor: undefined, resuming: false, resume: async () => true, answer: async () => true, choose: async () => true, decide: async () => true, update: async () => true, refine: async () => true, pause: async () => true, stop: async () => (stops++, true) }
   const render = (status: LeanDraftingStatus, overrides: Partial<RunActions> = {}, own = true) =>
     renderToStaticMarkup(createElement(MemoryRouter, null, createElement(RunHeader, { status, actions: { ...actions, ...overrides }, own, onOpen: () => {}, onShowDrafts: () => {} })))
   const paused = render(pausedRun())
@@ -361,6 +359,7 @@ test("the question card shows how many are answered and Send waits for an answer
       titleId: "q-title",
       onClose: () => {},
       onSend: async () => false,
+      onChoose: async () => false,
       onDecide: async () => false,
     }),
   )
@@ -378,10 +377,7 @@ test("the question card shows how many are answered and Send waits for an answer
   expect(calls).toHaveLength(0)
 })
 
-function questionCard(
-  questions: LeanQuestion[],
-  extra: { answered?: number; handedBack?: LeanQuestion[]; order?: string[]; done?: boolean; error?: string; errorFor?: string } = {},
-) {
+function questionCard(questions: LeanQuestion[], extra: { answered?: number; error?: string; errorFor?: string } = {}) {
   respond({ answers: {}, revision: 0 })
   return renderToStaticMarkup(
     createElement(Questions, {
@@ -389,9 +385,6 @@ function questionCard(
       ownerSessionID: blockedQuestion.owner_session_id,
       questions,
       answered: extra.answered ?? 0,
-      handedBack: extra.handedBack,
-      order: extra.order,
-      done: extra.done,
       titles: new Map(),
       busy: false,
       error: extra.error ?? "",
@@ -399,216 +392,181 @@ function questionCard(
       titleId: "q-title",
       onClose: () => {},
       onSend: async () => false,
+      onChoose: async () => false,
       onDecide: async () => false,
     }),
   )
 }
 
-test("Decide for me is offered, with an empty answer, only on an open question the run's model asked", () => {
-  const asked = { ...blockedQuestion.questions[0]!, status: "open" as const }
-  expect(asked.id.startsWith("q-")).toBe(true)
-  const html = questionCard([asked])
+// A judgment question as the run records it once advised: the advice sets out
+// the options and recommends one, with the passages behind it.
+const advised: LeanQuestion = {
+  id: "q-remedy",
+  stage: "changes",
+  document: "d1",
+  question: "Should late delivery carry a remedy?",
+  context: "The terms are silent.",
+  status: "open",
+  kind: "judgment",
+  advice: {
+    options: [
+      { id: "o1", text: "No remedy" },
+      { id: "o2", text: "Liquidated damages at 1% a week" },
+      { id: "o3", text: "A right to terminate after 30 days" },
+    ],
+    recommendation: {
+      option: "o2",
+      rationale: "The buyer asked for a remedy that does not need proof of loss.",
+      basis: [
+        { source_id: "request", quote: "a remedy that does not need proof of loss" },
+        { source_id: "Supply terms.docx", quote: "Delivery is due within 14 days." },
+      ],
+    },
+  },
+}
+const optionTexts = (html: string) => [...html.matchAll(/<span class="question-option-text">([^<]*)<\/span>/g)].map((match) => match[1])
+const unavailable = (question: LeanQuestion, reason = "The sources do not say which remedy the buyer wants."): LeanQuestion =>
+  ({ ...question, advice: { unavailable: { reason } } })
+
+test("a question's options appear in the order the run gives them, with none chosen for the lawyer", () => {
+  const html = questionCard([advised])
+  expect(html).toMatch(/<span id="[^"]+" class="question-label">Your answer<\/span><div role="group" aria-labelledby="[^"]+" class="question-options">/)
+  // The recommended option keeps its place: the list is never reordered around it.
+  expect(optionTexts(html)).toEqual(["No remedy", "Liquidated damages at 1% a week", "A right to terminate after 30 days"])
+  expect(html).not.toContain("aria-pressed")
+  expect(html).not.toContain("checked")
+  expect(html).not.toContain("autofocus")
+  expect(html).not.toContain("is-selected")
+
+  // A question's own options come before any the advice sets out, in their own order.
+  const own: LeanQuestion = {
+    ...advised,
+    id: "requested-files-d1",
+    kind: "file_name",
+    options: [{ id: "o1", text: "As my words ask" }, { id: "o2", text: "As planned" }],
+    advice: { recommendation: { option: "o2", rationale: "The plan follows the request.", basis: [{ source_id: "request", quote: "a supply note" }] } },
+  }
+  expect(optionTexts(questionCard([own]))).toEqual(["As my words ask", "As planned"])
+})
+
+test("the recommended option is marked, with why and the quoted passages and where each comes from", () => {
+  const html = questionCard([advised])
+  // Only the recommended option carries the mark, and it points at why.
+  expect(html.match(/class="question-option-tag">Recommended</g)).toHaveLength(1)
+  expect(html).toMatch(
+    /<button type="button" class="question-option is-recommended" aria-describedby="([^"]+)" disabled=""><span class="question-option-text">Liquidated damages at 1% a week<\/span><span class="question-option-tag">Recommended<\/span><\/button>/,
+  )
+  const why = html.match(/class="question-option is-recommended" aria-describedby="([^"]+)"/)?.[1]
+  expect(html).toContain(`<div id="${why}" class="question-advice">`)
+  expect(html).toContain('<p class="question-advice-why"><span class="question-advice-label">Why</span> The buyer asked for a remedy that does not need proof of loss.</p>')
+  // Each quote shows with its source: the lawyer's own instructions, or the matter file by name.
+  expect(html).toContain("<blockquote>a remedy that does not need proof of loss</blockquote><cite>Your instructions</cite>")
+  expect(html).toContain("<blockquote>Delivery is due within 14 days.</blockquote><cite>Supply terms.docx</cite>")
+  expect(html).not.toContain("source_id")
+})
+
+test("Other, the lawyer's own words, is always offered", () => {
+  // Beside options it is Other; with none, it is the answer.
+  const options = questionCard([advised])
+  expect(options).toMatch(/<label class="question-label" for="lean-answer-q-remedy">Other<\/label><textarea[^>]* id="lean-answer-q-remedy"/)
+  expect(options).toContain("Send answer")
+  for (const question of [unavailable(advised), { ...advised, advice: undefined }, { ...advised, kind: "fact" as const }]) {
+    const html = questionCard([question])
+    expect(html).toContain('<textarea')
+    expect(html).toContain("Send answer")
+  }
+  expect(questionCard([unavailable(advised)])).toMatch(/<label class="question-label" for="lean-answer-q-remedy">Your answer<\/label>/)
+})
+
+test("Decide for me is offered only where the run may take the recommendation: judgment and pure scope questions", () => {
+  const offered = (question: LeanQuestion) => questionCard([question]).includes(">Decide for me</button>")
+  expect(offered(advised)).toBe(true)
+  // Decided by the question's kind and advice, never by its id.
+  expect(offered({ ...advised, id: "package-scope-d1", kind: "scope" })).toBe(true)
+  for (const kind of ["fact", "instruction", "conflict", "file_name"] as const) expect(offered({ ...advised, kind })).toBe(false)
+  // A scope card that also asks for facts or approvals needs the lawyer's own answer.
+  expect(offered({ ...advised, kind: "scope", mixed: true })).toBe(false)
+  expect(offered(unavailable(advised))).toBe(false)
+  expect(offered({ ...advised, kind: undefined })).toBe(false)
+  expect(offered({ ...advised, advice: undefined })).toBe(false)
+
+  expect(delegableQuestion(advised)).toBe(true)
+  expect(delegableQuestion({ ...advised, id: "intake-1" })).toBe(true)
+  expect(delegableQuestion({ ...advised, kind: "fact" })).toBe(false)
+  expect(delegableQuestion({ ...advised, status: "answered" })).toBe(false)
+  const advice = advised.advice as Extract<NonNullable<LeanQuestion["advice"]>, { recommendation: unknown }>
+  // A recommendation of an option the question does not offer cannot be taken.
+  expect(delegableQuestion({ ...advised, advice: { ...advice, recommendation: { ...advice.recommendation, option: "o9" } } })).toBe(false)
+
+  const html = questionCard([advised])
   // Never over a typed answer: until saved answers load the box may hold one, so
-  // Decide waits like Send. It is enabled only while the box is empty (browser check).
+  // Decide for me and the options wait like Send (enabled while it is empty).
   expect(html).toContain("Loading saved answers…")
   expect(html).toMatch(/<button type="button" aria-describedby="[^"]+" disabled="">Decide for me<\/button>/)
-  expect(html).toMatch(/<button class="primary" type="button" disabled="">Send answer<\/button>/)
-  // Decide and Send stay together when the actions wrap.
+  expect(html).toMatch(/<button type="button" class="question-option" disabled="">/)
+  // Decide for me and Send stay together when the actions wrap.
   expect(html).toMatch(/<span class="question-send"><button[^>]*>Decide for me<\/button><button class="primary"/)
-  expect(html).toContain("You&#x27;ll get a review draft that says what was chosen and why, or what is still open.")
-
-  // A keyed question settles the run's scope and needs the lawyer's own answer.
-  const keyed = questionCard([{ ...asked, id: "package-scope-d1" }])
-  expect(keyed).not.toContain("Decide for me")
-  expect(keyed).not.toContain("review draft that says what was chosen")
-  expect(keyed).toContain("Send answer")
-
-  expect(delegableQuestion(asked)).toBe(true)
-  expect(delegableQuestion({ ...asked, status: "answered" })).toBe(false)
-  expect(delegableQuestion({ ...asked, id: "requested-files" })).toBe(false)
+  expect(html).toContain('class="question-delegate-hint">Decide for me answers with the recommended option.</p>')
+  expect(questionCard([{ ...advised, kind: "fact" }])).not.toContain("recommended option.</p>")
 })
 
-test("a hand-back posts exactly decide_for_me to the question route", async () => {
-  const calls = respond(answer, 202)
-  const question = blockedQuestion.questions[0]!
-  expect(await decideLeanQuestion("matter-a", question.id)).toMatchObject({ profile: "lean", mode: "queued" })
-  expect(calls).toHaveLength(1)
-  expect(calls[0]?.url).toEndWith(`/matters/matter-a/lean/questions/${encodeURIComponent(question.id)}`)
-  expect(calls[0]?.init?.method).toBe("POST")
-  expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({ decide_for_me: true })
+test("advice with no recommendation says why, marks no option and offers no Decide for me", () => {
+  const html = questionCard([unavailable(advised)])
+  expect(html).toContain('<p class="question-advice is-unavailable">No recommendation: The sources do not say which remedy the buyer wants.</p>')
+  expect(html).not.toContain("Decide for me")
+  expect(html).not.toContain("Recommended")
+  expect(html).not.toContain("question-options")
+  // Options the advice set out are still offered, none of them marked.
+  const advice = advised.advice as Extract<NonNullable<LeanQuestion["advice"]>, { recommendation: unknown }>
+  const listed = questionCard([{ ...advised, advice: { options: advice.options, unavailable: { reason: "No source settles it." } } }])
+  expect(optionTexts(listed)).toEqual(["No remedy", "Liquidated damages at 1% a week", "A right to terminate after 30 days"])
+  expect(listed).toContain("No recommendation: No source settles it.")
+  expect(listed).not.toContain("Recommended")
+  expect(listed).not.toContain("Decide for me")
 })
 
-test("a recorded hand-back reads as left to the drafter, not as an empty answer", () => {
-  const status = structuredClone(blockedQuestion) as LeanDraftingStatus
-  const first = status.questions[0]!
-  status.questions = [
-    { ...first, status: "answered", answer_kind: "decide_for_me" },
-    { ...first, id: "q-answered", status: "answered", answer: "The buyer." },
-    { ...first, id: "q-open", question: "Who bears the cost of storage?" },
-  ]
-  expect(handedBackQuestions(status).map((question) => question.id)).toEqual([first.id])
-  expect(openQuestions(status).map((question) => question.id)).toEqual(["q-open"])
+test("choosing an option posts its id, and Decide for me posts decide_for_me: true", async () => {
+  const route = `/matters/matter-a/lean/questions/${encodeURIComponent(advised.id)}`
+  const chosen = respond(answer, 202)
+  expect(await chooseLeanOption("matter-a", advised.id, "o2")).toMatchObject({ profile: "lean", mode: "queued" })
+  expect(chosen).toHaveLength(1)
+  expect(chosen[0]?.url).toEndWith(route)
+  expect(chosen[0]?.init?.method).toBe("POST")
+  expect(JSON.parse(String(chosen[0]?.init?.body))).toEqual({ option_id: "o2" })
 
-  const html = questionCard(openQuestions(status), { answered: 2, handedBack: handedBackQuestions(status) })
-  expect(html).toContain("1 answered, 1 left to the drafter, 1 to answer")
-  expect(html.match(/class="question-dot is-answered is-delegated"/g)).toHaveLength(1)
-  expect(html.match(/class="question-dot is-answered"/g)).toHaveLength(1)
-  // Without a hand-back the count reads as before.
-  expect(questionCard(openQuestions(status), { answered: 2 })).toContain("2 answered, 1 left")
+  const decided = respond(answer, 202)
+  expect(await decideLeanQuestion("matter-a", advised.id)).toMatchObject({ profile: "lean", mode: "queued" })
+  expect(decided[0]?.url).toEndWith(route)
+  expect(JSON.parse(String(decided[0]?.init?.body))).toEqual({ decide_for_me: true })
 })
 
-test("a refused hand-back surfaces as a plain message", async () => {
-  const question = blockedQuestion.questions[0]!
-  respond({ error: "This question needs the lawyer's own answer; it cannot be left to the drafter to decide.", code: "not_delegable" }, 409)
-  await expect(decideLeanQuestion("matter-a", question.id)).rejects.toThrow("This question needs your own answer. It can't be left to the drafter.")
+test("a refused answer surfaces as a plain message, with the question it is about", async () => {
+  respond({ error: "This question has no recommendation to adopt; it needs the lawyer's own answer.", code: "not_delegable" }, 409)
+  await expect(decideLeanQuestion("matter-a", advised.id)).rejects.toThrow("Decide for me isn't available for this question. Choose an option or write your own answer.")
   respond({ error: "This question is already answered.", code: "already_answered" }, 409)
-  await expect(decideLeanQuestion("matter-a", question.id)).rejects.toThrow("This question is already answered.")
+  await expect(decideLeanQuestion("matter-a", advised.id)).rejects.toThrow("This question is already answered.")
+  respond({ error: "That option is not one this question offers.", code: "invalid_answer" }, 400)
+  await expect(chooseLeanOption("matter-a", advised.id, "o9")).rejects.toThrow("This answer can't be sent. Choose one of the options shown, or write an answer of up to 20,000 characters.")
+  respond({ error: "An answer must be non-empty text of at most 20,000 characters.", code: "invalid_answer" }, 400)
+  await expect(answerLeanQuestion("matter-a", advised.id, " ")).rejects.toThrow("This answer can't be sent. Choose one of the options shown, or write an answer of up to 20,000 characters.")
   // Any other refusal keeps the service's own message.
   respond({ error: "This drafting run was stopped.", code: "lean_run_stopped" }, 409)
-  await expect(decideLeanQuestion("matter-a", question.id)).rejects.toThrow("This drafting run was stopped.")
+  await expect(decideLeanQuestion("matter-a", advised.id)).rejects.toThrow("This drafting run was stopped.")
 
   // A refusal shows with the question it is about, never under another one.
-  const open = { ...question, status: "open" as const }
-  const other = { ...open, id: "q-other", question: "Who bears the cost of storage?" }
-  const refused = questionCard([open, other], { error: "This question is already answered.", errorFor: open.id })
+  const other = { ...advised, id: "q-other", question: "Who bears the cost of storage?" }
+  const refused = questionCard([advised, other], { error: "This question is already answered.", errorFor: advised.id })
   expect(refused).toContain('<div class="msg-error" role="alert">This question is already answered.</div>')
-  expect(questionCard([other, open], { error: "This question is already answered.", errorFor: open.id })).not.toContain("msg-error")
-  expect(questionCard([open], { error: "This drafting run was stopped." })).not.toContain("msg-error")
+  expect(questionCard([other, advised], { error: "This question is already answered.", errorFor: advised.id })).not.toContain("msg-error")
+  expect(questionCard([advised], { error: "This drafting run was stopped." })).not.toContain("msg-error")
 })
 
-test("a question left to the drafter can still be answered from the question card", () => {
-  const status = structuredClone(blockedQuestion) as LeanDraftingStatus
-  const first = status.questions[0]!
-  status.questions = [{ ...first, status: "answered", answer_kind: "decide_for_me" }]
-  const left = handedBackQuestions(status)
-  expect(left.map((question) => question.id)).toEqual([first.id])
-  expect(openQuestions(status)).toEqual([])
-
-  // The card shows it as left to the drafter; its answer box posts the normal answer.
-  const card = questionCard([], { answered: 1, handedBack: left })
-  expect(card).toContain("Left to the drafter")
-  expect(card).toContain(first.question)
-  expect(card).toContain("Your answer")
-  expect(card).toMatch(/<button class="primary" type="button" disabled="">Answer instead<\/button>/)
-  expect(card).not.toContain("Decide for me")
-  expect(card).not.toContain("Send answer")
-
-  // With questions still asked, the left one follows them and is not offered back again.
-  const asked = { ...first, id: "q-open", question: "Who bears the cost of storage?" }
-  const mixed = questionCard([asked], { answered: 1, handedBack: left })
-  expect(mixed).toContain("Question 1 of 2")
-  expect(mixed).toContain("Who bears the cost of storage?")
-  expect(mixed).toContain("Decide for me")
-  expect(mixed).not.toContain("Left to the drafter")
-
-  // The dock stays while a question is left to the drafter, so the lawyer can still answer it.
-  const dock = (questions: LeanQuestion[], handedBack: LeanQuestion[]) =>
-    renderToStaticMarkup(
-      createElement(QuestionDock, {
-        matterId: "m", ownerSessionID: "s", questions, answered: 1, handedBack, titles: new Map(), busy: false, error: "",
-        onSend: async () => true, onDecide: async () => true,
-      }),
-    )
-  const review = dock([], left)
-  expect(review).toContain("1 question left to the drafter")
-  expect(review).toMatch(/aria-haspopup="dialog"[^>]*>Review</)
-  const both = dock([asked], left)
-  expect(both).toContain("The drafting run has a question for you")
-  expect(both).toMatch(/aria-haspopup="dialog"[^>]*>Answer</)
-  expect(dock([], [])).toBe("")
-  // A stopped run asks nothing and offers nothing back.
-  expect(handedBackQuestions({ ...status, stopped: true })).toEqual([])
-})
-
-test("a hand-back moves no question: each keeps its number, and the current dot is its own", () => {
-  const status = structuredClone(blockedQuestion) as LeanDraftingStatus
-  const first = status.questions[0]!
-  status.questions = [
-    { ...first, status: "answered", answer_kind: "decide_for_me" },
-    { ...first, id: "q-second", question: "Who bears the cost of storage?" },
-  ]
-  const order = status.questions.map((question) => question.id)
-  const dots = (html: string) => [...html.matchAll(/<span class="(question-dot[^"]*)"><\/span>/g)].map((match) => match[1])
-  // The first question was handed back: the second is still the second, and
-  // the card opens on it, the one still asked.
-  const html = questionCard(openQuestions(status), { answered: 1, handedBack: handedBackQuestions(status), order })
-  expect(html).toContain("Question 2 of 2")
-  expect(html).toContain("Who bears the cost of storage?")
-  expect(dots(html)).toEqual(["question-dot is-answered is-delegated", "question-dot is-current"])
-
-  // A question asked later follows those left to the drafter, under its own number.
-  status.questions = [
-    { ...first, status: "answered", answer_kind: "decide_for_me" },
-    { ...first, id: "q-second", status: "answered", answer_kind: "decide_for_me", question: "Who bears the cost of storage?" },
-    { ...first, id: "package-scope-d1", question: "Which documents should the package carry?" },
-  ]
-  const later = questionCard(openQuestions(status), { answered: 2, handedBack: handedBackQuestions(status), order: status.questions.map((question) => question.id) })
-  expect(later).toContain("Question 3 of 3")
-  expect(later).toContain("Which documents should the package carry?")
-  expect(dots(later)).toEqual(["question-dot is-answered is-delegated", "question-dot is-answered is-delegated", "question-dot is-current"])
-
-  // Answered questions leave the card as before; their dots come first.
-  status.questions = [
-    { ...first, status: "answered", answer: "The buyer." },
-    { ...first, id: "q-second", status: "answered", answer_kind: "decide_for_me", question: "Who bears the cost of storage?" },
-    { ...first, id: "q-third", question: "When is delivery due?" },
-  ]
-  const mixed = questionCard(openQuestions(status), { answered: 2, handedBack: handedBackQuestions(status), order: status.questions.map((question) => question.id) })
-  expect(mixed).toContain("Question 2 of 2")
-  expect(mixed).toContain("1 answered, 1 left to the drafter, 1 to answer")
-  expect(dots(mixed)).toEqual(["question-dot is-answered", "question-dot is-answered is-delegated", "question-dot is-current"])
-})
-
-test("on a finished draft, a question left to the drafter says that answering it runs the drafting again", () => {
-  const status = structuredClone(blockedQuestion) as LeanDraftingStatus
-  const first = status.questions[0]!
-  status.questions = [{ ...first, status: "answered", answer_kind: "decide_for_me" }]
-  const left = handedBackQuestions(status)
-  const note = "This draft is finished. Answering now runs the drafting again with your answer."
-  const finished = questionCard([], { answered: 1, handedBack: left, done: true })
-  expect(finished).toContain(note)
-  expect(finished).toMatch(/<button class="primary" type="button" aria-describedby="[^"]+" disabled="">Answer instead<\/button>/)
-  // While the run is still drafting, the answer is taken as the run goes on.
-  expect(questionCard([], { answered: 1, handedBack: left })).not.toContain(note)
-  // A question still asked on a finished run is answered as usual.
-  expect(questionCard([{ ...first, id: "package-scope-d1" }], { answered: 1, handedBack: left, done: true })).not.toContain(note)
-})
-
-test("with nothing asked, the dock for questions left to the drafter does not call for the lawyer", () => {
-  const status = structuredClone(blockedQuestion) as LeanDraftingStatus
-  const first = status.questions[0]!
-  status.questions = [{ ...first, status: "answered", answer_kind: "decide_for_me" }]
-  const left = handedBackQuestions(status)
-  const dock = (questions: LeanQuestion[]) =>
-    renderToStaticMarkup(
-      createElement(QuestionDock, {
-        matterId: "m", ownerSessionID: "s", questions, answered: 1, handedBack: left, titles: new Map(), busy: false, error: "",
-        onSend: async () => true, onDecide: async () => true,
-      }),
-    )
-  expect(dock([])).toContain('<div class="question-dock is-settled">')
-  expect(dock([{ ...first, id: "q-open", question: "Who bears the cost of storage?" }])).toContain('<div class="question-dock">')
-})
-
-test("a hand-back received but not yet recorded counts as left to the drafter, not answered", () => {
-  const status = structuredClone(blockedQuestion) as LeanDraftingStatus
-  const first = status.questions[0]!
-  status.questions = [
-    { ...first, status: "open" },
-    { ...first, id: "q-later", status: "open", question: "Who bears the cost of storage?" },
-    { ...first, id: "q-taken-back", status: "answered", answer_kind: "decide_for_me" },
-  ]
-  status.queued_answer_ids = [first.id, "q-taken-back"]
-  status.queued_handed_back_ids = [first.id]
-  expect(openQuestions(status).map((question) => question.id)).toEqual(["q-later"])
-  // The queued hand-back is left to the drafter; the recorded one has a real answer queued.
-  expect(handedBackQuestions(status).map((question) => question.id)).toEqual([first.id])
-  const html = questionCard(openQuestions(status), { answered: 2, handedBack: handedBackQuestions(status) })
-  expect(html).toContain("1 answered, 1 left to the drafter, 1 to answer")
-
-  // An older ingest names no queued hand-backs: only recorded ones count, as before.
-  const older = { ...status, queued_handed_back_ids: undefined }
-  expect(handedBackQuestions(older).map((question) => question.id)).toEqual(["q-taken-back"])
+test("nothing in the web app says a question is left to the drafter or handed back", async () => {
+  const root = path.resolve(import.meta.dir, "../src")
+  const found: string[] = []
+  for await (const file of new Bun.Glob("**/*.{ts,tsx,css,html,json,md}").scan({ cwd: root }))
+    if (/left to the drafter|hand(?:ed|ing)?[ -]?back/i.test(await Bun.file(path.join(root, file)).text())) found.push(file)
+  expect(found).toEqual([])
 })
 
 test("a durably queued answer stops being asked before the coordinator applies it", () => {

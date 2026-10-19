@@ -48,6 +48,23 @@ export type LeanOpenItem = {
   ref?: { document?: string; checklist_item?: string; checklist_class?: string }
 }
 
+/** What a question asks the lawyer for: a fact, what their instructions mean, a
+ * professional judgment, the package's scope, a conflict between sources, or a
+ * file's name. */
+export type LeanQuestionKind = "fact" | "instruction" | "judgment" | "scope" | "conflict" | "file_name"
+
+/** One answer the lawyer may pick, in the order the run gives them. */
+export type LeanQuestionOption = { id: string; text: string }
+
+/** The run's advice on an open question: the option it recommends, why, and the
+ * passages that support it (`source_id` is "request" for the lawyer's own
+ * instructions, else a matter file's name or a research URL); or why it
+ * recommends none. `options` are the advice's own, absent when the question
+ * carries options. It is never an answer. */
+export type LeanQuestionAdvice =
+  | { options?: LeanQuestionOption[]; recommendation: { option: string; rationale: string; basis: { source_id: string; quote: string }[] } }
+  | { options?: LeanQuestionOption[]; unavailable: { reason: string; reason_code?: string } }
+
 export type LeanQuestion = {
   id: string
   stage: string
@@ -56,9 +73,12 @@ export type LeanQuestion = {
   context: string
   status: "open" | "answered"
   answer?: string
-  /** The lawyer handed this question back for the drafting to decide: it is
-   * answered with no answer text, and the review draft says what was chosen. */
-  answer_kind?: "decide_for_me"
+  kind?: LeanQuestionKind
+  /** A scope question that also asks for missing facts or approvals. */
+  mixed?: true
+  /** The answers the question itself offers, beside the lawyer's own words. */
+  options?: LeanQuestionOption[]
+  advice?: LeanQuestionAdvice
 }
 
 export type LeanDocument = {
@@ -97,9 +117,6 @@ export type LeanDraftingStatus = {
   pending_requests: number
   /** Answers durably received, waiting for the coordinator to consume them. */
   queued_answer_ids?: string[]
-  /** The queued_answer_ids whose request is a hand-back (Decide for me) rather
-   * than answer text; absent from an older ingest. */
-  queued_handed_back_ids?: string[]
   updates?: { kind?: "clarification"; id: string; text: string; status: "queued" | "included"; progress?: "received" | "applying" | "applied" | "requires-rework" }[]
   open_items: LeanOpenItem[]
   questions: LeanQuestion[]
@@ -260,26 +277,32 @@ export async function stopLeanDraftingRun(matterId: string, ownerSessionID: stri
   return body as LeanDraftingStopped
 }
 
+/** Answers a question in the lawyer's own words. */
 export function answerLeanQuestion(matterId: string, questionID: string, answer: string) {
   return postLeanQuestion(matterId, questionID, { answer }, "Failed to send the answer")
 }
 
-/** Hands an open question the run's model asked back for the drafting to
- * decide; the review draft then says what was chosen and why. */
-export function decideLeanQuestion(matterId: string, questionID: string) {
-  return postLeanQuestion(matterId, questionID, { decide_for_me: true }, "Failed to hand the question back")
+/** Answers a question with one of the options it offers. */
+export function chooseLeanOption(matterId: string, questionID: string, optionID: string) {
+  return postLeanQuestion(matterId, questionID, { option_id: optionID }, "Failed to send the answer")
 }
 
-// Ingest's 409 codes for a question that cannot take this request, in the lawyer's words.
+/** Decide for me: answers the question with the option its advice recommends. */
+export function decideLeanQuestion(matterId: string, questionID: string) {
+  return postLeanQuestion(matterId, questionID, { decide_for_me: true }, "Failed to send the answer")
+}
+
+// Ingest's 409 and 400 codes for a question that cannot take this answer, in the lawyer's words.
 const QUESTION_REFUSALS: Record<string, string> = {
-  not_delegable: "This question needs your own answer. It can't be left to the drafter.",
+  not_delegable: "Decide for me isn't available for this question. Choose an option or write your own answer.",
   already_answered: "This question is already answered.",
+  invalid_answer: "This answer can't be sent. Choose one of the options shown, or write an answer of up to 20,000 characters.",
 }
 
 async function postLeanQuestion(
   matterId: string,
   questionID: string,
-  body: { answer: string } | { decide_for_me: true },
+  body: { answer: string } | { option_id: string } | { decide_for_me: true },
   fallback: string,
 ): Promise<LeanDraftingQueued> {
   const res = await fetch(`${INGEST_URL}/matters/${matterId}/lean/questions/${encodeURIComponent(questionID)}`, {
@@ -287,7 +310,7 @@ async function postLeanQuestion(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   })
-  if (res.status === 409) {
+  if (res.status === 409 || res.status === 400) {
     const refusal: unknown = await res.clone().json().catch(() => undefined)
     const message = record(refusal) && typeof refusal.code === "string" ? QUESTION_REFUSALS[refusal.code] : undefined
     if (message) throw new Error(message)
