@@ -3,7 +3,7 @@ import { sha256File } from "../../lib/lineage"
 import { normalize } from "../../lib/quote-verify"
 import { TOOL_SYNTAX_ISSUE, printedToolCall, record } from "./checks"
 import { readWorkingDocx } from "../../lib/working-docx"
-import { combinedDelivery, deliveryArtifactEvidence, deliveryStem, memoNotesFile, plannedRegistration, readLeanDocuments, redlineOfBody, requestedMemo } from "./deliverables"
+import { combinedDelivery, deliveryArtifactEvidence, deliveryStem, memoNotesFile, plannedRegistration, present, readLeanDocuments, redlineOfBody, requestedMemo } from "./deliverables"
 import { OTHER_FORMAT, formatStem, spelledNames } from "./delivery-selection"
 import { plainFileName, readLeanPlan, type DocID, type PlannedDocument } from "./plan"
 import { tagged } from "./prompts"
@@ -462,7 +462,8 @@ const savedFile = (row: unknown) => record(row) && Array.isArray(row.holds) && r
  * with one document must be that document's combined file (combinedDelivery),
  * one document alone must not be combined, the memo alone must be delivered
  * with no document combined, and a requested name must be the name
- * registration takes for that file. A name the run could not confirm
+ * registration takes for that file; a combined file asked for without a name
+ * must not move off its name for a file kept there. A name the run could not confirm
  * (`refused_name`) always gives an item, whatever file is delivered: the item
  * says the run could not use it as the file's name, never that the lawyer
  * gave it or that the lawyer's words lack it, and adds that the run delivers
@@ -513,8 +514,15 @@ export function requestedFilesItems(directory: string): OpenItem[] {
     const spelled = planned && row.wanted === planned.toLocaleLowerCase() && row.name.startsWith(row.wanted.slice(0, -5))
       ? `${planned.slice(0, -5)}${row.name.slice(row.wanted.length - 5)}` : row.name
     const titled = document ? title(document) ?? null : null
-    // The combined file under the name registration gave or will give it, as the run's evidence names it.
-    if (kind === "combined") return { kind, title: titled, name: planned?.toLocaleLowerCase() ?? row.name, spelled: planned ?? row.name, held: undefined }
+    // The combined file under the name registration gave or will give it, as
+    // the run's evidence names it. Off the requested name while a file there
+    // is kept (`held`), which registration keeps when it may not replace it.
+    if (kind === "combined") {
+      const spelled = planned ?? row.name
+      const requested = combined ? `${combined.name}.docx` : row.wanted
+      const held = spelled.toLocaleLowerCase() !== row.wanted && present(directory, requested) ? requested : undefined
+      return { kind, title: titled, name: spelled.toLocaleLowerCase(), spelled, held }
+    }
     const accepted = (name: string) => Boolean(readWorkingDocx(directory, path.join(directory, name)))
     const runs = (name: string) => {
       const current = sha256File(path.join(directory, name))?.sha256
@@ -553,8 +561,10 @@ export function requestedFilesItems(directory: string): OpenItem[] {
     const check = fileCheck(file, plan.documents, memo !== undefined)
     const shape = fileShape(file)
     const target = shape && deliveredIn(shape.document ?? MEMO)
-    // A name the run could not confirm never counts as delivered as named.
-    const named = file.name !== null ? target?.name === nameKey(file.name) : file.refused_name === undefined
+    // A name the run could not confirm never counts as delivered as named, nor
+    // does one file asked for without a name while a kept file holds the name
+    // the run gives it.
+    const named = file.name !== null ? target?.name === nameKey(file.name) : file.refused_name === undefined && !(target?.kind === "combined" && target.held)
     if (!check.unsupported && !check.issue && named) return []
     const files = new Map<string, NonNullable<ReturnType<typeof delivery>>>()
     for (const held of file.holds) {

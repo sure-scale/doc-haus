@@ -43,7 +43,10 @@ import { leanFile, readLeanJson, writeLeanBytes, writeLeanText, type OpenItem } 
 // the write's lock); a run's save and ingest's rebuild after an accept into a
 // part both record theirs. Any other file under the name is kept, and listed
 // as an earlier combined file when a delivery saved it there, and the new file
-// takes the next free name, as a body does. When the build is refused, the file under the name
+// takes the next free name, as a body does. A save refused under the write's
+// lock takes the next free name too; when the lawyer's request for the file then
+// gives an item the gate's notes did not disclose (requestedFilesItems), the run
+// fails visibly once the summary lists it. When the build is refused, the file under the name
 // holds the lawyer's accepted Word revision or no name is free, it is not
 // saved: a finalize item the notes disclose says so (combinedFileItems).
 
@@ -222,13 +225,32 @@ export async function recordLeanDocuments(directory: string, deps: LeanDeps, reg
   const delivery = titledCombinedDelivery(directory)
   const combined = delivery && await combinedRow(directory, deps, register, delivery, documents, earlier)
   const outputs = documents.flatMap(row => row.deliverable ?? [])
-  if (combined) documents.push(...combined.kept, ...(combined.row ? [combined.row] : []))
+  const own = combined ? [...combined.kept, ...(combined.row ? [combined.row] : [])] : []
+  // The combined files a delivery under another plan saved (another title or
+  // name, or no combined delivery now) stay listed while they are in the
+  // matter, before this run's (`.at(-1)`), so no file a delivery saved as a
+  // combined file is ever listed as a draft.
+  documents.push(...keptCombined(directory, earlier.filter(row => row.kind === "combined" && !(delivery && combinedOf(delivery, row))), [...outputs, ...own.map(row => row.path)]), ...own)
   const summary: LeanDocuments = { schema: "dochaus.lean.documents/2", status: register ? "completed" : "blocked", documents }
   writeLeanText(directory, "documents.json", `${JSON.stringify(summary, null, 2)}\n`)
   if (register) appendLeanEvent(directory, { stage: "run", event: "delivered", outputs: [...outputs, ...(combined?.row?.deliverable ? [combined.row.deliverable] : [])] })
   // The parts are delivered and listed; the run then fails visibly.
   if (combined?.failure) throw new Error(combined.failure)
+  if (combined?.moved) {
+    // A save refused under the write's lock moved the file after the gate's
+    // notes were checked: the request is checked against the name it was saved
+    // under, read from this summary. Imported here, as that check reads this module.
+    const { requestedFilesItems } = await import("./requested-files")
+    const item = requestedFilesItems(directory).find(item => !gateDisclosed(directory, item))
+    if (item) throw new Error(item.detail)
+  }
   return summary
+}
+
+/** Whether the gate's record lists `item` as disclosed by its notes. */
+function gateDisclosed(directory: string, item: OpenItem) {
+  const gate = readLeanJson(directory, "gate.json") as { items?: OpenItem[] } | undefined
+  return Boolean(gate?.items?.some(row => row.id === item.id && row.status === "disclosed"))
 }
 
 /** The summary's earlier rows by kind and title. Document ids are plan
@@ -244,9 +266,14 @@ function earlierRows(rows: LeanDocument[]) {
  * earlier combined files a delivery kept, then the run's own (`.at(-1)`), the
  * file it saved or the name a failed save gave it. */
 function earlierCombined(delivery: CombinedDelivery, rows: LeanDocument[]) {
-  const names = new Set(deliverableNames(delivery.name).map(name => name.toLocaleLowerCase()))
-  return rows.filter(row => row.kind === "combined" && row.title === delivery.title && names.has(row.path.toLocaleLowerCase()))
-    .map(row => ({ ...row, document: delivery.document }))
+  return rows.filter(row => combinedOf(delivery, row)).map(row => ({ ...row, document: delivery.document }))
+}
+
+/** Whether `row` is a combined row of this combined document: its title, under
+ * a name registration gives it. */
+function combinedOf(delivery: CombinedDelivery, row: LeanDocument) {
+  return row.kind === "combined" && row.title === delivery.title &&
+    deliverableNames(delivery.name).some(name => name.toLocaleLowerCase() === row.path.toLocaleLowerCase())
 }
 
 /** The combined file's summary rows: `kept`, the earlier combined files still in
@@ -262,8 +289,9 @@ function earlierCombined(delivery: CombinedDelivery, rows: LeanDocument[]) {
  * its name. At a stop before delivery, the earlier row is kept, delivered only
  * while both parts are and its file still holds the system's last write of it
  * (ownedDeliverable). `failure` says why the file
- * is not saved when the gate's notes did not disclose it (combinedFileItems). */
-async function combinedRow(directory: string, deps: LeanDeps, register: boolean, delivery: CombinedDelivery, documents: LeanDocument[], rows: LeanDocument[]): Promise<{ kept: LeanDocument[]; row?: LeanDocument; failure?: string }> {
+ * is not saved when the gate's notes did not disclose it (combinedFileItems);
+ * `moved`, that a save refused under the write's lock saved it under a later name. */
+async function combinedRow(directory: string, deps: LeanDeps, register: boolean, delivery: CombinedDelivery, documents: LeanDocument[], rows: LeanDocument[]): Promise<{ kept: LeanDocument[]; row?: LeanDocument; failure?: string; moved?: true }> {
   const earlier = earlierCombined(delivery, rows)
   const prior = earlier.at(-1)
   const others = [...rows, ...documents].filter(row => row.kind !== "combined")
@@ -275,11 +303,7 @@ async function combinedRow(directory: string, deps: LeanDeps, register: boolean,
   const read = (file: string) => new Uint8Array(readFileSync(path.join(directory, file)))
   const outcome = combinedOutcome(directory, delivery, parts && { memo: read(parts.notes), body: read(parts.body) }, earlier, others)
   if (!outcome) return unsaved(`The combined file "${combinedName(delivery, prior)}" is not saved in the matter: the memo and "${delivery.title}" are not both registered.`)
-  if ("item" in outcome) {
-    const gate = readLeanJson(directory, "gate.json") as { items?: OpenItem[] } | undefined
-    const disclosed = gate?.items?.some(item => item.id === outcome.item.id && item.status === "disclosed")
-    return unsaved(disclosed ? undefined : outcome.item.detail)
-  }
+  if ("item" in outcome) return unsaved(gateDisclosed(directory, outcome.item) ? undefined : outcome.item.detail)
   const row = (name: string, deliverable: string | null): LeanDocument => ({ kind: "combined", document: delivery.document, title: delivery.title, path: name, sha256: outcome.sha256, deliverable })
   const save = async (name: string, current: string | null) => {
     try {
@@ -293,7 +317,7 @@ async function combinedRow(directory: string, deps: LeanDeps, register: boolean,
     const registered = await save(next.name, next.current)
     // The parts are registered; a file the matter cannot take is the run's visible failure, not a lost summary.
     if (registered instanceof Error) return { kept: kept(next.name), row: row(next.name, null), failure: `The combined file "${next.name}" is not saved in the matter: ${registered.message}` }
-    if (registered) return { kept: kept(registered), row: row(registered, registered) }
+    if (registered) return { kept: kept(registered), row: row(registered, registered), ...(next !== outcome.first ? { moved: true } : {}) }
   }
   return { kept: kept(outcome.first.name), row: row(outcome.first.name, null), failure: `The combined file "${outcome.first.name}" is not saved in the matter: the matter refused it.` }
 }
@@ -318,7 +342,7 @@ function keptCombined(directory: string, earlier: LeanDocument[], taken: string[
 }
 
 /** Whether a file, link or anything else has the matter name `name`. */
-function present(directory: string, name: string) {
+export function present(directory: string, name: string) {
   try {
     lstatSync(path.join(directory, name))
     return true
@@ -462,12 +486,14 @@ function sourceName(directory: string, name: string) {
 /** Drops the summary rows of documents no longer planned. Rows are matched by
  * title, since a plan edit can give a kept document another id. A file already
  * registered for a dropped document stays in the matter: the run never removes
- * a matter document. */
+ * a matter document. A combined file a delivery saved keeps its row, which
+ * lists it as an earlier combined file while it is in the matter
+ * (recordLeanDocuments). */
 export function forgetUnplannedDocuments(directory: string) {
   const summary = readLeanDocuments(directory)
   const titles = new Set(readLeanPlan(directory)?.documents.map(row => row.title))
   if (!summary || !titles.size) return
-  const documents = summary.documents.filter(row => row.title === null || titles.has(row.title))
+  const documents = summary.documents.filter(row => row.title === null || titles.has(row.title) || (row.kind === "combined" && row.deliverable !== null))
   if (documents.length < summary.documents.length) writeLeanText(directory, "documents.json", `${JSON.stringify({ ...summary, documents }, null, 2)}\n`)
 }
 
