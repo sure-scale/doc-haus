@@ -307,7 +307,7 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
     const questions = result.questions && await adviseQuestions(directory, state, step, deps, result.questions.map(question => document ? { ...question, document } : question))
     if (paused()) return { state: settlePause(directory, state), paused: true }
     if (preferencesChanged()) {
-      state = updateLeanStage(directory, state, step, { status: "pending", input_sha: null, outputs: [], finished_at: null })
+      state = updateLeanStage(directory, state, step, { status: "pending", ...unkeyed(step), outputs: [], finished_at: null })
       return { state, restart: true }
     }
     replaceStageOpenItems(directory, stage, document ?? null, document ? result.openItems.map(item => inDocument(item, document)) : result.openItems)
