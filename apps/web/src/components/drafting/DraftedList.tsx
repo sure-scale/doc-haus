@@ -1,14 +1,13 @@
-import { useState, type ReactNode } from "react"
-import { documentContentUrl, fetchCombinedDocument } from "../../api/ingest/documents"
-import { humanizeError } from "../../api/ingest/errors"
-import { useToast } from "../Toast"
+import type { ReactNode } from "react"
+import { documentContentUrl } from "../../api/ingest/documents"
 import { OUTPUT_ROLE, type DraftedGroup, type DraftedOutput } from "./model"
 
 // The Word files a drafting run produced: each draft with its redline (and, for
 // a one-document run, the drafting notes) nested beneath it. The name opens the
 // file in the viewer; the icon button downloads the .docx. `fresh` marks rows the
 // run produced while the lawyer watched, for a one-time highlight. A combined
-// document's one file leads its group, with the draft it holds beneath it.
+// document's one file leads its group, with the draft it holds beneath it; a
+// combined file from an earlier run says so on its row.
 export default function DraftedList({
   matterId,
   groups,
@@ -52,33 +51,9 @@ export default function DraftedList({
   )
 }
 
-/** Saves a combined document's one file, composed by ingest on request; a
- * refusal (a part gone, or memo content the file cannot carry) shows as an
- * error toast, like other failed file actions. */
-export function useCombinedDownload(matterId: string) {
-  const toast = useToast()
-  const [busy, setBusy] = useState(false)
-  async function download(name: string) {
-    setBusy(true)
-    try {
-      const url = URL.createObjectURL(await fetchCombinedDocument(matterId, name))
-      const a = document.createElement("a")
-      a.href = url
-      a.download = name
-      a.click()
-      URL.revokeObjectURL(url)
-    } catch (error) {
-      toast("error", humanizeError(error, `Could not download ${name}.`))
-    } finally {
-      setBusy(false)
-    }
-  }
-  return { busy, download }
-}
-
-/** The combined file is not a matter file, so it has no viewer; it downloads only. */
+/** The combined file downloads as the file saved in the matter, as every
+ * other row does. */
 function CombinedRow({ matterId, name }: { matterId: string; name: string }) {
-  const { busy, download } = useCombinedDownload(matterId)
   return (
     <div className="drafted-row is-main">
       <FileIcon />
@@ -91,16 +66,15 @@ function CombinedRow({ matterId, name }: { matterId: string; name: string }) {
           <span className="drafted-tag is-combined">Memo and draft</span>
         </div>
       </div>
-      <button
-        type="button"
+      <a
         className="icon-btn drafted-download"
-        disabled={busy}
-        onClick={() => download(name)}
+        href={documentContentUrl(matterId, name)}
+        download={name}
         aria-label={`Download ${name}`}
         title="Download the memo and the draft as one .docx"
       >
         <DownloadIcon />
-      </button>
+      </a>
     </div>
   )
 }
@@ -134,7 +108,7 @@ function OutputRow({
           </span>
         )}
         <div className="drafted-file-meta">
-          <span className="document-origin is-created">Created by Doc.Haus</span>
+          <span className="document-origin is-created">Created by Doc.Haus{output.role === "earlier_combined" ? " in an earlier run" : ""}</span>
           {label ?? <span className={`drafted-tag is-${output.role}`}>{OUTPUT_ROLE[output.role]}</span>}
         </div>
       </div>

@@ -16,6 +16,7 @@ import { excerpt, proseQuoteFound, openItem } from "./quotes"
 import { answeredScopeQuestion, GATE_EXCERPT, keyedQuestionID, openScopeQuestion, scopeAnswers, scopeField, scopeQuestionShows } from "./package-scope"
 import { LEAN_MAX_SUBSTANTIVE_REPAIRS, readRepairRound, repairedChecklistItems } from "./repairs"
 import { requestedFilesItems } from "./requested-files"
+import { combinedFileItems } from "./deliverables"
 import { withheldChecklistRepair } from "./requests"
 import { isReviewStage, currentOpenItems, readLeanText, readLeanJson, readLeanState, readQuestions, type LeanState, type OpenItem, type Question } from "./state"
 
@@ -125,7 +126,7 @@ export function finalGate(directory: string): GateResult {
     ...checked.unresolvedParents.map(row => checklistUnresolvedParentItem(directory, row))] : []
   // A file name in the instructions the package review withheld is disclosed with the
   // draft, never blocking it: the notes were written before that review.
-  const items = [...unresolved, ...[...currentOpenItems(directory), ...deferredFindingItems(directory), ...coverageItems(directory), ...requestedFilesItems(directory)].map(item => settle(item, context)), ...semantic, ...projected, ...withheldDeliveryItems(directory)]
+  const items = [...unresolved, ...[...currentOpenItems(directory), ...deferredFindingItems(directory), ...coverageItems(directory), ...requestedFilesItems(directory), ...combinedFileItems(directory)].map(item => settle(item, context)), ...semantic, ...projected, ...withheldDeliveryItems(directory)]
   if (checked && !checked.valid) items.push(openItem("checklist-check", "omission", "Effective checklist findings or source-unit coverage are incomplete or stale, or a check or its reinspection failed; see checklist/report.md.", {}))
   // Focused checks can correctly preserve a source-dependent open issue
   // without requesting a missing answer or inventing a disclosure. Such a

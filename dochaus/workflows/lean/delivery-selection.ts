@@ -38,7 +38,7 @@ export function checkDeliverySelections(directory: string, value: unknown): stri
     if (!target || (target.name === target.wanted && group.length === 1)) return []
     if (!combined || !notes || group.length !== 2 || !group.includes(combined) || !group.some(file => file.kind === "drafting_notes")) return [DISTINCT_FILES]
     const name = rows.findLast(row => row.document === combined.document)?.file ?? notes.file
-    return [`"${name}" is the one file that holds the memo and document ${combined.document}. Select this file by one row: document "${combined.document}", role body, filename "${name}". Keep the other rows. The code builds it from the memo and the clean body at download; give no drafting_notes row for it.`]
+    return [`"${name}" is the one file that holds the memo and document ${combined.document}. Select this file by one row: document "${combined.document}", role body, filename "${name}". Keep the other rows. The code builds it from the memo and the clean body at delivery; give no drafting_notes row for it.`]
   }))
   if (!messages.size && !distinctFiles(rows)) messages.add(DISTINCT_FILES)
   return [...issues, ...messages]

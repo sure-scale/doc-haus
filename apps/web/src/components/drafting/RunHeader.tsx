@@ -108,7 +108,10 @@ export default function RunHeader({
   const settled = leanSettledItems(status)
   const note = status.status === "completed" || !settled ? openItemsSentence(status) : settled.length > 0 ? leanSettledSummary(settled, status.memo) : undefined
   const verdict = finalCheckNote(status)
-  const held = status.documents?.status === "blocked" ? status.documents.documents.filter((document) => document.kind !== "drafting_notes_markdown").length : 0
+  // The combined file holds the memo and a draft already counted, so it is not counted again.
+  const held = status.documents?.status === "blocked"
+    ? status.documents.documents.filter((document) => document.kind !== "drafting_notes_markdown" && document.kind !== "combined").length
+    : 0
   const canContinue = leanContinueAvailable(status) && !actions.resuming
   const canPause = runState(status) === "running" && !actions.resuming
   const canStop = leanStopAvailable(status) && !actions.resuming

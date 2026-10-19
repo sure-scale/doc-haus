@@ -149,6 +149,11 @@ test("the run header says where the run is in one line and offers the one next s
   expect(asked).not.toContain(blockedQuestion.questions[0]!.question)
   expect(asked).not.toContain("Continue drafting")
   expect(asked).toContain("held until the final check passes")
+  expect(asked).toContain("3 prepared documents are held")
+  // A combined file holds the memo and a draft already counted, so a stop that keeps one counts the same.
+  const combined = structuredClone(blockedQuestion)
+  combined.documents.documents.push({ kind: "combined", document: "d1", title: "Supply note", path: "supply-note.docx", sha256: "0".repeat(64), deliverable: "supply-note.docx" })
+  expect(render(combined)).toContain("3 prepared documents are held")
   expect(asked).not.toContain("`")
   const gated = render(blockedGate)
   expect(gated).toContain("Continue drafting")

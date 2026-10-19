@@ -3,7 +3,7 @@ import { sha256File } from "../../lib/lineage"
 import { normalize } from "../../lib/quote-verify"
 import { TOOL_SYNTAX_ISSUE, printedToolCall, record } from "./checks"
 import { readWorkingDocx } from "../../lib/working-docx"
-import { combinedDelivery, deliveryArtifactEvidence, deliveryStem, memoNotesFile, plannedRegistration, readLeanDocuments, redlineOfBody, requestedMemo } from "./deliverables"
+import { combinedDelivery, combinedFileItems, deliveryArtifactEvidence, deliveryStem, memoNotesFile, plannedRegistration, present, readLeanDocuments, redlineOfBody, requestedMemo } from "./deliverables"
 import { OTHER_FORMAT, formatStem, spelledNames } from "./delivery-selection"
 import { plainFileName, readLeanPlan, type DocID, type PlannedDocument } from "./plan"
 import { tagged } from "./prompts"
@@ -462,7 +462,8 @@ const savedFile = (row: unknown) => record(row) && Array.isArray(row.holds) && r
  * with one document must be that document's combined file (combinedDelivery),
  * one document alone must not be combined, the memo alone must be delivered
  * with no document combined, and a requested name must be the name
- * registration takes for that file. A name the run could not confirm
+ * registration takes for that file; a combined file asked for without a name
+ * must not move off its name for a file kept there. A name the run could not confirm
  * (`refused_name`) always gives an item, whatever file is delivered: the item
  * says the run could not use it as the file's name, never that the lawyer
  * gave it or that the lawyer's words lack it, and adds that the run delivers
@@ -475,9 +476,17 @@ const savedFile = (row: unknown) => record(row) && Array.isArray(row.holds) && r
  * (answeredFiles), the item cites that answer in plain words, quoting the
  * words it listed when they are more or fewer than the item's, but only while
  * the plan delivers the file as that question showed; otherwise the lawyer
- * should confirm it. Each id keys on the item's content. */
-export function requestedFilesItems(directory: string): OpenItem[] {
-  return [...new Map(requestedFilesRaised(directory).map(({ item }) => [item.id, item])).values()]
+ * should confirm it. Each item refers to its file by the file's index in the
+ * record (`requested_file`) and lists the names it says the run delivers that
+ * file's contents in (`delivered_names`); its id keys on its content and these.
+ * A file the record lists more than once, alike in every field, gives one item,
+ * about its first listing.
+ * With `told`, the items the gate's notes disclosed, only the items of the
+ * files whose name the lawyer's words give or to which one of `told` refers;
+ * an item that refers to no file, as a gate's record from before items carried
+ * the reference holds, counts for none. */
+export function requestedFilesItems(directory: string, told?: OpenItem[]): OpenItem[] {
+  return requestedFilesRaised(directory, told).map(({ item }) => item)
 }
 
 /** Whether a requested-files item (requestedFilesItems) is about a file the
@@ -489,9 +498,9 @@ export function requestedFilesItemNamed(directory: string, file: string) {
 
 const requestedNameKey = (name: string) => `${deliveryStem({ title: "", file: name })}.docx`.toLocaleLowerCase()
 
-/** Each requested-files item with the name its file records, recorded or
- * refused, when it records one. */
-function requestedFilesRaised(directory: string): { item: OpenItem; name?: string }[] {
+/** Each requested-files item (requestedFilesItems, with `told` as there) with
+ * the name its file records, recorded or refused, when it records one. */
+function requestedFilesRaised(directory: string, told?: OpenItem[]): { item: OpenItem; name?: string }[] {
   const plan = readLeanPlan(directory)
   const saved = readRequestedFiles(directory)
   if (!plan || plan.basis === undefined || !saved || saved.basis !== plan.basis ||
@@ -515,7 +524,8 @@ function requestedFilesRaised(directory: string): { item: OpenItem; name?: strin
   // makes registration take a name not known before it registers (`name`
   // null), and is described alike before and after it registers (`spelled`
   // null). A file is the run's when absent, holding the bytes the run
-  // registered there for this document, or holding the lawyer's accepted Word
+  // registered there for this document as a part (an earlier combined file
+  // under that name is kept), or holding the lawyer's accepted Word
   // revision of them (acceptedRevisionName), as the notes are once an accept
   // adds their addendum, before the summary is next written. A redline whose
   // body is kept at an accepted revision is kept as registration keeps it
@@ -528,11 +538,19 @@ function requestedFilesRaised(directory: string): { item: OpenItem; name?: strin
     const spelled = planned && row.wanted === planned.toLocaleLowerCase() && row.name.startsWith(row.wanted.slice(0, -5))
       ? `${planned.slice(0, -5)}${row.name.slice(row.wanted.length - 5)}` : row.name
     const titled = document ? title(document) ?? null : null
-    if (kind === "combined") return { kind, title: titled, name: row.name, spelled, held: undefined }
+    // The combined file under the name registration gave or will give it, as
+    // the run's evidence names it. Off the requested name while a file there
+    // is kept (`held`), which registration keeps when it may not replace it.
+    if (kind === "combined") {
+      const spelled = planned ?? row.name
+      const requested = combined ? `${combined.name}.docx` : row.wanted
+      const held = spelled.toLocaleLowerCase() !== row.wanted && present(directory, requested) ? requested : undefined
+      return { kind, title: titled, name: spelled.toLocaleLowerCase(), spelled, held }
+    }
     const accepted = (name: string) => Boolean(readWorkingDocx(directory, path.join(directory, name)))
     const runs = (name: string) => {
       const current = sha256File(path.join(directory, name))?.sha256
-      return !current || rows.some(other => other.title === titled && other.deliverable?.toLocaleLowerCase() === name.toLocaleLowerCase() &&
+      return !current || rows.some(other => other.kind !== "combined" && other.title === titled && other.deliverable?.toLocaleLowerCase() === name.toLocaleLowerCase() &&
         (other.sha256 === current || (other.kind === "redline" ? keptRedline(other.document, other.deliverable)
           : other.conflict === "accepted_revision" || accepted(other.deliverable))))
     }
@@ -550,10 +568,15 @@ function requestedFilesRaised(directory: string): { item: OpenItem; name?: strin
     if (earlier && runs(earlier)) return { kind, title: titled, name: earlier.toLocaleLowerCase(), spelled: held ? null : earlier, held }
     return held ? { kind, title: titled, name: null, spelled: null, held } : { kind, title: titled, name: row.name, spelled, held }
   }
+  // The memo and the combined document go in one file unless registration will
+  // not save it (combinedFileItems, whose item says so): then each is delivered
+  // as its own file, its part as registered. Read once, when first needed.
+  let joined: boolean | undefined
+  const together = () => joined ??= combinedFileItems(directory).length === 0
   const deliveredIn = (id: string) => {
-    if (id === MEMO) return !memo ? null : combined ? delivery("combined", combined.document) : delivery("drafting_notes", null)
+    if (id === MEMO) return !memo ? null : combined && together() ? delivery("combined", combined.document) : delivery("drafting_notes", null)
     const document = plan.documents.find(row => row.id === id)
-    return !document ? null : combined?.document === document.id ? delivery("combined", document.id) : delivery(document.deliverable === "redline" ? "redline" : "body", document.id)
+    return !document ? null : combined?.document === document.id && together() ? delivery("combined", document.id) : delivery(document.deliverable === "redline" ? "redline" : "body", document.id)
   }
   const describe = (file: NonNullable<ReturnType<typeof delivery>>) => {
     const what = file.kind === "combined" ? `the memo and "${file.title}"` : file.kind === "drafting_notes" ? "the memo" : `"${file.title}"${file.kind === "redline" ? " as a redline" : ""}`
@@ -562,13 +585,22 @@ function requestedFilesRaised(directory: string): { item: OpenItem; name?: strin
   }
   const lawyerQuote = (words: string) => `"${words.replace(/\s+/g, " ").trim()}"` + (matterSourceIDs(directory).includes(REQUEST_SOURCE) ? "" : ` [source: ${REQUEST_SOURCE}]`)
   const answered = answeredFiles(directory)
-  const items = saved.files.flatMap(file => {
+  // A file the record lists twice, alike in every field, is one file: the first
+  // listing stands for both, so the notes have one item to disclose.
+  const entry = (file: RequestedFile) => JSON.stringify([file.holds, file.name, file.quote, file.refused_name ?? null])
+  const firsts = new Map<string, number>()
+  saved.files.forEach((file, index) => { if (!firsts.has(entry(file))) firsts.set(entry(file), index) })
+  return saved.files.flatMap((file, index) => {
+    if (firsts.get(entry(file)) !== index) return []
+    if (told && file.name === null && !told.some(item => item.ref.requested_file === index)) return []
     const check = fileCheck(file, plan.documents, memo !== undefined)
     const shape = fileShape(file)
     const target = shape && deliveredIn(shape.document ?? MEMO)
-    // A name the run could not confirm never counts as delivered as named.
-    const named = file.name !== null ? target?.name === requestedNameKey(file.name) : file.refused_name === undefined
-    if (!check.unsupported && !check.issue && named) return []
+    // A name the run could not confirm never counts as delivered as named, nor
+    // does one file asked for without a name while a kept file holds the name
+    // the run gives it.
+    const asNamed = file.name !== null ? target?.name === requestedNameKey(file.name) : file.refused_name === undefined && !(target?.kind === "combined" && target.held)
+    if (!check.unsupported && !check.issue && asNamed) return []
     const files = new Map<string, NonNullable<ReturnType<typeof delivery>>>()
     for (const held of file.holds) {
       const delivered = deliveredIn(held)
@@ -590,12 +622,11 @@ function requestedFilesRaised(directory: string): { item: OpenItem; name?: strin
         "the plan drawn up with that answer still delivers them so."
       : " The lawyer should confirm how these files are to be delivered."
     const name = file.name ?? file.refused_name
-    return [{ ...(name !== undefined ? { name } : {}), item: openItem("finalize", "omission", `Requested files: the lawyer's words ${lawyerQuote(file.quote)} ask for ${what}` +
-      (refused === undefined ? `, but the run delivers ${delivers}.`
-        : `, but the run could not use "${refused}" as its name${format ? " and delivers .docx files only" : ""}; it delivers ${delivers}.`) +
-      `${reason}${closing}`, { repair_target: "memo" }) }]
+    return [{ ...(name !== undefined ? { name } : {}), item: openItem("finalize", "omission", `Requested files: the lawyer's words ${lawyerQuote(file.quote)} ask for ${what}, but the run ` +
+      (refused === undefined ? `delivers ${delivers}.`
+        : `could not use "${refused}" as its name${format ? " and delivers .docx files only" : ""}; it delivers ${delivers}.`) +
+      `${reason}${closing}`, { repair_target: "memo", requested_file: index, delivered_names: [...files.values()].map(file => file.spelled) }) }]
   })
-  return items
 }
 
 const titles = (documents: { title: string }[]) => serialList(documents.map(document => `"${document.title}"`))

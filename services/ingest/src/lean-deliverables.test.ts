@@ -16,7 +16,8 @@ import { sha256File } from "../../../dochaus/lib/lineage"
 import { readDocxCommentParagraphs } from "../../../dochaus/lib/docx-comments"
 import { withParagraphPointers } from "../../../dochaus/lib/drafting-amendment"
 import { readLeanJson } from "../../../dochaus/workflows/lean/state"
-import { writeDeliverableRevision } from "./deliverable"
+import { writeDeliverable, writeDeliverableRevision } from "./deliverable"
+import { pendingRedlinesForDoc, recordRedline } from "../../../dochaus/lib/redlines"
 import { acceptedWorkingDocxUpdate } from "./document-amendments"
 
 // Real coordinator, real deliverable registry write and real matter database.
@@ -81,6 +82,36 @@ test("a completed lean run registers its Word files as matter deliverables and d
   expect(readFileSync(path.join(directory, "Supply note.docx"), "utf8")).toBe("replaced by the lawyer")
   expect(deliverables(directory)).toContain("Supply note (2).docx")
 }, 120_000)
+
+test("a replace of a file that must still be the system's is refused under the write's lock once another write saved it or a proposal on it is pending", async () => {
+  const directory = ingestMatter()
+  const name = "supply-pack.docx"
+  const file = path.join(directory, name)
+  const docx = async (text: string) => new Uint8Array(await Packer.toBuffer(new Document({ sections: [{ children: [new Paragraph(text)] }] })))
+  const sha256 = () => sha256File(file)!.sha256
+  expect(await registerLeanDeliverable(directory, name, await docx("First wording."), null)).toBe(name)
+  // Another write saves the same bytes: the system's record of its write is gone.
+  const first = readFileSync(file)
+  await writeDeliverable(directory, name, first, { precondition: { kind: "replace", prior_sha256: sha256() } })
+  expect(readFileSync(file)).toEqual(first)
+  expect(await registerLeanDeliverable(directory, name, await docx("Second wording."), sha256(), { owned: true })).toBeUndefined()
+  expect(readFileSync(file)).toEqual(first)
+
+  // The system's own write again, then a proposal pending on it.
+  expect(await registerLeanDeliverable(directory, name, await docx("Second wording."), sha256())).toBe(name)
+  const second = readFileSync(file)
+  recordRedline(directory, { docPath: name, docName: name, scope: "phrase", findText: "Second", oldText: "Second", newText: "Revised", author: "reviewer", reviewComment: "", anchorId: "p000000000001" })
+  expect(await registerLeanDeliverable(directory, name, await docx("Third wording."), sha256(), { owned: true })).toBeUndefined()
+  expect(readFileSync(file)).toEqual(second)
+  expect(pendingRedlinesForDoc(directory, name)).toHaveLength(1)
+
+  // Once the lawyer resolves it, the system's file is replaced.
+  const db = openDb(directory)
+  db.run("UPDATE redlines SET status = 'rejected'")
+  db.close()
+  expect(await registerLeanDeliverable(directory, name, await docx("Third wording."), sha256(), { owned: true })).toBe(name)
+  expect(readFileSync(file)).not.toEqual(second)
+})
 
 test("a source document's name is never taken over by a deliverable", async () => {
   const directory = ingestMatter()

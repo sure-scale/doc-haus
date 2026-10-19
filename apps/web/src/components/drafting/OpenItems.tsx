@@ -1,12 +1,13 @@
 import { useState } from "react"
 import type { LeanOpenItem } from "../../api/ingest/lean"
-import { capGroups, groupOpenItems, openItemClass, openItemTag } from "./model"
+import { capGroups, groupOpenItems, openItemClass, openItemDetail, openItemTag } from "./model"
 
 const CAP = 5
 
 // The run's open items behind one expander, grouped by kind. Long lists show the
-// first few and a "Show all"; each item reads as the run recorded it. Unresolved
-// checklist findings lead the list and are never cut by the cap.
+// first few and a "Show all"; each item reads as the run recorded it, its source
+// tags in plain words. Unresolved checklist findings lead the list and are never
+// cut by the cap.
 export default function OpenItems({ items, titles }: { items: LeanOpenItem[]; titles: Map<string, string> }) {
   const [all, setAll] = useState(false)
   if (items.length === 0) return null
@@ -38,7 +39,7 @@ export default function OpenItems({ items, titles }: { items: LeanOpenItem[]; ti
                   {item.ref?.document && titles.size > 1 && titles.get(item.ref.document) && (
                     <span className="open-item-doc">{titles.get(item.ref.document)}</span>
                   )}
-                  <span>{item.detail}</span>
+                  <span>{openItemDetail(item)}</span>
                 </li>
               ))}
             </ul>

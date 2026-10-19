@@ -9,7 +9,7 @@ import { readLeanState, writeLeanText } from "./state"
 import { AGENT, DRAFT, cleanupMatters, drafter, matter, scriptedModel, type Reply } from "./test-support"
 
 // A requested memo is written separately, as the run's drafting notes, once the
-// documents are final; a combined file is built at download, the memo first and
+// documents are final; a combined file is built at delivery, the memo first and
 // then the clean body. Every body stage is told so from two flags (memo
 // requested; this document is the combined body), the scope guards fire on it,
 // and content-keyed resume sees it. Without a memo nothing changes.
@@ -17,7 +17,7 @@ import { AGENT, DRAFT, cleanupMatters, drafter, matter, scriptedModel, type Repl
 afterEach(cleanupMatters)
 
 const SEPARATE = "The request asks for a memo to accompany the documents. The run writes that memo separately, as the drafting notes, after the documents are final; it is not part of this document's body."
-const COMBINED = "The request asks for that memo and this document in one file. The code builds that file at download: the memo first, then this document's clean body."
+const COMBINED = "The request asks for that memo and this document in one file. The code builds that file at delivery: the memo first, then this document's clean body."
 const KEEP_OUT = "Do not report the memo as missing from this body, and do not insert memo, cover-note or advice text meant for the memo into this body."
 const KEEP_OWN = "Content this document's own purpose or the request assigns to it still belongs in this body. Advice belongs in this body only when this document's purpose is advice, and a reference to the memo only when the request requires one."
 const BLOCK = `<package_composition>\n${SEPARATE}\n${KEEP_OUT}\n${KEEP_OWN}\n</package_composition>`
@@ -28,7 +28,7 @@ const REVIEW_BOTH = "- Review only this document. Content the request assigns to
 const CHANGES_BOTH = "- Amend only this document. Content the request assigns to another planned document or the accompanying memo belongs there; leave out a finding that asks for it here."
 const REVIEW_PLANNED = "- Review only this document. Content the request assigns to another planned document is not missing from this one; do not report it here."
 const CHANGES_PLANNED = "- Amend only this document. Content the request assigns to another planned document belongs in that document; leave out a finding that asks for it here."
-const PACKAGE_LINE = "The requested memo is the run-wide drafting notes, delivered separately from the document bodies; where a document and the memo share one file, the code places the memo before that body at download. Memo, cover-note or advice text meant for the memo that appears inside a document body is a body finding against that document. Content a document's own purpose or the request assigns to that document still belongs in its body. Advice belongs in a body only when that document's purpose is advice, and a reference to the memo only when the request requires one."
+const PACKAGE_LINE = "The requested memo is the run-wide drafting notes, delivered separately from the document bodies; where a document and the memo share one file, the code places the memo before that body at delivery. Memo, cover-note or advice text meant for the memo that appears inside a document body is a body finding against that document. Content a document's own purpose or the request assigns to that document still belongs in its body. Advice belongs in a body only when that document's purpose is advice, and a reference to the memo only when the request requires one."
 
 const NOTE: Omit<PlannedDocument, "id"> = { title: "Supply note", purpose: "Operative terms", parts: [{ heading: "Delivery", scope: "Delivery terms" }] }
 const SCHEDULE: Omit<PlannedDocument, "id"> = { title: "Delivery schedule", purpose: "Delivery dates", parts: [{ heading: "Dates", scope: "The delivery dates" }] }

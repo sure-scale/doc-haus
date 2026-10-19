@@ -81,6 +81,18 @@ export type OpenItem = {
     checklist_item?: string
     /** Why a checklist_unresolved finding remains adverse; absent for a parent's coverage. */
     checklist_class?: ChecklistFindingClass
+    /** The requested file a Requested-files item is about: its index in the
+     * saved requested-files record, which is written with the plan. */
+    requested_file?: number
+    /** The names a Requested-files item says the run delivers that file's
+     * contents in, in its order; null for a file of a name not known before it
+     * registers. */
+    delivered_names?: (string | null)[]
+    /** The combined file an item saying it is not saved is about, by the
+     * name it states. */
+    combined_file?: string
+    /** Why that combined file is not saved, as a fixed code. */
+    unsaved_reason?: string
   }
   status: "open" | "resolved" | "disclosed"
   resolution?: string

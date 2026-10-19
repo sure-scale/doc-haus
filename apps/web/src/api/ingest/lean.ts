@@ -59,7 +59,8 @@ export type LeanQuestion = {
 }
 
 export type LeanDocument = {
-  kind: "body" | "redline" | "drafting_notes" | "drafting_notes_markdown"
+  /** "combined": a combined document's one file, saved in the matter at delivery. */
+  kind: "body" | "redline" | "drafting_notes" | "drafting_notes_markdown" | "combined"
   /** Planned document id ("d1"...); null for the drafting notes, which cover the run. */
   document: string | null
   title: string | null
@@ -119,12 +120,13 @@ export type LeanDraftingStatus = {
    * drafting notes are written and delivered as; null when none was requested,
    * absent from an older ingest. */
   memo?: string | null
-  /** The one file (`file`, "<name>.docx") a combined document is delivered as:
-   * the requested memo, then the body. `document` is the planned document's id,
-   * and `body` and `notes` the exact names its two parts are registered under
-   * (the body as "<name> - clean" or its next free name). Ingest reports it only
-   * once both parts are delivered and composes it on each download, so it is
-   * never a matter file; null otherwise, absent from an older ingest. */
+  /** The one file (`file`, "<name>.docx" or its next free name) a combined
+   * document is delivered as: the requested memo, then the body. `document` is
+   * the planned document's id, and `body` and `notes` the exact names its two
+   * parts are registered under (the body as "<name> - clean" or its next free
+   * name). Ingest reports it only once both parts are delivered; the file is
+   * saved in the matter at delivery and rebuilt when a change is accepted into
+   * a part. Null otherwise, absent from an older ingest. */
   combined_output?: { document: string; name: string; file: string; body: string; notes: string } | null
   /** The lawyer's drafting request as the run recorded it. */
   request?: string | null
