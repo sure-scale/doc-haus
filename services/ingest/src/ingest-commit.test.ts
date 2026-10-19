@@ -14,8 +14,9 @@ import { recoverDocumentMutations } from "./document-mutation"
 import { MODEL } from "./embed"
 import * as identifierExtraction from "./identifiers"
 import { ingestDocument } from "./ingest"
+import * as lineage from "./lineage"
 import { stampIngestLineage } from "./lineage"
-import { sourceArtifactsMatchRegistry, writeSourceArtifacts } from "./source-artifacts"
+import { healSourceArtifacts, sourceArtifactsMatchRegistry, writeSourceArtifacts } from "./source-artifacts"
 import { chunkSection, migrateSections, migrateStructure, sectionize } from "./structure"
 
 // Every fixture below is invented test content: no actual person,
@@ -569,4 +570,59 @@ describe("after a source mutation is interrupted", () => {
       rmSync(directory, { recursive: true, force: true })
     }
   }, 120_000)
+
+  test("recovery stamps the installed bytes of a delete that stopped before stamping lineage", async () => {
+    const directory = realpathSync(mkdtempSync(path.join(tmpdir(), "dochaus-source-recovery-")))
+    try {
+      writeCorpus(directory, 3)
+      await writeSourceArtifacts(directory)
+      const before = lineageRows(directory).length
+      const stop = spyOn(lineage, "stampIngestLineage").mockImplementation(() => {
+        throw new Error("stopped before the stamp")
+      })
+      try {
+        await expect(deleteMatterDocument(directory, "Corpus 00.docx")).rejects.toThrow("stopped before the stamp")
+      } finally {
+        stop.mockRestore()
+      }
+      expect(lineageRows(directory).length).toBe(before)
+      await recoverDocumentMutations(directory)
+      expect(stampedSince(directory, before)).toEqual(installedArtifacts(directory))
+      expect(await transactionsSettled(directory)).toBe(true)
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  }, 120_000)
+
+  test("the startup heal stamps the bytes it installs, rebuilding or restaging after a rollback", async () => {
+    const directory = realpathSync(mkdtempSync(path.join(tmpdir(), "dochaus-source-recovery-")))
+    try {
+      writeCorpus(directory, 3)
+      await writeSourceArtifacts(directory)
+      // The registry changed without the projection: the heal rebuilds and
+      // stamps the artifacts whose bytes changed.
+      const db = openDb(directory)
+      deleteDocument(db, path.join(directory, "Corpus 02.docx"))
+      db.close()
+      let before = lineageRows(directory).length
+      expect(await healSourceArtifacts(directory, false)).toBe("rebuilt")
+      const rebuilt = stampedSince(directory, before)
+      expect(rebuilt.map(({ artifact }) => artifact)).toContain("source-index.json")
+      expect(rebuilt).toEqual(installedArtifacts(directory).filter(({ artifact }) => rebuilt.some((row) => row.artifact === artifact)))
+      // After a rolled-back mutation the heal restages and stamps every artifact.
+      before = lineageRows(directory).length
+      expect(await healSourceArtifacts(directory, true)).toBe("recovered")
+      expect(stampedSince(directory, before)).toEqual(installedArtifacts(directory))
+      expect(await transactionsSettled(directory)).toBe(true)
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  }, 120_000)
 })
+
+// The lineage rows appended after the first `before`, as installedArtifacts lists them.
+function stampedSince(directory: string, before: number) {
+  return lineageRows(directory).slice(before)
+    .map(({ artifact, content_sha256, bytes }) => ({ artifact, content_sha256, bytes }))
+    .toSorted((left, right) => left.artifact.localeCompare(right.artifact))
+}
