@@ -1,4 +1,7 @@
-import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test"
+import { afterAll, beforeAll, describe, expect, setSystemTime, spyOn, test } from "bun:test"
+import { createHash } from "node:crypto"
+import * as fs from "node:fs"
+import * as fsPromises from "node:fs/promises"
 import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
@@ -7,10 +10,13 @@ import * as atomicWrite from "./atomic-document-write"
 import { deleteDocument, getMeta, insertChunk, openDb, setMeta, upsertDocument } from "./db"
 import { copyWordDocument, writeDeliverable, writeDeliverableRevision } from "./deliverable"
 import { deleteMatterDocument } from "./document-delete"
+import { recoverDocumentMutations } from "./document-mutation"
 import { MODEL } from "./embed"
 import * as identifierExtraction from "./identifiers"
 import { ingestDocument } from "./ingest"
-import { sourceArtifactsMatchRegistry, writeSourceArtifacts } from "./source-artifacts"
+import * as lineage from "./lineage"
+import { stampIngestLineage } from "./lineage"
+import { healSourceArtifacts, sourceArtifactsMatchRegistry, writeSourceArtifacts } from "./source-artifacts"
 import { chunkSection, migrateSections, migrateStructure, sectionize } from "./structure"
 
 // Every fixture below is invented test content: no actual person,
@@ -413,3 +419,210 @@ describe("a source delete from a multi-document matter", () => {
       readdirSync(path.join(directory, ".dochaus", "document-mutations")).length).toBeFalsy()
   }, 120_000)
 })
+
+type LineageRow = {
+  artifact: string
+  content_sha256: string
+  bytes: number
+  run: string
+  provenance: { documents: string[]; document_mutation_id?: string }
+}
+
+const lineageFile = (directory: string) => path.join(directory, ".dochaus", "lineage.jsonl")
+
+const lineageRows = (directory: string) =>
+  readFileSync(lineageFile(directory), "utf8").trim().split("\n").map((line) => JSON.parse(line) as LineageRow)
+
+// Every installed artifact an ingest stamps, with its bytes' hash and size.
+function installedArtifacts(directory: string) {
+  return [".dochaus/legal.db", ...Object.keys(sourceArtifactFiles(directory))]
+    .map((artifact) => {
+      const bytes = readFileSync(path.join(directory, artifact))
+      return { artifact, content_sha256: createHash("sha256").update(bytes).digest("hex"), bytes: bytes.length }
+    })
+    .toSorted((left, right) => left.artifact.localeCompare(right.artifact))
+}
+
+function isSourceArtifact(directory: string, file: unknown) {
+  if (typeof file !== "string") return false
+  const relative = path.relative(directory, file).split(path.sep).join("/")
+  return relative.startsWith("sources/") ||
+    relative.startsWith("source-chunks/") ||
+    ["source-index.json", "source-map.md", "source-map.json", "source-ledger.json", "matter-identifiers.json", "matter-identifiers.md"]
+      .includes(relative)
+}
+
+// Runs a source mutation and records the source artifacts it read back with
+// readFileSync and the source-artifact transactions it removed synchronously
+// while they still held the replaced snapshot.
+async function observeSourceMutation(directory: string, mutate: () => Promise<unknown>) {
+  const { readFileSync: read, rmSync: remove } = fs
+  const reads: string[] = []
+  const snapshotRemovals: string[] = []
+  const readSpy = spyOn(fs, "readFileSync").mockImplementation(((file: fs.PathOrFileDescriptor, options?: never) => {
+    if (isSourceArtifact(directory, file)) reads.push(path.relative(directory, String(file)))
+    return read(file, options)
+  }) as typeof fs.readFileSync)
+  const removeSpy = spyOn(fs, "rmSync").mockImplementation(((target: fs.PathLike, options?: fs.RmOptions) => {
+    if (typeof target === "string" && existsSync(path.join(target, "backup"))) snapshotRemovals.push(path.relative(directory, target))
+    return remove(target, options)
+  }) as typeof fs.rmSync)
+  try {
+    await mutate()
+  } finally {
+    readSpy.mockRestore()
+    removeSpy.mockRestore()
+  }
+  return { reads, snapshotRemovals }
+}
+
+// Waits for the replaced snapshot's removal; true once no transaction is left.
+async function transactionsSettled(directory: string) {
+  const roots = [".dochaus/document-mutations", ".dochaus/source-artifact-transactions"].map((root) => path.join(directory, root))
+  for (let waited = 0; waited <= 10_000; waited += 25) {
+    if (roots.every((root) => !existsSync(root) || !readdirSync(root).length)) return true
+    await Bun.sleep(25)
+  }
+  return false
+}
+
+describe("a source mutation's lineage and replaced snapshot", () => {
+  let directory = ""
+  beforeAll(async () => {
+    directory = realpathSync(mkdtempSync(path.join(tmpdir(), "dochaus-source-lineage-")))
+    writeCorpus(directory, 4)
+    await writeSourceArtifacts(directory)
+  })
+  afterAll(() => rmSync(directory, { recursive: true, force: true }))
+
+  for (const [label, mutate] of [
+    ["an upload", async () => ingestDocument(directory, "Lineage Notice.docx", await docx(["1. Scope", "The invented scope of Example Holdings 7 Ltd."]))],
+    ["a delete", () => deleteMatterDocument(directory, "Corpus 00.docx")],
+  ] as const) {
+    test(`${label} stamps lineage from the bytes it staged and removes the replaced snapshot off the event loop`, async () => {
+      const before = lineageRows(directory).length
+      // The replaced snapshot is moved aside and removed off the event loop.
+      expect(await observeSourceMutation(directory, mutate)).toEqual({ reads: [], snapshotRemovals: [] })
+      expect(
+        lineageRows(directory).slice(before)
+          .map(({ artifact, content_sha256, bytes }) => ({ artifact, content_sha256, bytes }))
+          .toSorted((left, right) => left.artifact.localeCompare(right.artifact)),
+      ).toEqual(installedArtifacts(directory))
+      expect(await transactionsSettled(directory)).toBe(true)
+    }, 120_000)
+  }
+
+  test("an upload and a delete append the same lineage bytes as stamping the installed files", async () => {
+    // A frozen clock and fixed random bytes make two stamps of the same
+    // artifacts comparable byte for byte (entry ids and timestamps).
+    setSystemTime(new Date(Date.now()))
+    const random = spyOn(globalThis.crypto, "getRandomValues")
+      .mockImplementation(((array: Uint8Array) => array.fill(7)) as typeof globalThis.crypto.getRandomValues)
+    try {
+      for (const mutate of [
+        async () => ingestDocument(directory, "Second Lineage Notice.docx", await docx(["2. Transport", "Sample Services 8 LLC moves the invented box."])),
+        () => deleteMatterDocument(directory, "Corpus 01.docx"),
+      ]) {
+        const before = readFileSync(lineageFile(directory))
+        await mutate()
+        const after = readFileSync(lineageFile(directory))
+        const [first] = after.subarray(before.length).toString("utf8").trim().split("\n").map((line) => JSON.parse(line) as LineageRow)
+        // The stamp as an ingest always made it: every present artifact read and hashed from disk.
+        writeFileSync(lineageFile(directory), before)
+        stampIngestLineage(directory, first!.provenance.documents, first!.run.slice("ingest:".length), first!.provenance.document_mutation_id)
+        expect(readFileSync(lineageFile(directory)).equals(after)).toBe(true)
+      }
+    } finally {
+      random.mockRestore()
+      setSystemTime()
+    }
+  }, 120_000)
+})
+
+// Every file under `root` whose bytes contain `text`, by its path in `root`.
+function filesHolding(root: string, text: string) {
+  if (!existsSync(root)) return []
+  return readdirSync(root, { recursive: true, encoding: "utf8" })
+    .filter((relative) => fs.statSync(path.join(root, relative)).isFile() && readFileSync(path.join(root, relative)).includes(text))
+    .toSorted()
+}
+
+describe("after a source mutation is interrupted", () => {
+  test("recovery removes a replaced snapshot whose removal was interrupted, with the deleted document's text", async () => {
+    const directory = realpathSync(mkdtempSync(path.join(tmpdir(), "dochaus-source-recovery-")))
+    try {
+      writeCorpus(directory, 3)
+      await writeSourceArtifacts(directory)
+      const deletedText = "Example Holdings 0 Ltd"
+      // The process stops before the replaced snapshot's background removal runs.
+      const removal = spyOn(fsPromises, "rm").mockImplementation((async () => undefined) as typeof fsPromises.rm)
+      try {
+        await deleteMatterDocument(directory, "Corpus 00.docx")
+      } finally {
+        removal.mockRestore()
+      }
+      const transactions = path.join(directory, ".dochaus", "source-artifact-transactions")
+      expect(filesHolding(transactions, deletedText).length).toBeGreaterThan(0)
+      await recoverDocumentMutations(directory)
+      expect(readdirSync(transactions)).toEqual([])
+      expect(filesHolding(directory, deletedText)).toEqual([])
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  }, 120_000)
+
+  test("recovery stamps the installed bytes of a delete that stopped before stamping lineage", async () => {
+    const directory = realpathSync(mkdtempSync(path.join(tmpdir(), "dochaus-source-recovery-")))
+    try {
+      writeCorpus(directory, 3)
+      await writeSourceArtifacts(directory)
+      const before = lineageRows(directory).length
+      const stop = spyOn(lineage, "stampIngestLineage").mockImplementation(() => {
+        throw new Error("stopped before the stamp")
+      })
+      try {
+        await expect(deleteMatterDocument(directory, "Corpus 00.docx")).rejects.toThrow("stopped before the stamp")
+      } finally {
+        stop.mockRestore()
+      }
+      expect(lineageRows(directory).length).toBe(before)
+      await recoverDocumentMutations(directory)
+      expect(stampedSince(directory, before)).toEqual(installedArtifacts(directory))
+      expect(await transactionsSettled(directory)).toBe(true)
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  }, 120_000)
+
+  test("the startup heal stamps the bytes it installs, rebuilding or restaging after a rollback", async () => {
+    const directory = realpathSync(mkdtempSync(path.join(tmpdir(), "dochaus-source-recovery-")))
+    try {
+      writeCorpus(directory, 3)
+      await writeSourceArtifacts(directory)
+      // The registry changed without the projection: the heal rebuilds and
+      // stamps the artifacts whose bytes changed.
+      const db = openDb(directory)
+      deleteDocument(db, path.join(directory, "Corpus 02.docx"))
+      db.close()
+      let before = lineageRows(directory).length
+      expect(await healSourceArtifacts(directory, false)).toBe("rebuilt")
+      const rebuilt = stampedSince(directory, before)
+      expect(rebuilt.map(({ artifact }) => artifact)).toContain("source-index.json")
+      expect(rebuilt).toEqual(installedArtifacts(directory).filter(({ artifact }) => rebuilt.some((row) => row.artifact === artifact)))
+      // After a rolled-back mutation the heal restages and stamps every artifact.
+      before = lineageRows(directory).length
+      expect(await healSourceArtifacts(directory, true)).toBe("recovered")
+      expect(stampedSince(directory, before)).toEqual(installedArtifacts(directory))
+      expect(await transactionsSettled(directory)).toBe(true)
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  }, 120_000)
+})
+
+// The lineage rows appended after the first `before`, as installedArtifacts lists them.
+function stampedSince(directory: string, before: number) {
+  return lineageRows(directory).slice(before)
+    .map(({ artifact, content_sha256, bytes }) => ({ artifact, content_sha256, bytes }))
+    .toSorted((left, right) => left.artifact.localeCompare(right.artifact))
+}
