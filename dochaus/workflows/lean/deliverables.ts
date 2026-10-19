@@ -242,21 +242,28 @@ export async function recordLeanDocuments(directory: string, deps: LeanDeps, reg
   if (combined?.failure) throw new Error(combined.failure)
   if (combined?.moved) {
     // A save refused under the write's lock moved the file after the gate's
-    // notes were checked: a request that names the file is checked against the
-    // name it was saved under, read from this summary, as the notes name it.
-    // One file asked for without a name is still the one file delivered; the
-    // next finalize discloses where it went. Imported here, as that check reads this module.
+    // notes were checked: a request whose file the lawyer's words or the notes
+    // name is checked against the name it was saved under, read from this
+    // summary. One file asked for without a name, which the notes did not
+    // place, is still the one file delivered; the next finalize discloses where
+    // it went. Imported here, as that check reads this module.
     const { requestedFilesItems } = await import("./requested-files")
-    const item = requestedFilesItems(directory, true).find(item => !gateDisclosed(directory, item))
+    const told = gateDisclosures(directory)
+    const item = requestedFilesItems(directory, told).find(item => !told.some(row => row.id === item.id))
     if (item) throw new Error(item.detail)
   }
   return summary
 }
 
+/** The items the gate's record lists as disclosed by its notes. */
+function gateDisclosures(directory: string) {
+  const gate = readLeanJson(directory, "gate.json") as { items?: OpenItem[] } | undefined
+  return gate?.items?.filter(row => row.status === "disclosed") ?? []
+}
+
 /** Whether the gate's record lists `item` as disclosed by its notes. */
 function gateDisclosed(directory: string, item: OpenItem) {
-  const gate = readLeanJson(directory, "gate.json") as { items?: OpenItem[] } | undefined
-  return Boolean(gate?.items?.some(row => row.id === item.id && row.status === "disclosed"))
+  return gateDisclosures(directory).some(row => row.id === item.id)
 }
 
 /** The summary's earlier rows by kind and title. Document ids are plan
@@ -352,10 +359,22 @@ function keptCombined(directory: string, earlier: LeanDocument[], taken: string[
  * it written through doc.haus (an accept, bound to an accepted Word revision or
  * not, or an upload), which removes the record of the system's write
  * (readSystemDocx). A file changed outside doc.haus, whose bytes no longer
- * match the record, is not, nor is one whose record cannot be read. Reads only. */
+ * match the record of the system's write or of the accepted Word revision
+ * (readWorkingDocx), is not, nor is one whose record cannot be read. Reads only.
+ * Known gap, a label only: after an accept not bound to a Word revision, an
+ * upload, or a delete through doc.haus, no record is left to compare, so a
+ * later save outside doc.haus under that name is still listed as the earlier
+ * combined file. No write follows from that label: no part replaces a
+ * combined file, and a rebuild needs the current plan's registered parts and
+ * the system's own last write (replaceableDeliverable). Closing it would need
+ * a new record of the file's bytes. */
 function earlierCombinedFile(directory: string, name: string) {
   try {
-    return ownedDeliverable(directory, name) || readSystemDocx(directory, name) === undefined
+    if (ownedDeliverable(directory, name)) return true
+    if (readSystemDocx(directory, name) !== undefined) return false
+    const file = path.join(directory, name)
+    const accepted = readWorkingDocx(directory, file)
+    return !accepted || accepted.source_sha256 === sha256File(file)?.sha256
   } catch {
     return false
   }
