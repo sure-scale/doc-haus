@@ -213,3 +213,45 @@ test("no chain and document specified returns that document's section text", asy
   const result = await tool.execute({ section: "4", document: "Original Agreement" }, ctxFor(dir))
   expect(result).toMatch(/Original §4 text\./)
 })
+
+// The amendment states its base as "Lease"; the base file is named differently,
+// so the chain root is unresolved.
+function seedUnmatchedBase(db: Database) {
+  const LEASE = "/m/lease-executed.docx"
+  db.run("INSERT INTO documents (doc_path, name, created_at) VALUES (?, ?, ?)", [LEASE, "Lease (executed).docx", 1])
+  db.run("INSERT INTO documents (doc_path, name, created_at) VALUES (?, ?, ?)", [AM1, "Amendment No. 1.docx", 2])
+  db.run("INSERT INTO chunks (doc_path, doc_name, section, text, char_start, char_end) VALUES (?, ?, ?, ?, ?, ?)", [LEASE, "Lease (executed).docx", "4", "4. Rent. Base rent text.", 0, 24])
+  db.run("INSERT INTO chunks (doc_path, doc_name, section, text, char_start, char_end) VALUES (?, ?, ?, ?, ?, ?)", [LEASE, "Lease (executed).docx", "8", "8. Notices. Base notices text.", 100, 130])
+  db.run("INSERT INTO chunks (doc_path, doc_name, section, text, char_start, char_end) VALUES (?, ?, ?, ?, ?, ?)", [AM1, "Amendment No. 1.docx", "1", "Section 4 of the Lease is hereby amended and restated.", 0, 54])
+  db.run("INSERT INTO doc_relations (doc_path, doc_name, relation, target_name, char_start, char_end) VALUES (?, ?, ?, ?, ?, ?)", [AM1, "Amendment No. 1.docx", "amends", "Lease", 0, 21])
+  db.run("INSERT INTO section_ops (doc_path, doc_name, section_label, operation, char_start, char_end) VALUES (?, ?, ?, ?, ?, ?)", [AM1, "Amendment No. 1.docx", "4", "restate", 0, 54])
+}
+
+test("a document not matched to any chain base is never reported as outside every chain while a base is unmatched", async () => {
+  const { dir, db } = matter()
+  seedUnmatchedBase(db)
+  db.close()
+
+  const result = await tool.execute({ section: "4", document: "Lease (executed).docx" }, ctxFor(dir))
+  expect(result).toMatch(/4\. Rent\. Base rent text\./)
+  expect(result).not.toMatch(/no amendment chain involves/)
+  expect(result).toContain('"Lease (executed).docx" was not matched to any amendment chain base')
+  expect(result).toContain('stated bases not matched to an indexed document: "Lease"')
+})
+
+test("an unmatched base's stated name selects its chain", async () => {
+  const { dir, db } = matter()
+  seedUnmatchedBase(db)
+  db.close()
+
+  const touched = await tool.execute({ section: "4", document: "Lease" }, ctxFor(dir))
+  expect(touched).toMatch(/Current state of §4 \(chain root: "Lease" \(unresolved\)\)/)
+  expect(touched).toContain('"Section 4 of the Lease is hereby amended and restated."')
+  // An untouched section is looked up across non-amending documents, never
+  // scoped to the stated name, which is not a document.
+  const untouched = await tool.execute({ section: "8", document: "Lease" }, ctxFor(dir))
+  expect(untouched).toMatch(/base document "Lease" was not matched/)
+  expect(untouched).toMatch(/8\. Notices\. Base notices text\./)
+  const missing = await tool.execute({ section: "9", document: "Lease" }, ctxFor(dir))
+  expect(missing).toMatch(/^No section "9" in this matter\./)
+})
