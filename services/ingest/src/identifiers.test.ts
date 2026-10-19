@@ -360,6 +360,48 @@ describe("extraction from the matter's previous identifiers", () => {
     }
   })
 
+  test("matches a full extraction through chained uploads, edits, deletes, renames and re-wraps", async () => {
+    // Each step extracts from the previous step's stored file, as uploads and
+    // deletes do, over a fixed pseudo-random sequence that includes initial and
+    // full middle-name variants of one person and ties between full middles.
+    const sentences = [...agreement, ...notice, ...schedule,
+      "Witness: Taylor Robin Morgan.", "Jordan A. Lee signed the agreement.", "Jordan Alexis Lee approved the budget.", "Jordan Alex Lee filed the notice."]
+    const names = ["A.docx", "B.docx", "C.docx", "D.docx"]
+    let seed = 7
+    const pick = <T,>(items: T[]) => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff
+      return items[seed % items.length]!
+    }
+    for (let run = 0; run < 6; run++) {
+      const documents = new Map<string, { texts: string[]; wrapped: boolean }>()
+      let previous: MatterIdentifiers | undefined
+      for (let step = 0; step < 10; step++) {
+        const operation = documents.size === 0 ? "upload" : pick(["upload", "upload", "edit", "delete", "rename", "rewrap"])
+        const name = documents.size === 0 ? pick(names) : pick([...documents.keys()])
+        const current = documents.get(name)
+        if (operation === "upload") {
+          const target = pick(names)
+          documents.delete(target)
+          documents.set(target, { texts: [pick(sentences), pick(sentences)], wrapped: pick([false, true]) })
+        }
+        if (operation === "edit" && current) documents.set(name, { ...current, texts: [current.texts[0]!, pick(sentences)] })
+        if (operation === "delete") documents.delete(name)
+        if (operation === "rename" && current) {
+          const target = pick(names)
+          documents.delete(name)
+          documents.delete(target)
+          documents.set(target, current)
+        }
+        if (operation === "rewrap" && current) documents.set(name, { ...current, wrapped: !current.wrapped })
+        const chunks = [...documents].flatMap(([document, { texts, wrapped }]) => matterChunks({ [document]: texts }).map((chunk) =>
+          wrapped ? { ...chunk, file: { text: chunk.text.replace(" ", "\n"), inserted: [] } } : chunk))
+        const data = await extractIdentifiers(chunks, previous)
+        expect(withoutTime(data)).toBe(withoutTime(await extractIdentifiers(chunks)))
+        previous = JSON.parse(JSON.stringify(data)) as MatterIdentifiers
+      }
+    }
+  })
+
   test("lets other work run between the chunks it parses", async () => {
     const chunks = matterChunks({ "Long.docx": Array.from({ length: 16 }, (_, index) => `${index + 1}. ${notice[0]}`) })
     const scan = spyOn(identifiers, "scanChunk")

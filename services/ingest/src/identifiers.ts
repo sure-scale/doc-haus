@@ -20,7 +20,8 @@ export type IdentifierRow = {
 
 // The version of matter-identifiers.json's extraction and shape; the one
 // value the extractor writes and the reader accepts. Bump it when either
-// changes: a stored file of another version is stale to the startup check
+// changes, since unchanged documents otherwise keep their stored rows: a
+// stored file of another version is stale to the startup check
 // (source-artifacts.ts), so each matter extracts again at its next start and
 // matches from then on. 2: values are read from each chunk's unwrapped source
 // slice, so a soft-wrap line break no longer splits a name. 3: `sources` keys
