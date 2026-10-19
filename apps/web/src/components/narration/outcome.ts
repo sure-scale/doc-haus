@@ -2,6 +2,7 @@ import type { LeanDraftingStatus } from "../../api/ingest/lean"
 import {
   attentionItems,
   checklistFindingsCount,
+  delegableQuestion,
   findingsConsequence,
   leanContinueAvailable,
   leanRunStopped,
@@ -34,7 +35,7 @@ export function runOutcome(status: LeanDraftingStatus): RunOutcome | undefined {
   }
   if (leanRunStopped(status))
     return { tone: "attention", text: "You stopped this draft. Its work so far is kept; a new drafting request starts a new draft." }
-  if (questions) return { tone: "attention", text: `Drafting is waiting on ${asks} only you can answer.` }
+  if (questions) return { tone: "attention", text: `Drafting is waiting on ${asks}${waitingChoice(status, questions)}` }
   const resume = leanContinueAvailable(status) ? " Continue drafting (above) picks up from the last finished step." : ""
   if (status.status === "blocked") {
     if (status.paused_at)
@@ -57,6 +58,16 @@ export function runOutcome(status: LeanDraftingStatus): RunOutcome | undefined {
   if (status.status === "failed") return { tone: "attention", text: `Drafting stopped before it finished.${resume}` }
   if (!status.in_flight) return { tone: "attention", text: `Paused: nothing is working on this run right now.${resume}` }
   return undefined
+}
+
+/** How the lawyer moves a question on: answer it, or, where Decide for me is
+ * offered, leave it to the drafting. */
+function waitingChoice(status: LeanDraftingStatus, questions: number) {
+  const delegable = openQuestions(status).filter(delegableQuestion).length
+  if (!delegable) return " only you can answer."
+  if (questions === 1) return ": answer it, or use Decide for me to leave it to the drafting."
+  const some = delegable === questions ? "any of them" : delegable === 1 ? "one of them" : `${delegable} of them`
+  return `: answer each, or use Decide for me to leave ${some} to the drafting.`
 }
 
 export type ResultCheck = { tone: "pass" | "warn" | "neutral"; text: string }
