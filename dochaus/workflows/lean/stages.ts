@@ -302,8 +302,9 @@ export async function acceptStageReply(directory: string, step: StepID, reply: s
     // A prose preamble before the one object costs no attempt.
     const parsed = parseJsonObject(reply)
     if (!parsed.ok) return { issues: ["Reply with the package review JSON only."], outputs: [], openItems: [] }
-    // On the last attempt a delivery row the check still refuses is withheld,
-    // with a limitation, and the planned name stands; earlier attempts retry it.
+    // On the last attempt a delivery row the check still refuses, or a missing
+    // delivery list, is withheld with a limitation and the planned names stand;
+    // earlier attempts retry it.
     const value = options.final ? withholdUngroundedDelivery(directory, parsed.value) : parsed.value
     const issues = checkPackageReview(directory, value)
     if (issues.length) return { issues, outputs: [], openItems: [] }

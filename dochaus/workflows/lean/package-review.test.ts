@@ -73,6 +73,23 @@ test("the last attempt never drops a finding or changes the status to pass the c
   expect(readPackageReview(directory)).toMatchObject({ status: "changes-required", findings, delivery: [] })
 })
 
+test("a missing delivery list is retried before the last attempt and read as no rename on it", async () => {
+  const directory = twoDocuments()
+  const missing = (extra: Record<string, unknown> = {}) => JSON.stringify({ status: "pass", findings: [], limitations: ["A disclosed gap."], ...extra })
+  const noted = ["A disclosed gap.", "delivery field missing; planned names stand"]
+  expect((await acceptStageReply(directory, "package-review", missing())).issues.join(" ")).toContain("delivery as an array")
+  expect(readLeanText(directory, "package-review.json")).toBeUndefined()
+  expect((await acceptStageReply(directory, "package-review", missing(), { final: true })).issues).toEqual([])
+  expect(readPackageReview(directory)).toEqual({ status: "pass", findings: [], delivery: [], limitations: noted })
+  // A delivery that is not a list is no rename either; status and findings are kept.
+  const findings = [{ target: "memo" as const, detail: "The notes misdescribe the delivery period." }]
+  expect((await acceptStageReply(directory, "package-review", missing({ status: "changes-required", findings, delivery: "none" }), { final: true })).issues).toEqual([])
+  expect(readPackageReview(directory)).toEqual({ status: "changes-required", findings, delivery: [], limitations: noted })
+  // Status and findings that fail the check still fail the last attempt.
+  expect((await acceptStageReply(directory, "package-review", missing({ findings }), { final: true })).issues).toEqual(["A pass cannot contain unresolved correction findings; use changes-required."])
+  expect((await acceptStageReply(directory, "package-review", missing({ limitations: "none" }), { final: true })).issues).toEqual(["Use status pass or changes-required, findings array and string limitations array."])
+})
+
 test("a prose preamble before one package review object does not cost an attempt", async () => {
   const directory = twoDocuments()
   const accepted = await acceptStageReply(directory, "package-review", `Based on my review of the package, here is my assessment.\n\n${review([])}`)

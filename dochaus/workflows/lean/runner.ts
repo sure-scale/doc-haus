@@ -533,7 +533,8 @@ function runStep(directory: string, state: LeanState, step: StepID, deps: LeanDe
 /** One child session; the first prompt carries the step's inputs, each retry the
  * checker's issues. On the last attempt the changes step withholds amendments
  * whose quotations still fail (they become open items), and package review
- * withholds delivery rows its check still refuses (the planned names stand);
+ * withholds delivery rows its check still refuses, or reads a missing delivery
+ * list as none (the planned names stand);
  * any other fourth failed check stops the run with those issues. */
 async function runModelStage(directory: string, state: LeanState, step: StepID, deps: LeanDeps, progress: Progress, prepared?: PreparedReview): Promise<StageRun> {
   const stage = stepStage(step) as ModelStageID

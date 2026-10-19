@@ -85,11 +85,13 @@ export function checkPackageReview(directory: string, value: unknown): string[] 
  * still conflict with each other, all are. Each dropped row is recorded as a
  * limitation of the saved review, not as an open item: a name the lawyer's words
  * do give reaches the plan through the files job, which discloses one it cannot
- * place (requestedFilesItems). Status and findings are never changed, so a
+ * place (requestedFilesItems). A missing or non-list delivery is read as no
+ * rename, with one limitation. Status and findings are never changed, so a
  * reply whose other parts fail the check still fails. */
 export function withholdUngroundedDelivery(directory: string, value: Record<string, unknown>): Record<string, unknown> {
   const { delivery, limitations } = value
-  if (!Array.isArray(delivery) || !Array.isArray(limitations)) return value
+  if (!Array.isArray(limitations)) return value
+  if (!Array.isArray(delivery)) return { ...value, delivery: [], limitations: [...limitations, "delivery field missing; planned names stand"] }
   const documents = readLeanPlan(directory)?.documents ?? []
   const grounded = delivery.filter(row => !deliverySelectionIssues(directory, row, documents).length)
   const kept = checkDeliverySelections(directory, grounded).length ? [] : grounded
