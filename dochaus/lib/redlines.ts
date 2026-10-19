@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite"
 import { existsSync, realpathSync } from "node:fs"
 import path from "node:path"
-import { openLegalDbForWrite } from "./legal-db"
+import { openLegalDbForWrite, prepared } from "./legal-db"
 import {
   canonicalArtifactIdentity,
   withArtifactMutationLockAsync,
@@ -149,26 +149,26 @@ export function supersedeRedlines(matterDir: string, ids: number[]) {
 }
 
 function openRedlineDb(matterDir: string) {
-  const db = openLegalDbForWrite(matterDir)
-  db.run(`
-    CREATE TABLE IF NOT EXISTS redlines (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      doc_path TEXT NOT NULL,
-      doc_name TEXT NOT NULL,
-      scope TEXT NOT NULL,
-      find_text TEXT NOT NULL,
-      old_text TEXT NOT NULL,
-      new_text TEXT NOT NULL,
-      author TEXT NOT NULL,
-      review_comment TEXT NOT NULL DEFAULT '',
-      anchor_id TEXT,
-      status TEXT NOT NULL DEFAULT 'pending',
-      created_at INTEGER NOT NULL
-    )
-  `)
-  if (!hasColumn(db, "redlines", "review_comment"))
-    db.run("ALTER TABLE redlines ADD COLUMN review_comment TEXT NOT NULL DEFAULT ''")
-  return db
+  return prepared(openLegalDbForWrite(matterDir), (db) => {
+    db.run(`
+      CREATE TABLE IF NOT EXISTS redlines (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        doc_path TEXT NOT NULL,
+        doc_name TEXT NOT NULL,
+        scope TEXT NOT NULL,
+        find_text TEXT NOT NULL,
+        old_text TEXT NOT NULL,
+        new_text TEXT NOT NULL,
+        author TEXT NOT NULL,
+        review_comment TEXT NOT NULL DEFAULT '',
+        anchor_id TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        created_at INTEGER NOT NULL
+      )
+    `)
+    if (!hasColumn(db, "redlines", "review_comment"))
+      db.run("ALTER TABLE redlines ADD COLUMN review_comment TEXT NOT NULL DEFAULT ''")
+  })
 }
 
 function pendingRedlines(db: Database, matterDir: string, docPath: string) {
