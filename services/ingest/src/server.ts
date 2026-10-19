@@ -29,6 +29,7 @@ import {
   extractDocumentText,
   matterDocumentName,
   SourceDocumentConflictError,
+  SourceDocumentExistsError,
 } from "./ingest"
 import {
   deliverableDocumentName,
@@ -550,10 +551,17 @@ app.post("/matters/:id/documents", async (c) => {
   if (!(file instanceof File)) return c.json({ error: "A source document file is required." }, 400)
   const name = matterDocumentName(file.name)
   if (!name) return c.json({ error: "The source document filename or extension is not supported." }, 400)
+  // A same-name source is never replaced silently: without an `existing` choice
+  // the upload is refused with source_exists so the lawyer can choose.
+  const existing = body["existing"]
+  if (existing !== undefined && existing !== "replace" && existing !== "keep-both")
+    return c.json({ error: "Choose replace or keep-both for an existing document." }, 400)
   const buffer = Buffer.from(await file.arrayBuffer())
   try {
-    return c.json(await ingestDocument(dir, name, buffer))
+    return c.json(await ingestDocument(dir, name, buffer, { existing }))
   } catch (error) {
+    if (error instanceof SourceDocumentExistsError)
+      return c.json({ error: error.message, code: "source_exists", name: error.existing }, 409)
     if (error instanceof SourceDocumentConflictError) return c.json({ error: error.message }, 409)
     throw error
   }
@@ -673,7 +681,8 @@ app.post("/matters/:id/documents/convert", async (c) => {
     db.close()
     if (role !== "source") return c.json({ error: `${target.name} is not a registered source document.` }, 409)
     const docxName = target.name.replace(/\.pdf$/i, ".docx")
-    const result = await ingestDocument(dir, docxName, await pdfToDocx(Buffer.from(await Bun.file(file).bytes())))
+    // Converting again replaces the earlier conversion, as it always has.
+    const result = await ingestDocument(dir, docxName, await pdfToDocx(Buffer.from(await Bun.file(file).bytes())), { existing: "replace" })
     return c.json(result)
   })
 })
@@ -1016,7 +1025,7 @@ async function writeDocumentRevision(
     acceptedRedlineIDs.forEach((id) => setRedlineStatus(registry,id,"accepted"))
   }
   if (role === "deliverable") return writeDeliverableRevision(directory, name, bytes, { updateRegistry,priorSha256,updateWorkingRevision:working })
-  return ingestDocument(directory, name, bytes, { requireExistingSource: true, updateRegistry })
+  return ingestDocument(directory, name, bytes, { existing: "replace", requireExistingSource: true, updateRegistry })
 }
 
 /** The document's role and the bytes writeDocumentRevision stores for `input`:

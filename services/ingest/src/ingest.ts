@@ -1,8 +1,9 @@
+import { readdirSync } from "node:fs"
 import path from "node:path"
 import mammoth from "mammoth"
 import PostalMime from "postal-mime"
 import { read, utils } from "xlsx"
-import { getDocumentRole, insertChunk, listSourceDocuments, openDb, upsertDocument } from "./db"
+import { getDocumentRole, insertChunk, listDocuments, listSourceDocuments, openDb, upsertDocument } from "./db"
 import { embedChunk, migrateEmbeddings } from "./embed"
 import { extractStructure, extractParties, migrateSections, migrateStructure, buildSectionPaths, chunkSection, recordSections, sectionize } from "./structure"
 import { pdfToText } from "./pdf"
@@ -29,6 +30,19 @@ const MATTER_DOCUMENT_EXTENSIONS = new Set([".docx", ".pdf", ".xlsx", ".eml"])
 
 export class SourceDocumentConflictError extends Error {}
 
+// The upload names a source already in the matter and the caller chose neither
+// replace nor keep both. `existing` is that source's stored name.
+export class SourceDocumentExistsError extends SourceDocumentConflictError {
+  constructor(readonly existing: string) {
+    super(`${existing} is already in this matter. Replace it, or keep both and add the upload under a new name.`)
+  }
+}
+
+// What an upload does when a source of the same name is already registered:
+// refuse (the default, so a lawyer's file is never replaced silently), replace
+// it, or keep both by storing the upload under the next free name.
+export type ExistingSourceChoice = "refuse" | "replace" | "keep-both"
+
 export function matterDocumentName(fileName: string) {
   const name = path.basename(fileName.trim())
   if (!name || name !== fileName.trim() || !MATTER_DOCUMENT_EXTENSIONS.has(path.extname(name).toLowerCase())) return
@@ -40,17 +54,42 @@ export async function ingestDocument(
   fileName: string,
   buffer: Buffer,
   options: {
+    existing?: ExistingSourceChoice
     requireExistingSource?: boolean
     updateRegistry?: (db: ReturnType<typeof openDb>) => void
   } = {},
 ) {
-  const name = matterDocumentName(fileName)
-  if (!name) throw new Error(`Matter documents must use a supported document filename and extension.`)
+  const requested = matterDocumentName(fileName)
+  if (!requested) throw new Error(`Matter documents must use a supported document filename and extension.`)
+  // Keep both picks a free name before locking it; the locked write still refuses
+  // a source that took the name meanwhile, so it never replaces one.
+  const { existing = "refuse" } = options
+  const name = existing === "keep-both" ? freeDocumentName(matterDir, requested) : requested
   return withArtifactMutationLocksAsync(
     matterDir,
     [name, ".dochaus/source-corpus"],
-    () => ingestDocumentLocked(matterDir, name, buffer, options),
+    () => ingestDocumentLocked(matterDir, name, buffer, { ...options, existing: existing === "keep-both" ? "refuse" : existing }),
   )
+}
+
+// The requested name, or the first `Stem (n).ext` from 2 up that no matter file
+// or registered document holds, compared case-insensitively on every platform.
+function freeDocumentName(matterDir: string, name: string) {
+  const db = openDb(matterDir)
+  const registered = (() => {
+    try {
+      return (listDocuments(db) as { name: string }[]).map((row) => row.name)
+    } finally {
+      db.close()
+    }
+  })()
+  const taken = new Set([...readdirSync(matterDir), ...registered].map((entry) => entry.toLowerCase()))
+  const extension = path.extname(name)
+  const stem = name.slice(0, -extension.length)
+  for (let n = 1; ; n++) {
+    const candidate = n === 1 ? name : `${stem} (${n})${extension}`
+    if (!taken.has(candidate.toLowerCase())) return candidate
+  }
 }
 
 async function ingestDocumentLocked(
@@ -58,6 +97,7 @@ async function ingestDocumentLocked(
   requestedName: string,
   buffer: Buffer,
   options: {
+    existing: "refuse" | "replace"
     requireExistingSource?: boolean
     updateRegistry?: (db: ReturnType<typeof openDb>) => void
   },
@@ -74,6 +114,7 @@ async function ingestDocumentLocked(
     throw new SourceDocumentConflictError(`Cannot replace generated deliverable ${fileName} with a source document.`)
   if (options.requireExistingSource && role !== "source")
     throw new SourceDocumentConflictError(`${fileName} is no longer a registered source document.`)
+  if (role === "source" && options.existing === "refuse") throw new SourceDocumentExistsError(fileName)
 
   // Untrusted-document defense (issue #17): normalize away invisible Unicode, then
   // scan the visible text and the raw DOCX for injected instructions. Findings are

@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test"
 import completed from "../../../dochaus/workflows/lean/fixtures/status-completed.json"
 import { deleteMatterSession } from "../src/api/ingest/matters"
 import { dispatchMatterContinuation } from "../src/api/ingest/drafting-run"
-import { uploadDocument } from "../src/api/ingest/documents"
+import { SourceExistsError, uploadDocument } from "../src/api/ingest/documents"
 import { getDraftingStatus } from "../src/api/ingest/drafting-status"
 import type { LeanDraftingStatus } from "../src/api/ingest/lean"
 
@@ -93,8 +93,10 @@ test("continuation dispatch goes through the matter backend and validates its cl
 })
 
 // Uploads go through XMLHttpRequest for progress events; the stub answers each
-// request with one scripted status and body, like the ingest service would.
+// request with one scripted status and body, like the ingest service would, and
+// keeps the forms it was sent.
 function scriptXhr(status: number, body: string) {
+  const sent: FormData[] = []
   globalThis.XMLHttpRequest = class {
     status = 0
     responseText = ""
@@ -104,12 +106,14 @@ function scriptXhr(status: number, body: string) {
     onerror?: () => void
     ontimeout?: () => void
     open() {}
-    send() {
+    send(form: FormData) {
+      sent.push(form)
       this.status = status
       this.responseText = body
       queueMicrotask(() => this.onload?.())
     }
   } as unknown as typeof XMLHttpRequest
+  return sent
 }
 
 test("a failed upload rejects with the ingest service's message instead of resolving its error body", async () => {
@@ -119,4 +123,33 @@ test("a failed upload rejects with the ingest service's message instead of resol
   )
   scriptXhr(500, "Internal Server Error")
   await expect(uploadDocument("matter", new File(["x"], "source.docx"))).rejects.toThrow("Could not read source.docx (500)")
+})
+
+test("a same-name upload is refused with the existing name until the caller chooses replace or keep both", async () => {
+  const file = new File(["theirs"], "agreement.docx")
+  const refused = scriptXhr(409, JSON.stringify({
+    error: "Agreement.docx is already in this matter. Replace it, or keep both and add the upload under a new name.",
+    code: "source_exists",
+    name: "Agreement.docx",
+  }))
+  const error = await uploadDocument("matter", file).catch((error: unknown) => error)
+  expect(error).toBeInstanceOf(SourceExistsError)
+  expect((error as SourceExistsError).existing).toBe("Agreement.docx")
+  expect((error as SourceExistsError).message).toStartWith("Agreement.docx is already in this matter.")
+  expect((refused[0]?.get("file") as File).name).toBe("agreement.docx")
+  expect(refused[0]?.has("existing")).toBe(false)
+
+  // Keep both resolves with the name the upload was stored under.
+  const kept = scriptXhr(200, JSON.stringify({ name: "Agreement (2).docx", docPath: "/matter/Agreement (2).docx", sections: 1, chunks: 1, injection: null }))
+  expect((await uploadDocument("matter", file, { existing: "keep-both" })).name).toBe("Agreement (2).docx")
+  expect(kept[0]?.get("existing")).toBe("keep-both")
+  const replaced = scriptXhr(200, JSON.stringify({ name: "Agreement.docx", docPath: "/matter/Agreement.docx", sections: 1, chunks: 1, injection: null }))
+  expect((await uploadDocument("matter", file, { existing: "replace" })).name).toBe("Agreement.docx")
+  expect(replaced[0]?.get("existing")).toBe("replace")
+
+  // Any other conflict, such as a generated deliverable of that name, stays a plain failure.
+  scriptXhr(409, JSON.stringify({ error: "Cannot replace generated deliverable Draft.docx with a source document." }))
+  const deliverable = await uploadDocument("matter", new File(["x"], "Draft.docx")).catch((error: unknown) => error)
+  expect(deliverable).not.toBeInstanceOf(SourceExistsError)
+  expect((deliverable as Error).message).toBe("Cannot replace generated deliverable Draft.docx with a source document.")
 })

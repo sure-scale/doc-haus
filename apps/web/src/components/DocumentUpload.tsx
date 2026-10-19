@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react"
-import { deleteDocument, uploadDocument, type Document } from "../api/ingest/documents"
+import { deleteDocument, SourceExistsError, uploadDocument, type Document, type ExistingSourceChoice } from "../api/ingest/documents"
 import { humanizeError } from "../api/ingest/errors"
 import type { LeanDraftingStatus } from "../api/ingest/lean"
 import { formatDate, formatDateTime, formatTime } from "../lib/format"
@@ -14,10 +14,14 @@ import { useToast } from "./Toast"
 type Upload = {
   key: number
   file: File
-  status: "queued" | "uploading" | "reading" | "ready" | "failed"
+  status: "queued" | "uploading" | "reading" | "ready" | "failed" | "exists"
   error?: string
   // A wrong file type cannot succeed on retry, so the row offers Remove only.
   retryable?: boolean
+  // A source of this name is already in the matter (its stored name); the row
+  // asks the lawyer to replace it or keep both, and the choice is sent on retry.
+  existing?: string
+  choice?: ExistingSourceChoice
 }
 
 const ACCEPTED = /\.(docx|pdf)$/i
@@ -81,7 +85,10 @@ export default function DocumentUpload({
   async function run(upload: Upload) {
     update(upload.key, { status: "uploading", error: undefined })
     try {
-      const result = await uploadDocument(matterId, upload.file, () => update(upload.key, { status: "reading" }))
+      const result = await uploadDocument(matterId, upload.file, {
+        onSent: () => update(upload.key, { status: "reading" }),
+        existing: upload.choice,
+      })
       update(upload.key, { status: "ready" })
       setTimeout(() => setUploads((prev) => prev.filter((u) => u.key !== upload.key)), READY_LINGER_MS)
       onUploaded()
@@ -99,7 +106,7 @@ export default function DocumentUpload({
       }
       toast("success", `${result.name} is ready (${result.sections} section${result.sections === 1 ? "" : "s"}).`)
     } catch (e) {
-      update(upload.key, { status: "failed", error: humanizeError(e, `Could not read ${upload.file.name}.`), retryable: true })
+      update(upload.key, failedUpload(e, upload.file))
     }
   }
 
@@ -225,6 +232,10 @@ export default function DocumentUpload({
                 update(u.key, { status: "queued", error: undefined })
                 enqueue(u)
               }}
+              onChoose={(choice) => {
+                update(u.key, { status: "queued", choice })
+                enqueue({ ...u, choice })
+              }}
               onDismiss={() => setUploads((prev) => prev.filter((x) => x.key !== u.key))}
             />
           ))}
@@ -297,20 +308,33 @@ export default function DocumentUpload({
   )
 }
 
+// A same-name clash asks the lawyer to replace the existing source or keep both;
+// any other failure can be retried.
+export function failedUpload(error: unknown, file: File): Partial<Upload> {
+  if (error instanceof SourceExistsError) return { status: "exists", existing: error.existing }
+  return { status: "failed", error: humanizeError(error, `Could not read ${file.name}.`), retryable: true }
+}
+
 const UPLOAD_LABEL: Record<Upload["status"], string> = {
   queued: "Waiting…",
   uploading: "Uploading…",
   reading: "Reading the document…",
   ready: "Ready",
   failed: "Not added",
+  exists: "Already in this matter. Replace it or keep both?",
 }
 
-function UploadRow({ upload, onRetry, onDismiss }: { upload: Upload; onRetry: () => void; onDismiss: () => void }) {
+export function UploadRow({ upload, onRetry, onChoose, onDismiss }: {
+  upload: Upload
+  onRetry: () => void
+  onChoose: (choice: ExistingSourceChoice) => void
+  onDismiss: () => void
+}) {
   return (
     <li className={`doc-row upload-row is-${upload.status}`} aria-live="polite">
       <div className="doc-row-main">
         <span className="upload-icon" aria-hidden>
-          {upload.status === "failed" ? <IconAlert /> : upload.status === "ready" ? <IconCheck /> : <span className="upload-spinner" />}
+          {upload.status === "failed" || upload.status === "exists" ? <IconAlert /> : upload.status === "ready" ? <IconCheck /> : <span className="upload-spinner" />}
         </span>
         <span className="upload-name">{upload.file.name}</span>
       </div>
@@ -325,6 +349,24 @@ function UploadRow({ upload, onRetry, onDismiss }: { upload: Upload; onRetry: ()
             )}
             <button type="button" className="icon-btn" onClick={onDismiss}>
               Remove
+            </button>
+          </span>
+        )}
+        {upload.status === "exists" && (
+          <span className="upload-actions">
+            <button
+              type="button"
+              className="icon-btn danger"
+              title={`Replace ${upload.existing} with this file — the current file is overwritten`}
+              onClick={() => onChoose("replace")}
+            >
+              Replace
+            </button>
+            <button type="button" className="icon-btn" title="Add this file under a new name and keep both" onClick={() => onChoose("keep-both")}>
+              Keep both
+            </button>
+            <button type="button" className="icon-btn" onClick={onDismiss}>
+              Cancel
             </button>
           </span>
         )}
