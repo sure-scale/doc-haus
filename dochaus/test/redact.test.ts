@@ -5,7 +5,7 @@
 // Lives in test/, not tool/: the engine's ToolRegistry imports every .ts under
 // {tool,tools}/ as a custom tool, and importing a bun:test file outside the
 // test runner throws ("Cannot use describe outside of the test runner").
-import { describe, expect, test } from "bun:test"
+import { describe, expect, spyOn, test } from "bun:test"
 import { Database } from "bun:sqlite"
 import { mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -197,4 +197,70 @@ describe("redact tool", () => {
     expect(result).toBeString()
     expect(result as string).toContain("must not contain")
   })
+
+  test("a log write that fails after the file is redacted still re-indexes and says what was not recorded", async () => {
+    const { dir, file } = await matterWith(buildFixture())
+    recordRedline(dir, {
+      docPath: file,
+      docName: "personnel.docx",
+      scope: "phrase",
+      findText: `SSN: ${SSN}`,
+      oldText: `SSN: ${SSN}`,
+      newText: "SSN: [on file]",
+      author: "test",
+      reviewComment: "",
+      anchorId: "x",
+    })
+    // Another process holds legal.db's write lock past the writers' short wait,
+    // as an ingest upload commit can: every log write after the .docx write
+    // fails with SQLITE_BUSY.
+    const holder = Bun.spawn(
+      [
+        process.execPath,
+        "-e",
+        `const { Database } = require("bun:sqlite")
+        const db = new Database(${JSON.stringify(path.join(dir, ".dochaus", "legal.db"))})
+        db.run("BEGIN IMMEDIATE")
+        db.run("UPDATE redlines SET author = author")
+        console.log("locked")
+        setTimeout(() => {}, 60_000)`,
+      ],
+      { stdout: "pipe" },
+    )
+    const requests: string[] = []
+    const fetchSpy = spyOn(globalThis, "fetch").mockImplementation((async (input: string | URL | Request) => {
+      requests.push(String(input))
+      return new Response("{}")
+    }) as typeof fetch)
+    let result: Awaited<ReturnType<typeof redact.execute>> | Error
+    try {
+      const reader = holder.stdout.getReader()
+      expect(new TextDecoder().decode((await reader.read()).value)).toContain("locked")
+      reader.releaseLock()
+      result = await redact
+        .execute({ document: "personnel.docx", text: SSN, reason: "SSN — PII", author: "A. Lawyer", label: undefined }, ctxFor(dir))
+        .catch((error: Error) => error)
+    } finally {
+      fetchSpy.mockRestore()
+      holder.kill()
+      await holder.exited
+    }
+
+    // The irreversible removal happened, and the index was asked to drop the text.
+    expect(docxPackageResidue(await Bun.file(file).bytes(), SSN)).toEqual([])
+    expect({
+      thrown: result instanceof Error ? result.message : null,
+      reindexRequests: requests.filter((url) => url.endsWith("/documents/revisions")).length,
+    }).toEqual({ thrown: null, reindexRequests: 1 })
+    if (typeof result === "string" || result instanceof Error) throw new Error(String(result))
+    expect(result.output).toContain("Permanently removed")
+    expect(result.output).not.toContain("Recorded as redaction log entry")
+    expect(result.output).not.toContain("Retired")
+    expect(result.output).toContain("WARNING: the redaction log entry was not recorded (database is locked)")
+    expect(result.output).toContain("WARNING: pending redlines that reference the removed text were not retired (database is locked)")
+    expect(result.metadata).toMatchObject({ redaction: null, supersededRedlines: null, reingested: true })
+    // Nothing was written to the log or retired: the warnings are the record.
+    expect(listRedactions(dir)).toEqual([])
+    expect(pendingRedlinesForDoc(dir, file)).toHaveLength(1)
+  }, 30_000)
 })

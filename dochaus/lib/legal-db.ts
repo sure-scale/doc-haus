@@ -15,8 +15,20 @@ const WRITE_BUSY_TIMEOUT_MS = 2000
 export function openLegalDbForWrite(matterDir: string) {
   const dir = path.join(matterDir, ".dochaus")
   mkdirSync(dir, { recursive: true })
-  const db = new Database(path.join(dir, "legal.db"))
-  db.run(`PRAGMA busy_timeout = ${WRITE_BUSY_TIMEOUT_MS}`)
-  db.run("PRAGMA journal_mode = WAL")
-  return db
+  return prepared(new Database(path.join(dir, "legal.db")), (db) => {
+    db.run(`PRAGMA busy_timeout = ${WRITE_BUSY_TIMEOUT_MS}`)
+    db.run("PRAGMA journal_mode = WAL")
+  })
+}
+
+/** `db` after `setup`, or closed when setup throws (a lock wait that ran out),
+ * so a failed open never leaks the connection. */
+export function prepared(db: Database, setup: (db: Database) => void) {
+  try {
+    setup(db)
+    return db
+  } catch (error) {
+    db.close()
+    throw error
+  }
 }

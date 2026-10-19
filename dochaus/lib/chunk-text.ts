@@ -38,3 +38,44 @@ export function chunkText(rows: readonly ChunkTextRow[], pad?: (length: number, 
   })
   return { text: done.join("") + tail, covered }
 }
+
+export type SectionChunkRow = ChunkTextRow & { doc_name: string; section: string }
+export type SectionPassage = { doc_name: string; section: string; char_start: number; text: string }
+
+// Section text for get-section and current-section. Rows come in (doc_name,
+// char_start, rowid) order. A passage is one section's run of chunks that touch
+// or overlap, rebuilt by chunkText from the run's first char_start: ingest
+// repeats the last ~12% of a long section's chunk at the start of the next, so
+// joining chunk text would repeat it. A label that recurs further on in a
+// document (an exhibit's own numbering) starts a new passage with its own
+// offsets. Passages end on a chunk boundary once `cap` characters are used,
+// always keeping the first chunk; `rest` is where the text not returned starts.
+export function sectionPassages(rows: readonly SectionChunkRow[], cap: number) {
+  const passages: SectionPassage[] = []
+  let rest: { doc_name: string; section: string; char_start: number } | undefined
+  let run: SectionChunkRow[] = []
+  let end = 0
+  let used = 0
+  const close = () => {
+    const first = run[0]
+    if (!first) return
+    const rebased = run.map((row) => ({ text: row.text, char_start: row.char_start - first.char_start }))
+    passages.push({ doc_name: first.doc_name, section: first.section, char_start: first.char_start, text: chunkText(rebased).text })
+    run = []
+  }
+  for (const row of rows) {
+    const first = run[0]
+    if (first && (row.doc_name !== first.doc_name || row.section !== first.section || row.char_start > end)) close()
+    const rowEnd = row.char_start + row.text.length
+    const added = run.length ? Math.max(0, rowEnd - end) : row.text.length
+    if (used + added > cap && passages.length + run.length > 0) {
+      rest = { doc_name: row.doc_name, section: row.section, char_start: run.length ? end : row.char_start }
+      break
+    }
+    end = run.length ? Math.max(end, rowEnd) : rowEnd
+    run.push(row)
+    used += added
+  }
+  close()
+  return { passages, rest }
+}
