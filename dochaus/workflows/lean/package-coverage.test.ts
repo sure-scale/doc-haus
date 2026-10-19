@@ -164,7 +164,7 @@ describe("package-scope question", () => {
       `"release the deposit", directed by "${RELEASE}" [source: ${SOURCE}]; to be taken by "Kestrel Works"; planned in d2 "Release letter", executed by parties the plan does not name. ` +
       "For each, which planned document, executed by those parties, should carry it, or is it outside this request?")
     expect(several.context).toBe("Drafting waits for your answer. The saved document plan, including any edits to it, is kept as it stands: " +
-      "to add a document, start a new draft, which plans the package from the start.")
+      'to add a document, stop this draft with "Stop draft", then start a new one, which plans the package from the start.')
     // The flag changes the wording only: the question keys on the same acts.
     expect(several.id).toBe(coverageScopeQuestion([act(), release], documents)!.id)
     const one = coverageScopeQuestion([act()], [planned("d1", "Advice note", [])], [], { saved: true })!.question

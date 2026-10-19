@@ -220,7 +220,8 @@ export default function Questions({
       )}
       {rerun && (
         <p id={rerunId} className="question-delegate-hint">
-          This draft is finished. Answering now runs the drafting again with your answer.
+          This draft is finished. Answering now reviews the drafted documents with your answer and amends them where
+          needed; they are not redrafted.
         </p>
       )}
     </section>

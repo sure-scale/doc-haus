@@ -102,7 +102,10 @@ describe("template coverage in a lean run", () => {
     expect(gaps).toEqual([expect.objectContaining({ ref: { template_part: "ANNEX B – CHARGING SCHEDULE", source_id: TEMPLATE, document: "d1" } })])
     const asked = model.prompts.filter(prompt => prompt.agent === AGENT["change-plan"])
     expect(asked).toHaveLength(1)
-    expect(asked[0]!.text).toMatch(new RegExp(`<required_repairs>[\\s\\S]*- ${gaps[0]!.id} [^\\n]*${gaps[0]!.detail.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[\\s\\S]*</required_repairs>`))
+    expect(asked[0]!.text).toMatch(new RegExp(`<required_repairs>[\\s\\S]*- ${gaps[0]!.id} \\(template part missing or cut short in the draft\\): ${gaps[0]!.detail.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[\\s\\S]*</required_repairs>`))
+    // The part names no paragraph: the change cycle is told to add it from the template.
+    expect(asked[0]!.text).toContain("For a template part missing or cut short in the draft, which names no paragraph, add the missing wording from the template: " +
+      "split the paragraph the part belongs after, or replace a paragraph of the part with its full wording.")
   }, 120_000)
 
   test("an annex the change cycle does not add is kept as an omission the drafting notes disclose; the run does not fail", async () => {

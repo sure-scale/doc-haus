@@ -123,6 +123,7 @@ export function changesRepairSections(directory: string, document: DocID) {
     defects.length ? tagged("required_repairs", [
       "Each item is a defect the draft still has. Fix each one with an amendment to the paragraph named:",
       "quote the source exactly, remove the unsupported point, or replace it with a visible [open item: what is needed] marker.",
+      "For a template part missing or cut short in the draft, which names no paragraph, add the missing wording from the template: split the paragraph the part belongs after, or replace a paragraph of the part with its full wording.",
       "For an unanswered question, repeat it with its \"id\" and the \"pid\" of the paragraph it affects, and put a visible [open item: ...] marker in that paragraph.",
       ...defects.map(item => `- ${item.id} ${pidLabel(item, paragraphs)}: ${item.detail}${quoteLabel(item)}`),
     ].join("\n")) : "",
@@ -180,6 +181,8 @@ function ofDocument(item: OpenItem, document: DocID) {
 }
 
 function pidLabel(item: OpenItem, paragraphs: ParagraphRow[]) {
+  // The draft step's only omission is a template gap (draftTemplateItems): it names a part, not a paragraph.
+  if (item.stage === "draft" && item.kind === "omission") return "(template part missing or cut short in the draft)"
   if (item.ref.pid) return paragraphs.some(row => row.pid === item.ref.pid) ? `[${item.ref.pid}]` : "(not an initial draft paragraph; reassess the finding in the current draft)"
   const needle = normalize(item.ref.quote ?? item.ref.citation ?? "")
   const pid = needle ? paragraphs.find(row => normalize(row.text).includes(needle))?.pid : undefined

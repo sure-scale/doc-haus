@@ -89,7 +89,7 @@ test("an instruction left open is asked once, in one package-scope question, and
   expect(question.question).not.toContain("For each")
   expect(question.context).toBe("Until a later check settles this instruction, it is disclosed with the review draft as left open; delivery is not held for it. " +
     "Your answer re-runs the stages that use it, including the checklist check; the document plan is kept as saved, and a drafted document changes only by amendment. " +
-    "A document the plan does not have is not added: to add one, start a new draft, which plans the package from the start.")
+    'A document the plan does not have is not added: to add one, stop this draft with "Stop draft" if it has not finished, then start a new one, which plans the package from the start.')
   // Still disclosed with its own reason, now referring to the question.
   expect(leftOpen(gate)).toEqual([expect.objectContaining({ status: "disclosed", ref: { checklist_item: "c1", document: "d1", question_id: question.id },
     detail: expect.stringContaining("Checklist requirement left open: The note states the delivery period.") })])
