@@ -12,7 +12,7 @@ import {
   type IdentifierChunk,
   type MatterIdentifiers,
 } from "./identifiers"
-import { stampIngestLineage, stampSourceRebuildLineage } from "./lineage"
+import { stampIngestLineage, stampSourceRebuildLineage, type ArtifactHash } from "./lineage"
 import { reconstructText, revision } from "./structure"
 
 const MAX_SOURCE_CHUNK_CHARS = 4500
@@ -57,8 +57,15 @@ const SOURCE_ARTIFACT_PATHS = [
 type SourceRevision = { doc_path: string; name: string; rev: string | null }
 
 // A snapshot staged in `transaction` before the commit that installs it, and
-// the registry sources (listSourceDocuments order) it was staged from.
-export type StagedSourceArtifacts = { transaction: string; sources: SourceRevision[]; chunks: number }
+// the registry sources (listSourceDocuments order) it was staged from. `files`:
+// each staged file's hash and size by its path in the matter (see
+// stageSourceArtifacts).
+export type StagedSourceArtifacts = {
+  transaction: string
+  sources: SourceRevision[]
+  chunks: number
+  files: ReadonlyMap<string, ArtifactHash>
+}
 
 // `rebuild` re-derives the projection from sources already ingested (the
 // startup self-heal): lineage then records only the artifacts whose bytes
@@ -90,10 +97,10 @@ export async function writeSourceArtifacts(
     "source-artifact-transactions",
     `${process.pid}-${randomUUID()}`,
   )
-  let snapshot: { documents: string[]; chunks: number }
+  let snapshot: { documents: string[]; chunks: number; files: ReadonlyMap<string, ArtifactHash> }
   try {
     snapshot = current
-      ? { documents: current.sources.map((source) => source.name), chunks: current.chunks }
+      ? { documents: current.sources.map((source) => source.name), chunks: current.chunks, files: current.files }
       : await stageSourceArtifacts(matterDir, transaction, sources)
     settleSourceArtifactSnapshot(matterDir, transaction, options.settle)
   } catch (error) {
@@ -105,10 +112,11 @@ export async function writeSourceArtifacts(
   }
   if (options.stampLineage !== false) {
     const correlationId = correlation ?? `${options.rebuild ? "rebuild" : "ingest"}-${Date.now().toString(36)}`
-    if (options.rebuild) stampSourceRebuildLineage(matterDir, snapshot.documents, correlationId)
-    else stampIngestLineage(matterDir, snapshot.documents, correlationId)
+    if (options.rebuild) stampSourceRebuildLineage(matterDir, snapshot.documents, correlationId, snapshot.files)
+    else stampIngestLineage(matterDir, snapshot.documents, correlationId, undefined, snapshot.files)
   }
-  return { documents: snapshot.documents.length, chunks: snapshot.chunks, sourceDocuments: snapshot.documents }
+  // `files`: the installed snapshot's hashes, for a caller that stamps lineage itself.
+  return { documents: snapshot.documents.length, chunks: snapshot.chunks, sourceDocuments: snapshot.documents, files: snapshot.files }
 }
 
 // Stage, before a source upload's or delete's write transaction, the snapshot
@@ -135,7 +143,7 @@ export async function stageSourceChange(
       .map((row) => ({ doc_path: row.doc_path, name: row.name, text: reconstructText(db, row.doc_path) })),
     ...(uploaded ? [{ doc_path: docPath, ...uploaded }] : []),
   ]
-  const { chunks } = await stageSourceArtifacts(
+  const { chunks, files } = await stageSourceArtifacts(
     matterDir,
     transaction,
     rows.map((row) => sourceRecord(row.doc_path, row.name, row.text)),
@@ -144,6 +152,7 @@ export async function stageSourceChange(
     transaction,
     sources: rows.map((row) => ({ doc_path: row.doc_path, name: row.name, rev: revision(row.text) })),
     chunks,
+    files,
   }
 }
 
@@ -174,26 +183,34 @@ function sourceRecord(docPath: string, name: string, text: string): SourceRecord
 
 // Write the snapshot of `sources` to `<transaction>/staged`, replacing anything
 // staged there before. No sources stage an empty snapshot, which removes the
-// projection when installed.
+// projection when installed. Returns, in `files`, the hash and size of the
+// bytes written to each file, keyed by its path in the matter, so lineage
+// stamps the installed snapshot without reading every file back.
 async function stageSourceArtifacts(matterDir: string, transaction: string, sources: SourceRecord[]) {
   const staged = path.join(transaction, "staged")
   rmSync(staged, { recursive: true, force: true })
   mkdirSync(staged, { recursive: true })
   const documents = sources.map((source) => source.document)
-  if (!sources.length) return { documents, chunks: 0 }
+  const files = new Map<string, ArtifactHash>()
+  const write = (relative: string, text: string) => {
+    const bytes = Buffer.from(text)
+    files.set(relative, { sha256: createHash("sha256").update(bytes).digest("hex"), bytes: bytes.length })
+    return Bun.write(path.join(staged, relative), bytes)
+  }
+  if (!sources.length) return { documents, chunks: 0, files }
   const previousIdentifiers = await readMatterIdentifiers(matterDir)
   const sourceMap = buildSourceMap(sources)
   mkdirSync(path.join(staged, "sources"), { recursive: true })
   mkdirSync(path.join(staged, "source-chunks"), { recursive: true })
-  await Promise.all(sources.map((source) => Bun.write(path.join(staged, source.extracted_text), `${source.text}\n`)))
+  await Promise.all(sources.map((source) => write(source.extracted_text, `${source.text}\n`)))
   const chunkFiles = sourceChunkFiles(sources, sourceMap)
-  await writeSourceChunks(staged, chunkFiles)
-  await writeMatterIdentifiers(staged, chunkFiles, previousIdentifiers)
-  await Bun.write(path.join(staged, "source-ledger.json"), `${JSON.stringify(sourceMap, null, 2)}\n`)
-  await Bun.write(path.join(staged, "source-map.json"), `${JSON.stringify(sourceMap, null, 2)}\n`)
-  await Bun.write(path.join(staged, "source-map.md"), sourceMapMarkdown(sourceMap))
-  await Bun.write(
-    path.join(staged, "source-index.json"),
+  await Promise.all(chunkFiles.map((chunk) => write(chunk.text_path, chunk.file.text)))
+  await writeMatterIdentifiers(write, chunkFiles, previousIdentifiers)
+  await write("source-ledger.json", `${JSON.stringify(sourceMap, null, 2)}\n`)
+  await write("source-map.json", `${JSON.stringify(sourceMap, null, 2)}\n`)
+  await write("source-map.md", sourceMapMarkdown(sourceMap))
+  await write(
+    "source-index.json",
     `${JSON.stringify(
       {
         source_ledger: "source-ledger.json",
@@ -211,7 +228,7 @@ async function stageSourceArtifacts(matterDir: string, transaction: string, sour
       2,
     )}\n`,
   )
-  return { documents, chunks: sourceMap.documents.reduce((sum, source) => sum + source.chunks.length, 0) }
+  return { documents, chunks: sourceMap.documents.reduce((sum, source) => sum + source.chunks.length, 0), files }
 }
 
 // Startup heal for one matter (ingest server boot). Returns what it did.
@@ -401,12 +418,8 @@ function sourceChunkFiles(sourceRows: SourceRecord[], sourceMap: ReturnType<type
   })
 }
 
-async function writeSourceChunks(matterDir: string, chunks: ReturnType<typeof sourceChunkFiles>) {
-  await Promise.all(chunks.map((chunk) => Bun.write(path.join(matterDir, chunk.text_path), chunk.file.text)))
-}
-
 async function writeMatterIdentifiers(
-  matterDir: string,
+  write: (relative: string, text: string) => Promise<number>,
   chunks: IdentifierChunk[],
   previous: MatterIdentifiers | undefined,
 ) {
@@ -414,8 +427,8 @@ async function writeMatterIdentifiers(
   const data = previous && sameIdentifierProjection(previous, extracted)
     ? { ...extracted, generated_at: previous.generated_at }
     : extracted
-  await Bun.write(path.join(matterDir, "matter-identifiers.json"), `${JSON.stringify(data, null, 2)}\n`)
-  await Bun.write(path.join(matterDir, "matter-identifiers.md"), `${renderIdentifiersMarkdown(data)}\n`)
+  await write("matter-identifiers.json", `${JSON.stringify(data, null, 2)}\n`)
+  await write("matter-identifiers.md", `${renderIdentifiersMarkdown(data)}\n`)
 }
 
 async function readMatterIdentifiers(matterDir: string): Promise<MatterIdentifiers | undefined> {

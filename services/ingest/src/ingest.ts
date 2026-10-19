@@ -139,7 +139,7 @@ async function ingestDocumentLocked(
         }))
       }),
     )
-    await commitIngestedDocument(db, {
+    const artifacts = await commitIngestedDocument(db, {
       matterDir,
       docPath,
       fileName,
@@ -152,7 +152,7 @@ async function ingestDocumentLocked(
       chunks: preparedChunks,
       updateRegistry: options.updateRegistry,
     })
-    finalizeDocumentMutationLineage(db, mutation)
+    finalizeDocumentMutationLineage(db, mutation, artifacts.files)
     completeDocumentMutation(db, mutation)
   } catch (error) {
     discardDocumentMutation(db, mutation)
@@ -251,7 +251,7 @@ async function commitIngestedDocument(
         (listSourceDocuments(db) as { name: string }[]).map((document) => document.name),
         input.correlation,
       )
-      const artifacts = await writeSourceArtifacts(input.matterDir, input.correlation, {
+      return await writeSourceArtifacts(input.matterDir, input.correlation, {
         db,
         stampLineage: false,
         staged,
@@ -261,7 +261,6 @@ async function commitIngestedDocument(
           settled = true
         },
       })
-      return artifacts.sourceDocuments
     } catch (error) {
       if (!settled) {
         try {

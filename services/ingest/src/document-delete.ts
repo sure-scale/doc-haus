@@ -61,7 +61,7 @@ export async function deleteMatterDocument(matterDir: string, requestedName: str
       // is taken (see stageSourceChange), so the transaction holds the lock for
       // the registry delete and the snapshot's installation only.
       const staged = await stageSourceChange(matterDir, db, mutation.projectionDirectory, target.docPath)
-      await commitDocumentDeleteAsync(target.docPath, async () => {
+      const artifacts = await commitDocumentDeleteAsync(target.docPath, async () => {
         db.run("BEGIN IMMEDIATE")
         let settled = false
         try {
@@ -71,7 +71,7 @@ export async function deleteMatterDocument(matterDir: string, requestedName: str
             (listSourceDocuments(db) as { name: string }[]).map((document) => document.name),
             correlation,
           )
-          const artifacts = await writeSourceArtifacts(matterDir, correlation, {
+          return await writeSourceArtifacts(matterDir, correlation, {
             db,
             stampLineage: false,
             staged,
@@ -81,7 +81,6 @@ export async function deleteMatterDocument(matterDir: string, requestedName: str
               settled = true
             },
           })
-          return artifacts.sourceDocuments
         } catch (error) {
           if (!settled) {
             try {
@@ -93,7 +92,7 @@ export async function deleteMatterDocument(matterDir: string, requestedName: str
           throw error
         }
       }, { backupPath: mutation.documentBackup })
-      finalizeDocumentMutationLineage(db, mutation)
+      finalizeDocumentMutationLineage(db, mutation, artifacts.files)
       completeDocumentMutation(db, mutation)
       return { ok: true as const, name: target.name, role }
     } catch (error) {

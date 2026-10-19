@@ -4,6 +4,13 @@
 // the source projection stamps only the artifacts it changed. `supersedes` links
 // each row to the prior row for that artifact. Canonical schema documented in
 // dochaus/lib/lineage.ts.
+//
+// A row's hash and size are those of the artifact's bytes. The caller may pass
+// them for the files it just installed (`files`, see stageSourceArtifacts):
+// reading thousands of chunk files back only to hash bytes it wrote a moment
+// ago held the event loop for seconds on a large matter. Any present artifact
+// not in `files` (legal.db, or a file the caller did not write) is read and
+// hashed here.
 import { createHash } from "node:crypto"
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs"
 import path from "node:path"
@@ -48,7 +55,9 @@ function priorEntryByArtifact(matterDir: string): Map<string, { entry_id: string
   return map
 }
 
-function hashFile(absPath: string): { sha256: string; bytes: number } | null {
+export type ArtifactHash = { sha256: string; bytes: number }
+
+function hashFile(absPath: string): ArtifactHash | null {
   if (!existsSync(absPath)) return null
   const buf = readFileSync(absPath)
   return { sha256: createHash("sha256").update(buf).digest("hex"), bytes: buf.length }
@@ -56,6 +65,7 @@ function hashFile(absPath: string): { sha256: string; bytes: number } | null {
 
 function artifactsOnDisk(matterDir: string): string[] {
   const top = [".dochaus/legal.db", "source-index.json", "source-map.json", "source-map.md", "source-ledger.json", "matter-identifiers.json", "matter-identifiers.md"]
+    .filter((artifact) => existsSync(path.join(matterDir, artifact)))
   const glob = (pat: string) => [...new Bun.Glob(pat).scanSync({ cwd: matterDir, onlyFiles: true })].map((p) => p.replace(/\\/g, "/"))
   return [...top, ...glob("source-chunks/*.txt"), ...glob("sources/*.txt")]
 }
@@ -66,6 +76,7 @@ export function stampIngestLineage(
   documents: string[],
   correlation: string,
   mutationID?: string,
+  files?: ReadonlyMap<string, ArtifactHash>,
 ): number {
   return withArtifactMutationLock(matterDir, ".dochaus/lineage.jsonl", () => {
     const completed = mutationID ? completedMutationArtifacts(matterDir, mutationID) : new Set<string>()
@@ -79,6 +90,7 @@ export function stampIngestLineage(
         ...(mutationID ? { document_mutation_id: mutationID } : {}),
       },
       stamp: (artifact, sha256) => !completed.has(`${artifact}\0${sha256}`),
+      files,
     })
   })
 }
@@ -90,7 +102,12 @@ export function stampIngestLineage(
 // row (or that have none) are stamped, so every file the rebuild changed gets a
 // current row and unchanged ones get none. legal.db is never written by a
 // rebuild and is not stamped. Returns the number of artifacts stamped.
-export function stampSourceRebuildLineage(matterDir: string, documents: string[], correlation: string): number {
+export function stampSourceRebuildLineage(
+  matterDir: string,
+  documents: string[],
+  correlation: string,
+  files?: ReadonlyMap<string, ArtifactHash>,
+): number {
   return withArtifactMutationLock(matterDir, ".dochaus/lineage.jsonl", () =>
     appendArtifactRows(matterDir, {
       artifacts: artifactsOnDisk(matterDir).filter((artifact) => artifact !== ".dochaus/legal.db"),
@@ -99,6 +116,7 @@ export function stampSourceRebuildLineage(matterDir: string, documents: string[]
       provenance: { origin: "source-rebuild", documents },
       // A file with no lineage row yet is stamped too, so it becomes ledgered.
       stamp: (_artifact, sha256, prior) => prior?.content_sha256 !== sha256,
+      files,
     }))
 }
 
@@ -112,13 +130,14 @@ function appendArtifactRows(
     run: string
     provenance: Record<string, unknown>
     stamp: (artifact: string, sha256: string, prior: { content_sha256: unknown } | undefined) => boolean
+    files?: ReadonlyMap<string, ArtifactHash>
   },
 ) {
   mkdirSync(path.join(matterDir, ".dochaus"), { recursive: true })
   const prior = priorEntryByArtifact(matterDir)
   const ts = new Date().toISOString()
   const lines = input.artifacts.flatMap((artifact) => {
-    const hash = hashFile(path.join(matterDir, artifact))
+    const hash = input.files?.get(artifact) ?? hashFile(path.join(matterDir, artifact))
     if (!hash || !input.stamp(artifact, hash.sha256, prior.get(artifact))) return []
     return [
       JSON.stringify({
