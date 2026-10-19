@@ -286,7 +286,7 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
     }
     if (prefetched && prefetched.inputSha !== inputSha) await prefetched.reply.catch(() => undefined)
     prepared.delete(step)
-    const result = await runStep(directory, state, step, deps, progress, planned, prefetched?.inputSha === inputSha ? prefetched : undefined, reinspectChecklist)
+    const result = await runStep(directory, state, step, deps, progress, planned, prefetched?.inputSha === inputSha ? prefetched : undefined, reinspectChecklist, recorded)
       .catch((error: unknown): StageRun => error instanceof ChecklistRefreshRestart ? { status: "restart" } : ({ status: "failed", reason: `${step}: stopped by a runtime error: ${message(directory, error)}` }))
     // Whatever the step returned once paused (helpers turn a refused prompt into
     // their own failure) is not accepted; the step is run again on Continue.
@@ -533,18 +533,29 @@ export function stageInputSha(directory: string, step: StepID) {
   return withSourceSnapshot(() => hashStageInputs(step, LEAN_PROMPT_VERSION, stageInputs(directory, step)))
 }
 
-function runStep(directory: string, state: LeanState, step: StepID, deps: LeanDeps, progress: Progress, planned: () => void | Promise<void>, prepared?: PreparedReview, reinspectChecklist = false): Promise<StageRun> {
+/** `recorded` is the step's state before this run of it. */
+function runStep(directory: string, state: LeanState, step: StepID, deps: LeanDeps, progress: Progress, planned: () => void | Promise<void>, prepared?: PreparedReview, reinspectChecklist = false, recorded?: LeanStageState): Promise<StageRun> {
   const stage = stepStage(step)
   const document = stepDocument(step)
   if (stage === "apply" && document) return runApply(directory, state, document)
   if (stage === "gate") return runGate(directory)
   if (stage === "checklist-check") return runChecklistStage(directory, state, deps, reinspectChecklist)
-  if (stage === "change-plan" && document && focusedChecklistRepairs(directory, document)) return runFocusedRepairAdjudication(directory, state, deps, document, progress)
+  if (stage === "change-plan" && document && !roundPlanned(directory, recorded) && focusedChecklistRepairs(directory, document)) return runFocusedRepairAdjudication(directory, state, deps, document, progress)
   if (stage === "change-review" && document && focusedChecklistRepairs(directory, document)) return runFocusedChangeReview(directory, state, deps, document, progress)
   if (stage === "changes" && document && focusedChecklistRepairs(directory, document)) return runChangeReconciliation(directory, state, deps, document, progress)
   if (stage === "change-prepare" && document) return runChangePreparation(directory, state, deps, document, progress)
   if (stage === "draft" && document) return runDraftStage(directory, state, deps, progress, document, planned)
   return runModelStage(directory, state, step, deps, progress, prepared)
+}
+
+/** Whether this change plan was accepted after the current repair round was
+ * requested. The checklist round is why the change plan runs only until its
+ * focused adjudication is accepted; a later re-key (an answer, an update, an
+ * earlier document's amendment) plans the new findings ordinarily, with the
+ * round's checklist findings beside them. */
+function roundPlanned(directory: string, recorded: LeanStageState | undefined) {
+  const round = readRepairRound(directory)
+  return Boolean(round && recorded?.status === "done" && recorded.finished_at && recorded.finished_at > round.requested_at)
 }
 
 /** One child session; the first prompt carries the step's inputs, each retry the

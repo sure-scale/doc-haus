@@ -6,13 +6,14 @@ import { renderMarkdownToDocx } from "../../lib/render"
 import { runLean, stageInputSha } from "./runner"
 import { stageOutputValid, type StageSessionPort } from "./stages"
 import { exportDocxComments, readDocxCommentParagraphs } from "../../lib/docx-comments"
-import { leanFile, readLeanJson, readLeanState, readOpenItems, updateLeanStage, writeLeanBytes, writeLeanState, writeLeanText } from "./state"
+import { leanFile, readLeanJson, readLeanState, readOpenItems, readQuestions, updateLeanStage, writeLeanBytes, writeLeanState, writeLeanText, writeQuestions } from "./state"
 import { finalGate, type GateResult } from "./gate"
 import { readLeanDocuments } from "./deliverables"
 import { enqueueLeanRequest } from "./requests"
 import { CHECKLIST_JOB_AGENTS } from "./checklist-job"
 import { readRepairRound } from "./repairs"
-import { AGENT, cleanupMatters, happyPath, matter, registering, scriptedModel, drafter, draftingNotes, pidOf, DRAFT, SOURCE, SUPPORT } from "./test-support"
+import { finalBodyParagraphs } from "./checks"
+import { AGENT, cleanupMatters, happyPath, matter, registering, scriptedModel, drafter, draftingNotes, pidOf, DRAFT, SOURCE, SUPPORT, type Reply } from "./test-support"
 import { DELIVERY_ARTIFACTS_ROW, checklistTextMeasuresMeaning, isDeliveryArtifactEvidence, type ChecklistCheckerInput, type ChecklistProducerInput } from "./checklist-contract"
 
 afterEach(cleanupMatters)
@@ -35,7 +36,7 @@ const deferChecklistRepair = (text: string) => JSON.stringify({ shared_decisions
 // The checker cites every row it is supplied, the target's delivery_artifacts
 // rows included; `delivery` cites only those rows: a finding about a delivered
 // file's name, format or composition.
-function model(directory: string, status: "satisfied" | "open" | "unsatisfied" | "indeterminate" = "satisfied", extra: { open_decisions?: string[]; indeterminate_cause?: "missing_inspection" | "not_inspectable" } = {}, options: { broken?: boolean; second?: boolean; pair?: boolean; departure?: boolean; review?: boolean; notes?: boolean; notesReview?: boolean; delivery?: boolean } = {}) {
+function model(directory: string, status: "satisfied" | "open" | "unsatisfied" | "indeterminate" = "satisfied", extra: { open_decisions?: string[]; indeterminate_cause?: "missing_inspection" | "not_inspectable" } = {}, options: { broken?: boolean; second?: boolean; pair?: boolean; departure?: boolean; review?: boolean; notes?: boolean; notesReview?: boolean; delivery?: boolean } = {}, replies: Record<string, Reply> = {}) {
   let extractedBeforeBody = false
   let checkedAfterNotes = false
   let reviewed = false
@@ -72,6 +73,7 @@ function model(directory: string, status: "satisfied" | "open" | "unsatisfied" |
         source_refs: input.item.source_refs, inspection_scope: "Current body paragraphs only.", limitation: "Comments not inspected.", ...extra,
         ...(options.departure ? { departure_disclosure: input.current_evidence.slice(0, 1) } : {}) })
     },
+    ...replies,
   })
   return { ...result, early: () => extractedBeforeBody, late: () => checkedAfterNotes }
 }
@@ -162,6 +164,64 @@ test("an omission is repaired once without Continue; an adverse re-check is disc
   expect(idle.prompts).toHaveLength(0)
   expect(readLeanJson(directory, "repairs.json")).toEqual(round)
 }, 120000)
+
+// After its checklist round, the run's repairs.json still holds the round's
+// checklist items. A later answer or update re-keys the change plan; it is
+// planned ordinarily, with the round's checklist findings beside it, so the
+// late input reaches the docx as an amendment.
+const LATE_PAYMENT = "Payment shall be due on delivery."
+// A focused re-adjudication defers the round's assessment again, in new words.
+const latePlan = (late: string): Reply => text => text.includes("ONE supplied checklist assessment")
+  ? deferChecklistRepair(text).replace("still needs a supported correction", "still needs a supported correction after the later input")
+  : !text.includes(late) ? deferChecklistRepair(text)
+  : JSON.stringify({ shared_decisions: [], groups: [{ id: "payment", pids: [pidOf(text, "Payment is due on delivery.")], goal: "State the payment timing the lawyer gave.",
+    sources: [{ source_id: SOURCE, quote: "Payment is due on delivery." }], limitations: [] }], dismissed: [], questions: [] })
+const latePreparation: Reply = text => JSON.stringify({ amendments: [{ pid: pidOf(text, "Payment is due on delivery."), updated: LATE_PAYMENT,
+  reason: "States the payment timing the lawyer gave.", sources: [{ source_id: SOURCE, quote: "Payment is due on delivery." }] }], questions: [] })
+const lateInputs: [string, string, (directory: string, late: string) => void][] = [
+  ["an update note", "State that payment shall be due on delivery.", (directory, late) => { enqueueLeanRequest(directory, { kind: "update", text: late }) }],
+  ["a gate answer", "Payment shall be due on delivery, as the terms say.", (directory, late) => {
+    writeQuestions(directory, [...readQuestions(directory), { id: "gate-payment", stage: "gate", question: "When is payment due?", context: "The draft states payment timing.", status: "open" }])
+    enqueueLeanRequest(directory, { kind: "answer", question_id: "gate-payment", answer: late })
+  }],
+]
+for (const [name, late, input] of lateInputs) test(`after a completed checklist round, ${name} is planned ordinarily and reaches the docx as an amendment`, async () => {
+  const directory = matter()
+  const first = model(directory, "unsatisfied")
+  expect((await runLean(directory, { sessions: first.port })).status).toBe("completed")
+  expect(focusedRepairs(first)).toBe(1)
+  expect(readRepairRound(directory)).toMatchObject({ round: 1, items: [{ stage: "checklist-check", ref: { document: "d1" } }] })
+  input(directory, late)
+  const later = model(directory, "unsatisfied", {}, {}, { [AGENT["change-plan"]]: latePlan(late), [AGENT["change-prepare"]]: latePreparation })
+  expect((await runLean(directory, { sessions: later.port })).status).toBe("completed")
+  expect(later.count(AGENT.draft)).toBe(0)
+  expect(finalBodyParagraphs(directory, "d1").map(row => row.text)).toContain(LATE_PAYMENT)
+  expect(focusedRepairs(later)).toBe(0)
+  // The ordinary plan carried the round's checklist finding beside the late input.
+  expect(later.prompts.some(row => row.agent === AGENT["change-plan"] && row.text.includes(late) && row.text.includes("<checklist_findings>"))).toBe(true)
+  const idle = scriptedModel({})
+  expect((await runLean(directory, { sessions: idle.port })).status).toBe("completed")
+  expect(idle.prompts).toHaveLength(0)
+}, 180000)
+
+test("a change plan that failed inside its checklist round is adjudicated focused again on Continue", async () => {
+  const directory = matter()
+  let failed = false
+  const once: Reply = text => {
+    if (text.includes("ONE supplied checklist assessment") && !failed) { failed = true; throw new Error("Scripted adjudication failure") }
+    return deferChecklistRepair(text)
+  }
+  const first = model(directory, "unsatisfied", {}, {}, { [AGENT["change-plan"]]: once })
+  const stopped = await runLean(directory, { sessions: first.port })
+  expect(stopped.status).toBe("failed")
+  expect(stopped.stages["d1.change-plan"]).toMatchObject({ status: "failed" })
+  expect(stopped.stages["d1.change-plan"]!.finished_at! > readRepairRound(directory)!.requested_at).toBe(true)
+  enqueueLeanRequest(directory, { kind: "continue" })
+  const resumed = model(directory, "unsatisfied")
+  expect((await runLean(directory, { sessions: resumed.port })).status).toBe("completed")
+  expect(focusedRepairs(resumed)).toBe(1)
+  expect(resumed.prompts.filter(row => row.agent === AGENT["change-plan"] && !row.text.includes("ONE supplied checklist assessment"))).toHaveLength(0)
+}, 180000)
 
 test("an omission resting on a delivered file's properties is disclosed with the review draft, never sent to a text repair", async () => {
   const directory = matter()
