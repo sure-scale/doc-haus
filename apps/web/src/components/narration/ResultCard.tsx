@@ -1,6 +1,6 @@
 import { documentContentUrl } from "../../api/ingest/documents"
 import type { LeanDraftingStatus } from "../../api/ingest/lean"
-import DraftedList, { useCombinedDownload } from "../drafting/DraftedList"
+import DraftedList from "../drafting/DraftedList"
 import { checklistFindingsCount, draftedGroups, findingsTitle, OUTPUT_ROLE, type DraftedOutput } from "../drafting/model"
 import { resultChecks } from "./outcome"
 
@@ -148,19 +148,12 @@ function ReviewRow({
   )
 }
 
-/** A combined document's one file, downloaded in place of its draft. */
+/** A combined document's one file, downloaded in place of its draft as the
+ * file saved in the matter. */
 function CombinedDownload({ matterId, name }: { matterId: string; name: string }) {
-  const { busy, download } = useCombinedDownload(matterId)
   return (
-    <button
-      type="button"
-      className="linklike result-download"
-      disabled={busy}
-      onClick={() => download(name)}
-      aria-label={`Download ${name}`}
-      title="Download the memo and the draft as one .docx"
-    >
+    <a href={documentContentUrl(matterId, name)} download={name} aria-label={`Download ${name}`} title="Download the memo and the draft as one .docx">
       Download
-    </button>
+    </a>
   )
 }

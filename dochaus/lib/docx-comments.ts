@@ -62,8 +62,11 @@ export function readDocxRevisionProperties(bytes: Uint8Array) {
 
 /** Read native comment text separately from current body text. Anchor records
  * identify paragraphs containing range markers, not the exact commented span.
- * paragraph_index is an accepted-text ordinal; xml_paragraph_index includes
- * empty/deleted paragraphs. PIDs and ordinals belong to this artifact only. */
+ * paragraph_index is an accepted-text ordinal and, with the accepted text and
+ * PIDs, describes the accepted paragraph (joined across deleted paragraph
+ * marks); a marker in a deletion-only paragraph has no ordinal and keeps that
+ * paragraph's PIDs. xml_paragraph_index includes empty/deleted paragraphs.
+ * PIDs and ordinals belong to this artifact only. */
 export function readDocxComments(bytes: Uint8Array) {
   const parts = unzipSync(bytes)
   if (!parts[BODY]) throw new Error("invalid_docx_package")
@@ -84,9 +87,10 @@ export function readDocxComments(bytes: Uint8Array) {
     const markers = ["commentRangeStart", "commentRangeEnd", "commentReference"].flatMap(kind =>
       elements(body, W, kind).filter(marker => marker.getAttributeNS(W, "id") === id).map(marker => {
         const paragraph = owningParagraph(marker) as Element | null
-        const row = accepted.find(candidate => candidate.node === paragraph)
-        return { kind, paragraph_index: row?.index ?? null, xml_paragraph_index: paragraph ? allParagraphs.indexOf(paragraph) : null, pids: paragraph ? paragraphPIDs(paragraph) : [],
-          accepted_paragraph_text: paragraph ? acceptedText(paragraph) : "",
+        const row = paragraph ? accepted.find(candidate => candidate.nodes.includes(paragraph)) : undefined
+        return { kind, paragraph_index: row?.index ?? null, xml_paragraph_index: paragraph ? allParagraphs.indexOf(paragraph) : null,
+          pids: row ? row.pids : paragraph ? paragraphPIDs(paragraph) : [],
+          accepted_paragraph_text: row ? row.text : paragraph ? acceptedText(paragraph) : "",
           deleted_paragraph_text: paragraph ? deletedText(paragraph) : "" }
       }))
     return { comment_id: id, text: elements(comment, W, "p").map(acceptedText).join("\n"), markers }
@@ -118,9 +122,11 @@ export function preserveDocxComments(original: Uint8Array, compared: Uint8Array)
       return markers[0].paragraph_index
     })
     if (indices[0] > indices[1] || indices[1] > indices[2]) throw new Error("unsupported_original_comment_range")
+    // The comparator accepts the original's pending revisions, so an original
+    // revision would return as this comparison's tracked change.
     for (let index = indices[0]; index <= indices[2]; index++) {
-      if (from[index].text !== to[index].text || elements(to[index].node, W, "*").some(node =>
-        ["ins", "del", "moveFrom", "moveTo", "rPrChange", "pPrChange"].includes(node.localName)))
+      if (from[index].text !== to[index].text || [from[index], to[index]].some(row => row.nodes.some(paragraph => elements(paragraph, W, "*").some(node =>
+        ["ins", "del", "moveFrom", "moveTo", "rPrChange", "pPrChange"].includes(node.localName)))))
         throw new Error("original_comment_range_was_edited")
       restored.add(index)
     }
@@ -128,7 +134,7 @@ export function preserveDocxComments(original: Uint8Array, compared: Uint8Array)
   // A paragraph's relationship IDs and style/numbering IDs belong to its
   // package. Equal text alone does not authorize transplanting those bindings.
   for (const index of restored) {
-    const nodes = [from[index].node, ...Array.from(from[index].node.getElementsByTagName("*"))]
+    const nodes = from[index].nodes.flatMap(paragraph => [paragraph, ...Array.from(paragraph.getElementsByTagName("*"))])
     if (nodes.some(node => ["drawing", "pict", "object", "fldSimple", "fldChar", "instrText", "footnoteReference", "endnoteReference"].includes(node.localName)
       || (node.localName === "hyperlink" && node.hasAttributeNS(W, "anchor"))))
       throw new Error("unsupported_original_comment_paragraph_dependency")
@@ -147,7 +153,9 @@ export function preserveDocxComments(original: Uint8Array, compared: Uint8Array)
         throw new Error("unsupported_original_comment_paragraph_dependency")
     }
   }
-  for (const index of restored) to[index].node.parentNode!.replaceChild(after.importNode(from[index].node, true), to[index].node)
+  // A restored row has no revision on either side, so no deleted mark joins
+  // it and each side is one w:p.
+  for (const index of restored) to[index].first.parentNode!.replaceChild(after.importNode(from[index].first, true), to[index].first)
   // Threaded comments and comment attachments need their own relationship
   // preservation contract; do not export a partially restored annotation.
   if (elements(sourceRelationships, R, "Relationship").some(row => row.getAttribute("Type") !== COMMENT_REL
@@ -241,8 +249,8 @@ export function exportDocxComments(bytes: Uint8Array, comments: DocxComment[]) {
       return []
     }
     const deleted = anchor.deleted_paragraph_text !== undefined
-    const inventory = deleted ? elements(doc, W, "p").map((node, index) => ({ node, index, text: deletedText(node), pids: [] as string[] }))
-      .filter(row => row.text && !acceptedText(row.node).trim()) : paragraphs
+    const inventory = deleted ? elements(doc, W, "p").map((node, index) => ({ first: node, last: node, open: false, index, text: deletedText(node), pids: [] as string[] }))
+      .filter(row => row.text && !acceptedText(row.first).trim()) : paragraphs
     const candidates = inventory.filter(row =>
       (anchor.deleted_paragraph_text === undefined || row.text === anchor.deleted_paragraph_text) &&
       (anchor.paragraph_text === undefined || row.text === anchor.paragraph_text)
@@ -258,16 +266,16 @@ export function exportDocxComments(bytes: Uint8Array, comments: DocxComment[]) {
     const target = candidates[0]
     const spanning = range ? range.map(row => paragraphs.find(paragraph => paragraph.index === row.paragraph_index && paragraph.text === row.paragraph_text)) : [target]
     if (!spanning.length || spanning.some(row => !row) || spanning.some((row, index) =>
-      row!.node.parentNode !== target.node.parentNode || row!.index !== target.index + index)) {
+      row!.first.parentNode !== target.first.parentNode || row!.index !== target.index + index)) {
       unresolved.push({ id: comment.id, reason: "The exact accepted paragraph range is not contiguous in one document parent." })
       return []
     }
     const end = spanning.at(-1)!
-    // A deleted paragraph mark merges paragraphs on acceptance. Attaching to
-    // the old boundary would misrepresent the final paragraph's extent.
-    if (!deleted && spanning.some(paragraph => elements(paragraph!.node, W, "del").some(node => node.parentNode?.nodeType === 1
-      && (node.parentNode as Element).localName === "rPr" && (node.parentNode?.parentNode as Element)?.localName === "pPr"))) {
-      unresolved.push({ id: comment.id, reason: "The paragraph boundary is deleted by a tracked revision; its accepted range is unresolved." })
+    // A deleted paragraph mark merges paragraphs on acceptance, so a row spans
+    // its merged members. A deleted mark with no following sibling paragraph
+    // has no known accepted extent; attaching would misrepresent it.
+    if (!deleted && spanning.some(paragraph => paragraph!.open)) {
+      unresolved.push({ id: comment.id, reason: "The paragraph boundary is deleted by a tracked revision without a following paragraph; its accepted range is unresolved." })
       return []
     }
     return [{ comment, ...target, end: end!, deleted, range }]
@@ -295,17 +303,18 @@ export function exportDocxComments(bytes: Uint8Array, comments: DocxComment[]) {
     const id = String(allocation.next++)
     const start = doc.createElementNS(W, "w:commentRangeStart")
     start.setAttributeNS(W, "w:id", id)
-    const properties = Array.from(target.node.childNodes).find(node => node.nodeType === 1
-      && (node as Element).namespaceURI === W && (node as Element).localName === "pPr")
-    target.node.insertBefore(start, properties ? properties.nextSibling : target.node.firstChild)
+    // The range runs from the first to the last member with accepted content;
+    // only deleted content follows before the accepted paragraph mark.
+    const properties = childElements(target.first, "pPr")[0]
+    target.first.insertBefore(start, properties ? properties.nextSibling : target.first.firstChild)
     const end = doc.createElementNS(W, "w:commentRangeEnd")
     end.setAttributeNS(W, "w:id", id)
-    target.end.node.appendChild(end)
+    target.end.last.appendChild(end)
     const run = doc.createElementNS(W, "w:r")
     const reference = doc.createElementNS(W, "w:commentReference")
     reference.setAttributeNS(W, "w:id", id)
     run.appendChild(reference)
-    target.end.node.appendChild(run)
+    target.end.last.appendChild(run)
     const native = commentDoc.createElementNS(W, "w:comment")
     native.setAttributeNS(W, "w:id", id)
     native.setAttributeNS(W, "w:author", target.comment.author)
@@ -382,7 +391,49 @@ function paragraphPIDs(paragraph: Element) {
       return name.startsWith("_dh_") ? [name.slice(4)] : []
     })
 }
+/** Content outside a deletion survives acceptance: text, or any other run
+ * content such as a drawing. A comment reference is review markup. */
+function hasAcceptedContent(paragraph: Element) {
+  return acceptedText(paragraph).length > 0 || elements(paragraph, W, "r").some(run => owningParagraph(run) === paragraph && !inDeletedContent(run)
+    && Array.from(run.childNodes).some(child => child.nodeType === 1
+      && !((child as Element).namespaceURI === W && ["rPr", "commentReference"].includes((child as Element).localName))))
+}
+/** A deleted or moved-away paragraph mark joins this paragraph to the next on acceptance. */
+function joinsNext(paragraph: Element) {
+  return childElements(paragraph, "pPr").some(properties => childElements(properties, "rPr")
+    .some(run => childElements(run, "del").length + childElements(run, "moveFrom").length > 0))
+}
+function childElements(node: Element, name: string) {
+  return Array.from(node.childNodes).filter(child => child.nodeType === 1 && (child as Element).namespaceURI === W
+    && (child as Element).localName === name) as Element[]
+}
+/** The previous sibling element, past range, proofing and permission markup,
+ * which may sit between body paragraphs and carries no paragraph content. */
+function previousElement(node: Node) {
+  let sibling = node.previousSibling
+  while (sibling && (sibling.nodeType !== 1 || ((sibling as Element).namespaceURI === W
+    && /^(bookmark(Start|End)|\w+Range(Start|End)|proofErr|perm(Start|End))$/.test((sibling as Element).localName))))
+    sibling = sibling.previousSibling
+  return sibling as Element | null
+}
+/** One row per accepted paragraph. A w:p whose mark is deleted merges with its
+ * next sibling w:p on acceptance, so those siblings are one row and numbering
+ * equals the accepted document's. A row's `nodes` are its members with
+ * accepted content; deletion-only members keep their own deleted anchors and
+ * pointers. `open` marks a deleted mark with no following sibling paragraph,
+ * whose accepted extent is unknown. */
 function acceptedParagraphs(doc: Document) {
-  return elements(doc, W, "p").map(node => ({ node, text: acceptedText(node) })).filter(row => row.text.length > 0)
-    .map((row, index) => ({ ...row, index, pids: paragraphPIDs(row.node) }))
+  const groups: Element[][] = []
+  const owner = new Map<Node, Element[]>()
+  for (const node of elements(doc, W, "p")) {
+    const previous = previousElement(node)
+    const group = previous && joinsNext(previous) ? owner.get(previous) : undefined
+    if (group) group.push(node)
+    else groups.push([node])
+    owner.set(node, group ?? groups.at(-1)!)
+  }
+  return groups.map(group => {
+    const nodes = group.filter(hasAcceptedContent)
+    return { nodes, first: nodes[0]!, last: nodes.at(-1)!, text: nodes.map(acceptedText).join(""), open: joinsNext(group.at(-1)!) }
+  }).filter(row => row.text.length > 0).map((row, index) => ({ ...row, index, pids: row.nodes.flatMap(paragraphPIDs) }))
 }

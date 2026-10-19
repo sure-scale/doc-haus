@@ -1,4 +1,4 @@
-import type { LeanDocument, LeanDraftingStatus, LeanOpenItem, LeanStageStatus } from "../../api/ingest/lean"
+import type { LeanDocument, LeanDraftingStatus, LeanOpenItem, LeanQuestion, LeanStageStatus } from "../../api/ingest/lean"
 
 // Pure view model for the drafting run header: plain step names, steps grouped per
 // planned document, the run's state in four words, and open items grouped by
@@ -129,6 +129,43 @@ export function openQuestions(status: LeanDraftingStatus) {
   return status.questions.filter((question) => question.status === "open" && !queued.has(question.id))
 }
 
+/** An open question the run's model asked (a `q-` id) can be handed back for
+ * the drafting to decide. Any other question settles the run's scope and needs
+ * the lawyer's own answer. */
+export function delegableQuestion(question: LeanQuestion) {
+  return question.status === "open" && question.id.startsWith("q-")
+}
+
+/** The questions left to the drafter: hand-backs the run recorded (answered,
+ * with no answer text) and hand-backs received but not yet recorded. A real
+ * answer received for a recorded hand-back takes it back. An older ingest does
+ * not say which received requests are hand-backs; only recorded ones count. */
+export function handedBackQuestions(status: LeanDraftingStatus) {
+  if (leanRunStopped(status)) return []
+  const received = status.queued_handed_back_ids
+  const handed = new Set(received)
+  const answering = new Set(received ? status.queued_answer_ids : [])
+  return status.questions.filter((question) =>
+    handed.has(question.id) ||
+    (question.status === "answered" && question.answer_kind === "decide_for_me" && !answering.has(question.id)))
+}
+
+/** The note under the chat while requests wait for the run to take them. A
+ * hand-back is not an answer, so it is named as a question left to the drafter. */
+export function queuedNote(status: LeanDraftingStatus) {
+  const queued = status.queued_answer_ids ?? []
+  if (!queued.length) return undefined
+  const handedIds = new Set(status.queued_handed_back_ids)
+  const handed = queued.filter((id) => handedIds.has(id)).length
+  const answers = queued.length - handed
+  if (!handed) return answers === 1
+    ? "Answer received — it will be included when drafting resumes."
+    : "Answers received — they will be included when drafting resumes."
+  const left = handed === 1 ? "Question left" : "Questions left"
+  if (!answers) return `${left} to the drafter to decide — ${handed === 1 ? "it" : "they"} will be handled when drafting resumes.`
+  return `${answers === 1 ? "Answer received" : "Answers received"} and ${handed === 1 ? "a question" : "questions"} left to the drafter to decide — ${queued.length === 2 ? "both" : "they"} will be handled when drafting resumes.`
+}
+
 /** Every stop short of completion is recoverable from the run header (Continue or an
  * answer), so it reads as paused, never as an error. */
 export function runState(status: LeanDraftingStatus): RunState {
@@ -169,6 +206,7 @@ const KIND_LABELS: Record<string, string> = {
   unapplied_amendment: "Changes not applied",
   question: "Questions for you",
   omission: "Points left out",
+  left_to_drafter: "Choices left to the drafter",
   template_removal: "Template text removed",
   checklist_open: "Requirements left open by the checklist check",
   checklist_unresolved: "Unresolved checklist findings",
@@ -182,6 +220,12 @@ export function openItemTag(item: LeanOpenItem) {
   if (item.status !== "disclosed") return undefined
   if (item.kind === "checklist_unresolved") return "Not satisfied"
   return item.kind === "checklist_open" ? "Left open" : "In the notes"
+}
+
+/** An item's detail as the lawyer reads it: the run cites a quotation's source
+ * as "[source: <id>]", which reads here as where the words come from. */
+export function openItemDetail(item: LeanOpenItem) {
+  return item.detail.replace(/\[source:\s*([^\]]*?)\s*\]/g, (_, source: string) => (source === "request" ? "(from the request)" : `(from ${source})`))
 }
 
 // The class only. Whether a repair round or reinspection ran is in the item's
@@ -292,27 +336,34 @@ export function openItemsSentence(status: LeanDraftingStatus) {
   return `Open items: ${list}.`
 }
 
-export type DraftedOutput = { name: string; role: "draft" | "redline" | "notes" }
+/** "combined": a combined document's one file, saved in the matter at delivery.
+ * "earlier_combined": a file a combined row of the summary names that is not
+ * the one this run saved (an earlier run's, kept under its name). */
+export type DraftedOutput = { name: string; role: "draft" | "redline" | "notes" | "combined" | "earlier_combined" }
 export type DraftedGroup = {
   main: DraftedOutput
   extras: DraftedOutput[]
-  /** The one file this draft is delivered as with the requested memo, which
-   * ingest composes on download: the group's primary download, with the draft
-   * and the memo listed beneath it. Never a matter file. */
+  /** The one file this draft is delivered as with the requested memo: the
+   * combined file the run saved in the matter, as its summary lists it. The
+   * group's primary download, with the draft and the memo listed beneath it. */
   combined?: string
 }
 
-export const OUTPUT_ROLE: Record<DraftedOutput["role"], string> = { draft: "Draft", redline: "Redline", notes: "Notes" }
+export const OUTPUT_ROLE: Record<DraftedOutput["role"], string> = { draft: "Draft", redline: "Redline", notes: "Notes", combined: "Combined", earlier_combined: "Earlier combined" }
 
 /** The Word files a completed run delivered: each drafted document with its
  * redline beneath it; the drafting notes (by their row kind, whatever their
  * name, such as a requested memo's) sit under the draft when the run made one
  * document, otherwise in their own row. A combined document's draft carries
- * the one file it downloads as. */
+ * the one file it downloads as; any other combined file the summary lists (an
+ * earlier one kept under its name) closes the list in a row of its own. */
 export function draftedGroups(status: LeanDraftingStatus | undefined): DraftedGroup[] {
   if (status?.documents?.status !== "completed") return []
   const documents = status.documents.documents.filter((row) => row.deliverable)
   const combined = combinedBody(status, documents)
+  const earlier = documents
+    .filter((row) => row.kind === "combined" && row.deliverable !== combined?.file)
+    .map((row): DraftedGroup => ({ main: { name: row.deliverable!, role: "earlier_combined" }, extras: [] }))
   const groups = documents
     .filter((row) => row.kind === "body")
     .map((body): DraftedGroup => ({
@@ -325,33 +376,50 @@ export function draftedGroups(status: LeanDraftingStatus | undefined): DraftedGr
   const notes = documents
     .filter((row) => row.kind === "drafting_notes" || row.kind === "drafting_notes_markdown")
     .map((row): DraftedOutput => ({ name: row.deliverable!, role: "notes" }))
-  if (groups.length === 1) return [{ ...groups[0]!, extras: [...groups[0]!.extras, ...notes] }]
-  return [...groups, ...notes.map((main) => ({ main, extras: [] }))]
+  if (groups.length === 1) return [{ ...groups[0]!, extras: [...groups[0]!.extras, ...notes] }, ...earlier]
+  return [...groups, ...notes.map((main) => ({ main, extras: [] })), ...earlier]
 }
 
-/** The draft a combined document's one file is built from. Ingest reports the
- * file only once the run delivered both parts, with the document's id and the
- * exact names it registered the body and notes under; only rows that are
- * exactly those parts carry the file, so no other "- clean" row is guessed at. */
+/** The draft a combined document's one file belongs to. Ingest reports the
+ * file with the document's id and the exact names it registered the body and
+ * notes under; the file is offered only while the summary lists it as the
+ * document's registered combined row under that name, and only rows that are
+ * exactly those parts carry it, so no file is taken for the combined one by
+ * its name and no other "- clean" row is guessed at. */
 function combinedBody(status: LeanDraftingStatus, documents: LeanDocument[]) {
   const output = status.combined_output
   if (!output) return undefined
+  const saved = documents.some((row) => row.kind === "combined" && row.document === output.document && row.deliverable === output.file)
   const body = documents.find((row) => row.kind === "body" && row.document === output.document && row.deliverable === output.body)
   const notes = documents.some((row) => row.kind === "drafting_notes" && row.deliverable === output.notes)
-  return body && notes ? { body, file: output.file } : undefined
+  return saved && body && notes ? { body, file: output.file } : undefined
 }
 
 /** The matter's generated files as drafted groups: what the run's status names
  * first, then any other deliverable by the run's naming ("<name> - redline",
  * "<name> - drafting notes"), so files from earlier runs group the same way.
- * A combined file is composed at download, not a matter file, so it is left out. */
-export function deliverableGroups(names: string[], status: LeanDraftingStatus | undefined) {
+ * A combined file is one only by the summary's row for it, never by its name:
+ * the run's current one stays on its draft's group, or leads a row of its own
+ * when that draft is no longer in the matter; any other file a combined row
+ * names, whatever the run's state (its build refused, nothing saved, the name
+ * held by the lawyer's revision), is an earlier one in a row of its own;
+ * neither is a draft of its own. */
+export function deliverableGroups(names: string[], status: LeanDraftingStatus | undefined): DraftedGroup[] {
   const present = new Set(names)
   const known = draftedGroups(status)
     .filter((group) => present.has(group.main.name))
-    .map((group) => ({ main: group.main, extras: group.extras.filter((output) => present.has(output.name)) }))
-  const placed = new Set(known.flatMap((group) => [group.main.name, ...group.extras.map((output) => output.name)]))
-  const rest = names.filter((name) => !placed.has(name))
+    .map((group): DraftedGroup => ({
+      main: group.main,
+      extras: group.extras.filter((output) => present.has(output.name)),
+      ...(group.combined && present.has(group.combined) ? { combined: group.combined } : {}),
+    }))
+  const placed = new Set(known.flatMap((group) => [group.main.name, ...group.extras.map((output) => output.name), ...(group.combined ? [group.combined] : [])]))
+  const own = draftedGroups(status).find((group) => group.combined)?.combined
+  const alone: DraftedGroup[] = own && present.has(own) && !placed.has(own) ? [{ main: { name: own, role: "combined" }, extras: [] }] : []
+  if (own) placed.add(own)
+  const earlier = earlierCombined(status)
+  const kept = names.filter((name) => !placed.has(name) && earlier.has(name)).map((name): DraftedGroup => ({ main: { name, role: "earlier_combined" }, extras: [] }))
+  const rest = names.filter((name) => !placed.has(name) && !earlier.has(name))
   const grouped = rest
     .filter((name) => outputRole(name) === "draft")
     .map(
@@ -367,8 +435,16 @@ export function deliverableGroups(names: string[], status: LeanDraftingStatus | 
   const groups = [...known, ...grouped]
   // One draft keeps its notes beneath it, as a one-document run delivers them.
   if (groups.length === 1 && loose.every((output) => output.role === "notes"))
-    return [{ ...groups[0]!, extras: [...groups[0]!.extras, ...loose] }]
-  return [...groups, ...loose.map((main) => ({ main, extras: [] }))]
+    return [...alone, { ...groups[0]!, extras: [...groups[0]!.extras, ...loose] }, ...kept]
+  return [...alone, ...groups, ...loose.map((main) => ({ main, extras: [] })), ...kept]
+}
+
+/** The files the summary's combined rows name (each row's saved file, else the
+ * name it was to take) that no other row delivers, in any state of the run. */
+function earlierCombined(status: LeanDraftingStatus | undefined) {
+  const rows = status?.documents?.documents ?? []
+  const others = new Set(rows.filter((row) => row.kind !== "combined").flatMap((row) => row.deliverable ?? []))
+  return new Set(rows.filter((row) => row.kind === "combined").map((row) => row.deliverable ?? row.path).filter((name) => !others.has(name)))
 }
 
 const REDLINE = / - redline(\.[a-z]+)$/i

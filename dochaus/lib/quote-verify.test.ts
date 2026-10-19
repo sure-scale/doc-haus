@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite"
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { verifyQuote, type QuoteChunk } from "./quote-verify"
+import { elidedParts, elisionGap, verifyQuote, type QuoteChunk } from "./quote-verify"
 
 const directories: string[] = []
 afterEach(() => directories.splice(0).forEach(directory => rmSync(directory, { recursive: true, force: true })))
@@ -39,4 +39,13 @@ test("whitespace gaps retain source offsets and existing normalization including
   const check = fixture([chunk(text.slice(0, split - 2), 0, "first"), chunk(text.slice(split, split + 10), split, "second"), chunk(text.slice(split + 5), split + 5, "overlap")])
   expect(check('"Alpha". Beta gamma delta')).toMatchObject({ found: true, hits: [{ charStart: 0, charEnd: text.length }] })
   expect(check('"Alpha". Beta changed delta').found).toBe(false)
+})
+
+test("an elided quotation located without regard to case or Markdown escapes shows the words left out as written", () => {
+  const request = "Please cap the liability at the greater of GBP 500,000 and the charges paid in the year before the claim."
+  const parts = elidedParts("please cap the liability at … the charges paid in the year before the claim")!
+  expect(elisionGap(request, parts)).toBeNull()
+  expect(elisionGap(request, parts, { ignoreCase: true })).toEqual({ kind: "near", omitted: "the greater of GBP 500,000 and" })
+  expect(elisionGap("The cap in clause 4\\.2 applies \\(save for fraud\\) to all goods and services.", elidedParts("The cap in clause 4.2 applies … to all goods and services")!, { unescapeMarkdown: true }))
+    .toEqual({ kind: "near", omitted: "(save for fraud)" })
 })

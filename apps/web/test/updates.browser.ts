@@ -5,12 +5,12 @@ import { mkdtemp, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
-import type { Page, Route } from "playwright"
+import type { Page, Route } from "@playwright/test"
 import type { useUpdates } from "../src/components/Updates"
 
 declare global { interface Window { updateHarness: ReturnType<typeof useUpdates> } }
 
-const { chromium } = await import(process.env.PLAYWRIGHT_MODULE || "playwright")
+const { chromium } = (await import(process.env.PLAYWRIGHT_MODULE || "@playwright/test")) as typeof import("@playwright/test")
 const directory = await mkdtemp(path.join(os.tmpdir(), "dochaus-update-browser-"))
 const component = path.resolve(import.meta.dir, "../src/components/Updates.tsx")
 const entry = path.join(directory, "harness.tsx")

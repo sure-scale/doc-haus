@@ -8,6 +8,7 @@ import { createHash } from "node:crypto"
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import type { Browser } from "@playwright/test"
 import { readWorkingDocx } from "../../../dochaus/lib/working-docx"
 
 type Bytes = Uint8Array
@@ -16,10 +17,6 @@ type XmlElement = XmlNode & {
   namespaceURI: string | null; localName: string | null; textContent: string | null
   attributes: ArrayLike<{ namespaceURI: string | null; localName: string | null; name: string; value: string }>
   getElementsByTagNameNS: (namespace: string, name: string) => ArrayLike<XmlElement>
-}
-type Route = {
-  request: () => { url: () => string; method: () => string; postData: () => string | null }
-  continue: () => Promise<void>; abort: () => Promise<void>; fulfill: (response: unknown) => Promise<void>
 }
 
 const repository = path.resolve(import.meta.dir, "../../..")
@@ -32,7 +29,7 @@ const { zipSync, unzipSync, strFromU8, strToU8 } = await import(Bun.resolveSync(
 const { DOMParser } = await import(Bun.resolveSync("@xmldom/xmldom", path.join(repository, "dochaus"))) as {
   DOMParser: new () => { parseFromString: (xml: string, type: string) => { documentElement: XmlElement } }
 }
-const { chromium, expect } = await import(process.env.PLAYWRIGHT_MODULE ?? "@playwright/test")
+const { chromium, expect } = (await import(process.env.PLAYWRIGHT_MODULE ?? "@playwright/test")) as typeof import("@playwright/test")
 
 const baseURL = process.env.PLAYWRIGHT_BASE_URL
 const evidence = process.env.DOCHAUS_EVIDENCE_DIR
@@ -239,7 +236,7 @@ async function step(name: string, run: () => Promise<void>) {
 }
 
 const file = { path: "", dir: "", matter: "" }
-let browser: { newContext: (options: unknown) => Promise<any>; close: () => Promise<void> } | undefined
+let browser: Browser | undefined
 try {
   await startIngest()
   browser = await chromium.launch({ headless: true, executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE })
@@ -248,7 +245,7 @@ try {
   const origin = new URL(baseURL).origin
   // Engine traffic is answered here. The Word flow's ingest traffic continues
   // through Vite's /ingest proxy to the isolated service.
-  await context.route("**/*", async (route: Route) => {
+  await context.route("**/*", async route => {
     const request = route.request()
     const url = new URL(request.url())
     if (url.origin !== origin) { unexpected.push(`${request.method()} ${request.url()}`); return route.abort() }

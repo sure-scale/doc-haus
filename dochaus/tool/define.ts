@@ -2,6 +2,7 @@ import { tool } from "./legacy-definition"
 import { Database } from "bun:sqlite"
 import { existsSync } from "node:fs"
 import path from "node:path"
+import { findTermUse } from "../lib/search/term-use"
 
 // doc.haus defined-term lookup. Reads the deterministic `defined_terms` table
 // that `services/ingest` extracts by regex (see services/ingest/src/structure.ts)
@@ -43,8 +44,7 @@ export default tool({
     const order = " ORDER BY doc_name, char_start"
     const scopeParams = args.document ? [args.document] : []
     // Escape LIKE wildcards so the bound term only ever matches literally —
-    // otherwise a `%` term dumps the whole table and breaks the indexOf
-    // invariant in the snippet logic below.
+    // otherwise a `%` term dumps the whole table.
     const like = args.term.replaceAll(/[\\%_]/g, "\\$&")
     const exact = db
       .query(select + "term = ? COLLATE NOCASE" + docScope + order)
@@ -62,16 +62,33 @@ export default tool({
       return `No defined term matching "${args.term}"${where}. Try the search-document tool to find related language instead.`
     }
 
-    // Usage sites: chunks whose body contains the bare term. Extracted text
-    // quotes terms with straight or curly quotes interchangeably, so matching
-    // the unquoted term is the reliable form.
-    const usage = db
-      .query(
-        "SELECT doc_name, section, text, char_start, char_end FROM chunks WHERE text LIKE '%' || ? || '%' ESCAPE '\\'" +
-          (args.document ? " AND doc_name = ?" : "") +
-          " ORDER BY doc_name, char_start LIMIT ?",
-      )
-      .all(like, ...scopeParams, USAGE_LIMIT) as UsageRow[]
+    // Usage sites: chunks that use one of the recorded terms found above.
+    // Extracted text quotes terms with straight or curly quotes interchangeably,
+    // so the unquoted term is the reliable form. The SQL prefilter keeps chunks
+    // containing a recorded term as a case-sensitive substring (instr), which
+    // findTermUse requires anyway, so it never drops a real use. findTermUse
+    // then keeps a chunk only if a recorded term occurs as a whole word ("Term"
+    // is not used in "Terminated"), and the limit applies after that check so
+    // prefilter-only rows cannot crowd out real uses.
+    const recordedTerms = [...new Set(hits.map((hit) => hit.term))]
+    const usage: Array<UsageRow & { at: number; term: string }> = []
+    const candidates = db.prepare<UsageRow, string[]>(
+      "SELECT doc_name, section, text, char_start, char_end FROM chunks WHERE (" +
+        recordedTerms.map(() => "instr(text, ?) > 0").join(" OR ") +
+        ")" +
+        docScope +
+        " ORDER BY doc_name, char_start",
+    )
+    for (const row of candidates.iterate(...recordedTerms, ...scopeParams)) {
+      const use = recordedTerms
+        .map((term) => ({ term, at: findTermUse(row.text, term) }))
+        .filter((found) => found.at !== -1)
+        .sort((a, b) => a.at - b.at)[0]
+      if (!use) continue
+      usage.push({ ...row, ...use })
+      if (usage.length === USAGE_LIMIT) break
+    }
+    candidates.finalize()
     db.close()
 
     const byDoc = Map.groupBy(hits, (hit) => hit.doc_name)
@@ -92,24 +109,32 @@ export default tool({
         ? "\n\nNote: multiple documents define this term and the definitions are not identical — check which document governs before relying on any one of them."
         : ""
     const usageLines = usage.map((row) => {
-      // The row matched LIKE on this same ASCII-case-folded term, so indexOf on
-      // the lowercased text always finds an occurrence.
-      const idx = row.text.toLowerCase().indexOf(args.term.toLowerCase())
+      const idx = row.at
       const lineStart = row.text.lastIndexOf("\n", idx) + 1
       const lineEndIndex = row.text.indexOf("\n", idx)
       const lineEnd = lineEndIndex === -1 ? row.text.length : lineEndIndex
-      const start = Math.max(lineStart, idx - SNIPPET_RADIUS)
-      const end = Math.min(lineEnd, idx + args.term.length + SNIPPET_RADIUS)
+      let start = Math.max(lineStart, idx - SNIPPET_RADIUS)
+      let end = Math.min(lineEnd, idx + row.term.length + SNIPPET_RADIUS)
+      // Widen an edge that falls inside a surrogate pair so no character is cut.
+      if (start > lineStart && isLowSurrogate(row.text.charCodeAt(start))) start--
+      if (end < lineEnd && isLowSurrogate(row.text.charCodeAt(end))) end++
       const snippet =
         (start > lineStart ? "..." : "") + row.text.slice(start, end) + (end < lineEnd ? "..." : "")
+      // Near-match rows are different terms, so say which one this line uses.
+      const uses = exact.length ? "" : ` uses "${row.term}"`
       // Chunk-granularity offsets, unlike the term-precise offsets on
       // definition rows — label them so the two are not conflated.
-      return `- ${row.doc_name} § ${row.section} [within chars ${row.char_start}-${row.char_end}]: ${snippet}`
+      return `- ${row.doc_name} § ${row.section} [within chars ${row.char_start}-${row.char_end}]${uses}: ${snippet}`
     })
+    const usageTitle = exact.length ? "Usage sites" : "Usage sites of the near-match terms above"
     const usageBlock = usageLines.length
-      ? `\n\nUsage sites (up to ${USAGE_LIMIT}):\n` + usageLines.join("\n")
+      ? `\n\n${usageTitle} (up to ${USAGE_LIMIT}):\n` + usageLines.join("\n")
       : ""
 
     return `${heading}\n\n${definitions}${differNote}${usageBlock}`
   },
 })
+
+function isLowSurrogate(code: number) {
+  return code >= 0xdc00 && code <= 0xdfff
+}

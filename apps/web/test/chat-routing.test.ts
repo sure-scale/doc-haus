@@ -4,6 +4,7 @@ import { abortSession, createSession, deleteSession } from "../src/api/opencode/
 import { modelSpec } from "../src/api/opencode/config"
 import { recoveryHistoryNeedsCompaction, sendMalformedToolRecovery } from "../src/api/opencode/recovery"
 import type { Client } from "../src/api/opencode/client"
+import type { Message } from "../src/api/session-view"
 import { CHAT_ASSISTANTS } from "../src/agents"
 import { childSessionIDs, loadConversation } from "../src/components/chat/conversation"
 import { isDraftingRecoveryMessage } from "../src/components/chat/drafting-recovery"
@@ -345,7 +346,7 @@ describe("chat dispatch", () => {
         time: { created: 1, ran: 1, completed: 2 },
       }],
     } satisfies SessionMessageInfo
-    const root = {
+    const root: Message = {
       info: { id: native.id, sessionID: "ses_root", role: "assistant", agent: "draft", parentID: undefined, finish: undefined, error: undefined, time: native.time },
       parts: [{
         type: "tool", id: "fixture-task", sessionID: "ses_root", messageID: native.id, tool: "task",
@@ -496,7 +497,6 @@ describe("task status", () => {
         id: "part",
         sessionID: "session",
         messageID: "message",
-        callID: "call",
         tool: "task",
         state: {
           status: "completed",
@@ -504,7 +504,6 @@ describe("task status", () => {
           output: '<handoff_gate status="blocked"></handoff_gate>',
           title: "Drafting strategist",
           metadata: {},
-          time: { start: 0, end: 1 },
         },
       }),
     ).toBe("error")

@@ -36,6 +36,7 @@ How to work:
 - Information is a fact, a commercial or strategic decision for the lawyer or the party the lawyer acts for, or authority. Where it is missing or uncertain, write a visible [open item: what is needed] marker in the text instead of guessing.
 - A preference is a drafting choice a competent drafter would make from the request, the documents and ordinary practice. Draft that choice and add a visible [open item: confirm ...] marker in the same paragraph saying what was chosen. A drafted choice is not an invented fact; the marker goes with the drafted wording, never in its place.
 - Draft for the party the lawyer acts for as the prompt states it. Where the request does not say, draft even-handedly: where the parties' interests diverge, draft wording balanced between them with a visible [open item: confirm ...] marker saying what the lawyer is to confirm, rather than favouring either party.
+- A point the prompt lists as left to the drafter takes no confirmation marker: draft the choice made for it as clean operative wording, without the rejected alternative or a precedence clause between the alternatives.
 - Keep defined terms, numbering, cross-references and style consistent across parts.
 
 Output contract:

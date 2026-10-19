@@ -24,7 +24,21 @@ export type MatterIdentifiers = {
 export type IdentifierChunk = {
   id: string
   document: string
+  // Values are read from this text: the chunk's source slice.
   text: string
+  // The chunk file a reader opens, when it is soft-wrapped; `line` and
+  // `context` point into it. The wrap turned spaces into line breaks one for
+  // one and inserted a line break before each offset of `text` in `inserted`
+  // (ascending).
+  file?: { text: string; inserted: number[] }
+}
+
+// The offset in a wrapped chunk file of the character at `offset` in its
+// source text.
+export function fileOffset(offset: number, inserted: number[]): number {
+  let shift = 0
+  while (shift < inserted.length && inserted[shift]! <= offset) shift++
+  return offset + shift
 }
 
 const CONTEXT_MAX_CHARS = 200
@@ -198,8 +212,7 @@ function extractViaMatch(
       value,
       source: chunk.document,
       chunk_id: chunk.id,
-      line: lineAt(chunk.text, offset),
-      context: contextAt(chunk.text, offset),
+      ...locate(chunk, offset),
     })
   }
   return out
@@ -219,8 +232,7 @@ function extractFromRegex(chunk: IdentifierChunk, extractor: RegexExtractor): Id
       value,
       source: chunk.document,
       chunk_id: chunk.id,
-      line: lineAt(chunk.text, offset),
-      context: contextAt(chunk.text, offset),
+      ...locate(chunk, offset),
     })
   }
   return out
@@ -228,6 +240,12 @@ function extractFromRegex(chunk: IdentifierChunk, extractor: RegexExtractor): Id
 
 function cleanValue(value: string): string {
   return value.replace(/[.\s]+$/, "").trim()
+}
+
+function locate(chunk: IdentifierChunk, offset: number) {
+  const text = chunk.file?.text ?? chunk.text
+  const at = chunk.file ? fileOffset(offset, chunk.file.inserted) : offset
+  return { line: lineAt(text, at), context: contextAt(text, at) }
 }
 
 function lineAt(text: string, offset: number): number {

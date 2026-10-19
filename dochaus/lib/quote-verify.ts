@@ -151,12 +151,7 @@ function findHits(docName: string, chunks: QuoteChunk[], needle: string, options
   // append only the uncovered suffix of overlapping chunks, then search the
   // normalized whole and map the match back to raw offsets to find
   // the covering chunks.
-  const raw = chunks.reduce(
-    (acc, c) => c.char_start > acc.length
-      ? acc + " ".repeat(c.char_start - acc.length) + c.text
-      : acc + c.text.slice(Math.max(0, acc.length - c.char_start)),
-    "",
-  )
+  const raw = documentText(chunks)
   const normalized = normalizeWithMap(raw, options)
   const at = normalized.text.indexOf(needle)
   if (at === -1) return
@@ -179,4 +174,159 @@ function findHits(docName: string, chunks: QuoteChunk[], needle: string, options
       verbatim: raw.slice(first.char_start, end),
     },
   ]
+}
+
+/** A document's raw text rebuilt from its chunks in char_start order. */
+function documentText(chunks: QuoteChunk[]) {
+  return chunks.reduce(
+    (acc, c) => c.char_start > acc.length
+      ? acc + " ".repeat(c.char_start - acc.length) + c.text
+      : acc + c.text.slice(Math.max(0, acc.length - c.char_start)),
+    "",
+  )
+}
+
+/** An ellipsis: "...", "…" or spaced ". . .", optionally in square brackets;
+ * a fourth dot (the period ending the sentence before it) is part of it. */
+const ELLIPSIS = /\s*(?:\[\s*(?:(?:\. ?){2,3}\.|\u2026)\s*\]|(?:\. ?){2,3}\.|\u2026)\s*/
+
+/** The normalized passages of a quotation that marks omitted words with an
+ * ellipsis (ELLIPSIS), or undefined when it marks none. An ellipsis at either
+ * end omits words outside the quotation and leaves no passage there, nor does
+ * sentence punctuation beyond it ("A …." ends the writer's sentence). */
+export function elidedParts(quote: string): string[] | undefined {
+  const parts = normalize(quote).split(ELLIPSIS)
+  if (parts.length < 2) return
+  return parts.filter((part, index) => (index > 0 && index < parts.length - 1) || !/^[\s.,;:!?]*$/.test(part))
+}
+
+/** The most source text one ellipsis may stand for when its passages are
+ * read as one passage: a citation or an aside, not the distance between two
+ * parts of a document. */
+export const MAX_OMITTED = 300
+
+/** Word's hyphen and non-breaking hyphen (U+2010, U+2011), the figure dash, en
+ * dash and minus sign (U+2012, U+2013, U+2212), which a page shows as or in
+ * place of "-". Not the em dash, which sets off an aside. */
+const HYPHENS = /[\u2010-\u2013\u2212]/g
+
+/** Where an elided quotation's passages (elidedParts) sit in `raw`. It only
+ * locates: words left out between passages can change who must do what or
+ * drop a condition, amount or limit, and no list of words can tell which, so
+ * only a single passage (an ellipsis at the start or end) verifies a quotation.
+ *
+ * Passages are matched as a quotation is (normalized, case-insensitively with
+ * `ignoreCase`, HYPHENS folded to "-"), each long enough (SHORT_QUOTE) to find
+ * its place on its own, beginning and ending on whole words of the source
+ * (insideWord: a hyphen or dash joins words) and beginning after the previous
+ * one ends.
+ * - "near": every passage in the quoted order, each omission short
+ *   (MAX_OMITTED) and within one paragraph (no blank line in the raw text). Of
+ *   such placements, the one leaving out least, the earliest on a tie.
+ *   `omitted` is the source words each ellipsis leaves out (whitespace
+ *   normalized), joined with " … "; a single passage leaves out nothing.
+ * - "apart": every passage in the quoted order, but only with a longer
+ *   omission or one across a paragraph break.
+ * - null: some passage is not in the source in the quoted order. */
+export function elisionGap(raw: string, parts: string[], options: { unescapeMarkdown?: boolean; ignoreCase?: boolean } = {}): ElisionGap {
+  if (!parts.length || parts.some(part => part.length < SHORT_QUOTE)) return null
+  const normalized = normalizeWithMap(raw, options)
+  const folded = { text: normalized.text.replace(HYPHENS, "-"), map: normalized.map }
+  const { text, map } = options.ignoreCase ? lowerWithMap(folded) : folded
+  const wanted = parts.map(part => part.replace(HYPHENS, "-")).map(part => options.ignoreCase ? lowerChars(part) : part)
+  const places = wanted.map(part => {
+    const found: number[] = []
+    for (let at = text.indexOf(part); at !== -1; at = text.indexOf(part, at + 1))
+      if (!insideWord(text, at) && !insideWord(text, at + part.length)) found.push(at)
+    return found
+  })
+  // The source as written between the end of one passage and the start of the next.
+  const between = (from: number, to: number) => raw.slice(map[from - 1]! + 1, map[to])
+  const near = (from: number, to: number) => to - from <= MAX_OMITTED && !/\n[^\S\n]*\n/.test(between(from, to))
+  // Each place of the latest passage placed, with the least it can leave out
+  // after near placements of the passages before it.
+  type Step = { at: number; end: number; left: number; before?: Step }
+  let steps: Step[] = places[0]!.map(at => ({ at, end: at + wanted[0]!.length, left: 0 }))
+  for (let index = 1; index < wanted.length; index++) {
+    steps = places[index]!.flatMap(at => {
+      const left = (step: Step) => step.left + at - step.end
+      const before = steps.filter(step => step.end <= at && near(step.end, at))
+        .reduce<Step | undefined>((best, step) => !best || left(step) < left(best) ? step : best, undefined)
+      return before ? [{ at, end: at + wanted[index]!.length, left: left(before), before }] : []
+    })
+  }
+  const last = steps.reduce<Step | undefined>((best, step) => !best || step.left < best.left ? step : best, undefined)
+  if (last) {
+    const omitted: string[] = []
+    for (let step = last; step.before; step = step.before) omitted.unshift(normalizeWithMap(between(step.before.end, step.at), options).text)
+    return { kind: "near", omitted: omitted.filter(Boolean).join(" \u2026 ") }
+  }
+  let from = 0
+  for (const [index, part] of wanted.entries()) {
+    const at = places[index]!.find(at => at >= from)
+    if (at === undefined) return null
+    from = at + part.length
+  }
+  return { kind: "apart" }
+}
+
+export type ElisionGap = { kind: "near"; omitted: string } | { kind: "apart" } | null
+
+/** The nearest of several placements of one quotation: "near" over "apart"
+ * over null. */
+export function nearestGap(gaps: ElisionGap[]): ElisionGap {
+  return gaps.find(gap => gap?.kind === "near") ?? gaps.find(gap => gap?.kind === "apart") ?? null
+}
+
+/** Whether one word of `text` runs across offset `at`: letters or digits on
+ * both sides, or joined there by a hyphen (or a dash HYPHENS folds to one),
+ * apostrophe or underscore ("non-exclusive", "Customer's"), or by a point or
+ * comma between two digits ("2.5", "1,000,000"). */
+function insideWord(text: string, at: number) {
+  const word = (i: number) => /[\p{L}\p{N}]/u.test(text[i] ?? "")
+  const digit = (i: number) => /\p{N}/u.test(text[i] ?? "")
+  const joiner = (i: number) => /[-_'\u2019]/.test(text[i] ?? "") || /[.,]/.test(text[i] ?? "") && digit(i - 1) && digit(i + 1)
+  return word(at - 1) && (word(at) || joiner(at) && word(at + 1)) || joiner(at - 1) && word(at - 2) && word(at)
+}
+
+/** Lower case one character at a time, so offsets keep their raw positions. */
+function lowerChars(text: string) {
+  return Array.from(text, ch => ch.toLowerCase()).join("")
+}
+
+function lowerWithMap(normalized: { text: string; map: number[] }) {
+  let text = ""
+  const map: number[] = []
+  let at = 0
+  for (const ch of normalized.text) {
+    const lower = ch.toLowerCase()
+    text += lower
+    for (let i = 0; i < lower.length; i++) map.push(normalized.map[at]!)
+    at += ch.length
+  }
+  return { text, map }
+}
+
+/** Where a quotation's elided passages (elidedParts) sit in the one named
+ * document, an indexed matter document or the bound playbook (elisionGap). */
+export function locateElidedQuote(args: { directory: string; parts: string[]; document: string }) {
+  const playbook = boundPlaybook(args.directory)
+  const texts = args.document.startsWith("playbook:")
+    ? playbook?.text && args.document === playbook.source_id ? [playbook.text] : []
+    : indexedText(args.directory, args.document)
+  return nearestGap(texts.flatMap(raw => [{}, { unescapeMarkdown: true }].map(options => elisionGap(raw, args.parts, options))))
+}
+
+function indexedText(directory: string, document: string): string[] {
+  const dbPath = path.join(directory, ".dochaus", "legal.db")
+  if (!existsSync(dbPath)) return []
+  const db = new Database(dbPath, { readonly: true })
+  try {
+    const chunks = db
+      .query("SELECT section, text, char_start, char_end FROM chunks WHERE doc_name = ? ORDER BY char_start")
+      .all(document) as QuoteChunk[]
+    return chunks.length ? [documentText(chunks)] : []
+  } finally {
+    db.close()
+  }
 }

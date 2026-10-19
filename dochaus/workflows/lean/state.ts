@@ -3,6 +3,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync
 import path from "node:path"
 import { readDurableJson, writeDurableBytes } from "../../lib/durable-json"
 import type { ChecklistFindingClass } from "./checklist-classify"
+import { HANDED_BACK_MEANING } from "./checklist-contract"
 import type { DocID, StepID } from "./plan"
 
 // Lean drafting run state. One JSON file, written whole (tmp + rename) on every
@@ -56,7 +57,7 @@ export type LeanState = {
   stages: Partial<Record<StepID, LeanStageState>>
 }
 
-export type OpenItemKind = "research_gap" | "quote_miss" | "citation_unsupported" | "placeholder" | "unapplied_amendment" | "question" | "omission" | "template_removal" | "checklist_open" | "checklist_unresolved"
+export type OpenItemKind = "research_gap" | "quote_miss" | "citation_unsupported" | "placeholder" | "unapplied_amendment" | "question" | "omission" | "left_to_drafter" | "template_removal" | "checklist_open" | "checklist_unresolved"
 
 export type OpenItem = {
   id: string
@@ -81,6 +82,18 @@ export type OpenItem = {
     checklist_item?: string
     /** Why a checklist_unresolved finding remains adverse; absent for a parent's coverage. */
     checklist_class?: ChecklistFindingClass
+    /** The requested file a Requested-files item is about: its index in the
+     * saved requested-files record, which is written with the plan. */
+    requested_file?: number
+    /** The names a Requested-files item says the run delivers that file's
+     * contents in, in its order; null for a file of a name not known before it
+     * registers. */
+    delivered_names?: (string | null)[]
+    /** The combined file an item saying it is not saved is about, by the
+     * name it states. */
+    combined_file?: string
+    /** Why that combined file is not saved, as a fixed code. */
+    unsaved_reason?: string
   }
   status: "open" | "resolved" | "disclosed"
   resolution?: string
@@ -99,6 +112,9 @@ export type Question = {
   document?: DocID
   status: "open" | "answered"
   answer?: string
+  /** Set when the lawyer handed the question back for the drafting to decide:
+   * it is then answered with no answer text, as a choice the lawyer has not made. */
+  answer_kind?: "decide_for_me"
   answered_at?: string
 }
 
@@ -283,7 +299,7 @@ export function keepAskedQuestions(questions: Question[], items: OpenItem[], kep
 }
 
 export class LeanQuestionError extends Error {
-  constructor(message: string, readonly code: "not_found" | "invalid_answer") {
+  constructor(message: string, readonly code: "not_found" | "invalid_answer" | "already_answered" | "not_delegable") {
     super(message)
   }
 }
@@ -300,9 +316,41 @@ export function answerQuestion(directory: string, questionID: string, answer: st
   const questions = readQuestions(directory)
   const target = questions.find(question => question.id === questionID)
   if (!target) throw new LeanQuestionError("No such question in this matter's lean drafting run.", "not_found")
-  const answered: Question = { ...target, status: "answered", answer: text, answered_at: new Date().toISOString() }
+  // A real answer replaces an earlier hand-back.
+  const { answer_kind: _handedBack, ...asked } = target
+  const answered: Question = { ...asked, status: "answered", answer: text, answered_at: new Date().toISOString() }
   writeQuestions(directory, questions.map(question => question.id === questionID ? answered : question))
   return answered
+}
+
+/** Refuses a hand-back of `target`, the stored question `questionID` names,
+ * unless it is an open model-asked question: not_found, not_delegable (keyed
+ * questions — package scope, requested files, checklist conflict — are read as
+ * settled once answered) or already_answered (answered, or already handed back). */
+export function assertDelegable(target: Question | undefined, questionID: string): asserts target is Question {
+  if (!target) throw new LeanQuestionError("No such question in this matter's lean drafting run.", "not_found")
+  if (!questionID.startsWith("q-")) throw new LeanQuestionError("This question needs the lawyer's own answer; it cannot be left to the drafter to decide.", "not_delegable")
+  if (handedBack(target)) throw new LeanQuestionError("This question was already left to the drafter to decide.", "already_answered")
+  if (target.status === "answered") throw new LeanQuestionError("This question is already answered.", "already_answered")
+}
+
+/** The lawyer hands an open model-asked question back for the drafting to
+ * decide (assertDelegable). A replayed hand-back, applied before a restart
+ * stopped the drain, is already recorded and changes nothing. */
+export function delegateQuestion(directory: string, questionID: string) {
+  const questions = readQuestions(directory)
+  const target = questions.find(question => question.id === questionID)
+  if (target && handedBack(target)) return target
+  assertDelegable(target, questionID)
+  const { answer: _answer, ...asked } = target
+  const delegated: Question = { ...asked, status: "answered", answer_kind: "decide_for_me", answered_at: new Date().toISOString() }
+  writeQuestions(directory, questions.map(question => question.id === questionID ? delegated : question))
+  return delegated
+}
+
+/** A question the lawyer left to the drafter to decide and has not since answered. */
+export function handedBack(question: Question) {
+  return question.status === "answered" && question.answer_kind === "decide_for_me"
 }
 
 /** Every answered question, ordered by id: questions.json's own order moves
@@ -311,11 +359,50 @@ export function answeredQuestions(directory: string) {
   return readQuestions(directory).filter(question => question.status === "answered").toSorted((a, b) => a.id.localeCompare(b.id))
 }
 
-/** Canonical text of every human answer; an input to every drafting stage. */
+/** Canonical text of every lawyer's answer; an input to every drafting stage.
+ * A question handed back has no answer: handedBackQuestionsText lists it. */
 export function answeredQuestionsText(directory: string) {
-  return answeredQuestions(directory)
+  return answeredQuestions(directory).filter(question => !handedBack(question))
     .map(question => `- [${question.id}] Q: ${question.question}\n  A: ${question.answer}`)
     .join("\n")
+}
+
+/** Canonical text of every question the lawyer handed back, by id like the answers. */
+export function handedBackQuestionsText(directory: string) {
+  return answeredQuestions(directory).filter(handedBack).map(question => `- [${question.id}] Q: ${question.question}`).join("\n")
+}
+
+/** The hand-backs as prompts show them beside the lawyer's answers, or "" with
+ * none: choices the drafting makes for the client and discloses, never the
+ * lawyer's answers. The body carries each choice cleanly; the notes disclose it.
+ * What leaving a question to the drafter means comes right before the questions,
+ * as beside a checklist job's hand-back rows. */
+export function handedBackBlock(directory: string) {
+  const text = handedBackQuestionsText(directory)
+  return text ? "The lawyer left these questions to the drafter to decide instead of answering them; do not ask them again. Each is a choice the drafting makes on professional judgment and discloses as one the lawyer has not made. " +
+    "Decide each as the lawyer for the party the lawyer acts for would: follow the instructions and the documents; where they leave the point open or conflict, choose what best serves that party within them, or what is even-handed when the request names no party. " +
+    "Apply each choice made as clean operative wording, with no confirmation marker, rejected alternative or precedence clause between the alternatives; the drafting notes give the reason and the alternative. " +
+    `None is an agreed term or an answered decision; record and review each as a drafting choice. ${HANDED_BACK_MEANING}\n${text}` : ""
+}
+
+/** The hand-backs as the drafting notes' writer sees them, or "" with none:
+ * worded to the lawyer, so an echo in the notes reads naturally. The stages
+ * that decide and apply each choice keep handedBackBlock. */
+export function handedBackNotesBlock(directory: string) {
+  const text = handedBackQuestionsText(directory)
+  return text ? "The lawyer left these questions to the drafter to decide. Task: state each choice once, in plain words, in the statement for the open item that names its question: " +
+    `what was chosen, why and the alternative not taken, or that the point stays open and what is needed.\n${text}` : ""
+}
+
+/** The heading of handedBackBlock where a prompt lists it after the answers
+ * under plain headings rather than tags. */
+export const LEFT_TO_DRAFTING = "Left to the drafter (not the lawyer's answers):"
+
+/** The "answers" input of every step's key. A hand-back keys it as an answer
+ * does, so it reruns from intake; without one it is the answers text alone. */
+export function answersInput(directory: string) {
+  const text = handedBackQuestionsText(directory)
+  return text ? [answeredQuestionsText(directory), `Left to the drafting:\n${text}`].filter(Boolean).join("\n") : answeredQuestionsText(directory)
 }
 
 export function shortHash(text: string, length = 10) {

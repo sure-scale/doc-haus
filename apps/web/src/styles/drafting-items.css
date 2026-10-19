@@ -154,6 +154,37 @@ button.question-dock-cta:focus-visible {
   box-shadow: 0 0 0 1px var(--warn), 0 0 0 4px rgba(138, 90, 26, 0.2);
 }
 
+/* Nothing asked: the questions left to the drafter stay reachable, but nothing
+   waits on the lawyer, so the dock is a quiet row with a plain Review button. */
+.question-dock.is-settled {
+  border-color: var(--border);
+  background: var(--panel);
+  animation: row-in var(--duration-base) var(--ease-out);
+}
+
+.question-dock.is-settled .question-dock-icon {
+  background: var(--bg-sunken);
+  color: var(--text-secondary);
+}
+
+.question-dock.is-settled button.question-dock-cta {
+  border-color: var(--border);
+  background: var(--panel);
+  color: var(--text);
+  font-weight: 500;
+  box-shadow: none;
+}
+
+.question-dock.is-settled button.question-dock-cta:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  background: var(--panel-hover);
+}
+
+.question-dock.is-settled button.question-dock-cta:focus-visible {
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+
 /* The questions open over the page, which frosts to white behind them. */
 .question-dialog {
   width: min(560px, calc(100vw - 32px));
@@ -257,6 +288,13 @@ button.question-dock-cta:focus-visible {
   background: var(--accent);
 }
 
+/* Settled, but left to the drafter rather than answered: a hollow diamond. */
+.question-dot.is-delegated {
+  border-radius: 1px;
+  background: transparent;
+  transform: rotate(45deg) scale(0.86);
+}
+
 .question-dot.is-current {
   background: var(--warn);
 }
@@ -309,6 +347,38 @@ button.question-dock-cta:focus-visible {
   justify-content: flex-end;
   gap: 12px;
   margin-top: 12px;
+}
+
+/* Decide for me and Send stay together on one line. */
+.question-send {
+  display: flex;
+  flex: none;
+  gap: 8px;
+}
+
+.question-send button {
+  white-space: nowrap;
+}
+
+.question-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.question-left .question-dot {
+  flex: none;
+}
+
+.question-delegate-hint {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: right;
 }
 
 .question-keys {
@@ -422,8 +492,7 @@ button.question-dock-cta:focus-visible {
   background: var(--accent-soft);
 }
 
-a.drafted-download,
-button.drafted-download {
+a.drafted-download {
   display: inline-flex;
   flex: none;
   align-items: center;

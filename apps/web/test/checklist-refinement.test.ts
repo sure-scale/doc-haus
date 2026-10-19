@@ -8,6 +8,9 @@ import RunHeader from "../src/components/drafting/RunHeader"
 import type { RunActions } from "../src/components/drafting/useRunActions"
 
 const originalFetch = globalThis.fetch
+
+// Bun's fetch type also carries preconnect; keep it so a stub is a whole fetch.
+const stubFetch = (respond: () => Promise<Response>): typeof fetch => Object.assign(respond, { preconnect: originalFetch.preconnect })
 afterEach(() => { globalThis.fetch = originalFetch })
 
 function refinementStatus(): LeanDraftingStatus {
@@ -22,9 +25,9 @@ function refinementStatus(): LeanDraftingStatus {
   }
 }
 
-const actions: RunActions = { busy: false, error: "", resuming: false, resume: async () => true, answer: async () => true, update: async () => true, refine: async () => true }
+const actions: RunActions = { busy: false, pausing: false, stopping: false, error: "", errorFor: undefined, resuming: false, resume: async () => true, answer: async () => true, decide: async () => true, update: async () => true, refine: async () => true, pause: async () => true, stop: async () => true }
 function render(status: LeanDraftingStatus, own = true) {
-  return renderToStaticMarkup(createElement(MemoryRouter, null, createElement(RunHeader, { status, actions, own, onOpen: () => {} })))
+  return renderToStaticMarkup(createElement(MemoryRouter, null, createElement(RunHeader, { status, actions, own, onOpen: () => {}, onShowDrafts: () => {} })))
 }
 
 test("full draft check requires explicit selection in the settled owner run", () => {
@@ -56,6 +59,6 @@ test("full draft check posts the selected original requirement with owner identi
   expect(calls[0]!.url).toEndWith("/matters/matter-check/lean/checklist/refine")
   expect(calls[0]!.init?.method).toBe("POST")
   expect(JSON.parse(String(calls[0]!.init?.body))).toEqual({ ownerSessionID: "owner-conversation", parents: [{ parent_id: "private-requirement-id", scope: "target_body" }] })
-  globalThis.fetch = (async () => Response.json({ error: "The active drafting run changed. Reload before refining its checklist." }, { status: 409 })) as typeof fetch
+  globalThis.fetch = stubFetch(async () => Response.json({ error: "The active drafting run changed. Reload before refining its checklist." }, { status: 409 }))
   await expect(refineLeanChecklist("matter-check", "old-owner", "private-requirement-id")).rejects.toThrow("The active drafting run changed. Reload before refining its checklist.")
 })

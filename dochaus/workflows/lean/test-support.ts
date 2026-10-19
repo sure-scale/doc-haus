@@ -1,7 +1,11 @@
 import { Database } from "bun:sqlite"
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { createHash } from "node:crypto"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import { withParagraphPointers } from "../../lib/drafting-amendment"
+import { recordSystemDocx, replaceableDeliverable } from "../../lib/system-docx"
+import { readWorkingDocx } from "../../lib/working-docx"
 import { readLeanPlan, writeLeanPlan } from "./plan"
 import { LEAN_STAGE_AGENTS, type LeanDeps, type StageSessionPort } from "./stages"
 import { initLeanState } from "./state"
@@ -67,7 +71,7 @@ export function scriptedModel(replies: Record<string, Reply>) {
         [AGENT["package-review"]]: () => JSON.stringify({ status: "pass", findings: [], limitations: [], delivery: [] }),
         [AGENT.intake]: () => JSON.stringify({ ready: true, jurisdiction: "No external legal determination needed for this supplied-source fixture", scope: "Reproduce supplied terms only" }),
         [AGENT.research]: () => JSON.stringify({ status: "not-needed", findings: [], limitations: ["This fixture requests a note from supplied terms only."] }),
-        [AGENT["research-review"]]: () => JSON.stringify({ approved: [], rejected: [], limitations: [] }),
+        [AGENT["research-review"]]: () => JSON.stringify({ approved: [], rejected: [], limitations: [], gaps: [] }),
       }
       const reply = replies[input.agent] ?? preparation[input.agent]
       if (!reply) throw new Error(`No scripted reply for ${input.agent}.`)
@@ -164,15 +168,48 @@ export function pidIn(prompt: string, start: string) {
   return new RegExp(`^\\[(p[0-9a-f]{12})\\] ${start}`, "m").exec(prompt)![1]!
 }
 
-/** Registers deliverables by writing them into the matter, as the ingest service does. */
+/** Registers deliverables as the ingest service does (registerLeanDeliverable):
+ * a create needs the name free and a replace the sha256 of the file there now;
+ * a source, a file holding the lawyer's accepted Word revision or a failed
+ * precondition is refused (undefined), as is a replace with `owned` of a file
+ * that is no longer the system's to write over (replaceableDeliverable). A
+ * Word file is stored with its paragraph pointers, and the sha256 of the stored
+ * bytes is recorded in the registry as the system's own write (system-docx.ts).
+ * `calls` lists every attempt, with the sha256 it was to replace. */
 export function registering() {
   const names: string[] = []
-  const registerDeliverable: NonNullable<LeanDeps["registerDeliverable"]> = async (directory, name, bytes) => {
-    writeFileSync(path.join(directory, name), bytes)
+  const calls: [string, string | null][] = []
+  const registerDeliverable: NonNullable<LeanDeps["registerDeliverable"]> = async (directory, name, bytes, prior, options) => {
+    calls.push([name, prior])
+    const file = path.join(directory, name)
+    const current = existsSync(file) ? sha256Hex(readFileSync(file)) : null
+    if (current !== prior || readWorkingDocx(directory, file) || registeredSource(directory, file)) return undefined
+    if (prior && options?.owned && !replaceableDeliverable(directory, name)) return undefined
+    const stored = name.toLowerCase().endsWith(".docx") ? withParagraphPointers(bytes) : bytes
+    writeFileSync(file, stored)
+    const db = new Database(path.join(directory, ".dochaus", "legal.db"))
+    try { db.transaction(() => recordSystemDocx(db, directory, name, sha256Hex(stored))).immediate() } finally { db.close() }
     names.push(name)
     return name
   }
-  return { names, registerDeliverable }
+  return { names, calls, registerDeliverable }
+}
+
+function sha256Hex(bytes: Uint8Array) {
+  return createHash("sha256").update(bytes).digest("hex")
+}
+
+/** Whether the registry lists `file` as a source, as ingest refuses to replace it. */
+function registeredSource(directory: string, file: string) {
+  const registry = path.join(directory, ".dochaus", "legal.db")
+  if (!existsSync(registry)) return false
+  const db = new Database(registry, { readonly: true })
+  try {
+    if (!db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='documents'").get()) return false
+    return Boolean(db.query("SELECT 1 FROM documents WHERE doc_path = ? AND role = 'source'").get(file))
+  } finally {
+    db.close()
+  }
 }
 
 // Fixture names used by the restore and deliverable tests. `prepare` may create

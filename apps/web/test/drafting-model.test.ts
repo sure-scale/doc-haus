@@ -6,6 +6,7 @@ import blockedQuestion from "../../../dochaus/workflows/lean/fixtures/status-blo
 import blockedGate from "../../../dochaus/workflows/lean/fixtures/status-blocked-gate.json"
 import completed from "../../../dochaus/workflows/lean/fixtures/status-completed.json"
 import failed from "../../../dochaus/workflows/lean/fixtures/status-failed.json"
+import { documentContentUrl } from "../src/api/ingest/documents"
 import { isLeanDraftingStatus, type LeanDocument, type LeanDraftingStatus, type LeanOpenItem, type LeanQuestion } from "../src/api/ingest/lean"
 import DocumentUpload from "../src/components/DocumentUpload"
 import DraftedList from "../src/components/drafting/DraftedList"
@@ -17,6 +18,8 @@ import {
   currentStep,
   deliverableGroups,
   draftedGroups,
+  type DraftedGroup,
+  type DraftedOutput,
   finalCheckNote,
   groupOpenItems,
   leanSettledSummary,
@@ -24,6 +27,7 @@ import {
   openItemsSentence,
   openItemTag,
   openQuestions,
+  queuedNote,
   unresolvedChecklistFindings,
   runPosition,
   runStepName,
@@ -36,6 +40,7 @@ import {
 import OpenItems from "../src/components/drafting/OpenItems"
 import QuestionDock from "../src/components/drafting/QuestionDock"
 import RunHeader, { runHeadline } from "../src/components/drafting/RunHeader"
+import type { RunActions } from "../src/components/drafting/useRunActions"
 import { stageMilestones, stepActivityLabel } from "../src/components/narration/activity"
 import { resultChecks } from "../src/components/narration/outcome"
 import ResultCard from "../src/components/narration/ResultCard"
@@ -44,6 +49,8 @@ function lean(value: unknown): LeanDraftingStatus {
   if (!isLeanDraftingStatus(value)) throw new Error("fixture is not a lean drafting status")
   return value
 }
+
+const actions: RunActions = { busy: false, pausing: false, stopping: false, error: "", errorFor: undefined, resuming: false, resume: async () => true, answer: async () => true, decide: async () => true, update: async () => true, refine: async () => true, pause: async () => true, stop: async () => true }
 
 const item = (id: string, kind: string, status: LeanOpenItem["status"] = "open"): LeanOpenItem => ({ id, stage: "draft", kind, detail: id, status })
 
@@ -102,6 +109,16 @@ test("open items group by kind in first-seen order and cap across groups", () =>
   expect(capGroups(groups, 5).flatMap((group) => group.items)).toHaveLength(5)
 })
 
+test("a question left to the drafter is listed as a choice left to the drafter, not as a point left out", () => {
+  const left: LeanOpenItem = { ...item("h1", "left_to_drafter", "disclosed"), stage: "finalize", ref: { repair_target: "memo", question_id: "q-1" } as LeanOpenItem["ref"] }
+  const groups = groupOpenItems([item("o1", "omission", "disclosed"), left])
+  expect(groups.map((group) => [group.label, group.items.map((row) => row.id)])).toEqual([
+    ["Points left out", ["o1"]],
+    ["Choices left to the drafter", ["h1"]],
+  ])
+  expect(openItemTag(left)).toBe("In the notes")
+})
+
 test("attention items follow the final check once it ran for this pass", () => {
   expect(attentionItems(lean(blockedGate)).map((row) => row.status)).toEqual(["open"])
   const disclosed = lean({ ...completed, gate: { ...completed.gate, items: [item("x", "placeholder", "disclosed"), item("y", "omission", "resolved")] } })
@@ -109,14 +126,13 @@ test("attention items follow the final check once it ran for this pass", () => {
 })
 
 test("a checklist requirement left open shows in the delivered review draft's details list", () => {
-  const actions = { busy: false, error: "", resuming: false, resume: async () => true, answer: async () => true }
   const detail =
     "Checklist requirement left open: Keep the note to about one page. Finding: Accepted body text measures {\"paragraphs\":28,\"words\":626,\"characters\":3900} do not clearly exceed about one page. Limitation: Rendered pagination was not verified."
   const open: LeanOpenItem = { id: "checklist-check:checklist_open:1", stage: "checklist-check", kind: "checklist_open", detail, status: "disclosed", ref: { document: "d1" } }
   const status = lean({ ...completed, gate: { ...completed.gate, delivery: "review_draft", disclosed: [open], items: [open, item("p1", "placeholder", "disclosed")] } })
   expect(attentionItems(status)).toContainEqual(open)
   expect(groupOpenItems([open])[0]!.label).toBe("Requirements left open by the checklist check")
-  const html = renderToStaticMarkup(createElement(RunHeader, { status, actions, own: true, onOpen: () => {} }))
+  const html = renderToStaticMarkup(createElement(RunHeader, { status, actions, own: true, onOpen: () => {}, onShowDrafts: () => {} }))
   expect(html).toContain("Requirements left open by the checklist check")
   expect(html).toContain("626")
   expect(html).toContain("Rendered pagination was not verified.")
@@ -176,9 +192,8 @@ test("unresolved checklist findings sort first, read as not satisfied and carry 
 })
 
 test("a review draft with unresolved checklist findings reads differently from a clean completion and a plain review draft", () => {
-  const actions = { busy: false, error: "", resuming: false, resume: async () => true, answer: async () => true }
   const render = (status: LeanDraftingStatus) =>
-    renderToStaticMarkup(createElement(RunHeader, { status, actions, own: true, onOpen: () => {} }))
+    renderToStaticMarkup(createElement(RunHeader, { status, actions, own: true, onOpen: () => {}, onShowDrafts: () => {} }))
   const now = Date.parse(completed.updated_at)
   const two = withFindings([unresolvedFinding(1, "omission"), unresolvedFinding(2, "source_conflict")], [item("p1", "placeholder", "disclosed"), item("o1", "omission", "disclosed")])
   const one = withFindings([unresolvedFinding(1)])
@@ -241,6 +256,15 @@ test("the open items list never caps away an unresolved checklist finding and co
   expect(plain).not.toContain("Show all")
 })
 
+test("an open item names its source in plain words, never as the run's source tag", () => {
+  const requested = { ...item("r1", "omission", "disclosed"), detail: 'The request asked for "one file named supply pack" [source: request], but the run delivers it in "supply pack (2).docx".' }
+  const quoted = { ...item("q1", "omission", "disclosed"), detail: 'The terms say "net 30 days" [source: Supply terms.docx] and "net 45 days" [source:  Order form.docx ].' }
+  const html = renderToStaticMarkup(createElement(OpenItems, { items: [requested, quoted], titles: new Map() }))
+  expect(html).not.toContain("[source:")
+  expect(html).toContain("&quot;one file named supply pack&quot; (from the request), but the run delivers")
+  expect(html).toContain("&quot;net 30 days&quot; (from Supply terms.docx) and &quot;net 45 days&quot; (from Order form.docx).")
+})
+
 test("drafted outputs nest the redline and notes under a single draft", () => {
   expect(draftedGroups(lean(completed))).toEqual([
     {
@@ -276,30 +300,40 @@ test("drafted outputs nest the redline and notes under a single draft", () => {
 
 /** The completed fixture as a run that wrote its notes as the memo the request
  * named ("cover note"); a combined run also registered its body as
- * "<name> - clean" and reports the one file the document downloads as, with
- * the exact names ingest registered its parts under (`reported`, by default
- * the body's row). `rows` adds further summary rows. */
-function memoRun({ combined = false, body = "Supply note - clean.docx", reported = body, rows: more = [] as LeanDocument[] } = {}) {
+ * "<name> - clean", lists the combined file it saved (`saved`, its row's
+ * deliverable; null for none) and reports the one file the document downloads
+ * as (`file`), with the exact names ingest registered its parts under
+ * (`reported`, by default the body's row). `rows` adds further summary rows. */
+function memoRun({
+  combined = false,
+  body = "Supply note - clean.docx",
+  reported = body,
+  file = "Supply note.docx",
+  saved = file,
+  rows: more = [],
+}: { combined?: boolean; body?: string; reported?: string; file?: string; saved?: string | null; rows?: LeanDocument[] } = {}) {
   const rows = completed.documents.documents.map((row) => {
     if (row.kind === "drafting_notes") return { ...row, deliverable: "Supply note - cover note.docx" }
     if (row.kind === "body" && combined) return { ...row, deliverable: body }
     return row
   })
+  const savedRow: LeanDocument[] =
+    combined && saved ? [{ kind: "combined", document: "d1", title: "Supply note", path: saved, sha256: "c".repeat(64), deliverable: saved }] : []
   return lean({
     ...completed,
     memo: "cover note",
-    documents: { ...completed.documents, documents: [...rows, ...more] },
+    documents: { ...completed.documents, documents: [...rows, ...more, ...savedRow] },
     ...(combined
-      ? { combined_output: { document: "d1", name: "Supply note", file: "Supply note.docx", body: reported, notes: "Supply note - cover note.docx" } }
+      ? { combined_output: { document: "d1", name: "Supply note", file, body: reported, notes: "Supply note - cover note.docx" } }
       : {}),
   })
 }
 
-const memoNotes = { name: "Supply note - cover note.docx", role: "notes" }
+const memoNotes: DraftedOutput = { name: "Supply note - cover note.docx", role: "notes" }
 
 test("a requested memo groups as the run's notes by its row kind and keeps its own name", () => {
   const status = memoRun()
-  const groups = [{ main: { name: "Supply note.docx", role: "draft" }, extras: [{ name: "Supply note - redline.docx", role: "redline" }, memoNotes] }]
+  const groups: DraftedGroup[] = [{ main: { name: "Supply note.docx", role: "draft" }, extras: [{ name: "Supply note - redline.docx", role: "redline" }, memoNotes] }]
   expect(draftedGroups(status)).toStrictEqual(groups)
   expect(deliverableGroups(["Supply note.docx", "Supply note - redline.docx", "Supply note - cover note.docx"], status)).toStrictEqual(groups)
   const html = renderToStaticMarkup(createElement(DraftedList, { matterId: "m", groups: draftedGroups(status), onView: () => {} }))
@@ -310,37 +344,60 @@ test("a requested memo groups as the run's notes by its row kind and keeps its o
 
 test("a combined document's one file leads its group only once both its parts are delivered", () => {
   const combined = memoRun({ combined: true })
-  const body = { name: "Supply note - clean.docx", role: "draft" }
-  const redline = { name: "Supply note - redline.docx", role: "redline" }
+  const body: DraftedOutput = { name: "Supply note - clean.docx", role: "draft" }
+  const redline: DraftedOutput = { name: "Supply note - redline.docx", role: "redline" }
   expect(draftedGroups(combined)).toStrictEqual([{ main: body, extras: [redline, memoNotes], combined: "Supply note.docx" }])
   // The registry's next free name for the body still belongs to the combined file.
   expect(draftedGroups(memoRun({ combined: true, body: "Supply note - clean (2).docx" }))[0]!.combined).toBe("Supply note.docx")
 
   const without = (kind: string) =>
     lean({ ...combined, documents: { ...combined.documents!, documents: combined.documents!.documents.filter((row) => row.kind !== kind) } })
-  // No memo delivered, no body delivered, a run still in progress, or a body of another name: no combined file.
-  expect(draftedGroups(without("drafting_notes"))).toStrictEqual([{ main: body, extras: [redline] }])
+  // No memo delivered, no body delivered, no combined file saved, a run still in progress, or a body of another
+  // name: the draft carries no combined file (one the summary still lists is a file of its own).
+  expect(draftedGroups(without("drafting_notes"))[0]).toStrictEqual({ main: body, extras: [redline] })
   expect(draftedGroups(without("body")).some((group) => "combined" in group)).toBe(false)
+  expect(draftedGroups(without("combined"))).toStrictEqual([{ main: body, extras: [redline, memoNotes] }])
   expect(draftedGroups(lean({ ...combined, documents: { ...combined.documents!, status: "blocked" } }))).toEqual([])
-  expect(draftedGroups(memoRun({ combined: true, body: "Supply note.docx", reported: "Supply note - clean.docx" }))[0]).not.toHaveProperty("combined")
+  expect(draftedGroups(memoRun({ combined: true, body: "Supply note.docx", reported: "Supply note - clean.docx", saved: null }))[0]).not.toHaveProperty("combined")
 
-  // The list leads with the combined file, downloaded from ingest, and keeps the draft and the memo beneath it.
+  // The list leads with the combined file, downloaded as the file saved in the matter, and keeps the draft and the memo beneath it.
   const html = renderToStaticMarkup(createElement(DraftedList, { matterId: "m", groups: draftedGroups(combined), onView: () => {} }))
   const main = html.slice(0, html.indexOf('<ul class="drafted-extras">'))
   const beneath = html.slice(html.indexOf('<ul class="drafted-extras">'))
   expect(main).toContain('<div class="drafted-row is-main">')
   expect(main).toContain('<span class="drafted-name" title="Supply note.docx"><span class="drafted-name-text">Supply note.docx</span></span>')
   expect(main).toContain('aria-label="Download Supply note.docx"')
-  expect(main).not.toContain("href=")
+  expect(main).toContain(`href="${documentContentUrl("m", "Supply note.docx")}" download="Supply note.docx"`)
   for (const name of ["Supply note - clean.docx", "Supply note - redline.docx", "Supply note - cover note.docx"]) {
     expect(beneath).toContain(`title="Open ${name}"`)
     expect(beneath).toContain(`download="${name}"`)
   }
   expect(beneath).not.toContain("is-main")
 
-  // The matter's files are the files the run registered; the combined file is composed at download.
+  // The matter's files are the files the run registered. The combined file saved among them stays on its
+  // draft's group, never a draft of its own; until it is saved, the group has none.
   const names = ["Supply note - clean.docx", "Supply note - redline.docx", "Supply note - cover note.docx"]
   expect(deliverableGroups(names, combined)).toStrictEqual([{ main: body, extras: [redline, memoNotes] }])
+  expect(deliverableGroups([...names, "Supply note.docx"], combined)).toStrictEqual([{ main: body, extras: [redline, memoNotes], combined: "Supply note.docx" }])
+  // Without its run's status the saved file groups as any other file, as before.
+  expect(deliverableGroups([...names, "Supply note.docx"], undefined).filter((group) => group.main.name === "Supply note.docx")).toHaveLength(1)
+
+  // The matter's document list shows the saved combined file in exactly one row, beside its parts.
+  const documents = [...names, "Supply note.docx"].map((name, id) => ({ id, name, doc_path: name, created_at: 1_760_000_000_000 + id * 60_000, role: "deliverable" as const }))
+  const listed = renderToStaticMarkup(createElement(DocumentUpload, { matterId: "m", documents, onUploaded: () => {}, onView: () => {}, drafting: combined }))
+  for (const name of [...names, "Supply note.docx"]) expect(listed.split(`download="${name}"`)).toHaveLength(2)
+  // Its label says what it is, as its parts' labels do; a label the lawyer chose still wins.
+  const labelOf = (html: string, name: string) => {
+    const select = html.split(`aria-label="Label for ${name}"`)[1]?.split("</select>")[0] ?? ""
+    return [select.match(/<option value="([a-z]+)" selected="">([^<]+)</)?.slice(1)]
+  }
+  expect(labelOf(listed, "Supply note.docx")).toEqual([["combined", "Combined"]])
+  expect(listed).toContain('class="document-label-badge is-combined"')
+  expect(names.map((name) => labelOf(listed, name))).toEqual([[["draft", "Draft"]], [["redline", "Redline"]], [["notes", "Notes"]]])
+  const chosen = documents.map((document) => (document.name === "Supply note.docx" ? { ...document, label: "final" as const } : document))
+  const relabelled = renderToStaticMarkup(createElement(DocumentUpload, { matterId: "m", documents: chosen, onUploaded: () => {}, onView: () => {}, drafting: combined }))
+  expect(labelOf(relabelled, "Supply note.docx")).toEqual([["final", "Final"]])
+  expect(relabelled).not.toContain(">Combined</option>")
 })
 
 test("a combined file belongs to the exact body and notes ingest names, never to another \"- clean\" row", () => {
@@ -365,6 +422,125 @@ test("a combined file belongs to the exact body and notes ingest names, never to
   expect(isLeanDraftingStatus({ ...status, combined_output: { name: "Supply note", file: "Supply note.docx" } })).toBe(false)
 })
 
+const resultDownload = (name: string) => `<a href="${documentContentUrl("m1", name)}" download="${name}"`
+const resultCard = (status: LeanDraftingStatus) => renderToStaticMarkup(createElement(ResultCard, { status, matterId: "m1", onViewDocument: () => {} }))
+const resultPage = (html: string) => html.slice(html.indexOf('<div class="result-document">'), html.indexOf('<ul class="result-stack"'))
+const ONE_FILE = 'title="Download the memo and the draft as one .docx"'
+
+test("the result card downloads a combined file as the file saved in the matter", () => {
+  const saved = memoRun({ combined: true })
+  expect(resultPage(resultCard(saved))).toContain(resultDownload("Supply note.docx"))
+  expect(resultPage(resultCard(saved))).toContain(ONE_FILE)
+})
+
+test("without a registered combined row no combined file is offered", () => {
+  const download = resultDownload
+  const result = resultCard
+  const page = resultPage
+  // A save that failed leaves the run's combined row without a deliverable, while ingest may still name
+  // the file the matter holds under the requested name (an earlier one the lawyer kept): nothing is combined.
+  const unsaved: LeanDocument = { kind: "combined", document: "d1", title: "Supply note", path: "Supply note (2).docx", sha256: "a".repeat(64), deliverable: null }
+  const failed = memoRun({ combined: true, body: "Supply note - clean (2).docx", saved: null, rows: [unsaved] })
+  expect(draftedGroups(failed).some((group) => group.combined)).toBe(false)
+  const names = ["Supply note - clean.docx", "Supply note - clean (2).docx", "Supply note - redline.docx", "Supply note - cover note.docx", "Supply note.docx"]
+  const groups = deliverableGroups(names, failed)
+  expect(groups.some((group) => group.combined)).toBe(false)
+  expect(groups.flatMap((group) => [group.main, ...group.extras]).filter((output) => output.role === "combined")).toEqual([])
+  expect(page(result(failed))).toContain(download("Supply note - clean (2).docx"))
+  expect(result(failed)).not.toContain(ONE_FILE)
+
+  // A registered combined row under another name than the one ingest reports carries no combined download.
+  const other = memoRun({ combined: true, saved: "Supply note (3).docx" })
+  expect(draftedGroups(other).some((group) => group.combined)).toBe(false)
+  expect(page(result(other))).toContain(download("Supply note - clean.docx"))
+})
+
+test("an earlier combined file the summary lists is the combined file from an earlier run beside the new one, never a draft of its own", () => {
+  // The lawyer kept changes in the combined file under the requested name; the new one took "(2)".
+  const earlier: LeanDocument = { kind: "combined", document: "d1", title: "Supply note", path: "Supply note.docx", sha256: "b".repeat(64), deliverable: "Supply note.docx" }
+  const status = memoRun({ combined: true, body: "Supply note - clean (2).docx", file: "Supply note (2).docx", rows: [earlier] })
+  const body: DraftedOutput = { name: "Supply note - clean (2).docx", role: "draft" }
+  const redline: DraftedOutput = { name: "Supply note - redline.docx", role: "redline" }
+  const kept: DraftedGroup = { main: { name: "Supply note.docx", role: "earlier_combined" }, extras: [] }
+  expect(draftedGroups(status)).toStrictEqual([{ main: body, extras: [redline, memoNotes], combined: "Supply note (2).docx" }, kept])
+  const names = ["Supply note - clean.docx", "Supply note - clean (2).docx", "Supply note - redline.docx", "Supply note - cover note.docx", "Supply note.docx", "Supply note (2).docx"]
+  expect(deliverableGroups(names, status)).toStrictEqual([
+    { main: body, extras: [redline, memoNotes], combined: "Supply note (2).docx" },
+    kept,
+    { main: { name: "Supply note - clean.docx", role: "draft" }, extras: [] },
+  ])
+  const documents = names.map((name, id) => ({ id, name, doc_path: name, created_at: 1_760_000_000_000 + id * 60_000, role: "deliverable" as const }))
+  const listed = renderToStaticMarkup(createElement(DocumentUpload, { matterId: "m", documents, onUploaded: () => {}, onView: () => {}, drafting: status }))
+  const select = (name: string) => listed.split(`aria-label="Label for ${name}"`)[1]?.split("</select>")[0] ?? ""
+  expect(select("Supply note (2).docx")).toContain('<option value="combined" selected="">Combined</option>')
+  expect(select("Supply note.docx")).toContain('<option value="earlier_combined" selected="">Earlier combined</option>')
+  // Why the earlier file is not the current one is said in words on its row, not only on a hover.
+  const row = (html: string, name: string) => html.split(`<span class="drafted-name-text">${name}</span>`)[1]?.split('class="icon-btn drafted-download"')[0] ?? ""
+  const EARLIER = '<span class="document-origin is-created">Created by Doc.Haus in an earlier run</span>'
+  expect(row(listed, "Supply note.docx")).toContain(EARLIER)
+  expect(row(listed, "Supply note (2).docx")).toContain('<span class="document-origin is-created">Created by Doc.Haus</span>')
+  // The result card's file list names it the same way; it downloads as the matter file it is, never as the memo and draft in one.
+  const card = resultCard(status)
+  expect(card).toContain('<span class="drafted-tag is-earlier_combined">Earlier combined</span>')
+  expect(row(card, "Supply note.docx")).toContain(EARLIER)
+  expect(card).not.toContain("<h4>Supply note.docx</h4>")
+  expect(card).not.toContain(`aria-label="Download Supply note.docx" ${ONE_FILE}`)
+  expect(card).toContain(`aria-label="Download Supply note (2).docx" ${ONE_FILE}`)
+  // The file's name alone does not make it a combined file: without its summary row it is not one.
+  const unlisted = memoRun({ combined: true, body: "Supply note - clean (2).docx", file: "Supply note (2).docx" })
+  expect(deliverableGroups(names, unlisted).flatMap((group) => [group.main, ...group.extras]).find((output) => output.name === "Supply note.docx")?.role).not.toBe("combined")
+})
+
+test("this run's saved combined file stays the combined file when its draft is no longer in the matter", () => {
+  const status = memoRun({ combined: true })
+  const names = ["Supply note - redline.docx", "Supply note - cover note.docx", "Supply note.docx"]
+  const outputs = deliverableGroups(names, status).flatMap((group) => [group.main, ...group.extras, ...(group.combined ? [{ name: group.combined, role: "combined" }] : [])])
+  expect(outputs.filter((output) => output.name === "Supply note.docx")).toEqual([{ name: "Supply note.docx", role: "combined" }])
+  const documents = names.map((name, id) => ({ id, name, doc_path: name, created_at: 1_760_000_000_000 + id * 60_000, role: "deliverable" as const }))
+  const listed = renderToStaticMarkup(createElement(DocumentUpload, { matterId: "m", documents, onUploaded: () => {}, onView: () => {}, drafting: status }))
+  const select = listed.split('aria-label="Label for Supply note.docx"')[1]?.split("</select>")[0] ?? ""
+  expect(select).toContain('<option value="combined" selected="">Combined</option>')
+})
+
+test("a file a combined row names that is not this run's saved combined file is the combined file from an earlier run, never a draft", () => {
+  const names = ["Supply note - clean.docx", "Supply note - redline.docx", "Supply note - cover note.docx", "Supply note.docx"]
+  const roleOf = (status: LeanDraftingStatus) =>
+    deliverableGroups(names, status).flatMap((group) => [group.main, ...group.extras]).find((output) => output.name === "Supply note.docx")?.role
+  const labelOf = (status: LeanDraftingStatus, label?: "final") => {
+    const documents = names.map((name, id) => ({ id, name, doc_path: name, created_at: 1_760_000_000_000 + id * 60_000, role: "deliverable" as const, ...(label && name === "Supply note.docx" ? { label } : {}) }))
+    const listed = renderToStaticMarkup(createElement(DocumentUpload, { matterId: "m", documents, onUploaded: () => {}, onView: () => {}, drafting: status }))
+    const select = listed.split(`aria-label="Label for Supply note.docx"`)[1]?.split("</select>")[0] ?? ""
+    return select.match(/<option value="([a-z_]+)" selected="">([^<]+)</)?.slice(1)
+  }
+  // This run did not save its combined file: the build was refused, the save failed, or the lawyer's
+  // revision holds the name. The file there is an earlier run's, and ingest reports no combined file.
+  const unsaved: LeanDocument = { kind: "combined", document: "d1", title: "Supply note", path: "Supply note.docx", sha256: "a".repeat(64), deliverable: null }
+  const held = lean({ ...memoRun({ combined: true, saved: null, rows: [unsaved] }), combined_output: null })
+  // A rerun stopped at its gate keeps the earlier run's file, which it has not delivered again.
+  const delivered: LeanDocument = { ...unsaved, deliverable: "Supply note.docx" }
+  const stopped = memoRun({ combined: true, saved: null, rows: [delivered] })
+  const blocked = lean({ ...stopped, status: "blocked", documents: { ...stopped.documents!, status: "blocked" }, combined_output: null })
+  const unsavedFailed = lean({ ...held, status: "failed", documents: { ...held.documents!, status: "blocked" } })
+  for (const status of [held, blocked, unsavedFailed]) {
+    expect(draftedGroups(status).some((group) => group.combined)).toBe(false)
+    expect(roleOf(status)).toBe("earlier_combined")
+    expect(labelOf(status)).toEqual(["earlier_combined", "Earlier combined"])
+    // A label the lawyer chose still wins.
+    expect(labelOf(status, "final")).toEqual(["final", "Final"])
+  }
+  // The panel offers the file as the matter file it is, never as the memo and draft in one.
+  const listed = renderToStaticMarkup(createElement(DocumentUpload, {
+    matterId: "m", documents: names.map((name, id) => ({ id, name, doc_path: name, created_at: 1_760_000_000_000 + id, role: "deliverable" as const })),
+    onUploaded: () => {}, onView: () => {}, drafting: held,
+  }))
+  const download = listed.split('aria-label="Download Supply note.docx"')
+  expect(download).toHaveLength(2)
+  expect(download[0]!.slice(download[0]!.lastIndexOf("<a "))).toContain(`href="${documentContentUrl("m", "Supply note.docx")}"`)
+  expect(download[1]!.split(">")[0]).toBe(' title="Download .docx"')
+  // Without a summary row naming it, a file of that name is not one.
+  expect(roleOf(lean({ ...held, documents: { ...held.documents!, documents: held.documents!.documents.filter((row) => row.kind !== "combined") } }))).toBe("draft")
+})
+
 test("a requested memo is named wherever the run would say drafting notes", () => {
   const items = [item("p1", "placeholder", "disclosed"), item("o1", "omission", "disclosed"), item("o2", "omission", "disclosed")]
   const plain = lean({ ...completed, gate: { ...completed.gate, items } })
@@ -387,11 +563,10 @@ test("a requested memo is named wherever the run would say drafting notes", () =
   expect([stepActivityLabel(running(plain), "finalize"), stepActivityLabel(running(memo), "finalize")]).toEqual(["Writing the drafting notes", "Writing the cover memo"])
   expect([runPosition(running(plain))!.text, runPosition(running(memo))!.text]).toEqual(["Finishing · Drafting notes", "Finishing · Cover memo"])
   // The header's step rows, its research note and the result card follow the memo too.
-  const actions = { busy: false, error: "", resuming: false, resume: async () => true, answer: async () => true }
   const notNeeded = (status: LeanDraftingStatus) =>
     lean({ ...status, stages: { research: { ...status.stages["d1.draft"]!, status: "done" }, ...status.stages }, research: { status: "not-needed", findings: [], limitations: [] } })
   const header = (status: LeanDraftingStatus) =>
-    renderToStaticMarkup(createElement(MemoryRouter, null, createElement(RunHeader, { status: notNeeded(status), actions, own: true, onOpen: () => {} })))
+    renderToStaticMarkup(createElement(MemoryRouter, null, createElement(RunHeader, { status: notNeeded(status), actions, own: true, onOpen: () => {}, onShowDrafts: () => {} })))
   expect(header(plain)).toContain("the reason is recorded with the drafting notes.")
   expect(header(memo)).toContain("the reason is recorded with the cover memo.")
   expect(header(memo)).toContain("Step 6 of 7: Cover memo, done")
@@ -402,12 +577,11 @@ test("a requested memo is named wherever the run would say drafting notes", () =
 
 test("a run without a requested memo keeps today's wording exactly", () => {
   const items = [item("p1", "placeholder", "disclosed"), item("o1", "omission", "disclosed")]
-  const actions = { busy: false, error: "", resuming: false, resume: async () => true, answer: async () => true }
   for (const raw of [completed, blockedGate, failed, blockedQuestion, { ...completed, gate: { ...completed.gate, items } }]) {
     const absent = lean(raw)
     const none = lean({ ...raw, memo: null })
     const view = (status: LeanDraftingStatus) => ({
-      header: renderToStaticMarkup(createElement(MemoryRouter, null, createElement(RunHeader, { status, actions, own: true, onOpen: () => {} }))),
+      header: renderToStaticMarkup(createElement(MemoryRouter, null, createElement(RunHeader, { status, actions, own: true, onOpen: () => {}, onShowDrafts: () => {} }))),
       result: renderToStaticMarkup(createElement(ResultCard, { status, matterId: "m1", onViewDocument: () => {} })),
       milestones: stageMilestones(status).map((line) => line.text),
       checks: resultChecks(status),
@@ -416,7 +590,7 @@ test("a run without a requested memo keeps today's wording exactly", () => {
     expect(view(none)).toStrictEqual(view(absent))
   }
   const plain = lean({ ...completed, gate: { ...completed.gate, items } })
-  const html = renderToStaticMarkup(createElement(MemoryRouter, null, createElement(RunHeader, { status: plain, actions, own: true, onOpen: () => {} })))
+  const html = renderToStaticMarkup(createElement(MemoryRouter, null, createElement(RunHeader, { status: plain, actions, own: true, onOpen: () => {}, onShowDrafts: () => {} })))
   expect(html).toContain("Step 5 of 6: Drafting notes, done")
   expect(resultChecks(plain).map((check) => check.text)).toEqual(["Final workflow check passed", "Quotes checked against sources", "1 placeholder to fill", "1 other item in the drafting notes"])
   expect(stageMilestones(plain).find((line) => line.step === "finalize")!.text).toBe("Drafting notes written")
@@ -425,7 +599,7 @@ test("a run without a requested memo keeps today's wording exactly", () => {
 test("a run without a memo or combined file groups and renders exactly as before", () => {
   const plain = lean(completed)
   const reported = lean({ ...completed, combined_output: null })
-  const expected = [
+  const expected: DraftedGroup[] = [
     {
       main: { name: "Supply note.docx", role: "draft" },
       extras: [
@@ -476,9 +650,8 @@ test("the document timeline orders files newest first and preserves origins and 
 })
 
 test("a delivered run with questions left counts them in the header and docks them above the composer", () => {
-  const actions = { busy: false, error: "", resuming: false, resume: async () => true, answer: async () => true }
   const render = (status: LeanDraftingStatus) =>
-    renderToStaticMarkup(createElement(RunHeader, { status, actions, own: true, onOpen: () => {} }))
+    renderToStaticMarkup(createElement(RunHeader, { status, actions, own: true, onOpen: () => {}, onShowDrafts: () => {} }))
   const status = lean({ ...completed, questions: blockedQuestion.questions })
   const delivered = render(status)
   expect(delivered).toContain("Ready for review")
@@ -489,7 +662,7 @@ test("a delivered run with questions left counts them in the header and docks th
 
   const dock = (questions: LeanQuestion[]) =>
     renderToStaticMarkup(
-      createElement(QuestionDock, { matterId: "m", questions, answered: 0, titles: new Map(), busy: false, error: "", onSend: async () => true }),
+      createElement(QuestionDock, { matterId: "m", ownerSessionID: status.owner_session_id, questions, answered: 0, handedBack: [], titles: new Map(), busy: false, error: "", onSend: async () => true, onDecide: async () => true }),
     )
   const one = dock(openQuestions(status))
   expect(one).toContain("The drafting run has a question for you")
@@ -530,9 +703,8 @@ test("open items read as one sentence, questions apart from placeholders", () =>
 })
 
 test("a draft changed after the final check stops repeating the check's verdict", () => {
-  const actions = { busy: false, error: "", resuming: false, resume: async () => true, answer: async () => true }
   const render = (status: LeanDraftingStatus) =>
-    renderToStaticMarkup(createElement(RunHeader, { status, actions, own: true, onOpen: () => {} }))
+    renderToStaticMarkup(createElement(RunHeader, { status, actions, own: true, onOpen: () => {}, onShowDrafts: () => {} }))
   const changed = lean({ ...completed, changed_after_check: { since: completed.gate.checked_at, documents: ["Supply note.docx"] } })
   expect(finalCheckNote(lean(completed))).toBe("Final workflow check passed: ready for signature.")
   expect(finalCheckNote(lean({ ...completed, gate: { ...completed.gate, delivery: "review_draft" } }))).toBe(
@@ -560,9 +732,8 @@ test("a stopped run's header says what happened in plain words; the checker's wo
 })
 
 test("elsewhere the run's one line leads with the questions still owed", () => {
-  const actions = { busy: false, error: "", resuming: false, resume: async () => true, answer: async () => true }
   const render = (status: LeanDraftingStatus) =>
-    renderToStaticMarkup(createElement(MemoryRouter, null, createElement(RunHeader, { status, actions, own: false, onOpen: () => {} })))
+    renderToStaticMarkup(createElement(MemoryRouter, null, createElement(RunHeader, { status, actions, own: false, onOpen: () => {}, onShowDrafts: () => {} })))
   const asked = render(lean({ ...completed, questions: blockedQuestion.questions }))
   expect(asked).toContain("1 question for you")
   expect(asked).toContain("Open run")
@@ -625,4 +796,19 @@ test("clarification progress describes inspection instead of applied document ch
   expect(updateProgressLabel({ ...update, progress: "applied" })).toStartWith("Clarification reviewed")
   expect(updateProgressLabel({ ...update, progress: "applying" })).toContain("being inspected")
   expect(updateProgressLabel({ ...update, status: "queued" })).toContain("received")
+})
+
+test("the queued note does not call a hand-back an answer", () => {
+  const base = lean(blockedQuestion as unknown as LeanDraftingStatus)
+  const note = (queued: string[], handed?: string[]) =>
+    queuedNote({ ...base, queued_answer_ids: queued, queued_handed_back_ids: handed })
+  expect(note([])).toBeUndefined()
+  expect(note(["a"])).toBe("Answer received — it will be included when drafting resumes.")
+  expect(note(["a", "b"])).toBe("Answers received — they will be included when drafting resumes.")
+  expect(note(["a"], [])).toBe("Answer received — it will be included when drafting resumes.")
+  expect(note(["a"], ["a"])).toBe("Question left to the drafter to decide — it will be handled when drafting resumes.")
+  expect(note(["a", "b"], ["a", "b"])).toBe("Questions left to the drafter to decide — they will be handled when drafting resumes.")
+  expect(note(["a", "b"], ["b"])).toBe("Answer received and a question left to the drafter to decide — both will be handled when drafting resumes.")
+  expect(note(["a", "b", "c"], ["b"])).toBe("Answers received and a question left to the drafter to decide — they will be handled when drafting resumes.")
+  expect(note(["a", "b", "c"], ["b", "c"])).toBe("Answer received and questions left to the drafter to decide — they will be handled when drafting resumes.")
 })

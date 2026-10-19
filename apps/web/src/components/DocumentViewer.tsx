@@ -138,7 +138,7 @@ export default function DocumentViewer({
     setError(undefined)
     try {
       const result = await action()
-      for (const notice of [notesNotUpdatedNotice(result, key === "all"), redlineNotUpdatedNotice(result)])
+      for (const notice of [notesNotUpdatedNotice(result, key === "all"), redlineNotUpdatedNotice(result), combinedNotUpdatedNotice(result)])
         if (notice) toast("warning", notice)
       onChanged?.()
       setReload((n) => n + 1)
@@ -439,6 +439,24 @@ export function redlineNotUpdatedNotice(result: AcceptResult | void) {
   if (result?.redline_updated !== false) return
   const reason = result.redline_skip_reason && redlineSkipReasons[result.redline_skip_reason]
   return `The redline was not updated${reason ? `: ${reason}` : ""}.`
+}
+
+// An accept into a part of a saved combined file (the draft or the memo) also
+// rebuilds that file. When that could not happen the accept still stands and the
+// combined file holds the parts as they were; say so.
+const combinedSkipReasons: Record<string, string> = {
+  combined_missing: "the combined file is no longer in the matter",
+  combined_not_deliverable: "the combined file is no longer a delivered document",
+  pending_combined_proposals: "the combined file has pending proposed changes",
+  combined_changed: "the combined file has changes of its own, which are kept",
+  build_refused: "the memo and the draft can no longer be combined. Download them separately",
+  rebuild_failed: "it could not be rebuilt from the accepted documents",
+  write_failed: "the combined file could not be saved",
+}
+export function combinedNotUpdatedNotice(result: AcceptResult | void) {
+  if (result?.combined_updated !== false) return
+  const reason = result.combined_skip_reason && combinedSkipReasons[result.combined_skip_reason]
+  return `The combined file was not updated${reason ? `: ${reason}` : ""}.`
 }
 
 // File glyph, name and a quiet status line. The pending count stays visible on

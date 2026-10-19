@@ -7,7 +7,7 @@ import { mkdir, writeFile } from "node:fs/promises"
 import path from "node:path"
 import blockedGate from "../../../dochaus/workflows/lean/fixtures/status-blocked-gate.json"
 
-const { chromium, expect } = await import(process.env.PLAYWRIGHT_MODULE ?? "@playwright/test")
+const { chromium, expect } = (await import(process.env.PLAYWRIGHT_MODULE ?? "@playwright/test")) as typeof import("@playwright/test")
 const baseURL = process.env.PLAYWRIGHT_BASE_URL
 const evidence = process.env.DOCHAUS_EVIDENCE_DIR
 if (!baseURL || !evidence) throw new Error("Set PLAYWRIGHT_BASE_URL and DOCHAUS_EVIDENCE_DIR.")
@@ -31,10 +31,7 @@ try {
     await context.addInitScript(() => sessionStorage.setItem("dh.launch-notice.v1", "accepted"))
     const unexpected: string[] = []
     const writes: string[] = []
-    await context.route("**/*", async (route: {
-      request: () => { url: () => string; method: () => string; resourceType: () => string }
-      continue: () => Promise<void>; abort: () => Promise<void>; fulfill: (response: unknown) => Promise<void>
-    }) => {
+    await context.route("**/*", async route => {
       const request = route.request()
       const url = new URL(request.url())
       const pathname = url.pathname.replace(/^\/ingest(?=\/)/, "").replace(/^\/engine(?=\/api\/)/, "")

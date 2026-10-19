@@ -4,7 +4,7 @@ import { Database } from "bun:sqlite"
 import { existsSync } from "node:fs"
 import path from "node:path"
 import { formatCitations } from "../lib/citations"
-import { buildChains, supersededSections } from "../lib/amendment-chain"
+import { buildChains, operativePassage, supersededSections, type IndexedText } from "../lib/amendment-chain"
 import { pendingRedlinesForDoc } from "../lib/redlines"
 import { draftingTraceReference } from "../lib/drafting-trace-identity"
 import { indexIsContained, lexicalChannel, phraseChannel, vectorChannel, type ChunkRow } from "../lib/search/channels"
@@ -105,6 +105,13 @@ export default tool({
     // Preserve matter-wide indexed-chain warnings and penalties for scoped passages.
     const chains = buildChains(db)
     const superseded = supersededSections(db, chains)
+    // A stated base that matched no indexed document gets no supersession flag
+    // or penalty, so name it instead of letting its passages read as current.
+    const unmatchedBases = chains.flatMap((chain) =>
+      chain.base.kind === "unresolved"
+        ? [`"${chain.base.targetName}" (amended by ${[...new Set(chain.entries.map((e) => e.rel.doc_name))].join(", ")})`]
+        : [],
+    )
     const channels = [
       vectorChannel(db, queryVec, args),
       lexicalChannel(db, args.query, args),
@@ -131,6 +138,16 @@ export default tool({
       .sort((a, b) => b.score - a.score)
       .slice(0, k)
 
+    // Code-point position of each superseding statement, so the warning says
+    // where to read it. Each amending document is rebuilt once per call.
+    const amenderTexts = new Map<string, IndexedText>()
+    const supersessionReads = new Map(
+      ranked.flatMap(({ row, supersededBy }) =>
+        supersededBy
+          ? [[row.id, operativePassage(db, supersededBy.op, supersededBy.amenderOps, amenderTexts).read] as const]
+          : [],
+      ),
+    )
     const definitionsNote = attachDefinitions(db, ranked, args)
     const crossRefsNote = attachCrossRefs(db, ranked, args)
     db.close()
@@ -178,6 +195,7 @@ export default tool({
             operation: supersededBy.op.operation,
             charStart: supersededBy.op.char_start,
             charEnd: supersededBy.op.char_end,
+            read: supersessionReads.get(row.id)!,
           }
         : undefined,
     }))
@@ -201,12 +219,22 @@ export default tool({
         pending.map((r) => `- #${r.id} (${r.author}) in ${r.docName}: proposes "${r.new_text}"`).join("\n")
       : ""
 
+    const unmatchedNote =
+      citations.length && unmatchedBases.length
+        ? `\n\nNote: amended base(s) not matched to an indexed document: ${unmatchedBases.join("; ")}. ` +
+          "Passages from the documents these names refer to may be superseded and are not flagged above."
+        : ""
+    // Everything after the passages, also kept in metadata so the legal plugin
+    // can carry it into the output it rebuilds after citation verification.
+    const notes = unmatchedNote + definitionsNote + crossRefsNote + pendingNote
+
     return {
       title: `${citations.length} passage(s) for "${args.query}"`,
-      output: (formatCitations(citations) || "No relevant passages found.") + definitionsNote + crossRefsNote + pendingNote,
+      output: (formatCitations(citations) || "No relevant passages found.") + notes,
       metadata: {
         citations,
         pending,
+        notes,
         ...(args.structural_path === undefined
           ? {}
           : { pending_context: { status: "omitted", reason: "unassessed_for_structural_scope" } }),

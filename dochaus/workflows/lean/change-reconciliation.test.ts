@@ -135,3 +135,217 @@ test("a requested memo reaches the conflict prompt; without one it is unchanged"
  const block=packageCompositionBlock(dir,"d1"),memo=prompt()
  expect(block).toStartWith("<package_composition>\n");expect(memo.split(block).length-1).toBe(1);expect(memo.replace(`\n\n${block}`,"")).toBe(without);expect(without).not.toContain("package_composition")
 })
+
+function targets(prompt: string): string[] {
+ return (JSON.parse(/<initial_targets>\n(.*)\n<\/initial_targets>/s.exec(prompt)![1]!) as { pid: string }[]).map(row => row.pid)
+}
+function provisions(directory: string, texts: string[]) {
+ const rows = texts.map((text, index) => ({ pid: `p${(index + 1).toString(16).padStart(12, "0")}`, text, sha256: paragraphSha256(text) }))
+ writeLeanPlan(directory, [{ title: "Record", purpose: "Record supplied terms", file: "record.docx", parts: [{ heading: "Terms", scope: "Terms" }] }])
+ writeLeanText(directory, "d1/paragraphs.json", JSON.stringify(rows))
+ return rows
+}
+function op(row: { pid: string; sha256: string }, updated: string) { return { id: "a1", pid: row.pid, existing_sha256: row.sha256, updated, reason: "Carry supplied instruction.", sources: support } }
+test("an oversized conflict component is reconciled in bounded slices, never refused",async()=>{
+ const dir=matter(),filler="The supplier keeps the delivery schedule under review. ".repeat(7)
+ const rows=provisions(dir,Array.from({length:200},(_,index)=>`Initial provision ${index+1}. ${filler}`))
+ writeLeanText(dir,"d1/changes.json",JSON.stringify(changes(rows.map((row,index)=>op(row,`Earlier correction ${index+1}. ${filler}`)))))
+ save(dir,inputs([{id:"whole",pids:rows.map(row=>row.pid)}],[changes(rows.map((row,index)=>op(row,`Prepared correction ${index+1}. ${filler}`)))]))
+ const model=scriptedModel({"lean-changes":prompt=>JSON.stringify({amendments:targets(prompt).map(pid=>({pid,updated:`Reconciled correction for ${pid}.`,reason:"Combined supported effect.",sources:support})),questions:[],dependencies:[]})})
+ const result=await runChangeReconciliation(dir,readLeanState(dir)!,{sessions:model.port},"d1",()=>{})
+ expect(result.status).toBe("done");expect(model.prompts.length).toBeGreaterThan(1)
+ for(const prompt of model.prompts)expect(prompt.text.length).toBeLessThanOrEqual(60_000)
+ const targeted=model.prompts.flatMap(prompt=>targets(prompt.text))
+ expect(targeted.toSorted()).toEqual(rows.map(row=>row.pid).toSorted())
+ expect(readChangeList(dir,"d1")!.amendments.map(row=>[row.pid,row.updated])).toEqual(rows.map(row=>[row.pid,`Reconciled correction for ${row.pid}.`]))
+})
+test("a paragraph too large for one bounded step keeps its earlier change and withholds the new one as an open item",async()=>{
+ const dir=matter(),rows=provisions(dir,["Initial provision 1.",`Long provision. ${"The supplier keeps the delivery schedule under review. ".repeat(1200)}`])
+ writeLeanText(dir,"d1/changes.json",JSON.stringify(changes([op(rows[0]!,"Earlier first correction."),op(rows[1]!,"Earlier shortened provision.")])))
+ save(dir,inputs([{id:"one",pids:rows.map(row=>row.pid)}],[changes([op(rows[0]!,"New first correction."),op(rows[1]!,"New shortened provision.")])]))
+ const model=scriptedModel({"lean-changes":prompt=>JSON.stringify({amendments:targets(prompt).map(pid=>({pid,updated:"Combined first correction.",reason:"Combined supported effect.",sources:support})),questions:[],dependencies:[]})})
+ const result=await runChangeReconciliation(dir,readLeanState(dir)!,{sessions:model.port},"d1",()=>{})
+ expect(result.status).toBe("done");expect(model.prompts).toHaveLength(1);expect(targets(model.prompts[0]!.text)).toEqual([rows[0]!.pid])
+ const accepted=readChangeList(dir,"d1")!
+ expect(accepted.amendments.map(row=>[row.pid,row.updated])).toEqual([[rows[0]!.pid,"Combined first correction."],[rows[1]!.pid,"Earlier shortened provision."]])
+ expect(accepted.withheld?.map(row=>[row.amendment.pid,row.amendment.updated])).toEqual([[rows[1]!.pid,"New shortened provision."]])
+ expect("openItems" in result&&result.openItems.filter(item=>item.kind==="unapplied_amendment").map(item=>[item.ref.pid,item.detail])).toEqual([[rows[1]!.pid,expect.stringContaining("too large to reconcile in one bounded step")]])
+})
+const tooLong=`Long provision. ${"The supplier keeps the delivery schedule under review. ".repeat(1200)}`
+function tagged(prompt: string, tag: string) { return JSON.parse(new RegExp(`<${tag}>\\n(.*)\\n</${tag}>`, "s").exec(prompt)![1]!) }
+function echo(edits: (pid: string) => boolean = () => true, explained: string[] = []) {
+ return scriptedModel({"lean-changes":prompt=>{const listed=targets(prompt);return JSON.stringify({amendments:listed.filter(edits).map(pid=>({pid,updated:`Reconciled correction for ${pid}.`,reason:"Combined supported effect.",sources:support})),explanations:listed.filter(pid=>explained.includes(pid)).map(pid=>({pid,reason:"Initial revision explanation, corrected.",sources:support})),questions:[],dependencies:[]})}})
+}
+async function reconcile(dir: string, port: ReturnType<typeof scriptedModel>["port"]) { return runChangeReconciliation(dir,readLeanState(dir)!,{sessions:port},"d1",()=>{}) }
+test("explanations, withheld rows and earlier-only paragraphs stay with their own slice across slice boundaries",async()=>{
+ const dir=matter(),filler="The supplier keeps the delivery schedule under review. ".repeat(7)
+ const rows=provisions(dir,Array.from({length:200},(_,index)=>`Initial provision ${index+1}. ${filler}`))
+ const explained=rows.filter((_,index)=>index%9===0).map(row=>row.pid),pending=rows.filter((_,index)=>index%13===5)
+ writeLeanText(dir,"d1/changes.json",JSON.stringify({...changes(rows.map((row,index)=>op(row,`Earlier correction ${index+1}. ${filler}`))),explanations:explained.map((pid,index)=>({id:`i${index+1}`,pid,reason:"Initial revision explanation.",sources:support})),withheld:pending.map(row=>({amendment:op(row,"Unverified intent."),issues:["Source support unresolved."]}))}))
+ save(dir,inputs([{id:"whole",pids:rows.map(row=>row.pid)}],[changes(rows.filter((_,index)=>index%7).map((row,index)=>op(row,`Prepared correction ${index+1}. ${filler}`)))]))
+ const model=echo(undefined,explained),result=await reconcile(dir,model.port)
+ expect(result.status).toBe("done");expect(model.prompts.length).toBeGreaterThan(1)
+ for(const prompt of model.prompts){
+  const listed=targets(prompt.text),own=tagged(prompt.text,"competing_operations_and_explanations") as ChangeList
+  expect([...own.amendments.map(row=>row.pid),...own.explanations!.map(row=>row.pid),...own.withheld!.map(row=>row.amendment.pid)].filter(pid=>!listed.includes(pid))).toEqual([])
+ }
+ expect(model.prompts.flatMap(prompt=>targets(prompt.text)).toSorted()).toEqual(rows.map(row=>row.pid).toSorted())
+ const accepted=readChangeList(dir,"d1")!
+ expect(accepted.amendments).toHaveLength(200);expect(accepted.explanations!.map(row=>row.pid).toSorted()).toEqual(explained.toSorted());expect(accepted.withheld).toEqual([])
+})
+test("a paragraph too large for one bounded step keeps its earlier change, every explanation and its earlier withheld rows",async()=>{
+ const dir=matter(),rows=provisions(dir,["Initial provision 1.",tooLong]),long=rows[1]!
+ writeLeanText(dir,"d1/changes.json",JSON.stringify({...changes([op(rows[0]!,"Earlier first correction."),op(long,"Earlier shortened provision.")]),explanations:[{id:"i1",pid:long.pid,reason:"Earlier initial revision explanation.",sources:support}],withheld:[{amendment:op(long,"Unverified intent."),issues:["Source support unresolved."]}]}))
+ save(dir,inputs([{id:"one",pids:rows.map(row=>row.pid)}],[{...changes([op(rows[0]!,"New first correction."),op(long,"New shortened provision.")]),explanations:[{id:"i1",pid:long.pid,reason:"Prepared initial revision explanation.",sources:support}]}]))
+ const model=echo(),result=await reconcile(dir,model.port)
+ expect(result.status).toBe("done");expect(model.prompts.map(prompt=>targets(prompt.text))).toEqual([[rows[0]!.pid]])
+ const accepted=readChangeList(dir,"d1")!
+ expect(accepted.amendments.map(row=>[row.pid,row.updated])).toEqual([[rows[0]!.pid,`Reconciled correction for ${rows[0]!.pid}.`],[long.pid,"Earlier shortened provision."]])
+ expect(accepted.explanations!.map(row=>[row.pid,row.reason])).toEqual([[long.pid,"Earlier initial revision explanation."],[long.pid,"Prepared initial revision explanation."]])
+ expect(accepted.withheld!.map(row=>[row.amendment.pid,row.amendment.updated,row.issues])).toEqual([[long.pid,"Unverified intent.",["Source support unresolved."]],[long.pid,"New shortened provision.",[expect.stringContaining("too large to reconcile in one bounded step")]]])
+ expect("openItems" in result&&result.openItems.filter(item=>item.kind==="unapplied_amendment").map(item=>item.ref.pid)).toEqual([long.pid,long.pid])
+})
+test("a paragraph too large for one bounded step keeps its own question and still blocks for the answer",async()=>{
+ const dir=matter(),rows=provisions(dir,["Initial provision 1.",tooLong]),long=rows[1]!
+ const question={id:"q-length",stage:"change-prepare" as const,question:"Which length applies?",context:"The sources do not settle it.",pid:long.pid,document:"d1" as const,status:"open" as const}
+ writeLeanText(dir,"questions.json",JSON.stringify({questions:[question]}))
+ writeLeanText(dir,"d1/changes.json",JSON.stringify(changes([op(rows[0]!,"Earlier first correction."),op(long,"Earlier shortened provision. [open item: confirm length]")])))
+ save(dir,inputs([{id:"one",pids:rows.map(row=>row.pid)}],[{...changes([op(rows[0]!,"New first correction."),op(long,"New shortened provision. [open item: confirm length]")]),questions:[{...question,stage:"changes"}]}]))
+ const result=await reconcile(dir,echo().port)
+ expect(result.status).toBe("blocked");expect(readChangeList(dir,"d1")!.questions.map(row=>[row.id,row.pid])).toEqual([["q-length",long.pid]])
+})
+test("a paragraph too large for one bounded step with one prepared change and nothing earlier is applied as prepared",async()=>{
+ const dir=matter(),rows=provisions(dir,["Initial provision 1.",tooLong]),long=rows[1]!
+ writeLeanText(dir,"d1/changes.json",JSON.stringify(changes([op(rows[0]!,"Earlier first correction.")])))
+ save(dir,inputs([{id:"one",pids:rows.map(row=>row.pid)}],[changes([op(rows[0]!,"New first correction."),op(long,"New shortened provision.")])]))
+ const result=await reconcile(dir,echo().port),accepted=readChangeList(dir,"d1")!
+ expect(result.status).toBe("done");expect(accepted.withheld).toEqual([])
+ expect(accepted.amendments.map(row=>[row.pid,row.updated])).toEqual([[rows[0]!.pid,`Reconciled correction for ${rows[0]!.pid}.`],[long.pid,"New shortened provision."]])
+})
+test("a paragraph too large for one bounded step with several earlier changes withholds them all as open items instead of failing",async()=>{
+ const dir=matter(),rows=provisions(dir,["Initial provision 1.",tooLong]),long=rows[1]!
+ writeLeanText(dir,"d1/changes.json",JSON.stringify(changes([op(rows[0]!,"Earlier first correction."),op(long,"Earlier shortened provision."),{...op(long,"Earlier other provision."),id:"a3"}])))
+ save(dir,inputs([{id:"one",pids:rows.map(row=>row.pid)}],[changes([op(rows[0]!,"New first correction."),op(long,"New shortened provision.")])]))
+ const result=await reconcile(dir,echo().port),accepted=readChangeList(dir,"d1")!
+ expect(result.status).toBe("done");expect(accepted.amendments.map(row=>row.pid)).toEqual([rows[0]!.pid])
+ expect(accepted.withheld!.map(row=>row.amendment.updated)).toEqual(["Earlier shortened provision.","Earlier other provision.","New shortened provision."])
+ expect("openItems" in result&&result.openItems.filter(item=>item.kind==="unapplied_amendment").map(item=>item.ref.pid)).toEqual([long.pid,long.pid,long.pid])
+})
+test("a split goal's slices point to the goal's other prepared changes instead of calling them independent",async()=>{
+ const dir=matter(),filler="The supplier keeps the delivery schedule under review. ".repeat(7)
+ const rows=provisions(dir,Array.from({length:40},(_,index)=>`Initial provision ${index+1}. ${filler}`))
+ writeLeanText(dir,"d1/changes.json",JSON.stringify(changes(rows.map((row,index)=>op(row,`Earlier correction ${index+1}. ${filler}`)))))
+ save(dir,inputs([{id:"whole",pids:rows.map(row=>row.pid)}],[changes(rows.map((row,index)=>op(row,`Prepared correction ${index+1}. ${filler}`)))]))
+ const model=echo(),result=await reconcile(dir,model.port)
+ expect(result.status).toBe("done");expect(model.prompts.length).toBeGreaterThan(1)
+ for(const prompt of model.prompts){expect(prompt.text.length).toBeLessThanOrEqual(60_000);expect(prompt.text).toContain("read-record .dochaus/lean/d1/change-preparation.json");expect(prompt.text).not.toContain("that is not a dependency")}
+})
+test("when the goal and instructions alone exceed the bound, the withheld changes say so rather than blaming the paragraph",async()=>{
+ const dir=matter(),rows=provisions(dir,Array.from({length:5},(_,index)=>`Initial provision ${index+1}.`))
+ writeLeanText(dir,"d1/changes.json",JSON.stringify(changes(rows.map((row,index)=>op(row,`Earlier correction ${index+1}.`)))))
+ const input=inputs([{id:"whole",pids:rows.map(row=>row.pid)}],[changes(rows.map((row,index)=>op(row,`Prepared correction ${index+1}.`)))])
+ input.plan.groups[0]!.goal=`Shorten every provision. ${"Keep every supplied condition. ".repeat(2000)}`;save(dir,input)
+ const model=echo(),result=await reconcile(dir,model.port),accepted=readChangeList(dir,"d1")!
+ expect(result.status).toBe("done");expect(model.prompts).toEqual([])
+ expect(accepted.amendments.map(row=>row.updated)).toEqual(rows.map((_,index)=>`Earlier correction ${index+1}.`))
+ expect(accepted.withheld!.map(row=>[row.amendment.updated,row.issues])).toEqual(rows.map((_,index)=>[`Prepared correction ${index+1}.`,[expect.stringContaining("instructions, goals and shared decisions")]]))
+ expect(JSON.stringify(accepted.withheld)).not.toContain("paragraph is too large")
+})
+test("slices with nothing to reconcile make no model call, and results keep job order whichever slice finishes first",async()=>{
+ const dir=matter(),filler="The supplier keeps the delivery schedule under review. ".repeat(20)
+ const rows=provisions(dir,Array.from({length:200},(_,index)=>`Initial provision ${index+1}. ${filler}`))
+ const edited=[...rows.slice(0,5),...rows.slice(195)],first=edited[0]!.pid,last=edited.at(-1)!.pid
+ writeLeanText(dir,"d1/changes.json",JSON.stringify({...changes(edited.map((row,index)=>op(row,`Earlier correction ${index+1}.`))),explanations:[first,last].map((pid,index)=>({id:`i${index+1}`,pid,reason:`Initial revision explanation ${index+1}.`,sources:support}))}))
+ save(dir,inputs([{id:"whole",pids:rows.map(row=>row.pid)}],[changes(edited.map((row,index)=>op(row,`Prepared correction ${index+1}.`)))]))
+ const model=echo(pid=>edited.some(row=>row.pid===pid),[first,last])
+ const port={...model.port,prompt:async(input:Parameters<typeof model.port.prompt>[0])=>{if(input.text.includes(`"pid":"${first}"`))await Bun.sleep(25);return model.port.prompt(input)}}
+ const result=await reconcile(dir,port)
+ expect(result.status).toBe("done");expect(model.prompts).toHaveLength(2)
+ expect(readChangeList(dir,"d1")!.explanations!.map(row=>[row.id,row.pid])).toEqual([["i1",first],["i2",last]])
+})
+const splitFiller="The supplier keeps the delivery schedule under review. ".repeat(7).trim()
+function splitGoal(dir: string, extra = 0, adjust: (earlier: ChangeList, prepared: ChangeList, first: { pid: string; sha256: string }) => void = () => {}) {
+ const filler=splitFiller
+ const rows=provisions(dir,Array.from({length:40+extra},(_,index)=>`Initial provision ${index+1}. ${filler}`)),goal=rows.slice(0,40)
+ const earlier=changes(goal.map((row,index)=>op(row,`Earlier correction ${index+1}. ${filler}`))),prepared=changes(goal.map((row,index)=>op(row,`Prepared correction ${index+1}. ${filler}`)))
+ adjust(earlier,prepared,goal[0]!)
+ writeLeanText(dir,"d1/changes.json",JSON.stringify(earlier))
+ save(dir,inputs([{id:"whole",pids:goal.map(row=>row.pid)}],[prepared]))
+ return rows
+}
+function dependent(pid: string, on: string, reporter = pid) {
+ return scriptedModel({"lean-changes":prompt=>{const listed=targets(prompt),reports=listed.includes(reporter);return JSON.stringify({amendments:listed.filter(row=>!reports||row!==pid).map(row=>({pid:row,updated:`Reconciled correction for ${row}.`,reason:"Combined supported effect.",sources:support})),questions:[],dependencies:reports?[{pid,depends_on:[on],issue:"The renamed term must match the definition reconciled elsewhere."}]:[]})}})
+}
+test("a sliced job's dependency on another slice of the same goal withholds that change and keeps its earlier one instead of failing",async()=>{
+ const dir=matter(),rows=splitGoal(dir),model=dependent(rows[0]!.pid,rows[39]!.pid),result=await reconcile(dir,model.port)
+ expect(result.status).toBe("done");expect(model.prompts.length).toBeGreaterThan(1)
+ expect(model.prompts.every(prompt=>prompt.text.includes('"depends_on"'))).toBe(true)
+ const accepted=readChangeList(dir,"d1")!
+ expect(accepted.amendments.map(row=>[row.pid,row.updated])).toEqual(rows.map((row,index)=>[row.pid,index?`Reconciled correction for ${row.pid}.`:`Earlier correction 1. ${splitFiller}`]))
+ expect(accepted.withheld!.map(row=>[row.amendment.pid,row.amendment.updated,row.issues])).toEqual([[rows[0]!.pid,`Prepared correction 1. ${splitFiller}`,[expect.stringContaining("depends on another paragraph of the same edit")]]])
+ expect(accepted.withheld![0]!.issues[0]).toContain('It depends on the paragraph beginning "Initial provision 40. The supplier keeps the delivery…". Reason given: The renamed term must match the definition reconciled elsewhere.')
+ expect(accepted.withheld![0]!.issues[0]).not.toContain(rows[39]!.pid)
+ for(const prompt of model.prompts)expect(prompt.text).not.toContain("dependencies holds a newly discovered cross-component dependency")
+ expect("openItems" in result&&result.openItems.filter(item=>item.kind==="unapplied_amendment").map(item=>item.ref.pid)).toEqual([rows[0]!.pid])
+})
+test("a sliced job's dependency outside its own goal still stops the run",async()=>{
+ const dir=matter(),rows=splitGoal(dir,1),before=JSON.stringify(readChangeList(dir,"d1"))
+ const result=await reconcile(dir,dependent(rows[0]!.pid,rows[40]!.pid).port)
+ expect(result.status).toBe("failed");expect(JSON.stringify(readChangeList(dir,"d1"))).toBe(before)
+})
+test("a sliced job cannot defer a paragraph that has no new change to withhold; the run stops instead of losing the report",async()=>{
+ const shapes:[string,Parameters<typeof splitGoal>[2],boolean][]=[
+  ["no candidate",(earlier,prepared)=>{earlier.amendments.shift();prepared.amendments.shift()},false],
+  ["earlier change only",(_,prepared)=>{prepared.amendments.shift()},false],
+  ["prepared change equal to the earlier one",(earlier,prepared)=>{prepared.amendments[0]={...earlier.amendments[0]!}},false],
+  ["earlier withheld row only",(earlier,prepared,first)=>{earlier.amendments.shift();prepared.amendments.shift();earlier.withheld=[{amendment:op(first,"Unverified intent."),issues:["Source support unresolved."]}]},false],
+  ["paragraph listed in another job",()=>{},true],
+ ]
+ for(const [name,adjust,elsewhere] of shapes){
+  const dir=matter(),rows=splitGoal(dir,0,adjust),before=JSON.stringify(readChangeList(dir,"d1"))
+  const model=elsewhere?dependent(rows[39]!.pid,rows[38]!.pid,rows[0]!.pid):dependent(rows[0]!.pid,rows[39]!.pid)
+  const result=await reconcile(dir,model.port)
+  expect([name,result.status]).toEqual([name,"failed"]);expect(JSON.stringify(readChangeList(dir,"d1"))).toBe(before)
+ }
+})
+test("a sliced job's deferred paragraph with only a prepared change has it withheld, not applied",async()=>{
+ const dir=matter(),rows=splitGoal(dir,0,earlier=>{earlier.amendments.shift()}),result=await reconcile(dir,dependent(rows[0]!.pid,rows[39]!.pid).port)
+ expect(result.status).toBe("done")
+ const accepted=readChangeList(dir,"d1")!
+ expect(accepted.amendments.some(row=>row.pid===rows[0]!.pid)).toBe(false)
+ expect(accepted.withheld!.map(row=>[row.amendment.pid,row.amendment.updated])).toEqual([[rows[0]!.pid,`Prepared correction 1. ${splitFiller}`]])
+})
+test("a sliced job's deferred paragraph keeps its earlier withheld row once beside the new one",async()=>{
+ const dir=matter(),rows=splitGoal(dir,0,(earlier,_,first)=>{earlier.withheld=[{amendment:op(first,"Unverified intent."),issues:["Source support unresolved."]}]})
+ const result=await reconcile(dir,dependent(rows[0]!.pid,rows[39]!.pid).port)
+ expect(result.status).toBe("done")
+ expect(readChangeList(dir,"d1")!.withheld!.map(row=>[row.amendment.updated,row.issues.length])).toEqual([["Unverified intent.",1],[`Prepared correction 1. ${splitFiller}`,1]])
+})
+test("a paragraph too large for one bounded step keeps its earlier retained-initial disposition",async()=>{
+ const dir=matter(),rows=provisions(dir,["Initial provision 1.",tooLong]),long=rows[1]!
+ const retained={pid:long.pid,reason:"The source supports the initial provision.",sources:support}
+ writeLeanText(dir,"d1/changes.json",JSON.stringify({...changes([op(rows[0]!,"Earlier first correction.")]),retained_initial:[retained]}))
+ save(dir,inputs([{id:"one",pids:rows.map(row=>row.pid)}],[changes([op(rows[0]!,"New first correction."),op(long,"New shortened provision.")])]))
+ const result=await reconcile(dir,echo().port),accepted=readChangeList(dir,"d1")!
+ expect(result.status).toBe("done");expect(accepted.retained_initial).toEqual([retained])
+ expect(accepted.withheld!.map(row=>[row.amendment.pid,row.amendment.updated])).toEqual([[long.pid,"New shortened provision."]])
+})
+test("failure reasons list jobs in document order whichever job fails first",async()=>{
+ const dir=matter(),filler="The supplier keeps the delivery schedule under review. ".repeat(7)
+ const rows=provisions(dir,Array.from({length:200},(_,index)=>`Initial provision ${index+1}. ${filler}`)),first=rows[0]!.pid
+ writeLeanText(dir,"d1/changes.json",JSON.stringify(changes(rows.map((row,index)=>op(row,`Earlier correction ${index+1}. ${filler}`)))))
+ save(dir,inputs([{id:"whole",pids:rows.map(row=>row.pid)}],[changes(rows.map((row,index)=>op(row,`Prepared correction ${index+1}. ${filler}`)))]))
+ const model=scriptedModel({"lean-changes":()=>JSON.stringify({amendments:[],questions:[],dependencies:["The change depends on another document."]})})
+ const port={...model.port,prompt:async(input:Parameters<typeof model.port.prompt>[0])=>{if(input.text.includes(`"pid":"${first}"`))await Bun.sleep(25);return model.port.prompt(input)}}
+ const result=await reconcile(dir,port)
+ expect(result.status).toBe("failed")
+ const parts=[...((result as {reason:string}).reason.matchAll(/whole part (\d+) of/g))].map(match=>Number(match[1]))
+ expect(parts.length).toBeGreaterThan(2);expect(parts).toEqual(parts.toSorted((a,b)=>a-b))
+})
+test("a deferred change's reported reasons name other paragraphs by their opening words, never by id",async()=>{
+ const dir=matter(),rows=splitGoal(dir),[first,before,last]=[rows[0]!.pid,rows[38]!.pid,rows[39]!.pid]
+ const model=scriptedModel({"lean-changes":prompt=>{const listed=targets(prompt),reports=listed.includes(first);return JSON.stringify({amendments:listed.filter(row=>!reports||row!==first).map(row=>({pid:row,updated:`Reconciled correction for ${row}.`,reason:"Combined supported effect.",sources:support})),questions:[],dependencies:reports?[{pid:first,depends_on:[last],issue:`Term must match ${last}.`},{pid:first,depends_on:[before],issue:`Cross-reference to ${before} moves.`}]:[]})}})
+ const result=await reconcile(dir,model.port),reason=readChangeList(dir,"d1")!.withheld![0]!.issues[0]!
+ expect(result.status).toBe("done");expect(reason).not.toMatch(/p[0-9a-f]{12}/)
+ expect(reason).toContain('Reason given: Term must match the paragraph beginning "Initial provision 40. The supplier keeps the delivery…"; Cross-reference to the paragraph beginning "Initial provision 39. The supplier keeps the delivery…" moves.')
+})

@@ -166,10 +166,25 @@ test("each stage run is one row that updates in place, in plain words, with its 
 test("a settled or stalled run says in one line where it stands and how the lawyer moves it on", () => {
   expect(runOutcome(running)).toBeUndefined()
   expect(runOutcome(done)).toEqual({ tone: "done", text: "Drafting is complete." })
+  // A question Decide for me can take says the lawyer may answer it or leave it
+  // to the drafter; one it cannot (a later scope question) only the lawyer answers.
   expect(runOutcome(question)).toEqual({
     tone: "attention",
-    text: "Drafting is waiting on a question only you can answer.",
+    text: "Drafting is waiting on a question: answer it, or use Decide for me to leave it to the drafter.",
   })
+  const asked = question.questions[0]!
+  const withQuestions = (...ids: string[]) => lean({ ...question, questions: ids.map((id) => ({ ...asked, id })) })
+  expect(runOutcome(withQuestions("package-scope-1"))?.text).toBe("Drafting is waiting on a question only you can answer.")
+  expect(runOutcome(withQuestions("q-1", "q-2"))?.text).toBe(
+    "Drafting is waiting on 2 questions: answer each, or use Decide for me to leave any of them to the drafter.",
+  )
+  expect(runOutcome(withQuestions("q-1", "package-scope-1"))?.text).toBe(
+    "Drafting is waiting on 2 questions: answer each, or use Decide for me to leave one of them to the drafter.",
+  )
+  const runKey = `run:blocked:${question.updated_at}`
+  expect(
+    buildExcerpt({ status: question, plan: { keys: [runKey], focus: runKey, reason: "checkpoint" }, activity: [], now: 0 }),
+  ).toContain("- The run settled: Drafting is waiting on a question: answer it, or use Decide for me to leave it to the drafter.")
   const answered = lean({
     ...question,
     questions: question.questions.map((row) => ({ ...row, status: "answered" })),
@@ -477,6 +492,18 @@ test("the timeline hangs each stage's activity from its row, rolls up finished s
   expect([elapsed(45_000), elapsed(252_000), elapsed(3_780_000)]).toEqual(["45s", "4m 12s", "1h 3m"])
 })
 
+test("an update written while the run was paused is marked past once the run resumes", () => {
+  const paused = narrationNote("n1", "question:q-4cc92c7c73", `run:blocked:${question.updated_at}`)
+  const progress = narrationNote("n2", "d1.draft:progress:1:0")
+  const kinds = (status: LeanDraftingStatus) =>
+    narrationTimeline([], [paused, progress], false, [], status).flatMap((block) => (block.kind === "note" ? [!!block.past] : []))
+  // Still blocked on the same question: the update is current.
+  expect(kinds(question)).toEqual([false, false])
+  // Resumed (running, question answered): the stop update is history; progress is not a stop.
+  expect(kinds(running)).toEqual([true, false])
+  expect(kinds(done)).toEqual([true, false])
+})
+
 test("narrator history pairs each update with the checkpoints its prompt recorded", () => {
   expect(narratorTitle("ses_child1")).toBe("doc.haus narrator · ses_child1")
   const messages = [
@@ -502,6 +529,7 @@ test("after a reload the run's own conversation shows the request, where the run
     narrating: false,
     failed: false,
     onForeignPart: () => {},
+    acceptsSession: () => false,
   }
   const render = (value: typeof narration, showRequest: boolean) =>
     renderToStaticMarkup(
@@ -656,3 +684,7 @@ test("parallel stage sessions retain every worker with singular status compatibi
   expect(notes.text.length).toBeLessThan(1800)
   expect(notes.reasoning.length).toBeLessThan(1000)
 })
+
+function narrationNote(id: string, ...keys: string[]) {
+  return { id, at: Number(id.slice(1)), text: `Drafting is stopped pending your answers (${id}).`, keys }
+}

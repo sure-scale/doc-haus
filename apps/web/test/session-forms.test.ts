@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test"
-import { OpenCode } from "@opencode/client"
+import { OpenCode, type FormInfo } from "@opencode/client"
 
 test("native session forms carry directory, answer selections and dismissal through their own APIs", async () => {
   const requests: { method: string; path: string; directory: string | null; body?: unknown }[] = []
-  const form = {
+  const form: FormInfo = {
     id: "form-intake",
     sessionID: "session-library",
     title: "Questions",

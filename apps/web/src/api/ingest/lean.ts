@@ -56,10 +56,14 @@ export type LeanQuestion = {
   context: string
   status: "open" | "answered"
   answer?: string
+  /** The lawyer handed this question back for the drafting to decide: it is
+   * answered with no answer text, and the review draft says what was chosen. */
+  answer_kind?: "decide_for_me"
 }
 
 export type LeanDocument = {
-  kind: "body" | "redline" | "drafting_notes" | "drafting_notes_markdown"
+  /** "combined": a combined document's one file, saved in the matter at delivery. */
+  kind: "body" | "redline" | "drafting_notes" | "drafting_notes_markdown" | "combined"
   /** Planned document id ("d1"...); null for the drafting notes, which cover the run. */
   document: string | null
   title: string | null
@@ -93,6 +97,9 @@ export type LeanDraftingStatus = {
   pending_requests: number
   /** Answers durably received, waiting for the coordinator to consume them. */
   queued_answer_ids?: string[]
+  /** The queued_answer_ids whose request is a hand-back (Decide for me) rather
+   * than answer text; absent from an older ingest. */
+  queued_handed_back_ids?: string[]
   updates?: { kind?: "clarification"; id: string; text: string; status: "queued" | "included"; progress?: "received" | "applying" | "applied" | "requires-rework" }[]
   open_items: LeanOpenItem[]
   questions: LeanQuestion[]
@@ -119,12 +126,13 @@ export type LeanDraftingStatus = {
    * drafting notes are written and delivered as; null when none was requested,
    * absent from an older ingest. */
   memo?: string | null
-  /** The one file (`file`, "<name>.docx") a combined document is delivered as:
-   * the requested memo, then the body. `document` is the planned document's id,
-   * and `body` and `notes` the exact names its two parts are registered under
-   * (the body as "<name> - clean" or its next free name). Ingest reports it only
-   * once both parts are delivered and composes it on each download, so it is
-   * never a matter file; null otherwise, absent from an older ingest. */
+  /** The one file (`file`, "<name>.docx" or its next free name) a combined
+   * document is delivered as: the requested memo, then the body. `document` is
+   * the planned document's id, and `body` and `notes` the exact names its two
+   * parts are registered under (the body as "<name> - clean" or its next free
+   * name). Ingest reports it only once both parts are delivered; the file is
+   * saved in the matter at delivery and rebuilt when a change is accepted into
+   * a part. Null otherwise, absent from an older ingest. */
   combined_output?: { document: string; name: string; file: string; body: string; notes: string } | null
   /** The lawyer's drafting request as the run recorded it. */
   request?: string | null
@@ -252,17 +260,39 @@ export async function stopLeanDraftingRun(matterId: string, ownerSessionID: stri
   return body as LeanDraftingStopped
 }
 
-export async function answerLeanQuestion(
+export function answerLeanQuestion(matterId: string, questionID: string, answer: string) {
+  return postLeanQuestion(matterId, questionID, { answer }, "Failed to send the answer")
+}
+
+/** Hands an open question the run's model asked back for the drafting to
+ * decide; the review draft then says what was chosen and why. */
+export function decideLeanQuestion(matterId: string, questionID: string) {
+  return postLeanQuestion(matterId, questionID, { decide_for_me: true }, "Failed to hand the question back")
+}
+
+// Ingest's 409 codes for a question that cannot take this request, in the lawyer's words.
+const QUESTION_REFUSALS: Record<string, string> = {
+  not_delegable: "This question needs your own answer. It can't be left to the drafter.",
+  already_answered: "This question is already answered.",
+}
+
+async function postLeanQuestion(
   matterId: string,
   questionID: string,
-  answer: string,
+  body: { answer: string } | { decide_for_me: true },
+  fallback: string,
 ): Promise<LeanDraftingQueued> {
   const res = await fetch(`${INGEST_URL}/matters/${matterId}/lean/questions/${encodeURIComponent(questionID)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ answer }),
+    body: JSON.stringify(body),
   })
-  return leanQueued(res, "Failed to send the answer")
+  if (res.status === 409) {
+    const refusal: unknown = await res.clone().json().catch(() => undefined)
+    const message = record(refusal) && typeof refusal.code === "string" ? QUESTION_REFUSALS[refusal.code] : undefined
+    if (message) throw new Error(message)
+  }
+  return leanQueued(res, fallback)
 }
 
 /** Ask the run to compare one explicitly selected requirement with the full draft. */

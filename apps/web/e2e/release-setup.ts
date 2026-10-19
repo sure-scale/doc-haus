@@ -5,10 +5,11 @@ import path from "node:path"
 import { DEFAULT_DRAFTING } from "../../../dochaus/lib/drafting-preferences"
 import { OFFICIAL_SOURCE_HOSTS, OFFICIAL_SOURCE_SUFFIXES } from "../../../dochaus/lib/research-sources"
 
-const { chromium, expect } = await import(process.env.PLAYWRIGHT_MODULE ?? "@playwright/test")
+const { chromium, expect } = (await import(process.env.PLAYWRIGHT_MODULE ?? "@playwright/test")) as typeof import("@playwright/test")
 const baseURL = process.env.PLAYWRIGHT_BASE_URL
 const evidence = process.env.DOCHAUS_EVIDENCE_DIR
 if (!baseURL || !evidence) throw new Error("Set PLAYWRIGHT_BASE_URL and DOCHAUS_EVIDENCE_DIR.")
+const appOrigin = new URL(baseURL).origin
 await mkdir(evidence, { recursive: true })
 const browser = await chromium.launch({ headless: true, executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE })
 const steps = ["models", "research", "details"]
@@ -33,12 +34,12 @@ async function open(state: ReturnType<typeof fixture>) {
   page.setDefaultTimeout(10000)
   const errors: string[] = []
   page.on("pageerror", (error: Error) => errors.push(error.message))
-  await page.route("**/*", async (route: { request: () => { url: () => string; method: () => string; postData: () => string | null }; fulfill: (value: unknown) => Promise<void>; continue: () => Promise<void>; abort: () => Promise<void> }) => {
+  await page.route("**/*", async route => {
     const request = route.request()
     const url = new URL(request.url())
     const pathname = url.pathname.replace(/^\/ingest(?=\/)/, "").replace(/^\/engine(?=\/api\/)/, "")
     const api = pathname.startsWith("/api/") || ["/auth/reuse", "/setup", "/engine/config", "/preferences", "/matters", "/jurisdictions", "/updates", "/host/gcp-projects", "/host/aws-profiles", "/host/probe-vertex"].includes(pathname) || pathname.startsWith("/matters/") || pathname.startsWith("/research/")
-    if (!api && url.origin === new URL(baseURL).origin) return route.continue()
+    if (!api && url.origin === appOrigin) return route.continue()
     if (!api) { state.unexpected.push(request.url()); return route.abort() }
     if (request.method() === "OPTIONS") return route.fulfill({ status: 204, headers: { "access-control-allow-origin": "*", "access-control-allow-headers": "*", "access-control-allow-methods": "*" } })
     const method = request.method()
@@ -123,7 +124,7 @@ async function open(state: ReturnType<typeof fixture>) {
     state.unexpected.push(`${method} ${pathname}`)
     return reply({ error: "Unexpected fixture request" }, 501)
   })
-  await page.goto(baseURL)
+  await page.goto(baseURL!)
   return { page, context, errors }
 }
 async function accept(page: Awaited<ReturnType<typeof open>>["page"]) { await page.getByRole("button", { name: "I accept", exact: true }).click(); await expect(page.getByRole("dialog", { name: "Let's get you set up" })).toBeVisible() }

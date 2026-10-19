@@ -6,6 +6,9 @@ import { inspectParserCapabilities } from "../../../services/ingest/src/parser-c
 import { parserCapabilitiesRoutes } from "../../../services/ingest/src/parser-capabilities-route"
 import { getParserCapabilities } from "../src/api/parser-capabilities"
 
+// Bun's fetch type also carries preconnect; keep it so a stub is a whole fetch.
+const stubFetch = (respond: () => Promise<Response>): typeof fetch => Object.assign(respond, { preconnect: fetch.preconnect })
+
 test("web client uses the isolated product Hono GET and preserves unknown observations", async () => {
   const directory = mkdtempSync(path.join(tmpdir(), "parser-inventory-web-"))
   const calls: Request[] = []
@@ -41,13 +44,13 @@ test("web client rejects unsupported schemas, fabricated capacity and invalid co
     { ...snapshot, components: snapshot.components.map(component => component.id === "uvx" ? { ...component, status: "ready" } : component) },
   ]
   for (const response of invalid)
-    await expect(getParserCapabilities({ fetch: (async () => Response.json(response)) as typeof fetch })).rejects.toThrow("unsupported inventory response")
-  await expect(getParserCapabilities({ fetch: (async () => new Response("not JSON")) as typeof fetch })).rejects.toThrow("unsupported inventory response")
+    await expect(getParserCapabilities({ fetch: stubFetch(async () => Response.json(response)) })).rejects.toThrow("unsupported inventory response")
+  await expect(getParserCapabilities({ fetch: stubFetch(async () => new Response("not JSON")) })).rejects.toThrow("unsupported inventory response")
 })
 
 test("web client reports an unavailable endpoint without presenting empty capabilities", async () => {
-  await expect(getParserCapabilities({ fetch: (async () => new Response("private error context", { status: 503 })) as typeof fetch })).rejects.toThrow("The ingestion host inventory is unavailable.")
-  await expect(getParserCapabilities({ fetch: (async () => { throw new Error("private network detail") }) as typeof fetch })).rejects.toThrow("The ingestion host inventory is unavailable.")
+  await expect(getParserCapabilities({ fetch: stubFetch(async () => new Response("private error context", { status: 503 })) })).rejects.toThrow("The ingestion host inventory is unavailable.")
+  await expect(getParserCapabilities({ fetch: stubFetch(async () => { throw new Error("private network detail") }) })).rejects.toThrow("The ingestion host inventory is unavailable.")
 })
 
 test("web client forwards cancellation and makes one request without retrying", async () => {

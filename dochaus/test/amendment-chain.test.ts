@@ -50,8 +50,8 @@ test("reports chain with verbatim recital and per-amender Operates on line", asy
   const { dir, db } = matter()
   db.run("INSERT INTO documents (doc_path, name, created_at) VALUES (?, ?, ?)", ["/m/base.docx", "Original Agreement", 1])
   db.run("INSERT INTO documents (doc_path, name, created_at) VALUES (?, ?, ?)", ["/m/am1.docx", "Amendment No. 1", 2])
-  db.run("INSERT INTO chunks (doc_path, section, text, char_start, char_end) VALUES (?, ?, ?, ?, ?)", ["/m/am1.docx", "", "Amendment No. 1 to the Original Agreement dated 2026-01-01.", 0, 60])
-  db.run("INSERT INTO doc_relations (doc_path, doc_name, relation, target_name, char_start, char_end) VALUES (?, ?, ?, ?, ?, ?)", ["/m/am1.docx", "Amendment No. 1", "amends", "Original Agreement", 0, 60])
+  db.run("INSERT INTO chunks (doc_path, section, text, char_start, char_end) VALUES (?, ?, ?, ?, ?)", ["/m/am1.docx", "", "Amendment No. 1 to the Original Agreement dated 2026-01-01.", 0, 59])
+  db.run("INSERT INTO doc_relations (doc_path, doc_name, relation, target_name, char_start, char_end) VALUES (?, ?, ?, ?, ?, ?)", ["/m/am1.docx", "Amendment No. 1", "amends", "Original Agreement", 0, 59])
   db.run("INSERT INTO section_ops (doc_path, doc_name, section_label, operation, char_start, char_end) VALUES (?, ?, ?, ?, ?, ?)", ["/m/am1.docx", "Amendment No. 1", "4", "restate", 100, 200])
   db.run("INSERT INTO section_ops (doc_path, doc_name, section_label, operation, char_start, char_end) VALUES (?, ?, ?, ?, ?, ?)", ["/m/am1.docx", "Amendment No. 1", "7", "delete", 300, 400])
   db.close()
@@ -61,6 +61,7 @@ test("reports chain with verbatim recital and per-amender Operates on line", asy
   expect(result).toMatch(/Amendment No. 1 amends "Original Agreement"/)
   expect(result).toMatch(/Recital .*"Amendment No. 1 to the Original Agreement/)
   expect(result).toMatch(/Operates on:.*§4 \(restate\).*§7 \(delete\)/)
+  expect(result).toContain("Read Amendment No. 1 first — it is the most recently indexed amending document.")
 })
 
 test("omits Operates on line when amender has no section_ops", async () => {
@@ -89,4 +90,37 @@ test("document arg filters to chains that involve that document", async () => {
 
   const miss = await tool.execute({ document: "Nonexistent" }, ctxFor(dir))
   expect(miss).toMatch(/No extracted amendment relationship involves "Nonexistent"/)
+})
+
+// The amendment states its base as "Lease"; the base file is named differently.
+function seedUnmatchedBase(db: Database) {
+  db.run("INSERT INTO documents (doc_path, name, created_at) VALUES (?, ?, ?)", ["/m/lease-executed.docx", "Lease (executed).docx", 1])
+  db.run("INSERT INTO documents (doc_path, name, created_at) VALUES (?, ?, ?)", ["/m/am1.docx", "Amendment No. 1.docx", 2])
+  db.run("INSERT INTO chunks (doc_path, section, text, char_start, char_end) VALUES (?, ?, ?, ?, ?)", ["/m/am1.docx", "", "Amendment No. 1 to the Lease.", 0, 29])
+  db.run("INSERT INTO doc_relations (doc_path, doc_name, relation, target_name, char_start, char_end) VALUES (?, ?, ?, ?, ?, ?)", ["/m/am1.docx", "Amendment No. 1.docx", "amends", "Lease", 0, 29])
+}
+
+test("a document name that matches nothing lists the chains whose stated base was not matched", async () => {
+  const { dir, db } = matter()
+  seedUnmatchedBase(db)
+  db.close()
+
+  const result = await tool.execute({ document: "Lease (executed).docx" }, ctxFor(dir))
+  expect(result).not.toMatch(/^No extracted amendment relationship involves/)
+  expect(result).toContain('No extracted amendment relationship names "Lease (executed).docx"')
+  expect(result).toContain('Chain: "Lease" (as stated; not matched to any indexed document) is amended')
+  expect(result).toContain('Amendment No. 1.docx amends "Lease"')
+})
+
+test("an unmatched base qualifies which document to read first", async () => {
+  const { dir, db } = matter()
+  seedUnmatchedBase(db)
+  db.close()
+
+  const result = await tool.execute({}, ctxFor(dir))
+  expect(result).not.toContain("Read Amendment No. 1.docx first")
+  expect(result).toContain(
+    "Among the documents listed, Amendment No. 1.docx is the most recently indexed amending document. " +
+      "The base was not matched to an indexed document, so an amendment that states it differently may be listed under another chain.",
+  )
 })

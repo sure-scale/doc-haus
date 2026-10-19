@@ -6,6 +6,7 @@ import { MatterDocumentIdentityError, resolveMatterDocumentTarget } from "./docu
 import { matterDocumentName } from "./ingest"
 import { writeSourceArtifacts } from "./source-artifacts"
 import { workingDocxKey } from "../../../dochaus/lib/working-docx"
+import { forgetSystemDocx } from "../../../dochaus/lib/system-docx"
 import {
   beginDocumentMutation,
   completeDocumentMutation,
@@ -41,6 +42,7 @@ export async function deleteMatterDocument(matterDir: string, requestedName: str
           try {
             deleteDocument(db, target.docPath)
             db.run("DELETE FROM meta WHERE key = ?",[workingDocxKey(matterDir,target.docPath)])
+            forgetSystemDocx(db, matterDir, target.docPath)
             recordDocumentMutationCommit(db, mutation)
             db.run("COMMIT")
           } catch (error) {
