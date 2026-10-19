@@ -427,7 +427,7 @@ export function disclosableItems(directory: string): OpenItem[] {
  * writes its notes again before its gate. */
 export function handedBackItems(directory: string): OpenItem[] {
   return readQuestions(directory).filter(handedBack).map(question => openItem("finalize", "left_to_drafter",
-    `You left this question to the drafter to decide: ${question.question.trim()} ` +
+    `You left this question to the drafter to decide: ${question.question.trim().replace(/(?<![.!?])$/, ".")} ` +
     "The drafting notes give the choice made, the reason and the alternative not taken, or say why the point stays open. A choice made is for you to confirm; a point left open needs your answer.",
     { repair_target: "memo", question_id: question.id }))
 }

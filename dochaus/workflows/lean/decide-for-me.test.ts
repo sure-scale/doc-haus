@@ -450,6 +450,9 @@ test("the disclosure item tells the lawyer where the choice is and what each out
   // A spine that leaves the question open yields the same item, id included.
   writeLeanText(directory, "spine.json", JSON.stringify(spine({ ...CHOICE, kind: "open-item" })))
   expect(handedBackItems(directory)).toEqual([item!])
+  // A question without end punctuation still ends its own sentence.
+  writeQuestions(directory, [{ id: "q-late", stage: "intake", question: "Deposit of £70,000 or £75,000 ", context: "", status: "answered", answer_kind: "decide_for_me", answered_at: "2026-10-18T09:05:00.000Z" }])
+  expect(handedBackItems(directory)[0]!.detail).toStartWith("You left this question to the drafter to decide: Deposit of £70,000 or £75,000. The drafting notes give")
 })
 
 // The lawyer leaves a point to the drafter, never "to the drafting": every
