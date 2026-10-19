@@ -226,7 +226,18 @@ test("disclosure fields are optional typed finding fields, each named once in th
 test("a hand-back row carries its one meaning beside the input of every checklist job that sees it", () => {
   const handed = handedBackRef("q-2", " Which figure applies? ")
   expect(handed).toEqual({ document: "request", locator: ".dochaus/lean/questions.json decide_for_me (q-2) on the question: Which figure applies?", quote: "Decide for me" })
-  expect(HANDED_BACK_MEANING.trim().split(/\s+/).length).toBeLessThanOrEqual(60)
+  expect(HANDED_BACK_MEANING.trim().split(/\s+/).length).toBeLessThanOrEqual(96)
+  // The scope is pinned phrase by phrase in a built prompt: the hand-back settles
+  // only its own choice, for the lawyer's party, and every other check still runs.
+  const shown = buildChecklistCheckerPrompt({ ...packet, settled_instructions: [handed] })
+  for (const phrase of [
+    "for the party the lawyer acts for",
+    "Unless the lawyer has answered it, that settles only the choice between that question's alternatives;",
+    "the chosen alternative is still checked against every other instruction, source, playbook item and legal requirement.",
+    "state one alternative, or, where the sources cannot support one, leave it as a disclosed open point;",
+    "is not required by the hand-back.",
+  ]) expect(shown).toContain(phrase)
+  expect(shown).not.toContain("until the lawyer answers")
   const once = (prompt: string, input: string) => {
     expect(prompt.split(HANDED_BACK_MEANING)).toHaveLength(2)
     expect(prompt).toContain(`${HANDED_BACK_MEANING}\n\n${input}:`)

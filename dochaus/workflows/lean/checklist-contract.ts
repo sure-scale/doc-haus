@@ -151,9 +151,10 @@ function isHandedBackRef(ref: ChecklistSourceReference) {
 }
 /** What a hand-back means, written once in code: each prompt that shows a
  * hand-back row, or the hand-backs' block, carries it beside them. */
-export const HANDED_BACK_MEANING = "\"Decide for me\" directs the drafting to choose one alternative on its question and settles it for the requested documents until the lawyer answers. " +
-  "The documents must state one alternative clearly and consistently and the notes give the choice, its reason and the alternative not taken. " +
-  "Keeping both alternatives, a precedence clause or marker on that point is not required."
+export const HANDED_BACK_MEANING = "\"Decide for me\" directs the drafting to make its question's choice for the party the lawyer acts for. " +
+  "Unless the lawyer has answered it, that settles only the choice between that question's alternatives; the chosen alternative is still checked against every other instruction, source, playbook item and legal requirement. " +
+  "The documents must state one alternative, or, where the sources cannot support one, leave it as a disclosed open point; the notes give the choice, reason and alternative not taken. " +
+  "Keeping both alternatives, a precedence clause or marker on that point is not required by the hand-back."
 /** The meaning, before a job input that shows a hand-back row; nothing otherwise. */
 function handedBackMeaning(refs: readonly ChecklistSourceReference[]) {
   return refs.some(isHandedBackRef) ? [HANDED_BACK_MEANING] : []
