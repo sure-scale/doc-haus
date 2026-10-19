@@ -76,6 +76,60 @@ test("a same-name source upload is refused unless the caller chooses replace or 
   })
 }, 90_000)
 
+// A file already in the matter folder but never registered (copied in by hand,
+// say) is refused like a source, so no existing file is overwritten silently.
+test("a same-name upload is refused when the file is on disk but not registered", async () => {
+  await withMatter("Unregistered files", async ({ matter, upload, stored, role }) => {
+    const loose = await docx("Loose marker")
+    const theirs = await docx("Their marker")
+    await writeFile(path.join(matter.dir, "Agreement.docx"), loose)
+    expect(role("Agreement.docx")).toBeNull()
+
+    const refused = await upload("Agreement.docx", theirs)
+    expect(refused.status).toBe(409)
+    expect(await refused.json()).toEqual({ error: expect.any(String), code: "source_exists", name: "Agreement.docx" })
+    if (process.platform === "darwin" || process.platform === "win32")
+      expect(await (await upload("AGREEMENT.DOCX", theirs)).json()).toMatchObject({ code: "source_exists", name: "Agreement.docx" })
+    expect(await stored("Agreement.docx")).toEqual(loose)
+
+    const kept = await upload("Agreement.docx", theirs, "keep-both")
+    expect((await kept.json() as { name: string }).name).toBe("Agreement (2).docx")
+    expect(await stored("Agreement.docx")).toEqual(loose)
+    expect((await upload("Agreement.docx", theirs, "replace")).status).toBe(200)
+    expect(await stored("Agreement.docx")).toEqual(theirs)
+    expect(role("Agreement.docx")).toBe("source")
+  })
+}, 90_000)
+
+// macOS Finder can name a file in decomposed Unicode (NFD) while the matter holds
+// the composed (NFC) spelling; APFS treats both as one file, so the upload is
+// refused without a choice, and keep both stores it under a genuinely free name.
+test.skipIf(process.platform !== "darwin")("a decomposed upload name clashes with its composed source", async () => {
+  await withMatter("Unicode names", async ({ matter, upload, stored }) => {
+    const composed = "Caf\u00e9.docx"
+    const decomposed = "Cafe\u0301.docx"
+    const ours = await docx("Our marker")
+    const theirs = await docx("Their marker")
+    expect((await upload(composed, ours)).status).toBe(200)
+
+    const refused = await upload(decomposed, theirs)
+    expect(refused.status).toBe(409)
+    expect(await refused.json()).toMatchObject({ code: "source_exists", name: composed })
+
+    const kept = await upload(decomposed, theirs, "keep-both")
+    const keptName = (await kept.json() as { name: string }).name
+    expect(keptName.normalize("NFC")).toBe("Caf\u00e9 (2).docx")
+    expect(kept.status).toBe(200)
+    expect(await stored(keptName)).toEqual(theirs)
+    expect(await stored(composed)).toEqual(ours)
+    const db = openDb(matter.dir)
+    try {
+      expect((listSourceDocuments(db) as { name: string }[]).map(row => row.name.normalize("NFC")).toSorted())
+        .toEqual([composed, "Caf\u00e9 (2).docx"].toSorted())
+    } finally { db.close() }
+  })
+}, 90_000)
+
 // Converting a PDF never overwrites a document that already holds the .docx
 // name: the conversion is stored under the next free name, which it returns.
 test("a PDF conversion keeps both when its .docx name is already taken", async () => {
