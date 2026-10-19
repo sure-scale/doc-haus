@@ -209,12 +209,12 @@ export function deliveredNotes(directory: string, gate: GateResult): string | un
     "These checklist requirements were not established as satisfied. Each is disclosed with this review draft; none is treated as satisfied."),
   ...section(open, "# Checklist requirements left open",
     "These checklist requirements were left open. Each is disclosed with this review draft; none is treated as satisfied."),
-  ...named("# File names not applied", "These file names in your instructions could not be applied. Each is disclosed with this review draft."), body].join("\n")
+  ...named("# File names not applied", "These names in your instructions could not be applied. Each is disclosed with this review draft."), body].join("\n")
   const memo = body.trimEnd()
   return [...(memo ? [memo, ""] : []),
     ...section(unresolved, "## Requirements not confirmed as met", "These requirements were not confirmed as met in this draft and need the lawyer's review."),
     ...section(open, "## Requirements left open", "These requirements were left open in this draft and need the lawyer's review."),
-    ...named("## File names not applied", "These file names in your instructions could not be applied in this draft.")].join("\n")
+    ...named("## File names not applied", "These names in your instructions could not be applied in this draft.")].join("\n")
 }
 
 /** The drafting notes as the reader gets them: without their "[ref: …]"

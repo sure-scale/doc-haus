@@ -185,11 +185,12 @@ const SPELLING = "the name was not selected exactly as your instructions spell i
 /** Why a withheld row's name was not applied to the file it selects, in plain
  * words that hold whenever the lawyer's words give the name (asked): a row
  * refused for its name's spelling, path or case is one whose name was not
- * selected as they spell it. */
+ * selected as they spell it, unless the name they write holds a folder. */
 function withheldReason(row: WithheldDelivery & { asked_file: string }, memo: boolean) {
   switch (row.cause) {
     case "role": return "it was not settled which file takes the name"
-    case "file": return wordFileName(row.asked_file.trim()) ? SPELLING : "the name is not a usable Word file name"
+    case "file": return /[\\/]/.test(row.asked_file) ? "a file name cannot include a folder"
+      : wordFileName(row.asked_file.trim()) ? SPELLING : "the name is not a usable Word file name"
     case "conflict": return "the name conflicts with another file name chosen for this package"
     case "notes_name": return memo ? "the memo already has the name" : "the drafting notes already have the name"
     case "planned_name": return "another file in this package already has the name"
@@ -256,7 +257,7 @@ export function withheldDeliveryItems(directory: string): OpenItem[] {
     }
     const parts = [...reasons].map(([reason, subjects]) => subjects.length > 1 ? `${listed(subjects)} keep their planned file names because ${reason}`
       : subjects[0] === "the drafting notes" ? `the drafting notes keep their planned file name because ${reason}` : `${subjects[0]} keeps its planned file name because ${reason}`)
-    const detail = `Your instructions mention the file name "${excerpt(group[0].asked_spelling.trim().replace(/[\x00-\x1f\x7f]/g, " "), 120)}", but it was not applied: ${parts.length ? parts.join("; ") : "the name could not be matched to a document in this package"}.`
+    const detail = `Your instructions mention the name "${excerpt(group[0].asked_spelling.trim().replace(/[\x00-\x1f\x7f]/g, " "), 120)}", but it was not applied: ${parts.length ? parts.join("; ") : "the name could not be matched to a document in this package"}.`
     const only = documents.size === 1 && seen.size === 1 ? [...documents][0] : undefined
     return [{ ...openItem("package-review", "omission", detail, only ? { document: only } : {}), status: "disclosed", resolution: WITHHELD_RESOLUTION }]
   })

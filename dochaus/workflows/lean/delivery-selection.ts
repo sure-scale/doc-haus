@@ -91,13 +91,13 @@ export function wordFileName(file: unknown): file is string {
  * instruction its row quotes, whatever else refuses its row: the file name in
  * their spelling (`file`, a title with ".docx" added) and exactly as they write
  * it (`spelling`, a title without it). It is a name nameSpellings finds there,
- * where a name may also start after any mark outside a word but a hyphen or a
- * full stop (ASKED_OPENS), compared with the whole file name, or else with its
- * last path part, case and spaces aside: a folder the lawyer writes is quoted
- * with the name, one only the model gives never is. It says only that their
- * words give the name, not what they meant by it. A name cut short from a
- * longer one, or one only in the model's words, is none. Code only, never a
- * prompt. */
+ * where a name may also start after any mark outside a word but a hyphen, a
+ * full stop, an ampersand or a plus sign (ASKED_OPENS), compared with the
+ * whole file name, or else with its last path part, case and spaces aside: a
+ * folder the lawyer writes is quoted with the name, one only the model gives
+ * never is. It says only that their words give the name, not what they meant
+ * by it. A name cut short from a longer one, or one only in the model's words,
+ * is none. Code only, never a prompt. */
 export function deliveryNameAsked(directory: string, quote: unknown, file: unknown): { file: string; spelling: string } | undefined {
   if (typeof file !== "string" || typeof quote !== "string" || !instructionFound(directory, quote)) return
   const whole = file.trim()
@@ -154,9 +154,10 @@ export const OTHER_FORMAT = /\.(?:doc|docm|dot|dotx|dotm|rtf|odt|wpd|pages|pdf|x
 const WORD = /[\p{L}\p{N}_]/u
 const NAME_OPENS = /["«(\[*`:]/
 /** Where else a name the lawyer asked for (deliveryNameAsked) may start: after
- * any mark outside a word but a hyphen or a full stop, which join it to a
- * longer name; an apostrophe still only outside a word. */
-const ASKED_OPENS = /[^\p{L}\p{N}_\-.']/u
+ * any mark outside a word but a hyphen, a full stop, an ampersand or a plus
+ * sign, which join it to a longer name; an apostrophe still only outside a
+ * word. */
+const ASKED_OPENS = /[^\p{L}\p{N}_\-.'&+]/u
 const NAME_END = /^(?:$|[,;!?:"'»)\]*`]|\.(?:["'»)\]*`]|\s|$)|\s[-–—](?:\s|$))/
 const LINE_END = /^[^\S\r\n]*[\r\n]/
 const NAMING = new RegExp(String.raw`(?:^|[^\p{L}\p{N}_])(?:${NAMING_WORDS}):?\s*(?:\*\*|["'«(\[*\x60])?$`, "u")
