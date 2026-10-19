@@ -110,7 +110,7 @@ test("open items group by kind in first-seen order and cap across groups", () =>
 })
 
 test("a question left to the drafter is listed as a choice left to the drafter, not as a point left out", () => {
-  const left: LeanOpenItem = { ...item("h1", "left_to_drafter", "disclosed"), stage: "finalize", ref: { repair_target: "memo", question_id: "q-1" } }
+  const left: LeanOpenItem = { ...item("h1", "left_to_drafter", "disclosed"), stage: "finalize", ref: { repair_target: "memo", question_id: "q-1" } as LeanOpenItem["ref"] }
   const groups = groupOpenItems([item("o1", "omission", "disclosed"), left])
   expect(groups.map((group) => [group.label, group.items.map((row) => row.id)])).toEqual([
     ["Points left out", ["o1"]],
