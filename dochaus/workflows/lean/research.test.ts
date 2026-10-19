@@ -106,15 +106,15 @@ test("research text the lawyer reads that names an internal workflow file is ret
   expect(named(acceptResearchReply(directory, "research", JSON.stringify({ ...research, findings: [{ ...research.findings[0], limitations: "Only research-context.txt was read." }] })).issues)).toBe(true)
   expect(readLeanText(directory, "research.json")).toBeUndefined()
   expect(acceptResearchReply(directory, "research", JSON.stringify(research)).issues).toEqual([])
-  expect(named(acceptResearchReply(directory, "research-review", JSON.stringify({ approved: ["r1"], rejected: [], limitations: [leak] })).issues)).toBe(true)
-  expect(named(acceptResearchReply(directory, "research-review", JSON.stringify({ approved: [], rejected: [{ id: "r1", reason: `Snapshot .dochaus/research-sources/${research.findings[0]!.snapshot}.json was clipped.` }], limitations: [] })).issues)).toBe(true)
+  expect(named(acceptResearchReply(directory, "research-review", JSON.stringify({ approved: ["r1"], rejected: [], limitations: [leak], gaps: [] })).issues)).toBe(true)
+  expect(named(acceptResearchReply(directory, "research-review", JSON.stringify({ approved: [], rejected: [{ id: "r1", reason: `Snapshot .dochaus/research-sources/${research.findings[0]!.snapshot}.json was clipped.` }], limitations: [], gaps: [] })).issues)).toBe(true)
   expect(readLeanText(directory, "research-review.json")).toBeUndefined()
   // The last attempt keeps the model's words as written rather than failing the run.
-  const final = acceptResearchReply(directory, "research-review", JSON.stringify({ approved: ["r1"], rejected: [], limitations: [leak] }), { final: true })
+  const final = acceptResearchReply(directory, "research-review", JSON.stringify({ approved: ["r1"], rejected: [], limitations: [leak], gaps: [] }), { final: true })
   expect(final.issues).toEqual([])
   expect(final.openItems.map(item => item.detail)).toEqual([leak])
-  expect(readLeanJson(directory, "research-review.json")).toEqual({ approved: ["r1"], rejected: [], limitations: [leak] })
-  expect(acceptResearchReply(directory, "research-review", JSON.stringify({ approved: ["r1"], rejected: [], limitations: ["The source's currency remains unconfirmed."] })).issues).toEqual([])
+  expect(readLeanJson(directory, "research-review.json")).toEqual({ approved: ["r1"], rejected: [], limitations: [leak], gaps: [] })
+  expect(acceptResearchReply(directory, "research-review", JSON.stringify({ approved: ["r1"], rejected: [], limitations: ["The source's currency remains unconfirmed."], gaps: [] })).issues).toEqual([])
 })
 
 test("each internal path form is retried by field name, without repeating the path", () => {
@@ -138,7 +138,7 @@ test("finding currency and jurisdiction, which reach the drafter, are checked wi
     findings: [{ ...research.findings[0], jurisdiction: leak, currentness: leak, limitations: leak }] })).issues)
     .toEqual([named("limitations[1]"), named("findings[0].jurisdiction"), named("findings[0].currentness"), named("findings[0].limitations")])
   expect(acceptResearchReply(directory, "research", JSON.stringify(research)).issues).toEqual([])
-  expect(acceptResearchReply(directory, "research-review", JSON.stringify({ approved: [], rejected: [{ id: "r1", reason: leak }], limitations: [leak] })).issues)
+  expect(acceptResearchReply(directory, "research-review", JSON.stringify({ approved: [], rejected: [{ id: "r1", reason: leak }], limitations: [leak], gaps: [] })).issues)
     .toEqual([named("limitations[0]"), named("rejected[0].reason")])
 })
 
@@ -155,7 +155,7 @@ test("a path is reported with the other issues before the last attempt, and only
   expect(last.issues).toEqual(both.filter(issue => !pathIssues([issue]).length))
   expect(readLeanText(directory, "research.json")).toBeUndefined()
   expect(acceptResearchReply(directory, "research", JSON.stringify(research)).issues).toEqual([])
-  const unreviewed = acceptResearchReply(directory, "research-review", JSON.stringify({ approved: [], rejected: [], limitations: [leak] })).issues
+  const unreviewed = acceptResearchReply(directory, "research-review", JSON.stringify({ approved: [], rejected: [], limitations: [leak], gaps: [] })).issues
   expect(unreviewed).toEqual([expect.stringContaining("exactly once"), expect.stringContaining("internal workflow file")])
 })
 
@@ -175,20 +175,20 @@ test("the last research attempt keeps a path as written and saves its files", ()
 test("a research review that names an internal file on every attempt completes on the last one with its words kept", async () => {
   const directory = matter()
   const leak = "The readable context in .dochaus/lean/research-context.txt held no source text."
-  const model = scriptedModel({ ...happyPath, [AGENT["research-review"]]: () => JSON.stringify({ approved: [], rejected: [], limitations: [leak] }) })
+  const model = scriptedModel({ ...happyPath, [AGENT["research-review"]]: () => JSON.stringify({ approved: [], rejected: [], limitations: [leak], gaps: [] }) })
   expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
   expect(model.count(AGENT["research-review"])).toBe(LEAN_MAX_RETRIES + 1)
   expect(model.prompts.filter(row => row.agent === AGENT["research-review"]).slice(1).every(row => row.text.includes("internal workflow file"))).toBe(true)
-  expect(readLeanJson(directory, "research-review.json")).toEqual({ approved: [], rejected: [], limitations: [leak] })
+  expect(readLeanJson(directory, "research-review.json")).toEqual({ approved: [], rejected: [], limitations: [leak], gaps: [] })
 }, 120_000)
 
 test("a research review corrected on retry saves the corrected words", async () => {
   const directory = matter()
   const model = scriptedModel({ ...happyPath, [AGENT["research-review"]]: (_text, index) =>
-    JSON.stringify({ approved: [], rejected: [], limitations: [index === 0 ? "The readable context in .dochaus/lean/research-context.txt held no source text." : "The readable context held no source text."] }) })
+    JSON.stringify({ approved: [], rejected: [], limitations: [index === 0 ? "The readable context in .dochaus/lean/research-context.txt held no source text." : "The readable context held no source text."], gaps: [] }) })
   expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
   expect(model.count(AGENT["research-review"])).toBe(2)
-  expect(readLeanJson(directory, "research-review.json")).toEqual({ approved: [], rejected: [], limitations: ["The readable context held no source text."] })
+  expect(readLeanJson(directory, "research-review.json")).toEqual({ approved: [], rejected: [], limitations: ["The readable context held no source text."], gaps: [] })
 }, 120_000)
 
 test("completed legacy runs remain unchanged and do not claim research", async () => {
