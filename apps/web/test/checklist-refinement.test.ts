@@ -25,7 +25,7 @@ function refinementStatus(): LeanDraftingStatus {
   }
 }
 
-const actions: RunActions = { busy: false, pausing: false, stopping: false, error: "", resuming: false, resume: async () => true, answer: async () => true, update: async () => true, refine: async () => true, pause: async () => true, stop: async () => true }
+const actions: RunActions = { busy: false, pausing: false, stopping: false, error: "", errorFor: undefined, resuming: false, resume: async () => true, answer: async () => true, decide: async () => true, update: async () => true, refine: async () => true, pause: async () => true, stop: async () => true }
 function render(status: LeanDraftingStatus, own = true) {
   return renderToStaticMarkup(createElement(MemoryRouter, null, createElement(RunHeader, { status, actions, own, onOpen: () => {}, onShowDrafts: () => {} })))
 }

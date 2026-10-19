@@ -135,7 +135,7 @@ test("the run header says where the run is in one line and offers the one next s
   expect(runHeadline(lean(orphaned), now).title).toBe("Paused")
   expect(runHeadline(lean(failed), now, true).title).toBe("Resuming…")
 
-  const idle: RunActions = { busy: false, pausing: false, stopping: false, error: "", resuming: false, resume: async () => true, answer: async () => true, update: async () => true, refine: async () => true, pause: async () => true, stop: async () => true }
+  const idle: RunActions = { busy: false, pausing: false, stopping: false, error: "", errorFor: undefined, resuming: false, resume: async () => true, answer: async () => true, decide: async () => true, update: async () => true, refine: async () => true, pause: async () => true, stop: async () => true }
   const render = (fixture: unknown) =>
     renderToStaticMarkup(createElement(RunHeader, { status: lean(fixture), actions: idle, own: true, onOpen: () => {}, onShowDrafts: () => {} }))
   const done = render(completed)
@@ -201,7 +201,7 @@ test("Pause posts the run's owner to the lean pause route and keeps refusals", a
 test("the header offers Pause only while the run is working; a paused run offers Continue", () => {
   const now = Date.parse(completed.updated_at)
   let paused = 0
-  const actions: RunActions = { busy: false, pausing: false, stopping: false, error: "", resuming: false, resume: async () => true, answer: async () => true, update: async () => true, refine: async () => true, pause: async () => (paused++, true), stop: async () => true }
+  const actions: RunActions = { busy: false, pausing: false, stopping: false, error: "", errorFor: undefined, resuming: false, resume: async () => true, answer: async () => true, decide: async () => true, update: async () => true, refine: async () => true, pause: async () => (paused++, true), stop: async () => true }
   const render = (status: LeanDraftingStatus, overrides: Partial<RunActions> = {}) =>
     renderToStaticMarkup(createElement(RunHeader, { status, actions: { ...actions, ...overrides }, own: true, onOpen: () => {}, onShowDrafts: () => {} }))
   const working = render(lean(start.status))
@@ -245,7 +245,7 @@ test("Stop posts the run's owner to the lean stop route and keeps refusals", asy
 test("a run nothing is working on offers Stop draft; a stopped run says so, asks nothing, offers no Continue and takes a new request", () => {
   const now = Date.parse(completed.updated_at)
   let stops = 0
-  const actions: RunActions = { busy: false, pausing: false, stopping: false, error: "", resuming: false, resume: async () => true, answer: async () => true, update: async () => true, refine: async () => true, pause: async () => true, stop: async () => (stops++, true) }
+  const actions: RunActions = { busy: false, pausing: false, stopping: false, error: "", errorFor: undefined, resuming: false, resume: async () => true, answer: async () => true, decide: async () => true, update: async () => true, refine: async () => true, pause: async () => true, stop: async () => (stops++, true) }
   const render = (status: LeanDraftingStatus, overrides: Partial<RunActions> = {}, own = true) =>
     renderToStaticMarkup(createElement(MemoryRouter, null, createElement(RunHeader, { status, actions: { ...actions, ...overrides }, own, onOpen: () => {}, onShowDrafts: () => {} })))
   const paused = render(pausedRun())
