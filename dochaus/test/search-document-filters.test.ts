@@ -324,6 +324,33 @@ test("structural passage selection preserves matter-wide supersession metadata a
     )
     expect(scoped.result!.output).not.toContain("read-document")
     expect(scoped.result!.output).not.toContain("current-section")
+    expect(unfiltered.result!.output).not.toContain("not matched to an indexed document")
+  } finally {
+    rmSync(fixture.directory, { recursive: true, force: true })
+  }
+})
+
+test("passages are qualified when an amendment's stated base matched no indexed document", async () => {
+  const fixture = matter()
+  // The amendment states its base as "Lease"; the file is named differently,
+  // so no passage can be flagged as superseded.
+  const base = fixture.addDocument("Lease (executed).docx")
+  const amender = fixture.addDocument("Amendment No. 1.docx")
+  fixture.addChunk(base, "Doc(Lease (executed).docx) › §3 Rent", "needle base rent", 1, 0, "3")
+  const amendmentText = "Amendment No. 1 to the Lease. Section 3 is hereby amended and restated. needle"
+  fixture.addChunk(amender, "Doc(Amendment No. 1.docx) › §1", amendmentText, 0.2, 0, "1")
+  fixture.db.run("INSERT INTO doc_relations (doc_path, doc_name, relation, target_name, char_start, char_end) VALUES (?, ?, 'amends', 'Lease', 0, 29)", [amender.path, amender.name])
+  fixture.db.run("INSERT INTO section_ops (doc_path, doc_name, section_label, operation, char_start, char_end) VALUES (?, ?, '3', 'restate', 30, 71)", [amender.path, amender.name])
+  fixture.db.close()
+  try {
+    const [result] = await search(fixture.directory, [{ query: "needle", k: 20 }])
+    const output = result.result!.output
+    expect(result.result!.metadata.citations.find((citation) => citation.docPath === base.path)!.superseded_by).toBeUndefined()
+    expect(output).toContain(
+      'Note: amended base(s) not matched to an indexed document: "Lease" (amended by Amendment No. 1.docx). ' +
+        "Passages from the documents these names refer to may be superseded and are not flagged above.",
+    )
+    expect(output).not.toMatch(/amendment-chain|current-section|read-document/)
   } finally {
     rmSync(fixture.directory, { recursive: true, force: true })
   }
