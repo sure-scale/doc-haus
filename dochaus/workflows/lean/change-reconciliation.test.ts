@@ -18,7 +18,7 @@ function setup() {
   return directory
 }
 function amendment(pid: string, updated: string) { return { id: "a1", pid, existing_sha256: paragraphSha256(`Initial provision ${[p1,p2,p3].indexOf(pid)+1}.`), updated, reason: "Carry supplied instruction.", sources: support } }
-function changes(amendments: ReturnType<typeof amendment>[] = []): ChangeList { return { amendments, questions: [], shared_paragraphs: [] } }
+function changes(amendments: ReturnType<typeof amendment>[] = []): ChangeList { return { amendments, questions: [] } }
 function inputs(groups: { id: string; pids: string[] }[], ops: ChangeList[]) {
   const plan: ChangePlan = { shared_decisions: [], dismissed: [], findings: [], questions: [], groups: groups.map(row => ({ ...row, goal: "Preserve the supplied instruction and its conditions.", sources: support, limitations: [] })) }
   const preparation: ChangePreparation = { groups: groups.map((row, index) => ({ group: row.id, changes: ops[index]! })) }

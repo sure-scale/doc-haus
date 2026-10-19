@@ -2,12 +2,13 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs"
 import { runApply } from "./apply-stage"
 import { stagePrompt } from "./prompts"
+import { checkChanges } from "./change-checks"
 import { readParagraphs } from "./checks"
 import type { GateResult } from "./gate"
 import { enqueueLeanRequest } from "./requests"
 import { runLean } from "./runner"
 import { acceptStageReply, LEAN_CHILD_PERMISSIONS } from "./stages"
-import { leanFile, readLeanJson, readLeanState, readOpenItems, readQuestions } from "./state"
+import { leanFile, readLeanJson, readLeanState, readOpenItems, readQuestions, writeLeanText } from "./state"
 import { AGENT, DRAFT, SOURCE, SUPPORT, changes, cleanupMatters, drafter, happyPath, matter, noChanges, pidOf, sameSession, scriptedModel, type Reply } from "./test-support"
 
 // Real coordinator, checkers, renderer, pointer applier and comparison. Only the
@@ -190,7 +191,9 @@ describe("lean drafting runner", () => {
     // is a visible open item. Apply takes no session port, so it cannot ask a model.
     const direct = matter()
     expect((await acceptStageReply(direct, "d1.draft", DRAFT)).issues).toEqual([])
-    expect((await acceptStageReply(direct, "d1.changes", twoEdits(stagePrompt(direct, "d1.changes"), 0))).issues).toEqual([])
+    const listed = checkChanges(direct, twoEdits(stagePrompt(direct, "d1.changes"), 0), readParagraphs(direct, "d1"), { document: "d1" })
+    expect(listed.issues).toEqual([])
+    writeLeanText(direct, "d1/changes.json", `${JSON.stringify(listed.changes, null, 2)}\n`)
     const applied = await runApply(direct, readLeanState(direct)!, "d1")
 
     expect(applied.status).toBe("done")

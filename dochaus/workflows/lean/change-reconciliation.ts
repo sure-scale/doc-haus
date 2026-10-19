@@ -122,7 +122,7 @@ function reconciliationSlices(directory: string, document: DocID, component: Com
     const own = (list: ChangeList): ChangeList => ({
       ...list, amendments: list.amendments.filter(row => keep.has(row.pid)), explanations: list.explanations?.filter(row => keep.has(row.pid)),
       retained_initial: list.retained_initial?.filter(row => keep.has(row.pid)), withheld: list.withheld?.filter(row => keep.has(row.amendment.pid)),
-      questions: list.questions.filter(row => row.pid ? keep.has(row.pid) : first), shared_paragraphs: [],
+      questions: list.questions.filter(row => row.pid ? keep.has(row.pid) : first),
     })
     return { ...component, pids, prior_only: component.prior_only.filter(pid => keep.has(pid)), prior: own(component.prior), changes: own(component.changes) }
   }
@@ -286,9 +286,9 @@ function withoutParagraphs(value: Record<string, unknown>, pids: ReadonlyMap<str
   return { ...value, amendments: keep(value.amendments), explanations: keep(value.explanations), retained_initial: keep(value.retained_initial), questions: keep(value.questions), dependencies: [] }
 }
 
-function emptyChanges(): ChangeList { return { amendments: [], explanations: [], withheld: [], questions: [], shared_paragraphs: [] } }
+function emptyChanges(): ChangeList { return { amendments: [], explanations: [], withheld: [], questions: [] } }
 function combine(lists: ChangeList[]): ChangeList {
-  return { retained_initial: lists.flatMap(row => row.retained_initial ?? []), amendments: lists.flatMap(row => row.amendments), explanations: lists.flatMap(row => row.explanations ?? []), withheld: lists.flatMap(row => row.withheld ?? []), questions: [...new Map(lists.flatMap(row => row.questions).map(row => [JSON.stringify([row.pid, row.question, row.context]), row])).values()], shared_paragraphs: [] }
+  return { retained_initial: lists.flatMap(row => row.retained_initial ?? []), amendments: lists.flatMap(row => row.amendments), explanations: lists.flatMap(row => row.explanations ?? []), withheld: lists.flatMap(row => row.withheld ?? []), questions: [...new Map(lists.flatMap(row => row.questions).map(row => [JSON.stringify([row.pid, row.question, row.context]), row])).values()] }
 }
 function operationKey(row: Amendment) { return JSON.stringify([row.operation ?? "replace", row.updated]) }
 function coalesce(rows: Amendment[]): Amendment {

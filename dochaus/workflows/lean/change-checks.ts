@@ -81,16 +81,13 @@ export function checkChanges(directory: string, content: string, paragraphs: Par
     const carrier = unverified.find(row => row.amendment.pid === question.pid && paragraphShowsOpenItem(amendmentText(row.amendment)))
     return carrier ? [[question.id, carrier.amendment.id] as const] : []
   }))
-  const shared = [...Map.groupBy(kept, amendment => amendment.pid)]
-    .filter(([, group]) => group.length > 1)
-    .map(([pid, group]) => ({ pid, amendment_ids: group.map(amendment => amendment.id) }))
   const explained = explanations.filter(record).map((item, index) => ({
     id: `i${index + 1}`, pid: String(item.pid), reason: String(item.reason).trim(),
     sources: (item.sources as { source_id: string; quote: string }[]).map(source => ({ source_id: source.source_id.trim(), quote: source.quote })),
   }))
   return {
     issues: [],
-    changes: { ...(value.explanations !== undefined ? { explanations: explained } : {}), amendments: kept, withheld: unverified, questions: questionList, shared_paragraphs: shared },
+    changes: { ...(value.explanations !== undefined ? { explanations: explained } : {}), amendments: kept, withheld: unverified, questions: questionList },
     openItems: [
       ...unverified.map(row => openItem("changes", "unapplied_amendment", [
         `Amendment ${row.amendment.id} to paragraph [${row.amendment.pid}] was withheld and not applied: it did not pass the change checks after the allowed retries.`,

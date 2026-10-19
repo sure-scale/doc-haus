@@ -344,7 +344,7 @@ export async function acceptStageReply(directory: string, step: StepID, reply: s
   }
   if (stage === "changes") {
     const check = checkChanges(directory, reply, readParagraphs(directory, document), { withholdUnverified: options.final, document })
-    const issues = [...check.issues, ...(check.changes && readLeanText(directory, `${document}/change-plan.json`) ? uniqueReplacementIssues(check.changes) : [])]
+    const issues = [...check.issues, ...(check.changes ? uniqueReplacementIssues(check.changes) : [])]
     if (issues.length || !check.changes) return { issues, openItems: [], outputs: [] }
     writeLeanText(directory, `${document}/changes.json`, `${JSON.stringify(check.changes, null, 2)}\n`)
     return { issues: [], openItems: check.openItems, outputs: stepOutputs(step), questions: check.changes.questions }
@@ -401,7 +401,6 @@ export function stageOutputValid(directory: string, step: StepID) {
     const pids = new Set(readParagraphs(directory, document).map(row => row.pid))
     const list = readChangeList(directory, document)
     if (!list?.amendments.every(amendment => pids.has(amendment.pid))) return false
-    if (!readLeanText(directory, `${document}/change-plan.json`)) return true
     return !uniqueReplacementIssues(list).length && !checkChanges(directory, text(`${document}/changes.json`), readParagraphs(directory, document), { document }).issues.length
   }
   // Saved notes are judged as a last attempt judges them: an internal id in

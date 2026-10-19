@@ -75,8 +75,6 @@ export function exportAppliedChangeComments(bytes: Uint8Array, finalBytes: Uint8
         ? targets.length > 1 ? { paragraphs: targets.map(paragraph => ({ paragraph_index: paragraph.paragraph_index, paragraph_text: paragraph.paragraph_text })) }
           : { paragraph_index: target.paragraph_index, paragraph_text: target.paragraph_text } : { pid: row.pid },
       unresolved_reason: !amendment ? "The applied change has no available explanation record."
-        : deletion && pids.length ? "Later reconciliation retained wording; this deletion rationale does not describe the final result."
-        : !deletion && !pids.length ? "Later reconciliation deleted the paragraph; this wording rationale does not describe the final result."
         : target && proposed && (targets.length !== proposed.length || targets.some((paragraph, index) =>
           normalizeParagraphText(paragraph.paragraph_text) !== normalizeParagraphText(proposed[index] ?? "")))
           ? "Final wording was reconciled after this proposal; its explanation needs review."
