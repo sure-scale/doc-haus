@@ -643,3 +643,106 @@ test("supersededSections does not down-rank a document the target only partially
   expect(map.has("/m/release.docx")).toBe(false)
   db.close()
 })
+
+test("resolveTarget strips only a document's real extension, never a dotted word in its name", () => {
+  // The indexed path records the extension; a name without it keeps its dots.
+  expect(resolutionFor([{ path: "/m/lease.docx", name: "Lease.final", createdAt: 1 }], "Lease").resolution).toEqual({ kind: "unmatched" })
+  // No recorded extension: only a supported document extension is stripped.
+  expect(resolutionFor([{ path: "/m/lease-final", name: "Lease.final", createdAt: 1 }], "Lease").resolution).toEqual({ kind: "unmatched" })
+  expect(resolutionFor([{ path: "/m/Lease.final", name: "Lease.final", createdAt: 1 }], "Lease").resolution).toEqual({ kind: "unmatched" })
+  expect(resolutionFor([{ path: "/m/lease", name: "Lease.docx", createdAt: 1 }], "Lease").resolution).toMatchObject({
+    kind: "resolved",
+    doc: { doc_path: "/m/lease" },
+  })
+  // A target stating a document extension names the whole file.
+  const converted = [{ path: "/m/lease.pdf.docx", name: "Lease.pdf.docx", createdAt: 1 }]
+  expect(resolutionFor(converted, "Lease.pdf").resolution).toEqual({ kind: "unmatched" })
+  expect(resolutionFor(converted, "Lease.pdf.docx").resolution).toMatchObject({ kind: "resolved", doc: { doc_path: "/m/lease.pdf.docx" } })
+})
+
+test("resolveTarget keeps dots inside names: a version or suffix must be stated in full", () => {
+  const final = [{ path: "/m/lease.final.docx", name: "Lease.final.docx", createdAt: 1 }]
+  expect(resolutionFor(final, "Lease.final").resolution).toMatchObject({ kind: "resolved", doc: { doc_path: "/m/lease.final.docx" } })
+  expect(resolutionFor(final, "Lease").resolution).toEqual({ kind: "unmatched" })
+  const versioned = [{ path: "/m/lease-v12.docx", name: "Lease v1.2.docx", createdAt: 1 }]
+  expect(resolutionFor(versioned, "Lease v1.2").resolution).toMatchObject({ kind: "resolved", doc: { doc_path: "/m/lease-v12.docx" } })
+  expect(resolutionFor(versioned, "Lease v1").resolution).toEqual({ kind: "unmatched" })
+})
+
+test("resolveTarget folds surrounding and non-breaking spaces but not unicode dashes", () => {
+  const lease = [{ path: "/m/lease.docx", name: "Lease Agreement.docx", createdAt: 1 }]
+  expect(resolutionFor(lease, "Lease Agreement ").resolution).toMatchObject({ kind: "resolved", doc: { doc_path: "/m/lease.docx" } })
+  expect(resolutionFor(lease, "Lease\u00a0Agreement").resolution).toMatchObject({ kind: "resolved", doc: { doc_path: "/m/lease.docx" } })
+  // A different dash is a different character: unmatched, never guessed.
+  const dashed = [{ path: "/m/lease-a.docx", name: "Lease \u2013 A.docx", createdAt: 1 }]
+  expect(resolutionFor(dashed, "Lease - A").resolution).toEqual({ kind: "unmatched" })
+})
+
+test("resolveTarget trims the target before the defined-term lookup", () => {
+  const { resolution } = resolutionFor(
+    [{ path: "/m/premises.docx", name: "Premises.docx", createdAt: 1 }],
+    "Head Lease ",
+    [{ docPath: "/m/premises.docx", term: "Head Lease" }],
+  )
+  expect(resolution).toMatchObject({ kind: "resolved", doc: { doc_path: "/m/premises.docx" } })
+})
+
+// Two narrowing preferences: an exact file name over a defined term, and a
+// non-amending document over an amending one. A base is chosen only when they
+// agree; when they point at different documents the target is ambiguous.
+function chainsFor(docs: DocSeed[], relations: { path: string; name: string; target: string }[], terms: { docPath: string; term: string }[]) {
+  const { db } = syntheticDb()
+  seed(
+    db,
+    docs,
+    [],
+    relations.map((r) => ({ doc_path: r.path, doc_name: r.name, relation: "amends", target_name: r.target, char_start: 0, char_end: 10 })),
+    [],
+  )
+  for (const t of terms) db.run("INSERT INTO defined_terms (doc_path, term) VALUES (?, ?)", [t.docPath, t.term])
+  const chains = buildChains(db)
+  db.close()
+  return chains
+}
+
+test("resolveTarget reports an amending exact-name match beside a non-amending defined-term match as ambiguous", () => {
+  const chains = chainsFor(
+    [
+      { path: "/m/original.docx", name: "Original.docx", createdAt: 1 },
+      { path: "/m/agreement.docx", name: "Agreement.docx", createdAt: 2 },
+      { path: "/m/side.docx", name: "Side.docx", createdAt: 3 },
+      { path: "/m/am1.docx", name: "Amendment No. 1.docx", createdAt: 4 },
+    ],
+    [
+      { path: "/m/agreement.docx", name: "Agreement.docx", target: "Original" },
+      { path: "/m/am1.docx", name: "Amendment No. 1.docx", target: "Agreement" },
+    ],
+    [{ docPath: "/m/side.docx", term: "Agreement" }],
+  )
+  const entry = chains.flatMap((c) => c.entries).find((e) => e.rel.doc_path === "/m/am1.docx")!
+  expect(entry.resolution.kind).toBe("ambiguous")
+  if (entry.resolution.kind === "ambiguous") expect(entry.resolution.names.sort()).toEqual(["Agreement.docx", "Side.docx"])
+})
+
+test("resolveTarget resolves a non-amending exact-name match over an amender that defines the same term", () => {
+  // Amendments routinely define the base's name as a term; both preferences
+  // point at the base, so it resolves.
+  const chains = chainsFor(
+    [
+      { path: "/m/lease.docx", name: "Lease.docx", createdAt: 1 },
+      { path: "/m/am1.docx", name: "Amendment No. 1.docx", createdAt: 2 },
+      { path: "/m/am2.docx", name: "Amendment No. 2.docx", createdAt: 3 },
+    ],
+    [
+      { path: "/m/am1.docx", name: "Amendment No. 1.docx", target: "Lease" },
+      { path: "/m/am2.docx", name: "Amendment No. 2.docx", target: "Lease" },
+    ],
+    [
+      { docPath: "/m/am1.docx", term: "Lease" },
+      { docPath: "/m/am2.docx", term: "Lease" },
+    ],
+  )
+  expect(chains).toHaveLength(1)
+  expect(chains[0]!.base).toMatchObject({ kind: "resolved", doc: { doc_path: "/m/lease.docx" } })
+  expect(chains[0]!.entries.map((e) => e.resolution.kind)).toEqual(["resolved", "resolved"])
+})

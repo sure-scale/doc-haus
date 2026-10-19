@@ -1,4 +1,5 @@
 import { Database } from "bun:sqlite"
+import path from "node:path"
 
 // Shared chain semantics for the amendment surfaces (issue #69). Three tools
 // (amendment-chain, current-section, and the supersession pass inside
@@ -48,34 +49,56 @@ export type Chain = {
 
 // Structural normalisation for comparing a stated target with a file name:
 // case and runs of whitespace, underscores and hyphens. Nothing else is folded.
-// A target may state the file name with or without its trailing extension (a
-// dot then a letter-led run, so "No. 1" and "No.1" stay intact).
 const normalizeTitle = (value: string) => value.toLowerCase().replace(/[\s_-]+/g, " ").trim()
-const fileTitles = (name: string) => [normalizeTitle(name), normalizeTitle(name.replace(/\.[a-z][a-z0-9]{0,7}$/i, ""))]
+
+// Document types ingest accepts (MATTER_DOCUMENT_EXTENSIONS in
+// services/ingest/src/ingest.ts). Only one of these is ever treated as a file
+// name's extension, so a dotted word in a name ("Lease.final", "v1.2") stays.
+const DOCUMENT_EXTENSIONS = new Set([".docx", ".pdf", ".xlsx", ".eml"])
+const documentExtension = (name: string) => {
+  const ext = path.extname(name).toLowerCase()
+  return DOCUMENT_EXTENSIONS.has(ext) ? ext : ""
+}
+
+// A document's file name without its real extension: the one its indexed path
+// records (the name's own when the path records none), when that is a document
+// type. Null when the name carries no such extension.
+function bareFileTitle(doc: DocRow) {
+  const ext = documentExtension(path.extname(doc.doc_path) ? doc.doc_path : doc.name)
+  return ext && doc.name.toLowerCase().endsWith(ext) ? normalizeTitle(doc.name.slice(0, -ext.length)) : null
+}
 
 // A document resolves a stated target only on an exact match: its file name
 // equals the target after structural normalisation, or it records the target
-// as a defined term (NOCASE). Partial overlap never matches. The amender itself
-// is excluded, and amenders are dropped whenever a non-amending candidate
-// exists. More than one exact match is ambiguous and none is unmatched; both
-// are reported, never forced.
+// as a defined term (NOCASE). A target may omit the file's extension; one that
+// states a document extension names the whole file. Partial overlap never
+// matches. The amender itself is excluded. Two preferences then narrow the
+// candidates: a non-amending document over an amending one, and an exact file
+// name over a defined term. A base is chosen only when they agree; when the
+// first would drop every file-name match for a defined-term match, the target
+// is ambiguous. More than one candidate is ambiguous and none is unmatched;
+// both are reported, never forced.
 function resolveTarget(db: Database, target: RelationRow, docs: DocRow[], relations: RelationRow[]): Resolution {
-  const title = normalizeTitle(target.target_name)
+  const stated = target.target_name.trim()
+  const title = normalizeTitle(stated)
+  const statesExtension = documentExtension(stated) !== ""
   const definerPaths = new Set(
     (
       db
         .query("SELECT DISTINCT doc_path FROM defined_terms WHERE term = ? COLLATE NOCASE")
-        .all(target.target_name) as { doc_path: string }[]
+        .all(stated) as { doc_path: string }[]
     ).map((r) => r.doc_path),
   )
-  const candidates = docs.filter(
-    (d) =>
-      d.doc_path !== target.doc_path &&
-      ((title !== "" && fileTitles(d.name).includes(title)) || definerPaths.has(d.doc_path)),
+  const others = docs.filter((d) => d.doc_path !== target.doc_path)
+  const byName = others.filter(
+    (d) => title !== "" && (normalizeTitle(d.name) === title || (!statesExtension && bareFileTitle(d) === title)),
   )
+  const candidates = others.filter((d) => byName.includes(d) || definerPaths.has(d.doc_path))
   const amenderPaths = new Set(relations.map((r) => r.doc_path))
   const nonAmending = candidates.filter((d) => !amenderPaths.has(d.doc_path))
   const pool = nonAmending.length > 0 ? nonAmending : candidates
+  if (byName.length > 0 && !pool.some((d) => byName.includes(d)))
+    return { kind: "ambiguous", names: candidates.map((d) => d.name) }
   if (pool.length === 1) return { kind: "resolved", doc: pool[0]! }
   if (pool.length > 1) return { kind: "ambiguous", names: pool.map((d) => d.name) }
   return { kind: "unmatched" }
