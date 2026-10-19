@@ -1,4 +1,5 @@
-import { describe, expect, setSystemTime, test } from "bun:test"
+import { describe, expect, setSystemTime, spyOn, test } from "bun:test"
+import * as fs from "node:fs"
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { createHash } from "node:crypto"
 import { tmpdir } from "node:os"
@@ -158,6 +159,34 @@ describe("ingest lineage appender", () => {
       })}\n`)
     } finally {
       setSystemTime()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("a stamp reads the ledger once, however long it is", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "ingest-lineage-"))
+    const ledger = path.join(dir, ".dochaus", "lineage.jsonl")
+    const { readFileSync: read } = fs
+    let ledgerReads = 0
+    try {
+      mkdirSync(path.join(dir, ".dochaus"), { recursive: true })
+      mkdirSync(path.join(dir, "sources"), { recursive: true })
+      writeFileSync(path.join(dir, ".dochaus", "legal.db"), "registry")
+      writeFileSync(path.join(dir, "sources", "agreement.txt"), "text")
+      stampIngestLineage(dir, ["Agreement.docx"], "corr-1", "mutation-1")
+      writeFileSync(path.join(dir, "sources", "agreement.txt"), "rebuilt text")
+      const spy = spyOn(fs, "readFileSync").mockImplementation(((file: fs.PathOrFileDescriptor, options?: never) => {
+        if (file === ledger) ledgerReads++
+        return read(file, options)
+      }) as typeof fs.readFileSync)
+      try {
+        expect(stampIngestLineage(dir, ["Agreement.docx"], "corr-2", "mutation-2")).toBe(2)
+        expect(stampSourceRebuildLineage(dir, ["Agreement.docx"], "rebuild-1")).toBe(0)
+      } finally {
+        spy.mockRestore()
+      }
+      expect(ledgerReads).toBe(2)
+    } finally {
       rmSync(dir, { recursive: true, force: true })
     }
   })

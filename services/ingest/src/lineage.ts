@@ -37,22 +37,39 @@ function lineageFile(matterDir: string): string {
   return path.join(matterDir, ".dochaus", "lineage.jsonl")
 }
 
-// The latest lineage row per artifact: its entry id and recorded content hash.
-function priorEntryByArtifact(matterDir: string): Map<string, { entry_id: string; content_sha256: unknown }> {
-  const map = new Map<string, { entry_id: string; content_sha256: unknown }>()
+type Ledger = ReturnType<typeof readLedger>
+
+// The ledger as a stamp needs it, from one read under the lineage lock: the
+// latest row per artifact (its entry id and recorded content hash), the
+// artifact/hash pairs that `mutationID`'s rows record (a finalize retried
+// after a stop skips them), and whether the ledger lacks a final newline. An
+// ingest appends a row per artifact, so the ledger grows by megabytes on a
+// large matter; reading and parsing it once per stamp instead of up to three
+// times keeps that stretch of the event loop short.
+function readLedger(matterDir: string, mutationID?: string) {
   const file = lineageFile(matterDir)
-  if (!existsSync(file)) return map
-  for (const line of readFileSync(file, "utf8").split(/\r?\n/)) {
+  const text = existsSync(file) ? readFileSync(file, "utf8") : ""
+  const prior = new Map<string, { entry_id: string; content_sha256: unknown }>()
+  const completed = new Set<string>()
+  for (const line of text.split(/\r?\n/)) {
     if (!line.trim()) continue
     try {
-      const row = JSON.parse(line) as { artifact?: string; entry_id?: string; content_sha256?: unknown }
-      if (typeof row.artifact === "string" && typeof row.entry_id === "string")
-        map.set(row.artifact, { entry_id: row.entry_id, content_sha256: row.content_sha256 })
+      const row = JSON.parse(line) as {
+        artifact?: string
+        entry_id?: string
+        content_sha256?: unknown
+        provenance?: { document_mutation_id?: string }
+      }
+      if (typeof row.artifact !== "string") continue
+      if (typeof row.entry_id === "string")
+        prior.set(row.artifact, { entry_id: row.entry_id, content_sha256: row.content_sha256 })
+      if (mutationID && row.provenance?.document_mutation_id === mutationID && typeof row.content_sha256 === "string")
+        completed.add(`${row.artifact}\0${row.content_sha256}`)
     } catch {
       /* skip corrupt line */
     }
   }
-  return map
+  return { prior, completed, unterminated: text.length > 0 && !text.endsWith("\n") }
 }
 
 export type ArtifactHash = { sha256: string; bytes: number }
@@ -79,8 +96,8 @@ export function stampIngestLineage(
   files?: ReadonlyMap<string, ArtifactHash>,
 ): number {
   return withArtifactMutationLock(matterDir, ".dochaus/lineage.jsonl", () => {
-    const completed = mutationID ? completedMutationArtifacts(matterDir, mutationID) : new Set<string>()
-    return appendArtifactRows(matterDir, {
+    const ledger = readLedger(matterDir, mutationID)
+    return appendArtifactRows(matterDir, ledger, {
       artifacts: artifactsOnDisk(matterDir),
       op: "ingest",
       run: `ingest:${correlation}`,
@@ -89,7 +106,7 @@ export function stampIngestLineage(
         documents,
         ...(mutationID ? { document_mutation_id: mutationID } : {}),
       },
-      stamp: (artifact, sha256) => !completed.has(`${artifact}\0${sha256}`),
+      stamp: (artifact, sha256) => !ledger.completed.has(`${artifact}\0${sha256}`),
       files,
     })
   })
@@ -109,7 +126,7 @@ export function stampSourceRebuildLineage(
   files?: ReadonlyMap<string, ArtifactHash>,
 ): number {
   return withArtifactMutationLock(matterDir, ".dochaus/lineage.jsonl", () =>
-    appendArtifactRows(matterDir, {
+    appendArtifactRows(matterDir, readLedger(matterDir), {
       artifacts: artifactsOnDisk(matterDir).filter((artifact) => artifact !== ".dochaus/legal.db"),
       op: "write",
       run: `ingest:${correlation}`,
@@ -121,9 +138,10 @@ export function stampSourceRebuildLineage(
 }
 
 // Appends one PERMANENT row per present artifact the caller chooses to stamp.
-// Runs under the caller's lineage lock.
+// Runs under the caller's lineage lock, which `ledger` was read under.
 function appendArtifactRows(
   matterDir: string,
+  ledger: Ledger,
   input: {
     artifacts: string[]
     op: "ingest" | "write"
@@ -134,7 +152,7 @@ function appendArtifactRows(
   },
 ) {
   mkdirSync(path.join(matterDir, ".dochaus"), { recursive: true })
-  const prior = priorEntryByArtifact(matterDir)
+  const prior = ledger.prior
   const ts = new Date().toISOString()
   const lines = input.artifacts.flatMap((artifact) => {
     const hash = input.files?.get(artifact) ?? hashFile(path.join(matterDir, artifact))
@@ -157,36 +175,8 @@ function appendArtifactRows(
     ]
   })
   if (lines.length) {
-    const file = lineageFile(matterDir)
-    const existing = existsSync(file) ? readFileSync(file, "utf8") : ""
-    const prefix = existing.length && !existing.endsWith("\n") ? "\n" : ""
-    appendFileSync(file, prefix + lines.join("\n") + "\n")
+    const prefix = ledger.unterminated ? "\n" : ""
+    appendFileSync(lineageFile(matterDir), prefix + lines.join("\n") + "\n")
   }
   return lines.length
-}
-
-function completedMutationArtifacts(matterDir: string, mutationID: string) {
-  const file = lineageFile(matterDir)
-  if (!existsSync(file)) return new Set<string>()
-  return new Set(
-    readFileSync(file, "utf8")
-      .split(/\r?\n/)
-      .flatMap((line) => {
-        try {
-          const row = JSON.parse(line) as {
-            artifact?: string
-            content_sha256?: string
-            provenance?: { document_mutation_id?: string }
-          }
-          if (
-            row.provenance?.document_mutation_id !== mutationID ||
-            typeof row.artifact !== "string" ||
-            typeof row.content_sha256 !== "string"
-          ) return []
-          return [`${row.artifact}\0${row.content_sha256}`]
-        } catch {
-          return []
-        }
-      }),
-  )
 }
