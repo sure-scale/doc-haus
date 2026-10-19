@@ -746,3 +746,20 @@ test("resolveTarget resolves a non-amending exact-name match over an amender tha
   expect(chains[0]!.base).toMatchObject({ kind: "resolved", doc: { doc_path: "/m/lease.docx" } })
   expect(chains[0]!.entries.map((e) => e.resolution.kind)).toEqual(["resolved", "resolved"])
 })
+
+test("buildChains groups unmatched targets by their trimmed stated name", () => {
+  const chains = chainsFor(
+    [
+      { path: "/m/am1.docx", name: "Amendment No. 1.docx", createdAt: 1 },
+      { path: "/m/am2.docx", name: "Amendment No. 2.docx", createdAt: 2 },
+    ],
+    [
+      { path: "/m/am1.docx", name: "Amendment No. 1.docx", target: "Lease" },
+      { path: "/m/am2.docx", name: "Amendment No. 2.docx", target: "Lease " },
+    ],
+    [],
+  )
+  expect(chains).toHaveLength(1)
+  expect(chains[0]!.base).toEqual({ kind: "unresolved", targetName: "Lease" })
+  expect(chains[0]!.entries.map((e) => e.rel.doc_name)).toEqual(["Amendment No. 1.docx", "Amendment No. 2.docx"])
+})

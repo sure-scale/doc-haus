@@ -234,15 +234,15 @@ export function buildChains(db: Database): Chain[] {
     ops: opsByDoc.get(rel.doc_path) ?? [],
   }))
 
-  // Group by resolved target (or the stated name when unresolved), then merge
-  // transitively from root targets: a target that is itself an amender
+  // Group by resolved target (or the trimmed stated name when unresolved), then
+  // merge transitively from root targets: a target that is itself an amender
   // continues another document's chain. The seen set terminates a cycle.
   const groups = new Map<string, typeof resolved>()
   for (const entry of resolved) {
     const key =
       entry.resolution.kind === "resolved"
         ? entry.resolution.doc.doc_path
-        : `unresolved:${entry.rel.target_name.toLowerCase()}`
+        : `unresolved:${entry.rel.target_name.trim().toLowerCase()}`
     groups.set(key, [...(groups.get(key) ?? []), entry])
   }
   const amenderPaths = new Set(resolved.map((entry) => entry.rel.doc_path))
@@ -259,7 +259,7 @@ export function buildChains(db: Database): Chain[] {
         (a, b) => (createdAt.get(a.rel.doc_path) ?? 0) - (createdAt.get(b.rel.doc_path) ?? 0),
       )
       const base: Chain["base"] = key.startsWith("unresolved:")
-        ? { kind: "unresolved", targetName: (groups.get(key) ?? [])[0]?.rel.target_name ?? key }
+        ? { kind: "unresolved", targetName: (groups.get(key) ?? [])[0]?.rel.target_name.trim() ?? key }
         : { kind: "resolved", doc: docs.find((d) => d.doc_path === key)! }
       return { key, base, entries }
     })
