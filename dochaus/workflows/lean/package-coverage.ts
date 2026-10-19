@@ -558,8 +558,12 @@ function actIssues(act: CoverageAct, documents: PlannedDocument[], acts: Coverag
  * discloses the acts left. An act whose document the lawyer's words leave out
  * is never asked about: those words already speak to the package's scope, so its
  * leftOutDocuments go only to the outline's revisions and, any still planned,
- * to its disclosure. The step never answers it. */
-export function coverageScopeQuestion(acts: CoverageAct[], documents: PlannedDocument[], answered: Question[] = []): Question | undefined {
+ * to its disclosure. The step never answers it. Asked about a `saved` plan
+ * (the draft step's recheck of a plan it will not outline again), it offers no
+ * new document: it asks only which planned document carries each act, or
+ * whether it is outside this request, since a document is added only by a new
+ * draft, which plans the package from the start. */
+export function coverageScopeQuestion(acts: CoverageAct[], documents: PlannedDocument[], answered: Question[] = [], options: { saved?: boolean } = {}): Question | undefined {
   const { ask: open, id } = actScopeAnswers(acts.filter(act => !act.excluded_by && actIssues(act, documents, acts).length), answered, acts)
   if (!open.length) return undefined
   const several = open.length > 1
@@ -568,8 +572,12 @@ export function coverageScopeQuestion(acts: CoverageAct[], documents: PlannedDoc
     stage: "draft",
     question: [`The document plan leaves ${several ? "these instructed acts" : "this instructed act"} without a document executed by the parties who must take ${several ? "them" : "it"}:`,
       ...open.map(act => actLine(act, documents, excerpt(act.quote))),
-      `${several ? "For each, should" : "Should"} the package add a document, or change a planned one, so that those parties take it, or is it outside this request? If the package should carry it, say in which document and who executes it.`].join(" "),
-    context: "Drafting waits for your answer. If the document plan is not yet saved, it is drawn up with your answer before any part is drafted; a saved plan, including any edits to it, is kept as it stands.",
+      options.saved
+        ? `${several ? "For each, which" : "Which"} planned document, executed by those parties, should carry it, or is it outside this request?`
+        : `${several ? "For each, should" : "Should"} the package add a document, or change a planned one, so that those parties take it, or is it outside this request? If the package should carry it, say in which document and who executes it.`].join(" "),
+    context: options.saved
+      ? "Drafting waits for your answer. The saved document plan, including any edits to it, is kept as it stands: to add a document, start a new draft, which plans the package from the start."
+      : "Drafting waits for your answer. If the document plan is not yet saved, it is drawn up with your answer before any part is drafted; a saved plan, including any edits to it, is kept as it stands.",
     status: "open",
   }
 }

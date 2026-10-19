@@ -44,7 +44,7 @@ const finding = (item_id: string, status: ChecklistFinding["status"], extra: Par
 })
 const SCOPE = "Whether this deliverable is meant to carry it"
 const left = (item_id: string) => finding(item_id, "open", { open_decisions: [SCOPE] })
-const CLOSING = "the open decisions above (supply any missing fact or approval they name). If the package should carry it, say in which document; otherwise say it is outside this request."
+const CLOSING = "the open decisions above (supply any missing fact or approval they name). If the package should carry it, say which planned document carries it; otherwise say it is outside this request."
 
 // The checklist's saved output, as the gate reads it.
 function checklistMatter(findings: ChecklistFinding[], items: { id: string; item: ChecklistItem }[] = ITEMS) {
@@ -88,7 +88,8 @@ test("an instruction left open is asked once, in one package-scope question, and
   expect(question.question).not.toContain("c2")
   expect(question.question).not.toContain("For each")
   expect(question.context).toBe("Until a later check settles this instruction, it is disclosed with the review draft as left open; delivery is not held for it. " +
-    "Your answer re-runs the stages that use it, including the checklist check; the document plan is kept as saved, and a drafted document changes only by amendment.")
+    "Your answer re-runs the stages that use it, including the checklist check; the document plan is kept as saved, and a drafted document changes only by amendment. " +
+    "A document the plan does not have is not added: to add one, start a new draft, which plans the package from the start.")
   // Still disclosed with its own reason, now referring to the question.
   expect(leftOpen(gate)).toEqual([expect.objectContaining({ status: "disclosed", ref: { checklist_item: "c1", document: "d1", question_id: question.id },
     detail: expect.stringContaining("Checklist requirement left open: The note states the delivery period.") })])
@@ -447,7 +448,7 @@ test("the scope question on one instruction, and its disclosure, read exactly as
   const gate = finalGate(checklistMatter([left("c1"), finding("c2", "satisfied")]))
   expect(gate.questions!.map(row => row.question)).toStrictEqual(["The checklist check left this instruction open, so the package may not carry it: " +
     'c1: The note states the delivery period. Sources: request "Deliver within thirty days of the order." Open decisions: Whether this deliverable is meant to carry it. ' +
-    "Answer the open decisions above (supply any missing fact or approval they name). If the package should carry it, say in which document; otherwise say it is outside this request."])
+    "Answer the open decisions above (supply any missing fact or approval they name). If the package should carry it, say which planned document carries it; otherwise say it is outside this request."])
   expect(leftOpen(gate).map(item => item.detail)).toStrictEqual(["Checklist requirement left open: The note states the delivery period. Finding: Focused result open. " +
     "Limitation: Comments not inspected. Open decisions: Whether this deliverable is meant to carry it."])
 })

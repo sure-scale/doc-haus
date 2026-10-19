@@ -591,7 +591,8 @@ function instructionLeftOpen(directory: string, { item, finding }: ChecklistOpen
 
 /** The gate's backstop for instructions the checklist check left open: one
  * question asking, for each, whether the package carries it and in which
- * document, or whether it is outside this request. The plan-side route for
+ * planned document, or whether it is outside this request; a document the
+ * saved plan lacks needs a new draft, planned from the start. The plan-side route for
  * instructed acts is the package-coverage check before drafting; this asks
  * only what reached the gate still open. Its `id`, from scopeAnswers, keys
  * on the verbatim instruction quotes, never on extraction-ordinal item ids, so
@@ -609,8 +610,8 @@ function packageScopeQuestion(rows: ChecklistOpenFinding[], id: string, hinted: 
     question: [`The checklist check left ${several ? "these instructions" : "this instruction"} open, so the package may not carry ${several ? "them" : "it"}:`,
       ...rows.map(({ item_id, item, finding }) => `${checklistRequirement(item_id, item)} ${finding.open_decisions?.length
         ? `Open decisions: ${sentence(finding.open_decisions.map(row => scopeField(row.trim())).join("; "))}` : "No open decision recorded; state what is missing."}`),
-      `${several ? "For each, answer" : "Answer"} the open decisions above (supply any missing fact or approval they name). If the package should carry it, say in which document; otherwise say it is outside this request.`].join(" "),
-    context: [`Until a later check settles ${several ? "these instructions, they are" : "this instruction, it is"} disclosed with the review draft as left open; delivery is not held for ${several ? "them" : "it"}. Your answer re-runs the stages that use it, including the checklist check; the document plan is kept as saved, and a drafted document changes only by amendment.`,
+      `${several ? "For each, answer" : "Answer"} the open decisions above (supply any missing fact or approval they name). If the package should carry it, say which planned document carries it; otherwise say it is outside this request.`].join(" "),
+    context: [`Until a later check settles ${several ? "these instructions, they are" : "this instruction, it is"} disclosed with the review draft as left open; delivery is not held for ${several ? "them" : "it"}. Your answer re-runs the stages that use it, including the checklist check; the document plan is kept as saved, and a drafted document changes only by amendment. A document the plan does not have is not added: to add one, start a new draft, which plans the package from the start.`,
       ...hints, ...(hints.length === rows.length ? [HANDED_BACK_UNANSWERED] : [])].join(" "),
     status: "open",
   }

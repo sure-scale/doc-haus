@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { rmSync } from "node:fs"
+import { readFileSync, rmSync } from "node:fs"
 import { readParagraphs } from "./checks"
 import { readLeanDocuments } from "./deliverables"
 import type { GateResult } from "./gate"
 import { coverageItems, coveragePlanHash, readLeanCoverage } from "./package-coverage"
 import { readLeanPlan } from "./plan"
 import { openItem } from "./quotes"
+import { enqueueLeanRequest } from "./requests"
 import { runLean } from "./runner"
 import { LEAN_MAX_RETRIES } from "./stages"
 import { leanFile, readLeanJson, readLeanText, readOpenItems, readQuestions, writeLeanText, writeOpenItems } from "./state"
@@ -308,6 +309,30 @@ describe("plan coverage through the run", () => {
     expect(left).toHaveLength(3)
     expect(left).toEqual(expect.arrayContaining([own, other, reviewed]))
   }, 120_000)
+
+  test("a lawyer's edit whose recheck stops for the plan step's scope question keeps both accepted drafts once the question is answered", async () => {
+    const directory = prepared()
+    const run = () => scriptedModel(replies({ [AGENT.draft]: outliner(outline(RESOLUTION, RELEASE_LETTER)), [AGENT.coverage]: coverageOf(approval, release) }))
+    expect((await runLean(directory, { sessions: run().port })).status).toBe("completed")
+    const bodies = () => ["d1", "d2"].map(document => readFileSync(leanFile(directory, `${document}/body.docx`)))
+    const before = bodies()
+
+    // The lawyer renames d2's only part, so the saved plan no longer carries the release.
+    const plan = readLeanPlan(directory)!
+    const edited = { ...plan, documents: plan.documents.map(row => row.id === "d2" ? { ...row, parts: [{ heading: "Terms", scope: "" }] } : row) }
+    writeLeanText(directory, "plan.json", `${JSON.stringify(edited, null, 2)}\n`)
+    const blocked = run()
+    expect((await runLean(directory, { sessions: blocked.port })).status).toBe("blocked")
+    const [question] = readQuestions(directory)
+    expect(question).toMatchObject({ stage: "draft", status: "open" })
+
+    enqueueLeanRequest(directory, { kind: "answer", question_id: question!.id, answer: "The release is outside this request." })
+    const answered = run()
+    expect((await runLean(directory, { sessions: answered.port })).status).toBe("completed")
+    expect([blocked.count(AGENT.draft), answered.count(AGENT.draft)]).toEqual([0, 0])
+    expect(bodies()).toEqual(before)
+    expect(readLeanPlan(directory)).toEqual(edited)
+  }, 180_000)
 
   test("an outlined plan whose coverage record is missing is checked again; a plan written by hand without one is followed unchecked", async () => {
     const directory = prepared(`Prepare the letter by which ${RELEASE}.`)
