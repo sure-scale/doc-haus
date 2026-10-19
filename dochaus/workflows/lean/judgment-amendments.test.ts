@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { readFileSync } from "node:fs"
 import { paragraphSha256 } from "../../lib/drafting-amendment"
 import { checkChanges } from "./change-checks"
 import { finalBodyItems, readChangeList, type ParagraphRow } from "./checks"
@@ -7,7 +6,7 @@ import type { GateResult } from "./gate"
 import type { StepID } from "./plan"
 import { runLean } from "./runner"
 import { LEAN_PROMPT_VERSION, stageInputs } from "./stages"
-import { hashStageInputs, leanFile, readLeanJson, readLeanState, readOpenItems, writeLeanState, writeQuestions } from "./state"
+import { hashStageInputs, readLeanJson, readLeanState, readOpenItems, writeLeanState, writeQuestions } from "./state"
 import { AGENT, SUPPORT, cleanupMatters, draftingNotes, happyPath, matter, pidOf, sameSession, scriptedModel, type Reply } from "./test-support"
 
 // Amendments that rest on drafting judgment rather than a source passage. Real
@@ -347,7 +346,7 @@ describe("a marked judgment amendment through the run", () => {
 })
 
 describe("prompt version", () => {
-  test("the contract change is lean-17-advice-scope, and a run keyed under lean-16-repair-composition re-runs every model step except the accepted draft", async () => {
+  test("the contract change is lean-17-advice-scope, and a run keyed under lean-16-repair-composition re-runs every model step", async () => {
     expect(LEAN_PROMPT_VERSION).toBe("lean-17-advice-scope")
     const directory = matter()
     expect((await runLean(directory, { sessions: scriptedModel(happyPath).port })).status).toBe("completed")
@@ -355,7 +354,6 @@ describe("prompt version", () => {
     expect((await runLean(directory, { sessions: idle.port })).status).toBe("completed")
     expect(idle.prompts).toHaveLength(0)
 
-    const body = readFileSync(leanFile(directory, "d1/body.docx"))
     const state = readLeanState(directory)!
     writeLeanState(directory, {
       ...state,
@@ -364,9 +362,6 @@ describe("prompt version", () => {
     })
     const rerun = scriptedModel(happyPath)
     expect((await runLean(directory, { sessions: rerun.port })).status).toBe("completed")
-    // A document's draft is final once its docx exists: an upgrade re-runs the
-    // review, change and finalize steps against it, never a redraft.
-    expect(rerun.counts().map(count => count > 0)).toEqual([false, true, true, true])
-    expect(readFileSync(leanFile(directory, "d1/body.docx")).equals(body)).toBe(true)
+    expect(rerun.counts().map(count => count > 0)).toEqual([true, true, true, true])
   }, 120_000)
 })

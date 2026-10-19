@@ -113,7 +113,7 @@ describe("a requested memo in the body stages' context", () => {
   test("stage inputs carry both flags for every body stage after the accepted draft, and only when a memo is requested", () => {
     const directory = matter()
     writeLeanPlan(directory, [SCHEDULE, COMBINED_NOTE], undefined, undefined, MEMO)
-    // A draft is keyed on the outline contract alone; its prompt still carries the block.
+    // A draft is keyed on the outline contract and its own plan entry; its prompt still carries the block.
     const steps = (["d1", "d2"] as const).flatMap(document => BODY_STAGES.filter(stage => stage !== "draft").map(stage => `${document}.${stage}` as StepID))
     const withMemo = new Map(steps.map(step => [step, stageInputs(directory, step)]))
     for (const step of steps)

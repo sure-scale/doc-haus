@@ -45,10 +45,18 @@ type OutlinedDocument = Omit<PlannedDocument, "id">
 
 const MAX_LISTED = 12
 
+type TemplateEntry = { template?: string; comparison?: string; mode?: "new" | "revise" }
+
+/** The name a planned document's template is drawn from: a revision's
+ * original, else its "Template:" line. */
+export function templateSource(entry: TemplateEntry | undefined) {
+  return entry?.mode === "revise" ? entry.comparison ?? entry.template : entry?.template
+}
+
 /** The template a planned document is drafted from: the matter document its
  * "Template:" line names, when that document has headed parts. */
-export function documentTemplate(directory: string, entry: { template?: string; comparison?: string; mode?: "new" | "revise" } | undefined): DocumentTemplate | undefined {
-  const source = entry?.mode === "revise" ? entry.comparison ?? entry.template : entry?.template
+export function documentTemplate(directory: string, entry: TemplateEntry | undefined): DocumentTemplate | undefined {
+  const source = templateSource(entry)
   if (!source || !matterSourceIDs(directory).includes(source)) return
   const units = parseTemplateUnits(sourceText(directory, source))
   return topUnits(units).length ? { source, units } : undefined

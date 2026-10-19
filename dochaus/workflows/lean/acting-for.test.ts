@@ -134,7 +134,8 @@ describe("whom the lawyer acts for", () => {
     writeLeanText(directory, "plan.json", `${JSON.stringify({ ...readLeanPlan(directory)!, acting_for: { party: "the buyer", stated: true } }, null, 2)}\n`)
     expect(planActingFor(directory)).toEqual({ party: "the buyer", stated: true })
     expect(stagePrompt(directory, "d1.review")).toContain(SIDED_REVIEW)
-    // The accepted draft is keyed on the outline contract alone. Apply keys on
+    // The accepted draft is keyed on the outline contract and its own plan entry, not
+    // on whom the lawyer acts for. Apply keys on
     // the whole plan.json (it measures template coverage from the plan), so it
     // re-keys too; it makes no model call.
     expect(keys().map((key, index) => key !== before[index])).toEqual([false, true, true, true, true, false])
