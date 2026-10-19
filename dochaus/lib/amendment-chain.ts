@@ -76,21 +76,94 @@ function resolveTarget(db: Database, target: RelationRow, docs: DocRow[], relati
   return { kind: "unmatched" }
 }
 
-// The verbatim text at start..end of a document's extracted text, rebuilt from
-// its stored chunks the same way services/ingest/src/structure.ts
-// reconstructText does. Only stored chunk text is returned — never anything
-// synthesized. Exported so tool surfaces can quote the operative sentence at a
-// section_op's offsets without re-implementing the reconstruction.
-export function verbatimSpan(db: Database, docPath: string, start: number, end: number) {
+// A document's extracted text rebuilt from its stored chunks the way
+// services/ingest/src/structure.ts reconstructText does: each chunk is written
+// at its own char_start, gaps are padded and overlapping chunks (the
+// structure-aware chunker carries a trailing overlap) overwrite the same region
+// instead of being appended twice. A chunk never truncates text an earlier,
+// longer chunk already placed. `covered` lists the merged [start, end) ranges
+// that stored chunk text actually fills; padding is not covered. Only chunks
+// starting before `before` are read.
+function indexedText(db: Database, docPath: string, before: number) {
   const rows = db
     .query("SELECT text, char_start FROM chunks WHERE doc_path = ? AND char_start < ? ORDER BY char_start")
-    .all(docPath, end) as { text: string; char_start: number }[]
-  let rebuilt = ""
+    .all(docPath, before) as { text: string; char_start: number }[]
+  let text = ""
+  const covered: [number, number][] = []
   for (const row of rows) {
-    if (row.char_start > rebuilt.length) rebuilt += " ".repeat(row.char_start - rebuilt.length)
-    rebuilt += row.text
+    if (row.char_start > text.length) text += " ".repeat(row.char_start - text.length)
+    text = text.slice(0, row.char_start) + row.text + text.slice(row.char_start + row.text.length)
+    const end = row.char_start + row.text.length
+    const last = covered[covered.length - 1]
+    if (last && row.char_start <= last[1]) last[1] = Math.max(last[1], end)
+    else covered.push([row.char_start, end])
   }
-  return rebuilt.slice(start, end).trim()
+  return { text, covered }
+}
+
+// End of the contiguous stored-text run that contains `from`, or `from` itself
+// when that position is not covered by any chunk.
+function coveredUntil(covered: [number, number][], from: number) {
+  return covered.find(([start, end]) => start <= from && from < end)?.[1] ?? from
+}
+
+// Unicode code points in text[from, to); positions past the rebuilt text count
+// one each. read-document offsets and limits count code points, while stored
+// chunk and op offsets are UTF-16 indexes.
+function codePoints(text: string, from: number, to: number) {
+  return Array.from(text.slice(from, to)).length + Math.max(0, to - Math.max(from, text.length))
+}
+
+// The verbatim text at start..end of a document's extracted text, rebuilt from
+// its stored chunks. Only stored chunk text is returned — never anything
+// synthesized — and null when stored chunks do not cover the whole span.
+// Exported so tool surfaces can quote the operative sentence at a section_op's
+// offsets without re-implementing the reconstruction.
+export function verbatimSpan(db: Database, docPath: string, start: number, end: number) {
+  if (start >= end) return null
+  const { text, covered } = indexedText(db, docPath, end)
+  if (coveredUntil(covered, start) < end) return null
+  return text.slice(start, end).trim() || null
+}
+
+// read-document reads at most this many code points per page.
+const READ_LIMIT = 4000
+// How far past an operative statement the following text may run when no
+// later operative statement in the same document bounds it.
+const FOLLOWING_CAP = 3000
+
+export type OperativePassage = {
+  // Verbatim statement at the op's span (the amendment's own wording); null
+  // when stored chunks do not cover the span.
+  operativeText: string | null
+  // Verbatim text after the statement, up to the next operative statement in
+  // the same amending document or FOLLOWING_CAP characters. Position-based only:
+  // it may hold the restated wording or unrelated clauses, and is never
+  // verified as the resulting section text.
+  followingText: string | null
+  // read-document arguments (code points) covering the statement and the text
+  // after it.
+  read: { document: string; offset: number; limit: number }
+}
+
+// The amending document's own words around one op, located purely by stored
+// offsets. `docOps` are that document's ops; the next one bounds the passage.
+export function operativePassage(db: Database, op: SectionOpRow, docOps: SectionOpRow[]): OperativePassage {
+  const next = Math.min(...docOps.filter((o) => o.char_start >= op.char_end).map((o) => o.char_start))
+  const boundary = Math.min(next, op.char_end + FOLLOWING_CAP)
+  const { text, covered } = indexedText(db, op.doc_path, boundary)
+  const anchored = op.char_start < op.char_end && coveredUntil(covered, op.char_start) >= op.char_end
+  const readEnd = Math.max(op.char_end, Math.min(boundary, text.length))
+  const followingEnd = anchored ? Math.min(readEnd, coveredUntil(covered, op.char_end)) : op.char_end
+  return {
+    operativeText: anchored ? text.slice(op.char_start, op.char_end).trim() || null : null,
+    followingText: text.slice(op.char_end, followingEnd).trim() || null,
+    read: {
+      document: op.doc_name,
+      offset: codePoints(text, 0, op.char_start),
+      limit: Math.min(READ_LIMIT, Math.max(1, codePoints(text, op.char_start, readEnd))),
+    },
+  }
 }
 
 export function buildChains(db: Database): Chain[] {
@@ -102,7 +175,8 @@ export function buildChains(db: Database): Chain[] {
   const docs = db.query("SELECT doc_path, name, created_at FROM documents").all() as DocRow[]
   const opsByDoc = new Map<string, SectionOpRow[]>()
   for (const op of db
-    .query("SELECT doc_path, doc_name, section_label, operation, char_start, char_end FROM section_ops")
+    // Document order: ingest stores ops grouped by verb, not by position.
+    .query("SELECT doc_path, doc_name, section_label, operation, char_start, char_end FROM section_ops ORDER BY char_start, id")
     .all() as SectionOpRow[]) {
     const list = opsByDoc.get(op.doc_path) ?? []
     list.push(op)
@@ -112,7 +186,7 @@ export function buildChains(db: Database): Chain[] {
   const resolved = relations.map((rel) => ({
     rel,
     resolution: resolveTarget(db, rel, docs, relations),
-    recital: verbatimSpan(db, rel.doc_path, rel.char_start, rel.char_end),
+    recital: verbatimSpan(db, rel.doc_path, rel.char_start, rel.char_end) ?? "",
     ops: opsByDoc.get(rel.doc_path) ?? [],
   }))
 
@@ -148,17 +222,16 @@ export function buildChains(db: Database): Chain[] {
 }
 
 // For each resolved base, map every section_label any amender touches to the
-// latest amender's op (newest-first walk). Used by search-document to flag and
-// down-rank chunks whose section has been superseded.
-export function supersededSections(
-  db: Database,
-  chains: Chain[],
-): Map<string, Map<string, { amender: string; op: SectionOpRow }>> {
-  const result = new Map<string, Map<string, { amender: string; op: SectionOpRow }>>()
+// latest amender's op (newest-first walk), with all of that amender's ops so a
+// caller can bound the op's passage (operativePassage). Used by search-document
+// to flag and down-rank chunks whose section has been superseded.
+type Supersession = { amender: string; op: SectionOpRow; amenderOps: SectionOpRow[] }
+export function supersededSections(db: Database, chains: Chain[]): Map<string, Map<string, Supersession>> {
+  const result = new Map<string, Map<string, Supersession>>()
   for (const chain of chains) {
     if (chain.base.kind !== "resolved") continue
     const basePath = chain.base.doc.doc_path
-    const baseMap = result.get(basePath) ?? new Map<string, { amender: string; op: SectionOpRow }>()
+    const baseMap = result.get(basePath) ?? new Map<string, Supersession>()
     // Walk amenders newest-first. Within one amender, the LAST op in document
     // order wins per label (matches resolveCurrentSection's contract — a
     // document that says "§4 amended" then later "§4 deleted" reports deleted).
@@ -167,7 +240,7 @@ export function supersededSections(
       const latestPerLabel = new Map<string, SectionOpRow>()
       for (const op of entry.ops) latestPerLabel.set(op.section_label, op)
       for (const [label, op] of latestPerLabel) {
-        if (!baseMap.has(label)) baseMap.set(label, { amender: entry.rel.doc_name, op })
+        if (!baseMap.has(label)) baseMap.set(label, { amender: entry.rel.doc_name, op, amenderOps: entry.ops })
       }
     }
     if (baseMap.size > 0) result.set(basePath, baseMap)
@@ -176,26 +249,25 @@ export function supersededSections(
 }
 
 // Walk a chain newest-first for the given section label. Returns the first
-// matching amender's op (the operative one) and operativeText: the verbatim
-// statement at that op's offsets in the amending document. That is the
+// matching amender's op (the operative one) with its operativePassage: the
+// verbatim statement at that op's offsets in the amending document, the text
+// that follows it there, and read-document arguments for both. That is the
 // amendment's own wording ("Section 4 ... is hereby amended and restated ..."),
-// not the resulting text of the base section, and it is null when the index
-// cannot rebuild the span. The amender's chunks are never looked up by label:
-// an amendment's own §4 is a different clause from the base document's §4.
-// Returns null when no amender touches the label.
+// not the resulting text of the base section. The amender's chunks are never
+// looked up by label: an amendment's own §4 is a different clause from the
+// base document's §4. Returns null when no amender touches the label.
 export function resolveCurrentSection(
   db: Database,
   chain: Chain,
   label: string,
-): { operation: SectionOpRow["operation"]; amender: ChainEntry; op: SectionOpRow; operativeText: string | null } | null {
+): ({ operation: SectionOpRow["operation"]; amender: ChainEntry; op: SectionOpRow } & OperativePassage) | null {
   for (let i = chain.entries.length - 1; i >= 0; i--) {
     const entry = chain.entries[i]!
     const matching = entry.ops.filter((op) => op.section_label === label)
     if (matching.length === 0) continue
     // Within one amender, the last operative sentence in document order wins.
     const op = matching[matching.length - 1]!
-    const operativeText = verbatimSpan(db, op.doc_path, op.char_start, op.char_end)
-    return { operation: op.operation, amender: entry, op, operativeText: operativeText || null }
+    return { operation: op.operation, amender: entry, op, ...operativePassage(db, op, entry.ops) }
   }
   return null
 }

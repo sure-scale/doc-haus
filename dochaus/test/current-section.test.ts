@@ -64,15 +64,17 @@ test("restated section returns latest amender's operative wording + lineage", as
   // The amenders' own clauses labelled "4" are not the base's §4.
   db.run("INSERT INTO chunks (doc_path, doc_name, section, text, char_start, char_end) VALUES (?, ?, ?, ?, ?, ?)", [AM1, "Amendment No. 1", "4", "AM1 own clause 4.", 200, 217])
   db.run("INSERT INTO chunks (doc_path, doc_name, section, text, char_start, char_end) VALUES (?, ?, ?, ?, ?, ?)", [AM2, "Amendment No. 2", "4", "AM2 own clause 4.", 200, 217])
-  db.run("INSERT INTO section_ops (doc_path, doc_name, section_label, operation, char_start, char_end) VALUES (?, ?, ?, ?, ?, ?)", [AM1, "Amendment No. 1", "4", "amend", 50, 100])
-  db.run("INSERT INTO section_ops (doc_path, doc_name, section_label, operation, char_start, char_end) VALUES (?, ?, ?, ?, ?, ?)", [AM2, "Amendment No. 2", "4", "restate", 50, 100])
+  db.run("INSERT INTO section_ops (doc_path, doc_name, section_label, operation, char_start, char_end) VALUES (?, ?, ?, ?, ?, ?)", [AM1, "Amendment No. 1", "4", "amend", 50, 74])
+  db.run("INSERT INTO section_ops (doc_path, doc_name, section_label, operation, char_start, char_end) VALUES (?, ?, ?, ?, ?, ?)", [AM2, "Amendment No. 2", "4", "restate", 50, 74])
   db.close()
 
   const result = await tool.execute({ section: "4" }, ctxFor(dir))
   expect(result).toMatch(/Current state of §4/)
   expect(result).toMatch(/Latest operative source: Amendment No. 2/)
-  expect(result).toContain('Operative wording of Amendment No. 2 (verbatim, chars 50..100)')
+  expect(result).toContain('Operative wording of Amendment No. 2 (verbatim, chars 50..74)')
   expect(result).toContain('"AM2 operative statement."')
+  // The newest entry's quote is not repeated in the lineage.
+  expect(result.split("AM2 operative statement.").length - 1).toBe(1)
   expect(result).not.toMatch(/own clause 4/)
   expect(result).toMatch(/Lineage \(newest first\):/)
   expect(result).toMatch(/Amendment No. 2.*restated/)
@@ -129,7 +131,7 @@ test("amender op span not recoverable from the index says the current text is no
   const result = await tool.execute({ section: "4" }, ctxFor(dir))
   expect(result).toMatch(/current text of §4 is not resolved/)
   expect(result).not.toMatch(/Operative wording of/)
-  expect(result).toMatch(/read-document on "Amendment No\. 1" at chars 50\.\.100/)
+  expect(result).toContain('Next step: read-document {"document":"Amendment No. 1","offset":50,"limit":50}')
 })
 
 test("amender's own same-numbered clause is never presented as the base section's current text", async () => {
@@ -156,12 +158,36 @@ test("amender's own same-numbered clause is never presented as the base section'
   db.close()
 
   const result = await tool.execute({ section: "4" }, ctxFor(dir))
-  expect(result).not.toMatch(/Governing Law/)
+  const following = "Text following the amendment's statement in Amendment No. 1 (verbatim; may contain the restated wording; not verified as the resulting text of §4):"
   expect(result).not.toMatch(/Current text of §4/)
   expect(result).toMatch(/Latest operative source: Amendment No\. 1 — restated §4/)
   expect(result).toContain(`Operative wording of Amendment No. 1 (verbatim, chars ${opStart}..${opStart + statement.length})`)
   expect(result).toContain(`"${statement}"`)
   expect(result).toMatch(/current text of §4 is not resolved/)
+  // The amender's own §4 appears only as part of the positional text after the
+  // statement, labelled as unverified, never as the base section's text.
+  expect(result).toContain(`${following}\n“4. Fees. Customer shall pay each invoice within forty-five (45) days.”\n4. Governing Law.`)
+  expect(result.slice(0, result.indexOf(following))).not.toMatch(/Governing Law/)
+  expect(result).toContain(`Next step: read-document {"document":"Amendment No. 1","offset":${opStart},"limit":${full.length - opStart}}`)
+  expect(result.split(statement).length - 1).toBe(1)
+})
+
+test("unresolved base: an untouched section lists non-amending documents and says the base was not matched", async () => {
+  const { dir, db } = matter()
+  const SIDE = "/m/side.docx"
+  db.run("INSERT INTO documents (doc_path, name, created_at) VALUES (?, ?, ?)", [AM1, "Amendment No. 1", 2])
+  db.run("INSERT INTO documents (doc_path, name, created_at) VALUES (?, ?, ?)", [SIDE, "Side Letter", 3])
+  db.run("INSERT INTO chunks (doc_path, doc_name, section, text, char_start, char_end) VALUES (?, ?, ?, ?, ?, ?)", [AM1, "Amendment No. 1", "4", "4. Governing Law. This Amendment is governed by the laws of the State of New York.", 0, 83])
+  db.run("INSERT INTO chunks (doc_path, doc_name, section, text, char_start, char_end) VALUES (?, ?, ?, ?, ?, ?)", [SIDE, "Side Letter", "4", "4. Notices. Notices go to the addresses above.", 0, 46])
+  // The stated base matches no indexed document, so the chain root is unresolved.
+  db.run("INSERT INTO doc_relations (doc_path, doc_name, relation, target_name, char_start, char_end) VALUES (?, ?, ?, ?, ?, ?)", [AM1, "Amendment No. 1", "amends", "Supply Agreement", 0, 10])
+  db.close()
+
+  const result = await tool.execute({ section: "4" }, ctxFor(dir))
+  expect(result).not.toMatch(/Governing Law/)
+  expect(result).not.toMatch(/Text below is from the base document/)
+  expect(result).toMatch(/base document "Supply Agreement" was not matched/)
+  expect(result).toMatch(/4\. Notices\./)
 })
 
 test("no chain in matter behaves like get-section with a note", async () => {

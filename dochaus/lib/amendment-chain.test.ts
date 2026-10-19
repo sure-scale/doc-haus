@@ -5,7 +5,7 @@ import { expect, test } from "bun:test"
 import { mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { buildChains, resolveCurrentSection, supersededSections } from "./amendment-chain"
+import { buildChains, resolveCurrentSection, supersededSections, verbatimSpan } from "./amendment-chain"
 
 function syntheticDb() {
   const dir = mkdtempSync(path.join(tmpdir(), "amend-helper-"))
@@ -177,8 +177,8 @@ test("resolveCurrentSection walks newest-first and returns the latest op", () =>
       { doc_path: "/m/am2.docx", doc_name: "Amendment No. 2", relation: "amends", target_name: "Original Agreement", char_start: 0, char_end: 10 },
     ],
     [
-      { doc_path: "/m/am1.docx", doc_name: "Amendment No. 1", section_label: "4", operation: "amend", char_start: 100, char_end: 200 },
-      { doc_path: "/m/am2.docx", doc_name: "Amendment No. 2", section_label: "4", operation: "restate", char_start: 100, char_end: 200 },
+      { doc_path: "/m/am1.docx", doc_name: "Amendment No. 1", section_label: "4", operation: "amend", char_start: 100, char_end: 123 },
+      { doc_path: "/m/am2.docx", doc_name: "Amendment No. 2", section_label: "4", operation: "restate", char_start: 100, char_end: 123 },
     ],
   )
   const [chain] = buildChains(db)
@@ -241,7 +241,9 @@ function collidingAmendment(db: Database) {
   const statement = "Section 4 of the Agreement is hereby amended and restated in its entirety to read as follows:"
   const subStatement = "Section 4.2(a) of the Agreement is hereby amended by replacing “thirty (30) days” with “forty-five (45) days”"
   const parts = [
-    { section: "", text: "AMENDMENT NO. 1 TO MASTER SERVICES AGREEMENT\n" },
+    // One astral character (two UTF-16 units, one code point) before the ops,
+    // so read-document offsets must be converted to code points.
+    { section: "", text: "AMENDMENT NO. 1 TO MASTER SERVICES AGREEMENT 𝔄\n" },
     { section: "1", text: `1. Fees. ${statement}\n“4. Fees. Customer shall pay each invoice within forty-five (45) days.”\n` },
     { section: "2", text: `2. Payment Terms. ${subStatement}\n` },
     { section: "4", text: "4. Governing Law. This Amendment is governed by the laws of the State of New York.\n" },
@@ -274,7 +276,7 @@ function collidingAmendment(db: Database) {
       { doc_path: "/m/am1.docx", doc_name: "Amendment No. 1", section_label: "4.2(a)", operation: "amend", char_start: subStart, char_end: subStart + subStatement.length },
     ],
   )
-  return { statement, subStatement, opStart }
+  return { statement, subStatement, opStart, subStart, full }
 }
 
 test("resolveCurrentSection returns the amender's operative wording, never its own same-numbered clause", () => {
@@ -296,9 +298,122 @@ test("resolveCurrentSection quotes a sub-clause op's wording, not the amender's 
   const { subStatement } = collidingAmendment(db)
   const [chain] = buildChains(db)
   const resolved = resolveCurrentSection(db, chain!, "4.2(a)")
-  expect(JSON.stringify(resolved)).not.toContain("Counterparts")
+  expect(resolved?.operativeText).not.toContain("Counterparts")
   expect(resolved?.operation).toBe("amend")
   expect(resolved?.operativeText).toBe(subStatement)
+  db.close()
+})
+
+test("resolveCurrentSection returns the text after the statement up to the next op, with code-point read arguments", () => {
+  const { db } = syntheticDb()
+  const { opStart, subStart } = collidingAmendment(db)
+  const [chain] = buildChains(db)
+  const resolved = resolveCurrentSection(db, chain!, "4")
+  // Position-based only: everything between the §4 statement and the next
+  // operative statement in the same amending document.
+  expect(resolved?.followingText).toBe("“4. Fees. Customer shall pay each invoice within forty-five (45) days.”\n2. Payment Terms.")
+  // offset and limit count code points; the preamble's astral character is one.
+  expect(resolved?.read).toEqual({ document: "Amendment No. 1", offset: opStart - 1, limit: subStart - opStart })
+  db.close()
+})
+
+test("resolveCurrentSection runs the following text to the end of the indexed text when no later op bounds it", () => {
+  const { db } = syntheticDb()
+  const { subStart, subStatement, full } = collidingAmendment(db)
+  const [chain] = buildChains(db)
+  const resolved = resolveCurrentSection(db, chain!, "4.2(a)")
+  expect(resolved?.followingText).toBe(full.slice(subStart + subStatement.length).trim())
+  expect(resolved?.read).toEqual({ document: "Amendment No. 1", offset: subStart - 1, limit: full.length - subStart })
+  db.close()
+})
+
+test("resolveCurrentSection caps the following text at 3000 characters", () => {
+  const { db } = syntheticDb()
+  const statement = "Section 6 of the Agreement is hereby amended and restated in its entirety to read as follows:"
+  const full = `${statement}\n${"Restated body paragraph. ".repeat(200)}`
+  seed(
+    db,
+    [
+      { path: "/m/base.docx", name: "Original Agreement", createdAt: 1 },
+      { path: "/m/am1.docx", name: "Amendment No. 1", createdAt: 2 },
+    ],
+    [{ docPath: "/m/am1.docx", section: "1", text: full, charStart: 0, charEnd: full.length }],
+    [
+      { doc_path: "/m/am1.docx", doc_name: "Amendment No. 1", relation: "amends", target_name: "Original Agreement", char_start: 0, char_end: 10 },
+    ],
+    [
+      { doc_path: "/m/am1.docx", doc_name: "Amendment No. 1", section_label: "6", operation: "restate", char_start: 0, char_end: statement.length },
+    ],
+  )
+  const [chain] = buildChains(db)
+  const resolved = resolveCurrentSection(db, chain!, "6")
+  expect(resolved?.followingText).toBe(full.slice(statement.length, statement.length + 3000).trim())
+  expect(resolved?.read).toEqual({ document: "Amendment No. 1", offset: 0, limit: statement.length + 3000 })
+  db.close()
+})
+
+test("verbatimSpan rebuilds overlapping chunks at their offsets and refuses an unanchored span", () => {
+  const { db } = syntheticDb()
+  const statement = "Section 9 of the Agreement is hereby amended and restated in its entirety to read as follows:"
+  const full =
+    "AMENDMENT NO. 2 TO SUPPLY AGREEMENT\n" +
+    "The parties wish to amend the Agreement as set out below.\n" +
+    `1. Term. ${statement}\n“9. Term. This Agreement continues until terminated by either party.”\n`
+  const opStart = full.indexOf(statement)
+  // Structure-aware chunking carries a trailing overlap: the second chunk
+  // starts inside the first one.
+  const firstEnd = opStart + 20
+  const secondStart = opStart - 30
+  seed(
+    db,
+    [
+      { path: "/m/supply.docx", name: "Supply Agreement", createdAt: 1 },
+      { path: "/m/am2.docx", name: "Amendment No. 2", createdAt: 2 },
+    ],
+    [
+      { docPath: "/m/am2.docx", section: "1", text: full.slice(0, firstEnd), charStart: 0, charEnd: firstEnd },
+      { docPath: "/m/am2.docx", section: "1", text: full.slice(secondStart), charStart: secondStart, charEnd: full.length },
+    ],
+    [
+      { doc_path: "/m/am2.docx", doc_name: "Amendment No. 2", relation: "amends", target_name: "Supply Agreement", char_start: 0, char_end: 35 },
+    ],
+    [
+      { doc_path: "/m/am2.docx", doc_name: "Amendment No. 2", section_label: "9", operation: "restate", char_start: opStart, char_end: opStart + statement.length },
+    ],
+  )
+  expect(verbatimSpan(db, "/m/am2.docx", opStart, opStart + statement.length)).toBe(statement)
+  // A span running past the indexed text cannot be anchored.
+  expect(verbatimSpan(db, "/m/am2.docx", opStart, full.length + 50)).toBeNull()
+  const [chain] = buildChains(db)
+  const resolved = resolveCurrentSection(db, chain!, "9")
+  expect(resolved?.operativeText).toBe(statement)
+  expect(resolved?.followingText).toBe("“9. Term. This Agreement continues until terminated by either party.”")
+  db.close()
+})
+
+test("ops are taken in document order even when stored grouped by operation", () => {
+  // Ingest inserts section_ops grouped by verb (restate rows before delete
+  // rows), so storage order is not document order. Here §4 is deleted early
+  // and restated later in the same amender: the later restate is operative.
+  const { db } = syntheticDb()
+  seed(
+    db,
+    [
+      { path: "/m/base.docx", name: "Original Agreement", createdAt: 1 },
+      { path: "/m/am1.docx", name: "Amendment No. 1", createdAt: 2 },
+    ],
+    [],
+    [
+      { doc_path: "/m/am1.docx", doc_name: "Amendment No. 1", relation: "amends", target_name: "Original Agreement", char_start: 0, char_end: 10 },
+    ],
+    [
+      { doc_path: "/m/am1.docx", doc_name: "Amendment No. 1", section_label: "4", operation: "restate", char_start: 300, char_end: 400 },
+      { doc_path: "/m/am1.docx", doc_name: "Amendment No. 1", section_label: "4", operation: "delete", char_start: 100, char_end: 200 },
+    ],
+  )
+  const chains = buildChains(db)
+  expect(resolveCurrentSection(db, chains[0]!, "4")?.operation).toBe("restate")
+  expect(supersededSections(db, chains).get("/m/base.docx")?.get("4")?.op.operation).toBe("restate")
   db.close()
 })
 

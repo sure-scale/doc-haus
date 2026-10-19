@@ -4,7 +4,7 @@ import { Database } from "bun:sqlite"
 import { existsSync } from "node:fs"
 import path from "node:path"
 import { formatCitations } from "../lib/citations"
-import { buildChains, supersededSections } from "../lib/amendment-chain"
+import { buildChains, operativePassage, supersededSections } from "../lib/amendment-chain"
 import { pendingRedlinesForDoc } from "../lib/redlines"
 import { draftingTraceReference } from "../lib/drafting-trace-identity"
 import { indexIsContained, lexicalChannel, phraseChannel, vectorChannel, type ChunkRow } from "../lib/search/channels"
@@ -131,6 +131,13 @@ export default tool({
       .sort((a, b) => b.score - a.score)
       .slice(0, k)
 
+    // read-document arguments (code points) for each superseding statement, so
+    // the warning names a call the agent can make without another tool.
+    const supersessionReads = new Map(
+      ranked.flatMap(({ row, supersededBy }) =>
+        supersededBy ? [[row.id, operativePassage(db, supersededBy.op, supersededBy.amenderOps).read] as const] : [],
+      ),
+    )
     const definitionsNote = attachDefinitions(db, ranked, args)
     const crossRefsNote = attachCrossRefs(db, ranked, args)
     db.close()
@@ -178,6 +185,7 @@ export default tool({
             operation: supersededBy.op.operation,
             charStart: supersededBy.op.char_start,
             charEnd: supersededBy.op.char_end,
+            read: supersessionReads.get(row.id)!,
           }
         : undefined,
     }))

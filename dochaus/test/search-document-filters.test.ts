@@ -305,16 +305,22 @@ test("structural passage selection preserves matter-wide supersession metadata a
     ])
     const original = unfiltered.result!.metadata.citations.find((citation) => citation.docPath === source.path)!
     expect(unfiltered.result!.metadata.citations[0].docPath).toBe(amender.path)
+    // read-document arguments run from the operative statement to the end of
+    // the indexed amendment text (no later statement bounds it).
+    const read = { document: amender.name, offset: operation.char_start, limit: amendmentText.length - operation.char_start }
     expect(original.superseded_by).toEqual({
       amenderName: amender.name,
       operation: "restate",
       charStart: operation.char_start,
       charEnd: operation.char_end,
+      read,
     })
     expect(original.score).toBeCloseTo(1 / 3, 10)
     expect(scoped.result!.metadata.citations).toEqual([original])
     expect(scoped.result!.output).toContain("[⚠ SUPERSEDED]")
     expect(scoped.result!.output).toContain(`superseded by: ${amender.name}`)
+    expect(scoped.result!.output).toContain(`read the amendment's operative wording: read-document ${JSON.stringify(read)}`)
+    expect(scoped.result!.output).not.toContain("current-section")
   } finally {
     rmSync(fixture.directory, { recursive: true, force: true })
   }

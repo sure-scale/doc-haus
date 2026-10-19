@@ -7,7 +7,7 @@
 import { FLAGGED_PASSAGE_NOTE, UNTRUSTED_EXCERPT_NOTICE } from "./untrusted"
 
 const SUPERSEDED_PASSAGE_NOTE =
-  "[⚠ SUPERSEDED] This passage may be from a section a later amendment restates, amends, or deletes. Use the `current-section` tool to see the amendment's operative wording and lineage before quoting this passage as current."
+  "[⚠ SUPERSEDED] A later amendment restates, amends, or deletes this passage's section, so it may not be the current text."
 
 const DEFAULT_EXCERPT_DISPLAY_CHARS = 1000
 
@@ -45,6 +45,9 @@ export type DocumentCitation = {
     operation: "amend" | "restate" | "delete" | "add"
     charStart: number
     charEnd: number
+    // read-document arguments (Unicode code points) covering the amender's
+    // operative statement and the text after it.
+    read?: { document: string; offset: number; limit: number }
   }
 }
 
@@ -55,7 +58,10 @@ export function formatCitations(citations: DocumentCitation[]) {
       const score = c.score === undefined ? "" : ` (score ${c.score.toFixed(3)})`
       const flag = c.flagged ? `\n${FLAGGED_PASSAGE_NOTE}` : ""
       const superseded = c.superseded_by
-        ? `\n${SUPERSEDED_PASSAGE_NOTE}\n   superseded by: ${c.superseded_by.amenderName} (${c.superseded_by.operation}, chars ${c.superseded_by.charStart}..${c.superseded_by.charEnd})`
+        ? `\n${SUPERSEDED_PASSAGE_NOTE}\n   superseded by: ${c.superseded_by.amenderName} (${c.superseded_by.operation}, chars ${c.superseded_by.charStart}..${c.superseded_by.charEnd})` +
+          (c.superseded_by.read
+            ? `\n   before quoting this passage as current, read the amendment's operative wording: read-document ${JSON.stringify(c.superseded_by.read)}`
+            : "")
         : ""
       const reason =
         c.reason === undefined

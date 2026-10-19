@@ -2,15 +2,17 @@ import { tool } from "./legacy-definition"
 import { Database } from "bun:sqlite"
 import { existsSync } from "node:fs"
 import path from "node:path"
-import { buildChains, resolveCurrentSection, verbatimSpan, type Chain } from "../lib/amendment-chain"
+import { buildChains, resolveCurrentSection, verbatimSpan, type Chain, type SectionOpRow } from "../lib/amendment-chain"
 
 // doc.haus current-section resolver. For a section label, walks the matter's
 // amendment chains newest-first and returns the verbatim operative wording of
-// whichever amender last touches that section (the stored op span), plus the
-// full lineage so the answer is auditable. It never presents an amender's own
-// clause as the base section's current text: when the resulting text is not
-// recorded it says so. Falls back honestly when no chain exists or no amender
-// touches the section.
+// whichever amender last touches that section (the stored op span), the text
+// that follows it in that amender located by position only, a read-document
+// call covering both, and the full lineage so the answer is auditable. It never
+// presents an amender's own clause as the base section's current text: the
+// resulting text is not recorded, and the output says so. Falls back honestly
+// when no chain exists, no amender touches the section, or the base document
+// was not matched.
 //
 // Differs from get-section, which returns one document's verbatim section text
 // without walking the chain. Use current-section for "what does §X currently
@@ -20,16 +22,26 @@ import { buildChains, resolveCurrentSection, verbatimSpan, type Chain } from "..
 // flood the context window. Read-only; all writes happen in the ingest service.
 
 const TEXT_CAP = 20000
+// An operative statement is one sentence; clip a quote that is not.
+const QUOTE_CAP = 1000
 
-type Chunk = { doc_name: string; section: string; text: string; char_start: number; char_end: number }
+type Chunk = { doc_path: string; doc_name: string; section: string; text: string; char_start: number; char_end: number }
 
-function fallbackSectionText(db: Database, section: string, document: string | undefined) {
+// Section text by label. `exclude` drops documents by path — amending
+// documents, whose own numbering is not the base document's.
+function fallbackSectionText(db: Database, section: string, document: string | undefined, exclude = new Set<string>()) {
   const where = document ? "doc_name = ? AND section = ?" : "section = ?"
   const params = document ? [document, section] : [section]
   const rows = db
-    .query(`SELECT doc_name, section, text, char_start, char_end FROM chunks WHERE ${where} ORDER BY doc_name, char_start`)
+    .query(`SELECT doc_path, doc_name, section, text, char_start, char_end FROM chunks WHERE ${where} ORDER BY doc_name, char_start`)
     .all(...params) as Chunk[]
-  return rows
+  return rows.filter((row) => !exclude.has(row.doc_path))
+}
+
+function quote(text: string) {
+  return text.length > QUOTE_CAP
+    ? `"${text.slice(0, QUOTE_CAP)}" [quote clipped at ${QUOTE_CAP} characters]`
+    : `"${text}"`
 }
 
 function renderChunks(rows: Chunk[]) {
@@ -60,7 +72,9 @@ function conjugate(operation: "amend" | "restate" | "delete" | "add") {
   return operation + (operation.endsWith("e") ? "d" : "ed")
 }
 
-function renderLineage(db: Database, chain: Chain, label: string) {
+// `quotedAbove` is the op whose wording the answer already quotes; its lineage
+// line refers back instead of repeating the quote.
+function renderLineage(db: Database, chain: Chain, label: string, quotedAbove?: SectionOpRow) {
   const lines: string[] = []
   let seenNewest = false
   for (let i = chain.entries.length - 1; i >= 0; i--) {
@@ -73,8 +87,13 @@ function renderLineage(db: Database, chain: Chain, label: string) {
     // Quote the operative sentence at the displayed op offsets — not the
     // doc-level recital, which lives at different offsets. The chars shown
     // on this line (op.char_start..op.char_end) must match the quoted text.
-    const opVerbatim = verbatimSpan(db, op.doc_path, op.char_start, op.char_end)
-    const verbatim = opVerbatim ? `"${opVerbatim}"` : "operative text not recoverable from the index at these offsets"
+    const opVerbatim = op === quotedAbove ? null : verbatimSpan(db, op.doc_path, op.char_start, op.char_end)
+    const verbatim =
+      op === quotedAbove
+        ? "operative wording quoted above"
+        : opVerbatim
+          ? quote(opVerbatim)
+          : "operative text not recoverable from the index at these offsets"
     const tag = superseded ? " (now superseded)" : ""
     lines.push(`- ${entry.rel.doc_name} §${label} (chars ${op.char_start}..${op.char_end}): ${conjugate(op.operation)}${tag} — ${verbatim}`)
   }
@@ -86,7 +105,7 @@ function renderLineage(db: Database, chain: Chain, label: string) {
 
 export default tool({
   description:
-    'Trace a contract section across the matter\'s amendment chain — e.g. "what does Section 4 currently say?". Walks amendments newest-first and returns the latest amendment\'s verbatim operative wording for that section (amend/restate/add) — the amendment\'s statement, not the resulting section text — or reports the section deleted. Says when the current text is not resolved. Always cites the full lineage. Use get-section for raw text from one document without chain-walking.',
+    'Trace a contract section across the matter\'s amendment chain — e.g. "what does Section 4 currently say?". Walks amendments newest-first and returns the latest amendment\'s verbatim operative wording for that section (amend/restate/add) — the amendment\'s statement, not the resulting section text — plus the text that follows it in the amendment (by position, unverified) and a read-document call, or reports the section deleted. Says when the current text is not resolved. Always cites the full lineage. Use get-section for raw text from one document without chain-walking.',
   args: {
     section: tool.schema.string().describe('Section label, e.g. "4" or "7.2(a)" or "EXHIBIT A".'),
     document: tool.schema
@@ -139,14 +158,28 @@ export default tool({
 
     if (!resolved) {
       // No amender touches the section; return base text with a clear note.
-      const rows = fallbackSectionText(db, args.section, chain.base.kind === "resolved" ? chain.base.doc.name : undefined)
+      if (chain.base.kind === "resolved") {
+        const rows = fallbackSectionText(db, args.section, chain.base.doc.name)
+        db.close()
+        if (!rows.length) return missingNote(args.section, args.document, `no amendment modifies §${args.section}`)
+        return `${renderChunks(rows)}\n\nNote: no amendment modifies §${args.section}. Text below is from the base document.`
+      }
+      // The stated base matched no indexed document. Never offer an amending
+      // document's own clause as the base text; list the other documents'
+      // sections with that label and say the base is unknown.
+      const amenders = new Set(chains.flatMap((c) => c.entries.map((e) => e.rel.doc_path)))
+      const rows = fallbackSectionText(db, args.section, undefined, amenders)
       db.close()
-      if (!rows.length) return missingNote(args.section, args.document, `no amendment modifies §${args.section}`)
-      return `${renderChunks(rows)}\n\nNote: no amendment modifies §${args.section}. Text below is from the base document.`
+      const unmatched = `the base document "${chain.base.targetName}" was not matched to an indexed document`
+      if (!rows.length) return missingNote(args.section, args.document, `no amendment modifies §${args.section}, and ${unmatched}`)
+      return (
+        `Note: no amendment modifies §${args.section}, but ${unmatched}. ` +
+        `Sections labelled §${args.section} in the matter's non-amending documents (none is confirmed as the base):\n\n${renderChunks(rows)}`
+      )
     }
 
-    const lineage = renderLineage(db, chain, args.section)
     if (resolved.operation === "delete") {
+      const lineage = renderLineage(db, chain, args.section)
       db.close()
       return (
         `=== Current state of §${args.section} (chain root: ${baseName}) ===\n` +
@@ -155,28 +188,35 @@ export default tool({
     }
 
     // The index records where the amendment operates (the op span), not the
-    // resulting section text. Quote the amendment's own operative wording,
-    // labelled as such, and say the current text is not resolved.
-    const { op, operativeText } = resolved
+    // resulting section text. Quote the amendment's own operative wording and
+    // the text after it by position only, labelled as such, and say the
+    // current text is not resolved.
+    const { op, operativeText, followingText, read } = resolved
+    const lineage = renderLineage(db, chain, args.section, operativeText ? op : undefined)
+    db.close()
     const amender = resolved.amender.rel.doc_name
     const span = `chars ${op.char_start}..${op.char_end}`
-    db.close()
+    const nextStep = `Next step: read-document ${JSON.stringify(read)}`
     const header =
       `=== Current state of §${args.section} (chain root: ${baseName}) ===\n` +
       `Latest operative source: ${amender} — ${conjugate(resolved.operation)} §${args.section}.\n\n`
     if (!operativeText) {
       return (
         header +
-        `Note: the current text of §${args.section} is not resolved — the amendment's operative wording at ${span} is not recoverable from the index. ` +
-        `Use read-document on "${amender}" at ${span} to view it verbatim.\n\n${lineage}`
+        `Note: the current text of §${args.section} is not resolved — the amendment's operative wording at ${span} is not recoverable from the index.\n` +
+        `${nextStep} reads the amendment's text at that position.\n\n${lineage}`
       )
     }
+    const following = followingText
+      ? `Text following the amendment's statement in ${amender} (verbatim; may contain the restated wording; not verified as the resulting text of §${args.section}):\n${followingText}\n\n`
+      : ""
     return (
       header +
       `Operative wording of ${amender} (verbatim, ${span}). This is the amendment's statement, not the resulting text of §${args.section}:\n` +
-      `"${operativeText}"\n\n` +
-      `Note: the current text of §${args.section} is not resolved — the index records where the amendment operates, not the resulting section text. ` +
-      `Use read-document on "${amender}" from char ${op.char_start} onward for the amendment's full wording.\n\n${lineage}`
+      `${quote(operativeText)}\n\n` +
+      following +
+      `Note: the current text of §${args.section} is not resolved — the index records where the amendment operates, not the resulting section text.\n` +
+      `${nextStep} reads the statement and the text after it; confirm the resulting wording of §${args.section} there before quoting it as current.\n\n${lineage}`
     )
   },
 })
