@@ -18,7 +18,7 @@ import { requestedFilesPrompt } from "./requested-files"
 import { drainLeanRequests, enqueueLeanRequest, queuedAnswerIDs, type LeanRequest, type StoredLeanRequest } from "./requests"
 import { researchPrompt } from "./research"
 import { runLean } from "./runner"
-import { handedBackItems, LEAN_PROMPT_VERSION, stageInputs } from "./stages"
+import { handedBackItems, LEAN_PROMPT_VERSION, researchBasis, stageInputs } from "./stages"
 import { answeredQuestionsText, answerQuestion, assertDelegable, delegateQuestion, handedBack as isHandedBack, handedBackBlock, handedBackNotesBlock, handedBackQuestionsText, hashStageInputs, LeanQuestionError, readLeanJson, readLeanText, readOpenItems, readQuestions, writeLeanText, writeOpenItems, writeQuestions, type Question } from "./state"
 import { AGENT, cleanupMatters, happyPath, matter, noChanges, scriptedModel, SUPPORT, type Reply } from "./test-support"
 
@@ -244,7 +244,7 @@ test("with no lawyer's answers a hand-back is listed under its own heading, not 
   const directory = matter()
   writeQuestions(directory, [{ id: "q-cap", stage: "intake", question: "Should liability be capped?", context: "The terms are silent.", status: "answered", answer_kind: "decide_for_me", answered_at: "2026-10-18T09:05:00.000Z" }])
   const block = handedBackBlock(directory)
-  for (const prompt of [evidencePrompt(directory, "discrepancy"), evidencePrompt(directory, "spine"), researchPrompt(directory, "intake"), researchPrompt(directory, "research")])
+  for (const prompt of [evidencePrompt(directory, "discrepancy"), evidencePrompt(directory, "spine"), researchPrompt(directory, "intake", researchBasis(directory)), researchPrompt(directory, "research", researchBasis(directory))])
     expect(prompt).toContain(`${LEFT}\n${block}`)
 })
 
