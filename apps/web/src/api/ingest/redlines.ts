@@ -45,7 +45,8 @@ export async function prepareDocumentChanges(id:string,name:string,instructions:
 // whether that run's drafting notes recorded the accepted change and its
 // delivered redline was rebuilt from the accepted body, and if not, why. The
 // combined outcome is present only when the accept changed a part of a saved
-// combined file: whether that file was rebuilt, and if not, why.
+// combined file: whether that file was rebuilt, and if not, why. A reject that
+// changed a part of a saved combined file reports the combined outcome too.
 export type AcceptResult = {
   notes_updated?: boolean
   notes_skip_reason?: string
@@ -59,8 +60,8 @@ export async function acceptRedline(id: string, redlineId: number): Promise<Acce
   return acceptResult(await resolveRedlines(`${INGEST_URL}/matters/${id}/redlines/${redlineId}/accept`))
 }
 
-export async function rejectRedline(id: string, redlineId: number): Promise<void> {
-  await resolveRedlines(`${INGEST_URL}/matters/${id}/redlines/${redlineId}/reject`)
+export async function rejectRedline(id: string, redlineId: number): Promise<AcceptResult> {
+  return acceptResult(await resolveRedlines(`${INGEST_URL}/matters/${id}/redlines/${redlineId}/reject`))
 }
 
 export async function acceptAllRedlines(id: string, name: string): Promise<AcceptResult> {
@@ -82,8 +83,8 @@ function acceptResult(body: unknown): AcceptResult {
   }
 }
 
-export async function rejectAllRedlines(id: string, name: string): Promise<void> {
-  await resolveRedlines(`${INGEST_URL}/matters/${id}/redlines/reject-all?name=${encodeURIComponent(name)}`)
+export async function rejectAllRedlines(id: string, name: string): Promise<AcceptResult> {
+  return acceptResult(await resolveRedlines(`${INGEST_URL}/matters/${id}/redlines/reject-all?name=${encodeURIComponent(name)}`))
 }
 
 async function resolveRedlines(url: string): Promise<unknown> {

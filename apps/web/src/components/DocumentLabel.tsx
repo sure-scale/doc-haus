@@ -7,16 +7,16 @@ export default function DocumentLabelBadge({ matterId, name, label, onChanged }:
   matterId: string
   name: string
   /** "combined" names a saved combined file the lawyer has not labelled, and
-   * "earlier_combined" one from an earlier run; each is shown, never saved,
-   * since a label the lawyer chooses is one of the four. */
+   * "earlier_combined" one from an earlier run (its row says so in words);
+   * each is shown, never saved, since a label the lawyer chooses is one of
+   * the four. */
   label: DocumentLabel | "combined" | "earlier_combined"
   onChanged: () => void
 }) {
   const [saving, setSaving] = useState(false)
   const toast = useToast()
   return (
-    <span className={`document-label-badge is-${label}`} aria-busy={saving || undefined}
-      title={label === "earlier_combined" ? "The combined file from an earlier run" : undefined}>
+    <span className={`document-label-badge is-${label}`} aria-busy={saving || undefined}>
       <select
         style={{ color: "#176b50", WebkitTextFillColor: "#176b50" }}
         aria-label={`Label for ${name}`}

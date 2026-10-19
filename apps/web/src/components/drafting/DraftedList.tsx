@@ -6,7 +6,8 @@ import { OUTPUT_ROLE, type DraftedGroup, type DraftedOutput } from "./model"
 // a one-document run, the drafting notes) nested beneath it. The name opens the
 // file in the viewer; the icon button downloads the .docx. `fresh` marks rows the
 // run produced while the lawyer watched, for a one-time highlight. A combined
-// document's one file leads its group, with the draft it holds beneath it.
+// document's one file leads its group, with the draft it holds beneath it; a
+// combined file from an earlier run says so on its row.
 export default function DraftedList({
   matterId,
   groups,
@@ -107,7 +108,7 @@ function OutputRow({
           </span>
         )}
         <div className="drafted-file-meta">
-          <span className="document-origin is-created">Created by Doc.Haus</span>
+          <span className="document-origin is-created">Created by Doc.Haus{output.role === "earlier_combined" ? " in an earlier run" : ""}</span>
           {label ?? <span className={`drafted-tag is-${output.role}`}>{OUTPUT_ROLE[output.role]}</span>}
         </div>
       </div>

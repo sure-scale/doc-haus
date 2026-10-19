@@ -184,6 +184,12 @@ export function openItemTag(item: LeanOpenItem) {
   return item.kind === "checklist_open" ? "Left open" : "In the notes"
 }
 
+/** An item's detail as the lawyer reads it: the run cites a quotation's source
+ * as "[source: <id>]", which reads here as where the words come from. */
+export function openItemDetail(item: LeanOpenItem) {
+  return item.detail.replace(/\[source:\s*([^\]]*?)\s*\]/g, (_, source: string) => (source === "request" ? "(from the request)" : `(from ${source})`))
+}
+
 // The class only. Whether a repair round or reinspection ran is in the item's
 // detail, as the final check worded it.
 const CHECKLIST_CLASS_LABELS: Record<string, string> = {
@@ -355,9 +361,10 @@ function combinedBody(status: LeanDraftingStatus, documents: LeanDocument[]) {
  * first, then any other deliverable by the run's naming ("<name> - redline",
  * "<name> - drafting notes"), so files from earlier runs group the same way.
  * A combined file is one only by the summary's row for it, never by its name:
- * the run's current one stays on its draft's group; any other file a combined
- * row names, whatever the run's state (its build refused, nothing saved, the
- * name held by the lawyer's revision), is an earlier one in a row of its own;
+ * the run's current one stays on its draft's group, or leads a row of its own
+ * when that draft is no longer in the matter; any other file a combined row
+ * names, whatever the run's state (its build refused, nothing saved, the name
+ * held by the lawyer's revision), is an earlier one in a row of its own;
  * neither is a draft of its own. */
 export function deliverableGroups(names: string[], status: LeanDraftingStatus | undefined): DraftedGroup[] {
   const present = new Set(names)
@@ -369,6 +376,9 @@ export function deliverableGroups(names: string[], status: LeanDraftingStatus | 
       ...(group.combined && present.has(group.combined) ? { combined: group.combined } : {}),
     }))
   const placed = new Set(known.flatMap((group) => [group.main.name, ...group.extras.map((output) => output.name), ...(group.combined ? [group.combined] : [])]))
+  const own = draftedGroups(status).find((group) => group.combined)?.combined
+  const alone: DraftedGroup[] = own && present.has(own) && !placed.has(own) ? [{ main: { name: own, role: "combined" }, extras: [] }] : []
+  if (own) placed.add(own)
   const earlier = earlierCombined(status)
   const kept = names.filter((name) => !placed.has(name) && earlier.has(name)).map((name): DraftedGroup => ({ main: { name, role: "earlier_combined" }, extras: [] }))
   const rest = names.filter((name) => !placed.has(name) && !earlier.has(name))
@@ -387,8 +397,8 @@ export function deliverableGroups(names: string[], status: LeanDraftingStatus | 
   const groups = [...known, ...grouped]
   // One draft keeps its notes beneath it, as a one-document run delivers them.
   if (groups.length === 1 && loose.every((output) => output.role === "notes"))
-    return [{ ...groups[0]!, extras: [...groups[0]!.extras, ...loose] }, ...kept]
-  return [...groups, ...loose.map((main) => ({ main, extras: [] })), ...kept]
+    return [...alone, { ...groups[0]!, extras: [...groups[0]!.extras, ...loose] }, ...kept]
+  return [...alone, ...groups, ...loose.map((main) => ({ main, extras: [] })), ...kept]
 }
 
 /** The files the summary's combined rows name (each row's saved file, else the

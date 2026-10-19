@@ -242,6 +242,15 @@ test("the open items list never caps away an unresolved checklist finding and co
   expect(plain).not.toContain("Show all")
 })
 
+test("an open item names its source in plain words, never as the run's source tag", () => {
+  const requested = { ...item("r1", "omission", "disclosed"), detail: 'The request asked for "one file named supply pack" [source: request], but the run delivers it in "supply pack (2).docx".' }
+  const quoted = { ...item("q1", "omission", "disclosed"), detail: 'The terms say "net 30 days" [source: Supply terms.docx] and "net 45 days" [source:  Order form.docx ].' }
+  const html = renderToStaticMarkup(createElement(OpenItems, { items: [requested, quoted], titles: new Map() }))
+  expect(html).not.toContain("[source:")
+  expect(html).toContain("&quot;one file named supply pack&quot; (from the request), but the run delivers")
+  expect(html).toContain("&quot;net 30 days&quot; (from Supply terms.docx) and &quot;net 45 days&quot; (from Order form.docx).")
+})
+
 test("drafted outputs nest the redline and notes under a single draft", () => {
   expect(draftedGroups(lean(completed))).toEqual([
     {
@@ -451,15 +460,32 @@ test("an earlier combined file the summary lists is the combined file from an ea
   const select = (name: string) => listed.split(`aria-label="Label for ${name}"`)[1]?.split("</select>")[0] ?? ""
   expect(select("Supply note (2).docx")).toContain('<option value="combined" selected="">Combined</option>')
   expect(select("Supply note.docx")).toContain('<option value="earlier_combined" selected="">Earlier combined</option>')
+  // Why the earlier file is not the current one is said in words on its row, not only on a hover.
+  const row = (html: string, name: string) => html.split(`<span class="drafted-name-text">${name}</span>`)[1]?.split('class="icon-btn drafted-download"')[0] ?? ""
+  const EARLIER = '<span class="document-origin is-created">Created by Doc.Haus in an earlier run</span>'
+  expect(row(listed, "Supply note.docx")).toContain(EARLIER)
+  expect(row(listed, "Supply note (2).docx")).toContain('<span class="document-origin is-created">Created by Doc.Haus</span>')
   // The result card's file list names it the same way; it downloads as the matter file it is, never as the memo and draft in one.
   const card = resultCard(status)
   expect(card).toContain('<span class="drafted-tag is-earlier_combined">Earlier combined</span>')
+  expect(row(card, "Supply note.docx")).toContain(EARLIER)
   expect(card).not.toContain("<h4>Supply note.docx</h4>")
   expect(card).not.toContain(`aria-label="Download Supply note.docx" ${ONE_FILE}`)
   expect(card).toContain(`aria-label="Download Supply note (2).docx" ${ONE_FILE}`)
   // The file's name alone does not make it a combined file: without its summary row it is not one.
   const unlisted = memoRun({ combined: true, body: "Supply note - clean (2).docx", file: "Supply note (2).docx" })
   expect(deliverableGroups(names, unlisted).flatMap((group) => [group.main, ...group.extras]).find((output) => output.name === "Supply note.docx")?.role).not.toBe("combined")
+})
+
+test("this run's saved combined file stays the combined file when its draft is no longer in the matter", () => {
+  const status = memoRun({ combined: true })
+  const names = ["Supply note - redline.docx", "Supply note - cover note.docx", "Supply note.docx"]
+  const outputs = deliverableGroups(names, status).flatMap((group) => [group.main, ...group.extras, ...(group.combined ? [{ name: group.combined, role: "combined" }] : [])])
+  expect(outputs.filter((output) => output.name === "Supply note.docx")).toEqual([{ name: "Supply note.docx", role: "combined" }])
+  const documents = names.map((name, id) => ({ id, name, doc_path: name, created_at: 1_760_000_000_000 + id * 60_000, role: "deliverable" as const }))
+  const listed = renderToStaticMarkup(createElement(DocumentUpload, { matterId: "m", documents, onUploaded: () => {}, onView: () => {}, drafting: status }))
+  const select = listed.split('aria-label="Label for Supply note.docx"')[1]?.split("</select>")[0] ?? ""
+  expect(select).toContain('<option value="combined" selected="">Combined</option>')
 })
 
 test("a file a combined row names that is not this run's saved combined file is the combined file from an earlier run, never a draft", () => {
@@ -493,7 +519,10 @@ test("a file a combined row names that is not this run's saved combined file is 
     matterId: "m", documents: names.map((name, id) => ({ id, name, doc_path: name, created_at: 1_760_000_000_000 + id, role: "deliverable" as const })),
     onUploaded: () => {}, onView: () => {}, drafting: held,
   }))
-  expect(listed).not.toContain(ONE_FILE)
+  const download = listed.split('aria-label="Download Supply note.docx"')
+  expect(download).toHaveLength(2)
+  expect(download[0]!.slice(download[0]!.lastIndexOf("<a "))).toContain(`href="${documentContentUrl("m", "Supply note.docx")}"`)
+  expect(download[1]!.split(">")[0]).toBe(' title="Download .docx"')
   // Without a summary row naming it, a file of that name is not one.
   expect(roleOf(lean({ ...held, documents: { ...held.documents!, documents: held.documents!.documents.filter((row) => row.kind !== "combined") } }))).toBe("draft")
 })
