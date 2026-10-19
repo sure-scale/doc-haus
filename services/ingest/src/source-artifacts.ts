@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite"
 import { createHash, randomUUID } from "node:crypto"
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
+import { rm } from "node:fs/promises"
 import path from "node:path"
 import { isDeepStrictEqual } from "node:util"
 import { listSourceDocuments, openDb } from "./db"
@@ -328,13 +329,26 @@ function installSourceArtifactSnapshot(matterDir: string, transaction: string) {
   }
   return {
     commit() {
+      // The installed snapshot is authoritative. The replaced one (`backup`, a
+      // file per prior chunk) leaves the transaction in one rename and is
+      // removed off the event loop; removing it here held the loop for seconds
+      // on a large matter. Recovery never reads the moved directory, so it
+      // cannot meet a half-removed transaction. A leftover backup directory is
+      // harmless and can be removed by maintenance without rolling back a
+      // source corpus whose database settlement already succeeded.
+      const discarded = path.join(matterDir, ".dochaus", "source-artifact-transactions", `discarded-${randomUUID()}`)
       try {
-        rmSync(transaction, { recursive: true, force: true })
+        mkdirSync(path.dirname(discarded), { recursive: true })
+        renameSync(transaction, discarded)
       } catch {
-        // The installed snapshot is authoritative. A leftover backup directory
-        // is harmless and can be removed by maintenance without rolling back a
-        // source corpus whose database settlement already succeeded.
+        try {
+          rmSync(transaction, { recursive: true, force: true })
+        } catch {
+          // Left for maintenance, as above.
+        }
+        return
       }
+      void rm(discarded, { recursive: true, force: true }).catch(() => undefined)
     },
     rollback() {
       recoverSourceArtifactTransaction(matterDir, transaction, false)

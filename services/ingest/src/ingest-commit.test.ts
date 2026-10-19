@@ -450,23 +450,40 @@ function isSourceArtifact(directory: string, file: unknown) {
 }
 
 // Runs a source mutation and records the source artifacts it read back with
-// readFileSync.
+// readFileSync and the source-artifact transactions it removed synchronously
+// while they still held the replaced snapshot.
 async function observeSourceMutation(directory: string, mutate: () => Promise<unknown>) {
-  const { readFileSync: read } = fs
+  const { readFileSync: read, rmSync: remove } = fs
   const reads: string[] = []
+  const snapshotRemovals: string[] = []
   const readSpy = spyOn(fs, "readFileSync").mockImplementation(((file: fs.PathOrFileDescriptor, options?: never) => {
     if (isSourceArtifact(directory, file)) reads.push(path.relative(directory, String(file)))
     return read(file, options)
   }) as typeof fs.readFileSync)
+  const removeSpy = spyOn(fs, "rmSync").mockImplementation(((target: fs.PathLike, options?: fs.RmOptions) => {
+    if (typeof target === "string" && existsSync(path.join(target, "backup"))) snapshotRemovals.push(path.relative(directory, target))
+    return remove(target, options)
+  }) as typeof fs.rmSync)
   try {
     await mutate()
   } finally {
     readSpy.mockRestore()
+    removeSpy.mockRestore()
   }
-  return { reads }
+  return { reads, snapshotRemovals }
 }
 
-describe("a source mutation's lineage", () => {
+// Waits for the replaced snapshot's removal; true once no transaction is left.
+async function transactionsSettled(directory: string) {
+  const roots = [".dochaus/document-mutations", ".dochaus/source-artifact-transactions"].map((root) => path.join(directory, root))
+  for (let waited = 0; waited <= 10_000; waited += 25) {
+    if (roots.every((root) => !existsSync(root) || !readdirSync(root).length)) return true
+    await Bun.sleep(25)
+  }
+  return false
+}
+
+describe("a source mutation's lineage and replaced snapshot", () => {
   let directory = ""
   beforeAll(async () => {
     directory = realpathSync(mkdtempSync(path.join(tmpdir(), "dochaus-source-lineage-")))
@@ -479,14 +496,16 @@ describe("a source mutation's lineage", () => {
     ["an upload", async () => ingestDocument(directory, "Lineage Notice.docx", await docx(["1. Scope", "The invented scope of Example Holdings 7 Ltd."]))],
     ["a delete", () => deleteMatterDocument(directory, "Corpus 00.docx")],
   ] as const) {
-    test(`${label} stamps every installed artifact from the bytes it staged, without reading one back`, async () => {
+    test(`${label} stamps lineage from the bytes it staged and removes the replaced snapshot off the event loop`, async () => {
       const before = lineageRows(directory).length
-      expect(await observeSourceMutation(directory, mutate)).toEqual({ reads: [] })
+      // The replaced snapshot is moved aside and removed off the event loop.
+      expect(await observeSourceMutation(directory, mutate)).toEqual({ reads: [], snapshotRemovals: [] })
       expect(
         lineageRows(directory).slice(before)
           .map(({ artifact, content_sha256, bytes }) => ({ artifact, content_sha256, bytes }))
           .toSorted((left, right) => left.artifact.localeCompare(right.artifact)),
       ).toEqual(installedArtifacts(directory))
+      expect(await transactionsSettled(directory)).toBe(true)
     }, 120_000)
   }
 
