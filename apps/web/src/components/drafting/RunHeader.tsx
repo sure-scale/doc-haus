@@ -287,13 +287,13 @@ export function runHeadline(status: LeanDraftingStatus, now: number, resuming = 
   if (state === "input") {
     const questions = openQuestions(status)
     const asks = questions.length
-    // Where Decide for me is offered, leaving a question to the drafting also lets the run resume.
+    // Where Decide for me is offered, leaving a question to the drafter also lets the run resume.
     const delegable = questions.filter(delegableQuestion).length
     const resumes = !delegable
       ? "Drafting resumes after all answers are received"
       : delegable < asks
-        ? "Drafting resumes once each is answered or, where Decide for me is offered, left to the drafting"
-        : `Drafting resumes once ${asks === 1 ? "it is" : "each is"} answered or left to the drafting`
+        ? "Drafting resumes once each is answered or, where Decide for me is offered, left to the drafter"
+        : `Drafting resumes once ${asks === 1 ? "it is" : "each is"} answered or left to the drafter`
     return {
       tone: "input",
       title: "Waiting for your answers",

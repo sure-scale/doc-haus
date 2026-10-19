@@ -103,6 +103,16 @@ test("open items group by kind in first-seen order and cap across groups", () =>
   expect(capGroups(groups, 5).flatMap((group) => group.items)).toHaveLength(5)
 })
 
+test("a question left to the drafter is listed as a choice left to the drafter, not as a point left out", () => {
+  const left: LeanOpenItem = { ...item("h1", "left_to_drafter", "disclosed"), stage: "finalize", ref: { repair_target: "memo", question_id: "q-1" } }
+  const groups = groupOpenItems([item("o1", "omission", "disclosed"), left])
+  expect(groups.map((group) => [group.label, group.items.map((row) => row.id)])).toEqual([
+    ["Points left out", ["o1"]],
+    ["Choices left to the drafter", ["h1"]],
+  ])
+  expect(openItemTag(left)).toBe("In the notes")
+})
+
 test("attention items follow the final check once it ran for this pass", () => {
   expect(attentionItems(lean(blockedGate)).map((row) => row.status)).toEqual(["open"])
   const disclosed = lean({ ...completed, gate: { ...completed.gate, items: [item("x", "placeholder", "disclosed"), item("y", "omission", "resolved")] } })

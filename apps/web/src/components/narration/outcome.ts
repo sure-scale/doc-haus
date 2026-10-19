@@ -61,13 +61,13 @@ export function runOutcome(status: LeanDraftingStatus): RunOutcome | undefined {
 }
 
 /** How the lawyer moves a question on: answer it, or, where Decide for me is
- * offered, leave it to the drafting. */
+ * offered, leave it to the drafter. */
 function waitingChoice(status: LeanDraftingStatus, questions: number) {
   const delegable = openQuestions(status).filter(delegableQuestion).length
   if (!delegable) return " only you can answer."
-  if (questions === 1) return ": answer it, or use Decide for me to leave it to the drafting."
+  if (questions === 1) return ": answer it, or use Decide for me to leave it to the drafter."
   const some = delegable === questions ? "any of them" : delegable === 1 ? "one of them" : `${delegable} of them`
-  return `: answer each, or use Decide for me to leave ${some} to the drafting.`
+  return `: answer each, or use Decide for me to leave ${some} to the drafter.`
 }
 
 export type ResultCheck = { tone: "pass" | "warn" | "neutral"; text: string }

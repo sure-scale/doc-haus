@@ -206,6 +206,7 @@ const KIND_LABELS: Record<string, string> = {
   unapplied_amendment: "Changes not applied",
   question: "Questions for you",
   omission: "Points left out",
+  left_to_drafter: "Choices left to the drafter",
   template_removal: "Template text removed",
   checklist_open: "Requirements left open by the checklist check",
   checklist_unresolved: "Unresolved checklist findings",
