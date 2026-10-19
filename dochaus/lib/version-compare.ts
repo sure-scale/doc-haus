@@ -5,8 +5,9 @@ import { docxodus } from "./docxodus"
 
 // Compares two versions of one Word document. The blackline is Word Compare's:
 // left → right with every pending tracked change in either file accepted first.
-// A second pass compares left with right's tracked changes rejected, which
-// leaves exactly the edits right made without tracking. Pure: no model call,
+// A second pass compares both files with their tracked changes rejected, which
+// leaves exactly the edits right made without tracking: proposals left sent
+// still pending, and still pending in right, cancel out. Pure: no model call,
 // no file writes.
 
 export type CompareOptions = { ignoreFormatting: boolean; detectMoves: boolean; headersFooters: boolean }
@@ -70,18 +71,25 @@ export async function compareVersions(
   const dx = await docxodus()
   const leftInputs = await dx.getRevisions(left.bytes)
   const rightInputs = await dx.getRevisions(right.bytes)
-  // Both comparisons pre-accept their inputs, so left anchors address
-  // accept-all(left) and blackline right anchors accept-all(right).
+  // Comparisons pre-accept their inputs, so blackline anchors address
+  // accept-all(left) and accept-all(right); the check's inputs carry no
+  // revisions, so its anchors address reject-all(left) and reject-all(right).
   const leftView = leftInputs.length ? await dx.docxDiffAcceptRevisions(left.bytes) : left.bytes
   const rightView = rightInputs.length ? await dx.docxDiffAcceptRevisions(right.bytes) : right.bytes
+  const original = leftInputs.length ? await dx.docxDiffRejectRevisions(left.bytes) : left.bytes
   const received = rightInputs.length ? await dx.docxDiffRejectRevisions(right.bytes) : right.bytes
   const settings = { preAcceptInputRevisions: true, authorForRevisions: right.label, detectMoves: options.detectMoves,
     compareHeadersFooters: options.headersFooters, dateTimeForRevisions: new Date(date).toISOString().replace(/\.\d{3}Z$/, "Z") }
   const compared = await dx.docxDiffCompareProducts(left.bytes, right.bytes, settings, ["redline", "revisions"])
-  // With no tracked changes in right, every difference is untracked: the check is the blackline's own comparison.
-  const checked = received === right.bytes ? compared : await dx.docxDiffCompareProducts(left.bytes, received, settings, ["redline", "revisions"])
+  // With no tracked changes in either file, every difference is untracked: the check is the blackline's own comparison.
+  const checked = original === left.bytes && received === right.bytes ? compared
+    : await dx.docxDiffCompareProducts(original, received, settings, ["redline", "revisions"])
 
   const plain = options.ignoreFormatting ? withoutFormatChanges(compared.redline!) : compared.redline!
+  // Untracked revisions key by their offset in left's text. When left carries
+  // tracked changes the check reads reject-all(left) and the blackline
+  // accept-all(left), so an untracked edit after a left proposal may not key;
+  // relabel then refuses and the plain blackline keeps the side label.
   const relabelled = relabel(plain, checked.redline!, rightInputs, right.label)
   // Never ship a partially re-labelled file: on any miss, the plain Word Compare blackline.
   const attribution = relabelled && await roundTrips(relabelled, leftView, rightView, options.headersFooters) ? "authors" : "label"
@@ -89,15 +97,17 @@ export async function compareVersions(
   const changed = compared.revisions!.filter(row => !options.ignoreFormatting || row.revisionType !== "FormatChanged")
   const unchecked = checked.revisions!.filter(row => row.revisionType !== "FormatChanged")
   const anchors = (rows: DiffRevision[]) => rows.flatMap(row => [row.leftAnchor ?? [], row.rightAnchor ?? []].flat())
-  const leftSide = await side(leftView, [...anchors(changed), ...anchors(unchecked)])
+  const leftSide = await side(leftView, anchors(original === leftView ? [...changed, ...unchecked] : changed))
   const rightSide = await side(rightView, anchors(received === rightView ? [...changed, ...unchecked] : changed))
+  const originalSide = original === leftView ? leftSide : await side(original, anchors(unchecked))
   const receivedSide = received === rightView ? rightSide : await side(received, anchors(unchecked))
-  const untracked = hunks(unchecked, leftSide, receivedSide, "U")
+  const untracked = hunks(unchecked, originalSide, receivedSide, "U")
   const changes = hunks(changed, leftSide, rightSide, "C")
   // A change holds an untracked edit when an untracked hunk shares its left
-  // paragraph (both passes read the same accept-all(left)) or, for an inserted
-  // paragraph, its content-derived right anchor. Derived the same way under both
-  // attributions, so the flag never depends on whether re-labelling held.
+  // paragraph or, for an inserted paragraph, its right one. Anchors are
+  // content-derived, so a paragraph reads the same in both passes unless a
+  // tracked change touches it. Derived the same way under both attributions, so
+  // the flag never depends on whether re-labelling held.
   const leftKeys = new Set(untracked.flatMap(hunk => hunk.left)), rightKeys = new Set(untracked.flatMap(hunk => hunk.right))
   for (const hunk of changes)
     hunk.untracked = hunk.left.length ? hunk.left.some(anchor => leftKeys.has(anchor)) : hunk.right.some(anchor => rightKeys.has(anchor))

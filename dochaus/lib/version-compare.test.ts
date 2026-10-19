@@ -14,6 +14,7 @@ const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 const DATE = "2026-10-19T12:00:00Z"
 const PAT = { author: "Pat Reviewer", date: "2026-10-15T09:00:00Z" }
 const SAM = { author: "Sam Counsel", date: "2026-10-16T10:00:00Z" }
+const US = { author: "Northwind Legal", date: "2026-10-12T08:00:00Z" }
 const ALL: CompareOptions = { ignoreFormatting: true, detectMoves: true, headersFooters: true }
 const LEFT = "Sent draft", RIGHT = "Their draft"
 
@@ -78,6 +79,9 @@ const tracked = (by = PAT) => {
   return rows
 }
 const plant = (rows: string[]) => { rows[7] = p(C.p21.replace("within 30 days", "within 45 days")); return rows }
+// Our own redline: a proposal of ours still pending when the draft was sent.
+const OURS = " A day ends at 5 pm London time."
+const proposed = (rows: string[]) => { rows[4] = para(run(C.d12) + ins(OURS, US)); return rows }
 
 // Revision markup of a package: element, author, date and its text.
 function revisions(bytes: Uint8Array) {
@@ -163,6 +167,41 @@ test("a planted untracked edit in a returned draft is the only untracked edit, l
   expect(revisions(result.blackline).every(row => row.date === (row.author === PAT.author ? PAT.date : DATE))).toBe(true)
   expect(await rejected(result.blackline)).toEqual(await storyText(left))
   expect(await accepted(result.blackline)).toEqual(await accepted(right))
+})
+
+test("our own pending proposals, still pending in their return, are not untracked edits", async () => {
+  const result = await compare(sent(proposed(body())), sent(proposed(tracked())))
+  expect(result.left).toEqual({ count: 1, authors: [US.author] })
+  expect(result.right.authors.toSorted()).toEqual([US.author, PAT.author])
+  expect(result.untracked).toEqual([])
+  expect(result.changes.map(hunk => [hunk.after, hunk.untracked])).toEqual([
+    [C.d11 + INSERTED, false], [C.d13a, false], [C.p24a + "withhold" + C.p24b, false]])
+  expect(result.attribution).toBe("authors")
+  expect(new Set(texted(result.blackline).map(row => row.author))).toEqual(new Set([PAT.author]))
+})
+
+test("beside our own pending proposals, a planted untracked edit is the only untracked edit", async () => {
+  const left = sent(proposed(body())), right = sent(plant(proposed(tracked())))
+  const result = await compare(left, right)
+  expect(result.untracked).toEqual([{ id: "U1", kind: "modified", untracked: true, before: C.p21, after: C.p21.replace("30 days", "45 days"),
+    location: { scope: "body", paragraph: 8, side: "right", heading: C.h2 } }])
+  expect(result.changes.map(hunk => [hunk.after, hunk.untracked])).toEqual([
+    [C.d11 + INSERTED, false], [C.d13a, false], [C.p21.replace("30 days", "45 days"), true], [C.p24a + "withhold" + C.p24b, false]])
+  // The check reads left before our proposal, the blackline after it, so the
+  // untracked edit past the proposal has no exact key: the side label holds.
+  expect(result.attribution).toBe("label")
+  expect(await rejected(result.blackline)).toEqual(await accepted(left))
+  expect(await accepted(result.blackline)).toEqual(await accepted(right))
+})
+
+test("a proposal of ours they accepted without tracking is reported as untracked", async () => {
+  const rows = tracked()
+  rows[4] = p(C.d12 + OURS)
+  const result = await compare(sent(proposed(body())), sent(rows))
+  expect(result.untracked).toEqual([{ id: "U1", kind: "modified", untracked: true, before: C.d12, after: C.d12 + OURS,
+    location: { scope: "body", paragraph: 5, side: "right", heading: C.h1 } }])
+  // Accepted on both sides, the blackline shows no change in that paragraph.
+  expect(result.changes.map(hunk => hunk.after)).toEqual([C.d11 + INSERTED, C.d13a, C.p24a + "withhold" + C.p24b])
 })
 
 test("revisions are re-attributed only when unambiguous: identical text by two reviewers keeps the side label", async () => {
