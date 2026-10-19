@@ -126,7 +126,29 @@ export function researchContextLocators(directory: string) {
   })
 }
 
-export function acceptResearchReply(directory: string, stage: ResearchStage, reply: string): StageAcceptance {
+/** An internal workflow file: anything under the matter's .dochaus directory, or
+ * a research artifact the review prompt names for reading. */
+const INTERNAL_PATH = /\.dochaus[\\/][^\s"'`)\],;]*|research-context\.txt|research-sources[\\/][^\s"'`)\],;]*/i
+
+/** Limitations and rejection reasons become research open items the lawyer
+ * reads, so an internal file path there is retried. The prompt still gives the
+ * reviewer the paths it reads; the model's words are never rewritten. This is
+ * retry feedback, not a defect of saved research: checkResearch and
+ * checkReview, which re-check saved output on resume, do not apply it. */
+function internalPathIssues(stage: "research" | "research-review", value: Research | ResearchReview) {
+  const texts = [...value.limitations.map((text, index) => ({ where: `${stage === "research" ? "Research" : "Review"} limitation ${index + 1}`, text })),
+    ...stage === "research"
+      ? (value as Research).findings.map(row => ({ where: `The limitations of finding ${row.id}`, text: row.limitations }))
+      : (value as ResearchReview).rejected.map(row => ({ where: `The rejection reason for ${row.id}`, text: row.reason }))]
+  return texts.flatMap(({ where, text }) => {
+    const match = text.match(INTERNAL_PATH)?.[0]
+    return match ? [`${where} names an internal workflow file (${match}). The lawyer reads this text: describe the gap in words, without file paths.`] : []
+  })
+}
+
+/** On the last attempt (`final`) a reply whose only issue is an internal file
+ * path is saved as the model wrote it rather than failing the run. */
+export function acceptResearchReply(directory: string, stage: ResearchStage, reply: string, options: { final?: boolean } = {}): StageAcceptance {
   if (stage === "intake") {
     const questions = intakeQuestions(directory, reply, "intake")
     if (questions?.issues.length) return { issues: questions.issues, outputs: [], openItems: [] }
@@ -140,6 +162,7 @@ export function acceptResearchReply(directory: string, stage: ResearchStage, rep
     ? !record(value) || value.ready !== true || typeof value.scope !== "string" || !value.scope.trim() || typeof value.jurisdiction !== "string" || !value.jurisdiction.trim()
       ? ["Return material questions, or {ready:true,jurisdiction:the supplied governing jurisdiction or an explanation why none is needed,scope:the research scope}. Never mark ready while a material decision is unresolved."] : []
     : checkReview(directory, value)
+  if (!issues.length && stage !== "intake" && !options.final) issues.push(...internalPathIssues(stage, value as Research | ResearchReview))
   if (issues.length) return { issues, outputs: [], openItems: [] }
   if (stage === "research") writeLeanText(directory, "research-context.txt", readableResearchContext(directory, (value as Research).findings))
   writeLeanText(directory, `${stage}.json`, `${JSON.stringify(value, null, 2)}\n`)

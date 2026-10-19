@@ -550,7 +550,7 @@ async function runModelStage(directory: string, state: LeanState, step: StepID, 
     const accepted = stage === "discrepancy" || stage === "spine"
       ? acceptEvidenceReply(directory, stage, reply)
       : stage === "intake" || stage === "research" || stage === "research-review"
-      ? acceptResearchReply(directory, stage, reply)
+      ? acceptResearchReply(directory, stage, reply, { final: index >= LEAN_MAX_RETRIES })
       : await acceptStageReply(directory, step, reply, { final: index >= LEAN_MAX_RETRIES })
     const timing = { wait_ms: leanElapsedMs(asked, answered), check_ms: leanElapsedMs(answered) }
     progress({ attempts: index + 1, calls: index + 1, feedback: accepted.issues })

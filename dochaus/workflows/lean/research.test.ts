@@ -94,6 +94,25 @@ test("research verifier rejects unsupported proposition without making it drafti
   expect(citationRowsForLeanText(directory, "draft", research.findings[0]!.url)[0]?.status).toBe("unsupported")
 })
 
+test("research text the lawyer reads that names an internal workflow file is retried, and kept as written on the last attempt", () => {
+  const directory = matter()
+  const research = retrieved(directory)
+  const leak = "The readable context in .dochaus/lean/research-context.txt held no source text."
+  const named = (issues: string[]) => issues.some(issue => issue.includes("internal workflow file"))
+  expect(named(acceptResearchReply(directory, "research", JSON.stringify({ ...research, limitations: [leak] })).issues)).toBe(true)
+  expect(named(acceptResearchReply(directory, "research", JSON.stringify({ ...research, findings: [{ ...research.findings[0], limitations: "Only research-context.txt was read." }] })).issues)).toBe(true)
+  expect(readLeanText(directory, "research.json")).toBeUndefined()
+  expect(acceptResearchReply(directory, "research", JSON.stringify(research)).issues).toEqual([])
+  expect(named(acceptResearchReply(directory, "research-review", JSON.stringify({ approved: ["r1"], rejected: [], limitations: [leak] })).issues)).toBe(true)
+  expect(named(acceptResearchReply(directory, "research-review", JSON.stringify({ approved: [], rejected: [{ id: "r1", reason: `Snapshot .dochaus/research-sources/${research.findings[0]!.snapshot}.json was clipped.` }], limitations: [] })).issues)).toBe(true)
+  expect(readLeanText(directory, "research-review.json")).toBeUndefined()
+  // The last attempt keeps the model's words as written rather than failing the run.
+  const final = acceptResearchReply(directory, "research-review", JSON.stringify({ approved: ["r1"], rejected: [], limitations: [leak] }), { final: true })
+  expect(final.issues).toEqual([])
+  expect(final.openItems.map(item => item.detail)).toEqual([leak])
+  expect(acceptResearchReply(directory, "research-review", JSON.stringify({ approved: ["r1"], rejected: [], limitations: ["The source's currency remains unconfirmed."] })).issues).toEqual([])
+})
+
 test("completed legacy runs remain unchanged and do not claim research", async () => {
   const directory = matter()
   const current = readLeanState(directory)!
