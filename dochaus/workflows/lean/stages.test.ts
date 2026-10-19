@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { providerStopKind } from "../../lib/provider-stop"
 import { LEAN_CHILD_PERMISSIONS, engineSessionPort } from "./stages"
 
 // The engine session port runs through the real v2 adapter (engineV2Fetch and the
@@ -11,7 +12,9 @@ type NativeError = { type: string; message: string; status?: number }
 
 function scriptedEngine(reply: { text: string; outcome: string; interrupted?: boolean; finalError?: boolean | NativeError; onIdlePoll?: () => void
   /** The engine's own refusal of the prompt, before any model call. */
-  refusal?: { status: number; body: Record<string, unknown> } }) {
+  refusal?: { status: number; body: Record<string, unknown> }
+  /** A turn that failed before any reply: the error is on its idle record only. */
+  idleError?: NativeError }) {
   const created: Record<string, unknown>[] = []
   const admitted: Record<string, unknown>[] = []
   const interrupts: string[] = []
@@ -55,9 +58,9 @@ function scriptedEngine(reply: { text: string; outcome: string; interrupted?: bo
               error: { type: "provider.transport", message: "Decode error", status: 200 }, content: [] },
             { id: "msg_000000000008aaaaaaaaaaaaaa", type: "synthetic", text: "The previous response was interrupted. Continue.", time: { created: 7 } },
           ] : []),
-          { id: "msg_000000000009aaaaaaaaaaaaaa", type: "assistant", agent: "expander", time: { created: 7, completed: 8 }, content: [{ type: "text", text: reply.text }],
-            ...(reply.finalError ? { finish: "error", error: reply.finalError === true ? { type: "provider.transport", message: "Decode error", status: 200 } : reply.finalError } : {}) },
-          { id: "idle_latest", type: "idle", outcome: reply.outcome, time: { created: 9 } },
+          ...(reply.idleError ? [] : [{ id: "msg_000000000009aaaaaaaaaaaaaa", type: "assistant", agent: "expander", time: { created: 7, completed: 8 }, content: [{ type: "text", text: reply.text }],
+            ...(reply.finalError ? { finish: "error", error: reply.finalError === true ? { type: "provider.transport", message: "Decode error", status: 200 } : reply.finalError } : {}) }]),
+          { id: "idle_latest", type: "idle", outcome: reply.outcome, ...(reply.idleError ? { error: reply.idleError } : {}), time: { created: 9 } },
         ))
       const limit = Number(url.searchParams.get("limit") ?? transcript.length)
       return Response.json({ data: transcript.toReversed().slice(0, limit), cursor: {} })
@@ -139,6 +142,15 @@ describe("lean engine session port", () => {
     expect(failure).toBeInstanceOf(Error)
     expect((failure as Error).message).toBe(`The expander session ended failed: ${JSON.stringify(expired)}.`)
     expect((failure as Error).cause).toEqual(expired)
+  })
+
+  test("a turn that failed before any reply carries its idle record's typed error as its cause", async () => {
+    const unavailable = { type: "provider.no-route", message: "Model unavailable: test/scripted" }
+    const engine = scriptedEngine({ text: "", outcome: "failed", idleError: unavailable })
+    const port = engineSessionPort({ engineURL: "http://engine.test", fetch: engine.fetcher, pollMs: 1 })
+    const failure = await port.prompt({ directory: DIRECTORY, sessionID: "ses_child", agent: "expander", text: "Draft it." }).catch((error: unknown) => error)
+    expect((failure as Error).cause).toEqual(unavailable)
+    expect(providerStopKind(failure)).toBe("model")
   })
 
   test("an engine refusal carries its typed body as its cause", async () => {

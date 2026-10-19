@@ -53,8 +53,9 @@ export function engineSessionPort(options: { engineURL?: string; fetch?: typeof 
       while (Date.now() < deadline) {
         await Bun.sleep(pollMs)
         if (input.signal?.aborted) throw new Error(`The ${input.agent} session was paused.`)
-        const outcome = await idleOutcome(transport, base, input.directory, input.sessionID)
-        if (!outcome) continue
+        const idle = await idleOutcome(transport, base, input.directory, input.sessionID)
+        if (!idle) continue
+        const { outcome } = idle
         const listed = await request(`${base}/api/session/${encodeURIComponent(input.sessionID)}/message`, {
           headers: { "x-opencode-directory": input.directory }, signal: AbortSignal.timeout(30_000),
         })
@@ -68,10 +69,10 @@ export function engineSessionPort(options: { engineURL?: string; fetch?: typeof 
         // continuation, so only the turn's last reply decides whether it failed.
         const last = messages.filter(record).findLast(message => record(message.info) && message.info.role === "assistant" &&
           message.info.parentID === messageID)
-        const failure = record(last) && record(last.info) && last.info.error ? last : undefined
-        if (outcome !== "succeeded" || failure)
-          throw new Error(`The ${input.agent} session ended ${outcome}${failure && record(failure.info) ? `: ${JSON.stringify(failure.info.error)}` : ""}.`,
-            { cause: failure && record(failure.info) ? failure.info.error : undefined })
+        // A turn that failed before any reply has its error on the idle record only.
+        const error = record(last) && record(last.info) && last.info.error ? last.info.error : outcome === "failed" ? idle.error : undefined
+        if (outcome !== "succeeded" || error)
+          throw new Error(`The ${input.agent} session ended ${outcome}${error ? `: ${JSON.stringify(error)}` : ""}.`, { cause: error })
         return nativeStageResult(messages, messageID, input.agent)
       }
       throw new Error(`The ${input.agent} session did not finish within ${Math.round(timeoutMs / 60_000)} minutes.`)
@@ -97,7 +98,7 @@ async function idleOutcome(transport: typeof fetch, base: string, directory: str
   const envelope: unknown = await response.json().catch(() => undefined)
   const newest = record(envelope) && Array.isArray(envelope.data) ? envelope.data[0] : undefined
   if (!record(newest) || newest.type !== "idle") return
-  return typeof newest.outcome === "string" ? newest.outcome : "unknown"
+  return { outcome: typeof newest.outcome === "string" ? newest.outcome : "unknown", error: newest.error }
 }
 
 // Native message ids sort by time: 12 hex of (ms * 0x1000 + counter), then 14 base62.
