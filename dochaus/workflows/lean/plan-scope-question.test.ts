@@ -118,8 +118,8 @@ describe("the plan step's package-scope question", () => {
       "add a document, or change a planned one", "outside this request"])
       expect(question!.question).toContain(text)
     expect(question!.context).toContain("Drafting waits for your answer")
-    // An answer re-plans the package, so the context says it replaces edits to the saved plan.
-    expect(question!.context).toContain("so the plan is drawn up again with it before any part is drafted, replacing any edits to the saved plan.")
+    // No plan is saved yet, so the plan is drawn up with the answer; a saved plan is kept.
+    expect(question!.context).toContain("If the document plan is not yet saved, it is drawn up with your answer before any part is drafted; a saved plan, including any edits to it, is kept as it stands.")
     // The plan is not saved; the coverage record keeps what was found.
     expect(planSaved(directory)).toBe(false)
     expect(readLeanCoverage(directory)).toMatchObject({ status: "uncovered", acts: [act], issues: [expect.stringContaining(MISPLACED)] })
@@ -342,7 +342,7 @@ describe("the plan step's package-scope question", () => {
       context: "", status: "answered", answer: ANSWER }])
     const [approval, deposit] = coverageItems(directory)
     expect(approval!.detail).toContain(`directed by "${APPROVE}"`)
-    expect(approval!.detail).toContain(`The lawyer answered the package-scope question ${SCOPE_ID}; the plan drawn up with that answer still leaves this act so.`)
+    expect(approval!.detail).toContain(`The lawyer answered the package-scope question ${SCOPE_ID}; the plan still leaves this act so.`)
     // The deposit's release was not in that question: plain uncovered wording.
     expect(deposit!.detail).toContain(`directed by "${DEPOSIT}"`)
     expect(deposit!.detail).toEndWith("no planned document carries it.")
@@ -554,7 +554,7 @@ describe("scope asker termination: fix wave 3", () => {
     const gate = readLeanJson(directory, "gate.json") as { status: string; disclosed: { kind: string; detail: string }[] }
     expect(gate.status).toBe("pass")
     expect(gate.disclosed).toContainEqual(expect.objectContaining({ kind: "omission",
-      detail: expect.stringContaining(`The lawyer answered the package-scope question ${question!.id}; the plan drawn up with that answer still leaves this act so.`) }))
+      detail: expect.stringContaining(`The lawyer answered the package-scope question ${question!.id}; the plan still leaves this act so.`) }))
   }, 180_000)
 
   test("through the run: answers the coverage job quotes back as new acts bring one more question, then a disclosure; the run ends after two answers", async () => {

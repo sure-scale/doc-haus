@@ -49,7 +49,7 @@ export function appliedChangeEvidenceFromRecords(changes: ChangeList | undefined
   })]
 }
 
-/** Use the final applied paragraph after all merges, rather than an amendment's
+/** Use the final applied paragraph, rather than an amendment's
  * proposed text. Comparison may discard paragraph bookmarks, so its accepted
  * text and paragraph position jointly locate the exported redline comment. */
 export function exportAppliedChangeComments(bytes: Uint8Array, finalBytes: Uint8Array, document: DocID, amendments: Amendment[], applied: AppliedAmendment[], explanations: ChangeExplanation[] = [], initial: ParagraphRow[] = [], author = draftingAttribution().author) {

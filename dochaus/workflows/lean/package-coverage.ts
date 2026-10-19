@@ -569,7 +569,7 @@ export function coverageScopeQuestion(acts: CoverageAct[], documents: PlannedDoc
     question: [`The document plan leaves ${several ? "these instructed acts" : "this instructed act"} without a document executed by the parties who must take ${several ? "them" : "it"}:`,
       ...open.map(act => actLine(act, documents, excerpt(act.quote))),
       `${several ? "For each, should" : "Should"} the package add a document, or change a planned one, so that those parties take it, or is it outside this request? If the package should carry it, say in which document and who executes it.`].join(" "),
-    context: "Drafting waits for your answer. Your answer becomes part of the document plan's basis, so the plan is drawn up again with it before any part is drafted, replacing any edits to the saved plan.",
+    context: "Drafting waits for your answer. If the document plan is not yet saved, it is drawn up with your answer before any part is drafted; a saved plan, including any edits to it, is kept as it stands.",
     status: "open",
   }
 }
@@ -597,7 +597,8 @@ export function coverageScopeQuestion(acts: CoverageAct[], documents: PlannedDoc
  * one per other recorded issue; "unchecked" gives one item saying the check
  * gave no usable result. Either single item asks the lawyer to confirm
  * coverage. They belong to the drafting notes, so a repair goes to the
- * notes writer and a re-draft, which supersedes draft-stage items, keeps them.
+ * notes writer and a re-run of the draft step, which replaces draft-stage
+ * items, keeps them.
  * Each id keys on the item's content. */
 export function coverageItems(directory: string): OpenItem[] {
   const plan = readLeanPlan(directory)
@@ -621,7 +622,7 @@ export function coverageItems(directory: string): OpenItem[] {
   const settled = actScopeAnswers(open, readQuestions(directory).filter(answeredScopeQuestion), coverage.acts)
   const after = (act: CoverageAct) => {
     const asked = settled.by(act).map(question => question.id)
-    return asked.length ? ` The lawyer answered the package-scope question ${asked.join(", ")}; the plan drawn up with that answer still leaves this act so.` : ""
+    return asked.length ? ` The lawyer answered the package-scope question ${asked.join(", ")}; the plan still leaves this act so.` : ""
   }
   const stillPlanned = (act: CoverageAct) => {
     const planned = leftOutDocuments(act, plan.documents, coverage.acts).map(document => `${label(document)}, which is executed by ${quotedList(document.executed_by!)}`)
