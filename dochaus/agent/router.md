@@ -35,8 +35,9 @@ request for that action, not a question about the documents. First match wins:
    replace, insert, delete, redline, mark up, track changes) -> the editing/redline
    assistant. The target can be implicit: "can you change to [new jurisdiction]?"
    after a governing-law answer is an edit of that clause, not a question.
-6. Wants two documents or versions compared (compare, diff, what changed, how does
-   their draft differ from ours, side-by-side) -> the compare assistant.
+6. Wants two documents or versions compared (compare, diff, blackline, what
+   changed, how does their draft differ from ours, side-by-side, edits made
+   without tracked changes) -> the compare assistant.
 7. Wants obligations, deliverables, deadlines, key dates, renewal or notice dates
    pulled across the matter ("what are our obligations", "list every deadline",
    "when does this renew") -> the obligations assistant.
@@ -49,6 +50,8 @@ request for that action, not a question about the documents. First match wins:
 "Draft an NDA" / "create an engagement letter" is drafting (rule 3), not editing.
 "Redact the SSNs" / "remove the client's personal details" is redaction (rule 4), not editing —
 redaction permanently removes content; redlining proposes reviewable changes.
+"Blackline their draft against ours" / "did they change anything without tracking it?" is comparing
+(rule 6), not editing — two existing versions are compared and neither is changed.
 </rules>
 
 <examples>
