@@ -537,3 +537,22 @@ function longAgreement(count: number) {
   })
   return { left: docx({ body: left }), right: docx({ body: right }), untracked, tracked: chosen.length - untracked.length }
 }
+
+test("the blackline carries none of the anchor ids the check keeps in left's accepted view, comments included", async () => {
+  // A comment on the intro, as Word stores it, in both versions.
+  const commented = (bytes: Uint8Array) => {
+    const parts = unzipSync(bytes)
+    const edit = (name: string, find: string, add: string) => { parts[name] = strToU8(strFromU8(parts[name]!).replace(find, add + find)) }
+    edit("[Content_Types].xml", "</Types>", `<Override PartName="/word/comments.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml"/>`)
+    edit("word/_rels/document.xml.rels", "</Relationships>", `<Relationship Id="rIdC" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="comments.xml"/>`)
+    edit("word/document.xml", run(C.intro), `<w:commentRangeStart w:id="0"/>`)
+    edit("word/document.xml", "</w:p>", `<w:commentRangeEnd w:id="0"/><w:r><w:commentReference w:id="0"/></w:r>`)
+    parts["word/comments.xml"] = strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:comments ${NS}><w:comment w:id="0" w:author="${SAM.author}" w:date="${SAM.date}" w:initials="SC"><w:p>${run("Check the party names.")}</w:p></w:comment></w:comments>`)
+    return zipSync(parts)
+  }
+  const result = await compare(commented(sent(proposed(body()))), commented(sent(plant(tracked()))))
+  expect(result.attribution).toBe("authors")
+  const parts = unzipSync(result.blackline)
+  expect(strFromU8(parts["word/comments.xml"]!)).toContain("Check the party names.")
+  expect(Object.entries(parts).filter(([name, data]) => name.endsWith(".xml") && strFromU8(data).includes("powertools")).map(([name]) => name)).toEqual([])
+})

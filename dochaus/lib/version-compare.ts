@@ -114,7 +114,8 @@ export async function compareVersions(
   // With no tracked changes in right, every difference is untracked: the check is the blackline's own comparison.
   const checked = received === right.bytes ? compared : await dx.docxDiffCompareProducts(leftView, received, settings, ["redline", "revisions"])
 
-  const plain = options.ignoreFormatting ? withoutFormatChanges(compared.redline!) : compared.redline!
+  const redline = withoutAnchorIds(compared.redline!)
+  const plain = options.ignoreFormatting ? withoutFormatChanges(redline) : redline
   const relabelled = relabel(plain, checked.redline!, rightInputs, right.label)
   // Never ship a partially re-labelled file: on any miss, the plain Word Compare blackline.
   const attribution = relabelled && await roundTrips(relabelled, leftView, rightView, options.headersFooters) ? "authors" : "label"
@@ -169,13 +170,13 @@ function occurrences(text: string, within: string) {
 // Left with every revision accepted in one session that writes each
 // paragraph's anchor id into the file, so a revised paragraph keeps the id
 // left's own revisions address (Docxodus's accept-all derives a new one from its
-// content), and the revisions it listed. A refused accept leaves that revision
+// content), and the revisions it listed. A refused or failed accept leaves that revision
 // to the comparisons, which accept their inputs first.
 function acceptLeft(dx: Dx, bytes: Uint8Array) {
   const session = dx.openDocxSession(bytes, { persistAnchorIds: true })
   try {
     const sent = session.listRevisions()
-    for (const row of sent) session.acceptRevision(row.id)
+    for (const row of sent) try { session.acceptRevision(row.id) } catch {}
     return { view: session.save(), sent }
   } finally {
     session.close()
@@ -454,6 +455,24 @@ function carriers(docs: Map<string, Document>) {
     visit(doc.documentElement)
   }
   return rows
+}
+
+// Left's accepted view keeps Docxodus's anchor ids (PowerTools namespace) for
+// the check, and the comparison copies them into the blackline. Word does not
+// know that namespace, so its attributes and declarations are dropped.
+const POWERTOOLS = /\sxmlns:([\w.-]+)="http:\/\/powertools\.codeplex\.com\/2011"/g
+function withoutAnchorIds(bytes: Uint8Array) {
+  const parts = unzipSync(bytes)
+  let changed = false
+  for (const [name, data] of Object.entries(parts)) {
+    if (!name.endsWith(".xml")) continue
+    const xml = strFromU8(data)
+    const prefixes = new Set([...xml.matchAll(POWERTOOLS)].map(match => match[1]!))
+    if (!prefixes.size) continue
+    parts[name] = strToU8([...prefixes].reduce((text, prefix) => text.replace(new RegExp(`\\s(?:xmlns:${prefix}|${prefix}:[\\w.-]+)="[^"]*"`, "g"), ""), xml))
+    changed = true
+  }
+  return changed ? zipSync(parts, { mtime: new Date(1980, 0, 1) }) : bytes
 }
 
 function withoutFormatChanges(bytes: Uint8Array) {
