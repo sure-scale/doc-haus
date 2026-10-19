@@ -98,8 +98,6 @@ export async function runDraftStage(
   progress: (patch: Partial<LeanStageState>) => void,
   document: DocID,
   planned: () => void | Promise<void>,
-  /** The step's draft was accepted in this run; only its saved output was found wanting. */
-  current = false,
 ): Promise<DraftStageRun> {
   const step: StepID = `${document}.draft`
   // A new stage attempt cannot retrieve a partial draft from an older attempt.
@@ -289,12 +287,13 @@ export async function runDraftStage(
     recordCoverage(saved.documents, saved.acting_for, coverage)
     const blocked = scopeBlock(saved.documents, coverage)
     if (blocked) return blocked
-    // When only the coverage record was out of date (a lawyer's edit to another
-    // document's entry, say), the accepted draft is kept with its open items.
-    if (current && draftOutputValid(directory, step)) {
-      await planned()
-      return { status: "done", outputs: stepOutputs(step), openItems: readOpenItems(directory).filter(item => item.stage === "draft" && item.ref.document === document) }
-    }
+  }
+  // A saved plan's accepted draft is final for the run (a new run starts from
+  // an empty lean folder): a step re-run after a coverage refresh, or after
+  // the question it stopped for is answered, keeps it with its open items.
+  if (!outlined && draftOutputValid(directory, step)) {
+    await planned()
+    return { status: "done", outputs: stepOutputs(step), openItems: readOpenItems(directory).filter(item => item.stage === "draft" && item.ref.document === document) }
   }
   const plan = plannedDocument(directory, document)
   if (!plan) return { status: "failed", reason: `${step}: the run's plan has no document ${document}.` }

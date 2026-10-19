@@ -244,7 +244,7 @@ describe("plan coverage at the outline step", () => {
     rmSync(leanFile(directory, "coverage.json"))
     const model = scriptedModel({ [AGENT.draft]: outliner(TWO), [AGENT.coverage]: () => ACTS })
     const progress = (patch: Partial<LeanStageState>) => { updateLeanStage(directory, readLeanState(directory)!, "d1.draft", patch) }
-    const kept = await runDraftStage(directory, state, { sessions: model.port }, progress, "d1", () => {}, true)
+    const kept = await runDraftStage(directory, state, { sessions: model.port }, progress, "d1", () => {})
 
     expect(kept.status).toBe("done")
     expect(model.sessions.filter(session => session.agent === AGENT.draft)).toEqual([])
