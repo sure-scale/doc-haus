@@ -28,6 +28,7 @@ import {
   ingestDocument,
   extractDocumentText,
   matterDocumentName,
+  DeliverableDocumentExistsError,
   SourceDocumentConflictError,
   SourceDocumentExistsError,
 } from "./ingest"
@@ -562,6 +563,8 @@ app.post("/matters/:id/documents", async (c) => {
   } catch (error) {
     if (error instanceof SourceDocumentExistsError)
       return c.json({ error: error.message, code: "source_exists", name: error.existing }, 409)
+    if (error instanceof DeliverableDocumentExistsError)
+      return c.json({ error: error.message, code: "deliverable_exists", name: error.existing }, 409)
     if (error instanceof SourceDocumentConflictError) return c.json({ error: error.message }, 409)
     throw error
   }
@@ -659,8 +662,9 @@ app.post("/matters/:id/documents/revisions", async (c) => {
 
 // Convert an uploaded .pdf into an editable .docx sibling and index it, so a PDF
 // contract can enter the DOCX redline pipeline. The source .pdf is kept; the new
-// .docx lands beside it under the same base name. LibreOffice is used when present
-// on the host, otherwise a MIT text-only rebuild (see convert.ts).
+// .docx lands beside it under the same base name, or the next free one when that
+// name is taken, so a conversion never overwrites a document. LibreOffice is used
+// when present on the host, otherwise a MIT text-only rebuild (see convert.ts).
 app.post("/matters/:id/documents/convert", async (c) => {
   const dir = matterDir(c.req.param("id"))
   const name = matterDocumentName(c.req.query("name") ?? "")
@@ -681,8 +685,7 @@ app.post("/matters/:id/documents/convert", async (c) => {
     db.close()
     if (role !== "source") return c.json({ error: `${target.name} is not a registered source document.` }, 409)
     const docxName = target.name.replace(/\.pdf$/i, ".docx")
-    // Converting again replaces the earlier conversion, as it always has.
-    const result = await ingestDocument(dir, docxName, await pdfToDocx(Buffer.from(await Bun.file(file).bytes())), { existing: "replace" })
+    const result = await ingestDocument(dir, docxName, await pdfToDocx(Buffer.from(await Bun.file(file).bytes())), { existing: "keep-both" })
     return c.json(result)
   })
 })

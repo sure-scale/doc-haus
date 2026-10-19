@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test"
 import completed from "../../../dochaus/workflows/lean/fixtures/status-completed.json"
 import { deleteMatterSession } from "../src/api/ingest/matters"
 import { dispatchMatterContinuation } from "../src/api/ingest/drafting-run"
-import { SourceExistsError, uploadDocument } from "../src/api/ingest/documents"
+import { DocumentExistsError, uploadDocument } from "../src/api/ingest/documents"
 import { getDraftingStatus } from "../src/api/ingest/drafting-status"
 import type { LeanDraftingStatus } from "../src/api/ingest/lean"
 
@@ -133,9 +133,9 @@ test("a same-name upload is refused with the existing name until the caller choo
     name: "Agreement.docx",
   }))
   const error = await uploadDocument("matter", file).catch((error: unknown) => error)
-  expect(error).toBeInstanceOf(SourceExistsError)
-  expect((error as SourceExistsError).existing).toBe("Agreement.docx")
-  expect((error as SourceExistsError).message).toStartWith("Agreement.docx is already in this matter.")
+  expect(error).toBeInstanceOf(DocumentExistsError)
+  expect(error).toMatchObject({ existing: "Agreement.docx", role: "source" })
+  expect((error as DocumentExistsError).message).toStartWith("Agreement.docx is already in this matter.")
   expect((refused[0]?.get("file") as File).name).toBe("agreement.docx")
   expect(refused[0]?.has("existing")).toBe(false)
 
@@ -147,9 +147,19 @@ test("a same-name upload is refused with the existing name until the caller choo
   expect((await uploadDocument("matter", file, { existing: "replace" })).name).toBe("Agreement.docx")
   expect(replaced[0]?.get("existing")).toBe("replace")
 
-  // Any other conflict, such as a generated deliverable of that name, stays a plain failure.
-  scriptXhr(409, JSON.stringify({ error: "Cannot replace generated deliverable Draft.docx with a source document." }))
+  // A generated deliverable of that name is named too, so the caller can keep both.
+  scriptXhr(409, JSON.stringify({
+    error: "Cannot replace generated deliverable Draft.docx with a source document.",
+    code: "deliverable_exists",
+    name: "Draft.docx",
+  }))
   const deliverable = await uploadDocument("matter", new File(["x"], "Draft.docx")).catch((error: unknown) => error)
-  expect(deliverable).not.toBeInstanceOf(SourceExistsError)
-  expect((deliverable as Error).message).toBe("Cannot replace generated deliverable Draft.docx with a source document.")
+  expect(deliverable).toBeInstanceOf(DocumentExistsError)
+  expect(deliverable).toMatchObject({ existing: "Draft.docx", role: "deliverable" })
+
+  // Any other conflict stays a plain failure.
+  scriptXhr(409, JSON.stringify({ error: "Alias.docx is a symbolic-link alias, not a matter document." }))
+  const alias = await uploadDocument("matter", new File(["x"], "Alias.docx")).catch((error: unknown) => error)
+  expect(alias).not.toBeInstanceOf(DocumentExistsError)
+  expect((alias as Error).message).toBe("Alias.docx is a symbolic-link alias, not a matter document.")
 })

@@ -38,6 +38,14 @@ export class SourceDocumentExistsError extends SourceDocumentConflictError {
   }
 }
 
+// The upload names a generated deliverable, which a source never replaces; the
+// caller can keep both. `existing` is the deliverable's stored name.
+export class DeliverableDocumentExistsError extends SourceDocumentConflictError {
+  constructor(readonly existing: string) {
+    super(`Cannot replace generated deliverable ${existing} with a source document.`)
+  }
+}
+
 // What an upload does when a source of the same name is already registered:
 // refuse (the default, so a lawyer's file is never replaced silently), replace
 // it, or keep both by storing the upload under the next free name.
@@ -110,8 +118,7 @@ async function ingestDocumentLocked(
   const registry = openDb(matterDir)
   const role = getDocumentRole(registry, docPath)
   registry.close()
-  if (role === "deliverable")
-    throw new SourceDocumentConflictError(`Cannot replace generated deliverable ${fileName} with a source document.`)
+  if (role === "deliverable") throw new DeliverableDocumentExistsError(fileName)
   if (options.requireExistingSource && role !== "source")
     throw new SourceDocumentConflictError(`${fileName} is no longer a registered source document.`)
   if (role === "source" && options.existing === "refuse") throw new SourceDocumentExistsError(fileName)
