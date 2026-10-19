@@ -8,6 +8,8 @@ import {
   type ChangeLocation,
   type CompareParams,
   type ComparisonJson,
+  type ComparisonSide,
+  type ProposalOutcome,
 } from "../api/ingest/compare"
 import { humanizeError } from "../api/ingest/errors"
 import { fileStem } from "./CompareDialog"
@@ -16,7 +18,8 @@ import { ModalClose } from "./ModalHeader"
 
 // The blackline of two Word versions, painted with the same render as the
 // document viewer, beside a list of the edits the later version made without
-// tracked changes and then every change. View and download only: the blackline
+// tracked changes, what became of the earlier version's own tracked changes,
+// and then every change. View and download only: the blackline
 // is generated on demand and never saved into the matter.
 export default function BlacklineViewer({ matterId, params, onClose }: { matterId: string; params: CompareParams; onClose: () => void }) {
   const { isReady, error: wasmError, convertToHtml } = useDocxodus("/wasm/")
@@ -193,15 +196,39 @@ function untrackedStatus({ left, right, untracked }: ComparisonJson) {
   }
 }
 
+const OUTCOME: Record<ProposalOutcome["outcome"], string> = {
+  pending: "still pending",
+  accepted: "accepted",
+  undone: "undone without tracking",
+}
+
+// "3 proposals: 1 still pending, 1 accepted, 1 undone without tracking."
+// Outcomes that did not happen are left out.
+function proposalSummary(proposals: ProposalOutcome[]) {
+  const parts = (Object.keys(OUTCOME) as ProposalOutcome["outcome"][]).flatMap((outcome) => {
+    const count = proposals.filter((proposal) => proposal.outcome === outcome).length
+    return count ? [`${count} ${OUTCOME[outcome]}`] : []
+  })
+  return `${plural(proposals.length, "proposal")}: ${parts.join(", ")}.`
+}
+
+const hadRevisions = ({ label, trackedChanges: { count, authors } }: ComparisonSide) =>
+  `${label} had ${plural(count, "tracked change")}${authors.length ? ` (by ${authors.join(", ")})` : ""}`
+
 // What the comparison did with the inputs and the Word file, in plain words.
-function disclosures({ left, right, options, attribution, untracked }: ComparisonJson) {
+function disclosures({ left, right, options, attribution, untracked, proposals = [] }: ComparisonJson) {
   const lines: string[] = []
   if (attribution === "label") lines.push(`Untracked edits are listed here only; in the Word file every change shows under ${right.label}.`)
   else if (untracked.length) lines.push(`In the Word file, edits made without tracked changes show under “Not tracked (${right.label})”.`)
-  for (const side of [left, right]) {
-    const { count, authors } = side.trackedChanges
-    if (count) lines.push(`${side.label} had ${plural(count, "tracked change")}${authors.length ? ` (by ${authors.join(", ")})` : ""}; compared as accepted.`)
-  }
+  // The blackline reads left with its own tracked changes accepted; the
+  // proposals section, not this line, says what became of each.
+  const leftCount = left.trackedChanges.count
+  if (leftCount)
+    lines.push(
+      `${hadRevisions(left)}; the blackline compares its text with ${leftCount === 1 ? "that change" : "those changes"} accepted.` +
+        (proposals.length ? ` “Proposals in ${left.label}” above shows what became of each in ${right.label}.` : ""),
+    )
+  if (right.trackedChanges.count) lines.push(`${hadRevisions(right)}; compared as accepted.`)
   for (const side of [left, right])
     if (side.pendingProposals)
       lines.push(`${side.label} has ${plural(side.pendingProposals, "pending doc.haus proposal")}; ${side.pendingProposals === 1 ? "it is" : "they are"} not included.`)
@@ -212,7 +239,7 @@ function disclosures({ left, right, options, attribution, untracked }: Compariso
 }
 
 export function ComparePanel({ comparison }: { comparison: ComparisonJson }) {
-  const { left, right, changes, untracked } = comparison
+  const { left, right, changes, untracked, proposals = [] } = comparison
   const status = untrackedStatus(comparison)
   return (
     <aside className="changes-panel compare-panel" aria-label="Changes">
@@ -234,6 +261,18 @@ export function ComparePanel({ comparison }: { comparison: ComparisonJson }) {
           <HunkCard key={hunk.id} hunk={hunk} comparison={comparison} />
         ))}
       </section>
+      {proposals.length > 0 && (
+        <section className="compare-section compare-proposals" aria-labelledby="compare-proposals-title">
+          <h3 id="compare-proposals-title">
+            {`Proposals in ${left.label}`}
+            <span className="compare-count">{proposals.length}</span>
+          </h3>
+          <p className="compare-status">{proposalSummary(proposals)}</p>
+          {proposals.map((proposal) => (
+            <ProposalCard key={proposal.id} proposal={proposal} comparison={comparison} />
+          ))}
+        </section>
+      )}
       <section className="compare-section" aria-labelledby="compare-all-title">
         <h3 id="compare-all-title">All changes</h3>
         {changes.length === 0 && <p className="compare-status">No differences found.</p>}
@@ -253,7 +292,7 @@ export function ComparePanel({ comparison }: { comparison: ComparisonJson }) {
 function HunkCard({ hunk, comparison, marked }: { hunk: ChangeHunk; comparison: ComparisonJson; marked?: boolean }) {
   const before = hunk.before && !(hunk.kind === "moved" && hunk.before === hunk.after) ? hunk.before : undefined
   return (
-    <div className={`change-card compare-hunk${marked && hunk.untracked ? " is-untracked" : ""}`}>
+    <div id={`compare-${hunk.id}`} className={`change-card compare-hunk${marked && hunk.untracked ? " is-untracked" : ""}`}>
       <div className="change-author compare-hunk-meta">
         <span>{hunk.id}</span>
         <span>{KIND[hunk.kind]}</span>
@@ -262,6 +301,42 @@ function HunkCard({ hunk, comparison, marked }: { hunk: ChangeHunk; comparison: 
       <div className="compare-hunk-location">{hunkLocation(hunk.location, comparison)}</div>
       {before && <ClippedText className="change-old" text={before} />}
       {hunk.after && <ClippedText className="change-new" text={hunk.after} />}
+    </div>
+  )
+}
+
+// One tracked change the earlier version proposed and what became of it. An
+// undone one names the untracked edit that reversed it, which sits above.
+function ProposalCard({ proposal, comparison }: { proposal: ProposalOutcome; comparison: ComparisonJson }) {
+  const undone = proposal.outcome === "undone"
+  const ref = proposal.untracked
+  return (
+    <div id={`compare-${proposal.id}`} className={`change-card compare-hunk compare-proposal${undone ? " is-undone" : ""}`}>
+      <div className="change-author compare-hunk-meta">
+        <span>{proposal.id}</span>
+        <span>{proposal.kind === "inserted" ? "Proposed insertion" : "Proposed deletion"}</span>
+        <span className={`compare-outcome-tag${undone ? " is-undone" : ""}`}>
+          {!undone ? (
+            proposal.outcome === "pending" ? "Still pending" : "Accepted"
+          ) : ref ? (
+            <>
+              {"Undone without tracking — see "}
+              <button
+                type="button"
+                className="linklike compare-ref"
+                title={`Show ${ref} under Edits made without tracked changes`}
+                onClick={() => document.getElementById(`compare-${ref}`)?.scrollIntoView({ block: "center", behavior: "smooth" })}
+              >
+                {ref}
+              </button>
+            </>
+          ) : (
+            "Undone without tracking"
+          )}
+        </span>
+      </div>
+      <div className="compare-hunk-location">{hunkLocation(proposal.location, comparison)}</div>
+      <ClippedText className={proposal.kind === "inserted" ? "change-new" : "change-old"} text={proposal.text} />
     </div>
   )
 }

@@ -49,6 +49,24 @@ export type ComparisonSide = {
   pendingProposals: number
 }
 
+// What became of one tracked insertion or deletion pending in the left file,
+// read from the right file without a model: still pending there, accepted
+// (its effect is in the right text), or undone by an edit made without
+// tracking. Format-only, moved and paragraph-mark revisions are not listed.
+export type ProposalOutcome = {
+  // "P1"… in left's document order.
+  id: string
+  kind: "inserted" | "deleted"
+  // The proposed inserted text, or the text proposed for deletion.
+  text: string
+  author: string
+  outcome: "pending" | "accepted" | "undone"
+  // Outcome "undone": the id ("U2") of the untracked edit that reversed it.
+  untracked?: string
+  // Where it sits in left; paragraph 0 when it could not be placed.
+  location: ChangeLocation
+}
+
 export type ComparisonJson = {
   left: ComparisonSide
   right: ComparisonSide
@@ -58,6 +76,8 @@ export type ComparisonJson = {
   attribution: "authors" | "label"
   changes: ChangeHunk[]
   untracked: ChangeHunk[]
+  // Left's pending tracked changes and their outcome; absent means none.
+  proposals?: ProposalOutcome[]
   blacklineName: string
 }
 

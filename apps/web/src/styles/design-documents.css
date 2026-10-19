@@ -311,7 +311,8 @@
 .compare-error { margin: 0; font-size: 13px; color: var(--danger); }
 .compare-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
 
-/* Blackline side panel: untracked edits first, then every change. */
+/* Blackline side panel: untracked edits first, then what became of the earlier
+   version's proposals, then every change. */
 @media (min-width: 721px) {
   .blackline-reader .compare-panel { width: 380px; }
 }
@@ -321,18 +322,24 @@
 .compare-section h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 6px; font-family: var(--font-sans); font-size: 13px; font-weight: 600; color: var(--text); }
 .compare-count { padding: 0 7px; border-radius: var(--radius-pill); background: var(--bg-sunken); color: var(--text-secondary); font-size: 11px; line-height: 18px; }
 .compare-status { margin: 0 0 6px; font-size: 12.5px; line-height: 1.5; color: var(--text-secondary); }
-.compare-untracked { padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg); }
+.compare-untracked,
+.compare-proposals { padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg); }
 .compare-untracked.is-warning { border-color: var(--warn-border); background: var(--warn-soft); }
 .compare-untracked.is-warning h3,
 .compare-untracked.is-warning .compare-status { color: var(--warn); }
 .compare-untracked.is-warning .compare-count { background: var(--warn); color: var(--text-on-accent); }
 .compare-untracked.is-info { border-color: transparent; background: var(--info-soft); }
 .compare-untracked.is-ok { border-color: var(--accent-border); background: var(--accent-tint); }
-.document-reader .compare-untracked .change-card { padding: 12px 0; background: transparent; }
-.document-reader .compare-untracked .change-card:last-child { padding-bottom: 0; border-bottom: 0; }
+.document-reader :is(.compare-untracked, .compare-proposals) .change-card { padding: 12px 0; background: transparent; }
+.document-reader :is(.compare-untracked, .compare-proposals) .change-card:last-child { padding-bottom: 0; border-bottom: 0; }
 .compare-hunk-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 4px; }
-.compare-untracked-tag { padding: 0 6px; border: 1px solid var(--warn-border); border-radius: 4px; background: var(--warn-soft); color: var(--warn); font-size: 11px; font-weight: 500; letter-spacing: 0; line-height: 16px; text-transform: none; }
-.document-reader .compare-hunk.is-untracked { padding-left: 12px; box-shadow: inset 3px 0 var(--warn); }
+.compare-untracked-tag,
+.compare-outcome-tag { padding: 0 6px; border: 1px solid var(--warn-border); border-radius: 4px; background: var(--warn-soft); color: var(--warn); font-size: 11px; font-weight: 500; letter-spacing: 0; line-height: 16px; text-transform: none; }
+/* Pending and accepted proposals read neutral; only an undone one warns. */
+.compare-outcome-tag:not(.is-undone) { border-color: var(--border); background: var(--panel); color: var(--text-secondary); }
+.compare-outcome-tag .compare-ref { font: inherit; color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+.document-reader .compare-hunk.is-untracked,
+.document-reader .compare-proposal.is-undone { padding-left: 12px; box-shadow: inset 3px 0 var(--warn); }
 .compare-hunk-location { margin-bottom: 8px; font-size: 12px; color: var(--text-secondary); overflow-wrap: anywhere; }
 .compare-more { margin: 2px 0 6px; font-size: 12px; }
 .compare-disclosures { padding-top: 12px; border-top: 1px solid var(--border); }

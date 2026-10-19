@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
 import { INGEST_URL } from "../src/config"
-import { compareUrl, fetchBlacklineBytes, fetchComparison, type ChangeHunk, type ComparisonJson } from "../src/api/ingest/compare"
+import { compareUrl, fetchBlacklineBytes, fetchComparison, type ChangeHunk, type ComparisonJson, type ProposalOutcome } from "../src/api/ingest/compare"
 import { choiceParams, compareCandidates } from "../src/components/CompareDialog"
 import CompareDialog from "../src/components/CompareDialog"
 import BlacklineViewer, { ComparePanel, hunkLocation, saveDocx } from "../src/components/BlacklineViewer"
@@ -149,7 +149,8 @@ describe("blackline side panel", () => {
       left: { name: "Our draft.docx", label: "Our draft", trackedChanges: { count: 1, authors: [] }, pendingProposals: 2 },
     }))
     expect(html).toContain("Untracked edits are listed here only; in the Word file every change shows under Their draft.")
-    expect(html).toContain("Our draft had 1 tracked change; compared as accepted.")
+    expect(html).toContain("Our draft had 1 tracked change; the blackline compares its text with that change accepted.")
+    expect(html).not.toContain("Our draft had 1 tracked change; compared as accepted.")
     expect(html).toContain("Our draft has 2 pending doc.haus proposals; they are not included.")
     expect(panel(comparison())).toContain("show under “Not tracked (Their draft)”")
   })
@@ -162,6 +163,73 @@ describe("blackline side panel", () => {
     const html = panel(comparison({ untracked: [hunk("U1", true, { after: "word ".repeat(200) })] }))
     expect(html).toContain("…")
     expect(html).toContain("Show all")
+  })
+})
+
+// Our draft's own tracked changes and what Their draft did with each.
+const proposal = (id: string, outcome: ProposalOutcome["outcome"], patch: Partial<ProposalOutcome> = {}): ProposalOutcome => ({
+  id, kind: "inserted", text: "Interest accrues on late payments.", author: "Ann Lawyer", outcome,
+  location: { scope: "body", paragraph: 5, side: "left", heading: "2. Payment", number: "2.2" }, ...patch,
+})
+const withProposals = (patch: Partial<ComparisonJson> = {}) => comparison({
+  left: { name: "Our draft.docx", label: "Our draft", trackedChanges: { count: 3, authors: ["Ann Lawyer"] }, pendingProposals: 0 },
+  untracked: [
+    hunk("U1", true, { kind: "inserted", before: undefined, after: "A new late fee applies." }),
+    hunk("U2", true, { before: "Payment is due within thirty days. Interest accrues on late payments.", after: "Payment is due within thirty days." }),
+  ],
+  proposals: [
+    proposal("P1", "pending", { text: "Either party may terminate on notice.", location: { scope: "body", paragraph: 9, side: "left", heading: "5. Term" } }),
+    proposal("P2", "accepted", { kind: "deleted", text: "Payment may be withheld.", location: { scope: "body", paragraph: 7, side: "left" } }),
+    proposal("P3", "undone", { untracked: "U2" }),
+  ],
+  ...patch,
+})
+
+describe("proposal outcomes", () => {
+  test("no section when the earlier version proposed nothing", () => {
+    for (const value of [comparison(), comparison({ proposals: [] })]) {
+      const html = panel(value)
+      expect(html).not.toContain("Proposals in")
+      expect(html).not.toContain("compare-proposals")
+    }
+  })
+
+  test("the section sits after the untracked edits and counts each outcome", () => {
+    const html = panel(withProposals())
+    expect(html).toContain("Proposals in Our draft")
+    expect(html).toContain("3 proposals: 1 still pending, 1 accepted, 1 undone without tracking.")
+    expect(html.indexOf("Edits made without tracked changes")).toBeLessThan(html.indexOf("Proposals in Our draft"))
+    expect(html.indexOf("Proposals in Our draft")).toBeLessThan(html.indexOf("All changes"))
+    expect(html.indexOf("P1")).toBeLessThan(html.indexOf("P2"))
+    expect(html.indexOf("P2")).toBeLessThan(html.indexOf("P3"))
+    const accepted = panel(withProposals({ proposals: [proposal("P1", "accepted"), proposal("P2", "accepted")] }))
+    expect(accepted).toContain("2 proposals: 2 accepted.")
+    expect(accepted).not.toContain("is-undone")
+  })
+
+  test("each card names its outcome, place and proposed text; an undone one points to its untracked edit", () => {
+    const html = panel(withProposals())
+    expect(html).toContain("Still pending")
+    expect(html).toContain("Accepted")
+    expect(html).toMatch(/Undone without tracking — see <button[^>]*>U2<\/button>/)
+    expect(html).toContain('id="compare-U2"')
+    expect(html).toContain('id="compare-P3" class="change-card compare-hunk compare-proposal is-undone"')
+    expect(html).toContain('id="compare-P1" class="change-card compare-hunk compare-proposal"')
+    expect(html).toContain('id="compare-P2" class="change-card compare-hunk compare-proposal"')
+    expect(html).toContain("5. Term · paragraph 9 in Our draft")
+    expect(html).toContain("Paragraph 7 in Our draft")
+    expect(html).toContain("Proposed insertion")
+    expect(html).toContain("Proposed deletion")
+    expect(html).toMatch(/class="change-old">Payment may be withheld\.</)
+    expect(html).toMatch(/class="change-new">Either party may terminate on notice\.</)
+  })
+
+  test("the disclosure says the blackline compares accepted text and points to the proposals", () => {
+    const html = panel(withProposals())
+    expect(html).toContain(
+      "Our draft had 3 tracked changes (by Ann Lawyer); the blackline compares its text with those changes accepted. “Proposals in Our draft” above shows what became of each in Their draft.",
+    )
+    expect(html).not.toContain("Our draft had 3 tracked changes (by Ann Lawyer); compared as accepted.")
   })
 })
 
