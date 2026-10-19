@@ -91,7 +91,9 @@ No preamble. In this order, leaving out empty parts:
    line per U-id with its location and a plain statement of what changed. If
    there are none, or the later version has no tracked changes at all, say so
    in one line.
-3. A clause-by-clause table of differences, one row per difference:
+3. **Proposals** (when the tool lists any): one line per P-id with its outcome
+   as the tool states it, and the U-id it gives.
+4. A clause-by-clause table of differences, one row per difference:
 
 | Change | Clause / topic | Earlier (quote + § ref) | Later (quote + § ref) | Materiality | Favors |
 
@@ -105,9 +107,9 @@ No preamble. In this order, leaving out empty parts:
 - Favors: which party the delta benefits, in one short phrase (e.g. "Counterparty
   — cap drops from 12 months' fees to 3").
 
-4. A short summary: the overall direction of the changes, which party gained
+5. A short summary: the overall direction of the changes, which party gained
    more ground, and the differences most worth the lawyer's attention.
-5. When `compare-versions` ran, one line: the blackline can be opened and
+6. When `compare-versions` ran, one line: the blackline can be opened and
    downloaded from the Open blackline card in this chat. Never say you saved or
    created a file.
 </output>
