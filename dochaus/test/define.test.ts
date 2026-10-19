@@ -13,7 +13,7 @@ afterEach(() => {
 
 function matter(input: {
   terms: Array<{ term: string; definition: string }>
-  chunks: Array<{ section: string; text: string; start: number }>
+  chunks: Array<{ section: string; text: string; start: number; doc?: string }>
 }) {
   const dir = mkdtempSync(path.join(tmpdir(), "define-usage-"))
   dirs.push(dir)
@@ -38,8 +38,8 @@ function matter(input: {
   }
   for (const row of input.chunks) {
     db.run("INSERT INTO chunks (doc_path, doc_name, section, text, char_start, char_end) VALUES (?, ?, ?, ?, ?, ?)", [
-      "/m/supply.docx",
-      "Supply Agreement",
+      `/m/${row.doc ?? "Supply Agreement"}.docx`,
+      row.doc ?? "Supply Agreement",
       row.section,
       row.text,
       row.start,
@@ -50,8 +50,8 @@ function matter(input: {
   return dir
 }
 
-async function lookup(dir: string, term: string) {
-  return (await define.execute({ term }, { directory: dir } as never)) as string
+async function lookup(dir: string, term: string, document?: string) {
+  return (await define.execute({ term, document }, { directory: dir } as never)) as string
 }
 
 function usageSites(output: string) {
@@ -120,5 +120,66 @@ describe("define usage sites", () => {
 
     expect(sites).toContain("During the Term, rent is fixed.")
     expect(sites).not.toContain("terminate")
+  })
+
+  test("names the matched term on each near-match usage line", async () => {
+    const dir = matter({
+      terms: [{ term: "Change of Control", definition: '"Change of Control" means a transfer of voting power.' }],
+      chunks: [{ section: "12", text: "A Change of Control lets the lender accelerate.", start: 0 }],
+    })
+
+    const output = await lookup(dir, "control")
+
+    expect(output).toContain("No exact match")
+    expect(output).toContain("Usage sites of the near-match terms above (up to 5):")
+    expect(output).toContain('uses "Change of Control": A Change of Control lets the lender accelerate.')
+  })
+
+  test("keeps the exact-match usage heading and lines unchanged", async () => {
+    const dir = matter({
+      terms: [{ term: "Term", definition: '"Term" means the period stated in Section 2.' }],
+      chunks: [{ section: "6", text: "During the Term, rent is fixed.", start: 0 }],
+    })
+
+    const output = await lookup(dir, "Term")
+
+    expect(output).toContain(
+      "Usage sites (up to 5):\n- Supply Agreement § 6 [within chars 0-31]: During the Term, rent is fixed.",
+    )
+  })
+
+  test("never cuts a character in half at either snippet edge", async () => {
+    const wide = "\u{1D400}"
+    // Snippets reach 100 code units either side of the use; place a surrogate
+    // pair across each edge.
+    const leading = "aaaaa" + wide + "b".repeat(98) + " Term follows."
+    const trailing = "Term " + "c".repeat(98) + wide + "dd"
+    const dir = matter({
+      terms: [{ term: "Term", definition: '"Term" means the period stated in Section 2.' }],
+      chunks: [
+        { section: "1", text: leading, start: 0 },
+        { section: "2", text: trailing, start: 500 },
+      ],
+    })
+
+    const sites = usageSites(await lookup(dir, "Term"))
+
+    expect(sites.isWellFormed()).toBe(true)
+    expect(sites.split(wide).length - 1).toBe(2)
+  })
+
+  test("keeps the document filter when one is given", async () => {
+    const dir = matter({
+      terms: [{ term: "Term", definition: '"Term" means the period stated in Section 2.' }],
+      chunks: [
+        { section: "6", text: "During the Term, rent is fixed.", start: 0 },
+        { section: "2", text: "The Term of the lease is ten years.", start: 0, doc: "Lease" },
+      ],
+    })
+
+    const sites = usageSites(await lookup(dir, "Term", "Supply Agreement"))
+
+    expect(sites).toContain("During the Term, rent is fixed.")
+    expect(sites).not.toContain("lease")
   })
 })

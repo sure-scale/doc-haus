@@ -64,22 +64,22 @@ export default tool({
 
     // Usage sites: chunks that use one of the recorded terms found above.
     // Extracted text quotes terms with straight or curly quotes interchangeably,
-    // so the unquoted term is the reliable form. LIKE is only a cheap prefilter:
-    // every recorded term contains the requested one under LIKE's ASCII case
-    // folding, so it never drops a real use. findTermUse then keeps a chunk only
-    // if a recorded term occurs case-sensitively as a whole word ("Term" is not
-    // used in "terminate"), and the limit applies after that check so
+    // so the unquoted term is the reliable form. The SQL prefilter keeps chunks
+    // containing a recorded term as a case-sensitive substring (instr), which
+    // findTermUse requires anyway, so it never drops a real use. findTermUse
+    // then keeps a chunk only if a recorded term occurs as a whole word ("Term"
+    // is not used in "Terminated"), and the limit applies after that check so
     // prefilter-only rows cannot crowd out real uses.
     const recordedTerms = [...new Set(hits.map((hit) => hit.term))]
     const usage: Array<UsageRow & { at: number; term: string }> = []
-    const candidates = db
-      .query<UsageRow, string[]>(
-        "SELECT doc_name, section, text, char_start, char_end FROM chunks WHERE text LIKE '%' || ? || '%' ESCAPE '\\'" +
-          (args.document ? " AND doc_name = ?" : "") +
-          " ORDER BY doc_name, char_start",
-      )
-      .iterate(like, ...scopeParams)
-    for (const row of candidates) {
+    const candidates = db.prepare<UsageRow, string[]>(
+      "SELECT doc_name, section, text, char_start, char_end FROM chunks WHERE (" +
+        recordedTerms.map(() => "instr(text, ?) > 0").join(" OR ") +
+        ")" +
+        docScope +
+        " ORDER BY doc_name, char_start",
+    )
+    for (const row of candidates.iterate(...recordedTerms, ...scopeParams)) {
       const use = recordedTerms
         .map((term) => ({ term, at: findTermUse(row.text, term) }))
         .filter((found) => found.at !== -1)
@@ -88,6 +88,7 @@ export default tool({
       usage.push({ ...row, ...use })
       if (usage.length === USAGE_LIMIT) break
     }
+    candidates.finalize()
     db.close()
 
     const byDoc = Map.groupBy(hits, (hit) => hit.doc_name)
@@ -112,18 +113,28 @@ export default tool({
       const lineStart = row.text.lastIndexOf("\n", idx) + 1
       const lineEndIndex = row.text.indexOf("\n", idx)
       const lineEnd = lineEndIndex === -1 ? row.text.length : lineEndIndex
-      const start = Math.max(lineStart, idx - SNIPPET_RADIUS)
-      const end = Math.min(lineEnd, idx + row.term.length + SNIPPET_RADIUS)
+      let start = Math.max(lineStart, idx - SNIPPET_RADIUS)
+      let end = Math.min(lineEnd, idx + row.term.length + SNIPPET_RADIUS)
+      // Widen an edge that falls inside a surrogate pair so no character is cut.
+      if (start > lineStart && isLowSurrogate(row.text.charCodeAt(start))) start--
+      if (end < lineEnd && isLowSurrogate(row.text.charCodeAt(end))) end++
       const snippet =
         (start > lineStart ? "..." : "") + row.text.slice(start, end) + (end < lineEnd ? "..." : "")
+      // Near-match rows are different terms, so say which one this line uses.
+      const uses = exact.length ? "" : ` uses "${row.term}"`
       // Chunk-granularity offsets, unlike the term-precise offsets on
       // definition rows — label them so the two are not conflated.
-      return `- ${row.doc_name} § ${row.section} [within chars ${row.char_start}-${row.char_end}]: ${snippet}`
+      return `- ${row.doc_name} § ${row.section} [within chars ${row.char_start}-${row.char_end}]${uses}: ${snippet}`
     })
+    const usageTitle = exact.length ? "Usage sites" : "Usage sites of the near-match terms above"
     const usageBlock = usageLines.length
-      ? `\n\nUsage sites (up to ${USAGE_LIMIT}):\n` + usageLines.join("\n")
+      ? `\n\n${usageTitle} (up to ${USAGE_LIMIT}):\n` + usageLines.join("\n")
       : ""
 
     return `${heading}\n\n${definitions}${differNote}${usageBlock}`
   },
 })
+
+function isLowSurrogate(code: number) {
+  return code >= 0xdc00 && code <= 0xdfff
+}

@@ -18,6 +18,18 @@ describe("findTermUse", () => {
     expect(findTermUse("PartyÉ", "Party")).toBe(-1)
   })
 
+  test("treats a combining mark after the term as part of the word", () => {
+    expect(findTermUse("Cafe\u0301 x", "Cafe")).toBe(-1)
+    expect(findTermUse("x \u0301Cafe", "Cafe")).toBe(-1)
+  })
+
+  test("reads a whole surrogate pair on either side of the term", () => {
+    expect(findTermUse("\u{1D400}Party", "Party")).toBe(-1)
+    expect(findTermUse("Party\u{1D400}", "Party")).toBe(-1)
+    // A non-letter astral character is still a boundary.
+    expect(findTermUse("\u{1F600}Party", "Party")).toBe(2)
+  })
+
   test("never matches an empty term", () => {
     expect(findTermUse("any text", "")).toBe(-1)
   })

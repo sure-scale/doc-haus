@@ -54,4 +54,12 @@ describe("attachDefinitions term matching", () => {
 
     expect(note).toBe("")
   })
+
+  test("treats accented letters and underscores next to the term as part of the word", () => {
+    const db = termsDb(["Agreement"])
+
+    const note = attachDefinitions(db, [excerpt("See Agreement_v2 and the Agreementé copy.")], {})
+
+    expect(note).toBe("")
+  })
 })
