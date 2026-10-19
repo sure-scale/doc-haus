@@ -130,6 +130,15 @@ export async function writeSourceArtifacts(
   }
 }
 
+// Startup heal for one matter (ingest server boot). Returns what it did.
+export async function healSourceArtifacts(matterDir: string, sourceRolledBack: boolean) {
+  if (!sourceRolledBack && sourceArtifactsMatchRegistry(matterDir)) return "current" as const
+  // A rolled-back mutation also restored legal.db, so it is stamped as an ingest like the other recovery
+  // paths. Only a registry mismatch is a rebuild: it stamps just the files whose bytes changed.
+  await writeSourceArtifacts(matterDir, undefined, sourceRolledBack ? {} : { rebuild: true })
+  return sourceRolledBack ? "recovered" as const : "rebuilt" as const
+}
+
 export function sourceArtifactsMatchRegistry(matterDir: string, suppliedDb?: Database) {
   const db = suppliedDb ?? openDb(matterDir)
   const sources = (listSourceDocuments(db) as { doc_path: string; name: string }[])

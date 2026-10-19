@@ -5,7 +5,7 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { insertChunk, openDb, upsertDocument } from "./db"
 import { stampIngestLineage } from "./lineage"
-import { sourceArtifactsMatchRegistry, writeSourceArtifacts } from "./source-artifacts"
+import { healSourceArtifacts, sourceArtifactsMatchRegistry, writeSourceArtifacts } from "./source-artifacts"
 
 // The longest line a source chunk file may hold (the read-tool cap in source-artifacts.ts).
 const READ_LINE_CAP = 1000
@@ -418,8 +418,8 @@ describe("source artifacts", () => {
       const before = new Map(rebuilt().map((file) => [file, sha(file)]))
       const rowsBefore = lineage().length
 
-      // The startup heal (ingest server boot): rebuild when the projection no longer matches.
-      await writeSourceArtifacts(dir, undefined, { rebuild: true })
+      // The startup heal (ingest server boot) with no rolled-back mutation.
+      expect(await healSourceArtifacts(dir, false)).toBe("rebuilt")
 
       expect(sourceArtifactsMatchRegistry(dir)).toBe(true)
       for (const [file, text] of currentFormat) expect(readFileSync(path.join(dir, file), "utf8")).toBe(text)
@@ -432,6 +432,63 @@ describe("source artifacts", () => {
       for (const row of added) {
         expect(row).toMatchObject({ op: "write", content_sha256: sha(row.artifact), provenance: { origin: "source-rebuild" } })
       }
+      // A matching projection is left alone.
+      expect(await healSourceArtifacts(dir, false)).toBe("current")
+      expect(lineage().length).toBe(rowsBefore + added.length)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("the startup heal after a rolled-back mutation stamps every artifact as an ingest, legal.db included", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "dochaus-source-artifacts-"))
+    try {
+      // Authored synthetic texts; no real matter data.
+      const addDocument = (name: string, text: string) => {
+        const db = openDb(dir)
+        const docPath = path.join(dir, name)
+        insertChunk(db, {
+          documentId: upsertDocument(db, docPath, name, Date.now(), null),
+          docPath,
+          docName: name,
+          section: "1",
+          structuralPath: name,
+          party: "",
+          chunkIndex: 0,
+          text,
+          charStart: 0,
+          charEnd: text.length,
+          embedding: new Float32Array([1, 2, 3]),
+          flagged: false,
+        })
+        db.close()
+      }
+      addDocument("Agreement.docx", "ARTICLE 1\nAlpha obligations.")
+      await writeSourceArtifacts(dir)
+      // Recovery restored a registry (and so a legal.db) that lineage has not recorded.
+      addDocument("Schedule.docx", "SCHEDULE 1\nBeta obligations.")
+
+      const lineage = () => readFileSync(path.join(dir, ".dochaus", "lineage.jsonl"), "utf8").trim().split("\n").map((row) => JSON.parse(row))
+      const sha = (file: string) => createHash("sha256").update(readFileSync(path.join(dir, file))).digest("hex")
+      const latest = (artifact: string) => lineage().findLast((row) => row.artifact === artifact)
+      expect(latest(".dochaus/legal.db").content_sha256).not.toBe(sha(".dochaus/legal.db"))
+      const rowsBefore = lineage().length
+
+      expect(await healSourceArtifacts(dir, true)).toBe("recovered")
+
+      const added = lineage().slice(rowsBefore)
+      expect(added.find((row) => row.artifact === ".dochaus/legal.db")).toMatchObject({
+        op: "ingest",
+        content_sha256: sha(".dochaus/legal.db"),
+        provenance: { origin: "upload" },
+      })
+      // Every artifact on disk ends with a lineage row that matches it.
+      const tracked = [
+        ".dochaus/legal.db", "source-index.json", "source-map.json", "source-map.md", "source-ledger.json", "matter-identifiers.json", "matter-identifiers.md",
+        ...[...new Bun.Glob("{source-chunks,sources}/*.txt").scanSync({ cwd: dir })].map((file) => file.replace(/\\/g, "/")),
+      ]
+      expect(tracked.filter((artifact) => latest(artifact)?.content_sha256 !== sha(artifact))).toEqual([])
+      expect(sourceArtifactsMatchRegistry(dir)).toBe(true)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

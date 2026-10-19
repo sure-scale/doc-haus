@@ -97,6 +97,7 @@ export function stampSourceRebuildLineage(matterDir: string, documents: string[]
       op: "write",
       run: `ingest:${correlation}`,
       provenance: { origin: "source-rebuild", documents },
+      // A file with no lineage row yet is stamped too, so it becomes ledgered.
       stamp: (_artifact, sha256, prior) => prior?.content_sha256 !== sha256,
     }))
 }

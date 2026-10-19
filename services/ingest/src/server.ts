@@ -61,7 +61,7 @@ import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadat
 import { draftingTraceReference } from "../../../dochaus/lib/drafting-trace-identity"
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
 import path from "node:path"
-import { sourceArtifactsMatchRegistry, writeSourceArtifacts } from "./source-artifacts"
+import { healSourceArtifacts } from "./source-artifacts"
 import { MatterSessionDeletionConflictError, MatterSessionDeletionError, deleteMatterSession } from "./matter-session"
 import { ChatContinuationConflictError, dispatchChatContinuation, malformedToolContinuationInput } from "./chat-continuation"
 import { withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
@@ -1240,10 +1240,8 @@ for (const matter of listMatters()) {
     const db = openDb(matter.dir)
     const reembedded = await migrateEmbeddings(db)
     const restructured = migrateStructure(db)
-    const rebuildSourceArtifacts = Boolean(recovery.sourceRolledBack) ||
-      !sourceArtifactsMatchRegistry(matter.dir, db)
     db.close()
-    if (rebuildSourceArtifacts) await writeSourceArtifacts(matter.dir, undefined, { rebuild: true })
+    await healSourceArtifacts(matter.dir, Boolean(recovery.sourceRolledBack))
     if (reembedded) console.log("chunks re-embedded", { count: reembedded, matter_ref: draftingTraceReference(matter.dir) })
     if (restructured) console.log("document structure extracted", { count: restructured, matter_ref: draftingTraceReference(matter.dir) })
   } catch (e) {
