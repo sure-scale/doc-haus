@@ -8,17 +8,16 @@ import { draftingTraceReference } from "../../../dochaus/lib/drafting-trace-iden
 import { researchStatus } from "../../../dochaus/workflows/lean/research"
 import { readLeanDocuments, requestedMemo, type LeanDocuments } from "../../../dochaus/workflows/lean/deliverables"
 import { sha256File } from "../../../dochaus/lib/lineage"
-import { readDurableJson } from "../../../dochaus/lib/durable-json"
 import { lastLeanEventAt } from "../../../dochaus/workflows/lean/events"
 import { readLeanPlan } from "../../../dochaus/workflows/lean/plan"
-import { enqueueLeanRequest, pendingLeanRequests, leanUserUpdates, queuedAnswerIDs, isChecklistRefinement, type LeanRequest } from "../../../dochaus/workflows/lean/requests"
+import { enqueueLeanRequest, pendingLeanRequests, leanUserUpdates, queuedAnswerIDs, isChecklistRefinement } from "../../../dochaus/workflows/lean/requests"
 import { runLean, stageInputSha, stopLeanRun } from "../../../dochaus/workflows/lean/runner"
 import { leanSteps } from "../../../dochaus/workflows/lean/plan"
 import { withSourceSnapshot } from "../../../dochaus/workflows/lean/quotes"
 import { engineSessionPort, type LeanDeps } from "../../../dochaus/workflows/lean/stages"
 import {
   LeanQuestionError,
-  assertDelegable,
+  answerWith,
   currentOpenItems,
   initLeanState,
   leanDir,
@@ -31,6 +30,7 @@ import {
   validateAnswerText,
   writeLeanState,
   type LeanModel,
+  type AnswerForm,
   type LeanState,
   type Question,
 } from "../../../dochaus/workflows/lean/state"
@@ -114,57 +114,36 @@ export function resumeLeanDraftingRun(directory: string, deps: LeanDeps = defaul
   return { profile: "lean" as const, mode: "queued" as const, request_id: request.id, status: leanDraftingStatus(directory) }
 }
 
-/** Queues the lawyer's answer to a question, or its hand-back for the drafting
- * to decide: the body carries exactly one of `answer` text or
- * `decide_for_me: true`. The coordinator records it at its next stage boundary
- * and re-runs the stages that consume answers. A hand-back is admitted only if
- * the question, as its queued answers will leave it, can be handed back
- * (assertDelegable): one answered or handed back, recorded or still queued, is
- * refused. The drain checks again, since a stage may have replaced the question
- * meanwhile. A real answer may follow a hand-back and replaces it. Check and
- * enqueue run synchronously, so no other request in this process lands between. */
+/** Queues the lawyer's answer to a question. The body carries exactly one of
+ * `answer` text, the `option_id` of an offered option, or `decide_for_me: true`
+ * to adopt the recommended option. It is admitted only if the question, as its
+ * queued answers will leave it, takes that form (answerWith): an unknown
+ * question, empty words or an option it does not offer is refused, and so is an
+ * adoption of a question answered, recorded or still queued, or one with no
+ * recommendation to adopt. The coordinator records it at its next stage
+ * boundary, checking again since a stage may have replaced the question
+ * meanwhile, and re-runs the stages that consume answers. Check and enqueue run
+ * synchronously, so no other request in this process lands between. */
 export function answerLeanQuestion(directory: string, questionID: string, input: unknown, deps: LeanDeps = defaultDeps()) {
   if (!leanStateExists(directory)) return undefined
   refuseStopped(readLeanState(directory))
   const body = input && typeof input === "object" && !Array.isArray(input) ? input as Record<string, unknown> : {}
-  if ("decide_for_me" in body && (body.decide_for_me !== true || "answer" in body))
-    throw new LeanQuestionError("Send either answer text or decide_for_me: true.", "invalid_answer")
-  const request: Extract<LeanRequest, { kind: "answer" }> = "decide_for_me" in body
-    ? { kind: "answer", question_id: questionID, decide_for_me: true }
-    : { kind: "answer", question_id: questionID, answer: validateAnswerText(typeof body.answer === "string" ? body.answer : "") }
+  const given = ["answer", "option_id", "decide_for_me"].filter(key => key in body)
+  if (given.length !== 1 || ("option_id" in body && typeof body.option_id !== "string") || ("decide_for_me" in body && body.decide_for_me !== true))
+    throw new LeanQuestionError("Send exactly one of answer text, option_id or decide_for_me: true.", "invalid_answer")
+  const form: AnswerForm = "decide_for_me" in body ? { adopt: true } : "option_id" in body ? { option_id: body.option_id as string } : { text: typeof body.answer === "string" ? body.answer : "" }
   const question = readQuestions(directory).find(question => question.id === questionID)
-  if ("decide_for_me" in request) assertDelegable(afterQueuedAnswers(directory, question), questionID)
-  else if (!question) throw new LeanQuestionError("No such question in this matter's lean drafting run.", "not_found")
-  const queued = enqueueLeanRequest(directory, request)
+  answerWith(afterQueuedAnswers(directory, question), form)
+  const queued = enqueueLeanRequest(directory, "adopt" in form ? { kind: "answer", question_id: questionID, adopt: true }
+    : "option_id" in form ? { kind: "answer", question_id: questionID, option_id: form.option_id }
+    : { kind: "answer", question_id: questionID, answer: validateAnswerText(form.text) })
   if (!running.has(directory)) launch(directory, deps)
   return { profile: "lean" as const, mode: "queued" as const, request_id: queued.id, status: leanDraftingStatus(directory) }
 }
 
-/** The answers and hand-backs still queued, oldest first: the order the drain
- * applies them in. */
-function queuedAnswers(directory: string) {
-  return pendingLeanRequests(directory).flatMap(name => {
-    const request = readDurableJson(path.join(leanDir(directory), "requests", name))
-    return request && typeof request === "object" && "kind" in request && request.kind === "answer" &&
-      "question_id" in request && typeof request.question_id === "string"
-      ? [{ question_id: request.question_id, handed_back: "decide_for_me" in request && request.decide_for_me === true }]
-      : []
-  })
-}
-
-/** `question` as the drain will leave it: the latest answer or hand-back queued
- * for it wins, as a real answer replaces a hand-back. */
+/** `question` as the drain will leave it: answered once any answer is queued for it. */
 function afterQueuedAnswers(directory: string, question: Question | undefined): Question | undefined {
-  const latest = question && queuedAnswers(directory).findLast(request => request.question_id === question.id)
-  if (!question || !latest) return question
-  const { answer_kind: _kind, ...asked } = question
-  return { ...asked, status: "answered", ...(latest.handed_back ? { answer_kind: "decide_for_me" as const } : {}) }
-}
-
-/** The queued_answer_ids whose latest queued request is a hand-back, not answer text. */
-function queuedHandedBackIDs(directory: string) {
-  const latest = new Map(queuedAnswers(directory).map(request => [request.question_id, request.handed_back]))
-  return [...queuedAnswerIDs(directory)].filter(id => latest.get(id))
+  return question && queuedAnswerIDs(directory).has(question.id) ? { ...question, status: "answered" } : question
 }
 
 /** One synchronous read of the run: every step key it takes shares one read of
@@ -189,8 +168,6 @@ function readLeanDraftingStatus(directory: string) {
     last_progress_at: event && event > state.updated_at ? event : state.updated_at,
     pending_requests: pendingLeanRequests(directory).length,
     queued_answer_ids: [...queuedAnswerIDs(directory)],
-    // The subset still queued as hand-backs: received, but not the lawyer's answers.
-    queued_handed_back_ids: queuedHandedBackIDs(directory),
     updates: draftingUpdates(directory, state),
     open_items: currentOpenItems(directory),
     questions: readQuestions(directory),

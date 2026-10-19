@@ -39,8 +39,8 @@ Reply with the next progress update for the lawyer.
   run, or a completed run. The lawyer acts in the chat: they answer in the
   questions card and open the drafted files from the result. Continue drafting
   is for a stopped run with no question waiting; a run waiting only on
-  questions resumes by itself once every question is answered or left to the
-  drafting. The app already shows waiting questions to the lawyer, so do not
+  questions resumes by itself once every question is answered. The app already
+  shows waiting questions to the lawyer, so do not
   repeat a question's text or mention questions an earlier update already
   reported. Never answer a question for the lawyer, never suggest an answer,
   and never say the run will continue on its own when it is waiting on them.

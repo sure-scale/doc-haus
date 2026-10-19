@@ -1,5 +1,5 @@
 import { normalize } from "../../lib/quote-verify"
-import { handedBack, questionKindIssues, readQuestions, shortHash, type Question } from "./state"
+import { questionKindIssues, readQuestions, shortHash, type Question } from "./state"
 
 type Checked<T> = { issues: string[]; value?: T }
 
@@ -14,9 +14,7 @@ export function intakeQuestions(directory: string, reply: string, stage: Questio
   if (typeof value !== "object" || value === null) return invalid
   if (!("questions" in value)) return
   if (!Array.isArray(value.questions) || !value.questions.length) return invalid
-  const settled = readQuestions(directory).filter(row => row.status === "answered")
-  const answered = new Set(settled.filter(row => !handedBack(row)).map(row => normalize(row.question)))
-  const left = new Set(settled.filter(handedBack).map(row => normalize(row.question)))
+  const answered = new Set(readQuestions(directory).filter(row => row.status === "answered").map(row => normalize(row.question)))
   const questions: Question[] = []
   for (const [index, row] of value.questions.entries()) {
     if (!row || typeof row.question !== "string" || !row.question.trim() || typeof row.context !== "string" || !row.context.trim()) return invalid
@@ -24,8 +22,6 @@ export function intakeQuestions(directory: string, reply: string, stage: Questio
     if (kind.length) return { issues: kind }
     if (answered.has(normalize(row.question)))
       return { issues: ["That question already has a lawyer's answer. Use the supplied answers and return readiness, or ask only a genuinely unresolved decision."] }
-    if (left.has(normalize(row.question)))
-      return { issues: ["The lawyer left that question to the drafter to decide. Make the choice in drafting and return readiness, or ask only a genuinely unresolved decision."] }
     const id = `q-${shortHash(normalize(row.question))}`
     if (!questions.some(question => question.id === id))
       questions.push({ id, stage, question: row.question.trim(), context: row.context.trim(), status: "open", kind: row.kind })

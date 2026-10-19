@@ -4,14 +4,13 @@ import { repairBodyText, reviewDispositionText } from "./change-pipeline"
 import { appliedChangeEvidence, nativeExportEvidence } from "./review-evidence"
 import { comparisonDescription } from "./comparison"
 import { combinedDelivery, deliveryArtifactEvidence, requestedMemo } from "./deliverables"
-import { handedBackChoices, type DraftingEntry } from "./evidence"
 import { researchHandoff } from "./research"
 import { finalBodyParagraphs, readChangeList, readParagraphs, type ApplyResult } from "./checks"
 import { reviewStages, FIRST_DOCUMENT, earlierDocuments, planActingFor, operativeDocument, plannedDocument, readLeanPlan, stepDocument, stepStage, type DocID, type StepID } from "./plan"
 import { REQUEST_SOURCE, matterSourceIDs } from "./quotes"
 import { readRepairRound, changesRepairSections } from "./repairs"
 import { disclosableItems } from "./stages"
-import { QUESTION_KIND_CONTRACT, isReviewStage, answeredQuestionsText, handedBack, handedBackBlock, handedBackNotesBlock, readLeanJson, readLeanText, readQuestions, type OpenItem, type StageID } from "./state"
+import { QUESTION_KIND_CONTRACT, isReviewStage, answeredQuestionsText, readLeanJson, readLeanText, readQuestions, type OpenItem, type StageID } from "./state"
 import { plannedContract } from "./template-contract"
 
 // Prompts of the lean model steps. Each step's first prompt carries everything
@@ -37,10 +36,6 @@ const SOURCE_RULES = [
   "- A preference is a drafting choice needed to fulfil the requested purpose, within the requested scope. For a new substantive choice not settled by instructions or answers, draft balanced wording and add a visible [open item: confirm ...] marker in the same paragraph saying what was chosen. Do not add confirmation markers to settled decisions or ordinary wording that creates no new substantive choice. A drafted choice is not an invented fact; the marker goes with the drafted wording, never in its place.",
 ]
 
-/** The exception to the confirmation marker rule above, only with a hand-back:
- * the drafting notes disclose that choice instead (handedBackItems). */
-const HANDED_BACK_RULE = "- A point left to the drafter takes no confirmation marker: draft the choice made for it as clean operative wording, without the rejected alternative or a precedence clause between the alternatives."
-
 /** The first prompt of a step. `outline` asks the first draft step for the plan
  * of every document instead of drafting from the saved plan. */
 export function stagePrompt(directory: string, step: StepID, options: { outline?: boolean; contextOnly?: boolean } = {}) {
@@ -58,8 +53,6 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
   const spine = readLeanText(directory, "spine.json")
   const spineBlock = spine ? tagged("drafting_spine", "Source-linked drafting decisions and unresolved points. Retrieve the underlying evidence as needed; this handoff does not replace it.\n" + spine) : ""
   const answerBlock = answers ? tagged("answers", `The lawyer answered these decisions; their answers remain controlling and must not be re-asked under narrower or different wording:\n${answers}`) : ""
-  const handed = handedBackBlock(directory)
-  const handedBlock = handed ? tagged("left_to_drafting", handed) : ""
   const sources = tagged("sources", [
     "Matter documents (use these exact names with search-document and read-document, and as source names):",
     ...matterSourceIDs(directory).map(name => `- ${name}`),
@@ -81,13 +74,13 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
   // What the scope guards say other output owns: another planned document, the memo.
   const assigned = [planned ? "another planned document" : "", composition ? "the accompanying memo" : ""].filter(Boolean).join(" or ")
   const outline = tagged("document_outline", JSON.stringify(operativeDocument(plannedDocument(directory, document))))
-  if (options.contextOnly) return [request, spineBlock, acting, answerBlock, handedBlock, sources, planned, composition, outline, finished].filter(Boolean).join("\n\n")
+  if (options.contextOnly) return [request, spineBlock, acting, answerBlock, sources, planned, composition, outline, finished].filter(Boolean).join("\n\n")
   const sections: Partial<Record<StageID, string[]>> = {
     draft: options.outline ? [
       "This is a lean drafting run. Plan the substantive document bodies to draft, then draft each in parts. The workflow generates delivery artifacts from those bodies.",
-      request, spineBlock, answerBlock, handedBlock, sources,
+      request, spineBlock, answerBlock, sources,
       tagged("output_contract", [
-        ...SOURCE_RULES, ...(handed ? [HANDED_BACK_RULE] : []),
+        ...SOURCE_RULES,
         "- Delivery capabilities: for every planned body the workflow renders the final Word document and generates its tracked redline; one final drafting-notes memo accompanies the package. A request for a redline/comparison or ordinary drafting notes is fulfilled by those generated artifacts, not by another planned body. Set Compare against on the revised body to select a supplied original for comparison. Plan a separate substantive memo only when the request requires its own distinct audience, purpose or analysis beyond the accompanying drafting notes; a different delivery format does not create another substantive document. Do not draft simulated tracked text as a separate comparison document.",
         "- Write one line \"Memo: <its name in the request's own words>\" before the first \"# \" title only when the request asks for a memo or note to accompany the documents; otherwise leave it out. Do not also plan the memo it names as a \"# \" document.",
         "- These rules apply to every part you draft later.",
@@ -116,9 +109,9 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
     ] : [
       `This is a lean drafting run. You draft "${title ?? document}", one of the documents the request asks for, in parts: one part per reply.`,
       ...(plannedDocument(directory, document)?.purpose ? [`This document is for: ${plannedDocument(directory, document)!.purpose}`] : []),
-      request, spineBlock, acting, answerBlock, handedBlock, sources, composition, finished,
+      request, spineBlock, acting, answerBlock, sources, composition, finished,
       tagged("output_contract", [
-        ...SOURCE_RULES, ...(handed ? [HANDED_BACK_RULE] : []),
+        ...SOURCE_RULES,
         ...(finished ? ["- Carry accepted source-supported change explanations into this document when its purpose calls for advice or a summary. Explain the original issue, consequence, proposed solution and remaining decision. Verify the actual final wording and source context; an earlier explanation is not authority and may need correction. This document must agree with the finished documents above in their final wording: names, defined terms, figures, dates and cross-references."] : []),
         ...(template ? [`- This document is drafted from the matter document "${template}" as its template. Carry every part of it that the outline does not leave out, adapted to this matter.`] : []),
         ...(plannedDocument(directory, document)?.mode === "revise" ? ["- Preserve unaffected source wording, operative clauses and their qualifications. Revise only what the request, evidence and accepted proposals justify; explain substantive omissions. Advice or a summary does not replace operative wording in the revised document. Read the full original part before editing it."] : []),
@@ -129,7 +122,7 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
     review: [
       `This is a lean drafting run. Independently review the draft${named} below against the lawyer's request and the matter's sources.`,
       tagged("review_focus", isReviewStage(stage) ? REVIEW_FOCUS[stage] : ""),
-      request, spineBlock, acting, answerBlock, handedBlock, sources, planned, composition, outline, finished, paragraphs,
+      request, spineBlock, acting, answerBlock, sources, planned, composition, outline, finished, paragraphs,
       ...(stage === "review-wording" ? [draftingStyleWarningsBlock(readParagraphs(directory, document))] : []),
       tagged("output_contract", [
         "- Check the draft against the request and the sources (search-document, read-document, verify-quote).",
@@ -161,7 +154,7 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
         const finding = readLeanText(directory, `${document}/${stage}.md`)
         return finding ? `${stage}:\n${finding}` : ""
       }).filter(Boolean).join("\n\n"))]), ...changesRepairSections(directory, document),
-      spineBlock, acting, answerBlock, handedBlock, sources, planned, composition, outline, finished,
+      spineBlock, acting, answerBlock, sources, planned, composition, outline, finished,
       tagged("output_contract", [
         "Reply with exactly one JSON object and nothing else:",
         '{"amendments":[{"pid":"<pid from the draft>","updated":"<full new text of that paragraph>","reason":"<why it changes>","sources":[{"source_id":"<exact document name, or request>","quote":"<words copied exactly from that source>"}]}],"questions":[{"id":"<id of an open question you are repeating; omit for a new one>","pid":"<pid of the paragraph whose text depends on the answer>","question":"<what only the lawyer can decide>","kind":"<fact|instruction|judgment>","context":"<why it matters>"}]}',
@@ -264,14 +257,13 @@ function draftingNotesSections(directory: string, request: string) {
       : "This is a lean drafting run. Write the drafting notes that go to the lawyer with the drafted documents.",
     tagged("required_repairs", (readRepairRound(directory)?.items ?? []).filter(item => item.stage === "package-review" || item.ref.repair_target === "memo").map(item => `- ${item.detail}`).join("\n") || "None."),
     request, actingForBlock(directory), answeredQuestionsText(directory) ? tagged("answers", answeredQuestionsText(directory)) : "",
-    handedBackNotesBlock(directory) ? tagged("left_to_drafter", handedBackNotesBlock(directory)) : "",
     tagged("sources", matterSourceIDs(directory).join("\n")),
     tagged("delivery_artifacts", JSON.stringify(deliveryArtifactEvidence(directory), null, 2)),
     tagged("drafting_spine", readLeanText(directory, "spine.json") ?? "None."),
     tagged("discrepancies", readLeanText(directory, "discrepancy.json") ?? "None."),
     ...plan.map(row => `<document id="${row.id}" title="${attribute(row.title)}">\n${documentSections(directory, row.id, items).join("\n\n")}\n</document>`),
-    loose.length ? tagged("open_items", openItemLines(loose, handedBackChoices(directory))) : "",
-    tagged("questions", questions.map(question => `- ${question.id} (${handedBack(question) ? "left to the drafter" : question.status}): ${question.question}${question.answer ? `\n  Answer: ${question.answer}` : ""}`).join("\n") || "None."),
+    loose.length ? tagged("open_items", openItemLines(loose)) : "",
+    tagged("questions", questions.map(question => `- ${question.id} (${question.status}): ${question.question}${question.answer ? `\n  Answer: ${question.answer}` : ""}`).join("\n") || "None."),
     tagged("output_contract", [
       "- Follow the lawyer's explanation-detail, formality and house-style preferences when writing the notes. Translate the supplied records into their practical meaning rather than copying workflow field names, raw paths or stage status. Retain source support, comparison baselines, applied/unapplied outcomes, limitations and every required open-item id. Name documents where this helps locate them.",
       "- Separate actual unresolved instructions, corrections and decisions from professional review before issue. Do not turn settled instructions or internal output-handling steps into new confirmation requirements.",
@@ -313,13 +305,8 @@ function documentSections(directory: string, document: DocID, items: OpenItem[])
   ]
 }
 
-/** An item about a question the lawyer handed back carries what the spine
- * recorded for it, so the notes can say what was chosen and why. */
-function openItemLines(items: OpenItem[], choices = new Map<string, DraftingEntry>()) {
-  return items.map(item => {
-    const choice = item.ref.question_id ? choices.get(item.ref.question_id) : undefined
-    return `- ${item.id}: ${item.detail}${choice ? `\n  Drafting spine (${choice.kind}): ${choice.detail}` : ""}`
-  }).join("\n")
+function openItemLines(items: OpenItem[]) {
+  return items.map(item => `- ${item.id}: ${item.detail}`).join("\n")
 }
 
 function attribute(text: string) {

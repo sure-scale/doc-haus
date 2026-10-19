@@ -14,7 +14,7 @@ import { changesRepairSections, documentRepairs } from "./repairs"
 import { drainLeanRequests } from "./requests"
 import { approvedResearch } from "./research"
 import { LEAN_CHILD_PERMISSIONS, LEAN_MAX_RETRIES, LEAN_PROMPT_VERSION, LEAN_STAGE_AGENTS, stageInputs, stepSessionTitle, type LeanDeps } from "./stages"
-import { QUESTION_KIND_CONTRACT, handedBack, hashStageInputs, leanFile, questionContent, readLeanJson, readLeanText, readQuestions, writeLeanText, type LeanState, type LeanStageState, type Question } from "./state"
+import { QUESTION_KIND_CONTRACT, hashStageInputs, leanFile, questionContent, readLeanJson, readLeanText, readQuestions, writeLeanText, type LeanState, type LeanStageState, type Question } from "./state"
 
 export type ChangeGroup = {
   id: string
@@ -301,7 +301,7 @@ export function changeReviewPrompt(directory: string, document: DocID) {
     ...earlierDocuments(directory, document).map(row => `<earlier_body document="${row.id}">\n${finalBodyParagraphs(directory, row.id).map(paragraph => `[${paragraph.pid}] ${paragraph.text}`).join("\n\n")}\n</earlier_body>`),
     `<reconciled_changes>\n${readLeanText(directory, `${document}/changes.json`)}\n</reconciled_changes>`,
     `<adjudicated_goals>\n${readLeanText(directory, `${document}/change-plan.json`)}\n</adjudicated_goals>`,
-    `<questions>\n${JSON.stringify(readQuestions(directory).filter(row => !handedBack(row)).map(questionContent), null, 2)}\n</questions>`,
+    `<questions>\n${JSON.stringify(readQuestions(directory).map(questionContent), null, 2)}\n</questions>`,
     `<preparation_limits>\n${JSON.stringify((readLeanJson(directory, `${document}/change-preparation.json`) as ChangePreparation | undefined)?.groups?.map(row => ({ group: row.group, withheld: row.changes.withheld, questions: row.changes.questions })) ?? [], null, 2)}\n</preparation_limits>`,
     "Preparation limits describe unverified proposals, not final application outcomes. Assess whether their accepted goals are correctly fulfilled by the final projected wording; do not repeat a proposal limit as an outstanding defect after it is corrected.",
     ...changesRepairSections(directory, document).filter(section => !section.startsWith("<previous_changes>")),

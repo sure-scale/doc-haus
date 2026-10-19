@@ -10,7 +10,7 @@ import { readLeanPlan, type DocID } from "./plan"
 import { excerpt, matterSourceIDs, openItem } from "./quotes"
 import { researchHandoff } from "./research"
 import { requestedFilesItemNamed } from "./requested-files"
-import { answeredQuestionsText, handedBackBlock, readLeanJson, readLeanText, type OpenItem } from "./state"
+import { answeredQuestionsText, readLeanJson, readLeanText, type OpenItem } from "./state"
 
 export type PackageReview = {
   status: "pass" | "changes-required"
@@ -59,7 +59,6 @@ export function packageReviewPrompt(directory: string) {
     `<drafting_spine>\n${readLeanText(directory, "spine.json") ?? ""}\n</drafting_spine>`,
     `<discrepancies>\n${readLeanText(directory, "discrepancy.json") ?? ""}\n</discrepancies>`,
     `<answers>\n${answeredQuestionsText(directory)}\n</answers>`,
-    ...(handedBackBlock(directory) ? [`<left_to_drafting>\n${handedBackBlock(directory)}\n</left_to_drafting>`] : []),
     `<sources>\n${matterSourceIDs(directory).join("\n")}\n</sources>`,
     `<delivery_artifacts>\n${JSON.stringify(deliveryArtifactEvidence(directory), null, 2)}\n</delivery_artifacts>`,
     `<legal_research>\n${researchHandoff(directory)}\n</legal_research>`,

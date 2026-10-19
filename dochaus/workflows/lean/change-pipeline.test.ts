@@ -139,7 +139,7 @@ test("planner question pauses before preparation; canonical answer survives rest
   expect(waiting.prompts).toHaveLength(0)
   const asked = readQuestions(directory).find(row => row.question === question)!
   expect(asked.stage).toBe("change-plan")
-  answerQuestion(directory, asked.id, "Use the supplied delivery period.")
+  answerQuestion(directory, asked.id, { text: "Use the supplied delivery period." })
   restoreLeanStage(directory, "d1.change-plan")
   const resumed = scriptedModel(replies())
   expect((await runLean(directory, { sessions: resumed.port })).status).toBe("completed")
@@ -290,7 +290,7 @@ test("parallel worker questions are unioned under preparation and pause reconcil
   expect(readOpenItems(directory).filter(row => row.stage === "change-prepare" && row.kind === "question")).toHaveLength(2)
   expect(model.count(AGENT.changes)).toBe(0)
   expect(existsSync(leanFile(directory, "d1/body-applied.docx"))).toBe(false)
-  questions.forEach(row => answerQuestion(directory, row.id, "Use the supplied source instruction."))
+  questions.forEach(row => answerQuestion(directory, row.id, { text: "Use the supplied source instruction." }))
   expect((await runLean(directory, { sessions: scriptedModel(replies()).port })).status).toBe("completed")
   expect(readQuestions(directory).filter(row => row.status === "open")).toHaveLength(0)
 }, 120_000)

@@ -7,7 +7,7 @@ import { readLeanPlan, type DocID } from "./plan"
 import { packageCompositionBlock } from "./prompts"
 import { drainLeanRequests } from "./requests"
 import { LEAN_CHILD_PERMISSIONS, LEAN_MAX_RETRIES, LEAN_PROMPT_VERSION, LEAN_STAGE_AGENTS, stageInputs, stepSessionTitle, type LeanDeps } from "./stages"
-import { handedBack, handedBackBlock, hashStageInputs, readQuestions, type LeanState, type LeanStageState } from "./state"
+import { hashStageInputs, readQuestions, type LeanState, type LeanStageState } from "./state"
 
 const MAX_CONTEXT = 32_000
 export type FocusedChangeReviewInput = { id: string; pids: string[]; text: string }
@@ -41,12 +41,11 @@ export function focusedChangeReviewInputs(directory: string, document: DocID): F
     if (finding.disposition === "rejected") continue
     units.push({ id: `disclosure:${index}`, pids: [], goal: finding })
   }
-  const answers = readQuestions(directory).filter(row => !handedBack(row)).map(row => ({ id: row.id, question: row.question, status: row.status, answer: row.answer }))
+  const answers = readQuestions(directory).map(row => ({ id: row.id, question: row.question, status: row.status, answer: row.answer }))
   const request = checklistProducerInputs(directory).find(row => row.key === "request")!.input
   const documentPlan = readLeanPlan(directory)
   const entry = documentPlan?.documents.find(row => row.id === document)
   const composition = packageCompositionBlock(directory, document)
-  const handed = handedBackBlock(directory)
   const build = (unit: typeof units[number], split = false): FocusedChangeReviewInput => {
     const own = new Set(unit.pids)
     const context = new Set(unit.pids)
@@ -61,7 +60,6 @@ export function focusedChangeReviewInputs(directory: string, document: DocID): F
       `<actual_instructions>\n${JSON.stringify([...request.passages, ...request.instructions])}\n</actual_instructions>`,
       ...(composition ? [composition] : []),
       `<actual_questions_and_answers>\n${JSON.stringify(answers)}\n</actual_questions_and_answers>`,
-      ...(handed ? [`<left_to_drafting>\n${handed}\n</left_to_drafting>`] : []),
       `<shared_decisions>\n${JSON.stringify(plan.shared_decisions)}\n</shared_decisions>`,
       `<initial_target_and_neighbors>\n${initial.filter(row => context.has(row.pid)).map(row => `[${row.pid}] ${row.text}`).join("\n\n")}\n</initial_target_and_neighbors>`,
       `<projected_target_and_neighbors>\n${projected.filter(row => context.has(row.pid)).map(row => `[${row.pid}] ${row.text}`).join("\n\n")}\n</projected_target_and_neighbors>`,
