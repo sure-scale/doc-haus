@@ -81,6 +81,9 @@ export type OpenItem = {
     checklist_item?: string
     /** Why a checklist_unresolved finding remains adverse; absent for a parent's coverage. */
     checklist_class?: ChecklistFindingClass
+    /** The requested file a Requested-files item is about: its index in the
+     * saved requested-files record, which is written with the plan. */
+    requested_file?: number
   }
   status: "open" | "resolved" | "disclosed"
   resolution?: string

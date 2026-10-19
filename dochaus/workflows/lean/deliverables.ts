@@ -242,11 +242,12 @@ export async function recordLeanDocuments(directory: string, deps: LeanDeps, reg
   if (combined?.failure) throw new Error(combined.failure)
   if (combined?.moved) {
     // A save refused under the write's lock moved the file after the gate's
-    // notes were checked: a request whose file the lawyer's words or the notes
-    // name is checked against the name it was saved under, read from this
-    // summary. One file asked for without a name, which the notes did not
-    // place, is still the one file delivered; the next finalize discloses where
-    // it went. Imported here, as that check reads this module.
+    // notes were checked: a request whose file the lawyer's words name, or
+    // which an item the notes disclosed refers to (requested_file), is checked
+    // against the name it was saved under, read from this summary. One file
+    // asked for without a name, which the notes did not place, is still the one
+    // file delivered; the next finalize discloses where it went. Imported here,
+    // as that check reads this module.
     const { requestedFilesItems } = await import("./requested-files")
     const told = gateDisclosures(directory)
     const item = requestedFilesItems(directory, told).find(item => !told.some(row => row.id === item.id))
