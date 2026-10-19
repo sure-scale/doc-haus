@@ -1425,7 +1425,7 @@ for (const matter of listMatters()) {
     continue
   }
   try {
-    const db = openDb(matter.dir)
+    const db = openDb(matter.dir, { startup: true })
     try {
       const reembedded = await migrateEmbeddings(db)
       if (reembedded) console.log("chunks re-embedded", { count: reembedded, matter_ref: matterRef })

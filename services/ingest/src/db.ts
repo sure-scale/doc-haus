@@ -7,16 +7,27 @@ import { documentRegistryIdentity } from "./document-identity"
 // directory so it is scoped to that matter. Source rows own searchable chunks;
 // deliverable rows exist only so generated files remain listable and viewable.
 
-export function openDb(matterDir: string): Database {
+// How long the startup connection waits for another connection's write lock.
+const STARTUP_BUSY_TIMEOUT_MS = 5000
+
+// startup: the per-matter connection the service opens at boot, before it
+// listens, to run the compatibility migrations. Only it waits for a write lock
+// and checks the lexical index against the chunks (see ftsInSync below).
+//
+// Every other connection serves a request in this process, where an ingest or
+// delete commit holds its write lock across awaited file writes. bun:sqlite
+// waits synchronously, so a request waiting for that lock would block the very
+// event loop the holder needs to finish: it could only stall the service and
+// then fail. A request connection therefore never waits; on a current
+// database opening it takes no write lock at all, so reads go on during a
+// commit and a competing write fails at once with SQLITE_BUSY. At startup no
+// request runs yet, so a lock can only belong to another process (the engine's
+// short legal.db writes), which finishes while the startup connection waits.
+export function openDb(matterDir: string, options: { startup?: boolean } = {}): Database {
   const dir = path.join(matterDir, ".dochaus")
   mkdirSync(dir, { recursive: true })
   const db = new Database(path.join(dir, "legal.db"))
-  // Wait up to 5 s for another connection's write lock (the engine's writers,
-  // or a startup or ingest backfill that rewrites a matter's rows in one
-  // transaction) instead of failing at once with SQLITE_BUSY. That covers the
-  // longest such transaction measured on a large matter while still surfacing
-  // a lock that is never released as an error rather than a hung request.
-  db.run("PRAGMA busy_timeout = 5000")
+  if (options.startup) db.run(`PRAGMA busy_timeout = ${STARTUP_BUSY_TIMEOUT_MS}`)
   db.run("PRAGMA journal_mode = WAL")
   db.run("CREATE TABLE IF NOT EXISTS answer_drafts (scope TEXT PRIMARY KEY, answers TEXT NOT NULL, revision INTEGER NOT NULL)")
   // injection_report: JSON-encoded prompt-injection findings from ingest-time
@@ -129,20 +140,26 @@ export function openDb(matterDir: string): Database {
   // body so a query naming a clause ("Section 8.3") or a document matches that
   // clause's or document's own chunks directly.
   // Databases indexed before doc_name was added carry a two-column chunks_fts;
-  // FTS5 has no ALTER, so drop and recreate (the rebuild below repopulates).
+  // FTS5 has no ALTER, so drop and recreate. An index this open creates, for
+  // such a database or one from before the index existed, is built from the
+  // chunks already stored in the same transaction.
   const ftsSql = (db.query("SELECT sql FROM sqlite_master WHERE name = 'chunks_fts'").get() as { sql: string } | null)
     ?.sql
-  if (ftsSql && !ftsSql.includes("doc_name")) {
-    for (const trigger of ["chunks_fts_ai", "chunks_fts_ad", "chunks_fts_au"]) db.run(`DROP TRIGGER IF EXISTS ${trigger}`)
-    db.run("DROP TABLE chunks_fts")
-  }
-  db.run(`
-    CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
-      text, section, doc_name,
-      content='chunks', content_rowid='id',
-      tokenize='unicode61 remove_diacritics 2'
-    )
-  `)
+  if (!ftsSql?.includes("doc_name"))
+    db.transaction(() => {
+      if (ftsSql) {
+        for (const trigger of ["chunks_fts_ai", "chunks_fts_ad", "chunks_fts_au"]) db.run(`DROP TRIGGER IF EXISTS ${trigger}`)
+        db.run("DROP TABLE chunks_fts")
+      }
+      db.run(`
+        CREATE VIRTUAL TABLE chunks_fts USING fts5(
+          text, section, doc_name,
+          content='chunks', content_rowid='id',
+          tokenize='unicode61 remove_diacritics 2'
+        )
+      `)
+      db.run("INSERT INTO chunks_fts(chunks_fts) VALUES ('rebuild')")
+    })()
   // Triggers keep the index in sync with every write path (insertChunk,
   // upsertDocument's delete-then-reinsert, deleteDocument). External-content
   // FTS5 requires the special 'delete' insert form to unindex a row.
@@ -167,20 +184,27 @@ export function openDb(matterDir: string): Database {
   const currentUpdateTrigger = db.query("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'chunks_fts_au'").get() as
     | { sql: string }
     | null
-  if (currentUpdateTrigger?.sql !== updateTrigger) {
-    db.run("DROP TRIGGER IF EXISTS chunks_fts_au")
-    db.run(updateTrigger)
-  }
-  // Backfill databases that predate the FTS table, and self-heal any drift (a
-  // crash between table creation and indexing, or chunks written or updated
-  // while the triggers did not exist or did not match the index). Drift is not
-  // always a row-count mismatch: a desynced external-content index can hold the
-  // right number of rows with the wrong tokens, and then any trigger-driven
-  // 'delete' (e.g. a chunk text UPDATE) throws SQLITE_CORRUPT
+  if (currentUpdateTrigger?.sql !== updateTrigger)
+    db.transaction(() => {
+      db.run("DROP TRIGGER IF EXISTS chunks_fts_au")
+      db.run(updateTrigger)
+    })()
+  // Self-heal drift at startup: chunks written or updated while the triggers
+  // did not exist or did not match the index, by an older build or tool. Drift
+  // is not always a row-count mismatch: a desynced external-content index can
+  // hold the right number of rows with the wrong tokens, and then any
+  // trigger-driven 'delete' (e.g. a chunk text UPDATE) throws SQLITE_CORRUPT
   // ("database disk image is malformed") even though the file is intact. FTS5's
   // own 'integrity-check' command compares the index against the chunks table
   // and is the only complete drift probe; 'rebuild' atomically reindexes.
-  if (!ftsInSync(db)) db.run("INSERT INTO chunks_fts(chunks_fts) VALUES ('rebuild')")
+  // The check scans the whole index and, being an INSERT, needs the write lock,
+  // so it runs once per matter at startup rather than on every request. Drift
+  // cannot arise later: the triggers are part of the schema, so every
+  // connection in every process maintains the index in the same transaction as
+  // the chunk write, and the index and trigger changes above are atomic. A
+  // database the service has not seen gets its index built when this open
+  // creates it.
+  if (options.startup && !ftsInSync(db)) db.run("INSERT INTO chunks_fts(chunks_fts) VALUES ('rebuild')")
   // Contract-structure tables: deterministic, regex-extracted facts about each
   // document (see structure.ts). Every row is a pointer (offsets) into the
   // document's extracted text plus the verbatim text at that pointer — nothing
@@ -313,13 +337,16 @@ export function openDb(matterDir: string): Database {
 
 // FTS5 reports an index/content mismatch only by throwing SQLITE_CORRUPT from
 // its 'integrity-check' command (rank=1 verifies against the content table);
-// there is no boolean API, so the catch is the result.
-function ftsInSync(db: Database) {
+// there is no boolean API, so that error is the result. Any other error, such
+// as SQLITE_BUSY while another connection holds the write lock, says nothing
+// about the index and is rethrown rather than read as drift.
+export function ftsInSync(db: Database) {
   try {
     db.run("INSERT INTO chunks_fts(chunks_fts, rank) VALUES ('integrity-check', 1)")
     return true
-  } catch {
-    return false
+  } catch (error) {
+    if ((error as { code?: unknown }).code?.toString().startsWith("SQLITE_CORRUPT")) return false
+    throw error
   }
 }
 

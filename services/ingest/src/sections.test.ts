@@ -3,8 +3,9 @@ import { createHash } from "node:crypto"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import { Database } from "bun:sqlite"
 import { Document, Packer, Paragraph } from "docx"
-import { getMeta, openDb } from "./db"
+import { ftsInSync, getMeta, openDb } from "./db"
 import { extractDocumentText, ingestDocument } from "./ingest"
 import { createMatter } from "./matter"
 import { buildSectionPaths, chunkSection, documentSections, migrateSections, reconstructText, sectionize } from "./structure"
@@ -428,15 +429,116 @@ test("a failed sections backfill at ingest start is logged and the upload still 
   }
 }, 60_000)
 
-test("legal.db connections wait for a competing writer instead of failing at once", () => {
-  const directory = realpathSync(mkdtempSync(path.join(tmpdir(), "dochaus-sections-busy-")))
-  try {
-    const db = openDb(directory)
-    expect(db.query("PRAGMA busy_timeout").get()).toEqual({ timeout: 5000 })
-    db.close()
-  } finally {
-    rmSync(directory, { recursive: true, force: true })
+describe("legal.db write lock", () => {
+  let directory = ""
+  beforeAll(() => {
+    directory = realpathSync(mkdtempSync(path.join(tmpdir(), "dochaus-sections-busy-")))
+    openDb(directory).close()
+  })
+  afterAll(() => rmSync(directory, { recursive: true, force: true }))
+
+  // Another connection holding the write lock, as an ingest commit does across
+  // its awaited source-artifact write in this same process.
+  const holdWriteLock = () => {
+    const holder = new Database(path.join(directory, ".dochaus", "legal.db"))
+    holder.run("BEGIN IMMEDIATE")
+    holder.run("INSERT INTO meta (key, value) VALUES ('synthetic-lock', '1')")
+    return { release: () => (holder.run("ROLLBACK"), holder.close()) }
   }
+
+  test("a request connection opens and reads under another connection's write lock, and its own write fails at once", () => {
+    const lock = holdWriteLock()
+    try {
+      // A wait here would block the event loop the lock holder needs to finish.
+      const db = openDb(directory)
+      try {
+        expect(db.query("PRAGMA busy_timeout").get()).toEqual({ timeout: 0 })
+        expect(db.query("SELECT COUNT(*) AS n FROM chunks").get()).toEqual({ n: 0 })
+        expect(() =>
+          db.run("INSERT INTO answer_drafts (scope, answers, revision) VALUES ('synthetic', '{}', 1)"),
+        ).toThrow("database is locked")
+      } finally {
+        db.close()
+      }
+    } finally {
+      lock.release()
+    }
+  }, 30_000)
+
+  test("a held write lock is an error to the lexical index check, never drift", () => {
+    const db = new Database(path.join(directory, ".dochaus", "legal.db"))
+    const lock = holdWriteLock()
+    try {
+      expect(() => ftsInSync(db)).toThrow("database is locked")
+    } finally {
+      lock.release()
+      db.close()
+    }
+  })
+
+  test("the startup connection waits for another process's write lock", async () => {
+    const holder = Bun.spawn(
+      [
+        process.execPath,
+        "-e",
+        `const { Database } = require("bun:sqlite")
+        const db = new Database(${JSON.stringify(path.join(directory, ".dochaus", "legal.db"))})
+        db.run("BEGIN IMMEDIATE")
+        db.run("INSERT INTO meta (key, value) VALUES ('synthetic-holder', '1')")
+        console.log("locked")
+        setTimeout(() => { db.run("ROLLBACK"); db.close() }, 300)`,
+      ],
+      { stdout: "pipe" },
+    )
+    try {
+      const reader = holder.stdout.getReader()
+      expect(new TextDecoder().decode((await reader.read()).value)).toContain("locked")
+      reader.releaseLock()
+      const db = openDb(directory, { startup: true })
+      try {
+        expect(db.query("PRAGMA busy_timeout").get()).toEqual({ timeout: 5000 })
+        expect(ftsInSync(db)).toBe(true)
+      } finally {
+        db.close()
+      }
+    } finally {
+      holder.kill()
+      await holder.exited
+    }
+  }, 30_000)
+
+  test("the startup connection rebuilds a desynced lexical index, and a lexical index an open creates is built at once", () => {
+    const chunk = (db: Database, text: string) =>
+      db.run(
+        "INSERT INTO chunks (document_id, doc_path, doc_name, section, chunk_index, text, char_start, char_end, embedding) VALUES (1, 'synthetic.docx', 'synthetic.docx', '1', 0, ?, 0, ?, x'')",
+        [text, text.length],
+      )
+    const match = (db: Database, term: string) => db.query("SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH ?").all(term).length
+    const raw = new Database(path.join(directory, ".dochaus", "legal.db"))
+    raw.run("DROP TRIGGER chunks_fts_ai")
+    chunk(raw, "invented gamma clause")
+    raw.close()
+    const startup = openDb(directory, { startup: true })
+    try {
+      expect(ftsInSync(startup)).toBe(true)
+      expect(match(startup, "gamma")).toBe(1)
+    } finally {
+      startup.close()
+    }
+    // A database from before the lexical index existed.
+    const older = new Database(path.join(directory, ".dochaus", "legal.db"))
+    for (const trigger of ["chunks_fts_ai", "chunks_fts_ad", "chunks_fts_au"]) older.run(`DROP TRIGGER ${trigger}`)
+    older.run("DROP TABLE chunks_fts")
+    chunk(older, "invented delta clause")
+    older.close()
+    const db = openDb(directory)
+    try {
+      expect(ftsInSync(db)).toBe(true)
+      expect(match(db, "delta")).toBe(1)
+    } finally {
+      db.close()
+    }
+  })
 })
 
 test("a sections backfill failure at service start still heals the matter's source artifacts", async () => {
@@ -468,6 +570,11 @@ test("a sections backfill failure at service start still heals the matter's sour
     const db = openDb(dir)
     db.run("CREATE TRIGGER refuse_sections BEFORE INSERT ON sections BEGIN SELECT RAISE(ABORT, 'synthetic sections failure'); END")
     db.run("DELETE FROM meta WHERE key = 'sections_version'")
+    // A lexical index that lost a chunk's entry, healed by the startup check.
+    db.run(
+      "INSERT INTO chunks_fts(chunks_fts, rowid, text, section, doc_name) SELECT 'delete', id, text, section, doc_name FROM chunks LIMIT 1",
+    )
+    expect(ftsInSync(db)).toBe(false)
     db.close()
     rmSync(sourceMap)
 
@@ -492,6 +599,12 @@ test("a sections backfill failure at service start still heals the matter's sour
     }
     expect(readFileSync(serviceLog, "utf8")).toContain("matter migration failed")
     expect(existsSync(sourceMap)).toBe(true)
+    const healed = openDb(dir)
+    try {
+      expect(ftsInSync(healed)).toBe(true)
+    } finally {
+      healed.close()
+    }
   } finally {
     service?.kill()
     await service?.exited
