@@ -204,6 +204,35 @@ for (const [name, late, input] of lateInputs) test(`after a completed checklist 
   expect(idle.prompts).toHaveLength(0)
 }, 180000)
 
+// The ordinary plan of a late input may itself be stopped: paused, failed by a
+// runtime error or blocked on a question. Resumed, it stays ordinary.
+for (const interruption of ["a pause", "a runtime failure", "a question"] as const) test(`after a completed checklist round, a late update's ordinary plan stopped by ${interruption} stays ordinary when resumed`, async () => {
+  const directory = matter()
+  expect((await runLean(directory, { sessions: model(directory, "unsatisfied").port })).status).toBe("completed")
+  const late = "State that payment shall be due on delivery."
+  enqueueLeanRequest(directory, { kind: "update", text: late })
+  const pause = new AbortController()
+  let interrupted = false
+  const interrupt: Reply = (text, index) => {
+    if (interrupted || text.includes("ONE supplied checklist assessment") || !text.includes(late)) return latePlan(late)(text, index)
+    interrupted = true
+    if (interruption === "a runtime failure") throw new Error("Scripted ordinary plan failure")
+    if (interruption === "a pause") { pause.abort(); return latePlan(late)(text, index) }
+    return JSON.stringify({ shared_decisions: [], groups: [], dismissed: [], questions: [{ pid: pidOf(text, "Payment is due on delivery."), question: "Is payment due on delivery or on invoice?", context: "The update and the terms differ." }] })
+  }
+  const stopped = await runLean(directory, { sessions: model(directory, "unsatisfied", {}, {}, { [AGENT["change-plan"]]: interrupt }).port, pause: pause.signal })
+  expect(interrupted).toBe(true)
+  expect(stopped.status).toBe(interruption === "a runtime failure" ? "failed" : "blocked")
+  expect(stopped.stages["d1.change-plan"]?.status).not.toBe("done")
+  const question = readQuestions(directory).find(row => row.status === "open")
+  expect(Boolean(question)).toBe(interruption === "a question")
+  enqueueLeanRequest(directory, question ? { kind: "answer", question_id: question.id, answer: "On delivery." } : { kind: "continue" })
+  const resumed = model(directory, "unsatisfied", {}, {}, { [AGENT["change-plan"]]: latePlan(late), [AGENT["change-prepare"]]: latePreparation })
+  expect((await runLean(directory, { sessions: resumed.port })).status).toBe("completed")
+  expect(finalBodyParagraphs(directory, "d1").map(row => row.text)).toContain(LATE_PAYMENT)
+  expect(focusedRepairs(resumed)).toBe(0)
+}, 180000)
+
 test("a change plan that failed inside its checklist round is adjudicated focused again on Continue", async () => {
   const directory = matter()
   let failed = false
