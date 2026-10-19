@@ -266,3 +266,120 @@ test("supersededSections and resolveCurrentSection both pick last op within one 
   expect(resolved?.amender.rel.doc_name).toBe("Amendment No. 1")
   db.close()
 })
+
+// Base resolution: a stated target resolves only on an exact match — a recorded
+// defined term, or a file name after structural normalisation (case, extension,
+// whitespace/underscore/hyphen runs). A near miss stays unmatched; two exact
+// matches stay ambiguous. Nothing is picked by partial name overlap.
+function resolutionFor(docs: DocSeed[], targetName: string, terms: { docPath: string; term: string }[] = []) {
+  const { db } = syntheticDb()
+  seed(
+    db,
+    [...docs, { path: "/m/amender.docx", name: "Amendment No. 1.docx", createdAt: 99 }],
+    [],
+    [
+      { doc_path: "/m/amender.docx", doc_name: "Amendment No. 1.docx", relation: "amends", target_name: targetName, char_start: 0, char_end: 10 },
+    ],
+    [],
+  )
+  for (const t of terms) db.run("INSERT INTO defined_terms (doc_path, term) VALUES (?, ?)", [t.docPath, t.term])
+  const chains = buildChains(db)
+  db.close()
+  expect(chains).toHaveLength(1)
+  return { chain: chains[0]!, resolution: chains[0]!.entries[0]!.resolution }
+}
+
+test("resolveTarget does not match a target that is only a substring of a file name", () => {
+  const { chain, resolution } = resolutionFor([{ path: "/m/release.docx", name: "Release.docx", createdAt: 1 }], "Lease")
+  expect(resolution).toEqual({ kind: "unmatched" })
+  expect(chain.base).toEqual({ kind: "unresolved", targetName: "Lease" })
+})
+
+test("resolveTarget does not choose a lone file whose name merely contains the target", () => {
+  const { chain, resolution } = resolutionFor(
+    [{ path: "/m/master.docx", name: "Master Agreement.docx", createdAt: 1 }],
+    "Agreement",
+  )
+  expect(resolution).toEqual({ kind: "unmatched" })
+  expect(chain.base.kind).toBe("unresolved")
+})
+
+test("resolveTarget does not match on a numbered title that only shares a prefix", () => {
+  const { resolution } = resolutionFor([{ path: "/m/am10.docx", name: "Amendment No. 10.docx", createdAt: 1 }], "Amendment No. 1")
+  expect(resolution).toEqual({ kind: "unmatched" })
+})
+
+test("resolveTarget resolves an exact file-name match and ignores a near miss beside it", () => {
+  const { chain, resolution } = resolutionFor(
+    [
+      { path: "/m/lease.docx", name: "Lease.docx", createdAt: 1 },
+      { path: "/m/release.docx", name: "Release.docx", createdAt: 2 },
+    ],
+    "Lease",
+  )
+  expect(resolution).toMatchObject({ kind: "resolved", doc: { doc_path: "/m/lease.docx" } })
+  expect(chain.base).toMatchObject({ kind: "resolved", doc: { doc_path: "/m/lease.docx" } })
+})
+
+test("resolveTarget folds only case, extension and separators in file names", () => {
+  const { resolution } = resolutionFor(
+    [{ path: "/m/mla.docx", name: "master_lease-agreement.DOCX", createdAt: 1 }],
+    "Master Lease  Agreement",
+  )
+  expect(resolution).toMatchObject({ kind: "resolved", doc: { doc_path: "/m/mla.docx" } })
+})
+
+test("resolveTarget resolves a target that states the full file name, but not another extension", () => {
+  const docs = [{ path: "/m/source.docx", name: "Source.docx", createdAt: 1 }]
+  expect(resolutionFor(docs, "Source.docx").resolution).toMatchObject({ kind: "resolved", doc: { doc_path: "/m/source.docx" } })
+  expect(resolutionFor(docs, "Source.pdf").resolution).toEqual({ kind: "unmatched" })
+})
+
+test("resolveTarget resolves an exact recorded defined term", () => {
+  const { resolution } = resolutionFor(
+    [
+      { path: "/m/premises.docx", name: "Premises.docx", createdAt: 1 },
+      { path: "/m/other.docx", name: "Other.docx", createdAt: 2 },
+    ],
+    "Head Lease",
+    [
+      { docPath: "/m/premises.docx", term: "head lease" },
+      { docPath: "/m/other.docx", term: "Head Lease Guarantee" },
+    ],
+  )
+  expect(resolution).toMatchObject({ kind: "resolved", doc: { doc_path: "/m/premises.docx" } })
+})
+
+test("resolveTarget reports two exact matches as ambiguous", () => {
+  const { chain, resolution } = resolutionFor(
+    [
+      { path: "/m/lease.docx", name: "Lease.docx", createdAt: 1 },
+      { path: "/m/lease.pdf", name: "Lease.pdf", createdAt: 2 },
+    ],
+    "Lease",
+  )
+  expect(resolution.kind).toBe("ambiguous")
+  if (resolution.kind === "ambiguous") expect(resolution.names.sort()).toEqual(["Lease.docx", "Lease.pdf"])
+  expect(chain.base.kind).toBe("unresolved")
+})
+
+test("supersededSections does not down-rank a document the target only partially names", () => {
+  const { db } = syntheticDb()
+  seed(
+    db,
+    [
+      { path: "/m/release.docx", name: "Release.docx", createdAt: 1 },
+      { path: "/m/am1.docx", name: "Amendment No. 1.docx", createdAt: 2 },
+    ],
+    [],
+    [
+      { doc_path: "/m/am1.docx", doc_name: "Amendment No. 1.docx", relation: "amends", target_name: "Lease", char_start: 0, char_end: 10 },
+    ],
+    [
+      { doc_path: "/m/am1.docx", doc_name: "Amendment No. 1.docx", section_label: "4", operation: "restate", char_start: 100, char_end: 200 },
+    ],
+  )
+  const map = supersededSections(db, buildChains(db))
+  expect(map.has("/m/release.docx")).toBe(false)
+  db.close()
+})

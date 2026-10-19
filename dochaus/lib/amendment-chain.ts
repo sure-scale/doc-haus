@@ -46,16 +46,21 @@ export type Chain = {
   entries: ChainEntry[] // oldest-first, by created_at then insert order
 }
 
-// A document resolves a stated target when its indexed name contains every
-// token of the target (NOCASE), or when it defines the target as a term. The
-// amender itself is excluded, and amenders are dropped whenever a non-amending
-// candidate exists. Anything still unclear is reported, never forced. Verbatim
-// from the original inline resolver in dochaus/tool/amendment-chain.ts.
+// Structural normalisation for comparing a stated target with a file name:
+// case and runs of whitespace, underscores and hyphens. Nothing else is folded.
+// A target may state the file name with or without its trailing extension (a
+// dot then a letter-led run, so "No. 1" and "No.1" stay intact).
+const normalizeTitle = (value: string) => value.toLowerCase().replace(/[\s_-]+/g, " ").trim()
+const fileTitles = (name: string) => [normalizeTitle(name), normalizeTitle(name.replace(/\.[a-z][a-z0-9]{0,7}$/i, ""))]
+
+// A document resolves a stated target only on an exact match: its file name
+// equals the target after structural normalisation, or it records the target
+// as a defined term (NOCASE). Partial overlap never matches. The amender itself
+// is excluded, and amenders are dropped whenever a non-amending candidate
+// exists. More than one exact match is ambiguous and none is unmatched; both
+// are reported, never forced.
 function resolveTarget(db: Database, target: RelationRow, docs: DocRow[], relations: RelationRow[]): Resolution {
-  const tokens = target.target_name
-    .toLowerCase()
-    .split(/\s+/)
-    .filter((t) => /[\p{L}\p{N}]/u.test(t))
+  const title = normalizeTitle(target.target_name)
   const definerPaths = new Set(
     (
       db
@@ -66,7 +71,7 @@ function resolveTarget(db: Database, target: RelationRow, docs: DocRow[], relati
   const candidates = docs.filter(
     (d) =>
       d.doc_path !== target.doc_path &&
-      (tokens.every((t) => d.name.toLowerCase().includes(t)) || definerPaths.has(d.doc_path)),
+      ((title !== "" && fileTitles(d.name).includes(title)) || definerPaths.has(d.doc_path)),
   )
   const amenderPaths = new Set(relations.map((r) => r.doc_path))
   const nonAmending = candidates.filter((d) => !amenderPaths.has(d.doc_path))
