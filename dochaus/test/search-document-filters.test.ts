@@ -265,19 +265,166 @@ test("definitions, cross-reference hints and pending context respect an explicit
     expect(unfiltered.result!.output).toContain(childDefinition)
     expect(unfiltered.result!.output).toContain("outside-definition-")
     expect(unfiltered.result!.output).toContain("unproven-span-")
-    expect(unfiltered.result!.output).toContain("- Section 9 →")
+    expect(unfiltered.result!.output).toContain(`- source.docx has a section labelled "9": §9 Outside`)
     expect(unfiltered.result!.output).toContain(pendingText)
     expect(unfiltered.result!.metadata.pending).toHaveLength(1)
     expect(unfiltered.result!.metadata).not.toHaveProperty("pending_context")
     expect(filtered.result!.output).not.toContain("outside-definition-")
     expect(filtered.result!.output).not.toContain("unproven-span-")
     expect(filtered.result!.output).toContain(childDefinition)
-    expect(filtered.result!.output).not.toContain("- Section 9 →")
-    expect(filtered.result!.output).toContain("- Section 3.1 →")
+    expect(filtered.result!.output).not.toContain(`labelled "9"`)
+    expect(filtered.result!.output).toContain(`- source.docx has a section labelled "3.1": §3.1 Child`)
     expect(filtered.result!.output).not.toContain(pendingText)
     expect(filtered.result!.metadata.pending).toHaveLength(0)
     expect(filtered.result!.metadata.pending_context).toEqual({ status: "omitted", reason: "unassessed_for_structural_scope" })
     expect(filtered.result!.output).toContain("Pending redline context omitted for this structural scope; pending proposals have not been assessed.")
+  } finally {
+    rmSync(fixture.directory, { recursive: true, force: true })
+  }
+})
+
+const HINT_HEADER =
+  "Sections whose labels match references in these passages (a matching label does not show which document a reference means; to read one, pass both its document and section label to get-section):"
+
+// The section-label note is one blank-line-separated block of the output.
+function hintOf(output: string) {
+  return output.split("\n\n").find((block) => block.startsWith("Sections whose labels")) ?? ""
+}
+
+test("section-label hints match the reference kind and state a label, not a referent", async () => {
+  const fixture = matter()
+  const document = fixture.addDocument("Guarantee.docx")
+  const root = "Doc(Guarantee.docx)"
+  // Labels in the shapes ingest records: a numbered line ("8.3 Notices") keeps
+  // only its number; an unnumbered heading keeps its own text.
+  const text = "needle The Guarantor complies with Section 8.3 of the Credit Agreement, Article 5 of the Regulation, Clause 4.1, Schedule 3, Annex B and Exhibit C."
+  fixture.addChunk(document, `${root} › §2 Guarantee`, text, 1, 0, "2")
+  fixture.addChunk(document, `${root} › §3 Representations`, "representations", 0.1, 1000, "3")
+  fixture.addChunk(document, `${root} › §4.1 Costs`, "costs", 0.1, 2000, "4.1")
+  fixture.addChunk(document, `${root} › §5 Payments`, "payments", 0.1, 3000, "5")
+  fixture.addChunk(document, `${root} › §8.3 Notices`, "notices", 0.1, 4000, "8.3")
+  fixture.addChunk(document, `${root} › EXHIBIT B - FORM OF NOTICE`, "form of notice", 0.1, 5000, "EXHIBIT B - FORM OF NOTICE")
+  fixture.addChunk(document, `${root} › Exhibit C`, "exhibit c", 0.1, 6000, "Exhibit C")
+  fixture.db.close()
+  try {
+    const [result] = await search(fixture.directory, [{ query: "needle", k: 1 }])
+    const hint = hintOf(result.result!.output)
+    // A numbered label records no kind: Schedule 3 and Article 5 are other
+    // numbering series, and Annex B is not the EXHIBIT B heading.
+    expect(hint).not.toContain(`"3"`)
+    expect(hint).not.toContain(`"5"`)
+    expect(hint).not.toContain("EXHIBIT B")
+    // The note states which labels the document has; the reading agent decides
+    // what each reference means (Section 8.3 here names another agreement).
+    expect(hint).not.toContain("→")
+    expect(hint).not.toMatch(/resolve/i)
+    expect(hint).toBe(
+      [
+        HINT_HEADER,
+        `- Guarantee.docx has a section labelled "8.3": §8.3 Notices`,
+        `- Guarantee.docx has a section labelled "4.1": §4.1 Costs`,
+        `- Guarantee.docx has a section labelled "Exhibit C"`,
+      ].join("\n"),
+    )
+  } finally {
+    rmSync(fixture.directory, { recursive: true, force: true })
+  }
+})
+
+test("section-label hints keep numbering boundaries, kinds, label separators and letter case", async () => {
+  const fixture = matter()
+  const add = (name: string, citing: string, sections: Array<[label: string, crumb: string]>) => {
+    const document = fixture.addDocument(name)
+    fixture.addChunk(document, `Doc(${name}) › §1 Citing`, `needle ${citing}`, 1, 0, "1")
+    sections.forEach(([label, crumb], i) =>
+      fixture.addChunk(document, `Doc(${name}) › ${crumb}`, `body ${i}`, 0.1, 1000 * (i + 1), label))
+  }
+  // 8.3 is neither 8.30 nor 8.31; without its own label, 9.2 reports its child.
+  add("Numbers.docx", "Section 8.3 and Section 9.2.", [
+    ["8.30", "§8.30 Thirty"],
+    ["8.31", "§8.31 Thirty-one"],
+    ["9.2.1", "§9.2.1 Child"],
+  ])
+  // A roman-numeral Article matches its kind-named heading, never clause 5.
+  add("Roman.docx", "Article V applies.", [
+    ["5", "§5 Five"],
+    ["ARTICLE V", "ARTICLE V"],
+  ])
+  // The label may be followed by punctuation; a longer label (A-1) is another
+  // section; the label compares without letter case.
+  add("Punctuation.docx", "Article IV, Schedule 2, Exhibit A and Exhibit D.", [
+    ["Article IV—Definitions", "Article IV—Definitions"],
+    ["Schedule 2: Pricing", "Schedule 2: Pricing"],
+    ["EXHIBIT A-1", "EXHIBIT A-1"],
+    ["EXHIBIT d", "EXHIBIT d"],
+  ])
+  fixture.db.close()
+  try {
+    const [numbers, roman, punctuation] = await search(fixture.directory, [
+      { query: "needle", k: 1, document: "Numbers.docx" },
+      { query: "needle", k: 1, document: "Roman.docx" },
+      { query: "needle", k: 1, document: "Punctuation.docx" },
+    ])
+    expect(hintOf(numbers.result!.output)).toBe(
+      [HINT_HEADER, `- Numbers.docx has a section labelled "9.2.1": §9.2.1 Child`].join("\n"),
+    )
+    expect(hintOf(roman.result!.output)).toBe([HINT_HEADER, `- Roman.docx has a section labelled "ARTICLE V"`].join("\n"))
+    expect(hintOf(punctuation.result!.output)).toBe(
+      [
+        HINT_HEADER,
+        `- Punctuation.docx has a section labelled "Article IV—Definitions"`,
+        `- Punctuation.docx has a section labelled "Schedule 2: Pricing"`,
+        `- Punctuation.docx has a section labelled "EXHIBIT d"`,
+      ].join("\n"),
+    )
+  } finally {
+    rmSync(fixture.directory, { recursive: true, force: true })
+  }
+})
+
+test("section-label hints name each document, respect strict scope and clip long headings", async () => {
+  const fixture = matter()
+  const alpha = fixture.addDocument("Alpha.docx")
+  const beta = fixture.addDocument("Beta.docx")
+  fixture.addChunk(alpha, "Doc(Alpha.docx) › §1 Citing", "pairquery Section 4 and Section 7.", 1, 0, "1")
+  fixture.addChunk(alpha, "Doc(Alpha.docx) › §4 Alpha four", "alpha four", 0.1, 1000, "4")
+  fixture.addChunk(beta, "Doc(Beta.docx) › §1 Citing", "pairquery Section 4.", 1, 0, "1")
+  fixture.addChunk(beta, "Doc(Beta.docx) › §4 Beta four", "beta four", 0.1, 1000, "4")
+  // Beta's 7 is not a label of Alpha, where the reference appears.
+  fixture.addChunk(beta, "Doc(Beta.docx) › §7 Beta seven", "beta seven", 0.1, 2000, "7")
+
+  const scoped = fixture.addDocument("Scoped.docx")
+  const scope = "Doc(Scoped.docx) › §3 Included"
+  fixture.addChunk(scoped, scope, "scopequery Exhibit B and Section 3.1.", 1, 0, "3")
+  fixture.addChunk(scoped, `${scope} › §3.1 Child`, "child", 0.1, 1000, "3.1")
+  fixture.addChunk(scoped, "Doc(Scoped.docx) › EXHIBIT B", "exhibit b", 0.1, 2000, "EXHIBIT B")
+
+  // 76 x's put the emoji (two UTF-16 units) at the 80th code point.
+  const long = fixture.addDocument("Long.docx")
+  const heading = `§3 ${"x".repeat(76)}😀${"y".repeat(20)}`
+  fixture.addChunk(long, "Doc(Long.docx) › §1 Citing", "longquery Clause 3.", 1, 0, "1")
+  fixture.addChunk(long, `Doc(Long.docx) › ${heading}`, "long", 0.1, 1000, "3")
+  fixture.db.close()
+  try {
+    const [pair, unscoped, strict, clipped] = await search(fixture.directory, [
+      { query: "pairquery", k: 2 },
+      { query: "scopequery", k: 1, document: "Scoped.docx" },
+      { query: "scopequery", k: 1, structural_path: scope },
+      { query: "longquery", k: 1, document: "Long.docx" },
+    ])
+    const pairHint = hintOf(pair.result!.output).split("\n")
+    expect(pairHint[0]).toBe(HINT_HEADER)
+    expect(pairHint.slice(1).toSorted()).toEqual([
+      `- Alpha.docx has a section labelled "4": §4 Alpha four`,
+      `- Beta.docx has a section labelled "4": §4 Beta four`,
+    ])
+    expect(hintOf(unscoped.result!.output)).toContain(`- Scoped.docx has a section labelled "EXHIBIT B"`)
+    expect(hintOf(strict.result!.output)).toBe(
+      [HINT_HEADER, `- Scoped.docx has a section labelled "3.1": §3.1 Child`].join("\n"),
+    )
+    expect(hintOf(clipped.result!.output)).toBe(
+      [HINT_HEADER, `- Long.docx has a section labelled "3": §3 ${"x".repeat(76)}😀…`].join("\n"),
+    )
   } finally {
     rmSync(fixture.directory, { recursive: true, force: true })
   }
