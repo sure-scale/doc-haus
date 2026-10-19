@@ -59,11 +59,18 @@ function documentPage(document: string, text: string, args: { offset?: number; l
   const range = { offset, characters: returned, total_characters: characters.length, next_offset }
   return {
     title: `Read ${name}`,
-    output: `<untrusted-document name="${document}">\n${page}\n</untrusted-document>\n\n${UNTRUSTED_DOCUMENT_NOTICE}${warning}\n\n` +
+    output: `<untrusted-document name="${frameAttribute(document)}">\n${page}\n</untrusted-document>\n\n${UNTRUSTED_DOCUMENT_NOTICE}${warning}\n\n` +
       `[document-page] ${JSON.stringify({ document, ...range })}\n` +
       (next_offset === null ? "End of document (EOF)." : `More document text remains. Continue with read-document using the same document and offset=${next_offset}.`),
     // Native ToolOutput recognizes this tool-owned truncation state and retains
     // the exact page, including long runs of newlines, warnings and cursor.
     metadata: { document, page: range, truncated: next_offset !== null },
   }
+}
+
+// Uploaded names are untrusted (ingest rejects only "/"). Keep the frame's name
+// attribute closed and on one line; the exact name stays in [document-page] and
+// metadata for continuation, and the page text is never rewritten.
+function frameAttribute(name: string) {
+  return name.replaceAll("\"", "'").replaceAll("<", "‹").replaceAll(">", "›").replace(/[\p{Cc}\u2028\u2029]+/gu, " ")
 }
