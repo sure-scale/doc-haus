@@ -18,7 +18,9 @@ import { supersedeMatchingRedlines, withRedlineDocumentLock } from "../lib/redli
 // occurrence the engine cannot remove (text spanning a paragraph boundary,
 // residue surviving the scrub) aborts the whole operation before the file is
 // touched, and the user approves via permission "redact" before anything is
-// removed. Every redaction is recorded in the matter's redaction log.
+// removed. Every redaction is recorded in the matter's redaction log; once the
+// file is written, a log write that fails is reported in the result, not thrown,
+// so the re-index that drops the removed text from search still runs.
 
 const ingestUrl = process.env.INGEST_URL ?? "http://127.0.0.1:4500"
 
@@ -144,21 +146,25 @@ export default tool({
 
       assertDirectWorkingDocxWriteAllowed(ctx.directory, file)
       await Bun.write(file, scrub.bytes)
-      const stale = supersedeMatchingRedlines(
-        ctx.directory,
-        file,
-        (row) => row.find_text.includes(args.text) || row.new_text.includes(args.text),
+      const stale = attempt(() =>
+        supersedeMatchingRedlines(
+          ctx.directory,
+          file,
+          (row) => row.find_text.includes(args.text) || row.new_text.includes(args.text),
+        ),
       )
-      const id = recordRedaction(ctx.directory, {
-        docPath: file,
-        docName: path.basename(file),
-        redactedText: args.text,
-        label,
-        reason: args.reason,
-        author,
-        occurrences: currentMatches.length,
-        metadataHits: Object.values(scrub.hits).reduce((a, b) => a + b, 0),
-      })
+      const id = attempt(() =>
+        recordRedaction(ctx.directory, {
+          docPath: file,
+          docName: path.basename(file),
+          redactedText: args.text,
+          label,
+          reason: args.reason,
+          author,
+          occurrences: currentMatches.length,
+          metadataHits: Object.values(scrub.hits).reduce((a, b) => a + b, 0),
+        }),
+      )
       return { scrub, stale, id, occurrences: currentMatches.length }
     })
     if ("error" in redaction) return redaction.error
@@ -175,30 +181,44 @@ export default tool({
       })(),
     }).catch(() => null)
 
+    const { id, stale } = redaction
     const warnings = [
+      id instanceof Error &&
+        `WARNING: the redaction log entry was not recorded (${id.message}). The matter's redaction log has no entry for this removal; record it manually.`,
+      stale instanceof Error &&
+        `WARNING: pending redlines that reference the removed text were not retired (${stale.message}). Reject any that still propose or anchor to the removed text in the redline review.`,
       !reingest?.ok &&
         "WARNING: re-indexing failed — the matter's search index may still contain the removed text until the document is re-ingested.",
       redaction.scrub.unreachable.length &&
         `NOTE: the document embeds ${redaction.scrub.unreachable.length} image/object part(s) (${redaction.scrub.unreachable.join(", ")}) this tool cannot inspect — review them manually if they could depict the redacted content.`,
-      redaction.stale.length && `Retired ${redaction.stale.length} pending redline(s) that referenced the removed text.`,
+      !(stale instanceof Error) && stale.length && `Retired ${stale.length} pending redline(s) that referenced the removed text.`,
     ].filter(Boolean)
 
     return {
       title: `Redacted ${path.basename(file)}`,
       output: [
-        `Permanently removed ${JSON.stringify(args.text)} from ${path.basename(file)}: ${redaction.occurrences} text occurrence(s) replaced with ${JSON.stringify(label)}, ${Object.keys(redaction.scrub.hits).length} package part(s) scrubbed. Verified zero residue. Recorded as redaction log entry #${redaction.id} (reason: ${args.reason}, by ${author}).`,
+        `Permanently removed ${JSON.stringify(args.text)} from ${path.basename(file)}: ${redaction.occurrences} text occurrence(s) replaced with ${JSON.stringify(label)}, ${Object.keys(redaction.scrub.hits).length} package part(s) scrubbed. Verified zero residue.${id instanceof Error ? "" : ` Recorded as redaction log entry #${id} (reason: ${args.reason}, by ${author}).`}`,
         ...warnings,
       ].join("\n"),
       metadata: {
         document: file,
         occurrences: redaction.occurrences,
         scrubbedParts: redaction.scrub.hits,
-        redaction: redaction.id,
+        redaction: id instanceof Error ? null : id,
         reason: args.reason,
         author,
         reingested: reingest?.ok ?? false,
-        supersededRedlines: redaction.stale.map((row) => row.id),
+        supersededRedlines: stale instanceof Error ? null : stale.map((row) => row.id),
       },
     }
   },
 })
+
+// A log write's result, or the error it threw.
+function attempt<T>(write: () => T): T | Error {
+  try {
+    return write()
+  } catch (error) {
+    return error instanceof Error ? error : new Error(String(error))
+  }
+}
