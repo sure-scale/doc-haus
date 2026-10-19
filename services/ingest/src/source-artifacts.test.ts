@@ -1,9 +1,10 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect, spyOn, test } from "bun:test"
 import { createHash } from "node:crypto"
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { insertChunk, openDb, upsertDocument } from "./db"
+import * as identifierExtraction from "./identifiers"
 import { stampIngestLineage } from "./lineage"
 import { healSourceArtifacts, sourceArtifactsMatchRegistry, writeSourceArtifacts } from "./source-artifacts"
 
@@ -361,6 +362,54 @@ describe("source artifacts", () => {
       expect(organizations.some((row) => row.value.includes("\n"))).toBe(false)
       expect(organizations.filter((row) => row.value.endsWith("Example Procurement Services")).map(opened)).toEqual([second])
       expect(sourceArtifactsMatchRegistry(dir)).toBe(true)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("the startup check reads identifiers stored with an unchanged source map instead of extracting them again", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "dochaus-source-artifacts-"))
+    try {
+      // Authored synthetic text; the names are invented.
+      const text = "ARTICLE 1\nMorgan Ellis signs for Example Procurement Services.\n\nARTICLE 2\nTaylor Morgan countersigns."
+      const db = openDb(dir)
+      const docPath = path.join(dir, "Names.docx")
+      insertChunk(db, {
+        documentId: upsertDocument(db, docPath, "Names.docx", Date.now(), null),
+        docPath,
+        docName: "Names.docx",
+        section: "1",
+        structuralPath: "Names",
+        party: "",
+        chunkIndex: 0,
+        text,
+        charStart: 0,
+        charEnd: text.length,
+        embedding: new Float32Array([1, 2, 3]),
+        flagged: false,
+      })
+      db.close()
+      await writeSourceArtifacts(dir)
+      const markdown = path.join(dir, "matter-identifiers.md")
+      const stored = readFileSync(markdown, "utf8")
+
+      const extract = spyOn(identifierExtraction, "extractIdentifiers")
+      try {
+        expect(sourceArtifactsMatchRegistry(dir)).toBe(true)
+        expect(await healSourceArtifacts(dir, false)).toBe("current")
+        expect(extract).not.toHaveBeenCalled()
+        // Markdown that no longer renders the stored identifiers is stale.
+        writeFileSync(markdown, `${stored}Edited.\n`)
+        expect(sourceArtifactsMatchRegistry(dir)).toBe(false)
+        writeFileSync(markdown, stored)
+        // A changed source no longer has the source map's sha256.
+        const changed = openDb(dir)
+        changed.run("UPDATE chunks SET text = replace(text, 'countersigns', 'also signs')")
+        changed.close()
+        expect(sourceArtifactsMatchRegistry(dir)).toBe(false)
+      } finally {
+        extract.mockRestore()
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

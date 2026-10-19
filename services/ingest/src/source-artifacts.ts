@@ -181,24 +181,25 @@ export function sourceArtifactsMatchRegistry(matterDir: string, suppliedDb?: Dat
     if (JSON.stringify(JSON.parse(readFileSync(path.join(matterDir, "source-ledger.json"), "utf8"))) !== JSON.stringify(expectedMap)) return false
     if (readFileSync(path.join(matterDir, "source-map.md"), "utf8") !== sourceMapMarkdown(expectedMap)) return false
     if (sources.some((source) => readFileSync(path.join(matterDir, source.extracted_text), "utf8") !== `${source.text}\n`)) return false
-    const identifierChunks = sourceChunkFiles(sources, expectedMap).map((chunk) => {
-      if (
-        !existsSync(path.join(matterDir, chunk.text_path)) ||
-        readFileSync(path.join(matterDir, chunk.text_path), "utf8") !== chunk.file.text
-      ) throw new Error(`Stale source chunk ${chunk.id}.`)
-      return chunk
-    })
+    if (sourceChunkFiles(sources, expectedMap).some((chunk) =>
+      !existsSync(path.join(matterDir, chunk.text_path)) ||
+      readFileSync(path.join(matterDir, chunk.text_path), "utf8") !== chunk.file.text)) return false
+    // The identifiers are not extracted again. writeSourceArtifacts extracts
+    // them from exactly the chunk files checked above and installs them in the
+    // same snapshot as the source map, whose sha256 of every document and chunk
+    // was just matched against the current text; a partly installed snapshot
+    // lacks a file and fails above. So an unchanged source corpus has the
+    // identifiers it would get again, and re-running compromise over the whole
+    // matter on every start (most of a large matter's start time) would only
+    // repeat them. A change to the extraction itself reaches a matter at its
+    // next source change, or at every next start if the change also moves
+    // MatterIdentifiers.schema_version.
     const identifiers = decodeMatterIdentifiers(
       JSON.parse(readFileSync(path.join(matterDir, "matter-identifiers.json"), "utf8")),
     )
-    if (!identifiers) return false
-    const expectedIdentifiers = {
-      ...extractIdentifiers(identifierChunks),
-      generated_at: identifiers.generated_at,
-    }
-    if (!isDeepStrictEqual(identifiers, expectedIdentifiers)) return false
+    if (!identifiers || identifiers.documents !== new Set(sources.map((source) => source.document)).size) return false
     return readFileSync(path.join(matterDir, "matter-identifiers.md"), "utf8") ===
-      `${renderIdentifiersMarkdown(expectedIdentifiers)}\n`
+      `${renderIdentifiersMarkdown(identifiers)}\n`
   } catch {
     return false
   }
