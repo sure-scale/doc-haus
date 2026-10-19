@@ -17,6 +17,8 @@ import {
   currentStep,
   deliverableGroups,
   draftedGroups,
+  type DraftedGroup,
+  type DraftedOutput,
   finalCheckNote,
   groupOpenItems,
   leanSettledSummary,
@@ -36,6 +38,7 @@ import {
 import OpenItems from "../src/components/drafting/OpenItems"
 import QuestionDock from "../src/components/drafting/QuestionDock"
 import RunHeader, { runHeadline } from "../src/components/drafting/RunHeader"
+import type { RunActions } from "../src/components/drafting/useRunActions"
 import { stageMilestones, stepActivityLabel } from "../src/components/narration/activity"
 import { resultChecks } from "../src/components/narration/outcome"
 import ResultCard from "../src/components/narration/ResultCard"
@@ -44,6 +47,8 @@ function lean(value: unknown): LeanDraftingStatus {
   if (!isLeanDraftingStatus(value)) throw new Error("fixture is not a lean drafting status")
   return value
 }
+
+const actions: RunActions = { busy: false, pausing: false, stopping: false, error: "", resuming: false, resume: async () => true, answer: async () => true, update: async () => true, refine: async () => true, pause: async () => true, stop: async () => true }
 
 const item = (id: string, kind: string, status: LeanOpenItem["status"] = "open"): LeanOpenItem => ({ id, stage: "draft", kind, detail: id, status })
 
@@ -109,14 +114,13 @@ test("attention items follow the final check once it ran for this pass", () => {
 })
 
 test("a checklist requirement left open shows in the delivered review draft's details list", () => {
-  const actions = { busy: false, error: "", resuming: false, resume: async () => true, answer: async () => true }
   const detail =
     "Checklist requirement left open: Keep the note to about one page. Finding: Accepted body text measures {\"paragraphs\":28,\"words\":626,\"characters\":3900} do not clearly exceed about one page. Limitation: Rendered pagination was not verified."
   const open: LeanOpenItem = { id: "checklist-check:checklist_open:1", stage: "checklist-check", kind: "checklist_open", detail, status: "disclosed", ref: { document: "d1" } }
   const status = lean({ ...completed, gate: { ...completed.gate, delivery: "review_draft", disclosed: [open], items: [open, item("p1", "placeholder", "disclosed")] } })
   expect(attentionItems(status)).toContainEqual(open)
   expect(groupOpenItems([open])[0]!.label).toBe("Requirements left open by the checklist check")
-  const html = renderToStaticMarkup(createElement(RunHeader, { status, actions, own: true, onOpen: () => {} }))
+  const html = renderToStaticMarkup(createElement(RunHeader, { status, actions, own: true, onOpen: () => {}, onShowDrafts: () => {} }))
   expect(html).toContain("Requirements left open by the checklist check")
   expect(html).toContain("626")
   expect(html).toContain("Rendered pagination was not verified.")
@@ -176,9 +180,8 @@ test("unresolved checklist findings sort first, read as not satisfied and carry 
 })
 
 test("a review draft with unresolved checklist findings reads differently from a clean completion and a plain review draft", () => {
-  const actions = { busy: false, error: "", resuming: false, resume: async () => true, answer: async () => true }
   const render = (status: LeanDraftingStatus) =>
-    renderToStaticMarkup(createElement(RunHeader, { status, actions, own: true, onOpen: () => {} }))
+    renderToStaticMarkup(createElement(RunHeader, { status, actions, own: true, onOpen: () => {}, onShowDrafts: () => {} }))
   const now = Date.parse(completed.updated_at)
   const two = withFindings([unresolvedFinding(1, "omission"), unresolvedFinding(2, "source_conflict")], [item("p1", "placeholder", "disclosed"), item("o1", "omission", "disclosed")])
   const one = withFindings([unresolvedFinding(1)])
@@ -279,7 +282,7 @@ test("drafted outputs nest the redline and notes under a single draft", () => {
  * "<name> - clean" and reports the one file the document downloads as, with
  * the exact names ingest registered its parts under (`reported`, by default
  * the body's row). `rows` adds further summary rows. */
-function memoRun({ combined = false, body = "Supply note - clean.docx", reported = body, rows: more = [] as LeanDocument[] } = {}) {
+function memoRun({ combined = false, body = "Supply note - clean.docx", reported = body, rows: more = [] }: { combined?: boolean; body?: string; reported?: string; rows?: LeanDocument[] } = {}) {
   const rows = completed.documents.documents.map((row) => {
     if (row.kind === "drafting_notes") return { ...row, deliverable: "Supply note - cover note.docx" }
     if (row.kind === "body" && combined) return { ...row, deliverable: body }
@@ -295,11 +298,11 @@ function memoRun({ combined = false, body = "Supply note - clean.docx", reported
   })
 }
 
-const memoNotes = { name: "Supply note - cover note.docx", role: "notes" }
+const memoNotes: DraftedOutput = { name: "Supply note - cover note.docx", role: "notes" }
 
 test("a requested memo groups as the run's notes by its row kind and keeps its own name", () => {
   const status = memoRun()
-  const groups = [{ main: { name: "Supply note.docx", role: "draft" }, extras: [{ name: "Supply note - redline.docx", role: "redline" }, memoNotes] }]
+  const groups: DraftedGroup[] = [{ main: { name: "Supply note.docx", role: "draft" }, extras: [{ name: "Supply note - redline.docx", role: "redline" }, memoNotes] }]
   expect(draftedGroups(status)).toStrictEqual(groups)
   expect(deliverableGroups(["Supply note.docx", "Supply note - redline.docx", "Supply note - cover note.docx"], status)).toStrictEqual(groups)
   const html = renderToStaticMarkup(createElement(DraftedList, { matterId: "m", groups: draftedGroups(status), onView: () => {} }))
@@ -310,8 +313,8 @@ test("a requested memo groups as the run's notes by its row kind and keeps its o
 
 test("a combined document's one file leads its group only once both its parts are delivered", () => {
   const combined = memoRun({ combined: true })
-  const body = { name: "Supply note - clean.docx", role: "draft" }
-  const redline = { name: "Supply note - redline.docx", role: "redline" }
+  const body: DraftedOutput = { name: "Supply note - clean.docx", role: "draft" }
+  const redline: DraftedOutput = { name: "Supply note - redline.docx", role: "redline" }
   expect(draftedGroups(combined)).toStrictEqual([{ main: body, extras: [redline, memoNotes], combined: "Supply note.docx" }])
   // The registry's next free name for the body still belongs to the combined file.
   expect(draftedGroups(memoRun({ combined: true, body: "Supply note - clean (2).docx" }))[0]!.combined).toBe("Supply note.docx")
@@ -387,11 +390,10 @@ test("a requested memo is named wherever the run would say drafting notes", () =
   expect([stepActivityLabel(running(plain), "finalize"), stepActivityLabel(running(memo), "finalize")]).toEqual(["Writing the drafting notes", "Writing the cover memo"])
   expect([runPosition(running(plain))!.text, runPosition(running(memo))!.text]).toEqual(["Finishing · Drafting notes", "Finishing · Cover memo"])
   // The header's step rows, its research note and the result card follow the memo too.
-  const actions = { busy: false, error: "", resuming: false, resume: async () => true, answer: async () => true }
   const notNeeded = (status: LeanDraftingStatus) =>
     lean({ ...status, stages: { research: { ...status.stages["d1.draft"]!, status: "done" }, ...status.stages }, research: { status: "not-needed", findings: [], limitations: [] } })
   const header = (status: LeanDraftingStatus) =>
-    renderToStaticMarkup(createElement(MemoryRouter, null, createElement(RunHeader, { status: notNeeded(status), actions, own: true, onOpen: () => {} })))
+    renderToStaticMarkup(createElement(MemoryRouter, null, createElement(RunHeader, { status: notNeeded(status), actions, own: true, onOpen: () => {}, onShowDrafts: () => {} })))
   expect(header(plain)).toContain("the reason is recorded with the drafting notes.")
   expect(header(memo)).toContain("the reason is recorded with the cover memo.")
   expect(header(memo)).toContain("Step 6 of 7: Cover memo, done")
@@ -402,12 +404,11 @@ test("a requested memo is named wherever the run would say drafting notes", () =
 
 test("a run without a requested memo keeps today's wording exactly", () => {
   const items = [item("p1", "placeholder", "disclosed"), item("o1", "omission", "disclosed")]
-  const actions = { busy: false, error: "", resuming: false, resume: async () => true, answer: async () => true }
   for (const raw of [completed, blockedGate, failed, blockedQuestion, { ...completed, gate: { ...completed.gate, items } }]) {
     const absent = lean(raw)
     const none = lean({ ...raw, memo: null })
     const view = (status: LeanDraftingStatus) => ({
-      header: renderToStaticMarkup(createElement(MemoryRouter, null, createElement(RunHeader, { status, actions, own: true, onOpen: () => {} }))),
+      header: renderToStaticMarkup(createElement(MemoryRouter, null, createElement(RunHeader, { status, actions, own: true, onOpen: () => {}, onShowDrafts: () => {} }))),
       result: renderToStaticMarkup(createElement(ResultCard, { status, matterId: "m1", onViewDocument: () => {} })),
       milestones: stageMilestones(status).map((line) => line.text),
       checks: resultChecks(status),
@@ -416,7 +417,7 @@ test("a run without a requested memo keeps today's wording exactly", () => {
     expect(view(none)).toStrictEqual(view(absent))
   }
   const plain = lean({ ...completed, gate: { ...completed.gate, items } })
-  const html = renderToStaticMarkup(createElement(MemoryRouter, null, createElement(RunHeader, { status: plain, actions, own: true, onOpen: () => {} })))
+  const html = renderToStaticMarkup(createElement(MemoryRouter, null, createElement(RunHeader, { status: plain, actions, own: true, onOpen: () => {}, onShowDrafts: () => {} })))
   expect(html).toContain("Step 5 of 6: Drafting notes, done")
   expect(resultChecks(plain).map((check) => check.text)).toEqual(["Final workflow check passed", "Quotes checked against sources", "1 placeholder to fill", "1 other item in the drafting notes"])
   expect(stageMilestones(plain).find((line) => line.step === "finalize")!.text).toBe("Drafting notes written")
@@ -425,7 +426,7 @@ test("a run without a requested memo keeps today's wording exactly", () => {
 test("a run without a memo or combined file groups and renders exactly as before", () => {
   const plain = lean(completed)
   const reported = lean({ ...completed, combined_output: null })
-  const expected = [
+  const expected: DraftedGroup[] = [
     {
       main: { name: "Supply note.docx", role: "draft" },
       extras: [
@@ -476,9 +477,8 @@ test("the document timeline orders files newest first and preserves origins and 
 })
 
 test("a delivered run with questions left counts them in the header and docks them above the composer", () => {
-  const actions = { busy: false, error: "", resuming: false, resume: async () => true, answer: async () => true }
   const render = (status: LeanDraftingStatus) =>
-    renderToStaticMarkup(createElement(RunHeader, { status, actions, own: true, onOpen: () => {} }))
+    renderToStaticMarkup(createElement(RunHeader, { status, actions, own: true, onOpen: () => {}, onShowDrafts: () => {} }))
   const status = lean({ ...completed, questions: blockedQuestion.questions })
   const delivered = render(status)
   expect(delivered).toContain("Ready for review")
@@ -489,7 +489,7 @@ test("a delivered run with questions left counts them in the header and docks th
 
   const dock = (questions: LeanQuestion[]) =>
     renderToStaticMarkup(
-      createElement(QuestionDock, { matterId: "m", questions, answered: 0, titles: new Map(), busy: false, error: "", onSend: async () => true }),
+      createElement(QuestionDock, { matterId: "m", ownerSessionID: status.owner_session_id, questions, answered: 0, titles: new Map(), busy: false, error: "", onSend: async () => true }),
     )
   const one = dock(openQuestions(status))
   expect(one).toContain("The drafting run has a question for you")
@@ -530,9 +530,8 @@ test("open items read as one sentence, questions apart from placeholders", () =>
 })
 
 test("a draft changed after the final check stops repeating the check's verdict", () => {
-  const actions = { busy: false, error: "", resuming: false, resume: async () => true, answer: async () => true }
   const render = (status: LeanDraftingStatus) =>
-    renderToStaticMarkup(createElement(RunHeader, { status, actions, own: true, onOpen: () => {} }))
+    renderToStaticMarkup(createElement(RunHeader, { status, actions, own: true, onOpen: () => {}, onShowDrafts: () => {} }))
   const changed = lean({ ...completed, changed_after_check: { since: completed.gate.checked_at, documents: ["Supply note.docx"] } })
   expect(finalCheckNote(lean(completed))).toBe("Final workflow check passed: ready for signature.")
   expect(finalCheckNote(lean({ ...completed, gate: { ...completed.gate, delivery: "review_draft" } }))).toBe(
@@ -560,9 +559,8 @@ test("a stopped run's header says what happened in plain words; the checker's wo
 })
 
 test("elsewhere the run's one line leads with the questions still owed", () => {
-  const actions = { busy: false, error: "", resuming: false, resume: async () => true, answer: async () => true }
   const render = (status: LeanDraftingStatus) =>
-    renderToStaticMarkup(createElement(MemoryRouter, null, createElement(RunHeader, { status, actions, own: false, onOpen: () => {} })))
+    renderToStaticMarkup(createElement(MemoryRouter, null, createElement(RunHeader, { status, actions, own: false, onOpen: () => {}, onShowDrafts: () => {} })))
   const asked = render(lean({ ...completed, questions: blockedQuestion.questions }))
   expect(asked).toContain("1 question for you")
   expect(asked).toContain("Open run")

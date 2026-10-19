@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.checks.json"
   },
   "dependencies": {
     "@opencode/client": "workspace:*",
@@ -20,9 +20,11 @@
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
+    "@types/bun": "catalog:",
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
     "@vitejs/plugin-react": "^4.4.0",
+    "playwright": "1.59.1",
     "typescript": "^5.8.0",
     "vite": "^6.3.0"
   }

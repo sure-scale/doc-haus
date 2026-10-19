@@ -120,6 +120,7 @@ test("a running run shows its live stage and current activity; a finished one sh
     narrating: false,
     failed: false,
     onForeignPart: () => {},
+    acceptsSession: () => false,
   }
   const render = (value: typeof narration) =>
     renderToStaticMarkup(
@@ -338,7 +339,7 @@ test("a combined document downloads as its one file; the draft stays the page an
 function renderFinishedNarration(lines: ActivityLine[], notes: { id: string; at: number; text: string; keys: string[] }[] = []) {
   return renderToStaticMarkup(createElement(MemoryRouter, null, createElement(DraftingNarration, {
     narration: {
-      status: done, visible: true, lines, notes, narrating: false, failed: false, onForeignPart: () => {},
+      status: done, visible: true, lines, notes, narrating: false, failed: false, onForeignPart: () => {}, acceptsSession: () => false,
     },
     matterId: "m1", showRequest: false, onViewDocument: () => {},
   })))

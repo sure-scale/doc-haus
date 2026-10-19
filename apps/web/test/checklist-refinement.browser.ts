@@ -5,6 +5,7 @@ import { mkdtemp, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
+import type { Route } from "playwright"
 import blockedGate from "../../../dochaus/workflows/lean/fixtures/status-blocked-gate.json"
 
 const { chromium } = await import(process.env.PLAYWRIGHT_MODULE ?? "@playwright/test")
@@ -27,7 +28,7 @@ function Harness() {
   const [status, setStatus] = useState(${JSON.stringify(initial)})
   const actions = useRunActions("matter-check", status, setStatus)
   window.runActions = actions
-  return createElement(RunHeader, { status, actions, own: true, onOpen: () => {} })
+  return createElement(RunHeader, { status, actions, own: true, onOpen: () => {}, onShowDrafts: () => {} })
 }
 createRoot(document.getElementById("root")).render(createElement(Harness))
 `)
@@ -45,7 +46,7 @@ try {
   const calls: { url: string; body: unknown }[] = []
   let release = () => {}
   let refuse = true
-  await page.route("http://checklist.invalid/**", async route => {
+  await page.route("http://checklist.invalid/**", async (route: Route) => {
     calls.push({ url: route.request().url(), body: route.request().postDataJSON() })
     await new Promise<void>(resolve => { release = resolve })
     return route.fulfill({ status: refuse ? 409 : 202, contentType: "application/json", body: JSON.stringify(refuse
