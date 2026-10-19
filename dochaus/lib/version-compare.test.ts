@@ -311,6 +311,51 @@ test("a paragraph deletion restored without tracking is rejected, and proposals 
   expect(removed.location).toEqual({ scope: "body", paragraph: 8, side: "left", heading: C.h2 })
 })
 
+test("a proposal in one of identical paragraphs below a deleted paragraph is judged in its own paragraph", async () => {
+  // Ours: 1.3 deleted whole (they accepted it) and a sentence added to the
+  // second of three identical paragraphs, which they removed without tracking.
+  const mark = `<w:rPr><w:del w:id="${revisionId++}" w:author="${US.author}" w:date="${US.date}"/></w:rPr>`
+  const TWIN = "[Reserved] Not used."
+  const left = body()
+  left[5] = para(del(C.d13a + C.d13b, US), mark)
+  left.splice(9, 3, p(TWIN), para(run("[Reserved]") + ins(" Not used.", US)), p(TWIN))
+  const right = [...body().slice(0, 5), ...body().slice(6, 9), p(TWIN), p("[Reserved]"), p(TWIN)]
+  const result = await compare(sent(left), sent(right))
+  expect(result.untracked.map(({ id, before, after, location }) => ({ id, before, after, paragraph: location.paragraph }))).toEqual([{ id: "U1", before: TWIN, after: "[Reserved]", paragraph: 10 }])
+  expect(fates(result.proposals)).toEqual([
+    { id: "P1", outcome: "accepted", untracked: undefined, paragraph: 6 }, { id: "P2", outcome: "rejected", untracked: "U1", paragraph: 10 }])
+})
+
+test("a deletion of a paragraph's text that keeps the paragraph, retyped without tracking, is rejected", async () => {
+  const left = body()
+  left[11] = para(del(C.p25, US))
+  const result = await compare(sent(left), sent())
+  expect(result.untracked.map(({ id, after }) => ({ id, after }))).toEqual([{ id: "U1", after: C.p25 }])
+  expect(fates(result.proposals)).toEqual([{ id: "P1", outcome: "rejected", untracked: "U1", paragraph: 12 }])
+})
+
+test("an accepted paragraph deletion is not restored by an unrelated new paragraph whose text it contains", async () => {
+  const mark = `<w:rPr><w:del w:id="${revisionId++}" w:author="${US.author}" w:date="${US.date}"/></w:rPr>`
+  const left = body()
+  left[5] = para(del(C.d13a + C.d13b, US), mark)
+  const right = [...body().slice(0, 5), ...body().slice(6), p("Headings")]
+  const result = await compare(sent(left), sent(right))
+  expect(result.untracked.map(({ kind, after }) => ({ kind, after }))).toEqual([{ kind: "inserted", after: "Headings" }])
+  expect(fates(result.proposals)).toEqual([{ id: "P1", outcome: "accepted", untracked: undefined, paragraph: 6 }])
+})
+
+test("removing a longer proposal does not also remove a shorter one whose text it contains", async () => {
+  const left = body()
+  left[11] = para(run("2.5 Each party, including") + ins(" the Company", US) + run(", shall bear its own costs and")
+    + ins(" the Company's obligations", US) + run(" in connection with this Agreement."))
+  const right = body()
+  right[11] = p("2.5 Each party, including the Company, shall bear its own costs and in connection with this Agreement.")
+  const result = await compare(sent(left), sent(right))
+  expect(result.untracked.map(hunk => hunk.id)).toEqual(["U1"])
+  expect(fates(result.proposals)).toEqual([
+    { id: "P1", outcome: "accepted", untracked: "U1", paragraph: 12 }, { id: "P2", outcome: "rejected", untracked: "U1", paragraph: 12 }])
+})
+
 test("a whitespace-only proposal is not listed", async () => {
   const left = body()
   left[3] = para(run(C.d11) + ins(" ", US))
