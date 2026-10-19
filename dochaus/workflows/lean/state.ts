@@ -57,7 +57,7 @@ export type LeanState = {
   stages: Partial<Record<StepID, LeanStageState>>
 }
 
-export type OpenItemKind = "research_gap" | "quote_miss" | "citation_unsupported" | "placeholder" | "unapplied_amendment" | "question" | "omission" | "template_removal" | "checklist_open" | "checklist_unresolved"
+export type OpenItemKind = "research_gap" | "quote_miss" | "citation_unsupported" | "placeholder" | "unapplied_amendment" | "question" | "omission" | "left_to_drafter" | "template_removal" | "checklist_open" | "checklist_unresolved"
 
 export type OpenItem = {
   id: string
@@ -317,8 +317,8 @@ export function answerQuestion(directory: string, questionID: string, answer: st
  * settled once answered) or already_answered (answered, or already handed back). */
 export function assertDelegable(target: Question | undefined, questionID: string): asserts target is Question {
   if (!target) throw new LeanQuestionError("No such question in this matter's lean drafting run.", "not_found")
-  if (!questionID.startsWith("q-")) throw new LeanQuestionError("This question needs the lawyer's own answer; it cannot be left to the drafting to decide.", "not_delegable")
-  if (handedBack(target)) throw new LeanQuestionError("This question was already left to the drafting to decide.", "already_answered")
+  if (!questionID.startsWith("q-")) throw new LeanQuestionError("This question needs the lawyer's own answer; it cannot be left to the drafter to decide.", "not_delegable")
+  if (handedBack(target)) throw new LeanQuestionError("This question was already left to the drafter to decide.", "already_answered")
   if (target.status === "answered") throw new LeanQuestionError("This question is already answered.", "already_answered")
 }
 
@@ -363,11 +363,11 @@ export function handedBackQuestionsText(directory: string) {
 /** The hand-backs as prompts show them beside the lawyer's answers, or "" with
  * none: choices the drafting makes for the client and discloses, never the
  * lawyer's answers. The body carries each choice cleanly; the notes disclose it.
- * What "Decide for me" means comes right before the questions, as beside a
- * checklist job's hand-back rows. */
+ * What leaving a question to the drafter means comes right before the questions,
+ * as beside a checklist job's hand-back rows. */
 export function handedBackBlock(directory: string) {
   const text = handedBackQuestionsText(directory)
-  return text ? "The lawyer left these questions to the drafting to decide (\"Decide for me\") instead of answering them; do not ask them again. Each is a choice the drafting makes on professional judgment and discloses as one the lawyer has not made. " +
+  return text ? "The lawyer left these questions to the drafter to decide instead of answering them; do not ask them again. Each is a choice the drafting makes on professional judgment and discloses as one the lawyer has not made. " +
     "Decide each as the lawyer for the party the lawyer acts for would: follow the instructions and the documents; where they leave the point open or conflict, choose what best serves that party within them, or what is even-handed when the request names no party. " +
     "Apply each choice made as clean operative wording, with no confirmation marker, rejected alternative or precedence clause between the alternatives; the drafting notes give the reason and the alternative. " +
     `None is an agreed term or an answered decision; record and review each as a drafting choice. ${HANDED_BACK_MEANING}\n${text}` : ""
@@ -378,7 +378,7 @@ export function handedBackBlock(directory: string) {
  * that decide and apply each choice keep handedBackBlock. */
 export function handedBackNotesBlock(directory: string) {
   const text = handedBackQuestionsText(directory)
-  return text ? "The lawyer chose \"Decide for me\" on these questions. Task: state each choice once, in plain words, in the statement for the open item that names its question: " +
+  return text ? "The lawyer left these questions to the drafter to decide. Task: state each choice once, in plain words, in the statement for the open item that names its question: " +
     `what was chosen, why and the alternative not taken, or that the point stays open and what is needed.\n${text}` : ""
 }
 

@@ -423,7 +423,7 @@ export function disclosableItems(directory: string): OpenItem[] {
  * (handedBackNotesBlock). The text never reads the spine, so each id keys on
  * the question's text and id alone and the item stands until the lawyer answers. */
 export function handedBackItems(directory: string): OpenItem[] {
-  return readQuestions(directory).filter(handedBack).map(question => openItem("finalize", "omission",
+  return readQuestions(directory).filter(handedBack).map(question => openItem("finalize", "left_to_drafter",
     `You asked us to decide: ${question.question.trim()} ` +
     "The notes should say what was chosen, why and the alternative not taken, or why it stays open. A choice made is for you to confirm; a point left open needs your answer.",
     { repair_target: "memo", question_id: question.id }))

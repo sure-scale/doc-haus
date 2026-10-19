@@ -138,11 +138,11 @@ export function isDeliveryArtifactEvidence(row: ChecklistCurrentEvidence, suppli
   return !!normalize(row.text) && supplied.some(evidence => evidence.kind === "artifact" && evidence.locator.startsWith(DELIVERY_ARTIFACTS_ROW) && suppliedEvidenceContains(evidence, row))
 }
 const deliveryArtifactsMeaning = "A delivery_artifacts row in current_evidence records code-produced properties of a delivered file (its name, Word format and, for a combined file, its parts, their order and a build of it from the current parts). It is evidence only for a requirement about the delivered file itself (its name, format or composition), so cite it, as artifact evidence, only for such a requirement."
-/** The lawyer's "Decide for me" on one model-asked question, as a checklist
- * job's instruction row. The quote is that instruction alone; the question only
+/** The lawyer leaving one model-asked question to the drafter, as a checklist
+ * job's instruction row, in plain words. The quote is that instruction alone; the question only
  * names the point, in the locator, and is never quotable authority. */
-const HANDED_BACK_QUOTE = "Decide for me"
-const HANDED_BACK_LOCATOR = ".dochaus/lean/questions.json decide_for_me ("
+const HANDED_BACK_QUOTE = "left to the drafter to decide"
+const HANDED_BACK_LOCATOR = ".dochaus/lean/questions.json left to the drafter ("
 export function handedBackRef(id: string, question: string): ChecklistSourceReference {
   return { document: "request", locator: `${HANDED_BACK_LOCATOR}${id}) on the question: ${question.trim()}`, quote: HANDED_BACK_QUOTE }
 }
@@ -151,7 +151,7 @@ function isHandedBackRef(ref: ChecklistSourceReference) {
 }
 /** What a hand-back means, written once in code: each prompt that shows a
  * hand-back row, or the hand-backs' block, carries it beside them. */
-export const HANDED_BACK_MEANING = "\"Decide for me\" directs the drafting to make its question's choice for the party the lawyer acts for. " +
+export const HANDED_BACK_MEANING = "Leaving a question to the drafter asks the drafting to choose for the party the lawyer acts for. " +
   "Unless the lawyer has answered it, that settles only the choice between that question's alternatives; the chosen alternative is still checked against every other instruction, source, playbook item and legal requirement. " +
   "The documents must state one alternative, or, where the sources cannot support one, leave it as a disclosed open point; the notes give the choice, reason and alternative not taken. " +
   "Keeping both alternatives, a precedence clause or marker on that point is not required by the hand-back."

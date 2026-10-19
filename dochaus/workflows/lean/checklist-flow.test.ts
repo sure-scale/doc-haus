@@ -133,16 +133,16 @@ test("a question left to the drafting reaches extraction and checks as the lawye
       prompts.push(input)
       if (input.agent !== CHECKLIST_JOB_AGENTS.check) return deps.sessions.prompt(input)
       const packet: ChecklistCheckerInput = JSON.parse(input.text.split("CHECK_INPUT:\n\n")[1])
-      const handed = packet.settled_instructions.filter(ref => ref.locator.includes("decide_for_me (q-left)"))
+      const handed = packet.settled_instructions.filter(ref => ref.locator.includes("left to the drafter (q-left)"))
       return JSON.stringify({ item_id: packet.item_id, status: "open", reason: "The lawyer later asked the drafting to decide this point.", evidence: packet.current_evidence, source_refs: [...packet.item.source_refs, ...handed], inspection_scope: "Supplied current target and source.", limitation: "The choice awaits confirmation." })
     },
   }
   await runChecklistExtractionFlow(directory, { ...deps, sessions })
   const extraction: ChecklistProducerInput = JSON.parse(prompts.find(row => row.agent === CHECKLIST_JOB_AGENTS.extract)!.text.split("SOURCE_INPUT:\n\n")[1]!)
-  expect(extraction.instructions.map(ref => ref.quote)).toEqual(["Decide for me"])
+  expect(extraction.instructions.map(ref => ref.quote)).toEqual(["left to the drafter to decide"])
   const checked = await runChecklistCheckFlow(directory, { ...deps, sessions })
   expect(checked.checks.map(row => row.status)).toEqual(["succeeded"])
-  expect(checked.checks[0]!.finding!.source_refs.map(ref => ref.locator)).toContain(".dochaus/lean/questions.json decide_for_me (q-left) on the question: Which figure applies?")
+  expect(checked.checks[0]!.finding!.source_refs.map(ref => ref.locator)).toContain(".dochaus/lean/questions.json left to the drafter (q-left) on the question: Which figure applies?")
 })
 
 test("failed check is persisted and only an explicit subsequent flow run retries it", async () => {

@@ -89,7 +89,7 @@ test("a question left to the drafting reaches every checklist job as the lawyer'
     { id: "q-2", question: "HANDED BACK MODEL QUESTION: which figure applies?", status: "answered", answer_kind: "decide_for_me" },
     { id: "q-1", question: "Answered model question?", status: "answered", answer: "Keep the proposal open." },
   ] }))
-  const handed = { document: "request", locator: ".dochaus/lean/questions.json decide_for_me (q-2) on the question: HANDED BACK MODEL QUESTION: which figure applies?", quote: "Decide for me" }
+  const handed = { document: "request", locator: ".dochaus/lean/questions.json left to the drafter (q-2) on the question: HANDED BACK MODEL QUESTION: which figure applies?", quote: "left to the drafter to decide" }
   const producer = checklistProducerInputs(directory), jobs = checklistJobInputs(directory)
   expect(jobs.map(job => job.key)).toEqual(producer.map(job => job.key))
   for (const [index, job] of jobs.entries())
@@ -98,7 +98,7 @@ test("a question left to the drafting reaches every checklist job as the lawyer'
   // The model-written question names the point; its words are never quotable authority.
   expect(jobs.flatMap(job => [...job.input.passages, ...job.input.instructions]).filter(ref => ref.quote.includes("HANDED BACK"))).toEqual([])
   // Change stages keep the lawyer's words alone: their plans are re-checked against them.
-  expect(JSON.stringify(producer)).not.toContain("decide_for_me")
+  expect(JSON.stringify(producer)).not.toContain("left to the drafter")
 })
 
 test("generated artifacts and drafting assumptions never become producer evidence", () => {

@@ -221,11 +221,11 @@ test("disclosure fields are optional typed finding fields, each named once in th
   expect(buildChecklistProducerPrompt({ source: { document: "instruction.txt", role: "client instructions" }, passages: item.source_refs, instructions: [], targets: [{ document: "agreement.docx", role: "operative agreement" }], retrieval: "Use targeted lookup." })).not.toContain("indeterminate_cause")
 })
 
-// The lawyer's "Decide for me" on a question reaches the checklist jobs as an
-// instruction row; its meaning is written once in code, beside the job's input.
+// A question the lawyer left to the drafter reaches the checklist jobs as an
+// instruction row, in plain words; its meaning is written once in code, beside the job's input.
 test("a hand-back row carries its one meaning beside the input of every checklist job that sees it", () => {
   const handed = handedBackRef("q-2", " Which figure applies? ")
-  expect(handed).toEqual({ document: "request", locator: ".dochaus/lean/questions.json decide_for_me (q-2) on the question: Which figure applies?", quote: "Decide for me" })
+  expect(handed).toEqual({ document: "request", locator: ".dochaus/lean/questions.json left to the drafter (q-2) on the question: Which figure applies?", quote: "left to the drafter to decide" })
   expect(HANDED_BACK_MEANING.trim().split(/\s+/).length).toBeLessThanOrEqual(96)
   // The scope is pinned phrase by phrase in a built prompt: the hand-back settles
   // only its own choice, for the lawyer's party, and every other check still runs.

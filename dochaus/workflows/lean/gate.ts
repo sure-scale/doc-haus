@@ -692,8 +692,8 @@ function conflictKey(item: ChecklistItem) {
 
 type Passage = { document: string; quote: string }
 
-// The hint uses the product's "Decide for me" terms and names the notes as
-// delivered with the draft, so it holds when they are a memo. The closing
+// The hint words a hand-back as a point the lawyer asked us to decide and names
+// the notes as delivered with the draft, so it holds when they are a memo. The closing
 // sentence is added only when every pair or instruction the question asks is
 // hinted, so it never seems to cover one no hand-back's choice is about.
 const HANDED_BACK_HINT = "may be a point you asked us to decide earlier; the notes delivered with the draft describe the choice made."
@@ -823,10 +823,10 @@ function settle(item: OpenItem, context: SettleContext): OpenItem {
   // A question the lawyer handed back is carried by the disclosure of the
   // choice made in its place (handedBackItems), never as the lawyer's answer.
   const asked = item.kind === "question" && item.ref.question_id ? context.questions.get(item.ref.question_id) : undefined
-  if (asked && handedBack(asked)) return resolved("left to the drafting to decide; the drafting notes must disclose the choice made, which the lawyer has not made")
-  // That disclosure is named as a hand-back, never as an omission.
-  if (item.stage === "finalize" && item.kind === "omission" && item.ref.question_id)
-    return named ? disclosed("left to the drafting to decide; named in the drafting notes") : open("left to the drafting to decide; the drafting notes do not name it")
+  if (asked && handedBack(asked)) return resolved("left to the drafter; the notes must disclose the choice made, which the lawyer has not made")
+  // That disclosure is a choice left to the drafter, never an omission.
+  if (item.kind === "left_to_drafter")
+    return named ? disclosed("left to the drafter; named in the notes") : open("left to the drafter; the notes do not name it")
   // Drafting and review findings are re-derived from the final body at apply.
   if (item.stage === "draft" || isReviewStage(item.stage)) return resolved("superseded by the check of the final body")
   if (item.kind === "research_gap") return named ? disclosed("legal research limitation named in the drafting notes") : open("the drafting notes do not disclose this legal research limitation")

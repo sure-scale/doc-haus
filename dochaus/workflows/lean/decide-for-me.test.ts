@@ -5,7 +5,7 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { acceptChangePlan } from "./change-pipeline"
 import { checkChanges } from "./change-checks"
-import { HANDED_BACK_MEANING } from "./checklist-contract"
+import { HANDED_BACK_MEANING, handedBackRef } from "./checklist-contract"
 import { readParagraphs } from "./checks"
 import { checkEvidence, evidencePrompt } from "./evidence"
 import { focusedChangeReviewInputs } from "./focused-change-review"
@@ -65,11 +65,11 @@ test("a handed-back question is disclosed as a choice the lawyer has not made an
   expect(question).not.toHaveProperty("answer")
   const gate = readLeanJson(directory, "gate.json") as GateResult
   const choice = gate.items.find(item => item.ref.question_id === id)!
-  expect(choice).toMatchObject({ stage: "finalize", kind: "omission", status: "disclosed", ref: { repair_target: "memo", question_id: id } })
+  expect(choice).toMatchObject({ stage: "finalize", kind: "left_to_drafter", status: "disclosed", ref: { repair_target: "memo", question_id: id } })
   expect(choice.detail).toContain(QUESTION)
   expect(choice.detail).not.toContain(id)
-  // A hand-back is named as one, never called an omission.
-  expect(choice.resolution).toBe("left to the drafting to decide; named in the drafting notes")
+  // A hand-back is named as a choice left to the drafter, never called an omission.
+  expect(choice.resolution).toBe("left to the drafter; named in the notes")
   expect(gate).toMatchObject({ status: "pass", delivery: "review_draft" })
   // The question's own open item resolves to that disclosure, not to an answer.
   writeOpenItems(directory, [...readOpenItems(directory), openItem("changes", "question", QUESTION, { question_id: id, pid: "p-none" })])
@@ -79,7 +79,7 @@ test("a handed-back question is disclosed as a choice the lawyer has not made an
   // Notes that do not name the choice block the gate on it.
   const notes = readLeanText(directory, "drafting-notes.md")!
   writeLeanText(directory, "drafting-notes.md", notes.split("\n").filter(line => !line.includes(choice.id)).join("\n"))
-  expect(finalGate(directory)).toMatchObject({ status: "blocked", delivery: null, blocking: [expect.objectContaining({ id: choice.id, status: "open", resolution: "left to the drafting to decide; the drafting notes do not name it" })] })
+  expect(finalGate(directory)).toMatchObject({ status: "blocked", delivery: null, blocking: [expect.objectContaining({ id: choice.id, status: "open", resolution: "left to the drafter; the notes do not name it" })] })
   expect(JSON.stringify(finalGate(directory).items.filter(item => item.ref.question_id === id))).not.toMatch(/omission named|name this omission/)
 }, 120_000)
 
@@ -90,7 +90,7 @@ test("a real answer after a hand-back replaces it and its disclosure", async () 
   const [question] = readQuestions(directory)
   expect(question).toMatchObject({ id, status: "answered", answer: "Yes: a daily price reduction." })
   expect(question).not.toHaveProperty("answer_kind")
-  expect(finalGate(directory).items.some(item => item.ref.question_id === id && item.kind === "omission")).toBe(false)
+  expect(finalGate(directory).items.some(item => item.ref.question_id === id && item.kind === "left_to_drafter")).toBe(false)
 }, 120_000)
 
 test("the drain applies a hand-back once, takes a repeat as recorded, and refuses it for an answered, unknown or non-model question", () => {
@@ -149,9 +149,9 @@ test("assertDelegable admits only an open model-asked question", () => {
   }
   expect(refusal(open, "q-cap")).toBe("admitted")
   expect(refusal(undefined, "q-missing")).toBe("not_found: No such question in this matter's lean drafting run.")
-  expect(refusal({ ...open, id: "package-scope-d1" }, "package-scope-d1")).toBe("not_delegable: This question needs the lawyer's own answer; it cannot be left to the drafting to decide.")
+  expect(refusal({ ...open, id: "package-scope-d1" }, "package-scope-d1")).toBe("not_delegable: This question needs the lawyer's own answer; it cannot be left to the drafter to decide.")
   expect(refusal({ ...open, status: "answered", answer: "No cap.", answered_at: "2026-10-18T09:00:00.000Z" }, "q-cap")).toBe("already_answered: This question is already answered.")
-  expect(refusal({ ...open, status: "answered", answer_kind: "decide_for_me", answered_at: "2026-10-18T09:00:00.000Z" }, "q-cap")).toBe("already_answered: This question was already left to the drafting to decide.")
+  expect(refusal({ ...open, status: "answered", answer_kind: "decide_for_me", answered_at: "2026-10-18T09:00:00.000Z" }, "q-cap")).toBe("already_answered: This question was already left to the drafter to decide.")
 })
 
 // Inputs pinned on the code before hand-backs existed; hashed under a fixed
@@ -315,12 +315,12 @@ test("every prompt given the lawyer's answers also lists the hand-back, apart fr
   expect(review).toContain(`their answers remain controlling and must not be re-asked under narrower or different wording:\n- [${law}] Q: ${LAW}\n  A: Singapore law.\n</answers>`)
   // The drafting notes read the hand-back as the lawyer's request to decide it.
   const notes = prompts.find(prompt => prompt.agent === AGENT.finalize)!.text
-  expect(notes).toContain(`<decide_for_me>\n${notesBlock}\n</decide_for_me>`)
-  expect(notesBlock).toStartWith('The lawyer chose "Decide for me" on these questions. Task: ')
+  expect(notes).toContain(`<left_to_drafter>\n${notesBlock}\n</left_to_drafter>`)
+  expect(notesBlock).toStartWith("The lawyer left these questions to the drafter to decide. Task: ")
   // Nothing the notes' writer is given says a hand-back went unanswered.
   for (const unanswered of ["instead of answering", "not your answer", "or an answer"]) expect(notes).not.toContain(unanswered)
   for (const echo of [block, "left to the drafting", "not the lawyer's answers"]) expect(notes).not.toContain(echo)
-  expect(notes).toContain(`- ${left} (Decide for me): ${QUESTION}`)
+  expect(notes).toContain(`- ${left} (left to the drafter): ${QUESTION}`)
   expect(notes).not.toContain(`- ${left} (answered)`)
   expect(notes).toContain(`- ${law} (answered): ${LAW}\n  Answer: Singapore law.`)
   // The spine is told how to record the hand-back, and the notes' open item
@@ -329,6 +329,17 @@ test("every prompt given the lawyer's answers also lists the hand-back, apart fr
   expect(prompts.find(prompt => prompt.agent === AGENT.spine)!.text).toContain(SPINE_CHOICE)
   const [item] = handedBackItems(directory)
   expect(notes).toContain(`- ${item!.id}: ${item!.detail}\n  Drafting spine (drafting-choice): ${CHOSEN}`)
+}, 120_000)
+
+// The lawyer's act is told in plain words: the web button's name never reaches
+// a model or the gate's items, so no delivered text can echo it.
+const BUTTON = /decide[\s_-]for[\s_-]me/i
+
+test("no prompt, hand-back text or gate item names the Decide for me button", async () => {
+  const { directory, left, prompts } = await answeredAndHandedBack()
+  for (const prompt of prompts) expect([prompt.agent, BUTTON.exec(prompt.text)?.[0]]).toEqual([prompt.agent, undefined])
+  for (const text of [handedBackBlock(directory), handedBackNotesBlock(directory), HANDED_BACK_MEANING, JSON.stringify(handedBackRef(left, QUESTION)), JSON.stringify(readLeanJson(directory, "gate.json"))])
+    expect(text).not.toMatch(BUTTON)
 }, 120_000)
 
 test("the focused change review lists the hand-back apart from the actual answers", async () => {
