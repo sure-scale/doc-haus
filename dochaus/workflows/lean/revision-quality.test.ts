@@ -76,7 +76,7 @@ test("later documents retain the accepted rationale and rekey when only that rat
   const directory = matter()
   writeLeanPlan(directory, [{ title: "Supply note", purpose: "Record terms", parts: [{ heading: "Delivery", scope: "Terms" }] }, { title: "Covering letter", purpose: "Explain revisions", parts: [{ heading: "Advice", scope: "Consequences" }] }])
   writeLeanText(directory, "d1/paragraphs-applied.json", JSON.stringify([{ pid: "p111111111111", sha256: "final", text: "The revised delivery term." }]))
-  const changes = (text: string) => writeLeanText(directory, "d1/changes.json", JSON.stringify({ amendments: [], explanations: [{ id: "i1", pid: "p111111111111", reason: text, sources: SUPPORT }], questions: [], shared_paragraphs: [] }))
+  const changes = (text: string) => writeLeanText(directory, "d1/changes.json", JSON.stringify({ amendments: [], explanations: [{ id: "i1", pid: "p111111111111", reason: text, sources: SUPPORT }], questions: [] }))
   changes(reason)
   writeLeanText(directory, "d1/apply.json", JSON.stringify({ applied: [], unapplied: [], comments: { author: "Doc.Haus", attached: [], unresolved: [] } }))
   const text = completedDocumentsText(directory, "d2")

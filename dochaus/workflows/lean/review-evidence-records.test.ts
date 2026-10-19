@@ -10,7 +10,7 @@ afterEach(cleanupMatters)
 
 const passage = [{ source_id: "instructions.txt", quote: "Keep the register digitally." }]
 const paragraph = (pid: string, text: string): ParagraphRow => ({ pid, text, sha256: `hash-${pid}` })
-const changes = (amendments: Amendment[] = [], explanations: ChangeExplanation[] = []): ChangeList => ({ amendments, explanations, questions: [], shared_paragraphs: [] })
+const changes = (amendments: Amendment[] = [], explanations: ChangeExplanation[] = []): ChangeList => ({ amendments, explanations, questions: [] })
 
 test("record evidence uses reconciled current wording and document order for replacements and splits", () => {
   const list = changes([

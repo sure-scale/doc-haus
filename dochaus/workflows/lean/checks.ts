@@ -43,9 +43,6 @@ export type ChangeList = {
    * this change. They are not applied; each is an open item for the drafting notes. */
   withheld?: { amendment: Amendment; issues: string[] }[]
   questions: Question[]
-  // Amendments that address the same paragraph. A record for the lawyer; the
-  // applier merges them in list order.
-  shared_paragraphs: { pid: string; amendment_ids: string[] }[]
 }
 
 export const TOOL_SYNTAX_ISSUE =

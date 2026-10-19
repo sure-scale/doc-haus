@@ -180,7 +180,7 @@ function ofDocument(item: OpenItem, document: DocID) {
 }
 
 function pidLabel(item: OpenItem, paragraphs: ParagraphRow[]) {
-  if (item.ref.pid) return paragraphs.some(row => row.pid === item.ref.pid) ? `[${item.ref.pid}]` : "(earlier draft paragraph; reassess the finding in the current draft)"
+  if (item.ref.pid) return paragraphs.some(row => row.pid === item.ref.pid) ? `[${item.ref.pid}]` : "(not an initial draft paragraph; reassess the finding in the current draft)"
   const needle = normalize(item.ref.quote ?? item.ref.citation ?? "")
   const pid = needle ? paragraphs.find(row => normalize(row.text).includes(needle))?.pid : undefined
   return pid ? `[${pid}]` : "(paragraph not located)"

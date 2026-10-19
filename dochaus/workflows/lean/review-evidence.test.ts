@@ -2,41 +2,15 @@ import { afterEach, expect, test } from "bun:test"
 import { packageReviewPrompt } from "./package-review"
 import { parsePlan, writeLeanPlan } from "./plan"
 import { stagePrompt } from "./prompts"
-import { appliedChangeEvidence, exportAppliedChangeComments } from "./review-evidence"
-import { applyAmendments } from "../../lib/drafting-amendment-apply"
-import { ensureParagraphPointers, paragraphSha256, type Amendment } from "../../lib/drafting-amendment"
-import { readFileSync } from "node:fs"
+import { appliedChangeEvidence } from "./review-evidence"
 import { recordLeanDocuments } from "./deliverables"
 import { stageInputSha } from "./runner"
 import { renderMarkdownToDocx } from "../../lib/render"
 import { docxodus } from "../../lib/docxodus"
-import { leanFile, writeLeanText, writeLeanBytes } from "./state"
+import { writeLeanText, writeLeanBytes } from "./state"
 import { cleanupMatters, happyPath, matter, registering, scriptedModel, SOURCE, SUPPORT } from "./test-support"
 
 afterEach(cleanupMatters)
-
-test("a deletion explanation stays unresolved when its recorded result retains wording", async () => {
-  const directory = matter()
-  const original = "The archive record is paper."
-  const updated = "The archive record is digital."
-  writeLeanBytes(directory, "d1/body.docx", (await renderMarkdownToDocx(original)).bytes)
-  const initialPath = leanFile(directory, "d1/body.docx")
-  const pid = Object.keys(await ensureParagraphPointers(initialPath))[0]!
-  const initial = new Uint8Array(readFileSync(initialPath))
-  const deletion: Amendment = { id: "delete", pid, existing_sha256: paragraphSha256(original), operation: "delete", updated: "", reason: "Remove the archive record paragraph.", sources: SUPPORT }
-  const restore: Amendment = { id: "restore", pid, existing_sha256: paragraphSha256(original), updated, reason: "Keep the revised archive record instruction.", sources: SUPPORT }
-  const outPath = leanFile(directory, "d1/body-applied.docx")
-  const result = await applyAmendments({ docxPath: initialPath, outPath, amendments: [restore] })
-  expect(result.unapplied).toEqual([])
-  const final = new Uint8Array(readFileSync(outPath))
-  const redline = await (await docxodus()).compareDocuments(initial, final, { authorName: "Doc.Haus" })
-  // A recorded deletion outcome whose paragraph is still in the final body.
-  const exported = exportAppliedChangeComments(redline, final, "d1", [deletion, restore], [{ id: "delete", pid, mode: "code", result_pids: [pid] }, ...result.applied], [],
-    [{ pid, text: original, sha256: paragraphSha256(original) }])
-  expect(exported.comments.attached.map(row => row.id)).toEqual(["restore"])
-  expect(exported.comments.unresolved[0]).toMatchObject({ id: "delete", reason: expect.stringContaining("retained wording") })
-  expect(exported.openItems).toHaveLength(1)
-}, 120_000)
 
 test("delivery context projects the files registration uses without treating the plan as user intent", async () => {
   const directory = matter()
@@ -77,7 +51,7 @@ test("memo and final reviewer retain source arrays independently of application 
   const directory = matter()
   writeLeanPlan(directory, [{ title: "Supply note", purpose: "Record terms", parts: [{ heading: "Delivery", scope: "Agreed delivery" }] }])
   const amendment = { id: "a-source", pid: "p111111111111", existing_sha256: "initial", updated: "Supported revised wording.", reason: "Carry the supplied delivery period.", sources: SUPPORT }
-  const changes = (sources: typeof SUPPORT) => writeLeanText(directory, "d1/changes.json", JSON.stringify({ amendments: [{ ...amendment, sources }], questions: [], shared_paragraphs: [] }))
+  const changes = (sources: typeof SUPPORT) => writeLeanText(directory, "d1/changes.json", JSON.stringify({ amendments: [{ ...amendment, sources }], questions: [] }))
   changes(SUPPORT)
   const apply = (mode: "code" | "already_applied") => writeLeanText(directory, "d1/apply.json", JSON.stringify({ applied: [{ id: amendment.id, pid: amendment.pid, mode }], unapplied: [] }))
   apply("code")
@@ -132,7 +106,7 @@ test("native outcome counts keep withheld proposals separate from amendment appl
   const directory = matter()
   writeLeanPlan(directory, [{ title: "Supply note", purpose: "Record terms", parts: [{ heading: "Delivery", scope: "Delivery" }] }])
   writeLeanText(directory, "d1/paragraphs.json", JSON.stringify([{ pid: "p111111111111", sha256: "initial", text: "Delivery term" }]))
-  writeLeanText(directory, "d1/changes.json", JSON.stringify({ amendments: [], explanations: [{ id: "i1", pid: "p111111111111", reason: "Initial explanation", sources: SUPPORT }], questions: [], shared_paragraphs: [], withheld: [{ amendment: { id: "a1", pid: "p111111111111", existing_sha256: "initial", updated: "Unverified proposal", reason: "Not supported", sources: [] }, issues: ["Missing confirmation marker"] }] }))
+  writeLeanText(directory, "d1/changes.json", JSON.stringify({ amendments: [], explanations: [{ id: "i1", pid: "p111111111111", reason: "Initial explanation", sources: SUPPORT }], questions: [], withheld: [{ amendment: { id: "a1", pid: "p111111111111", existing_sha256: "initial", updated: "Unverified proposal", reason: "Not supported", sources: [] }, issues: ["Missing confirmation marker"] }] }))
   writeLeanText(directory, "d1/apply.json", JSON.stringify({ applied: [], unapplied: [] }))
   const prompt = packageReviewPrompt(directory)
   expect(prompt).toContain('"applied_amendment_count": 0')

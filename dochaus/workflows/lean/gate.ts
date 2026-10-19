@@ -610,7 +610,7 @@ function packageScopeQuestion(rows: ChecklistOpenFinding[], id: string, hinted: 
       ...rows.map(({ item_id, item, finding }) => `${checklistRequirement(item_id, item)} ${finding.open_decisions?.length
         ? `Open decisions: ${sentence(finding.open_decisions.map(row => scopeField(row.trim())).join("; "))}` : "No open decision recorded; state what is missing."}`),
       `${several ? "For each, answer" : "Answer"} the open decisions above (supply any missing fact or approval they name). If the package should carry it, say in which document; otherwise say it is outside this request.`].join(" "),
-    context: [`Until a later check settles ${several ? "these instructions, they are" : "this instruction, it is"} disclosed with the review draft as left open; delivery is not held for ${several ? "them" : "it"}. Your answer re-runs the drafting from the start, including the document plan and the checklist check.`,
+    context: [`Until a later check settles ${several ? "these instructions, they are" : "this instruction, it is"} disclosed with the review draft as left open; delivery is not held for ${several ? "them" : "it"}. Your answer re-runs the stages that use it, including the checklist check; the document plan is kept as saved, and a drafted document changes only by amendment.`,
       ...hints, ...(hints.length === rows.length ? [HANDED_BACK_UNANSWERED] : [])].join(" "),
     status: "open",
   }
@@ -686,7 +686,7 @@ function checklistConflictQuestion(pairs: ChecklistItem[][], asked: Question[], 
     question: [several ? `Checklist requirements taken from the sources conflict, in ${pairs.length} pairs.` : "Two checklist requirements taken from the sources conflict.",
       ...pairs.map(([a, b], index) => `${several ? `Pair ${index + 1}, first` : "First"}: ${requirementText(a!)} Second: ${requirementText(b!)}`),
       several ? "For each pair, which requirement governs, or how should they be reconciled?" : "Which requirement governs, or how should they be reconciled?"].join(" "),
-    context: [`Until a later check no longer finds ${several ? "these conflicts, they are" : "this conflict, it is"} disclosed with the review draft; delivery is not held for ${several ? "them" : "it"}. Your answer re-runs the drafting from the start, including the checklist check.`,
+    context: [`Until a later check no longer finds ${several ? "these conflicts, they are" : "this conflict, it is"} disclosed with the review draft; delivery is not held for ${several ? "them" : "it"}. Your answer re-runs the stages that use it, including the checklist check; a drafted document changes only by amendment.`,
       ...hints, ...(hints.length === pairs.length ? [HANDED_BACK_UNANSWERED] : [])].join(" "),
     status: "open",
   }

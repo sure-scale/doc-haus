@@ -4,7 +4,8 @@ import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { docxodus } from "../../lib/docxodus"
 import { renderMarkdownToDocx } from "../../lib/render"
-import { readChangeList, type ApplyResult } from "./checks"
+import { checkChanges } from "./change-checks"
+import { readChangeList, readParagraphs, type ApplyResult } from "./checks"
 import { finalGate } from "./gate"
 import { exportAppliedChangeComments } from "./review-evidence"
 import { runLean } from "./runner"
@@ -27,10 +28,12 @@ async function applyLegacyList(directory: string, model: ReturnType<typeof scrip
   writeLeanPlan(directory, plan.value!.documents)
   const rendered = await acceptStageReply(directory, "d1.draft", draft)
   expect(rendered.issues).toEqual([])
-  const changes = await acceptStageReply(directory, "d1.changes", await model.port.prompt({
+  // Written directly: the changes step refuses two amendments to one paragraph.
+  const changes = checkChanges(directory, await model.port.prompt({
     directory, sessionID: "ses_legacy_changes", agent: AGENT.changes, text: stagePrompt(directory, "d1.changes"),
-  }))
+  }), readParagraphs(directory, "d1"), { document: "d1" })
   expect(changes.issues).toEqual([])
+  writeLeanText(directory, "d1/changes.json", `${JSON.stringify(changes.changes, null, 2)}\n`)
   replaceStageOpenItems(directory, "changes", "d1", changes.openItems)
   const applied = await runApply(directory, readLeanState(directory)!, "d1")
   expect(applied.status).toBe("done")
