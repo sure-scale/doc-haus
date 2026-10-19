@@ -569,13 +569,14 @@ describe("legal.db write lock", () => {
     }
   }, 30_000)
 
+  const chunk = (db: Database, text: string) =>
+    db.run(
+      "INSERT INTO chunks (document_id, doc_path, doc_name, section, chunk_index, text, char_start, char_end, embedding) VALUES (1, 'synthetic.docx', 'synthetic.docx', '1', 0, ?, 0, ?, x'')",
+      [text, text.length],
+    )
+  const match = (db: Database, term: string) => db.query("SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH ?").all(term).length
+
   test("the startup connection rebuilds a desynced lexical index, and a lexical index an open creates is built at once", () => {
-    const chunk = (db: Database, text: string) =>
-      db.run(
-        "INSERT INTO chunks (document_id, doc_path, doc_name, section, chunk_index, text, char_start, char_end, embedding) VALUES (1, 'synthetic.docx', 'synthetic.docx', '1', 0, ?, 0, ?, x'')",
-        [text, text.length],
-      )
-    const match = (db: Database, term: string) => db.query("SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH ?").all(term).length
     const raw = new Database(path.join(directory, ".dochaus", "legal.db"))
     raw.run("DROP TRIGGER chunks_fts_ai")
     chunk(raw, "invented gamma clause")
@@ -597,6 +598,42 @@ describe("legal.db write lock", () => {
     try {
       expect(ftsInSync(db)).toBe(true)
       expect(match(db, "delta")).toBe(1)
+    } finally {
+      db.close()
+    }
+  })
+
+  // Another process may insert a chunk the moment the open that builds the
+  // lexical index commits; its triggers must already exist to index it.
+  test("an open that builds the lexical index commits its triggers with it", () => {
+    const file = path.join(directory, ".dochaus", "legal.db")
+    const older = new Database(file)
+    for (const trigger of ["chunks_fts_ai", "chunks_fts_ad", "chunks_fts_au"]) older.run(`DROP TRIGGER ${trigger}`)
+    older.run("DROP TABLE chunks_fts")
+    older.close()
+    const other = new Database(file)
+    const run = Database.prototype.run
+    let inserted = false
+    // The first statement the opening connection runs outside a transaction
+    // once the index exists: the gap right after the building transaction.
+    const spy = spyOn(Database.prototype, "run").mockImplementation(function (this: Database, ...args: Parameters<Database["run"]>) {
+      if (!inserted && this !== other && !this.inTransaction && other.query("SELECT 1 FROM sqlite_master WHERE name = 'chunks_fts'").get()) {
+        inserted = true
+        chunk(other, "invented epsilon clause")
+      }
+      return run.apply(this, args)
+    })
+    try {
+      openDb(directory).close()
+    } finally {
+      spy.mockRestore()
+      other.close()
+    }
+    expect(inserted).toBe(true)
+    const db = openDb(directory)
+    try {
+      expect(match(db, "epsilon")).toBe(1)
+      expect(ftsInSync(db)).toBe(true)
     } finally {
       db.close()
     }

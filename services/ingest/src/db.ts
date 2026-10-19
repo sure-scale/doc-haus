@@ -146,18 +146,32 @@ export function openDb(matterDir: string, options: { startup?: boolean } = {}): 
   // duplicated. The section label and document name are indexed alongside the
   // body so a query naming a clause ("Section 8.3") or a document matches that
   // clause's or document's own chunks directly.
+  // Triggers keep the index in sync with every write path (insertChunk,
+  // upsertDocument's delete-then-reinsert, deleteDocument). External-content
+  // FTS5 requires the special 'delete' insert form to unindex a row. Only the
+  // indexed columns re-index a row on update: embedding and section_ordinal
+  // writes (the embedding and sections backfills) leave the index alone.
+  const insertTrigger = `CREATE TRIGGER IF NOT EXISTS chunks_fts_ai AFTER INSERT ON chunks BEGIN
+      INSERT INTO chunks_fts(rowid, text, section, doc_name) VALUES (new.id, new.text, new.section, new.doc_name);
+    END`
+  const deleteTrigger = `CREATE TRIGGER IF NOT EXISTS chunks_fts_ad AFTER DELETE ON chunks BEGIN
+      INSERT INTO chunks_fts(chunks_fts, rowid, text, section, doc_name) VALUES ('delete', old.id, old.text, old.section, old.doc_name);
+    END`
+  const updateTrigger = `CREATE TRIGGER chunks_fts_au AFTER UPDATE OF text, section, doc_name ON chunks BEGIN
+      INSERT INTO chunks_fts(chunks_fts, rowid, text, section, doc_name) VALUES ('delete', old.id, old.text, old.section, old.doc_name);
+      INSERT INTO chunks_fts(rowid, text, section, doc_name) VALUES (new.id, new.text, new.section, new.doc_name);
+    END`
   // Databases indexed before doc_name was added carry a two-column chunks_fts;
   // FTS5 has no ALTER, so drop and recreate. An index this open creates, for
   // such a database or one from before the index existed, is built from the
-  // chunks already stored in the same transaction.
+  // chunks already stored and committed together with its triggers, so a chunk
+  // another process writes the moment it commits is indexed too.
   const ftsSql = (db.query("SELECT sql FROM sqlite_master WHERE name = 'chunks_fts'").get() as { sql: string } | null)
     ?.sql
   if (!ftsSql?.includes("doc_name"))
     db.transaction(() => {
-      if (ftsSql) {
-        for (const trigger of ["chunks_fts_ai", "chunks_fts_ad", "chunks_fts_au"]) db.run(`DROP TRIGGER IF EXISTS ${trigger}`)
-        db.run("DROP TABLE chunks_fts")
-      }
+      for (const trigger of ["chunks_fts_ai", "chunks_fts_ad", "chunks_fts_au"]) db.run(`DROP TRIGGER IF EXISTS ${trigger}`)
+      if (ftsSql) db.run("DROP TABLE chunks_fts")
       db.run(`
         CREATE VIRTUAL TABLE chunks_fts USING fts5(
           text, section, doc_name,
@@ -166,28 +180,14 @@ export function openDb(matterDir: string, options: { startup?: boolean } = {}): 
         )
       `)
       db.run("INSERT INTO chunks_fts(chunks_fts) VALUES ('rebuild')")
+      for (const trigger of [insertTrigger, deleteTrigger, updateTrigger]) db.run(trigger)
     })()
-  // Triggers keep the index in sync with every write path (insertChunk,
-  // upsertDocument's delete-then-reinsert, deleteDocument). External-content
-  // FTS5 requires the special 'delete' insert form to unindex a row.
-  db.run(`
-    CREATE TRIGGER IF NOT EXISTS chunks_fts_ai AFTER INSERT ON chunks BEGIN
-      INSERT INTO chunks_fts(rowid, text, section, doc_name) VALUES (new.id, new.text, new.section, new.doc_name);
-    END
-  `)
-  db.run(`
-    CREATE TRIGGER IF NOT EXISTS chunks_fts_ad AFTER DELETE ON chunks BEGIN
-      INSERT INTO chunks_fts(chunks_fts, rowid, text, section, doc_name) VALUES ('delete', old.id, old.text, old.section, old.doc_name);
-    END
-  `)
-  // Only the indexed columns re-index a row: embedding and section_ordinal
-  // writes (the embedding and sections backfills) leave the index alone.
-  // Databases created with the earlier any-column trigger get this one in its
-  // place; the definition check keeps a current database's schema untouched.
-  const updateTrigger = `CREATE TRIGGER chunks_fts_au AFTER UPDATE OF text, section, doc_name ON chunks BEGIN
-      INSERT INTO chunks_fts(chunks_fts, rowid, text, section, doc_name) VALUES ('delete', old.id, old.text, old.section, old.doc_name);
-      INSERT INTO chunks_fts(rowid, text, section, doc_name) VALUES (new.id, new.text, new.section, new.doc_name);
-    END`
+  // A current index that lost a trigger gets it back here, and the startup
+  // check below heals what was written meanwhile. Databases created with the
+  // earlier any-column update trigger get the current one in its place; the
+  // definition check keeps a current database's schema untouched.
+  db.run(insertTrigger)
+  db.run(deleteTrigger)
   const currentUpdateTrigger = db.query("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'chunks_fts_au'").get() as
     | { sql: string }
     | null
