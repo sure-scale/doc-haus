@@ -824,6 +824,9 @@ function settle(item: OpenItem, context: SettleContext): OpenItem {
   // choice made in its place (handedBackItems), never as the lawyer's answer.
   const asked = item.kind === "question" && item.ref.question_id ? context.questions.get(item.ref.question_id) : undefined
   if (asked && handedBack(asked)) return resolved("left to the drafting to decide; the drafting notes must disclose the choice made, which the lawyer has not made")
+  // That disclosure is named as a hand-back, never as an omission.
+  if (item.stage === "finalize" && item.kind === "omission" && item.ref.question_id)
+    return named ? disclosed("left to the drafting to decide; named in the drafting notes") : open("left to the drafting to decide; the drafting notes do not name it")
   // Drafting and review findings are re-derived from the final body at apply.
   if (item.stage === "draft" || isReviewStage(item.stage)) return resolved("superseded by the check of the final body")
   if (item.kind === "research_gap") return named ? disclosed("legal research limitation named in the drafting notes") : open("the drafting notes do not disclose this legal research limitation")

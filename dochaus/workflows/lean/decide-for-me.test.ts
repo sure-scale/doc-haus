@@ -68,6 +68,8 @@ test("a handed-back question is disclosed as a choice the lawyer has not made an
   expect(choice).toMatchObject({ stage: "finalize", kind: "omission", status: "disclosed", ref: { repair_target: "memo", question_id: id } })
   expect(choice.detail).toContain(QUESTION)
   expect(choice.detail).not.toContain(id)
+  // A hand-back is named as one, never called an omission.
+  expect(choice.resolution).toBe("left to the drafting to decide; named in the drafting notes")
   expect(gate).toMatchObject({ status: "pass", delivery: "review_draft" })
   // The question's own open item resolves to that disclosure, not to an answer.
   writeOpenItems(directory, [...readOpenItems(directory), openItem("changes", "question", QUESTION, { question_id: id, pid: "p-none" })])
@@ -77,7 +79,8 @@ test("a handed-back question is disclosed as a choice the lawyer has not made an
   // Notes that do not name the choice block the gate on it.
   const notes = readLeanText(directory, "drafting-notes.md")!
   writeLeanText(directory, "drafting-notes.md", notes.split("\n").filter(line => !line.includes(choice.id)).join("\n"))
-  expect(finalGate(directory)).toMatchObject({ status: "blocked", delivery: null, blocking: [expect.objectContaining({ id: choice.id, status: "open" })] })
+  expect(finalGate(directory)).toMatchObject({ status: "blocked", delivery: null, blocking: [expect.objectContaining({ id: choice.id, status: "open", resolution: "left to the drafting to decide; the drafting notes do not name it" })] })
+  expect(JSON.stringify(finalGate(directory).items.filter(item => item.ref.question_id === id))).not.toMatch(/omission named|name this omission/)
 }, 120_000)
 
 test("a real answer after a hand-back replaces it and its disclosure", async () => {
@@ -296,7 +299,7 @@ test("every prompt given the lawyer's answers also lists the hand-back, apart fr
   // Each draft prompt that carries the drafting rules carries the hand-back's exception right after the marker rule.
   const ruled = prompts.filter(prompt => prompt.agent === AGENT.draft && prompt.text.includes(MARKER_RULE))
   expect([ruled.length > 0, ruled.every(prompt => prompt.text.includes(`${MARKER_RULE}\n${NO_MARKER}`))]).toEqual([true, true])
-  // The drafting notes see it in the lawyer's terms, so an echo reads naturally to the lawyer.
+  // The drafting notes see it in one neutral voice, so nothing echoes as the lawyer's or our words.
   const notesBlock = handedBackNotesBlock(directory)
   expect(notesBlock).toContain(line)
   for (const prompt of prompts) {
@@ -312,12 +315,12 @@ test("every prompt given the lawyer's answers also lists the hand-back, apart fr
   expect(review).toContain(`their answers remain controlling and must not be re-asked under narrower or different wording:\n- [${law}] Q: ${LAW}\n  A: Singapore law.\n</answers>`)
   // The drafting notes read the hand-back as the lawyer's request to decide it.
   const notes = prompts.find(prompt => prompt.agent === AGENT.finalize)!.text
-  expect(notes).toContain(`<you_asked_us_to_decide>\n${notesBlock}\n</you_asked_us_to_decide>`)
-  expect(notesBlock).toStartWith("You asked us to decide these questions. ")
+  expect(notes).toContain(`<decide_for_me>\n${notesBlock}\n</decide_for_me>`)
+  expect(notesBlock).toStartWith('The lawyer chose "Decide for me" on these questions. Task: ')
   // Nothing the notes' writer is given says a hand-back went unanswered.
   for (const unanswered of ["instead of answering", "not your answer", "or an answer"]) expect(notes).not.toContain(unanswered)
   for (const echo of [block, "left to the drafting", "not the lawyer's answers"]) expect(notes).not.toContain(echo)
-  expect(notes).toContain(`- ${left} (you asked us to decide): ${QUESTION}`)
+  expect(notes).toContain(`- ${left} (Decide for me): ${QUESTION}`)
   expect(notes).not.toContain(`- ${left} (answered)`)
   expect(notes).toContain(`- ${law} (answered): ${LAW}\n  Answer: Singapore law.`)
   // The spine is told how to record the hand-back, and the notes' open item
@@ -391,6 +394,9 @@ test("the spine accepts a hand-back recorded once as a drafting choice or an ope
   expect(checkEvidence(directory, "spine", spine({ ...CHOICE, kind: "open-item", detail: "Whether late delivery carries a remedy needs a commercial term the sources do not give; the body keeps its placeholder." }))).toEqual([])
   expect(evidencePrompt(directory, "spine")).toContain(`"question_id"`)
   for (const rule of [DECIDE, APPLY, SPINE_CHOICE]) expect(evidencePrompt(directory, "spine")).toContain(rule)
+  // Its limitation is plain: a choice for the lawyer to confirm, not an answer awaited.
+  expect(evidencePrompt(directory, "spine")).toContain("citing sources, with the limitation that it is a drafting choice for the lawyer to confirm;")
+  expect(evidencePrompt(directory, "spine")).not.toContain("the lawyer has not made this choice")
 })
 
 test("the spine rejects a hand-back left out, recorded as a decision, recorded twice or under an id that is not a hand-back", () => {
@@ -412,15 +418,20 @@ test("the spine rejects a hand-back left out, recorded as a decision, recorded t
   expect(issues(CHOICE, unkeyed)).toEqual([expect.stringContaining("question_id")])
 })
 
-test("the disclosure item tells the lawyer where the choice is and that it needs confirming, and does not depend on the spine", () => {
+test("the disclosure item tells the lawyer where the choice is and what each outcome needs, and does not depend on the spine", () => {
   const directory = spineMatter("handed back")
   const [item] = handedBackItems(directory)
-  // Lawyer-facing only: the instruction to the notes' writer stays in the finalize prompt.
-  expect(item!.detail).toBe(`You asked us to decide: ${QUESTION} The notes say what was chosen, why and the alternative not taken, ` +
-    "or why it stays open; it needs your confirmation.")
-  expect(handedBackNotesBlock(directory)).toContain("For each, say what we chose, why and the alternative not taken, or that it stays open and what is needed")
-  // Neither the item nor the notes' instruction says the question went unanswered.
-  for (const text of [item!.detail, handedBackNotesBlock(directory)]) expect(text).not.toMatch(/answer/i)
+  // Lawyer-facing, and true whether a choice was made or the point stays open;
+  // the gate checks only that the notes name it, so the item says what they should say.
+  expect(item!.detail).toBe(`You asked us to decide: ${QUESTION} The notes should say what was chosen, why and the alternative not taken, ` +
+    "or why it stays open. A choice made is for you to confirm; a point left open needs your answer.")
+  // The notes' writer gets one neutral task line: each choice once, in plain words.
+  const block = handedBackNotesBlock(directory)
+  const task = block.split("\n")[0]!
+  expect(task).toContain("Task: state each choice once, in plain words, in the statement for the open item that names its question: " +
+    "what was chosen, why and the alternative not taken, or that the point stays open and what is needed.")
+  expect(task).not.toMatch(/\b(you|your|we|our|us)\b/i)
+  expect(block).not.toMatch(/answer/i)
   // A spine that leaves the question open yields the same item, id included.
   writeLeanText(directory, "spine.json", JSON.stringify(spine({ ...CHOICE, kind: "open-item" })))
   expect(handedBackItems(directory)).toEqual([item!])

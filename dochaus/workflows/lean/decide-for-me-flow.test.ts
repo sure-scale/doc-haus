@@ -68,7 +68,7 @@ function memo(): Reply {
     const fault = armed.finalize.shift()
     const blocks = [...seen.prompt.matchAll(/<open_items>\n([\s\S]*?)\n<\/open_items>/g)].map(match => match[1]!)
     const items = blocks.flatMap(block => [...block.matchAll(/^- (\S+): .*(?:\n {2}Drafting spine \(drafting-choice\): (.*))?/gm)].map(match => ({ id: match[1]!, choice: match[2] })))
-    const question = (/^- \S+ \(you asked us to decide\): (.*)$/m.exec(seen.prompt))?.[1]
+    const question = (/^- \S+ \(Decide for me\): (.*)$/m.exec(seen.prompt))?.[1]
     const lines = items.filter(item => !(fault === "uncovered" && item.choice)).map(item => item.choice
       ? `- ${question} ${DISCLOSED} ${item.choice} The lawyer has not made this choice and should confirm it or answer the question. [ref: ${item.id}]`
       : `- The lawyer must resolve this before the draft is used. [ref: ${item.id}]`)
@@ -150,9 +150,10 @@ test("a hand-back runs through the queue, its checks and the gate to a review dr
   expect((readLeanJson(directory, "spine.json") as { entries: { kind: string; question_id?: string }[] }).entries)
     .toEqual([expect.objectContaining({ kind: "drafting-choice", question_id: id, detail: CHOSEN })])
   expect(finals[0]).toContain(`- ${choice!.id}: ${choice!.detail}\n  Drafting spine (drafting-choice): ${CHOSEN}`)
-  expect(finals[0]).toContain(`- ${id} (you asked us to decide): ${QUESTION}`)
+  expect(finals[0]).toContain(`- ${id} (Decide for me): ${QUESTION}`)
   expect(gate(directory)).toMatchObject({ status: "pass", delivery: "review_draft", blocking: [] })
-  expect(gate(directory).disclosed).toEqual([expect.objectContaining({ id: choice!.id, status: "disclosed", ref: { repair_target: "memo", question_id: id } })])
+  expect(gate(directory).disclosed).toEqual([expect.objectContaining({ id: choice!.id, status: "disclosed", ref: { repair_target: "memo", question_id: id },
+    resolution: "left to the drafting to decide; named in the drafting notes" })])
   expect(readLeanPlan(directory)).toMatchObject({ memo: "cover memo", notes_file: MEMO_FILE })
   expect(deliverables.names).toContain(MEMO_FILE)
   const plain = `${QUESTION} ${DISCLOSED} ${CHOSEN} The lawyer has not made this choice and should confirm it or answer the question.`

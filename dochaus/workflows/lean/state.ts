@@ -378,8 +378,8 @@ export function handedBackBlock(directory: string) {
  * that decide and apply each choice keep handedBackBlock. */
 export function handedBackNotesBlock(directory: string) {
   const text = handedBackQuestionsText(directory)
-  return text ? "You asked us to decide these questions. For each, say what we chose, why and the alternative not taken, " +
-    `or that it stays open and what is needed; each choice is ours, for you to confirm.\n${text}` : ""
+  return text ? "The lawyer chose \"Decide for me\" on these questions. Task: state each choice once, in plain words, in the statement for the open item that names its question: " +
+    `what was chosen, why and the alternative not taken, or that the point stays open and what is needed.\n${text}` : ""
 }
 
 /** The heading of handedBackBlock where a prompt lists it after the answers
