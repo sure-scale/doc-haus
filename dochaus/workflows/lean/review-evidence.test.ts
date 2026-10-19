@@ -63,13 +63,14 @@ test("delivery context projects the files registration uses without treating the
   expect(admitted.issues).toEqual([])
   expect(admitted.value?.documents[0]?.file).toBe("input-terms.docx")
   writeLeanPlan(directory, admitted.value!.documents)
-  for (const prompt of [stagePrompt(directory, "finalize"), packageReviewPrompt(directory)]) {
+  // The notes writer sees every planned file but the one its reply becomes.
+  for (const [prompt, ownFile] of [[stagePrompt(directory, "finalize"), false], [packageReviewPrompt(directory), true]] as const) {
     expect(prompt).toContain("<delivery_artifacts>")
     expect(prompt).toContain('"planned_filename": "input-terms - redline.docx"')
     expect(prompt).toContain('"planned_file": "input-terms.docx"')
     expect(prompt).not.toContain('"requested_file": "input-terms.docx"')
     expect(prompt).toContain("delivery-review.docx")
-    expect(prompt).toContain('"kind": "drafting_notes"')
+    expect(prompt.includes('"kind": "drafting_notes"')).toBe(ownFile)
   }
   expect(parsePlan("Acting for: not stated\n# Delivery terms\nFile: input-terms.docx\n## Delivery", "Revise input-terms.docx and deliver the revised body as input-terms.docx.").issues).toEqual([])
 }, 120_000)

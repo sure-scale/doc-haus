@@ -30,6 +30,8 @@ const MEMO_ORDER = "Lead with the discrepancies found and the choices made, then
 const NOTES_OPENING = "This is a lean drafting run. Write the drafting notes that go to the lawyer with the drafted documents."
 const MARKER_RULE = 'end that statement with the item\'s exact id as a trailing "[ref: <id>]"'
 const FINAL_NOT_PROCESS = "Describe the final documents and decisions, not how this run produced them."
+/** How a memo reports the lawyer's questions: answers as decisions, not as a Q&A record. */
+const MEMO_DECISIONS = "State what each answered question settled as the decision taken, without retelling the question or answer; an unanswered question stays an open point."
 /** How plain notes describe the redline's coverage. */
 const REVIEW_CHANGE_RULES = ["Identify any requested comparison not covered by that baseline as outstanding."]
 /** How a memo or the notes tell an initial revision from a review amendment. */
@@ -171,11 +173,11 @@ describe("finalize in memo mode", () => {
     expect(memo).toContain(MEMO_OPENING)
     expect(memo).toContain(MEMO_ORDER)
     expect(memo).toContain(MARKER_RULE)
-    // Only the opening, the notes file's planned name, the plain notes' comparison
-    // rule and the reply's name differ; every other contract line, the ref-marker
-    // and change_origin rules included, stays.
+    // Only the opening, the plain notes' comparison rule and the reply's name
+    // differ; every other contract line, the ref-marker and change_origin rules
+    // included, stays.
     const memoLines = new Set(memo.split("\n"))
-    expect(notes.split("\n").filter(line => !memoLines.has(line))).toEqual([NOTES_OPENING, expect.stringContaining('"planned_filename": "Supply note - drafting notes.docx"'),
+    expect(notes.split("\n").filter(line => !memoLines.has(line))).toEqual([NOTES_OPENING,
       ...REVIEW_CHANGE_RULES.map(rule => expect.stringContaining(rule)), expect.stringContaining("Reply with the drafting notes"), expect.stringContaining("saved as the drafting notes")])
     expect(stageInputs(directory, "finalize").map(row => row.name)).toEqual([...notesInputs.slice(0, notesInputs.indexOf("drafting-notes-contract") + 1), "requested-memo-contract", ...notesInputs.slice(notesInputs.indexOf("drafting-notes-contract") + 1)])
   })
@@ -188,6 +190,8 @@ describe("finalize in memo mode", () => {
     const memo = stagePrompt(directory, "finalize")
     expect(memo).toContain(FINAL_NOT_PROCESS)
     expect(notes).not.toContain(FINAL_NOT_PROCESS)
+    expect(memo).toContain(MEMO_DECISIONS)
+    expect(notes).not.toContain(MEMO_DECISIONS)
     for (const rule of REVIEW_CHANGE_RULES) {
       expect(notes).toContain(rule)
       expect(memo).not.toContain(rule)
@@ -196,11 +200,12 @@ describe("finalize in memo mode", () => {
     // review checks against change_origin.
     for (const prompt of [notes, memo]) expect(prompt.split("\n")).toContain(CHANGE_ORIGIN_RULE)
     expect(memo).not.toContain("drafting notes")
-    // The delivery map names each planned file, the reply's own included, and
-    // says nothing of its status, registration or which request it fulfils.
+    // The delivery map names each planned document file, not the reply's own,
+    // and says nothing of its status, registration or which request it fulfils.
     const delivery = (prompt: string) => JSON.parse(/<delivery_artifacts>\n([\s\S]*?)\n<\/delivery_artifacts>/.exec(prompt)![1]!) as Record<string, unknown>[]
-    expect(delivery(memo)).toContainEqual({ kind: "drafting_notes", document: null, planned_filename: memoNotesFile([DOCUMENT], "cover memo") })
     for (const prompt of [notes, memo]) {
+      expect(delivery(prompt).map(row => row.kind)).toEqual(["body", "redline"])
+      expect(prompt).not.toContain("your reply becomes")
       for (const row of delivery(prompt)) expect(Object.keys(row)).toEqual(["kind", "document", "planned_filename"])
       for (const words of ["pending rendering", "not yet written", "registration", "these notes are the requested memo", "explanatory-note request", "explanatory artifact"])
         expect(prompt.toLowerCase()).not.toContain(words)
@@ -219,6 +224,7 @@ describe("finalize in memo mode", () => {
     expect(agent.toLowerCase()).not.toContain("corrected notes")
     expect(agent).toContain("Outside a requested memo, also assess the actual native comparison and its selected baseline")
     expect(agent).toContain("- Explain what each drafted document does and, outside a requested memo, what changed in its review.")
+    expect(agent).toContain("- Outside a requested memo, report each question for the lawyer and any answer already given.")
   })
 
   test("every notes-check retry names the reply as the prompt does", () => {

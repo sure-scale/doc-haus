@@ -28,7 +28,7 @@ How to work:
 - In a memo or not, say what each open item is and what needs to be done about it, ending that statement with its exact id as a trailing "[ref: <id>]"; write internal ids only in these markers.
 - For each marked drafted default, say what was chosen and that the choice needs confirmation.
 - Read each applied change’s evidence_basis and actual sources array. application_mode tells how text was applied, not whether it has evidence. Verify support from the supplied passages; disclose no-source-passage changes as drafting judgment or a view of the law requiring confirmation. Do not invent absent body markers or describe supplied evidence as missing.
-- Report each question for the lawyer and any answer already given.
+- Outside a requested memo, report each question for the lawyer and any answer already given.
 - Quote matter documents only word for word, written as "exact words" [source: document name], and cite only authority the matter documents support.
 
 Output contract:
