@@ -1,7 +1,8 @@
 // Ingest-side lineage appender (#96). Self-contained — the ingest service cannot
 // import dochaus/lib — producing the SAME row shape as dochaus/lib/lineage.ts.
-// Stamps one PERMANENT row per present source artifact, with `supersedes` linking
-// to the prior row for that artifact. Canonical schema documented in
+// An ingest stamps one PERMANENT row per present source artifact; a rebuild of
+// the source projection stamps only the artifacts it changed. `supersedes` links
+// each row to the prior row for that artifact. Canonical schema documented in
 // dochaus/lib/lineage.ts.
 import { createHash } from "node:crypto"
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs"
@@ -29,15 +30,17 @@ function lineageFile(matterDir: string): string {
   return path.join(matterDir, ".dochaus", "lineage.jsonl")
 }
 
-function priorEntryByArtifact(matterDir: string): Map<string, string> {
-  const map = new Map<string, string>()
+// The latest lineage row per artifact: its entry id and recorded content hash.
+function priorEntryByArtifact(matterDir: string): Map<string, { entry_id: string; content_sha256: unknown }> {
+  const map = new Map<string, { entry_id: string; content_sha256: unknown }>()
   const file = lineageFile(matterDir)
   if (!existsSync(file)) return map
   for (const line of readFileSync(file, "utf8").split(/\r?\n/)) {
     if (!line.trim()) continue
     try {
-      const row = JSON.parse(line) as { artifact?: string; entry_id?: string }
-      if (typeof row.artifact === "string" && typeof row.entry_id === "string") map.set(row.artifact, row.entry_id)
+      const row = JSON.parse(line) as { artifact?: string; entry_id?: string; content_sha256?: unknown }
+      if (typeof row.artifact === "string" && typeof row.entry_id === "string")
+        map.set(row.artifact, { entry_id: row.entry_id, content_sha256: row.content_sha256 })
     } catch {
       /* skip corrupt line */
     }
@@ -65,44 +68,81 @@ export function stampIngestLineage(
   mutationID?: string,
 ): number {
   return withArtifactMutationLock(matterDir, ".dochaus/lineage.jsonl", () => {
-    mkdirSync(path.join(matterDir, ".dochaus"), { recursive: true })
-    const prior = priorEntryByArtifact(matterDir)
-    const run = `ingest:${correlation}`
     const completed = mutationID ? completedMutationArtifacts(matterDir, mutationID) : new Set<string>()
-    const provenance = {
-      origin: "upload" as const,
-      documents,
-      ...(mutationID ? { document_mutation_id: mutationID } : {}),
-    }
-    const ts = new Date().toISOString()
-    const lines = artifactsOnDisk(matterDir).flatMap((artifact) => {
-      const hash = hashFile(path.join(matterDir, artifact))
-      if (!hash || completed.has(`${artifact}\0${hash.sha256}`)) return []
-      return [
-        JSON.stringify({
-          entry_id: ulid(),
-          ts,
-          tier: "PERMANENT",
-          artifact,
-          op: "ingest",
-          run,
-          stage: null,
-          subagent: "ingest",
-          content_sha256: hash.sha256,
-          bytes: hash.bytes,
-          supersedes: prior.get(artifact) ?? null,
-          provenance,
-        }),
-      ]
+    return appendArtifactRows(matterDir, {
+      artifacts: artifactsOnDisk(matterDir),
+      op: "ingest",
+      run: `ingest:${correlation}`,
+      provenance: {
+        origin: "upload",
+        documents,
+        ...(mutationID ? { document_mutation_id: mutationID } : {}),
+      },
+      stamp: (artifact, sha256) => !completed.has(`${artifact}\0${sha256}`),
     })
-    if (lines.length) {
-      const file = lineageFile(matterDir)
-      const existing = existsSync(file) ? readFileSync(file, "utf8") : ""
-      const prefix = existing.length && !existing.endsWith("\n") ? "\n" : ""
-      appendFileSync(file, prefix + lines.join("\n") + "\n")
-    }
-    return lines.length
   })
+}
+
+// Stamps a rebuild of the source projection from the registry (the startup
+// self-heal). The rebuild re-derives files from sources already ingested and
+// uploads nothing, so each row is a whole-file "write" with origin
+// "source-rebuild". Only artifacts whose bytes differ from their latest lineage
+// row (or that have none) are stamped, so every file the rebuild changed gets a
+// current row and unchanged ones get none. legal.db is never written by a
+// rebuild and is not stamped. Returns the number of artifacts stamped.
+export function stampSourceRebuildLineage(matterDir: string, documents: string[], correlation: string): number {
+  return withArtifactMutationLock(matterDir, ".dochaus/lineage.jsonl", () =>
+    appendArtifactRows(matterDir, {
+      artifacts: artifactsOnDisk(matterDir).filter((artifact) => artifact !== ".dochaus/legal.db"),
+      op: "write",
+      run: `ingest:${correlation}`,
+      provenance: { origin: "source-rebuild", documents },
+      stamp: (_artifact, sha256, prior) => prior?.content_sha256 !== sha256,
+    }))
+}
+
+// Appends one PERMANENT row per present artifact the caller chooses to stamp.
+// Runs under the caller's lineage lock.
+function appendArtifactRows(
+  matterDir: string,
+  input: {
+    artifacts: string[]
+    op: "ingest" | "write"
+    run: string
+    provenance: Record<string, unknown>
+    stamp: (artifact: string, sha256: string, prior: { content_sha256: unknown } | undefined) => boolean
+  },
+) {
+  mkdirSync(path.join(matterDir, ".dochaus"), { recursive: true })
+  const prior = priorEntryByArtifact(matterDir)
+  const ts = new Date().toISOString()
+  const lines = input.artifacts.flatMap((artifact) => {
+    const hash = hashFile(path.join(matterDir, artifact))
+    if (!hash || !input.stamp(artifact, hash.sha256, prior.get(artifact))) return []
+    return [
+      JSON.stringify({
+        entry_id: ulid(),
+        ts,
+        tier: "PERMANENT",
+        artifact,
+        op: input.op,
+        run: input.run,
+        stage: null,
+        subagent: "ingest",
+        content_sha256: hash.sha256,
+        bytes: hash.bytes,
+        supersedes: prior.get(artifact)?.entry_id ?? null,
+        provenance: input.provenance,
+      }),
+    ]
+  })
+  if (lines.length) {
+    const file = lineageFile(matterDir)
+    const existing = existsSync(file) ? readFileSync(file, "utf8") : ""
+    const prefix = existing.length && !existing.endsWith("\n") ? "\n" : ""
+    appendFileSync(file, prefix + lines.join("\n") + "\n")
+  }
+  return lines.length
 }
 
 function completedMutationArtifacts(matterDir: string, mutationID: string) {

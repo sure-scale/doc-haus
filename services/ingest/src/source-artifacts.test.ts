@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test"
-import { existsSync, mkdtempSync, rmSync } from "node:fs"
+import { createHash } from "node:crypto"
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { insertChunk, openDb, upsertDocument } from "./db"
+import { stampIngestLineage } from "./lineage"
 import { sourceArtifactsMatchRegistry, writeSourceArtifacts } from "./source-artifacts"
 
 // The longest line a source chunk file may hold (the read-tool cap in source-artifacts.ts).
@@ -29,6 +31,28 @@ function unwrapChunk(original: string, wrapped: string) {
     }
   }
   return { restored, inserted }
+}
+
+// The chunk-file wrap of earlier ingests: split on sentence, semicolon and dash
+// separators and rejoin with one space. Used only to write a legacy chunk file.
+function earlierWrap(text: string) {
+  return text.split("\n").flatMap((line) => {
+    if (line.length <= READ_LINE_CAP) return [line]
+    const out: string[] = []
+    let current = ""
+    for (const piece of line.split(/(?<=\.)\s+|(?<=;)\s+|\s+—\s+/).filter(Boolean)) {
+      if (piece.length > READ_LINE_CAP) {
+        if (current) out.push(current)
+        current = ""
+        for (let i = 0; i < piece.length; i += READ_LINE_CAP) out.push(piece.slice(i, i + READ_LINE_CAP))
+      } else if (current && current.length + 1 + piece.length > READ_LINE_CAP) {
+        out.push(current)
+        current = piece
+      } else current = current ? `${current} ${piece}` : piece
+    }
+    if (current) out.push(current)
+    return out
+  }).join("\n")
 }
 
 function spaceFreeRunAt(text: string, at: number) {
@@ -337,6 +361,77 @@ describe("source artifacts", () => {
       expect(organizations.some((row) => row.value.includes("\n"))).toBe(false)
       expect(organizations.filter((row) => row.value.endsWith("Example Procurement Services")).map(opened)).toEqual([second])
       expect(sourceArtifactsMatchRegistry(dir)).toBe(true)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("the startup heal rebuilds earlier-wrap chunk files and stamps only what changed", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "dochaus-source-artifacts-"))
+    try {
+      // Authored synthetic texts; no real matter data.
+      const clause = "the Buyer — subject to Section 9.2 — against Losses"
+      const words = Array.from({ length: 400 }, (_, i) => ["The", "Seller", "shall", "indemnify;", "notice.", "within"][i % 6]).join(" ")
+      const documents = { "Long.docx": `${words} ${clause} ${words}`, "Short.docx": "ARTICLE 1\nShort obligations." }
+      const db = openDb(dir)
+      for (const [name, text] of Object.entries(documents)) {
+        const docPath = path.join(dir, name)
+        insertChunk(db, {
+          documentId: upsertDocument(db, docPath, name, Date.now(), null),
+          docPath,
+          docName: name,
+          section: "1",
+          structuralPath: name,
+          party: "",
+          chunkIndex: 0,
+          text,
+          charStart: 0,
+          charEnd: text.length,
+          embedding: new Float32Array([1, 2, 3]),
+          flagged: false,
+        })
+      }
+      db.close()
+      await writeSourceArtifacts(dir)
+      const sourceMapBytes = readFileSync(path.join(dir, "source-map.json"))
+      const sourceMap = JSON.parse(sourceMapBytes.toString("utf8")) as {
+        documents: Array<{ document: string; chunks: Array<{ text_path: string; start_char: number; end_char: number }> }>
+      }
+      const longChunks = sourceMap.documents.find((document) => document.document === "Long.docx")!.chunks
+      const currentFormat = new Map(longChunks.map((chunk) => [chunk.text_path, readFileSync(path.join(dir, chunk.text_path), "utf8")]))
+
+      // An earlier ingest left (and stamped) the long document's chunk files in the earlier wrap.
+      const earlier = new Map(longChunks.map((chunk) =>
+        [chunk.text_path, earlierWrap(documents["Long.docx"].slice(chunk.start_char, chunk.end_char))]))
+      for (const [file, text] of earlier) writeFileSync(path.join(dir, file), text)
+      const rewrapped = [...earlier].filter(([file, text]) => text !== currentFormat.get(file)).map(([file]) => file)
+      expect(rewrapped.length).toBeGreaterThan(0)
+      stampIngestLineage(dir, Object.keys(documents), "earlier")
+      expect(sourceArtifactsMatchRegistry(dir)).toBe(false)
+
+      const lineage = () => readFileSync(path.join(dir, ".dochaus", "lineage.jsonl"), "utf8").trim().split("\n").map((row) => JSON.parse(row))
+      const rebuilt = () => [
+        "source-index.json", "source-map.json", "source-map.md", "source-ledger.json", "matter-identifiers.json", "matter-identifiers.md",
+        ...[...new Bun.Glob("{source-chunks,sources}/*.txt").scanSync({ cwd: dir })].map((file) => file.replace(/\\/g, "/")),
+      ].sort()
+      const sha = (file: string) => createHash("sha256").update(readFileSync(path.join(dir, file))).digest("hex")
+      const before = new Map(rebuilt().map((file) => [file, sha(file)]))
+      const rowsBefore = lineage().length
+
+      // The startup heal (ingest server boot): rebuild when the projection no longer matches.
+      await writeSourceArtifacts(dir, undefined, { rebuild: true })
+
+      expect(sourceArtifactsMatchRegistry(dir)).toBe(true)
+      for (const [file, text] of currentFormat) expect(readFileSync(path.join(dir, file), "utf8")).toBe(text)
+      expect(readFileSync(path.join(dir, "source-map.json")).equals(sourceMapBytes)).toBe(true)
+      expect(rebuilt()).toEqual([...before.keys()])
+      const changed = rebuilt().filter((file) => sha(file) !== before.get(file))
+      expect(changed).toEqual(rewrapped)
+      const added = lineage().slice(rowsBefore)
+      expect(added.map((row) => row.artifact).sort()).toEqual(changed)
+      for (const row of added) {
+        expect(row).toMatchObject({ op: "write", content_sha256: sha(row.artifact), provenance: { origin: "source-rebuild" } })
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

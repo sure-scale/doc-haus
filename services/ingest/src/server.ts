@@ -1243,7 +1243,7 @@ for (const matter of listMatters()) {
     const rebuildSourceArtifacts = Boolean(recovery.sourceRolledBack) ||
       !sourceArtifactsMatchRegistry(matter.dir, db)
     db.close()
-    if (rebuildSourceArtifacts) await writeSourceArtifacts(matter.dir)
+    if (rebuildSourceArtifacts) await writeSourceArtifacts(matter.dir, undefined, { rebuild: true })
     if (reembedded) console.log("chunks re-embedded", { count: reembedded, matter_ref: draftingTraceReference(matter.dir) })
     if (restructured) console.log("document structure extracted", { count: restructured, matter_ref: draftingTraceReference(matter.dir) })
   } catch (e) {

@@ -5,7 +5,7 @@ import path from "node:path"
 import { isDeepStrictEqual } from "node:util"
 import { listSourceDocuments, openDb } from "./db"
 import { extractIdentifiers, renderIdentifiersMarkdown, type IdentifierChunk, type MatterIdentifiers } from "./identifiers"
-import { stampIngestLineage } from "./lineage"
+import { stampIngestLineage, stampSourceRebuildLineage } from "./lineage"
 import { reconstructText } from "./structure"
 
 const MAX_SOURCE_CHUNK_CHARS = 4500
@@ -43,10 +43,13 @@ const SOURCE_ARTIFACT_PATHS = [
   "source-chunks",
 ] as const
 
+// `rebuild` re-derives the projection from sources already ingested (the
+// startup self-heal): lineage then records only the artifacts whose bytes
+// changed, as a rebuild rather than an upload.
 export async function writeSourceArtifacts(
   matterDir: string,
   correlation?: string,
-  options: { db?: Database; settle?: () => void; stampLineage?: boolean; transactionDirectory?: string } = {},
+  options: { db?: Database; settle?: () => void; stampLineage?: boolean; rebuild?: boolean; transactionDirectory?: string } = {},
 ) {
   const previousIdentifiers = await readMatterIdentifiers(matterDir)
   const db = options.db ?? openDb(matterDir)
@@ -61,7 +64,12 @@ export async function writeSourceArtifacts(
   if (!options.db) db.close()
 
   const documents = sources.map((s) => s.document)
-  const correlationId = correlation ?? `ingest-${Date.now().toString(36)}`
+  const correlationId = correlation ?? `${options.rebuild ? "rebuild" : "ingest"}-${Date.now().toString(36)}`
+  const stampLineage = () => {
+    if (options.stampLineage === false) return
+    if (options.rebuild) stampSourceRebuildLineage(matterDir, documents, correlationId)
+    else stampIngestLineage(matterDir, documents, correlationId)
+  }
   const transaction = options.transactionDirectory ?? path.join(
     matterDir,
     ".dochaus",
@@ -72,7 +80,7 @@ export async function writeSourceArtifacts(
   mkdirSync(staged, { recursive: true })
   if (!sources.length) {
     settleSourceArtifactSnapshot(matterDir, transaction, options.settle)
-    if (options.stampLineage !== false) stampIngestLineage(matterDir, documents, correlationId)
+    stampLineage()
     return { documents: 0, chunks: 0, sourceDocuments: documents }
   }
 
@@ -114,7 +122,7 @@ export async function writeSourceArtifacts(
     ) rmSync(transaction, { recursive: true, force: true })
     throw error
   }
-  if (options.stampLineage !== false) stampIngestLineage(matterDir, documents, correlationId)
+  stampLineage()
   return {
     documents: sources.length,
     chunks: sourceMap.documents.reduce((sum, source) => sum + source.chunks.length, 0),
