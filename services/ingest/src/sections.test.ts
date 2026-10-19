@@ -570,3 +570,92 @@ describe("chunk index maintenance", () => {
     }
   })
 })
+
+describe("reconstructText", () => {
+  let directory = ""
+  beforeAll(() => {
+    directory = realpathSync(mkdtempSync(path.join(tmpdir(), "dochaus-sections-reconstruct-")))
+  })
+  afterAll(() => rmSync(directory, { recursive: true, force: true }))
+
+  const store = (docPath: string, chunks: Array<{ text: string; start: number }>) => {
+    const db = openDb(directory)
+    try {
+      db.transaction(() => {
+        chunks.forEach((chunk, index) =>
+          db.run(
+            "INSERT INTO chunks (document_id, doc_path, doc_name, section, chunk_index, text, char_start, char_end, embedding) VALUES (1, ?, ?, '1', ?, ?, ?, ?, x'')",
+            [docPath, docPath, index, chunk.text, chunk.start, chunk.start + chunk.text.length],
+          ),
+        )
+      })()
+    } finally {
+      db.close()
+    }
+  }
+  const rebuilt = (docPath: string) => {
+    const db = openDb(directory)
+    try {
+      return reconstructText(db, docPath)
+    } finally {
+      db.close()
+    }
+  }
+
+  test("chunks with the same start give the exact text in either stored order", () => {
+    const text = "1. Scope\nThe invented scope runs to here.\n"
+    const long = { text, start: 0 }
+    const short = { text: text.slice(0, 9), start: 0 }
+    store("tied-short-last.docx", [long, short])
+    store("tied-short-first.docx", [short, long])
+    expect(rebuilt("tied-short-last.docx")).toBe(text)
+    expect(rebuilt("tied-short-first.docx")).toBe(text)
+  })
+
+  test("the next chunk replaces the extra newline an older split section's last chunk carried", () => {
+    // Chunks stored before chunkSection stopped counting one newline past a
+    // split section: the first section's last chunk ends with "\n" where the
+    // second section's heading starts.
+    const text = "1. First\nAlpha line.\nBeta line.\n2. Second\nGamma line.\n"
+    const second = text.indexOf("2. Second")
+    store("older-split.docx", [
+      { text: text.slice(0, 21), start: 0 },
+      { text: text.slice(9, second) + "\n", start: 9 },
+      { text: text.slice(second), start: second },
+    ])
+    expect(rebuilt("older-split.docx")).toBe(text)
+  })
+
+  test("uncovered gaps are padded with spaces so offsets after them hold", () => {
+    store("gap.docx", [
+      { text: "NOTICE\n", start: 2 },
+      { text: "1. Scope\n", start: 12 },
+    ])
+    expect(rebuilt("gap.docx")).toBe("  NOTICE\n   1. Scope\n")
+  })
+
+  test("a 2000-chunk document reconstructs in near-linear time", () => {
+    const line = (i: number) => `Line ${i} of an invented clause that describes no actual obligation.\n`
+    const text = Array.from({ length: 60_000 }, (_, i) => line(i)).join("")
+    const count = 2000
+    const step = Math.floor(text.length / count)
+    store(
+      "large.docx",
+      Array.from({ length: count }, (_, i) => {
+        const start = i * step
+        const end = i === count - 1 ? text.length : Math.min(text.length, start + step + 250)
+        return { text: text.slice(start, end), start }
+      }),
+    )
+    const db = openDb(directory)
+    try {
+      reconstructText(db, "large.docx")
+      const started = performance.now()
+      expect(reconstructText(db, "large.docx")).toBe(text)
+      // Rewriting the whole string per chunk took over 100 ms here.
+      expect(performance.now() - started).toBeLessThan(50)
+    } finally {
+      db.close()
+    }
+  })
+})

@@ -234,22 +234,39 @@ export function extractStructure(db: Database, docPath: string, docName: string,
     )
 }
 
-// Rebuild a document's extracted text from its chunks. Chunk offsets index into
+// Rebuild a document's extracted text from its chunks: the canonical text that
+// chunk offsets, section spans and documents.rev index. Chunk offsets index into
 // the original extraction; each chunk is written at its own char_start, padding
 // gaps from skipped whitespace-only slices and letting overlapping chunks (the
 // structure-aware chunker carries a trailing overlap) write the same region
 // twice without duplicating it. Anchoring on char_start keeps every stored
 // offset valid against the rebuilt string.
+//
+// In (char_start, id) order, a chunk overwrites the range it covers and never
+// truncates text past its end, the rule dochaus/lib/amendment-chain.ts
+// indexedText follows: a shorter chunk with the same start cannot cut the text
+// short, and the next chunk's real text replaces the extra trailing newline an
+// older split section's last chunk carried (see chunkSection). No later chunk
+// starts before the current one, so text before its start is final and only
+// the tail from there on is rewritten, which keeps the rebuild linear.
 export function reconstructText(db: Database, docPath: string) {
   const rows = db
-    .query("SELECT text, char_start FROM chunks WHERE doc_path = ? ORDER BY char_start")
+    .query("SELECT text, char_start FROM chunks WHERE doc_path = ? ORDER BY char_start, id")
     .all(docPath) as Array<{ text: string; char_start: number }>
-  let out = ""
+  const done: string[] = []
+  let doneLength = 0
+  let tail = ""
   for (const row of rows) {
-    if (row.char_start > out.length) out += " ".repeat(row.char_start - out.length)
-    out = out.slice(0, row.char_start) + row.text
+    const at = row.char_start - doneLength
+    if (at > tail.length) tail += " ".repeat(at - tail.length)
+    if (at > 0) {
+      done.push(tail.slice(0, at))
+      tail = tail.slice(at)
+      doneLength = row.char_start
+    }
+    tail = row.text.length >= tail.length ? row.text : row.text + tail.slice(row.text.length)
   }
-  return out
+  return done.join("") + tail
 }
 
 // A clause line like "7.2 Termination" or "12. Governing Law": the dotted number
@@ -514,7 +531,7 @@ export function recordSections(db: Database, docPath: string, docName: string) {
   // before chunkSection stopped counting one newline past a section it split
   // end one character after that section does.)
   const chunks = db
-    .query("SELECT id, char_start FROM chunks WHERE doc_path = ? ORDER BY char_start")
+    .query("SELECT id, char_start FROM chunks WHERE doc_path = ? ORDER BY char_start, id")
     .all(docPath) as Array<{ id: number; char_start: number }>
   const link = db.query("UPDATE chunks SET section_ordinal = ? WHERE id = ?")
   let at = 0
