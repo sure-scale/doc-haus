@@ -1,5 +1,5 @@
 {
-  "version": 3,
-  "name": "2.0.1",
-  "notes": "Pause a draft and continue later from the same step. Drafts flag Word edits accepted after their final check, and requirements the checks can't settle become open items for your review instead of stalling the draft. Also a cleaner chat layout and every drafted document under Ready for review."
+  "version": 4,
+  "name": "2.0.2",
+  "notes": "Documents arrive the way you ask: one combined Word file, a file name you choose, or separate files. Questions come with options and a recommendation, and Decide for me goes with it. Instructions sent after a document is drafted amend it instead of starting over, and the redline shows what changed. If your AI provider sign-in stops working, drafting stops and tells you what to fix in Settings. Also: accept suggested edits one by one, cover memos written to your client, and much faster uploads on large matters."
 }
