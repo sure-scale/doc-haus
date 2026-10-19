@@ -216,19 +216,24 @@ function matterFileSha(directory: string, name: string) {
 }
 
 /** Delivered drafts whose matter file no longer holds the bytes the final check
- * saw: a change accepted after delivery, or a newer output kept from replacing
- * such a change. Disclosure only: the check is not re-run and its verdict is
- * passed through unchanged, so the lawyer is told to review the draft. */
+ * saw: a change accepted after delivery, a newer output kept from replacing
+ * such a change, or a draft no longer in the matter. `missing` is the subset
+ * with no readable file under the name (deleted, or replaced by anything but a
+ * regular file), so the lawyer is not told to review a draft that is gone.
+ * Disclosure only: the check is not re-run and its verdict is passed through
+ * unchanged. */
 function changedAfterCheck(directory: string, gate: unknown, documents: LeanDocuments | null) {
   if (documents?.status !== "completed") return null
+  const missing: string[] = []
   const changed = documents.documents.flatMap(row => {
     if (row.kind !== "body" || !row.deliverable || !deliverableDocumentName(row.deliverable)) return []
     const current = matterFileSha(directory, row.deliverable)
-    return row.conflict || (current && current !== row.sha256) ? [row.deliverable] : []
+    if (current === undefined) missing.push(row.deliverable)
+    return row.conflict || current !== row.sha256 ? [row.deliverable] : []
   })
   if (!changed.length) return null
   const since = gate && typeof gate === "object" && "checked_at" in gate && typeof gate.checked_at === "string" ? gate.checked_at : null
-  return { since, documents: changed }
+  return { since, documents: changed, missing }
 }
 
 /** Derived, never stored: the one file a combined document downloads as, once

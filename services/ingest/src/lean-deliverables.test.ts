@@ -179,5 +179,5 @@ test("a lawyer's accepted revision keeps its name; a later output is neither wri
   // The status keeps the final check's own verdict and discloses the change.
   const gate = readLeanJson(directory, "gate.json") as { status: string; checked_at: string }
   expect(gate.status).toBe("pass")
-  expect(leanDraftingStatus(directory)).toMatchObject({ gate, changed_after_check: { since: gate.checked_at, documents: ["Supply note.docx"] } })
+  expect(leanDraftingStatus(directory)).toMatchObject({ gate, changed_after_check: { since: gate.checked_at, documents: ["Supply note.docx"], missing: [] } })
 }, 120_000)

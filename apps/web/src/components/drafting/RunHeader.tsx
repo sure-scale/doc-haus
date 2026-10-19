@@ -5,6 +5,7 @@ import { formatAgo, formatElapsed } from "../../lib/format"
 import { activeStep, stepActivityLabel, stoppedByTechnicalProblem } from "../narration/activity"
 import { draftedIn } from "../narration/timeline"
 import {
+  afterCheckChange,
   attentionItems,
   checklistFindingsCount,
   cleanTitle,
@@ -261,7 +262,7 @@ export function runHeadline(status: LeanDraftingStatus, now: number, resuming = 
       meta: [
         took ? `Drafted in ${took}` : "",
         drafts ? `${drafts} document${drafts === 1 ? "" : "s"}` : "",
-        status.changed_after_check?.documents.length ? "Changed after final check" : "",
+        afterCheckChange(status)?.label ?? "",
       ],
     }
   }
