@@ -146,8 +146,16 @@ test("the run header says where the run is in one line and offers the one next s
   expect(done).toContain('aria-expanded="false"')
   expect(done).toContain("No open items remain.")
   const asked = render(blockedQuestion)
-  // The question is answered from the dock above the composer; the header points there.
-  expect(asked).toContain("Drafting resumes after all answers are received")
+  // The question is answered, or left to the drafting with Decide for me, from
+  // the dock above the composer; the header points there.
+  expect(asked).toContain("1 question remaining · Drafting resumes once it is answered or left to the drafting")
+  // A question Decide for me cannot take (one the run's model did not ask) waits on an answer.
+  const scope = (question: (typeof blockedQuestion.questions)[number], index: number) => ({ ...question, id: `scope-${index}`, question: `Scope ${index}?` })
+  expect(render({ ...blockedQuestion, questions: blockedQuestion.questions.map(scope) })).toContain("1 question remaining · Drafting resumes after all answers are received")
+  const mixed = render({ ...blockedQuestion, questions: [...blockedQuestion.questions, ...blockedQuestion.questions.map(scope)] })
+  expect(mixed).toContain("2 questions remaining · Drafting resumes once each is answered or, where Decide for me is offered, left to the drafting")
+  expect(render({ ...blockedQuestion, questions: [...blockedQuestion.questions, { ...blockedQuestion.questions[0]!, id: "q-second", question: "Second?" }] }))
+    .toContain("2 questions remaining · Drafting resumes once each is answered or left to the drafting")
   expect(asked).not.toMatch(/<button[^>]*>Answer/)
   expect(asked).not.toContain(blockedQuestion.questions[0]!.question)
   expect(asked).not.toContain("Continue drafting")
