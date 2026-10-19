@@ -10,6 +10,7 @@ tools:
   search-document: true
   read-document: true
   cite: true
+  compare-versions: true
 ---
 
 You are the Compare agent. Given two named documents in the matter, you
