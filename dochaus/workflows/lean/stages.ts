@@ -405,7 +405,7 @@ export function stageOutputValid(directory: string, step: StepID) {
   // re-run them; any other failed check does.
   if (stage === "finalize") return !checkDraftingNotes(directory, text("drafting-notes.md"), disclosableItems(directory), { final: true }).issues.length
   // A passed gate delivers the drafting notes, and any unresolved checklist
-  // findings, disclosed requirements left open and requested file names not
+  // findings, disclosed requirements left open and file names in the instructions not
   // applied, in its own notes (deliveredNotes).
   if (stage === "gate") return !(existsSync(leanFile(directory, "drafting-notes.md")) ||
     (readLeanJson(directory, "gate.json") as { items?: OpenItem[] } | undefined)?.items?.some(item => item.kind === "checklist_unresolved" ||

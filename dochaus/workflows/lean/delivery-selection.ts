@@ -68,7 +68,7 @@ export function deliveryRowRefusal(directory: string, selection: unknown, docume
     if (!documents.some(document => document.id === row.document)) return { refusal: "document", issue: "Delivery selection must name an existing final document id." }
     if (row.role !== "body" && row.role !== "redline") return { refusal: "role", issue: "Delivery role must be body, redline or drafting_notes; select an existing artifact without changing its content or comparison source." }
   }
-  if (typeof row.file !== "string" || !/^[^\\/:*?"<>|`\x00-\x1f]+\.docx$/i.test(row.file) || row.file !== row.file.trim()) return { refusal: "file", issue: "Delivery file must be the requested Word filename, without a folder path." }
+  if (!wordFileName(row.file)) return { refusal: "file", issue: "Delivery file must be the requested Word filename, without a folder path." }
   if (typeof row.instruction_quote !== "string" || !instructionFound(directory, row.instruction_quote)) return { refusal: "not_quoted", issue: NOT_QUOTED }
   // A name the quote spells with its extension, or one the earlier check
   // accepted, is a name, even in format words: package review is never
@@ -81,19 +81,25 @@ export function deliveryRowRefusal(directory: string, selection: unknown, docume
   return { refusal: "not_quoted", issue: NOT_QUOTED }
 }
 
-/** The lawyer's spelling of `file`, a Word file name, when the instruction its
- * row quotes gives it as a name: by the checks a row's name passes on its
- * quote (deliveryNameQuoted, quotedOrTitled), but with case and the name's
- * surrounding spaces aside; whatever else refuses its row. A name the lawyer's
- * words only mention, outside such an instruction, is not one they asked for.
- * Code only, never a prompt. */
+/** Whether `file` is a bare Word file name: no folder, no surrounding spaces
+ * and no character a file name cannot have. */
+export function wordFileName(file: unknown): file is string {
+  return typeof file === "string" && /^[^\\/:*?"<>|`\x00-\x1f]+\.docx$/i.test(file) && file === file.trim()
+}
+
+/** The lawyer's spelling of `file`, a Word file name, when the lawyer's own
+ * words give it, as written, inside the instruction its row quotes: a name
+ * spelledNames finds there, compared with the file's last path part, case and
+ * spaces aside; whatever else refuses its row. It says only that their words
+ * give the name, not what they meant by it. A name cut short from a longer one,
+ * or one only in the model's words, is none. Code only, never a prompt. */
 export function deliveryNameAsked(directory: string, quote: unknown, file: unknown): string | undefined {
-  if (typeof file !== "string" || typeof quote !== "string" || !/\.docx$/i.test(file.trim()) || !instructionFound(directory, quote)) return
-  const name = file.trim()
+  if (typeof file !== "string" || typeof quote !== "string" || !instructionFound(directory, quote)) return
+  const name = file.trim().replace(/^.*[\\/]/, "").trim()
+  if (!/\.docx$/i.test(name)) return
   const key = normalize(name).toLocaleLowerCase()
   for (const raw of lawyerWords(directory))
     for (const spelled of spelledNames(raw, quote, name.slice(0, -5), ".docx")) if (normalize(spelled).toLocaleLowerCase() === key) return spelled
-  return quotedOrTitled(quote, name) ? name : undefined
 }
 
 const NOT_QUOTED = "Delivery instruction_quote must quote the lawyer's actual instructions naming that output file or explicitly titling the Word output with its exact basename. Quote the actual naming instruction; source titles and input filenames do not themselves establish output intent. For an explicitly titled Word output, add only .docx to that title; do not guess, shorten or rename it. When the lawyer's words give that output no file name or explicit title, return no delivery row for it."

@@ -123,7 +123,7 @@ export function finalGate(directory: string): GateResult {
   // Adverse checklist findings lead: the lawyer's list of items may be capped.
   const unresolved = checked?.valid ? [...checked.unresolved.map(row => checklistUnresolvedItem(directory, leanState, row, conflict?.id)),
     ...checked.unresolvedParents.map(row => checklistUnresolvedParentItem(directory, row))] : []
-  // A requested file name the package review withheld is disclosed with the
+  // A file name in the instructions the package review withheld is disclosed with the
   // draft, never blocking it: the notes were written before that review.
   const items = [...unresolved, ...[...currentOpenItems(directory), ...deferredFindingItems(directory), ...coverageItems(directory), ...requestedFilesItems(directory)].map(item => settle(item, context)), ...semantic, ...projected, ...withheldDeliveryItems(directory)]
   if (checked && !checked.valid) items.push(openItem("checklist-check", "omission", "Effective checklist findings or source-unit coverage are incomplete or stale, or a check or its reinspection failed; see checklist/report.md.", {}))
@@ -173,7 +173,7 @@ export function finalGate(directory: string): GateResult {
 /** The notes delivered with the draft: the drafting notes as the reader gets
  * them (notesForReader), with any unresolved checklist findings and any
  * disclosed requirements the checklist check left open in plain words, and
- * any requested file name the package review could not apply
+ * any file name in the instructions the package review could not apply
  * (withheldDeliveryItems), in its item's words. The drafting notes are written
  * before the checklist check and the package review, so they cannot list
  * these. Undefined when there are neither drafting notes nor such an item.
@@ -209,12 +209,12 @@ export function deliveredNotes(directory: string, gate: GateResult): string | un
     "These checklist requirements were not established as satisfied. Each is disclosed with this review draft; none is treated as satisfied."),
   ...section(open, "# Checklist requirements left open",
     "These checklist requirements were left open. Each is disclosed with this review draft; none is treated as satisfied."),
-  ...named("# File names not applied", "These requested file names could not be applied. Each is disclosed with this review draft."), body].join("\n")
+  ...named("# File names not applied", "These file names in your instructions could not be applied. Each is disclosed with this review draft."), body].join("\n")
   const memo = body.trimEnd()
   return [...(memo ? [memo, ""] : []),
     ...section(unresolved, "## Requirements not confirmed as met", "These requirements were not confirmed as met in this draft and need the lawyer's review."),
     ...section(open, "## Requirements left open", "These requirements were left open in this draft and need the lawyer's review."),
-    ...named("## File names not applied", "These requested file names could not be applied in this draft.")].join("\n")
+    ...named("## File names not applied", "These file names in your instructions could not be applied in this draft.")].join("\n")
 }
 
 /** The drafting notes as the reader gets them: without their "[ref: …]"
