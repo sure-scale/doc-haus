@@ -9,13 +9,15 @@ import { documentRegistryIdentity } from "./document-identity"
 
 // How long the startup connection waits for another connection's write lock.
 const STARTUP_BUSY_TIMEOUT_MS = 5000
+// How long an upload's commit connection waits for one.
+const UPLOAD_BUSY_TIMEOUT_MS = 500
 
 // startup: the per-matter connection the service opens at boot, before it
-// listens, to run the compatibility migrations. Only it waits for a write lock
-// and checks the lexical index against the chunks (see ftsInSync below).
+// listens, to run the compatibility migrations. It waits for a write lock and
+// checks the lexical index against the chunks (see ftsInSync below).
 //
 // Every other connection serves a request in this process, where an ingest or
-// delete commit holds its write lock across awaited file writes. bun:sqlite
+// delete commit can hold its write lock across awaited file writes. bun:sqlite
 // waits synchronously, so a request waiting for that lock would block the very
 // event loop the holder needs to finish: it could only stall the service and
 // then fail. A request connection therefore never waits; on a current
@@ -23,11 +25,19 @@ const STARTUP_BUSY_TIMEOUT_MS = 5000
 // commit and a competing write fails at once with SQLITE_BUSY. At startup no
 // request runs yet, so a lock can only belong to another process (the engine's
 // short legal.db writes), which finishes while the startup connection waits.
-export function openDb(matterDir: string, options: { startup?: boolean } = {}): Database {
+//
+// upload: the connection a source upload commits through (ingest.ts). The
+// upload holds the matter's source-corpus lock, which every commit that keeps
+// the write lock across an await also takes, so no such commit runs in this
+// process meanwhile and a lock it meets belongs to another process. It waits
+// briefly, so an engine write of a few milliseconds at that instant delays the
+// upload instead of failing it.
+export function openDb(matterDir: string, options: { startup?: boolean; upload?: boolean } = {}): Database {
   const dir = path.join(matterDir, ".dochaus")
   mkdirSync(dir, { recursive: true })
   const db = new Database(path.join(dir, "legal.db"))
   if (options.startup) db.run(`PRAGMA busy_timeout = ${STARTUP_BUSY_TIMEOUT_MS}`)
+  else if (options.upload) db.run(`PRAGMA busy_timeout = ${UPLOAD_BUSY_TIMEOUT_MS}`)
   db.run("PRAGMA journal_mode = WAL")
   db.run("CREATE TABLE IF NOT EXISTS answer_drafts (scope TEXT PRIMARY KEY, answers TEXT NOT NULL, revision INTEGER NOT NULL)")
   // injection_report: JSON-encoded prompt-injection findings from ingest-time

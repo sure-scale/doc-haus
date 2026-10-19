@@ -87,7 +87,7 @@ async function ingestDocumentLocked(
   ]
   const sections = sectionize(text)
 
-  const db = openDb(matterDir)
+  const db = openDb(matterDir, { upload: true })
   let preparedChunks: Array<{
     section: string
     structuralPath: string
