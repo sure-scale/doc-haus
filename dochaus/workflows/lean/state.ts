@@ -3,6 +3,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync
 import path from "node:path"
 import { readDurableJson, writeDurableBytes } from "../../lib/durable-json"
 import type { ChecklistFindingClass } from "./checklist-classify"
+import { HANDED_BACK_MEANING } from "./checklist-contract"
 import type { DocID, StepID } from "./plan"
 
 // Lean drafting run state. One JSON file, written whole (tmp + rename) on every
@@ -361,13 +362,15 @@ export function handedBackQuestionsText(directory: string) {
 
 /** The hand-backs as prompts show them beside the lawyer's answers, or "" with
  * none: choices the drafting makes for the client and discloses, never the
- * lawyer's answers. The body carries each choice cleanly; the notes disclose it. */
+ * lawyer's answers. The body carries each choice cleanly; the notes disclose it.
+ * What "Decide for me" means comes right before the questions, as beside a
+ * checklist job's hand-back rows. */
 export function handedBackBlock(directory: string) {
   const text = handedBackQuestionsText(directory)
-  return text ? "The lawyer left these questions to the drafting to decide instead of answering them; do not ask them again. Each is a choice the drafting makes on professional judgment and discloses as one the lawyer has not made. " +
+  return text ? "The lawyer left these questions to the drafting to decide (\"Decide for me\") instead of answering them; do not ask them again. Each is a choice the drafting makes on professional judgment and discloses as one the lawyer has not made. " +
     "Decide each as the lawyer for the party the lawyer acts for would: follow the instructions and the documents; where they leave the point open or conflict, choose what best serves that party within them, or what is even-handed when the request names no party. " +
     "Apply each choice made as clean operative wording, with no confirmation marker, rejected alternative or precedence clause between the alternatives; the drafting notes give the reason and the alternative. " +
-    `None is an agreed term, an answered decision or a settled dependency; record and review each as a drafting choice.\n${text}` : ""
+    `None is an agreed term or an answered decision; record and review each as a drafting choice. ${HANDED_BACK_MEANING}\n${text}` : ""
 }
 
 /** The hand-backs as the drafting notes' writer sees them, or "" with none:
@@ -375,8 +378,8 @@ export function handedBackBlock(directory: string) {
  * that decide and apply each choice keep handedBackBlock. */
 export function handedBackNotesBlock(directory: string) {
   const text = handedBackQuestionsText(directory)
-  return text ? "You asked us to decide these questions instead of answering them. For each, say what we chose, why and the alternative not taken, " +
-    `or that it stays open and what is needed. Each is our choice for you to confirm, not your answer.\n${text}` : ""
+  return text ? "You asked us to decide these questions. For each, say what we chose, why and the alternative not taken, " +
+    `or that it stays open and what is needed; each choice is ours, for you to confirm.\n${text}` : ""
 }
 
 /** The heading of handedBackBlock where a prompt lists it after the answers

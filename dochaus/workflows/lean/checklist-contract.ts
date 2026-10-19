@@ -138,6 +138,26 @@ export function isDeliveryArtifactEvidence(row: ChecklistCurrentEvidence, suppli
   return !!normalize(row.text) && supplied.some(evidence => evidence.kind === "artifact" && evidence.locator.startsWith(DELIVERY_ARTIFACTS_ROW) && suppliedEvidenceContains(evidence, row))
 }
 const deliveryArtifactsMeaning = "A delivery_artifacts row in current_evidence records code-produced properties of a delivered file (its name, Word format and, for a combined file, its parts, their order and a build of it from the current parts). It is evidence only for a requirement about the delivered file itself (its name, format or composition), so cite it, as artifact evidence, only for such a requirement."
+/** The lawyer's "Decide for me" on one model-asked question, as a checklist
+ * job's instruction row. The quote is that instruction alone; the question only
+ * names the point, in the locator, and is never quotable authority. */
+const HANDED_BACK_QUOTE = "Decide for me"
+const HANDED_BACK_LOCATOR = ".dochaus/lean/questions.json decide_for_me ("
+export function handedBackRef(id: string, question: string): ChecklistSourceReference {
+  return { document: "request", locator: `${HANDED_BACK_LOCATOR}${id}) on the question: ${question.trim()}`, quote: HANDED_BACK_QUOTE }
+}
+function isHandedBackRef(ref: ChecklistSourceReference) {
+  return ref.document === "request" && ref.quote === HANDED_BACK_QUOTE && ref.locator.startsWith(HANDED_BACK_LOCATOR)
+}
+/** What a hand-back means, written once in code: each prompt that shows a
+ * hand-back row, or the hand-backs' block, carries it beside them. */
+export const HANDED_BACK_MEANING = "\"Decide for me\" directs the drafting to choose one alternative on its question and settles it for the requested documents until the lawyer answers. " +
+  "The documents must state one alternative clearly and consistently and the notes give the choice, its reason and the alternative not taken. " +
+  "Keeping both alternatives, a precedence clause or marker on that point is not required."
+/** The meaning, before a job input that shows a hand-back row; nothing otherwise. */
+function handedBackMeaning(refs: readonly ChecklistSourceReference[]) {
+  return refs.some(isHandedBackRef) ? [HANDED_BACK_MEANING] : []
+}
 const retrieval = "The input is already inline. Use exact supplied coordinates when inspection is needed, then targeted read-record/read-document/search-document/verify-quote for a material gap. Do not discover directories, reread the packet/schema or read the full matter by default."
 
 export function buildChecklistProducerPrompt(value: ChecklistProducerInput): string {
@@ -150,6 +170,7 @@ export function buildChecklistProducerPrompt(value: ChecklistProducerInput): str
     "Each item asks one focused check for one target document and states the source-supported treatment. Use the declared target identity/role, never invent a final paragraph pointer. Separate independent checks or target documents; keep necessary conditions attached. Structural artifact questions must say which property is to be inspected. Collection-wide questions must identify their scope rather than imply one passage proves completeness. If the sources do not settle treatment or applicability, preserve that uncertainty in qualifications. Do not create a duty merely to retain an observation.",
     retrieval,
     `Return only JSON {"items":[ITEM]}; ITEM uses exactly this shape: ${CHECKLIST_ITEM_SHAPE}. Choose one enum value, not a pipe-separated string. Copy exact source quotes and locators. No model-assigned IDs, extra fields or current-output evidence. An empty items array is permitted when this source yields no applicable checks.`,
+    ...handedBackMeaning([...input.passages, ...input.instructions]),
     "SOURCE_INPUT:",
     JSON.stringify(input),
   ].join("\n\n")
@@ -193,6 +214,7 @@ export function buildChecklistCheckerPrompt(value: ChecklistCheckerInput): strin
     "Missing excerpts do not prove absence. Inspect the relevant target sufficiently before asserting missing wording; otherwise report indeterminate with the gap. Satisfied means the applicable stated treatment is evidenced; unsatisfied requires an evidenced applicable mismatch; open preserves a substantive unresolved fact or decision, or an unsettled applicability decision; indeterminate means insufficient evidence or inspection; not_applicable needs an evidence-based explanation. State the actual inspection scope and do not claim whole-package coverage.",
     `Return only JSON {"item_id":"supplied ID","status":"satisfied|unsatisfied|open|indeterminate|not_applicable","reason":"...","evidence":[{"document":"...","locator":"...","text":"exact current evidence","kind":"body|comment|deleted_text|artifact"}],"source_refs":[{"document":"...","locator":"...","quote":"exact source or instruction"}],"inspection_scope":"...","limitation":"..."${input.item.required_action ? ',"action_status":"fulfilled|not_fulfilled|indeterminate|not_applicable"' : ""},"open_decisions":[]}. Choose one enum value. Empty evidence arrays preserve gaps; do not invent quotations or locators.`,
     disclosureFields,
+    ...handedBackMeaning([...input.settled_instructions, ...input.item.source_refs]),
     "CHECK_INPUT:",
     JSON.stringify(input),
   ].join("\n\n")
@@ -253,6 +275,7 @@ export function buildChecklistRefinementPrompt(value: ChecklistRefinementInput):
     "Return focused child checks, one source-supported action and target each, preserving necessary conditions, material exceptions and uncertainty. Do not bundle independent concerns. A collection-wide parent is not a child: extract the concrete concerns supported in THIS unit. Coverage of other units is a separate job. Original draft text alone does not impose retention or memo duties. If no applicable check is supported, explain that disposition; if scope/treatment cannot be settled, preserve unresolved and the precise gap rather than invent approval or omit the concern. Preserve every source-supported applicable aspect of the parent within this assigned unit, including its target document and treatment; action may clarify the source-supported duty but cannot silently change it. Do not replace a parent duty with a different target or presentation merely because another action is supported. If the parent target, treatment or scope is unsupported, or any applicable aspect cannot be preserved in focused children, return unresolved with a precise source-grounded reason; partial children may remain, but cannot certify the parent. No_applicable_check is only for a unit that contributes no applicable aspect, not an unsupported parent duty.",
     retrieval,
     `Return only JSON {"parent_id":"supplied ID","unit_id":"supplied source_unit.id","disposition":"refined|no_applicable_check|unresolved","reason":"source-grounded explanation","items":[ITEM],"source_refs":[{"document":"...","locator":"...","quote":"exact source"}],"limitations":[]}. ITEM uses ${CHECKLIST_ITEM_SHAPE.slice(0, -1)},"required_action":"adopt|propose|flag|assess"}. Children have no model-assigned IDs. Empty items requires an explicit no_applicable_check or unresolved disposition; unresolved may retain partial children. This job cannot certify the parent or unassigned source units complete.`,
+    ...handedBackMeaning([...input.instructions, ...input.source_unit.passages, ...input.parent.source_refs]),
     "REFINEMENT_INPUT:", JSON.stringify(input),
   ].join("\n\n")
 }

@@ -418,14 +418,15 @@ export function disclosableItems(directory: string): OpenItem[] {
 
 /** One item per question the lawyer handed back: the drafting notes say what
  * was chosen, why and the alternative, or that the draft leaves it open, as a
- * point still to confirm. Worded to the lawyer, so an echo in the notes reads
- * naturally. The text never reads the spine, so each id keys on the question's
- * text and id alone and the item stands until the lawyer answers. */
+ * point still to confirm. The text is lawyer-facing only, as the gate shows it
+ * to the lawyer; what the notes' writer must say is in the finalize prompt
+ * (handedBackNotesBlock). The text never reads the spine, so each id keys on
+ * the question's text and id alone and the item stands until the lawyer answers. */
 export function handedBackItems(directory: string): OpenItem[] {
   return readQuestions(directory).filter(handedBack).map(question => openItem("finalize", "omission",
     `You asked us to decide: ${question.question.trim()} ` +
-    "Say what we chose, why and the alternative not taken, or that it stays open and what is needed, " +
-    "and that it still needs your confirmation or an answer.", { repair_target: "memo", question_id: question.id }))
+    "The notes say what was chosen, why and the alternative not taken, or why it stays open; it needs your confirmation.",
+    { repair_target: "memo", question_id: question.id }))
 }
 
 function ensureNewline(text: string) {

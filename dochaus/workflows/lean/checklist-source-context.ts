@@ -3,7 +3,7 @@ import { realpathSync } from "node:fs"
 import path from "node:path"
 import { z } from "zod"
 import { readRegularFile } from "../../lib/regular-file"
-import { checklistProducerInputSchema, type ChecklistProducerInput, type ChecklistSourceReference } from "./checklist-contract"
+import { checklistProducerInputSchema, handedBackRef, type ChecklistProducerInput, type ChecklistSourceReference } from "./checklist-contract"
 import { readLeanPlan } from "./plan"
 import { leanUserUpdates } from "./requests"
 import { answeredQuestions, handedBack, readLeanText } from "./state"
@@ -85,9 +85,7 @@ export function checklistProducerInputs(directory: string): { key: string; input
  * are re-checked against the lawyer's words alone, and they see the hand-backs
  * as <left_to_drafting>. */
 export function checklistJobInputs(directory: string) {
-  const handed: ChecklistSourceReference[] = answeredQuestions(directory).filter(handedBack).map(question => ({
-    document: "request", locator: `.dochaus/lean/questions.json decide_for_me (${question.id}) on the question: ${question.question.trim()}`, quote: "Decide for me",
-  }))
+  const handed = answeredQuestions(directory).filter(handedBack).map(question => handedBackRef(question.id, question.question))
   const jobs = checklistProducerInputs(directory)
   return handed.length ? jobs.map(job => ({ ...job, input: { ...job.input, instructions: [...job.input.instructions, ...handed] } })) : jobs
 }
