@@ -8,9 +8,9 @@ import { docxodus } from "./docxodus"
 // A second pass compares that same accepted left with right after accepting only
 // the proposals of ours it still carries and rejecting its other revisions, which
 // leaves exactly the edits right made without tracking. Each of left's own
-// pending proposals is reported as still pending, accepted or undone without
-// tracking, from those same revisions and edits. Pure: no model call, no file
-// writes.
+// pending proposals is reported as still pending, countered, accepted or
+// rejected without tracking, from those same revisions and the untracked edits
+// in its own paragraph. Pure: no model call, no file writes.
 
 export type CompareOptions = { ignoreFormatting: boolean; detectMoves: boolean; headersFooters: boolean }
 
@@ -44,10 +44,19 @@ export type ProposalOutcome = {
   /** The proposed inserted text, or the text proposed for deletion. */
   text: string
   author: string
-  outcome: "pending" | "accepted" | "undone"
-  /** For an undone proposal: the U-id of the untracked edit that reversed it. */
+  /**
+   * pending: right still carries it as ours. countered: carried, but right also
+   * strikes or restores it with a tracked change of its own. accepted: its
+   * effect is in right as plain text. rejected: removed or changed in right with
+   * no tracked change, which is what Word's Reject Change leaves.
+   */
+  outcome: "pending" | "accepted" | "rejected" | "countered"
+  /**
+   * U-id of an untracked edit in the proposal's own paragraph: for a rejected
+   * proposal the one that removed it, otherwise the first there.
+   */
   untracked?: string
-  /** Where it sits in left; paragraph 0 if not located. */
+  /** Its paragraph in accept-all(left), counted as the hunks count (a deleted paragraph: in left); paragraph 0 if not located. */
   location: ChangeLocation
 }
 
@@ -67,6 +76,7 @@ type InputRevision = Awaited<ReturnType<Dx["getRevisions"]>>[number]
 type ListedRevision = ReturnType<ReturnType<Dx["openDocxSession"]>["listRevisions"]>[number]
 type Hunk = ChangeHunk & { left: string[]; right: string[] }
 type Block = { location: Omit<ChangeLocation, "side">; text: string }
+type Carried = ListedRevision & { countered: boolean }
 
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 const STORY = /^word\/(?:document|header\d*|footer\d*|footnotes|endnotes)\.xml$/
@@ -131,7 +141,7 @@ export async function compareVersions(
   const disclosed = (rows: InputRevision[]) => ({ count: rows.length, authors: unique(rows.map(row => row.author)) })
   const exported = ({ left: _left, right: _right, ...hunk }: Hunk): ChangeHunk => hunk
   return { blackline: attribution === "authors" ? relabelled! : plain, changes: changes.map(exported), untracked: untracked.map(exported),
-    attribution, left: disclosed(leftInputs), right: disclosed(rightInputs), proposals: await outcomes(left.bytes, sentRevisions, carried.ours, untracked) }
+    attribution, left: disclosed(leftInputs), right: disclosed(rightInputs), proposals: await outcomes(left.bytes, sentRevisions, carried.ours, untracked, leftSide) }
 }
 
 // A revision is ours when its type, author, date and text equal one pending in left.
@@ -140,6 +150,20 @@ const tally = (rows: ListedRevision[]) => {
   const counts = new Map<string, number>()
   for (const row of rows) counts.set(revisionKey(row), (counts.get(revisionKey(row)) ?? 0) + 1)
   return counts
+}
+const anchor = (row: ListedRevision) => row.anchorId ?? row.affectedAnchors[0]?.id
+const flat = (text = "") => text.replace(/[¶\s]+/g, " ").trim()
+// Copies of a non-empty text in another; one that starts or ends with a letter
+// or digit must not run on into one there.
+function occurrences(text: string, within: string) {
+  const word = /[\p{L}\p{N}]/u
+  let count = 0
+  for (let at = within.indexOf(text); at >= 0;) {
+    const inside = word.test(text[0]!) && word.test(within[at - 1] ?? "") || word.test(text.at(-1)!) && word.test(within[at + text.length] ?? "")
+    if (!inside) count++
+    at = within.indexOf(text, inside ? at + 1 : at + text.length)
+  }
+  return count
 }
 
 function listRevisions(dx: Dx, bytes: Uint8Array) {
@@ -152,17 +176,24 @@ function listRevisions(dx: Dx, bytes: Uint8Array) {
 }
 
 // Right with the proposals of ours it still carries accepted, as left's view has
-// them, and those carried revisions. If any accept is refused, right's bytes come
-// back unchanged and the check rejects every revision.
+// them, and those carried revisions. A carried one is countered when a revision
+// of theirs of the opposite type in the same paragraph holds its text: our
+// insertion struck, or our deletion restored, with tracking. If any accept is
+// refused, right's bytes come back unchanged and the check rejects every
+// revision.
 function acceptOurs(dx: Dx, sent: ListedRevision[], right: Uint8Array) {
   const pending = tally(sent)
   const session = dx.openDocxSession(right, { persistAnchorIds: false })
   try {
-    const ours = session.listRevisions().filter(row => {
+    const rows = session.listRevisions()
+    const carried = new Set(rows.filter(row => {
       const count = pending.get(revisionKey(row)) ?? 0
       pending.set(revisionKey(row), count - 1)
       return count > 0
-    })
+    }))
+    const opposite: Record<string, string> = { insert: "delete", delete: "insert" }
+    const ours: Carried[] = [...carried].map(row => ({ ...row, countered: !!flat(row.text) && !!anchor(row) && rows.some(other => !carried.has(other)
+      && other.type === opposite[row.type] && anchor(other) === anchor(row) && occurrences(flat(row.text), flat(other.text)) > 0) }))
     if (!ours.length) return { bytes: right, ours }
     return { bytes: ours.every(row => session.acceptRevision(row.id).success) ? session.save() : right, ours }
   } finally {
@@ -170,29 +201,54 @@ function acceptOurs(dx: Dx, sent: ListedRevision[], right: Uint8Array) {
   }
 }
 
-// What became of each of left's pending insertions and deletions: pending while
-// right carries it as ours; undone when an untracked edit reverses it (the first
-// whose before holds the inserted text and whose after does not, or the other
-// way round for deleted text); otherwise accepted, its effect in right. Format,
-// move and paragraph-mark revisions are not proposals. Located in left's own
-// bytes, which its revision anchors address.
-async function outcomes(left: Uint8Array, sent: ListedRevision[], ours: ListedRevision[], untracked: Hunk[]): Promise<ProposalOutcome[]> {
-  const proposed = sent.filter(row => (row.type === "insert" || row.type === "delete") && row.family !== "paragraph_mark" && row.text.replace(/¶$/, ""))
+// What became of each of left's pending insertions and deletions, judged in its
+// own paragraph: its home, the paragraph of accept-all(left) with the same text
+// as its paragraph in left (the nearest in its scope), and the untracked hunks
+// there. Such a hunk removes it when it holds more copies of the inserted text
+// before than after, or the other way round for deleted text; each surplus copy
+// goes to one proposal. A deleted whole paragraph has no home: an untracked insertion of
+// its text removes it. A proposal right carries as ours is pending (countered if
+// right also strikes or restores it), carried copies going first to proposals
+// nothing removed; otherwise rejected when removed, else accepted, its effect in
+// right. Format, move, paragraph-mark and blank revisions are not proposals.
+async function outcomes(left: Uint8Array, sent: ListedRevision[], ours: Carried[], untracked: Hunk[], leftSide: Map<string, Block>): Promise<ProposalOutcome[]> {
+  const proposed = sent.filter(row => (row.type === "insert" || row.type === "delete") && row.family !== "paragraph_mark" && flat(row.text))
   if (!proposed.length) return []
-  const anchor = (row: ListedRevision) => row.anchorId ?? row.affectedAnchors[0]?.id
   const located = await side(left, proposed.flatMap(row => anchor(row) ?? []))
-  const carried = tally(ours)
-  const flat = (text = "") => text.replace(/[¶\s]+/g, " ").trim()
-  return proposed.map((row, index) => {
-    const count = carried.get(revisionKey(row)) ?? 0
-    carried.set(revisionKey(row), count - 1)
-    const text = flat(row.text)
+  const homes = new Map<string, [string, Block][]>()
+  for (const entry of leftSide) if (PARAGRAPHS.has(entry[0].split(":")[0]!)) homes.set(flat(entry[1].text), [...homes.get(flat(entry[1].text)) ?? [], entry])
+  const copies = new Map<string, boolean[]>()
+  for (const row of ours) copies.set(revisionKey(row), [...copies.get(revisionKey(row)) ?? [], row.countered])
+  // Surplus copies left to claim, keyed by hunk id, type and text.
+  const claims = new Map<string, number>()
+  const rows = proposed.map(row => {
+    const text = flat(row.text), raw = located.get(anchor(row) ?? ""), own = raw && flat(raw.text)
+    const distance = ([id, block]: [string, Block]) => (id.split(":")[1] === anchor(row)!.split(":")[1] ? 0 : 1e6) + Math.abs(block.location.paragraph - raw!.location.paragraph)
+    const home = own ? homes.get(own)?.reduce((best, entry) => distance(entry) < distance(best) ? entry : best) : undefined
+    const whole = !!raw && !own
+    const tied = home ? untracked.filter(hunk => hunk.left.includes(home[0]))
+      : whole ? untracked.filter(hunk => !hunk.left.length && flat(hunk.after) && occurrences(flat(hunk.after), text)) : []
     const [gone, back] = row.type === "insert" ? (["before", "after"] as const) : (["after", "before"] as const)
-    const reversal = count > 0 ? undefined : untracked.find(hunk => flat(hunk[gone]).includes(text) && !flat(hunk[back]).includes(text))
-    const block = located.get(anchor(row) ?? "")
+    const removals = tied.flatMap(hunk => {
+      const surplus = whole ? 1 : occurrences(text, flat(hunk[gone])) - occurrences(text, flat(hunk[back])), key = `${hunk.id}|${row.type}|${text}`
+      if (surplus > 0 && !claims.has(key)) claims.set(key, surplus)
+      return surplus > 0 ? [key] : []
+    })
+    const block = home?.[1] ?? (whole ? raw : undefined)
+    return { row, tied, removals, location: block ? { ...block.location, side: "left" as const } : { scope: scopeOf(row.scope), paragraph: 0, side: "left" as const } }
+  })
+  const carried = new Map<number, boolean>()
+  for (const removed of [false, true]) rows.forEach(({ row, removals }, index) => {
+    const copy = !!removals.length === removed ? copies.get(revisionKey(row))?.shift() : undefined
+    if (copy !== undefined) carried.set(index, copy)
+  })
+  return rows.map(({ row, tied, removals, location }, index) => {
+    const countered = carried.get(index)
+    const claim = countered === undefined ? removals.find(key => claims.get(key)! > 0) : undefined
+    if (claim) claims.set(claim, claims.get(claim)! - 1)
+    const link = claim?.split("|")[0] ?? tied[0]?.id
     return { id: `P${index + 1}`, kind: row.type === "insert" ? "inserted" : "deleted", text: row.text.replace(/¶$/, ""), author: row.author,
-      outcome: count > 0 ? "pending" : reversal ? "undone" : "accepted", ...reversal && { untracked: reversal.id },
-      location: block ? { ...block.location, side: "left" } : { scope: scopeOf(row.scope), paragraph: 0, side: "left" } }
+      outcome: countered !== undefined ? countered ? "countered" : "pending" : claim ? "rejected" : "accepted", ...link && { untracked: link }, location }
   })
 }
 

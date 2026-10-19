@@ -186,14 +186,14 @@ test("a return with tracked changes discloses them and lists only the untracked 
 })
 
 test("format=json carries the library's outcome for each of left's tracked proposals unchanged", async () => {
-  // Left tracks Pat's insertion; right is plain text without it, so it was undone without tracking.
+  // Left tracks Pat's insertion; right is plain text without it, so it was rejected without tracking.
   const result = await (await compare({ left: TRACKED, right: RETURNED, format: "json" })).json() as Comparison
   const read = (name: string) => readFile(path.join(matter.dir, name)).then(bytes => new Uint8Array(bytes))
   const direct = await compareVersions({ bytes: await read(TRACKED), label: "Tracked return" }, { bytes: await read(RETURNED), label: "Returned draft" },
     { ignoreFormatting: true, detectMoves: true, headersFooters: true }, new Date().toISOString())
   expect(result.proposals).toEqual(direct.proposals)
   const reversed = result.untracked.find(hunk => hunk.before === `${NOTICES} Email counts as writing.`)!
-  expect(result.proposals).toEqual([{ id: "P1", kind: "inserted", text: " Email counts as writing.", author: "Pat Reviewer", outcome: "undone",
+  expect(result.proposals).toEqual([{ id: "P1", kind: "inserted", text: " Email counts as writing.", author: "Pat Reviewer", outcome: "rejected",
     untracked: reversed.id, location: { scope: "body", paragraph: 5, side: "left" } }])
 })
 

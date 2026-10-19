@@ -226,8 +226,8 @@ test("an untracked edit beside our pending proposal in the same paragraph flags 
   expect(result.untracked.map(({ kind, before, after }) => ({ kind, before, after }))).toEqual([{ kind: "modified", before: C.d12 + OURS, after: working + OURS }])
 })
 
-test("each of our pending proposals is reported as accepted, undone without tracking or still pending, in document order", async () => {
-  // Ours: an insertion they accepted as plain text, a deletion they undid
+test("each of our pending proposals is reported as accepted, rejected without tracking or still pending, in document order", async () => {
+  // Ours: an insertion they accepted as plain text, a deletion they rejected
   // without tracking and an insertion they kept pending. Theirs: Pat's tracked
   // change and one planted untracked edit.
   const LATER = " Invoices are issued monthly."
@@ -243,9 +243,91 @@ test("each of our pending proposals is reported as accepted, undone without trac
     { id: "U1", before: C.d13a, after: C.d13a + C.d13b }, { id: "U2", before: C.p21, after: C.p21.replace("30 days", "45 days") }])
   expect(result.proposals).toEqual([
     { id: "P1", kind: "inserted", text: INSERTED, author: US.author, outcome: "accepted", location: { scope: "body", paragraph: 4, side: "left", heading: C.h1 } },
-    { id: "P2", kind: "deleted", text: C.d13b, author: US.author, outcome: "undone", untracked: "U1", location: { scope: "body", paragraph: 6, side: "left", heading: C.h1 } },
+    { id: "P2", kind: "deleted", text: C.d13b, author: US.author, outcome: "rejected", untracked: "U1", location: { scope: "body", paragraph: 6, side: "left", heading: C.h1 } },
     { id: "P3", kind: "inserted", text: LATER, author: US.author, outcome: "pending", location: { scope: "body", paragraph: 10, side: "left", heading: C.h2 } },
   ])
+})
+
+// Outcome, untracked link and paragraph of each proposal.
+const fates = (proposals: { id: string; outcome: string; untracked?: string; location: { paragraph: number } }[]) =>
+  proposals.map(({ id, outcome, untracked, location }) => ({ id, outcome, untracked, paragraph: location.paragraph }))
+
+test("identical proposals in two paragraphs each take the outcome of their own paragraph", async () => {
+  const TWIN = " Notice may be given by email."
+  const left = body(), right = body()
+  left[3] = para(run(C.d11) + ins(TWIN, US))
+  left[4] = para(run(C.d12) + ins(TWIN, US))
+  right[4] = para(run(C.d12) + ins(TWIN, US))
+  const result = await compare(sent(left), sent(right))
+  expect(result.untracked.map(({ id, before, after }) => ({ id, before, after }))).toEqual([{ id: "U1", before: C.d11 + TWIN, after: C.d11 }])
+  expect(fates(result.proposals)).toEqual([
+    { id: "P1", outcome: "rejected", untracked: "U1", paragraph: 4 }, { id: "P2", outcome: "pending", untracked: undefined, paragraph: 5 }])
+})
+
+test("a short accepted insertion is not tied to an untracked edit of the same word elsewhere", async () => {
+  const left = body(), right = body()
+  left[9] = para(run("2.3 All amounts are") + ins(" not", US) + run(C.p23.slice("2.3 All amounts are".length)))
+  right[9] = p(C.p23.replace("are", "are not"))
+  right[5] = p(C.d13a + C.d13b.replace(" not", ""))
+  const result = await compare(sent(left), sent(right))
+  expect(result.untracked.map(hunk => [hunk.before, hunk.after])).toEqual([[C.d13a + C.d13b, C.d13a + C.d13b.replace(" not", "")]])
+  expect(fates(result.proposals)).toEqual([{ id: "P1", outcome: "accepted", untracked: undefined, paragraph: 10 }])
+})
+
+test("an inserted party name removed without tracking is rejected though the paragraph still names that party", async () => {
+  const before = "2.5 Each party shall bear its own costs, and the filing fees of Contoso LLC are shared by Northwind Ltd and"
+  const left = body(), right = body()
+  left[11] = para(run(before) + ins(" Contoso LLC", US) + run("."))
+  right[11] = p(`${before}.`)
+  const result = await compare(sent(left), sent(right))
+  expect(result.untracked.map(({ id, after }) => ({ id, after }))).toEqual([{ id: "U1", after: `${before}.` }])
+  expect(fates(result.proposals)).toEqual([{ id: "P1", outcome: "rejected", untracked: "U1", paragraph: 12 }])
+})
+
+test("an accepted proposal whose paragraph has another untracked edit links that edit", async () => {
+  const left = body(), right = body()
+  left[3] = para(run(C.d11) + ins(INSERTED, US))
+  right[3] = p(C.d11.replace("consulting", "advisory") + INSERTED)
+  const result = await compare(sent(left), sent(right))
+  expect(result.untracked.map(({ id, after }) => ({ id, after }))).toEqual([{ id: "U1", after: C.d11.replace("consulting", "advisory") + INSERTED }])
+  expect(fates(result.proposals)).toEqual([{ id: "P1", outcome: "accepted", untracked: "U1", paragraph: 4 }])
+})
+
+test("a paragraph deletion restored without tracking is rejected, and proposals below it count paragraphs as the hunks do", async () => {
+  // Ours: a whole-paragraph deletion of 1.3 and an insertion in 2.2. Theirs,
+  // untracked: 1.3 restored and 2.2 removed.
+  const mark = `<w:rPr><w:del w:id="${revisionId++}" w:author="${US.author}" w:date="${US.date}"/></w:rPr>`
+  const left = body(), right = body()
+  left[5] = para(del(C.d13a + C.d13b, US), mark)
+  left[8] = para(run(C.p22) + ins(INSERTED, US))
+  right.splice(8, 1)
+  const result = await compare(sent(left), sent(right))
+  const restored = result.untracked.find(hunk => hunk.kind === "inserted")!, removed = result.untracked.find(hunk => hunk.kind === "deleted")!
+  expect([restored.after, removed.before]).toEqual([C.d13a + C.d13b, C.p22 + INSERTED])
+  expect(result.proposals.map(({ id, kind, text, outcome, untracked, location }) => ({ id, kind, text, outcome, untracked, location }))).toEqual([
+    { id: "P1", kind: "deleted", text: C.d13a + C.d13b, outcome: "rejected", untracked: restored.id, location: { scope: "body", paragraph: 6, side: "left", heading: C.h1 } },
+    { id: "P2", kind: "inserted", text: INSERTED, outcome: "rejected", untracked: removed.id, location: removed.location },
+  ])
+  expect(removed.location).toEqual({ scope: "body", paragraph: 8, side: "left", heading: C.h2 })
+})
+
+test("a whitespace-only proposal is not listed", async () => {
+  const left = body()
+  left[3] = para(run(C.d11) + ins(" ", US))
+  expect((await compare(sent(left), sent())).proposals).toEqual([])
+})
+
+test("a proposal still carried but struck or restored by their own tracked change is countered", async () => {
+  const left = body(), right = body()
+  left[7] = para(run("2.1 The Customer shall pay the Fees within ") + ins("30", US) + run(C.p21.slice("2.1 The Customer shall pay the Fees within 30".length)))
+  left[5] = para(run(C.d13a) + del(C.d13b, US))
+  right[7] = para(run("2.1 The Customer shall pay the Fees within ") + `<w:ins w:id="${revisionId++}" w:author="${US.author}" w:date="${US.date}">${del("30")}</w:ins>`
+    + run(C.p21.slice("2.1 The Customer shall pay the Fees within 30".length)))
+  right[5] = para(run(C.d13a) + del(C.d13b, US) + ins(C.d13b))
+  const result = await compare(sent(left), sent(right))
+  expect(result.untracked).toEqual([])
+  expect(fates(result.proposals)).toEqual([
+    { id: "P1", outcome: "countered", untracked: undefined, paragraph: 6 }, { id: "P2", outcome: "countered", untracked: undefined, paragraph: 8 }])
 })
 
 test("revisions are re-attributed only when unambiguous: identical text by two reviewers keeps the side label", async () => {
