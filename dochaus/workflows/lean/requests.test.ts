@@ -141,7 +141,7 @@ for (let i = 0; i < 20; i++) enqueueLeanRequest(process.argv[1], { kind: "contin
   }, 120_000)
 })
 
-test("a chat update during review persists and reopens earlier work before changes are applied", async () => {
+test("a chat update during review persists and reopens the review, not the accepted draft, before changes are applied", async () => {
   const directory = matter()
   const text = "Use concise headings throughout the document."
   let queued = false
@@ -157,9 +157,9 @@ test("a chat update during review persists and reopens earlier work before chang
   expect(result.status).toBe("completed")
   expect(model.count(AGENT.review)).toBe(2)
   const outlines = model.prompts.filter(p => p.agent === AGENT.draft && p.text.includes("Reply now with the outline"))
-  expect(outlines).toHaveLength(2)
+  expect(outlines).toHaveLength(1)
   expect(outlines[0]!.text).not.toContain(text)
-  expect(outlines[1]!.text).toContain(text)
+  expect(model.prompts.filter(p => p.agent === AGENT.review).at(-1)!.text).toContain(text)
   for (const agent of [AGENT.changes, AGENT.finalize])
     expect(model.prompts.find(p => p.agent === agent)!.text).toContain(text)
   expect(readLeanText(directory, "updated-notes.md")).toContain(text)

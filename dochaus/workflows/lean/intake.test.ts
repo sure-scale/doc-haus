@@ -3,7 +3,7 @@ import { readParagraphs } from "./checks"
 import { enqueueLeanRequest } from "./requests"
 import { runLean } from "./runner"
 import { readLeanText, readQuestions, writeLeanText, writeQuestions } from "./state"
-import { AGENT, DRAFT, cleanupMatters, drafter, happyPath, matter, noChanges, scriptedModel } from "./test-support"
+import { AGENT, DRAFT, cleanupMatters, drafter, happyPath, matter, noChanges, pidOf, scriptedModel } from "./test-support"
 
 afterEach(cleanupMatters)
 
@@ -55,16 +55,14 @@ test("an already answered intake question gets correction feedback instead of be
   expect(readQuestions(directory)).toEqual([expect.objectContaining({ id: "q-existing", status: "answered" })])
 }, 120_000)
 
-test("a changed answer during review rebuilds the outline, draft and review before delivery", async () => {
+test("a changed answer during review re-runs the review and reaches the accepted draft as an amendment before delivery", async () => {
   const directory = matter()
   writeQuestions(directory, [{ id: "q-law", stage: "draft", question: "Which law should govern?", context: "Legal basis.", status: "answered", answer: "England and Wales law." }])
+  const DRAFTED = "This note is governed by England and Wales law."
+  const AMENDED = "This note is governed by Singapore law."
   let changed = false
-  let law = "England and Wales"
   const model = scriptedModel({ ...quiet,
-    [AGENT.draft]: (prompt, index) => {
-      if (prompt.includes("<answers>")) law = prompt.includes("Singapore law.") ? "Singapore" : "England and Wales"
-      return drafter(`# Supply note\n\n## Governing law\n\nThis note is governed by ${law} law.\n`)(prompt, index)
-    },
+    [AGENT.draft]: drafter(`# Supply note\n\n## Governing law\n\n${DRAFTED}\n`),
     [AGENT.review]: () => {
       if (!changed) {
         changed = true
@@ -72,12 +70,14 @@ test("a changed answer during review rebuilds the outline, draft and review befo
       }
       return "No changes needed."
     },
+    [AGENT.changes]: (prompt, index) => prompt.includes("Singapore law.") ? JSON.stringify({ amendments: [{ pid: pidOf(prompt, DRAFTED), updated: AMENDED,
+      reason: "Follows the lawyer's answer on governing law.", sources: [{ source_id: "request", quote: "Singapore law." }] }], questions: [] }) : noChanges(prompt, index),
   })
   expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
   expect(model.count(AGENT.review)).toBe(2)
+  // The draft accepted before the answer changed is kept; the answer reaches it through its review and changes.
   const outlines = model.prompts.filter(row => row.agent === AGENT.draft && row.text.includes("Reply now with the outline"))
-  expect(outlines).toHaveLength(2)
-  expect(outlines[1]!.text).toContain("Singapore law.")
-  expect(outlines[1]!.text).not.toContain("England and Wales law.")
-  expect(readParagraphs(directory, "d1", "paragraphs-applied.json").some(row => row.text === "This note is governed by Singapore law.")).toBe(true)
+  expect(outlines).toHaveLength(1)
+  expect(readParagraphs(directory, "d1").map(row => row.text)).toContain(DRAFTED)
+  expect(readParagraphs(directory, "d1", "paragraphs-applied.json").some(row => row.text === AMENDED)).toBe(true)
 }, 120_000)

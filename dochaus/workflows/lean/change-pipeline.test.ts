@@ -240,6 +240,17 @@ test("initial-draft projection requires one replacement/pid while legacy checker
   keys.forEach((key, index) => expect(stageInputSha(directory, key)).not.toBe(original[index]))
 }, 120_000)
 
+test("a saved change list that addresses a paragraph the accepted draft lacks is refused by projection, the checker and the output check", async () => {
+  const directory = matter()
+  expect((await runLean(directory, { sessions: scriptedModel(replies()).port })).status).toBe("completed")
+  const list = readChangeList(directory, "d1")!
+  const stale = JSON.stringify({ ...list, amendments: [{ ...list.amendments[0], pid: "p222222222222" }] })
+  writeLeanText(directory, "d1/changes.json", stale)
+  expect(() => projectedChangeParagraphs(directory, "d1")).toThrow("unknown initial paragraph")
+  expect(checkChanges(directory, stale, readParagraphs(directory, "d1"), { document: "d1" }).issues.join(" ")).toContain("not a paragraph")
+  expect(stageOutputValid(directory, "d1.changes")).toBe(false)
+}, 120_000)
+
 test("essential new authority issue from projected review revisits research before amendment work", async () => {
   const directory = matter()
   const model = scriptedModel({ ...replies(), [AGENT["change-review"]]: (_, index) => JSON.stringify(index ? { status: "pass", findings: [], limitations: [] } : {

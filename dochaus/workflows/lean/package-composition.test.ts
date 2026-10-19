@@ -110,14 +110,15 @@ describe("a requested memo in the body stages' context", () => {
       expect([stage, withMemo[stage].replace(`\n\n${BLOCK}`, "").replace(`\n${REVIEW_MEMO}`, "").replace(`\n${CHANGES_MEMO}`, "")]).toEqual([stage, withoutMemo[stage]])
   })
 
-  test("stage inputs carry both flags for every body stage, and only when a memo is requested", () => {
+  test("stage inputs carry both flags for every body stage after the accepted draft, and only when a memo is requested", () => {
     const directory = matter()
     writeLeanPlan(directory, [SCHEDULE, COMBINED_NOTE], undefined, undefined, MEMO)
-    const steps = (["d1", "d2"] as const).flatMap(document => BODY_STAGES.map(stage => `${document}.${stage}` as StepID))
+    // A draft is keyed on the outline contract alone; its prompt still carries the block.
+    const steps = (["d1", "d2"] as const).flatMap(document => BODY_STAGES.filter(stage => stage !== "draft").map(stage => `${document}.${stage}` as StepID))
     const withMemo = new Map(steps.map(step => [step, stageInputs(directory, step)]))
     for (const step of steps)
       expect([step, composition(directory, step)]).toEqual([step, [{ name: "package-composition", bytes: step.startsWith("d2.") ? COMBINED_BLOCK : BLOCK }]])
-    for (const step of ["d1.apply", "d2.apply", "finalize", "package-review", "gate"] as StepID[]) expect([step, composition(directory, step)]).toEqual([step, []])
+    for (const step of ["d1.draft", "d2.draft", "d1.apply", "d2.apply", "finalize", "package-review", "gate"] as StepID[]) expect([step, composition(directory, step)]).toEqual([step, []])
 
     // The combined flag is its own input: the same memo with d2 as a plain body rekeys d2's stages only.
     writeLeanPlan(directory, [SCHEDULE, NOTE], undefined, undefined, MEMO)

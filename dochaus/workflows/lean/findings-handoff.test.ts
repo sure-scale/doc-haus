@@ -70,14 +70,14 @@ test("admission is causal for evidence, scope, uncertainty and duplicate disposi
   expect(checkChangePlan(directory, "d1", plan())).toEqual([])
 })
 
-test("changed dispositions invalidate dependent consumers while leaving earlier drafting stable", () => {
+test("changed dispositions invalidate dependent consumers while leaving every draft stable", () => {
   const directory = setup()
   const steps = ["d1.draft", "d2.draft", "d2.review", "d2.change-plan", "finalize", "package-review", "gate"] as const
   const before = steps.map(step => stageInputSha(directory, step))
   const amended = plan()
   amended.findings![2].reason = "Explain this as a reminder option without altering the operative period."
   expect(acceptChangePlan(directory, "d1", JSON.stringify(amended)).issues).toEqual([])
-  expect(steps.map((step, index) => stageInputSha(directory, step) !== before[index])).toEqual([false, true, true, true, true, true, true])
+  expect(steps.map((step, index) => stageInputSha(directory, step) !== before[index])).toEqual([false, false, true, true, true, true, true])
 })
 
 test("legacy dismissal retains review navigation without being treated as evidence-backed rejection", () => {

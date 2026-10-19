@@ -289,7 +289,8 @@ describe("questions for the lawyer", () => {
     enqueueLeanRequest(directory, { kind: "answer", question_id: question!.id, answer: "No remedy." })
     const answered = scriptedModel({ ...happyPath, [AGENT.changes]: asking("Is a remedy for late delivery wanted?", true) })
     const state = await runLean(directory, { sessions: answered.port })
-    expect(answered.counts()).toEqual([3, 1, 1, 1])
+    // The answer reaches the accepted draft through its review and changes; no redraft.
+    expect(answered.counts()).toEqual([0, 1, 1, 1])
     expect(state.status).toBe("completed")
     expect(readQuestions(directory)).toEqual([expect.objectContaining({ id: question!.id, status: "answered", answer: "No remedy." })])
     expect(gateOf(directory)).toMatchObject({ status: "pass", delivery: "execution_ready" })
