@@ -211,3 +211,19 @@ describe("Session.view", () => {
     }),
   )
 })
+
+describe("Session idle record", () => {
+  it.effect("keeps a failed execution's typed error, also when no reply was written", () =>
+    Effect.gen(function* () {
+      const session = yield* Session.Service
+      const bus = yield* Bus.Service
+      const created = yield* session.create({ location })
+      const error = { type: "provider.no-route", message: "Model unavailable" }
+      yield* bus.publish(SessionEvent.Execution.Failed, { sessionID: created.id, error })
+      expect((yield* session.messages({ sessionID: created.id })).findLast((message) => message.type === "idle")).toMatchObject({
+        outcome: "failed",
+        error,
+      })
+    }),
+  )
+})
