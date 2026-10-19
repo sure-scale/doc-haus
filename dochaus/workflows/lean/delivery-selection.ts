@@ -81,16 +81,19 @@ export function deliveryRowRefusal(directory: string, selection: unknown, docume
   return { refusal: "not_quoted", issue: NOT_QUOTED }
 }
 
-/** Whether the lawyer's words give `file`, a Word file name, as a name, by the
- * checks a row's name passes on its quote (deliveryNameQuoted,
- * quotedOrTitled), or by the name itself, spelled with its extension, in the
- * lawyer's words; whatever else refuses its row. A name's surrounding spaces
- * aside. Code only, never a prompt. */
-export function deliveryNameGrounded(directory: string, quote: unknown, file: unknown) {
-  if (typeof file !== "string" || !/\.docx$/i.test(file.trim())) return false
+/** The lawyer's spelling of `file`, a Word file name, when the instruction its
+ * row quotes gives it as a name: by the checks a row's name passes on its
+ * quote (deliveryNameQuoted, quotedOrTitled), but with case and the name's
+ * surrounding spaces aside; whatever else refuses its row. A name the lawyer's
+ * words only mention, outside such an instruction, is not one they asked for.
+ * Code only, never a prompt. */
+export function deliveryNameAsked(directory: string, quote: unknown, file: unknown): string | undefined {
+  if (typeof file !== "string" || typeof quote !== "string" || !/\.docx$/i.test(file.trim()) || !instructionFound(directory, quote)) return
   const name = file.trim()
-  if (typeof quote === "string" && instructionFound(directory, quote) && (deliveryNameQuoted(directory, quote, name) || quotedOrTitled(quote, name))) return true
-  return deliveryNameQuoted(directory, name, name)
+  const key = normalize(name).toLocaleLowerCase()
+  for (const raw of lawyerWords(directory))
+    for (const spelled of spelledNames(raw, quote, name.slice(0, -5), ".docx")) if (normalize(spelled).toLocaleLowerCase() === key) return spelled
+  return quotedOrTitled(quote, name) ? name : undefined
 }
 
 const NOT_QUOTED = "Delivery instruction_quote must quote the lawyer's actual instructions naming that output file or explicitly titling the Word output with its exact basename. Quote the actual naming instruction; source titles and input filenames do not themselves establish output intent. For an explicitly titled Word output, add only .docx to that title; do not guess, shorten or rename it. When the lawyer's words give that output no file name or explicit title, return no delivery row for it."
