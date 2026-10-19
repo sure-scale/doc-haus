@@ -1,7 +1,7 @@
 import { leanClarifications } from "./requests"
 import { reviewDispositionText } from "./change-pipeline"
 import { boundPlaybookContext } from "../../lib/playbook-source"
-import { checkDeliverySelections, type DeliverySelection } from "./delivery-selection"
+import { checkDeliverySelections, deliverySelectionIssues, type DeliverySelection } from "./delivery-selection"
 import { appliedChangeEvidence, nativeExportEvidence } from "./review-evidence"
 import { comparisonDescription } from "./comparison"
 import { combinedDelivery, deliveryArtifactEvidence, requestedMemo } from "./deliverables"
@@ -76,6 +76,31 @@ export function checkPackageReview(directory: string, value: unknown): string[] 
   if (row.status === "pass" && row.findings.length) issues.push("A pass cannot contain unresolved correction findings; use changes-required.")
   if (row.status === "changes-required" && !row.findings.length) issues.push("State the material correction needed in findings.")
   return issues
+}
+
+/** On the last attempt, delivery rows the check still refuses are withheld
+ * rather than failing the run, as the changes stage withholds unverified
+ * amendments: delivery only names existing artifacts, so without a row the
+ * planned name stands. A row refused on its own is dropped; if the rows left
+ * still conflict with each other, all are. Each dropped row is recorded as a
+ * limitation of the saved review, not as an open item: a name the lawyer's words
+ * do give reaches the plan through the files job, which discloses one it cannot
+ * place (requestedFilesItems). Status and findings are never changed, so a
+ * reply whose other parts fail the check still fails. */
+export function withholdUngroundedDelivery(directory: string, value: Record<string, unknown>): Record<string, unknown> {
+  const { delivery, limitations } = value
+  if (!Array.isArray(delivery) || !Array.isArray(limitations)) return value
+  const documents = readLeanPlan(directory)?.documents ?? []
+  const grounded = delivery.filter(row => !deliverySelectionIssues(directory, row, documents).length)
+  const kept = checkDeliverySelections(directory, grounded).length ? [] : grounded
+  if (kept.length === delivery.length) return value
+  const named = (row: unknown) => {
+    const file = row && typeof row === "object" ? (row as { file?: unknown }).file : undefined
+    return typeof file === "string" && file.trim() ? file.trim() : "A delivery selection without a file name"
+  }
+  return { ...value, delivery: kept, limitations: [...limitations, ...delivery.filter(row => !kept.includes(row)).map(row => grounded.includes(row)
+    ? `${named(row)}: conflicts with another delivery selection; the planned name stands`
+    : `${named(row)}: no naming instruction in the lawyer's words; the planned name stands`)] }
 }
 
 export function readPackageReview(directory: string): PackageReview | undefined {

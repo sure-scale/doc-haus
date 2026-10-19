@@ -6,7 +6,7 @@ import { checklistItemSchema, type ChecklistFinding, type ChecklistItem } from "
 import { classifyChecklistFinding, type ChecklistFindingClass } from "./checklist-classify"
 import { acceptChangePlan, acceptChangeReview, preparationOutputValid, readChangePlan, readChangeReview, deferredFindingItems, reviewDispositionText, uniqueReplacementIssues } from "./change-pipeline"
 import { comparisonBasis } from "./comparison"
-import { checkPackageReview, readPackageReview } from "./package-review"
+import { checkPackageReview, readPackageReview, withholdUngroundedDelivery } from "./package-review"
 import { coverageItems, planCoverageCurrent } from "./package-coverage"
 import { requestedFilesItems } from "./requested-files"
 import { DELIVERED_NOTES, requestedMemo } from "./deliverables"
@@ -17,7 +17,7 @@ import { existsSync, readFileSync } from "node:fs"
 import { ensureParagraphPointers, paragraphSha256 } from "../../lib/drafting-amendment"
 import { renderMarkdownToDocx } from "../../lib/render"
 import { presentDraft, type DraftPresentation } from "./draft-presentation"
-import { checkChanges } from "./change-checks"
+import { checkChanges, parseJsonObject } from "./change-checks"
 import {
   checkDraft,
   finalBodyParagraphs,
@@ -299,10 +299,12 @@ export async function acceptStageReply(directory: string, step: StepID, reply: s
   const stage = stepStage(step)
   const document = stepDocument(step) ?? FIRST_DOCUMENT
   if (stage === "package-review") {
-    let value: unknown
-    try { value = JSON.parse(reply.trim().replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "")) } catch {
-      return { issues: ["Reply with the package review JSON only."], outputs: [], openItems: [] }
-    }
+    // A prose preamble before the one object costs no attempt.
+    const parsed = parseJsonObject(reply)
+    if (!parsed.ok) return { issues: ["Reply with the package review JSON only."], outputs: [], openItems: [] }
+    // On the last attempt a delivery row the check still refuses is withheld,
+    // with a limitation, and the planned name stands; earlier attempts retry it.
+    const value = options.final ? withholdUngroundedDelivery(directory, parsed.value) : parsed.value
     const issues = checkPackageReview(directory, value)
     if (issues.length) return { issues, outputs: [], openItems: [] }
     writeLeanText(directory, "package-review.json", `${JSON.stringify(value, null, 2)}\n`)

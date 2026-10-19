@@ -10,27 +10,7 @@ export type DeliverySelection = ({ document: DocID; role: "body" | "redline" } |
 export function checkDeliverySelections(directory: string, value: unknown): string[] {
   if (!Array.isArray(value)) return ["Return delivery as an array of user-grounded artifact selections, empty when no output filename was requested."]
   const documents = readLeanPlan(directory)?.documents ?? []
-  const issues = value.flatMap((selection): string[] => {
-    if (!selection || typeof selection !== "object" || Array.isArray(selection)) return ["Each delivery selection needs document, role, file and instruction_quote."]
-    const row = selection as Partial<DeliverySelection>
-    if (row.role === "drafting_notes") {
-      if (row.document !== null) return ["The run's drafting_notes artifact requires document null."]
-    } else {
-      if (!documents.some(document => document.id === row.document)) return ["Delivery selection must name an existing final document id."]
-      if (row.role !== "body" && row.role !== "redline") return ["Delivery role must be body, redline or drafting_notes; select an existing artifact without changing its content or comparison source."]
-    }
-    if (typeof row.file !== "string" || !/^[^\\/:*?"<>|`\x00-\x1f]+\.docx$/i.test(row.file) || row.file !== row.file.trim()) return ["Delivery file must be the requested Word filename, without a folder path."]
-    if (typeof row.instruction_quote !== "string" || !instructionFound(directory, row.instruction_quote)) return [NOT_QUOTED]
-    // A name the quote spells with its extension, or one the earlier check
-    // accepted, is a name, even in format words: package review is never
-    // stricter than before.
-    if (deliveryNameQuoted(directory, row.instruction_quote, row.file) || quotedOrTitled(row.instruction_quote, row.file)) return []
-    // A format the lawyer's words ask for, or a name in another format, is no file to select.
-    const stem = row.file.slice(0, -5)
-    if (formatStem(stem) || OTHER_FORMAT.test(stem))
-      return [`Delivery file "${row.file}" names a format, not a file. Words that ask only for a format give no file name; return no delivery row for them.`]
-    return [NOT_QUOTED]
-  })
+  const issues = value.flatMap(selection => deliverySelectionIssues(directory, selection, documents))
   if (issues.length) return issues
   const rows = value as DeliverySelection[]
   if (new Set(rows.map(row => row.document)).size !== rows.length) issues.push("The plan supports one named primary artifact per document and one name for the run's notes. Report conflicting or additional requested outputs as a package finding rather than choosing silently.")
@@ -64,7 +44,33 @@ export function checkDeliverySelections(directory: string, value: unknown): stri
   return [...issues, ...messages]
 }
 
-const NOT_QUOTED = "Delivery instruction_quote must quote the lawyer's actual instructions naming that output file or explicitly titling the Word output with its exact basename. Quote the actual naming instruction; source titles and input filenames do not themselves establish output intent. For an explicitly titled Word output, add only .docx to that title; do not guess, shorten or rename it."
+/** The checks of one delivery row on its own: its shape, an existing document
+ * and role, a bare Word filename, and a name the lawyer's quoted words give.
+ * Rows that pass them may still conflict with each other
+ * (checkDeliverySelections). */
+export function deliverySelectionIssues(directory: string, selection: unknown, documents: PlannedDocument[] = readLeanPlan(directory)?.documents ?? []): string[] {
+  if (!selection || typeof selection !== "object" || Array.isArray(selection)) return ["Each delivery selection needs document, role, file and instruction_quote."]
+  const row = selection as Partial<DeliverySelection>
+  if (row.role === "drafting_notes") {
+    if (row.document !== null) return ["The run's drafting_notes artifact requires document null."]
+  } else {
+    if (!documents.some(document => document.id === row.document)) return ["Delivery selection must name an existing final document id."]
+    if (row.role !== "body" && row.role !== "redline") return ["Delivery role must be body, redline or drafting_notes; select an existing artifact without changing its content or comparison source."]
+  }
+  if (typeof row.file !== "string" || !/^[^\\/:*?"<>|`\x00-\x1f]+\.docx$/i.test(row.file) || row.file !== row.file.trim()) return ["Delivery file must be the requested Word filename, without a folder path."]
+  if (typeof row.instruction_quote !== "string" || !instructionFound(directory, row.instruction_quote)) return [NOT_QUOTED]
+  // A name the quote spells with its extension, or one the earlier check
+  // accepted, is a name, even in format words: package review is never
+  // stricter than before.
+  if (deliveryNameQuoted(directory, row.instruction_quote, row.file) || quotedOrTitled(row.instruction_quote, row.file)) return []
+  // A format the lawyer's words ask for, or a name in another format, is no file to select.
+  const stem = row.file.slice(0, -5)
+  if (formatStem(stem) || OTHER_FORMAT.test(stem))
+    return [`Delivery file "${row.file}" names a format, not a file. Words that ask only for a format give no file name; return no delivery row for them.`]
+  return [NOT_QUOTED]
+}
+
+const NOT_QUOTED = "Delivery instruction_quote must quote the lawyer's actual instructions naming that output file or explicitly titling the Word output with its exact basename. Quote the actual naming instruction; source titles and input filenames do not themselves establish output intent. For an explicitly titled Word output, add only .docx to that title; do not guess, shorten or rename it. When the lawyer's words give that output no file name or explicit title, return no delivery row for it."
 const DISTINCT_FILES = "Distinct named primary artifacts need distinct filenames. Report a conflicting naming instruction as a package finding."
 
 function distinctFiles(rows: DeliverySelection[]) {

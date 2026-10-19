@@ -1,11 +1,85 @@
 import { afterEach, expect, test } from "bun:test"
-import { checkPackageReview, packageReviewPrompt } from "./package-review"
+import { checkPackageReview, packageReviewPrompt, readPackageReview } from "./package-review"
 import { writeLeanPlan } from "./plan"
 import { stagePrompt } from "./prompts"
-import { writeLeanText } from "./state"
+import { acceptStageReply } from "./stages"
+import { readLeanText, writeLeanText } from "./state"
 import { cleanupMatters, matter } from "./test-support"
 
 afterEach(cleanupMatters)
+
+// The lawyer's words name no file and give no title: a row that gives a
+// planned title plus .docx names nothing the lawyer asked for.
+const REQUEST = "Prepare a supply note from the supply terms, together with a short covering letter on the points to resolve before signing."
+const UNGROUNDED = [
+  { document: "d1", role: "body", file: "Supply note.docx", instruction_quote: "Prepare a supply note from the supply terms" },
+  { document: "d2", role: "body", file: "Covering letter.docx", instruction_quote: "together with a short covering letter on the points to resolve before signing" },
+]
+const withheld = (file: string) => `${file}: no naming instruction in the lawyer's words; the planned name stands`
+function twoDocuments(request = REQUEST) {
+  const directory = matter()
+  writeLeanText(directory, "request.md", request)
+  writeLeanPlan(directory, [{ title: "Supply note", purpose: "Operative terms", parts: [{ heading: "Terms", scope: "Preserve" }] },
+    { title: "Covering letter", purpose: "Points to resolve", parts: [{ heading: "Points", scope: "List" }] }])
+  return directory
+}
+const review = (delivery: unknown[], extra: Record<string, unknown> = {}) =>
+  JSON.stringify({ status: "pass", findings: [], limitations: ["A disclosed gap."], delivery, ...extra })
+
+test("an ungrounded delivery rename is retried before the last attempt and withheld on it, the planned names standing", async () => {
+  const directory = twoDocuments()
+  const retried = await acceptStageReply(directory, "package-review", review(UNGROUNDED))
+  expect(retried.outputs).toEqual([])
+  expect(retried.issues).toHaveLength(2)
+  for (const issue of retried.issues) expect(issue).toEndWith("When the lawyer's words give that output no file name or explicit title, return no delivery row for it.")
+  expect(readLeanText(directory, "package-review.json")).toBeUndefined()
+  const last = await acceptStageReply(directory, "package-review", review(UNGROUNDED), { final: true })
+  expect(last).toEqual({ issues: [], outputs: ["package-review.json"], openItems: [] })
+  expect(readPackageReview(directory)).toEqual({ status: "pass", findings: [], delivery: [],
+    limitations: ["A disclosed gap.", withheld("Supply note.docx"), withheld("Covering letter.docx")] })
+})
+
+test("on the last attempt a grounded delivery row still applies beside a withheld one", async () => {
+  const directory = twoDocuments(`${REQUEST} Save the covering letter as Points to resolve.docx.`)
+  const grounded = { document: "d2", role: "body", file: "Points to resolve.docx", instruction_quote: "Save the covering letter as Points to resolve.docx" } as const
+  expect((await acceptStageReply(directory, "package-review", review([UNGROUNDED[0], grounded]))).issues).toHaveLength(1)
+  expect((await acceptStageReply(directory, "package-review", review([UNGROUNDED[0], grounded]), { final: true })).issues).toEqual([])
+  expect(readPackageReview(directory)).toEqual({ status: "pass", findings: [], delivery: [grounded], limitations: ["A disclosed gap.", withheld("Supply note.docx")] })
+  expect((await acceptStageReply(directory, "package-review", review([grounded]), { final: true })).issues).toEqual([])
+  expect(readPackageReview(directory)).toEqual({ status: "pass", findings: [], delivery: [grounded], limitations: ["A disclosed gap."] })
+})
+
+test("grounded delivery rows that still conflict on the last attempt leave the planned names, never the review's findings", async () => {
+  const directory = twoDocuments(`${REQUEST} Save the supply note as Supply terms.docx.`)
+  const grounded = { document: "d1", role: "body", file: "Supply terms.docx", instruction_quote: "Save the supply note as Supply terms.docx" }
+  // Two names for one document are a conflict across rows, not an ungrounded row.
+  const twice = [grounded, { ...grounded, role: "redline" }]
+  expect((await acceptStageReply(directory, "package-review", review(twice))).issues.join(" ")).toContain("one named primary artifact")
+  const findings = [{ target: "memo", detail: "The notes misdescribe the delivery period." }]
+  expect((await acceptStageReply(directory, "package-review", review(twice, { status: "changes-required", findings }), { final: true })).issues).toEqual([])
+  const saved = readPackageReview(directory)
+  expect(saved).toMatchObject({ status: "changes-required", findings, delivery: [] })
+  expect(saved?.limitations).toHaveLength(3)
+  expect(saved?.limitations.slice(1)).toEqual(Array(2).fill("Supply terms.docx: conflicts with another delivery selection; the planned name stands"))
+})
+
+test("the last attempt never drops a finding or changes the status to pass the check", async () => {
+  const directory = twoDocuments()
+  const findings = [{ target: "memo", detail: "The notes misdescribe the delivery period." }]
+  const last = await acceptStageReply(directory, "package-review", review(UNGROUNDED, { findings }), { final: true })
+  expect(last.issues).toEqual(["A pass cannot contain unresolved correction findings; use changes-required."])
+  expect(readLeanText(directory, "package-review.json")).toBeUndefined()
+  expect((await acceptStageReply(directory, "package-review", review(UNGROUNDED, { status: "changes-required", findings }), { final: true })).issues).toEqual([])
+  expect(readPackageReview(directory)).toMatchObject({ status: "changes-required", findings, delivery: [] })
+})
+
+test("a prose preamble before one package review object does not cost an attempt", async () => {
+  const directory = twoDocuments()
+  const accepted = await acceptStageReply(directory, "package-review", `Based on my review of the package, here is my assessment.\n\n${review([])}`)
+  expect(accepted.issues).toEqual([])
+  expect(readPackageReview(directory)).toEqual({ status: "pass", findings: [], limitations: ["A disclosed gap."], delivery: [] })
+  expect((await acceptStageReply(directory, "package-review", "No JSON here.")).issues).toEqual(["Reply with the package review JSON only."])
+})
 
 test("a material semantic finding cannot coexist with a package pass", () => {
   const directory = matter()
