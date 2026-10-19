@@ -640,7 +640,9 @@ describe("legal.db write lock", () => {
   })
 })
 
-test("a sections backfill failure at service start still heals the matter's source artifacts", async () => {
+// Starts the ingest service over a workspace holding one invented matter,
+// once `prepare` has set the matter up, and runs `check` when it serves.
+async function bootMatter(prepare: (dir: string) => Promise<void>, check: (dir: string, log: string) => void) {
   const temporary = realpathSync(mkdtempSync(path.join(tmpdir(), "dochaus-sections-boot-")))
   const workspace = path.join(temporary, "workspace")
   const config = path.join(temporary, "config")
@@ -663,20 +665,7 @@ test("a sections backfill failure at service start still heals the matter's sour
   const serviceLog = path.join(temporary, "ingest.log")
   let service: ReturnType<typeof Bun.spawn> | undefined
   try {
-    await ingestDocument(dir, "Synthetic Notice.docx", await docx(["1. Scope", "The invented scope."]))
-    const sourceMap = path.join(dir, "source-map.json")
-    expect(existsSync(sourceMap)).toBe(true)
-    const db = openDb(dir)
-    db.run("CREATE TRIGGER refuse_sections BEFORE INSERT ON sections BEGIN SELECT RAISE(ABORT, 'synthetic sections failure'); END")
-    db.run("DELETE FROM meta WHERE key = 'sections_version'")
-    // A lexical index that lost a chunk's entry, healed by the startup check.
-    db.run(
-      "INSERT INTO chunks_fts(chunks_fts, rowid, text, section, doc_name) SELECT 'delete', id, text, section, doc_name FROM chunks LIMIT 1",
-    )
-    expect(ftsInSync(db)).toBe(false)
-    db.close()
-    rmSync(sourceMap)
-
+    await prepare(dir)
     service = Bun.spawn([process.execPath, "run", "src/server.ts"], {
       cwd: path.resolve(import.meta.dir, ".."),
       env: {
@@ -696,20 +685,70 @@ test("a sections backfill failure at service start still heals the matter's sour
       if (Date.now() >= deadline) throw new Error(`Ingest startup failed:\n${readFileSync(serviceLog, "utf8")}`)
       await Bun.sleep(50)
     }
-    expect(readFileSync(serviceLog, "utf8")).toContain("matter migration failed")
-    expect(existsSync(sourceMap)).toBe(true)
-    const healed = openDb(dir)
-    try {
-      expect(ftsInSync(healed)).toBe(true)
-    } finally {
-      healed.close()
-    }
+    check(dir, readFileSync(serviceLog, "utf8"))
   } finally {
     service?.kill()
     await service?.exited
     engine.stop(true)
     rmSync(temporary, { recursive: true, force: true })
   }
+}
+
+// A lexical index that lost a chunk's entry, healed by the startup check.
+function dropLexicalEntry(db: Database) {
+  db.run(
+    "INSERT INTO chunks_fts(chunks_fts, rowid, text, section, doc_name) SELECT 'delete', id, text, section, doc_name FROM chunks LIMIT 1",
+  )
+  expect(ftsInSync(db)).toBe(false)
+}
+
+function expectLexicalIndexInSync(dir: string) {
+  const db = openDb(dir)
+  try {
+    expect(ftsInSync(db)).toBe(true)
+  } finally {
+    db.close()
+  }
+}
+
+test("a sections backfill failure at service start still heals the matter's source artifacts", async () => {
+  await bootMatter(
+    async (dir) => {
+      await ingestDocument(dir, "Synthetic Notice.docx", await docx(["1. Scope", "The invented scope."]))
+      const sourceMap = path.join(dir, "source-map.json")
+      expect(existsSync(sourceMap)).toBe(true)
+      const db = openDb(dir)
+      db.run("CREATE TRIGGER refuse_sections BEFORE INSERT ON sections BEGIN SELECT RAISE(ABORT, 'synthetic sections failure'); END")
+      db.run("DELETE FROM meta WHERE key = 'sections_version'")
+      dropLexicalEntry(db)
+      db.close()
+      rmSync(sourceMap)
+    },
+    (dir, log) => {
+      expect(log).toContain("matter migration failed")
+      expect(existsSync(path.join(dir, "source-map.json"))).toBe(true)
+      expectLexicalIndexInSync(dir)
+    },
+  )
+}, 60_000)
+
+test("a mutation recovery failure at service start still heals the matter's lexical index", async () => {
+  await bootMatter(
+    async (dir) => {
+      await ingestDocument(dir, "Synthetic Notice.docx", await docx(["1. Scope", "The invented scope."]))
+      const db = openDb(dir)
+      dropLexicalEntry(db)
+      db.close()
+      // A damaged mutation record beside a backup recovery cannot safely undo.
+      const damaged = path.join(dir, ".dochaus", "document-mutations", "synthetic-damaged")
+      mkdirSync(damaged, { recursive: true })
+      writeFileSync(path.join(damaged, "document.bak"), "invented backup bytes")
+    },
+    (dir, log) => {
+      expect(log).toContain("matter recovery failed")
+      expectLexicalIndexInSync(dir)
+    },
+  )
 }, 60_000)
 
 describe("chunk index maintenance", () => {

@@ -1415,30 +1415,34 @@ seedPlaybooks()
 for (const matter of listMatters()) {
   if (!existsSync(path.join(matter.dir, ".dochaus", "legal.db"))) continue
   // One corrupt or externally-locked matter DB must not abort the whole
-  // service; that matter just stays un-migrated until its next ingest.
+  // service. A failed step is logged and retried at the next start; the
+  // migrations also run again at the matter's next ingest.
   const matterRef = draftingTraceReference(matter.dir)
-  let recovery: Awaited<ReturnType<typeof recoverDocumentMutations>>
-  try {
-    recovery = await recoverDocumentMutations(matter.dir)
-  } catch (e) {
+  const recovery = await recoverDocumentMutations(matter.dir).catch((e) => {
     console.error("matter recovery failed", { matter_ref: matterRef, ...diagnosticErrorMetadata(e) })
-    continue
-  }
+  })
   try {
+    // The startup open checks the lexical index against the chunks, and only
+    // it does, so it runs even when recovery failed: the index derives from
+    // the committed chunks alone. The migrations and the artifact heal wait for
+    // a recovered matter.
     const db = openDb(matter.dir, { startup: true })
     try {
-      const reembedded = await migrateEmbeddings(db)
-      if (reembedded) console.log("chunks re-embedded", { count: reembedded, matter_ref: matterRef })
-      const restructured = migrateStructure(db)
-      if (restructured) console.log("document structure extracted", { count: restructured, matter_ref: matterRef })
-      const sectioned = migrateSections(db)
-      if (sectioned) console.log("document sections recorded", { count: sectioned, matter_ref: matterRef })
+      if (recovery) {
+        const reembedded = await migrateEmbeddings(db)
+        if (reembedded) console.log("chunks re-embedded", { count: reembedded, matter_ref: matterRef })
+        const restructured = migrateStructure(db)
+        if (restructured) console.log("document structure extracted", { count: restructured, matter_ref: matterRef })
+        const sectioned = migrateSections(db)
+        if (sectioned) console.log("document sections recorded", { count: sectioned, matter_ref: matterRef })
+      }
     } finally {
       db.close()
     }
   } catch (e) {
     console.error("matter migration failed", { matter_ref: matterRef, ...diagnosticErrorMetadata(e) })
   }
+  if (!recovery) continue
   // The source artifacts derive from the chunks, not from the migrated rows, so
   // a failed migration (rolled back, retried next start) does not stop them
   // being healed.
