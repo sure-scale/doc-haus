@@ -7,8 +7,9 @@ import { embedChunk, migrateEmbeddings } from "./embed"
 import { extractStructure, extractParties, migrateSections, migrateStructure, buildSectionPaths, chunkSection, recordSections, sectionize } from "./structure"
 import { pdfToText } from "./pdf"
 import { detectInjection, normalizeExtractedText, scanDocxHiddenContent } from "./sanitize"
-import { writeSourceArtifacts } from "./source-artifacts"
+import { stageSourceUpload, writeSourceArtifacts } from "./source-artifacts"
 import { withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
+import { chunkText } from "../../../dochaus/lib/chunk-text"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
 import { draftingTraceReference } from "../../../dochaus/lib/drafting-trace-identity"
 import { commitDocumentWriteAsync } from "./atomic-document-write"
@@ -203,6 +204,19 @@ async function commitIngestedDocument(
     updateRegistry?: (db: ReturnType<typeof openDb>) => void
   },
 ) {
+  // The source snapshot is staged before legal.db's write lock is taken (see
+  // stageSourceUpload); the transaction then holds the lock for the registry
+  // writes and the snapshot's installation only. The uploaded document's text
+  // is rebuilt from its chunks as reconstructText rebuilds it once stored.
+  const staged = await stageSourceUpload(input.matterDir, db, input.mutation.projectionDirectory, {
+    doc_path: input.docPath,
+    name: input.fileName,
+    text: chunkText(
+      input.chunks
+        .map((chunk) => ({ text: chunk.text, char_start: chunk.charStart }))
+        .toSorted((left, right) => left.char_start - right.char_start),
+    ).text,
+  })
   return commitDocumentWriteAsync(input.docPath, input.buffer, async () => {
     db.run("BEGIN IMMEDIATE")
     let settled = false
@@ -241,7 +255,7 @@ async function commitIngestedDocument(
       const artifacts = await writeSourceArtifacts(input.matterDir, input.correlation, {
         db,
         stampLineage: false,
-        transactionDirectory: input.mutation.projectionDirectory,
+        staged,
         settle: () => {
           recordDocumentMutationCommit(db, input.mutation)
           db.run("COMMIT")
