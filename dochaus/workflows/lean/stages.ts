@@ -90,7 +90,6 @@ export const LEAN_STAGE_AGENTS = {
   "change-prepare": "lean-change-prepare",
   "change-review": "lean-change-review",
   changes: "lean-changes",
-  merge: "lean-merge",
   finalize: "lean-drafting-notes",
   // A job of the outline, not a stage: it checks the planned package against the instructions.
   coverage: "lean-coverage",

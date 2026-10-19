@@ -49,7 +49,6 @@ describe("lean drafting runner", () => {
     // One failed outline, then the outline and one call per part.
     expect(model.count(AGENT.draft)).toBe(4)
     expect(model.prompts.filter(row => row.agent === AGENT.draft)[1]!.text).toContain("has no \"# \" title line")
-    expect(model.count(AGENT.merge)).toBe(0)
     expect(readLeanJson(directory, "d1/apply.json")).toMatchObject({ applied: [{ id: "a1", mode: "code" }], unapplied: [] })
     expect(readParagraphs(directory, "d1", "paragraphs-applied.json").map(row => row.text))
       .toContain("The supplier shall deliver the goods within thirty days of the order date.")
@@ -161,7 +160,7 @@ describe("lean drafting runner", () => {
     })
   }, 120_000)
 
-  test("legacy overlapping amendments merge through an applier child session; an engine failure stops apply", async () => {
+  test("overlapping amendments to one paragraph are consolidated before change-review; one that still reaches apply is an open item and opens no session", async () => {
     const twoEdits: Reply = prompt => {
       const pid = pidOf(prompt, "The supplier shall deliver the goods.")
       const source = [{ source_id: SOURCE, quote: "within thirty days of the order date" }]
@@ -173,32 +172,33 @@ describe("lean drafting runner", () => {
         questions: [],
       })
     }
+    // In the walk the changes check returns the overlap for consolidation, so
+    // change-review reviews one operation per paragraph and apply writes it.
     const directory = matter()
-    const model = scriptedModel({
-      ...happyPath,
-      [AGENT.changes]: twoEdits,
-      [AGENT.merge]: () => "<paragraph>The supplier shall promptly deliver the goods within thirty days of the order date.</paragraph>",
-    })
-    expect((await acceptStageReply(directory, "d1.draft", DRAFT)).issues).toEqual([])
-    expect((await acceptStageReply(directory, "d1.changes", twoEdits(stagePrompt(directory, "d1.changes"), 0))).issues).toEqual([])
-    const state = await runApply(directory, readLeanState(directory)!, { sessions: model.port }, "d1")
+    const model = scriptedModel({ ...happyPath, [AGENT.changes]: sameSession((prompt, index) => index ? changes(prompt, index) : twoEdits(prompt, index)) })
+    expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+    const pid = pidOf(model.prompts.find(prompt => prompt.agent === AGENT.changes)!.text, "The supplier shall deliver the goods.")
+    expect(model.prompts.filter(prompt => prompt.agent === AGENT.changes)[1]!.text).toContain(`Consolidate all accepted changes for [${pid}] into one full replacement`)
+    expect(readLeanJson(directory, "d1/changes.json")).toMatchObject({ amendments: [{ id: "a1", pid }] })
+    expect((readLeanJson(directory, "d1/changes.json") as { amendments: unknown[] }).amendments).toHaveLength(1)
+    expect(model.prompts.find(prompt => prompt.agent === AGENT["change-review"])!.text)
+      .toContain(`[${pid}] The supplier shall deliver the goods within thirty days of the order date.`)
+    expect(readLeanJson(directory, "d1/apply.json")).toMatchObject({ applied: [{ id: "a1", mode: "code" }], unapplied: [] })
+    expect(model.sessions.map(session => session.agent)).not.toContain("lean-merge")
 
-    expect(state.status).toBe("done")
-    expect(readLeanJson(directory, "d1/changes.json")).toMatchObject({ shared_paragraphs: [{ amendment_ids: ["a1", "a2"] }] })
-    expect(readLeanJson(directory, "d1/apply.json")).toMatchObject({ applied: [{ id: "a1", mode: "code" }, { id: "a2", mode: "merged" }] })
-    expect(model.prompts.find(prompt => prompt.agent === AGENT.merge)!.text).toStartWith("This is a lean drafting run.")
-    expect(model.sessions.find(session => session.agent === AGENT.merge)).toMatchObject({ parentID: "ses_owner", permissions: LEAN_CHILD_PERMISSIONS })
-    expect(readParagraphs(directory, "d1", "paragraphs-applied.json").map(row => row.text))
-      .toContain("The supplier shall promptly deliver the goods within thirty days of the order date.")
+    // A list applied without review keeps the first change; the overlapping one
+    // is a visible open item. Apply takes no session port, so it cannot ask a model.
+    const direct = matter()
+    expect((await acceptStageReply(direct, "d1.draft", DRAFT)).issues).toEqual([])
+    expect((await acceptStageReply(direct, "d1.changes", twoEdits(stagePrompt(direct, "d1.changes"), 0))).issues).toEqual([])
+    const applied = await runApply(direct, readLeanState(direct)!, "d1")
 
-    const broken = matter()
-    const failing = scriptedModel({ ...happyPath, [AGENT.changes]: twoEdits, [AGENT.merge]: () => { throw new Error("engine unavailable") } })
-    expect((await acceptStageReply(broken, "d1.draft", DRAFT)).issues).toEqual([])
-    expect((await acceptStageReply(broken, "d1.changes", twoEdits(stagePrompt(broken, "d1.changes"), 0))).issues).toEqual([])
-    const stopped = await runApply(broken, readLeanState(broken)!, { sessions: failing.port }, "d1")
-    expect(stopped.status).toBe("failed")
-    expect(stopped).toMatchObject({ reason: "d1.apply: stopped by a runtime error during merge: engine unavailable" })
-    expect(existsSync(leanFile(broken, "d1/apply.json"))).toBe(false)
+    expect(applied.status).toBe("done")
+    expect(readLeanJson(direct, "d1/apply.json")).toMatchObject({ applied: [{ id: "a1", mode: "code" }],
+      unapplied: [{ id: "a2", reason: "stale", detail: { issue: "An earlier amendment in this batch already changed this paragraph." } }] })
+    expect(applied.status === "done" ? applied.openItems : []).toContainEqual(expect.objectContaining({ stage: "apply", kind: "unapplied_amendment", ref: expect.objectContaining({ amendment_id: "a2" }) }))
+    expect(readParagraphs(direct, "d1", "paragraphs-applied.json").map(row => row.text))
+      .toContain("The supplier shall deliver the goods within thirty days of the order date.")
   }, 120_000)
 
   test("a question is never answered by the run; an answer repeats drafting and review and is not asked again", async () => {

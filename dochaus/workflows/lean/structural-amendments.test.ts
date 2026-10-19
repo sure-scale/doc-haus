@@ -96,7 +96,6 @@ test("source-grounded structural changes survive preparation, projected review, 
   expect(result.status).toBe("completed")
   expect(model.count(AGENT["change-prepare"])).toBe(1)
   expect(model.count(AGENT.changes)).toBe(1)
-  expect(model.count(AGENT.merge)).toBe(0)
   expect(readRepairRound(directory)).toEqual(repairs)
   const original = readParagraphs(directory, "d1")
   const applied = readParagraphs(directory, "d1", "paragraphs-applied.json")
@@ -228,7 +227,7 @@ test("structural table edits retain the cell boundary, unaffected cells and uniq
     { id: "delete-cell", pid: pid(DELETE), existing_sha256: paragraphSha256(DELETE), operation: "delete", updated: "", reason: DELETE_REASON, sources: SUPPORT.delete },
     { id: "split-cell", pid: pid(COMBINED), existing_sha256: paragraphSha256(COMBINED), operation: "split", updated: SPLIT, reason: SPLIT_REASON, sources: SUPPORT.split },
   ] satisfies Parameters<typeof applyAmendments>[0]["amendments"]
-  const result = await applyAmendments({ docxPath, outPath, merge: async () => "unused", amendments: targets })
+  const result = await applyAmendments({ docxPath, outPath, amendments: targets })
   expect(result.unapplied).toEqual([])
   expect(result.applied.map(row => row.id)).toEqual(["delete-cell", "split-cell"])
   const written = readFileSync(outPath)
@@ -263,16 +262,15 @@ test("stale structural targets preserve their text and missing deletion targets 
     { id: "delete", pid: pid(DELETE), existing_sha256: paragraphSha256(DELETE), operation: "delete" as const, updated: "", reason: DELETE_REASON, sources: SUPPORT.delete },
     { id: "split", pid: pid(COMBINED), existing_sha256: paragraphSha256(COMBINED), operation: "split" as const, updated: SPLIT, reason: SPLIT_REASON, sources: SUPPORT.split },
   ]
-  const merge = async () => { throw new Error("Unchanged structural paragraphs must never require a merge.") }
-  expect((await applyAmendments({ docxPath, outPath, amendments: targets, merge })).unapplied).toEqual([])
+  expect((await applyAmendments({ docxPath, outPath, amendments: targets })).unapplied).toEqual([])
   const mutated = targets.map(row => ({ ...row, existing_sha256: paragraphSha256("A different earlier inspection instruction.") }))
-  const stale = await applyAmendments({ docxPath, outPath, amendments: mutated, merge })
+  const stale = await applyAmendments({ docxPath, outPath, amendments: mutated })
   expect(stale.applied).toEqual([])
   expect(stale.unapplied.map(row => row.reason)).toEqual(["stale", "stale"])
   expect(readDocxCommentParagraphs(readFileSync(outPath)).map(row => row.paragraph_text)).toContain(DELETE)
   expect(readDocxCommentParagraphs(readFileSync(outPath)).map(row => row.paragraph_text)).toContain(COMBINED)
-  await applyAmendments({ docxPath, outPath, amendments: [targets[0]!], merge })
-  const missing = await applyAmendments({ docxPath: outPath, outPath: leanFile(directory, "reapplied.docx"), amendments: [targets[0]!], merge })
+  await applyAmendments({ docxPath, outPath, amendments: [targets[0]!] })
+  const missing = await applyAmendments({ docxPath: outPath, outPath: leanFile(directory, "reapplied.docx"), amendments: [targets[0]!] })
   expect(missing.applied).toEqual([])
   expect(missing.unapplied.map(row => row.reason)).toEqual(["target_deleted"])
 }, 120_000)
@@ -293,7 +291,7 @@ test("a question remains tied to uncertainty in the second split paragraph and c
   writeQuestions(directory, accepted.changes!.questions)
   replaceStageOpenItems(directory, "changes", "d1", accepted.openItems)
   writeLeanText(directory, "d1/changes.json", JSON.stringify(accepted.changes))
-  const applied = await applyAmendments({ docxPath: leanFile(directory, "d1/body.docx"), outPath: leanFile(directory, "d1/body-applied.docx"), amendments: accepted.changes!.amendments, merge: async () => "unused" })
+  const applied = await applyAmendments({ docxPath: leanFile(directory, "d1/body.docx"), outPath: leanFile(directory, "d1/body-applied.docx"), amendments: accepted.changes!.amendments })
   expect(applied.unapplied).toEqual([])
   const final = await paragraphRows(leanFile(directory, "d1/body-applied.docx"))
   writeLeanText(directory, "d1/paragraphs-applied.json", JSON.stringify(final))
