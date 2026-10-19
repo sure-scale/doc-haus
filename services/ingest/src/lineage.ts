@@ -1,8 +1,10 @@
 // Ingest-side lineage appender (#96). Self-contained — the ingest service cannot
 // import dochaus/lib — producing the SAME row shape as dochaus/lib/lineage.ts.
-// An ingest stamps one PERMANENT row per present source artifact; a rebuild of
-// the source projection stamps only the artifacts it changed. `supersedes` links
-// each row to the prior row for that artifact. Canonical schema documented in
+// An ingest (upload or delete) and a rebuild of the source projection each
+// stamp one PERMANENT row per present source artifact whose bytes differ from
+// its latest row; an unchanged artifact gets no row. `supersedes` links each
+// row to the prior row for that artifact. Only the first row a stamp appends
+// lists the source documents. Canonical schema documented in
 // dochaus/lib/lineage.ts.
 //
 // A row's hash and size are those of the artifact's bytes. The caller may pass
@@ -40,36 +42,25 @@ function lineageFile(matterDir: string): string {
 type Ledger = ReturnType<typeof readLedger>
 
 // The ledger as a stamp needs it, from one read under the lineage lock: the
-// latest row per artifact (its entry id and recorded content hash), the
-// artifact/hash pairs that `mutationID`'s rows record (a finalize retried
-// after a stop skips them), and whether the ledger lacks a final newline. An
-// ingest appends a row per artifact, so the ledger grows by megabytes on a
-// large matter; reading and parsing it once per stamp instead of up to three
-// times keeps that stretch of the event loop short.
-function readLedger(matterDir: string, mutationID?: string) {
+// latest row per artifact (its entry id and recorded content hash) and whether
+// the ledger lacks a final newline. The ledger only grows; reading and parsing
+// it once per stamp instead of up to three times keeps that stretch of the
+// event loop short.
+function readLedger(matterDir: string) {
   const file = lineageFile(matterDir)
   const text = existsSync(file) ? readFileSync(file, "utf8") : ""
   const prior = new Map<string, { entry_id: string; content_sha256: unknown }>()
-  const completed = new Set<string>()
   for (const line of text.split(/\r?\n/)) {
     if (!line.trim()) continue
     try {
-      const row = JSON.parse(line) as {
-        artifact?: string
-        entry_id?: string
-        content_sha256?: unknown
-        provenance?: { document_mutation_id?: string }
-      }
-      if (typeof row.artifact !== "string") continue
-      if (typeof row.entry_id === "string")
+      const row = JSON.parse(line) as { artifact?: string; entry_id?: string; content_sha256?: unknown }
+      if (typeof row.artifact === "string" && typeof row.entry_id === "string")
         prior.set(row.artifact, { entry_id: row.entry_id, content_sha256: row.content_sha256 })
-      if (mutationID && row.provenance?.document_mutation_id === mutationID && typeof row.content_sha256 === "string")
-        completed.add(`${row.artifact}\0${row.content_sha256}`)
     } catch {
       /* skip corrupt line */
     }
   }
-  return { prior, completed, unterminated: text.length > 0 && !text.endsWith("\n") }
+  return { prior, unterminated: text.length > 0 && !text.endsWith("\n") }
 }
 
 export type ArtifactHash = { sha256: string; bytes: number }
@@ -87,7 +78,10 @@ function artifactsOnDisk(matterDir: string): string[] {
   return [...top, ...glob("source-chunks/*.txt"), ...glob("sources/*.txt")]
 }
 
-// Returns the number of artifacts stamped.
+// Stamps a source upload or delete (or a recovery that restaged it) as an
+// ingest, legal.db included. A finalize retried after a stop, even one that
+// stopped mid-append, finds the rows it already wrote as the latest ones and
+// stamps only what is still unrecorded. Returns the number of artifacts stamped.
 export function stampIngestLineage(
   matterDir: string,
   documents: string[],
@@ -95,9 +89,8 @@ export function stampIngestLineage(
   mutationID?: string,
   files?: ReadonlyMap<string, ArtifactHash>,
 ): number {
-  return withArtifactMutationLock(matterDir, ".dochaus/lineage.jsonl", () => {
-    const ledger = readLedger(matterDir, mutationID)
-    return appendArtifactRows(matterDir, ledger, {
+  return withArtifactMutationLock(matterDir, ".dochaus/lineage.jsonl", () =>
+    appendArtifactRows(matterDir, readLedger(matterDir), {
       artifacts: artifactsOnDisk(matterDir),
       op: "ingest",
       run: `ingest:${correlation}`,
@@ -106,19 +99,15 @@ export function stampIngestLineage(
         documents,
         ...(mutationID ? { document_mutation_id: mutationID } : {}),
       },
-      stamp: (artifact, sha256) => !ledger.completed.has(`${artifact}\0${sha256}`),
       files,
-    })
-  })
+    }))
 }
 
 // Stamps a rebuild of the source projection from the registry (the startup
 // self-heal). The rebuild re-derives files from sources already ingested and
 // uploads nothing, so each row is a whole-file "write" with origin
-// "source-rebuild". Only artifacts whose bytes differ from their latest lineage
-// row (or that have none) are stamped, so every file the rebuild changed gets a
-// current row and unchanged ones get none. legal.db is never written by a
-// rebuild and is not stamped. Returns the number of artifacts stamped.
+// "source-rebuild". legal.db is never written by a rebuild and is not stamped.
+// Returns the number of artifacts stamped.
 export function stampSourceRebuildLineage(
   matterDir: string,
   documents: string[],
@@ -131,14 +120,15 @@ export function stampSourceRebuildLineage(
       op: "write",
       run: `ingest:${correlation}`,
       provenance: { origin: "source-rebuild", documents },
-      // A file with no lineage row yet is stamped too, so it becomes ledgered.
-      stamp: (_artifact, sha256, prior) => prior?.content_sha256 !== sha256,
       files,
     }))
 }
 
-// Appends one PERMANENT row per present artifact the caller chooses to stamp.
-// Runs under the caller's lineage lock, which `ledger` was read under.
+// Appends one PERMANENT row per present artifact whose bytes differ from its
+// latest row; a file with no lineage row yet is stamped too, so it becomes
+// ledgered. The first row lists `documents`; later rows keep the rest of the
+// provenance, so a stamp records the document list once rather than once per
+// artifact. Runs under the caller's lineage lock, which `ledger` was read under.
 function appendArtifactRows(
   matterDir: string,
   ledger: Ledger,
@@ -146,34 +136,33 @@ function appendArtifactRows(
     artifacts: string[]
     op: "ingest" | "write"
     run: string
-    provenance: Record<string, unknown>
-    stamp: (artifact: string, sha256: string, prior: { content_sha256: unknown } | undefined) => boolean
+    provenance: { origin: string; documents: string[]; document_mutation_id?: string }
     files?: ReadonlyMap<string, ArtifactHash>
   },
 ) {
   mkdirSync(path.join(matterDir, ".dochaus"), { recursive: true })
-  const prior = ledger.prior
+  const { documents: _documents, ...later } = input.provenance
   const ts = new Date().toISOString()
-  const lines = input.artifacts.flatMap((artifact) => {
+  const lines: string[] = []
+  for (const artifact of input.artifacts) {
     const hash = input.files?.get(artifact) ?? hashFile(path.join(matterDir, artifact))
-    if (!hash || !input.stamp(artifact, hash.sha256, prior.get(artifact))) return []
-    return [
-      JSON.stringify({
-        entry_id: ulid(),
-        ts,
-        tier: "PERMANENT",
-        artifact,
-        op: input.op,
-        run: input.run,
-        stage: null,
-        subagent: "ingest",
-        content_sha256: hash.sha256,
-        bytes: hash.bytes,
-        supersedes: prior.get(artifact)?.entry_id ?? null,
-        provenance: input.provenance,
-      }),
-    ]
-  })
+    const prior = ledger.prior.get(artifact)
+    if (!hash || prior?.content_sha256 === hash.sha256) continue
+    lines.push(JSON.stringify({
+      entry_id: ulid(),
+      ts,
+      tier: "PERMANENT",
+      artifact,
+      op: input.op,
+      run: input.run,
+      stage: null,
+      subagent: "ingest",
+      content_sha256: hash.sha256,
+      bytes: hash.bytes,
+      supersedes: prior?.entry_id ?? null,
+      provenance: lines.length ? later : input.provenance,
+    }))
+  }
   if (lines.length) {
     const prefix = ledger.unterminated ? "\n" : ""
     appendFileSync(lineageFile(matterDir), prefix + lines.join("\n") + "\n")

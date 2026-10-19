@@ -589,7 +589,7 @@ describe("source artifacts", () => {
     }
   })
 
-  test("the startup heal after a rolled-back mutation stamps every artifact as an ingest, legal.db included", async () => {
+  test("the startup heal after a rolled-back mutation stamps every changed artifact as an ingest, legal.db included", async () => {
     const dir = mkdtempSync(path.join(tmpdir(), "dochaus-source-artifacts-"))
     try {
       // Authored synthetic texts; no real matter data.
