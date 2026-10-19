@@ -5,10 +5,12 @@ import path from "node:path"
 import { buildChains, resolveCurrentSection, verbatimSpan, type Chain } from "../lib/amendment-chain"
 
 // doc.haus current-section resolver. For a section label, walks the matter's
-// amendment chains newest-first and returns the operative text from whichever
-// amender last touches that section, plus the full lineage so the answer is
-// auditable. Falls back honestly when no chain exists, no amender touches the
-// section, or the amender's replacement text is not separately indexed.
+// amendment chains newest-first and returns the verbatim operative wording of
+// whichever amender last touches that section (the stored op span), plus the
+// full lineage so the answer is auditable. It never presents an amender's own
+// clause as the base section's current text: when the resulting text is not
+// recorded it says so. Falls back honestly when no chain exists or no amender
+// touches the section.
 //
 // Differs from get-section, which returns one document's verbatim section text
 // without walking the chain. Use current-section for "what does §X currently
@@ -84,7 +86,7 @@ function renderLineage(db: Database, chain: Chain, label: string) {
 
 export default tool({
   description:
-    'Resolve the current operative text of a contract section across the matter\'s amendment chain — e.g. "what does Section 4 currently say?". Walks amendments newest-first and returns the latest replacement text (amend/restate/add) or reports the section deleted. Always cites the full lineage. Use get-section for raw text from one document without chain-walking.',
+    'Trace a contract section across the matter\'s amendment chain — e.g. "what does Section 4 currently say?". Walks amendments newest-first and returns the latest amendment\'s verbatim operative wording for that section (amend/restate/add) — the amendment\'s statement, not the resulting section text — or reports the section deleted. Says when the current text is not resolved. Always cites the full lineage. Use get-section for raw text from one document without chain-walking.',
   args: {
     section: tool.schema.string().describe('Section label, e.g. "4" or "7.2(a)" or "EXHIBIT A".'),
     document: tool.schema
@@ -152,28 +154,29 @@ export default tool({
       )
     }
 
-    if (!resolved.replacementText) {
-      const op = resolved.amender.ops.filter((o) => o.section_label === args.section).slice(-1)[0]!
-      const verb = conjugate(resolved.operation)
-      db.close()
+    // The index records where the amendment operates (the op span), not the
+    // resulting section text. Quote the amendment's own operative wording,
+    // labelled as such, and say the current text is not resolved.
+    const { op, operativeText } = resolved
+    const amender = resolved.amender.rel.doc_name
+    const span = `chars ${op.char_start}..${op.char_end}`
+    db.close()
+    const header =
+      `=== Current state of §${args.section} (chain root: ${baseName}) ===\n` +
+      `Latest operative source: ${amender} — ${conjugate(resolved.operation)} §${args.section}.\n\n`
+    if (!operativeText) {
       return (
-        `=== Current state of §${args.section} (chain root: ${baseName}) ===\n` +
-        `Latest operative source: ${resolved.amender.rel.doc_name} — ${verb} §${args.section} (operative span chars ${op.char_start}..${op.char_end}).\n` +
-        `Note: replacement text not separately indexed in ${resolved.amender.rel.doc_name} (no chunk labeled "${args.section}"). ` +
-        `Use read-document on "${resolved.amender.rel.doc_name}" at chars ${op.char_start}..${op.char_end} to view verbatim.\n\n${lineage}`
+        header +
+        `Note: the current text of §${args.section} is not resolved — the amendment's operative wording at ${span} is not recoverable from the index. ` +
+        `Use read-document on "${amender}" at ${span} to view it verbatim.\n\n${lineage}`
       )
     }
-
-    const text = resolved.replacementText.slice(0, TEXT_CAP)
-    const truncation = resolved.replacementText.length > TEXT_CAP
-      ? `\n[Truncated at the ${TEXT_CAP}-character cap. Use get-section with document: "${resolved.amender.rel.doc_name}" and section: "${args.section}" to fetch the rest.]`
-      : ""
-    db.close()
-    const opVerb = conjugate(resolved.operation)
     return (
-      `=== Current text of §${args.section} (chain root: ${baseName}) ===\n` +
-      `Latest operative source: ${resolved.amender.rel.doc_name} — ${opVerb} §${args.section}.\n\n` +
-      `Current text (verbatim from ${resolved.amender.rel.doc_name}, chunks labeled §${args.section}):\n${text}${truncation}\n\n${lineage}`
+      header +
+      `Operative wording of ${amender} (verbatim, ${span}). This is the amendment's statement, not the resulting text of §${args.section}:\n` +
+      `"${operativeText}"\n\n` +
+      `Note: the current text of §${args.section} is not resolved — the index records where the amendment operates, not the resulting section text. ` +
+      `Use read-document on "${amender}" from char ${op.char_start} onward for the amendment's full wording.\n\n${lineage}`
     )
   },
 })

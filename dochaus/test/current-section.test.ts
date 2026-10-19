@@ -55,19 +55,25 @@ function seedChain(db: Database) {
   db.run("INSERT INTO doc_relations (doc_path, doc_name, relation, target_name, char_start, char_end) VALUES (?, ?, ?, ?, ?, ?)", [AM2, "Amendment No. 2", "amends", "Original Agreement", 0, 41])
 }
 
-test("restated section returns latest amender's replacement text + lineage", async () => {
+test("restated section returns latest amender's operative wording + lineage", async () => {
   const { dir, db } = matter()
   seedChain(db)
-  db.run("INSERT INTO chunks (doc_path, doc_name, section, text, char_start, char_end) VALUES (?, ?, ?, ?, ?, ?)", [AM1, "Amendment No. 1", "4", "AM1 replacement body.", 200, 220])
-  db.run("INSERT INTO chunks (doc_path, doc_name, section, text, char_start, char_end) VALUES (?, ?, ?, ?, ?, ?)", [AM2, "Amendment No. 2", "4", "AM2 replacement body.", 200, 220])
+  // Each amender's operative statement sits at its op span (chars 50..100).
+  db.run("INSERT INTO chunks (doc_path, doc_name, section, text, char_start, char_end) VALUES (?, ?, ?, ?, ?, ?)", [AM1, "Amendment No. 1", "1", "AM1 operative statement.", 50, 74])
+  db.run("INSERT INTO chunks (doc_path, doc_name, section, text, char_start, char_end) VALUES (?, ?, ?, ?, ?, ?)", [AM2, "Amendment No. 2", "1", "AM2 operative statement.", 50, 74])
+  // The amenders' own clauses labelled "4" are not the base's §4.
+  db.run("INSERT INTO chunks (doc_path, doc_name, section, text, char_start, char_end) VALUES (?, ?, ?, ?, ?, ?)", [AM1, "Amendment No. 1", "4", "AM1 own clause 4.", 200, 217])
+  db.run("INSERT INTO chunks (doc_path, doc_name, section, text, char_start, char_end) VALUES (?, ?, ?, ?, ?, ?)", [AM2, "Amendment No. 2", "4", "AM2 own clause 4.", 200, 217])
   db.run("INSERT INTO section_ops (doc_path, doc_name, section_label, operation, char_start, char_end) VALUES (?, ?, ?, ?, ?, ?)", [AM1, "Amendment No. 1", "4", "amend", 50, 100])
   db.run("INSERT INTO section_ops (doc_path, doc_name, section_label, operation, char_start, char_end) VALUES (?, ?, ?, ?, ?, ?)", [AM2, "Amendment No. 2", "4", "restate", 50, 100])
   db.close()
 
   const result = await tool.execute({ section: "4" }, ctxFor(dir))
-  expect(result).toMatch(/Current text of §4/)
+  expect(result).toMatch(/Current state of §4/)
   expect(result).toMatch(/Latest operative source: Amendment No. 2/)
-  expect(result).toMatch(/AM2 replacement body\./)
+  expect(result).toContain('Operative wording of Amendment No. 2 (verbatim, chars 50..100)')
+  expect(result).toContain('"AM2 operative statement."')
+  expect(result).not.toMatch(/own clause 4/)
   expect(result).toMatch(/Lineage \(newest first\):/)
   expect(result).toMatch(/Amendment No. 2.*restated/)
   expect(result).toMatch(/Amendment No. 1.*amended.*now superseded/)
@@ -113,16 +119,49 @@ test("section not touched by any amender returns base text + note", async () => 
   expect(result).toMatch(/no amendment modifies §8/)
 })
 
-test("amender has op but no replacement chunk falls back honestly", async () => {
+test("amender op span not recoverable from the index says the current text is not resolved", async () => {
   const { dir, db } = matter()
   seedChain(db)
-  // AM1 amends §4 but has no chunk labeled "4" of its own.
+  // AM1 amends §4, but no indexed chunk covers its op span (chars 50..100).
   db.run("INSERT INTO section_ops (doc_path, doc_name, section_label, operation, char_start, char_end) VALUES (?, ?, ?, ?, ?, ?)", [AM1, "Amendment No. 1", "4", "amend", 50, 100])
   db.close()
 
   const result = await tool.execute({ section: "4" }, ctxFor(dir))
-  expect(result).toMatch(/replacement text not separately indexed/)
-  expect(result).toMatch(/read-document/)
+  expect(result).toMatch(/current text of §4 is not resolved/)
+  expect(result).not.toMatch(/Operative wording of/)
+  expect(result).toMatch(/read-document on "Amendment No\. 1" at chars 50\.\.100/)
+})
+
+test("amender's own same-numbered clause is never presented as the base section's current text", async () => {
+  // Amendment No. 1 restates base §4 in its own §1; its own §4 is Governing Law.
+  const { dir, db } = matter()
+  const statement = "Section 4 of the Agreement is hereby amended and restated in its entirety to read as follows:"
+  const parts = [
+    { section: "", text: "AMENDMENT NO. 1 TO MASTER SERVICES AGREEMENT\n" },
+    { section: "1", text: `1. Fees. ${statement}\n“4. Fees. Customer shall pay each invoice within forty-five (45) days.”\n` },
+    { section: "4", text: "4. Governing Law. This Amendment is governed by the laws of the State of New York.\n" },
+  ]
+  const full = parts.map((p) => p.text).join("")
+  db.run("INSERT INTO documents (doc_path, name, created_at) VALUES (?, ?, ?)", [BASE, "Master Services Agreement", 1])
+  db.run("INSERT INTO documents (doc_path, name, created_at) VALUES (?, ?, ?)", [AM1, "Amendment No. 1", 2])
+  db.run("INSERT INTO chunks (doc_path, doc_name, section, text, char_start, char_end) VALUES (?, ?, ?, ?, ?, ?)", [BASE, "Master Services Agreement", "4", "4. Fees. Customer shall pay each invoice within thirty (30) days.", 0, 66])
+  let at = 0
+  for (const part of parts) {
+    db.run("INSERT INTO chunks (doc_path, doc_name, section, text, char_start, char_end) VALUES (?, ?, ?, ?, ?, ?)", [AM1, "Amendment No. 1", part.section, part.text, at, at + part.text.length])
+    at += part.text.length
+  }
+  db.run("INSERT INTO doc_relations (doc_path, doc_name, relation, target_name, char_start, char_end) VALUES (?, ?, ?, ?, ?, ?)", [AM1, "Amendment No. 1", "amends", "Master Services Agreement", 0, 44])
+  const opStart = full.indexOf(statement)
+  db.run("INSERT INTO section_ops (doc_path, doc_name, section_label, operation, char_start, char_end) VALUES (?, ?, ?, ?, ?, ?)", [AM1, "Amendment No. 1", "4", "restate", opStart, opStart + statement.length])
+  db.close()
+
+  const result = await tool.execute({ section: "4" }, ctxFor(dir))
+  expect(result).not.toMatch(/Governing Law/)
+  expect(result).not.toMatch(/Current text of §4/)
+  expect(result).toMatch(/Latest operative source: Amendment No\. 1 — restated §4/)
+  expect(result).toContain(`Operative wording of Amendment No. 1 (verbatim, chars ${opStart}..${opStart + statement.length})`)
+  expect(result).toContain(`"${statement}"`)
+  expect(result).toMatch(/current text of §4 is not resolved/)
 })
 
 test("no chain in matter behaves like get-section with a note", async () => {

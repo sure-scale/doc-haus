@@ -176,26 +176,26 @@ export function supersededSections(
 }
 
 // Walk a chain newest-first for the given section label. Returns the first
-// matching amender's op (the operative one), plus replacement text from the
-// amender's own chunks when the operation is amend/restate/add, or null when
-// deleted. Returns null when no amender touches the label.
+// matching amender's op (the operative one) and operativeText: the verbatim
+// statement at that op's offsets in the amending document. That is the
+// amendment's own wording ("Section 4 ... is hereby amended and restated ..."),
+// not the resulting text of the base section, and it is null when the index
+// cannot rebuild the span. The amender's chunks are never looked up by label:
+// an amendment's own §4 is a different clause from the base document's §4.
+// Returns null when no amender touches the label.
 export function resolveCurrentSection(
   db: Database,
   chain: Chain,
   label: string,
-): { operation: SectionOpRow["operation"]; amender: ChainEntry; replacementText: string | null } | null {
+): { operation: SectionOpRow["operation"]; amender: ChainEntry; op: SectionOpRow; operativeText: string | null } | null {
   for (let i = chain.entries.length - 1; i >= 0; i--) {
     const entry = chain.entries[i]!
     const matching = entry.ops.filter((op) => op.section_label === label)
     if (matching.length === 0) continue
     // Within one amender, the last operative sentence in document order wins.
     const op = matching[matching.length - 1]!
-    if (op.operation === "delete") return { operation: "delete", amender: entry, replacementText: null }
-    const rows = db
-      .query("SELECT text FROM chunks WHERE doc_path = ? AND section = ? ORDER BY char_start")
-      .all(entry.rel.doc_path, label) as { text: string }[]
-    const replacementText = rows.map((r) => r.text).join("").trim()
-    return { operation: op.operation, amender: entry, replacementText: replacementText || null }
+    const operativeText = verbatimSpan(db, op.doc_path, op.char_start, op.char_end)
+    return { operation: op.operation, amender: entry, op, operativeText: operativeText || null }
   }
   return null
 }

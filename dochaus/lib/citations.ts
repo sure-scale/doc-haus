@@ -7,7 +7,7 @@
 import { FLAGGED_PASSAGE_NOTE, UNTRUSTED_EXCERPT_NOTICE } from "./untrusted"
 
 const SUPERSEDED_PASSAGE_NOTE =
-  "[⚠ SUPERSEDED] This passage may be from a section a later amendment restates, amends, or deletes. Use the `current-section` tool to fetch the operative text before quoting this passage as current."
+  "[⚠ SUPERSEDED] This passage may be from a section a later amendment restates, amends, or deletes. Use the `current-section` tool to see the amendment's operative wording and lineage before quoting this passage as current."
 
 const DEFAULT_EXCERPT_DISPLAY_CHARS = 1000
 

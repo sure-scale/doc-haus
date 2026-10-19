@@ -167,10 +167,10 @@ test("resolveCurrentSection walks newest-first and returns the latest op", () =>
       { path: "/m/am2.docx", name: "Amendment No. 2", createdAt: 3 },
     ],
     [
-      // am1's replacement text for §4 (superseded by am2)
-      { docPath: "/m/am1.docx", section: "4", text: "OLD REPLACEMENT TEXT", charStart: 0, charEnd: 20 },
-      // am2's replacement text for §4 (operative)
-      { docPath: "/m/am2.docx", section: "4", text: "NEW REPLACEMENT TEXT", charStart: 0, charEnd: 20 },
+      // am1's operative statement on §4 at its op span (superseded by am2)
+      { docPath: "/m/am1.docx", section: "1", text: "OLD OPERATIVE STATEMENT", charStart: 100, charEnd: 123 },
+      // am2's operative statement on §4 at its op span (operative)
+      { docPath: "/m/am2.docx", section: "1", text: "NEW OPERATIVE STATEMENT", charStart: 100, charEnd: 123 },
     ],
     [
       { doc_path: "/m/am1.docx", doc_name: "Amendment No. 1", relation: "amends", target_name: "Original Agreement", char_start: 0, char_end: 10 },
@@ -185,11 +185,11 @@ test("resolveCurrentSection walks newest-first and returns the latest op", () =>
   const resolved = resolveCurrentSection(db, chain!, "4")
   expect(resolved?.operation).toBe("restate")
   expect(resolved?.amender.rel.doc_name).toBe("Amendment No. 2")
-  expect(resolved?.replacementText).toBe("NEW REPLACEMENT TEXT")
+  expect(resolved?.operativeText).toBe("NEW OPERATIVE STATEMENT")
   db.close()
 })
 
-test("resolveCurrentSection returns delete with null replacementText", () => {
+test("resolveCurrentSection returns delete with its op and no wording when the span is unindexed", () => {
   const { db } = syntheticDb()
   seed(
     db,
@@ -208,7 +208,8 @@ test("resolveCurrentSection returns delete with null replacementText", () => {
   const [chain] = buildChains(db)
   const resolved = resolveCurrentSection(db, chain!, "8")
   expect(resolved?.operation).toBe("delete")
-  expect(resolved?.replacementText).toBeNull()
+  expect(resolved?.op.char_start).toBe(100)
+  expect(resolved?.operativeText).toBeNull()
   db.close()
 })
 
@@ -230,6 +231,99 @@ test("resolveCurrentSection returns null when no amender touches the section", (
   )
   const [chain] = buildChains(db)
   expect(resolveCurrentSection(db, chain!, "99")).toBeNull()
+  db.close()
+})
+
+// A synthetic amendment whose own numbering collides with the base section it
+// amends: its §1 restates base §4, while its own §4 is an unrelated clause.
+// Chunks and the op span are laid out on one text so offsets match ingest.
+function collidingAmendment(db: Database) {
+  const statement = "Section 4 of the Agreement is hereby amended and restated in its entirety to read as follows:"
+  const subStatement = "Section 4.2(a) of the Agreement is hereby amended by replacing “thirty (30) days” with “forty-five (45) days”"
+  const parts = [
+    { section: "", text: "AMENDMENT NO. 1 TO MASTER SERVICES AGREEMENT\n" },
+    { section: "1", text: `1. Fees. ${statement}\n“4. Fees. Customer shall pay each invoice within forty-five (45) days.”\n` },
+    { section: "2", text: `2. Payment Terms. ${subStatement}\n` },
+    { section: "4", text: "4. Governing Law. This Amendment is governed by the laws of the State of New York.\n" },
+    { section: "4.2", text: "4.2 Counterparts. This Amendment may be signed in counterparts.\n" },
+  ]
+  const full = parts.map((p) => p.text).join("")
+  let at = 0
+  const chunks = parts.map((p) => {
+    const chunk = { docPath: "/m/am1.docx", section: p.section, text: p.text, charStart: at, charEnd: at + p.text.length }
+    at += p.text.length
+    return chunk
+  })
+  const opStart = full.indexOf(statement)
+  const subStart = full.indexOf(subStatement)
+  seed(
+    db,
+    [
+      { path: "/m/base.docx", name: "Master Services Agreement", createdAt: 1 },
+      { path: "/m/am1.docx", name: "Amendment No. 1", createdAt: 2 },
+    ],
+    [
+      { docPath: "/m/base.docx", section: "4", text: "4. Fees. Customer shall pay each invoice within thirty (30) days.", charStart: 0, charEnd: 66 },
+      ...chunks,
+    ],
+    [
+      { doc_path: "/m/am1.docx", doc_name: "Amendment No. 1", relation: "amends", target_name: "Master Services Agreement", char_start: 0, char_end: 44 },
+    ],
+    [
+      { doc_path: "/m/am1.docx", doc_name: "Amendment No. 1", section_label: "4", operation: "restate", char_start: opStart, char_end: opStart + statement.length },
+      { doc_path: "/m/am1.docx", doc_name: "Amendment No. 1", section_label: "4.2(a)", operation: "amend", char_start: subStart, char_end: subStart + subStatement.length },
+    ],
+  )
+  return { statement, subStatement, opStart }
+}
+
+test("resolveCurrentSection returns the amender's operative wording, never its own same-numbered clause", () => {
+  const { db } = syntheticDb()
+  const { statement, opStart } = collidingAmendment(db)
+  const [chain] = buildChains(db)
+  const resolved = resolveCurrentSection(db, chain!, "4")
+  // The amendment's own §4 (Governing Law) is not the base's §4.
+  expect(JSON.stringify(resolved)).not.toContain("Governing Law")
+  expect(resolved?.operation).toBe("restate")
+  expect(resolved?.amender.rel.doc_name).toBe("Amendment No. 1")
+  expect(resolved?.op.char_start).toBe(opStart)
+  expect(resolved?.operativeText).toBe(statement)
+  db.close()
+})
+
+test("resolveCurrentSection quotes a sub-clause op's wording, not the amender's parent-numbered chunk", () => {
+  const { db } = syntheticDb()
+  const { subStatement } = collidingAmendment(db)
+  const [chain] = buildChains(db)
+  const resolved = resolveCurrentSection(db, chain!, "4.2(a)")
+  expect(JSON.stringify(resolved)).not.toContain("Counterparts")
+  expect(resolved?.operation).toBe("amend")
+  expect(resolved?.operativeText).toBe(subStatement)
+  db.close()
+})
+
+test("resolveCurrentSection reports no operative wording when the op span is not recoverable", () => {
+  const { db } = syntheticDb()
+  seed(
+    db,
+    [
+      { path: "/m/base.docx", name: "Original Agreement", createdAt: 1 },
+      { path: "/m/am1.docx", name: "Amendment No. 1", createdAt: 2 },
+    ],
+    // The amender's only chunk labelled "4" lies outside the op span.
+    [{ docPath: "/m/am1.docx", section: "4", text: "UNRELATED AMENDER CLAUSE", charStart: 500, charEnd: 524 }],
+    [
+      { doc_path: "/m/am1.docx", doc_name: "Amendment No. 1", relation: "amends", target_name: "Original Agreement", char_start: 0, char_end: 10 },
+    ],
+    [
+      { doc_path: "/m/am1.docx", doc_name: "Amendment No. 1", section_label: "4", operation: "amend", char_start: 100, char_end: 200 },
+    ],
+  )
+  const [chain] = buildChains(db)
+  const resolved = resolveCurrentSection(db, chain!, "4")
+  expect(JSON.stringify(resolved)).not.toContain("UNRELATED AMENDER CLAUSE")
+  expect(resolved?.operation).toBe("amend")
+  expect(resolved?.operativeText).toBeNull()
   db.close()
 })
 
