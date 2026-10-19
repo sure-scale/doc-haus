@@ -362,7 +362,8 @@ function keptCombined(directory: string, earlier: LeanDocument[], taken: string[
  * match the record of the system's write or of the accepted Word revision
  * (readWorkingDocx), is not, nor is one whose record cannot be read. Reads only.
  * Known gap, a label only: after an accept not bound to a Word revision, an
- * upload, or a delete through doc.haus, no record is left to compare, so a
+ * upload, the render tool's write to /deliverables without a precondition, or
+ * a delete through doc.haus, no record is left to compare, so a
  * later save outside doc.haus under that name is still listed as the earlier
  * combined file. No write follows from that label: no part replaces a
  * combined file, and a rebuild needs the current plan's registered parts and

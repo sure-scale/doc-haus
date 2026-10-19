@@ -478,7 +478,7 @@ const savedFile = (row: unknown) => record(row) && Array.isArray(row.holds) && r
  * the plan delivers the file as that question showed; otherwise the lawyer
  * should confirm it. Each id keys on the item's content. With `told`, the
  * items the gate's notes disclosed, only the items of the files whose name the
- * lawyer's words give or one of `told` stated. */
+ * lawyer's words give or one of `told` stated about that same file. */
 export function requestedFilesItems(directory: string, told?: OpenItem[]): OpenItem[] {
   const plan = readLeanPlan(directory)
   const saved = readRequestedFiles(directory)
@@ -565,9 +565,11 @@ export function requestedFilesItems(directory: string, told?: OpenItem[]): OpenI
   const nameKey = (name: string) => `${deliveryStem({ title: "", file: name })}.docx`.toLocaleLowerCase()
   const lawyerQuote = (words: string) => `"${words.replace(/\s+/g, " ").trim()}"` + (matterSourceIDs(directory).includes(REQUEST_SOURCE) ? "" : ` [source: ${REQUEST_SOURCE}]`)
   const answered = answeredFiles(directory)
-  // Each item about a file opens with the lawyer's words for it.
-  const about = (file: RequestedFile) => `Requested files: the lawyer's words ${lawyerQuote(file.quote)} ask for `
-  const items = saved.files.filter(file => !told || file.name !== null || told.some(item => item.detail.startsWith(about(file)))).flatMap(file => {
+  const planned = (held: string) => plan.documents.find(row => row.id === held)
+  // Each item about a file opens with the lawyer's words for it and what they
+  // ask for, which together tell that file from another asked for in the same words.
+  const opening = (file: RequestedFile) => `Requested files: the lawyer's words ${lawyerQuote(file.quote)} ask for ${asked(file, planned)}, but the run `
+  const items = saved.files.filter(file => !told || file.name !== null || told.some(item => item.detail.startsWith(opening(file)))).flatMap(file => {
     const check = fileCheck(file, plan.documents, memo !== undefined)
     const shape = fileShape(file)
     const target = shape && deliveredIn(shape.document ?? MEMO)
@@ -590,15 +592,14 @@ export function requestedFilesItems(directory: string, told?: OpenItem[]): OpenI
     // Whether the refused name is a format or another format's file name: a fact
     // about the run's output, read from that name alone, never from the quote.
     const format = refused !== undefined && (OTHER_FORMAT.test(refused) || formatStem(nameStem(refused)))
-    const what = asked(file, held => plan.documents.find(row => row.id === held))
-    const listed = answered.listing(file, saved.files, what)
+    const listed = answered.listing(file, saved.files, asked(file, planned))
     const closing = listed && !check.unsupported && check.planned === listed.planned
       ? ` The lawyer answered the question about ${listed.same ? "these files" : `the files the words ${lawyerQuote(listed.words)} ask for`}; ` +
         "the plan drawn up with that answer still delivers them so."
       : " The lawyer should confirm how these files are to be delivered."
-    return [openItem("finalize", "omission", `${about(file)}${what}` +
-      (refused === undefined ? `, but the run delivers ${delivers}.`
-        : `, but the run could not use "${refused}" as its name${format ? " and delivers .docx files only" : ""}; it delivers ${delivers}.`) +
+    return [openItem("finalize", "omission", opening(file) +
+      (refused === undefined ? `delivers ${delivers}.`
+        : `could not use "${refused}" as its name${format ? " and delivers .docx files only" : ""}; it delivers ${delivers}.`) +
       `${reason}${closing}`, { repair_target: "memo" })]
   })
   return [...new Map(items.map(row => [row.id, row])).values()]

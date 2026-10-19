@@ -92,9 +92,9 @@ async function writeDelivered(directory: string) {
   writeLeanText(directory, DELIVERED_NOTES.markdown, `${text}\n`)
 }
 
-/** The gate's record of `items`, each disclosed by the notes. */
-function discloseAtGate(directory: string, items: ReturnType<typeof openItem>[]) {
-  writeLeanText(directory, "gate.json", `${JSON.stringify({ items: items.map(item => ({ ...item, status: "disclosed" })) }, null, 2)}\n`)
+/** The gate's record of `items`, each disclosed by the notes unless recorded with another `status`. */
+function discloseAtGate(directory: string, items: ReturnType<typeof openItem>[], status: ReturnType<typeof openItem>["status"] = "disclosed") {
+  writeLeanText(directory, "gate.json", `${JSON.stringify({ items: items.map(item => ({ ...item, status })) }, null, 2)}\n`)
 }
 
 const COPIES = {
@@ -738,7 +738,7 @@ describe("the combined file saved in the matter", () => {
       "The lawyer should confirm how these files are to be delivered.", { repair_target: "memo" })
     /** A delivered matter whose rerun's gate finds nothing to disclose, then a
      * rerun whose save of the combined file is refused under the write's lock. */
-    const raced = async (disclosed: ReturnType<typeof openItem>[], named = true) => {
+    const raced = async (disclosed: ReturnType<typeof openItem>[], named = true, status: ReturnType<typeof openItem>["status"] = "disclosed") => {
       const directory = matter()
       const plan = writeLeanPlan(directory, [COMBINED], "basis-1", undefined, memo([COMBINED]))
       writeRequestedFiles(directory, { schema: LEAN_REQUESTED_FILES_SCHEMA, basis: "basis-1", planned: requestedFilesPlanned(plan.documents, plan.memo), stated: true,
@@ -748,7 +748,7 @@ describe("the combined file saved in the matter", () => {
       await writeCopies(directory, { "d1/body-applied.docx": "# Supply note\n\nThe supplier delivers the goods each week." })
       // The gate finds the file the system's to replace in place.
       expect(requestedFilesItems(directory)).toEqual([])
-      discloseAtGate(directory, disclosed)
+      discloseAtGate(directory, disclosed, status)
       const registration = registering()
       const racing: NonNullable<LeanDeps["registerDeliverable"]> = async (directory, name, bytes, current, options) => {
         if (name === "supply-pack.docx" && current) registry(directory, db => forgetSystemDocx(db, directory, path.join(directory, name)))
@@ -768,6 +768,9 @@ describe("the combined file saved in the matter", () => {
     expect(calls.map(([name]) => name)).toContain("supply-pack (2).docx")
     expect(rows).toContainEqual(["combined", "d1", "supply-pack (2).docx"])
 
+    // An item the gate recorded but its notes did not disclose does not count.
+    for (const status of ["open", "resolved"] as const) await expect((await raced([item], true, status)).delivered).rejects.toThrow(item.detail)
+
     // Notes that already disclose that mismatch let the moved delivery complete.
     const disclosed = await raced([item])
     expect((await disclosed.delivered).documents.filter(row => row.kind === "combined").map(row => row.deliverable)).toEqual(["supply-pack.docx", "supply-pack (2).docx"])
@@ -779,6 +782,37 @@ describe("the combined file saved in the matter", () => {
     expect(requestedFilesItems(one.directory)).toEqual([openItem("finalize", "omission", `Requested files: the lawyer's words "${unnamed}" [source: request] ask for the memo and "Supply note" in one file, ` +
       'but the run delivers the memo and "Supply note" in one file named "supply-pack (2).docx", since a file already in the matter holds the name "supply-pack.docx". ' +
       "The lawyer should confirm how these files are to be delivered.", { repair_target: "memo" })])
+  }, 60_000)
+
+  test("a save refused under the write's lock: only a disclosed item about the one file itself counts as the notes saying which name it takes", async () => {
+    const words = "Send the supply note with the cover memo in one file and the delivery schedule as dates.docx"
+    for (const shared of [true, false]) {
+      const directory = matter()
+      const documents = [COMBINED, SCHEDULE]
+      const plan = writeLeanPlan(directory, documents, "basis-1", undefined, memo(documents))
+      // Two files asked for in one sentence, or in two: the one file without a
+      // name, and the schedule under a name the plan does not give it.
+      writeRequestedFiles(directory, { schema: LEAN_REQUESTED_FILES_SCHEMA, basis: "basis-1", planned: requestedFilesPlanned(plan.documents, plan.memo), stated: true,
+        files: [{ holds: ["memo", "d1"], name: null, quote: words }, { holds: ["d2"], name: "dates.docx", quote: shared ? words : "the delivery schedule as dates.docx" }] })
+      const schedule = "# Delivery schedule\n\nGoods arrive on the first day."
+      await writeCopies(directory, { ...COPIES, "d2/body-applied.docx": schedule, "d2/redline.docx": schedule })
+      await deliver(directory)
+      await writeCopies(directory, { "d1/body-applied.docx": "# Supply note\n\nThe supplier delivers the goods each week." })
+      // The notes disclose the schedule's file only: the one file is the system's to replace in place.
+      const gate = disclosableItems(directory).filter(item => item.detail.startsWith("Requested files:"))
+      expect({ shared, gate: gate.map(item => item.detail.includes('ask for "Delivery schedule" as a file named "dates.docx"')) }).toEqual({ shared, gate: [true] })
+      discloseAtGate(directory, gate)
+      const registration = registering()
+      const racing: NonNullable<LeanDeps["registerDeliverable"]> = async (directory, name, bytes, current, options) => {
+        if (name === "supply-pack.docx" && current) registry(directory, db => forgetSystemDocx(db, directory, path.join(directory, name)))
+        return registration.registerDeliverable(directory, name, bytes, current, options)
+      }
+      const delivered = await recordLeanDocuments(directory, { sessions: scriptedModel({}).port, registerDeliverable: racing }, true).then(summary => summary, (error: Error) => error.message)
+      expect({ shared, combined: typeof delivered === "string" ? delivered : delivered.documents.filter(row => row.kind === "combined").map(row => row.deliverable) })
+        .toEqual({ shared, combined: ["supply-pack.docx", "supply-pack (2).docx"] })
+      // The next finalize discloses where the one file went.
+      expect(requestedFilesItems(directory).filter(item => item.detail.includes('in one file named "supply-pack (2).docx"'))).toHaveLength(1)
+    }
   }, 60_000)
 
   test("a save refused under the write's lock after the gate's notes said which name the file takes: the run fails for a request without a usable name too", async () => {
