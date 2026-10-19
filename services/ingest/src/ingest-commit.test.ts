@@ -5,6 +5,7 @@ import path from "node:path"
 import { Document, Packer, Paragraph } from "docx"
 import * as atomicWrite from "./atomic-document-write"
 import { deleteDocument, getMeta, insertChunk, openDb, setMeta, upsertDocument } from "./db"
+import { deleteMatterDocument } from "./document-delete"
 import { MODEL } from "./embed"
 import * as identifierExtraction from "./identifiers"
 import { ingestDocument } from "./ingest"
@@ -238,6 +239,92 @@ describe("an upload into a multi-document matter", () => {
     const index = JSON.parse(readFileSync(path.join(directory, "source-index.json"), "utf8")) as { sources: { document: string }[] }
     expect(index.sources.map((source) => source.document)).not.toContain("Corpus 03.docx")
     expect(index.sources.map((source) => source.document)).toContain("Third Notice.docx")
+    const restaged = sourceArtifactFiles(directory)
+    await writeSourceArtifacts(directory, undefined, { rebuild: true })
+    expect(sourceArtifactFiles(directory)).toEqual(restaged)
+    // No staged snapshot is left behind.
+    expect(existsSync(path.join(directory, ".dochaus", "document-mutations")) &&
+      readdirSync(path.join(directory, ".dochaus", "document-mutations")).length).toBeFalsy()
+  }, 120_000)
+})
+
+describe("a source delete from a multi-document matter", () => {
+  let directory = ""
+  beforeAll(() => {
+    directory = realpathSync(mkdtempSync(path.join(tmpdir(), "dochaus-delete-corpus-")))
+    writeCorpus(directory, 12)
+  })
+  afterAll(() => rmSync(directory, { recursive: true, force: true }))
+
+  const indexedSources = () =>
+    (JSON.parse(readFileSync(path.join(directory, "source-index.json"), "utf8")) as { sources: { document: string }[] })
+      .sources.map((source) => source.document)
+
+  test("holds the legal.db write lock for milliseconds, so the engine writes throughout", async () => {
+    const writer = await startEngineWriter(directory)
+    const extract = spyOn(identifierExtraction, "extractIdentifiers")
+    let writes: { at: number; ms: number; ok: boolean }[] = []
+    let started = 0
+    let finished = 0
+    try {
+      started = Date.now()
+      await deleteMatterDocument(directory, "Corpus 00.docx")
+      finished = Date.now()
+      // The remaining matter's identifiers are extracted once, before the lock.
+      expect(extract).toHaveBeenCalledTimes(1)
+    } finally {
+      extract.mockRestore()
+      writes = await writer.stop().catch((error) => (writer.kill(), Promise.reject(error)))
+    }
+    const during = writes.filter((write) => write.at >= started && write.at <= finished)
+    expect(during.filter((write) => !write.ok)).toEqual([])
+    expect(Math.max(...during.map((write) => write.ms))).toBeLessThan(500)
+    expect(during.length).toBeGreaterThan(10)
+    expect(sourceArtifactsMatchRegistry(directory)).toBe(true)
+    expect(indexedSources()).not.toContain("Corpus 00.docx")
+  }, 120_000)
+
+  test("installs the snapshot staged before the lock, byte for byte the one built in the lock", async () => {
+    const extract = spyOn(identifierExtraction, "extractIdentifiers")
+    try {
+      await deleteMatterDocument(directory, "Corpus 01.docx")
+      expect(extract).toHaveBeenCalledTimes(1)
+    } finally {
+      extract.mockRestore()
+    }
+    expect(indexedSources()).not.toContain("Corpus 01.docx")
+    expect(indexedSources()).toContain("Corpus 02.docx")
+    const staged = sourceArtifactFiles(directory)
+    await writeSourceArtifacts(directory, undefined, { rebuild: true })
+    expect(sourceArtifactFiles(directory)).toEqual(staged)
+  }, 120_000)
+
+  test("restages in the lock when the registry changed after staging", async () => {
+    const removed = path.join(directory, "Corpus 03.docx")
+    const commitDocumentDeleteAsync = atomicWrite.commitDocumentDeleteAsync
+    // Another writer drops a source between the staging and the transaction.
+    const commit = spyOn(atomicWrite, "commitDocumentDeleteAsync").mockImplementation(async (...args) => {
+      const db = openDb(directory)
+      try {
+        deleteDocument(db, removed)
+      } finally {
+        db.close()
+      }
+      return commitDocumentDeleteAsync(...args)
+    })
+    const extract = spyOn(identifierExtraction, "extractIdentifiers")
+    try {
+      await deleteMatterDocument(directory, "Corpus 02.docx")
+      // Once before the lock, and again for the registry the commit holds.
+      expect(extract).toHaveBeenCalledTimes(2)
+    } finally {
+      extract.mockRestore()
+      commit.mockRestore()
+    }
+    expect(sourceArtifactsMatchRegistry(directory)).toBe(true)
+    expect(indexedSources()).not.toContain("Corpus 02.docx")
+    expect(indexedSources()).not.toContain("Corpus 03.docx")
+    expect(indexedSources()).toContain("Corpus 04.docx")
     const restaged = sourceArtifactFiles(directory)
     await writeSourceArtifacts(directory, undefined, { rebuild: true })
     expect(sourceArtifactFiles(directory)).toEqual(restaged)

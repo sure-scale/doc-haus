@@ -4,7 +4,7 @@ import { deleteDocument, getDocumentRole, listSourceDocuments, openDb } from "./
 import { deliverableDocumentName } from "./deliverable"
 import { MatterDocumentIdentityError, resolveMatterDocumentTarget } from "./document-identity"
 import { matterDocumentName } from "./ingest"
-import { writeSourceArtifacts } from "./source-artifacts"
+import { stageSourceChange, writeSourceArtifacts } from "./source-artifacts"
 import { workingDocxKey } from "../../../dochaus/lib/working-docx"
 import { forgetSystemDocx } from "../../../dochaus/lib/system-docx"
 import {
@@ -57,6 +57,10 @@ export async function deleteMatterDocument(matterDir: string, requestedName: str
         completeDocumentMutation(db, mutation)
         return { ok: true as const, name: target.name, role }
       }
+      // The remaining sources' snapshot is staged before legal.db's write lock
+      // is taken (see stageSourceChange), so the transaction holds the lock for
+      // the registry delete and the snapshot's installation only.
+      const staged = await stageSourceChange(matterDir, db, mutation.projectionDirectory, target.docPath)
       await commitDocumentDeleteAsync(target.docPath, async () => {
         db.run("BEGIN IMMEDIATE")
         let settled = false
@@ -70,7 +74,7 @@ export async function deleteMatterDocument(matterDir: string, requestedName: str
           const artifacts = await writeSourceArtifacts(matterDir, correlation, {
             db,
             stampLineage: false,
-            transactionDirectory: mutation.projectionDirectory,
+            staged,
             settle: () => {
               recordDocumentMutationCommit(db, mutation)
               db.run("COMMIT")

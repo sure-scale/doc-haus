@@ -7,7 +7,7 @@ import { embedChunk, migrateEmbeddings } from "./embed"
 import { extractStructure, extractParties, migrateSections, migrateStructure, buildSectionPaths, chunkSection, recordSections, sectionize } from "./structure"
 import { pdfToText } from "./pdf"
 import { detectInjection, normalizeExtractedText, scanDocxHiddenContent } from "./sanitize"
-import { stageSourceUpload, writeSourceArtifacts } from "./source-artifacts"
+import { stageSourceChange, writeSourceArtifacts } from "./source-artifacts"
 import { withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
 import { chunkText } from "../../../dochaus/lib/chunk-text"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
@@ -205,11 +205,10 @@ async function commitIngestedDocument(
   },
 ) {
   // The source snapshot is staged before legal.db's write lock is taken (see
-  // stageSourceUpload); the transaction then holds the lock for the registry
+  // stageSourceChange); the transaction then holds the lock for the registry
   // writes and the snapshot's installation only. The uploaded document's text
   // is rebuilt from its chunks as reconstructText rebuilds it once stored.
-  const staged = await stageSourceUpload(input.matterDir, db, input.mutation.projectionDirectory, {
-    doc_path: input.docPath,
+  const staged = await stageSourceChange(input.matterDir, db, input.mutation.projectionDirectory, input.docPath, {
     name: input.fileName,
     text: chunkText(
       input.chunks
