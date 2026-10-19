@@ -328,6 +328,21 @@ describe("ingest records sections and the document revision", () => {
     expect(snapshot()).toEqual(fresh)
   })
 
+  test("a matter recorded by sections version 1 is re-recorded, replacing its revs", () => {
+    const fresh = snapshot()
+    const db = openDb(directory)
+    try {
+      // Version 1 hashed the trimmed text and rebuilt it with truncating overwrites.
+      db.run("UPDATE meta SET value = '1' WHERE key = 'sections_version'")
+      db.run("UPDATE documents SET rev = 'stale0000000' WHERE role = 'source'")
+      expect(migrateSections(db)).toBe(3)
+      expect(migrateSections(db)).toBe(0)
+    } finally {
+      db.close()
+    }
+    expect(snapshot()).toEqual(fresh)
+  })
+
   test("a matter indexed before sections existed gets them at start, equal to a fresh ingest", () => {
     const fresh = snapshot()
     const old = openDb(directory)

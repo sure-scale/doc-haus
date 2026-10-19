@@ -551,9 +551,11 @@ function revision(text: string) {
 }
 
 // Bump when sectionize, its heading patterns or the derivation of the recorded
-// rows (documentSections, recordSections, revision) change, so existing matters
-// re-record at next boot (server.ts) or ingest (ingest.ts).
-const SECTIONS_VERSION = "1"
+// rows (documentSections, recordSections, revision, reconstructText) change, so
+// existing matters re-record at next boot (server.ts) or ingest (ingest.ts).
+// 2: rev hashes the untrimmed canonical text, rebuilt without truncating
+// overwrites.
+const SECTIONS_VERSION = "2"
 
 // Backfill matters indexed before sections were recorded or before the current
 // SECTIONS_VERSION, plus any source document still without a rev, and drop
