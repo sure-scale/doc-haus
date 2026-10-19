@@ -1,3 +1,4 @@
+import { PROVIDER_STOP_MESSAGES } from "../../../../../dochaus/lib/provider-stop"
 import type { Part } from "../../api/session-view"
 import type { LeanDraftingStatus } from "../../api/ingest/lean"
 import { basename, stepLabel } from "../chat/step-labels"
@@ -204,7 +205,8 @@ export function stageMilestones(status: LeanDraftingStatus): ActivityLine[] {
 }
 
 function pauseText(status: LeanDraftingStatus, step: string, state: string) {
-  if (state === "failed") return `Paused while ${during(step, status.memo)} after a technical problem`
+  if (state === "failed")
+    return `Paused while ${during(step, status.memo)}${providerStopMessage(status) ? ": Settings need attention" : " after a technical problem"}`
   if (step !== "gate") return `Paused while ${during(step, status.memo)}`
   const blocking = status.gate?.blocking.length ?? status.open_items.filter((item) => item.status === "open").length
   return `Final check found ${blocking} open item${blocking === 1 ? "" : "s"} to resolve`
@@ -248,7 +250,12 @@ export function isWorking(status: LeanDraftingStatus) {
 /** A run that stopped on a runtime fault rather than on its own checks; the
  * runner records such stops in this form, and Continue resumes them. */
 export function stoppedByTechnicalProblem(status: LeanDraftingStatus) {
-  return status.status === "failed" && (status.stop_reason ?? "").includes("stopped by a runtime error")
+  return status.status === "failed" && (providerStopMessage(status) !== undefined || (status.stop_reason ?? "").includes("stopped by a runtime error"))
+}
+
+/** The lawyer's fix in Settings for a run its model provider or setup stopped. */
+export function providerStopMessage(status: LeanDraftingStatus): string | undefined {
+  return status.status === "failed" && status.provider_stop ? PROVIDER_STOP_MESSAGES[status.provider_stop] : undefined
 }
 
 /** The step the run is working on, if any. */

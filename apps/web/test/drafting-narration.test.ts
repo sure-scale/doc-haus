@@ -7,6 +7,7 @@ import start from "../../../dochaus/workflows/lean/fixtures/start.json"
 import blockedQuestion from "../../../dochaus/workflows/lean/fixtures/status-blocked-question.json"
 import completed from "../../../dochaus/workflows/lean/fixtures/status-completed.json"
 import failed from "../../../dochaus/workflows/lean/fixtures/status-failed.json"
+import { PROVIDER_STOP_MESSAGES } from "../../../dochaus/lib/provider-stop"
 import { isLeanDraftingStatus, leanStageSessions, type LeanDraftingStatus } from "../src/api/ingest/lean"
 import { narratorNotes, narratorTitle } from "../src/api/opencode/narrator"
 import type { Part } from "../src/api/session-view"
@@ -324,6 +325,13 @@ test("a technical stop reads as a calm pause, and Continue reads as a resume", (
   expect(runTransition(running, lean({ ...running, in_flight: false }))).toMatchObject({ state: "paused" })
   expect(runTransition(question, done)).toBeUndefined()
   expect(runTransition(running, running)).toBeUndefined()
+})
+
+test("a provider or setup stop names the fix in Settings, and Continue resumes it", () => {
+  const expired = lean({ ...stopped, stop_reason: `d1.draft: ${PROVIDER_STOP_MESSAGES.auth}`, provider_stop: "auth" })
+  expect(runOutcome(expired)).toEqual({ tone: "attention", text: PROVIDER_STOP_MESSAGES.auth })
+  expect(stageMilestones(expired).at(-1)).toMatchObject({ state: "paused", text: "Paused while drafting: Settings need attention" })
+  expect(runTransition(expired, running)).toEqual({ state: "done", text: "Resumed, picking up with drafting" })
 })
 
 test("checkpoints cover finished stages, the plan, open questions and the run settling", () => {
