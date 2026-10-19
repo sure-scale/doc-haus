@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite"
-import { existsSync, mkdirSync, realpathSync } from "node:fs"
+import { existsSync, realpathSync } from "node:fs"
 import path from "node:path"
+import { openLegalDbForWrite } from "./legal-db"
 import {
   canonicalArtifactIdentity,
   withArtifactMutationLockAsync,
@@ -148,10 +149,7 @@ export function supersedeRedlines(matterDir: string, ids: number[]) {
 }
 
 function openRedlineDb(matterDir: string) {
-  const dir = path.join(matterDir, ".dochaus")
-  mkdirSync(dir, { recursive: true })
-  const db = new Database(path.join(dir, "legal.db"))
-  db.run("PRAGMA journal_mode = WAL")
+  const db = openLegalDbForWrite(matterDir)
   db.run(`
     CREATE TABLE IF NOT EXISTS redlines (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

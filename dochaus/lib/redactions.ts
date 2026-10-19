@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite"
-import { existsSync, mkdirSync } from "node:fs"
+import { existsSync } from "node:fs"
 import path from "node:path"
+import { openLegalDbForWrite } from "./legal-db"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 
 // Redaction support for the redact tool: the per-matter redaction log (what was
@@ -25,30 +26,30 @@ export function recordRedaction(
     metadataHits: number
   },
 ) {
-  const dir = path.join(matterDir, ".dochaus")
-  mkdirSync(dir, { recursive: true })
-  const db = new Database(path.join(dir, "legal.db"))
-  db.run("PRAGMA journal_mode = WAL")
-  db.run(`
-    CREATE TABLE IF NOT EXISTS redactions (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      doc_path TEXT NOT NULL,
-      doc_name TEXT NOT NULL,
-      redacted_text TEXT NOT NULL,
-      label TEXT NOT NULL,
-      reason TEXT NOT NULL,
-      author TEXT NOT NULL,
-      occurrences INTEGER NOT NULL,
-      metadata_hits INTEGER NOT NULL,
-      created_at INTEGER NOT NULL
+  const db = openLegalDbForWrite(matterDir)
+  try {
+    db.run(`
+      CREATE TABLE IF NOT EXISTS redactions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        doc_path TEXT NOT NULL,
+        doc_name TEXT NOT NULL,
+        redacted_text TEXT NOT NULL,
+        label TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        author TEXT NOT NULL,
+        occurrences INTEGER NOT NULL,
+        metadata_hits INTEGER NOT NULL,
+        created_at INTEGER NOT NULL
+      )
+    `)
+    const result = db.run(
+      "INSERT INTO redactions (doc_path, doc_name, redacted_text, label, reason, author, occurrences, metadata_hits, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [row.docPath, row.docName, row.redactedText, row.label, row.reason, row.author, row.occurrences, row.metadataHits, Date.now()],
     )
-  `)
-  const result = db.run(
-    "INSERT INTO redactions (doc_path, doc_name, redacted_text, label, reason, author, occurrences, metadata_hits, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    [row.docPath, row.docName, row.redactedText, row.label, row.reason, row.author, row.occurrences, row.metadataHits, Date.now()],
-  )
-  db.close()
-  return Number(result.lastInsertRowid)
+    return Number(result.lastInsertRowid)
+  } finally {
+    db.close()
+  }
 }
 
 export type RedactionRow = {
