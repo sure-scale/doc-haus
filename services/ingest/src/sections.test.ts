@@ -7,7 +7,7 @@ import { Document, Packer, Paragraph } from "docx"
 import { getMeta, openDb } from "./db"
 import { extractDocumentText, ingestDocument } from "./ingest"
 import { createMatter } from "./matter"
-import { buildSectionPaths, documentSections, migrateSections, reconstructText, sectionize } from "./structure"
+import { buildSectionPaths, chunkSection, documentSections, migrateSections, reconstructText, sectionize } from "./structure"
 
 // Every fixture below is invented parser test content: no actual person,
 // organization, transaction or obligation.
@@ -65,6 +65,17 @@ test("sections tile text that does not end with a newline, and whitespace-only t
   expectTiling(led, blankLead.length)
   expect(led.map((row) => row.label)).toEqual(["1"])
   for (const blank of [" ", "\n", "\n\n", "  \n\t\n "]) expect(documentSections(blank)).toEqual([])
+})
+
+test("a split section's chunks are its own text at their offsets", () => {
+  const paragraph = (i: number) =>
+    `Paragraph ${i} of an invented clause, written only to exceed one chunk and describing no actual obligation.`
+  const text = ["1. Long clause", ...Array.from({ length: 60 }, (_, i) => paragraph(i + 1)), "2. Next clause", "Short."].join("\n") + "\n"
+  const [long, next] = sectionize(text)
+  const chunks = chunkSection(long!)
+  expect(chunks.length).toBeGreaterThan(1)
+  for (const chunk of chunks) expect(text.slice(chunk.charStart, chunk.charEnd)).toBe(chunk.text)
+  expect(chunks.at(-1)!.charEnd).toBe(next!.charStart)
 })
 
 test("without Markdown headings the recorded hierarchy is the structural path chunks carry", () => {
@@ -256,11 +267,10 @@ describe("ingest records sections and the document revision", () => {
           expect(holding.map((row) => row.ordinal)).toEqual([chunk.section_ordinal!])
           // The chunk was cut from that section.
           expect(chunk.section).toBe(holding[0]!.label ?? holding[0]!.heading ?? "Preamble")
-          // chunkSection splits a long section's text, which already ends in a
-          // newline, as if one more line followed, so the section's last chunk
-          // ends one newline past the section.
-          const overrun = chunk.char_end - holding[0]!.charEnd
-          expect(overrun <= 0 || (overrun === 1 && chunk.text.endsWith("\n"))).toBe(true)
+          // A chunk is the canonical text at its offsets and ends within its
+          // section, including the last chunk of a section split in several.
+          expect(chunk.char_end).toBeLessThanOrEqual(holding[0]!.charEnd)
+          expect(canonical.slice(chunk.char_start, chunk.char_end)).toBe(chunk.text)
         }
       }
       const notice = path.join(directory, "Synthetic Notice.docx")

@@ -427,7 +427,11 @@ export function chunkSection(section: { text: string; charStart: number }) {
   // Group lines into blocks that must stay whole: a run of table rows is one
   // block, every other line is its own block. Blocks are then packed into
   // chunks up to the budget, keeping each block (and so each table) atomic.
+  // Every line but the last keeps the newline split removed; the last is the
+  // text after the final newline (none when the section ends with one), so the
+  // blocks are exactly the section's text and no chunk runs past the section.
   const lines = section.text.split("\n")
+  const lineText = (index: number) => (index < lines.length - 1 ? lines[index] + "\n" : lines[index]!)
   const blocks: { text: string; start: number }[] = []
   let offset = 0
   let i = 0
@@ -436,15 +440,16 @@ export function chunkSection(section: { text: string; charStart: number }) {
     if (isTableLine(lines[i]!)) {
       let text = ""
       while (i < lines.length && isTableLine(lines[i]!)) {
-        text += lines[i] + "\n"
-        offset += lines[i]!.length + 1
+        text += lineText(i)
+        offset += lineText(i).length
         i++
       }
       blocks.push({ text, start })
       continue
     }
-    blocks.push({ text: lines[i] + "\n", start })
-    offset += lines[i]!.length + 1
+    const text = lineText(i)
+    if (text) blocks.push({ text, start })
+    offset += text.length
     i++
   }
 
@@ -505,9 +510,9 @@ export function recordSections(db: Database, docPath: string, docName: string) {
   for (const s of sections)
     insert.run(docPath, docName, s.ordinal, s.parentOrdinal, s.depth, s.label, s.heading, s.charStart, s.charEnd, s.structureSource)
   // Each chunk was cut from one section of this same text, so the section that
-  // holds a chunk's first character is the one it came from. (chunkSection
-  // counts one newline past a section it splits, so that section's last chunk
-  // ends one character after the section does.)
+  // holds a chunk's first character is the one it came from. (Chunks stored
+  // before chunkSection stopped counting one newline past a section it split
+  // end one character after that section does.)
   const chunks = db
     .query("SELECT id, char_start FROM chunks WHERE doc_path = ? ORDER BY char_start")
     .all(docPath) as Array<{ id: number; char_start: number }>
