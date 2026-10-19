@@ -6,6 +6,8 @@ const text = z.string().refine(value => value.trim().length > 0, "Expected nonem
 export const checklistSourceReferenceSchema = z.object({
   document: text,
   locator: text,
+  /** On a lawyer's answer: the question it answers, for its meaning. Only the quote is authority. */
+  question: text.optional(),
   quote: text,
 }).strict()
 

@@ -123,7 +123,7 @@ test("an answer to the conflict question re-keys the checklist check and reaches
   answerQuestion(directory, question.id, { text: "The payment requirement governs." })
   expect(stageInputSha(directory, "checklist-check")).not.toBe(before)
   expect(checklistProducerInputs(directory).find(row => row.key === "request")!.input.instructions).toContainEqual(
-    { document: "request", locator: `.dochaus/lean/questions.json answer (${question.id})`, quote: "The payment requirement governs." })
+    { document: "request", locator: `.dochaus/lean/questions.json answer (${question.id})`, question: question.question, quote: "The payment requirement governs." })
 })
 
 const ANSWER = "Payment on delivery governs; state it in the note."
@@ -298,7 +298,7 @@ test("an answer's source locator survives a later step rewriting questions.json:
   expect(state.status).toBe("completed")
   expect(readQuestions(directory).map(row => row.id)).toEqual(["gate-second", conflict!.id])
   expect(checklistProducerInputs(directory).find(row => row.key === "request")!.input.instructions).toEqual(
-    [{ document: "request", locator: ".dochaus/lean/questions.json answer (gate-second)", quote: "It is outside this request." }])
+    [{ document: "request", locator: ".dochaus/lean/questions.json answer (gate-second)", question: "Should the package carry the instruction?", quote: "It is outside this request." }])
   const settled = readLeanState(directory)!
   expect(leanSteps(directory).filter(step => settled.stages[step]?.input_sha !== stageInputSha(directory, step))).toEqual([])
   const idle = scriptedModel({})

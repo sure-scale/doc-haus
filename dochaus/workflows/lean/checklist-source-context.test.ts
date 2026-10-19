@@ -62,7 +62,10 @@ test("included lawyer updates and actual answers stay separate from original tex
   expect(request.passages).toHaveLength(1)
   expect(request.instructions.map(ref => ref.quote)).toEqual(["Use the current requested document names.", "Keep this proposal unapproved pending confirmation."])
   expect(jobs[0].input.instructions.map(ref => ref.quote)).toEqual([request.passages[0].quote, ...request.instructions.map(ref => ref.quote)])
-  expect(JSON.stringify(jobs)).not.toContain("MODEL QUESTION")
+  // An answer carries the question it answers, for its meaning; the question is never a quote.
+  expect(request.instructions[1]!.question).toBe("MODEL QUESTION MUST NOT BECOME SOURCE")
+  expect(jobs.flatMap(job => [...job.input.passages, ...job.input.instructions]).filter(ref => ref.quote.includes("MODEL QUESTION"))).toEqual([])
+  expect(JSON.stringify(jobs)).not.toContain("OPEN MODEL QUESTION")
   expect(JSON.stringify(jobs)).not.toContain("UNSETTLED TEXT")
   expect(JSON.stringify(jobs)).not.toContain("QUEUED TEXT")
 })
@@ -74,15 +77,15 @@ test("each answer keeps an id-keyed locator in a stable order however questions.
   put(".dochaus/lean/questions.json", JSON.stringify({ questions: [open, answered("q2"), answered("q1")] }))
   const before = checklistProducerInputs(directory)
   expect(before.at(-1)!.input.instructions).toEqual([
-    { document: "request", locator: ".dochaus/lean/questions.json answer (q1)", quote: "Answer q1." },
-    { document: "request", locator: ".dochaus/lean/questions.json answer (q2)", quote: "Answer q2." },
+    { document: "request", locator: ".dochaus/lean/questions.json answer (q1)", question: "Question q1?", quote: "Answer q1." },
+    { document: "request", locator: ".dochaus/lean/questions.json answer (q2)", question: "Question q2?", quote: "Answer q2." },
   ])
   // Answered questions first, as a step's question rewrite leaves them.
   put(".dochaus/lean/questions.json", JSON.stringify({ questions: [answered("q1"), answered("q2"), open] }))
   expect(checklistProducerInputs(directory)).toEqual(before)
 })
 
-test("an adopted or picked answer reaches the checklist jobs as the lawyer's own instruction, never as quotable question text", () => {
+test("an adopted or picked answer reaches the checklist jobs as the lawyer's own instruction with the question it answers, never as quotable question text", () => {
   const { directory, put } = prepare()
   put(".dochaus/lean/questions.json", JSON.stringify({ questions: [
     { id: "q-2", question: "ADOPTED MODEL QUESTION: which figure applies?", status: "answered", answer: "Use the later figure.", answer_kind: "adopted", option_id: "o1" },
@@ -90,8 +93,8 @@ test("an adopted or picked answer reaches the checklist jobs as the lawyer's own
   ] }))
   const jobs = checklistProducerInputs(directory)
   expect(jobs.at(-1)!.input.instructions).toEqual([
-    { document: "request", locator: ".dochaus/lean/questions.json answer (q-1)", quote: "Keep the proposal open." },
-    { document: "request", locator: ".dochaus/lean/questions.json answer (q-2)", quote: "Use the later figure." },
+    { document: "request", locator: ".dochaus/lean/questions.json answer (q-1)", question: "PICKED MODEL QUESTION?", quote: "Keep the proposal open." },
+    { document: "request", locator: ".dochaus/lean/questions.json answer (q-2)", question: "ADOPTED MODEL QUESTION: which figure applies?", quote: "Use the later figure." },
   ])
   for (const job of jobs) expect(checklistProducerInputSchema.safeParse(job.input).success).toBe(true)
   // The model-written question is never quotable authority.

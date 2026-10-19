@@ -25,9 +25,12 @@ export function checklistProducerInputs(directory: string): { key: string; input
       document: "request", locator: `.dochaus/lean/requests/done/${update.id}.json /text`, quote: update.text,
     })),
     // Keyed on the question id, never its position: questions.json is
-    // reordered when a step's questions replace its earlier ones.
+    // reordered when a step's questions replace its earlier ones. The
+    // question rides with its answer, so a short option answer keeps its
+    // meaning; it is model-written, so it is never the quote.
     ...answeredQuestions(directory).flatMap(question => question.answer?.trim() ? [{
-      document: "request", locator: `.dochaus/lean/questions.json answer (${question.id})`, quote: question.answer,
+      document: "request", locator: `.dochaus/lean/questions.json answer (${question.id})`,
+      ...(question.question.trim() ? { question: question.question } : {}), quote: question.answer,
     }] : []),
   ]
   const indexBytes = readRegularFile(path.join(directory, "source-index.json"))
