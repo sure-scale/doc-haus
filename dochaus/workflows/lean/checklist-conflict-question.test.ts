@@ -314,6 +314,8 @@ test("the conflict question names each requirement by its check and sources, nev
     expect(question!.question).toContain(text)
   expect(question!.context).toContain("Until a later check no longer finds this conflict, it is disclosed with the review draft")
   expect(question!.context).not.toContain("Until you answer")
+  expect(question!.context).toContain("Your answer re-runs the stages that use it, including the checklist check; a drafted document changes only by amendment.")
+  expect(question!.context).not.toContain("from the start")
 })
 
 test("the same conflicting requirements under other item ids are the same question", () => {
