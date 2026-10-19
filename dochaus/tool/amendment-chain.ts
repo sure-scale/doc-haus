@@ -48,6 +48,17 @@ export default tool({
       (chain.base.kind === "resolved" && chain.base.doc.name.toLowerCase() === args.document!.toLowerCase())
 
     const selected = chains.filter(matchesArg)
+    // A document may be the base of a chain whose stated name matched no
+    // indexed document; show those chains instead of reporting none.
+    const unmatched = chains.filter((c) => c.base.kind === "unresolved")
+    if (selected.length === 0 && args.document && unmatched.length > 0) {
+      db.close()
+      return (
+        `No extracted amendment relationship names "${args.document}", but the stated base of these chains was not matched to any indexed document, ` +
+        `so "${args.document}" may be one of them. Compare the recitals below with it before relying on it as unamended.\n\n` +
+        unmatched.map(renderChain).join("\n\n")
+      )
+    }
     if (selected.length === 0) {
       const total = chains.reduce((sum, c) => sum + c.entries.length, 0)
       db.close()
@@ -94,10 +105,17 @@ function renderChain(chain: Chain) {
     )
   })
   const latest = ordered[ordered.length - 1]!
+  // Unmatched amendments are grouped by the name each states, so this chain
+  // may not hold every amendment of the real base.
+  const readFirst =
+    chain.base.kind === "resolved"
+      ? `Read ${latest.rel.doc_name} first — it is the most recently indexed amending document. `
+      : `Among the documents listed, ${latest.rel.doc_name} is the most recently indexed amending document. ` +
+        "The base was not matched to an indexed document, so an amendment that states it differently may be listed under another chain. "
   return (
     `Chain: ${base} is amended (and possibly superseded) by:\n` +
     lines.join("\n") +
-    `\nRead ${latest.rel.doc_name} first — it is the most recently indexed amending document. ` +
+    `\n${readFirst}` +
     "Whether each amendment restates the base in its entirety or merely modifies specific provisions must be confirmed in its recitals, quoted verbatim above."
   )
 }
