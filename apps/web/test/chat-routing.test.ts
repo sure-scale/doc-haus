@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import type { SessionInfo, SessionMessageInfo } from "@opencode/client"
 import { abortSession, createSession, deleteSession } from "../src/api/opencode/sessions"
 import { modelSpec } from "../src/api/opencode/config"
+import { routeAgent } from "../src/api/opencode/routing"
 import { recoveryHistoryNeedsCompaction, sendMalformedToolRecovery } from "../src/api/opencode/recovery"
 import type { Client } from "../src/api/opencode/client"
 import type { Message } from "../src/api/session-view"
@@ -486,6 +487,73 @@ describe("provider errors", () => {
         data: { error: { message: "Quota exceeded for gemma-4-31b. Please retry in 54s." } },
       }),
     ).toBe("Quota exceeded for gemma-4-31b. Please retry in 54s.")
+  })
+
+  // A throwaway router session whose every turn ends the way the engine records
+  // it: the reply carries `reply` (an error or text) and the idle marker follows.
+  function routerClient(reply: { error?: Record<string, unknown>; text?: string }) {
+    const prompts: string[] = []
+    const client = {
+      session: {
+        create: async () => ({ id: `ses_router_${prompts.length}` }),
+        switchAgent: async () => ({}),
+        switchModel: async (input: { model: { providerID: string; id: string } }) => {
+          prompts.push(`${input.model.providerID}/${input.model.id}`)
+          return {}
+        },
+        prompt: async () => ({}),
+        wait: async () => undefined,
+        interrupt: async () => ({}),
+        remove: async () => ({}),
+      },
+      message: {
+        list: async () => ({
+          data: [
+            { type: "user", id: "msg_user", text: "Route this.", time: { created: 1 } },
+            {
+              type: "assistant",
+              id: "msg_reply",
+              agent: "router",
+              content: reply.text ? [{ type: "text", text: reply.text }] : [],
+              ...(reply.error ? { finish: "error", error: reply.error } : { finish: "stop" }),
+              time: { created: 2, completed: 3 },
+            },
+            { type: "idle", id: "msg_idle", outcome: reply.error ? "failed" : "succeeded", ...(reply.error ? { error: reply.error } : {}), time: { created: 4 } },
+          ],
+          cursor: {},
+        }),
+      },
+    } as unknown as Client
+    return { client, prompts }
+  }
+
+  const route = (client: Client) =>
+    routeAgent({
+      client,
+      smallModel: "opencode-go/small",
+      primaryModel: "opencode-go/primary",
+      candidates: CHAT_ASSISTANTS.map((a) => ({ name: a.name, description: a.description })),
+      history: [],
+      text: "Review the lease.",
+    })
+
+  test("Auto surfaces the provider's own error when the router's reply fails", async () => {
+    const expired = {
+      type: "provider.auth",
+      status: 401,
+      message: "This API key has expired. Create a new API key in OpenCode Console.",
+    }
+    const { client, prompts } = routerClient({ error: expired })
+    await expect(route(client)).rejects.toThrow(expired.message)
+    // The existing small-then-primary escalation, and no further attempts.
+    expect(prompts).toEqual(["opencode-go/small", "opencode-go/primary"])
+  })
+
+  test("Auto keeps the could-not-choose message for an empty router reply", async () => {
+    const { client } = routerClient({ text: "" })
+    await expect(route(client)).rejects.toThrow(
+      "Auto could not choose an assistant. Try again or select an assistant manually.",
+    )
   })
 })
 
