@@ -409,7 +409,7 @@ async function writeMatterIdentifiers(
   chunks: IdentifierChunk[],
   previous: MatterIdentifiers | undefined,
 ) {
-  const extracted = extractIdentifiers(chunks)
+  const extracted = await extractIdentifiers(chunks, previous)
   const data = previous && sameIdentifierProjection(previous, extracted)
     ? { ...extracted, generated_at: previous.generated_at }
     : extracted

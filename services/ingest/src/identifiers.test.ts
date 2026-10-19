@@ -1,5 +1,6 @@
-import { describe, expect, test } from "bun:test"
-import { extractIdentifiers, fileOffset, IDENTIFIERS_SCHEMA_VERSION, renderIdentifiersMarkdown, type IdentifierChunk } from "./identifiers"
+import { describe, expect, spyOn, test } from "bun:test"
+import * as identifiers from "./identifiers"
+import { extractIdentifiers, fileOffset, IDENTIFIERS_SCHEMA_VERSION, renderIdentifiersMarkdown, type IdentifierChunk, type MatterIdentifiers } from "./identifiers"
 
 // Authored synthetic procurement examples. Names, contact details and case IDs
 // are invented for extraction tests; no client or court document was used.
@@ -17,29 +18,29 @@ const sampleChunk: IdentifierChunk = {
   ].join("\n"),
 }
 
-function rowsOfType(data: ReturnType<typeof extractIdentifiers>, type: string) {
+function rowsOfType(data: MatterIdentifiers, type: string) {
   return data.rows.filter((row) => row.type === type).map((row) => row.value)
 }
 
 describe("extractIdentifiers", () => {
-  test("schema and metadata are populated", () => {
-    const data = extractIdentifiers([sampleChunk])
+  test("schema and metadata are populated", async () => {
+    const data = await extractIdentifiers([sampleChunk])
     expect(data.schema_version).toBe(IDENTIFIERS_SCHEMA_VERSION)
     expect(data.documents).toBe(1)
     expect(data.generated_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/)
     expect(data.rows.length).toBeGreaterThan(0)
   })
 
-  test("extracts person names", () => {
-    const data = extractIdentifiers([sampleChunk])
+  test("extracts person names", async () => {
+    const data = await extractIdentifiers([sampleChunk])
     expect(rowsOfType(data, "person")).toEqual(expect.arrayContaining([
       "Alex Morgan Bennett",
       "Taylor R. Morgan",
     ]))
   })
 
-  test("extracts organizations", () => {
-    const data = extractIdentifiers([sampleChunk])
+  test("extracts organizations", async () => {
+    const data = await extractIdentifiers([sampleChunk])
     expect(rowsOfType(data, "organization")).toEqual(
       expect.arrayContaining([
         "Example Procurement Services",
@@ -48,20 +49,20 @@ describe("extractIdentifiers", () => {
     )
   })
 
-  test("extracts places", () => {
-    const data = extractIdentifiers([sampleChunk])
+  test("extracts places", async () => {
+    const data = await extractIdentifiers([sampleChunk])
     const places = rowsOfType(data, "place")
     expect(places.some((p) => p.includes("Baltimore"))).toBe(true)
     expect(places.some((p) => p.includes("Maryland"))).toBe(true)
   })
 
-  test("extracts money", () => {
-    const data = extractIdentifiers([sampleChunk])
+  test("extracts money", async () => {
+    const data = await extractIdentifiers([sampleChunk])
     expect(rowsOfType(data, "money")).toContain("$437.00")
   })
 
-  test("extracts dates", () => {
-    const data = extractIdentifiers([sampleChunk])
+  test("extracts dates", async () => {
+    const data = await extractIdentifiers([sampleChunk])
     expect(rowsOfType(data, "date")).toEqual(
       expect.arrayContaining([
         expect.stringMatching(/August 3, 2023/),
@@ -69,25 +70,25 @@ describe("extractIdentifiers", () => {
     )
   })
 
-  test("extracts phone numbers", () => {
-    const data = extractIdentifiers([sampleChunk])
+  test("extracts phone numbers", async () => {
+    const data = await extractIdentifiers([sampleChunk])
     expect(rowsOfType(data, "phone")).toContain("(410) 555-0113")
   })
 
-  test("extracts emails", () => {
-    const data = extractIdentifiers([sampleChunk])
+  test("extracts emails", async () => {
+    const data = await extractIdentifiers([sampleChunk])
     expect(rowsOfType(data, "email")).toContain("coordinator@example.com")
   })
 
-  test("extracts case references via custom regex", () => {
-    const data = extractIdentifiers([sampleChunk])
+  test("extracts case references via custom regex", async () => {
+    const data = await extractIdentifiers([sampleChunk])
     expect(rowsOfType(data, "case_reference")).toEqual(
       expect.arrayContaining(["00-TEST-0000001"]),
     )
   })
 
-  test("extracts statute citations via custom regex", () => {
-    const data = extractIdentifiers([sampleChunk])
+  test("extracts statute citations via custom regex", async () => {
+    const data = await extractIdentifiers([sampleChunk])
     const statutes = rowsOfType(data, "statute_citation")
     expect(statutes).toEqual(
       expect.arrayContaining([
@@ -97,7 +98,7 @@ describe("extractIdentifiers", () => {
     )
   })
 
-  test("extracts state-law Title/Subtitle statute citations without § symbol", () => {
+  test("extracts state-law Title/Subtitle statute citations without § symbol", async () => {
     const chunk: IdentifierChunk = {
       id: "intake-c002",
       document: "intake-memo",
@@ -108,7 +109,7 @@ describe("extractIdentifiers", () => {
         "Title 5 of the contract governs delivery dates.",
       ].join("\n"),
     }
-    const statutes = rowsOfType(extractIdentifiers([chunk]), "statute_citation")
+    const statutes = rowsOfType(await extractIdentifiers([chunk]), "statute_citation")
     expect(statutes).toEqual(
       expect.arrayContaining([
         "Maryland Family Law Article, Title 5, Subtitle 3",
@@ -121,8 +122,8 @@ describe("extractIdentifiers", () => {
     expect(statutes.some((s) => /contract/.test(s))).toBe(false)
   })
 
-  test("each row carries source, chunk_id, line, and context", () => {
-    const data = extractIdentifiers([sampleChunk])
+  test("each row carries source, chunk_id, line, and context", async () => {
+    const data = await extractIdentifiers([sampleChunk])
     for (const row of data.rows) {
       expect(row.source).toBe("synthetic-procurement-memo")
       expect(row.chunk_id).toBe("synthetic-procurement-memo-c007")
@@ -133,8 +134,8 @@ describe("extractIdentifiers", () => {
     }
   })
 
-  test("line numbers map to chunk-local line positions", () => {
-    const data = extractIdentifiers([sampleChunk])
+  test("line numbers map to chunk-local line positions", async () => {
+    const data = await extractIdentifiers([sampleChunk])
     const caseRow = data.rows.find((row) => row.type === "case_reference")
     expect(caseRow).toBeDefined()
     // "Example Procurement Services filed Case No. 00-TEST-0000001."
@@ -142,19 +143,19 @@ describe("extractIdentifiers", () => {
     expect(caseRow!.line).toBe(3)
   })
 
-  test("context contains the matched value", () => {
-    const data = extractIdentifiers([sampleChunk])
+  test("context contains the matched value", async () => {
+    const data = await extractIdentifiers([sampleChunk])
     const emailRow = data.rows.find((row) => row.type === "email")
     expect(emailRow!.context).toContain("coordinator@example.com")
   })
 
-  test("multiple chunks attribute correctly", () => {
+  test("multiple chunks attribute correctly", async () => {
     const secondChunk: IdentifierChunk = {
       id: "intake-c001",
       document: "intake-memo",
       text: "Synthetic Docket No. 00-TEST-0000002 was filed in 2024.",
     }
-    const data = extractIdentifiers([sampleChunk, secondChunk])
+    const data = await extractIdentifiers([sampleChunk, secondChunk])
     const intakeRow = data.rows.find((row) => row.chunk_id === "intake-c001")
     expect(intakeRow).toBeDefined()
     expect(intakeRow!.source).toBe("intake-memo")
@@ -162,8 +163,8 @@ describe("extractIdentifiers", () => {
     expect(data.documents).toBe(2)
   })
 
-  test("empty chunks produce empty inventory", () => {
-    const data = extractIdentifiers([])
+  test("empty chunks produce empty inventory", async () => {
+    const data = await extractIdentifiers([])
     expect(data.rows).toEqual([])
     expect(data.documents).toBe(0)
   })
@@ -178,7 +179,7 @@ describe("extractIdentifiers", () => {
   // middle is a single initial (R., A.) that matches the first letter of the
   // other form's middle (Renee, Alex). Two different full middle names
   // (Alexis vs Alex) are NOT collapsed — could be different people.
-  test("collapses initial-middle variants to the full-middle form", () => {
+  test("collapses initial-middle variants to the full-middle form", async () => {
     const variantChunk: IdentifierChunk = {
       id: "doc-c001",
       document: "doc",
@@ -187,14 +188,14 @@ describe("extractIdentifiers", () => {
         "Counsel for Taylor Renee Morgan confirmed consent.",
       ].join("\n"),
     }
-    const data = extractIdentifiers([variantChunk])
+    const data = await extractIdentifiers([variantChunk])
     const personValues = rowsOfType(data, "person")
     // No row should still carry "Taylor R. Morgan" — all collapsed to "Taylor Renee Morgan"
     expect(personValues).not.toContain("Taylor R. Morgan")
     expect(personValues.filter((v) => v === "Taylor Renee Morgan").length).toBeGreaterThan(0)
   })
 
-  test("does NOT collapse when neither middle is a single initial", () => {
+  test("does NOT collapse when neither middle is a single initial", async () => {
     // "Jordan Alex Lee" and "Jordan Alexis Lee" — both have multi-letter
     // middles that are NOT initials of each other. Could be different people
     // (Alex vs Alexis). Must remain distinct.
@@ -206,13 +207,13 @@ describe("extractIdentifiers", () => {
         "Witness: Jordan Alexis Lee.",
       ].join("\n"),
     }
-    const data = extractIdentifiers([distinctChunk])
+    const data = await extractIdentifiers([distinctChunk])
     const personValues = rowsOfType(data, "person")
     expect(personValues).toContain("Jordan Alex Lee")
     expect(personValues).toContain("Jordan Alexis Lee")
   })
 
-  test("does NOT collapse two-word names with no middle", () => {
+  test("does NOT collapse two-word names with no middle", async () => {
     // "Sarah Chen" appears in many sources. There is no variant here, and no
     // middle to compare. Conservative: never collapse a two-word row.
     const twoWordChunk: IdentifierChunk = {
@@ -220,12 +221,12 @@ describe("extractIdentifiers", () => {
       document: "doc",
       text: "Sarah Chen represented the petitioner. Sarah Chen is partner.",
     }
-    const data = extractIdentifiers([twoWordChunk])
+    const data = await extractIdentifiers([twoWordChunk])
     const personValues = rowsOfType(data, "person")
     expect(personValues).toContain("Sarah Chen")
   })
 
-  test("preserves source diversity after collapse", () => {
+  test("preserves source diversity after collapse", async () => {
     // Same entity from two different sources — collapse to longest form but
     // keep both rows so the inventory still shows the entity in both sources.
     const multiSourceChunkA: IdentifierChunk = {
@@ -238,14 +239,14 @@ describe("extractIdentifiers", () => {
       document: "docB.docx",
       text: "I represent Taylor Renee Morgan in this matter.",
     }
-    const data = extractIdentifiers([multiSourceChunkA, multiSourceChunkB])
+    const data = await extractIdentifiers([multiSourceChunkA, multiSourceChunkB])
     const personRows = data.rows.filter((r) => r.type === "person" && r.value === "Taylor Renee Morgan")
     expect(personRows.length).toBeGreaterThanOrEqual(2)
     expect(personRows.some((r) => r.source === "docA.docx")).toBe(true)
     expect(personRows.some((r) => r.source === "docB.docx")).toBe(true)
   })
 
-  test("original surface form survives in the Context column after collapse", () => {
+  test("original surface form survives in the Context column after collapse", async () => {
     // The Value is normalized but the Context column preserves the source
     // text verbatim — so "Taylor R. Morgan" still appears in the row whose
     // Value was normalized, just in the Context. This is the audit trail.
@@ -259,12 +260,117 @@ describe("extractIdentifiers", () => {
       document: "doc",
       text: "Counsel for Taylor Renee Morgan confirmed consent.",
     }
-    const data = extractIdentifiers([variantChunk, fullChunk])
+    const data = await extractIdentifiers([variantChunk, fullChunk])
     const normalizedRow = data.rows.find(
       (r) => r.type === "person" && r.value === "Taylor Renee Morgan" && r.chunk_id === "doc-c001",
     )
     expect(normalizedRow).toBeDefined()
     expect(normalizedRow!.context).toContain("Taylor R. Morgan")
+  })
+})
+
+// Authored synthetic documents; the names, case IDs and amounts are invented.
+const agreement = ["ARTICLE 1\nCounsel for Taylor Renee Morgan confirmed consent.", "Example Procurement Services pays $437.00 by August 3, 2023."]
+const notice = ["Taylor R. Morgan coordinates the fictional project.", "Example Procurement Services filed Case No. 00-TEST-0000001."]
+const schedule = ["SCHEDULE 1\nMorgan Ellis of Example Research Institute approves the budget."]
+
+function matterChunks(documents: Record<string, string[]>): IdentifierChunk[] {
+  return Object.entries(documents).flatMap(([document, texts]) =>
+    texts.map((text, index) => ({ id: `${document}-c${String(index + 1).padStart(3, "0")}`, document, text })))
+}
+
+// The file as writeMatterIdentifiers stores and readMatterIdentifiers reads it.
+async function stored(documents: Record<string, string[]>) {
+  return JSON.parse(JSON.stringify(await extractIdentifiers(matterChunks(documents)))) as MatterIdentifiers
+}
+
+function withoutTime(data: MatterIdentifiers) {
+  return JSON.stringify({ ...data, generated_at: "" })
+}
+
+describe("extraction from the matter's previous identifiers", () => {
+  test("gives exactly what a full extraction gives after an upload, an edit and a delete", async () => {
+    const previous = await stored({ "Agreement.docx": agreement, "Notice.docx": notice })
+    const states: Record<string, string[]>[] = [
+      { "Agreement.docx": agreement, "Notice.docx": notice, "Schedule.docx": schedule },
+      { "Agreement.docx": agreement, "Notice.docx": [notice[0]!, "Example Procurement Services filed Case No. 00-TEST-0000002."] },
+      { "Notice.docx": notice },
+      { "Schedule.docx": schedule, "Agreement.docx": agreement },
+    ]
+    for (const documents of states) {
+      const chunks = matterChunks(documents)
+      expect(withoutTime(await extractIdentifiers(chunks, previous))).toBe(withoutTime(await extractIdentifiers(chunks)))
+    }
+  })
+
+  test("parses only the chunks of new or changed documents", async () => {
+    const previous = await stored({ "Agreement.docx": agreement, "Notice.docx": notice })
+    const scan = spyOn(identifiers, "scanChunk")
+    const scanned = () => scan.mock.calls.map(([chunk]) => chunk.id)
+    try {
+      await extractIdentifiers(matterChunks({ "Agreement.docx": agreement, "Notice.docx": notice, "Schedule.docx": schedule }), previous)
+      expect(scanned()).toEqual(["Schedule.docx-c001"])
+      scan.mockClear()
+      await extractIdentifiers(matterChunks({ "Notice.docx": notice }), previous)
+      expect(scanned()).toEqual([])
+      // The same text wrapped differently moves the rows' line and context, so
+      // it is parsed again.
+      const rewrapped = matterChunks({ "Agreement.docx": agreement, "Notice.docx": notice }).map((chunk) =>
+        chunk.document === "Notice.docx" ? { ...chunk, file: { text: chunk.text.replace(" ", "\n"), inserted: [] } } : chunk)
+      await extractIdentifiers(rewrapped, previous)
+      expect(scanned()).toEqual(["Notice.docx-c001", "Notice.docx-c002"])
+    } finally {
+      scan.mockRestore()
+    }
+  })
+
+  test("deleting the document with the full middle name returns the others' rows to their surface form", async () => {
+    const previous = await stored({ "Agreement.docx": agreement, "Notice.docx": notice })
+    const collapsed = previous.rows.find((row) => row.type === "person" && row.source === "Notice.docx")
+    expect(collapsed).toMatchObject({ value: "Taylor Renee Morgan", surface: "Taylor R. Morgan" })
+    const after = await extractIdentifiers(matterChunks({ "Notice.docx": notice }), previous)
+    expect(after.rows.some((row) => row.source === "Agreement.docx")).toBe(false)
+    const person = after.rows.find((row) => row.type === "person")
+    expect(person?.value).toBe("Taylor R. Morgan")
+    expect(person && "surface" in person).toBe(false)
+  })
+
+  test("a previous file whose rows are not described by its sources is not reused", async () => {
+    const previous = await stored({ "Agreement.docx": agreement, "Notice.docx": notice })
+    const chunks = matterChunks({ "Agreement.docx": agreement, "Notice.docx": notice })
+    const full = withoutTime(await extractIdentifiers(chunks))
+    const first = previous.rows[0]!
+    const unusable = [
+      { ...previous, sources: undefined },
+      { ...previous, sources: [...previous.sources, previous.sources[0]] },
+      { ...previous, rows: [...previous.rows, { ...first, source: "Elsewhere.docx" }] },
+      { ...previous, rows: [{ ...first, line: String(first.line) }, ...previous.rows.slice(1)] },
+      { ...previous, rows: [{ ...first, note: "edited" }, ...previous.rows.slice(1)] },
+    ]
+    const scan = spyOn(identifiers, "scanChunk")
+    try {
+      for (const file of unusable) {
+        scan.mockClear()
+        const data = await extractIdentifiers(chunks, file as unknown as MatterIdentifiers)
+        expect(scan).toHaveBeenCalledTimes(chunks.length)
+        expect(withoutTime(data)).toBe(full)
+      }
+    } finally {
+      scan.mockRestore()
+    }
+  })
+
+  test("lets other work run between the chunks it parses", async () => {
+    const chunks = matterChunks({ "Long.docx": Array.from({ length: 16 }, (_, index) => `${index + 1}. ${notice[0]}`) })
+    const scan = spyOn(identifiers, "scanChunk")
+    try {
+      const parsedWhenTimerRan = new Promise<number>((resolve) => setTimeout(() => resolve(scan.mock.calls.length), 0))
+      await extractIdentifiers(chunks)
+      expect(scan).toHaveBeenCalledTimes(chunks.length)
+      expect(await parsedWhenTimerRan).toBeLessThan(chunks.length)
+    } finally {
+      scan.mockRestore()
+    }
   })
 })
 
@@ -276,14 +382,14 @@ describe("wrapped chunk files", () => {
     expect(fileOffset(2500, [1000, 2000])).toBe(2502)
   })
 
-  test("extracts values from the source text and locates them in the wrapped file", () => {
+  test("extracts values from the source text and locates them in the wrapped file", async () => {
     // The file hard-cuts the run of x's (a line break inserted before source
     // offset 5) and turns three spaces into line breaks, two of them inside names.
     const text = "xxxxxxxxxx Taylor Morgan signed. The notice was signed by Morgan Ellis for Example Procurement Services today."
     const file = "xxxxx\nxxxxx\nTaylor Morgan signed. The notice was signed by Morgan\nEllis for Example Procurement\nServices today."
     const line3 = "Taylor Morgan signed. The notice was signed by Morgan"
     const chunk: IdentifierChunk = { id: "doc-c001", document: "doc", text, file: { text: file, inserted: [5] } }
-    const rows = extractIdentifiers([chunk]).rows
+    const rows = (await extractIdentifiers([chunk])).rows
     const located = (type: string) => rows.filter((row) => row.type === type).map((row) => [row.value, row.line, row.context])
     expect(located("person")).toEqual([
       ["Taylor Morgan", 3, line3],
@@ -294,8 +400,8 @@ describe("wrapped chunk files", () => {
 })
 
 describe("renderIdentifiersMarkdown", () => {
-  test("renders grouped table by type with counts", () => {
-    const data = extractIdentifiers([sampleChunk])
+  test("renders grouped table by type with counts", async () => {
+    const data = await extractIdentifiers([sampleChunk])
     const md = renderIdentifiersMarkdown(data)
     expect(md).toContain("# Matter Identifiers")
     expect(md).toContain("## person")
@@ -305,7 +411,7 @@ describe("renderIdentifiersMarkdown", () => {
   })
 
   test("markdown is stable for empty inventory", () => {
-    const md = renderIdentifiersMarkdown({ schema_version: IDENTIFIERS_SCHEMA_VERSION, generated_at: "2026-06-28T00:00:00Z", documents: 0, rows: [] })
+    const md = renderIdentifiersMarkdown({ schema_version: IDENTIFIERS_SCHEMA_VERSION, generated_at: "2026-06-28T00:00:00Z", documents: 0, sources: [], rows: [] })
     expect(md).toContain("# Matter Identifiers")
     expect(md).toContain("0 identifiers")
   })
