@@ -31,13 +31,16 @@ type Hunk = {
   untracked: boolean
 }
 // One of left's pending tracked changes and what right did with it: still a
-// tracked change in right, accepted, or reversed by the untracked edit `untracked`.
+// tracked change in right (countered: right also holds its own tracked change
+// reversing it), accepted, or rejected (removed or changed with no tracked change).
+// `untracked` is the U-id of the edit made without tracked changes that removed a
+// rejected one; on any other outcome, an untracked edit in the same paragraph.
 type Proposal = {
   id: string
   kind: "inserted" | "deleted"
   text: string
   author: string
-  outcome: "pending" | "accepted" | "undone"
+  outcome: "pending" | "countered" | "accepted" | "rejected"
   untracked?: string
   location: Hunk["location"]
 }
@@ -55,7 +58,7 @@ type Comparison = {
 
 export default tool({
   description:
-    "Compare two versions of a Word (.docx) document in this matter and list every difference, deterministically (no model call). left is the earlier version (for example the draft we sent); right is the later version (for example their returned draft). Lists edits made without tracked changes first (ids U1, U2…: differences that right does not show as tracked changes), then left's pending tracked changes and what right did with each (ids P1, P2…: still pending, accepted, or undone without tracking by a U-id), then every change in the blackline (ids C1, C2…), each with its kind, location (clause number, nearest heading, paragraph) and text. Also reports each side's pending tracked changes. Long lists are paged: follow the returned offset until the end. The user gets an Open blackline card to view or download the Word blackline; nothing is saved to the matter. DOCX only: a PDF must be converted to DOCX first.",
+    "Compare two versions of a Word (.docx) document in this matter and list every difference, deterministically (no model call). left is the earlier version (for example the draft we sent); right is the later version (for example their returned draft). Lists edits made without tracked changes first (ids U1, U2…: differences that right does not show as tracked changes), then left's pending tracked changes and what right did with each (ids P1, P2…: still pending, reversed by right's own tracked change, accepted, or rejected or changed without a tracked change, with the U-id of the edit that did it), then every change in the blackline (ids C1, C2…), each with its kind, location (clause number, nearest heading, paragraph) and text. Also reports each side's pending tracked changes. Long lists are paged: follow the returned offset until the end. The user gets an Open blackline card to view or download the Word blackline; nothing is saved to the matter. DOCX only: a PDF must be converted to DOCX first.",
   args: {
     left: tool.schema.string().describe('Earlier version: a document file name in this matter, e.g. "Supply Agreement v1.docx"'),
     right: tool.schema.string().describe('Later version: a document file name in this matter, e.g. "Supply Agreement v2 returned.docx"'),
@@ -86,19 +89,29 @@ export default tool({
     const proposals = body.proposals ?? []
 
     // When right carries no tracked changes, every difference is untracked and
-    // the untracked list repeats the changes: list them once, and point an
-    // undone proposal's U-id at the change that lists the same edit.
+    // the untracked list repeats the changes: list them once, and point a
+    // proposal's U-id at the change that lists the same edit.
     const noTracked = body.right.trackedChanges.count === 0
-    const undoneBy = (id: string) => {
+    const listedAs = (id: string) => {
       const edit = noTracked ? body.untracked.find(hunk => hunk.id === id) : undefined
-      const listed = edit && body.changes.find(hunk => hunk.kind === edit.kind && hunk.before === edit.before && hunk.after === edit.after
-        && hunk.location.scope === edit.location.scope && hunk.location.paragraph === edit.location.paragraph)
-      return listed ? `${id}, listed as ${listed.id}` : id
+      return edit && body.changes.find(hunk => hunk.kind === edit.kind && hunk.before === edit.before && hunk.after === edit.after
+        && hunk.location.scope === edit.location.scope && hunk.location.paragraph === edit.location.paragraph)?.id
+    }
+    const editRef = (id: string) => {
+      const listed = listedAs(id)
+      return listed ? `${id}, listed as ${listed}` : id
+    }
+    // The listed edit that removed each rejected proposal names it back.
+    const removes = new Map<string, string[]>()
+    for (const proposal of proposals) {
+      if (proposal.outcome !== "rejected" || !proposal.untracked) continue
+      const edit = listedAs(proposal.untracked) ?? proposal.untracked
+      removes.set(edit, [...removes.get(edit) ?? [], proposal.id])
     }
     const items = [
-      ...(noTracked ? [] : body.untracked.map(hunk => prepare(hunk, "untracked", true))),
-      ...proposals.map(proposal => prepareProposal(proposal, undoneBy)),
-      ...body.changes.map(hunk => prepare(hunk, "changes", !noTracked)),
+      ...(noTracked ? [] : body.untracked.map(hunk => prepare(hunk, "untracked", true, removes.get(hunk.id)))),
+      ...proposals.map(proposal => prepareProposal(proposal, editRef)),
+      ...body.changes.map(hunk => prepare(hunk, "changes", !noTracked, noTracked ? removes.get(hunk.id) : undefined)),
     ]
     const offset = args.offset ?? 0
     if (offset > 0 && offset >= items.length)
@@ -184,43 +197,47 @@ export default tool({
 
 // Revision, heading and author text come from raw DOCX bytes, not ingest's
 // indexed text: apply the same normalization and injection rules. Flag; never
-// rewrite visible text.
+// rewrite visible text (block() only indents continuation lines).
 function scanned(parts: (string | undefined)[]) {
   const shown = parts.map(part => part === undefined ? undefined : normalizeUntrustedText(part))
   const findings = shown.flatMap(side => side ? [...side.findings, ...detectInjection(side.text)] : [])
   return { texts: shown.map(side => side?.text), rules: [...new Set(findings.map(finding => finding.rule))] }
 }
 
-function prepare(hunk: Hunk, section: "untracked" | "changes", markUntracked: boolean) {
+function prepare(hunk: Hunk, section: "untracked" | "changes", markUntracked: boolean, removed: string[] = []) {
   const { texts: [heading, before, after], rules } = scanned([hunk.location.heading || undefined, hunk.before, hunk.after])
   const tags = [
     hunk.kind,
     ...(markUntracked && section === "changes" && hunk.untracked ? ["includes an edit made without tracked changes"] : []),
+    ...(removed.length ? [`removes ${removed.length === 1 ? "proposal" : "proposals"} ${removed.join(", ")}`] : []),
     ...(rules.length ? [`flagged: ${rules.join(", ")}`] : []),
     where({ ...hunk.location, heading }),
   ]
   const text = [
     `${hunk.id} · ${tags.join(" · ")}`,
-    ...(before !== undefined ? [`  before: ${cap(before)}`] : []),
-    ...(after !== undefined ? [`  after: ${cap(after)}`] : []),
+    ...(before !== undefined ? [`  before: ${block(before)}`] : []),
+    ...(after !== undefined ? [`  after: ${block(after)}`] : []),
   ].join("\n")
   return { id: hunk.id, section, rules, text }
 }
 
-function prepareProposal(proposal: Proposal, undoneBy: (id: string) => string) {
+function prepareProposal(proposal: Proposal, editRef: (id: string) => string) {
   const { texts: [heading, author, text], rules } = scanned([proposal.location.heading || undefined, oneLine(proposal.author ?? "") || undefined, proposal.text])
+  const ref = proposal.untracked ? ` (${editRef(proposal.untracked)})` : ""
   const outcome = {
     pending: "still pending in right",
+    countered: "still pending in right, with right's own tracked change reversing it",
     accepted: "accepted",
-    undone: `undone without tracking${proposal.untracked ? ` (${undoneBy(proposal.untracked)})` : ""}`,
+    rejected: `rejected or changed, with no tracked change in right${ref}`,
   }[proposal.outcome]
   const tags = [
     author ? `${proposal.kind} by ${short(author)}` : proposal.kind,
     outcome,
+    ...(proposal.outcome !== "rejected" && ref ? [`its paragraph also has an edit made without tracked changes${ref}`] : []),
     ...(rules.length ? [`flagged: ${rules.join(", ")}`] : []),
     where({ ...proposal.location, heading }),
   ]
-  return { id: proposal.id, section: "proposals" as const, rules, text: `${proposal.id} · ${tags.join(" · ")}\n  text: ${cap(text ?? "")}` }
+  return { id: proposal.id, section: "proposals" as const, rules, text: `${proposal.id} · ${tags.join(" · ")}\n  text: ${block(text ?? "")}` }
 }
 
 function where(location: Hunk["location"]) {
@@ -231,6 +248,12 @@ function where(location: Hunk["location"]) {
       ? `${location.scope === "body" ? "" : `${location.scope} `}paragraph ${location.paragraph} of ${location.side}`
       : `${location.scope === "body" ? "" : `${location.scope}, `}paragraph not located`,
   ].filter(Boolean).join(", ")
+}
+
+// Changed text inside the frame, capped, with every continuation line indented so
+// no line of it can read as one of the listing's own section headings.
+function block(text: string) {
+  return cap(text).replace(/[\n\u0085\u2028\u2029]/g, "$&    ")
 }
 
 function cap(text: string, limit = TEXT_CAP) {
@@ -287,13 +310,13 @@ function short(author: string) {
 function outcomesLine(proposals: Proposal[]) {
   if (!proposals.length) return []
   const count = (outcome: Proposal["outcome"]) => proposals.filter(proposal => proposal.outcome === outcome).length
-  return [`Left's ${plural(proposals.length, "proposal")} (its pending tracked changes): ${count("pending")} still pending in right, ${count("accepted")} accepted, ${count("undone")} undone without tracking.`]
+  return [`Left's ${plural(proposals.length, "proposal")} (its pending tracked changes): ${count("pending")} still pending in right, ${count("countered")} reversed by right's tracked change, ${count("accepted")} accepted, ${count("rejected")} rejected or changed without a tracked change.`]
 }
 
 function pendingChangesLine(left: Side, right: Side) {
   const pending = [left, right].filter(side => side.pendingProposals > 0)
   if (!pending.length) return []
-  return [`Not included: doc.haus pending changes not yet in the stored file (${pending.map(side => `${side.name}: ${side.pendingProposals}`).join(", ")}). The comparison uses the stored files.`]
+  return [`Not included: doc.haus changes not yet in the stored file (${pending.map(side => `${side.name}: ${side.pendingProposals}`).join(", ")}). The comparison uses the stored files.`]
 }
 
 function plural(count: number, noun: string) {

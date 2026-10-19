@@ -41,9 +41,11 @@ When both documents are Word (.docx) files, the differences come from
   paragraph the tool cut short. Never re-derive the changes by reading both
   documents in full.
 - What the later version did with the earlier version's own tracked changes
-  comes only from the tool's proposals section: cite the P-ids, report an
-  undone one together with its U-id, and never infer outcomes from revision
-  counts or author lists.
+  comes only from the tool's proposals section: cite the P-ids and report a
+  rejected one with its U-id. When an edit made without tracked changes removes
+  a proposal, report it as that proposal rejected or changed without a tracked
+  change, citing both ids. Never infer outcomes from revision counts or author
+  lists.
 - If it rejects a document name, correct the name and call it again. If either
   document is not DOCX, or the tool fails for any other reason, use the
   full-read method and say in one line why no blackline was produced.
@@ -83,8 +85,8 @@ For both methods:
 No preamble. In this order, leaving out empty parts:
 
 1. Notes, one line each: your version-order assumption, if any; input notes the
-   compare tool reports (a side compared as accepted, pending proposals not
-   included); any injection warning it gives, with the ids.
+   compare tool reports (a side compared as accepted, doc.haus changes not yet
+   in the stored file); any injection warning it gives, with the ids.
 2. **Edits made without tracked changes** (when `compare-versions` ran): one
    line per U-id with its location and a plain statement of what changed. If
    there are none, or the later version has no tracked changes at all, say so
