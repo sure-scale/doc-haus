@@ -38,7 +38,8 @@ test("a later-body finding repairs the earlier owned body and retains accepted a
   expect(finalBodyParagraphs(directory, "d1").map(row => row.pid)).toEqual(readParagraphs(directory, "d1").map(row => row.pid))
   expect(readRepairRound(directory)?.substantive_attempts).toBe(1)
   expect(readRepairRound(directory)?.items[0]?.ref.document).toBe("d1")
-  expect(model.prompts.filter(row => row.agent === AGENT.draft && /Draft part \d+ of \d+ of "Covering letter"/.test(row.text))).toHaveLength(4)
+  // The covering letter is drafted once; the earlier body's repair reaches it through its change review.
+  expect(model.prompts.filter(row => row.agent === AGENT.draft && /Draft part \d+ of \d+ of "Covering letter"/.test(row.text))).toHaveLength(2)
   expect(model.prompts.filter(row => row.agent === AGENT["change-review"] && row.text.includes("We enclose the supply note for signature.")).length).toBeGreaterThanOrEqual(2)
 }, 120_000)
 

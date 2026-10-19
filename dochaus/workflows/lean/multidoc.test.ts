@@ -183,7 +183,7 @@ describe("lean drafting with several documents", () => {
     expect(model.count(AGENT.finalize)).toBe(0)
   }, 120_000)
 
-  test("an answer to a first-document question repeats earlier work before starting the later document", async () => {
+  test("an answer to a first-document question repeats earlier work but its accepted draft before starting the later document", async () => {
     const directory = matter()
     const firstChanges: Reply = prompt => {
       const answered = prompt.includes("No remedy; say so.")
@@ -212,9 +212,10 @@ describe("lean drafting with several documents", () => {
     const answered = scriptedModel(replies())
     const resumed = await runLean(directory, { sessions: answered.port })
     expect(resumed.status).toBe("completed")
-    expect(answered.counts()).toEqual([5, 2, 2, 1])
+    // Only the later document is drafted; the first document's accepted draft is kept.
+    expect(answered.counts()).toEqual([2, 2, 2, 1])
     const rerun = Object.keys(resumed.stages).filter(step => resumed.stages[step as keyof typeof resumed.stages]?.finished_at !== blocked.stages[step as keyof typeof blocked.stages]?.finished_at)
-    expect(rerun).toEqual(["discrepancy", "intake", "research", "research-review", "spine", "d1.draft", "d1.review", "d1.review-independent", "d1.review-wording", "d1.review-client-disadvantage", "d1.change-plan", "d1.change-prepare", "d1.changes", "d1.change-review", "d1.apply", "d2.draft", "d2.review", "d2.review-independent", "d2.review-wording", "d2.review-client-disadvantage", "d2.change-plan", "d2.change-prepare", "d2.changes", "d2.change-review", "d2.apply", "finalize", "checklist-check", "package-review", "gate"])
+    expect(rerun).toEqual(["discrepancy", "intake", "research", "research-review", "spine", "d1.review", "d1.review-independent", "d1.review-wording", "d1.review-client-disadvantage", "d1.change-plan", "d1.change-prepare", "d1.changes", "d1.change-review", "d1.apply", "d2.draft", "d2.review", "d2.review-independent", "d2.review-wording", "d2.review-client-disadvantage", "d2.change-plan", "d2.change-prepare", "d2.changes", "d2.change-review", "d2.apply", "finalize", "checklist-check", "package-review", "gate"])
     expect(readParagraphs(directory, "d2", "paragraphs-applied.json").map(row => row.text)).toContain(
       "The goods will be delivered as the supply note states: The supplier shall deliver the goods within thirty days of the order date, and late delivery carries no remedy.")
 
@@ -225,13 +226,15 @@ describe("lean drafting with several documents", () => {
     const edited = scriptedModel(replies())
     const reapplied = await runLean(directory, { sessions: edited.port })
     expect(reapplied.status).toBe("completed")
-    // An edited rationale is now an input of the dependent covering letter.
-    expect(edited.counts()).toEqual([2, 1, 1, 1])
+    // An edited rationale reaches the dependent covering letter through its review and change plan, not a redraft.
+    expect(edited.counts()).toEqual([0, 1, 1, 1])
     expect(edited.count(AGENT["change-review"])).toBe(2)
     expect(edited.count(AGENT["change-plan"])).toBe(1)
     expect(edited.count(AGENT["change-prepare"])).toBe(0)
     expect(reapplied.stages["d1.apply"]?.finished_at).not.toBe(resumed.stages["d1.apply"]?.finished_at)
-    ;(["d2.draft", "d2.review", "d2.review-independent", "d2.review-wording", "d2.review-client-disadvantage", "d2.change-plan", "d2.change-prepare", "d2.changes", "d2.change-review", "d2.apply"] as const).forEach(step => expect(reapplied.stages[step]?.finished_at).not.toBe(resumed.stages[step]?.finished_at))
+    // The letter's accepted draft is kept, and with its change list unchanged its applied body stands.
+    ;(["d2.draft", "d2.apply"] as const).forEach(step => expect(reapplied.stages[step]?.finished_at).toBe(resumed.stages[step]?.finished_at))
+    ;(["d2.review", "d2.review-independent", "d2.review-wording", "d2.review-client-disadvantage", "d2.change-plan", "d2.change-prepare", "d2.changes", "d2.change-review"] as const).forEach(step => expect(reapplied.stages[step]?.finished_at).not.toBe(resumed.stages[step]?.finished_at))
   }, 180_000)
 
   test("restoring to just after the first document's apply re-runs only the later document, the notes and the gate", async () => {

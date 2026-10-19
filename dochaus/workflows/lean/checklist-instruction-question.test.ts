@@ -8,7 +8,7 @@ import { PACKAGE_SCOPE_QUESTION, packageScopeQuestionID, scopeQuestionShows } fr
 import { leanSteps, readLeanPlan, writeLeanPlan, type PlannedDocument } from "./plan"
 import { enqueueLeanRequest } from "./requests"
 import { runLean, stageInputSha } from "./runner"
-import { handedBackItems, outlineBasis } from "./stages"
+import { handedBackItems } from "./stages"
 import { answerQuestion, leanFile, readLeanJson, readLeanState, readQuestions, replaceStageQuestions, updateLeanStage, writeLeanText, writeQuestions, type Question } from "./state"
 import { AGENT, cleanupMatters, happyPath, matter, scriptedModel } from "./test-support"
 
@@ -600,7 +600,7 @@ function instructionModel() {
   })
 }
 
-test("an instruction left open completes the run with one open gate question; resume and a gate re-run neither pause nor duplicate it; the answer re-runs the plan and is not asked again", async () => {
+test("an instruction left open completes the run with one open gate question; resume and a gate re-run neither pause nor duplicate it; the answer reaches the accepted draft through its review and is not asked again", async () => {
   const directory = matter()
   const state = await runLean(directory, { sessions: instructionModel().port })
   expect(state.status).toBe("completed")
@@ -625,16 +625,17 @@ test("an instruction left open completes the run with one open gate question; re
   expect((await runLean(directory, { sessions: idle.port })).status).toBe("completed")
   expect(idle.prompts).toHaveLength(0)
   expect(readQuestions(directory)).toEqual([question])
-  // The answer changes the plan's basis: the outline is asked again with it,
-  // and the checklist check receives it. The instruction still reported open
-  // stays disclosed and its answered question is not asked again.
-  const basis = readLeanPlan(directory)!.basis
+  // The saved plan is followed and the accepted draft kept: the answer reaches
+  // the document through its review, and the checklist check receives it. The
+  // instruction still reported open stays disclosed and its answered question
+  // is not asked again.
+  const plan = readLeanPlan(directory)
   enqueueLeanRequest(directory, { kind: "answer", question_id: question.id, answer: ANSWER })
   const answered = instructionModel()
   expect((await runLean(directory, { sessions: answered.port })).status).toBe("completed")
-  expect(answered.prompts.find(row => row.agent === AGENT.draft)!.text).toContain(ANSWER)
-  expect(readLeanPlan(directory)!.basis).not.toBe(basis)
-  expect(readLeanPlan(directory)!.basis).toBe(outlineBasis(directory))
+  expect(answered.count(AGENT.draft)).toBe(0)
+  expect(readLeanPlan(directory)).toEqual(plan)
+  expect(answered.prompts.filter(row => row.agent === AGENT.review).some(row => row.text.includes(ANSWER))).toBe(true)
   expect(answered.prompts.filter(row => row.agent === CHECKLIST_JOB_AGENTS.check).some(row => row.text.includes(ANSWER))).toBe(true)
   expect(readQuestions(directory)).toEqual([expect.objectContaining({ id: question.id, status: "answered", answer: ANSWER })])
   expect(readLeanJson(directory, "gate.json")).toMatchObject({ status: "pass", delivery: "review_draft" })

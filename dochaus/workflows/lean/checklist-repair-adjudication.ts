@@ -1,5 +1,4 @@
 import { leanClarifications } from "./requests"
-import { freshDraftRepairInputs } from "./fresh-draft-repair-context"
 import { buildChecklistDocumentContext, type ChecklistDocumentContext } from "./checklist-document-context"
 import { checklistItemSchema, checklistFindingSchema, isDeliveryArtifactEvidence, type ChecklistItem, type ChecklistFinding } from "./checklist-contract"
 import { checklistProducerInputs } from "./checklist-source-context"
@@ -136,12 +135,9 @@ export function mergeRepairAdjudications(previous: ChangePlan, results: RepairAd
 export async function runFocusedRepairAdjudication(directory: string, state: LeanState, deps: LeanDeps, document: DocID, progress: (patch: Partial<LeanStageState>) => void) {
   const assessments = focusedChecklistRepairs(directory, document)
   if (!assessments) return { status: "failed" as const, reason: "Focused repair requires checklist-only assessments." }
-  const acceptedPrevious = readChangePlan(directory, document)
-  let transition: ReturnType<typeof freshDraftRepairInputs> | undefined
-  try { if (!acceptedPrevious) transition = freshDraftRepairInputs(directory, document, assessments, REPAIR_ADJUDICATION_OUTPUT) }
-  catch (error) { return { status: "failed" as const, reason: error instanceof Error ? error.message : String(error) } }
-  const previous = acceptedPrevious ?? transition!.previous
-  const jobs = transition?.inputs ?? assessments.map(assessment => buildRepairAdjudicationInput(directory, document, assessment, previous))
+  const previous = readChangePlan(directory, document)
+  if (!previous) return { status: "failed" as const, reason: `${document}.change-plan: focused repair needs the accepted cumulative plan; absence must not discard prior amendments.` }
+  const jobs = assessments.map(assessment => buildRepairAdjudicationInput(directory, document, assessment, previous))
   const key = stageInputSha(directory, `${document}.change-plan`)
   const counts = { next: 0, calls: 0, attempts: 0, sessions: [] as string[] }
   const results: { item_id: string; value: RepairAdjudication }[] = []

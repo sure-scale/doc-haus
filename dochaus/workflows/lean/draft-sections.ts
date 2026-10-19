@@ -22,7 +22,6 @@ import {
   acceptStageReply,
   draftOutputValid,
   outlineBasis,
-  planBasisCurrent,
   stepOutputs,
   stepSessionTitle,
   type LeanDeps,
@@ -34,7 +33,7 @@ import { draftTemplateItems } from "./template-coverage"
 // Sectioned draft step. A long document can need more tokens than one model
 // reply may carry, so the draft agent writes one part per reply in the same
 // child session, so native history carries the parts already written. When the
-// run has no current plan, the first document's session starts with the outline
+// run has no plan, the first document's session starts with the outline
 // of every document the request asks for, which code saves as the run's plan;
 // otherwise each document's session starts from its planned entry and the final
 // text of the documents before it. Each reply is checked on its own and retried with the checker's
@@ -92,13 +91,6 @@ export const PLAN_COVERAGE_REVISIONS = 2
 /** Revised outlines the files job's issues may ask for before the plan is saved. */
 export const PLAN_FILES_REVISIONS = 2
 
-/** The saved plan is followed (planBasisCurrent) and, unless it was written by
- * hand, its coverage record checked this very plan (planCoverageCurrent, which
- * the first document's draft step also needs to count as done on resume). */
-export function planIsCurrent(directory: string) {
-  return planBasisCurrent(directory) && planCoverageCurrent(directory)
-}
-
 export async function runDraftStage(
   directory: string,
   state: LeanState,
@@ -106,7 +98,7 @@ export async function runDraftStage(
   progress: (patch: Partial<LeanStageState>) => void,
   document: DocID,
   planned: () => void | Promise<void>,
-  /** The step was done from these very inputs; only its saved output was found wanting. */
+  /** The step's draft was accepted in this run; only its saved output was found wanting. */
   current = false,
 ): Promise<DraftStageRun> {
   const step: StepID = `${document}.draft`
@@ -204,10 +196,9 @@ export async function runDraftStage(
     const refused = new Map<string, string>()
     return exchange({ id, agent: filesAgent })("files", requestedFilesPrompt(directory, documents, memo), (reply, final) => parseRequestedFiles(reply, directory, documents, memo, { final, refused }))
   }
-  // A plan whose outline basis is current is followed as it stands, including a
-  // lawyer's edits; only its coverage record is refreshed when it no longer
-  // matches the plan.
-  const outlined = document === FIRST_DOCUMENT && !planBasisCurrent(directory)
+  // Once saved, the plan is followed as it stands, including a lawyer's edits;
+  // only its coverage record is refreshed when it no longer matches the plan.
+  const outlined = document === FIRST_DOCUMENT && !readLeanPlan(directory)
   if (outlined) {
     const basis = outlineBasis(directory)
     // The lawyer's own words ground requested file names and the memo; a
@@ -292,15 +283,14 @@ export async function runDraftStage(
         reason: "The files job's reply did not pass its check, so the files the lawyer asks to receive could not be confirmed; the plan delivers its files as outlined and the drafting notes say so." })
     } else rmSync(leanFile(directory, "requested-files.json"), { force: true })
     writeLeanPlan(directory, named?.documents ?? value.documents, basis, value.acting_for, memo && { name: memo.name, file: named?.notes_file ?? memo.file })
-  } else if (document === FIRST_DOCUMENT && !planIsCurrent(directory)) {
+  } else if (document === FIRST_DOCUMENT && !planCoverageCurrent(directory)) {
     const saved = readLeanPlan(directory)!
     const coverage = await covering(saved.documents)
     recordCoverage(saved.documents, saved.acting_for, coverage)
     const blocked = scopeBlock(saved.documents, coverage)
     if (blocked) return blocked
     // When only the coverage record was out of date (a lawyer's edit to another
-    // document's entry, say), the draft already done from these inputs is kept
-    // with its open items.
+    // document's entry, say), the accepted draft is kept with its open items.
     if (current && draftOutputValid(directory, step)) {
       await planned()
       return { status: "done", outputs: stepOutputs(step), openItems: readOpenItems(directory).filter(item => item.stage === "draft" && item.ref.document === document) }

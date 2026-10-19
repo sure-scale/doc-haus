@@ -1,14 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { createHash } from "node:crypto"
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import { checkChanges } from "./change-checks"
 import { readParagraphs } from "./checks"
 import { readLeanDocuments } from "./deliverables"
-import { readLeanPlan, writeLeanPlan } from "./plan"
 import { restoreLeanStage } from "./restore-stage"
 import { runLean } from "./runner"
-import { outlineBasis, planBasisCurrent } from "./stages"
 import { answerQuestion, leanFile, readLeanJson, readOpenItems, readQuestions, writeQuestions, writeOpenItems, replaceStageQuestions, replaceStageOpenItems } from "./state"
 import {
   AGENT, APPLIED, DRAFT, DRAFTED, LETTER, QUESTION, SUPPORT, changesFirst, cleanupMatters, drafter, happyPath, listed, matter, noChanges, pidIn,
@@ -16,9 +13,9 @@ import {
 } from "./test-support"
 
 // Runs whose earlier steps change after a document has finished: a question
-// that a later document stops asking, lawyer's edits to the plan, and a re-plan
-// that puts the documents in another order. Real coordinator, checkers,
-// renderer, applier and gate; only the model is scripted.
+// that a later document stops asking and a lawyer's edit of the plan that drops
+// a document. Real coordinator, checkers, renderer, applier and gate; only the
+// model is scripted.
 
 const MARK = "[open item: whether late delivery carries a remedy]"
 const CONTEXT = "The terms are silent."
@@ -40,10 +37,6 @@ async function askedTwice() {
     { id: "question-d2", stage: "changes", kind: "question", detail: QUESTION, ref: { document: "d2", pid: letterPid, question_id: question.id }, status: "open" },
   ])
   return { directory, replies, question, notePid }
-}
-
-function sha(file: string) {
-  return createHash("sha256").update(readFileSync(file)).digest("hex")
 }
 
 describe("lean drafting when a finished document's steps change", () => {
@@ -101,66 +94,6 @@ describe("lean drafting when a finished document's steps change", () => {
       "body:d1:Supply note.docx", "redline:d1:Supply note - redline.docx", "drafting_notes:null:Supply note - drafting notes.docx", "drafting_notes_markdown:null:null",
     ])
   }, 180_000)
-
-  test("a lawyer's plan that drops the first document and renumbers the second redrafts it from its entry under its own name", async () => {
-    const directory = matter()
-    const deliverables = registering()
-    const replies = { ...happyPath, [AGENT.draft]: drafter(DRAFT, LETTER), [AGENT.review]: reviewFirst, [AGENT.changes]: changesFirst }
-    const first = await runLean(directory, { sessions: scriptedModel(replies).port, registerDeliverable: deliverables.registerDeliverable })
-    expect(first.status).toBe("completed")
-
-    const plan = JSON.parse(readFileSync(leanFile(directory, "plan.json"), "utf8"))
-    writeFileSync(leanFile(directory, "plan.json"), `${JSON.stringify({ ...plan, documents: [{ ...plan.documents[1], id: "d1" }] }, null, 2)}\n`)
-    const model = scriptedModel(replies)
-    const state = await runLean(directory, { sessions: model.port, registerDeliverable: deliverables.registerDeliverable })
-
-    expect(state.status).toBe("completed")
-    expect(model.counts()).toEqual([2, 1, 1, 1])
-    expect(model.prompts.some(prompt => prompt.text.includes("Reply now with the outline only"))).toBe(false)
-    expect(readLeanPlan(directory)?.documents.map(row => [row.id, row.title])).toEqual([["d1", "Covering letter"]])
-    expect(readFileSync(leanFile(directory, "d1/draft.md"), "utf8")).toStartWith("# Covering letter\n")
-    expect(readLeanDocuments(directory)!.documents.map(row => `${row.kind}:${row.document}:${row.title}:${row.deliverable}`)).toEqual([
-      "body:d1:Covering letter:Covering letter.docx",
-      "redline:d1:Covering letter:Covering letter - redline.docx",
-      "drafting_notes:null:null:Covering letter - drafting notes.docx",
-      "drafting_notes_markdown:null:null:null",
-    ])
-    expect(sha(path.join(directory, "Covering letter.docx"))).toBe(sha(leanFile(directory, "d1/body-applied.docx")))
-    expect(existsSync(path.join(directory, "Covering letter (2).docx"))).toBe(false)
-  }, 180_000)
-
-  test("a re-plan that reorders the documents registers each body under its own title", async () => {
-    const directory = matter()
-    const deliverables = registering()
-    const replies = { ...happyPath, [AGENT.review]: reviewFirst, [AGENT.changes]: changesFirst }
-    const first = await runLean(directory, { sessions: scriptedModel({ ...replies, [AGENT.draft]: drafter(DRAFT, LETTER) }).port, registerDeliverable: deliverables.registerDeliverable })
-    expect(first.status).toBe("completed")
-
-    writeFileSync(leanFile(directory, "request.md"), "Draft a covering letter enclosing a short supply note from the supply terms.\n")
-    const replanned = await runLean(directory, { sessions: scriptedModel({ ...replies, [AGENT.draft]: drafter(LETTER, DRAFT) }).port, registerDeliverable: deliverables.registerDeliverable })
-    expect(replanned.status).toBe("completed")
-    expect(readLeanPlan(directory)?.documents.map(row => [row.id, row.title])).toEqual([["d1", "Covering letter"], ["d2", "Supply note"]])
-    expect(readLeanDocuments(directory)!.documents.slice(0, 4).map(row => `${row.kind}:${row.document}:${row.title}:${row.deliverable}`)).toEqual([
-      "body:d1:Covering letter:Covering letter.docx",
-      "redline:d1:Covering letter:Covering letter - redline.docx",
-      "body:d2:Supply note:Supply note.docx",
-      "redline:d2:Supply note:Supply note - redline.docx",
-    ])
-    expect(sha(path.join(directory, "Covering letter.docx"))).toBe(sha(leanFile(directory, "d1/body-applied.docx")))
-    expect(sha(path.join(directory, "Supply note.docx"))).toBe(sha(leanFile(directory, "d2/body-applied.docx")))
-  }, 180_000)
-
-  test("a saved plan is followed until the request it was outlined from changes; a plan without its basis is followed as written", () => {
-    const directory = matter()
-    const parts = [{ heading: "Delivery", scope: "" }]
-    expect(planBasisCurrent(directory)).toBe(false)
-    writeLeanPlan(directory, [{ title: "Supply note", purpose: "", parts }], outlineBasis(directory))
-    expect(planBasisCurrent(directory)).toBe(true)
-    writeFileSync(leanFile(directory, "request.md"), "Draft a covering letter for the supply note.\n")
-    expect(planBasisCurrent(directory)).toBe(false)
-    writeLeanPlan(directory, [{ title: "Supply note", purpose: "", parts }])
-    expect(planBasisCurrent(directory)).toBe(true)
-  })
 
   test("a question repeated by id without a paragraph keeps the earlier paragraph only in the same document", () => {
     const directory = matter()

@@ -255,13 +255,13 @@ describe("requested files through the run", () => {
     expect(gateOf(directory)).toMatchObject({ status: "pass", blocking: [] })
     expect(gateOf(directory).disclosed).toContainEqual(expect.objectContaining({ id: items[0]!.id, status: "disclosed" }))
 
-    // A later update that leaves these words as they were: the plan is drawn up
-    // again, with no revision and no new question, and the item still cites the answer.
+    // A later update: the saved plan is followed, so nothing is outlined, filed
+    // or asked again, and the item still cites the answer.
     enqueueLeanRequest(directory, { kind: "update", text: "Address the release letter to the Orchard Committee." })
     const updated = scriptedModel(replies({ [AGENT.draft]: outliner(BODY), [AGENT.files]: filesOf(requoted) }))
     expect((await runLean(directory, { sessions: updated.port })).status).toBe("completed")
-    expect(outlinePrompt(updated).text).toContain("Address the release letter to the Orchard Committee.")
-    expect(updated.count(AGENT.files)).toBe(1)
+    expect(updated.count(AGENT.draft)).toBe(0)
+    expect(updated.count(AGENT.files)).toBe(0)
     expect(revisions(updated)).toEqual([])
     expect(readQuestions(directory)).toEqual([expect.objectContaining({ id: asked[0]!.id, status: "answered", answer: ANSWER })])
     expect(requestedFilesItems(directory).map(item => item.detail)).toEqual([items[0]!.detail])

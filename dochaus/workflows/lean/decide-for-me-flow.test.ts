@@ -178,10 +178,12 @@ test("a hand-back runs through the queue, its checks and the gate to a review dr
   expect(gate(directory)).toMatchObject({ status: "pass", delivery: "review_draft" })
 
   // 5. A real answer supersedes the hand-back: it is recorded as the lawyer's,
-  //    the stages that read answers rerun, a spine still carrying the drafting
-  //    choice is refused, and nothing is left to disclose for the question.
-  const counts = () => [AGENT.intake, AGENT.spine, AGENT.draft, AGENT.finalize].map(agent => model.count(agent))
+  //    the stages that read answers rerun while the accepted draft is kept, a
+  //    spine still carrying the drafting choice is refused, and nothing is
+  //    left to disclose for the question.
+  const counts = () => [AGENT.intake, AGENT.spine, AGENT.review, AGENT.finalize].map(agent => model.count(agent))
   const before = counts()
+  const drafted = model.count(AGENT.draft)
   armed.spine.push("stale")
   const answered = model.prompts.length
   const answer = enqueueLeanRequest(directory, { kind: "answer", question_id: id, answer: ANSWER })
@@ -194,6 +196,7 @@ test("a hand-back runs through the queue, its checks and the gate to a review dr
   expect(handedBackBlock(directory)).toBe("")
   expect(handedBackItems(directory)).toEqual([])
   counts().forEach((count, index) => expect(count).toBeGreaterThan(before[index]!))
+  expect(model.count(AGENT.draft)).toBe(drafted)
   const respined = since(answered, AGENT.spine)
   expect(respined).toHaveLength(2)
   expect(respined[0]).toContain(ANSWER)

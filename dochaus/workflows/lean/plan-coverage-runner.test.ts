@@ -250,7 +250,7 @@ describe("plan coverage through the run", () => {
     expect(readLeanCoverage(directory)).toMatchObject({ status: "covered", issues: [] })
 
     // The lawyer adds a party the record names nowhere to d2 only; d1's plan entry is unchanged.
-    const drafted = readLeanText(directory, "d1/draft.md")
+    const drafted = ["d1", "d2"].map(document => readLeanText(directory, `${document}/draft.md`))
     const plan = readLeanPlan(directory)!
     const edited = { ...plan, documents: plan.documents.map(row => row.id === "d2" ? { ...row, executed_by: [...row.executed_by!, "the Heron Trust"] } : row) }
     writeLeanText(directory, "plan.json", `${JSON.stringify(edited, null, 2)}\n`)
@@ -258,11 +258,11 @@ describe("plan coverage through the run", () => {
     expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
 
     // Checked once more, against the plan as the lawyer left it, which is followed and not outlined
-    // again; d1's draft is kept and only d2, whose entry changed, is drafted again (one part).
+    // again; both accepted drafts are kept, and d2's changed entry reaches it through its review and change plan.
     expect(model.count(AGENT.coverage)).toBe(1)
     expect(revisions(model)).toEqual([])
-    expect(model.count(AGENT.draft)).toBe(1)
-    expect(readLeanText(directory, "d1/draft.md")).toBe(drafted)
+    expect(model.count(AGENT.draft)).toBe(0)
+    expect(["d1", "d2"].map(document => readLeanText(directory, `${document}/draft.md`))).toEqual(drafted)
     expect(readLeanPlan(directory)).toEqual(edited)
     expect(readLeanCoverage(directory)).toMatchObject({
       plan: coveragePlanHash(edited.documents, edited.acting_for), status: "uncovered",
@@ -277,7 +277,7 @@ describe("plan coverage through the run", () => {
   // The recheck keeps d1's draft only while its saved output still passes.
   for (const [name, damage] of [
     ["its paragraph pointers are deleted", (directory: string) => rmSync(leanFile(directory, "d1/paragraphs.json"))],
-    ["its text is cleared", (directory: string) => writeLeanText(directory, "d1/draft.md", "")],
+    ["its Word body is deleted", (directory: string) => rmSync(leanFile(directory, "d1/body.docx"))],
   ] as const)
     test(`after that edit, d1's draft is written again, not kept, when ${name}`, async () => {
       const { directory, run, drafted } = await laterPartiesEdited()
@@ -287,7 +287,7 @@ describe("plan coverage through the run", () => {
 
       expect(model.count(AGENT.coverage)).toBe(1)
       expect(model.prompts.filter(prompt => prompt.agent === AGENT.draft).map(prompt => /^Draft part 1 of 1 of "([^"]+)"/m.exec(prompt.text)?.[1]))
-        .toEqual(["Committee resolution", "Release letter"])
+        .toEqual(["Committee resolution"])
       expect(readLeanText(directory, "d1/draft.md")).toBe(drafted)
       expect(readParagraphs(directory, "d1")).not.toEqual([])
     }, 120_000)
@@ -296,16 +296,17 @@ describe("plan coverage through the run", () => {
     const { directory, run, drafted } = await laterPartiesEdited()
     const own = openItem("draft", "omission", "The resolution leaves the meeting date open.", { document: "d1" })
     const reviewed = openItem("review", "omission", "The resolution's quorum is not stated.", { document: "d1" })
-    writeOpenItems(directory, [own, openItem("draft", "omission", "The letter leaves the release date open.", { document: "d2" }), reviewed])
+    const other = openItem("draft", "omission", "The letter leaves the release date open.", { document: "d2" })
+    writeOpenItems(directory, [own, other, reviewed])
     const model = run()
     expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
 
-    // d1's draft is kept with its own item; d2's item went with d2's new draft; d1's review item stays once.
-    expect(model.count(AGENT.draft)).toBe(1)
+    // d1's draft is kept with its own item; d2's kept draft keeps its item; d1's review item stays once.
+    expect(model.count(AGENT.draft)).toBe(0)
     expect(readLeanText(directory, "d1/draft.md")).toBe(drafted)
     const left = readOpenItems(directory).filter(item => item.stage === "draft" || item.stage === "review")
-    expect(left).toHaveLength(2)
-    expect(left).toEqual(expect.arrayContaining([own, reviewed]))
+    expect(left).toHaveLength(3)
+    expect(left).toEqual(expect.arrayContaining([own, other, reviewed]))
   }, 120_000)
 
   test("an outlined plan whose coverage record is missing is checked again; a plan written by hand without one is followed unchecked", async () => {

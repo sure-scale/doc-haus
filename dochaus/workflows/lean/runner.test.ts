@@ -201,7 +201,7 @@ describe("lean drafting runner", () => {
       .toContain("The supplier shall deliver the goods within thirty days of the order date.")
   }, 120_000)
 
-  test("a question is never answered by the run; an answer repeats drafting and review and is not asked again", async () => {
+  test("a question is never answered by the run; an answer repeats the review, not the accepted draft, and is not asked again", async () => {
     const directory = matter()
     const asking = sameSession(prompt => JSON.stringify({ ...JSON.parse(changes(prompt, 0)), questions: [{ question: "Should late delivery carry a remedy?", context: "The terms are silent." }] }))
     const model = scriptedModel({ ...happyPath, [AGENT.changes]: asking })
@@ -218,7 +218,7 @@ describe("lean drafting runner", () => {
     enqueueLeanRequest(directory, { kind: "answer", question_id: question!.id, answer: "No remedy; leave the terms silent." })
     const answered = scriptedModel({ ...happyPath, [AGENT.changes]: asking })
     const resumed = await runLean(directory, { sessions: answered.port })
-    expect(answered.counts()).toEqual([3, 1, 1, 1])
+    expect(answered.counts()).toEqual([0, 1, 1, 1])
     expect(answered.prompts.find(prompt => prompt.agent === AGENT.changes)!.text).toContain("No remedy; leave the terms silent.")
     expect(readQuestions(directory)).toEqual([expect.objectContaining({ id: question!.id, status: "answered" })])
     expect(resumed.status).toBe("completed")
