@@ -69,7 +69,7 @@ test("saved settings update warm matters, rotate tokens and disconnect on opt-ou
   await until(() => JSON.stringify(servers.get("courtlistener")).includes("second-synthetic-token"))
   save({ courtlistenerMcpEnabled: false, caseLawApiKey: "second-synthetic-token" })
   await until(() => !servers.has("courtlistener"))
-})
+}, 30_000)
 
 test("account and native refreshes retain local Python and remove every unapproved remote", async () => {
   const { servers, save, reload } = await fixture({ courtlistenerMcpEnabled: true, caseLawApiKey: "synthetic-token" })
@@ -133,8 +133,10 @@ test("a failing native editor does not throw from the transform and reports fail
   expect(researchConsentStatus(root)).toBe("failed")
 })
 
+// The plugin reloads on a file watch; on macOS a watch event can take a few
+// seconds to arrive.
 async function until(ready: () => boolean) {
-  const deadline = Date.now() + 3000
+  const deadline = Date.now() + 10_000
   while (!ready()) {
     if (Date.now() > deadline) throw new Error("Saved connector preferences did not apply")
     await Bun.sleep(20)
