@@ -84,8 +84,8 @@ test("non-formulaic phrasing produces no row", () => {
 
 test("schedule-referenced restatement still records an amend op (resolver handles missing replacement)", () => {
   // The regex detects that §4 is amended; the *replacement text* lives in an
-  // external Schedule the amender does not re-index. The resolver surfaces this
-  // honestly via the "replacement text not separately indexed" fallback.
+  // external Schedule the amender does not re-index. The resolver quotes this
+  // operative statement and says the current text of §4 is not resolved.
   const text = "Section 4 is hereby amended as set forth in Schedule A."
   const ops = extractSectionOps(text)
   expect(ops).toHaveLength(1)
