@@ -126,7 +126,37 @@ export function researchContextLocators(directory: string) {
   })
 }
 
-export function acceptResearchReply(directory: string, stage: ResearchStage, reply: string): StageAcceptance {
+/** Our own workflow file names, matched case-insensitively: anything under the
+ * matter's .dochaus directory, and the research files the review prompt names
+ * for reading (.dochaus/lean/research-context.txt and
+ * .dochaus/research-sources/<snapshot>.json), also without the leading folder. */
+const INTERNAL_PATHS = [".dochaus/", ".dochaus\\", "research-context.txt", "research-sources/", "research-sources\\"]
+
+/** Limitations and rejection reasons become research open items the lawyer
+ * reads; a finding's jurisdiction and currency reach the drafter and the
+ * drafting notes through researchHandoff. An internal file path in that text is
+ * retried, naming the field but not the path, because checker feedback reaches
+ * the narrator. Finding text is checked at the research stage, where it is
+ * written: the reviewer only selects ids and cannot change it. The prompt still
+ * gives the reviewer the paths it reads; the model's words are never rewritten.
+ * This is retry feedback, not a defect of saved research: checkResearch and
+ * checkReview, which re-check saved output on resume, do not apply it. */
+function internalPathIssues(stage: "research" | "research-review", value: unknown) {
+  if (!record(value)) return []
+  const rows = (list: unknown) => Array.isArray(list) ? list : []
+  const texts: [string, unknown][] = [...rows(value.limitations).map((text, index): [string, unknown] => [`limitations[${index}]`, text]),
+    ...stage === "research"
+      ? rows(value.findings).flatMap((row, index) => record(row) ? (["jurisdiction", "currentness", "limitations"] as const).map((key): [string, unknown] => [`findings[${index}].${key}`, row[key]]) : [])
+      : rows(value.rejected).map((row, index): [string, unknown] => [`rejected[${index}].reason`, record(row) ? row.reason : undefined])]
+  return texts.flatMap(([where, text]) => typeof text === "string" && INTERNAL_PATHS.some(name => text.toLowerCase().includes(name))
+    ? [`${where} names an internal workflow file. The lawyer reads this text: describe the gap in words, without file paths.`] : [])
+}
+
+/** Before the last attempt an internal file path is reported with any other
+ * issues, so it costs no extra retry. On the last attempt (`final`) it is not
+ * reported: a reply whose only issue is a path is saved as the model wrote it
+ * rather than failing the run. */
+export function acceptResearchReply(directory: string, stage: ResearchStage, reply: string, options: { final?: boolean } = {}): StageAcceptance {
   if (stage === "intake") {
     const questions = intakeQuestions(directory, reply, "intake")
     if (questions?.issues.length) return { issues: questions.issues, outputs: [], openItems: [] }
@@ -140,6 +170,7 @@ export function acceptResearchReply(directory: string, stage: ResearchStage, rep
     ? !record(value) || value.ready !== true || typeof value.scope !== "string" || !value.scope.trim() || typeof value.jurisdiction !== "string" || !value.jurisdiction.trim()
       ? ["Return material questions, or {ready:true,jurisdiction:the supplied governing jurisdiction or an explanation why none is needed,scope:the research scope}. Never mark ready while a material decision is unresolved."] : []
     : checkReview(directory, value)
+  if (stage !== "intake" && !options.final) issues.push(...internalPathIssues(stage, value))
   if (issues.length) return { issues, outputs: [], openItems: [] }
   if (stage === "research") writeLeanText(directory, "research-context.txt", readableResearchContext(directory, (value as Research).findings))
   writeLeanText(directory, `${stage}.json`, `${JSON.stringify(value, null, 2)}\n`)
