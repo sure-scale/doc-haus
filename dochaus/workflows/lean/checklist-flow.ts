@@ -7,7 +7,7 @@ import { checklistAdjudicationCounterevidenceSchema, type ChecklistAdjudicationC
 import { checklistFindingRecovery, buildChecklistCheckerPrompt, buildChecklistProducerPrompt, checklistFindingSchema, checklistItemSchema, checklistRefinementSchema, buildChecklistRefinementPrompt, type ChecklistRefinementInput, type ChecklistSourceReference, type ChecklistTargetDocument } from "./checklist-contract"
 import { buildChecklistDocumentContext } from "./checklist-document-context"
 import { runChecklistCheckJob, runChecklistExtractionJob, runChecklistRefinementJob, type ChecklistJobDeps } from "./checklist-job"
-import { checklistProducerInputs } from "./checklist-source-context"
+import { checklistJobInputs } from "./checklist-source-context"
 import { matterSourceBasis, snapshotRead, withSourceSnapshot } from "./quotes"
 import { readLeanJson, shortHash, writeLeanText } from "./state"
 
@@ -187,7 +187,7 @@ export async function runChecklistCheckFlow(directory: string, deps: ChecklistJo
 }
 
 function extractionInputs(directory: string, deps: ChecklistJobDeps) {
-  const jobs = checklistProducerInputs(directory)
+  const jobs = checklistJobInputs(directory)
   const basis = shortHash(JSON.stringify([matterSourceBasis(directory), jobs.map(job => job.input)]), 40)
   return jobs.map(job => ({ ...job, input_sha: shortHash(JSON.stringify(["checklist-extraction-1", deps.model, basis, buildChecklistProducerPrompt(job.input)]), 40) }))
 }
@@ -372,7 +372,7 @@ export function reconcileChecklistParentCoverage(directory: string, checks: Chec
 }
 
 export function checklistRefinementSourceBasis(directory: string, target?: ChecklistItem) {
-  const sources = snapshotRead(`checklist-sources\0${directory}`, () => [matterSourceBasis(directory), checklistProducerInputs(directory).map(job => job.input)])
+  const sources = snapshotRead(`checklist-sources\0${directory}`, () => [matterSourceBasis(directory), checklistJobInputs(directory).map(job => job.input)])
   return shortHash(JSON.stringify([...sources, ...(target ? [checklistTargetAssignments(directory, target)] : [])]), 40)
 }
 

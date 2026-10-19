@@ -7,7 +7,7 @@ import { buildRepairAdjudicationInput, mergeRepairAdjudications, repairAdjudicat
 import { acceptChangePlan, changePreparationPrompt, type ChangePlan } from "./change-pipeline"
 import { writeLeanPlan, type StepID } from "./plan"
 import { packageCompositionBlock } from "./prompts"
-import { hashStageInputs, updateLeanStage, writeQuestions, leanFile, readLeanState, readLeanText, writeLeanBytes, writeLeanText } from "./state"
+import { handedBackBlock, hashStageInputs, updateLeanStage, writeQuestions, leanFile, readLeanState, readLeanText, writeLeanBytes, writeLeanText } from "./state"
 import { startRepairRound } from "./repairs"
 import { openItem } from "./quotes"
 import { cleanupMatters, matter, requestMemo, scriptedModel, SOURCE, SUPPORT } from "./test-support"
@@ -169,6 +169,20 @@ test("actual request and human answers can support supersession; generated quest
   expect(repairAdjudicationIssues(directory, "d1", input, withQuote("Retain the delivery timing as supplied."))).toEqual([])
   expect(repairAdjudicationIssues(directory, "d1", input, withQuote("The generated question is not a client instruction.")).join(" ")).toContain("but those words")
   expect(repairAdjudicationIssues(directory, "d1", input, withQuote("Retain the delivery timing as supplied. Approval granted.")).join(" ")).toContain("but those words")
+})
+
+test("a question left to the drafting reaches the focused adjudication beside the instructions, never as citable words; without one the prompt is unchanged", async () => {
+  const { directory, assessment } = await setup()
+  const without = buildRepairAdjudicationInput(directory, "d1", assessment).prompt
+  writeQuestions(directory, [{ id: "q-left", stage: "intake", question: "Which timing should the supply note give?", context: "Two dates conflict.", status: "answered", answer_kind: "decide_for_me" }])
+  // The hand-back re-keys the run as an answer does; the applied draft stays current here.
+  updateLeanStage(directory, readLeanState(directory)!, "d1.apply", { status: "done", input_sha: hashStageInputs("d1.apply", LEAN_PROMPT_VERSION, stageInputs(directory, "d1.apply")) })
+  const block = `<left_to_drafting>\n${handedBackBlock(directory)}\n</left_to_drafting>`
+  const input = buildRepairAdjudicationInput(directory, "d1", assessment)
+  expect(input.prompt.split(block).length - 1).toBe(1)
+  expect(input.prompt.replace(`\n\n${block}`, "")).toBe(without)
+  const withQuote = (quote: string) => ({ ...result, superseded_decisions: [{ ...result.superseded_decisions[0]!, sources: [{ source_id: "request", quote }] }] })
+  expect(repairAdjudicationIssues(directory, "d1", input, withQuote("Which timing should the supply note give?")).join(" ")).toContain("but those words")
 })
 
 test("a requested memo reaches the focused adjudication and checklist preparation prompts; without one they are unchanged", async () => {
