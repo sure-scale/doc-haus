@@ -1,6 +1,5 @@
 import { Database } from "bun:sqlite"
 import { getMeta, setMeta } from "./db"
-import type { Section } from "./ingest"
 
 // Deterministic legal-document structure extraction. Each extractor is
 // signal-driven and optional: it records marked definitions, numbered
@@ -250,6 +249,65 @@ export function reconstructText(db: Database, docPath: string) {
     out = out.slice(0, row.char_start) + row.text
   }
   return out
+}
+
+// A clause line like "7.2 Termination" or "12. Governing Law": the dotted number
+// is the hierarchy key, the trailing text is the heading title.
+const CLAUSE_RE = /^\s*(\d+(?:\.\d+)*)[.)]?\s+(.+)$/
+// A heading line: short, mostly uppercase, no trailing sentence punctuation.
+const HEADING_RE = /^[A-Z0-9][A-Z0-9 ,'\-&/]{2,79}$/
+
+// label is the hierarchy key (the dotted clause number, or the heading text when
+// there is no number); title is the human heading line; number is the dotted
+// numeric when present, which drives the parent/child path nesting.
+export type Section = {
+  label: string
+  title: string
+  number: string | null
+  text: string
+  charStart: number
+  charEnd: number
+}
+
+export function sectionize(text: string): Section[] {
+  const sections: Section[] = []
+  let current: Section = { label: "Preamble", title: "Preamble", number: null, text: "", charStart: 0, charEnd: 0 }
+  let offset = 0
+
+  for (const line of text.split("\n")) {
+    // PDF extractors can emit Markdown headings; strip hashes so "## 7.2 Termination"
+    // sections the same as a plain "7.2 Termination" line.
+    const trimmed = line.trim().replace(/^#{1,6}\s+/, "")
+    const isMdHeading = trimmed !== line.trim()
+    const clause = trimmed.match(CLAUSE_RE)
+    const isHeading = clause || (isMdHeading ? isMarkdownHeading(trimmed) : trimmed.length > 0 && HEADING_RE.test(trimmed))
+    if (isHeading && trimmed.length > 0) {
+      if (current.text.trim()) {
+        current.charEnd = offset
+        sections.push(current)
+      }
+      const number = clause?.[1] ?? null
+      const title = (clause?.[2] ?? trimmed).trim()
+      current = { label: number ?? trimmed, title, number, text: line + "\n", charStart: offset, charEnd: 0 }
+    } else {
+      current.text += line + "\n"
+    }
+    offset += line.length + 1
+  }
+  if (current.text.trim()) {
+    current.charEnd = offset
+    sections.push(current)
+  }
+  return sections
+}
+
+function isMarkdownHeading(text: string) {
+  if (CLAUSE_RE.test(text)) return true
+  if (/^(appendix|annex|exhibit|schedule|article)\b/i.test(text)) return true
+  const words = text.match(/[A-Za-z][A-Za-z'’-]*/g) ?? []
+  if (words.length < 2) return false
+  if (/^[A-Z]{1,4}\s+\d+[A-Z0-9.-]*$/i.test(text)) return false
+  return !words.every((word) => ["a", "an", "and", "between", "for", "of", "or", "the"].includes(word.toLowerCase()))
 }
 
 // Build a human structural path per section from its heading numbering. Sections
