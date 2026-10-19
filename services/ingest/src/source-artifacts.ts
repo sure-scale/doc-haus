@@ -298,10 +298,10 @@ async function writeSourceChunks(matterDir: string, sourceRows: SourceRecord[], 
         // Chunk files are read by drafting agents through the generic `read`
         // tool, which truncates any single line beyond
         // 2000 characters mid-clause. Legal prose often emits an entire
-        // clause or recital as one line, so the artifact is soft-wrapped on
-        // sentence/clause boundaries before writing. This is safe: the
-        // authoritative offsets live in source-map.json (char ranges into the
-        // reconstructed extracted text), never in these read-only files.
+        // clause or recital as one line, so the artifact is soft-wrapped at
+        // spaces before writing (see wrapForReadability). The authoritative
+        // offsets live in source-map.json (char ranges into the reconstructed
+        // extracted text), never in these read-only files.
         Bun.write(
           path.join(matterDir, chunk.text_path),
           wrapForReadability(textByDocument.get(source.document)?.slice(chunk.start_char, chunk.end_char) ?? ""),
@@ -358,9 +358,12 @@ function sameIdentifierProjection(previous: MatterIdentifiers, current: MatterId
 }
 
 // Soft-wrap overly long lines so the generic read tool never truncates them.
-// Splits first on sentence/clause boundaries, then greedily packs the pieces
-// into lines under the cap, hard-wrapping any single piece that still exceeds
-// it. Existing short lines are untouched.
+// Quote and citation checks read these files, so the wrap never drops or
+// changes a character. Each break replaces the last space (U+0020) that keeps
+// the line within the cap, so the file keeps the source slice's length and
+// every other character's offset. Only a run of more than READ_LINE_CAP
+// characters without a space is cut, by inserting a line break (never between
+// the two halves of a surrogate pair). Short lines are untouched.
 const READ_LINE_CAP = 1000
 
 function wrapForReadability(text: string): string {
@@ -371,27 +374,27 @@ function wrapForReadability(text: string): string {
 }
 
 function wrapLine(line: string): string[] {
-  const pieces = line.split(/(?<=\.)\s+|(?<=;)\s+|\s+—\s+/).filter(Boolean)
   const out: string[] = []
-  let current = ""
-  for (const piece of pieces) {
-    if (piece.length > READ_LINE_CAP) {
-      if (current) {
-        out.push(current)
-        current = ""
-      }
-      for (let i = 0; i < piece.length; i += READ_LINE_CAP) out.push(piece.slice(i, i + READ_LINE_CAP))
+  let rest = line
+  while (rest.length > READ_LINE_CAP) {
+    const space = rest.lastIndexOf(" ", READ_LINE_CAP)
+    if (space > 0) {
+      out.push(rest.slice(0, space))
+      rest = rest.slice(space + 1)
       continue
     }
-    if (current && current.length + 1 + piece.length > READ_LINE_CAP) {
-      out.push(current)
-      current = piece
-    } else {
-      current = current ? `${current} ${piece}` : piece
-    }
+    const cut = isSurrogatePair(rest, READ_LINE_CAP - 1) ? READ_LINE_CAP - 1 : READ_LINE_CAP
+    out.push(rest.slice(0, cut))
+    rest = rest.slice(cut)
   }
-  if (current) out.push(current)
+  out.push(rest)
   return out
+}
+
+function isSurrogatePair(text: string, at: number) {
+  const high = text.charCodeAt(at)
+  const low = text.charCodeAt(at + 1)
+  return high >= 0xd800 && high <= 0xdbff && low >= 0xdc00 && low <= 0xdfff
 }
 
 function chunkSource(source: SourceRecord): SourceChunk[] {

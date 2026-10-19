@@ -3,7 +3,39 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { insertChunk, openDb, upsertDocument } from "./db"
-import { writeSourceArtifacts } from "./source-artifacts"
+import { sourceArtifactsMatchRegistry, writeSourceArtifacts } from "./source-artifacts"
+
+// The longest line a source chunk file may hold (the read-tool cap in source-artifacts.ts).
+const READ_LINE_CAP = 1000
+
+// Undo the soft wrap of a chunk file against its source slice. A line break the
+// wrap put in place of a space turns back into that space; a line break it
+// inserted between two characters is dropped and reported, so the caller can
+// check it sits inside a single run of more than READ_LINE_CAP non-space
+// characters. Any other difference is copied through and fails the comparison.
+function unwrapChunk(original: string, wrapped: string) {
+  let restored = ""
+  let at = 0
+  const inserted: number[] = []
+  for (const char of wrapped) {
+    if (char !== "\n" || original.startsWith("\n", at)) {
+      restored += char
+      at += char.length
+    } else if (original[at] === " ") {
+      restored += " "
+      at += 1
+    } else {
+      inserted.push(at)
+    }
+  }
+  return { restored, inserted }
+}
+
+function spaceFreeRunAt(text: string, at: number) {
+  const start = Math.max(text.lastIndexOf(" ", at - 1), text.lastIndexOf("\n", at - 1)) + 1
+  const ends = [text.indexOf(" ", at), text.indexOf("\n", at)].filter((end) => end !== -1)
+  return text.slice(start, ends.length ? Math.min(...ends) : text.length)
+}
 
 describe("source artifacts", () => {
   test("writes compact source maps and refreshes stale generated files", async () => {
@@ -184,6 +216,69 @@ describe("source artifacts", () => {
       expect(existsSync(ledger)).toBe(true)
       const rows = (await Bun.file(ledger).text()).trim().split("\n").map((l) => JSON.parse(l) as { tier: string; artifact: string })
       expect(rows.some((r) => r.tier === "PERMANENT" && r.artifact === ".dochaus/legal.db")).toBe(true)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("wraps long chunk lines at spaces without losing or changing a character", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "dochaus-source-artifacts-"))
+    try {
+      // Authored synthetic clause text; no real matter data.
+      const clause = "the Buyer — subject to Section 9.2 — against Losses"
+      const filler = (count: number) =>
+        Array.from({ length: count }, (_, i) => ["The", "Seller", "shall", "indemnify;", "notice.", "within", "thirty", "days"][i % 8]).join(" ")
+      const prose = `${filler(160)} ${clause} — and  each\tparty — ${filler(170)} ${clause}.`
+      const longToken = `See ${"x".repeat(2300)} for details.`
+      // Astral characters are two UTF-16 units; a cut between the halves would
+      // write a replacement character instead of the original.
+      const astralToken = `Marks a${"\u{1D538}".repeat(800)} end.`
+      const text = [prose, longToken, astralToken].join("\n\n")
+      expect(prose.length).toBeGreaterThan(2 * READ_LINE_CAP)
+
+      const db = openDb(dir)
+      const docPath = path.join(dir, "Wrapped.docx")
+      const documentId = upsertDocument(db, docPath, "Wrapped.docx", Date.now(), null)
+      insertChunk(db, {
+        documentId,
+        docPath,
+        docName: "Wrapped.docx",
+        section: "1",
+        structuralPath: "Wrapped",
+        party: "",
+        chunkIndex: 0,
+        text,
+        charStart: 0,
+        charEnd: text.length,
+        embedding: new Float32Array([1, 2, 3]),
+        flagged: false,
+      })
+      db.close()
+
+      await writeSourceArtifacts(dir)
+      const sourceMap = await Bun.file(path.join(dir, "source-map.json")).json() as {
+        documents: Array<{ chunks: Array<{ text_path: string; start_char: number; end_char: number }> }>
+      }
+      const chunks = sourceMap.documents[0]!.chunks
+      const files = await Promise.all(chunks.map((chunk) => Bun.file(path.join(dir, chunk.text_path)).text()))
+      const wrappedLines = files.flatMap((file) => file.split("\n"))
+
+      expect(wrappedLines.every((line) => line.length <= READ_LINE_CAP)).toBe(true)
+      expect(files.join("\n").replace(/\s+/g, " ").split(clause).length - 1).toBe(2)
+      chunks.forEach((chunk, index) => {
+        const original = text.slice(chunk.start_char, chunk.end_char)
+        const { restored, inserted } = unwrapChunk(original, files[index]!)
+        expect(restored).toBe(original)
+        for (const at of inserted) expect(spaceFreeRunAt(original, at).length).toBeGreaterThan(READ_LINE_CAP)
+      })
+      // Prose breaks sit near the cap (the last space that fits), not at every space.
+      const proseLines = wrappedLines.filter((line) => line.includes("indemnify;"))
+      expect(proseLines.length).toBeGreaterThan(1)
+      expect(proseLines.slice(0, -1).every((line) => line.length > READ_LINE_CAP - 12)).toBe(true)
+      // The over-long tokens are cut, nothing else: the short words around them keep their own lines intact.
+      expect(wrappedLines).toEqual(expect.arrayContaining(["See", "Marks"]))
+      expect(files.join("")).not.toContain("\uFFFD")
+      expect(sourceArtifactsMatchRegistry(dir)).toBe(true)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
