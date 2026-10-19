@@ -1,4 +1,5 @@
 import { Database } from "bun:sqlite"
+import { createHash } from "node:crypto"
 import { getMeta, setMeta } from "./db"
 
 // Deterministic legal-document structure extraction. Each extractor is
@@ -259,11 +260,16 @@ const HEADING_RE = /^[A-Z0-9][A-Z0-9 ,'\-&/]{2,79}$/
 
 // label is the hierarchy key (the dotted clause number, or the heading text when
 // there is no number); title is the human heading line; number is the dotted
-// numeric when present, which drives the parent/child path nesting.
+// numeric when present, which drives the parent/child path nesting. level is the
+// Markdown heading level ("##" is 2) when the extractor marked the heading line
+// as Markdown. opening marks the text before the first heading, which has no
+// heading of its own; its "Preamble" label and title only name it in paths.
 export type Section = {
   label: string
   title: string
   number: string | null
+  level?: number
+  opening?: boolean
   text: string
   charStart: number
   charEnd: number
@@ -271,14 +277,15 @@ export type Section = {
 
 export function sectionize(text: string): Section[] {
   const sections: Section[] = []
-  let current: Section = { label: "Preamble", title: "Preamble", number: null, text: "", charStart: 0, charEnd: 0 }
+  let current: Section = { label: "Preamble", title: "Preamble", number: null, opening: true, text: "", charStart: 0, charEnd: 0 }
   let offset = 0
 
   for (const line of text.split("\n")) {
     // PDF extractors can emit Markdown headings; strip hashes so "## 7.2 Termination"
     // sections the same as a plain "7.2 Termination" line.
-    const trimmed = line.trim().replace(/^#{1,6}\s+/, "")
-    const isMdHeading = trimmed !== line.trim()
+    const markdown = line.trim().match(/^(#{1,6})\s+/)
+    const trimmed = line.trim().slice(markdown?.[0].length ?? 0)
+    const isMdHeading = Boolean(markdown)
     const clause = trimmed.match(CLAUSE_RE)
     const isHeading = clause || (isMdHeading ? isMarkdownHeading(trimmed) : trimmed.length > 0 && HEADING_RE.test(trimmed))
     if (isHeading && trimmed.length > 0) {
@@ -288,7 +295,7 @@ export function sectionize(text: string): Section[] {
       }
       const number = clause?.[1] ?? null
       const title = (clause?.[2] ?? trimmed).trim()
-      current = { label: number ?? trimmed, title, number, text: line + "\n", charStart: offset, charEnd: 0 }
+      current = { label: number ?? trimmed, title, number, level: markdown?.[1]?.length, text: line + "\n", charStart: offset, charEnd: 0 }
     } else {
       current.text += line + "\n"
     }
@@ -337,6 +344,57 @@ export function buildSectionPaths(docName: string, sections: Section[]) {
     numbered.push(section)
   }
   return paths
+}
+
+type SectionRow = {
+  ordinal: number
+  parentOrdinal: number | null
+  depth: number
+  label: string | null
+  heading: string | null
+  charStart: number
+  charEnd: number
+  structureSource: "sectionize" | "markdown"
+}
+
+// One document's rows for the sections table (see db.ts), from its
+// reconstructed text. The hierarchy is the one buildSectionPaths gives the
+// structural paths (a numbered section nests under the latest earlier numbered
+// section whose number is its dotted prefix, and an unnumbered heading ends that
+// numbering) plus the Markdown heading levels the extractor emitted: a Markdown
+// heading closes every open Markdown heading at its level or deeper, and a
+// section with no numbered parent belongs to the innermost Markdown heading
+// still open. Nothing else is inferred from the text.
+export function documentSections(text: string) {
+  // The reconstructed text ends with the newline sectionize counts after the
+  // last line; sectionize the text before it so the last span ends with the text.
+  const sections = sectionize(text.endsWith("\n") ? text.slice(0, -1) : text)
+  const rows: SectionRow[] = []
+  const numbered: Array<{ number: string; row: SectionRow }> = []
+  const markdown: Array<{ level: number; row: SectionRow }> = []
+  for (const section of sections) {
+    const level = section.level
+    const numberedParent = section.number
+      ? numbered.findLast((open) => section.number!.startsWith(open.number + "."))
+      : undefined
+    if (level) while (markdown.length && markdown.at(-1)!.level >= level) markdown.pop()
+    const parent = numberedParent?.row ?? markdown.at(-1)?.row
+    const row: SectionRow = {
+      ordinal: rows.length + 1,
+      parentOrdinal: parent?.ordinal ?? null,
+      depth: (parent?.depth ?? 0) + 1,
+      label: section.number,
+      heading: section.opening ? null : section.title,
+      charStart: section.charStart,
+      charEnd: section.charEnd,
+      structureSource: level ? "markdown" : "sectionize",
+    }
+    if (section.number) numbered.push({ number: section.number, row })
+    else numbered.length = 0
+    if (level) markdown.push({ level, row })
+    rows.push(row)
+  }
+  return rows
 }
 
 // Structure-aware chunking. A section is the atomic unit; it is emitted whole
@@ -428,5 +486,60 @@ export function migrateStructure(db: Database) {
   }>
   for (const doc of docs) extractStructure(db, doc.doc_path, doc.name, reconstructText(db, doc.doc_path))
   setMeta(db, "structure_version", VERSION)
+  return docs.length
+}
+
+// Record a source document's sections, each chunk's section ordinal and the
+// document revision. All three derive from the chunks already stored, so ingest
+// (right after writing them) and the backfill below write the same rows.
+export function recordSections(db: Database, docPath: string, docName: string) {
+  const text = reconstructText(db, docPath)
+  const sections = documentSections(text)
+  db.run("DELETE FROM sections WHERE doc_path = ?", [docPath])
+  const insert = db.query(
+    "INSERT INTO sections (doc_path, doc_name, ordinal, parent_ordinal, depth, label, heading, char_start, char_end, structure_source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  )
+  for (const s of sections)
+    insert.run(docPath, docName, s.ordinal, s.parentOrdinal, s.depth, s.label, s.heading, s.charStart, s.charEnd, s.structureSource)
+  // Each chunk was cut from one section of this same text, so the section that
+  // holds a chunk's first character is the one it came from. (chunkSection
+  // counts one newline past a section it splits, so that section's last chunk
+  // ends one character after the section does.)
+  const chunks = db
+    .query("SELECT id, char_start FROM chunks WHERE doc_path = ? ORDER BY char_start")
+    .all(docPath) as Array<{ id: number; char_start: number }>
+  const link = db.query("UPDATE chunks SET section_ordinal = ? WHERE id = ?")
+  let at = 0
+  for (const chunk of chunks) {
+    while (sections[at + 1] && sections[at + 1]!.charStart <= chunk.char_start) at++
+    link.run(sections[at]?.ordinal ?? null, chunk.id)
+  }
+  db.run("UPDATE documents SET rev = ? WHERE doc_path = ?", [revision(text), docPath])
+}
+
+// The first 12 hex digits of the sha256 that source-map.json records for the
+// document, which hashes the same reconstructed text trimmed.
+function revision(text: string) {
+  return createHash("sha256").update(text.trim()).digest("hex").slice(0, 12)
+}
+
+// Bump whenever documentSections changes so existing matters re-record at next
+// boot (server.ts) or ingest (ingest.ts).
+const SECTIONS_VERSION = "1"
+
+// Backfill matters indexed before sections were recorded (or before the current
+// SECTIONS_VERSION). Like the structure backfill it reads the chunks, which is
+// what ingest records from too, so a backfilled document matches a fresh
+// ingest. One transaction never leaves a matter half-recorded.
+export function migrateSections(db: Database) {
+  if (getMeta(db, "sections_version") === SECTIONS_VERSION) return 0
+  const docs = db.query("SELECT doc_path, name FROM documents WHERE role = 'source'").all() as Array<{
+    doc_path: string
+    name: string
+  }>
+  db.transaction(() => {
+    for (const doc of docs) recordSections(db, doc.doc_path, doc.name)
+    setMeta(db, "sections_version", SECTIONS_VERSION)
+  })()
   return docs.length
 }

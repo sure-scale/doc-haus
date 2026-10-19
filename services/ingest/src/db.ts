@@ -69,6 +69,13 @@ export function openDb(matterDir: string): Database {
   if (!hasColumn(db, "chunks", "structural_path"))
     db.run("ALTER TABLE chunks ADD COLUMN structural_path TEXT NOT NULL DEFAULT ''")
   if (!hasColumn(db, "chunks", "party")) db.run("ALTER TABLE chunks ADD COLUMN party TEXT NOT NULL DEFAULT ''")
+  // Recorded structure (see the sections table below). rev: the first 12 hex
+  // digits of the sha256 that source-map.json records for a source document's
+  // text; deliverables have none. section_ordinal: the section the chunk was cut
+  // from. Rows the sections backfill (structure.ts migrateSections) has not yet
+  // reached hold NULL.
+  if (!hasColumn(db, "documents", "rev")) db.run("ALTER TABLE documents ADD COLUMN rev TEXT")
+  if (!hasColumn(db, "chunks", "section_ordinal")) db.run("ALTER TABLE chunks ADD COLUMN section_ordinal INTEGER")
   // Small key-value table for index-level facts that aren't rows — currently
   // which embedding model wrote the chunk vectors (see embed.ts migration).
   db.run("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
@@ -226,6 +233,32 @@ export function openDb(matterDir: string): Database {
       char_end INTEGER NOT NULL
     )
   `)
+  // A source document's sections in document order, as ingest parsed them
+  // (structure.ts documentSections). Spans index the text rebuilt from the
+  // chunks (structure.ts reconstructText), in the chunk offsets' coordinates,
+  // and tile it: each section starts where the previous one ends, and a
+  // section's span is its own text up to the next heading of any depth, not its
+  // children's. ordinal counts from 1; parent_ordinal is NULL and depth 1 at the
+  // top level. label is the clause number and heading the heading text; both are
+  // NULL for the opening text before the first heading. structure_source names
+  // the parse that found the heading: 'sectionize' for a heading-shaped line,
+  // 'markdown' for a heading the extractor marked with #.
+  db.run(`
+    CREATE TABLE IF NOT EXISTS sections (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      doc_path TEXT NOT NULL,
+      doc_name TEXT NOT NULL,
+      ordinal INTEGER NOT NULL,
+      parent_ordinal INTEGER,
+      depth INTEGER NOT NULL,
+      label TEXT,
+      heading TEXT,
+      char_start INTEGER NOT NULL,
+      char_end INTEGER NOT NULL,
+      structure_source TEXT NOT NULL
+    )
+  `)
+  db.run("CREATE UNIQUE INDEX IF NOT EXISTS sections_doc_ordinal ON sections(doc_path, ordinal)")
   db.run("CREATE INDEX IF NOT EXISTS defined_terms_term ON defined_terms(term)")
   db.run("CREATE INDEX IF NOT EXISTS section_refs_doc ON section_refs(doc_path)")
   db.run("CREATE INDEX IF NOT EXISTS section_ops_doc ON section_ops(doc_path)")
@@ -361,7 +394,7 @@ export function deleteDocument(db: Database, docPath: string) {
 
 function deleteDocumentIndexData(db: Database, docPath: string) {
   db.run("DELETE FROM chunks WHERE doc_path = ?", [docPath])
-  for (const table of ["defined_terms", "section_refs", "parties", "doc_relations", "section_ops"])
+  for (const table of ["defined_terms", "section_refs", "parties", "doc_relations", "section_ops", "sections"])
     db.run(`DELETE FROM ${table} WHERE doc_path = ?`, [docPath])
 }
 

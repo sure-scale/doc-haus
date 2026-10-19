@@ -4,7 +4,7 @@ import PostalMime from "postal-mime"
 import { read, utils } from "xlsx"
 import { getDocumentRole, insertChunk, listSourceDocuments, openDb, upsertDocument } from "./db"
 import { embedChunk, migrateEmbeddings } from "./embed"
-import { extractStructure, extractParties, migrateStructure, buildSectionPaths, chunkSection, sectionize } from "./structure"
+import { extractStructure, extractParties, migrateSections, migrateStructure, buildSectionPaths, chunkSection, recordSections, sectionize } from "./structure"
 import { pdfToText } from "./pdf"
 import { detectInjection, normalizeExtractedText, scanDocxHiddenContent } from "./sanitize"
 import { writeSourceArtifacts } from "./source-artifacts"
@@ -103,9 +103,11 @@ async function ingestDocumentLocked(
   try {
     // Never mix vectors from two embedding models in one matter — re-embed any
     // stale chunks before this document's are written (no-op on current DBs).
-    // Same for structure rows extracted by an older pattern version.
+    // Same for structure rows extracted by an older pattern version, and for
+    // sections recorded by an older version or not yet recorded.
     await migrateEmbeddings(db)
     migrateStructure(db)
+    migrateSections(db)
     const paths = buildSectionPaths(fileName, sections)
     preparedChunks = await Promise.all(
       sections.flatMap((section) => {
@@ -219,6 +221,7 @@ async function commitIngestedDocument(
           flagged: chunk.flagged,
         }),
       )
+      recordSections(db, input.docPath, input.fileName)
       extractStructure(db, input.docPath, input.fileName, input.text)
       input.updateRegistry?.(db)
       recordDocumentMutationLineageIntent(

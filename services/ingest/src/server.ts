@@ -37,7 +37,7 @@ import {
   writeDeliverableRevision,
 } from "./deliverable"
 import { EmbeddingModelUnavailableError, migrateEmbeddings } from "./embed"
-import { migrateStructure } from "./structure"
+import { migrateSections, migrateStructure } from "./structure"
 import { pdfToDocx } from "./convert"
 import { buildRedlined, bake, redlineState, redlineStaleReason, RedlinePreviewConflictError } from "./redline"
 import { listMatters, createMatter, getMatter, renameMatter, deleteMatter, recordConflicts, matterDir, listJurisdictions, listPlaybooks, updatePlaybook, deletePlaybook, PlaybookError, PLAYBOOK_DIR, type Conflicts } from "./matter"
@@ -1411,7 +1411,7 @@ const { seedPlaybooks } = await import("./seed")
 seedPlaybooks()
 
 // Run database compatibility migrations at startup: build/backfill the lexical
-// index and refresh vectors and structure when their versions change.
+// index and refresh vectors, structure and sections when their versions change.
 for (const matter of listMatters()) {
   if (!existsSync(path.join(matter.dir, ".dochaus", "legal.db"))) continue
   // One corrupt or externally-locked matter DB must not abort the whole
@@ -1421,15 +1421,18 @@ for (const matter of listMatters()) {
     const db = openDb(matter.dir)
     let reembedded: number
     let restructured: number
+    let sectioned: number
     try {
       reembedded = await migrateEmbeddings(db)
       restructured = migrateStructure(db)
+      sectioned = migrateSections(db)
     } finally {
       db.close()
     }
     await healSourceArtifacts(matter.dir, Boolean(recovery.sourceRolledBack))
     if (reembedded) console.log("chunks re-embedded", { count: reembedded, matter_ref: draftingTraceReference(matter.dir) })
     if (restructured) console.log("document structure extracted", { count: restructured, matter_ref: draftingTraceReference(matter.dir) })
+    if (sectioned) console.log("document sections recorded", { count: sectioned, matter_ref: draftingTraceReference(matter.dir) })
   } catch (e) {
     console.error("matter migration failed", { matter_ref: draftingTraceReference(matter.dir), ...diagnosticErrorMetadata(e) })
   }
