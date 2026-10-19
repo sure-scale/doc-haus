@@ -762,7 +762,12 @@ describe("reconstructText", () => {
     expect(rebuilt("gap.docx")).toBe("  NOTICE\n   1. Scope\n")
   })
 
-  test("a 2000-chunk document reconstructs in near-linear time", () => {
+  test("a 2000-chunk document reconstructs in about the time it takes to read its chunks", () => {
+    // Rewriting the whole string per chunk took about 75 times as long as
+    // reading the same rows here; the linear rebuild takes about as long. The
+    // bound compares two costs measured together on the same machine rather
+    // than a fixed time, and the fastest of several runs discards a pause from
+    // garbage collection or a loaded machine.
     const line = (i: number) => `Line ${i} of an invented clause that describes no actual obligation.\n`
     const text = Array.from({ length: 60_000 }, (_, i) => line(i)).join("")
     const count = 2000
@@ -775,13 +780,27 @@ describe("reconstructText", () => {
         return { text: text.slice(start, end), start }
       }),
     )
+    const fastest = (run: () => unknown) =>
+      Math.min(
+        ...Array.from({ length: 5 }, () => {
+          const started = performance.now()
+          run()
+          return performance.now() - started
+        }),
+      )
     const db = openDb(directory)
     try {
-      reconstructText(db, "large.docx")
-      const started = performance.now()
       expect(reconstructText(db, "large.docx")).toBe(text)
-      // Rewriting the whole string per chunk took over 100 ms here.
-      expect(performance.now() - started).toBeLessThan(50)
+      const read = fastest(() =>
+        (
+          db
+            .query("SELECT text, char_start FROM chunks WHERE doc_path = ? ORDER BY char_start, id")
+            .all("large.docx") as Array<{ text: string }>
+        )
+          .map((row) => row.text)
+          .join(""),
+      )
+      expect(fastest(() => reconstructText(db, "large.docx"))).toBeLessThan(10 * read)
     } finally {
       db.close()
     }
