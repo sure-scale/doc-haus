@@ -242,9 +242,10 @@ describe("the plan step's package-scope question", () => {
     expect(asked!.id.startsWith(PACKAGE_SCOPE_QUESTION)).toBe(true)
     expect(asked!.id).not.toBe(SCOPE_ID)
 
-    // The lawyer edits the saved plan instead of answering; its recheck leaves the act uncovered.
+    // The lawyer edits the saved plan's executing parties instead of answering; its recheck
+    // leaves the act uncovered, and the draft reads nothing the edit changes.
     const plan = readLeanJson(directory, "plan.json") as { documents: PlannedDocument[] }
-    writeLeanText(directory, "plan.json", `${JSON.stringify({ ...plan, documents: plan.documents.map(row => ({ ...row, purpose: "Releases the deposit." })) }, null, 2)}\n`)
+    writeLeanText(directory, "plan.json", `${JSON.stringify({ ...plan, documents: plan.documents.map(row => ({ ...row, executed_by: ["Kestrel Works", "the Heron Trust"] })) }, null, 2)}\n`)
     const body = readFileSync(leanFile(directory, "d1/body.docx"))
     const updated = scriptedModel(replies(openChecklist))
     const second = await runLean(directory, { sessions: updated.port })

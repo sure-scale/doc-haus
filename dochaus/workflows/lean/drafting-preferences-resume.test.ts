@@ -51,7 +51,7 @@ test("house style and posture changes revisit completed model work but the accep
   for (const preferences of [{ houseStyle: "Use active voice." }, { houseStyle: "Use active voice.", posture: "client-favorable" }]) {
     const keys = new Map(leanSteps(directory).map(step => [step, stageInputSha(directory, step)]))
     save(preferences)
-    // The accepted draft is keyed on the outline contract alone; the change reaches it through its review.
+    // The accepted draft is keyed on the outline contract and its own plan entry; the change reaches it through its review.
     for (const step of leanSteps(directory)) {
       if (step.endsWith(".draft")) expect(stageInputSha(directory, step)).toBe(keys.get(step)!)
       else expect(stageInputSha(directory, step)).not.toBe(keys.get(step)!)

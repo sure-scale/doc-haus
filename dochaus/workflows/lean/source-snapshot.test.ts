@@ -68,7 +68,7 @@ test("a source revised between step boundaries re-keys every later step but the 
   const revisedAt = steps.indexOf("d1.review")
   for (const [index, step] of steps.slice(0, steps.indexOf("checklist-check")).entries()) {
     expect(first.stages[step]?.status).toBe("done")
-    // The accepted draft is keyed on the outline contract alone; the revision reaches it through its review.
+    // The accepted draft is keyed on the outline contract and its own plan entry; the revision reaches it through its review.
     if (index <= revisedAt && !step.endsWith(".draft")) expect(first.stages[step]!.input_sha).not.toBe(stageInputSha(directory, step))
     else expect(first.stages[step]!.input_sha).toBe(stageInputSha(directory, step))
   }

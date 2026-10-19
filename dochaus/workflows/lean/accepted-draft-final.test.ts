@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { readFileSync } from "node:fs"
+import { existsSync, readFileSync } from "node:fs"
 import { finalBodyParagraphs, readParagraphs } from "./checks"
 import { enqueueLeanRequest } from "./requests"
 import { runLean } from "./runner"
-import { leanFile, readLeanJson, readLeanState, writeLeanText, writeQuestions } from "./state"
+import { leanFile, readLeanJson, readLeanState, readOpenItems, writeLeanText, writeQuestions } from "./state"
 import { AGENT, DRAFT, LETTER, QUESTION, SOURCE, changesFirst, cleanupMatters, drafter, happyPath, matter, pidOf, reviewFirst, scriptedModel } from "./test-support"
 
 // A produced docx is never redrafted. Once a document's body.docx and
@@ -56,6 +56,23 @@ describe("an accepted draft is final", () => {
       expect(stagePrompts(model, "Supply note", "change-plan").length).toBeGreaterThan(0)
       expect(stagePrompts(model, "Covering letter", "change-plan").length).toBeGreaterThan(0)
     }, 180_000)
+
+  test("a pause just after a draft is accepted keeps it on Continue with the open items its text gives", async () => {
+    const directory = matter()
+    const dated = { ...happyPath, [AGENT.draft]: drafter(DRAFT.replace("Payment is due on delivery.", "Payment is due on [insert payment date].")) }
+    // Paused once the accepted body's paragraph pointers are saved, before the step settles.
+    const pause = { get aborted() { return existsSync(leanFile(directory, "d1/paragraphs.json")) }, addEventListener() {}, removeEventListener() {} } as unknown as AbortSignal
+    expect((await runLean(directory, { sessions: scriptedModel(dated).port, pause })).status).toBe("blocked")
+    expect(readLeanState(directory)!.stages["d1.draft"]).toMatchObject({ status: "pending" })
+    const body = readFileSync(leanFile(directory, "d1/body.docx"))
+
+    const model = scriptedModel(dated)
+    expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+    expect(model.count(AGENT.draft)).toBe(0)
+    expect(readFileSync(leanFile(directory, "d1/body.docx"))).toEqual(body)
+    expect(readOpenItems(directory).filter(item => item.stage === "draft").map(item => [item.kind, item.ref.document, item.detail]))
+      .toEqual([["placeholder", "d1", "The body contains the placeholder [insert payment date]."]])
+  }, 180_000)
 
   test("after both documents apply, an amendment to the first reaches the second as its change-plan input, not a redraft", async () => {
     const directory = matter()

@@ -240,11 +240,12 @@ describe("plan coverage at the outline step", () => {
 
   test("a refresh that keeps the existing draft creates no draft session, only the coverage session", async () => {
     const { directory, state } = prepared()
-    expect((await run(directory, state, scriptedModel({ [AGENT.draft]: outliner(TWO), [AGENT.coverage]: () => ACTS }))).status).toBe("done")
+    // The step records its accepted draft's key on its row, as the runner keeps it.
+    const progress = (patch: Partial<LeanStageState>) => { updateLeanStage(directory, readLeanState(directory)!, "d1.draft", patch) }
+    expect((await runDraftStage(directory, state, { sessions: scriptedModel({ [AGENT.draft]: outliner(TWO), [AGENT.coverage]: () => ACTS }).port }, progress, "d1", () => {})).status).toBe("done")
     rmSync(leanFile(directory, "coverage.json"))
     const model = scriptedModel({ [AGENT.draft]: outliner(TWO), [AGENT.coverage]: () => ACTS })
-    const progress = (patch: Partial<LeanStageState>) => { updateLeanStage(directory, readLeanState(directory)!, "d1.draft", patch) }
-    const kept = await runDraftStage(directory, state, { sessions: model.port }, progress, "d1", () => {})
+    const kept = await runDraftStage(directory, readLeanState(directory)!, { sessions: model.port }, progress, "d1", () => {})
 
     expect(kept.status).toBe("done")
     expect(model.sessions.filter(session => session.agent === AGENT.draft)).toEqual([])

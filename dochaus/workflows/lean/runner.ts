@@ -20,7 +20,7 @@ import { DELIVERED_NOTES, forgetUnplannedDocuments, recordLeanDocuments } from "
 import { runDraftStage } from "./draft-sections"
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { checklistFindingLabel, deliveredNotes, finalGate, notesCoverageReport } from "./gate"
-import { readLeanPlan, reviewStages, leanSteps, stepDocument, stepStage, type StepID } from "./plan"
+import { leanPlanIssue, readLeanPlan, reviewStages, leanSteps, stepDocument, stepStage, type StepID } from "./plan"
 import { retryPrompt, stagePrompt } from "./prompts"
 import { excerpt, inDocument, openItem, withSourceSnapshot } from "./quotes"
 import { checklistRefinementSelections, drainLeanRequests, pendingLeanRequests, withheldChecklistRepair } from "./requests"
@@ -137,6 +137,11 @@ export async function runLean(directory: string, deps: LeanDeps): Promise<LeanSt
  * earliest step that consumes the answer runs next. The step list is read
  * again at every boundary because the first draft writes the plan. */
 async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDeps, reinspectChecklist = false): Promise<PassResult> {
+  // A plan.json that is there but is not a plan is the lawyer's to correct: the
+  // run neither follows it, plans over it nor drafts again from it.
+  const unreadable = leanPlanIssue(directory)
+  if (unreadable) return { state: writeLeanState(directory, { ...initial, status: "blocked",
+    stop_reason: `.dochaus/lean/plan.json is not a valid document plan: ${unreadable}. Correct it, then Continue.` }) }
   const preferences = readFirmDraftingPreferences()
   const preferenceChange = { observed: false }
   const preferencesChanged = () => preferenceChange.observed ||= readFirmDraftingPreferences() !== preferences
@@ -230,7 +235,7 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
     const currentPrefetch = prefetched?.inputSha === inputSha
     if (!currentPrefetch) appendLeanEvent(directory, { stage, document, event: "started", check_ms })
     state = updateLeanStage(directory, state, step, {
-      status: "running", input_sha: null, outputs: [], session_ids: [], session_id: currentPrefetch ? prefetched.sessionID : null, attempts: 0, calls: 0, feedback: [], started_at: currentPrefetch ? state.stages[step]?.started_at ?? now() : now(), finished_at: null,
+      status: "running", ...unkeyed(step), outputs: [], session_ids: [], session_id: currentPrefetch ? prefetched.sessionID : null, attempts: 0, calls: 0, feedback: [], started_at: currentPrefetch ? state.stages[step]?.started_at ?? now() : now(), finished_at: null,
     })
     const progress: Progress = patch => {
       state = updateLeanStage(directory, state, step, patch)
@@ -287,7 +292,7 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
     // their own failure) is not accepted; the step is run again on Continue.
     if (paused()) return { state: settlePause(directory, state), paused: true }
     if (result.status === "restart" || preferencesChanged()) {
-      state = updateLeanStage(directory, state, step, { status: "pending", input_sha: null, outputs: [], finished_at: null })
+      state = updateLeanStage(directory, state, step, { status: "pending", ...unkeyed(step), outputs: [], finished_at: null })
       return { state, restart: true }
     }
     appendLeanEvent(directory, result.status === "failed"
@@ -302,7 +307,8 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
       replaceStageQuestions(directory, stage, document ?? null, result.questions.map(question => document ? { ...question, document } : question))
     snapshotStage(directory, state.revision, step, result.outputs)
     // These steps write some of their own inputs (the gate its question); their key is taken again.
-    state = updateLeanStage(directory, state, step, { status: result.status, input_sha: step === "checklist-check" || step === "gate" ? stageInputSha(directory, step) : inputSha, outputs: result.outputs, finished_at: now() })
+    // A draft row already holds the key its accepted draft was drafted from (runDraftStage).
+    state = updateLeanStage(directory, state, step, { status: result.status, input_sha: step === "checklist-check" || step === "gate" ? stageInputSha(directory, step) : stage === "draft" ? state.stages[step]?.input_sha ?? null : inputSha, outputs: result.outputs, finished_at: now() })
     // Researchable gaps from the first review of this research go back to it once.
     if (step === "research-review" && result.status === "done" && startResearchGapRound(directory, researchBasis(directory))) return { state, restart: true }
     if (stage === "change-review" && document && readChangeReview(directory, document)?.status === "changes-required") {
@@ -417,7 +423,13 @@ function settlePause(directory: string, fallback: LeanState): LeanState {
  * session and attempts stay for inspection. Other steps are returned as they are. */
 function unfinished(stages: LeanState["stages"]) {
   return Object.fromEntries(Object.entries(stages).map(([step, row]) => [step, row?.status === "running"
-    ? { ...row, status: "pending", input_sha: null, outputs: [], finished_at: null } : row])) as LeanState["stages"]
+    ? { ...row, status: "pending", ...unkeyed(step as StepID), outputs: [], finished_at: null } : row])) as LeanState["stages"]
+}
+
+/** A step that is not done has no key, except a draft step: its row keeps the
+ * key of its accepted draft, which the step keeps while that key is current. */
+function unkeyed(step: StepID): { input_sha?: null } {
+  return stepStage(step) === "draft" ? {} : { input_sha: null }
 }
 
 /** The lawyer stopped a run no coordinator is working on (the caller checks):

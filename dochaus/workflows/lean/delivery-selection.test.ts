@@ -326,7 +326,7 @@ test("delivery metadata refreshes notes and package review while operative sourc
   expect(stageInputSha(directory, "finalize")).not.toBe(before.get("finalize")!)
   expect(stageInputSha(directory, "package-review")).not.toBe(before.get("package-review")!)
   writeLeanPlan(directory, [{ ...document, comparison: "another-source.docx" }], "stable-basis", { party: "Buyer", stated: true })
-  // The accepted draft is keyed on the outline contract alone; the change steps carry the new comparison.
+  // A new-mode draft does not read the comparison, so its key stands; the change steps carry the new comparison.
   expect(stageInputSha(directory, "d1.draft")).toBe(before.get("d1.draft")!)
   for (const stage of ["change-plan", "change-prepare", "changes", "change-review", "apply"] as const)
     expect(stageInputSha(directory, `d1.${stage}`)).not.toBe(before.get(`d1.${stage}`)!)

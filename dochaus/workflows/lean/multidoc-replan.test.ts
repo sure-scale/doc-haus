@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test"
+import { createHash } from "node:crypto"
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import { checkChanges } from "./change-checks"
 import { readParagraphs } from "./checks"
 import { readLeanDocuments } from "./deliverables"
+import { readLeanPlan } from "./plan"
 import { restoreLeanStage } from "./restore-stage"
 import { runLean } from "./runner"
 import { answerQuestion, leanFile, readLeanJson, readOpenItems, readQuestions, writeQuestions, writeOpenItems, replaceStageQuestions, replaceStageOpenItems } from "./state"
@@ -13,9 +15,9 @@ import {
 } from "./test-support"
 
 // Runs whose earlier steps change after a document has finished: a question
-// that a later document stops asking and a lawyer's edit of the plan that drops
-// a document. Real coordinator, checkers, renderer, applier and gate; only the
-// model is scripted.
+// that a later document stops asking and lawyer's edits of the plan that drop
+// a document or renumber one. Real coordinator, checkers, renderer, applier and
+// gate; only the model is scripted.
 
 const MARK = "[open item: whether late delivery carries a remedy]"
 const CONTEXT = "The terms are silent."
@@ -37,6 +39,10 @@ async function askedTwice() {
     { id: "question-d2", stage: "changes", kind: "question", detail: QUESTION, ref: { document: "d2", pid: letterPid, question_id: question.id }, status: "open" },
   ])
   return { directory, replies, question, notePid }
+}
+
+function sha(file: string) {
+  return createHash("sha256").update(readFileSync(file)).digest("hex")
 }
 
 describe("lean drafting when a finished document's steps change", () => {
@@ -94,6 +100,66 @@ describe("lean drafting when a finished document's steps change", () => {
       "body:d1:Supply note.docx", "redline:d1:Supply note - redline.docx", "drafting_notes:null:Supply note - drafting notes.docx", "drafting_notes_markdown:null:null",
     ])
   }, 180_000)
+
+  test("a lawyer's plan that drops the first document and renumbers the second redrafts it from its entry under its own name", async () => {
+    const directory = matter()
+    const deliverables = registering()
+    const replies = { ...happyPath, [AGENT.draft]: drafter(DRAFT, LETTER), [AGENT.review]: reviewFirst, [AGENT.changes]: changesFirst }
+    const first = await runLean(directory, { sessions: scriptedModel(replies).port, registerDeliverable: deliverables.registerDeliverable })
+    expect(first.status).toBe("completed")
+
+    const plan = JSON.parse(readFileSync(leanFile(directory, "plan.json"), "utf8"))
+    writeFileSync(leanFile(directory, "plan.json"), `${JSON.stringify({ ...plan, documents: [{ ...plan.documents[1], id: "d1" }] }, null, 2)}\n`)
+    const model = scriptedModel(replies)
+    const state = await runLean(directory, { sessions: model.port, registerDeliverable: deliverables.registerDeliverable })
+
+    // d1's entry is now the letter's, so its draft step drafts the letter's two parts from that entry; the plan is not outlined again.
+    expect(state.status).toBe("completed")
+    expect(model.counts()).toEqual([2, 1, 1, 1])
+    expect(model.prompts.some(prompt => prompt.text.includes("Reply now with the outline only"))).toBe(false)
+    expect(readLeanPlan(directory)?.documents.map(row => [row.id, row.title])).toEqual([["d1", "Covering letter"]])
+    expect(readFileSync(leanFile(directory, "d1/draft.md"), "utf8")).toStartWith("# Covering letter\n")
+    expect(readParagraphs(directory, "d1").map(row => row.text)).not.toContain(DRAFTED)
+    expect(readLeanDocuments(directory)!.documents.map(row => `${row.kind}:${row.document}:${row.title}:${row.deliverable}`)).toEqual([
+      "body:d1:Covering letter:Covering letter.docx",
+      "redline:d1:Covering letter:Covering letter - redline.docx",
+      "drafting_notes:null:null:Covering letter - drafting notes.docx",
+      "drafting_notes_markdown:null:null:null",
+    ])
+    expect(sha(path.join(directory, "Covering letter.docx"))).toBe(sha(leanFile(directory, "d1/body-applied.docx")))
+    expect(existsSync(path.join(directory, "Covering letter (2).docx"))).toBe(false)
+  }, 180_000)
+
+  // A plan.json the lawyer left unreadable is theirs to correct: the run stops naming it and
+  // its error, and neither outlines a plan over it nor drafts again.
+  for (const [name, broken, error] of [
+    ["does not parse", (text: string) => text.slice(0, text.lastIndexOf("}")), (text: string) => { try { JSON.parse(text) } catch (caught) { return (caught as Error).message } return "" }],
+    ["is not a valid plan", (text: string) => JSON.stringify({ ...JSON.parse(text), documents: [{ ...JSON.parse(text).documents[0], parts: [] }] }, null, 2), () => "document 1 is not a valid planned document"],
+  ] as const)
+    test(`a lawyer's plan.json that ${name} stops the run with the file and its error named; the plan and the drafted body stay as they were`, async () => {
+      const directory = matter()
+      expect((await runLean(directory, { sessions: scriptedModel(happyPath).port })).status).toBe("completed")
+      const original = readFileSync(leanFile(directory, "plan.json"), "utf8")
+      const edited = broken(original)
+      writeFileSync(leanFile(directory, "plan.json"), edited)
+      const body = sha(leanFile(directory, "d1/body.docx"))
+      const model = scriptedModel(happyPath)
+      const state = await runLean(directory, { sessions: model.port })
+
+      expect(state.status).toBe("blocked")
+      expect(state.stop_reason).toContain(".dochaus/lean/plan.json")
+      expect(state.stop_reason).toContain(error(edited))
+      expect(model.prompts).toEqual([])
+      expect(readFileSync(leanFile(directory, "plan.json"), "utf8")).toBe(edited)
+      expect(sha(leanFile(directory, "d1/body.docx"))).toBe(body)
+
+      // Once corrected, Continue goes on from the plan as it was, drafting nothing again.
+      writeFileSync(leanFile(directory, "plan.json"), original)
+      const resumed = scriptedModel(happyPath)
+      expect((await runLean(directory, { sessions: resumed.port })).status).toBe("completed")
+      expect(resumed.count(AGENT.draft)).toBe(0)
+      expect(sha(leanFile(directory, "d1/body.docx"))).toBe(body)
+    }, 180_000)
 
   test("a question repeated by id without a paragraph keeps the earlier paragraph only in the same document", () => {
     const directory = matter()

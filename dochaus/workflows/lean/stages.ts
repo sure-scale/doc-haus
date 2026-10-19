@@ -29,7 +29,8 @@ import {
   type ParagraphRow,
   type StageCheck,
 } from "./checks"
-import { reviewStages, FIRST_DOCUMENT, planActingFor, operativeDocument, operativePlan, plannedDocument, readLeanPlan, stepDocument, stepStage, type StepID } from "./plan"
+import { reviewStages, FIRST_DOCUMENT, planActingFor, operativeDocument, operativePlan, plannedDocument, readLeanPlan, stepDocument, stepStage, type PlannedDocument, type StepID } from "./plan"
+import { templateSource } from "./template-contract"
 import { completedDocumentsText, packageCompositionBlock } from "./prompts"
 import { matterSourceBasis, matterSourceIDs, openItem } from "./quotes"
 import { documentRepairs, readRepairRound } from "./repairs"
@@ -188,7 +189,9 @@ const DISCLOSED_STAGES: StageID[] = ["research", "research-review", "change-plan
 /** Named inputs of each step: everything its prompt or code step reads. Their
  * content hash is the step's resume key and nothing more. A document's accepted
  * draft (its body.docx and paragraphs.json) is final for the run, so a draft
- * step is keyed on nothing that can change after it: answers, updates,
+ * step is keyed only on the outline contract and what it reads of its own plan
+ * entry (draftedEntry): a lawyer's edit of that entry, or a renumbered plan that
+ * gives its id to another document, drafts it again. Answers, updates,
  * research, an earlier document's final text and accepted explanations, and
  * whom the lawyer acts for reach a drafted document as amendments through its
  * review and change-plan keys. Answers are inputs of every other step. The
@@ -198,7 +201,7 @@ const DISCLOSED_STAGES: StageID[] = ["research", "research-review", "change-plan
  * inputs of review and changes, which are scoped by them; an edit of a
  * document's parts re-keys neither. */
 export function stageInputs(directory: string, step: StepID, options: { repairContext?: false; researchGaps?: false } = {}): { name: string; bytes: string | Uint8Array }[] {
-  if (stepStage(step) === "draft") return [{ name: "outline-contract", bytes: OUTLINE_CONTRACT }]
+  if (stepStage(step) === "draft") return [{ name: "outline-contract", bytes: OUTLINE_CONTRACT }, { name: "plan-entry", bytes: JSON.stringify(draftedEntry(plannedDocument(directory, stepDocument(step) ?? FIRST_DOCUMENT))) }]
   const updates = readLeanText(directory, "updated-notes.md")
   const clarifications = leanClarifications(directory)
   const inputs = baseStageInputs(directory, step, options)
@@ -373,6 +376,15 @@ export async function paragraphRows(docxPath: string): Promise<ParagraphRow[]> {
 }
 
 /** A draft step's accepted document: planned, with its Word body and its paragraphs. */
+/** What a document's draft prompt and code read of its plan entry: its title,
+ * purpose and parts, its mode, the template it is drawn from and the template
+ * parts it leaves out. Its file and deliverable (which package review rewrites),
+ * executing parties and guidance selection are not read by the draft. */
+function draftedEntry(entry: PlannedDocument | undefined) {
+  if (!entry) return null
+  return { title: entry.title, purpose: entry.purpose, parts: entry.parts, mode: entry.mode, template: templateSource(entry), left_out: entry.left_out }
+}
+
 export function draftOutputValid(directory: string, step: StepID) {
   const document = stepDocument(step) ?? FIRST_DOCUMENT
   return Boolean(plannedDocument(directory, document)) && existsSync(leanFile(directory, `${document}/body.docx`)) && readParagraphs(directory, document).length > 0

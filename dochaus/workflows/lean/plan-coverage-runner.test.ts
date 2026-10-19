@@ -4,7 +4,7 @@ import { readParagraphs } from "./checks"
 import { readLeanDocuments } from "./deliverables"
 import type { GateResult } from "./gate"
 import { coverageItems, coveragePlanHash, readLeanCoverage } from "./package-coverage"
-import { readLeanPlan } from "./plan"
+import { readLeanPlan, type LeanPlan } from "./plan"
 import { openItem } from "./quotes"
 import { enqueueLeanRequest } from "./requests"
 import { runLean } from "./runner"
@@ -55,9 +55,14 @@ const coverageOf = (...acts: Instructed[]): Reply => prompt => {
 }
 
 /** The outline agent: `first` answers the outline prompt, `revised` any
- * revision request, and each part gets one plain paragraph. */
-const outliner = (first: string, revised = first): Reply => text =>
-  /^Draft part \d+ of \d+ of "/m.test(text) ? "The terms are recorded." : text.startsWith(REVISE) ? revised : first
+ * revision request, and each part gets one plain paragraph, or `part`'s. */
+const outliner = (first: string, revised = first, part: Reply = () => "The terms are recorded."): Reply => (text, index) =>
+  /^Draft part \d+ of \d+ of "/m.test(text) ? part(text, index) : text.startsWith(REVISE) ? revised : first
+
+/** Parts whose resolution leaves its meeting date to be inserted: a draft item of d1's own. */
+const MEETING = "[insert meeting date]"
+const dated: Reply = text => /^Draft part \d+ of \d+ of "Committee resolution"/m.test(text) ? `The approval is given on ${MEETING}.` : "The terms are recorded."
+const draftItems = (directory: string, document: string) => readOpenItems(directory).filter(item => item.stage === "draft" && item.ref.document === document)
 
 /** A whole run whose later steps find nothing to change. */
 const replies = (extra: Record<string, Reply>): Record<string, Reply> => ({
@@ -81,9 +86,9 @@ const gateOf = (directory: string) => readLeanJson(directory, "gate.json") as Ga
 
 /** Two documents run to completion; then the lawyer adds a party to d2's executing
  * parties only, so the coverage record is out of date while d1's draft step keeps its inputs. */
-async function laterPartiesEdited() {
+async function laterPartiesEdited(part?: Reply) {
   const directory = prepared()
-  const run = () => scriptedModel(replies({ [AGENT.draft]: outliner(outline(RESOLUTION, RELEASE_LETTER)), [AGENT.coverage]: coverageOf(approval, release) }))
+  const run = () => scriptedModel(replies({ [AGENT.draft]: outliner(outline(RESOLUTION, RELEASE_LETTER), undefined, part), [AGENT.coverage]: coverageOf(approval, release) }))
   expect((await runLean(directory, { sessions: run().port })).status).toBe("completed")
   const plan = readLeanPlan(directory)!
   const edited = { ...plan, documents: plan.documents.map(row => row.id === "d2" ? { ...row, executed_by: [...row.executed_by!, "the Heron Trust"] } : row) }
@@ -294,11 +299,13 @@ describe("plan coverage through the run", () => {
     }, 120_000)
 
   test("after that edit, d1's kept draft reports d1's own draft items, not d2's or another step's", async () => {
-    const { directory, run, drafted } = await laterPartiesEdited()
-    const own = openItem("draft", "omission", "The resolution leaves the meeting date open.", { document: "d1" })
+    const { directory, run, drafted } = await laterPartiesEdited(dated)
+    const [own] = draftItems(directory, "d1")
+    expect(own).toMatchObject({ kind: "placeholder", detail: expect.stringContaining(MEETING) })
     const reviewed = openItem("review", "omission", "The resolution's quorum is not stated.", { document: "d1" })
     const other = openItem("draft", "omission", "The letter leaves the release date open.", { document: "d2" })
-    writeOpenItems(directory, [own, other, reviewed])
+    // The record has lost d1's own item; the kept draft's text still gives it.
+    writeOpenItems(directory, [other, reviewed])
     const model = run()
     expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
 
@@ -310,28 +317,56 @@ describe("plan coverage through the run", () => {
     expect(left).toEqual(expect.arrayContaining([own, other, reviewed]))
   }, 120_000)
 
-  test("a lawyer's edit whose recheck stops for the plan step's scope question keeps both accepted drafts once the question is answered", async () => {
+  // A lawyer's edit the recheck stops on: the scope question first, then, once it is answered,
+  // each document's accepted draft is kept while what its draft reads of its plan entry is unchanged.
+  async function scopeEdited(edit: (plan: LeanPlan) => LeanPlan, part?: Reply, stopped?: (directory: string) => void) {
     const directory = prepared()
-    const run = () => scriptedModel(replies({ [AGENT.draft]: outliner(outline(RESOLUTION, RELEASE_LETTER)), [AGENT.coverage]: coverageOf(approval, release) }))
+    const run = () => scriptedModel(replies({ [AGENT.draft]: outliner(outline(RESOLUTION, RELEASE_LETTER), undefined, part), [AGENT.coverage]: coverageOf(approval, release) }))
     expect((await runLean(directory, { sessions: run().port })).status).toBe("completed")
     const bodies = () => ["d1", "d2"].map(document => readFileSync(leanFile(directory, `${document}/body.docx`)))
     const before = bodies()
-
-    // The lawyer renames d2's only part, so the saved plan no longer carries the release.
-    const plan = readLeanPlan(directory)!
-    const edited = { ...plan, documents: plan.documents.map(row => row.id === "d2" ? { ...row, parts: [{ heading: "Terms", scope: "" }] } : row) }
+    const edited = edit(readLeanPlan(directory)!)
     writeLeanText(directory, "plan.json", `${JSON.stringify(edited, null, 2)}\n`)
     const blocked = run()
     expect((await runLean(directory, { sessions: blocked.port })).status).toBe("blocked")
     const [question] = readQuestions(directory)
     expect(question).toMatchObject({ stage: "draft", status: "open" })
+    stopped?.(directory)
 
-    enqueueLeanRequest(directory, { kind: "answer", question_id: question!.id, answer: "The release is outside this request." })
+    enqueueLeanRequest(directory, { kind: "answer", question_id: question!.id, answer: "That act is outside this request." })
     const answered = run()
     expect((await runLean(directory, { sessions: answered.port })).status).toBe("completed")
-    expect([blocked.count(AGENT.draft), answered.count(AGENT.draft)]).toEqual([0, 0])
-    expect(bodies()).toEqual(before)
     expect(readLeanPlan(directory)).toEqual(edited)
+    return { directory, before, after: bodies(), blocked, answered }
+  }
+
+  test("a lawyer's edit whose recheck stops for the plan step's scope question keeps both accepted drafts once the question is answered", async () => {
+    // The lawyer names another party as d2's only executing party, so the saved plan no longer has
+    // the release taken by Kestrel Works; what either draft reads of its entry is unchanged.
+    const { before, after, blocked, answered } = await scopeEdited(plan => ({ ...plan, documents: plan.documents.map(row => row.id === "d2" ? { ...row, executed_by: ["the Heron Trust"] } : row) }))
+    expect([blocked.count(AGENT.draft), answered.count(AGENT.draft)]).toEqual([0, 0])
+    expect(after).toEqual(before)
+  }, 180_000)
+
+  test("a kept draft whose recheck stops for the scope question reports its own draft items again once the question is answered", async () => {
+    const parties = (plan: LeanPlan) => ({ ...plan, documents: plan.documents.map(row => row.id === "d2" ? { ...row, executed_by: ["the Heron Trust"] } : row) })
+    const held: { items?: unknown[] } = {}
+    const { directory, answered } = await scopeEdited(parties, dated, directory => { held.items = draftItems(directory, "d1") })
+    expect(answered.count(AGENT.draft)).toBe(0)
+    // The stopped step reports none; its kept draft's text gives the item again.
+    expect(held.items).toEqual([])
+    expect(draftItems(directory, "d1")).toEqual([expect.objectContaining({ kind: "placeholder", detail: expect.stringContaining(MEETING) })])
+  }, 180_000)
+
+  test("a lawyer's edit of d1's parts that the recheck stops on drafts d1 again from its edited parts once the question is answered, and keeps d2's accepted draft", async () => {
+    // The lawyer renames d1's only part, so the saved plan no longer carries the approval. The
+    // stopped step keeps the key d1's draft was accepted from, so the answer does not keep it.
+    const { directory, before, after, blocked, answered } = await scopeEdited(plan => ({ ...plan, documents: plan.documents.map(row => row.id === "d1" ? { ...row, parts: [{ heading: "Terms", scope: "" }] } : row) }))
+    expect(blocked.count(AGENT.draft)).toBe(0)
+    expect(answered.prompts.filter(prompt => prompt.agent === AGENT.draft).map(prompt => /^Draft part 1 of 1 of "([^"]+)": (.+)$/m.exec(prompt.text)?.slice(1)))
+      .toEqual([["Committee resolution", "Terms"]])
+    expect(readLeanText(directory, "d1/draft.md")).toStartWith("# Committee resolution\n\n## Terms\n")
+    expect(after[1]).toEqual(before[1])
   }, 180_000)
 
   test("an outlined plan whose coverage record is missing is checked again; a plan written by hand without one is followed unchecked", async () => {

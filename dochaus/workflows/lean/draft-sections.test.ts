@@ -9,6 +9,7 @@ import { readParagraphs } from "./checks"
 import { checkSection, runDraftStage } from "./draft-sections"
 import { readLeanEvents } from "./events"
 import { NOT_STATED, parsePlan, readLeanPlan } from "./plan"
+import { stageInputSha } from "./runner"
 import { acceptStageReply, LEAN_STAGE_AGENTS, type StageSessionPort } from "./stages"
 import { initLeanState, leanFile, writeLeanText } from "./state"
 import { rowsBody } from "./template-coverage"
@@ -145,8 +146,8 @@ describe("sectioned draft stage", () => {
       "## Next steps", "", "### Timing", "", "We will wait for a reply. [open item: reply deadline]", "",
     ].join("\n"))
     // Six calls, the outline's coverage job included; the hardest step (the
-    // retried part) took two tries.
-    expect(progress.at(-1)).toEqual({ attempts: 2, calls: 6, feedback: [] })
+    // retried part) took two tries. The accepted draft's key is recorded with it.
+    expect(progress.slice(-2)).toEqual([{ attempts: 2, calls: 6, feedback: [] }, { input_sha: stageInputSha(directory, "d1.draft") }])
 
     // Every listed paragraph carries its hidden pointer bookmark in the body docx.
     const rows = readParagraphs(directory, "d1")

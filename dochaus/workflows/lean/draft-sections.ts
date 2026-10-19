@@ -1,6 +1,6 @@
 import { rmSync } from "node:fs"
 import { playbookSelectionIssues } from "./playbook-review"
-import { TOOL_SYNTAX_ISSUE, printedToolCall, readParagraphs } from "./checks"
+import { TOOL_SYNTAX_ISSUE, checkDraft, printedToolCall, readParagraphs } from "./checks"
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { matterSourceIDs } from "./quotes"
 import { memoNotesFile } from "./deliverables"
@@ -26,7 +26,8 @@ import {
   stepSessionTitle,
   type LeanDeps,
 } from "./stages"
-import { answeredQuestionsText, handedBackBlock, leanFile, LEFT_TO_DRAFTING, readLeanText, readOpenItems, readQuestions, writeLeanText, type LeanStageState, type LeanState, type OpenItem, type Question } from "./state"
+import { answeredQuestionsText, handedBackBlock, leanFile, LEFT_TO_DRAFTING, readLeanText, readQuestions, writeLeanText, type LeanStageState, type LeanState, type OpenItem, type Question } from "./state"
+import { stageInputSha } from "./runner"
 import { outlineCoverageIssues, partCarries, plannedContract } from "./template-contract"
 import { draftTemplateItems } from "./template-coverage"
 
@@ -289,16 +290,22 @@ export async function runDraftStage(
     if (blocked) return blocked
   }
   // A saved plan's accepted draft is final for the run (a new run starts from
-  // an empty lean folder): a step re-run after a coverage refresh, or after
-  // the question it stopped for is answered, keeps it with its open items.
-  if (!outlined && draftOutputValid(directory, step)) {
+  // an empty lean folder): a step re-run after a coverage refresh, after the
+  // question it stopped for is answered, or after a pause, keeps it while it
+  // was accepted from this very key. The step's row keeps that key (the runner
+  // never clears a draft row's input_sha), so a plan entry the lawyer edited or
+  // renumbered, or a new prompt version, drafts it again. Its open items are
+  // derived from its saved text as at acceptance, since a pause or a stopped
+  // recheck can leave the record without them.
+  if (!outlined && draftOutputValid(directory, step) && state.stages[step]?.input_sha === stageInputSha(directory, step)) {
     await planned()
-    return { status: "done", outputs: stepOutputs(step), openItems: readOpenItems(directory).filter(item => item.stage === "draft" && item.ref.document === document) }
+    return { status: "done", outputs: stepOutputs(step), openItems: [...checkDraft(directory, readLeanText(directory, `${document}/draft.md`) ?? "").openItems, ...draftTemplateItems(directory, document, readParagraphs(directory, document))] }
   }
   const plan = plannedDocument(directory, document)
   if (!plan) return { status: "failed", reason: `${step}: the run's plan has no document ${document}.` }
   // Await source-only extraction for fresh and existing plans before any body part.
   await planned()
+  const key = stageInputSha(directory, step)
   const contract = plannedContract(directory, document)
   const carries = contract ? partCarries(contract, plan.parts.length) : []
   const drafted: string[] = []
@@ -321,6 +328,8 @@ export async function runDraftStage(
     : undefined
   const accepted = await acceptStageReply(directory, step, assembleDraft(plan, drafted), { presentation })
   if (accepted.issues.length) return failed("assembled document", accepted.issues)
+  // Recorded with the body, so a pause or restart before the step settles keeps it.
+  progress({ input_sha: key })
   return { status: "done", outputs: accepted.outputs, openItems: [...accepted.openItems, ...draftTemplateItems(directory, document, readParagraphs(directory, document))], questions: accepted.questions }
 }
 
