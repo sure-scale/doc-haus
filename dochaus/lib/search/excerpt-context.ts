@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite"
 import { chunkScope, type ChunkRow, type SearchScope } from "./channels"
+import { findTermUse } from "./term-use"
 
 // Supplementary context the search-document tool appends after its citations.
 
@@ -7,8 +8,7 @@ import { chunkScope, type ChunkRow, type SearchScope } from "./channels"
 // returned excerpts. A passage like "during the Cure Period" silently depends
 // on a definition that lives pages away; attaching it saves the model a lookup
 // and keeps it from guessing the meaning. Matching is case-sensitive whole-word
-// (defined terms are capitalized — case folding would match ordinary prose),
-// definition text is verbatim from the defined_terms table, and the list is
+// over every occurrence (see term-use.ts), definition text is verbatim from the defined_terms table, and the list is
 // deduped and capped so a definition-dense passage cannot flood the response.
 const ATTACH_CAP = 5
 
@@ -34,11 +34,7 @@ export function attachDefinitions(db: Database, ranked: Array<{ row: ChunkRow }>
         // Skip excerpts that are themselves the definition site — attaching the
         // definition under the passage that states it is noise.
         if (row.text.includes(`"${t.term}"`) || row.text.includes(`“${t.term}”`)) return false
-        const at = row.text.indexOf(t.term)
-        if (at === -1) return false
-        const before = row.text[at - 1]
-        const after = row.text[at + t.term.length]
-        return (before === undefined || !/[A-Za-z0-9]/.test(before)) && (after === undefined || !/[A-Za-z0-9]/.test(after))
+        return findTermUse(row.text, t.term) !== -1
       }),
     )
     .filter((t, i, all) => all.findIndex((o) => o.term === t.term && o.doc_path === t.doc_path) === i)
