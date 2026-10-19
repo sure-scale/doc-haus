@@ -420,6 +420,10 @@
   margin-top: 4px;
 }
 
+.design-conversation .run-head.is-done .open-items > summary {
+  background: var(--panel);
+}
+
 .design-conversation .run-head.is-done > .msg-error,
 .design-conversation .run-head.is-done > .run-head-details {
   grid-column: 1 / -1;
