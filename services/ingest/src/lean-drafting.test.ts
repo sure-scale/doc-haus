@@ -426,8 +426,8 @@ test("the HTTP answer flow holds a run until every intake question is answered",
       if (intake) {
         intake = false
         return JSON.stringify({ questions: [
-          { question: "Which governing law applies?", context: "The legal approach depends on it." },
-          { question: "Whose position should this protect?", context: "The drafting approach depends on it." },
+          { question: "Which governing law applies?", kind: "instruction", context: "The legal approach depends on it." },
+          { question: "Whose position should this protect?", kind: "instruction", context: "The drafting approach depends on it." },
         ] })
       }
       return JSON.stringify({ ready: true, jurisdiction: "Singapore law", scope: "Supplied terms" })
@@ -443,16 +443,19 @@ test("the HTTP answer flow holds a run until every intake question is answered",
   expect(waiting.status).toBe("blocked")
   expect(waiting.questions).toHaveLength(2)
   expect(waiting.stages["d1.review"]?.status).toBe("pending")
+  // Discrepancy, intake and one advice per question; waiting asks the model nothing more.
+  const asked = model.prompts.length
+  expect(asked).toBe(4)
   const post = (id: string, answer: string) => routes.request(`/m1/lean/questions/${id}`, {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ answer }),
   })
   expect((await post(waiting.questions[0]!.id, "Singapore law.")).status).toBe(202)
   await leanDraftingIdle(directory)
   expect(leanDraftingStatus(directory)!.status).toBe("blocked")
-  expect(model.prompts).toHaveLength(2)
+  expect(model.prompts).toHaveLength(asked)
   expect((await routes.request("/m1/lean/resume", { method: "POST" })).status).toBe(202)
   await leanDraftingIdle(directory)
-  expect(model.prompts).toHaveLength(2)
+  expect(model.prompts).toHaveLength(asked)
   expect((await post(waiting.questions[1]!.id, "The supplier.")).status).toBe(202)
   await leanDraftingIdle(directory)
   expect(leanDraftingStatus(directory)!.status).toBe("completed")
