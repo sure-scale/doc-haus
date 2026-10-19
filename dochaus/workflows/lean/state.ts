@@ -84,6 +84,10 @@ export type OpenItem = {
     /** The requested file a Requested-files item is about: its index in the
      * saved requested-files record, which is written with the plan. */
     requested_file?: number
+    /** The names a Requested-files item says the run delivers that file's
+     * contents in, in its order; null for a file of a name not known before it
+     * registers. */
+    delivered_names?: (string | null)[]
   }
   status: "open" | "resolved" | "disclosed"
   resolution?: string

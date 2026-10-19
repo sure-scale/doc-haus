@@ -477,7 +477,8 @@ const savedFile = (row: unknown) => record(row) && Array.isArray(row.holds) && r
  * words it listed when they are more or fewer than the item's, but only while
  * the plan delivers the file as that question showed; otherwise the lawyer
  * should confirm it. Each item refers to its file by the file's index in the
- * record (`requested_file`), and its id keys on its content and that file.
+ * record (`requested_file`) and lists the names it says the run delivers that
+ * file's contents in (`delivered_names`); its id keys on its content and these.
  * With `told`, the items the gate's notes disclosed, only the items of the
  * files whose name the lawyer's words give or to which one of `told` refers;
  * an item that refers to no file, as a gate's record from before items carried
@@ -601,7 +602,7 @@ export function requestedFilesItems(directory: string, told?: OpenItem[]): OpenI
     return [openItem("finalize", "omission", `Requested files: the lawyer's words ${lawyerQuote(file.quote)} ask for ${what}, but the run ` +
       (refused === undefined ? `delivers ${delivers}.`
         : `could not use "${refused}" as its name${format ? " and delivers .docx files only" : ""}; it delivers ${delivers}.`) +
-      `${reason}${closing}`, { repair_target: "memo", requested_file: index })]
+      `${reason}${closing}`, { repair_target: "memo", requested_file: index, delivered_names: [...files.values()].map(file => file.spelled) })]
   })
 }
 

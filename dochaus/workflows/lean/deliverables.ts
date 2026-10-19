@@ -45,8 +45,9 @@ import { leanFile, readLeanJson, writeLeanBytes, writeLeanText, type OpenItem } 
 // as an earlier combined file when a delivery saved it there, and the new file
 // takes the next free name, as a body does. A save refused under the write's
 // lock takes the next free name too; when the lawyer's request for the file then
-// gives an item the gate's notes did not disclose (requestedFilesItems), the run
-// fails visibly once the summary lists it. When the build is refused, the file under the name
+// gives an item (requestedFilesItems) about a file the gate's notes did not
+// place under the names it now gives, the run fails visibly once the summary
+// lists it. When the build is refused, the file under the name
 // holds the lawyer's accepted Word revision or no name is free, it is not
 // saved: a finalize item the notes disclose says so (combinedFileItems).
 
@@ -244,13 +245,19 @@ export async function recordLeanDocuments(directory: string, deps: LeanDeps, reg
     // A save refused under the write's lock moved the file after the gate's
     // notes were checked: a request whose file the lawyer's words name, or
     // which an item the notes disclosed refers to (requested_file), is checked
-    // against the name it was saved under, read from this summary. One file
-    // asked for without a name, which the notes did not place, is still the one
-    // file delivered; the next finalize discloses where it went. Imported here,
-    // as that check reads this module.
+    // against the name it was saved under, read from this summary. The notes
+    // still say where its contents went while an item they disclosed is about
+    // that same file and gives the same names (delivered_names), whatever else
+    // its words now read; one about no file (a gate's record from before items
+    // carried the reference) says it of none. One file asked for without a
+    // name, which the notes did not place, is still the one file delivered; the
+    // next finalize discloses where it went. Imported here, as that check reads
+    // this module.
     const { requestedFilesItems } = await import("./requested-files")
     const told = gateDisclosures(directory)
-    const item = requestedFilesItems(directory, told).find(item => !told.some(row => row.id === item.id))
+    const placed = (item: OpenItem) => told.some(row => row.ref.requested_file !== undefined && row.ref.requested_file === item.ref.requested_file &&
+      JSON.stringify(row.ref.delivered_names) === JSON.stringify(item.ref.delivered_names))
+    const item = requestedFilesItems(directory, told).find(item => item.ref.requested_file !== undefined && !placed(item))
     if (item) throw new Error(item.detail)
   }
   return summary

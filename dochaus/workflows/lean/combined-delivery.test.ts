@@ -674,7 +674,7 @@ describe("the combined file saved in the matter", () => {
 
     const item = openItem("finalize", "omission", `Requested files: the lawyer's words "${words}" [source: request] ask for the memo and "Supply note" in one file named "supply-pack.docx", ` +
       'but the run delivers the memo and "Supply note" in one file named "supply-pack (2).docx", since a file already in the matter holds the name "supply-pack.docx". ' +
-      "The lawyer should confirm how these files are to be delivered.", { repair_target: "memo", requested_file: 0 })
+      "The lawyer should confirm how these files are to be delivered.", { repair_target: "memo", requested_file: 0, delivered_names: ["supply-pack (2).docx"] })
     // Predicted before the delivery moves the file, and read from the summary after it.
     expect(requestedFilesItems(directory)).toEqual([item])
     expect(evidence()).toMatchObject({ download_filename: "supply-pack (2).docx" })
@@ -697,7 +697,7 @@ describe("the combined file saved in the matter", () => {
 
     const item = openItem("finalize", "omission", `Requested files: the lawyer's words "${words}" [source: request] ask for the memo and "Supply note" in one file, ` +
       'but the run delivers the memo and "Supply note" in one file named "supply-pack (2).docx", since a file already in the matter holds the name "supply-pack.docx". ' +
-      "The lawyer should confirm how these files are to be delivered.", { repair_target: "memo", requested_file: 0 })
+      "The lawyer should confirm how these files are to be delivered.", { repair_target: "memo", requested_file: 0, delivered_names: ["supply-pack (2).docx"] })
     expect(requestedFilesItems(directory)).toEqual([item])
     discloseAtGate(directory, [item])
     expect((await deliver(directory)).rows).toContainEqual(["combined", "d1", "supply-pack (2).docx"])
@@ -723,7 +723,7 @@ describe("the combined file saved in the matter", () => {
         'the memo could not be read as a Word document. The memo and "Supply note" are delivered as separate files.', { repair_target: "memo" })
       const separate = openItem("finalize", "omission", `Requested files: the lawyer's words "${words}" [source: request] ask for the memo and "Supply note" in one file named "supply-pack.docx", ` +
         'but the run delivers the memo in "supply-pack - cover memo.docx" and "Supply note" in "supply-pack - clean.docx". ' +
-        "The lawyer should confirm how these files are to be delivered.", { repair_target: "memo", requested_file: 0 })
+        "The lawyer should confirm how these files are to be delivered.", { repair_target: "memo", requested_file: 0, delivered_names: ["supply-pack - cover memo.docx", "supply-pack - clean.docx"] })
       expect({ named, items: disclosableItems(directory).filter(item => /combined file|Requested files/.test(item.detail)) })
         .toEqual({ named, items: named ? expect.arrayContaining([unsavedItem, separate]) : [unsavedItem] })
       expect(disclosableItems(directory).some(item => item.detail.includes("in one file named \"supply-pack (2).docx\""))).toBe(false)
@@ -735,7 +735,7 @@ describe("the combined file saved in the matter", () => {
     const unnamed = "Send the supply note with the cover memo in one file"
     const item = openItem("finalize", "omission", `Requested files: the lawyer's words "${words}" [source: request] ask for the memo and "Supply note" in one file named "supply-pack.docx", ` +
       'but the run delivers the memo and "Supply note" in one file named "supply-pack (2).docx", since a file already in the matter holds the name "supply-pack.docx". ' +
-      "The lawyer should confirm how these files are to be delivered.", { repair_target: "memo", requested_file: 0 })
+      "The lawyer should confirm how these files are to be delivered.", { repair_target: "memo", requested_file: 0, delivered_names: ["supply-pack (2).docx"] })
     /** A delivered matter whose rerun's gate finds nothing to disclose, then a
      * rerun whose save of the combined file is refused under the write's lock. */
     const raced = async (disclosed: ReturnType<typeof openItem>[], named = true, status: ReturnType<typeof openItem>["status"] = "disclosed") => {
@@ -781,7 +781,7 @@ describe("the combined file saved in the matter", () => {
     expect((await one.delivered).documents.filter(row => row.kind === "combined").map(row => row.deliverable)).toEqual(["supply-pack.docx", "supply-pack (2).docx"])
     expect(requestedFilesItems(one.directory)).toEqual([openItem("finalize", "omission", `Requested files: the lawyer's words "${unnamed}" [source: request] ask for the memo and "Supply note" in one file, ` +
       'but the run delivers the memo and "Supply note" in one file named "supply-pack (2).docx", since a file already in the matter holds the name "supply-pack.docx". ' +
-      "The lawyer should confirm how these files are to be delivered.", { repair_target: "memo", requested_file: 0 })])
+      "The lawyer should confirm how these files are to be delivered.", { repair_target: "memo", requested_file: 0, delivered_names: ["supply-pack (2).docx"] })])
   }, 60_000)
 
   test("a save refused under the write's lock: only a disclosed item about the one file itself counts as the notes saying which name it takes", async () => {
@@ -865,6 +865,8 @@ describe("the combined file saved in the matter", () => {
     const opening = (detail: string) => detail.slice(0, detail.indexOf(", but the run "))
     expect(items.map(item => opening(item.detail))).toEqual([opening(items[0]!.detail), opening(items[0]!.detail)])
     for (const item of items) expect(requestedFilesItems(directory, [{ ...item, status: "disclosed" }])).toEqual([item])
+    // An item from a gate's record before items carried the reference is about no file.
+    expect(requestedFilesItems(directory, items.map(item => ({ ...item, ref: { repair_target: "memo" }, status: "disclosed" })))).toEqual([])
   })
 
   test("a save refused under the write's lock after a matter source named for the request is added: the item the notes disclosed still finds its file, and the run fails", async () => {
@@ -893,6 +895,43 @@ describe("the combined file saved in the matter", () => {
     expect(error).toBe(requestedFilesItems(directory)[0]?.detail)
     expect(error).toContain('in one file named "supply-pack (3).docx"')
     expect(error).not.toContain("[source:")
+    // It fails as the item the notes disclosed is about this file and gave another name.
+    const about = (items: ReturnType<typeof openItem>[]) => items.map(item => [item.ref.requested_file, item.ref.delivered_names])
+    expect([about(gate), about(requestedFilesItems(directory))]).toEqual([[[0, ["supply-pack (2).docx"]]], [[0, ["supply-pack (3).docx"]]]])
+  }, 60_000)
+
+  test("a save refused under the write's lock after a matter source named for the request is added: an item the notes disclosed about another file, still delivered where they said, does not fail the run", async () => {
+    const directory = matter()
+    const documents = [COMBINED, SCHEDULE]
+    const plan = writeLeanPlan(directory, documents, "basis-1", undefined, memo(documents))
+    // One file asked for without a name, which the notes do not place, and the
+    // schedule asked for under a name the plan does not give it.
+    writeRequestedFiles(directory, { schema: LEAN_REQUESTED_FILES_SCHEMA, basis: "basis-1", planned: requestedFilesPlanned(plan.documents, plan.memo), stated: true, files: [
+      { holds: ["memo", "d1"], name: null, quote: "Send the supply note with the cover memo in one file" },
+      { holds: ["d2"], name: "schedule-review.docx", quote: "Send the delivery schedule as schedule-review.docx" },
+    ] })
+    await writeCopies(directory, { ...COPIES, "d2/body-applied.docx": "# Delivery schedule\n\nThe goods arrive on Mondays.", "d2/redline.docx": "# Delivery schedule\n\nThe goods arrive on Mondays." })
+    const gate = disclosableItems(directory).filter(item => item.detail.startsWith("Requested files:"))
+    expect(gate.map(item => [item.ref.requested_file, item.detail.includes("[source: request]"), item.detail.includes('in "Delivery schedule.docx"')])).toEqual([[1, true, true]])
+    discloseAtGate(directory, gate)
+    // A matter source named "request" then quotes the lawyer's words without "[source: request]".
+    const db = new Database(path.join(directory, ".dochaus", "legal.db"))
+    try { db.query("INSERT INTO chunks VALUES (?, ?, ?, ?, ?)").run("request", "1", "Send the delivery schedule", 0, 26) } finally { db.close() }
+    // Under the write's lock a lawyer's file takes the combined name.
+    const lawyer = await docx("# Supply pack\n\nA synthetic file saved under this name by hand.")
+    const registration = registering()
+    const racing: NonNullable<LeanDeps["registerDeliverable"]> = async (directory, name, bytes, current, options) => {
+      if (name === "supply-pack.docx" && !current && !existsSync(path.join(directory, name))) writeFileSync(path.join(directory, name), lawyer)
+      return registration.registerDeliverable(directory, name, bytes, current, options)
+    }
+    const error = await recordLeanDocuments(directory, { sessions: scriptedModel({}).port, registerDeliverable: racing }, true).then(() => undefined, (error: Error) => error.message)
+    expect(combinedRows(directory).at(-1)?.deliverable).toBe("supply-pack (2).docx")
+    // The schedule's item now reads without the suffix, so its id differs from
+    // the one the notes disclosed; it is still about the same file, delivered
+    // under the same name, so the notes still say where it went.
+    const schedule = requestedFilesItems(directory).find(item => item.ref.requested_file === 1)!
+    expect([schedule.id === gate[0]!.id, schedule.detail.includes("[source:"), schedule.detail.includes('in "Delivery schedule.docx"')]).toEqual([false, false, true])
+    expect(error).toBeUndefined()
   }, 60_000)
 
   test("a later plan without the combined delivery handles the saved file as a dropped deliverable's", async () => {
@@ -970,7 +1009,7 @@ describe("the combined file saved in the matter", () => {
 
     const item = openItem("finalize", "omission", `Requested files: the lawyer's words "${words}" [source: request] ask for "Supply note" as a file named "supply-pack.docx", ` +
       'but the run delivers "Supply note" in a file of another name, since a file already in the matter holds the name "supply-pack.docx". ' +
-      "The lawyer should confirm how these files are to be delivered.", { repair_target: "memo", requested_file: 0 })
+      "The lawyer should confirm how these files are to be delivered.", { repair_target: "memo", requested_file: 0, delivered_names: [null] })
     // Predicted at the gate, and the same item once the document is saved.
     expect(disclosableItems(directory)).toContainEqual(item)
     discloseAtGate(directory, [item])
