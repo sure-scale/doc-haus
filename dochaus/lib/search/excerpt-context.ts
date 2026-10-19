@@ -81,14 +81,39 @@ const CLAUSE_NUMBER_KINDS = new Set(["Section", "Clause"])
 
 type LabelledSection = { section: string; structural_path: string }
 
+const LABEL_CHAR = /[\p{L}\p{N}]/u
+
+// A kind-named heading starts with the kind and the label, both compared
+// without letter case. The label may end the heading or be followed by
+// whitespace or punctuation ("ARTICLE V—Definitions", "Schedule 2: Pricing"),
+// but not by a character that extends it into another label ("EXHIBIT A-1",
+// "8.3.1", "ARTICLE VI").
+function namesKindAndLabel(section: string, kind: string, label: string) {
+  const heading = section.trim()
+  if (heading.slice(0, kind.length).toUpperCase() !== kind.toUpperCase()) return false
+  const rest = heading.slice(kind.length)
+  const labelAt = rest.length - rest.trimStart().length
+  if (!labelAt || rest.slice(labelAt, labelAt + label.length).toUpperCase() !== label.toUpperCase()) return false
+  const [next, after] = [...rest.slice(labelAt + label.length)]
+  if (next === undefined) return true
+  if (LABEL_CHAR.test(next)) return false
+  // ".", "-" or "(" directly before a letter or digit continues the label.
+  return !(".-(".includes(next) && after !== undefined && LABEL_CHAR.test(after))
+}
+
 function matchingSection(sections: LabelledSection[], kind: string, label: string) {
-  const named = sections.find(({ section }) => {
-    const [first, second] = section.trim().split(/\s+/)
-    return first?.toUpperCase() === kind.toUpperCase() && second?.replace(/[.:;,–—-]+$/, "") === label
-  })
+  const named = sections.find(({ section }) => namesKindAndLabel(section, kind, label))
   if (named || !CLAUSE_NUMBER_KINDS.has(kind)) return named
   const numbered = sections.filter(({ section }) => CLAUSE_NUMBER_LABEL.test(section))
   return numbered.find(({ section }) => section === label) ?? numbered.find(({ section }) => section.startsWith(`${label}.`))
+}
+
+// Headings come from the document; keep the note line short.
+const HEADING_MAX = 80
+
+function clipHeading(heading: string) {
+  const points = [...heading]
+  return points.length > HEADING_MAX ? `${points.slice(0, HEADING_MAX).join("").trimEnd()}…` : heading
 }
 
 export function attachCrossRefs(db: Database, ranked: Array<{ row: ChunkRow }>, scope: SearchScope) {
@@ -97,10 +122,12 @@ export function attachCrossRefs(db: Database, ranked: Array<{ row: ChunkRow }>, 
   const sectionsOf = (docPath: string) => {
     const cached = sectionsByDoc.get(docPath)
     if (cached) return cached
+    // One row per labelled section, in document order, not one per chunk.
     const sections = db
       .query(
         "SELECT section, structural_path FROM chunks WHERE doc_path = ?" +
-          (filter.sql ? ` AND ${filter.sql}` : "") + " ORDER BY char_start",
+          (filter.sql ? ` AND ${filter.sql}` : "") +
+          " GROUP BY section, structural_path ORDER BY MIN(char_start)",
       )
       .all(docPath, ...filter.params) as LabelledSection[]
     sectionsByDoc.set(docPath, sections)
@@ -121,11 +148,11 @@ export function attachCrossRefs(db: Database, ranked: Array<{ row: ChunkRow }>, 
     .slice(0, ATTACH_CAP)
     .map(({ row, hit }) => {
       const heading = hit!.structural_path.split(" › ").at(-1)
-      return `- ${row.doc_name} has a section labelled "${hit!.section}"` + (heading && heading !== hit!.section ? `: ${heading}` : "")
+      return `- ${row.doc_name} has a section labelled "${hit!.section}"` + (heading && heading !== hit!.section ? `: ${clipHeading(heading)}` : "")
     })
   if (!notes.length) return ""
   return (
-    `\n\nSections whose labels match references in these passages (a matching label does not show which document a reference means; fetch with the get-section tool):\n` +
+    `\n\nSections whose labels match references in these passages (a matching label does not show which document a reference means; to read one, pass both its document and section label to get-section):\n` +
     notes.join("\n")
   )
 }
