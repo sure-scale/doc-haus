@@ -10,6 +10,7 @@ import { runChecklistCheckJob, runChecklistExtractionJob, runChecklistRefinement
 import { checklistProducerInputs } from "./checklist-source-context"
 import { matterSourceBasis, snapshotRead, withSourceSnapshot } from "./quotes"
 import { readLeanJson, shortHash, writeLeanText } from "./state"
+import { providerStopKind } from "../../lib/provider-stop"
 
 const itemRecordSchema = z.object({ id: z.string(), item: checklistItemSchema, assignment: checklistComparisonAssignmentSchema.optional() })
 const sourceResultSchema = z.object({
@@ -163,8 +164,9 @@ export async function runChecklistCheckFlow(directory: string, deps: ChecklistJo
           ? { ...inspected, input_sha: job.input_sha, finding: result.value, reinspection: { ...review, status: "succeeded", issues: [], sessionID: result.sessionID, attempts: result.attempts } }
           : { ...inspected, input_sha: job.input_sha, reinspection: { ...review, issues: result.issues, sessionID: result.sessionID, attempts: result.attempts } }
       } catch (error) {
-        // A paused run accepts no outcome; the saved admission stays unspent.
-        if (options.pause?.aborted) return
+        // A paused run, or one its model provider or setup stopped, accepts no
+        // outcome; the saved admission stays unspent.
+        if (options.pause?.aborted || providerStopKind(error)) return
         records[index] = { ...inspected, input_sha: job.input_sha, reinspection: { ...review, issues: [message(error)] } }
       }
       save()

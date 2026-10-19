@@ -743,6 +743,12 @@ test("a stopped run's header says what happened in plain words; the checker's wo
   expect(gate.meta[0]).toMatch(/^1 item to resolve, starting with [a-z]/)
 })
 
+test("a run stopped on its model provider or setup points the header at Settings", () => {
+  const setup = runHeadline(lean({ ...failed, stop_reason: "d1.draft: Model setup is not finished.", provider_stop: "setup" }), Date.now())
+  expect(setup).toMatchObject({ tone: "paused", title: "Paused: Settings need attention" })
+  expect(setup.meta).toContain("The work so far is kept")
+})
+
 test("elsewhere the run's one line leads with the questions still owed", () => {
   const render = (status: LeanDraftingStatus) =>
     renderToStaticMarkup(createElement(MemoryRouter, null, createElement(RunHeader, { status, actions, own: false, onOpen: () => {}, onShowDrafts: () => {} })))

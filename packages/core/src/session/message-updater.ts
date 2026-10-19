@@ -142,7 +142,7 @@ export function update(adapter: Adapter, event: SessionEvent.DurableEvent) {
       "session.inbox.delivery.changed": () => Effect.void,
       "session.execution.started": () => Effect.void,
       "session.execution.succeeded": () => idle("succeeded"),
-      "session.execution.failed": (event) => idle("failed", event.data.error.type === "execution.recovery_state_lost" ? event.data.error : undefined),
+      "session.execution.failed": (event) => idle("failed", event.data.error),
       // Shutdown keeps the execution claim and the resumed drain continues the turn.
       "session.execution.interrupted": (event) =>
         event.data.reason === "shutdown" ? clearCurrentRetry : idle("interrupted"),

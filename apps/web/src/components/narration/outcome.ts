@@ -11,7 +11,7 @@ import {
   openQuestions,
   unresolvedFindingsPhrase,
 } from "../drafting/model"
-import { stoppedByTechnicalProblem } from "./activity"
+import { providerStopMessage, stoppedByTechnicalProblem } from "./activity"
 
 // What the lawyer needs to know once the run settles or stalls, in one short
 // line, and the honest checks behind a completed run. Built only from the
@@ -51,6 +51,8 @@ export function runOutcome(status: LeanDraftingStatus): RunOutcome | undefined {
       }
     return { tone: "attention", text: `Paused with ${items}.${resume}` }
   }
+  const provider = providerStopMessage(status)
+  if (provider) return { tone: "attention", text: provider }
   if (stoppedByTechnicalProblem(status))
     return {
       tone: "attention",
