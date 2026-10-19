@@ -24,7 +24,9 @@ export const LEAN_MAX_SUBSTANTIVE_REPAIRS = 5
 type DocumentRepairContext = { round: number; items: OpenItem[]; basis: string }
 export type RepairRound = { round: number; requested_at: string; items: OpenItem[]; substantive_attempts?: number; checklist_items?: string[]; document_contexts?: Partial<Record<DocID, DocumentRepairContext>> }
 
-const REPAIRABLE_DRAFT_KINDS = new Set<OpenItem["kind"]>(["quote_miss", "citation_unsupported"])
+// A template part the rendered draft falls short on is an omission
+// (draftTemplateItems): the draft is not rewritten for it, so the change cycle repairs it.
+const REPAIRABLE_DRAFT_KINDS = new Set<OpenItem["kind"]>(["quote_miss", "citation_unsupported", "omission"])
 
 export function readRepairRound(directory: string): RepairRound | undefined {
   const value = readLeanJson(directory, "repairs.json")
