@@ -687,9 +687,9 @@ test("resolveTarget trims the target before the defined-term lookup", () => {
   expect(resolution).toMatchObject({ kind: "resolved", doc: { doc_path: "/m/premises.docx" } })
 })
 
-// Two narrowing preferences: an exact file name over a defined term, and a
-// non-amending document over an amending one. A base is chosen only when they
-// agree; when they point at different documents the target is ambiguous.
+// File-name and defined-term matches are not ranked against each other. The
+// non-amending preference narrows them, but never by dropping every file-name
+// match in favour of a defined term: that is reported as ambiguous.
 function chainsFor(docs: DocSeed[], relations: { path: string; name: string; target: string }[], terms: { docPath: string; term: string }[]) {
   const { db } = syntheticDb()
   seed(
@@ -762,4 +762,19 @@ test("buildChains groups unmatched targets by their trimmed stated name", () => 
   expect(chains).toHaveLength(1)
   expect(chains[0]!.base).toEqual({ kind: "unresolved", targetName: "Lease" })
   expect(chains[0]!.entries.map((e) => e.rel.doc_name)).toEqual(["Amendment No. 1.docx", "Amendment No. 2.docx"])
+})
+
+test("resolveTarget reports a non-amending exact-name match beside a non-amending definer as ambiguous", () => {
+  const chains = chainsFor(
+    [
+      { path: "/m/lease.docx", name: "Lease.docx", createdAt: 1 },
+      { path: "/m/guarantee.docx", name: "Guarantee.docx", createdAt: 2 },
+      { path: "/m/am1.docx", name: "Amendment No. 1.docx", createdAt: 3 },
+    ],
+    [{ path: "/m/am1.docx", name: "Amendment No. 1.docx", target: "Lease" }],
+    [{ docPath: "/m/guarantee.docx", term: "Lease" }],
+  )
+  const resolution = chains[0]!.entries[0]!.resolution
+  expect(resolution.kind).toBe("ambiguous")
+  if (resolution.kind === "ambiguous") expect(resolution.names.sort()).toEqual(["Guarantee.docx", "Lease.docx"])
 })

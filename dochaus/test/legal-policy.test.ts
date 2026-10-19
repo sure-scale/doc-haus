@@ -88,7 +88,14 @@ test("rebuilt search output keeps the notes search-document recorded after its p
   const rejected = { title: "passage", output: `indexed passage${notes}`, metadata: { citations: [{ ...citation, excerpt: "Payment is due before delivery." }], notes } }
   await hooks["tool.execute.after"]!({ tool: "search-document", sessionID: "citation-notes", callID: "rejected", args: {} }, rejected)
   expect(rejected.metadata.citations).toEqual([])
-  expect(rejected.output).toContain(`No passages survived verification.${notes}\n\n[citation-verification]`)
+  // With no verified passage left, notes about the passages have nothing to qualify.
+  expect(rejected.output).toContain("No passages survived verification.\n\n[citation-verification]")
+  expect(rejected.output).not.toContain("not matched to an indexed document")
+
+  const mixed = { title: "passage", output: `indexed passages${notes}`, metadata: { citations: [citation, { ...citation, excerpt: "Payment is due before delivery." }], notes } }
+  await hooks["tool.execute.after"]!({ tool: "search-document", sessionID: "citation-notes", callID: "mixed", args: {} }, mixed)
+  expect(mixed.metadata.citations).toHaveLength(1)
+  expect(mixed.output).toContain(`${excerpt}${notes}\n\n[citation-verification]`)
 })
 
 function chatParams(providerID: string, maxOutputTokens: number | undefined) {

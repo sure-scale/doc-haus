@@ -72,12 +72,12 @@ function bareFileTitle(doc: DocRow) {
 // equals the target after structural normalisation, or it records the target
 // as a defined term (NOCASE). A target may omit the file's extension; one that
 // states a document extension names the whole file. Partial overlap never
-// matches. The amender itself is excluded. Two preferences then narrow the
-// candidates: a non-amending document over an amending one, and an exact file
-// name over a defined term. A base is chosen only when they agree; when the
-// first would drop every file-name match for a defined-term match, the target
-// is ambiguous. More than one candidate is ambiguous and none is unmatched;
-// both are reported, never forced.
+// matches. The amender itself is excluded. File-name and defined-term matches
+// are not ranked against each other; non-amending documents are preferred over
+// amending ones, except that this preference never drops every file-name match
+// in favour of a defined-term match (the target is then ambiguous). More than
+// one remaining candidate is ambiguous and none is unmatched; both are
+// reported, never forced.
 function resolveTarget(db: Database, target: RelationRow, docs: DocRow[], relations: RelationRow[]): Resolution {
   const stated = target.target_name.trim()
   const title = normalizeTitle(stated)

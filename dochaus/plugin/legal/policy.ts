@@ -245,8 +245,9 @@ export const LegalPlugin: LegalPolicy = async (input) => {
       if (!rejected.length && !reanchored.length) return
       // Notes the tool recorded after its passages (search-document: unmatched
       // amendment bases, definitions, cross-references, pending redlines). The
-      // rebuilt output keeps them; per-passage warnings come from the citations.
-      const notes = typeof output.metadata.notes === "string" ? output.metadata.notes : ""
+      // rebuilt output keeps them while a verified passage remains for them to
+      // qualify; per-passage warnings come from the citations.
+      const notes = verified.length && typeof output.metadata.notes === "string" ? output.metadata.notes : ""
 
       if (!rejected.length) {
         const realignedDocs = [...new Set(reanchored.map((c) => c.documentName))].join(", ")
