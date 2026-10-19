@@ -27,7 +27,7 @@ export async function deleteMatterDocument(matterDir: string, requestedName: str
     const recovery = await recoverDocumentMutations(matterDir)
     if (recovery.sourceRolledBack) await writeSourceArtifacts(matterDir)
     const target = documentTarget(matterDir, name)
-    const db = openDb(matterDir)
+    const db = openDb(matterDir, { commit: true })
     const role = getDocumentRole(db, target.docPath)
     if (!role) {
       db.close()

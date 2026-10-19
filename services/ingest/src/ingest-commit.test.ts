@@ -5,6 +5,7 @@ import path from "node:path"
 import { Document, Packer, Paragraph } from "docx"
 import * as atomicWrite from "./atomic-document-write"
 import { deleteDocument, getMeta, insertChunk, openDb, setMeta, upsertDocument } from "./db"
+import { copyWordDocument, writeDeliverable, writeDeliverableRevision } from "./deliverable"
 import { deleteMatterDocument } from "./document-delete"
 import { MODEL } from "./embed"
 import * as identifierExtraction from "./identifiers"
@@ -74,6 +75,85 @@ describe("an upload's legal.db commit", () => {
       holder?.kill()
       rmSync(directory, { recursive: true, force: true })
     }
+  }, 60_000)
+})
+
+// Longer than a request connection's wait for a write lock (200 ms), well
+// within a commit connection's (500 ms).
+const COMMIT_HOLD_MS = 300
+
+// Runs `action` while another process takes legal.db's write lock just before
+// the action's registry transaction begins and holds it COMMIT_HOLD_MS.
+async function againstHeldWriteLock(directory: string, action: () => Promise<unknown>) {
+  let holder: ReturnType<typeof Bun.spawn> | undefined
+  const { commitDocumentWriteAsync, commitDocumentDeleteAsync } = atomicWrite
+  const write = spyOn(atomicWrite, "commitDocumentWriteAsync").mockImplementation(async (...args) => {
+    holder = await holdWriteLockInAnotherProcess(directory, COMMIT_HOLD_MS)
+    return commitDocumentWriteAsync(...args)
+  })
+  const remove = spyOn(atomicWrite, "commitDocumentDeleteAsync").mockImplementation(async (...args) => {
+    holder = await holdWriteLockInAnotherProcess(directory, COMMIT_HOLD_MS)
+    return commitDocumentDeleteAsync(...args)
+  })
+  try {
+    await action()
+  } finally {
+    write.mockRestore()
+    remove.mockRestore()
+    if (holder) await holder.exited
+  }
+  expect(holder?.exitCode).toBe(0)
+  const db = openDb(directory)
+  try {
+    expect(getMeta(db, "synthetic-holder")).toBe("1")
+    return db.query("SELECT name, role FROM documents ORDER BY created_at").all() as { name: string; role: string }[]
+  } finally {
+    db.close()
+  }
+}
+
+describe("a delete's or deliverable's legal.db commit waits briefly for another process's write lock", () => {
+  const directories: string[] = []
+  const matter = () => {
+    const directory = realpathSync(mkdtempSync(path.join(tmpdir(), "dochaus-commit-wait-")))
+    directories.push(directory)
+    return directory
+  }
+  afterAll(() => directories.forEach((directory) => rmSync(directory, { recursive: true, force: true })))
+
+  test("deleting a source document", async () => {
+    const directory = matter()
+    writeCorpus(directory, 2)
+    expect(await againstHeldWriteLock(directory, () => deleteMatterDocument(directory, "Corpus 00.docx")))
+      .toEqual([{ name: "Corpus 01.docx", role: "source" }])
+  }, 60_000)
+
+  test("deleting a deliverable", async () => {
+    const directory = matter()
+    await writeDeliverable(directory, "Invented Memo.docx", await docx(["The invented memo."]))
+    expect(await againstHeldWriteLock(directory, () => deleteMatterDocument(directory, "Invented Memo.docx"))).toEqual([])
+  }, 60_000)
+
+  test("writing a deliverable", async () => {
+    const directory = matter()
+    const bytes = await docx(["The invented memo."])
+    expect(await againstHeldWriteLock(directory, () => writeDeliverable(directory, "Invented Memo.docx", bytes)))
+      .toEqual([{ name: "Invented Memo.docx", role: "deliverable" }])
+  }, 60_000)
+
+  test("writing a deliverable's revision", async () => {
+    const directory = matter()
+    await writeDeliverable(directory, "Invented Memo.docx", await docx(["The invented memo."]))
+    const bytes = await docx(["The revised invented memo."])
+    expect(await againstHeldWriteLock(directory, () => writeDeliverableRevision(directory, "Invented Memo.docx", bytes)))
+      .toEqual([{ name: "Invented Memo.docx", role: "deliverable" }])
+  }, 60_000)
+
+  test("copying a Word document", async () => {
+    const directory = matter()
+    await writeDeliverable(directory, "Invented Memo.docx", await docx(["The invented memo."]))
+    expect(await againstHeldWriteLock(directory, () => copyWordDocument(directory, "Invented Memo.docx", "Invented Memo Copy.docx")))
+      .toEqual([{ name: "Invented Memo.docx", role: "deliverable" }, { name: "Invented Memo Copy.docx", role: "deliverable" }])
   }, 60_000)
 })
 
