@@ -34,45 +34,80 @@ describe("lean quotation matching", () => {
   })
 })
 
-// A prose quotation may join passages of one source with an ellipsis. It is
-// verified only when every passage is in that source, in the quoted order, and
-// each is long enough to verify on its own; otherwise it is refused as a miss.
+// The retry feedback for a quotation with an ellipsis in the middle: the words
+// it leaves out ("near"), passages too far apart to read as one ("apart"), or
+// the plain miss when a passage is not in the source.
+const NEAR_TAIL = "Leaving words out can change who must do what or drop a condition, amount or limit, so quotations with words left out in the middle are not accepted. Quote one continuous passage that includes those words, without an ellipsis."
+const near = (quote: string, omitted: string, source = SOURCE, where = "The drafting notes") =>
+  `${where} quotes "${quote}" as from "${source}". The quoted words are in ${source === "request" ? "the request, a user update or one of the lawyer's answers" : "that document"}, but the "…" leaves out: "${omitted}". ${NEAR_TAIL}`
+const apart = (quote: string, source = SOURCE) =>
+  `The drafting notes quotes "${quote}" as from "${source}". The quoted parts are in that document, but in separate passages. Quote each passage as its own quotation, without an ellipsis.`
+const miss = (quote: string, source = SOURCE) =>
+  `The drafting notes quotes "${quote}" as from "${source}", but those words are not in that document. Copy the exact words with read-document (or check them with verify-quote), or drop the quotation marks and paraphrase.`
+const notes = (quote: string, source = SOURCE) => `# Drafting notes\n\nThe terms provide "${quote}" [source: ${source}].`
+const issues = (directory: string, quote: string, source = SOURCE) => checkDraftingNotes(directory, notes(quote, source), []).issues
+
+// A prose quotation may begin or end with an ellipsis: the passage left must be
+// in the named source, long enough to verify on its own and cut on whole words.
+// An ellipsis in the middle is refused, and the miss says what it leaves out.
 describe("lean elided quotation matching", () => {
   const TERMS = "The supplier shall deliver the goods within thirty days of the order date. Late delivery entitles the buyer to a credit. Payment is due in full on delivery of the goods."
-  const notes = (quote: string, source = SOURCE) => `# Drafting notes\n\nThe terms provide "${quote}" [source: ${source}].`
-  const issues = (directory: string, quote: string, source = SOURCE) => checkDraftingNotes(directory, notes(quote, source), []).issues
+  const OMITTED = "within thirty days of the order date. Late delivery entitles the buyer to a credit."
 
-  test("passages of one source joined by an ellipsis, in order, are verified", () => {
+  test("passages of one source joined by an ellipsis are refused with the words it leaves out", () => {
     const directory = matter(TERMS)
-    expect(issues(directory, "The supplier shall deliver the goods \u2026 Payment is due in full on delivery")).toEqual([])
-    expect(issues(directory, "The supplier shall deliver the goods ... Payment is due in full on delivery")).toEqual([])
-    expect(issues(directory, "... entitles the buyer to a credit. Payment is due in full")).toEqual([])
-    expect(issues(directory, "Draft a short supply note \u2026 from the supply terms", "request")).toEqual([])
-    // The lawyer's words are matched without regard to case, as quoteFound does.
-    expect(issues(directory, "draft a short supply note \u2026 from the supply terms", "request")).toEqual([])
+    for (const quote of ["The supplier shall deliver the goods … Payment is due in full on delivery", "The supplier shall deliver the goods ... Payment is due in full on delivery"])
+      expect(issues(directory, quote)).toEqual([near(quote, OMITTED)])
+    // The lawyer's words are located without regard to case, as quoteFound
+    // matches them, and the miss shows them as written.
+    for (const quote of ["Draft a short supply … from the supply terms", "draft a short supply … from the supply terms"])
+      expect(issues(directory, quote, "request")).toEqual([near(quote, "note", "request")])
+    // An ellipsis between passages that meet leaves nothing out.
+    expect(issues(directory, "Draft a short supply note … from the supply terms", "request")).toEqual([
+      `The drafting notes quotes "Draft a short supply note … from the supply terms" as from "request". The quoted words are one continuous passage of the request, a user update or one of the lawyer's answers; the "…" leaves nothing out. Quote the passage without an ellipsis.`,
+    ])
+  })
+
+  test("the continuous passage verifies, as does each passage quoted on its own; deleting the ellipsis does not", () => {
+    const directory = matter(TERMS)
+    expect(issues(directory, `The supplier shall deliver the goods ${OMITTED} Payment is due in full on delivery`)).toEqual([])
+    expect(checkDraftingNotes(directory, `# Drafting notes\n\nThe terms provide "The supplier shall deliver the goods" [source: ${SOURCE}] and "Payment is due in full on delivery" [source: ${SOURCE}].`, []).issues).toEqual([])
+    const joined = "The supplier shall deliver the goods Payment is due in full on delivery"
+    expect(issues(directory, joined)).toEqual([miss(joined)])
+  })
+
+  test("an ellipsis at the start or end verifies the passage it leaves", () => {
+    const directory = matter(TERMS)
+    for (const quote of ["... entitles the buyer to a credit. Payment is due in full", "The supplier shall deliver the goods within thirty days …",
+      "… Late delivery entitles the buyer to a credit …", "[…] Late delivery entitles the buyer to a credit"])
+      expect([quote, issues(directory, quote)]).toEqual([quote, []])
+    for (const quote of ["Draft a short supply note …", "… a short supply note from the supply terms"])
+      expect([quote, issues(directory, quote, "request")]).toEqual([quote, []])
+    // An ellipsis in the middle refuses the quotation even beside edge ellipses.
+    const edged = "… shall deliver the goods … Payment is due in full on delivery …"
+    expect(issues(directory, edged)).toEqual([near(edged, OMITTED)])
   })
 
   test("reordered, too short or absent passages are still refused with the plain miss", () => {
     const directory = matter(TERMS)
-    const miss = (quote: string) => `The drafting notes quotes "${quote}" as from "${SOURCE}", but those words are not in that document.`
     for (const quote of [
-      "Payment is due in full on delivery \u2026 The supplier shall deliver the goods",
-      "The supplier shall deliver the goods \u2026 Payment is due",
-      "The supplier shall deliver the goods \u2026 Payment is due within sixty days",
-    ]) {
-      const found = issues(directory, quote)
-      expect(found).toHaveLength(1)
-      expect(found[0]).toContain(miss(quote))
-    }
-    expect(issues(directory, "from the supply terms \u2026 Draft a short supply note", "request")).toHaveLength(1)
+      "Payment is due in full on delivery … The supplier shall deliver the goods",
+      "The supplier shall deliver the goods … Payment is due",
+      "The supplier shall deliver the goods … Payment is due within sixty days",
+    ]) expect(issues(directory, quote)).toEqual([miss(quote)])
+    expect(issues(directory, "from the supply terms … Draft a short supply note", "request")).toEqual([
+      `The drafting notes quotes "from the supply terms … Draft a short supply note" as from "request", but those words are not in the request, user updates or any one of the lawyer's answers. Copy the exact words with read-document (or check them with verify-quote), or drop the quotation marks and paraphrase.`,
+    ])
   })
 
   test("spaced, bracketed and sentence-ending ellipses separate passages under the same rules", () => {
     const directory = matter(TERMS)
-    for (const mark of [" . . . ", " [\u2026] ", " [...] ", " [. . .] ", ". . . . "])
-      expect(issues(directory, `The supplier shall deliver the goods${mark}Payment is due in full on delivery`)).toEqual([])
-    expect(issues(directory, "The supplier shall deliver the goods . . . Payment is due")).toHaveLength(1)
-    expect(issues(directory, "Payment is due in full on delivery [...] The supplier shall deliver the goods")).toHaveLength(1)
+    for (const mark of [" . . . ", " […] ", " [...] ", " [. . .] ", ". . . . "]) {
+      const quote = `The supplier shall deliver the goods${mark}Payment is due in full on delivery`
+      expect(issues(directory, quote)).toEqual([near(quote, OMITTED)])
+    }
+    expect(issues(directory, "The supplier shall deliver the goods . . . Payment is due")).toEqual([miss("The supplier shall deliver the goods . . . Payment is due")])
+    expect(issues(directory, "Payment is due in full on delivery [...] The supplier shall deliver the goods")).toEqual([miss("Payment is due in full on delivery [...] The supplier shall deliver the goods")])
   })
 
   test("a passage must begin after the previous one ends and come from the same source", () => {
@@ -81,170 +116,138 @@ describe("lean elided quotation matching", () => {
     const schedule = "Late delivery entitles the buyer to a service credit of five percent."
     db.query("INSERT INTO chunks VALUES (?, ?, ?, ?, ?)").run("delivery-schedule.docx", "1", schedule, 0, schedule.length)
     db.close()
-    expect(issues(directory, "The supplier shall deliver the goods within \u2026 deliver the goods within thirty days")).toHaveLength(1)
-    expect(issues(directory, "The supplier shall deliver the goods \u2026 entitles the buyer to a service credit")).toHaveLength(1)
-    expect(issues(directory, "The supplier shall deliver the goods \u2026 entitles the buyer to a service credit", "delivery-schedule.docx")).toHaveLength(1)
-    expect(issues(directory, "Late delivery entitles the buyer \u2026 a service credit of five percent", "delivery-schedule.docx")).toEqual([])
+    for (const [quote, source] of [
+      ["The supplier shall deliver the goods within … deliver the goods within thirty days", SOURCE],
+      ["The supplier shall deliver the goods … entitles the buyer to a service credit", SOURCE],
+      ["The supplier shall deliver the goods … entitles the buyer to a service credit", "delivery-schedule.docx"],
+    ] as const) expect(issues(directory, quote, source)).toEqual([miss(quote, source)])
+    const quote = "Late delivery entitles the buyer … a service credit of five percent"
+    expect(issues(directory, quote, "delivery-schedule.docx")).toEqual([near(quote, "to", "delivery-schedule.docx")])
   })
 
-  test("a recorded quotation field still needs the verbatim words", () => {
+  test("a recorded quotation field still needs the verbatim words; its miss locates an elision too", () => {
     const directory = matter(TERMS)
-    expect(quoteFound(directory, { quote: "The supplier shall deliver the goods \u2026 Payment is due in full on delivery", source_id: SOURCE })).toBe(false)
+    const quote = "The supplier shall deliver the goods … Payment is due in full on delivery"
+    expect(quoteFound(directory, { quote, source_id: SOURCE })).toBe(false)
+    expect(quoteMissIssue(directory, "findings[0].quote", { quote, source_id: SOURCE }, "json")).toBe(near(quote, OMITTED, SOURCE, "findings[0].quote"))
   })
 })
 
-// An ellipsis may only shorten a passage, never turn it into words the source
-// does not say: each passage begins and ends on whole words of the source, the
-// omitted words hold no negation or qualification, and each omission stays a
-// short run within one paragraph.
-describe("lean elided quotation limits", () => {
+// An ellipsis in the middle is refused whatever it leaves out: no list of words
+// can tell which omissions change who must do what or drop a condition, amount
+// or limit. The miss locates the passages so the author can quote one
+// continuous passage, or each passage on its own.
+describe("lean elided quotation refusals", () => {
   const LIMITS = [
     "The Supplier shall be liable for direct losses only and shall not be liable for indirect or consequential losses arising from late delivery.",
     "The Seller hereby agrees that it shall not indemnify the Buyer for third-party claims of any kind.",
     "The licence granted under this Agreement is non-exclusive and non-transferable.",
     "The Customer's liability under this Agreement is unlimited in amount for breach of confidentiality.",
   ].join("\n\n")
-  const verified = (directory: string, quote: string) =>
-    checkDraftingNotes(directory, `# Drafting notes\n\nThe terms provide "${quote}" [source: ${SOURCE}].`, []).issues.length === 0
   const PURCHASE = (omitted: string) => `The Distributor shall purchase the goods ${omitted} from the Manufacturer at the list price.`
   const PURCHASE_QUOTE = "The Distributor shall purchase the goods … from the Manufacturer at the list price"
   const NEUTRAL = "in the quantities stated in each purchase order and on the delivery dates agreed in writing by both parties"
 
-  test("a passage that begins or ends inside a word of the source is refused", () => {
+  test("a passage that begins or ends inside a word of the source is not found", () => {
     const directory = matter(LIMITS)
-    expect(verified(directory, "The licence granted under this Agreement is … exclusive and non-transferable.")).toBe(false)
-    expect(verified(directory, "The Customer's liability under this Agreement is …limited in amount for breach of confidentiality.")).toBe(false)
-    expect(verified(directory, "The licence granted under this Agreement is non … and non-transferable.")).toBe(false)
-    expect(verified(directory, "The licence granted under this Agreement is … and non-transferable.")).toBe(true)
-    // The start of a passage is checked on its own: "ir" is no prefix the
-    // omission rule knows.
-    expect(verified(matter("The licence granted under this Agreement is irrevocable and perpetual within the Territory."),
-      "The licence granted under this Agreement is … revocable and perpetual within the Territory")).toBe(false)
+    for (const quote of ["The licence granted under this Agreement is … exclusive and non-transferable.",
+      "The Customer's liability under this Agreement is …limited in amount for breach of confidentiality.",
+      "The licence granted under this Agreement is non … and non-transferable."])
+      expect(issues(directory, quote)).toEqual([miss(quote)])
+    const whole = "The licence granted under this Agreement is … and non-transferable."
+    expect(issues(directory, whole)).toEqual([near(whole, "non-exclusive")])
+    // The start of a passage is checked on its own: "ir" is no prefix.
+    const revocable = "The licence granted under this Agreement is … revocable and perpetual within the Territory"
+    expect(issues(matter("The licence granted under this Agreement is irrevocable and perpetual within the Territory."), revocable)).toEqual([miss(revocable)])
     // Word text carries a non-breaking hyphen (U+2011) where the page shows "-";
-    // a faithful quotation verifies with either hyphen.
+    // a passage locates with either hyphen.
     const nonBreaking = matter("The licence granted under this Agreement is non‑exclusive and is limited to the Territory.")
-    expect(verified(nonBreaking, "… exclusive and is limited to the Territory")).toBe(false)
-    for (const hyphen of ["‑", "-"])
-      expect(verified(nonBreaking, `The licence granted under this Agreement is non${hyphen}exclusive … limited to the Territory`)).toBe(true)
+    for (const hyphen of ["‑", "-"]) {
+      const quote = `The licence granted under this Agreement is non${hyphen}exclusive … limited to the Territory`
+      expect(issues(nonBreaking, quote)).toEqual([near(quote, "and is")])
+    }
   })
 
-  test("an omission holding a negation or qualification is refused", () => {
-    const directory = matter(LIMITS)
-    expect(verified(directory, "The Supplier shall be liable … for indirect or consequential losses")).toBe(false)
-    expect(verified(directory, "The Seller hereby agrees that it shall … indemnify the Buyer for third-party claims")).toBe(false)
-    for (const omitted of ["not", "never", "only", "in no event", "nor", "neither", "none of", "without delay", "except samples", "unless rejected",
-      "save as agreed", "subject to clause 4", "provided that stock lasts", "notwithstanding clause 4", "cannot", "won't",
-      "other than samples", "excluding samples", "apart from samples", "otherwise than in bulk", "rather than samples", "solely", "exclusively",
-      "if stock is available", "to the extent stock is available", "in the event stock is available"])
-      expect([omitted, verified(matter(PURCHASE(omitted)), PURCHASE_QUOTE)]).toEqual([omitted, false])
-    expect(verified(matter(PURCHASE(NEUTRAL)), PURCHASE_QUOTE)).toBe(true)
-    // Whole words only: "gift" and "different" hold no "if".
-    expect(verified(matter(PURCHASE("packed in gift boxes for the different regions")), PURCHASE_QUOTE)).toBe(true)
-    // "No." before a number abbreviates "number"; it negates nothing.
-    expect(verified(matter(PURCHASE("listed in schedule No. 4")), PURCHASE_QUOTE)).toBe(true)
+  test("an ellipsis at the start or end may not cut a word at a hyphen or dash", () => {
+    const licence = (grant: string) => matter(`The Licensor grants the Licensee ${grant} licence to use the Software in the Territory.`)
+    const lead = "… exclusive licence to use the Software in the Territory"
+    const trail = "The Licensor grants the Licensee a non …"
+    // Hyphen, Word's hyphen and non-breaking hyphen, figure dash, en dash, minus sign.
+    for (const dash of ["-", "‐", "‑", "‒", "–", "−"]) {
+      const directory = licence(`a non${dash}exclusive`)
+      expect([dash, issues(directory, lead), issues(directory, trail)]).toEqual([dash, [miss(lead)], [miss(trail)]])
+      expect([dash, issues(directory, "… a non-exclusive licence to use the Software …")]).toEqual([dash, []])
+    }
+    expect(issues(licence("an exclusive"), lead)).toEqual([])
+    // The em dash sets off an aside and joins no word.
+    expect(issues(licence("a non—exclusive"), lead)).toEqual([])
   })
 
-  test("an omission holding a limit is refused", () => {
+  test("an omission is refused whatever it leaves out, and the miss shows it", () => {
+    const cap = (amount: string) => `The Supplier's aggregate liability under this Agreement is capped at ${amount} the Charges paid in the twelve months before the claim.`
+    const CAP_QUOTE = "The Supplier's aggregate liability under this Agreement is capped at … the Charges paid in the twelve months before the claim"
     const support = (omitted: string) => `The Supplier shall provide ${omitted} ten Business Days of support each month to the Customer at the Site.`
-    const quote = "The Supplier shall provide … ten Business Days of support each month to the Customer at the Site"
-    for (const omitted of ["up to", "at least", "a maximum of", "a minimum of"])
-      expect([omitted, verified(matter(support(omitted)), quote)]).toEqual([omitted, false])
-    expect(verified(matter(support("the Customer with")), quote)).toBe(true)
+    const SUPPORT_QUOTE = "The Supplier shall provide … ten Business Days of support each month to the Customer at the Site"
+    for (const [source, quote, omitted] of [
+      ...["not", "only", "unless rejected", "if stock is available", "subject to clause 4", "up to £500", "less 5%", NEUTRAL,
+        "packed in gift boxes for the different regions", "listed in schedule No. 4"].map(omitted => [PURCHASE(omitted), PURCHASE_QUOTE, omitted]),
+      ...["150% of", "the greater of £5,000,000 and", "the greater of GBP 500000 and", "the amount of"].map(amount => [cap(amount), CAP_QUOTE, amount]),
+      ...["up to", "at least", "the Customer with"].map(omitted => [support(omitted), SUPPORT_QUOTE, omitted]),
+      [LIMITS, "The Supplier shall be liable … for indirect or consequential losses", "for direct losses only and shall not be liable"],
+      [LIMITS, "The Seller hereby agrees that it shall … indemnify the Buyer for third-party claims", "not"],
+      ["The Customer under this Agreement may request additional services from time to time. The Supplier shall provide the additional services within ten days.",
+        "The Customer under this Agreement may … provide the additional services within ten days", "request additional services from time to time. The Supplier shall"],
+      ["The Buyer may inspect the goods on delivery and the Seller shall replace them. Notice of a defect is given in writing.",
+        "The Buyer may inspect the goods … Notice of a defect is given in writing", "on delivery and the Seller shall replace them."],
+    ]) expect([omitted, issues(matter(source), quote)]).toEqual([omitted, [near(quote, omitted)]])
   })
 
-  test("an omitted \"(if any)\" conditions nothing; any other \"if\" still does", () => {
-    const expenses = (omitted: string) => `The Customer shall reimburse the Supplier for its expenses ${omitted} incurred in performing the Services at the Site.`
-    const quote = "The Customer shall reimburse the Supplier for its expenses … incurred in performing the Services at the Site"
-    expect(verified(matter(expenses("(if any)")), quote)).toBe(true)
-    expect(verified(matter(expenses("(If Any)")), quote)).toBe(true)
-    for (const omitted of [", if any,", "(if any goods are rejected)", "(if any) or (if agreed)"])
-      expect([omitted, verified(matter(expenses(omitted)), quote)]).toEqual([omitted, false])
+  test("an omission that hands an obligation to another party is refused, and the miss shows the hand-off", () => {
+    for (const [source, quote, omitted] of [
+      ["Under this Agreement the Supplier shall deliver the Goods to the Site and the Customer shall pay the Price within thirty days of delivery.",
+        "Under this Agreement the Supplier … shall pay the Price within thirty days of delivery", "shall deliver the Goods to the Site and the Customer"],
+      ["The Secretary of State may make regulations under this section and the Authority must publish guidance on the operation of the scheme.",
+        "The Secretary of State may make regulations … must publish guidance on the operation of the scheme", "under this section and the Authority"],
+      ["The Landlord may enter the Premises to inspect them and the Tenant shall make good any damage within twenty working days.",
+        "The Landlord may enter the Premises … shall make good any damage within twenty working days", "to inspect them and the Tenant"],
+      ...["shall at its own cost", "shall (at its own cost)", "shall – at its own cost –", "shall forthwith", "shall then", "shall in any event",
+        "shall at all times", "shall also", "shall be entitled to", "may elect to", "shall be obliged to", "shall have the right to",
+        "shall use reasonable endeavours to", "shall procure that its subcontractors", "shall, at its own cost and within ten days"].map(tail => [
+        `The Buyer may inspect the goods on delivery and the Seller ${tail} replace any defective goods within ten days of notice.`,
+        "The Buyer may inspect the goods … replace any defective goods within ten days of notice", `on delivery and the Seller ${tail}`]),
+    ]) expect([omitted, issues(matter(source), quote)]).toEqual([omitted, [near(quote, omitted)]])
   })
 
-  test("an omission holding an amount is refused", () => {
-    for (const omitted of ["less 5%", "less 5 %", "less 5 per cent", "less 5 percent", "up to £500", "up to $ 500", "up to €500", "up to ¥500"])
-      expect([omitted, verified(matter(PURCHASE(omitted)), PURCHASE_QUOTE)]).toEqual([omitted, false])
-    const cap = (amount: string) => `The Supplier's aggregate liability under this Agreement is capped at ${amount} the Charges paid in the twelve months before the claim.`
-    const quote = "The Supplier's aggregate liability under this Agreement is capped at … the Charges paid in the twelve months before the claim"
-    expect(verified(matter(cap("150% of")), quote)).toBe(false)
-    expect(verified(matter(cap("the greater of £5,000,000 and")), quote)).toBe(false)
-    expect(verified(matter(cap("the amount of")), quote)).toBe(true)
-  })
-
-  test("an omission holding a currency code or a number grouped in thousands is refused", () => {
-    const cap = (amount: string) => `The Supplier's aggregate liability under this Agreement is capped at ${amount} the Charges paid in the twelve months before the claim.`
-    const quote = "The Supplier's aggregate liability under this Agreement is capped at … the Charges paid in the twelve months before the claim"
-    for (const amount of ["the greater of GBP 500000 and", "the greater of USD1000 and", "the greater of 5,000,000 pounds and", "the greater of 25,000 and"])
-      expect([amount, verified(matter(cap(amount)), quote)]).toEqual([amount, false])
-    // A currency code is upper case: a short word before a number is no amount.
-    expect(verified(matter(cap("the amount, for 30 days, of")), quote)).toBe(true)
-  })
-
-  test("an omission that hands a sentence's verb to another subject or modal is refused", () => {
-    expect(verified(matter("The Customer under this Agreement may request additional services from time to time. The Supplier shall provide the additional services within ten days."),
-      "The Customer under this Agreement may … provide the additional services within ten days")).toBe(false)
-    expect(verified(matter("The Buyer may inspect the goods on delivery and the Seller shall replace any defective goods within ten days of notice."),
-      "The Buyer may inspect the goods … replace any defective goods within ten days of notice")).toBe(false)
-    // The omission may end on the modal and an adverb, a comma-set aside or a list label.
-    for (const tail of ["shall promptly", "shall, at its own cost,", "shall (a)"])
-      expect([tail, verified(matter(`The Buyer may inspect the goods on delivery and the Seller ${tail} replace any defective goods within ten days of notice.`),
-        "The Buyer may inspect the goods … replace any defective goods within ten days of notice")]).toEqual([tail, false])
-    // A modal may be omitted where the next passage begins a sentence of its own.
-    expect(verified(matter("The Buyer may inspect the goods on delivery and the Seller shall replace them. Notice of a defect is given in writing."),
-      "The Buyer may inspect the goods … Notice of a defect is given in writing")).toBe(true)
-  })
-
-  test("a modal earlier in the omission, in an aside or a date, hands over nothing", () => {
-    for (const [source, quote] of [
+  test("a harmless aside is refused the same way; the passage quoted whole verifies", () => {
+    for (const [source, quote, omitted] of [
       ["The Customer shall pay each valid invoice within 30 days of receipt (or such longer period as the parties may agree in writing) by bank transfer to the account notified by the Supplier.",
-        "The Customer shall pay each valid invoice within 30 days of receipt … by bank transfer to the account notified by the Supplier"],
-      ["The Supplier shall provide the Customer with such information about the Services as the Customer may reasonably require for the purposes of its audit.",
-        "The Supplier shall provide the Customer with such information about the Services … for the purposes of its audit"],
-      ["\"Confidential Information\" means all information disclosed by one party to the other, which shall include know-how and trade secrets, whether before or after the date of this Agreement.",
-        "\"Confidential Information\" means all information disclosed by one party to the other … whether before or after the date of this Agreement"],
-      ["A notice under subsection (1) must be in writing, must be in such form as may be prescribed, and must be served on every person with an interest in the land.",
-        "A notice under subsection (1) must be in writing … and must be served on every person with an interest in the land"],
+        "The Customer shall pay each valid invoice within 30 days of receipt … by bank transfer to the account notified by the Supplier", "(or such longer period as the parties may agree in writing)"],
       ["The Share Purchase Agreement dated 14 May 2023 between the Sellers and the Buyer provides that the price is payable in cash on Completion.",
-        "The Share Purchase Agreement … provides that the price is payable in cash on Completion"],
-    ] as const) expect([quote, verified(matter(source), quote)]).toEqual([quote, true])
+        "The Share Purchase Agreement … provides that the price is payable in cash on Completion", "dated 14 May 2023 between the Sellers and the Buyer"],
+      ["The Customer shall reimburse the Supplier for its expenses (if any) incurred in performing the Services at the Site.",
+        "The Customer shall reimburse the Supplier for its expenses … incurred in performing the Services at the Site", "(if any)"],
+    ]) {
+      const directory = matter(source)
+      expect([omitted, issues(directory, quote)]).toEqual([omitted, [near(quote, omitted)]])
+      expect([omitted, issues(directory, source.slice(0, -1))]).toEqual([omitted, []])
+    }
   })
 
-  test("an omission that drops a non- or un- prefix from the next word is refused", () => {
-    for (const source of [
-      "The licence granted under this Agreement is non exclusive and is limited to the Territory.",
-      "The licence granted under this Agreement is non-\nexclusive and is limited to the Territory.",
-      "The licence granted under this Agreement is un- conditional and is limited to the Territory.",
-      // Word's non-breaking hyphen and hyphen, and an en dash, stand for "-".
-      "The licence granted under this Agreement is non‑exclusive and is limited to the Territory.",
-      "The licence granted under this Agreement is non‐exclusive and is limited to the Territory.",
-      "The licence granted under this Agreement is non–exclusive and is limited to the Territory.",
-    ]) expect([source, verified(matter(source), `The licence granted under this Agreement is … ${source.includes("un-") ? "conditional" : "exclusive"} and is limited to the Territory`)]).toEqual([source, false])
-  })
-
-  test("a figure dash, en dash or minus sign stands for \"-\" as a hyphen does", () => {
+  test("a figure dash, en dash or minus sign locates as \"-\" does; an em dash is an aside", () => {
     const licence = (prefix: string) => `The licence granted under this Agreement is ${prefix}exclusive and is limited to the Territory.`
     const quote = "The licence granted under this Agreement is … exclusive and is limited to the Territory"
-    for (const prefix of ["non\u2012", "non\u2212", "non \u2013 ", "non - ", "un \u2013"])
-      expect([prefix, verified(matter(licence(prefix)), quote)]).toEqual([prefix, false])
-    expect(verified(matter(licence("non\u2013")), "… exclusive and is limited to the Territory")).toBe(false)
-    // The em dash sets off an aside and joins no word.
-    expect(verified(matter("The Supplier shall deliver the goods\u2014and any packaging\u2014to the Site at its own cost."),
-      "The Supplier shall deliver the goods … to the Site at its own cost")).toBe(true)
+    for (const prefix of ["non‒", "non−"])
+      expect([prefix, issues(matter(licence(prefix)), quote)]).toEqual([prefix, [miss(quote)]])
+    const aside = "The Supplier shall deliver the goods … to the Site at its own cost"
+    expect(issues(matter("The Supplier shall deliver the goods—and any packaging—to the Site at its own cost."), aside))
+      .toEqual([near(aside, "—and any packaging—")])
     // A range keeps its dash on both sides of the comparison.
-    expect(verified(matter("Clauses 1\u20135 of Schedule 2 apply to the Services and clauses 6\u20139 of Schedule 2 apply to the Goods."),
-      "Clauses 1\u20135 of Schedule 2 apply … clauses 6\u20139 of Schedule 2 apply to the Goods")).toBe(true)
+    const range = "Clauses 1–5 of Schedule 2 apply … clauses 6–9 of Schedule 2 apply to the Goods"
+    expect(issues(matter("Clauses 1–5 of Schedule 2 apply to the Services and clauses 6–9 of Schedule 2 apply to the Goods."), range))
+      .toEqual([near(range, "to the Services and")])
   })
 
-  test("an omission may skip list items that Word writes as separate paragraphs", () => {
-    // Converted Word text ends every paragraph, each list item included, with a blank line.
-    const items = "The Supplier shall, at its own cost:\n\n(a) deliver the goods to the Site;\n\n(b) install the goods; and\n\n(c) invoice the Customer monthly in arrears.\n\n"
-    expect(verified(matter(items), "The Supplier shall, at its own cost: … (c) invoice the Customer monthly in arrears")).toBe(true)
-    // Without a list label to resume at, the omission still may not cross a paragraph.
-    expect(verified(matter(items), "The Supplier shall, at its own cost: … invoice the Customer monthly in arrears")).toBe(false)
-  })
-
-  // Two clauses whose sub-clauses restart at the same label, written as Word
-  // paragraphs, on one line, or one per line as in PDF text.
+  // Two clauses whose sub-clauses restart at the same label.
   const LABELS = {
     lower: (clause: number, item: number) => `(${"abc"[item - 1]})`,
     upper: (clause: number, item: number) => `(${["III", "IV"][item - 1]})`,
@@ -255,41 +258,41 @@ describe("lean elided quotation limits", () => {
     [`4.1 The Supplier shall, at its own cost:`, `${label(1, 1)} deliver the goods to the Site;`, `${label(1, 2)} install the goods at the Site.`,
       `4.2 The Customer shall:`, `${label(2, 1)} pay the Charges within 30 days of invoice.`].join(gap) + gap
 
-  test("an omission may skip typed upper-case, roman and decimal list items", () => {
-    for (const [name, label] of Object.entries(LABELS))
-      expect([name, verified(matter(clauses("\n\n", label)), `The Supplier shall, at its own cost: … ${label(1, 2)} install the goods at the Site`)]).toEqual([name, true])
+  test("list items that Word writes as separate paragraphs are separate passages", () => {
+    // Converted Word text ends every paragraph, each list item included, with a blank line.
+    const items = matter("The Supplier shall, at its own cost:\n\n(a) deliver the goods to the Site;\n\n(b) install the goods; and\n\n(c) invoice the Customer monthly in arrears.\n\n")
+    for (const quote of ["The Supplier shall, at its own cost: … (c) invoice the Customer monthly in arrears", "The Supplier shall, at its own cost: … invoice the Customer monthly in arrears"])
+      expect(issues(items, quote)).toEqual([apart(quote)])
+    expect(checkDraftingNotes(items, `# Drafting notes\n\nThe terms provide "The Supplier shall, at its own cost:" [source: ${SOURCE}] and "(c) invoice the Customer monthly in arrears" [source: ${SOURCE}].`, []).issues).toEqual([])
+    for (const [name, label] of Object.entries(LABELS)) {
+      const quote = `The Supplier shall, at its own cost: … ${label(1, 2)} install the goods at the Site`
+      expect([name, issues(matter(clauses("\n\n", label)), quote)]).toEqual([name, [apart(quote)]])
+    }
   })
 
-  test("an omission may not hand a restarted list item to another party's modal", () => {
-    for (const gap of ["\n\n", " ", "\n"]) for (const [name, label] of Object.entries(LABELS))
-      expect([JSON.stringify(gap), name, verified(matter(clauses(gap, label)), `The Supplier shall, at its own cost: … ${label(2, 1)} pay the Charges within 30 days of invoice`)])
-        .toEqual([JSON.stringify(gap), name, false])
-    expect(verified(matter("The Customer may request additional services. The Supplier shall (a) provide the additional services within ten days."),
-      "The Customer may request additional services. … (a) provide the additional services within ten days")).toBe(false)
+  test("an omission that restarts a list for another party is refused with the words it leaves out", () => {
+    for (const gap of [" ", "\n"]) for (const [name, label] of Object.entries(LABELS)) {
+      const quote = `The Supplier shall, at its own cost: … ${label(2, 1)} pay the Charges within 30 days of invoice`
+      const omitted = `${label(1, 1)} deliver the goods to the Site; ${label(1, 2)} install the goods at the Site. 4.2 The Customer shall:`
+      expect([JSON.stringify(gap), name, issues(matter(clauses(gap, label)), quote)]).toEqual([JSON.stringify(gap), name, [near(quote, omitted)]])
+    }
   })
 
-  test("a list label resumes a passage across a blank line only where it begins a line", () => {
-    for (const verb of ["may reject", "rejects"])
-      expect([verb, verified(matter(`The Supplier shall deliver the goods to the Site.\n\nThe Customer ${verb} goods that fail the tests in paragraph 4(c) within ten days of delivery.`),
-        "The Supplier shall deliver the goods to the Site. … (c) within ten days of delivery")]).toEqual([verb, false])
-  })
-
-  test("an omission longer than a short run or crossing a paragraph break is refused", () => {
+  test("passages far apart or in separate paragraphs are refused as apart, without the words between", () => {
     const long = Array.from({ length: 4 }, () => NEUTRAL).join(", ")
-    expect(long.length).toBeGreaterThan(300)
-    expect(verified(matter(PURCHASE(long)), PURCHASE_QUOTE)).toBe(false)
-    expect(verified(matter(PURCHASE(`${NEUTRAL}, ${NEUTRAL}`)), PURCHASE_QUOTE)).toBe(true)
+    expect(long.length).toBeGreaterThan(400)
+    expect(issues(matter(PURCHASE(long)), PURCHASE_QUOTE)).toEqual([apart(PURCHASE_QUOTE)])
+    expect(issues(matter(PURCHASE(`${NEUTRAL}, ${NEUTRAL}`)), PURCHASE_QUOTE)).toEqual([near(PURCHASE_QUOTE, `${NEUTRAL}, ${NEUTRAL}`)])
     const paragraphs = (gap: string) => `The Distributor shall purchase the goods each month.${gap}The price for the goods is the list price on the order date.`
     const quote = "The Distributor shall purchase the goods … The price for the goods is the list price"
-    expect(verified(matter(paragraphs("\n\n")), quote)).toBe(false)
-    expect(verified(matter(paragraphs("\r\n \r\n")), quote)).toBe(false)
-    expect(verified(matter(paragraphs("\n")), quote)).toBe(true)
+    for (const gap of ["\n\n", "\r\n \r\n"]) expect(issues(matter(paragraphs(gap)), quote)).toEqual([apart(quote)])
+    expect(issues(matter(paragraphs("\n")), quote)).toEqual([near(quote, "each month.")])
   })
 
-  test("a later occurrence of a passage is tried when the first leaves too long an omission", () => {
+  test("the nearest occurrence of a passage is located", () => {
     const far = Array.from({ length: 4 }, () => NEUTRAL).join(", ")
     const source = `The Distributor shall purchase the goods on the first order date, ${far}. ${PURCHASE("each month")}`
-    expect(verified(matter(source), PURCHASE_QUOTE)).toBe(true)
-    expect(verified(matter(source.replace(PURCHASE("each month"), "The goods come from the Manufacturer at the list price.")), PURCHASE_QUOTE)).toBe(false)
+    expect(issues(matter(source), PURCHASE_QUOTE)).toEqual([near(PURCHASE_QUOTE, "each month")])
+    expect(issues(matter(source.replace(PURCHASE("each month"), "The goods come from the Manufacturer at the list price.")), PURCHASE_QUOTE)).toEqual([apart(PURCHASE_QUOTE)])
   })
 })

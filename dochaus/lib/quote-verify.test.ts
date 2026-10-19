@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite"
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { elidedParts, partsInOrder, verifyQuote, type QuoteChunk } from "./quote-verify"
+import { elidedParts, elisionGap, verifyQuote, type QuoteChunk } from "./quote-verify"
 
 const directories: string[] = []
 afterEach(() => directories.splice(0).forEach(directory => rmSync(directory, { recursive: true, force: true })))
@@ -41,9 +41,11 @@ test("whitespace gaps retain source offsets and existing normalization including
   expect(check('"Alpha". Beta changed delta').found).toBe(false)
 })
 
-test("a quotation matched without regard to case still reads a currency code as written", () => {
-  const request = (amount: string) => `Please cap the liability at ${amount} the charges paid in the year before the claim.`
+test("an elided quotation located without regard to case or Markdown escapes shows the words left out as written", () => {
+  const request = "Please cap the liability at the greater of GBP 500,000 and the charges paid in the year before the claim."
   const parts = elidedParts("please cap the liability at … the charges paid in the year before the claim")!
-  expect(partsInOrder(request("the greater of GBP 500000 and"), parts, { ignoreCase: true })).toBe(false)
-  expect(partsInOrder(request("the amount, for 30 days, of"), parts, { ignoreCase: true })).toBe(true)
+  expect(elisionGap(request, parts)).toBeNull()
+  expect(elisionGap(request, parts, { ignoreCase: true })).toEqual({ kind: "near", omitted: "the greater of GBP 500,000 and" })
+  expect(elisionGap("The cap in clause 4\\.2 applies \\(save for fraud\\) to all goods and services.", elidedParts("The cap in clause 4.2 applies … to all goods and services")!, { unescapeMarkdown: true }))
+    .toEqual({ kind: "near", omitted: "(save for fraud)" })
 })

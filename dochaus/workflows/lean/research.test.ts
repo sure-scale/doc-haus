@@ -144,7 +144,7 @@ test("long canonical source text is readable beyond JSON clipping with focused s
   expect(checkResearch(directory, { ...research, findings: [{ ...research.findings[0], quote: "Invented wording" }] })).not.toEqual([])
 })
 
-test("drafting notes may cite an approved authority by name after a signal word and quote it with an ellipsis", () => {
+test("drafting notes may cite an approved authority by name after a signal word and quote it whole, not elided", () => {
   const directory = matter()
   const text = "The tenant must keep the premises insured against the listed risks (see Property Act § 14-201; Ashdown v. Merrow, 12 Synth. 34, 36 [2020]; Kestrel v. Fenby Holdings, 304 Synth. 513, 514 [2019]). A subtenant is bound by the same insurance covenant."
   const research = retrieved(directory, text)
@@ -153,8 +153,13 @@ test("drafting notes may cite an approved authority by name after a signal word 
   expect(acceptResearchReply(directory, "research-review", JSON.stringify({ approved: ["r1"], rejected: [], limitations: [] })).issues).toEqual([])
   const url = research.findings[0]!.url
   const notes = (body: string) => checkDraftingNotes(directory, `# Drafting notes\n\n${body}`, []).issues
+  // Leaving out the citations between two sentences is refused with the words
+  // left out; the continuous passage verifies.
   const elided = "The tenant must keep the premises insured against the listed risks \u2026 A subtenant is bound by the same insurance covenant"
-  expect(notes(`In Ashdown v. Merrow, the court held that "${elided}" [source: ${url}].`)).toEqual([])
+  expect(notes(`In Ashdown v. Merrow, the court held that "${elided}" [source: ${url}].`)).toEqual([
+    `The drafting notes quotes "${elided}" as from "${url}". The quoted words are in that document, but the "\u2026" leaves out: "(see Property Act § 14-201; Ashdown v. Merrow, 12 Synth. 34, 36 [2020]; Kestrel v. Fenby Holdings, 304 Synth. 513, 514 [2019]).". Leaving words out can change who must do what or drop a condition, amount or limit, so quotations with words left out in the middle are not accepted. Quote one continuous passage that includes those words, without an ellipsis.`,
+  ])
+  expect(notes(`In Ashdown v. Merrow, the court held that "${text.slice(0, -1)}" [source: ${url}].`)).toEqual([])
   expect(notes(`See Ashdown v. Merrow, 12 Synth. 34 (2020), for the insurance covenant.`)).toEqual([])
   expect(citationRowsForLeanText(directory, "drafting-notes.md", "In Ashdown v. Merrow, the covenant binds.").map(row => [row.citation_text, row.status]))
     .toEqual([["Ashdown v. Merrow", "verified"]])

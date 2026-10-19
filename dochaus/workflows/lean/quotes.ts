@@ -3,7 +3,7 @@ import { approvedResearch, researchSource } from "./research"
 import { Database } from "bun:sqlite"
 import { existsSync } from "node:fs"
 import path from "node:path"
-import { elidedParts, normalize, partsInOrder, verifyElidedQuote, verifyQuote } from "../../lib/quote-verify"
+import { elidedParts, elisionGap, locateElidedQuote, nearestGap, normalize, verifyQuote } from "../../lib/quote-verify"
 import type { DocID } from "./plan"
 import { leanUserUpdates } from "./requests"
 import { readLeanText, readQuestions, shortHash, type OpenItem, type StageID } from "./state"
@@ -136,22 +136,29 @@ export function instructionFound(directory: string, quote: string) {
   return words.length > 0 && lawyerWords(directory).some(text => normalize(text).toLowerCase().includes(words))
 }
 
-/** A quotation in prose ('"words" [source: id]') may omit words with an
- * ellipsis, as a lawyer would: it passes when quoteFound does, or when each
- * passage the ellipsis separates is in the one named source, in the quoted
- * order, and long enough to verify on its own, and the ellipsis only shortens
- * the source (partsInOrder: whole words, short omissions within a paragraph,
- * no omitted negation or qualification). A JSON quote field keeps the
- * verbatim contract of quoteFound, since its consumers locate those words. */
+/** A quotation in prose ('"words" [source: id]') passes when quoteFound does,
+ * or when an ellipsis at its start or end leaves one passage that is in the
+ * named source (elisionGap). An ellipsis in the middle is never accepted:
+ * the words it leaves out can change who must do what or drop a condition,
+ * amount or limit. quoteMissIssue then says what it leaves out. A JSON quote
+ * field keeps the verbatim contract of quoteFound, since its consumers locate
+ * those words. */
 export function proseQuoteFound(directory: string, quote: SourceQuote) {
   if (quoteFound(directory, quote)) return true
+  const elided = elision(directory, quote)
+  return elided?.parts.length === 1 && elided.gap?.kind === "near"
+}
+
+/** Where the passages of a quotation with an ellipsis sit in its named source
+ * (elisionGap), or undefined for a quotation without one. */
+function elision(directory: string, quote: SourceQuote) {
   const parts = elidedParts(quote.quote)
-  if (!parts) return false
-  if (/^https?:\/\//.test(quote.source_id)) return approvedResearch(directory).some(row => row.url === quote.source_id &&
-    partsInOrder(researchSource(directory, row.snapshot)?.text ?? "", parts))
+  if (!parts) return
+  if (/^https?:\/\//.test(quote.source_id)) return { parts, gap: nearestGap(approvedResearch(directory).filter(row => row.url === quote.source_id)
+    .map(row => elisionGap(researchSource(directory, row.snapshot)?.text ?? "", parts))) }
   if (quote.source_id === REQUEST_SOURCE && !matterSourceIDs(directory).includes(REQUEST_SOURCE))
-    return lawyerWords(directory).some(text => partsInOrder(text, parts, { ignoreCase: true }))
-  return verifyElidedQuote({ directory, parts, document: quote.source_id })
+    return { parts, gap: nearestGap(lawyerWords(directory).map(text => elisionGap(text, parts, { ignoreCase: true }))) }
+  return { parts, gap: locateElidedQuote({ directory, parts, document: quote.source_id }) }
 }
 
 /** The request, each included update and each answer, quoted one at a time so a
@@ -163,12 +170,26 @@ export function lawyerWords(directory: string) {
 }
 
 /** Actionable retry feedback for one unverified quote. When the words are in a
- * different matter document, that document is named. */
+ * different matter document, that document is named. When an ellipsis in the
+ * middle joins passages of the named source, the feedback says so and shows
+ * the words it leaves out, or that the passages are apart. */
 export function quoteMissIssue(directory: string, where: string, quote: SourceQuote, format: "prose" | "json" = "prose") {
+  const request = quote.source_id === REQUEST_SOURCE && !matterSourceIDs(directory).includes(REQUEST_SOURCE)
+  const elided = elision(directory, quote)
+  const gap = elided && elided.parts.length > 1 ? elided.gap : null
+  if (gap) {
+    const quoted = `${where} quotes "${excerpt(quote.quote)}" as from "${quote.source_id}".`
+    const there = request ? "the request, a user update or one of the lawyer's answers" : "that document"
+    if (gap.kind === "apart")
+      return `${quoted} The quoted parts are in ${there}, but in separate passages. Quote each passage as its own quotation, without an ellipsis.`
+    if (!gap.omitted)
+      return `${quoted} The quoted words are one continuous passage of ${there}; the "…" leaves nothing out. Quote the passage without an ellipsis.`
+    return `${quoted} The quoted words are in ${there}, but the "…" leaves out: "${gap.omitted}". Leaving words out can change who must do what or drop a condition, amount or limit, so quotations with words left out in the middle are not accepted. Quote one continuous passage that includes those words, without an ellipsis.`
+  }
   const elsewhere = [...new Set(verifyQuote({ directory, quote: quote.quote }).hits.map(hit => hit.doc))]
     .filter(doc => doc !== quote.source_id)
   return [
-    quote.source_id === REQUEST_SOURCE && !matterSourceIDs(directory).includes(REQUEST_SOURCE)
+    request
       ? `${where} quotes "${excerpt(quote.quote)}" as from "${REQUEST_SOURCE}", but those words are not in the request, user updates or any one of the lawyer's answers.`
       : `${where} quotes "${excerpt(quote.quote)}" as from "${quote.source_id}", but those words are not in that document.`,
     elsewhere.length
