@@ -5,7 +5,13 @@ import path from "node:path"
 import { isDeepStrictEqual } from "node:util"
 import { listSourceDocuments, openDb } from "./db"
 import { documentRegistryIdentity } from "./document-identity"
-import { extractIdentifiers, renderIdentifiersMarkdown, type IdentifierChunk, type MatterIdentifiers } from "./identifiers"
+import {
+  extractIdentifiers,
+  IDENTIFIERS_SCHEMA_VERSION,
+  renderIdentifiersMarkdown,
+  type IdentifierChunk,
+  type MatterIdentifiers,
+} from "./identifiers"
 import { stampIngestLineage, stampSourceRebuildLineage } from "./lineage"
 import { reconstructText, revision } from "./structure"
 
@@ -256,9 +262,9 @@ export function sourceArtifactsMatchRegistry(matterDir: string, suppliedDb?: Dat
     // lacks a file and fails above. So an unchanged source corpus has the
     // identifiers it would get again, and re-running compromise over the whole
     // matter on every start (most of a large matter's start time) would only
-    // repeat them. A change to the extraction itself reaches a matter at its
-    // next source change, or at every next start if the change also moves
-    // MatterIdentifiers.schema_version.
+    // repeat them. A change to the extraction reaches existing matters through
+    // IDENTIFIERS_SCHEMA_VERSION: a file stored under another version does not
+    // decode below, so the next start rebuilds it once, and it matches after.
     const identifiers = decodeMatterIdentifiers(
       JSON.parse(readFileSync(path.join(matterDir, "matter-identifiers.json"), "utf8")),
     )
@@ -421,7 +427,7 @@ async function readMatterIdentifiers(matterDir: string): Promise<MatterIdentifie
 function decodeMatterIdentifiers(value: unknown): MatterIdentifiers | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return
   const data = value as Record<string, unknown>
-  if (data.schema_version !== 1 || typeof data.generated_at !== "string" || typeof data.documents !== "number" || !Array.isArray(data.rows)) return
+  if (data.schema_version !== IDENTIFIERS_SCHEMA_VERSION || typeof data.generated_at !== "string" || typeof data.documents !== "number" || !Array.isArray(data.rows)) return
   const generatedAt = Date.parse(data.generated_at)
   if (!Number.isFinite(generatedAt) || new Date(generatedAt).toISOString() !== data.generated_at) return
   return value as MatterIdentifiers

@@ -215,7 +215,7 @@ describe("source artifacts", () => {
       expect(existsSync(identifiersMdPath)).toBe(true)
 
       const parsed = await Bun.file(identifiersJsonPath).json()
-      expect(parsed.schema_version).toBe(1)
+      expect(parsed.schema_version).toBe(identifierExtraction.IDENTIFIERS_SCHEMA_VERSION)
       expect(parsed.rows.length).toBeGreaterThan(0)
       const values = parsed.rows.map((row: { value: string }) => row.value)
       expect(values).toEqual(expect.arrayContaining([
@@ -407,6 +407,48 @@ describe("source artifacts", () => {
         changed.run("UPDATE chunks SET text = replace(text, 'countersigns', 'also signs')")
         changed.close()
         expect(sourceArtifactsMatchRegistry(dir)).toBe(false)
+      } finally {
+        extract.mockRestore()
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("identifiers an earlier extraction version stored are extracted again at one start, then match", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "dochaus-source-artifacts-"))
+    try {
+      // Authored synthetic text; the names are invented.
+      const text = "ARTICLE 1\nMorgan Ellis signs for Example Procurement Services."
+      const db = openDb(dir)
+      const docPath = path.join(dir, "Names.docx")
+      insertChunk(db, {
+        documentId: upsertDocument(db, docPath, "Names.docx", Date.now(), null),
+        docPath,
+        docName: "Names.docx",
+        section: "1",
+        structuralPath: "Names",
+        party: "",
+        chunkIndex: 0,
+        text,
+        charStart: 0,
+        charEnd: text.length,
+        embedding: new Float32Array([1, 2, 3]),
+        flagged: false,
+      })
+      db.close()
+      await writeSourceArtifacts(dir)
+      // The file as version 1 (values read from the wrapped chunk files) stored it.
+      const file = path.join(dir, "matter-identifiers.json")
+      writeFileSync(file, `${JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), schema_version: 1 }, null, 2)}\n`)
+
+      const extract = spyOn(identifierExtraction, "extractIdentifiers")
+      try {
+        expect(await healSourceArtifacts(dir, false)).toBe("rebuilt")
+        expect(extract).toHaveBeenCalledTimes(1)
+        expect(JSON.parse(readFileSync(file, "utf8")).schema_version).toBe(identifierExtraction.IDENTIFIERS_SCHEMA_VERSION)
+        expect(await healSourceArtifacts(dir, false)).toBe("current")
+        expect(extract).toHaveBeenCalledTimes(1)
       } finally {
         extract.mockRestore()
       }

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { extractIdentifiers, fileOffset, renderIdentifiersMarkdown, type IdentifierChunk } from "./identifiers"
+import { extractIdentifiers, fileOffset, IDENTIFIERS_SCHEMA_VERSION, renderIdentifiersMarkdown, type IdentifierChunk } from "./identifiers"
 
 // Authored synthetic procurement examples. Names, contact details and case IDs
 // are invented for extraction tests; no client or court document was used.
@@ -24,7 +24,7 @@ function rowsOfType(data: ReturnType<typeof extractIdentifiers>, type: string) {
 describe("extractIdentifiers", () => {
   test("schema and metadata are populated", () => {
     const data = extractIdentifiers([sampleChunk])
-    expect(data.schema_version).toBe(1)
+    expect(data.schema_version).toBe(IDENTIFIERS_SCHEMA_VERSION)
     expect(data.documents).toBe(1)
     expect(data.generated_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/)
     expect(data.rows.length).toBeGreaterThan(0)
@@ -305,7 +305,7 @@ describe("renderIdentifiersMarkdown", () => {
   })
 
   test("markdown is stable for empty inventory", () => {
-    const md = renderIdentifiersMarkdown({ schema_version: 1, generated_at: "2026-06-28T00:00:00Z", documents: 0, rows: [] })
+    const md = renderIdentifiersMarkdown({ schema_version: IDENTIFIERS_SCHEMA_VERSION, generated_at: "2026-06-28T00:00:00Z", documents: 0, rows: [] })
     expect(md).toContain("# Matter Identifiers")
     expect(md).toContain("0 identifiers")
   })
