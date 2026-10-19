@@ -5,7 +5,7 @@ import path from "node:path"
 import { DEFAULT_DRAFTING } from "../../../dochaus/lib/drafting-preferences"
 import { OFFICIAL_SOURCE_HOSTS, OFFICIAL_SOURCE_SUFFIXES } from "../../../dochaus/lib/research-sources"
 
-const { chromium, expect } = await import(process.env.PLAYWRIGHT_MODULE ?? "@playwright/test")
+const { chromium, expect } = (await import(process.env.PLAYWRIGHT_MODULE ?? "@playwright/test")) as typeof import("@playwright/test")
 const baseURL = process.env.PLAYWRIGHT_BASE_URL
 const evidence = process.env.DOCHAUS_EVIDENCE_DIR
 if (!baseURL || !evidence) throw new Error("Set PLAYWRIGHT_BASE_URL and DOCHAUS_EVIDENCE_DIR.")
@@ -34,7 +34,7 @@ async function open(state: ReturnType<typeof fixture>) {
   page.setDefaultTimeout(10000)
   const errors: string[] = []
   page.on("pageerror", (error: Error) => errors.push(error.message))
-  await page.route("**/*", async (route: { request: () => { url: () => string; method: () => string; postData: () => string | null }; fulfill: (value: unknown) => Promise<void>; continue: () => Promise<void>; abort: () => Promise<void> }) => {
+  await page.route("**/*", async route => {
     const request = route.request()
     const url = new URL(request.url())
     const pathname = url.pathname.replace(/^\/ingest(?=\/)/, "").replace(/^\/engine(?=\/api\/)/, "")
@@ -124,7 +124,7 @@ async function open(state: ReturnType<typeof fixture>) {
     state.unexpected.push(`${method} ${pathname}`)
     return reply({ error: "Unexpected fixture request" }, 501)
   })
-  await page.goto(baseURL)
+  await page.goto(baseURL!)
   return { page, context, errors }
 }
 async function accept(page: Awaited<ReturnType<typeof open>>["page"]) { await page.getByRole("button", { name: "I accept", exact: true }).click(); await expect(page.getByRole("dialog", { name: "Let's get you set up" })).toBeVisible() }
@@ -187,7 +187,7 @@ try {
       const layouts = []
       for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
         await page.setViewportSize(viewport)
-        await page.getByRole("dialog").evaluate((element: Element) => element.getAnimations().forEach(animation => animation.finish()))
+        await page.getByRole("dialog").evaluate(element => element.getAnimations().forEach(animation => animation.finish()))
         await list.locator("li").first().scrollIntoViewIfNeeded()
         await page.screenshot({ path: path.join(evidence!, `25-research-approved-${viewport.width}-top.png`), fullPage: false, mask: [page.locator('input[type="password"]')] })
         await list.locator("li").last().scrollIntoViewIfNeeded()
@@ -210,7 +210,7 @@ try {
       await modes.getByRole("button", { name: "Entire web", exact: true }).click()
       await expect(additional).toHaveCount(0)
       await expect(list).toHaveCount(0)
-      await page.locator(".onboarding-body").evaluate((element: Element) => { element.scrollTop = 0 })
+      await page.locator(".onboarding-body").evaluate(element => { element.scrollTop = 0 })
       await page.screenshot({ path: path.join(evidence!, "28-research-entire-web-mobile.png"), fullPage: false, mask: [page.locator('input[type="password"]')] })
       await stepButton(page, "Models").click(); await stepButton(page, "Research").click()
       await expect(modes.getByRole("button", { name: "Entire web", exact: true })).toHaveAttribute("aria-pressed", "true")
@@ -354,9 +354,9 @@ try {
       for (const stage of stageLabels.slice(1)) {
         const button = stepButton(page, stage)
         await expect(button).toBeDisabled()
-        const reason = await button.evaluate((element: Element) => [element.getAttribute("title"), ...(element.getAttribute("aria-describedby") ?? "").split(/\s+/).filter(Boolean).map(id => document.getElementById(id)?.textContent)].filter(Boolean).join(" "))
+        const reason = await button.evaluate(element => [element.getAttribute("title"), ...(element.getAttribute("aria-describedby") ?? "").split(/\s+/).filter(Boolean).map(id => document.getElementById(id)?.textContent)].filter(Boolean).join(" "))
         expect(reason.length, `${stage} has a visible or accessible prerequisite explanation`).toBeGreaterThan(0)
-        await button.evaluate((element: HTMLButtonElement) => element.click())
+        await button.evaluate(element => (element as HTMLButtonElement).click())
         await currentStage(page, "Provider")
       }
       await page.getByLabel(/^Model provider/).selectOption("test-models")

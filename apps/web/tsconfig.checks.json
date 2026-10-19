@@ -1,7 +1,7 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "types": ["bun"]
+    "types": ["bun", "vite/client"]
   },
   "include": ["e2e", "test", "tests"]
 }

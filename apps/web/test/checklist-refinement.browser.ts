@@ -5,10 +5,9 @@ import { mkdtemp, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
-import type { Route } from "playwright"
 import blockedGate from "../../../dochaus/workflows/lean/fixtures/status-blocked-gate.json"
 
-const { chromium } = await import(process.env.PLAYWRIGHT_MODULE ?? "@playwright/test")
+const { chromium } = (await import(process.env.PLAYWRIGHT_MODULE ?? "@playwright/test")) as typeof import("@playwright/test")
 const directory = await mkdtemp(path.join(os.tmpdir(), "dochaus-checklist-ui-"))
 const initial = {
   ...blockedGate,
@@ -46,7 +45,7 @@ try {
   const calls: { url: string; body: unknown }[] = []
   let release = () => {}
   let refuse = true
-  await page.route("http://checklist.invalid/**", async (route: Route) => {
+  await page.route("http://checklist.invalid/**", async route => {
     calls.push({ url: route.request().url(), body: route.request().postDataJSON() })
     await new Promise<void>(resolve => { release = resolve })
     return route.fulfill({ status: refuse ? 409 : 202, contentType: "application/json", body: JSON.stringify(refuse

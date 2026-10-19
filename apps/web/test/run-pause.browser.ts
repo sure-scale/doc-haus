@@ -6,11 +6,10 @@ import { mkdtemp, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
-import type { Route } from "playwright"
 import blockedGate from "../../../dochaus/workflows/lean/fixtures/status-blocked-gate.json"
 import start from "../../../dochaus/workflows/lean/fixtures/start.json"
 
-const { chromium } = await import(process.env.PLAYWRIGHT_MODULE ?? "@playwright/test")
+const { chromium } = (await import(process.env.PLAYWRIGHT_MODULE ?? "@playwright/test")) as typeof import("@playwright/test")
 const directory = await mkdtemp(path.join(os.tmpdir(), "dochaus-pause-ui-"))
 const shots = process.env.RUN_PAUSE_SCREENSHOTS
 const working = start.status
@@ -68,7 +67,7 @@ try {
   let release = () => {}
   // The first Stop is refused as ingest refuses a changed run; the next is held, then settles.
   const stops = [{ status: 409, body: { error: "The active drafting run changed. Reload before stopping it.", code: "lean_run_changed" } }]
-  await page.route("http://pause.invalid/**", async (route: Route) => {
+  await page.route("http://pause.invalid/**", async route => {
     calls.push({ url: route.request().url(), method: route.request().method(), body: route.request().postDataJSON() })
     const stop = route.request().url().endsWith("/lean/stop")
     const refusal = stop ? stops.shift() : undefined
@@ -112,13 +111,13 @@ try {
   // Stop asks in place; Keep draft and Escape both withdraw the question and nothing is sent.
   await stopDraft.click()
   await confirm.waitFor()
-  assert.equal(await keep.evaluate((button: Element) => button === document.activeElement), true)
+  assert.equal(await keep.evaluate(button => button === document.activeElement), true)
   assert.equal(await resume.count(), 0)
   if (shots) await page.screenshot({ path: path.join(shots, "2-confirm.png"), fullPage: true })
   await keep.click()
   await confirm.waitFor({ state: "detached" })
   await resume.waitFor()
-  assert.equal(await stopDraft.evaluate((button: Element) => button === document.activeElement), true)
+  assert.equal(await stopDraft.evaluate(button => button === document.activeElement), true)
   await stopDraft.click()
   await confirm.waitFor()
   await page.keyboard.press("Escape")
