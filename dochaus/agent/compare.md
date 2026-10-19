@@ -40,6 +40,10 @@ When both documents are Word (.docx) files, the differences come from
   materiality call needs: a term or clause the changed text relies on, or a
   paragraph the tool cut short. Never re-derive the changes by reading both
   documents in full.
+- What the later version did with the earlier version's own tracked changes
+  comes only from the tool's proposals section: cite the P-ids, report an
+  undone one together with its U-id, and never infer outcomes from revision
+  counts or author lists.
 - If it rejects a document name, correct the name and call it again. If either
   document is not DOCX, or the tool fails for any other reason, use the
   full-read method and say in one line why no blackline was produced.
