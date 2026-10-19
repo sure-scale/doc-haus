@@ -143,8 +143,9 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
   const preferencesChanged = () => preferenceChange.observed ||= readFirmDraftingPreferences() !== preferences
   const pause = sourceDeps.pause
   const paused = () => pause?.aborted === true
-  // The first provider or setup failure of the pass, whatever a helper makes of it.
-  const provider: { stop?: ProviderStopKind } = {}
+  // The first provider or setup failure of the pass, whatever a helper makes of
+  // it, and the session whose call failed.
+  const provider: { stop?: ProviderStopKind; sessionID?: string } = {}
   // A pause interrupts every native session with a prompt in flight.
   const live = new Set<string>()
   const interruptLive = () => {
@@ -164,8 +165,11 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
     try {
       return await untilPaused(sourceDeps.sessions.prompt(pause ? { ...input, signal: pause } : input), pause)
     } catch (error) {
-      provider.stop ??= providerStopKind(error)
-      throw error
+      const kind = providerStopKind(error)
+      if (!kind) throw error
+      if (!provider.stop) Object.assign(provider, { stop: kind, sessionID: input.sessionID })
+      // Helpers record a failed call's message: the lawyer's fix, never the provider's own words.
+      throw new Error(PROVIDER_STOP_MESSAGES[kind], { cause: (error as Error).cause })
     } finally {
       live.delete(input.sessionID)
       if (paused()) throw new LeanPauseRequested()
@@ -296,7 +300,9 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
       state = updateLeanStage(directory, state, step, { status: "pending", input_sha: null, outputs: [], finished_at: null })
       return { state, restart: true }
     }
-    if (provider.stop) return { state: settleProviderStop(directory, state, provider.stop, step) }
+    // A prefetched review's failure is settled when its own step takes the reply.
+    if (provider.stop && ![...prepared.values()].some(row => row.sessionID === provider.sessionID))
+      return { state: settleProviderStop(directory, state, provider.stop, step) }
     appendLeanEvent(directory, result.status === "failed"
       ? { stage, document, event: "failed", reason: result.reason }
       : { stage, document, event: result.status, outputs: result.outputs, reason: result.reason })
