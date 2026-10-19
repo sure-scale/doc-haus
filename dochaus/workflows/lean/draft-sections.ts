@@ -7,7 +7,7 @@ import { memoNotesFile } from "./deliverables"
 import { LEAN_COVERAGE_SCHEMA, coveragePlanHash, coveragePrompt, coverageScopeQuestion, parseCoverage, planCoverageCurrent, planCoverageIssues, type CoverageAct, type LeanCoverage } from "./package-coverage"
 import { answeredScopeQuestion, openScopeQuestion } from "./package-scope"
 import {
-  LEAN_REQUESTED_FILES_SCHEMA, parseRequestedFiles, requestedFilesIssues, requestedFilesPlanned, requestedFilesPrompt, requestedFilesQuestion, requestedFilesRevision, withRequestedNames, writeRequestedFiles,
+  LEAN_REQUESTED_FILES_SCHEMA, parseRequestedFiles, requestedFilesIssues, requestedFilesPlanned, requestedFilesPrompt, requestedFilesQuestion, requestedFilesRevision, requestedFilesWords, withRequestedNames, writeRequestedFiles,
   type RequestedFiles,
 } from "./requested-files"
 import {
@@ -271,12 +271,12 @@ export async function runDraftStage(
     const memo = value.memo ? { name: value.memo, file: memoNotesFile(value.documents, value.memo) } : undefined
     const named = requested && withRequestedNames(value.documents, memo, requested)
     if (requested && named) {
-      writeRequestedFiles(directory, { schema: LEAN_REQUESTED_FILES_SCHEMA, basis, planned: requestedFilesPlanned(named.documents, value.memo), stated: requested.stated, files: requested.files })
+      writeRequestedFiles(directory, { schema: LEAN_REQUESTED_FILES_SCHEMA, basis, words: requestedFilesWords(directory), planned: requestedFilesPlanned(named.documents, value.memo), stated: requested.stated, files: requested.files })
       appendLeanEvent(directory, { stage: "draft", document, event: "requested_files", step: "files", outcome: requested.stated ? "stated" : "not_stated", issues: files.map(row => row.issue),
         ...(named.applied.length ? { reason: named.applied.join("; ") } : {}) })
     } else if (filed) {
       // Disclosed from the record (requestedFilesItems), as an unchecked coverage record is.
-      writeRequestedFiles(directory, { schema: LEAN_REQUESTED_FILES_SCHEMA, basis, planned: requestedFilesPlanned(value.documents, value.memo), status: "unchecked", stated: false, files: [] })
+      writeRequestedFiles(directory, { schema: LEAN_REQUESTED_FILES_SCHEMA, basis, words: requestedFilesWords(directory), planned: requestedFilesPlanned(value.documents, value.memo), status: "unchecked", stated: false, files: [] })
       appendLeanEvent(directory, { stage: "draft", document, event: "requested_files", step: "files", outcome: "unchecked",
         reason: "The files job's reply did not pass its check, so the files the lawyer asks to receive could not be confirmed; the plan delivers its files as outlined and the drafting notes say so." })
     } else rmSync(leanFile(directory, "requested-files.json"), { force: true })

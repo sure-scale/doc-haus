@@ -26,6 +26,7 @@ import { leanPlanIssue, readLeanPlan, reviewStages, leanSteps, stepDocument, ste
 import { retryPrompt, stagePrompt } from "./prompts"
 import { excerpt, inDocument, openItem, withSourceSnapshot } from "./quotes"
 import { checklistRefinementSelections, drainLeanRequests, pendingLeanRequests, withheldChecklistRepair } from "./requests"
+import { LEAN_REQUESTED_FILES_SCHEMA, parseRequestedFiles, readRequestedFiles, requestedFilesIssues, requestedFilesPlanned, requestedFilesPrompt, requestedFilesWords, writeRequestedFiles } from "./requested-files"
 import {
   LEAN_CHILD_PERMISSIONS,
   LEAN_MAX_RETRIES,
@@ -210,6 +211,13 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
       if (preferencesChanged()) return { state, restart: true }
       const queued = drainLeanRequests(directory)
       if (queued.answered || queued.updated) return { state, restart: true }
+    }
+    // The notes disclose the files the run does not deliver as asked, so
+    // finalize is keyed once the files are read again (recheckRequestedFiles).
+    if (step === "finalize") {
+      await recheckRequestedFiles(directory, state, deps)
+      if (paused()) return { state: settlePause(directory, state), paused: true }
+      if (preferencesChanged()) return { state, restart: true }
     }
     // The first draft can write the plan its own key reads; its key is then
     // taken again once the plan is saved.
@@ -576,6 +584,37 @@ function runStep(directory: string, state: LeanState, step: StepID, deps: LeanDe
   if (stage === "change-prepare" && document) return runChangePreparation(directory, state, deps, document, progress)
   if (stage === "draft" && document) return runDraftStage(directory, state, deps, progress, document, planned)
   return runModelStage(directory, state, step, deps, progress, prepared)
+}
+
+/** The files the lawyer asks to receive, read again before the notes are
+ * written when the lawyer's words have changed since the record was saved (a
+ * later instruction or answer): one files job against the saved plan, as when
+ * the plan was outlined, whose record replaces the earlier one. The plan is
+ * followed as saved and nothing is asked; requestedFilesItems discloses a file
+ * it does not deliver as asked, and a reply that never passed its check leaves
+ * an unchecked record, disclosed alike. Errors from the session calls
+ * propagate. */
+async function recheckRequestedFiles(directory: string, state: LeanState, deps: LeanDeps) {
+  const plan = readLeanPlan(directory)
+  const words = requestedFilesWords(directory)
+  if (!plan?.basis || (plan.memo === undefined && plan.documents.length < 2) || readRequestedFiles(directory)?.words === words) return
+  const agent = LEAN_STAGE_AGENTS.files
+  const sessionID = await deps.sessions.createSession({ directory, parentID: state.owner_session_id, agent, title: stepSessionTitle(directory, "finalize", "files"), model: state.model, permissions: LEAN_CHILD_PERMISSIONS })
+  const refused = new Map<string, string>()
+  let checked: ReturnType<typeof parseRequestedFiles> = { issues: [] }
+  for (let attempt = 0; attempt <= LEAN_MAX_RETRIES; attempt += 1) {
+    appendLeanEvent(directory, { stage: "finalize", event: attempt ? "retry" : "model_call", step: "files", attempt, session_id: sessionID })
+    const reply = await deps.sessions.prompt({ directory, sessionID, agent, text: attempt ? retryPrompt("finalize", checked.issues) : requestedFilesPrompt(directory, plan.documents, plan.memo) })
+    checked = parseRequestedFiles(reply, directory, plan.documents, plan.memo, { final: attempt >= LEAN_MAX_RETRIES, refused })
+    appendLeanEvent(directory, { stage: "finalize", event: "checker", step: "files", attempt, issues: checked.issues })
+    if (!checked.issues.length) break
+  }
+  const requested = checked.value
+  const record = { schema: LEAN_REQUESTED_FILES_SCHEMA, basis: plan.basis, words, planned: requestedFilesPlanned(plan.documents, plan.memo) } as const
+  writeRequestedFiles(directory, requested ? { ...record, stated: requested.stated, files: requested.files } : { ...record, status: "unchecked", stated: false, files: [] })
+  appendLeanEvent(directory, { stage: "finalize", event: "requested_files", step: "files", outcome: !requested ? "unchecked" : requested.stated ? "stated" : "not_stated",
+    issues: requested ? requestedFilesIssues(plan.documents, plan.memo, requested).issues.map(row => row.issue) : [],
+    ...(!requested ? { reason: "The files job's reply did not pass its check, so the files the lawyer asks to receive could not be confirmed; the plan delivers its files as saved and the drafting notes say so." } : {}) })
 }
 
 /** Whether the current repair round has been planned: this change plan was

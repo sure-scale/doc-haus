@@ -7,7 +7,7 @@ import type { GateResult } from "./gate"
 import { parsePlan, readLeanPlan, writeLeanPlan } from "./plan"
 import { PACKAGE_SCOPE_QUESTION } from "./package-scope"
 import { enqueueLeanRequest } from "./requests"
-import { FILES_REVISION_SCOPE, LEAN_REQUESTED_FILES_SCHEMA, readRequestedFiles, requestedFilesItems, writeRequestedFiles, type RequestedFile } from "./requested-files"
+import { FILES_REVISION_SCOPE, LEAN_REQUESTED_FILES_SCHEMA, readRequestedFiles, requestedFilesItems, requestedFilesWords, writeRequestedFiles, type RequestedFile } from "./requested-files"
 import { runLean } from "./runner"
 import { LEAN_CHILD_PERMISSIONS, LEAN_MAX_RETRIES, disclosableItems, outlineBasis } from "./stages"
 import { leanFile, readLeanJson, readLeanText, readQuestions, writeLeanText } from "./state"
@@ -96,7 +96,7 @@ describe("requested files through the run", () => {
     const plan = readLeanPlan(directory)!
     expect(plan).toMatchObject({ basis: outlineBasis(directory), memo: "cover memo", notes_file: "Kestrel Release Pack - cover memo.docx" })
     expect(plan.documents).toEqual([expect.objectContaining({ id: "d1", title: "Release letter", deliverable: "combined", file: "Kestrel Release Pack.docx" })])
-    expect(readRequestedFiles(directory)).toEqual({ schema: LEAN_REQUESTED_FILES_SCHEMA, basis: plan.basis!, planned: PLANNED, stated: true, files: [PACKED] })
+    expect(readRequestedFiles(directory)).toEqual({ schema: LEAN_REQUESTED_FILES_SCHEMA, basis: plan.basis!, words: requestedFilesWords(directory), planned: PLANNED, stated: true, files: [PACKED] })
     expect(filesEvents(directory)).toEqual([expect.objectContaining({ stage: "draft", document: "d1", step: "files", outcome: "stated", issues: [],
       reason: '"Release letter": file "Kestrel Release Pack.docx"' })])
 
@@ -255,16 +255,49 @@ describe("requested files through the run", () => {
     expect(gateOf(directory)).toMatchObject({ status: "pass", blocking: [] })
     expect(gateOf(directory).disclosed).toContainEqual(expect.objectContaining({ id: items[0]!.id, status: "disclosed" }))
 
-    // A later update: the saved plan is followed, so nothing is outlined, filed
-    // or asked again, and the item still cites the answer.
+    // A later update: the saved plan is followed, so nothing is outlined or
+    // asked again; the files are read once more against it, and the item still
+    // cites the answer.
     enqueueLeanRequest(directory, { kind: "update", text: "Address the release letter to the Orchard Committee." })
     const updated = scriptedModel(replies({ [AGENT.draft]: outliner(BODY), [AGENT.files]: filesOf(requoted) }))
     expect((await runLean(directory, { sessions: updated.port })).status).toBe("completed")
     expect(updated.count(AGENT.draft)).toBe(0)
-    expect(updated.count(AGENT.files)).toBe(0)
+    expect(updated.count(AGENT.files)).toBe(1)
     expect(revisions(updated)).toEqual([])
     expect(readQuestions(directory)).toEqual([expect.objectContaining({ id: asked[0]!.id, status: "answered", answer: ANSWER })])
     expect(requestedFilesItems(directory).map(item => item.detail)).toEqual([items[0]!.detail])
+  }, 120_000)
+
+  test("files asked for in a later update are checked once against the saved plan and disclosed; nothing is outlined, asked or redrafted", async () => {
+    const directory = prepared("Prepare a release letter for Kestrel Works with a cover memo.")
+    const unstated: Reply = () => JSON.stringify({ stated: false, files: [] })
+    expect((await runLean(directory, { sessions: scriptedModel(replies({ [AGENT.draft]: outliner(BODY), [AGENT.files]: unstated })).port })).status).toBe("completed")
+    expect(readRequestedFiles(directory)).toMatchObject({ stated: false, files: [] })
+    expect(requestedFilesItems(directory)).toEqual([])
+    const plan = readLeanText(directory, "plan.json")
+
+    const late = "Put the cover memo and the release letter in one file named Kestrel Release Pack.docx."
+    enqueueLeanRequest(directory, { kind: "update", text: late })
+    const file: RequestedFile = { holds: ["memo", "d1"], name: "Kestrel Release Pack.docx", quote: late }
+    const updated = scriptedModel(replies({ [AGENT.draft]: outliner(BODY), [AGENT.files]: filesOf(file) }))
+    expect((await runLean(directory, { sessions: updated.port })).status).toBe("completed")
+
+    expect(updated.count(AGENT.files)).toBe(1)
+    expect(updated.count(AGENT.draft)).toBe(0)
+    expect(readQuestions(directory)).toEqual([])
+    expect(readLeanText(directory, "plan.json")).toBe(plan)
+    expect(readRequestedFiles(directory)).toMatchObject({ basis: readLeanPlan(directory)!.basis, planned: PLANNED, stated: true, files: [file] })
+    expect(filesEvents(directory).at(-1)).toMatchObject({ stage: "finalize", step: "files", outcome: "stated" })
+    const items = requestedFilesItems(directory)
+    expect(items).toHaveLength(1)
+    expect(items[0]!.detail).toContain(`the lawyer's words "${late}" [source: request] ask for the memo and "Release letter" in one file named "Kestrel Release Pack.docx", but the run delivers`)
+    expect(readLeanText(directory, "drafting-notes.md")).toContain(`[ref: ${items[0]!.id}]`)
+    expect(gateOf(directory).disclosed).toContainEqual(expect.objectContaining({ id: items[0]!.id, status: "disclosed" }))
+
+    // Finalize was keyed on the record it disclosed, so nothing runs again.
+    const idle = scriptedModel({})
+    expect((await runLean(directory, { sessions: idle.port })).status).toBe("completed")
+    expect(idle.prompts).toEqual([])
   }, 120_000)
 
   test("no memo and one document: the files job is never asked and the plan is the outline's", async () => {
@@ -297,7 +330,7 @@ describe("requested files through the run", () => {
     expect(plan).toMatchObject({ memo: "cover memo", notes_file: "Kestrel Advice.docx" })
     expect(plan.documents).toEqual([expect.objectContaining({ id: "d1", file: "Kestrel Release.docx" })])
     expect(plan.documents[0]).not.toHaveProperty("deliverable")
-    expect(readRequestedFiles(directory)).toEqual({ schema: LEAN_REQUESTED_FILES_SCHEMA, basis: plan.basis!, planned: PLANNED, stated: true, files })
+    expect(readRequestedFiles(directory)).toEqual({ schema: LEAN_REQUESTED_FILES_SCHEMA, basis: plan.basis!, words: requestedFilesWords(directory), planned: PLANNED, stated: true, files })
     expect(requestedFilesItems(directory)).toEqual([])
     expect(readQuestions(directory)).toEqual([])
     expect(deliverables.names).toEqual(expect.arrayContaining(["Kestrel Release.docx", "Kestrel Advice.docx"]))
@@ -316,7 +349,7 @@ describe("requested files through the run", () => {
     expect(new Set(model.prompts.filter(prompt => prompt.agent === AGENT.files).map(prompt => prompt.sessionID)).size).toBe(1)
     expect(revisions(model)).toEqual([])
     const plan = readLeanPlan(directory)!
-    expect(readRequestedFiles(directory)).toEqual({ schema: LEAN_REQUESTED_FILES_SCHEMA, basis: plan.basis!, planned: PLANNED, status: "unchecked", stated: false, files: [] })
+    expect(readRequestedFiles(directory)).toEqual({ schema: LEAN_REQUESTED_FILES_SCHEMA, basis: plan.basis!, words: requestedFilesWords(directory), planned: PLANNED, status: "unchecked", stated: false, files: [] })
     expect(filesEvents(directory)).toEqual([expect.objectContaining({ stage: "draft", document: "d1", step: "files", outcome: "unchecked",
       reason: "The files job's reply did not pass its check, so the files the lawyer asks to receive could not be confirmed; the plan delivers its files as outlined and the drafting notes say so." })])
     expect(filesEvents(directory)[0]).not.toHaveProperty("issues")
