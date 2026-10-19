@@ -192,11 +192,12 @@ const ELLIPSIS = /\s*(?:\[\s*(?:(?:\. ?){2,3}\.|\u2026)\s*\]|(?:\. ?){2,3}\.|\u2
 
 /** The normalized passages of a quotation that marks omitted words with an
  * ellipsis (ELLIPSIS), or undefined when it marks none. An ellipsis at either
- * end omits words outside the quotation and leaves no passage there. */
+ * end omits words outside the quotation and leaves no passage there, nor does
+ * sentence punctuation beyond it ("A …." ends the writer's sentence). */
 export function elidedParts(quote: string): string[] | undefined {
   const parts = normalize(quote).split(ELLIPSIS)
   if (parts.length < 2) return
-  return parts.filter((part, index) => part || (index > 0 && index < parts.length - 1))
+  return parts.filter((part, index) => (index > 0 && index < parts.length - 1) || !/^[\s.,;:!?]*$/.test(part))
 }
 
 /** The most source text one ellipsis may stand for when its passages are
@@ -279,10 +280,12 @@ export function nearestGap(gaps: ElisionGap[]): ElisionGap {
 
 /** Whether one word of `text` runs across offset `at`: letters or digits on
  * both sides, or joined there by a hyphen (or a dash HYPHENS folds to one),
- * apostrophe or underscore ("non-exclusive", "Customer's"). */
+ * apostrophe or underscore ("non-exclusive", "Customer's"), or by a point or
+ * comma between two digits ("2.5", "1,000,000"). */
 function insideWord(text: string, at: number) {
   const word = (i: number) => /[\p{L}\p{N}]/u.test(text[i] ?? "")
-  const joiner = (i: number) => /[-_'\u2019]/.test(text[i] ?? "")
+  const digit = (i: number) => /\p{N}/u.test(text[i] ?? "")
+  const joiner = (i: number) => /[-_'\u2019]/.test(text[i] ?? "") || /[.,]/.test(text[i] ?? "") && digit(i - 1) && digit(i + 1)
   return word(at - 1) && (word(at) || joiner(at) && word(at + 1)) || joiner(at - 1) && word(at - 2) && word(at)
 }
 
