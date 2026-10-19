@@ -15,7 +15,7 @@ import { cleanupMatters, happyPath, matter, registering, scriptedModel, SOURCE, 
 
 afterEach(cleanupMatters)
 
-test("a superseded deletion explanation stays unresolved when later reconciliation retains wording", async () => {
+test("a deletion explanation stays unresolved when its recorded result retains wording", async () => {
   const directory = matter()
   const original = "The archive record is paper."
   const updated = "The archive record is digital."
@@ -23,17 +23,16 @@ test("a superseded deletion explanation stays unresolved when later reconciliati
   const initialPath = leanFile(directory, "d1/body.docx")
   const pid = Object.keys(await ensureParagraphPointers(initialPath))[0]!
   const initial = new Uint8Array(readFileSync(initialPath))
-  const amendments: Amendment[] = [
-    { id: "delete", pid, existing_sha256: paragraphSha256(original), operation: "delete", updated: "", reason: "Remove the archive record paragraph.", sources: SUPPORT },
-    { id: "restore", pid, existing_sha256: paragraphSha256(original), updated, reason: "Keep the revised archive record instruction.", sources: SUPPORT },
-  ]
+  const deletion: Amendment = { id: "delete", pid, existing_sha256: paragraphSha256(original), operation: "delete", updated: "", reason: "Remove the archive record paragraph.", sources: SUPPORT }
+  const restore: Amendment = { id: "restore", pid, existing_sha256: paragraphSha256(original), updated, reason: "Keep the revised archive record instruction.", sources: SUPPORT }
   const outPath = leanFile(directory, "d1/body-applied.docx")
-  const result = await applyAmendments({ docxPath: initialPath, outPath, amendments, merge: async () => updated })
+  const result = await applyAmendments({ docxPath: initialPath, outPath, amendments: [restore] })
   expect(result.unapplied).toEqual([])
-  expect(result.applied[0]!.result_pids).toEqual([pid])
   const final = new Uint8Array(readFileSync(outPath))
   const redline = await (await docxodus()).compareDocuments(initial, final, { authorName: "Doc.Haus" })
-  const exported = exportAppliedChangeComments(redline, final, "d1", amendments, result.applied, [], [{ pid, text: original, sha256: paragraphSha256(original) }])
+  // A recorded deletion outcome whose paragraph is still in the final body.
+  const exported = exportAppliedChangeComments(redline, final, "d1", [deletion, restore], [{ id: "delete", pid, mode: "code", result_pids: [pid] }, ...result.applied], [],
+    [{ pid, text: original, sha256: paragraphSha256(original) }])
   expect(exported.comments.attached.map(row => row.id)).toEqual(["restore"])
   expect(exported.comments.unresolved[0]).toMatchObject({ id: "delete", reason: expect.stringContaining("retained wording") })
   expect(exported.openItems).toHaveLength(1)
@@ -80,7 +79,7 @@ test("memo and final reviewer retain source arrays independently of application 
   const amendment = { id: "a-source", pid: "p111111111111", existing_sha256: "initial", updated: "Supported revised wording.", reason: "Carry the supplied delivery period.", sources: SUPPORT }
   const changes = (sources: typeof SUPPORT) => writeLeanText(directory, "d1/changes.json", JSON.stringify({ amendments: [{ ...amendment, sources }], questions: [], shared_paragraphs: [] }))
   changes(SUPPORT)
-  const apply = (mode: "code" | "merged") => writeLeanText(directory, "d1/apply.json", JSON.stringify({ applied: [{ id: amendment.id, pid: amendment.pid, mode }], unapplied: [] }))
+  const apply = (mode: "code" | "already_applied") => writeLeanText(directory, "d1/apply.json", JSON.stringify({ applied: [{ id: amendment.id, pid: amendment.pid, mode }], unapplied: [] }))
   apply("code")
   const supported = appliedChangeEvidence(directory, "d1")[0]!
   expect(supported.evidence_basis).toBe("source-passages-provided")
@@ -91,7 +90,7 @@ test("memo and final reviewer retain source arrays independently of application 
     expect(prompt).toContain('"application_mode": "code"')
     expect(prompt).toContain('"evidence_basis": "source-passages-provided"')
   }
-  apply("merged")
+  apply("already_applied")
   expect(appliedChangeEvidence(directory, "d1")[0]!.evidence_basis).toBe(supported.evidence_basis)
   expect(appliedChangeEvidence(directory, "d1")[0]!.sources).toEqual(SUPPORT)
   const key = stageInputSha(directory, "package-review")

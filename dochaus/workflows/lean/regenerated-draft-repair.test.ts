@@ -105,7 +105,7 @@ test("stale amendment context is advisory only; strict projection and accepted o
   expect(() => projectedChangeParagraphs(directory, "d1")).toThrow("unknown initial paragraph")
   expect(checkChanges(directory, stale, readParagraphs(directory, "d1"), { document: "d1" }).issues.length).toBeGreaterThan(0)
   expect(stageOutputValid(directory, "d1.changes")).toBe(false)
-  const apply = await runApply(directory, readLeanState(directory)!, { sessions: scriptedModel({}).port }, "d1")
+  const apply = await runApply(directory, readLeanState(directory)!, "d1")
   expect(apply.status).toBe("done")
   expect(readLeanJson(directory, "d1/apply.json")).toMatchObject({ applied: [], unapplied: [expect.objectContaining({ pid: JSON.parse(stale).amendments[0].pid })] })
   expect(finalBodyParagraphs(directory, "d1").map(row => row.text)).not.toContain(APPLIED)

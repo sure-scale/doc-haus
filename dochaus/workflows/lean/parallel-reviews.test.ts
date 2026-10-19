@@ -56,7 +56,6 @@ test("all four independent reviews run together and fan into adjudication before
   expect(model.count(AGENT["change-plan"])).toBe(1)
   expect(model.count(AGENT.changes)).toBe(1)
   expect(model.count(AGENT["change-review"])).toBe(1)
-  expect(model.count(AGENT.merge)).toBe(0)
   REVIEW_STAGES.forEach(stage => {
     expect(state.stages[`d1.${stage}`]).toMatchObject({ status: "done", attempts: 1, calls: 1, outputs: [`d1/${stage}.md`] })
     expect(model.sessions.find(session => session.agent === AGENT[stage])).toMatchObject({ parentID: "ses_owner", permissions: LEAN_CHILD_PERMISSIONS })
