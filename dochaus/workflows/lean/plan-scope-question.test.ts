@@ -200,6 +200,11 @@ describe("the plan step's package-scope question", () => {
     expect(result).toMatchObject({ status: "blocked", outputs: ["coverage.json"], openItems: [], reason: expect.stringContaining("d1.draft") })
     expect(result.status === "blocked" && result.questions).toEqual([expect.objectContaining({ id: SCOPE_ID, stage: "draft", status: "open",
       question: expect.stringContaining('taken by "the Orchard Committee"') })])
+    // The plan is saved, so the question offers no new document: a new draft adds one.
+    const [asked] = result.status === "blocked" ? result.questions! : []
+    expect(asked!.question).toEndWith("Which planned document, executed by those parties, should carry it, or is it outside this request?")
+    expect(asked!.question).not.toContain("add a document")
+    expect(asked!.context).toContain("to add a document, start a new draft, which plans the package from the start.")
     // No outline was asked for and no part drafted: the plan stands as saved.
     expect(model.count(AGENT.draft)).toBe(0)
     expect(model.count(AGENT.coverage)).toBe(1)

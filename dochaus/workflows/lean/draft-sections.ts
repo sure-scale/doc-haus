@@ -167,12 +167,12 @@ export async function runDraftStage(
   // package-scope question has settled (none is asked when all were, or once
   // two of the step's own are answered; coverageItems discloses the rest), and
   // none while another stage's is still open. An unchecked coverage reply never
-  // asks.
-  const scopeBlock = (documents: PlannedDocument[], coverage: Coverage): DraftStageRun | undefined => {
+  // asks. Asked about a `saved` plan, it offers no new document.
+  const scopeBlock = (documents: PlannedDocument[], coverage: Coverage, saved = false): DraftStageRun | undefined => {
     if (!coverage.acts || !coverage.issues.length) return
     const questions = readQuestions(directory)
     if (openScopeQuestion(questions, "draft")) return
-    const question = coverageScopeQuestion(coverage.acts, documents, questions.filter(answeredScopeQuestion))
+    const question = coverageScopeQuestion(coverage.acts, documents, questions.filter(answeredScopeQuestion), { saved })
     if (!question) return
     return { status: "blocked", outputs: ["coverage.json"], openItems: [], questions: [question],
       reason: `${step}: the document plan leaves an instructed act without a document its parties execute; drafting waits for your answer on the package's scope.` }
@@ -285,7 +285,7 @@ export async function runDraftStage(
     const saved = readLeanPlan(directory)!
     const coverage = await covering(saved.documents)
     recordCoverage(saved.documents, saved.acting_for, coverage)
-    const blocked = scopeBlock(saved.documents, coverage)
+    const blocked = scopeBlock(saved.documents, coverage, true)
     if (blocked) return blocked
   }
   // A saved plan's accepted draft is final for the run (a new run starts from
