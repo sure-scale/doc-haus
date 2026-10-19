@@ -134,7 +134,7 @@ export default tool({
         : noTracked
           ? `Blackline authors: changes appear under "Not tracked (${rightSide.label})".`
           : `Blackline authors: right's tracked changes keep their own author where that is unambiguous (otherwise "${rightSide.label}"); edits made without tracked changes appear under "Not tracked (${rightSide.label})".`,
-      ...proposalsLine(leftSide, rightSide),
+      ...pendingChangesLine(leftSide, rightSide),
       `Options: formatting-only changes ${body.options.ignoreFormatting ? "ignored" : "included"}; moves ${body.options.detectMoves ? "detected" : "shown as a deletion plus an insertion"}; headers and footers ${body.options.headersFooters ? "compared" : "not compared"}.`,
       noTracked
         ? `Totals: ${plural(body.changes.length, "change")} in the blackline.`
@@ -290,10 +290,10 @@ function outcomesLine(proposals: Proposal[]) {
   return [`Left's ${plural(proposals.length, "proposal")} (its pending tracked changes): ${count("pending")} still pending in right, ${count("accepted")} accepted, ${count("undone")} undone without tracking.`]
 }
 
-function proposalsLine(left: Side, right: Side) {
+function pendingChangesLine(left: Side, right: Side) {
   const pending = [left, right].filter(side => side.pendingProposals > 0)
   if (!pending.length) return []
-  return [`Not included: pending doc.haus proposals (${pending.map(side => `${side.name}: ${side.pendingProposals}`).join(", ")}). The comparison uses the stored files.`]
+  return [`Not included: doc.haus pending changes not yet in the stored file (${pending.map(side => `${side.name}: ${side.pendingProposals}`).join(", ")}). The comparison uses the stored files.`]
 }
 
 function plural(count: number, noun: string) {

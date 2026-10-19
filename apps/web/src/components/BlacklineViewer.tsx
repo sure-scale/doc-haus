@@ -231,7 +231,7 @@ function disclosures({ left, right, options, attribution, untracked, proposals =
   if (right.trackedChanges.count) lines.push(`${hadRevisions(right)}; compared as accepted.`)
   for (const side of [left, right])
     if (side.pendingProposals)
-      lines.push(`${side.label} has ${plural(side.pendingProposals, "pending doc.haus proposal")}; ${side.pendingProposals === 1 ? "it is" : "they are"} not included.`)
+      lines.push(`${side.label} has ${plural(side.pendingProposals, "pending change")} in doc.haus that ${side.pendingProposals === 1 ? "is" : "are"} not in the file yet, so ${side.pendingProposals === 1 ? "it is" : "they are"} not included.`)
   if (options.ignoreFormatting) lines.push("Formatting-only changes are left out.")
   if (!options.detectMoves) lines.push("Moved text shows as deleted and inserted.")
   if (!options.headersFooters) lines.push("Headers and footers were not compared.")

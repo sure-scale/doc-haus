@@ -151,7 +151,8 @@ describe("blackline side panel", () => {
     expect(html).toContain("Untracked edits are listed here only; in the Word file every change shows under Their draft.")
     expect(html).toContain("Our draft had 1 tracked change; the blackline compares its text with that change accepted.")
     expect(html).not.toContain("Our draft had 1 tracked change; compared as accepted.")
-    expect(html).toContain("Our draft has 2 pending doc.haus proposals; they are not included.")
+    expect(html).toContain("Our draft has 2 pending changes in doc.haus that are not in the file yet, so they are not included.")
+    expect(html).not.toContain("doc.haus proposal")
     expect(panel(comparison())).toContain("show under “Not tracked (Their draft)”")
   })
 

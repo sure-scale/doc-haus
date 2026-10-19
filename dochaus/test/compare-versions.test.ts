@@ -123,7 +123,8 @@ test("edits made without tracked changes come first, then changes, with location
   const output = result.output
   expect(output).toContain("Right (Supply Terms v2.docx): 2 pending tracked changes by Pat Reviewer")
   expect(output).toContain("Left (Supply Terms v1.docx): no pending tracked changes")
-  expect(output).toContain("Not included: pending doc.haus proposals (Supply Terms v2.docx: 2)")
+  expect(output).toContain("Not included: doc.haus pending changes not yet in the stored file (Supply Terms v2.docx: 2)")
+  expect(output).not.toContain("doc.haus proposals")
   const untracked = output.indexOf("## Edits made without tracked changes")
   const changes = output.indexOf("## Changes")
   expect(untracked).toBeGreaterThan(0)
