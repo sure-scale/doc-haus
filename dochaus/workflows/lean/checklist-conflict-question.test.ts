@@ -8,7 +8,7 @@ import { leanSteps, writeLeanPlan } from "./plan"
 import { changesRepairSections } from "./repairs"
 import { enqueueLeanRequest } from "./requests"
 import { runLean, stageInputSha } from "./runner"
-import { LEAN_PROMPT_VERSION, stageInputs } from "./stages"
+import { handedBackItems, LEAN_PROMPT_VERSION, stageInputs } from "./stages"
 import { answerQuestion, hashStageInputs, readLeanJson, readLeanState, readQuestions, replaceStageQuestions, shortHash, updateLeanStage, writeLeanText, writeQuestions, type Question } from "./state"
 import { cleanupMatters, happyPath, matter, scriptedModel } from "./test-support"
 
@@ -32,10 +32,10 @@ const finding = (item_id: string, status: ChecklistFinding["status"], extra: Par
 })
 
 // The checklist's saved output, as the gate reads it.
-function checklistMatter(findings: ChecklistFinding[]) {
+function checklistMatter(findings: ChecklistFinding[], items: { id: string; item: ChecklistItem }[] = ITEMS) {
   const directory = matter()
   writeLeanPlan(directory, [{ title: "Supply note", purpose: "Supply note", file: "supply-note.docx", parts: [{ heading: "Delivery", scope: "Delivery terms" }] }])
-  writeLeanText(directory, "checklist/extraction.json", JSON.stringify({ expected_sources: ["request"], sources: [{ key: "request", status: "succeeded", items: ITEMS }] }))
+  writeLeanText(directory, "checklist/extraction.json", JSON.stringify({ expected_sources: ["request"], sources: [{ key: "request", status: "succeeded", items }] }))
   writeLeanText(directory, "checklist/checks.json", JSON.stringify({ extraction_complete: true, expected_items: findings.map(row => row.item_id),
     checks: findings.map(row => ({ item_id: row.item_id, input_sha: "sha", status: "succeeded", issues: [], finding: row })) }))
   writeLeanText(directory, "checklist/report.md", "# Checklist handoff findings\n")
@@ -95,6 +95,115 @@ test("findings without a source conflict ask nothing and keep their delivery", (
   const satisfied = checklistMatter([finding("c1", "satisfied"), finding("c2", "satisfied")])
   expect(finalGate(satisfied)).toMatchObject({ status: "pass", delivery: "execution_ready" })
   expect(finalGate(satisfied).questions).toBeUndefined()
+})
+
+// A question the lawyer handed back to the drafting, the spine's entry made in
+// its place citing `evidence` from `source` (the request unless named), and
+// drafting notes that disclose the hand-back unless `disclosed` is false.
+const HANDED: Question = { id: "q-terms", stage: "intake", question: "Which term governs?", context: "", status: "answered", answer_kind: "decide_for_me", answered_at: "2026-01-01T00:00:00.000Z" }
+function handBack(directory: string, evidence: string[], { disclosed = true, kind = "drafting-choice", source = "request" } = {}) {
+  writeQuestions(directory, [HANDED])
+  writeLeanText(directory, "spine.json", JSON.stringify({ entries: [{ kind, question_id: HANDED.id, detail: "Choice: the note follows the first source.",
+    evidence: evidence.map(quote => ({ source_id: source, quote })), limitations: ["The lawyer has not made this choice."] }], limitations: [] }))
+  writeLeanText(directory, "drafting-notes.md", disclosed ? handedBackItems(directory).map(item => item.id).join("\n") : "")
+  return directory
+}
+const HINT = "may be a point you asked us to decide earlier; the notes delivered with the draft describe the choice made."
+const UNANSWERED = "Leaving this question unanswered keeps the draft as drafted."
+const PRICE = "Unit price: 100 per unit"
+const EMAIL = "We propose 120 per unit."
+const sides = (a: { check: string; quotes: string[] }, b: { check: string; quotes: string[] }) => {
+  const item = ({ check, quotes }: { check: string; quotes: string[] }): ChecklistItem => ({ ...requirement(check, quotes[0]!), source_refs: quotes.map(ref) })
+  return { items: [{ id: "c1", item: item(a) }, { id: "c2", item: item(b) }],
+    findings: [finding("c1", "unsatisfied", { conflicting_source_refs: [ref(b.quotes.at(-1)!)] }), finding("c2", "unsatisfied", { conflicting_source_refs: [ref(a.quotes.at(-1)!)] })] }
+}
+
+test("a conflict the lawyer may have handed back is still asked, once and under its own key, with a plain hint; a strict match alone adds the hint", () => {
+  const conflicts = () => checklistMatter([conflict("c1", "Payment is due on delivery."), conflict("c2", "Deliver within thirty days of the order.")])
+  const plain = finalGate(conflicts()).questions![0]!
+  const BOTH = ["Deliver within thirty days of the order.", "Payment is due on delivery."]
+  const directory = handBack(conflicts(), BOTH)
+  const gate = finalGate(directory)
+  // Never met: both stay adverse findings, disclosed with the question, and
+  // the hand-back stays disclosed as a choice the lawyer has not made.
+  expect(gate).toMatchObject({ status: "pass", delivery: "review_draft_with_findings", blocking: [] })
+  expect(gate.questions).toHaveLength(1)
+  const [question] = gate.questions!
+  expect(question!.id).toBe(plain.id)
+  expect(question!.question).toBe(plain.question)
+  expect(question!.context).toBe(`${plain.context} This conflict ${HINT} ${UNANSWERED}`)
+  for (const id of [HANDED.id, "c1", "c2", "checklist-conflict-", "handed-back"]) expect(question!.context).not.toContain(id)
+  expect(gate.disclosed.filter(item => item.kind === "checklist_unresolved").map(item => item.ref.question_id)).toEqual([plain.id, plain.id])
+  expect(gate.disclosed.filter(item => item.stage === "finalize").map(item => item.ref.question_id)).toEqual([HANDED.id])
+  // A choice citing one side only, a passage neither side cites, no passage,
+  // the same words in another source, an open item rather than a choice, a
+  // side with open decisions of its own, an undisclosed hand-back and a real
+  // answer give no hint; the question is asked the same way.
+  const hinted = (directory: string) => finalGate(directory).questions![0]!.context.includes(HINT)
+  for (const evidence of [[BOTH[0]!], [BOTH[1]!], [...BOTH, "Deliver to the buyer's warehouse."], []]) expect(hinted(handBack(conflicts(), evidence))).toBe(false)
+  expect(hinted(handBack(conflicts(), BOTH, { source: "term-sheet" }))).toBe(false)
+  expect(hinted(handBack(conflicts(), BOTH, { kind: "open-item" }))).toBe(false)
+  // The open decisions an adverse side records are asked in no question, so
+  // the hint would read as settling them.
+  const undecided = () => checklistMatter([finding("c1", "unsatisfied", { conflicting_source_refs: [ref("Payment is due on delivery.")],
+    open_decisions: ["The delivery address is not given in the sources"] }), conflict("c2", "Deliver within thirty days of the order.")])
+  const asked = finalGate(undecided()).questions!
+  expect(asked.map(row => row.id)).toEqual([plain.id])
+  expect(finalGate(handBack(undecided(), BOTH)).questions).toEqual(asked)
+  const silent = finalGate(handBack(conflicts(), BOTH, { disclosed: false }))
+  expect(silent.status).toBe("blocked")
+  expect(silent.questions![0]).toEqual(plain)
+  answerQuestion(directory, HANDED.id, "Payment on delivery governs.")
+  expect(finalGate(directory).questions).toEqual([plain])
+})
+
+test("a choice whose passages do not match the conflict's exactly gives no hint: a wider passage, another term in the same passages, a generic phrase, a shared passage or one side only", () => {
+  const SHARED = "Use the term sheet figures for every commercial term."
+  const TS = "Unit price: 100 per unit, payable within 30 days of invoice."
+  const EM = "We propose 120 per unit, payable within 60 days of invoice."
+  const A = "Delivery shall be made in accordance with the order form, within ten days."
+  const B = "Delivery shall be made in accordance with the order form, within forty days."
+  const cases: [string, ReturnType<typeof sides>, string[]][] = [
+    ["payment period, same passages as a price choice", sides({ check: "Payment within 30 days.", quotes: [TS] }, { check: "Payment within 60 days.", quotes: [EM] }), [PRICE, "We propose 120 per unit"]],
+    ["generic phrase inside both sides", sides({ check: "Delivery within ten days.", quotes: [A] }, { check: "Delivery within forty days.", quotes: [B] }), ["in accordance with the order form"]],
+    ["a shared passage and one side's own", sides({ check: "Price is 100 per unit.", quotes: [SHARED, PRICE] }, { check: "Price is 120 per unit.", quotes: [SHARED, EMAIL] }), [PRICE, SHARED]],
+    ["one side only", sides({ check: "Price is 100 per unit.", quotes: [PRICE] }, { check: "Price is 120 per unit.", quotes: [EMAIL] }), [PRICE]],
+    ["short passages inside longer ones", sides({ check: "Price is 100 per unit.", quotes: ["100 per unit"] }, { check: "Price is 120 per unit.", quotes: ["120 per unit"] }), [PRICE, EMAIL]],
+  ]
+  for (const [name, { items, findings }, evidence] of cases) {
+    const gate = finalGate(handBack(checklistMatter(findings, items), evidence))
+    expect([name, gate.questions?.map(row => row.id.startsWith("checklist-conflict-"))]).toEqual([name, [true]])
+    expect([name, gate.questions![0]!.context.includes(HINT)]).toEqual([name, false])
+  }
+  // The same conflicts, each cited exactly, or as a longer span of the same
+  // passage, do get the hint.
+  const exact = sides({ check: "Price is 100 per unit.", quotes: [PRICE] }, { check: "Price is 120 per unit.", quotes: ["We propose 120 per unit"] })
+  for (const evidence of [[PRICE, "We propose 120 per unit"], [`${PRICE}, payable within 30 days.`, `${EMAIL} Payable in 60 days.`]])
+    expect(finalGate(handBack(checklistMatter(exact.findings, exact.items), evidence)).questions![0]!.context).toContain(`This conflict ${HINT}`)
+})
+
+test("among several conflicts the hint names only the pair the choice matches, and says nothing of leaving the question unanswered; an answered question is not asked again once the hand-back is disclosed", () => {
+  const TEN = "Deliver within ten days of the order.", FORTY = "Deliver within forty days of the order."
+  const price = sides({ check: "Price is 100 per unit.", quotes: [PRICE] }, { check: "Price is 120 per unit.", quotes: [EMAIL] })
+  const items = [...price.items, { id: "c3", item: requirement("Deliver within ten days.", TEN) }, { id: "c4", item: requirement("Deliver within forty days.", FORTY) }]
+  const findings = [...price.findings, conflict("c3", FORTY), conflict("c4", TEN)]
+  const directory = handBack(checklistMatter(findings, items), [PRICE, EMAIL], { disclosed: false })
+  const first = finalGate(directory).questions![0]!
+  expect(first.context).not.toContain(HINT)
+  const pair = first.question.indexOf(`"${EMAIL}"`) < first.question.indexOf(`"${TEN}"`) ? 1 : 2
+  // The lawyer answers it before the drafting notes disclose the hand-back.
+  replaceStageQuestions(directory, "gate", null, [first])
+  answerQuestion(directory, first.id, "Ten days; the term sheet price.")
+  writeLeanText(directory, "drafting-notes.md", handedBackItems(directory).map(item => item.id).join("\n"))
+  const again = finalGate(directory).questions!
+  expect(again.map(row => row.id)).toEqual([first.id])
+  // Leaving the question unanswered would leave the other pair as drafted
+  // too, which no choice settled: that sentence is kept for a question every
+  // part of which a choice may have settled.
+  expect(again[0]!.context).toBe(`${first.context} Pair ${pair} ${HINT}`)
+  replaceStageQuestions(directory, "gate", null, again)
+  expect(readQuestions(directory).filter(row => row.status === "open")).toEqual([])
+  expect(readQuestions(directory).find(row => row.id === first.id)).toMatchObject({ status: "answered", context: first.context })
 })
 
 test("an answer to the conflict question re-keys the checklist check and reaches its source instructions", () => {

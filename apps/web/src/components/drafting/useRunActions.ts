@@ -2,6 +2,7 @@ import { useRef, useState } from "react"
 import { humanizeError } from "../../api/ingest/errors"
 import {
   answerLeanQuestion,
+  decideLeanQuestion,
   pauseLeanDraftingRun,
   resumeLeanDraftingRun,
   refineLeanChecklist,
@@ -24,11 +25,14 @@ export default function useRunActions(
   // Pause and Stop settle the run; neither reads as resuming.
   const [halting, setHalting] = useState<"pause" | "stop">()
   const [error, setError] = useState("")
+  // The question a refused answer or hand-back was about: the question card
+  // shows the error only with that question.
+  const [errorFor, setErrorFor] = useState<string>()
   // The run's updated_at when a request was accepted: until the run moves on
   // from it, a stopped run reads as resuming rather than paused.
   const [resumedFrom, setResumedFrom] = useState<string>()
 
-  async function queue(work: () => Promise<{ status: LeanDraftingStatus }>, halt?: "pause" | "stop") {
+  async function queue(work: () => Promise<{ status: LeanDraftingStatus }>, halt?: "pause" | "stop", question?: string) {
     if (submitting.current) return false
     submitting.current = true
     setBusy(true)
@@ -41,6 +45,7 @@ export default function useRunActions(
       return true
     } catch (e) {
       setError(humanizeError(e, "Could not reach the drafting service. Try again."))
+      setErrorFor(question)
       return false
     } finally {
       submitting.current = false
@@ -53,6 +58,7 @@ export default function useRunActions(
   return {
     busy,
     error,
+    errorFor,
     pausing: halting === "pause",
     stopping: halting === "stop",
     resuming:
@@ -75,7 +81,9 @@ export default function useRunActions(
         ? queue(() => stopLeanDraftingRun(matterId, status.owner_session_id), "stop")
         : Promise.resolve(false),
     answer: (questionID: string, answer: string) =>
-      matterId ? queue(() => answerLeanQuestion(matterId, questionID, answer)) : Promise.resolve(false),
+      matterId ? queue(() => answerLeanQuestion(matterId, questionID, answer), undefined, questionID) : Promise.resolve(false),
+    decide: (questionID: string) =>
+      matterId ? queue(() => decideLeanQuestion(matterId, questionID), undefined, questionID) : Promise.resolve(false),
   }
 }
 

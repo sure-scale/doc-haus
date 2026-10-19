@@ -324,3 +324,16 @@ for (const kind of ["clarification", "update", "answer"] as const) test(`${kind 
   expect(drainLeanRequests(directory, settled(directory)).repairRound).toBe(true)
   expect(readRepairRound(directory)).toMatchObject({ round: 2, substantive_attempts: 2 })
 })
+
+test("a question handed back after the declined round is no new human context, so Continue still resumes", async () => {
+  const { directory, round } = await declinedRound()
+  adjudicate(directory, "parent")
+  writeQuestions(directory, [{ id: "q-timing", stage: "change-plan", question: "Does the supplied timing apply to the advice?", context: "Timing", status: "open" }])
+  await Bun.sleep(5)
+  enqueueLeanRequest(directory, { kind: "answer", question_id: "q-timing", decide_for_me: true })
+  // Reported as an answer, so a settled run restarts on it.
+  expect(drainLeanRequests(directory, settled(directory))).toEqual({ answered: 1, updated: 0, repairRound: false })
+  enqueueLeanRequest(directory, { kind: "continue" })
+  expect(drainLeanRequests(directory, settled(directory)).repairRound).toBe(false)
+  expect(readRepairRound(directory)).toEqual(round)
+})

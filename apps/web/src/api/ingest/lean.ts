@@ -56,6 +56,9 @@ export type LeanQuestion = {
   context: string
   status: "open" | "answered"
   answer?: string
+  /** The lawyer handed this question back for the drafting to decide: it is
+   * answered with no answer text, and the review draft says what was chosen. */
+  answer_kind?: "decide_for_me"
 }
 
 export type LeanDocument = {
@@ -94,6 +97,9 @@ export type LeanDraftingStatus = {
   pending_requests: number
   /** Answers durably received, waiting for the coordinator to consume them. */
   queued_answer_ids?: string[]
+  /** The queued_answer_ids whose request is a hand-back (Decide for me) rather
+   * than answer text; absent from an older ingest. */
+  queued_handed_back_ids?: string[]
   updates?: { kind?: "clarification"; id: string; text: string; status: "queued" | "included"; progress?: "received" | "applying" | "applied" | "requires-rework" }[]
   open_items: LeanOpenItem[]
   questions: LeanQuestion[]
@@ -254,17 +260,39 @@ export async function stopLeanDraftingRun(matterId: string, ownerSessionID: stri
   return body as LeanDraftingStopped
 }
 
-export async function answerLeanQuestion(
+export function answerLeanQuestion(matterId: string, questionID: string, answer: string) {
+  return postLeanQuestion(matterId, questionID, { answer }, "Failed to send the answer")
+}
+
+/** Hands an open question the run's model asked back for the drafting to
+ * decide; the review draft then says what was chosen and why. */
+export function decideLeanQuestion(matterId: string, questionID: string) {
+  return postLeanQuestion(matterId, questionID, { decide_for_me: true }, "Failed to hand the question back")
+}
+
+// Ingest's 409 codes for a question that cannot take this request, in the lawyer's words.
+const QUESTION_REFUSALS: Record<string, string> = {
+  not_delegable: "This question needs your own answer. It can't be left to the drafter.",
+  already_answered: "This question is already answered.",
+}
+
+async function postLeanQuestion(
   matterId: string,
   questionID: string,
-  answer: string,
+  body: { answer: string } | { decide_for_me: true },
+  fallback: string,
 ): Promise<LeanDraftingQueued> {
   const res = await fetch(`${INGEST_URL}/matters/${matterId}/lean/questions/${encodeURIComponent(questionID)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ answer }),
+    body: JSON.stringify(body),
   })
-  return leanQueued(res, "Failed to send the answer")
+  if (res.status === 409) {
+    const refusal: unknown = await res.clone().json().catch(() => undefined)
+    const message = record(refusal) && typeof refusal.code === "string" ? QUESTION_REFUSALS[refusal.code] : undefined
+    if (message) throw new Error(message)
+  }
+  return leanQueued(res, fallback)
 }
 
 /** Ask the run to compare one explicitly selected requirement with the full draft. */

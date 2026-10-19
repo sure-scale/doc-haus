@@ -90,6 +90,9 @@ describe("drafting start profile", () => {
 
 const DRAFT_AGENT = LEAN_STAGE_AGENTS.draft
 const doneRequests = (directory: string) => readdirSync(path.join(leanDir(directory), "requests", "done"))
+/** The outcome status of each processed request, in arrival order. */
+const doneOutcomes = (directory: string) => doneRequests(directory).toSorted()
+  .map(name => JSON.parse(readFileSync(path.join(leanDir(directory), "requests", "done", name), "utf8")).outcome.status)
 
 test("full draft comparison projects structured adverse originals and queues explicit target scope", async () => {
   const directory = matter(), model = heldModel()
@@ -219,6 +222,97 @@ describe("lean drafting start and Continue", () => {
     await leanDraftingIdle(directory)
     expect(readQuestions(directory)[0]).toMatchObject({ status: "answered", answer: "The buyer." })
     expect(leanDraftingStatus(directory)).toMatchObject({ questions: [{ id: "q1", status: "answered" }], pending_requests: 0, queued_answer_ids: [] })
+  })
+
+  test("a question can be handed back instead of answered: the body carries exactly one of answer or decide_for_me, admission refuses a hand-back the stored question cannot take, and a later real answer replaces a recorded hand-back", async () => {
+    const directory = matter()
+    const model = heldModel()
+    const routes = leanDraftingRoutes({ directory: () => directory, deps: () => model.deps })
+    const post = (qid: string, body: unknown) =>
+      routes.request(`/m1/lean/questions/${qid}`, { method: "POST", body: JSON.stringify(body), headers: { "content-type": "application/json" } })
+    const refusal = async (qid: string, body: unknown) => {
+      const response = await post(qid, body)
+      return { status: response.status, code: (await response.json()).code }
+    }
+
+    await startLeanDraftingRun(directory, { request: "Draft the agreement.", agent: "draft", model: MODEL }, model.deps)
+    writeQuestions(directory, [
+      { id: "q-cost", stage: "intake", question: "Which party bears the cost?", context: "", status: "open" },
+      { id: "q-law", stage: "intake", question: "Which law governs?", context: "", status: "answered", answer: "Singapore law.", answered_at: "2026-10-18T09:00:00.000Z" },
+      { id: "package-scope-d1", stage: "draft", question: "Is the side letter in scope?", context: "", status: "open" },
+    ])
+    try {
+      for (const body of [{ answer: "The buyer.", decide_for_me: true }, { answer: "The buyer.", decide_for_me: false }, {}, { decide_for_me: false }, { decide_for_me: "true" }, null, []])
+        expect(await refusal("q-cost", body)).toEqual({ status: 400, code: "invalid_answer" })
+      expect(await refusal("q-unknown", { decide_for_me: true })).toEqual({ status: 404, code: "not_found" })
+      expect(await refusal("q-law", { decide_for_me: true })).toEqual({ status: 409, code: "already_answered" })
+      expect(await refusal("package-scope-d1", { decide_for_me: true })).toEqual({ status: 409, code: "not_delegable" })
+      expect(pendingLeanRequests(directory)).toEqual([])
+
+      const queued = await post("q-cost", { decide_for_me: true })
+      expect(queued.status).toBe(202)
+      expect(await queued.json()).toMatchObject({ mode: "queued", status: { pending_requests: 1, queued_answer_ids: ["q-cost"], queued_handed_back_ids: ["q-cost"] } })
+      const [name] = pendingLeanRequests(directory)
+      const { id: _id, received_at: _received, ...request } = JSON.parse(readFileSync(path.join(leanDir(directory), "requests", name!), "utf8"))
+      expect(request).toEqual({ kind: "answer", question_id: "q-cost", decide_for_me: true })
+    } finally { model.release() }
+
+    await leanDraftingIdle(directory)
+    const handed = leanDraftingStatus(directory)!.questions.find(question => question.id === "q-cost")!
+    expect(handed).toMatchObject({ status: "answered", answer_kind: "decide_for_me", answered_at: expect.any(String) })
+    expect(handed).not.toHaveProperty("answer")
+    expect(leanDraftingStatus(directory)!.questions.find(question => question.id === "q-law")).not.toHaveProperty("answer_kind")
+    expect(leanDraftingStatus(directory)).toMatchObject({ pending_requests: 0, queued_answer_ids: [], queued_handed_back_ids: [] })
+
+    // The lawyer answers the handed-back question after all: the drain records
+    // the answer text in place of the hand-back.
+    expect(await refusal("q-cost", { decide_for_me: true })).toEqual({ status: 409, code: "already_answered" })
+    expect((await post("q-cost", { answer: "The seller." })).status).toBe(202)
+    await leanDraftingIdle(directory)
+    expect(doneOutcomes(directory)).toEqual(["delegated", "answered"])
+    const replaced = leanDraftingStatus(directory)!.questions.find(question => question.id === "q-cost")!
+    expect(replaced).toMatchObject({ status: "answered", answer: "The seller." })
+    expect(replaced).not.toHaveProperty("answer_kind")
+  })
+
+  test("a hand-back is refused while the question already has a queued answer or hand-back; a real answer queued after a hand-back supersedes it, and the status lists a question as a queued hand-back only while its latest queued request is one", async () => {
+    const directory = matter()
+    const model = heldModel()
+    const routes = leanDraftingRoutes({ directory: () => directory, deps: () => model.deps })
+    const post = async (qid: string, body: unknown) => {
+      const response = await routes.request(`/m1/lean/questions/${qid}`, { method: "POST", body: JSON.stringify(body), headers: { "content-type": "application/json" } })
+      return { status: response.status, body: await response.json() }
+    }
+
+    await startLeanDraftingRun(directory, { request: "Draft the agreement.", agent: "draft", model: MODEL }, model.deps)
+    writeQuestions(directory, [
+      { id: "q-cost", stage: "intake", question: "Which party bears the cost?", context: "", status: "open" },
+      { id: "q-start", stage: "intake", question: "When does the term start?", context: "", status: "open" },
+      { id: "q-notice", stage: "intake", question: "How long is the notice period?", context: "", status: "open" },
+    ])
+    try {
+      expect((await post("q-cost", { answer: "The buyer." })).status).toBe(202)
+      expect(await post("q-cost", { decide_for_me: true })).toMatchObject({ status: 409, body: { code: "already_answered", error: "This question is already answered." } })
+
+      expect((await post("q-start", { decide_for_me: true })).status).toBe(202)
+      expect(await post("q-start", { decide_for_me: true })).toMatchObject({ status: 409, body: { code: "already_answered", error: "This question was already left to the drafter to decide." } })
+
+      expect((await post("q-notice", { decide_for_me: true })).status).toBe(202)
+      const answered = await post("q-notice", { answer: "Thirty days." })
+      expect(answered.status).toBe(202)
+      expect(answered.body.status).toMatchObject({ pending_requests: 4, queued_answer_ids: ["q-cost", "q-start", "q-notice"], queued_handed_back_ids: ["q-start"] })
+      expect(await post("q-notice", { decide_for_me: true })).toMatchObject({ status: 409, body: { code: "already_answered", error: "This question is already answered." } })
+      expect(pendingLeanRequests(directory)).toHaveLength(4)
+    } finally { model.release() }
+
+    await leanDraftingIdle(directory)
+    expect(doneOutcomes(directory)).toEqual(["answered", "delegated", "delegated", "answered"])
+    const questions = leanDraftingStatus(directory)!.questions
+    expect(questions.find(question => question.id === "q-cost")).toMatchObject({ status: "answered", answer: "The buyer." })
+    expect(questions.find(question => question.id === "q-start")).toMatchObject({ status: "answered", answer_kind: "decide_for_me" })
+    expect(questions.find(question => question.id === "q-notice")).toMatchObject({ status: "answered", answer: "Thirty days." })
+    expect(questions.find(question => question.id === "q-notice")).not.toHaveProperty("answer_kind")
+    expect(leanDraftingStatus(directory)).toMatchObject({ pending_requests: 0, queued_answer_ids: [], queued_handed_back_ids: [] })
   })
 })
 

@@ -15,7 +15,7 @@ import { LEAN_MAX_RETRIES, LEAN_STAGE_AGENTS, type LeanDeps } from "./stages"
 import { stageInputSha } from "./runner"
 import { matterSourceIDs, quoteFound, quoteMissIssue, type SourceQuote } from "./quotes"
 import { approvedResearch } from "./research"
-import { readLeanJson, readQuestions, writeLeanText, type LeanState, type LeanStageState } from "./state"
+import { handedBackBlock, readLeanJson, readQuestions, writeLeanText, type LeanState, type LeanStageState } from "./state"
 import type { DocID } from "./plan"
 
 export type Assessment = { item_id: string; item: ChecklistItem; finding: ChecklistFinding }
@@ -64,6 +64,7 @@ export function buildRepairAdjudicationInput(directory: string, document: DocID,
     "Original instructions and actual human answers below are authority for scope. Generated research limits, prior plans, reviews, drafts and decisions are work product, not client waivers or later instructions. If relevant, inspect their provenance by targeted lookup; they cannot silently narrow an original duty. Unknown facts/authority remain unknown: propose supported research, disclosure or an indispensable question as appropriate; never invent facts, market norms or approvals.",
     `<assessment>\n${JSON.stringify(assessment)}\n</assessment>`,
     `<original_instructions_and_actual_answers>\n${JSON.stringify(context.input.settled_instructions)}\n</original_instructions_and_actual_answers>`,
+    ...(handedBackBlock(directory) ? [`<left_to_drafting>\n${handedBackBlock(directory)}\n</left_to_drafting>`] : []),
     ...(composition ? [composition] : []),
     `<current_target_hints>\n${JSON.stringify(exactEvidence.length ? [] : context.input.current_evidence.filter(row => !isDeliveryArtifactEvidence(row, context.input.current_evidence)))}\n</current_target_hints>`,
     `<initial_draft_paragraphs>\n${paragraphs.map(row => `[${row.pid}] ${row.text}`).join("\n\n")}\n</initial_draft_paragraphs>`,

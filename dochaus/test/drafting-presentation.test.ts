@@ -73,3 +73,12 @@ test("human-facing notes and narration defer style and detail to saved preferenc
   expect(narrator).not.toContain("one or two short, plain sentences")
   expect(narrator).not.toContain("calm, specific and brief")
 })
+
+// Answers and hand-backs restart a run waiting on questions (the answer route
+// launches the run; it stays blocked while any question is open), so the
+// narrator keeps Continue drafting for a run stopped with nothing waiting.
+test("narration sends the lawyer to Continue drafting only for a run with no question waiting", () => {
+  const narrator = readFileSync(new URL("../agent/narrator.md", import.meta.url), "utf8").replace(/\s+/g, " ")
+  expect(narrator).toContain("Continue drafting is for a stopped run with no question waiting; a run waiting only on questions resumes by itself once every question is answered or left to the drafting.")
+  expect(narrator).not.toContain("resume a stopped run with Continue drafting")
+})

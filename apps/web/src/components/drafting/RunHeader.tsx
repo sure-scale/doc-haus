@@ -9,6 +9,7 @@ import {
   checklistFindingsCount,
   cleanTitle,
   currentStep,
+  delegableQuestion,
   draftedGroups,
   finalCheckNote,
   findingsTitle,
@@ -287,11 +288,19 @@ export function runHeadline(status: LeanDraftingStatus, now: number, resuming = 
       meta: ["You stopped this draft", "Its work so far is kept", "Send a new request to start a new draft"],
     }
   if (state === "input") {
-    const asks = openQuestions(status).length
+    const questions = openQuestions(status)
+    const asks = questions.length
+    // Where Decide for me is offered, leaving a question to the drafter also lets the run resume.
+    const delegable = questions.filter(delegableQuestion).length
+    const resumes = !delegable
+      ? "Drafting resumes after all answers are received"
+      : delegable < asks
+        ? "Drafting resumes once each is answered or, where Decide for me is offered, left to the drafter"
+        : `Drafting resumes once ${asks === 1 ? "it is" : "each is"} answered or left to the drafter`
     return {
       tone: "input",
       title: "Waiting for your answers",
-      meta: [`${asks === 1 ? "1 question" : `${asks} questions`} remaining · Drafting resumes after all answers are received`],
+      meta: [`${asks === 1 ? "1 question" : `${asks} questions`} remaining · ${resumes}`],
     }
   }
   if (status.status === "running")

@@ -3,10 +3,10 @@ import { realpathSync } from "node:fs"
 import path from "node:path"
 import { z } from "zod"
 import { readRegularFile } from "../../lib/regular-file"
-import { checklistProducerInputSchema, type ChecklistProducerInput, type ChecklistSourceReference } from "./checklist-contract"
+import { checklistProducerInputSchema, handedBackRef, type ChecklistProducerInput, type ChecklistSourceReference } from "./checklist-contract"
 import { readLeanPlan } from "./plan"
 import { leanUserUpdates } from "./requests"
-import { answeredQuestions, readLeanText } from "./state"
+import { answeredQuestions, handedBack, readLeanText } from "./state"
 
 const sourceIndexSchema = z.object({ sources: z.array(z.object({ document: z.string().min(1), extracted_text: z.string().min(1) })) })
 
@@ -74,4 +74,18 @@ export function checklistProducerInputs(directory: string): { key: string; input
       retrieval: "The original canonical request is supplied unchanged; current included human instructions are separate, each with its own locator. Extract current request/update requirements while preserving original quotes and conditions. Only answered human text is authority; model questions and queued updates are not settled instructions. Use targeted source lookup only for material context, without inspecting generated deliverables.",
     }),
   }]
+}
+
+/** The checklist's own jobs (extraction, check and refinement) with each
+ * question the lawyer left to the drafting added to their instructions: the
+ * lawyer's later instruction to decide that point, so a stated choice can meet
+ * an earlier requirement to flag it. The quote is that instruction alone; the
+ * model-written question only names the point, in the locator, and is never
+ * quotable authority. Change stages keep checklistProducerInputs: their plans
+ * are re-checked against the lawyer's words alone, and they see the hand-backs
+ * as <left_to_drafting>. */
+export function checklistJobInputs(directory: string) {
+  const handed = answeredQuestions(directory).filter(handedBack).map(question => handedBackRef(question.id, question.question))
+  const jobs = checklistProducerInputs(directory)
+  return handed.length ? jobs.map(job => ({ ...job, input: { ...job.input, instructions: [...job.input.instructions, ...handed] } })) : jobs
 }

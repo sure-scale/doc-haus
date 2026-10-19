@@ -27,6 +27,7 @@ import {
   openItemsSentence,
   openItemTag,
   openQuestions,
+  queuedNote,
   unresolvedChecklistFindings,
   runPosition,
   runStepName,
@@ -106,6 +107,16 @@ test("open items group by kind in first-seen order and cap across groups", () =>
     ["placeholder", 1, 2],
   ])
   expect(capGroups(groups, 5).flatMap((group) => group.items)).toHaveLength(5)
+})
+
+test("a question left to the drafter is listed as a choice left to the drafter, not as a point left out", () => {
+  const left: LeanOpenItem = { ...item("h1", "left_to_drafter", "disclosed"), stage: "finalize", ref: { repair_target: "memo", question_id: "q-1" } }
+  const groups = groupOpenItems([item("o1", "omission", "disclosed"), left])
+  expect(groups.map((group) => [group.label, group.items.map((row) => row.id)])).toEqual([
+    ["Points left out", ["o1"]],
+    ["Choices left to the drafter", ["h1"]],
+  ])
+  expect(openItemTag(left)).toBe("In the notes")
 })
 
 test("attention items follow the final check once it ran for this pass", () => {
@@ -651,7 +662,7 @@ test("a delivered run with questions left counts them in the header and docks th
 
   const dock = (questions: LeanQuestion[]) =>
     renderToStaticMarkup(
-      createElement(QuestionDock, { matterId: "m", ownerSessionID: status.owner_session_id, questions, answered: 0, titles: new Map(), busy: false, error: "", onSend: async () => true }),
+      createElement(QuestionDock, { matterId: "m", ownerSessionID: status.owner_session_id, questions, answered: 0, handedBack: [], titles: new Map(), busy: false, error: "", onSend: async () => true, onDecide: async () => true }),
     )
   const one = dock(openQuestions(status))
   expect(one).toContain("The drafting run has a question for you")
@@ -785,4 +796,19 @@ test("clarification progress describes inspection instead of applied document ch
   expect(updateProgressLabel({ ...update, progress: "applied" })).toStartWith("Clarification reviewed")
   expect(updateProgressLabel({ ...update, progress: "applying" })).toContain("being inspected")
   expect(updateProgressLabel({ ...update, status: "queued" })).toContain("received")
+})
+
+test("the queued note does not call a hand-back an answer", () => {
+  const base = lean(blockedQuestion as unknown as LeanDraftingStatus)
+  const note = (queued: string[], handed?: string[]) =>
+    queuedNote({ ...base, queued_answer_ids: queued, queued_handed_back_ids: handed })
+  expect(note([])).toBeUndefined()
+  expect(note(["a"])).toBe("Answer received — it will be included when drafting resumes.")
+  expect(note(["a", "b"])).toBe("Answers received — they will be included when drafting resumes.")
+  expect(note(["a"], [])).toBe("Answer received — it will be included when drafting resumes.")
+  expect(note(["a"], ["a"])).toBe("Question left to the drafter to decide — it will be handled when drafting resumes.")
+  expect(note(["a", "b"], ["a", "b"])).toBe("Questions left to the drafter to decide — they will be handled when drafting resumes.")
+  expect(note(["a", "b"], ["b"])).toBe("Answer received and a question left to the drafter to decide — both will be handled when drafting resumes.")
+  expect(note(["a", "b", "c"], ["b"])).toBe("Answers received and a question left to the drafter to decide — they will be handled when drafting resumes.")
+  expect(note(["a", "b", "c"], ["b", "c"])).toBe("Answer received and questions left to the drafter to decide — they will be handled when drafting resumes.")
 })

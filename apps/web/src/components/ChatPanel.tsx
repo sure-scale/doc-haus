@@ -28,7 +28,7 @@ import { useChatActions } from "./chat/use-chat-actions"
 import { useStickToBottom } from "./chat/use-stick-to-bottom"
 import DraftingNarration from "./narration/DraftingNarration"
 import { useDraftingNarration } from "./narration/use-drafting-narration"
-import { cleanTitle, leanRunTakesUpdates, openQuestions, updateProgressLabel } from "./drafting/model"
+import { cleanTitle, handedBackQuestions, leanRunTakesUpdates, openQuestions, queuedNote, updateProgressLabel } from "./drafting/model"
 import SessionQuestions from "./chat/SessionQuestions"
 import QuestionDock from "./drafting/QuestionDock"
 import RunHeader from "./drafting/RunHeader"
@@ -476,21 +476,22 @@ export default function ChatPanel({
       {permissions.map((p) => (
         <PermissionCard key={p.id} request={p} onReply={onPermissionReply} />
       ))}
-      {own && Boolean(run?.queued_answer_ids?.length) && (
-        <p className="run-note" role="status">{run!.queued_answer_ids!.length === 1
-          ? "Answer received — it will be included when drafting resumes."
-          : "Answers received — they will be included when drafting resumes."}</p>
-      )}
+      {own && run && queuedNote(run) && <p className="run-note" role="status">{queuedNote(run)}</p>}
       {own && run && matterId && (
         <QuestionDock
           matterId={matterId}
           ownerSessionID={run.owner_session_id}
           questions={asked}
           answered={run.questions.length - asked.length}
+          handedBack={handedBackQuestions(run)}
+          order={run.questions.map((question) => question.id)}
+          done={run.status === "completed"}
           titles={new Map((run.plan?.documents ?? []).map((row) => [row.id, cleanTitle(row.title)]))}
           busy={actions.busy}
           error={actions.error}
+          errorFor={actions.errorFor}
           onSend={(question, answer) => actions.answer(question.id, answer)}
+          onDecide={(question) => actions.decide(question.id)}
         />
       )}
       {matterId && <SessionQuestions
