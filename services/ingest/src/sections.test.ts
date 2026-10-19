@@ -461,23 +461,70 @@ describe("legal.db write lock", () => {
     return { release: () => (holder.run("ROLLBACK"), holder.close()) }
   }
 
-  test("a request connection opens and reads under another connection's write lock, and its own write fails at once", () => {
+  test("a request connection opens and reads under another connection's write lock, and its own write fails fast", () => {
     const lock = holdWriteLock()
     try {
-      // A wait here would block the event loop the lock holder needs to finish.
+      // A long wait here would block the event loop the lock holder needs to finish.
       const db = openDb(directory)
       try {
-        expect(db.query("PRAGMA busy_timeout").get()).toEqual({ timeout: 0 })
+        expect(db.query("PRAGMA busy_timeout").get()).toEqual({ timeout: 200 })
         expect(db.query("SELECT COUNT(*) AS n FROM chunks").get()).toEqual({ n: 0 })
+        const started = performance.now()
         expect(() =>
           db.run("INSERT INTO answer_drafts (scope, answers, revision) VALUES ('synthetic', '{}', 1)"),
         ).toThrow("database is locked")
+        expect(performance.now() - started).toBeLessThan(1000)
       } finally {
         db.close()
       }
     } finally {
       lock.release()
     }
+  }, 30_000)
+
+  // Another process's last connection checkpoints and removes the WAL as it
+  // closes, holding the database briefly; a request open in that moment waits
+  // it out instead of failing.
+  test("request opens never fail while another process opens, writes and closes in a loop", async () => {
+    const file = path.join(directory, ".dochaus", "legal.db")
+    const runMs = 2000
+    const writer = Bun.spawn(
+      [
+        process.execPath,
+        "-e",
+        `const { Database } = require("bun:sqlite")
+        const until = Date.now() + ${runMs}
+        let n = 0
+        while (Date.now() < until) {
+          const db = new Database(${JSON.stringify(file)})
+          db.run("PRAGMA busy_timeout = 2000")
+          db.run("PRAGMA journal_mode = WAL")
+          db.run("INSERT INTO meta (key, value) VALUES (?, '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value", ["synthetic-" + (n++ % 50)])
+          db.close()
+          Bun.sleepSync(2)
+        }`,
+      ],
+      { stderr: "pipe" },
+    )
+    let opens = 0
+    const failures: string[] = []
+    try {
+      const until = Date.now() + runMs
+      while (Date.now() < until) {
+        try {
+          openDb(directory).close()
+          opens++
+        } catch (error) {
+          failures.push(String((error as { code?: unknown }).code))
+        }
+        await Bun.sleep(1)
+      }
+    } finally {
+      await writer.exited
+    }
+    expect(writer.exitCode).toBe(0)
+    expect(opens).toBeGreaterThan(100)
+    expect(failures).toEqual([])
   }, 30_000)
 
   test("a held write lock is an error to the lexical index check, never drift", () => {
@@ -522,13 +569,14 @@ describe("legal.db write lock", () => {
     }
   }, 30_000)
 
+  const chunk = (db: Database, text: string) =>
+    db.run(
+      "INSERT INTO chunks (document_id, doc_path, doc_name, section, chunk_index, text, char_start, char_end, embedding) VALUES (1, 'synthetic.docx', 'synthetic.docx', '1', 0, ?, 0, ?, x'')",
+      [text, text.length],
+    )
+  const match = (db: Database, term: string) => db.query("SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH ?").all(term).length
+
   test("the startup connection rebuilds a desynced lexical index, and a lexical index an open creates is built at once", () => {
-    const chunk = (db: Database, text: string) =>
-      db.run(
-        "INSERT INTO chunks (document_id, doc_path, doc_name, section, chunk_index, text, char_start, char_end, embedding) VALUES (1, 'synthetic.docx', 'synthetic.docx', '1', 0, ?, 0, ?, x'')",
-        [text, text.length],
-      )
-    const match = (db: Database, term: string) => db.query("SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH ?").all(term).length
     const raw = new Database(path.join(directory, ".dochaus", "legal.db"))
     raw.run("DROP TRIGGER chunks_fts_ai")
     chunk(raw, "invented gamma clause")
@@ -554,9 +602,47 @@ describe("legal.db write lock", () => {
       db.close()
     }
   })
+
+  // Another process may insert a chunk the moment the open that builds the
+  // lexical index commits; its triggers must already exist to index it.
+  test("an open that builds the lexical index commits its triggers with it", () => {
+    const file = path.join(directory, ".dochaus", "legal.db")
+    const older = new Database(file)
+    for (const trigger of ["chunks_fts_ai", "chunks_fts_ad", "chunks_fts_au"]) older.run(`DROP TRIGGER ${trigger}`)
+    older.run("DROP TABLE chunks_fts")
+    older.close()
+    const other = new Database(file)
+    const run = Database.prototype.run
+    let inserted = false
+    // The first statement the opening connection runs outside a transaction
+    // once the index exists: the gap right after the building transaction.
+    const spy = spyOn(Database.prototype, "run").mockImplementation(function (this: Database, ...args: Parameters<Database["run"]>) {
+      if (!inserted && this !== other && !this.inTransaction && other.query("SELECT 1 FROM sqlite_master WHERE name = 'chunks_fts'").get()) {
+        inserted = true
+        chunk(other, "invented epsilon clause")
+      }
+      return run.apply(this, args)
+    })
+    try {
+      openDb(directory).close()
+    } finally {
+      spy.mockRestore()
+      other.close()
+    }
+    expect(inserted).toBe(true)
+    const db = openDb(directory)
+    try {
+      expect(match(db, "epsilon")).toBe(1)
+      expect(ftsInSync(db)).toBe(true)
+    } finally {
+      db.close()
+    }
+  })
 })
 
-test("a sections backfill failure at service start still heals the matter's source artifacts", async () => {
+// Starts the ingest service over a workspace holding one invented matter,
+// once `prepare` has set the matter up, and runs `check` when it serves.
+async function bootMatter(prepare: (dir: string) => Promise<void>, check: (dir: string, log: string) => void) {
   const temporary = realpathSync(mkdtempSync(path.join(tmpdir(), "dochaus-sections-boot-")))
   const workspace = path.join(temporary, "workspace")
   const config = path.join(temporary, "config")
@@ -579,20 +665,7 @@ test("a sections backfill failure at service start still heals the matter's sour
   const serviceLog = path.join(temporary, "ingest.log")
   let service: ReturnType<typeof Bun.spawn> | undefined
   try {
-    await ingestDocument(dir, "Synthetic Notice.docx", await docx(["1. Scope", "The invented scope."]))
-    const sourceMap = path.join(dir, "source-map.json")
-    expect(existsSync(sourceMap)).toBe(true)
-    const db = openDb(dir)
-    db.run("CREATE TRIGGER refuse_sections BEFORE INSERT ON sections BEGIN SELECT RAISE(ABORT, 'synthetic sections failure'); END")
-    db.run("DELETE FROM meta WHERE key = 'sections_version'")
-    // A lexical index that lost a chunk's entry, healed by the startup check.
-    db.run(
-      "INSERT INTO chunks_fts(chunks_fts, rowid, text, section, doc_name) SELECT 'delete', id, text, section, doc_name FROM chunks LIMIT 1",
-    )
-    expect(ftsInSync(db)).toBe(false)
-    db.close()
-    rmSync(sourceMap)
-
+    await prepare(dir)
     service = Bun.spawn([process.execPath, "run", "src/server.ts"], {
       cwd: path.resolve(import.meta.dir, ".."),
       env: {
@@ -612,20 +685,70 @@ test("a sections backfill failure at service start still heals the matter's sour
       if (Date.now() >= deadline) throw new Error(`Ingest startup failed:\n${readFileSync(serviceLog, "utf8")}`)
       await Bun.sleep(50)
     }
-    expect(readFileSync(serviceLog, "utf8")).toContain("matter migration failed")
-    expect(existsSync(sourceMap)).toBe(true)
-    const healed = openDb(dir)
-    try {
-      expect(ftsInSync(healed)).toBe(true)
-    } finally {
-      healed.close()
-    }
+    check(dir, readFileSync(serviceLog, "utf8"))
   } finally {
     service?.kill()
     await service?.exited
     engine.stop(true)
     rmSync(temporary, { recursive: true, force: true })
   }
+}
+
+// A lexical index that lost a chunk's entry, healed by the startup check.
+function dropLexicalEntry(db: Database) {
+  db.run(
+    "INSERT INTO chunks_fts(chunks_fts, rowid, text, section, doc_name) SELECT 'delete', id, text, section, doc_name FROM chunks LIMIT 1",
+  )
+  expect(ftsInSync(db)).toBe(false)
+}
+
+function expectLexicalIndexInSync(dir: string) {
+  const db = openDb(dir)
+  try {
+    expect(ftsInSync(db)).toBe(true)
+  } finally {
+    db.close()
+  }
+}
+
+test("a sections backfill failure at service start still heals the matter's source artifacts", async () => {
+  await bootMatter(
+    async (dir) => {
+      await ingestDocument(dir, "Synthetic Notice.docx", await docx(["1. Scope", "The invented scope."]))
+      const sourceMap = path.join(dir, "source-map.json")
+      expect(existsSync(sourceMap)).toBe(true)
+      const db = openDb(dir)
+      db.run("CREATE TRIGGER refuse_sections BEFORE INSERT ON sections BEGIN SELECT RAISE(ABORT, 'synthetic sections failure'); END")
+      db.run("DELETE FROM meta WHERE key = 'sections_version'")
+      dropLexicalEntry(db)
+      db.close()
+      rmSync(sourceMap)
+    },
+    (dir, log) => {
+      expect(log).toContain("matter migration failed")
+      expect(existsSync(path.join(dir, "source-map.json"))).toBe(true)
+      expectLexicalIndexInSync(dir)
+    },
+  )
+}, 60_000)
+
+test("a mutation recovery failure at service start still heals the matter's lexical index", async () => {
+  await bootMatter(
+    async (dir) => {
+      await ingestDocument(dir, "Synthetic Notice.docx", await docx(["1. Scope", "The invented scope."]))
+      const db = openDb(dir)
+      dropLexicalEntry(db)
+      db.close()
+      // A damaged mutation record beside a backup recovery cannot safely undo.
+      const damaged = path.join(dir, ".dochaus", "document-mutations", "synthetic-damaged")
+      mkdirSync(damaged, { recursive: true })
+      writeFileSync(path.join(damaged, "document.bak"), "invented backup bytes")
+    },
+    (dir, log) => {
+      expect(log).toContain("matter recovery failed")
+      expectLexicalIndexInSync(dir)
+    },
+  )
 }, 60_000)
 
 describe("chunk index maintenance", () => {
