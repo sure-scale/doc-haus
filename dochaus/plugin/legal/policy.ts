@@ -243,12 +243,17 @@ export const LegalPlugin: LegalPolicy = async (input) => {
 
       const reanchored = verified.filter((c) => c.reanchored)
       if (!rejected.length && !reanchored.length) return
+      // Notes the tool recorded after its passages (search-document: unmatched
+      // amendment bases, definitions, cross-references, pending redlines). The
+      // rebuilt output keeps them; per-passage warnings come from the citations.
+      const notes = typeof output.metadata.notes === "string" ? output.metadata.notes : ""
 
       if (!rejected.length) {
         const realignedDocs = [...new Set(reanchored.map((c) => c.documentName))].join(", ")
         output.title = `${verified.length} verified passage(s) (${reanchored.length} re-anchored)`
         output.output =
           formatCitations(verified) +
+          notes +
           `\n\n[citation-verification] ${reanchored.length} citation(s) in ${realignedDocs} had indexed positions ` +
           `that did not match the live extraction; their quotes were re-verified and re-anchored against the live document. ` +
           `A position mismatch alone does not establish that the source was amended. ` +
@@ -260,6 +265,7 @@ export const LegalPlugin: LegalPolicy = async (input) => {
       output.title = `${verified.length} verified passage(s) (${rejected.length} rejected)`
       output.output =
         (formatCitations(verified) || "No passages survived verification.") +
+        notes +
         `\n\n[citation-verification] ` +
         (input.tool === "cite"
           ? `The quoted text could not be verified against the live document — do not present it to the user. `

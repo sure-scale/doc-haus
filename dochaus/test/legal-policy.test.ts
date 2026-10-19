@@ -67,6 +67,30 @@ test("citation position repair verifies quotes without claiming the source was a
   expect(await Bun.file(docPath).text()).toBe(bytes)
 })
 
+test("rebuilt search output keeps the notes search-document recorded after its passages", async () => {
+  const directory = mkdtempSync(path.join(workspace, "citation-notes-"))
+  const docPath = path.join(directory, "instructions.eml")
+  writeFileSync(docPath, "Subject: Approved instructions\r\nFrom: client@example.invalid\r\nTo: counsel@example.invalid\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nPayment is due after receipt of the invoice.\r\n")
+  const excerpt = "Payment is due after receipt of the invoice."
+  const citation: DocumentCitation = { documentName: "instructions.eml", docPath, section: "Instructions", excerpt, charStart: 0, charEnd: excerpt.length }
+  const notes =
+    '\n\nNote: amended base(s) not matched to an indexed document: "Instructions" (amended by Update.eml). ' +
+    "Passages from the documents these names refer to may be superseded and are not flagged above."
+  const hooks = await pluginFor(directory)
+  const superseded = { amenderName: "Update.eml", operation: "restate" as const, charStart: 0, charEnd: 10 }
+  const shifted = { title: "passage", output: `indexed passage${notes}`, metadata: { citations: [{ ...citation, superseded_by: superseded }], notes } }
+  await hooks["tool.execute.after"]!({ tool: "search-document", sessionID: "citation-notes", callID: "shifted", args: {} }, shifted)
+  expect(shifted.metadata.citations[0]?.reanchored).toBe(true)
+  // Per-passage warnings are re-rendered from the citation itself.
+  expect(shifted.output).toContain("[⚠ SUPERSEDED]")
+  expect(shifted.output).toContain(`${excerpt}${notes}\n\n[citation-verification]`)
+
+  const rejected = { title: "passage", output: `indexed passage${notes}`, metadata: { citations: [{ ...citation, excerpt: "Payment is due before delivery." }], notes } }
+  await hooks["tool.execute.after"]!({ tool: "search-document", sessionID: "citation-notes", callID: "rejected", args: {} }, rejected)
+  expect(rejected.metadata.citations).toEqual([])
+  expect(rejected.output).toContain(`No passages survived verification.${notes}\n\n[citation-verification]`)
+})
+
 function chatParams(providerID: string, maxOutputTokens: number | undefined) {
   return {
     input: {

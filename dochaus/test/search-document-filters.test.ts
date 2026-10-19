@@ -351,6 +351,10 @@ test("passages are qualified when an amendment's stated base matched no indexed 
         "Passages from the documents these names refer to may be superseded and are not flagged above.",
     )
     expect(output).not.toMatch(/amendment-chain|current-section|read-document/)
+    // Recorded structurally so a rebuilt output can keep everything after the passages.
+    const notes = (result.result!.metadata as { notes?: string }).notes
+    expect(notes).toContain('Note: amended base(s) not matched to an indexed document: "Lease"')
+    expect(output.endsWith(notes!)).toBe(true)
   } finally {
     rmSync(fixture.directory, { recursive: true, force: true })
   }
