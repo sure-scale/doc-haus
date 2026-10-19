@@ -118,8 +118,8 @@ describe("the plan step's package-scope question", () => {
       "add a document, or change a planned one", "outside this request"])
       expect(question!.question).toContain(text)
     expect(question!.context).toContain("Drafting waits for your answer")
-    // No plan is saved yet, so the plan is drawn up with the answer; a saved plan is kept.
-    expect(question!.context).toContain("If the document plan is not yet saved, it is drawn up with your answer before any part is drafted; a saved plan, including any edits to it, is kept as it stands.")
+    // No plan is saved yet, so the plan is drawn up with the answer.
+    expect(question!.context).toContain("The document plan is drawn up with your answer before any part is drafted.")
     // The plan is not saved; the coverage record keeps what was found.
     expect(planSaved(directory)).toBe(false)
     expect(readLeanCoverage(directory)).toMatchObject({ status: "uncovered", acts: [act], issues: [expect.stringContaining(MISPLACED)] })

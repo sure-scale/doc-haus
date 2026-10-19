@@ -577,7 +577,7 @@ export function coverageScopeQuestion(acts: CoverageAct[], documents: PlannedDoc
         : `${several ? "For each, should" : "Should"} the package add a document, or change a planned one, so that those parties take it, or is it outside this request? If the package should carry it, say in which document and who executes it.`].join(" "),
     context: options.saved
       ? "Drafting waits for your answer. The saved document plan, including any edits to it, is kept as it stands: to add a document, start a new draft, which plans the package from the start."
-      : "Drafting waits for your answer. If the document plan is not yet saved, it is drawn up with your answer before any part is drafted; a saved plan, including any edits to it, is kept as it stands.",
+      : "Drafting waits for your answer. The document plan is drawn up with your answer before any part is drafted.",
     status: "open",
   }
 }
