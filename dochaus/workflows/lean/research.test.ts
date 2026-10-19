@@ -9,8 +9,8 @@ import { finalGate } from "./gate"
 import { quoteFound } from "./quotes"
 import { enqueueLeanRequest } from "./requests"
 import { runLean } from "./runner"
-import { stageInputs } from "./stages"
-import { leanFile, readLeanState, readLeanText, readQuestions, replaceStageOpenItems, writeLeanState, writeLeanText } from "./state"
+import { LEAN_MAX_RETRIES, stageInputs } from "./stages"
+import { leanFile, readLeanJson, readLeanState, readLeanText, readQuestions, replaceStageOpenItems, writeLeanState, writeLeanText } from "./state"
 import { AGENT, cleanupMatters, happyPath, matter, scriptedModel } from "./test-support"
 
 afterEach(cleanupMatters)
@@ -110,8 +110,83 @@ test("research text the lawyer reads that names an internal workflow file is ret
   const final = acceptResearchReply(directory, "research-review", JSON.stringify({ approved: ["r1"], rejected: [], limitations: [leak] }), { final: true })
   expect(final.issues).toEqual([])
   expect(final.openItems.map(item => item.detail)).toEqual([leak])
+  expect(readLeanJson(directory, "research-review.json")).toEqual({ approved: ["r1"], rejected: [], limitations: [leak] })
   expect(acceptResearchReply(directory, "research-review", JSON.stringify({ approved: ["r1"], rejected: [], limitations: ["The source's currency remains unconfirmed."] })).issues).toEqual([])
 })
+
+test("each internal path form is retried by field name, without repeating the path", () => {
+  const directory = matter()
+  const research = retrieved(directory)
+  const sha = research.findings[0]!.snapshot
+  const retried = "limitations[0] names an internal workflow file. The lawyer reads this text: describe the gap in words, without file paths."
+  for (const text of ["Checked .dochaus/lean/intake.json only.", "Checked .dochaus\\lean\\intake.json only.", "Only research-context.txt was read.",
+    `Snapshot research-sources/${sha}.json was clipped.`, `Snapshot research-sources\\${sha}.json was clipped.`,
+    `Snapshot C:\\Matters\\Example\\.dochaus\\research-sources\\${sha}.json was clipped.`, "Only .DOCHAUS/Lean/Research-Context.TXT was read."])
+    expect(acceptResearchReply(directory, "research", JSON.stringify({ ...research, limitations: [text] })).issues).toEqual([retried])
+  expect(acceptResearchReply(directory, "research", JSON.stringify({ ...research, limitations: ["The research_context.txt note and https://www.dochaus.com/ are not paths."] })).issues).toEqual([])
+})
+
+test("finding currency and jurisdiction, which reach the drafter, are checked with the open-item text", () => {
+  const directory = matter()
+  const research = retrieved(directory)
+  const leak = "Metadata in .dochaus/research-sources/ only."
+  const named = (field: string) => `${field} names an internal workflow file. The lawyer reads this text: describe the gap in words, without file paths.`
+  expect(acceptResearchReply(directory, "research", JSON.stringify({ ...research, limitations: [research.limitations[0], leak],
+    findings: [{ ...research.findings[0], jurisdiction: leak, currentness: leak, limitations: leak }] })).issues)
+    .toEqual([named("limitations[1]"), named("findings[0].jurisdiction"), named("findings[0].currentness"), named("findings[0].limitations")])
+  expect(acceptResearchReply(directory, "research", JSON.stringify(research)).issues).toEqual([])
+  expect(acceptResearchReply(directory, "research-review", JSON.stringify({ approved: [], rejected: [{ id: "r1", reason: leak }], limitations: [leak] })).issues)
+    .toEqual([named("limitations[0]"), named("rejected[0].reason")])
+})
+
+test("a path is reported with the other issues before the last attempt, and only the path is let through on it", () => {
+  const directory = matter()
+  const research = retrieved(directory)
+  const leak = "The readable context in .dochaus/lean/research-context.txt held no source text."
+  const pathIssues = (issues: string[]) => issues.filter(issue => issue.includes("internal workflow file"))
+  const invented = { ...research, limitations: [leak], findings: [{ ...research.findings[0], quote: "Invented text" }] }
+  const both = acceptResearchReply(directory, "research", JSON.stringify(invented)).issues
+  expect(both.length).toBe(2)
+  expect(pathIssues(both)).toEqual([expect.stringContaining("limitations[0]")])
+  const last = acceptResearchReply(directory, "research", JSON.stringify(invented), { final: true })
+  expect(last.issues).toEqual(both.filter(issue => !pathIssues([issue]).length))
+  expect(readLeanText(directory, "research.json")).toBeUndefined()
+  expect(acceptResearchReply(directory, "research", JSON.stringify(research)).issues).toEqual([])
+  const unreviewed = acceptResearchReply(directory, "research-review", JSON.stringify({ approved: [], rejected: [], limitations: [leak] })).issues
+  expect(unreviewed).toEqual([expect.stringContaining("exactly once"), expect.stringContaining("internal workflow file")])
+})
+
+test("the last research attempt keeps a path as written and saves its files", () => {
+  const directory = matter()
+  const research = retrieved(directory)
+  const leak = "Only research-context.txt was read."
+  const value = { ...research, findings: [{ ...research.findings[0], currentness: leak, limitations: leak }] }
+  const final = acceptResearchReply(directory, "research", JSON.stringify(value), { final: true })
+  expect(final.issues).toEqual([])
+  expect(final.outputs).toEqual(["research.json", "research-context.txt"])
+  expect(readLeanJson(directory, "research.json")).toEqual(value)
+  expect(readLeanText(directory, "research-context.txt")).toContain("Canonical extracted text:")
+  expect(final.openItems.map(item => item.detail)).toEqual([...research.limitations, `r1: ${leak}`])
+})
+
+test("a research review that names an internal file on every attempt completes on the last one with its words kept", async () => {
+  const directory = matter()
+  const leak = "The readable context in .dochaus/lean/research-context.txt held no source text."
+  const model = scriptedModel({ ...happyPath, [AGENT["research-review"]]: () => JSON.stringify({ approved: [], rejected: [], limitations: [leak] }) })
+  expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+  expect(model.count(AGENT["research-review"])).toBe(LEAN_MAX_RETRIES + 1)
+  expect(model.prompts.filter(row => row.agent === AGENT["research-review"]).slice(1).every(row => row.text.includes("internal workflow file"))).toBe(true)
+  expect(readLeanJson(directory, "research-review.json")).toEqual({ approved: [], rejected: [], limitations: [leak] })
+}, 120_000)
+
+test("a research review corrected on retry saves the corrected words", async () => {
+  const directory = matter()
+  const model = scriptedModel({ ...happyPath, [AGENT["research-review"]]: (_text, index) =>
+    JSON.stringify({ approved: [], rejected: [], limitations: [index === 0 ? "The readable context in .dochaus/lean/research-context.txt held no source text." : "The readable context held no source text."] }) })
+  expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+  expect(model.count(AGENT["research-review"])).toBe(2)
+  expect(readLeanJson(directory, "research-review.json")).toEqual({ approved: [], rejected: [], limitations: ["The readable context held no source text."] })
+}, 120_000)
 
 test("completed legacy runs remain unchanged and do not claim research", async () => {
   const directory = matter()
