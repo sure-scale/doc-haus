@@ -50,9 +50,11 @@ export type ComparisonSide = {
 }
 
 // What became of one tracked insertion or deletion pending in the left file,
-// read from the right file without a model: still pending there, accepted
-// (its effect is in the right text), or undone by an edit made without
-// tracking. Format-only, moved and paragraph-mark revisions are not listed.
+// read from the right file without a model: still pending there; countered
+// (still pending, but right holds its own tracked change reversing it);
+// accepted (its effect is in the right text); or rejected (removed or changed
+// in right with no tracked change, as Word's Reject Change leaves it).
+// Format-only, moved and paragraph-mark revisions are not listed.
 export type ProposalOutcome = {
   // "P1"… in left's document order.
   id: string
@@ -60,8 +62,9 @@ export type ProposalOutcome = {
   // The proposed inserted text, or the text proposed for deletion.
   text: string
   author: string
-  outcome: "pending" | "accepted" | "undone"
-  // Outcome "undone": the id ("U2") of the untracked edit that reversed it.
+  outcome: "pending" | "countered" | "accepted" | "rejected"
+  // The id ("U2") of an untracked edit: for "rejected", the edit that removed
+  // it; otherwise an edit made without tracking in the same paragraph.
   untracked?: string
   // Where it sits in left; paragraph 0 when it could not be placed.
   location: ChangeLocation

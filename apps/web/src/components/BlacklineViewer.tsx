@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { useDocxodus } from "docxodus/react"
 import {
   compareUrl,
@@ -196,13 +196,15 @@ function untrackedStatus({ left, right, untracked }: ComparisonJson) {
   }
 }
 
+// In summary order.
 const OUTCOME: Record<ProposalOutcome["outcome"], string> = {
   pending: "still pending",
+  countered: "reversed by their tracked change",
   accepted: "accepted",
-  undone: "undone without tracking",
+  rejected: "rejected or changed",
 }
 
-// "3 proposals: 1 still pending, 1 accepted, 1 undone without tracking."
+// "3 proposals: 1 still pending, 1 accepted, 1 rejected or changed."
 // Outcomes that did not happen are left out.
 function proposalSummary(proposals: ProposalOutcome[]) {
   const parts = (Object.keys(OUTCOME) as ProposalOutcome["outcome"][]).flatMap((outcome) => {
@@ -229,9 +231,10 @@ function disclosures({ left, right, options, attribution, untracked, proposals =
         (proposals.length ? ` “Proposals in ${left.label}” above shows what became of each in ${right.label}.` : ""),
     )
   if (right.trackedChanges.count) lines.push(`${hadRevisions(right)}; compared as accepted.`)
+  // Not "pending": that word belongs to the earlier version's proposals.
   for (const side of [left, right])
     if (side.pendingProposals)
-      lines.push(`${side.label} has ${plural(side.pendingProposals, "pending change")} in doc.haus that ${side.pendingProposals === 1 ? "is" : "are"} not in the file yet, so ${side.pendingProposals === 1 ? "it is" : "they are"} not included.`)
+      lines.push(`${side.label} has ${plural(side.pendingProposals, "change")} in doc.haus that ${side.pendingProposals === 1 ? "is" : "are"} not in the file yet, so ${side.pendingProposals === 1 ? "it is" : "they are"} not included.`)
   if (options.ignoreFormatting) lines.push("Formatting-only changes are left out.")
   if (!options.detectMoves) lines.push("Moved text shows as deleted and inserted.")
   if (!options.headersFooters) lines.push("Headers and footers were not compared.")
@@ -258,7 +261,12 @@ export function ComparePanel({ comparison }: { comparison: ComparisonJson }) {
         </h3>
         <p className="compare-status">{status.text}</p>
         {untracked.map((hunk) => (
-          <HunkCard key={hunk.id} hunk={hunk} comparison={comparison} />
+          <HunkCard
+            key={hunk.id}
+            hunk={hunk}
+            comparison={comparison}
+            removes={proposals.filter((proposal) => proposal.outcome === "rejected" && proposal.untracked === hunk.id).map((proposal) => proposal.id)}
+          />
         ))}
       </section>
       {proposals.length > 0 && (
@@ -289,7 +297,8 @@ export function ComparePanel({ comparison }: { comparison: ComparisonJson }) {
   )
 }
 
-function HunkCard({ hunk, comparison, marked }: { hunk: ChangeHunk; comparison: ComparisonJson; marked?: boolean }) {
+// One change. An untracked edit names the proposals it removed, listed below.
+function HunkCard({ hunk, comparison, marked, removes = [] }: { hunk: ChangeHunk; comparison: ComparisonJson; marked?: boolean; removes?: string[] }) {
   const before = hunk.before && !(hunk.kind === "moved" && hunk.before === hunk.after) ? hunk.before : undefined
   return (
     <div id={`compare-${hunk.id}`} className={`change-card compare-hunk${marked && hunk.untracked ? " is-untracked" : ""}`}>
@@ -297,6 +306,17 @@ function HunkCard({ hunk, comparison, marked }: { hunk: ChangeHunk; comparison: 
         <span>{hunk.id}</span>
         <span>{KIND[hunk.kind]}</span>
         {marked && hunk.untracked && <span className="compare-untracked-tag">Not tracked</span>}
+        {removes.length > 0 && (
+          <span className="compare-outcome-tag is-warn">
+            {`Removes your ${removes.length === 1 ? "proposal" : "proposals"} `}
+            {removes.map((id, index) => (
+              <Fragment key={id}>
+                {index > 0 && ", "}
+                <CompareRef id={id} section={`Proposals in ${comparison.left.label}`} />
+              </Fragment>
+            ))}
+          </span>
+        )}
       </div>
       <div className="compare-hunk-location">{hunkLocation(hunk.location, comparison)}</div>
       {before && <ClippedText className="change-old" text={before} />}
@@ -305,39 +325,58 @@ function HunkCard({ hunk, comparison, marked }: { hunk: ChangeHunk; comparison: 
   )
 }
 
-// One tracked change the earlier version proposed and what became of it. An
-// undone one names the untracked edit that reversed it, which sits above.
+const OUTCOME_TAG: Record<Exclude<ProposalOutcome["outcome"], "rejected">, string> = {
+  pending: "Still pending",
+  countered: "Still pending — their tracked change reverses it",
+  accepted: "Accepted",
+}
+
+// One tracked change the earlier version proposed and what became of it. A
+// rejected one names the untracked edit that removed it; any other names an
+// untracked edit in its paragraph. Both edits sit above.
 function ProposalCard({ proposal, comparison }: { proposal: ProposalOutcome; comparison: ComparisonJson }) {
-  const undone = proposal.outcome === "undone"
+  const rejected = proposal.outcome === "rejected"
   const ref = proposal.untracked
+  const refButton = ref && <CompareRef id={ref} section="Edits made without tracked changes" />
   return (
-    <div id={`compare-${proposal.id}`} className={`change-card compare-hunk compare-proposal${undone ? " is-undone" : ""}`}>
+    <div id={`compare-${proposal.id}`} className={`change-card compare-hunk compare-proposal${rejected ? " is-rejected" : ""}`}>
       <div className="change-author compare-hunk-meta">
         <span>{proposal.id}</span>
         <span>{proposal.kind === "inserted" ? "Proposed insertion" : "Proposed deletion"}</span>
-        <span className={`compare-outcome-tag${undone ? " is-undone" : ""}`}>
-          {!undone ? (
-            proposal.outcome === "pending" ? "Still pending" : "Accepted"
-          ) : ref ? (
-            <>
-              {"Undone without tracking — see "}
-              <button
-                type="button"
-                className="linklike compare-ref"
-                title={`Show ${ref} under Edits made without tracked changes`}
-                onClick={() => document.getElementById(`compare-${ref}`)?.scrollIntoView({ block: "center", behavior: "smooth" })}
-              >
-                {ref}
-              </button>
-            </>
-          ) : (
-            "Undone without tracking"
-          )}
-        </span>
+        {proposal.outcome === "rejected" ? (
+          <span className="compare-outcome-tag is-warn">
+            {`Rejected or changed — not shown as a tracked change${ref ? ", see " : ""}`}
+            {refButton}
+          </span>
+        ) : (
+          <>
+            <span className="compare-outcome-tag">{OUTCOME_TAG[proposal.outcome]}</span>
+            {ref && (
+              <span className="compare-outcome-tag is-warn">
+                {"Same paragraph has an untracked edit — see "}
+                {refButton}
+              </span>
+            )}
+          </>
+        )}
       </div>
       <div className="compare-hunk-location">{hunkLocation(proposal.location, comparison)}</div>
       <ClippedText className={proposal.kind === "inserted" ? "change-new" : "change-old"} text={proposal.text} />
     </div>
+  )
+}
+
+// A tag's link to another card in this panel.
+function CompareRef({ id, section }: { id: string; section: string }) {
+  return (
+    <button
+      type="button"
+      className="linklike compare-ref"
+      title={`Show ${id} under ${section}`}
+      onClick={() => document.getElementById(`compare-${id}`)?.scrollIntoView({ block: "center", behavior: "smooth" })}
+    >
+      {id}
+    </button>
   )
 }
 
