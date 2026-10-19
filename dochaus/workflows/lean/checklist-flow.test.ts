@@ -120,31 +120,6 @@ test("source update prevents checking stale extracted requirements", async () =>
   expect(deps.counts.created).toBe(before)
 })
 
-test("a question left to the drafting reaches extraction and checks as the lawyer's later instruction a finding can cite", async () => {
-  const directory = matter(), deps = port(directory)
-  const basis = checklistRefinementSourceBasis(directory)
-  writeLeanText(directory, "questions.json", JSON.stringify({ questions: [
-    { id: "q-left", stage: "intake", question: "Which figure applies?", context: "Two figures conflict.", status: "answered", answer_kind: "decide_for_me" }] }))
-  expect(checklistRefinementSourceBasis(directory)).not.toBe(basis)
-  const prompts: { agent?: string; text: string }[] = []
-  const sessions: StageSessionPort = {
-    createSession: deps.sessions.createSession.bind(deps.sessions),
-    async prompt(input) {
-      prompts.push(input)
-      if (input.agent !== CHECKLIST_JOB_AGENTS.check) return deps.sessions.prompt(input)
-      const packet: ChecklistCheckerInput = JSON.parse(input.text.split("CHECK_INPUT:\n\n")[1])
-      const handed = packet.settled_instructions.filter(ref => ref.locator.includes("left to the drafter (q-left)"))
-      return JSON.stringify({ item_id: packet.item_id, status: "open", reason: "The lawyer later asked the drafting to decide this point.", evidence: packet.current_evidence, source_refs: [...packet.item.source_refs, ...handed], inspection_scope: "Supplied current target and source.", limitation: "The choice awaits confirmation." })
-    },
-  }
-  await runChecklistExtractionFlow(directory, { ...deps, sessions })
-  const extraction: ChecklistProducerInput = JSON.parse(prompts.find(row => row.agent === CHECKLIST_JOB_AGENTS.extract)!.text.split("SOURCE_INPUT:\n\n")[1]!)
-  expect(extraction.instructions.map(ref => ref.quote)).toEqual(["left to the drafter to decide"])
-  const checked = await runChecklistCheckFlow(directory, { ...deps, sessions })
-  expect(checked.checks.map(row => row.status)).toEqual(["succeeded"])
-  expect(checked.checks[0]!.finding!.source_refs.map(ref => ref.locator)).toContain(".dochaus/lean/questions.json left to the drafter (q-left) on the question: Which figure applies?")
-})
-
 test("failed check is persisted and only an explicit subsequent flow run retries it", async () => {
   const directory = matter(), deps = port(directory, { failCheck: true })
   await runChecklistExtractionFlow(directory, deps)

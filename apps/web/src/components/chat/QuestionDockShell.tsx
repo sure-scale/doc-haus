@@ -2,19 +2,12 @@ import { type ReactNode, useEffect, useId, useLayoutEffect, useRef, useState } f
 
 export default function QuestionDockShell({
   count,
-  kept = 0,
-  keptTitle = "",
   preview,
   subject,
   renderQuestions,
 }: {
   /** Questions asked; the dock counts them. */
   count: number
-  /** Settled questions the dialog still offers; with none asked, the dock
-   * names them with keptTitle and offers Review, without the amber call for
-   * an answer: nothing waits on the lawyer. */
-  kept?: number
-  keptTitle?: string
   preview: string
   subject: string
   renderQuestions: (titleId: string, onClose: () => void) => ReactNode
@@ -31,18 +24,15 @@ export default function QuestionDockShell({
     if (!open && node.open) node.close()
   }, [open])
 
-  // The dialog closes once the last asked question is settled, and once it holds nothing.
+  // The dialog closes once the last asked question is settled.
   useEffect(() => {
     if (count === 0) setOpen(false)
   }, [count])
-  useEffect(() => {
-    if (count + kept === 0) setOpen(false)
-  }, [count, kept])
 
-  if (count + kept === 0) return null
+  if (count === 0) return null
   return (
     <>
-      <div className={count === 0 ? "question-dock is-settled" : "question-dock"}>
+      <div className="question-dock">
         <span className="question-dock-icon" aria-hidden>
           <svg
             width="14"
@@ -60,12 +50,12 @@ export default function QuestionDockShell({
         </span>
         <div className="question-dock-text">
           <span className="question-dock-title">
-            {count === 0 ? keptTitle : count === 1 ? `${subject} has a question for you` : `${subject} has ${count} questions for you`}
+            {count === 1 ? `${subject} has a question for you` : `${subject} has ${count} questions for you`}
           </span>
           <span className="question-dock-preview">{preview}</span>
         </div>
         <button type="button" className="question-dock-cta" aria-haspopup="dialog" onClick={() => setOpen(true)}>
-          {count === 0 ? "Review" : count === 1 ? "Answer" : `Answer ${count}`}
+          {count === 1 ? "Answer" : `Answer ${count}`}
         </button>
       </div>
       <dialog

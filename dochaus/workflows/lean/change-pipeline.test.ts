@@ -128,7 +128,7 @@ test("planner question pauses before preparation; canonical answer survives rest
   const directory = matter(), question = "Which agreed delivery instruction should govern?"
   const model = scriptedModel({ ...replies(), [AGENT["change-plan"]]: prompt => {
     const value = JSON.parse(plan(prompt, 0))
-    return JSON.stringify({ ...value, questions: [{ pid: value.groups[0].pids[0], question, context: "Conflicting material instructions need a decision." }] })
+    return JSON.stringify({ ...value, questions: [{ pid: value.groups[0].pids[0], question, kind: "instruction", context: "Conflicting material instructions need a decision." }] })
   } })
   expect((await runLean(directory, { sessions: model.port })).status).toBe("blocked")
   expect(model.count(AGENT["change-prepare"])).toBe(0)
@@ -139,7 +139,7 @@ test("planner question pauses before preparation; canonical answer survives rest
   expect(waiting.prompts).toHaveLength(0)
   const asked = readQuestions(directory).find(row => row.question === question)!
   expect(asked.stage).toBe("change-plan")
-  answerQuestion(directory, asked.id, "Use the supplied delivery period.")
+  answerQuestion(directory, asked.id, { text: "Use the supplied delivery period." })
   restoreLeanStage(directory, "d1.change-plan")
   const resumed = scriptedModel(replies())
   expect((await runLean(directory, { sessions: resumed.port })).status).toBe("completed")
@@ -281,7 +281,7 @@ test("parallel worker questions are unioned under preparation and pause reconcil
     const context = contexts.get(sessionID)!, delivery = context.includes('"id": "delivery"')
     const original = delivery ? "The supplier shall deliver the goods." : "Payment timing remains to be agreed."
     const pid = pidOf(context, original), question = delivery ? "Which delivery instruction is authorised?" : "Which payment instruction is authorised?"
-    return JSON.stringify({ amendments: [{ pid, updated: `${original} [open item: ${question}]`, reason: "Shows a newly identified essential unanswered decision.", sources: delivery ? SUPPORT : PAYMENT_SUPPORT }], questions: [{ pid, question, context: "A newly discovered instruction conflict requires the lawyer's decision." }] })
+    return JSON.stringify({ amendments: [{ pid, updated: `${original} [open item: ${question}]`, reason: "Shows a newly identified essential unanswered decision.", sources: delivery ? SUPPORT : PAYMENT_SUPPORT }], questions: [{ pid, question, kind: "instruction", context: "A newly discovered instruction conflict requires the lawyer's decision." }] })
   } })
   expect((await runLean(directory, { sessions: model.port })).status).toBe("blocked")
   const questions = readQuestions(directory).filter(row => row.status === "open")
@@ -290,7 +290,7 @@ test("parallel worker questions are unioned under preparation and pause reconcil
   expect(readOpenItems(directory).filter(row => row.stage === "change-prepare" && row.kind === "question")).toHaveLength(2)
   expect(model.count(AGENT.changes)).toBe(0)
   expect(existsSync(leanFile(directory, "d1/body-applied.docx"))).toBe(false)
-  questions.forEach(row => answerQuestion(directory, row.id, "Use the supplied source instruction."))
+  questions.forEach(row => answerQuestion(directory, row.id, { text: "Use the supplied source instruction." }))
   expect((await runLean(directory, { sessions: scriptedModel(replies()).port })).status).toBe("completed")
   expect(readQuestions(directory).filter(row => row.status === "open")).toHaveLength(0)
 }, 120_000)

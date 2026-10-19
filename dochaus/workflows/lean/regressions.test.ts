@@ -212,7 +212,7 @@ describe("questions for the lawyer", () => {
     const marked: Reply = prompt => JSON.stringify({
       amendments: [{ pid: pidOf(prompt, DELIVERY), updated: "The supplier shall deliver the goods within thirty days of the order date [open item: remedy for late delivery].",
         reason: "Period, with the remedy left open.", sources: SUPPORT }],
-      questions: [{ question: QUESTION, context: "The terms are silent.", pid: pidOf(prompt, DELIVERY) }],
+      questions: [{ question: QUESTION, kind: "judgment", context: "The terms are silent.", pid: pidOf(prompt, DELIVERY) }],
     })
     const state = await runLean(directory, { sessions: scriptedModel({ ...happyPath, [AGENT.changes]: marked }).port })
     expect(state.status).toBe("blocked")
@@ -225,7 +225,7 @@ describe("questions for the lawyer", () => {
   const PERIOD = "The supplier shall deliver the goods within thirty days of the order date"
   const asked = (pid: string, marker: string) => ({
     amendments: [{ pid, updated: `${PERIOD}${marker}.`, reason: "Period.", sources: SUPPORT }],
-    questions: [{ question: QUESTION, context: "The terms are silent.", pid }],
+    questions: [{ question: QUESTION, kind: "judgment", context: "The terms are silent.", pid }],
   })
   const unmarked = (pid: string) => asked(pid, "")
   const marked = (pid: string) => asked(pid, " [open item: remedy for late delivery]")
@@ -260,7 +260,7 @@ describe("questions for the lawyer", () => {
   test("a question tied to no paragraph is retried with an instruction to tie it to the paragraph it affects", async () => {
     const directory = matter()
     const model = scriptedModel({ ...happyPath, [AGENT.changes]: asker((pid, index) => index === 0
-      ? { ...unmarked(pid), questions: [{ question: QUESTION, context: "The terms are silent." }] }
+      ? { ...unmarked(pid), questions: [{ question: QUESTION, kind: "judgment", context: "The terms are silent." }] }
       : marked(pid)) })
     const state = await runLean(directory, { sessions: model.port })
 
@@ -273,7 +273,7 @@ describe("questions for the lawyer", () => {
   test("a question ties to its id: reworded with the same id it stays one question, and once answered it is not asked again", async () => {
     const directory = matter()
     const asking = (wording: string, withID: boolean) => sameSession(prompt => JSON.stringify({ ...JSON.parse(changes(prompt, 0)), questions: [{
-      ...(withID ? { id: readQuestions(directory)[0]!.id } : {}), question: wording, context: "The terms are silent.",
+      ...(withID ? { id: readQuestions(directory)[0]!.id } : {}), question: wording, kind: "judgment", context: "The terms are silent.",
     }] }))
     await runLean(directory, { sessions: scriptedModel({ ...happyPath, [AGENT.changes]: asking(QUESTION, false) }).port })
     const [question] = readQuestions(directory)

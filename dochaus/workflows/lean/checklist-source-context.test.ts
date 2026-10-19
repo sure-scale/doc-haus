@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { checklistJobInputs, checklistProducerInputs } from "./checklist-source-context"
+import { checklistProducerInputs } from "./checklist-source-context"
 import { runChecklistExtractionFlow } from "./checklist-flow"
 import type { StageSessionPort } from "./stages"
 import { checklistProducerInputSchema } from "./checklist-contract"
@@ -62,7 +62,10 @@ test("included lawyer updates and actual answers stay separate from original tex
   expect(request.passages).toHaveLength(1)
   expect(request.instructions.map(ref => ref.quote)).toEqual(["Use the current requested document names.", "Keep this proposal unapproved pending confirmation."])
   expect(jobs[0].input.instructions.map(ref => ref.quote)).toEqual([request.passages[0].quote, ...request.instructions.map(ref => ref.quote)])
-  expect(JSON.stringify(jobs)).not.toContain("MODEL QUESTION")
+  // An answer carries the question it answers, for its meaning; the question is never a quote.
+  expect(request.instructions[1]!.question).toBe("MODEL QUESTION MUST NOT BECOME SOURCE")
+  expect(jobs.flatMap(job => [...job.input.passages, ...job.input.instructions]).filter(ref => ref.quote.includes("MODEL QUESTION"))).toEqual([])
+  expect(JSON.stringify(jobs)).not.toContain("OPEN MODEL QUESTION")
   expect(JSON.stringify(jobs)).not.toContain("UNSETTLED TEXT")
   expect(JSON.stringify(jobs)).not.toContain("QUEUED TEXT")
 })
@@ -74,31 +77,28 @@ test("each answer keeps an id-keyed locator in a stable order however questions.
   put(".dochaus/lean/questions.json", JSON.stringify({ questions: [open, answered("q2"), answered("q1")] }))
   const before = checklistProducerInputs(directory)
   expect(before.at(-1)!.input.instructions).toEqual([
-    { document: "request", locator: ".dochaus/lean/questions.json answer (q1)", quote: "Answer q1." },
-    { document: "request", locator: ".dochaus/lean/questions.json answer (q2)", quote: "Answer q2." },
+    { document: "request", locator: ".dochaus/lean/questions.json answer (q1)", question: "Question q1?", quote: "Answer q1." },
+    { document: "request", locator: ".dochaus/lean/questions.json answer (q2)", question: "Question q2?", quote: "Answer q2." },
   ])
   // Answered questions first, as a step's question rewrite leaves them.
   put(".dochaus/lean/questions.json", JSON.stringify({ questions: [answered("q1"), answered("q2"), open] }))
   expect(checklistProducerInputs(directory)).toEqual(before)
 })
 
-test("a question left to the drafting reaches every checklist job as the lawyer's own instruction, never as quotable question text", () => {
+test("an adopted or picked answer reaches the checklist jobs as the lawyer's own instruction with the question it answers, never as quotable question text", () => {
   const { directory, put } = prepare()
-  expect(checklistJobInputs(directory)).toEqual(checklistProducerInputs(directory))
   put(".dochaus/lean/questions.json", JSON.stringify({ questions: [
-    { id: "q-2", question: "HANDED BACK MODEL QUESTION: which figure applies?", status: "answered", answer_kind: "decide_for_me" },
-    { id: "q-1", question: "Answered model question?", status: "answered", answer: "Keep the proposal open." },
+    { id: "q-2", question: "ADOPTED MODEL QUESTION: which figure applies?", status: "answered", answer: "Use the later figure.", answer_kind: "adopted", option_id: "o1" },
+    { id: "q-1", question: "PICKED MODEL QUESTION?", status: "answered", answer: "Keep the proposal open.", answer_kind: "option", option_id: "o2" },
   ] }))
-  const handed = { document: "request", locator: ".dochaus/lean/questions.json left to the drafter (q-2) on the question: HANDED BACK MODEL QUESTION: which figure applies?", quote: "left to the drafter to decide" }
-  const producer = checklistProducerInputs(directory), jobs = checklistJobInputs(directory)
-  expect(jobs.map(job => job.key)).toEqual(producer.map(job => job.key))
-  for (const [index, job] of jobs.entries())
-    expect(job.input).toEqual({ ...producer[index]!.input, instructions: [...producer[index]!.input.instructions, handed] })
+  const jobs = checklistProducerInputs(directory)
+  expect(jobs.at(-1)!.input.instructions).toEqual([
+    { document: "request", locator: ".dochaus/lean/questions.json answer (q-1)", question: "PICKED MODEL QUESTION?", quote: "Keep the proposal open." },
+    { document: "request", locator: ".dochaus/lean/questions.json answer (q-2)", question: "ADOPTED MODEL QUESTION: which figure applies?", quote: "Use the later figure." },
+  ])
   for (const job of jobs) expect(checklistProducerInputSchema.safeParse(job.input).success).toBe(true)
-  // The model-written question names the point; its words are never quotable authority.
-  expect(jobs.flatMap(job => [...job.input.passages, ...job.input.instructions]).filter(ref => ref.quote.includes("HANDED BACK"))).toEqual([])
-  // Change stages keep the lawyer's words alone: their plans are re-checked against them.
-  expect(JSON.stringify(producer)).not.toContain("left to the drafter")
+  // The model-written question is never quotable authority.
+  expect(jobs.flatMap(job => [...job.input.passages, ...job.input.instructions]).filter(ref => ref.quote.includes("MODEL QUESTION"))).toEqual([])
 })
 
 test("generated artifacts and drafting assumptions never become producer evidence", () => {

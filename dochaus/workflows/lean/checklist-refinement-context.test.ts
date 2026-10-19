@@ -37,7 +37,7 @@ test("actual answers remain separate; library guidance is bounded on paragraph/w
   process.env.WORKSPACE_ROOT = f.dir;const library = "# Guidance\n\n" + "Preserve conditional proposals and exceptions.\n\n".repeat(200)
   f.put("matter.json", { playbook: "playbook-unit-guidance" });f.put(".playbooks/playbook-unit-guidance/SKILL.md", library)
   const result = buildChecklistRefinementContext(f.dir, { parent_id: "parent", scope: "source_collection" }), units = result.units.filter(unit => unit.passages[0].document === "playbook:playbook-unit-guidance")
-  expect(units.length).toBeGreaterThan(1);expect(units.every(unit => unit.passages[0].quote.length <= 4500)).toBe(true);expect(units.map(unit => unit.passages[0].quote).join("")).toBe(library);expect(result.instructions.map(ref => ref.quote)).toContain("Keep the fallback conditional.");expect(JSON.stringify(result)).not.toContain("MODEL QUESTION");expect(JSON.stringify(result)).not.toContain("UNSETTLED")
+  expect(units.length).toBeGreaterThan(1);expect(units.every(unit => unit.passages[0].quote.length <= 4500)).toBe(true);expect(units.map(unit => unit.passages[0].quote).join("")).toBe(library);expect(result.instructions.map(ref => ref.quote)).toContain("Keep the fallback conditional.");expect(result.instructions.find(ref => ref.quote === "Keep the fallback conditional.")?.question).toBe("MODEL QUESTION");expect(result.instructions.filter(ref => ref.quote.includes("MODEL QUESTION"))).toEqual([]);expect(JSON.stringify(result)).not.toContain("OPEN MODEL QUESTION");expect(JSON.stringify(result)).not.toContain("UNSETTLED")
   rmSync(path.join(f.dir, ".playbooks/playbook-unit-guidance/SKILL.md"));expect(() => buildChecklistRefinementContext(f.dir, { parent_id: "parent", scope: "source_collection" })).toThrow("unavailable")
 })
 
@@ -45,12 +45,4 @@ test("duplicated chunk identities and missing canonical source text do not silen
   const f = fixture();f.document.chunks[1].id = f.document.chunks[0].id;f.put("source-map.json", { documents: [f.document] })
   expect(() => buildChecklistRefinementContext(f.dir, { parent_id: "parent", scope: "source_collection" })).toThrow("not unique")
   rmSync(path.join(f.dir, "sources/guide.txt"));expect(() => buildChecklistRefinementContext(f.dir, { parent_id: "parent", scope: "source_collection" })).toThrow()
-})
-test("a question left to the drafting reaches refinement as the lawyer's instruction to decide it, and a parent citing it gets that instruction as its unit", () => {
-  const f = fixture(), without = buildChecklistRefinementContext(f.dir, { parent_id: "parent", scope: "source_collection" })
-  f.put(".dochaus/lean/questions.json", { questions: [{ id: "q-left", stage: "intake", question: "MODEL QUESTION", context: "", status: "answered", answer_kind: "decide_for_me" }] })
-  const handed = { document: "request", locator: ".dochaus/lean/questions.json left to the drafter (q-left) on the question: MODEL QUESTION", quote: "left to the drafter to decide" }
-  expect(buildChecklistRefinementContext(f.dir, { parent_id: "parent", scope: "source_collection" })).toEqual({ ...without, instructions: [...without.instructions, handed] })
-  f.item.source_refs.push(handed);f.save()
-  expect(buildChecklistRefinementContext(f.dir, { parent_id: "parent", scope: "cited_sources" }).units.map(unit => unit.passages[0].quote)).toEqual([f.texts[0], "left to the drafter to decide"])
 })

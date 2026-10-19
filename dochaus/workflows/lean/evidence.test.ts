@@ -28,7 +28,7 @@ test("later answers and same-name source revisions invalidate dependent work", (
   expect(stageInputSha(directory, "discrepancy")).not.toBe(before)
   const review = stageInputSha(directory, "d1.review")
   writeQuestions(directory, [{ id: "q-choice", stage: "intake", question: "Which delivery term applies?", context: "Versions conflict", status: "open" }])
-  answerQuestion(directory, "q-choice", "Use the later expressly agreed term.")
+  answerQuestion(directory, "q-choice", { text: "Use the later expressly agreed term." })
   expect(stageInputSha(directory, "d1.review")).not.toBe(review)
   expect(evidencePrompt(directory, "discrepancy")).toContain("Use the later expressly agreed term.")
   const spine = stageInputSha(directory, "spine")
@@ -50,7 +50,7 @@ test("user instruction evidence uses the canonical request identity and rejects 
   enqueueLeanRequest(directory, { kind: "update", text: "Use the revised delivery provision." })
   drainLeanRequests(directory)
   writeQuestions(directory, [{ id: "q-evidence", stage: "intake", question: "Which provision?", context: "Material choice", status: "open" }])
-  answerQuestion(directory, "q-evidence", "Use the expressly agreed later provision.")
+  answerQuestion(directory, "q-evidence", { text: "Use the expressly agreed later provision." })
   expect(checkEvidence(directory, "spine", reply("request", "Use the revised delivery provision."))).toEqual([])
   expect(checkEvidence(directory, "spine", reply("request", "Use the expressly agreed later provision."))).toEqual([])
   for (const alias of ["Request text", "Human answer", "Intake", "Verified research", "update:unavailable"]) {
@@ -68,7 +68,7 @@ test("a rejected quotation identifies the exact evidence to correct without acce
   const directory = matter()
   const answer = "Use the expressly agreed later provision."
   writeQuestions(directory, [{ id: "q-feedback", stage: "intake", question: "Which provision?", context: "Material choice", status: "open" }])
-  answerQuestion(directory, "q-feedback", answer)
+  answerQuestion(directory, "q-feedback", { text: answer })
   const reply = (quote: string) => ({ entries: [{ kind: "decision", detail: "Follow the answer", evidence: [{ source_id: "request", quote }], limitations: [] }], limitations: [] })
   expect(checkEvidence(directory, "spine", reply(answer))).toEqual([])
   const rejected = `Answer: ${answer}`

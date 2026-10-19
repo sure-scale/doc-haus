@@ -218,7 +218,7 @@ for (const interruption of ["a pause", "a runtime failure", "a question"] as con
     interrupted = true
     if (interruption === "a runtime failure") throw new Error("Scripted ordinary plan failure")
     if (interruption === "a pause") { pause.abort(); return latePlan(late)(text, index) }
-    return JSON.stringify({ shared_decisions: [], groups: [], dismissed: [], questions: [{ pid: pidOf(text, "Payment is due on delivery."), question: "Is payment due on delivery or on invoice?", context: "The update and the terms differ." }] })
+    return JSON.stringify({ shared_decisions: [], groups: [], dismissed: [], questions: [{ pid: pidOf(text, "Payment is due on delivery."), question: "Is payment due on delivery or on invoice?", kind: "instruction", context: "The update and the terms differ." }] })
   }
   const stopped = await runLean(directory, { sessions: model(directory, "unsatisfied", {}, {}, { [AGENT["change-plan"]]: interrupt }).port, pause: pause.signal })
   expect(interrupted).toBe(true)

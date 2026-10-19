@@ -6,7 +6,7 @@ import { type ChangeList, readChangeList } from "./checks"
 import { checkChanges } from "./change-checks"
 import { writeLeanPlan } from "./plan"
 import { packageCompositionBlock } from "./prompts"
-import { readLeanState, writeLeanText } from "./state"
+import { LEAN_QUESTIONS_SCHEMA, readLeanState, writeLeanText } from "./state"
 import { cleanupMatters, matter, requestMemo, scriptedModel, SOURCE, SUPPORT } from "./test-support"
 const p1 = "p111111111111", p2 = "p222222222222", p3 = "p333333333333"
 const support = [SUPPORT[0]!]
@@ -73,7 +73,7 @@ test("conflict prompts omit unrelated matter history and retain actual source/in
 
 test("indispensable source question survives focused reconciliation and blocks before apply",async()=>{
  const dir=setup(),input=inputs([{id:"one",pids:[p1]}],[changes([amendment(p1,"New proposal.")])]);writeLeanText(dir,"d1/changes.json",JSON.stringify(changes([amendment(p1,"Earlier proposal.")])));save(dir,input)
- const model=scriptedModel({"lean-changes":()=>JSON.stringify({amendments:[{...amendment(p1,"Supported term. [open item: confirm timing choice]"),sources:support}],questions:[{pid:p1,question:"Which timing choice should be used?",context:"The supplied sources do not settle this essential choice."}],dependencies:[]})})
+ const model=scriptedModel({"lean-changes":()=>JSON.stringify({amendments:[{...amendment(p1,"Supported term. [open item: confirm timing choice]"),sources:support}],questions:[{pid:p1,question:"Which timing choice should be used?",kind:"judgment",context:"The supplied sources do not settle this essential choice."}],dependencies:[]})})
  const result=await runChangeReconciliation(dir,readLeanState(dir)!,{sessions:model.port},"d1",()=>{})
  expect(result).toMatchObject({status:"blocked"});expect(readChangeList(dir,"d1")!.questions).toHaveLength(1);expect(model.prompts).toHaveLength(1)
 })
@@ -88,17 +88,17 @@ test("a changed explanation cannot silently disappear from a conflicting compone
 test("distinct indispensable questions from independent accepted preparations both survive final validation",async()=>{
  const dir=setup(), groups=[{id:"one",pids:[p1]},{id:"two",pids:[p2]}]
  const lists=groups.map((group,index)=>{
-  const checked=checkChanges(dir,JSON.stringify({amendments:[amendment(group.pids[0]!,`Supported term. [open item: confirm choice ${index+1}]`)],questions:[{pid:group.pids[0],question:`Which essential choice ${index+1} should be used?`,context:"Source does not supply this choice."}]}),[p1,p2,p3].map((pid,index)=>({pid,text:`Initial provision ${index+1}.`,sha256:paragraphSha256(`Initial provision ${index+1}.`)})),{document:"d1"})
+  const checked=checkChanges(dir,JSON.stringify({amendments:[amendment(group.pids[0]!,`Supported term. [open item: confirm choice ${index+1}]`)],questions:[{pid:group.pids[0],question:`Which essential choice ${index+1} should be used?`,kind:"judgment",context:"Source does not supply this choice."}]}),[p1,p2,p3].map((pid,index)=>({pid,text:`Initial provision ${index+1}.`,sha256:paragraphSha256(`Initial provision ${index+1}.`)})),{document:"d1"})
   expect(checked.issues).toEqual([]);return checked.changes!
  })
- writeLeanText(dir,"questions.json",JSON.stringify({questions:lists.flatMap(row=>row.questions)}))
+ writeLeanText(dir,"questions.json",JSON.stringify({schema:LEAN_QUESTIONS_SCHEMA,questions:lists.flatMap(row=>row.questions)}))
  const input=inputs(groups,lists);save(dir,input);const model=scriptedModel({})
  const result=await runChangeReconciliation(dir,readLeanState(dir)!,{sessions:model.port},"d1",()=>{})
  expect(result.status).toBe("blocked");expect(readChangeList(dir,"d1")!.questions).toHaveLength(2);expect(readChangeList(dir,"d1")!.amendments).toHaveLength(2);expect(model.prompts).toEqual([])
 })
 test("a retained global open question is not silently discarded when it lacks a paragraph carrier",async()=>{
- const dir=setup(),input=inputs([],[]),question={id:"q-existing",stage:"changes",question:"Which essential choice applies?",context:"Unresolved supplied choice.",status:"open"}
- writeLeanText(dir,"questions.json",JSON.stringify({questions:[question]}));writeLeanText(dir,"d1/changes.json",JSON.stringify({...changes(),questions:[question]}));save(dir,input)
+ const dir=setup(),input=inputs([],[]),question={id:"q-existing",stage:"changes",question:"Which essential choice applies?",kind:"judgment",context:"Unresolved supplied choice.",status:"open"}
+ writeLeanText(dir,"questions.json",JSON.stringify({schema:LEAN_QUESTIONS_SCHEMA,questions:[question]}));writeLeanText(dir,"d1/changes.json",JSON.stringify({...changes(),questions:[question]}));save(dir,input)
  const work=reconciliationWork(dir,"d1",input.plan,input.preparation);expect(work.direct.questions).toHaveLength(1)
  const result=await runChangeReconciliation(dir,readLeanState(dir)!,{sessions:scriptedModel({}).port},"d1",()=>{})
  expect(result.status).toBe("failed");expect("reason" in result&&result.reason).toContain("tied to no paragraph");expect(readChangeList(dir,"d1")!.questions).toHaveLength(1)
@@ -207,8 +207,8 @@ test("a paragraph too large for one bounded step keeps its earlier change, every
 })
 test("a paragraph too large for one bounded step keeps its own question and still blocks for the answer",async()=>{
  const dir=matter(),rows=provisions(dir,["Initial provision 1.",tooLong]),long=rows[1]!
- const question={id:"q-length",stage:"change-prepare" as const,question:"Which length applies?",context:"The sources do not settle it.",pid:long.pid,document:"d1" as const,status:"open" as const}
- writeLeanText(dir,"questions.json",JSON.stringify({questions:[question]}))
+ const question={id:"q-length",stage:"change-prepare" as const,question:"Which length applies?",kind:"judgment" as const,context:"The sources do not settle it.",pid:long.pid,document:"d1" as const,status:"open" as const}
+ writeLeanText(dir,"questions.json",JSON.stringify({schema:LEAN_QUESTIONS_SCHEMA,questions:[question]}))
  writeLeanText(dir,"d1/changes.json",JSON.stringify(changes([op(rows[0]!,"Earlier first correction."),op(long,"Earlier shortened provision. [open item: confirm length]")])))
  save(dir,inputs([{id:"one",pids:rows.map(row=>row.pid)}],[{...changes([op(rows[0]!,"New first correction."),op(long,"New shortened provision. [open item: confirm length]")]),questions:[{...question,stage:"changes"}]}]))
  const result=await reconcile(dir,echo().port)

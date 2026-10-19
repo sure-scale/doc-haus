@@ -1,164 +1,177 @@
 import { afterEach, expect, test } from "bun:test"
 import { createHash } from "node:crypto"
-import { mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { acceptChangePlan } from "./change-pipeline"
-import { checkChanges } from "./change-checks"
-import { HANDED_BACK_MEANING, handedBackRef } from "./checklist-contract"
-import { readParagraphs } from "./checks"
 import { checkEvidence, evidencePrompt } from "./evidence"
-import { focusedChangeReviewInputs } from "./focused-change-review"
-import { finalGate, type GateResult } from "./gate"
 import { intakeQuestions } from "./intake"
-import { leanSteps, readLeanPlan, writeLeanPlan } from "./plan"
-import { stagePrompt } from "./prompts"
-import { openItem, withSourceSnapshot } from "./quotes"
-import { requestedFilesPrompt } from "./requested-files"
-import { drainLeanRequests, enqueueLeanRequest, queuedAnswerIDs, type LeanRequest, type StoredLeanRequest } from "./requests"
-import { researchPrompt } from "./research"
-import { runLean } from "./runner"
-import { handedBackItems, LEAN_PROMPT_VERSION, researchBasis, stageInputs } from "./stages"
-import { answeredQuestionsText, answerQuestion, assertDelegable, delegateQuestion, handedBack as isHandedBack, handedBackBlock, handedBackNotesBlock, handedBackQuestionsText, hashStageInputs, LeanQuestionError, readLeanJson, readLeanText, readOpenItems, readQuestions, writeLeanText, writeOpenItems, writeQuestions, type Question } from "./state"
-import { AGENT, cleanupMatters, happyPath, matter, noChanges, scriptedModel, SUPPORT, type Reply } from "./test-support"
+import { leanSteps, writeLeanPlan } from "./plan"
+import { withSourceSnapshot } from "./quotes"
+import { drainLeanRequests, enqueueLeanRequest, type LeanRequest, type StoredLeanRequest } from "./requests"
+import { stageInputSha } from "./runner"
+import { stageInputs } from "./stages"
+import { answeredQuestionsText, answerQuestion, delegable, hashStageInputs, LeanQuestionError, readLeanJson, readQuestions, writeLeanText, writeQuestions, type Question, type QuestionAdvice } from "./state"
+import { cleanupMatters, matter, SUPPORT } from "./test-support"
 
-// "Decide for me": the lawyer hands a run question back instead of answering
-// it. The hand-back is recorded as a choice the lawyer has not made: the
-// drafting notes must disclose it, delivery stays a review draft, and the
-// question's own open item is never resolved as answered by the lawyer. Only
-// model-asked questions can be handed back. Synthetic matter; only the model is
-// scripted.
+// "Decide for me" adopts the advisor's recommendation as the lawyer's answer.
+// An answer is the lawyer's typed words, an offered option picked, or the
+// recommended option adopted; each is stored as words, and every stage reads
+// the words alone. Adoption is open only for an open judgment or pure scope
+// question whose advice recommends an option. Synthetic matter; no model runs.
 
 afterEach(cleanupMatters)
 
-const QUESTION = "Should late delivery carry a remedy?"
-const CHOSEN = "Add no separate late-delivery remedy: the terms fix delivery within thirty days and the general law covers late performance."
-const quiet = { ...happyPath, [AGENT.review]: () => "No changes needed.", [AGENT.changes]: noChanges }
-
-/** The spine records each question the lawyer handed back as a drafting choice. */
-function spineChoosing(directory: string): Reply {
-  return () => JSON.stringify({ entries: readQuestions(directory).filter(isHandedBack).map(question => ({
-    kind: "drafting-choice", question_id: question.id, detail: CHOSEN, evidence: SUPPORT, limitations: ["The lawyer has not made this choice."] })), limitations: [] })
+const RECOMMENDED = "Leave liability uncapped."
+const ADVICE: QuestionAdvice = {
+  options: [{ id: "o1", text: "Cap liability at the price." }, { id: "o2", text: RECOMMENDED }],
+  recommendation: { option: "o2", rationale: "The terms set no cap.", basis: SUPPORT },
+}
+const UNAVAILABLE: QuestionAdvice = { options: [], unavailable: { reason: "Nothing in the sources supports one option." } }
+const OPEN: Question = { id: "q-cap", stage: "intake", question: "Should liability be capped?", context: "The terms are silent.", status: "open", kind: "judgment", advice: ADVICE }
+const FILE_NAME: Question = {
+  id: "requested-files-d1", stage: "draft", question: "Which file names should the delivered files take?", context: "Named files.", status: "open", kind: "file_name",
+  options: [{ id: "o1", text: "As my words ask" }, { id: "o2", text: "As planned" }], advice: { recommendation: { option: "o1", rationale: "The request names the file.", basis: SUPPORT } },
 }
 
-/** A completed run whose one intake question the lawyer handed back. */
-async function handedBack() {
-  const directory = matter()
-  const model = scriptedModel({ ...quiet, [AGENT.spine]: spineChoosing(directory), [AGENT.intake]: (_prompt, index) => index === 0
-    ? JSON.stringify({ questions: [{ question: QUESTION, context: "The supplied terms are silent on late delivery." }] })
-    : JSON.stringify({ ready: true, jurisdiction: "Singapore law", scope: "Supplied terms" }) })
-  expect((await runLean(directory, { sessions: model.port })).status).toBe("blocked")
-  const id = readQuestions(directory)[0]!.id
-  enqueueLeanRequest(directory, { kind: "answer", question_id: id, decide_for_me: true })
-  expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
-  return { directory, id }
+function refusal(run: () => unknown) {
+  try {
+    run()
+    return "admitted"
+  } catch (error) {
+    return error instanceof LeanQuestionError ? error.code : String(error)
+  }
 }
 
 function outcome(directory: string, request: StoredLeanRequest) {
   return (readLeanJson(directory, `requests/done/${request.id}.json`) as { outcome: { status: string; detail?: string } }).outcome
 }
 
-test("a handed-back question is disclosed as a choice the lawyer has not made and is never delivered execution ready", async () => {
-  const { directory, id } = await handedBack()
-  const [question] = readQuestions(directory)
-  expect(question).toEqual(expect.objectContaining({ id, status: "answered", answer_kind: "decide_for_me", answered_at: expect.any(String) }))
-  expect(question).not.toHaveProperty("answer")
-  const gate = readLeanJson(directory, "gate.json") as GateResult
-  const choice = gate.items.find(item => item.ref.question_id === id)!
-  expect(choice).toMatchObject({ stage: "finalize", kind: "left_to_drafter", status: "disclosed", ref: { repair_target: "memo", question_id: id } })
-  expect(choice.detail).toContain(QUESTION)
-  expect(choice.detail).not.toContain(id)
-  // A hand-back is named as a choice left to the drafter, never called an omission.
-  expect(choice.resolution).toBe("left to the drafter; named in the notes")
-  expect(gate).toMatchObject({ status: "pass", delivery: "review_draft" })
-  // The question's own open item resolves to that disclosure, not to an answer.
-  writeOpenItems(directory, [...readOpenItems(directory), openItem("changes", "question", QUESTION, { question_id: id, pid: "p-none" })])
-  const own = finalGate(directory).items.find(item => item.kind === "question" && item.ref.question_id === id)!
-  expect(own.status).toBe("resolved")
-  expect(own.resolution).not.toBe("answered by the lawyer")
-  // Notes that do not name the choice block the gate on it.
-  const notes = readLeanText(directory, "drafting-notes.md")!
-  writeLeanText(directory, "drafting-notes.md", notes.split("\n").filter(line => !line.includes(choice.id)).join("\n"))
-  expect(finalGate(directory)).toMatchObject({ status: "blocked", delivery: null, blocking: [expect.objectContaining({ id: choice.id, status: "open", resolution: "left to the drafter; the notes do not name it" })] })
-  expect(JSON.stringify(finalGate(directory).items.filter(item => item.ref.question_id === id))).not.toMatch(/omission named|name this omission/)
-}, 120_000)
-
-test("a real answer after a hand-back replaces it and its disclosure", async () => {
-  const { directory, id } = await handedBack()
-  enqueueLeanRequest(directory, { kind: "answer", question_id: id, answer: "Yes: a daily price reduction." })
-  expect(drainLeanRequests(directory)).toEqual({ answered: 1, updated: 0, repairRound: false })
-  const [question] = readQuestions(directory)
-  expect(question).toMatchObject({ id, status: "answered", answer: "Yes: a daily price reduction." })
-  expect(question).not.toHaveProperty("answer_kind")
-  expect(finalGate(directory).items.some(item => item.ref.question_id === id && item.kind === "left_to_drafter")).toBe(false)
-}, 120_000)
-
-test("the drain applies a hand-back once, takes a repeat as recorded, and refuses it for an answered, unknown or non-model question", () => {
+test("an answer is typed words, a picked option or the adopted recommendation, each stored as words", () => {
   const directory = matter()
-  const questions: Question[] = [
-    { id: "q-law", stage: "intake", question: "Which law should govern?", context: "Legal basis.", status: "answered", answer: "Singapore law.", answered_at: "2026-10-18T09:00:00.000Z" },
-    { id: "q-cap", stage: "changes", question: "Should liability be capped?", context: "The terms are silent.", status: "open" },
-    { id: "package-scope-earlier", stage: "draft", question: "Which documents are in scope?", context: "Scope.", status: "open" },
-  ]
-  writeQuestions(directory, questions)
-  const requests = [
-    enqueueLeanRequest(directory, { kind: "answer", question_id: "q-law", decide_for_me: true }),
-    enqueueLeanRequest(directory, { kind: "answer", question_id: "q-missing", decide_for_me: true }),
-    enqueueLeanRequest(directory, { kind: "answer", question_id: "package-scope-earlier", decide_for_me: true }),
-    enqueueLeanRequest(directory, { kind: "answer", question_id: "q-cap", answer: "No cap.", decide_for_me: true } as unknown as LeanRequest),
-    enqueueLeanRequest(directory, { kind: "answer", question_id: "q-cap", decide_for_me: true }),
-    enqueueLeanRequest(directory, { kind: "answer", question_id: "q-cap", decide_for_me: true }),
-  ]
-  expect(queuedAnswerIDs(directory)).toEqual(new Set(["q-law", "q-missing", "package-scope-earlier", "q-cap"]))
-  // The hand-back counts as an answer, so a settled run restarts on it. A
-  // repeat finds it recorded and changes nothing (see the replay test below).
-  expect(drainLeanRequests(directory)).toEqual({ answered: 2, updated: 0, repairRound: false })
-  expect(requests.map(request => outcome(directory, request))).toEqual([
-    { status: "rejected", detail: expect.stringMatching(/^already_answered: /) },
-    { status: "rejected", detail: expect.stringMatching(/^not_found: /) },
-    { status: "rejected", detail: expect.stringMatching(/^not_delegable: /) },
-    { status: "rejected", detail: "unreadable request" },
-    { status: "delegated" },
-    { status: "delegated" },
-  ])
-  expect(readQuestions(directory)).toEqual([questions[0]!, {
-    id: "q-cap", stage: "changes", question: "Should liability be capped?", context: "The terms are silent.", status: "answered", answer_kind: "decide_for_me", answered_at: expect.any(String),
-  }, questions[2]!])
+  const answer = (question: Question, form: Parameters<typeof answerQuestion>[2]) => {
+    writeQuestions(directory, [question])
+    return answerQuestion(directory, question.id, form)
+  }
+  const typed = answer(OPEN, { text: ` ${RECOMMENDED}\r\n` })
+  expect(typed).toMatchObject({ status: "answered", answer: RECOMMENDED, answered_at: expect.any(String) })
+  expect(typed).not.toHaveProperty("answer_kind")
+  expect(typed).not.toHaveProperty("option_id")
+  expect(answer(OPEN, { option_id: "o1" })).toMatchObject({ status: "answered", answer: "Cap liability at the price.", answer_kind: "option", option_id: "o1" })
+  expect(answer(OPEN, { adopt: true })).toMatchObject({ status: "answered", answer: RECOMMENDED, answer_kind: "adopted", option_id: "o2" })
+  // A question's own options are picked the same way.
+  expect(answer(FILE_NAME, { option_id: "o2" })).toMatchObject({ status: "answered", answer: "As planned", answer_kind: "option", option_id: "o2" })
+  expect(readQuestions(directory)).toEqual([expect.objectContaining({ id: FILE_NAME.id, answer: "As planned" })])
+  // The lawyer's later words replace a picked or adopted answer.
+  answer(OPEN, { adopt: true })
+  const replaced = answerQuestion(directory, OPEN.id, { text: "Cap it at twice the price." })
+  expect(replaced).toMatchObject({ status: "answered", answer: "Cap it at twice the price." })
+  expect(replaced).not.toHaveProperty("answer_kind")
+  expect(replaced).not.toHaveProperty("option_id")
 })
 
-test("a hand-back replayed after a restart is recorded as delegated and changes nothing", () => {
+test("an option the question does not offer, or empty words, is an invalid answer and records nothing", () => {
   const directory = matter()
-  writeQuestions(directory, [{ id: "q-cap", stage: "changes", question: "Should liability be capped?", context: "The terms are silent.", status: "open" }])
-  const request = enqueueLeanRequest(directory, { kind: "answer", question_id: "q-cap", decide_for_me: true })
-  // The drain applied the hand-back, then stopped before moving the request to done.
-  const applied = delegateQuestion(directory, "q-cap")
+  writeQuestions(directory, [OPEN, { ...OPEN, id: "q-plain", kind: "fact", advice: UNAVAILABLE }])
+  expect(refusal(() => answerQuestion(directory, "q-cap", { option_id: "o9" }))).toBe("invalid_answer")
+  expect(refusal(() => answerQuestion(directory, "q-plain", { option_id: "o1" }))).toBe("invalid_answer")
+  expect(refusal(() => answerQuestion(directory, "q-cap", { text: "  " }))).toBe("invalid_answer")
+  expect(refusal(() => answerQuestion(directory, "q-missing", { option_id: "o1" }))).toBe("not_found")
+  expect(readQuestions(directory).map(question => question.status)).toEqual(["open", "open"])
+})
+
+test("Decide for me is offered only for an open judgment or pure scope question whose advice recommends an option", () => {
+  const directory = matter()
+  const cases: [string, Question, string][] = [
+    ["judgment", OPEN, "admitted"],
+    ["pure scope", { ...OPEN, kind: "scope" }, "admitted"],
+    ["fact", { ...OPEN, kind: "fact" }, "not_delegable"],
+    ["instruction", { ...OPEN, kind: "instruction" }, "not_delegable"],
+    ["conflict", { ...OPEN, kind: "conflict" }, "not_delegable"],
+    ["file name", FILE_NAME, "not_delegable"],
+    ["mixed scope", { ...OPEN, kind: "scope", mixed: true }, "not_delegable"],
+    ["unavailable advice", { ...OPEN, advice: UNAVAILABLE }, "not_delegable"],
+    ["advisor failed", { ...OPEN, advice: { unavailable: { reason: "No checked recommendation is available for this question.", reason_code: "advisor_failed" } } }, "not_delegable"],
+    ["no advice", { ...OPEN, advice: undefined }, "not_delegable"],
+    ["answered", { ...OPEN, status: "answered", answer: "Cap it.", answered_at: "2026-10-19T09:00:00.000Z" }, "already_answered"],
+  ]
+  for (const [name, question, expected] of cases) {
+    writeQuestions(directory, [question])
+    expect([name, delegable(question), refusal(() => answerQuestion(directory, question.id, { adopt: true }))]).toEqual([name, expected === "admitted", expected])
+  }
+  expect(refusal(() => answerQuestion(directory, "q-missing", { adopt: true }))).toBe("not_found")
+})
+
+test("the drain applies queued typed, picked and adopted answers in order and refuses what the stored question cannot take", () => {
+  const directory = matter()
+  writeQuestions(directory, [
+    OPEN,
+    FILE_NAME,
+    { ...OPEN, id: "q-fact", kind: "fact", question: "Who signs for the buyer?" },
+    { ...OPEN, id: "q-law", kind: "instruction", question: "Which law governs?" },
+  ])
+  const requests = [
+    enqueueLeanRequest(directory, { kind: "answer", question_id: "q-law", answer: "Singapore law." }),
+    enqueueLeanRequest(directory, { kind: "answer", question_id: FILE_NAME.id, option_id: "o1" }),
+    enqueueLeanRequest(directory, { kind: "answer", question_id: "q-cap", adopt: true }),
+    enqueueLeanRequest(directory, { kind: "answer", question_id: "q-fact", adopt: true }),
+    enqueueLeanRequest(directory, { kind: "answer", question_id: "q-fact", option_id: "o9" }),
+    enqueueLeanRequest(directory, { kind: "answer", question_id: "q-missing", adopt: true }),
+    enqueueLeanRequest(directory, { kind: "answer", question_id: "q-fact", answer: "The director.", adopt: true } as unknown as LeanRequest),
+    enqueueLeanRequest(directory, { kind: "answer", question_id: "q-fact", decide_for_me: true } as unknown as LeanRequest),
+  ]
+  expect(drainLeanRequests(directory)).toEqual({ answered: 3, updated: 0, repairRound: false })
+  expect(requests.map(request => outcome(directory, request))).toEqual([
+    { status: "answered" },
+    { status: "answered" },
+    { status: "answered" },
+    { status: "rejected", detail: expect.stringMatching(/^not_delegable: /) },
+    { status: "rejected", detail: expect.stringMatching(/^invalid_answer: /) },
+    { status: "rejected", detail: expect.stringMatching(/^not_found: /) },
+    { status: "rejected", detail: "unreadable request" },
+    { status: "rejected", detail: "unreadable request" },
+  ])
+  const stored = new Map(readQuestions(directory).map(question => [question.id, question]))
+  expect(stored.get("q-law")).toMatchObject({ status: "answered", answer: "Singapore law." })
+  expect(stored.get(FILE_NAME.id)).toMatchObject({ status: "answered", answer: "As my words ask", answer_kind: "option", option_id: "o1" })
+  expect(stored.get("q-cap")).toMatchObject({ status: "answered", answer: RECOMMENDED, answer_kind: "adopted", option_id: "o2" })
+  expect(stored.get("q-fact")).toMatchObject({ status: "open" })
+})
+
+test("an adoption replayed after a restart is already recorded and changes nothing", () => {
+  const directory = matter()
+  writeQuestions(directory, [OPEN])
+  const request = enqueueLeanRequest(directory, { kind: "answer", question_id: "q-cap", adopt: true })
+  // The drain applied the adoption, then stopped before moving the request to done.
+  const applied = answerQuestion(directory, "q-cap", { adopt: true })
   expect(drainLeanRequests(directory)).toEqual({ answered: 1, updated: 0, repairRound: false })
-  expect(outcome(directory, request)).toEqual({ status: "delegated" })
+  expect(outcome(directory, request)).toEqual({ status: "answered" })
   expect(readQuestions(directory)).toEqual([applied])
 })
 
-test("assertDelegable admits only an open model-asked question", () => {
-  const open: Question = { id: "q-cap", stage: "changes", question: "Should liability be capped?", context: "The terms are silent.", status: "open" }
-  const refusal = (target: Question | undefined, id: string) => {
-    try {
-      assertDelegable(target, id)
-      return "admitted"
-    } catch (error) {
-      return error instanceof LeanQuestionError ? `${error.code}: ${error.message}` : String(error)
-    }
+test("the same words typed, picked or adopted give the same answers text and the same keys", () => {
+  const keys = (form: Parameters<typeof answerQuestion>[2]) => {
+    const directory = matter()
+    writeLeanPlan(directory, [{ title: "Supply note", purpose: "Supply note", file: "supply-note.docx", parts: [{ heading: "Delivery", scope: "Delivery terms" }] }])
+    writeQuestions(directory, [OPEN, { ...OPEN, id: "q-gate", stage: "gate", question: "Which requirement governs?", kind: "conflict", advice: UNAVAILABLE }])
+    answerQuestion(directory, "q-cap", form)
+    answerQuestion(directory, "q-gate", { text: "The first." })
+    return Object.fromEntries([["answers", answeredQuestionsText(directory)], ...(["intake", "d1.change-plan", "gate", "finalize", "d1.change-review"] as const).map(step => [step, stageInputSha(directory, step)])])
   }
-  expect(refusal(open, "q-cap")).toBe("admitted")
-  expect(refusal(undefined, "q-missing")).toBe("not_found: No such question in this matter's lean drafting run.")
-  expect(refusal({ ...open, id: "package-scope-d1" }, "package-scope-d1")).toBe("not_delegable: This question needs the lawyer's own answer; it cannot be left to the drafter to decide.")
-  expect(refusal({ ...open, status: "answered", answer: "No cap.", answered_at: "2026-10-18T09:00:00.000Z" }, "q-cap")).toBe("already_answered: This question is already answered.")
-  expect(refusal({ ...open, status: "answered", answer_kind: "decide_for_me", answered_at: "2026-10-18T09:00:00.000Z" }, "q-cap")).toBe("already_answered: This question was already left to the drafter to decide.")
+  const typed = keys({ text: RECOMMENDED })
+  expect(typed.answers).toContain(`- [q-cap] Q: ${OPEN.question}\n  A: ${RECOMMENDED}`)
+  expect(keys({ option_id: "o2" })).toEqual(typed)
+  expect(keys({ adopt: true })).toEqual(typed)
+  // Other words are another answer.
+  expect(keys({ option_id: "o1" }).intake).not.toBe(typed.intake)
 })
 
 // Inputs pinned on the code before hand-backs existed; hashed under a fixed
 // label so a prompt version change does not move them. The gate's also keys
-// its contract, bumped when the hint a disclosed hand-back's choice adds to
-// the question that asks its conflict was reworded and narrowed. A draft's
-// keys its outline contract and what it reads of its own plan entry, never answers.
+// its contract. A draft's keys its outline contract and what it reads of its
+// own plan entry, never answers. Change-review, finalize and the gate were
+// re-pinned when stage keys stopped carrying when a question was answered (and
+// its kind, options and advice). The same pins hold however the lawyer gave an
+// answer.
 const ANSWERS = "- [package-scope-d1] Q: Which documents are in scope?\n  A: Only the supply note.\n- [q-law] Q: Which law should govern?\n  A: Singapore law."
 const INPUTS: Record<string, string> = {
   "discrepancy": "8dac7eefaf1e988e35ffbe6c7f765a951943e9b1299546a9b94dc10e99950a72",
@@ -174,29 +187,34 @@ const INPUTS: Record<string, string> = {
   "d1.change-plan": "27e6854d53eef220e0881676aa0ea75d3dd349ddf1a4f2dadab7d7905790946f",
   "d1.change-prepare": "0e65f05f5cdbac92e874b5150ac1dd21f355a34be5b6a1b918b1be46f580591f",
   "d1.changes": "332ce3588588c3dc6fd37068e9202f5612a4e6a9f21d9632e0e2b15a7bba5271",
-  "d1.change-review": "d5ab00d1b03fbfa3aa4104202872c85bd8d96bb8e4acffdb112d70d32ea87924",
+  "d1.change-review": "a0507849a8675a5bee6aeb4099030ae99b4a13d0c0377a8cdf0a1aa7cde59e60",
   "d1.apply": "3fc66df6877ed50af811c9f7a5bbdf1ccb1c269dc8b176cf392941cd2da83149",
-  "finalize": "b38c29092265887c63cf0e8a96bac1cd40201575a9344dca65628f3adedef462",
+  "finalize": "fcb7ded51c54fad4bb3fd616ba57fbdfe8aa15a2dc1becf5ec5df4e69b537793",
   "checklist-check": "bf9d2570d825f9efdf7d09b08a635561362fda11c11812346212a16ead317e10",
   "package-review": "dde115af0ba46b8cb1ecf9bf7eb0c40aff3b78f4d6be9e0f0da3dff2d5d4066f",
-  "gate": "5a2eea841b0446e2f2581f98994cdf7cb6d0e669da0a5e7d4d28b096f964ef25",
+  "gate": "0950183c873a0bd663d5367c064a7013025084deb8884311b2f38a54fcb8e229",
 }
 
-test("without a hand-back the answers text and every step's inputs are unchanged", () => {
+test("the answers text and every step's inputs are pinned, however the lawyer gave the answer", () => {
   const previous = process.env.WORKSPACE_ROOT
   const workspace = mkdtempSync(path.join(tmpdir(), "lean-dfm-workspace-"))
   process.env.WORKSPACE_ROOT = workspace
+  const law: Question = { id: "q-law", stage: "intake", question: "Which law should govern?", context: "Legal basis.", status: "answered", answer: "Singapore law.", answered_at: "2026-10-18T09:00:00.000Z" }
+  const advised: Question = { id: "q-law", stage: "intake", question: "Which law should govern?", context: "Legal basis.", status: "open", kind: "judgment",
+    advice: { options: [{ id: "o1", text: "English law." }, { id: "o2", text: "Singapore law." }], recommendation: { option: "o2", rationale: "The terms are Singaporean.", basis: SUPPORT } } }
   try {
-    const directory = matter()
-    writeLeanPlan(directory, [{ title: "Supply note", purpose: "Supply note", file: "supply-note.docx", parts: [{ heading: "Delivery", scope: "Delivery terms" }] }])
-    writeQuestions(directory, [
-      { id: "q-law", stage: "intake", question: "Which law should govern?", context: "Legal basis.", status: "answered", answer: "Singapore law.", answered_at: "2026-10-18T09:00:00.000Z" },
-      { id: "q-cap", stage: "changes", question: "Should liability be capped?", context: "The terms are silent.", pid: "p-1", document: "d1", status: "open" },
-      { id: "package-scope-d1", stage: "intake", question: "Which documents are in scope?", context: "Scope.", status: "answered", answer: "Only the supply note.", answered_at: "2026-10-18T09:05:00.000Z" },
-    ])
-    expect(answeredQuestionsText(directory)).toBe(ANSWERS)
-    expect([handedBackQuestionsText(directory), handedBackBlock(directory)]).toEqual(["", ""])
-    expect(Object.fromEntries(leanSteps(directory).map(step => [step, withSourceSnapshot(() => hashStageInputs(step, "pin", stageInputs(directory, step)))]))).toEqual(INPUTS)
+    for (const form of [undefined, { option_id: "o2" }, { adopt: true as const }]) {
+      const directory = matter()
+      writeLeanPlan(directory, [{ title: "Supply note", purpose: "Supply note", file: "supply-note.docx", parts: [{ heading: "Delivery", scope: "Delivery terms" }] }])
+      writeQuestions(directory, [
+        form ? advised : law,
+        { id: "q-cap", stage: "changes", question: "Should liability be capped?", context: "The terms are silent.", pid: "p-1", document: "d1", status: "open" },
+        { id: "package-scope-d1", stage: "intake", question: "Which documents are in scope?", context: "Scope.", status: "answered", answer: "Only the supply note.", answered_at: "2026-10-18T09:05:00.000Z" },
+      ])
+      if (form) answerQuestion(directory, "q-law", form)
+      expect(answeredQuestionsText(directory)).toBe(ANSWERS)
+      expect(Object.fromEntries(leanSteps(directory).map(step => [step, withSourceSnapshot(() => hashStageInputs(step, "pin", stageInputs(directory, step)))]))).toEqual(INPUTS)
+    }
   } finally {
     if (previous === undefined) delete process.env.WORKSPACE_ROOT
     else process.env.WORKSPACE_ROOT = previous
@@ -204,289 +222,75 @@ test("without a hand-back the answers text and every step's inputs are unchanged
   }
 })
 
-// The lawyer's answers and the questions handed back are separate projections:
-// only answers are authoritative; a hand-back is a choice the drafting makes
-// and discloses. Neither shows a timestamp.
+// The spine records settled facts, decisions, recommendations, requirements
+// and open items; it records no question and makes no choice for the lawyer.
+const QUESTION = "Should late delivery carry a remedy?"
 const LAW = "Which law should govern the supply note?"
-const LEFT = "Left to the drafter (not the lawyer's answers):"
-// How every stage given a hand-back decides it and applies it in the body.
-const DECIDE = "Decide each as the lawyer for the party the lawyer acts for would: follow the instructions and the documents; where they leave the point open or conflict, choose what best serves that party within them, or what is even-handed when the request names no party."
-const APPLY = "Apply each choice made as clean operative wording, with no confirmation marker, rejected alternative or precedence clause between the alternatives; the drafting notes give the reason and the alternative."
-// The drafting rule for other unsettled choices, and its exception for a hand-back.
-const MARKER_RULE = "- A preference is a drafting choice needed to fulfil the requested purpose, within the requested scope. For a new substantive choice not settled by instructions or answers, draft balanced wording and add a visible [open item: confirm ...] marker in the same paragraph saying what was chosen. Do not add confirmation markers to settled decisions or ordinary wording that creates no new substantive choice. A drafted choice is not an invented fact; the marker goes with the drafted wording, never in its place."
-const NO_MARKER = "- A point left to the drafter takes no confirmation marker: draft the choice made for it as clean operative wording, without the rejected alternative or a precedence clause between the alternatives."
-// The spine, which makes the choice, records it with the wording it takes.
-const SPINE_CHOICE = 'kind "drafting-choice" stating the choice made, decided as above, why, and the operative wording it takes, citing sources'
-
-test("the answers text lists only the lawyer's answers; hand-backs are listed apart, without timestamps", () => {
-  const directory = matter()
-  writeQuestions(directory, [
-    { id: "q-law", stage: "intake", question: LAW, context: "Legal basis.", status: "answered", answer: "Singapore law.", answered_at: "2026-10-18T09:00:00.000Z" },
-    { id: "q-cap", stage: "changes", question: "Should liability be capped?", context: "The terms are silent.", status: "answered", answer_kind: "decide_for_me", answered_at: "2026-10-18T09:05:00.000Z" },
-    { id: "q-open", stage: "intake", question: "Who signs?", context: "Execution.", status: "open" },
-  ])
-  expect(answeredQuestionsText(directory)).toBe(`- [q-law] Q: ${LAW}\n  A: Singapore law.`)
-  expect(handedBackQuestionsText(directory)).toBe("- [q-cap] Q: Should liability be capped?")
-  const block = handedBackBlock(directory)
-  expect(block).toEndWith("\n- [q-cap] Q: Should liability be capped?")
-  expect(block).not.toMatch(/2026|controlling|lawyer's answers:/)
-  // Downstream steps record and review the choice as a drafting choice, never as the lawyer's.
-  expect(block).toContain("None is an agreed term or an answered decision; record and review each as a drafting choice.")
-  // What "Decide for me" means is written once, right before the hand-backs.
-  expect(block).toEndWith(`${HANDED_BACK_MEANING}\n- [q-cap] Q: Should liability be capped?`)
-  expect(block.split(HANDED_BACK_MEANING)).toHaveLength(2)
-  // Each is decided for the client within the instructions and documents, and applied cleanly.
-  for (const rule of [DECIDE, APPLY]) expect(block).toContain(rule)
-  // A hand-back keys every step through "answers", as an answer does.
-  expect(stageInputs(directory, "intake").find(part => part.name === "answers")!.bytes).toBe(`${answeredQuestionsText(directory)}\nLeft to the drafting:\n- [q-cap] Q: Should liability be capped?`)
-})
-
-test("with no lawyer's answers a hand-back is listed under its own heading, not under the answers heading", () => {
-  const directory = matter()
-  writeQuestions(directory, [{ id: "q-cap", stage: "intake", question: "Should liability be capped?", context: "The terms are silent.", status: "answered", answer_kind: "decide_for_me", answered_at: "2026-10-18T09:05:00.000Z" }])
-  const block = handedBackBlock(directory)
-  for (const prompt of [evidencePrompt(directory, "discrepancy"), evidencePrompt(directory, "spine"), researchPrompt(directory, "intake", researchBasis(directory)), researchPrompt(directory, "research", researchBasis(directory))])
-    expect(prompt).toContain(`${LEFT}\n${block}`)
-})
-
-test("a hand-back changes the intake key, as an answer does", () => {
-  const directory = matter()
-  writeQuestions(directory, [{ id: "q-cap", stage: "intake", question: "Should liability be capped?", context: "The terms are silent.", status: "open" }])
-  const key = () => withSourceSnapshot(() => hashStageInputs("intake", LEAN_PROMPT_VERSION, stageInputs(directory, "intake")))
-  const open = key()
-  delegateQuestion(directory, "q-cap")
-  const delegated = key()
-  expect(delegated).not.toBe(open)
-  expect(stageInputs(directory, "intake").find(part => part.name === "answers")!.bytes).toBe("Left to the drafting:\n- [q-cap] Q: Should liability be capped?")
-  answerQuestion(directory, "q-cap", "No cap.")
-  expect(key()).not.toBe(delegated)
-})
-
-/** A run whose intake asked two questions: the lawyer answered one and handed
- * the other back. Returns the prompts of the rerun that followed. */
-async function answeredAndHandedBack() {
-  const directory = matter()
-  const model = scriptedModel({ ...quiet, [AGENT.spine]: spineChoosing(directory), [AGENT.intake]: (_prompt, index) => index === 0
-    ? JSON.stringify({ questions: [{ question: QUESTION, context: "The supplied terms are silent on late delivery." }, { question: LAW, context: "The terms name no governing law." }] })
-    : JSON.stringify({ ready: true, jurisdiction: "Singapore law", scope: "Supplied terms" }) })
-  expect((await runLean(directory, { sessions: model.port })).status).toBe("blocked")
-  const id = (text: string) => readQuestions(directory).find(question => question.question === text)!.id
-  enqueueLeanRequest(directory, { kind: "answer", question_id: id(LAW), answer: "Singapore law." })
-  enqueueLeanRequest(directory, { kind: "answer", question_id: id(QUESTION), decide_for_me: true })
-  const before = model.prompts.length
-  expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
-  return { directory, left: id(QUESTION), law: id(LAW), prompts: model.prompts.slice(before) }
-}
-
-test("every prompt given the lawyer's answers also lists the hand-back, apart from the answers and their authority", async () => {
-  const { directory, left, law, prompts } = await answeredAndHandedBack()
-  const block = handedBackBlock(directory)
-  const line = `- [${left}] Q: ${QUESTION}`
-  expect(block).toContain(line)
-  for (const agent of [AGENT.discrepancy, AGENT.intake, AGENT.research, AGENT["research-review"], AGENT.spine, AGENT.draft, AGENT.coverage,
-    AGENT.review, AGENT["review-independent"], AGENT["review-wording"], AGENT["review-client-disadvantage"], AGENT["change-plan"], AGENT.changes,
-    AGENT["change-review"], AGENT["package-review"]]) {
-    const own = prompts.filter(prompt => prompt.agent === agent)
-    expect([agent, own.length > 0, own.some(prompt => prompt.text.includes(block))]).toEqual([agent, true, true])
-  }
-  // The files job runs only for a memo or several documents; its prompt is checked directly.
-  expect(requestedFilesPrompt(directory, readLeanPlan(directory)!.documents, "memo")).toContain(block)
-  // Every drafting part after the first gets it in its section handoff.
-  expect(prompts.filter(prompt => prompt.agent === AGENT.draft && prompt.text.includes("Section handoff")).every(prompt => prompt.text.includes(block))).toBe(true)
-  // The spine, which makes the choice, and the draft, review and changes
-  // stages decide it for the client and apply it as clean operative wording.
-  for (const agent of [AGENT.spine, AGENT.draft, AGENT.review, AGENT["review-independent"], AGENT["review-wording"], AGENT["review-client-disadvantage"], AGENT.changes])
-    expect([agent, prompts.some(prompt => prompt.agent === agent && prompt.text.includes(DECIDE) && prompt.text.includes(APPLY))]).toEqual([agent, true])
-  // Each draft prompt that carries the drafting rules carries the hand-back's exception right after the marker rule.
-  const ruled = prompts.filter(prompt => prompt.agent === AGENT.draft && prompt.text.includes(MARKER_RULE))
-  expect([ruled.length > 0, ruled.every(prompt => prompt.text.includes(`${MARKER_RULE}\n${NO_MARKER}`))]).toEqual([true, true])
-  // The drafting notes see it in one neutral voice, so nothing echoes as the lawyer's or our words.
-  const notesBlock = handedBackNotesBlock(directory)
-  expect(notesBlock).toContain(line)
-  for (const prompt of prompts) {
-    expect([prompt.agent, prompt.text.includes("A: undefined")]).toEqual([prompt.agent, false])
-    // Listed once, in its own block: never among the answers that control.
-    expect([prompt.agent, prompt.text.split(line).length - 1]).toEqual([prompt.agent, prompt.text.includes(block) || prompt.text.includes(notesBlock) ? 1 : 0])
-    // The block has its own heading or tag, never the answers heading.
-    expect([prompt.agent, !prompt.text.includes(block) || [`<left_to_drafting>\n${block}`, `${LEFT}\n${block}`].some(text => prompt.text.includes(text))]).toEqual([prompt.agent, true])
-  }
-  const review = prompts.find(prompt => prompt.agent === AGENT.review)!.text
-  const questions = prompts.find(prompt => prompt.agent === AGENT["change-review"])!.text.split("<questions>\n")[1]!.split("\n</questions>")[0]!
-  expect([questions.includes(law), questions.includes(left)]).toEqual([true, false])
-  expect(review).toContain(`their answers remain controlling and must not be re-asked under narrower or different wording:\n- [${law}] Q: ${LAW}\n  A: Singapore law.\n</answers>`)
-  // The drafting notes read the hand-back as the lawyer's request to decide it.
-  const notes = prompts.find(prompt => prompt.agent === AGENT.finalize)!.text
-  expect(notes).toContain(`<left_to_drafter>\n${notesBlock}\n</left_to_drafter>`)
-  expect(notesBlock).toStartWith("The lawyer left these questions to the drafter to decide. Task: ")
-  // Nothing the notes' writer is given says a hand-back went unanswered.
-  for (const unanswered of ["instead of answering", "not your answer", "or an answer"]) expect(notes).not.toContain(unanswered)
-  for (const echo of [block, LEFT, "not the lawyer's answers"]) expect(notes).not.toContain(echo)
-  expect(notes).toContain(`- ${left} (left to the drafter): ${QUESTION}`)
-  expect(notes).not.toContain(`- ${left} (answered)`)
-  expect(notes).toContain(`- ${law} (answered): ${LAW}\n  Answer: Singapore law.`)
-  // The spine is told how to record the hand-back, and the notes' open item
-  // for it carries what the spine chose, so the memo can say what and why.
-  expect(prompts.find(prompt => prompt.agent === AGENT.spine)!.text).toContain(`"question_id"`)
-  expect(prompts.find(prompt => prompt.agent === AGENT.spine)!.text).toContain(SPINE_CHOICE)
-  const [item] = handedBackItems(directory)
-  expect(notes).toContain(`- ${item!.id}: ${item!.detail}\n  Drafting spine (drafting-choice): ${CHOSEN}`)
-}, 120_000)
-
-// The lawyer's act is told in plain words: the web button's name never reaches
-// a model or the gate's items, so no delivered text can echo it.
-const BUTTON = /decide[\s_-]for[\s_-]me/i
-
-test("no prompt, hand-back text or gate item names the Decide for me button", async () => {
-  const { directory, left, prompts } = await answeredAndHandedBack()
-  for (const prompt of prompts) expect([prompt.agent, BUTTON.exec(prompt.text)?.[0]]).toEqual([prompt.agent, undefined])
-  for (const text of [handedBackBlock(directory), handedBackNotesBlock(directory), HANDED_BACK_MEANING, JSON.stringify(handedBackRef(left, QUESTION)), JSON.stringify(readLeanJson(directory, "gate.json"))])
-    expect(text).not.toMatch(BUTTON)
-}, 120_000)
-
-test("the focused change review lists the hand-back apart from the actual answers", async () => {
-  const { directory, left } = await answeredAndHandedBack()
-  const delivery = readParagraphs(directory, "d1").find(row => row.text === "The supplier shall deliver the goods.")!
-  const plan = { shared_decisions: [], groups: [{ id: "delivery", pids: [delivery.pid], goal: "State the supplied delivery period.", sources: SUPPORT, limitations: [] }], dismissed: [], questions: [], findings: [] }
-  expect(acceptChangePlan(directory, "d1", JSON.stringify(plan)).issues).toEqual([])
-  const checked = checkChanges(directory, JSON.stringify({ amendments: [{ pid: delivery.pid, updated: "The supplier shall deliver the goods within thirty days of the order date.", reason: "States the source period.", sources: SUPPORT }], questions: [] }), readParagraphs(directory, "d1"), { document: "d1" })
-  expect(checked.issues).toEqual([])
-  writeLeanText(directory, "d1/changes.json", JSON.stringify(checked.changes))
-  const [input] = focusedChangeReviewInputs(directory, "d1")
-  expect(input!.text).toContain(handedBackBlock(directory))
-  const answers = input!.text.split("<actual_questions_and_answers>\n")[1]!.split("\n</actual_questions_and_answers>")[0]!
-  expect(answers).toContain("Singapore law.")
-  expect(answers).not.toContain(left)
-}, 120_000)
-
-test("only a hand-back is drafted without a confirmation marker; other unsettled choices keep the marker rule", () => {
-  const directory = matter()
-  writeLeanPlan(directory, [{ title: "Supply note", purpose: "Supply note", file: "supply-note.docx", parts: [{ heading: "Delivery", scope: "Delivery terms" }] }])
-  writeQuestions(directory, [
-    { id: "q-law", stage: "intake", question: LAW, context: "Legal basis.", status: "answered", answer: "Singapore law.", answered_at: "2026-10-18T09:00:00.000Z" },
-    { id: "q-late", stage: "intake", question: QUESTION, context: "The terms are silent.", status: "open" },
-  ])
-  const drafts = () => [stagePrompt(directory, "d1.draft", { outline: true }), stagePrompt(directory, "d1.draft")]
-  for (const prompt of drafts()) expect([prompt.includes(MARKER_RULE), prompt.includes(NO_MARKER), prompt.includes(APPLY)]).toEqual([true, false, false])
-  delegateQuestion(directory, "q-late")
-  for (const prompt of drafts()) expect([prompt.includes(`${MARKER_RULE}\n${NO_MARKER}`), prompt.includes(APPLY)]).toEqual([true, true])
-  // The draft agent's own rules keep the marker rule and state the exception.
-  const agent = readFileSync(new URL("../../agent/lean-draft.md", import.meta.url), "utf8")
-  expect(agent).toContain("- A preference is a drafting choice a competent drafter would make from the request, the documents and ordinary practice. Draft that choice and add a visible [open item: confirm ...] marker in the same paragraph saying what was chosen. A drafted choice is not an invented fact; the marker goes with the drafted wording, never in its place.\n")
-  expect(agent).toContain("- A point the prompt lists as left to the drafter takes no confirmation marker: draft the choice made for it as clean operative wording, without the rejected alternative or a precedence clause between the alternatives.\n")
-})
-
-test("intake re-asking a handed-back question is told it was left to the drafter, not answered", () => {
-  const directory = matter()
-  writeQuestions(directory, [{ id: "q-cap", stage: "intake", question: "Should liability be capped?", context: "The terms are silent.", status: "open" }])
-  delegateQuestion(directory, "q-cap")
-  const reply = JSON.stringify({ questions: [{ question: "Should liability be capped?", context: "Still silent." }] })
-  const issues = intakeQuestions(directory, reply)!.issues.join(" ")
-  expect(issues).toContain("left that question to the drafter to decide")
-  expect(issues).not.toContain("lawyer's answer")
-})
-
-// The spine records each hand-back once, keyed by the stored question id, as a
-// drafting choice the lawyer has not made, or as an open item when deciding it
-// would need a fact the sources do not give. Never as the lawyer's decision.
-const CHOICE = { kind: "drafting-choice", question_id: "q-late", detail: CHOSEN, evidence: SUPPORT, limitations: ["The lawyer has not made this choice."] }
 const spine = (...entries: object[]) => ({ entries, limitations: [] })
-
-function spineMatter(late: Question["status"] | "handed back") {
-  const directory = matter()
-  writeQuestions(directory, [
-    { id: "q-law", stage: "intake", question: LAW, context: "Legal basis.", status: "answered", answer: "Singapore law.", answered_at: "2026-10-18T09:00:00.000Z" },
-    { id: "q-late", stage: "intake", question: QUESTION, context: "The terms are silent.", ...(late === "handed back" ? { status: "answered", answer_kind: "decide_for_me", answered_at: "2026-10-18T09:05:00.000Z" } : { status: late }) },
-  ])
-  return directory
-}
-
-test("the spine accepts a hand-back recorded once as a drafting choice or an open item", () => {
-  const directory = spineMatter("handed back")
-  expect(checkEvidence(directory, "spine", spine(CHOICE))).toEqual([])
-  expect(checkEvidence(directory, "spine", spine({ ...CHOICE, kind: "open-item", detail: "Whether late delivery carries a remedy needs a commercial term the sources do not give; the body keeps its placeholder." }))).toEqual([])
-  expect(evidencePrompt(directory, "spine")).toContain(`"question_id"`)
-  for (const rule of [DECIDE, APPLY, SPINE_CHOICE]) expect(evidencePrompt(directory, "spine")).toContain(rule)
-  // Its limitation is plain: a choice for the lawyer to confirm, not an answer awaited.
-  expect(evidencePrompt(directory, "spine")).toContain("citing sources, with the limitation that it is a drafting choice for the lawyer to confirm;")
-  expect(evidencePrompt(directory, "spine")).not.toContain("the lawyer has not made this choice")
-})
-
-test("the spine rejects a hand-back left out, recorded as a decision, recorded twice or under an id that is not a hand-back", () => {
-  const directory = spineMatter("handed back")
-  const issues = (...entries: object[]) => checkEvidence(directory, "spine", spine(...entries))
-  const fact = { kind: "fact", detail: "Delivery is within thirty days.", evidence: SUPPORT, limitations: [] }
-  const missing = issues(fact)
-  expect(missing).toHaveLength(1)
-  expect(missing[0]).toContain(`"q-late"`)
-  expect(missing[0]).toContain(QUESTION)
-  const decision = issues({ ...CHOICE, kind: "decision" })
-  expect(decision).toHaveLength(1)
-  expect(decision[0]).toContain("decision")
-  expect(decision[0]).toContain(`"q-late"`)
-  expect(issues(CHOICE, { ...CHOICE, kind: "open-item" })).toEqual([expect.stringContaining("exactly one")])
-  // The lawyer answered q-law; q-other was never asked. Neither is a hand-back.
-  for (const id of ["q-law", "q-other"]) expect(issues(CHOICE, { ...fact, question_id: id })).toEqual([expect.stringContaining(`"${id}"`)])
-  const { question_id: _id, ...unkeyed } = CHOICE
-  expect(issues(CHOICE, unkeyed)).toEqual([expect.stringContaining("question_id")])
-})
-
-test("the disclosure item tells the lawyer where the choice is and what each outcome needs, and does not depend on the spine", () => {
-  const directory = spineMatter("handed back")
-  const [item] = handedBackItems(directory)
-  // Lawyer-facing, and true whether a choice was made or the point stays open:
-  // a plain statement of where the choice is, never an instruction to the notes' writer.
-  expect(item!.detail).toBe(`You left this question to the drafter to decide: ${QUESTION} The drafting notes give the choice made, the reason ` +
-    "and the alternative not taken, or say why the point stays open. A choice made is for you to confirm; a point left open needs your answer.")
-  expect(item!.detail).toContain(QUESTION)
-  expect(item!.detail.replace(QUESTION, "")).not.toMatch(/\b(should|must|say what)\b/i)
-  expect(item!.ref).toEqual({ repair_target: "memo", question_id: "q-late" })
-  expect(item!.kind).toBe("left_to_drafter")
-  // The notes' writer gets one neutral task line: each choice once, in plain words.
-  const block = handedBackNotesBlock(directory)
-  const task = block.split("\n")[0]!
-  expect(task).toContain("Task: state each choice once, in plain words, in the statement for the open item that names its question: " +
-    "what was chosen, why and the alternative not taken, or that the point stays open and what is needed.")
-  expect(task).not.toMatch(/\b(you|your|we|our|us)\b/i)
-  expect(block).not.toMatch(/answer/i)
-  // A spine that leaves the question open yields the same item, id included.
-  writeLeanText(directory, "spine.json", JSON.stringify(spine({ ...CHOICE, kind: "open-item" })))
-  expect(handedBackItems(directory)).toEqual([item!])
-  // A question without end punctuation still ends its own sentence.
-  writeQuestions(directory, [{ id: "q-late", stage: "intake", question: "Deposit of £70,000 or £75,000 ", context: "", status: "answered", answer_kind: "decide_for_me", answered_at: "2026-10-18T09:05:00.000Z" }])
-  expect(handedBackItems(directory)[0]!.detail).toStartWith("You left this question to the drafter to decide: Deposit of £70,000 or £75,000. The drafting notes give")
-})
-
-// The lawyer leaves a point to the drafter, never "to the drafting": every
-// prompt, the draft agent's rules and each retry message say so.
-const TO_DRAFTING = /\bleft (?:\w+ ){0,2}to the drafting\b/i
-const TO_DRAFTER = /\bleft (?:\w+ ){0,2}to the drafter\b/
-
-test("no prompt, agent rule or retry message says a point was left to the drafting", async () => {
-  const { prompts } = await answeredAndHandedBack()
-  for (const prompt of prompts) expect([prompt.agent, TO_DRAFTING.exec(prompt.text)?.[0]]).toEqual([prompt.agent, undefined])
-  expect(readFileSync(new URL("../../agent/lean-draft.md", import.meta.url), "utf8")).not.toMatch(TO_DRAFTING)
-  const directory = spineMatter("handed back")
-  expect(evidencePrompt(directory, "spine")).not.toMatch(TO_DRAFTING)
-  const fact = { kind: "fact", detail: "Delivery is within thirty days.", evidence: SUPPORT, limitations: [] }
-  const { question_id: _id, ...unkeyed } = CHOICE
-  const issues = [spine({ ...CHOICE, kind: "other" }), spine(unkeyed), spine(CHOICE, { ...fact, question_id: "q-other" }), spine({ ...CHOICE, kind: "decision" })]
-    .flatMap(value => checkEvidence(directory, "spine", value))
-  issues.push(...intakeQuestions(directory, JSON.stringify({ questions: [{ question: QUESTION, context: "Still silent." }] }))!.issues)
-  expect(issues).toHaveLength(7)
-  for (const issue of issues) expect([issue, TO_DRAFTER.test(issue), TO_DRAFTING.test(issue)]).toEqual([issue, true, false])
-}, 120_000)
-
+const FACT = { kind: "fact", detail: "Delivery is within thirty days.", evidence: SUPPORT, limitations: [] }
 // Pinned on the code before hand-backs reached the spine.
 const SPINE_PROMPT = "aa0471af46a44d8b7a3ccc78fbfb1d1f647d5a746a00e934ca36b8886ea6a283"
 
-test("without a hand-back the spine check and prompt are unchanged", () => {
-  for (const late of ["open", "answered"] as const) {
+function spineMatter(late: "open" | "answered" | "adopted") {
+  const directory = matter()
+  writeQuestions(directory, [
+    { id: "q-law", stage: "intake", question: LAW, context: "Legal basis.", status: "answered", answer: "Singapore law.", answered_at: "2026-10-18T09:00:00.000Z" },
+    { id: "q-late", stage: "intake", question: QUESTION, context: "The terms are silent.", status: "open", kind: "judgment",
+      advice: { options: [{ id: "o1", text: "No separate remedy." }, { id: "o2", text: "A price reduction." }], recommendation: { option: "o1", rationale: "The terms are silent.", basis: SUPPORT } } },
+  ])
+  if (late === "answered") answerQuestion(directory, "q-late", { text: "No separate remedy." })
+  if (late === "adopted") answerQuestion(directory, "q-late", { adopt: true })
+  return directory
+}
+
+test("the spine takes its five entry kinds and refuses a drafting choice or a question_id; its prompt is unchanged", () => {
+  for (const late of ["open", "answered", "adopted"] as const) {
     const directory = spineMatter(late)
-    if (late === "answered") answerQuestion(directory, "q-late", "No separate remedy.")
-    // The new kind is not offered and a stray question_id is ignored, as before.
-    expect(checkEvidence(directory, "spine", spine(CHOICE))).toEqual(["A spine entry kind must be decision, recommendation, requirement, fact or open-item."])
-    expect(checkEvidence(directory, "spine", spine({ ...CHOICE, kind: "decision", question_id: "q-law" }))).toEqual([])
     expect(checkEvidence(directory, "spine", spine())).toEqual([])
-    if (late === "open") expect(createHash("sha256").update(evidencePrompt(directory, "spine")).digest("hex")).toBe(SPINE_PROMPT)
+    for (const kind of ["decision", "recommendation", "requirement", "fact", "open-item"]) expect(checkEvidence(directory, "spine", spine({ ...FACT, kind }))).toEqual([])
+    expect(checkEvidence(directory, "spine", spine({ ...FACT, kind: "drafting-choice" }))).toEqual(["A spine entry kind must be decision, recommendation, requirement, fact or open-item."])
+    for (const id of ["q-late", "q-law", "q-other"])
+      expect(checkEvidence(directory, "spine", spine({ ...FACT, kind: "decision", question_id: id }))).toEqual(["A spine entry takes no question_id; remove it."])
+    const prompt = evidencePrompt(directory, "spine")
+    expect(prompt).not.toContain("question_id")
+    expect(prompt).not.toContain("drafting-choice")
+    if (late === "open") expect(createHash("sha256").update(prompt).digest("hex")).toBe(SPINE_PROMPT)
   }
+  // The discrepancy assessment never took one either.
+  expect(checkEvidence(spineMatter("adopted"), "discrepancy", { entries: [], limitations: [] })).toEqual([])
+})
+
+test("intake told a question is answered is told so however it was answered", () => {
+  for (const late of ["answered", "adopted"] as const) {
+    const directory = spineMatter(late)
+    const reply = JSON.stringify({ questions: [{ question: QUESTION, kind: "judgment", context: "Still silent." }] })
+    expect(intakeQuestions(directory, reply)!.issues.join(" ")).toContain("already has a lawyer's answer")
+  }
+})
+
+test("a question stored in the old format without answer words, as an old hand-back was, is read as unasked, so its step asks it again", () => {
+  const directory = matter()
+  const answered = { id: "q-law", stage: "intake", question: LAW, context: "Legal basis.", status: "answered", answer: "Singapore law.", answered_at: "2026-10-18T09:00:00.000Z" }
+  writeLeanText(directory, "questions.json", JSON.stringify({ schema: "dochaus.lean.questions/1", questions: [
+    answered,
+    { id: "q-late", stage: "intake", question: QUESTION, context: "The terms are silent.", status: "answered", answer_kind: "decide_for_me", answered_at: "2026-10-18T09:05:00.000Z" },
+    { id: "q-open", stage: "intake", question: "Who signs?", context: "Execution.", status: "open" },
+  ] }))
+  expect(readQuestions(directory)).toEqual([answered as Question])
+  expect(answeredQuestionsText(directory)).toBe(`- [q-law] Q: ${LAW}\n  A: Singapore law.`)
+  // Intake may ask it again, and its key no longer carries it.
+  const reply = JSON.stringify({ questions: [{ question: QUESTION, kind: "judgment", context: "Still silent." }] })
+  expect(intakeQuestions(directory, reply)).toMatchObject({ issues: [], value: [{ question: QUESTION, status: "open" }] })
+})
+
+test("an answer queued for an old-format open question finds no question: the drain records it as rejected not_found, with its words kept", () => {
+  const directory = matter()
+  writeLeanText(directory, "questions.json", JSON.stringify({ schema: "dochaus.lean.questions/1", questions: [
+    { id: "q-open", stage: "intake", question: "Who signs?", context: "Execution.", status: "open" },
+  ] }))
+  const request = enqueueLeanRequest(directory, { kind: "answer", question_id: "q-open", answer: "The director." })
+  expect(drainLeanRequests(directory)).toEqual({ answered: 0, updated: 0, repairRound: false })
+  expect(outcome(directory, request)).toEqual({ status: "rejected", detail: "not_found: No such question in this matter's lean drafting run." })
+  expect(readLeanJson(directory, `requests/done/${request.id}.json`)).toMatchObject({ question_id: "q-open", answer: "The director." })
+  expect(readQuestions(directory)).toEqual([])
 })

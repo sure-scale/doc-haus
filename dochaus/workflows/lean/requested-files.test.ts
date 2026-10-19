@@ -462,7 +462,8 @@ describe("requested files question", () => {
     const directory = prepared()
     const { issues } = requestedFilesIssues(DOCUMENTS, MEMO, ASKED)
     const question = requestedFilesQuestion(directory, ASKED, DOCUMENTS, issues)!
-    expect(question).toEqual({ id: expect.stringMatching(/^requested-files-[0-9a-f]+$/), stage: "draft", question: ASK, context: expect.any(String), status: "open" })
+    expect(question).toEqual({ id: expect.stringMatching(/^requested-files-[0-9a-f]+$/), stage: "draft", question: ASK, context: expect.any(String), status: "open",
+      kind: "file_name", options: [{ id: "o1", text: "As my words ask" }, { id: "o2", text: "As planned" }] })
     expect(question.question).not.toMatch(/\bd[12]\b/)
     expect(requestedFilesQuestion(directory, ASKED, DOCUMENTS, issues)!.id).toBe(question.id)
     // Not asked again once open or answered.

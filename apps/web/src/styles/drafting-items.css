@@ -154,37 +154,6 @@ button.question-dock-cta:focus-visible {
   box-shadow: 0 0 0 1px var(--warn), 0 0 0 4px rgba(138, 90, 26, 0.2);
 }
 
-/* Nothing asked: the questions left to the drafter stay reachable, but nothing
-   waits on the lawyer, so the dock is a quiet row with a plain Review button. */
-.question-dock.is-settled {
-  border-color: var(--border);
-  background: var(--panel);
-  animation: row-in var(--duration-base) var(--ease-out);
-}
-
-.question-dock.is-settled .question-dock-icon {
-  background: var(--bg-sunken);
-  color: var(--text-secondary);
-}
-
-.question-dock.is-settled button.question-dock-cta {
-  border-color: var(--border);
-  background: var(--panel);
-  color: var(--text);
-  font-weight: 500;
-  box-shadow: none;
-}
-
-.question-dock.is-settled button.question-dock-cta:hover:not(:disabled) {
-  border-color: var(--border-strong);
-  background: var(--panel-hover);
-}
-
-.question-dock.is-settled button.question-dock-cta:focus-visible {
-  border-color: var(--accent);
-  box-shadow: var(--focus-ring);
-}
-
 /* The questions open over the page, which frosts to white behind them. */
 .question-dialog {
   width: min(560px, calc(100vw - 32px));
@@ -288,13 +257,6 @@ button.question-dock-cta:focus-visible {
   background: var(--accent);
 }
 
-/* Settled, but left to the drafter rather than answered: a hollow diamond. */
-.question-dot.is-delegated {
-  border-radius: 1px;
-  background: transparent;
-  transform: rotate(45deg) scale(0.86);
-}
-
 .question-dot.is-current {
   background: var(--warn);
 }
@@ -341,6 +303,76 @@ button.question-dock-cta:focus-visible {
   box-shadow: var(--focus-ring);
 }
 
+/* A question's options, one full-width choice per line in the run's order: a
+   label can name a document, so it wraps rather than truncates. The
+   recommended one carries a tag, never a selected look. */
+.question-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.question-options button {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 13px;
+  font-size: 14px;
+  line-height: 1.4;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.question-option-tag {
+  flex: none;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* Why the option is recommended, with each supporting passage and its source. */
+.question-advice {
+  margin: 10px 0 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.question-advice-why {
+  margin: 0;
+}
+
+.question-advice-label {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.question-advice-basis {
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.question-advice-basis li + li {
+  margin-top: 6px;
+}
+
+.question-advice-basis blockquote {
+  margin: 0;
+  padding-left: 10px;
+  border-left: 2px solid var(--border-strong);
+  color: var(--text);
+}
+
+.question-advice-basis cite {
+  display: block;
+  padding-left: 12px;
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
+}
+
 .question-actions {
   display: flex;
   align-items: center;
@@ -358,20 +390,6 @@ button.question-dock-cta:focus-visible {
 
 .question-send button {
   white-space: nowrap;
-}
-
-.question-left {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 10px 0 0;
-  color: var(--text-secondary);
-  font-size: 13px;
-  line-height: 1.45;
-}
-
-.question-left .question-dot {
-  flex: none;
 }
 
 .question-delegate-hint {

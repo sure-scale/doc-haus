@@ -129,41 +129,31 @@ export function openQuestions(status: LeanDraftingStatus) {
   return status.questions.filter((question) => question.status === "open" && !queued.has(question.id))
 }
 
-/** An open question the run's model asked (a `q-` id) can be handed back for
- * the drafting to decide. Any other question settles the run's scope and needs
- * the lawyer's own answer. */
+/** The options a question offers: its own, else its advice's, in that order. */
+export function questionOptions(question: LeanQuestion) {
+  return question.options ?? question.advice?.options ?? []
+}
+
+/** The offered option the question's advice recommends, if any. */
+export function recommendedOption(question: LeanQuestion) {
+  const advice = question.advice
+  return advice && "recommendation" in advice ? questionOptions(question).find((option) => option.id === advice.recommendation.option) : undefined
+}
+
+/** Decide for me answers with the recommended option. As ingest allows, it is
+ * offered on an open judgment question, or a scope question that asks for
+ * nothing else, whose advice recommends an offered option. */
 export function delegableQuestion(question: LeanQuestion) {
-  return question.status === "open" && question.id.startsWith("q-")
+  return question.status === "open" && (question.kind === "judgment" || (question.kind === "scope" && !question.mixed)) && recommendedOption(question) !== undefined
 }
 
-/** The questions left to the drafter: hand-backs the run recorded (answered,
- * with no answer text) and hand-backs received but not yet recorded. A real
- * answer received for a recorded hand-back takes it back. An older ingest does
- * not say which received requests are hand-backs; only recorded ones count. */
-export function handedBackQuestions(status: LeanDraftingStatus) {
-  if (leanRunStopped(status)) return []
-  const received = status.queued_handed_back_ids
-  const handed = new Set(received)
-  const answering = new Set(received ? status.queued_answer_ids : [])
-  return status.questions.filter((question) =>
-    handed.has(question.id) ||
-    (question.status === "answered" && question.answer_kind === "decide_for_me" && !answering.has(question.id)))
-}
-
-/** The note under the chat while requests wait for the run to take them. A
- * hand-back is not an answer, so it is named as a question left to the drafter. */
+/** The note under the chat while answers wait for the run to take them. */
 export function queuedNote(status: LeanDraftingStatus) {
   const queued = status.queued_answer_ids ?? []
   if (!queued.length) return undefined
-  const handedIds = new Set(status.queued_handed_back_ids)
-  const handed = queued.filter((id) => handedIds.has(id)).length
-  const answers = queued.length - handed
-  if (!handed) return answers === 1
+  return queued.length === 1
     ? "Answer received — it will be included when drafting resumes."
     : "Answers received — they will be included when drafting resumes."
-  const left = handed === 1 ? "Question left" : "Questions left"
-  if (!answers) return `${left} to the drafter to decide — ${handed === 1 ? "it" : "they"} will be handled when drafting resumes.`
-  return `${answers === 1 ? "Answer received" : "Answers received"} and ${handed === 1 ? "a question" : "questions"} left to the drafter to decide — ${queued.length === 2 ? "both" : "they"} will be handled when drafting resumes.`
 }
 
 /** Every stop short of completion is recoverable from the run header (Continue or an
@@ -206,7 +196,6 @@ const KIND_LABELS: Record<string, string> = {
   unapplied_amendment: "Changes not applied",
   question: "Questions for you",
   omission: "Points left out",
-  left_to_drafter: "Choices left to the drafter",
   template_removal: "Template text removed",
   checklist_open: "Requirements left open by the checklist check",
   checklist_unresolved: "Unresolved checklist findings",

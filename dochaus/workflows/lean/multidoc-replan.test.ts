@@ -57,7 +57,7 @@ describe("lean drafting when a finished document's steps change", () => {
     expect(model.prompts).toHaveLength(0)
     expect(readQuestions(run.directory)).toEqual([expect.objectContaining({ id: run.question.id, document: "d1", pid: run.notePid, status: "open" })])
     expect(state.stop_reason).toContain("Waiting for your answers")
-    expect(answerQuestion(run.directory, run.question.id, "No remedy.")).toMatchObject({ status: "answered" })
+    expect(answerQuestion(run.directory, run.question.id, { text: "No remedy." })).toMatchObject({ status: "answered" })
   }, 120_000)
 
   test("restoring to before the later document's changes keeps the question with the earlier document", async () => {
@@ -164,7 +164,7 @@ describe("lean drafting when a finished document's steps change", () => {
   test("a question repeated by id without a paragraph keeps the earlier paragraph only in the same document", () => {
     const directory = matter()
     writeQuestions(directory, [{ id: "q-earlier", stage: "changes", question: QUESTION, context: CONTEXT, pid: "p000000000001", document: "d1", status: "open" }])
-    const reply = JSON.stringify({ amendments: [], questions: [{ id: "q-earlier", question: QUESTION }] })
+    const reply = JSON.stringify({ amendments: [], questions: [{ id: "q-earlier", question: QUESTION, kind: "judgment" }] })
     const rows = [{ pid: "p000000000002", sha256: "0".repeat(64), text: "Delivery follows the supply note." }]
     const asked = (document: "d1" | "d2") => checkChanges(directory, reply, rows, { withholdUnverified: true, document }).changes?.questions
 

@@ -166,25 +166,30 @@ test("each stage run is one row that updates in place, in plain words, with its 
 test("a settled or stalled run says in one line where it stands and how the lawyer moves it on", () => {
   expect(runOutcome(running)).toBeUndefined()
   expect(runOutcome(done)).toEqual({ tone: "done", text: "Drafting is complete." })
-  // A question Decide for me can take says the lawyer may answer it or leave it
-  // to the drafter; one it cannot (a later scope question) only the lawyer answers.
-  expect(runOutcome(question)).toEqual({
-    tone: "attention",
-    text: "Drafting is waiting on a question: answer it, or use Decide for me to leave it to the drafter.",
-  })
+  // A question Decide for me can take (a judgment or pure scope question with a
+  // recommendation) may be answered or settled by the recommendation; any other
+  // (here one with no kind or advice, or a fact reading) only the lawyer answers.
+  expect(runOutcome(question)).toEqual({ tone: "attention", text: "Drafting is waiting on a question only you can answer." })
   const asked = question.questions[0]!
-  const withQuestions = (...ids: string[]) => lean({ ...question, questions: ids.map((id) => ({ ...asked, id })) })
-  expect(runOutcome(withQuestions("package-scope-1"))?.text).toBe("Drafting is waiting on a question only you can answer.")
-  expect(runOutcome(withQuestions("q-1", "q-2"))?.text).toBe(
-    "Drafting is waiting on 2 questions: answer each, or use Decide for me to leave any of them to the drafter.",
+  const advice = { options: [{ id: "o1", text: "No remedy" }, { id: "o2", text: "A remedy" }], recommendation: { option: "o2", rationale: "Asked for.", basis: [{ source_id: "request", quote: "a remedy" }] } }
+  const withQuestions = (...kinds: Array<"judgment" | "scope" | "fact">) =>
+    lean({ ...question, questions: kinds.map((kind, index) => ({ ...asked, id: `q-${index}`, kind, advice })) })
+  const delegable = withQuestions("judgment")
+  expect(runOutcome(delegable)).toEqual({
+    tone: "attention",
+    text: "Drafting is waiting on a question: answer it, or use Decide for me to accept the recommendation.",
+  })
+  expect(runOutcome(withQuestions("fact"))?.text).toBe("Drafting is waiting on a question only you can answer.")
+  expect(runOutcome(withQuestions("judgment", "scope"))?.text).toBe(
+    "Drafting is waiting on 2 questions: answer each, or use Decide for me to accept the recommendation on any of them.",
   )
-  expect(runOutcome(withQuestions("q-1", "package-scope-1"))?.text).toBe(
-    "Drafting is waiting on 2 questions: answer each, or use Decide for me to leave one of them to the drafter.",
+  expect(runOutcome(withQuestions("judgment", "fact"))?.text).toBe(
+    "Drafting is waiting on 2 questions: answer each, or use Decide for me to accept the recommendation on one of them.",
   )
-  const runKey = `run:blocked:${question.updated_at}`
+  const runKey = `run:blocked:${delegable.updated_at}`
   expect(
-    buildExcerpt({ status: question, plan: { keys: [runKey], focus: runKey, reason: "checkpoint" }, activity: [], now: 0 }),
-  ).toContain("- The run settled: Drafting is waiting on a question: answer it, or use Decide for me to leave it to the drafter.")
+    buildExcerpt({ status: delegable, plan: { keys: [runKey], focus: runKey, reason: "checkpoint" }, activity: [], now: 0 }),
+  ).toContain("- The run settled: Drafting is waiting on a question: answer it, or use Decide for me to accept the recommendation.")
   const answered = lean({
     ...question,
     questions: question.questions.map((row) => ({ ...row, status: "answered" })),

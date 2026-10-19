@@ -26,7 +26,7 @@ import {
   stepSessionTitle,
   type LeanDeps,
 } from "./stages"
-import { answeredQuestionsText, handedBackBlock, leanFile, LEFT_TO_DRAFTING, readLeanText, readQuestions, writeLeanText, type LeanStageState, type LeanState, type OpenItem, type Question } from "./state"
+import { answeredQuestionsText, leanFile, readLeanText, readQuestions, writeLeanText, type LeanStageState, type LeanState, type OpenItem, type Question } from "./state"
 import { stageInputSha } from "./runner"
 import { outlineCoverageIssues, partCarries, plannedContract } from "./template-contract"
 import { draftTemplateItems } from "./template-coverage"
@@ -200,8 +200,7 @@ export async function runDraftStage(
   const outlined = document === FIRST_DOCUMENT && !readLeanPlan(directory)
   if (outlined) {
     const basis = outlineBasis(directory)
-    // The lawyer's own words ground requested file names and the memo; a
-    // question handed back to the drafting adds none.
+    // The lawyer's own words ground requested file names and the memo.
     const request = [readLeanText(directory, "request.md"), readLeanText(directory, "updated-notes.md"), answeredQuestionsText(directory)].filter(Boolean).join("\n\n")
     const best: { value?: LeanOutline } = {}
     const checkOutline = (reply: string): Checked<LeanOutline> => {
@@ -363,7 +362,6 @@ export function sectionPrompt(outline: DraftOutline, index: number, template?: {
 function sectionHandoff(directory: string, document: DocID) {
   const updates = readLeanText(directory, "updated-notes.md")?.trim()
   const answers = answeredQuestionsText(directory)
-  const handed = handedBackBlock(directory)
   const files = ["spine.json", "research.json", "research-review.json"].filter(name => readLeanText(directory, name))
   return [
     ...(plannedDocument(directory, document)?.mode === "revise" ? ["Revision foundation: preserve unaffected source wording and operative clauses, including their qualifications. Read the full original part before editing it. A summary or recommendation does not replace operative wording. Explain substantive omissions against the supplied source."] : []),
@@ -372,7 +370,6 @@ function sectionHandoff(directory: string, document: DocID) {
     ...(files.length ? [`Working evidence records available with read: ${files.map(name => `.dochaus/lean/${name}`).join(", ")}. These are retrieval guides, not independent authority; verify underlying matter passages and use only research approved by research-review.`] : []),
     ...(updates ? [`Current user updates, in arrival order (explicit later changes control; tentative suggestions are not settled decisions):\n${updates}`] : []),
     ...(answers ? [`Answered decisions — apply these and do not ask them again without new contrary evidence:\n${answers}`] : []),
-    ...(handed ? [`${LEFT_TO_DRAFTING}\n${handed}`] : []),
   ].join("\n\n")
 }
 

@@ -24,11 +24,11 @@ test("conflicting material instructions can pause before a plan or draft is writ
   const directory = matter()
   writeLeanText(directory, "request.md", "Use Singapore law, but retain the template's England and Wales governing law clause unchanged.")
   const model = scriptedModel({ [AGENT.intake]: () => JSON.stringify({ questions: [
-    { question: "Which governing law should the draft use?", context: "The requested law conflicts with the instruction to retain the existing clause." },
-    { question: "Which governing law should the draft use?", context: "The same decision affects the whole document." },
+    { question: "Which governing law should the draft use?", kind: "instruction", context: "The requested law conflicts with the instruction to retain the existing clause." },
+    { question: "Which governing law should the draft use?", kind: "instruction", context: "The same decision affects the whole document." },
   ] }) })
   expect((await runLean(directory, { sessions: model.port })).status).toBe("blocked")
-  expect(model.prompts.map(row => row.agent)).toEqual([AGENT.discrepancy, AGENT.intake])
+  expect(model.prompts.map(row => row.agent)).toEqual([AGENT.discrepancy, AGENT.intake, AGENT.advise])
   expect(readQuestions(directory)).toHaveLength(1)
   expect(readLeanText(directory, "plan.json")).toBeUndefined()
   expect(readLeanText(directory, "d1/draft.md")).toBeUndefined()
@@ -48,7 +48,7 @@ test("an already answered intake question gets correction feedback instead of be
   const directory = matter()
   writeQuestions(directory, [{ id: "q-existing", stage: "draft", question: "Which law should govern?", context: "Legal basis.", status: "answered", answer: "Singapore law." }])
   const model = scriptedModel({ ...quiet, [AGENT.intake]: (prompt, index) => index === 0
-    ? JSON.stringify({ questions: [{ question: "Which law should govern?", context: "Legal basis." }] })
+    ? JSON.stringify({ questions: [{ question: "Which law should govern?", kind: "instruction", context: "Legal basis." }] })
     : JSON.stringify({ ready: true, jurisdiction: "Singapore law", scope: "Supplied terms" }) })
   expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
   expect(model.prompts.filter(row => row.agent === AGENT.intake)[1]!.text).toContain("already has a lawyer's answer")

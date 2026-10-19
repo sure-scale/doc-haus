@@ -193,7 +193,7 @@ test("structural admission rejects only missing support, misquotes and disappear
     expect(checkChanges(directory, JSON.stringify(misquote), paragraphs).issues.join(" ")).toContain("not in")
   }
   expect(checkChanges(directory, JSON.stringify(good), paragraphs).issues).toEqual([])
-  const question = { ...good, questions: [{ pid: paragraphs[0]!.pid, question: "Is the retention instruction withdrawn?" }] }
+  const question = { ...good, questions: [{ pid: paragraphs[0]!.pid, question: "Is the retention instruction withdrawn?", kind: "instruction" }] }
   expect(checkChanges(directory, JSON.stringify(question), paragraphs).issues.join(" ")).toContain("open item")
 })
 
@@ -282,7 +282,7 @@ test("a question remains tied to uncertainty in the second split paragraph and c
   const original = await paragraphRows(leanFile(directory, "d1/body.docx"))
   writeLeanText(directory, "d1/paragraphs.json", JSON.stringify(original))
   const target = original.find(row => row.text === COMBINED)!
-  const question = { pid: target.pid, question: "Who may sign the inspection register?" }
+  const question = { pid: target.pid, question: "Who may sign the inspection register?", kind: "fact" }
   const marked = `${SPLIT[1]} [open item: confirm who may sign the inspection register]`
   const reply = { amendments: [{ pid: target.pid, operation: "split", updated: [SPLIT[0], marked], reason: SPLIT_REASON, sources: SUPPORT.split }], questions: [question] }
   const accepted = checkChanges(directory, JSON.stringify(reply), original, { document: "d1" })

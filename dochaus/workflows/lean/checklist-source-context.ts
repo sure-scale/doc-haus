@@ -3,10 +3,10 @@ import { realpathSync } from "node:fs"
 import path from "node:path"
 import { z } from "zod"
 import { readRegularFile } from "../../lib/regular-file"
-import { checklistProducerInputSchema, handedBackRef, type ChecklistProducerInput, type ChecklistSourceReference } from "./checklist-contract"
+import { checklistProducerInputSchema, type ChecklistProducerInput, type ChecklistSourceReference } from "./checklist-contract"
 import { readLeanPlan } from "./plan"
 import { leanUserUpdates } from "./requests"
-import { answeredQuestions, handedBack, readLeanText } from "./state"
+import { answeredQuestions, readLeanText } from "./state"
 
 const sourceIndexSchema = z.object({ sources: z.array(z.object({ document: z.string().min(1), extracted_text: z.string().min(1) })) })
 
@@ -25,9 +25,12 @@ export function checklistProducerInputs(directory: string): { key: string; input
       document: "request", locator: `.dochaus/lean/requests/done/${update.id}.json /text`, quote: update.text,
     })),
     // Keyed on the question id, never its position: questions.json is
-    // reordered when a step's questions replace its earlier ones.
+    // reordered when a step's questions replace its earlier ones. The
+    // question rides with its answer, so a short option answer keeps its
+    // meaning; it is model-written, so it is never the quote.
     ...answeredQuestions(directory).flatMap(question => question.answer?.trim() ? [{
-      document: "request", locator: `.dochaus/lean/questions.json answer (${question.id})`, quote: question.answer,
+      document: "request", locator: `.dochaus/lean/questions.json answer (${question.id})`,
+      ...(question.question.trim() ? { question: question.question } : {}), quote: question.answer,
     }] : []),
   ]
   const indexBytes = readRegularFile(path.join(directory, "source-index.json"))
@@ -74,18 +77,4 @@ export function checklistProducerInputs(directory: string): { key: string; input
       retrieval: "The original canonical request is supplied unchanged; current included human instructions are separate, each with its own locator. Extract current request/update requirements while preserving original quotes and conditions. Only answered human text is authority; model questions and queued updates are not settled instructions. Use targeted source lookup only for material context, without inspecting generated deliverables.",
     }),
   }]
-}
-
-/** The checklist's own jobs (extraction, check and refinement) with each
- * question the lawyer left to the drafting added to their instructions: the
- * lawyer's later instruction to decide that point, so a stated choice can meet
- * an earlier requirement to flag it. The quote is that instruction alone; the
- * model-written question only names the point, in the locator, and is never
- * quotable authority. Change stages keep checklistProducerInputs: their plans
- * are re-checked against the lawyer's words alone, and they see the hand-backs
- * as <left_to_drafting>. */
-export function checklistJobInputs(directory: string) {
-  const handed = answeredQuestions(directory).filter(handedBack).map(question => handedBackRef(question.id, question.question))
-  const jobs = checklistProducerInputs(directory)
-  return handed.length ? jobs.map(job => ({ ...job, input: { ...job.input, instructions: [...job.input.instructions, ...handed] } })) : jobs
 }
