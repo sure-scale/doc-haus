@@ -14,6 +14,8 @@ type CitationCandidate = {
   kind: CitationCheckRow["kind"]
   start: number
   end: number
+  /** The name as written, when a leading signal was dropped (LEADING_SIGNAL). */
+  written?: { citation_text: string; normalized_key: string; start: number }
 }
 
 export function normalizeCitationKey(raw: string): string {
@@ -65,58 +67,70 @@ function citationRowsFromText(
   supportIndex: SupportHaystack[],
 ): CitationCheckRow[] {
   return extractCitations(text).map((citation) => {
-    const position = lineColumn(text, citation.start)
-    const support = resolveSupport(citation.normalized_key, supportIndex)
-    let status: CitationCheckStatus
-    let pinpointInfo: CitationPinpoint | undefined
-    let allSupport = support
-    if (support.some((item) => item.status === "verified")) {
-      status = "verified"
-    } else if (support.length) {
-      status = "unresolved"
-    } else {
-      const pinpoint = extractPinpoint(citation.normalized_key, citation.kind)
-      if (pinpoint) {
-        const baseSupport = resolveSupport(pinpoint.base_key, supportIndex)
-        if (baseSupport.length) {
-          status = "unresolved"
-          pinpointInfo = {
-            base_key: pinpoint.base_key,
-            suffix: pinpoint.suffix,
-            reason: `parent authority "${pinpoint.base_key}" has source support but pinpoint "${pinpoint.suffix}" is not confirmed`,
-          }
-          allSupport = dedupSupport([...support, ...baseSupport])
-        } else {
-          status = "unsupported"
+    // The name as written goes first, so a party name that begins with a signal
+    // word keeps its own case; the name after the signal is the fallback.
+    const written = citation.written && citationRow(text, artifact, supportIndex, { ...citation, ...citation.written })
+    if (written?.status === "verified") return written
+    const row = citationRow(text, artifact, supportIndex, citation)
+    return written?.status === "unresolved" && row.status === "unsupported" ? written : row
+  })
+}
+
+function citationRow(text: string, artifact: string, supportIndex: SupportHaystack[], citation: CitationCandidate): CitationCheckRow {
+  const position = lineColumn(text, citation.start)
+  // A citation must be whole words of the support text: "Down v. Merrow" is
+  // not "Ashdown v. Merrow", and "s. 5" is not "s. 51".
+  const wholeWord = citation.kind !== "url"
+  const support = resolveSupport(citation.normalized_key, supportIndex, { wholeWord })
+  let status: CitationCheckStatus
+  let pinpointInfo: CitationPinpoint | undefined
+  let allSupport = support
+  if (support.some((item) => item.status === "verified")) {
+    status = "verified"
+  } else if (support.length) {
+    status = "unresolved"
+  } else {
+    const pinpoint = extractPinpoint(citation.normalized_key, citation.kind)
+    if (pinpoint) {
+      const baseSupport = resolveSupport(pinpoint.base_key, supportIndex, { wholeWord })
+      if (baseSupport.length) {
+        status = "unresolved"
+        pinpointInfo = {
+          base_key: pinpoint.base_key,
+          suffix: pinpoint.suffix,
+          reason: `parent authority "${pinpoint.base_key}" has source support but pinpoint "${pinpoint.suffix}" is not confirmed`,
         }
+        allSupport = dedupSupport([...support, ...baseSupport])
       } else {
         status = "unsupported"
       }
+    } else {
+      status = "unsupported"
     }
-    return {
-      citation_text: citation.citation_text,
-      normalized_key: citation.normalized_key,
-      kind: citation.kind,
-      artifact: {
-        file: artifact,
-        line: position.line,
-        column: position.column,
-        character_start: citation.start,
-        character_end: citation.end,
-      },
-      status,
-      linked_source_ids: allSupport
-        .filter((item) => item.kind !== "research-row")
-        .map((item) => item.id)
-        .sort((a, b) => a.localeCompare(b)),
-      linked_research_ids: allSupport
-        .map((item) => item.research_row_id)
-        .filter((id): id is string => Boolean(id))
-        .sort((a, b) => a.localeCompare(b)),
-      support: allSupport,
-      pinpoint: pinpointInfo,
-    }
-  })
+  }
+  return {
+    citation_text: citation.citation_text,
+    normalized_key: citation.normalized_key,
+    kind: citation.kind,
+    artifact: {
+      file: artifact,
+      line: position.line,
+      column: position.column,
+      character_start: citation.start,
+      character_end: citation.end,
+    },
+    status,
+    linked_source_ids: allSupport
+      .filter((item) => item.kind !== "research-row")
+      .map((item) => item.id)
+      .sort((a, b) => a.localeCompare(b)),
+    linked_research_ids: allSupport
+      .map((item) => item.research_row_id)
+      .filter((id): id is string => Boolean(id))
+      .sort((a, b) => a.localeCompare(b)),
+    support: allSupport,
+    pinpoint: pinpointInfo,
+  }
 }
 
 function dedupSupport(items: CitationSupport[]): CitationSupport[] {
@@ -161,10 +175,14 @@ function extractCitations(text: string): CitationCandidate[] {
 function matchCitations(text: string, pattern: RegExp, kind: CitationCandidate["kind"]): CitationCandidate[] {
   return [...text.matchAll(pattern)]
     .map((match) => {
-      const citation_text = trimCitation(match[0])
+      const trimmed = trimCitation(match[0])
+      const citation_text = kind === "url" ? trimmed : trimmed.replace(LEADING_SIGNAL, "")
       const start = (match.index ?? 0) + match[0].indexOf(citation_text)
+      const written = citation_text === trimmed ? undefined
+        : { citation_text: trimmed, normalized_key: normalizeCitationKey(trimmed), start: (match.index ?? 0) + match[0].indexOf(trimmed) }
       return {
         citation_text,
+        written,
         normalized_key: normalizeCitationKey(citation_text),
         kind,
         start,
@@ -173,6 +191,13 @@ function matchCitations(text: string, pattern: RegExp, kind: CitationCandidate["
     })
     .filter((candidate) => candidate.citation_text && candidate.normalized_key)
 }
+
+/** A citation signal before a name ("See Smith v. Jones", "Cf. Smith v.
+ * Jones") is not part of the name, nor is the sentence-opening "In" ("In Smith
+ * v. Jones, the court held"; "In re" stays); kept, they make the key miss the
+ * authority it names. Other words that can open a sentence ("Under", "The")
+ * also begin party names and stay. The name as written is tried first. */
+const LEADING_SIGNAL = /^(?:See(?:[ \t]+(?:[Aa]lso|[Gg]enerally))?|Cf\.|Compare|But[ \t]+(?:[Ss]ee|[Cc]f\.)|Accord|Contra|E\.g\.|In(?![ \t]+[Rr][Ee]\b))[ \t]+(?=[A-Z])/
 
 function rangesOverlap(a: CitationCandidate, b: CitationCandidate) {
   return a.start < b.end && b.start < a.end

@@ -3,7 +3,7 @@ import { approvedResearch, researchSource } from "./research"
 import { Database } from "bun:sqlite"
 import { existsSync } from "node:fs"
 import path from "node:path"
-import { normalize, verifyQuote } from "../../lib/quote-verify"
+import { SHORT_QUOTE, elidedParts, elisionGap, locateElidedQuote, nearestGap, normalize, verifyQuote } from "../../lib/quote-verify"
 import type { DocID } from "./plan"
 import { leanUserUpdates } from "./requests"
 import { readLeanText, readQuestions, shortHash, type OpenItem, type StageID } from "./state"
@@ -136,6 +136,31 @@ export function instructionFound(directory: string, quote: string) {
   return words.length > 0 && lawyerWords(directory).some(text => normalize(text).toLowerCase().includes(words))
 }
 
+/** A quotation in prose ('"words" [source: id]') passes when quoteFound does,
+ * or when an ellipsis at its start or end leaves one passage that is in the
+ * named source (elisionGap). An ellipsis in the middle is never accepted:
+ * the words it leaves out can change who must do what or drop a condition,
+ * amount or limit. quoteMissIssue then says what it leaves out. A JSON quote
+ * field keeps the verbatim contract of quoteFound, since its consumers locate
+ * those words. */
+export function proseQuoteFound(directory: string, quote: SourceQuote) {
+  if (quoteFound(directory, quote)) return true
+  const elided = elision(directory, quote)
+  return elided?.parts.length === 1 && elided.gap?.kind === "near"
+}
+
+/** Where the passages of a quotation with an ellipsis sit in its named source
+ * (elisionGap), or undefined for a quotation without one. */
+function elision(directory: string, quote: SourceQuote) {
+  const parts = elidedParts(quote.quote)
+  if (!parts) return
+  if (/^https?:\/\//.test(quote.source_id)) return { parts, gap: nearestGap(approvedResearch(directory).filter(row => row.url === quote.source_id)
+    .map(row => elisionGap(researchSource(directory, row.snapshot)?.text ?? "", parts))) }
+  if (quote.source_id === REQUEST_SOURCE && !matterSourceIDs(directory).includes(REQUEST_SOURCE))
+    return { parts, gap: nearestGap(lawyerWords(directory).map(text => elisionGap(text, parts, { ignoreCase: true }))) }
+  return { parts, gap: locateElidedQuote({ directory, parts, document: quote.source_id }) }
+}
+
 /** The request, each included update and each answer, quoted one at a time so a
  * quotation never runs across two of them. The questions are the model's words
  * and are not included. */
@@ -145,26 +170,50 @@ export function lawyerWords(directory: string) {
 }
 
 /** Actionable retry feedback for one unverified quote. When the words are in a
- * different matter document, that document is named. */
+ * different matter document, that document is named. When an ellipsis in the
+ * middle joins passages of the named source, the feedback says so and shows
+ * the words it leaves out (or the source's own ellipsis, written differently),
+ * or that the passages are apart. A passage beside an ellipsis that is too
+ * short to locate (SHORT_QUOTE) is reported as such, not as missing. */
 export function quoteMissIssue(directory: string, where: string, quote: SourceQuote, format: "prose" | "json" = "prose") {
+  const request = quote.source_id === REQUEST_SOURCE && !matterSourceIDs(directory).includes(REQUEST_SOURCE)
+  const elided = elision(directory, quote)
+  const gap = elided && elided.parts.length > 1 ? elided.gap : null
+  if (gap) {
+    const quoted = `${where} quotes "${excerpt(quote.quote)}" as from "${quote.source_id}".`
+    const there = request ? "the request, a user update or one of the lawyer's answers" : "that document"
+    if (gap.kind === "apart")
+      return `${quoted} The quoted parts are in ${there}, but in separate passages. Quote each passage as its own quotation, without an ellipsis.`
+    if (!gap.omitted)
+      return `${quoted} The quoted words are one continuous passage of ${there}; the "…" leaves nothing out. Quote the passage without an ellipsis.`
+    // What the "…" stands for is the source's own ellipsis ("..." for "…").
+    if (elidedParts(gap.omitted)?.length === 0)
+      return `${quoted} The quoted words are in ${there}, but it writes the ellipsis as "${gap.omitted}". Copy the exact characters, including that ellipsis.`
+    return `${quoted} The quoted words are in ${there}, but the "…" leaves out: "${gap.omitted}". Leaving words out can change who must do what or drop a condition, amount or limit, so quotations with words left out in the middle are not accepted. Quote one continuous passage that includes those words, without an ellipsis.`
+  }
   const elsewhere = [...new Set(verifyQuote({ directory, quote: quote.quote }).hits.map(hit => hit.doc))]
     .filter(doc => doc !== quote.source_id)
+  const short = elided?.parts.some(part => part.length < SHORT_QUOTE)
   return [
-    quote.source_id === REQUEST_SOURCE && !matterSourceIDs(directory).includes(REQUEST_SOURCE)
-      ? `${where} quotes "${excerpt(quote.quote)}" as from "${REQUEST_SOURCE}", but those words are not in the request, user updates or any one of the lawyer's answers.`
-      : `${where} quotes "${excerpt(quote.quote)}" as from "${quote.source_id}", but those words are not in that document.`,
+    short
+      ? `${where} quotes "${excerpt(quote.quote)}" as from "${quote.source_id}". A passage around the "…" is too short to locate on its own.`
+      : request
+        ? `${where} quotes "${excerpt(quote.quote)}" as from "${REQUEST_SOURCE}", but those words are not in the request, user updates or any one of the lawyer's answers.`
+        : `${where} quotes "${excerpt(quote.quote)}" as from "${quote.source_id}", but those words are not in that document.`,
     elsewhere.length
       ? `They do appear in ${elsewhere.map(doc => `"${doc}"`).join(", ")}; cite that document if it is the source you meant.`
       : format === "json"
         ? "The JSON quote field requires verbatim source words. Copy them with read-document or check them with verify-quote. Record paraphrases outside source-quote entries; removing JSON string delimiters does not make a paraphrase a valid quote."
-        : "Copy the exact words with read-document (or check them with verify-quote), or drop the quotation marks and paraphrase.",
+        : short
+          ? "Quote one continuous passage without an ellipsis, or drop the quotation marks."
+          : "Copy the exact words with read-document (or check them with verify-quote), or drop the quotation marks and paraphrase.",
   ].join(" ")
 }
 
 /** Open items for quotations in `text` that the named source does not contain. */
 export function quoteMissItems(directory: string, stage: StageID, text: string, ref: OpenItem["ref"] = {}) {
   return sourceQuotes(text)
-    .filter(quote => !quoteFound(directory, quote))
+    .filter(quote => !proseQuoteFound(directory, quote))
     .map(quote => openItem(stage, "quote_miss", `Quoted text was not found verbatim in source "${quote.source_id}".`,
       { ...ref, source_id: quote.source_id, quote: quote.quote }))
 }

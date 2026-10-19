@@ -153,13 +153,27 @@ function haystack(text: string, support: CitationSupport): SupportHaystack | nul
   return { normalized_text, support }
 }
 
-export function resolveSupport(normalizedKey: string, supportIndex: SupportHaystack[]): CitationSupport[] {
+/** With `wholeWord`, the key must be whole words of the support text: it
+ * neither continues a word before it ("down v jones" is not in "ashdown v
+ * jones", "ash-down v jones" or "o'down v jones") nor runs on into one after it
+ * ("s. 5" is not "s. 51", "v jones" is not "v jonesco"). */
+export function resolveSupport(normalizedKey: string, supportIndex: SupportHaystack[], options: { wholeWord?: boolean } = {}): CitationSupport[] {
   const byID = new Map<string, CitationSupport>()
   for (const item of supportIndex) {
-    if (!item.normalized_text.includes(normalizedKey)) continue
+    if (!(options.wholeWord ? wholeWordAt(item.normalized_text, normalizedKey) : item.normalized_text.includes(normalizedKey))) continue
     byID.set(item.support.id, item.support)
   }
   return [...byID.values()].sort((a, b) => a.id.localeCompare(b.id))
+}
+
+function wholeWordAt(text: string, key: string) {
+  const word = (ch: string | undefined) => /[\p{L}\p{N}]/u.test(ch ?? "")
+  for (let at = text.indexOf(key); at !== -1; at = text.indexOf(key, at + 1)) {
+    // A hyphen, apostrophe or underscore after a letter or digit joins the word.
+    const continues = word(text[at - 1]) || /[-_'\u2019]/.test(text[at - 1] ?? "") && word(text[at - 2])
+    if ((!word(key[0]) || !continues) && (!word(key.at(-1)) || !word(text[at + key.length]))) return true
+  }
+  return false
 }
 
 function normalizeSupportText(text: string) {

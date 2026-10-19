@@ -7,7 +7,7 @@ import { draftingPlaceholders } from "../../lib/placeholder-resolution"
 import { normalize } from "../../lib/quote-verify"
 import { changeListIDs, memoMode, runItemIDs, withoutRefMarkers } from "./delivered-memo"
 import { notesForReader } from "./gate"
-import { excerpt, openItem, quoteFound, quoteMissIssue, quoteMissItems, sourceQuotes } from "./quotes"
+import { excerpt, openItem, proseQuoteFound, quoteMissIssue, quoteMissItems, sourceQuotes } from "./quotes"
 import { readLeanPlan, type DocID } from "./plan"
 import { readLeanJson, type OpenItem, type Question, type StageID } from "./state"
 
@@ -156,7 +156,7 @@ export function checkDraftingNotes(directory: string, content: string, items: Op
   const own = items.reduce((text, item) => text.replaceAll(item.id, " "), delivered).replace(QUOTED, " ")
   const gaps = options.final ? [] : textPlaceholders(own)
     .filter(placeholder => !recorded.has(placeholder.toLowerCase()) && !EDITORIAL_MARK.test(placeholder))
-  const misquoted = sourceQuotes(content).filter(quote => !quoteFound(directory, quote))
+  const misquoted = sourceQuotes(content).filter(quote => !proseQuoteFound(directory, quote))
   const unsupported = [...new Set(citationRowsForLeanText(directory, "drafting-notes.md", content)
     .filter(row => row.status === "unsupported").map(row => row.citation_text))]
   const reader = memo ? "The memo is" : "The notes are"
