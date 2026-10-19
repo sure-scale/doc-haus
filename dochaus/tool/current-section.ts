@@ -112,7 +112,7 @@ export default tool({
       .string()
       .optional()
       .describe(
-        "Base document name to resolve from, when the matter has more than one amendment chain. Omit to use the matter's longest chain.",
+        "Base document name to resolve from (or a base's stated name when it matched no indexed document), when the matter has more than one amendment chain. Omit to use the matter's longest chain.",
       ),
   },
   async execute(args, ctx) {
@@ -128,23 +128,30 @@ export default tool({
       return `${renderChunks(rows)}\n\nNote: no amendment chain in this matter.`
     }
 
+    // A base is named by its document, or by its stated name when the base
+    // matched no indexed document.
+    const baseLabel = (c: Chain) => (c.base.kind === "resolved" ? c.base.doc.name : c.base.targetName)
     const candidates = args.document
-      ? chains.filter(
-          (c) => c.base.kind === "resolved" && c.base.doc.name.toLowerCase() === args.document!.toLowerCase(),
-        )
+      ? chains.filter((c) => baseLabel(c).toLowerCase() === args.document!.toLowerCase())
       : chains
 
     if (candidates.length === 0) {
       // Document arg didn't match any chain base. Fall back to that document's
-      // own section text — it may be a standalone doc the agent asked about.
+      // own section text — it may be a standalone doc the agent asked about, or
+      // the base of a chain whose stated name matched no indexed document.
+      const unmatched = chains.flatMap((c) => (c.base.kind === "unresolved" ? [`"${c.base.targetName}"`] : []))
+      const reason = unmatched.length
+        ? `"${args.document}" was not matched to any amendment chain base, but it may be one of the stated bases not matched to an indexed document: ${unmatched.join(", ")}. ` +
+          "Pass a stated name as the document argument to trace that chain"
+        : undefined
       const rows = fallbackSectionText(db, args.section, args.document)
       db.close()
-      if (!rows.length) return missingNote(args.section, args.document, "no amendment chain involves this document")
-      return `${renderChunks(rows)}\n\nNote: no amendment chain involves "${args.document}".`
+      if (!rows.length) return missingNote(args.section, args.document, reason ?? "no amendment chain involves this document")
+      return `${renderChunks(rows)}\n\nNote: ${reason ?? `no amendment chain involves "${args.document}"`}.`
     }
 
     if (candidates.length > 1) {
-      const bases = candidates.map((c) => (c.base.kind === "resolved" ? c.base.doc.name : c.base.targetName)).join(", ")
+      const bases = candidates.map(baseLabel).join(", ")
       db.close()
       return (
         `Multiple amendment chains could contain §${args.section}. ` +
@@ -171,7 +178,8 @@ export default tool({
       const rows = fallbackSectionText(db, args.section, undefined, amenders)
       db.close()
       const unmatched = `the base document "${chain.base.targetName}" was not matched to an indexed document`
-      if (!rows.length) return missingNote(args.section, args.document, `no amendment modifies §${args.section}, and ${unmatched}`)
+      // The lookup spans the matter; a stated name is not a document to scope by.
+      if (!rows.length) return missingNote(args.section, undefined, `no amendment modifies §${args.section}, and ${unmatched}`)
       return (
         `Note: no amendment modifies §${args.section}, but ${unmatched}. ` +
         `Sections labelled §${args.section} in the matter's non-amending documents (none is confirmed as the base):\n\n${renderChunks(rows)}`

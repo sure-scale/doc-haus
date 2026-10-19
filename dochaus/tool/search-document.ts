@@ -105,6 +105,13 @@ export default tool({
     // Preserve matter-wide indexed-chain warnings and penalties for scoped passages.
     const chains = buildChains(db)
     const superseded = supersededSections(db, chains)
+    // A stated base that matched no indexed document gets no supersession flag
+    // or penalty, so name it instead of letting its passages read as current.
+    const unmatchedBases = chains.flatMap((chain) =>
+      chain.base.kind === "unresolved"
+        ? [`"${chain.base.targetName}" (amended by ${[...new Set(chain.entries.map((e) => e.rel.doc_name))].join(", ")})`]
+        : [],
+    )
     const channels = [
       vectorChannel(db, queryVec, args),
       lexicalChannel(db, args.query, args),
@@ -212,12 +219,22 @@ export default tool({
         pending.map((r) => `- #${r.id} (${r.author}) in ${r.docName}: proposes "${r.new_text}"`).join("\n")
       : ""
 
+    const unmatchedNote =
+      citations.length && unmatchedBases.length
+        ? `\n\nNote: amended base(s) not matched to an indexed document: ${unmatchedBases.join("; ")}. ` +
+          "Passages from the documents these names refer to may be superseded and are not flagged above."
+        : ""
+    // Everything after the passages, also kept in metadata so the legal plugin
+    // can carry it into the output it rebuilds after citation verification.
+    const notes = unmatchedNote + definitionsNote + crossRefsNote + pendingNote
+
     return {
       title: `${citations.length} passage(s) for "${args.query}"`,
-      output: (formatCitations(citations) || "No relevant passages found.") + definitionsNote + crossRefsNote + pendingNote,
+      output: (formatCitations(citations) || "No relevant passages found.") + notes,
       metadata: {
         citations,
         pending,
+        notes,
         ...(args.structural_path === undefined
           ? {}
           : { pending_context: { status: "omitted", reason: "unassessed_for_structural_scope" } }),

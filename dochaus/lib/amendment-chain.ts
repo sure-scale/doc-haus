@@ -1,4 +1,5 @@
 import { Database } from "bun:sqlite"
+import path from "node:path"
 
 // Shared chain semantics for the amendment surfaces (issue #69). Three tools
 // (amendment-chain, current-section, and the supersession pass inside
@@ -46,31 +47,58 @@ export type Chain = {
   entries: ChainEntry[] // oldest-first, by created_at then insert order
 }
 
-// A document resolves a stated target when its indexed name contains every
-// token of the target (NOCASE), or when it defines the target as a term. The
-// amender itself is excluded, and amenders are dropped whenever a non-amending
-// candidate exists. Anything still unclear is reported, never forced. Verbatim
-// from the original inline resolver in dochaus/tool/amendment-chain.ts.
+// Structural normalisation for comparing a stated target with a file name:
+// case and runs of whitespace, underscores and hyphens. Nothing else is folded.
+const normalizeTitle = (value: string) => value.toLowerCase().replace(/[\s_-]+/g, " ").trim()
+
+// Document types ingest accepts (MATTER_DOCUMENT_EXTENSIONS in
+// services/ingest/src/ingest.ts). Only one of these is ever treated as a file
+// name's extension, so a dotted word in a name ("Lease.final", "v1.2") stays.
+const DOCUMENT_EXTENSIONS = new Set([".docx", ".pdf", ".xlsx", ".eml"])
+const documentExtension = (name: string) => {
+  const ext = path.extname(name).toLowerCase()
+  return DOCUMENT_EXTENSIONS.has(ext) ? ext : ""
+}
+
+// A document's file name without its real extension: the one its indexed path
+// records (the name's own when the path records none), when that is a document
+// type. Null when the name carries no such extension.
+function bareFileTitle(doc: DocRow) {
+  const ext = documentExtension(path.extname(doc.doc_path) ? doc.doc_path : doc.name)
+  return ext && doc.name.toLowerCase().endsWith(ext) ? normalizeTitle(doc.name.slice(0, -ext.length)) : null
+}
+
+// A document resolves a stated target only on an exact match: its file name
+// equals the target after structural normalisation, or it records the target
+// as a defined term (NOCASE). A target may omit the file's extension; one that
+// states a document extension names the whole file. Partial overlap never
+// matches. The amender itself is excluded. File-name and defined-term matches
+// are not ranked against each other; non-amending documents are preferred over
+// amending ones, except that this preference never drops every file-name match
+// in favour of a defined-term match (the target is then ambiguous). More than
+// one remaining candidate is ambiguous and none is unmatched; both are
+// reported, never forced.
 function resolveTarget(db: Database, target: RelationRow, docs: DocRow[], relations: RelationRow[]): Resolution {
-  const tokens = target.target_name
-    .toLowerCase()
-    .split(/\s+/)
-    .filter((t) => /[\p{L}\p{N}]/u.test(t))
+  const stated = target.target_name.trim()
+  const title = normalizeTitle(stated)
+  const statesExtension = documentExtension(stated) !== ""
   const definerPaths = new Set(
     (
       db
         .query("SELECT DISTINCT doc_path FROM defined_terms WHERE term = ? COLLATE NOCASE")
-        .all(target.target_name) as { doc_path: string }[]
+        .all(stated) as { doc_path: string }[]
     ).map((r) => r.doc_path),
   )
-  const candidates = docs.filter(
-    (d) =>
-      d.doc_path !== target.doc_path &&
-      (tokens.every((t) => d.name.toLowerCase().includes(t)) || definerPaths.has(d.doc_path)),
+  const others = docs.filter((d) => d.doc_path !== target.doc_path)
+  const byName = others.filter(
+    (d) => title !== "" && (normalizeTitle(d.name) === title || (!statesExtension && bareFileTitle(d) === title)),
   )
+  const candidates = others.filter((d) => byName.includes(d) || definerPaths.has(d.doc_path))
   const amenderPaths = new Set(relations.map((r) => r.doc_path))
   const nonAmending = candidates.filter((d) => !amenderPaths.has(d.doc_path))
   const pool = nonAmending.length > 0 ? nonAmending : candidates
+  if (byName.length > 0 && !pool.some((d) => byName.includes(d)))
+    return { kind: "ambiguous", names: candidates.map((d) => d.name) }
   if (pool.length === 1) return { kind: "resolved", doc: pool[0]! }
   if (pool.length > 1) return { kind: "ambiguous", names: pool.map((d) => d.name) }
   return { kind: "unmatched" }
@@ -206,15 +234,15 @@ export function buildChains(db: Database): Chain[] {
     ops: opsByDoc.get(rel.doc_path) ?? [],
   }))
 
-  // Group by resolved target (or the stated name when unresolved), then merge
-  // transitively from root targets: a target that is itself an amender
+  // Group by resolved target (or the trimmed stated name when unresolved), then
+  // merge transitively from root targets: a target that is itself an amender
   // continues another document's chain. The seen set terminates a cycle.
   const groups = new Map<string, typeof resolved>()
   for (const entry of resolved) {
     const key =
       entry.resolution.kind === "resolved"
         ? entry.resolution.doc.doc_path
-        : `unresolved:${entry.rel.target_name.toLowerCase()}`
+        : `unresolved:${entry.rel.target_name.trim().toLowerCase()}`
     groups.set(key, [...(groups.get(key) ?? []), entry])
   }
   const amenderPaths = new Set(resolved.map((entry) => entry.rel.doc_path))
@@ -231,7 +259,7 @@ export function buildChains(db: Database): Chain[] {
         (a, b) => (createdAt.get(a.rel.doc_path) ?? 0) - (createdAt.get(b.rel.doc_path) ?? 0),
       )
       const base: Chain["base"] = key.startsWith("unresolved:")
-        ? { kind: "unresolved", targetName: (groups.get(key) ?? [])[0]?.rel.target_name ?? key }
+        ? { kind: "unresolved", targetName: (groups.get(key) ?? [])[0]?.rel.target_name.trim() ?? key }
         : { kind: "resolved", doc: docs.find((d) => d.doc_path === key)! }
       return { key, base, entries }
     })
