@@ -7,7 +7,7 @@ import { buildCombinedFile } from "../../lib/combined-docx"
 import { readDocxCommentParagraphs, readDocxRevisionProperties } from "../../lib/docx-comments"
 import { withParagraphPointers } from "../../lib/drafting-amendment"
 import { sha256File } from "../../lib/lineage"
-import { ownedDeliverable, replaceableDeliverable } from "../../lib/system-docx"
+import { ownedDeliverable, readSystemDocx, replaceableDeliverable } from "../../lib/system-docx"
 import { readWorkingDocx } from "../../lib/working-docx"
 import { appendLeanEvent } from "./events"
 import { readLeanPlan, type DocID, type LeanPlan } from "./plan"
@@ -195,6 +195,10 @@ export async function recordLeanDocuments(directory: string, deps: LeanDeps, reg
   const closed = closedNames(directory, produced)
   const items = produced.filter(row => existsSync(leanFile(directory, row.file)))
   const priorRow = (item: Produced) => previous.get(`${item.kind}:${item.title ?? item.name}`)
+  // The rows whose files a part may replace: this run's earlier parts of the
+  // same title. Never a combined file: only its own save, which refuses a file
+  // with pending proposals, rebuilds it; a part planned under its name takes a free one.
+  const owns = (title: string | null) => [...previous.values()].filter(row => row.title === title && row.kind !== "combined")
   // Each document's body kept at the lawyer's accepted revision, found before any
   // row is recorded, so its redline's keep does not depend on the rows' order.
   const keptBodies = new Map(items.flatMap(item => {
@@ -215,7 +219,7 @@ export async function recordLeanDocuments(directory: string, deps: LeanDeps, reg
     const kept = register && item.name !== null
       ? body ? keptRedlineName(directory, item.name, prior, body) : acceptedRevisionName(directory, item.name, prior) : undefined
     const deliverable = kept ?? (register && item.name !== null && deps.registerDeliverable
-      ? await registerOnce(directory, deps.registerDeliverable, item.name, bytes, sha256, prior, [...previous.values()].filter(row => row.title === item.title), closed(item, item.name))
+      ? await registerOnce(directory, deps.registerDeliverable, item.name, bytes, sha256, prior, owns(item.title), closed(item, item.name))
       : prior?.sha256 === sha256 ? prior.deliverable : null)
     documents.push({
       kind: item.kind, document: item.document, title: item.title, path: path.relative(directory, leanFile(directory, item.file)), sha256, deliverable,
@@ -238,10 +242,12 @@ export async function recordLeanDocuments(directory: string, deps: LeanDeps, reg
   if (combined?.failure) throw new Error(combined.failure)
   if (combined?.moved) {
     // A save refused under the write's lock moved the file after the gate's
-    // notes were checked: the request is checked against the name it was saved
-    // under, read from this summary. Imported here, as that check reads this module.
+    // notes were checked: a request that names the file is checked against the
+    // name it was saved under, read from this summary, as the notes name it.
+    // One file asked for without a name is still the one file delivered; the
+    // next finalize discloses where it went. Imported here, as that check reads this module.
     const { requestedFilesItems } = await import("./requested-files")
-    const item = requestedFilesItems(directory).find(item => !gateDisclosed(directory, item))
+    const item = requestedFilesItems(directory, true).find(item => !gateDisclosed(directory, item))
     if (item) throw new Error(item.detail)
   }
   return summary
@@ -324,21 +330,35 @@ async function combinedRow(directory: string, deps: LeanDeps, register: boolean,
 
 /** The earlier combined files (`earlier`) still in the matter: each row's
  * delivered file, unless a source or one of the names `taken` (the run's own
- * file, or another output's), listed under its name with its deliverable. A row
- * without a deliverable lists no file: whatever holds that name now, a delivery
- * did not save it there. The run keeps these files; it never removes a matter
- * document. */
+ * file, or another output's), listed under its name with its deliverable while
+ * the file is still the delivery's (earlierCombinedFile). A row without a
+ * deliverable lists no file: whatever holds that name now, a delivery did not
+ * save it there. The run keeps these files; it never removes a matter document. */
 function keptCombined(directory: string, earlier: LeanDocument[], taken: string[]) {
   const closed = new Set(taken.map(name => name.toLocaleLowerCase()))
   const kept = new Map<string, LeanDocument>()
   for (const row of earlier) {
     // A row without a deliverable names no file a delivery saved: the file now under that name is not the run's.
     const name = row.deliverable
-    if (!name || closed.has(name.toLocaleLowerCase()) || !present(directory, name) || sourceName(directory, name)) continue
+    if (!name || closed.has(name.toLocaleLowerCase()) || !present(directory, name) || sourceName(directory, name) || !earlierCombinedFile(directory, name)) continue
     kept.delete(name.toLocaleLowerCase())
     kept.set(name.toLocaleLowerCase(), { ...row, path: name, deliverable: name })
   }
   return [...kept.values()]
+}
+
+/** Whether the matter file `name` a delivery saved as a combined file is still
+ * that file: the system's last write of it (ownedDeliverable), or a revision of
+ * it written through doc.haus (an accept, bound to an accepted Word revision or
+ * not, or an upload), which removes the record of the system's write
+ * (readSystemDocx). A file changed outside doc.haus, whose bytes no longer
+ * match the record, is not, nor is one whose record cannot be read. Reads only. */
+function earlierCombinedFile(directory: string, name: string) {
+  try {
+    return ownedDeliverable(directory, name) || readSystemDocx(directory, name) === undefined
+  } catch {
+    return false
+  }
 }
 
 /** Whether a file, link or anything else has the matter name `name`. */

@@ -3,7 +3,7 @@ import { sha256File } from "../../lib/lineage"
 import { normalize } from "../../lib/quote-verify"
 import { TOOL_SYNTAX_ISSUE, printedToolCall, record } from "./checks"
 import { readWorkingDocx } from "../../lib/working-docx"
-import { combinedDelivery, deliveryArtifactEvidence, deliveryStem, memoNotesFile, plannedRegistration, present, readLeanDocuments, redlineOfBody, requestedMemo } from "./deliverables"
+import { combinedDelivery, combinedFileItems, deliveryArtifactEvidence, deliveryStem, memoNotesFile, plannedRegistration, present, readLeanDocuments, redlineOfBody, requestedMemo } from "./deliverables"
 import { OTHER_FORMAT, formatStem, spelledNames } from "./delivery-selection"
 import { plainFileName, readLeanPlan, type DocID, type PlannedDocument } from "./plan"
 import { tagged } from "./prompts"
@@ -476,8 +476,9 @@ const savedFile = (row: unknown) => record(row) && Array.isArray(row.holds) && r
  * (answeredFiles), the item cites that answer in plain words, quoting the
  * words it listed when they are more or fewer than the item's, but only while
  * the plan delivers the file as that question showed; otherwise the lawyer
- * should confirm it. Each id keys on the item's content. */
-export function requestedFilesItems(directory: string): OpenItem[] {
+ * should confirm it. Each id keys on the item's content. With `named`, only
+ * the items of the files the lawyer's words give a name. */
+export function requestedFilesItems(directory: string, named = false): OpenItem[] {
   const plan = readLeanPlan(directory)
   const saved = readRequestedFiles(directory)
   if (!plan || plan.basis === undefined || !saved || saved.basis !== plan.basis ||
@@ -544,10 +545,15 @@ export function requestedFilesItems(directory: string): OpenItem[] {
     if (earlier && runs(earlier)) return { kind, title: titled, name: earlier.toLocaleLowerCase(), spelled: held ? null : earlier, held }
     return held ? { kind, title: titled, name: null, spelled: null, held } : { kind, title: titled, name: row.name, spelled, held }
   }
+  // The memo and the combined document go in one file unless registration will
+  // not save it (combinedFileItems, whose item says so): then each is delivered
+  // as its own file, its part as registered. Read once, when first needed.
+  let joined: boolean | undefined
+  const together = () => joined ??= combinedFileItems(directory).length === 0
   const deliveredIn = (id: string) => {
-    if (id === MEMO) return !memo ? null : combined ? delivery("combined", combined.document) : delivery("drafting_notes", null)
+    if (id === MEMO) return !memo ? null : combined && together() ? delivery("combined", combined.document) : delivery("drafting_notes", null)
     const document = plan.documents.find(row => row.id === id)
-    return !document ? null : combined?.document === document.id ? delivery("combined", document.id) : delivery(document.deliverable === "redline" ? "redline" : "body", document.id)
+    return !document ? null : combined?.document === document.id && together() ? delivery("combined", document.id) : delivery(document.deliverable === "redline" ? "redline" : "body", document.id)
   }
   const describe = (file: NonNullable<ReturnType<typeof delivery>>) => {
     const what = file.kind === "combined" ? `the memo and "${file.title}"` : file.kind === "drafting_notes" ? "the memo" : `"${file.title}"${file.kind === "redline" ? " as a redline" : ""}`
@@ -557,7 +563,7 @@ export function requestedFilesItems(directory: string): OpenItem[] {
   const nameKey = (name: string) => `${deliveryStem({ title: "", file: name })}.docx`.toLocaleLowerCase()
   const lawyerQuote = (words: string) => `"${words.replace(/\s+/g, " ").trim()}"` + (matterSourceIDs(directory).includes(REQUEST_SOURCE) ? "" : ` [source: ${REQUEST_SOURCE}]`)
   const answered = answeredFiles(directory)
-  const items = saved.files.flatMap(file => {
+  const items = saved.files.filter(file => !named || file.name !== null).flatMap(file => {
     const check = fileCheck(file, plan.documents, memo !== undefined)
     const shape = fileShape(file)
     const target = shape && deliveredIn(shape.document ?? MEMO)

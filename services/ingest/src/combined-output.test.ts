@@ -13,6 +13,7 @@ import { writeLeanPlan, type PlannedDocument } from "../../../dochaus/workflows/
 import { initLeanState, readLeanState, writeLeanBytes, writeLeanState, writeLeanText } from "../../../dochaus/workflows/lean/state"
 import { leanFixtureMatter, scriptedLeanModel } from "../../../dochaus/workflows/lean/test-support"
 import { ownedDeliverable, readSystemDocx, systemDocxKey } from "../../../dochaus/lib/system-docx"
+import { pendingRedlinesForDoc, recordRedline } from "../../../dochaus/lib/redlines"
 import { getRedline, openDb, setRedlineStatus } from "./db"
 import { writeDeliverableRevision } from "./deliverable"
 import { leanDraftingStatus } from "./lean-drafting"
@@ -209,6 +210,20 @@ test("a rerun stopped at its gate with changed notes has no combined file until 
   await blockedRerun(f.directory, `${MEMO}\n\nChanged.`)
   expect(readLeanDocuments(f.directory)?.documents.map(row => [row.kind, row.deliverable])).toContainEqual(["drafting_notes", null])
   refused(f)
+}, 60_000)
+
+test("a body planned under the combined file's name takes a free name and leaves the combined file and its proposals", async () => {
+  const f = await deliveredMatter([COMBINED])
+  const saved = () => createHash("sha256").update(readFileSync(path.join(f.directory, "supply-pack.docx"))).digest("hex")
+  const before = saved()
+  recordRedline(f.directory, { docPath: "supply-pack.docx", docName: "supply-pack.docx", scope: "phrase", findText: "goods", oldText: "goods", newText: "products", author: "reviewer", reviewComment: "", anchorId: "p000000000001" })
+  const body = [{ ...COMBINED, deliverable: "body" as const }]
+  writeLeanPlan(f.directory, body, undefined, undefined, { name: "cover memo", file: memoNotesFile(body, "cover memo") })
+  deliverables.forgetUnplannedDocuments(f.directory)
+  await recordLeanDocuments(f.directory, { sessions: scriptedLeanModel().port, registerDeliverable: registerLeanDeliverable }, true)
+  expect(saved()).toBe(before)
+  expect(pendingRedlinesForDoc(f.directory, "supply-pack.docx")).toHaveLength(1)
+  expect(readLeanDocuments(f.directory)?.documents.find(row => row.kind === "body")?.deliverable).toBe("supply-pack (2).docx")
 }, 60_000)
 
 describe("combined file rebuild: lock, contention and ownership", () => {

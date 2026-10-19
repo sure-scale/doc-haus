@@ -471,12 +471,11 @@ describe("the combined file saved in the matter", () => {
     expect(matterFile(directory, "supply-pack.docx")).toEqual(earlier)
   }, 60_000)
 
-  test("a file saved under the combined name by another write is kept: the combined file takes the next free name, with no item", async () => {
+  test("a file saved under the combined name by another write is kept but no longer listed as a combined file: the combined file takes the next free name, with no item", async () => {
     const directory = matter()
     writeLeanPlan(directory, [COMBINED], undefined, undefined, memo([COMBINED]))
     await writeCopies(directory, COPIES)
     await deliver(directory)
-    const [first] = combinedRows(directory)
     const other = await docx("# Supply pack\n\nA synthetic file saved under this name by hand.")
     writeFileSync(path.join(directory, "supply-pack.docx"), other)
     await writeCopies(directory, { "d1/body-applied.docx": "# Supply note\n\nThe supplier delivers the goods each week." })
@@ -486,7 +485,8 @@ describe("the combined file saved in the matter", () => {
     expect(calls.map(([name]) => name)).not.toContain("supply-pack.docx")
     expect(rows).toContainEqual(["combined", "d1", "supply-pack (2).docx"])
     expect(matterFile(directory, "supply-pack.docx")).toEqual(other)
-    expect(combinedRows(directory)).toEqual([first, expect.objectContaining({ path: "supply-pack (2).docx", deliverable: "supply-pack (2).docx" })])
+    // The file is no longer the system's last write: no row lists it as created by doc.haus.
+    expect(combinedRows(directory)).toEqual([expect.objectContaining({ path: "supply-pack (2).docx", deliverable: "supply-pack (2).docx" })])
   }, 60_000)
 
   test("an accept with a working record into the combined file itself: the file is held with its item, never moved to the next free name", async () => {
@@ -703,18 +703,45 @@ describe("the combined file saved in the matter", () => {
     expect(requestedFilesItems(directory)).toEqual([item])
   }, 60_000)
 
-  test("a save refused under the write's lock after the gate: the request is checked against the name the file is saved under, and an undisclosed mismatch fails the run", async () => {
+  test("a request for one file while a kept file holds the combined name and the combined file will not be saved: the items agree that the files are delivered separately", async () => {
+    for (const named of [true, false]) {
+      const directory = matter()
+      const words = named ? "Send the supply note with the cover memo in one file named supply-pack.docx" : "Send the supply note with the cover memo in one file"
+      const plan = writeLeanPlan(directory, [COMBINED], "basis-1", undefined, memo([COMBINED]))
+      writeRequestedFiles(directory, { schema: LEAN_REQUESTED_FILES_SCHEMA, basis: "basis-1", planned: requestedFilesPlanned(plan.documents, plan.memo), stated: true,
+        files: [{ holds: ["memo", "d1"], name: named ? "supply-pack.docx" : null, quote: words }] })
+      await writeCopies(directory, COPIES)
+      writeFileSync(path.join(directory, "supply-pack.docx"), await docx("# Supply pack\n\nA synthetic file saved under this name by hand."))
+      discloseAtGate(directory, disclosableItems(directory))
+      expect((await deliver(directory)).rows).toContainEqual(["combined", "d1", "supply-pack (2).docx"])
+      // A later run's memo cannot be read as Word, so the combined file is not saved.
+      writeLeanBytes(directory, "drafting-notes.docx", new Uint8Array([1, 2, 3]))
+      await writeCopies(directory, { "d1/body-applied.docx": "# Supply note\n\nThe supplier delivers the goods each week." })
+
+      const unsavedItem = openItem("finalize", "omission", 'The combined file "supply-pack (2).docx" (the memo, then "Supply note") is not saved in the matter: ' +
+        'the memo could not be read as a Word document. The memo and "Supply note" are delivered as separate files.', { repair_target: "memo" })
+      const separate = openItem("finalize", "omission", `Requested files: the lawyer's words "${words}" [source: request] ask for the memo and "Supply note" in one file named "supply-pack.docx", ` +
+        'but the run delivers the memo in "supply-pack - cover memo.docx" and "Supply note" in "supply-pack - clean.docx". ' +
+        "The lawyer should confirm how these files are to be delivered.", { repair_target: "memo" })
+      expect({ named, items: disclosableItems(directory).filter(item => /combined file|Requested files/.test(item.detail)) })
+        .toEqual({ named, items: named ? expect.arrayContaining([unsavedItem, separate]) : [unsavedItem] })
+      expect(disclosableItems(directory).some(item => item.detail.includes("in one file named \"supply-pack (2).docx\""))).toBe(false)
+    }
+  }, 60_000)
+
+  test("a save refused under the write's lock after the gate: the request is checked against the name the file is saved under, and an undisclosed mismatch with a requested name fails the run", async () => {
     const words = "Send the supply note with the cover memo in one file named supply-pack.docx"
+    const unnamed = "Send the supply note with the cover memo in one file"
     const item = openItem("finalize", "omission", `Requested files: the lawyer's words "${words}" [source: request] ask for the memo and "Supply note" in one file named "supply-pack.docx", ` +
       'but the run delivers the memo and "Supply note" in one file named "supply-pack (2).docx", since a file already in the matter holds the name "supply-pack.docx". ' +
       "The lawyer should confirm how these files are to be delivered.", { repair_target: "memo" })
     /** A delivered matter whose rerun's gate finds nothing to disclose, then a
      * rerun whose save of the combined file is refused under the write's lock. */
-    const raced = async (disclosed: ReturnType<typeof openItem>[]) => {
+    const raced = async (disclosed: ReturnType<typeof openItem>[], named = true) => {
       const directory = matter()
       const plan = writeLeanPlan(directory, [COMBINED], "basis-1", undefined, memo([COMBINED]))
       writeRequestedFiles(directory, { schema: LEAN_REQUESTED_FILES_SCHEMA, basis: "basis-1", planned: requestedFilesPlanned(plan.documents, plan.memo), stated: true,
-        files: [{ holds: ["memo", "d1"], name: "supply-pack.docx", quote: words }] })
+        files: [{ holds: ["memo", "d1"], name: named ? "supply-pack.docx" : null, quote: named ? words : unnamed }] })
       await writeCopies(directory, COPIES)
       await deliver(directory)
       await writeCopies(directory, { "d1/body-applied.docx": "# Supply note\n\nThe supplier delivers the goods each week." })
@@ -743,6 +770,14 @@ describe("the combined file saved in the matter", () => {
     // Notes that already disclose that mismatch let the moved delivery complete.
     const disclosed = await raced([item])
     expect((await disclosed.delivered).documents.filter(row => row.kind === "combined").map(row => row.deliverable)).toEqual(["supply-pack.docx", "supply-pack (2).docx"])
+
+    // One file asked for without a name is the one file delivered: the move
+    // completes the run, and the next finalize discloses where the file went.
+    const one = await raced([], false)
+    expect((await one.delivered).documents.filter(row => row.kind === "combined").map(row => row.deliverable)).toEqual(["supply-pack.docx", "supply-pack (2).docx"])
+    expect(requestedFilesItems(one.directory)).toEqual([openItem("finalize", "omission", `Requested files: the lawyer's words "${unnamed}" [source: request] ask for the memo and "Supply note" in one file, ` +
+      'but the run delivers the memo and "Supply note" in one file named "supply-pack (2).docx", since a file already in the matter holds the name "supply-pack.docx". ' +
+      "The lawyer should confirm how these files are to be delivered.", { repair_target: "memo" })])
   }, 60_000)
 
   test("a later plan without the combined delivery handles the saved file as a dropped deliverable's", async () => {
@@ -779,19 +814,49 @@ describe("the combined file saved in the matter", () => {
     expect(combinedRows(retitled).map(row => [row.title, row.deliverable])).toEqual([["Supply note", "supply-pack.docx"], ["Supply terms", "supply-pack (2).docx"]])
     expect(combinedParts(retitled)?.file).toBe("supply-pack (2).docx")
 
-    // As with any earlier file of the same document, a deliverable now planned
-    // under that name replaces it while it still holds the bytes registered.
-    const renamed = matter()
-    writeLeanPlan(renamed, [COMBINED], undefined, undefined, memo([COMBINED]))
-    await writeCopies(renamed, COPIES)
-    await deliver(renamed)
-    const combined = sha256(matterFile(renamed, "supply-pack.docx"))
-    const body = { ...COMBINED, deliverable: "body" as const }
-    writeLeanPlan(renamed, [body], undefined, undefined, memo([body]))
-    const again = await deliver(renamed)
-    expect(again.calls).toContainEqual(["supply-pack.docx", combined])
-    expect(again.rows).toContainEqual(["body", "d1", "supply-pack.docx"])
-    expect(again.rows.map(([kind]) => kind)).not.toContain("combined")
+    // Unlike an earlier file of the same document, a combined file is never
+    // replaced by a deliverable now planned under its name: only the combined
+    // save, which keeps pending proposals, writes over it. The deliverable
+    // takes the next free name and the file stays listed as an earlier combined file.
+    for (const forget of [false, true]) {
+      const renamed = matter()
+      writeLeanPlan(renamed, [COMBINED], undefined, undefined, memo([COMBINED]))
+      await writeCopies(renamed, COPIES)
+      await deliver(renamed)
+      const combined = sha256(matterFile(renamed, "supply-pack.docx"))
+      const body = { ...COMBINED, deliverable: "body" as const }
+      writeLeanPlan(renamed, [body], undefined, undefined, memo([body]))
+      if (forget) forgetUnplannedDocuments(renamed)
+      const again = await deliver(renamed)
+      expect(again.calls.map(([name]) => name)).not.toContain("supply-pack.docx")
+      expect(again.rows).toContainEqual(["body", "d1", "supply-pack (2).docx"])
+      expect(again.rows.filter(([kind]) => kind === "combined")).toEqual([["combined", "d1", "supply-pack.docx"]])
+      expect(sha256(matterFile(renamed, "supply-pack.docx"))).toBe(combined)
+    }
+  }, 60_000)
+
+  test("an earlier combined file the plan no longer delivers stays listed only while it is the system's, or its accepted revision", async () => {
+    for (const change of ["retitle", "drop"] as const) {
+      for (const write of ["outside", "accept", "bound accept", "none"] as const) {
+        const directory = matter()
+        writeLeanPlan(directory, [COMBINED], undefined, undefined, memo([COMBINED]))
+        await writeCopies(directory, COPIES)
+        await deliver(directory)
+        const terms = { ...COMBINED, title: "Supply terms" }
+        if (change === "retitle") writeLeanPlan(directory, [terms], undefined, undefined, memo([terms]))
+        else writeLeanPlan(directory, [COMBINED])
+        forgetUnplannedDocuments(directory)
+        await deliver(directory)
+        const file = path.join(directory, "supply-pack.docx")
+        // A save outside doc.haus leaves the record of the system's write, which no longer matches.
+        if (write === "outside") writeFileSync(file, await docx("# Supply pack\n\nA synthetic file saved under this name by hand."))
+        else if (write !== "none") await acceptIntoCombined(directory, write === "bound accept")
+        const saved = sha256(matterFile(directory, "supply-pack.docx"))
+        const listed = (await deliver(directory)).rows.filter(([kind, , name]) => kind === "combined" && name === "supply-pack.docx")
+        expect({ change, write, listed }).toEqual({ change, write, listed: write === "outside" ? [] : [["combined", "d1", "supply-pack.docx"]] })
+        expect(sha256(matterFile(directory, "supply-pack.docx"))).toBe(saved)
+      }
+    }
   }, 60_000)
 
   test("without a combined delivery, registration calls, the summary and the items are as before", async () => {
