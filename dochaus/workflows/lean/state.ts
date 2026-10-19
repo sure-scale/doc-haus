@@ -88,6 +88,11 @@ export type OpenItem = {
      * contents in, in its order; null for a file of a name not known before it
      * registers. */
     delivered_names?: (string | null)[]
+    /** The combined file an item saying it is not saved is about, by the
+     * name it states. */
+    combined_file?: string
+    /** Why that combined file is not saved, as a fixed code. */
+    unsaved_reason?: string
   }
   status: "open" | "resolved" | "disclosed"
   resolution?: string

@@ -102,8 +102,8 @@ const COPIES = {
   "d1/redline.docx": "# Supply note\n\nThe supplier delivers the goods each month.",
   "drafting-notes.docx": "# Cover memo\n\nThe delivery terms follow the supply terms.",
 }
-const unsaved = (reason: string) => openItem("finalize", "omission", `The combined file "supply-pack.docx" (the memo, then "Supply note") is not saved in the matter: ${reason}. ` +
-  'The memo and "Supply note" are delivered as separate files.', { repair_target: "memo" })
+const unsaved = (code: string, reason: string) => openItem("finalize", "omission", `The combined file "supply-pack.docx" (the memo, then "Supply note") is not saved in the matter: ${reason}. ` +
+  'The memo and "Supply note" are delivered as separate files.', { repair_target: "memo", combined_file: "supply-pack.docx", unsaved_reason: code })
 
 describe("registration of a combined document", () => {
   test("registers the body as '<stem> - clean', the notes under the memo's name, then the file built from them under the requested name", async () => {
@@ -160,7 +160,7 @@ describe("the combined file saved in the matter", () => {
     writeLeanBytes(directory, "drafting-notes.docx", zipSync(numbered))
     expect(buildCombinedFile({ memo: zipSync(numbered), body: await docx(COPIES["d1/body-applied.docx"]) })).toEqual({ refused: "unsupported_memo_numbering" })
 
-    const item = unsaved("the memo uses list numbering the combined file cannot carry")
+    const item = unsaved("unsupported_memo_numbering", "the memo uses list numbering the combined file cannot carry")
     expect(disclosableItems(directory)).toEqual([item])
     await expect(deliver(directory)).rejects.toThrow(item.detail)
     expect(existsSync(path.join(directory, "supply-pack.docx"))).toBe(false)
@@ -169,6 +169,28 @@ describe("the combined file saved in the matter", () => {
     expect(calls.map(([name]) => name)).toEqual(["supply-pack - clean.docx", "supply-pack - redline.docx", "supply-pack - cover memo.docx"])
     expect(rows.map(([kind]) => kind)).not.toContain("combined")
     expect(existsSync(path.join(directory, "supply-pack.docx"))).toBe(false)
+  }, 60_000)
+
+  test("a combined file not saved counts as disclosed by an item the notes disclosed about that file for that reason, whatever else its words read; never by one about another file", async () => {
+    const directory = matter()
+    writeLeanPlan(directory, [COMBINED], undefined, undefined, memo([COMBINED]))
+    await writeCopies(directory, COPIES)
+    const numbered = unzipSync(await docx("# Cover memo\n\n1. First point.\n2. Second point."))
+    numbered["word/numbering.xml"] = strToU8(strFromU8(numbered["word/numbering.xml"]!).replace(/(<w:abstractNum\b[^>]*>)/g, '$1<w:numStyleLink w:val="MemoList"/>'))
+    writeLeanBytes(directory, "drafting-notes.docx", zipSync(numbered))
+    const [item] = disclosableItems(directory)
+    // The same file and reason in other words: disclosed, though its id differs.
+    const reworded = openItem("finalize", "omission", item!.detail.replace(" are delivered as separate files.", " are each delivered as a file of its own."), item!.ref)
+    expect(reworded.id).not.toBe(item!.id)
+    discloseAtGate(directory, [reworded])
+    expect((await deliver(directory)).rows.map(([kind]) => kind)).not.toContain("combined")
+    // An item about another combined file, or from a gate's record before items carried the reference, discloses nothing of this one.
+    const other = openItem("finalize", "omission", item!.detail.replaceAll('"supply-pack.docx"', '"supply-pack (2).docx"'), { ...item!.ref, combined_file: "supply-pack (2).docx" })
+    for (const told of [other, openItem("finalize", "omission", item!.detail, { repair_target: "memo" })]) {
+      discloseAtGate(directory, [told])
+      await expect(deliver(directory)).rejects.toThrow(item!.detail)
+    }
+    expect(item!.ref).toEqual({ repair_target: "memo", combined_file: "supply-pack.docx", unsaved_reason: "unsupported_memo_numbering" })
   }, 60_000)
 
   test("a source under the requested name is untouched: the combined file takes the next free name, with no item", async () => {
@@ -498,7 +520,7 @@ describe("the combined file saved in the matter", () => {
     const accepted = await acceptIntoCombined(directory, true)
     await writeCopies(directory, { "d1/body-applied.docx": "# Supply note\n\nThe supplier delivers the goods each week." })
 
-    const item = unsaved("the file of that name holds the lawyer's accepted Word changes, which the run does not write over")
+    const item = unsaved("accepted_revision", "the file of that name holds the lawyer's accepted Word changes, which the run does not write over")
     expect(disclosableItems(directory)).toEqual([item])
     await expect(deliver(directory)).rejects.toThrow(item.detail)
     discloseAtGate(directory, [item])
@@ -644,7 +666,7 @@ describe("the combined file saved in the matter", () => {
     }
     await writeCopies(directory, REVISED_MEMO)
 
-    const item = unsaved("another file already has that name, which the run keeps (it replaces only a combined file it saved there that still holds what it saved, with no change pending review), " +
+    const item = unsaved("no_free_name", "another file already has that name, which the run keeps (it replaces only a combined file it saved there that still holds what it saved, with no change pending review), " +
       'and other files already have each numbered name the run can give the new file, up to "supply-pack (9).docx"')
     expect(disclosableItems(directory)).toEqual([item])
     // Registration finds the same item, which the gate's notes disclose.
@@ -720,7 +742,8 @@ describe("the combined file saved in the matter", () => {
       await writeCopies(directory, { "d1/body-applied.docx": "# Supply note\n\nThe supplier delivers the goods each week." })
 
       const unsavedItem = openItem("finalize", "omission", 'The combined file "supply-pack (2).docx" (the memo, then "Supply note") is not saved in the matter: ' +
-        'the memo could not be read as a Word document. The memo and "Supply note" are delivered as separate files.', { repair_target: "memo" })
+        'the memo could not be read as a Word document. The memo and "Supply note" are delivered as separate files.',
+        { repair_target: "memo", combined_file: "supply-pack (2).docx", unsaved_reason: "unreadable_memo" })
       const separate = openItem("finalize", "omission", `Requested files: the lawyer's words "${words}" [source: request] ask for the memo and "Supply note" in one file named "supply-pack.docx", ` +
         'but the run delivers the memo in "supply-pack - cover memo.docx" and "Supply note" in "supply-pack - clean.docx". ' +
         "The lawyer should confirm how these files are to be delivered.", { repair_target: "memo", requested_file: 0, delivered_names: ["supply-pack - cover memo.docx", "supply-pack - clean.docx"] })

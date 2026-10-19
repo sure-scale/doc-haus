@@ -269,9 +269,14 @@ function gateDisclosures(directory: string) {
   return gate?.items?.filter(row => row.status === "disclosed") ?? []
 }
 
-/** Whether the gate's record lists `item` as disclosed by its notes. */
+/** Whether the gate's notes disclosed the combined file's item `item`
+ * (combinedOutcome): an item they disclosed is about the same file
+ * (combined_file) and gives the same reason it is not saved (unsaved_reason),
+ * whatever else its words read. One without the reference, as a gate's record
+ * from before items carried it holds, is about no file. */
 function gateDisclosed(directory: string, item: OpenItem) {
-  return gateDisclosures(directory).some(row => row.id === item.id)
+  return item.ref.combined_file !== undefined && gateDisclosures(directory).some(row =>
+    row.ref.combined_file === item.ref.combined_file && row.ref.unsaved_reason === item.ref.unsaved_reason)
 }
 
 /** The summary's earlier rows by kind and title. Document ids are plan
@@ -499,15 +504,17 @@ function combinedOutcome(directory: string, delivery: CombinedDelivery, parts: {
   { bytes: Uint8Array; sha256: string; first: CombinedName; rest: Generator<CombinedName, void> } | { item: OpenItem } | undefined {
   const name = combinedName(delivery, earlier.at(-1))
   const file = path.join(directory, name)
-  const unsaved = (reason: string) => ({ item: openItem("finalize", "omission", `The combined file "${name}" (the memo, then "${delivery.title}") is not saved in the matter: ${reason}. ` +
-    `The memo and "${delivery.title}" are delivered as separate files.`, { repair_target: "memo" }) })
-  if (present(directory, name) && readWorkingDocx(directory, file)) return unsaved("the file of that name holds the lawyer's accepted Word changes, which the run does not write over")
+  // The item names the file it is about (combined_file) and why it is not saved (unsaved_reason, a fixed code).
+  const unsaved = (code: string, reason: string) => ({ item: openItem("finalize", "omission", `The combined file "${name}" (the memo, then "${delivery.title}") is not saved in the matter: ${reason}. ` +
+    `The memo and "${delivery.title}" are delivered as separate files.`, { repair_target: "memo", combined_file: name, unsaved_reason: code }) })
+  if (present(directory, name) && readWorkingDocx(directory, file)) return unsaved("accepted_revision", "the file of that name holds the lawyer's accepted Word changes, which the run does not write over")
   if (!parts) return
   const built = buildCombinedFile(parts)
-  if ("refused" in built) return unsaved(built.part ? `the ${built.part === "memo" ? "memo" : "draft"} could not be read as a Word document` : COMBINED_REFUSALS[built.refused] ?? "the file could not be built")
+  if ("refused" in built) return built.part ? unsaved(`unreadable_${built.part}`, `the ${built.part === "memo" ? "memo" : "draft"} could not be read as a Word document`)
+    : unsaved(built.refused, COMBINED_REFUSALS[built.refused] ?? "the file could not be built")
   const rest = combinedNames(directory, delivery, earlier, others)
   const first = rest.next()
-  if (first.done) return unsaved("another file already has that name, which the run keeps (it replaces only a combined file it saved there that still holds what it saved, with no change pending review), " +
+  if (first.done) return unsaved("no_free_name", "another file already has that name, which the run keeps (it replaces only a combined file it saved there that still holds what it saved, with no change pending review), " +
     `and other files already have each numbered name the run can give the new file, up to "${delivery.name} (${MAX_NAME_SUFFIX}).docx"`)
   // Paragraph pointers as registration gives them, the replaced file's where the text is unchanged.
   const bytes = withParagraphPointers(built.bytes, first.value.current ? readFileSync(path.join(directory, first.value.name)) : undefined)
