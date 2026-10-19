@@ -72,7 +72,7 @@ test("grounded delivery rows that still conflict on the last attempt leave the p
   expect(saved).toMatchObject({ status: "changes-required", findings, delivery: [] })
   expect(saved?.limitations).toHaveLength(3)
   expect(saved?.limitations.slice(1)).toEqual(Array(2).fill("Supply terms.docx: conflicts with another delivery selection; the planned name stands"))
-  const conflict = { file: "Supply terms.docx", cause: "conflict", reason: "conflicts with another delivery selection", asked: true, asked_file: "Supply terms.docx" } as const
+  const conflict = { file: "Supply terms.docx", cause: "conflict", reason: "conflicts with another delivery selection", asked: true, asked_file: "Supply terms.docx", asked_spelling: "Supply terms.docx" } as const
   expect(saved?.withheld_delivery).toEqual([{ document: "d1", role: "body", ...conflict }, { document: "d1", role: "redline", ...conflict }])
   // The lawyer's instructions give the name, so it is disclosed once, never blocking.
   expect(withheldDeliveryItems(directory).map(item => [item.detail, item.status])).toEqual([[`Your instructions mention the file name "Supply terms.docx", but it was not applied: "Supply note" keeps its planned file name because the name conflicts with another file name chosen for this package.`, "disclosed"]])
@@ -134,7 +134,7 @@ test("a name the lawyer asked for, withheld on the last attempt for a wrong docu
   const claimed = { withheld_delivery: [{ file: "Invented.docx", cause: "document", reason: "names no planned document", asked: true }] }
   expect((await acceptStageReply(directory, "package-review", review([row], claimed), { final: true })).issues).toEqual([])
   expect(readPackageReview(directory)).toEqual({ status: "pass", findings: [], delivery: [], limitations: ["A disclosed gap.", withheld("Supply terms.docx", "names no planned document")],
-    withheld_delivery: [{ document: "d3", role: "body", file: "Supply terms.docx", cause: "document", reason: "names no planned document", asked: true, asked_file: "Supply terms.docx" }] })
+    withheld_delivery: [{ document: "d3", role: "body", file: "Supply terms.docx", cause: "document", reason: "names no planned document", asked: true, asked_file: "Supply terms.docx", asked_spelling: "Supply terms.docx" }] })
   const sentence = `Your instructions mention the file name "Supply terms.docx", but it was not applied: the name could not be matched to a document in this package.`
   const gate = finalGate(directory)
   expect(gate.blocking).toEqual([])
@@ -162,7 +162,7 @@ test("on the last attempt a grounded row is kept beside a grounded row that take
   expect((await acceptStageReply(directory, "package-review", review([kept, clash]))).issues.length).toBeGreaterThan(0)
   expect((await acceptStageReply(directory, "package-review", review([kept, clash]), { final: true })).issues).toEqual([])
   expect(readPackageReview(directory)).toEqual({ status: "pass", findings: [], delivery: [kept], limitations: ["A disclosed gap.", withheld("Points memo.docx", "the notes already have that file name")],
-    withheld_delivery: [{ document: "d1", role: "body", file: "Points memo.docx", cause: "notes_name", reason: "the notes already have that file name", asked: true, asked_file: "Points memo.docx" }] })
+    withheld_delivery: [{ document: "d1", role: "body", file: "Points memo.docx", cause: "notes_name", reason: "the notes already have that file name", asked: true, asked_file: "Points memo.docx", asked_spelling: "Points memo.docx" }] })
   expect(withheldDeliveryItems(directory).map(item => item.detail)).toEqual([`Your instructions mention the file name "Points memo.docx", but it was not applied: "Supply note" keeps its planned file name because the memo already has the name.`])
 })
 
@@ -179,16 +179,16 @@ test("each withheld delivery row records its own plain reason", async () => {
   const save = "Save the supply note as Supply terms.docx"
   const cases: [string, unknown[], WithheldDelivery[], string[], { file?: string }][] = [
     ["wrong document id", [{ document: "d9", role: "body", file: "Supply terms.docx", instruction_quote: save }],
-      [{ document: "d9", role: "body", file: "Supply terms.docx", cause: "document", reason: "names no planned document", asked: true, asked_file: "Supply terms.docx" }],
+      [{ document: "d9", role: "body", file: "Supply terms.docx", cause: "document", reason: "names no planned document", asked: true, asked_file: "Supply terms.docx", asked_spelling: "Supply terms.docx" }],
       [`Your instructions mention the file name "Supply terms.docx", but it was not applied: the name could not be matched to a document in this package.`], {}],
     ["role", [{ document: "d1", role: "clean", file: "Supply terms.docx", instruction_quote: save }],
-      [{ document: "d1", role: "clean", file: "Supply terms.docx", cause: "role", reason: "names no role the run delivers", asked: true, asked_file: "Supply terms.docx" }],
+      [{ document: "d1", role: "clean", file: "Supply terms.docx", cause: "role", reason: "names no role the run delivers", asked: true, asked_file: "Supply terms.docx", asked_spelling: "Supply terms.docx" }],
       [`Your instructions mention the file name "Supply terms.docx", but it was not applied: "Supply note" keeps its planned file name because it was not settled which file takes the name.`], {}],
     ["notes row naming a document", [{ document: "d1", role: "drafting_notes", file: "Supply terms.docx", instruction_quote: save }],
-      [{ document: "d1", role: "drafting_notes", file: "Supply terms.docx", cause: "notes_document", reason: "a selection of the notes that names a document", asked: true, asked_file: "Supply terms.docx" }],
+      [{ document: "d1", role: "drafting_notes", file: "Supply terms.docx", cause: "notes_document", reason: "a selection of the notes that names a document", asked: true, asked_file: "Supply terms.docx", asked_spelling: "Supply terms.docx" }],
       [`Your instructions mention the file name "Supply terms.docx", but it was not applied: the name could not be matched to a document in this package.`], {}],
     ["name shape", [{ document: "d1", role: "body", file: "Supply: terms.docx", instruction_quote: "Save the supply note as Supply: terms.docx" }],
-      [{ document: "d1", role: "body", file: "Supply: terms.docx", cause: "file", reason: "not a plain Word file name", asked: true, asked_file: "Supply: terms.docx" }],
+      [{ document: "d1", role: "body", file: "Supply: terms.docx", cause: "file", reason: "not a plain Word file name", asked: true, asked_file: "Supply: terms.docx", asked_spelling: "Supply: terms.docx" }],
       [`Your instructions mention the file name "Supply: terms.docx", but it was not applied: "Supply note" keeps its planned file name because the name is not a usable Word file name.`], {}],
     // The name is in the lawyer's words, but not in the instruction the row quotes.
     ["no naming instruction", [{ document: "d1", role: "body", file: "Supply terms.docx", instruction_quote: "Prepare a supply note from the supply terms" }],
@@ -199,12 +199,12 @@ test("each withheld delivery row records its own plain reason", async () => {
     ["not a row", ["Supply terms.docx"], [{ cause: "selection", reason: "not a complete delivery selection", asked: false }], [], {}],
     ["conflict between rows", [{ document: "d1", role: "body", file: "Supply terms.docx", instruction_quote: save },
       { document: "d2", role: "body", file: "Supply terms.docx", instruction_quote: "Save the covering letter as Supply terms.docx" }],
-    [{ document: "d1", role: "body", file: "Supply terms.docx", cause: "conflict", reason: "conflicts with another delivery selection", asked: true, asked_file: "Supply terms.docx" },
-      { document: "d2", role: "body", file: "Supply terms.docx", cause: "conflict", reason: "conflicts with another delivery selection", asked: true, asked_file: "Supply terms.docx" }],
+    [{ document: "d1", role: "body", file: "Supply terms.docx", cause: "conflict", reason: "conflicts with another delivery selection", asked: true, asked_file: "Supply terms.docx", asked_spelling: "Supply terms.docx" },
+      { document: "d2", role: "body", file: "Supply terms.docx", cause: "conflict", reason: "conflicts with another delivery selection", asked: true, asked_file: "Supply terms.docx", asked_spelling: "Supply terms.docx" }],
     // One item for the name lists every file it was not applied to.
     [`Your instructions mention the file name "Supply terms.docx", but it was not applied: "Supply note" and "Covering letter" keep their planned file names because the name conflicts with another file name chosen for this package.`], {}],
     ["another planned file's name", [{ document: "d1", role: "body", file: "Letter terms.docx", instruction_quote: "Save the supply note as Letter terms.docx" }],
-      [{ document: "d1", role: "body", file: "Letter terms.docx", cause: "planned_name", reason: "another planned file already has that name", asked: true, asked_file: "Letter terms.docx" }],
+      [{ document: "d1", role: "body", file: "Letter terms.docx", cause: "planned_name", reason: "another planned file already has that name", asked: true, asked_file: "Letter terms.docx", asked_spelling: "Letter terms.docx" }],
       [`Your instructions mention the file name "Letter terms.docx", but it was not applied: "Supply note" keeps its planned file name because another file in this package already has the name.`], { file: "Letter terms.docx" }],
   ]
   for (const [label, rows, records, details, options] of cases) {
@@ -232,8 +232,8 @@ test("a withheld name a requested-files item already raises is not raised again"
 
 const SAVE = "Save the supply note as Supply terms.docx"
 const GROUNDED = { document: "d1", role: "body", file: "Supply terms.docx", instruction_quote: SAVE } as const
-const asked = (file: string, cause: WithheldDelivery["cause"], reason: string, document: string | null = "d1", role = "body", spelled = file): WithheldDelivery =>
-  ({ document, role, file, cause, reason, asked: true, asked_file: spelled })
+const asked = (file: string, cause: WithheldDelivery["cause"], reason: string, document: string | null = "d1", role = "body", spelled = file, written = spelled): WithheldDelivery =>
+  ({ document, role, file, cause, reason, asked: true, asked_file: spelled, asked_spelling: written })
 
 test("a name the lawyer did not ask for is kept as a record and never shown to the lawyer, whatever refused it", async () => {
   const cases: [string, Record<string, unknown>, WithheldDelivery][] = [
@@ -363,6 +363,7 @@ test("a name that is only part of what the lawyer's words give is no item: a tit
   const cases: [string, string, string][] = [
     ["a title cut short", `${REQUEST} The supply note should be titled Supply terms and conditions.`, "The supply note should be titled Supply terms"],
     ["inside a longer name", `${REQUEST} Save the supply note as ACME-Supply terms.docx.`, "Save the supply note as ACME-Supply terms.docx"],
+    ["after a full stop inside a longer name", `${REQUEST} Save the supply note as ACME.Supply terms.docx.`, "Save the supply note as ACME.Supply terms.docx"],
   ]
   for (const [label, request, quote] of cases) {
     const directory = twoDocuments(request)
@@ -415,6 +416,69 @@ test("a file name's surrounding spaces alone never refuse its row on the last at
   expect((await acceptStageReply(directory, "package-review", review([padded]))).issues).toEqual(["Delivery file must be the requested Word filename, without a folder path."])
   expect((await acceptStageReply(directory, "package-review", review([padded]), { final: true })).issues).toEqual([])
   expect(readPackageReview(directory)).toEqual({ status: "pass", findings: [], limitations: ["A disclosed gap."], delivery: [GROUNDED] })
+  expect(withheldDeliveryItems(directory)).toEqual([])
+})
+
+test("a title the lawyer gives without an extension is disclosed as written, never with the .docx the run adds", async () => {
+  const request = `${REQUEST} The supply note should be titled Supply terms.`
+  const quote = "The supply note should be titled Supply terms"
+  const directory = twoDocuments(request)
+  writeLeanText(directory, "drafting-notes.md", "# Notes\nThe supply note records the agreed terms.")
+  const text = await lawyerText(directory, [{ ...GROUNDED, document: "d9", instruction_quote: quote }])
+  const detail = `Your instructions mention the file name "Supply terms", but it was not applied: the name could not be matched to a document in this package.`
+  expect(withheldDeliveryItems(directory).map(item => item.detail)).toEqual([detail])
+  expect(text.split(detail)).toHaveLength(3)
+  expect(text).not.toContain("Supply terms.docx")
+  expect(readPackageReview(directory)?.withheld_delivery).toEqual([asked("Supply terms.docx", "document", "names no planned document", "d9", "body", "Supply terms.docx", "Supply terms")])
+  // The file name the title gives still matches a kept row's name: no item.
+  const kept = twoDocuments(request)
+  const rows = [{ ...GROUNDED, instruction_quote: quote }, { ...GROUNDED, role: "clean", instruction_quote: quote }]
+  expect((await acceptStageReply(kept, "package-review", review(rows), { final: true })).issues).toEqual([])
+  expect(readPackageReview(kept)).toMatchObject({ delivery: [rows[0]], withheld_delivery: [asked("Supply terms.docx", "role", "names no role the run delivers", "d1", "clean", "Supply terms.docx", "Supply terms")] })
+  expect(withheldDeliveryItems(kept)).toEqual([])
+})
+
+// A name the lawyer's words open with any mark but a hyphen or a full stop (a
+// name they join is cut short, above), or give in a folder of their own:
+// [label, instruction, rows, the name quoted, why].
+const ANGLE = "Save the supply note as <Supply terms.docx>"
+const UNMATCHED = "the name could not be matched to a document in this package"
+const OPENED: [string, string, unknown[], string, string][] = [
+  ["an angle bracket", ANGLE, [{ ...GROUNDED, document: "d9", instruction_quote: ANGLE }], "Supply terms.docx", UNMATCHED],
+  ["an angle bracket, two files", ANGLE, [{ ...GROUNDED, instruction_quote: ANGLE }, { ...GROUNDED, document: "d2", instruction_quote: ANGLE }], "Supply terms.docx",
+    `"Supply note" and "Covering letter" keep their planned file names because the name conflicts with another file name chosen for this package`],
+  ["low quotation marks", "Save the supply note as „Supply terms.docx“", [{ ...GROUNDED, document: "d9", instruction_quote: "Save the supply note as „Supply terms.docx" }], "Supply terms.docx", UNMATCHED],
+  ["a dash", "Save the supply note as—Supply terms.docx", [{ ...GROUNDED, document: "d9", instruction_quote: "Save the supply note as—Supply terms.docx" }], "Supply terms.docx", UNMATCHED],
+  ["their own folder", "Save the supply note as drafts/Supply terms.docx",
+    [{ ...GROUNDED, file: "drafts/Supply terms.docx", instruction_quote: "Save the supply note as drafts/Supply terms.docx" }], "drafts/Supply terms.docx",
+    `"Supply note" keeps its planned file name because the name is not a usable Word file name`],
+]
+for (const [label, instruction, rows, name, rest] of OPENED)
+  test(`a name the lawyer's words give after ${label} is disclosed as they write it`, async () => {
+    const request = `${REQUEST} ${instruction}.`
+    const directory = twoDocuments(request)
+    writeLeanText(directory, "drafting-notes.md", "# Notes\nThe supply note records the agreed terms.")
+    const text = await lawyerText(directory, rows)
+    const detail = `Your instructions mention the file name "${name}", but it was not applied: ${rest}.`
+    expect(withheldDeliveryItems(directory).map(item => item.detail)).toEqual([detail])
+    expect(text.split(detail)).toHaveLength(3)
+    expect(request).toContain(name)
+  })
+
+test("a quote the lawyer's words hold only when its letters are lowered one by one gives no item", async () => {
+  // Lowered in context, the quote's last sigma is final and the lawyer's is not.
+  const directory = twoDocuments(`${REQUEST} Save the supply note as Report.docx ΤΑΣΟΣ.`)
+  const row = { document: "d1", role: "body", file: "Report.docx", instruction_quote: "Save the supply note as Report.docx ΤΑΣ" }
+  expect((await acceptStageReply(directory, "package-review", review([row]), { final: true })).issues).toEqual([])
+  expect(readPackageReview(directory)?.withheld_delivery).toEqual([{ document: "d1", role: "body", file: "Report.docx", ...NOT_QUOTED }])
+  expect(withheldDeliveryItems(directory)).toEqual([])
+})
+
+test("a name a kept row applies with a run of spaces is no item", async () => {
+  const directory = twoDocuments(`${REQUEST} ${SAVE}.`)
+  const spaced = { ...GROUNDED, file: "Supply  terms.docx" }
+  expect((await acceptStageReply(directory, "package-review", review([spaced, { ...GROUNDED, role: "clean" }]), { final: true })).issues).toEqual([])
+  expect(readPackageReview(directory)).toMatchObject({ delivery: [spaced], withheld_delivery: [asked("Supply terms.docx", "role", "names no role the run delivers", "d1", "clean")] })
   expect(withheldDeliveryItems(directory)).toEqual([])
 })
 

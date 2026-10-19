@@ -25,8 +25,9 @@ export type PackageReview = {
 /** A delivery row the last attempt withheld: what it selects, as the reply
  * gave it; why (`cause`, and `reason` in plain words); and whether the
  * lawyer's own words give its name inside the instruction it quotes (`asked`,
- * deliveryNameAsked), with the name as the lawyer spells it (`asked_file`). */
-export type WithheldDelivery = { document?: string | null; role?: string; file?: string; cause: WithheldCause; reason: string; asked: boolean; asked_file?: string }
+ * deliveryNameAsked), with the file name in their spelling (`asked_file`, a
+ * title with ".docx" added) and exactly as they write it (`asked_spelling`). */
+export type WithheldDelivery = { document?: string | null; role?: string; file?: string; cause: WithheldCause; reason: string; asked: boolean; asked_file?: string; asked_spelling?: string }
 
 /** A row's own check that refuses it, or a conflict: with another row, with
  * the notes' file name, or with another planned file's name. */
@@ -145,7 +146,7 @@ export function withholdUngroundedDelivery(directory: string, value: Record<stri
       ...(typeof document === "string" || document === null ? { document } : {}),
       ...(typeof role === "string" ? { role } : {}),
       ...(typeof file === "string" && file ? { file } : {}),
-      cause, reason: WITHHELD_REASON[cause], asked: asked !== undefined, ...(asked !== undefined ? { asked_file: asked } : {}),
+      cause, reason: WITHHELD_REASON[cause], asked: asked !== undefined, ...(asked ? { asked_file: asked.file, asked_spelling: asked.spelling } : {}),
     }
     return [[JSON.stringify(record), record]]
   }))
@@ -202,11 +203,11 @@ function listed(items: string[]) {
 }
 
 /** The withheld delivery rows (withheld_delivery) the lawyer reads about: only
- * names the lawyer's words give in the instruction a row quotes (asked), in
- * their spelling (asked_file), one item per name, each disclosed with the
- * review draft and never blocking it. Any other row stays an internal record
- * and a limitation, so no name a model made reaches the lawyer and the planned
- * name stands. Names compare trimmed, case and spaces aside. None is raised for
+ * names the lawyer's words give in the instruction a row quotes (asked), quoted
+ * as they write them (asked_spelling), one item per file name (asked_file),
+ * each disclosed with the review draft and never blocking it. Any other row
+ * stays an internal record and a limitation, so no name a model made reaches
+ * the lawyer and the planned name stands. Names compare trimmed, case and spaces aside. None is raised for
  * a name a kept row applies, one the planned file of a document a row selects
  * (or of the notes) already has, or one a requested-files item is about
  * (requestedFilesItemNamed). Each says in one plain sentence only what the code
@@ -231,10 +232,11 @@ export function withheldDeliveryItems(directory: string): OpenItem[] {
       : document && plannedName(combined?.document === document.id ? "combined" : document.deliverable === "redline" ? "redline" : "body", document.id)
     return { notes, document, planned }
   }
-  const rows = review.withheld_delivery.filter((row): row is WithheldDelivery & { asked_file: string } => !!row && typeof row === "object" && row.asked === true &&
-    typeof row.asked_file === "string" && !!row.asked_file.trim() && typeof row.cause === "string" && Object.hasOwn(WITHHELD_REASON, row.cause))
+  const rows = review.withheld_delivery.filter((row): row is WithheldDelivery & { asked_file: string; asked_spelling: string } => !!row && typeof row === "object" && row.asked === true &&
+    typeof row.asked_file === "string" && !!row.asked_file.trim() && typeof row.asked_spelling === "string" && !!row.asked_spelling.trim() &&
+    typeof row.cause === "string" && Object.hasOwn(WITHHELD_REASON, row.cause))
   const applied = new Set(review.delivery.map(row => key(row.file)))
-  const names = new Map<string, (WithheldDelivery & { asked_file: string })[]>()
+  const names = new Map<string, (typeof rows)[number][]>()
   for (const row of rows) names.set(key(row.asked_file), [...names.get(key(row.asked_file)) ?? [], row])
   return [...names].flatMap(([name, group]): OpenItem[] => {
     if (applied.has(name) || requestedFilesItemNamed(directory, group[0].asked_file)) return []
@@ -254,7 +256,7 @@ export function withheldDeliveryItems(directory: string): OpenItem[] {
     }
     const parts = [...reasons].map(([reason, subjects]) => subjects.length > 1 ? `${listed(subjects)} keep their planned file names because ${reason}`
       : subjects[0] === "the drafting notes" ? `the drafting notes keep their planned file name because ${reason}` : `${subjects[0]} keeps its planned file name because ${reason}`)
-    const detail = `Your instructions mention the file name "${excerpt(group[0].asked_file.trim().replace(/[\x00-\x1f\x7f]/g, " "), 120)}", but it was not applied: ${parts.length ? parts.join("; ") : "the name could not be matched to a document in this package"}.`
+    const detail = `Your instructions mention the file name "${excerpt(group[0].asked_spelling.trim().replace(/[\x00-\x1f\x7f]/g, " "), 120)}", but it was not applied: ${parts.length ? parts.join("; ") : "the name could not be matched to a document in this package"}.`
     const only = documents.size === 1 && seen.size === 1 ? [...documents][0] : undefined
     return [{ ...openItem("package-review", "omission", detail, only ? { document: only } : {}), status: "disclosed", resolution: WITHHELD_RESOLUTION }]
   })

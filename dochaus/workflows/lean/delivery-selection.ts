@@ -87,19 +87,29 @@ export function wordFileName(file: unknown): file is string {
   return typeof file === "string" && /^[^\\/:*?"<>|`\x00-\x1f]+\.docx$/i.test(file) && file === file.trim()
 }
 
-/** The lawyer's spelling of `file`, a Word file name, when the lawyer's own
- * words give it, as written, inside the instruction its row quotes: a name
- * spelledNames finds there, compared with the file's last path part, case and
- * spaces aside; whatever else refuses its row. It says only that their words
- * give the name, not what they meant by it. A name cut short from a longer one,
- * or one only in the model's words, is none. Code only, never a prompt. */
-export function deliveryNameAsked(directory: string, quote: unknown, file: unknown): string | undefined {
+/** `file`, a Word file name, when the lawyer's own words give it inside the
+ * instruction its row quotes, whatever else refuses its row: the file name in
+ * their spelling (`file`, a title with ".docx" added) and exactly as they write
+ * it (`spelling`, a title without it). It is a name nameSpellings finds there,
+ * where a name may also start after any mark outside a word but a hyphen or a
+ * full stop (ASKED_OPENS), compared with the whole file name, or else with its
+ * last path part, case and spaces aside: a folder the lawyer writes is quoted
+ * with the name, one only the model gives never is. It says only that their
+ * words give the name, not what they meant by it. A name cut short from a
+ * longer one, or one only in the model's words, is none. Code only, never a
+ * prompt. */
+export function deliveryNameAsked(directory: string, quote: unknown, file: unknown): { file: string; spelling: string } | undefined {
   if (typeof file !== "string" || typeof quote !== "string" || !instructionFound(directory, quote)) return
-  const name = file.trim().replace(/^.*[\\/]/, "").trim()
-  if (!/\.docx$/i.test(name)) return
-  const key = normalize(name).toLocaleLowerCase()
-  for (const raw of lawyerWords(directory))
-    for (const spelled of spelledNames(raw, quote, name.slice(0, -5), ".docx")) if (normalize(spelled).toLocaleLowerCase() === key) return spelled
+  const whole = file.trim()
+  for (const name of new Set([whole, whole.replace(/^.*[\\/]/, "").trim()])) {
+    if (!/\.docx$/i.test(name)) continue
+    const key = normalize(name).toLocaleLowerCase()
+    for (const raw of lawyerWords(directory))
+      for (const { written, title } of nameSpellings(raw, quote, name.slice(0, -5), ".docx", ASKED_OPENS)) {
+        const spelled = title ? `${written}.docx` : written
+        if (normalize(spelled).toLocaleLowerCase() === key) return { file: spelled, spelling: written }
+      }
+  }
 }
 
 const NOT_QUOTED = "Delivery instruction_quote must quote the lawyer's actual instructions naming that output file or explicitly titling the Word output with its exact basename. Quote the actual naming instruction; source titles and input filenames do not themselves establish output intent. For an explicitly titled Word output, add only .docx to that title; do not guess, shorten or rename it. When the lawyer's words give that output no file name or explicit title, return no delivery row for it."
@@ -143,6 +153,10 @@ export const OTHER_FORMAT = /\.(?:doc|docm|dot|dotx|dotm|rtf|odt|wpd|pages|pdf|x
 // between spaces.
 const WORD = /[\p{L}\p{N}_]/u
 const NAME_OPENS = /["«(\[*`:]/
+/** Where else a name the lawyer asked for (deliveryNameAsked) may start: after
+ * any mark outside a word but a hyphen or a full stop, which join it to a
+ * longer name; an apostrophe still only outside a word. */
+const ASKED_OPENS = /[^\p{L}\p{N}_\-.']/u
 const NAME_END = /^(?:$|[,;!?:"'»)\]*`]|\.(?:["'»)\]*`]|\s|$)|\s[-–—](?:\s|$))/
 const LINE_END = /^[^\S\r\n]*[\r\n]/
 const NAMING = new RegExp(String.raw`(?:^|[^\p{L}\p{N}_])(?:${NAMING_WORDS}):?\s*(?:\*\*|["'«(\[*\x60])?$`, "u")
@@ -173,6 +187,13 @@ const fold = (text: string) => text.replace(/[\s\S]/gu, char => {
  * grounds or what its earlier literal or titled check accepted
  * (deliveryNameQuoted, quotedOrTitled). */
 export function* spelledNames(raw: string, quote: string, stem: string, extension: string) {
+  for (const { written, title } of nameSpellings(raw, quote, stem, extension, NAME_OPENS)) yield title ? `${written}.docx` : written
+}
+
+/** Each name spelledNames gives, as `raw` writes it (`written`), and whether it
+ * is a Word file's given without ".docx" (`title`), which spelledNames adds. A
+ * name may also start after a character `opens` matches. */
+function* nameSpellings(raw: string, quote: string, stem: string, extension: string, opens: RegExp) {
   const name = fold(normalize(stem))
   const words = fold(normalize(quote))
   const ending = extension.toLowerCase()
@@ -180,7 +201,7 @@ export function* spelledNames(raw: string, quote: string, stem: string, extensio
   const titled = ending === ".docx" && !formatStem(name) && !OTHER_FORMAT.test(name)
   const { text: normal, map } = normalizeWithMap(raw)
   const text = fold(normal)
-  const starts = (at: number) => at === 0 || text[at - 1] === " " || NAME_OPENS.test(text[at - 1]!) ||
+  const starts = (at: number) => at === 0 || text[at - 1] === " " || opens.test(text[at - 1]!) ||
     (text[at - 1] === "'" && !WORD.test(text[at - 2] ?? ""))
   for (let start = text.indexOf(words); start >= 0; start = text.indexOf(words, start + 1)) {
     const end = start + words.length
@@ -188,9 +209,9 @@ export function* spelledNames(raw: string, quote: string, stem: string, extensio
       if (!starts(at)) continue
       const close = at + name.length
       const spelled = (to: number) => raw.slice(map[at], map[to - 1]! + 1).replace(/\s+/g, " ")
-      if (text.startsWith(ending, close) && !WORD.test(text[close + ending.length] ?? "")) yield spelled(close + ending.length)
+      if (text.startsWith(ending, close) && !WORD.test(text[close + ending.length] ?? "")) yield { written: spelled(close + ending.length), title: false }
       else if (titled && close <= end && NAMING.test(text.slice(start, at)) && (NAME_END.test(text.slice(close)) || LINE_END.test(raw.slice(map[close - 1]! + 1))))
-        yield `${spelled(close)}.docx`
+        yield { written: spelled(close), title: true }
     }
   }
 }
