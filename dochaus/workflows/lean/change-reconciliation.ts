@@ -269,9 +269,12 @@ function deferredParagraphs(component: Component, dependencies: unknown[], parag
     const words = paragraphs.find(row => row.pid === pid)?.text.split(/\s+/).filter(Boolean) ?? []
     return `the paragraph beginning "${words.slice(0, 8).join(" ")}${words.length > 8 ? "…" : ""}"`
   }
+  // The reported reason may name paragraphs by id; the lawyer reads their opening words instead.
+  const known = paragraphs.map(row => row.pid).toSorted((a, b) => b.length - a.length)
+  const plain = (issue: string) => known.reduce((text, pid) => text.includes(pid) ? text.replaceAll(pid, opening(pid)) : text, issue).replace(/[.;\s]+$/, "")
   const deferred = new Map<string, ChangeList>()
   for (const [pid, report] of reports) {
-    const reason = `${DEPENDS_ELSEWHERE} It depends on ${[...report.on].map(opening).join(" and ")}.${report.issues.size ? ` Reason given: ${[...report.issues].join(" ")}` : ""}`
+    const reason = `${DEPENDS_ELSEWHERE} It depends on ${[...report.on].map(opening).join(" and ")}.${report.issues.size ? ` Reason given: ${[...report.issues].map(plain).join("; ")}.` : ""}`
     const unreconciled = unreconciledParagraph(component, pid, reason, false)
     if (unreconciled.withheld!.length <= (component.changes.withheld ?? []).filter(row => row.amendment.pid === pid).length) return undefined
     deferred.set(pid, unreconciled)

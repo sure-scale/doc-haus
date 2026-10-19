@@ -298,6 +298,7 @@ test("a sliced job cannot defer a paragraph that has no new change to withhold; 
   ["no candidate",(earlier,prepared)=>{earlier.amendments.shift();prepared.amendments.shift()},false],
   ["earlier change only",(_,prepared)=>{prepared.amendments.shift()},false],
   ["prepared change equal to the earlier one",(earlier,prepared)=>{prepared.amendments[0]={...earlier.amendments[0]!}},false],
+  ["earlier withheld row only",(earlier,prepared,first)=>{earlier.amendments.shift();prepared.amendments.shift();earlier.withheld=[{amendment:op(first,"Unverified intent."),issues:["Source support unresolved."]}]},false],
   ["paragraph listed in another job",()=>{},true],
  ]
  for(const [name,adjust,elsewhere] of shapes){
@@ -340,4 +341,11 @@ test("failure reasons list jobs in document order whichever job fails first",asy
  expect(result.status).toBe("failed")
  const parts=[...((result as {reason:string}).reason.matchAll(/whole part (\d+) of/g))].map(match=>Number(match[1]))
  expect(parts.length).toBeGreaterThan(2);expect(parts).toEqual(parts.toSorted((a,b)=>a-b))
+})
+test("a deferred change's reported reasons name other paragraphs by their opening words, never by id",async()=>{
+ const dir=matter(),rows=splitGoal(dir),[first,before,last]=[rows[0]!.pid,rows[38]!.pid,rows[39]!.pid]
+ const model=scriptedModel({"lean-changes":prompt=>{const listed=targets(prompt),reports=listed.includes(first);return JSON.stringify({amendments:listed.filter(row=>!reports||row!==first).map(row=>({pid:row,updated:`Reconciled correction for ${row}.`,reason:"Combined supported effect.",sources:support})),questions:[],dependencies:reports?[{pid:first,depends_on:[last],issue:`Term must match ${last}.`},{pid:first,depends_on:[before],issue:`Cross-reference to ${before} moves.`}]:[]})}})
+ const result=await reconcile(dir,model.port),reason=readChangeList(dir,"d1")!.withheld![0]!.issues[0]!
+ expect(result.status).toBe("done");expect(reason).not.toMatch(/p[0-9a-f]{12}/)
+ expect(reason).toContain('Reason given: Term must match the paragraph beginning "Initial provision 40. The supplier keeps the delivery…"; Cross-reference to the paragraph beginning "Initial provision 39. The supplier keeps the delivery…" moves.')
 })
