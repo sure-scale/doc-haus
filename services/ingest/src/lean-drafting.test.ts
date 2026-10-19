@@ -38,6 +38,7 @@ import { scriptedLeanModel } from "../../../dochaus/workflows/lean/test-support"
 import { openDb } from "./db"
 import { writeDeliverable, writeDeliverableRevision } from "./deliverable"
 import { acceptedWorkingDocxUpdate } from "./document-amendments"
+import { deleteMatterDocument } from "./document-delete"
 import { registerLeanDeliverable } from "./lean-deliverables"
 
 // The coordinator, state files and routes are real; only the model behind the
@@ -607,9 +608,43 @@ test("a delivered draft changed after the final check is disclosed; the check's 
   await writeDeliverableRevision(directory, "Supply note.docx", revised, { priorSha256: sha(checked), updateWorkingRevision: await acceptedWorkingDocxUpdate(directory, file, revised) })
   expect(sha(readFileSync(file))).not.toBe(sha(checked))
   const status = leanDraftingStatus(directory)!
-  expect(status.changed_after_check).toEqual({ since: gate.checked_at, documents: ["Supply note.docx"] })
+  expect(status.changed_after_check).toEqual({ since: gate.checked_at, documents: ["Supply note.docx"], missing: [] })
   // Disclosure only: nothing re-runs, upgrades or clears the final check.
   expect(status).toMatchObject({ status: "completed", gate, open_items: [open] })
+  expect(JSON.parse(readLeanText(directory, "gate.json")!)).toEqual(gate)
+})
+
+test("a delivered draft deleted after the final check is disclosed as missing; an unchanged one is not, and a changed one stays changed", async () => {
+  const directory = matter()
+  const docx = async (text: string) => Buffer.from(withParagraphPointers(await Packer.toBuffer(new Document({ sections: [{ children: [new Paragraph(text)] }] }))))
+  const sha = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex")
+  writeLeanState(directory, { ...initLeanState(directory, { request: "Draft a supply note and a side letter.", ownerSessionID: "ses_owner", model: MODEL }), status: "completed" })
+  const note = await docx("Delivery is due within five days.")
+  const letter = await docx("The parties agree a side arrangement.")
+  await writeDeliverable(directory, "Supply note.docx", note, { precondition: { kind: "create" } })
+  await writeDeliverable(directory, "Side letter.docx", letter, { precondition: { kind: "create" } })
+  const gate = { status: "pass", delivery: "execution_ready", blocking: [], disclosed: [], items: [], checked_at: "2026-10-11T09:05:28.417Z" }
+  writeLeanText(directory, "gate.json", `${JSON.stringify(gate)}\n`)
+  writeLeanText(directory, "documents.json", `${JSON.stringify({ schema: "dochaus.lean.documents/2", status: "completed", documents: [
+    { kind: "body", document: "d1", title: "Supply note", path: ".dochaus/lean/d1/body-applied.docx", sha256: sha(note), deliverable: "Supply note.docx" },
+    { kind: "body", document: "d2", title: "Side letter", path: ".dochaus/lean/d2/body-applied.docx", sha256: sha(letter), deliverable: "Side letter.docx" },
+  ] })}\n`)
+  // Both drafts hold the bytes the final check saw.
+  expect(leanDraftingStatus(directory)!.changed_after_check).toBeNull()
+
+  // The lawyer deletes one delivered draft through the matter's document route.
+  await deleteMatterDocument(directory, "Supply note.docx")
+  expect(existsSync(path.join(directory, "Supply note.docx"))).toBe(false)
+  expect(leanDraftingStatus(directory)!.changed_after_check).toEqual({ since: gate.checked_at, documents: ["Supply note.docx"], missing: ["Supply note.docx"] })
+
+  // The other is then changed: it is disclosed as changed, never as missing.
+  const revised = await docx("The parties agree a revised side arrangement.")
+  const file = path.join(directory, "Side letter.docx")
+  await writeDeliverableRevision(directory, "Side letter.docx", revised, { priorSha256: sha(letter), updateWorkingRevision: await acceptedWorkingDocxUpdate(directory, file, revised) })
+  const status = leanDraftingStatus(directory)!
+  expect(status.changed_after_check).toEqual({ since: gate.checked_at, documents: ["Supply note.docx", "Side letter.docx"], missing: ["Supply note.docx"] })
+  // Disclosure only: the check's verdict is passed through unchanged.
+  expect(status).toMatchObject({ status: "completed", gate })
   expect(JSON.parse(readLeanText(directory, "gate.json")!)).toEqual(gate)
 })
 
@@ -621,21 +656,29 @@ describe("changed-after-check reads only regular files inside the matter", () =>
     writeFileSync(outside, outsideBytes)
     prepare(directory, outside)
     writeLeanState(directory, { ...initLeanState(directory, { request: "Draft a short supply note.", ownerSessionID: "ses_owner", model: MODEL }), status: "completed" })
+    // The recorded bytes are the outside file's: a read that followed the link would find them unchanged.
     writeLeanText(directory, "documents.json", `${JSON.stringify({ schema: "dochaus.lean.documents/2", status: "completed", documents: [
-      { kind: "body", document: "d1", title: "Supply note", path: ".dochaus/lean/d1/body-applied.docx", sha256: "0".repeat(64), deliverable },
+      { kind: "body", document: "d1", title: "Supply note", path: ".dochaus/lean/d1/body-applied.docx", sha256: createHash("sha256").update(outsideBytes).digest("hex"), deliverable },
     ] })}\n`)
     return directory
   }
+  for (const [label, name] of [
+    ["a dot name", "."],
+    ["a dot-dot name", ".."],
+    ["an empty name", ""],
+  ] as const) {
+    test(`${label} is not a delivered document and is skipped`, () => {
+      const directory = completedWith(name, () => {})
+      expect(leanDraftingStatus(directory)!.changed_after_check).toBeNull()
+    })
+  }
   for (const [label, name, prepare] of [
-    ["a dot name", ".", () => {}],
-    ["a dot-dot name", "..", () => {}],
-    ["an empty name", "", () => {}],
     ["a directory", "Folder.docx", (directory: string) => mkdirSync(path.join(directory, "Folder.docx"))],
     ["a symlink to a file outside the matter", "Link.docx", (directory: string, outside: string) => symlinkSync(outside, path.join(directory, "Link.docx"))],
   ] as const) {
-    test(`${label} is skipped like a missing file`, () => {
+    test(`${label} is never read and is disclosed as a missing draft`, () => {
       const directory = completedWith(name, prepare)
-      expect(leanDraftingStatus(directory)!.changed_after_check).toBeNull()
+      expect(leanDraftingStatus(directory)!.changed_after_check).toEqual({ since: null, documents: [name], missing: [name] })
     })
   }
 })

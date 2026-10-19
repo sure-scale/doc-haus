@@ -241,9 +241,15 @@ test("a completed run claims only the checks its status shows", () => {
     { tone: "warn", text: "1 requirement left open by the checklist check" },
   ])
   expect(resultChecks(lean({ ...done, gate: null }))).toEqual([])
-  const changed = lean({ ...done, changed_after_check: { since: "2026-10-11T09:05:28.417Z", documents: ["Supply note.docx"] } })
+  const changed = lean({ ...done, changed_after_check: { since: "2026-10-11T09:05:28.417Z", documents: ["Supply note.docx"], missing: [] } })
   expect(resultChecks(changed)).toEqual([
     { tone: "warn", text: "Changed after final check: review the draft" },
+    { tone: "pass", text: "Quotes checked against sources" },
+  ])
+  // A delivered draft no longer in the matter is named as missing, not as one to review.
+  const missing = lean({ ...done, changed_after_check: { since: "2026-10-11T09:05:28.417Z", documents: ["Supply note.docx"], missing: ["Supply note.docx"] } })
+  expect(resultChecks(missing)).toEqual([
+    { tone: "warn", text: "Missing after final check: the delivered draft is no longer in the matter" },
     { tone: "pass", text: "Quotes checked against sources" },
   ])
   expect(resultChecks(lean({ ...done, changed_after_check: null }))[0]).toEqual({ tone: "pass", text: "Final workflow check passed" })
@@ -285,7 +291,7 @@ test("a review draft with unresolved checklist findings never reads as a clean c
   ])
   expect(resultChecks(one)[0]).toEqual({ tone: "warn", text: "1 checklist requirement not satisfied" })
   expect(resultChecks(plain)[0]).toEqual({ tone: "pass", text: "Final workflow check passed" })
-  const changed = lean({ ...two, changed_after_check: { since: "2026-10-11T09:05:28.417Z", documents: ["Supply note.docx"] } })
+  const changed = lean({ ...two, changed_after_check: { since: "2026-10-11T09:05:28.417Z", documents: ["Supply note.docx"], missing: [] } })
   expect(resultChecks(changed).slice(0, 2)).toEqual([
     { tone: "warn", text: "Changed after final check: review the draft" },
     { tone: "warn", text: "2 checklist requirements not satisfied" },

@@ -118,8 +118,9 @@ export type LeanDraftingStatus = {
   } | null
   documents: { status: "blocked" | "completed"; documents: LeanDocument[] } | null
   /** Delivered drafts whose matter file differs from what the final check saw
-   * (`since` is when it ran). The gate's verdict above is not re-evaluated. */
-  changed_after_check?: { since: string | null; documents: string[] } | null
+   * (`since` is when it ran); `missing` is the subset no longer in the matter.
+   * The gate's verdict above is not re-evaluated. */
+  changed_after_check?: { since: string | null; documents: string[]; missing: string[] } | null
   /** The documents the run plans to draft, in order; null before the outline. */
   plan: { documents: LeanPlannedDocument[] } | null
   /** The name the plan gives the memo the lawyer asked for, which the run's

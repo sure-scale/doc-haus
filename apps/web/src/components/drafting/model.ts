@@ -498,12 +498,28 @@ const DELIVERY: Record<string, string> = {
   review_draft: "a review draft, not yet ready for signature",
 }
 
-/** The final check's verdict for a delivered run. A draft changed after the
- * check is not what it checked, so the verdict is not repeated for it. A draft
- * delivered with unresolved checklist findings did not pass clean. */
+/** How a delivered draft that is no longer what the final check saw is named:
+ * changed in the matter, or missing from it, so a draft that is gone is never
+ * one to review. Undefined while every delivered draft is as checked. */
+export function afterCheckChange(status: LeanDraftingStatus) {
+  const after = status.changed_after_check
+  if (!after?.documents.length) return undefined
+  const missing = after.missing.length
+  if (!missing) return { label: "Changed after final check", detail: "review the draft" }
+  if (missing < after.documents.length) return { label: "Changed or missing after final check", detail: "review the drafts" }
+  return {
+    label: "Missing after final check",
+    detail: missing === 1 ? "the delivered draft is no longer in the matter" : "the delivered drafts are no longer in the matter",
+  }
+}
+
+/** The final check's verdict for a delivered run. A draft changed or missing
+ * after the check is not what it checked, so the verdict is not repeated for
+ * it. A draft delivered with unresolved checklist findings did not pass clean. */
 export function finalCheckNote(status: LeanDraftingStatus) {
   if (!status.gate?.delivery) return undefined
-  if (status.changed_after_check?.documents.length) return "Changed after final check: review the draft."
+  const after = afterCheckChange(status)
+  if (after) return `${after.label}: ${after.detail}.`
   const findings = checklistFindingsCount(status)
   if (findings !== undefined)
     return `Final workflow check: a review draft with ${unresolvedFindingsPhrase(findings)}, not yet ready for signature. ${findingsConsequence(findings)}`

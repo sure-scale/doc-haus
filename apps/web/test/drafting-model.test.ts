@@ -224,7 +224,7 @@ test("a review draft with unresolved checklist findings reads differently from a
   )
   expect(finalCheckNote(plain)).toBe("Final workflow check passed: a review draft, not yet ready for signature.")
   // A draft changed after the check is not what it checked.
-  expect(finalCheckNote(lean({ ...two, changed_after_check: { since: completed.gate.checked_at, documents: ["Supply note.docx"] } }))).toBe(
+  expect(finalCheckNote(lean({ ...two, changed_after_check: { since: completed.gate.checked_at, documents: ["Supply note.docx"], missing: [] } }))).toBe(
     "Changed after final check: review the draft.",
   )
 
@@ -705,7 +705,7 @@ test("open items read as one sentence, questions apart from placeholders", () =>
 test("a draft changed after the final check stops repeating the check's verdict", () => {
   const render = (status: LeanDraftingStatus) =>
     renderToStaticMarkup(createElement(RunHeader, { status, actions, own: true, onOpen: () => {}, onShowDrafts: () => {} }))
-  const changed = lean({ ...completed, changed_after_check: { since: completed.gate.checked_at, documents: ["Supply note.docx"] } })
+  const changed = lean({ ...completed, changed_after_check: { since: completed.gate.checked_at, documents: ["Supply note.docx"], missing: [] } })
   expect(finalCheckNote(lean(completed))).toBe("Final workflow check passed: ready for signature.")
   expect(finalCheckNote(lean({ ...completed, gate: { ...completed.gate, delivery: "review_draft" } }))).toBe(
     "Final workflow check passed: a review draft, not yet ready for signature.",
@@ -720,6 +720,28 @@ test("a draft changed after the final check stops repeating the check's verdict"
   expect(runHeadline(changed, Date.now())).toMatchObject({ tone: "done", title: "Ready for review" })
   expect(runHeadline(changed, Date.now()).meta).toContain("Changed after final check")
   expect(runHeadline(lean(completed), Date.now()).meta).not.toContain("Changed after final check")
+})
+
+test("a delivered draft missing after the final check is disclosed as missing, not as a draft to review", () => {
+  const render = (status: LeanDraftingStatus) =>
+    renderToStaticMarkup(createElement(RunHeader, { status, actions, own: true, onOpen: () => {}, onShowDrafts: () => {} }))
+  const after = (documents: string[], missing: string[]) =>
+    lean({ ...completed, changed_after_check: { since: completed.gate.checked_at, documents, missing } })
+  const missing = after(["Supply note.docx"], ["Supply note.docx"])
+  expect(finalCheckNote(missing)).toBe("Missing after final check: the delivered draft is no longer in the matter.")
+  expect(finalCheckNote(after(["Supply note.docx", "Side letter.docx"], ["Supply note.docx", "Side letter.docx"]))).toBe(
+    "Missing after final check: the delivered drafts are no longer in the matter.",
+  )
+  // One draft deleted and another changed: both are named, and neither repeats the verdict.
+  const both = after(["Supply note.docx", "Side letter.docx"], ["Supply note.docx"])
+  expect(finalCheckNote(both)).toBe("Changed or missing after final check: review the drafts.")
+  const header = render(missing)
+  expect(header).toContain("Missing after final check: the delivered draft is no longer in the matter.")
+  expect(header).not.toContain("ready for signature")
+  expect(header).not.toContain("review the draft")
+  expect(runHeadline(missing, Date.now()).meta).toContain("Missing after final check")
+  expect(runHeadline(missing, Date.now()).meta).not.toContain("Changed after final check")
+  expect(runHeadline(both, Date.now()).meta).toContain("Changed or missing after final check")
 })
 
 test("a stopped run's header says what happened in plain words; the checker's wording stays on its step", () => {

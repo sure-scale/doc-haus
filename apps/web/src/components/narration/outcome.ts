@@ -1,5 +1,6 @@
 import type { LeanDraftingStatus } from "../../api/ingest/lean"
 import {
+  afterCheckChange,
   attentionItems,
   checklistFindingsCount,
   delegableQuestion,
@@ -75,8 +76,9 @@ export type ResultCheck = { tone: "pass" | "warn" | "neutral"; text: string }
 /** The checks a completed run can honestly claim, from its status alone: the
  * final check, quotations verified against the sources (every misquote the
  * checks find becomes a quote item), and what remains for the lawyer. A draft
- * changed after the final check is not what it checked, so that pass is not
- * claimed; nor is it for a draft delivered with unresolved checklist findings. */
+ * changed or missing after the final check is not what it checked, so that
+ * pass is not claimed; nor is it for a draft delivered with unresolved
+ * checklist findings. */
 export function resultChecks(status: LeanDraftingStatus): ResultCheck[] {
   const items = attentionItems(status).filter((item) => item.kind !== "question")
   const misses = items.filter((item) => item.kind === "quote_miss").length
@@ -85,11 +87,11 @@ export function resultChecks(status: LeanDraftingStatus): ResultCheck[] {
   const unresolved = items.filter((item) => item.kind === "checklist_unresolved").length
   const other = items.length - misses - placeholders - unverified - unresolved
   const findings = checklistFindingsCount(status)
-  const changed = !!status.changed_after_check?.documents.length
+  const after = afterCheckChange(status)
   const checks: Array<ResultCheck | undefined> = [
     status.gate?.status === "pass"
-      ? changed
-        ? { tone: "warn", text: "Changed after final check: review the draft" }
+      ? after
+        ? { tone: "warn", text: `${after.label}: ${after.detail}` }
         : findings === undefined
           ? { tone: "pass", text: "Final workflow check passed" }
           : undefined
