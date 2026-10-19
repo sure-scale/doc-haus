@@ -84,6 +84,13 @@
   margin-left: auto;
 }
 
+.upload-actions .upload-keep-both {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+  font-weight: 600;
+}
+
 .upload-spinner {
   width: 12px;
   height: 12px;

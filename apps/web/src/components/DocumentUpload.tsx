@@ -322,7 +322,7 @@ const UPLOAD_LABEL: Record<Upload["status"], string> = {
   reading: "Reading the document…",
   ready: "Ready",
   failed: "Not added",
-  exists: "Already in this matter. Replace it or keep both?",
+  exists: "Already in this matter. Keep both or replace it?",
 }
 const DELIVERABLE_EXISTS = "A document created by Doc.Haus has this name. Keep both?"
 
@@ -358,19 +358,20 @@ export function UploadRow({ upload, onRetry, onChoose, onDismiss }: {
         )}
         {upload.status === "exists" && (
           <span className="upload-actions">
+            {/* Keep both loses nothing, so it leads; Replace overwrites and stays plain. */}
+            <button type="button" className="icon-btn upload-keep-both" title="Add this file under a new name and keep both" onClick={() => onChoose("keep-both")}>
+              Keep both
+            </button>
             {upload.existing?.role === "source" && (
               <button
                 type="button"
-                className="icon-btn danger"
+                className="icon-btn"
                 title={`Replace ${upload.existing.name} with this file — the current file is overwritten`}
                 onClick={() => onChoose("replace")}
               >
                 Replace
               </button>
             )}
-            <button type="button" className="icon-btn" title="Add this file under a new name and keep both" onClick={() => onChoose("keep-both")}>
-              Keep both
-            </button>
             <button type="button" className="icon-btn" onClick={onDismiss}>
               Cancel
             </button>
