@@ -370,6 +370,15 @@ export function handedBackBlock(directory: string) {
     `None is an agreed term, an answered decision or a settled dependency; record and review each as a drafting choice.\n${text}` : ""
 }
 
+/** The hand-backs as the drafting notes' writer sees them, or "" with none:
+ * worded to the lawyer, so an echo in the notes reads naturally. The stages
+ * that decide and apply each choice keep handedBackBlock. */
+export function handedBackNotesBlock(directory: string) {
+  const text = handedBackQuestionsText(directory)
+  return text ? "You asked us to decide these questions instead of answering them. For each, say what we chose, why and the alternative not taken, " +
+    `or that it stays open and what is needed. Each is our choice for you to confirm, not your answer.\n${text}` : ""
+}
+
 /** The heading of handedBackBlock where a prompt lists it after the answers
  * under plain headings rather than tags. */
 export const LEFT_TO_DRAFTING = "Left to the drafting (not the lawyer's answers):"

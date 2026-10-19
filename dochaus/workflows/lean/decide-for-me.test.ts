@@ -18,7 +18,7 @@ import { drainLeanRequests, enqueueLeanRequest, queuedAnswerIDs, type LeanReques
 import { researchPrompt } from "./research"
 import { runLean } from "./runner"
 import { handedBackItems, LEAN_PROMPT_VERSION, stageInputs } from "./stages"
-import { answeredQuestionsText, answerQuestion, assertDelegable, delegateQuestion, handedBack as isHandedBack, handedBackBlock, handedBackQuestionsText, hashStageInputs, LeanQuestionError, readLeanJson, readLeanText, readOpenItems, readQuestions, writeLeanText, writeOpenItems, writeQuestions, type Question } from "./state"
+import { answeredQuestionsText, answerQuestion, assertDelegable, delegateQuestion, handedBack as isHandedBack, handedBackBlock, handedBackNotesBlock, handedBackQuestionsText, hashStageInputs, LeanQuestionError, readLeanJson, readLeanText, readOpenItems, readQuestions, writeLeanText, writeOpenItems, writeQuestions, type Question } from "./state"
 import { AGENT, cleanupMatters, happyPath, matter, noChanges, scriptedModel, SUPPORT, type Reply } from "./test-support"
 
 // "Decide for me": the lawyer hands a run question back instead of answering
@@ -277,7 +277,7 @@ test("every prompt given the lawyer's answers also lists the hand-back, apart fr
   expect(block).toContain(line)
   for (const agent of [AGENT.discrepancy, AGENT.intake, AGENT.research, AGENT["research-review"], AGENT.spine, AGENT.draft, AGENT.coverage,
     AGENT.review, AGENT["review-independent"], AGENT["review-wording"], AGENT["review-client-disadvantage"], AGENT["change-plan"], AGENT.changes,
-    AGENT["change-review"], AGENT.finalize, AGENT["package-review"]]) {
+    AGENT["change-review"], AGENT["package-review"]]) {
     const own = prompts.filter(prompt => prompt.agent === agent)
     expect([agent, own.length > 0, own.some(prompt => prompt.text.includes(block))]).toEqual([agent, true, true])
   }
@@ -292,10 +292,13 @@ test("every prompt given the lawyer's answers also lists the hand-back, apart fr
   // Each draft prompt that carries the drafting rules carries the hand-back's exception right after the marker rule.
   const ruled = prompts.filter(prompt => prompt.agent === AGENT.draft && prompt.text.includes(MARKER_RULE))
   expect([ruled.length > 0, ruled.every(prompt => prompt.text.includes(`${MARKER_RULE}\n${NO_MARKER}`))]).toEqual([true, true])
+  // The drafting notes see it in the lawyer's terms, so an echo reads naturally to the lawyer.
+  const notesBlock = handedBackNotesBlock(directory)
+  expect(notesBlock).toContain(line)
   for (const prompt of prompts) {
     expect([prompt.agent, prompt.text.includes("A: undefined")]).toEqual([prompt.agent, false])
     // Listed once, in its own block: never among the answers that control.
-    expect([prompt.agent, prompt.text.split(line).length - 1]).toEqual([prompt.agent, prompt.text.includes(block) ? 1 : 0])
+    expect([prompt.agent, prompt.text.split(line).length - 1]).toEqual([prompt.agent, prompt.text.includes(block) || prompt.text.includes(notesBlock) ? 1 : 0])
     // The block has its own heading or tag, never the answers heading.
     expect([prompt.agent, !prompt.text.includes(block) || [`<left_to_drafting>\n${block}`, `${LEFT}\n${block}`].some(text => prompt.text.includes(text))]).toEqual([prompt.agent, true])
   }
@@ -303,9 +306,12 @@ test("every prompt given the lawyer's answers also lists the hand-back, apart fr
   const questions = prompts.find(prompt => prompt.agent === AGENT["change-review"])!.text.split("<questions>\n")[1]!.split("\n</questions>")[0]!
   expect([questions.includes(law), questions.includes(left)]).toEqual([true, false])
   expect(review).toContain(`their answers remain controlling and must not be re-asked under narrower or different wording:\n- [${law}] Q: ${LAW}\n  A: Singapore law.\n</answers>`)
-  // The drafting notes' questions read the hand-back as left to the drafting.
+  // The drafting notes read the hand-back as the lawyer's request to decide it.
   const notes = prompts.find(prompt => prompt.agent === AGENT.finalize)!.text
-  expect(notes).toContain(`- ${left} (left to the drafting): ${QUESTION}`)
+  expect(notes).toContain(`<you_asked_us_to_decide>\n${notesBlock}\n</you_asked_us_to_decide>`)
+  expect(notesBlock).toStartWith("You asked us to decide these questions instead of answering them.")
+  for (const echo of [block, "left to the drafting", "not the lawyer's answers"]) expect(notes).not.toContain(echo)
+  expect(notes).toContain(`- ${left} (you asked us to decide): ${QUESTION}`)
   expect(notes).not.toContain(`- ${left} (answered)`)
   expect(notes).toContain(`- ${law} (answered): ${LAW}\n  Answer: Singapore law.`)
   // The spine is told how to record the hand-back, and the notes' open item
@@ -403,9 +409,9 @@ test("the spine rejects a hand-back left out, recorded as a decision, recorded t
 test("the disclosure item asks for the choice made or the point left open, and does not depend on the spine", () => {
   const directory = spineMatter("handed back")
   const [item] = handedBackItems(directory)
-  // Worded for any reader of the notes, the lawyer or the client.
-  expect(item!.detail).toBe(`This question was left to the drafting to decide: ${QUESTION} Say what the drafting chose, why and the alternative it did not take, ` +
-    "or that the draft leaves it open where the sources do not give what is needed, and that the point still needs confirmation or an answer.")
+  // Worded to the lawyer, so an echo in the notes reads naturally.
+  expect(item!.detail).toBe(`You asked us to decide: ${QUESTION} Say what we chose, why and the alternative not taken, ` +
+    "or that it stays open and what is needed, and that it still needs your confirmation or an answer.")
   // A spine that leaves the question open yields the same item, id included.
   writeLeanText(directory, "spine.json", JSON.stringify(spine({ ...CHOICE, kind: "open-item" })))
   expect(handedBackItems(directory)).toEqual([item!])

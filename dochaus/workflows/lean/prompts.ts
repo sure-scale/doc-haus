@@ -11,7 +11,7 @@ import { reviewStages, FIRST_DOCUMENT, earlierDocuments, planActingFor, operativ
 import { REQUEST_SOURCE, matterSourceIDs } from "./quotes"
 import { readRepairRound, changesRepairSections } from "./repairs"
 import { disclosableItems } from "./stages"
-import { isReviewStage, answeredQuestionsText, handedBack, handedBackBlock, readLeanJson, readLeanText, readQuestions, type OpenItem, type StageID } from "./state"
+import { isReviewStage, answeredQuestionsText, handedBack, handedBackBlock, handedBackNotesBlock, readLeanJson, readLeanText, readQuestions, type OpenItem, type StageID } from "./state"
 import { plannedContract } from "./template-contract"
 
 // Prompts of the lean model steps. Each step's first prompt carries everything
@@ -263,14 +263,14 @@ function draftingNotesSections(directory: string, request: string) {
       : "This is a lean drafting run. Write the drafting notes that go to the lawyer with the drafted documents.",
     tagged("required_repairs", (readRepairRound(directory)?.items ?? []).filter(item => item.stage === "package-review" || item.ref.repair_target === "memo").map(item => `- ${item.detail}`).join("\n") || "None."),
     request, actingForBlock(directory), answeredQuestionsText(directory) ? tagged("answers", answeredQuestionsText(directory)) : "",
-    handedBackBlock(directory) ? tagged("left_to_drafting", handedBackBlock(directory)) : "",
+    handedBackNotesBlock(directory) ? tagged("you_asked_us_to_decide", handedBackNotesBlock(directory)) : "",
     tagged("sources", matterSourceIDs(directory).join("\n")),
     tagged("delivery_artifacts", JSON.stringify(deliveryArtifactEvidence(directory), null, 2)),
     tagged("drafting_spine", readLeanText(directory, "spine.json") ?? "None."),
     tagged("discrepancies", readLeanText(directory, "discrepancy.json") ?? "None."),
     ...plan.map(row => `<document id="${row.id}" title="${attribute(row.title)}">\n${documentSections(directory, row.id, items).join("\n\n")}\n</document>`),
     loose.length ? tagged("open_items", openItemLines(loose, handedBackChoices(directory))) : "",
-    tagged("questions", questions.map(question => `- ${question.id} (${handedBack(question) ? "left to the drafting" : question.status}): ${question.question}${question.answer ? `\n  Answer: ${question.answer}` : ""}`).join("\n") || "None."),
+    tagged("questions", questions.map(question => `- ${question.id} (${handedBack(question) ? "you asked us to decide" : question.status}): ${question.question}${question.answer ? `\n  Answer: ${question.answer}` : ""}`).join("\n") || "None."),
     tagged("output_contract", [
       "- Follow the lawyer's explanation-detail, formality and house-style preferences when writing the notes. Translate the supplied records into their practical meaning rather than copying workflow field names, raw paths or stage status. Retain source support, comparison baselines, applied/unapplied outcomes, limitations and every required open-item id. Name documents where this helps locate them.",
       "- Separate actual unresolved instructions, corrections and decisions from professional review before issue. Do not turn settled instructions or internal output-handling steps into new confirmation requirements.",
