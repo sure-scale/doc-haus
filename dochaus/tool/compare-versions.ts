@@ -224,10 +224,14 @@ function attribute(text: string) {
   return oneLine(text).replace(/"/g, "'").replace(/</g, "‹").replace(/>/g, "›")
 }
 
+// Authors come from the file, so the header names a few, each cut short.
+const AUTHORS_SHOWN = 5
 function sideLine(name: "Left" | "Right", side: Side, note: string) {
   const { count, authors } = side.trackedChanges
   if (!count) return `${name} (${side.name}): no pending tracked changes.`
-  return `${name} (${side.name}): ${plural(count, "pending tracked change")} by ${authors.length ? authors.join(", ") : "an unnamed author"}; ${note}.`
+  const named = authors.slice(0, AUTHORS_SHOWN).map(author => author.length > 80 ? `${author.slice(0, 79)}…` : author).join(", ")
+  const rest = authors.length > AUTHORS_SHOWN ? ` and ${authors.length - AUTHORS_SHOWN} more` : ""
+  return `${name} (${side.name}): ${plural(count, "pending tracked change")} by ${authors.length ? named + rest : "an unnamed author"}; ${note}.`
 }
 
 function proposalsLine(left: Side, right: Side) {
