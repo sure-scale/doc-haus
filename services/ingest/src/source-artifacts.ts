@@ -5,7 +5,7 @@ import path from "node:path"
 import { isDeepStrictEqual } from "node:util"
 import { listSourceDocuments, openDb } from "./db"
 import { extractIdentifiers, renderIdentifiersMarkdown, type IdentifierChunk, type MatterIdentifiers } from "./identifiers"
-import { stampIngestLineage } from "./lineage"
+import { stampIngestLineage, stampSourceRebuildLineage } from "./lineage"
 import { reconstructText } from "./structure"
 
 const MAX_SOURCE_CHUNK_CHARS = 4500
@@ -43,10 +43,13 @@ const SOURCE_ARTIFACT_PATHS = [
   "source-chunks",
 ] as const
 
+// `rebuild` re-derives the projection from sources already ingested (the
+// startup self-heal): lineage then records only the artifacts whose bytes
+// changed, as a rebuild rather than an upload.
 export async function writeSourceArtifacts(
   matterDir: string,
   correlation?: string,
-  options: { db?: Database; settle?: () => void; stampLineage?: boolean; transactionDirectory?: string } = {},
+  options: { db?: Database; settle?: () => void; stampLineage?: boolean; rebuild?: boolean; transactionDirectory?: string } = {},
 ) {
   const previousIdentifiers = await readMatterIdentifiers(matterDir)
   const db = options.db ?? openDb(matterDir)
@@ -61,7 +64,12 @@ export async function writeSourceArtifacts(
   if (!options.db) db.close()
 
   const documents = sources.map((s) => s.document)
-  const correlationId = correlation ?? `ingest-${Date.now().toString(36)}`
+  const correlationId = correlation ?? `${options.rebuild ? "rebuild" : "ingest"}-${Date.now().toString(36)}`
+  const stampLineage = () => {
+    if (options.stampLineage === false) return
+    if (options.rebuild) stampSourceRebuildLineage(matterDir, documents, correlationId)
+    else stampIngestLineage(matterDir, documents, correlationId)
+  }
   const transaction = options.transactionDirectory ?? path.join(
     matterDir,
     ".dochaus",
@@ -72,7 +80,7 @@ export async function writeSourceArtifacts(
   mkdirSync(staged, { recursive: true })
   if (!sources.length) {
     settleSourceArtifactSnapshot(matterDir, transaction, options.settle)
-    if (options.stampLineage !== false) stampIngestLineage(matterDir, documents, correlationId)
+    stampLineage()
     return { documents: 0, chunks: 0, sourceDocuments: documents }
   }
 
@@ -81,8 +89,9 @@ export async function writeSourceArtifacts(
     mkdirSync(path.join(staged, "sources"), { recursive: true })
     mkdirSync(path.join(staged, "source-chunks"), { recursive: true })
     await Promise.all(sources.map((source) => Bun.write(path.join(staged, source.extracted_text), `${source.text}\n`)))
-    await writeSourceChunks(staged, sources, sourceMap)
-    await writeMatterIdentifiers(staged, sourceMap, previousIdentifiers)
+    const chunkFiles = sourceChunkFiles(sources, sourceMap)
+    await writeSourceChunks(staged, chunkFiles)
+    await writeMatterIdentifiers(staged, chunkFiles, previousIdentifiers)
     await Bun.write(path.join(staged, "source-ledger.json"), `${JSON.stringify(sourceMap, null, 2)}\n`)
     await Bun.write(path.join(staged, "source-map.json"), `${JSON.stringify(sourceMap, null, 2)}\n`)
     await Bun.write(path.join(staged, "source-map.md"), sourceMapMarkdown(sourceMap))
@@ -113,7 +122,7 @@ export async function writeSourceArtifacts(
     ) rmSync(transaction, { recursive: true, force: true })
     throw error
   }
-  if (options.stampLineage !== false) stampIngestLineage(matterDir, documents, correlationId)
+  stampLineage()
   return {
     documents: sources.length,
     chunks: sourceMap.documents.reduce((sum, source) => sum + source.chunks.length, 0),
@@ -121,20 +130,33 @@ export async function writeSourceArtifacts(
   }
 }
 
+// Startup heal for one matter (ingest server boot). Returns what it did.
+export async function healSourceArtifacts(matterDir: string, sourceRolledBack: boolean) {
+  if (!sourceRolledBack && sourceArtifactsMatchRegistry(matterDir)) return "current" as const
+  // A rolled-back mutation also restored legal.db, so it is stamped as an ingest like the other recovery
+  // paths. Only a registry mismatch is a rebuild: it stamps just the files whose bytes changed.
+  await writeSourceArtifacts(matterDir, undefined, sourceRolledBack ? {} : { rebuild: true })
+  return sourceRolledBack ? "recovered" as const : "rebuilt" as const
+}
+
 export function sourceArtifactsMatchRegistry(matterDir: string, suppliedDb?: Database) {
   const db = suppliedDb ?? openDb(matterDir)
-  const sources = (listSourceDocuments(db) as { doc_path: string; name: string }[])
-    .map((document): SourceRecord => {
-      const text = reconstructText(db, document.doc_path).trim()
-      return {
-        document: document.name,
-        doc_path: document.doc_path,
-        extracted_text: `sources/${sourceSlug(document.name)}.txt`,
-        text,
-        characters: text.length,
-      }
-    })
-  if (!suppliedDb) db.close()
+  let sources: SourceRecord[]
+  try {
+    sources = (listSourceDocuments(db) as { doc_path: string; name: string }[])
+      .map((document): SourceRecord => {
+        const text = reconstructText(db, document.doc_path).trim()
+        return {
+          document: document.name,
+          doc_path: document.doc_path,
+          extracted_text: `sources/${sourceSlug(document.name)}.txt`,
+          text,
+          characters: text.length,
+        }
+      })
+  } finally {
+    if (!suppliedDb) db.close()
+  }
   if (!sources.length) return SOURCE_ARTIFACT_PATHS.every((relative) => !existsSync(path.join(matterDir, relative)))
   if (SOURCE_ARTIFACT_PATHS.slice(0, 6).some((relative) => !existsSync(path.join(matterDir, relative)))) return false
   try {
@@ -156,18 +178,12 @@ export function sourceArtifactsMatchRegistry(matterDir: string, suppliedDb?: Dat
     if (JSON.stringify(JSON.parse(readFileSync(path.join(matterDir, "source-ledger.json"), "utf8"))) !== JSON.stringify(expectedMap)) return false
     if (readFileSync(path.join(matterDir, "source-map.md"), "utf8") !== sourceMapMarkdown(expectedMap)) return false
     if (sources.some((source) => readFileSync(path.join(matterDir, source.extracted_text), "utf8") !== `${source.text}\n`)) return false
-    const textByDocument = new Map(sources.map((source) => [source.document, source.text]))
-    const identifierChunks = expectedMap.documents.flatMap((document) => {
-      const text = textByDocument.get(document.document)
-      if (text === undefined) throw new Error(`Missing source text for ${document.document}.`)
-      return document.chunks.map((chunk) => {
-        const expected = wrapForReadability(text.slice(chunk.start_char, chunk.end_char))
-        if (
-          !existsSync(path.join(matterDir, chunk.text_path)) ||
-          readFileSync(path.join(matterDir, chunk.text_path), "utf8") !== expected
-        ) throw new Error(`Stale source chunk ${chunk.id}.`)
-        return { id: chunk.id, document: document.document, text: expected }
-      })
+    const identifierChunks = sourceChunkFiles(sources, expectedMap).map((chunk) => {
+      if (
+        !existsSync(path.join(matterDir, chunk.text_path)) ||
+        readFileSync(path.join(matterDir, chunk.text_path), "utf8") !== chunk.file.text
+      ) throw new Error(`Stale source chunk ${chunk.id}.`)
+      return chunk
     })
     const identifiers = decodeMatterIdentifiers(
       JSON.parse(readFileSync(path.join(matterDir, "matter-identifiers.json"), "utf8")),
@@ -290,43 +306,34 @@ function buildSourceMap(sourceRows: SourceRecord[]) {
   }
 }
 
-async function writeSourceChunks(matterDir: string, sourceRows: SourceRecord[], sourceMap: ReturnType<typeof buildSourceMap>) {
+// Each chunk's source slice and the file written for it. Chunk files are read
+// by drafting agents through the generic `read` tool, which truncates any
+// single line beyond 2000 characters mid-clause. Legal prose often emits an
+// entire clause or recital as one line, so the file is soft-wrapped at spaces
+// (see wrapForReadability). The authoritative offsets live in source-map.json
+// (char ranges into the reconstructed extracted text), never in these
+// read-only files; identifier values are read from the unwrapped slice.
+function sourceChunkFiles(sourceRows: SourceRecord[], sourceMap: ReturnType<typeof buildSourceMap>) {
   const textByDocument = new Map(sourceRows.map((source) => [source.document, source.text]))
-  await Promise.all(
-    sourceMap.documents.flatMap((source) =>
-      source.chunks.map((chunk) =>
-        // Chunk files are read by drafting agents through the generic `read`
-        // tool, which truncates any single line beyond
-        // 2000 characters mid-clause. Legal prose often emits an entire
-        // clause or recital as one line, so the artifact is soft-wrapped on
-        // sentence/clause boundaries before writing. This is safe: the
-        // authoritative offsets live in source-map.json (char ranges into the
-        // reconstructed extracted text), never in these read-only files.
-        Bun.write(
-          path.join(matterDir, chunk.text_path),
-          wrapForReadability(textByDocument.get(source.document)?.slice(chunk.start_char, chunk.end_char) ?? ""),
-        ),
-      ),
-    ),
-  )
+  return sourceMap.documents.flatMap((document) => {
+    const text = textByDocument.get(document.document)
+    if (text === undefined) throw new Error(`Missing source text for ${document.document}.`)
+    return document.chunks.map((chunk) => {
+      const slice = text.slice(chunk.start_char, chunk.end_char)
+      return { id: chunk.id, document: document.document, text_path: chunk.text_path, text: slice, file: wrapForReadability(slice) }
+    })
+  })
+}
+
+async function writeSourceChunks(matterDir: string, chunks: ReturnType<typeof sourceChunkFiles>) {
+  await Promise.all(chunks.map((chunk) => Bun.write(path.join(matterDir, chunk.text_path), chunk.file.text)))
 }
 
 async function writeMatterIdentifiers(
   matterDir: string,
-  sourceMap: ReturnType<typeof buildSourceMap>,
+  chunks: IdentifierChunk[],
   previous: MatterIdentifiers | undefined,
 ) {
-  const chunks: IdentifierChunk[] = []
-  for (const doc of sourceMap.documents) {
-    for (const chunk of doc.chunks) {
-      const text = await Bun.file(path.join(matterDir, chunk.text_path)).text()
-      chunks.push({
-        id: chunk.id,
-        document: doc.document,
-        text,
-      })
-    }
-  }
   const extracted = extractIdentifiers(chunks)
   const data = previous && sameIdentifierProjection(previous, extracted)
     ? { ...extracted, generated_at: previous.generated_at }
@@ -358,40 +365,52 @@ function sameIdentifierProjection(previous: MatterIdentifiers, current: MatterId
 }
 
 // Soft-wrap overly long lines so the generic read tool never truncates them.
-// Splits first on sentence/clause boundaries, then greedily packs the pieces
-// into lines under the cap, hard-wrapping any single piece that still exceeds
-// it. Existing short lines are untouched.
+// Quote and citation checks read these files, so the wrap never drops or
+// changes a character. Each break replaces the last space (U+0020) that keeps
+// the line within the cap, so the file keeps the source slice's length and
+// every other character's offset. Only a run of more than READ_LINE_CAP
+// characters without a space is cut, by inserting a line break (never between
+// the two halves of a surrogate pair); `inserted` lists the offsets of `text`
+// before which a cut was inserted. Short lines are untouched.
 const READ_LINE_CAP = 1000
 
-function wrapForReadability(text: string): string {
-  return text
-    .split("\n")
-    .flatMap((line) => (line.length <= READ_LINE_CAP ? [line] : wrapLine(line)))
-    .join("\n")
+function wrapForReadability(text: string) {
+  const lines: string[] = []
+  const inserted: number[] = []
+  let offset = 0
+  for (const line of text.split("\n")) {
+    const wrapped = wrapLine(line)
+    lines.push(...wrapped.lines)
+    inserted.push(...wrapped.cuts.map((cut) => offset + cut))
+    offset += line.length + 1
+  }
+  return { text: lines.join("\n"), inserted }
 }
 
-function wrapLine(line: string): string[] {
-  const pieces = line.split(/(?<=\.)\s+|(?<=;)\s+|\s+—\s+/).filter(Boolean)
-  const out: string[] = []
-  let current = ""
-  for (const piece of pieces) {
-    if (piece.length > READ_LINE_CAP) {
-      if (current) {
-        out.push(current)
-        current = ""
-      }
-      for (let i = 0; i < piece.length; i += READ_LINE_CAP) out.push(piece.slice(i, i + READ_LINE_CAP))
+function wrapLine(line: string) {
+  const lines: string[] = []
+  const cuts: number[] = []
+  let start = 0
+  while (line.length - start > READ_LINE_CAP) {
+    const space = line.lastIndexOf(" ", start + READ_LINE_CAP)
+    if (space > start) {
+      lines.push(line.slice(start, space))
+      start = space + 1
       continue
     }
-    if (current && current.length + 1 + piece.length > READ_LINE_CAP) {
-      out.push(current)
-      current = piece
-    } else {
-      current = current ? `${current} ${piece}` : piece
-    }
+    const end = start + (isSurrogatePair(line, start + READ_LINE_CAP - 1) ? READ_LINE_CAP - 1 : READ_LINE_CAP)
+    lines.push(line.slice(start, end))
+    cuts.push(end)
+    start = end
   }
-  if (current) out.push(current)
-  return out
+  lines.push(line.slice(start))
+  return { lines, cuts }
+}
+
+function isSurrogatePair(text: string, at: number) {
+  const high = text.charCodeAt(at)
+  const low = text.charCodeAt(at + 1)
+  return high >= 0xd800 && high <= 0xdbff && low >= 0xdc00 && low <= 0xdfff
 }
 
 function chunkSource(source: SourceRecord): SourceChunk[] {
