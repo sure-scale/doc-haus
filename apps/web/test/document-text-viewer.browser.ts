@@ -1,5 +1,5 @@
 // Run from apps/web: PLAYWRIGHT_MODULE=<installed playwright module> bun test/document-text-viewer.browser.ts
-// Mounts the real DocumentViewer in Chromium with only ingest HTTP mocked (#266). An email or spreadsheet opens as the
+// Mounts the real DocumentViewer in Chromium with only ingest HTTP mocked. An email or spreadsheet opens as the
 // text ingest extracted, read-only, with a cited excerpt highlighted and focused; it never takes the Word path.
 // A Word file is the control: it still renders through Docxodus from the redlined bytes.
 // Set PLAYWRIGHT_CHROMIUM_PATH=<chromium> when Playwright's own browser is missing, DOCXODUS_WASM_DIR=<wasm dir> to try another runtime build.
@@ -121,7 +121,8 @@ try {
       const highlighted = (await mark.allTextContents()).join("")
       if (highlighted !== marked) problem.push(`highlighted ${JSON.stringify(highlighted)}, expected ${JSON.stringify(marked)}`)
       if (normalize(highlighted) !== normalize(excerpt!)) problem.push("highlight differs from the excerpt")
-      if (!(await mark.first().evaluate(node => node === document.activeElement).catch(() => false))) problem.push("highlight not focused")
+      // Count first: evaluate on a missing mark would wait out the page timeout.
+      if (!(await mark.count()) || !(await mark.first().evaluate(node => node === document.activeElement))) problem.push("highlight not focused")
       if (!status.includes("The cited excerpt is highlighted.")) problem.push(`status ${JSON.stringify(status)}`)
     } else if (await mark.count()) problem.push("highlight without a citation")
     if (problem.length) failures.push(`${label}: ${problem.join("; ")}`)
