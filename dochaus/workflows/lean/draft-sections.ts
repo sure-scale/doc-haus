@@ -1,4 +1,5 @@
 import { rmSync } from "node:fs"
+import { isLetter } from "../../lib/page-furniture"
 import { playbookSelectionIssues } from "./playbook-review"
 import { TOOL_SYNTAX_ISSUE, checkDraft, printedToolCall, readParagraphs } from "./checks"
 import { appendLeanEvent, leanElapsedMs } from "./events"
@@ -322,7 +323,7 @@ export async function runDraftStage(
     drafted.push(written.value)
     writeLeanText(directory, `${document}/draft-in-progress.md`, assembleDraft(plan, drafted, false))
   }
-  const letter = plan.form === "letter"
+  const letter = isLetter(plan.form)
   const presentation = letter || plan.parts.some(part => part.display_heading !== undefined)
     ? { source: assembleDraft(plan, drafted, false), parts: drafted.map((text, part) => ({ heading: headingText(text.split("\n")[0]!.replace(/^##\s+/, "")), display_heading: plan.parts[part]?.display_heading, part })), ...(letter ? { title: false as const } : {}) }
     : undefined

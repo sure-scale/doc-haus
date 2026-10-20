@@ -1,4 +1,4 @@
-import { DOCUMENT_FORMS, type DocumentForm } from "../../lib/page-furniture"
+import { DOCUMENT_FORMS, isLetter, type DocumentForm } from "../../lib/page-furniture"
 import { TOOL_SYNTAX_ISSUE, printedToolCall } from "./checks"
 import { REVIEW_STAGES, readLeanJson, readLeanText, writeLeanText, type ReviewStageID, type StageID } from "./state"
 
@@ -298,7 +298,7 @@ export function parsePlan(reply: string, request?: string): Checked<LeanOutline>
         purpose: document.purpose.join(" "),
         ...(document.playbook_review ? { playbook_review: document.playbook_review } : {}),
         // A letter reads as one letter: its planning labels are not its headings.
-        parts: document.parts.map(part => plannedPart(part, forms[index] === "letter" && !document.headings)),
+        parts: document.parts.map(part => plannedPart(part, isLetter(forms[index]) && !document.headings)),
         ...(document.mode ? { mode: document.mode } : {}),
         // A combined file that cannot be built stands as the body on the last attempt.
         ...(document.deliverable ? { deliverable: document.deliverable === "combined" && (combinedIssues.length || !memoName) ? "body" as const : document.deliverable } : {}),
@@ -420,10 +420,11 @@ const combinedMoreThanOne = (titles: string[]) =>
   `"Deliverable: combined" is under ${titles.map(title => `"${title}"`).join(", ")}, but only one document can share the file with the memo. ` +
   "Keep it under the document the request asks to deliver with the memo, and write \"Deliverable: body\" under the others."
 
-/** A "Form:" value as one of DOCUMENT_FORMS, ignoring case; undefined when the
- * line is missing or names another form. */
+/** A "Form:" value as one of DOCUMENT_FORMS, ignoring case and spelling
+ * "advice letter" with a hyphen or underscore; undefined when the line is
+ * missing or names another form. */
 function documentForm(value: string | undefined) {
-  return DOCUMENT_FORMS.find(form => form === value?.toLowerCase())
+  return DOCUMENT_FORMS.find(form => form === value?.toLowerCase().replace(/[-_]/g, " "))
 }
 
 const FORM_VALUES = DOCUMENT_FORMS.map(form => `"Form: ${form}"`).join(", ")
