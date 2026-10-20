@@ -6,6 +6,8 @@ import { isOfficialSource, researchScope } from "../../lib/research"
 import { adaptAzureChatCompletionGpt5Params, adaptOpenAIPlanParams, applyAgentThinkingBudget, capLowThroughputModelOutput, modelID, optimizeRouterParams, paceLowThroughputModel } from "./model-policy"
 import { readMatterConflicts } from "./conflicts"
 import { readFirmDraftingPreferences } from "../../lib/drafting-preferences"
+import { effectivePosture } from "../../lib/matter-client"
+import { runPosture } from "../../workflows/lean/plan"
 import { verifyCitation } from "./citations"
 import { recordSessionAgent, sessionAgent } from "./session"
 import { draftingPreferencesMode, jurisdictionContextMode, loadStageJurisdictions } from "./stage-context"
@@ -42,7 +44,10 @@ export const LegalPlugin: LegalPolicy = async (input) => {
     "experimental.chat.system.transform": async (input, output) => {
       const agent = sessionAgent(input.sessionID)
       const preferencesMode = draftingPreferencesMode(agent)
-      const draftingPreferences = preferencesMode === "none" ? undefined : readFirmDraftingPreferences(preferencesMode)
+      // A drafting run's stages take the Posture frozen in its plan (as their
+      // keys do); other work on the matter takes the matter's, else the firm's.
+      const draftingPreferences = preferencesMode === "none" ? undefined
+        : readFirmDraftingPreferences(preferencesMode, agent?.startsWith("lean-") ? runPosture(directory) : effectivePosture(directory))
       if (draftingPreferences) output.system.push(draftingPreferences)
       // Untrusted-document guard (issue #17): injected for every agent — built-in
       // and firm-composed alike — so document content is always framed as data.

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { existsSync } from "node:fs"
+import { effectivePosture } from "../../lib/matter-client"
 import { combinedDelivery, memoNotesFile } from "./deliverables"
 import { PLAN_FILES_REVISIONS } from "./draft-sections"
 import { readLeanEvents } from "./events"
@@ -71,7 +72,7 @@ function planned(outlineText: string, request: string, directory: string) {
   const parsed = parsePlan(outlineText, request).value!
   const other = matter(SOURCE_TEXT)
   writeLeanPlan(other, parsed.documents, outlineBasis(directory), parsed.acting_for,
-    parsed.memo ? { name: parsed.memo, file: memoNotesFile(parsed.documents, parsed.memo) } : undefined)
+    parsed.memo ? { name: parsed.memo, file: memoNotesFile(parsed.documents, parsed.memo) } : undefined, effectivePosture(directory))
   return readLeanText(other, "plan.json")
 }
 

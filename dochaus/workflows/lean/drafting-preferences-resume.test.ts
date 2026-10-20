@@ -44,11 +44,13 @@ test("unchanged, equivalent defaults and operational-only saves skip accepted st
   }
 }, 120_000)
 
-test("house style and posture changes revisit completed model work but the accepted draft, and code outputs", async () => {
+// The Posture is frozen into the plan (posture.test.ts), so only the other
+// drafting preferences revisit a run once its plan is saved.
+test("house style changes revisit completed model work but the accepted draft, and code outputs", async () => {
   const directory = matter()
   let prior = await runLean(directory, { sessions: scriptedModel(happyPath).port })
   expect(prior.status).toBe("completed")
-  for (const preferences of [{ houseStyle: "Use active voice." }, { houseStyle: "Use active voice.", posture: "client-favorable" }]) {
+  for (const preferences of [{ houseStyle: "Use active voice." }, { houseStyle: "Use short headings.", posture: "client-favorable" }]) {
     const keys = new Map(leanSteps(directory).map(step => [step, stageInputSha(directory, step)]))
     save(preferences)
     // The accepted draft is keyed on the outline contract and its own plan entry; the change reaches it through its review.
@@ -104,7 +106,7 @@ test("a save during parallel review discards prefetched old replies before adjud
   const sessions = { ...model.port, async prompt(input: Parameters<typeof model.port.prompt>[0]) {
     if (input.agent === AGENT.review && !changed) {
       changed = true
-      save({ posture: "conservative" })
+      save({ houseStyle: "Use active voice." })
     }
     return model.port.prompt(input)
   } }
@@ -173,7 +175,7 @@ test("parallel review retains an observed preference change after A is restored 
     async prompt(input: Parameters<typeof model.port.prompt>[0]) {
       if (input.agent === AGENT["review-wording"] && !switched) {
         switched = true
-        save({ posture: "conservative" })
+        save({ houseStyle: "Use active voice." })
       }
       const reply = await model.port.prompt(input)
       if (input.agent === AGENT["review-independent"] && !restored) await independent
