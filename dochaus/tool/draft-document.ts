@@ -6,6 +6,9 @@ import { withParagraphPointers } from "../lib/drafting-amendment"
 import { renumberHeadings, splitBlocks } from "../lib/markdown"
 import { lintRenderedDraftMarkdown, renderMarkdownToDocx, uploadDeliverable } from "../lib/render"
 import { withGeneratedDocxAttribution } from "../lib/docx-attribution"
+import { normalizePreferences } from "../lib/drafting-preferences"
+import { pageFurniture } from "../lib/page-furniture"
+import { readFirmPreferences } from "../lib/preferences"
 
 // doc.haus draft-document tool. Creates a NEW Word (.docx) document in the
 // current matter — either by filling a template from dochaus/templates, or from
@@ -95,7 +98,10 @@ export default tool({
     // core; only template mode needs its own session for the
     // omit/fills/replaces machinery.
     if (!args.template && args.content) {
-      const rendered = await renderMarkdownToDocx(args.content).catch((err: Error) => err)
+      // The tool knows no document form, so a from-scratch draft carries only
+      // the firm's page numbers.
+      const rendered = await renderMarkdownToDocx(args.content, undefined, pageFurniture("other", normalizePreferences(readFirmPreferences())))
+        .catch((err: Error) => err)
       if (rendered instanceof Error) return `Draft failed: ${rendered.message}`
       const uploadError = await uploadDeliverable(
         ctx.directory,

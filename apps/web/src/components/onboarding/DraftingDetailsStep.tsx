@@ -3,6 +3,8 @@ import { savePreferences, type DraftingPreferences } from "../../api/ingest/pref
 import type { Jurisdiction } from "../../api/ingest/matters"
 import { savePrefs } from "../../prefs"
 import JurisdictionSelect from "../JurisdictionSelect"
+import { LegendField, PageLayoutPreview } from "../settings/PageLayout"
+import { ADVICE_LEGENDS, AGREEMENT_LEGENDS, suggestedLegends } from "../settings/page-layout"
 
 export default function DraftingDetailsStep({
   drafting,
@@ -23,6 +25,7 @@ export default function DraftingDetailsStep({
 }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState("")
+  const suggested = suggestedLegends(selectedJx)
   return (
     <>
       {error && <p role="alert" className="settings-warning">{error}</p>}
@@ -64,6 +67,36 @@ export default function DraftingDetailsStep({
         </div>
       </section>
 
+      <section className="settings-section">
+        <h3>Legends</h3>
+        <p className="settings-hint muted">
+          A legend has legal effect, so doc.haus adds none unless you choose one. Each appears only on the documents
+          it names.{suggested.agreement.length > 0 && " Suggestions follow common practice in your default jurisdictions."}
+        </p>
+        <LegendField
+          id="onboarding-agreement-legend"
+          label="Agreement legend"
+          hint="At the top of every page of an agreement."
+          presets={AGREEMENT_LEGENDS}
+          suggested={suggested.agreement}
+          disabled={busy || !drafting}
+          value={drafting?.agreementLegend ?? ""}
+          onChange={(agreementLegend) => setDrafting((d) => d && { ...d, agreementLegend })}
+        />
+        <LegendField
+          id="onboarding-advice-legend"
+          label="Advice legend"
+          hint="At the top of every page of advice, such as a memo or opinion."
+          presets={ADVICE_LEGENDS}
+          suggested={suggested.advice}
+          disabled={busy || !drafting}
+          value={drafting?.adviceLegend ?? ""}
+          onChange={(adviceLegend) => setDrafting((d) => d && { ...d, adviceLegend })}
+        />
+        {drafting && <PageLayoutPreview prefs={drafting} />}
+        <p className="settings-hint muted">Page numbers and the draft line can be changed in Settings → Drafting.</p>
+      </section>
+
       <div className="onboarding-actions">
         <button disabled={busy} onClick={() => setStep("research")}>Back to research</button>
         <button
@@ -73,7 +106,7 @@ export default function DraftingDetailsStep({
             if (!drafting || busy) return
             setBusy(true); setError("")
             try {
-              await savePreferences({ attorney: drafting.attorney, firm: drafting.firm })
+              await savePreferences({ attorney: drafting.attorney, firm: drafting.firm, agreementLegend: drafting.agreementLegend, adviceLegend: drafting.adviceLegend })
               savePrefs({ defaultJurisdictions: selectedJx })
               await onClose()
             } catch { setError("Could not save drafting details. Retry.") }

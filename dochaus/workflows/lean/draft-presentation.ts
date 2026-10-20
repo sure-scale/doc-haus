@@ -3,22 +3,32 @@ import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { paragraphPointers } from "../../lib/drafting-amendment"
 import { visibleInlineText } from "../../lib/markdown-visible-text"
 
-export type DraftPresentation = { source: string; parts: { heading: string; display_heading?: string; part?: number }[] }
+/** `title: false` leaves the planned title out of publication: a letter reads
+ * as one letter, not as a titled document. */
+export type DraftPresentation = { source: string; parts: { heading: string; display_heading?: string; part?: number }[]; title?: false }
 
 /** Keep drafting boundaries out of publication while retaining their existing
  * paragraph pointers for template coverage. Only explicit top-level part
- * headings are changed; body paragraphs, tables and lower headings retain their
- * native structure, including when their text repeats a part label. */
-export function presentDraft(bytes: Uint8Array, parts: DraftPresentation["parts"]) {
+ * headings, and with `title` false the title, are changed; body paragraphs,
+ * tables and lower headings retain their native structure, including when their
+ * text repeats a part label. */
+export function presentDraft(bytes: Uint8Array, parts: DraftPresentation["parts"], title = true) {
   const entries = unzipSync(bytes)
   const document = new DOMParser().parseFromString(strFromU8(entries["word/document.xml"]!), "application/xml")
   const namespace = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
   const attribution = new Map<string, { draft_part: number | null; draft_heading: boolean }>()
   let next = 0
   let part: number | null = null
+  let titled = title
   for (const paragraph of Array.from(document.getElementsByTagNameNS(namespace, "p"))) {
     const text = Array.from(paragraph.getElementsByTagNameNS(namespace, "t")).map(node => node.textContent ?? "").join("")
     const style = paragraph.getElementsByTagNameNS(namespace, "pStyle")[0]?.getAttributeNS(namespace, "val")
+    // The assembled title is the first Heading 1.
+    if (!titled && style === "Heading1") {
+      titled = true
+      paragraph.parentNode?.removeChild(paragraph)
+      continue
+    }
     const boundary = parts[next]
     const heading = style === "Heading2" && boundary && text === visibleInlineText(boundary.heading)
     if (heading) {

@@ -9,6 +9,8 @@ export type DraftingPreferences = {
   posture: "client-favorable" | "balanced" | "conservative"
   formality: "formal" | "plain"
   detail: "concise" | "detailed"
+  strategyApproval: "off" | "interactive"
+  materialDecisionCheckpoints: "off" | "interactive"
   dateFormat: "month-day-year" | "day-month-year" | "iso"
   numberStyle: "words-and-numerals" | "numerals"
   houseStyle: string
@@ -18,6 +20,15 @@ export type DraftingPreferences = {
   courtlistenerMcpEnabled: boolean
   approvedSources: string[]
   telemetry: TelemetryPreferences
+  // Page layout (Settings → Drafting). Flat keys: the ingest save merges top-level
+  // keys only. Read when a document renders, never sent to the model. Legends
+  // are the firm's own text, empty (none) by default.
+  pageNumbers: "plain" | "page" | "off"
+  pageNumberPosition: "center" | "right"
+  draftLine: boolean
+  agreementLegend: string
+  adviceLegend: string
+  notesMarking: boolean
 }
 
 export type RateOverride = Partial<{

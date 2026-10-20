@@ -16,7 +16,7 @@ afterEach(cleanupMatters)
 const REQUEST = "Draft a supply note and a cover memo, and send them together as supply-pack.docx."
 const NEEDS_MEMO = '"Deliverable: combined" puts a document and the requested memo in one file, so it needs a "Memo:" line'
 const ONE_DOCUMENT = "only one document can share the file with the memo"
-const document = (title: string, ...lines: string[]) => [`# ${title}`, ...lines, "## Delivery", "What is delivered."].join("\n")
+const document = (title: string, ...lines: string[]) => [`# ${title}`, "Form: other", ...lines, "## Delivery", "What is delivered."].join("\n")
 const outline = (...lines: string[]) => ["Acting for: not stated", ...lines].join("\n")
 
 describe("a document delivered with the requested memo in one file", () => {

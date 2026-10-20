@@ -87,18 +87,25 @@ export function scriptedModel(replies: Record<string, Reply>) {
 /** The draft agent for whole Markdown documents, in drafting order: their "# "
  * titles and "## " parts answer the outline prompt (and any retry of it), after
  * an "Acting for: not stated" line, then each part prompt gets the text of the
- * part it names in the document it names. Each assembled draft is the document
- * itself. */
+ * part it names in the document it names. A "Form:" or "Headings:" line between
+ * a title and its first part is an outline line of that document, which is
+ * otherwise planned as "Form: other". Each assembled draft is the document
+ * itself, without those lines. */
 export function drafter(...documents: string[]): Reply {
-  const planned = documents.map(document => ({
-    title: /^# (.+)$/m.exec(document)?.[1],
-    parts: document.split(/^(?=## )/m).slice(1).map(part => part.trim()),
-  }))
+  const planned = documents.map(document => {
+    const [head = "", ...parts] = document.split(/^(?=## )/m)
+    const lines = head.split("\n").filter(line => /^(?:form|headings)\s*:/i.test(line))
+    return {
+      title: /^# (.+)$/m.exec(document)?.[1],
+      outline: lines.some(line => /^form\s*:/i.test(line)) ? lines : ["Form: other", ...lines],
+      parts: parts.map(part => part.trim()),
+    }
+  })
   if (!planned.length || planned.some(row => !row.title || !row.parts.length))
     throw new Error('A scripted draft needs a "# " title and at least one "## " part.')
   return prompt => {
     const named = /^Draft part \d+ of \d+ of "([^"]*)": (.+)$/m.exec(prompt)
-    if (!named) return ["Acting for: not stated", ...planned.flatMap(row => [`# ${row.title}`, ...row.parts.map(part => part.split("\n")[0]!)])].join("\n")
+    if (!named) return ["Acting for: not stated", ...planned.flatMap(row => [`# ${row.title}`, ...row.outline, ...row.parts.map(part => part.split("\n")[0]!)])].join("\n")
     const part = planned.find(row => row.title === named[1])?.parts.find(row => row.split("\n")[0] === `## ${named[2]}`)
     if (!part) throw new Error(`The scripted draft has no part "${named[2]}" in "${named[1]}".`)
     return part
@@ -149,8 +156,9 @@ export const draftingNotes: Reply = prompt => {
 
 export const happyPath: Record<string, Reply> = { [AGENT.draft]: drafter(DRAFT), [AGENT.review]: review, [AGENT.changes]: changes, [AGENT.finalize]: draftingNotes }
 
-// Runs that plan a second document: a covering letter for the supply note.
-export const LETTER = "# Covering letter\n\n## Enclosure\n\nWe enclose the supply note for signature.\n\n## Delivery\n\nThe goods will be delivered as the supply note states.\n"
+// Runs that plan a second document: a covering letter for the supply note,
+// whose part labels are not its headings.
+export const LETTER = "# Covering letter\nForm: letter\n\n## Enclosure\n\nWe enclose the supply note for signature.\n\n## Delivery\n\nThe goods will be delivered as the supply note states.\n"
 export const DRAFTED = "The supplier shall deliver the goods."
 export const APPLIED = "The supplier shall deliver the goods within thirty days of the order date."
 export const QUESTION = "Should late delivery carry a remedy?"

@@ -32,7 +32,7 @@ test("delivery context projects the files registration uses without treating the
   expect(registered.documents.flatMap(row => row.deliverable ?? [])).toEqual(projected.map(row => row.planned_filename))
   // Change only the model's selection: review must see the resulting mismatch,
   // without relabelling that selection as the lawyer's requested output.
-  const admitted = parsePlan("Acting for: not stated\n# Delivery terms\nMode: revise\nDeliverable: body\nFile: input-terms.docx\n## Delivery\nApproved period", request)
+  const admitted = parsePlan("Acting for: not stated\n# Delivery terms\nForm: agreement\nMode: revise\nDeliverable: body\nFile: input-terms.docx\n## Delivery\nApproved period", request)
   expect(admitted.issues).toEqual([])
   expect(admitted.value?.documents[0]?.file).toBe("input-terms.docx")
   writeLeanPlan(directory, admitted.value!.documents)
@@ -44,7 +44,7 @@ test("delivery context projects the files registration uses without treating the
     expect(prompt).toContain("delivery-review.docx")
     expect(prompt).toContain('"kind": "drafting_notes"')
   }
-  expect(parsePlan("Acting for: not stated\n# Delivery terms\nFile: input-terms.docx\n## Delivery", "Revise input-terms.docx and deliver the revised body as input-terms.docx.").issues).toEqual([])
+  expect(parsePlan("Acting for: not stated\n# Delivery terms\nForm: agreement\nFile: input-terms.docx\n## Delivery", "Revise input-terms.docx and deliver the revised body as input-terms.docx.").issues).toEqual([])
 }, 120_000)
 
 test("memo and final reviewer retain source arrays independently of application mode", () => {

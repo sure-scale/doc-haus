@@ -68,7 +68,7 @@ describe("whom the lawyer acts for", () => {
   }, 120_000)
 
   test("non-answers on the Acting for line are not a party, and a stated party must be named in the request", () => {
-    const outline = (line: string) => `Acting for: ${line}\n# Title\n## One`
+    const outline = (line: string) => `Acting for: ${line}\n# Title\nForm: other\n## One`
     const request = "Review the agreement for ABC (UK) Ltd, the supplier."
     for (const line of ["N/A", "n/a", "NA", "Unknown", "none", "None specified", "[not stated]", "(not stated)", "\"not stated\"",
       "'Not specified.'", "not stated (the request does not say)", "Not stated - the request is silent", "unspecified"])
@@ -145,7 +145,7 @@ describe("whom the lawyer acts for", () => {
 // Who executes each planned document: an optional "Executed by:" line under its
 // title, read into the plan for the package-coverage check.
 describe("who executes each planned document", () => {
-  const outline = (lines: string) => `Acting for: not stated\n# Resolution\nRecords the approval.\n${lines}## Approval\nThe approval.`
+  const outline = (lines: string) => `Acting for: not stated\n# Resolution\nRecords the approval.\nForm: other\n${lines}## Approval\nThe approval.`
 
   test("an Executed by line names each executing party, or none", () => {
     expect(parsePlan(outline("Executed by: the Orchard Committee; Kestrel Works\n")).value?.documents[0]?.executed_by).toEqual(["the Orchard Committee", "Kestrel Works"])
@@ -155,7 +155,7 @@ describe("who executes each planned document", () => {
     // Lines add up; a non-answer declares nothing; a line under a part is scope text.
     expect(parsePlan(outline("Executed by: Kestrel Works\nExecuted by: Wren Atelier; Kestrel Works\n")).value?.documents[0]?.executed_by).toEqual(["Kestrel Works", "Wren Atelier"])
     expect(parsePlan(outline("Executed by: not stated\n")).value?.documents[0]).not.toHaveProperty("executed_by")
-    const late = parsePlan("Acting for: not stated\n# Resolution\n## Approval\nExecuted by: Kestrel Works").value?.documents[0]
+    const late = parsePlan("Acting for: not stated\n# Resolution\nForm: other\n## Approval\nExecuted by: Kestrel Works").value?.documents[0]
     expect(late).not.toHaveProperty("executed_by")
     expect(late?.parts[0]?.scope).toBe("Executed by: Kestrel Works")
   })
@@ -173,7 +173,7 @@ describe("who executes each planned document", () => {
       const executed = parsePlan(outline(`Executed by: ${answer}\n`))
       expect(executed.issues).toEqual([])
       expect(executed.value?.documents[0]).not.toHaveProperty("executed_by")
-      expect(parsePlan(`Acting for: ${answer}\n# Title\n## One`, "Review the agreement.")).toEqual({ issues: [], value: expect.objectContaining({ acting_for: NOT_STATED }) })
+      expect(parsePlan(`Acting for: ${answer}\n# Title\nForm: other\n## One`, "Review the agreement.")).toEqual({ issues: [], value: expect.objectContaining({ acting_for: NOT_STATED }) })
     }
   })
 
@@ -186,13 +186,13 @@ describe("who executes each planned document", () => {
       ["Wren Atelier Ltd (UK) (as buyer)", "Wren Atelier Ltd (UK)"], ["(Wren Atelier Ltd (UK))", "Wren Atelier Ltd (UK)"], ["“Wren Atelier Ltd (UK)”.", "Wren Atelier Ltd (UK)"]])
       expect(executedBy(answer!)).toEqual([name])
     const request = "We act for Heron – Vale LLP; the other side is Wren Atelier Ltd (UK)."
-    expect(parsePlan("Acting for: Heron – Vale LLP\n# Title\n## One", request)).toEqual({ issues: [], value: expect.objectContaining({ acting_for: { party: "Heron – Vale LLP", stated: true } }) })
-    expect(parsePlan("Acting for: Wren Atelier Ltd (UK) — the other side\n# Title\n## One", request)).toEqual({ issues: [], value: expect.objectContaining({ acting_for: { party: "Wren Atelier Ltd (UK)", stated: true } }) })
+    expect(parsePlan("Acting for: Heron – Vale LLP\n# Title\nForm: other\n## One", request)).toEqual({ issues: [], value: expect.objectContaining({ acting_for: { party: "Heron – Vale LLP", stated: true } }) })
+    expect(parsePlan("Acting for: Wren Atelier Ltd (UK) — the other side\n# Title\nForm: other\n## One", request)).toEqual({ issues: [], value: expect.objectContaining({ acting_for: { party: "Wren Atelier Ltd (UK)", stated: true } }) })
   })
 
   test("the Executed by label is matched loosely, and only under a title", () => {
     expect(parsePlan(outline("EXECUTED   BY: Kestrel Works\n")).value?.documents[0]?.executed_by).toEqual(["Kestrel Works"])
-    const early = parsePlan("Acting for: not stated\nExecuted by: Kestrel Works\n# Resolution\nRecords the approval.\n## Approval\nThe approval.")
+    const early = parsePlan("Acting for: not stated\nExecuted by: Kestrel Works\n# Resolution\nRecords the approval.\nForm: other\n## Approval\nThe approval.")
     expect(early.issues).toEqual([])
     expect(early.value?.documents[0]).not.toHaveProperty("executed_by")
   })
@@ -200,7 +200,7 @@ describe("who executes each planned document", () => {
   test("a missing Executed by line is no issue and leaves the plan as before", () => {
     expect(parsePlan(outline(""), "Approve the schedule.")).toStrictEqual({
       issues: [],
-      value: { documents: [{ title: "Resolution", purpose: "Records the approval.", parts: [{ heading: "Approval", scope: "The approval." }] }], acting_for: NOT_STATED },
+      value: { documents: [{ title: "Resolution", purpose: "Records the approval.", parts: [{ heading: "Approval", scope: "The approval." }], form: "other" }], acting_for: NOT_STATED },
     })
   })
 

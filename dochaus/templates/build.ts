@@ -4,7 +4,9 @@
 //
 // `_base.docx` is the seed every from-scratch draft starts from: an empty body
 // carrying the house style set (Title, Heading 1-3, List Paragraph, Quote), so markdown
-// inserted by Docxodus lands as real Word styles. It is assembled from raw OOXML
+// inserted by Docxodus lands as real Word styles, plus the Header and Footer styles
+// page furniture (lib/page-furniture.ts) writes with: smaller text, single spaced,
+// with Word's centre and right tab stops for the 6.5-inch text width. It is assembled from raw OOXML
 // parts zipped with the system `zip` (Docxodus can edit a .docx but not create
 // one from nothing). `demo/templates/nda.docx` is then drafted from that seed
 // through the same Docxodus insert pipeline the draft-document tool uses. It is
@@ -58,7 +60,7 @@ const DOCUMENT = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
     <w:p/>
     <w:sectPr>
       <w:pgSz w:w="12240" w:h="15840"/>
-      <w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/>
+      <w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/>
     </w:sectPr>
   </w:body>
 </w:document>`
@@ -97,6 +99,16 @@ const STYLES = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
   <w:style w:type="paragraph" w:styleId="Quote">
     <w:name w:val="Quote"/><w:basedOn w:val="Normal"/>
     <w:pPr><w:ind w:left="720" w:right="720"/></w:pPr>
+  </w:style>
+  <w:style w:type="paragraph" w:styleId="Header">
+    <w:name w:val="header"/><w:basedOn w:val="Normal"/>
+    <w:pPr><w:tabs><w:tab w:val="center" w:pos="4680"/><w:tab w:val="right" w:pos="9360"/></w:tabs><w:spacing w:after="0" w:line="240" w:lineRule="auto"/></w:pPr>
+    <w:rPr><w:sz w:val="18"/></w:rPr>
+  </w:style>
+  <w:style w:type="paragraph" w:styleId="Footer">
+    <w:name w:val="footer"/><w:basedOn w:val="Normal"/>
+    <w:pPr><w:tabs><w:tab w:val="center" w:pos="4680"/><w:tab w:val="right" w:pos="9360"/></w:tabs><w:spacing w:after="0" w:line="240" w:lineRule="auto"/></w:pPr>
+    <w:rPr><w:sz w:val="18"/></w:rPr>
   </w:style>
 </w:styles>`
 

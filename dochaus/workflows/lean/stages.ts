@@ -12,7 +12,9 @@ import { requestedFilesItems } from "./requested-files"
 import { combinedFileItems, DELIVERED_NOTES, requestedMemo } from "./deliverables"
 import { evidenceOutputValid } from "./evidence"
 import { currentResearchGaps, researchOutputValid } from "./research"
-import { readFirmDraftingPreferences } from "../../lib/drafting-preferences"
+import { normalizePreferences, readFirmDraftingPreferences } from "../../lib/drafting-preferences"
+import { pageFurniture, type FurnitureKind } from "../../lib/page-furniture"
+import { readFirmPreferences } from "../../lib/preferences"
 import { existsSync, readFileSync } from "node:fs"
 import { ensureParagraphPointers, paragraphSha256 } from "../../lib/drafting-amendment"
 import { renderMarkdownToDocx } from "../../lib/render"
@@ -39,6 +41,7 @@ import {
   answeredQuestionsText,
   hashStageInputs,
   leanFile,
+  readLeanState,
   readLeanText,
   readLeanJson,
   readOpenItems,
@@ -60,7 +63,7 @@ import {
 // one planned document keep their files under that document's id (d1/, d2/...).
 
 export const LEAN_PROMPT_VERSION = "lean-18-advised-questions"
-const OUTLINE_CONTRACT = "document-executing-parties-memo-6"
+const OUTLINE_CONTRACT = "document-form-7"
 const DELIVERY_REVIEW_CONTRACT = "grounded-delivery-selection-4"
 const STRUCTURAL_AMENDMENT_CONTRACT = "explicit-paragraph-cardinality-1"
 const DRAFTING_NOTES_CONTRACT = "lawyer-facing-notes-plain-refs-3"
@@ -329,8 +332,10 @@ export async function acceptStageReply(directory: string, step: StepID, reply: s
   if (stage === "draft") {
     const check = checkDraft(directory, reply)
     if (check.issues.length) return { ...check, outputs: [] }
-    const rendered = await renderMarkdownToDocx(options.presentation?.source ?? reply)
-      .then(result => options.presentation ? presentDraft(result.bytes, options.presentation.parts) : { bytes: result.bytes, attribution: undefined })
+    // A plan without a form (a legacy plan, or an outline's last attempt) carries the plain page numbers.
+    const furniture = renderedFurniture(directory, plannedDocument(directory, document)?.form ?? "other")
+    const rendered = await renderMarkdownToDocx(options.presentation?.source ?? reply, undefined, furniture)
+      .then(result => options.presentation ? presentDraft(result.bytes, options.presentation.parts, options.presentation.title !== false) : { bytes: result.bytes, attribution: undefined })
       .then(result => result, (error: unknown) => ({ error }))
     if ("error" in rendered)
       return { issues: [`The document could not be rendered to Word (${message(rendered.error)}). Use plain Markdown headings, paragraphs, lists and tables.`], openItems: [], outputs: [] }
@@ -368,8 +373,22 @@ export async function acceptStageReply(directory: string, step: StepID, reply: s
   const notes = advisory ? `${reply.trimEnd()}\n\n${advisory}\n` : reply
   writeLeanText(directory, "drafting-notes.md", ensureNewline(notes))
   const previous = leanFile(directory, "drafting-notes.docx")
-  writeLeanBytes(directory, "drafting-notes.docx", (await renderMarkdownToDocx(notes, existsSync(previous) ? readFileSync(previous) : undefined)).bytes)
+  writeLeanBytes(directory, "drafting-notes.docx", (await renderMarkdownToDocx(notes, existsSync(previous) ? readFileSync(previous) : undefined, notesFurniture(directory))).bytes)
   return { ...check, outputs: stepOutputs(step) }
+}
+
+/** The page furniture a file the run renders carries under the firm's current
+ * settings, dated by the run's start in run state rather than the render clock
+ * or a step's start (steps restart), so every file and render in the run reads
+ * the same date. */
+export function renderedFurniture(directory: string, kind: FurnitureKind) {
+  return pageFurniture(kind, normalizePreferences(readFirmPreferences()), readLeanState(directory)?.created_at)
+}
+
+/** The notes are a document for the reader when the request asks for a memo;
+ * otherwise they are internal. */
+export function notesFurniture(directory: string) {
+  return renderedFurniture(directory, requestedMemo(directory) ? "advice" : "notes")
 }
 
 /** Gives every body paragraph a pointer (rewriting the docx when one is added)
@@ -380,12 +399,13 @@ export async function paragraphRows(docxPath: string): Promise<ParagraphRow[]> {
 
 /** A draft step's accepted document: planned, with its Word body and its paragraphs. */
 /** What a document's draft prompt and code read of its plan entry: its title,
- * purpose and parts, its mode, the template it is drawn from and the template
- * parts it leaves out. Its file and deliverable (which package review rewrites),
+ * purpose and parts, its mode, the template it is drawn from, the template
+ * parts it leaves out and its form, which sets the rendered body's page
+ * furniture. Its file and deliverable (which package review rewrites),
  * executing parties and guidance selection are not read by the draft. */
 function draftedEntry(entry: PlannedDocument | undefined) {
   if (!entry) return null
-  return { title: entry.title, purpose: entry.purpose, parts: entry.parts, mode: entry.mode, template: templateSource(entry), left_out: entry.left_out }
+  return { title: entry.title, purpose: entry.purpose, parts: entry.parts, mode: entry.mode, template: templateSource(entry), left_out: entry.left_out, form: entry.form }
 }
 
 export function draftOutputValid(directory: string, step: StepID) {

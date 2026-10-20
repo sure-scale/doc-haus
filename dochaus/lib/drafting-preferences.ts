@@ -41,6 +41,15 @@ export type DraftingPreferences = {
   // Operational telemetry controls. Stored with preferences so Settings can
   // round-trip one object, but never rendered into drafting.md.
   telemetry: TelemetryPreferences
+  // Page furniture (dochaus/lib/page-furniture.ts), read at render and never
+  // rendered into drafting.md, so a change re-keys no running draft. Legends
+  // have legal effect: they are the firm's own text, empty (none) by default.
+  pageNumbers: "plain" | "page" | "off"
+  pageNumberPosition: "center" | "right"
+  draftLine: boolean
+  agreementLegend: string
+  adviceLegend: string
+  notesMarking: boolean
 }
 
 export type RateOverride = Partial<{
@@ -72,7 +81,16 @@ export const DEFAULT_DRAFTING: DraftingPreferences = {
   courtlistenerMcpEnabled: false,
   approvedSources: [],
   telemetry: { retention_days: 90, retention_days_source: "default", rate_overrides: {} },
+  pageNumbers: "plain",
+  pageNumberPosition: "center",
+  draftLine: true,
+  agreementLegend: "",
+  adviceLegend: "",
+  notesMarking: true,
 }
+
+/** Longest legend kept: a legend is one short line of page furniture. */
+export const LEGEND_MAX_LENGTH = 120
 
 export function normalizePreferences(value: unknown): DraftingPreferences {
   const input = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}
@@ -100,7 +118,21 @@ export function normalizePreferences(value: unknown): DraftingPreferences {
         ? "interactive"
         : DEFAULT_DRAFTING.materialDecisionCheckpoints,
     telemetry: normalizeTelemetry(input.telemetry),
+    pageNumbers: input.pageNumbers === "page" || input.pageNumbers === "off" ? input.pageNumbers : DEFAULT_DRAFTING.pageNumbers,
+    pageNumberPosition: input.pageNumberPosition === "right" ? "right" : DEFAULT_DRAFTING.pageNumberPosition,
+    draftLine: input.draftLine !== false,
+    agreementLegend: normalizeLegend(input.agreementLegend),
+    adviceLegend: normalizeLegend(input.adviceLegend),
+    notesMarking: input.notesMarking !== false,
   }
+}
+
+/** A legend is one line of the firm's own text: control characters and line
+ * breaks become spaces, runs of white space collapse, and the text is capped.
+ * Format characters (joiners, direction marks) stay: some scripts need them. */
+export function normalizeLegend(input: unknown): string {
+  if (typeof input !== "string") return ""
+  return input.normalize("NFC").replace(/[\p{Cc}\u2028\u2029]+/gu, " ").replace(/\s+/g, " ").trim().slice(0, LEGEND_MAX_LENGTH).trim()
 }
 
 // An absent choice uses the default for fresh and legacy preferences. An invalid

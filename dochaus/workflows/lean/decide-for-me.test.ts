@@ -170,8 +170,8 @@ test("the same words typed, picked or adopted give the same answers text and the
 // its contract. A draft's keys its outline contract and what it reads of its
 // own plan entry, never answers. Change-review, finalize and the gate were
 // re-pinned when stage keys stopped carrying when a question was answered (and
-// its kind, options and advice). The same pins hold however the lawyer gave an
-// answer.
+// its kind, options and advice), and the draft when the outline gained its
+// Form line. The same pins hold however the lawyer gave an answer.
 const ANSWERS = "- [package-scope-d1] Q: Which documents are in scope?\n  A: Only the supply note.\n- [q-law] Q: Which law should govern?\n  A: Singapore law."
 const INPUTS: Record<string, string> = {
   "discrepancy": "8dac7eefaf1e988e35ffbe6c7f765a951943e9b1299546a9b94dc10e99950a72",
@@ -179,7 +179,7 @@ const INPUTS: Record<string, string> = {
   "research": "64a0d22c3dd780907955b2e56b3122b94ea72101092d694f899a15e2af0cb13b",
   "research-review": "f30467728cba33fbf89ff10cfba8903cd7aa9647cbd6849d4a3caf293f27a65b",
   "spine": "c038d3823819fc2e8ef176dc1cb855fd7f7a87e1fe077efb1c2aee41f922e076",
-  "d1.draft": "4eb720a791b22d697b04a4d87572ca5b34e62b3f66f9f7f7ce63af7cf0f42be2",
+  "d1.draft": "e58ff873e267c45c52fe21dbd06f3b3aa2249093af95298d75e63d8480855d67",
   "d1.review": "e80f5bbe084c8ef90d2864358d2caafa09139822584fb0f12cb14d0976e76416",
   "d1.review-independent": "9f1fe22f3e0db01ef5fffe96a09ddf917b5e371a89c58988eb875bcfbbae4aa4",
   "d1.review-wording": "7f86222090d292207f576968b1171dab74bedab8cf5dbc4e3593752d2584b6f5",

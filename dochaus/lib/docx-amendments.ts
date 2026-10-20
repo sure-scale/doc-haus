@@ -319,10 +319,15 @@ export async function openRevision(source: Uint8Array) {
         formatting: paragraph.match.fragments.map(fragment => ({ text: fragment.text, formatting: fragment.formatting })),
       }
     })
+    // Header and footer text follows the body in this view. It is page
+    // furniture, so each change of part opens with a label and no reader takes
+    // it for body text. A body-only view has no label; escaped document text
+    // cannot forge one.
     const markdown = views.map((view, ordinal) => {
+      const part = view.scope !== (views[ordinal - 1]?.scope ?? "body") ? `[${partLabel(view.scope)}]\n\n` : ""
       const prefix = paragraphs[ordinal].match.enclosingAnchor.kind === "h" ? `${"#".repeat(view.headings.at(-1)!.level)} ` : ""
       const context = view.table ? `> Table ${view.table.table}, row ${view.table.row}, column ${view.table.column}\n\n` : ""
-      return context + prefix + view.formatting.map(fragment => {
+      return part + context + prefix + view.formatting.map(fragment => {
         const text = fragment.text.replace(/[\\`*_{}[\]<>|]/g, "\\$&")
         return fragment.formatting.bold && fragment.formatting.italic ? `***${text}***`
           : fragment.formatting.bold ? `**${text}**` : fragment.formatting.italic ? `*${text}*` : text
@@ -367,6 +372,11 @@ export function verifyPreservation(before: Awaited<ReturnType<typeof openRevisio
 function parse(xml: string) {
   const fail = (message: string) => { throw new Error(`invalid_docx_xml:${message}`) }
   return new DOMParser({ errorHandler: { warning: fail, error: fail, fatalError: fail } }).parseFromString(xml, "application/xml")
+}
+function partLabel(scope: string) {
+  if (/^hdr\d*$/.test(scope)) return "Page header: page furniture, not body text"
+  if (/^ftr\d*$/.test(scope)) return "Page footer: page furniture, not body text"
+  return ({ body: "Body text", fn: "Footnotes", en: "Endnotes", cmt: "Comments" } as Record<string, string>)[scope] ?? scope
 }
 function elements(node: Document | Element, name: string) { return Array.from(node.getElementsByTagNameNS(W, name)) }
 // grep projects w:t text only: breaks of any type, tabs and field codes add
