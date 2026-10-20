@@ -855,9 +855,9 @@ const supplyEntries = [
   "Supply note.docx: “thirty days” → “forty-five days”. Reason: Buyer asked for a longer delivery window.",
   "Supply note.docx: “on delivery” → “within fourteen days of delivery”. Reason: Agreed payment terms.",
 ]
-// Paragraph texts with each addendum entry's acceptance date checked and removed.
+// Body paragraph texts with each addendum entry's acceptance date checked and removed.
 async function notesText(file:string,day?:string) {
-  return (await createDocxRevision(await Bun.file(file).bytes())).paragraphs.map((row) => row.text).map((text) => {
+  return (await createDocxRevision(await Bun.file(file).bytes())).paragraphs.filter((row) => row.scope === "body").map((row) => row.text).map((text) => {
     const dated = /^(\d{4}-\d{2}-\d{2}) — (Supply note\.docx: .*)$/.exec(text)
     if (dated) expect(Number.isNaN(Date.parse(dated[1]))).toBe(false)
     if (dated && day) expect(dated[1]).toBe(day)
@@ -911,6 +911,9 @@ test("accepted changes to a completed run's body are appended to its drafting no
 
     expect(await matter.accept(second)).toBe(200)
     expect(await notesText(notes)).toEqual([...preparedNotes,notesHeading,notesIntro,...supplyEntries])
+    // The addendum goes into the body; the notes' page furniture stays as rendered.
+    expect((await createDocxRevision(await Bun.file(notes).bytes())).paragraphs.filter((row) => row.scope !== "body").map((row) => row.text))
+      .toEqual(["Internal drafting notes — not for circulation","1"])
 
     // Accepting a change to the notes themselves adds no addendum entry.
     expect(await matter.acceptResult(onNotes)).toEqual({status:200,body:{ok:true}})
