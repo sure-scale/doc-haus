@@ -1070,3 +1070,13 @@ test("a run without a requested memo reports no memo and no combined file", asyn
   await deliverRun(directory)
   expect(leanDraftingStatus(directory)).toMatchObject({ memo: null, combined_output: null })
 }, 60_000)
+
+test("status reports whom the plan says the lawyer acts for, and not stated for a plan without it", () => {
+  const directory = leanFixtureMatter("lean-acting-for-status-")
+  directories.push(directory)
+  expect(leanDraftingStatus(directory)?.plan).toBeNull()
+  writeLeanPlan(directory, [SUPPLY_NOTE], undefined, { party: "Northwind Traders Ltd", stated: true })
+  expect(leanDraftingStatus(directory)?.plan?.acting_for).toEqual({ party: "Northwind Traders Ltd", stated: true })
+  writeLeanPlan(directory, [SUPPLY_NOTE])
+  expect(leanDraftingStatus(directory)?.plan?.acting_for).toEqual({ party: "", stated: false })
+})
