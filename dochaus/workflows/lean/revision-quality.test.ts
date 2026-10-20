@@ -33,7 +33,7 @@ function explanations(prompt: string) {
 
 test("explicit revision mode preserves its source foundation and requested artifact role", () => {
   const directory = matter(original)
-  const parsed = parsePlan(`Acting for: not stated\n# Supply note\nMode: revise\nDeliverable: redline\nCompare against: ${SOURCE}\nFile: supply-review.docx\n## Delivery\nDelivery\n## Payment\nPayment`, request)
+  const parsed = parsePlan(`Acting for: not stated\n# Supply note\nForm: other\nMode: revise\nDeliverable: redline\nCompare against: ${SOURCE}\nFile: supply-review.docx\n## Delivery\nDelivery\n## Payment\nPayment`, request)
   expect(parsed.issues).toEqual([])
   expect(parsed.value!.documents[0]).toMatchObject({ mode: "revise", deliverable: "redline" })
   writeLeanPlan(directory, parsed.value!.documents)
