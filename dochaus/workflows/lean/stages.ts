@@ -333,7 +333,7 @@ export async function acceptStageReply(directory: string, step: StepID, reply: s
     const check = checkDraft(directory, reply)
     if (check.issues.length) return { ...check, outputs: [] }
     // A plan without a form (a legacy plan, or an outline's last attempt) carries the plain page numbers.
-    const furniture = renderedFurniture(directory, plannedDocument(directory, document)?.form ?? "other", step)
+    const furniture = renderedFurniture(directory, plannedDocument(directory, document)?.form ?? "other")
     const rendered = await renderMarkdownToDocx(options.presentation?.source ?? reply, undefined, furniture)
       .then(result => options.presentation ? presentDraft(result.bytes, options.presentation.parts, options.presentation.title !== false) : { bytes: result.bytes, attribution: undefined })
       .then(result => result, (error: unknown) => ({ error }))
@@ -378,16 +378,17 @@ export async function acceptStageReply(directory: string, step: StepID, reply: s
 }
 
 /** The page furniture a file the run renders carries under the firm's current
- * settings, dated by its step's start in run state rather than the render
- * clock, so every render of it in the run reads the same date. */
-export function renderedFurniture(directory: string, kind: FurnitureKind, step: StepID) {
-  return pageFurniture(kind, normalizePreferences(readFirmPreferences()), readLeanState(directory)?.stages[step]?.started_at ?? undefined)
+ * settings, dated by the run's start in run state rather than the render clock
+ * or a step's start (steps restart), so every file and render in the run reads
+ * the same date. */
+export function renderedFurniture(directory: string, kind: FurnitureKind) {
+  return pageFurniture(kind, normalizePreferences(readFirmPreferences()), readLeanState(directory)?.created_at)
 }
 
-/** The notes are a document for the reader when the request asks for a memo,
- * dated by the finalize step that writes them; otherwise they are internal. */
+/** The notes are a document for the reader when the request asks for a memo;
+ * otherwise they are internal. */
 export function notesFurniture(directory: string) {
-  return renderedFurniture(directory, requestedMemo(directory) ? "advice" : "notes", "finalize")
+  return renderedFurniture(directory, requestedMemo(directory) ? "advice" : "notes")
 }
 
 /** Gives every body paragraph a pointer (rewriting the docx when one is added)

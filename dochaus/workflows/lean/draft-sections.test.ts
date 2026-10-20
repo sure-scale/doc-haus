@@ -12,7 +12,7 @@ import { NOT_STATED, leanPlanIssue, parsePlan, readLeanPlan, writeLeanPlan } fro
 import { stagePrompt } from "./prompts"
 import { stageInputSha } from "./runner"
 import { acceptStageReply, LEAN_STAGE_AGENTS, type StageSessionPort } from "./stages"
-import { initLeanState, leanFile, updateLeanStage, writeLeanText } from "./state"
+import { initLeanState, leanFile, updateLeanStage, writeLeanState, writeLeanText } from "./state"
 import { rowsBody } from "./template-coverage"
 
 // Real plan parser, section checks, assembly, renderer and pointer writer.
@@ -333,7 +333,7 @@ describe("a planned document's form", () => {
     expect(Object.keys(parts).filter(name => /^word\/(header|footer)\d+\.xml$/.test(name)).sort()).toEqual(["word/footer1.xml", "word/footer2.xml"])
   }, 60_000)
 
-  test("an agreement's body carries the firm's legend and a draft line dated by its draft step, outside its paragraphs", async () => {
+  test("an agreement's body carries the firm's legend and a draft line dated by the run's start, outside its paragraphs", async () => {
     const { directory, state } = matter()
     const workspace = mkdtempSync(path.join(tmpdir(), "lean-furniture-prefs-"))
     directories.push(workspace)
@@ -343,7 +343,8 @@ describe("a planned document's form", () => {
     try {
       writeFileSync(path.join(workspace, ".preferences", "preferences.json"), JSON.stringify({ firm: "Doe & Partners LLP", agreementLegend: "Subject to contract", dateFormat: "day-month-year" }))
       writeLeanPlan(directory, [{ title: "Supply terms", purpose: "", parts: [{ heading: "Delivery", scope: "" }], form: "agreement" }])
-      updateLeanStage(directory, state, "d1.draft", { status: "running", started_at: "2026-10-20T12:00:00.000Z" })
+      // A step restarted later in the run does not move the date.
+      updateLeanStage(directory, writeLeanState(directory, { ...state, created_at: "2026-10-20T12:00:00.000Z" }), "d1.draft", { status: "running", started_at: "2026-10-22T12:00:00.000Z" })
       expect((await acceptStageReply(directory, "d1.draft", "# Supply terms\n\n## Delivery\n\nGoods are delivered on the agreed date.\n")).issues).toEqual([])
       const parts = unzipSync(new Uint8Array(readFileSync(leanFile(directory, "d1/body.docx"))))
       const header = strFromU8(parts["word/header1.xml"]!)
