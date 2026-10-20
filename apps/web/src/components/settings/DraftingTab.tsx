@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react"
 import { getPreferences, savePreferences, type DraftingPreferences } from "../../api/ingest/preferences"
 import { FieldRow, SegRow } from "./controls"
-import { LegendField, PageLayoutPreview } from "./PageLayout"
+import { CheckRow, LegendField, PageLayoutPreview } from "./PageLayout"
 import { ADVICE_LEGENDS, AGREEMENT_LEGENDS, NOTES_MARKING, draftLineText } from "./page-layout"
 
 // Firm-wide drafting preferences. The engine renders the saved structured
@@ -152,29 +152,39 @@ export default function DraftingTab({ onSaved }: { onSaved: (text: string) => vo
         <fieldset className="settings-drafting-fields" disabled={saving} aria-label="Page layout">
           <SegRow
             label="Page numbers"
-            hint="In the footer of every page. Letters are numbered from page 2."
+            hint="In the footer of each page."
             value={prefs.pageNumbers}
             onChange={(pageNumbers) => set({ pageNumbers: pageNumbers as DraftingPreferences["pageNumbers"] })}
             options={[
               { value: "off", label: "Off" },
               { value: "plain", label: "2" },
               { value: "page", label: "Page 2" },
+              { value: "dashed", label: "- 2 -" },
             ]}
           />
           {prefs.pageNumbers !== "off" && (
-            <SegRow
-              label="Page number position"
-              value={prefs.pageNumberPosition}
-              onChange={(pageNumberPosition) => set({ pageNumberPosition: pageNumberPosition as DraftingPreferences["pageNumberPosition"] })}
-              options={[
-                { value: "center", label: "Center" },
-                { value: "right", label: "Right" },
-              ]}
-            />
+            <>
+              <SegRow
+                label="Page number position"
+                value={prefs.pageNumberPosition}
+                onChange={(pageNumberPosition) => set({ pageNumberPosition: pageNumberPosition as DraftingPreferences["pageNumberPosition"] })}
+                options={[
+                  { value: "center", label: "Center" },
+                  { value: "right", label: "Right" },
+                ]}
+              />
+              <CheckRow
+                id="drafting-number-first-page"
+                label="Number the first page"
+                hint="Letters always start numbering on page 2."
+                checked={prefs.numberFirstPage}
+                onChange={(numberFirstPage) => set({ numberFirstPage })}
+              />
+            </>
           )}
           <SegRow
             label="Draft line"
-            hint={`On agreements and advice: "${draftLineText(prefs.firm, prefs.dateFormat, today)}", dated when the draft is first made.`}
+            hint={`On agreements, advice and letters: "${draftLineText(prefs, today)}", dated when the draft is first made.`}
             value={prefs.draftLine ? "on" : "off"}
             onChange={(value) => set({ draftLine: value === "on" })}
             options={[
@@ -182,6 +192,14 @@ export default function DraftingTab({ onSaved }: { onSaved: (text: string) => vo
               { value: "on", label: "On" },
             ]}
           />
+          {prefs.draftLine && (
+            <CheckRow
+              id="drafting-draft-line-firm"
+              label="Include the firm name"
+              checked={prefs.draftLineFirm}
+              onChange={(draftLineFirm) => set({ draftLineFirm })}
+            />
+          )}
           <LegendField
             key={`agreement-${saves}`}
             id="drafting-agreement-legend"
@@ -195,7 +213,7 @@ export default function DraftingTab({ onSaved }: { onSaved: (text: string) => vo
             key={`advice-${saves}`}
             id="drafting-advice-legend"
             label="Advice legend"
-            hint="At the top of every page of advice, such as a memo or opinion."
+            hint="At the top of every page of advice, such as a memo, opinion or advice letter."
             presets={ADVICE_LEGENDS}
             value={prefs.adviceLegend}
             onChange={(adviceLegend) => set({ adviceLegend })}

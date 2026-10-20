@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import { DEFAULT_DRAFTING, LEGEND_MAX_LENGTH as SERVER_LEGEND_MAX_LENGTH } from "../../../dochaus/lib/drafting-preferences"
 import { NOTES_MARKING as SERVER_NOTES_MARKING, formatDraftDate as serverDate, pageFurniture } from "../../../dochaus/lib/page-furniture"
-import { ADVICE_LEGENDS, AGREEMENT_LEGENDS, LEGEND_MAX_LENGTH, NOTES_MARKING, agreementFurniture, formatDraftDate, suggestedLegends } from "../src/components/settings/page-layout"
+import { ADVICE_LEGENDS, AGREEMENT_LEGENDS, LEGEND_MAX_LENGTH, NOTES_MARKING, agreementFurniture, draftLineText, formatDraftDate, pageNumberText, suggestedLegends } from "../src/components/settings/page-layout"
 
 test("legend suggestions follow the jurisdiction family and are empty elsewhere", () => {
   const us = { agreement: ["Draft — for discussion purposes only"], advice: ["Privileged & confidential — attorney-client communication"] }
@@ -26,16 +26,31 @@ test("the preview text matches the server's page furniture", () => {
   expect(NOTES_MARKING).toBe(SERVER_NOTES_MARKING)
   const at = new Date(2026, 9, 20, 12)
   for (const dateFormat of ["month-day-year", "day-month-year", "iso"] as const) expect(formatDraftDate(at, dateFormat)).toBe(serverDate(at.toISOString(), dateFormat)!)
-  for (const prefs of [
-    { ...DEFAULT_DRAFTING, firm: "Fixture Partners LLP", dateFormat: "day-month-year" as const, agreementLegend: "Subject to contract" },
-    { ...DEFAULT_DRAFTING, firm: "  ", pageNumbers: "page" as const, pageNumberPosition: "right" as const },
-    { ...DEFAULT_DRAFTING, draftLine: false, agreementLegend: "Fixture legend", pageNumbers: "off" as const },
-  ]) {
-    const server = pageFurniture("agreement", prefs, at.toISOString())!
-    const web = agreementFurniture(prefs, at)
-    expect(web.header).toEqual(server.header)
-    expect(web.pageNumber && { format: web.pageNumber.text === "1" ? "plain" : "page", align: web.pageNumber.align }).toEqual(server.pageNumber)
-  }
+  // Page 1's text for each format, as the engine's footer prints it.
+  const printed = { plain: "1", page: "Page 1", dashed: "- 1 -" } as const
+  const formats = ["plain", "page", "dashed", "off"] as const
+  let cases = 0
+  for (const firm of ["Fixture Partners LLP", "  "])
+    for (const draftLine of [true, false])
+      for (const draftLineFirm of [true, false])
+        for (const [index, pageNumbers] of formats.entries())
+          for (const numberFirstPage of [true, false])
+            for (const agreementLegend of ["", "Subject to contract"]) {
+              const dateFormat = (["month-day-year", "day-month-year", "iso"] as const)[index % 3]!
+              const pageNumberPosition = numberFirstPage ? "center" as const : "right" as const
+              const prefs = { ...DEFAULT_DRAFTING, firm, dateFormat, draftLine, draftLineFirm, pageNumbers, pageNumberPosition, numberFirstPage, agreementLegend }
+              const server = pageFurniture("agreement", prefs, at.toISOString())
+              const web = agreementFurniture(prefs, at)
+              expect(web.header).toEqual(server?.header ?? [])
+              expect(web.pageNumber?.text).toBe(server?.pageNumber && printed[server.pageNumber.format])
+              expect(web.pageNumber?.align).toBe(server?.pageNumber?.align)
+              expect(web.firstPage).toBe(server?.firstPage)
+              cases++
+            }
+  expect(cases).toBe(128)
   expect(agreementFurniture({ ...DEFAULT_DRAFTING, firm: "Fixture Partners LLP", dateFormat: "day-month-year" }, at).header).toEqual(["Fixture Partners LLP draft: 20 October 2026"])
   expect(agreementFurniture(DEFAULT_DRAFTING, at)).toEqual({ header: ["Draft: October 20, 2026"], pageNumber: { text: "1", align: "center" } })
+  expect(agreementFurniture({ ...DEFAULT_DRAFTING, pageNumbers: "dashed", numberFirstPage: false }, at)).toEqual({ header: ["Draft: October 20, 2026"], pageNumber: { text: "- 1 -", align: "center" }, firstPage: "unnumbered" })
+  expect(draftLineText({ firm: "Fixture Partners LLP", draftLineFirm: false, dateFormat: "iso" }, at)).toBe("Draft: 2026-10-20")
+  expect((["plain", "page", "dashed"] as const).map(format => pageNumberText(format, 2))).toEqual(["2", "Page 2", "- 2 -"])
 })

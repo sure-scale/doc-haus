@@ -23,9 +23,12 @@ export type DraftingPreferences = {
   // Page layout (Settings → Drafting). Flat keys: the ingest save merges top-level
   // keys only. Read when a document renders, never sent to the model. Legends
   // are the firm's own text, empty (none) by default.
-  pageNumbers: "plain" | "page" | "off"
+  pageNumbers: "plain" | "page" | "dashed" | "off"
   pageNumberPosition: "center" | "right"
+  // A letter's first page is never numbered, whatever this says.
+  numberFirstPage: boolean
   draftLine: boolean
+  draftLineFirm: boolean
   agreementLegend: string
   adviceLegend: string
   notesMarking: boolean
