@@ -557,6 +557,12 @@ test("header and footer targets keep whole-revision binding; a body target binds
       expect(response.status).toBe(200)
       return (await response.json() as {redline_ids:number[]}).redline_ids
     })
+    // The legal pass sees header and footer text labelled as page furniture, apart from the body.
+    expect(JSON.parse(engine.prompts[0].match(/<draft_view encoding="json">([\s\S]*)<\/draft_view>/)![1])).toBe([
+      "Cure within five days; notice within five days.","Closing wording stays.",
+      "[Page header: page furniture, not body text]","Header reference ABC-1.",
+      "[Page footer: page furniture, not body text]","Footer reference XYZ-9.",
+    ].join("\n\n"))
     const db = openDb(directory)
     const rows = (() => {try {return ids.map((id) => getRedline(db,id)!)} finally {db.close()}})()
     // Only body paragraphs carry pointers; header and footer text has no target.

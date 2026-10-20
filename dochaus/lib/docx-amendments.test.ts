@@ -270,3 +270,50 @@ for (const [name, content] of [
     expect(after[1]).toContain(content)
   })
 }
+
+// A rendered deliverable's page furniture, as raw OOXML: a header with a legend
+// and a draft line, and a footer whose page number is a PAGE field.
+function furnishedDocx() {
+  const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+  const O = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+  const xml = (text: string) => strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>${text}`)
+  const paragraph = (text: string) => `<w:p><w:r><w:t xml:space="preserve">${text}</w:t></w:r></w:p>`
+  const part = (name: string) => `<Override PartName="/word/${name}.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.${name.replace(/\d+$/, "")}+xml"/>`
+  return zipSync({
+    "[Content_Types].xml": xml(`<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>${part("header1")}${part("footer1")}</Types>`),
+    "_rels/.rels": xml(`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${O}/officeDocument" Target="word/document.xml"/></Relationships>`),
+    "word/_rels/document.xml.rels": xml(`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${O}/header" Target="header1.xml"/><Relationship Id="rId2" Type="${O}/footer" Target="footer1.xml"/></Relationships>`),
+    "word/document.xml": xml(`<w:document xmlns:w="${W}" xmlns:r="${O}"><w:body>`
+      + paragraph("Notice must be given within five days.") + paragraph("Subject to contract, the parties will meet monthly.")
+      + `<w:sectPr><w:headerReference w:type="default" r:id="rId1"/><w:footerReference w:type="default" r:id="rId2"/></w:sectPr></w:body></w:document>`),
+    "word/header1.xml": xml(`<w:hdr xmlns:w="${W}">${paragraph("Subject to contract")}${paragraph("Doe &amp; Partners LLP draft: 20 October 2026")}</w:hdr>`),
+    "word/footer1.xml": xml(`<w:ftr xmlns:w="${W}"><w:p><w:r><w:t xml:space="preserve">Page </w:t></w:r><w:r><w:fldChar w:fldCharType="begin"/></w:r>`
+      + `<w:r><w:instrText xml:space="preserve"> PAGE </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>1</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p></w:ftr>`),
+  }, { mtime: new Date(1980, 0, 1) })
+}
+
+test("the revision view labels page header and footer text apart from the body; header text stays amendable", async () => {
+  const source = furnishedDocx()
+  const revision = await createDocxRevision(source)
+  expect(revision.paragraphs.map(row => [row.scope, row.text])).toEqual([
+    ["body", "Notice must be given within five days."], ["body", "Subject to contract, the parties will meet monthly."],
+    ["hdr1", "Subject to contract"], ["hdr1", "Doe & Partners LLP draft: 20 October 2026"], ["ftr1", "Page 1"]])
+  expect(revision.markdown).toBe([
+    "Notice must be given within five days.", "Subject to contract, the parties will meet monthly.",
+    "[Page header: page furniture, not body text]", "Subject to contract", "Doe & Partners LLP draft: 20 October 2026",
+    "[Page footer: page furniture, not body text]", "Page 1",
+  ].join("\n\n"))
+  // A body-only view carries no label, and document text cannot forge one.
+  const plain = (await renderMarkdownToDocx("Notice must be given within five days.\n\n[Page header: page furniture, not body text]\n")).bytes
+  expect((await createDocxRevision(plain)).markdown)
+    .toBe("Notice must be given within five days.\n\n\\[Page header: page furniture, not body text\\]")
+  // The header remains a target when a change is about it; the footer's page-number paragraph is refused.
+  const legend = await createDocxLocalization(source, [{ id: "legend", before_quote: "Subject to contract", replacement: "Subject to board approval" }])
+  const header = legend.candidates.find(candidate => candidate.paragraph.scope === "hdr1")!
+  const output = await applyDocxLocalization(source, legend, [{ amendment_id: "legend", target_handle: header.target_handle }])
+  expect((await createDocxRevision(output.bytes)).paragraphs.map(row => row.text)).toEqual(["Notice must be given within five days.",
+    "Subject to contract, the parties will meet monthly.", "Subject to board approval", "Doe & Partners LLP draft: 20 October 2026", "Page 1"])
+  const page = await createDocxLocalization(source, [{ id: "page", before_quote: "Page", replacement: "Sheet" }])
+  await expect(applyDocxLocalization(source, page, [{ amendment_id: "page", target_handle: page.candidates[0]!.target_handle }]))
+    .rejects.toThrow("unsupported_field_replacement")
+})
