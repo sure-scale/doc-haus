@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { useParams, useSearchParams } from "react-router-dom"
 import type { CompareParams } from "../api/ingest/compare"
 import { humanizeError } from "../api/ingest/errors"
@@ -84,6 +84,9 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
   const createdRef = useRef<string | undefined>(undefined)
   const drafting = useDraftingStatus(id)
   useNeedsYouTitle(drafting.status)
+  // The chat's answer in progress, which the status bar shows while it runs.
+  const [chat, setChat] = useState<{ activity?: string }>()
+  const onChatBusy = useCallback((busy: boolean, activity?: string) => setChat(busy ? { activity } : undefined), [])
   const runStatus = drafting.status?.status
 
   useEffect(() => {
@@ -311,6 +314,7 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
               setBlackline(params)
             }}
             onDocumentsChanged={refresh}
+            onBusyChange={onChatBusy}
             feed={drafting}
           />
         </div>
@@ -340,7 +344,7 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
         />
       )}
 
-      <MatterRail matter={matter} session={session} drafting={drafting.status} showStatusbar />
+      <MatterRail matter={matter} session={session} drafting={drafting.status} chat={chat} showStatusbar />
 
       {viewing && (
         <DocumentViewer

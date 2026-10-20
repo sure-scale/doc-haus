@@ -2513,7 +2513,17 @@ li.list-row {
   }
 }
 
-/* Pre-token state: three rising dots instead of literal "Thinking..." text. */
+/* The line under a live answer that says it is still coming: three rising
+   dots and what the answer is doing now. */
+.msg-working {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .working {
   display: inline-flex;
   gap: 4px;

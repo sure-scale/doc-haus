@@ -147,7 +147,9 @@ export default function ChatPanel({
   // Fired when a tool changed the matter's document set mid-turn (a draft was
   // created), so the documents rail refreshes without waiting for a reload.
   onDocumentsChanged?: () => void
-  onBusyChange?: (busy: boolean) => void
+  // Whether a turn is working, and what it is doing now when that has a plain
+  // name; the matter page shows it in its status bar.
+  onBusyChange?: (busy: boolean, activity?: string) => void
   // The matter page's poll of its drafting run, shared with the documents rail;
   // the run header's actions write their result back to it.
   feed?: DraftingFeed
@@ -233,8 +235,6 @@ export default function ChatPanel({
   // settled turns: calling focus() inside finalize fires before that re-render,
   // landing on a node React then reconciles away — which is why the refocus only
   // worked intermittently.
-  useEffect(() => { onBusyChange?.(busy) }, [busy, onBusyChange])
-
   const wasBusy = useRef(false)
   useEffect(() => {
     if (wasBusy.current && !busy) inputRef.current?.focus({ preventScroll: true })
@@ -242,6 +242,10 @@ export default function ChatPanel({
   }, [busy])
 
   const live = readTurn(partsRef.current, rolesRef.current, matterName, sessionRef.current)
+  const activity = busy ? live.activity : undefined
+  useEffect(() => {
+    onBusyChange?.(busy, activity)
+  }, [busy, activity, onBusyChange])
   // The narration answers under the request turn this chat sent; anywhere else
   // (a reload, the run's own conversation) it shows the run's recorded request.
   const anchor =
@@ -448,17 +452,16 @@ export default function ChatPanel({
             <div className={`msg assistant${live.text ? " streaming" : ""}`}>
               <div className="msg-agent">{agentLabel(isAuto(agent) && resolvedAgent ? resolvedAgent : agent)}</div>
               <StepsPanel steps={live.steps} busy answered={Boolean(live.text)} />
-              {live.text ? (
-                answer(stripIssues(live.text), live.compares)
-              ) : (
-                live.steps.length === 0 && (
-                  <span className="working" aria-label="Working">
-                    <span className="working-dot" />
-                    <span className="working-dot" />
-                    <span className="working-dot" />
-                  </span>
-                )
-              )}
+              {live.text && answer(stripIssues(live.text), live.compares)}
+              {/* The answer is still coming: before its first step, during each step and between them. */}
+              <p className="msg-working" role="status">
+                <span className="working" aria-hidden>
+                  <span className="working-dot" />
+                  <span className="working-dot" />
+                  <span className="working-dot" />
+                </span>
+                {activity ?? "Working"}
+              </p>
               <IssuesView issues={parseIssues(live.text)} />
               <TodoView todos={live.todos} />
               <CitationView citations={live.citations} matterId={matterId} documents={documents} />
