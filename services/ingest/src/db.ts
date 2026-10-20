@@ -413,6 +413,21 @@ export function listPendingRedlines(db: Database, docPath: string): RedlineRow[]
     .filter((row) => documentRegistryIdentity(row.doc_path) === identity)
 }
 
+// The latest Prepare for one Word document: its batch and the open items it
+// reported. Open items are stored nowhere else, so the viewer lists them from
+// here until the next Prepare replaces them or the document is deleted.
+export type PreparedChanges = { redline_ids: number[]; open_items: string[] }
+const preparedKey = (docPath: string) => `document-amendment-prepared:${documentRegistryIdentity(docPath)}`
+
+export function getPreparedChanges(db: Database, docPath: string): PreparedChanges | null {
+  const value = getMeta(db, preparedKey(docPath))
+  return value ? JSON.parse(value) as PreparedChanges : null
+}
+
+export function setPreparedChanges(db: Database, docPath: string, prepared: PreparedChanges) {
+  setMeta(db, preparedKey(docPath), JSON.stringify(prepared))
+}
+
 export function getRedline(db: Database, id: number): RedlineRow | null {
   return (db.query("SELECT * FROM redlines WHERE id = ?").get(id) as RedlineRow) ?? null
 }
@@ -457,6 +472,7 @@ export function deleteDocument(db: Database, docPath: string) {
   matchingDocumentRows(db, docPath).forEach((row) => {
     deleteDocumentIndexData(db, row.doc_path)
     db.run("DELETE FROM redlines WHERE doc_path = ?", [row.doc_path])
+    db.run("DELETE FROM meta WHERE key = ?", [preparedKey(row.doc_path)])
     db.run("DELETE FROM documents WHERE id = ?", [row.id])
   })
 }

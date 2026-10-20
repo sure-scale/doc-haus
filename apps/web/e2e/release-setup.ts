@@ -22,7 +22,7 @@ function fixture() {
     config: {} as Record<string, unknown>, completed: [] as string[], skipped: [] as string[],
     preferences: { ...DEFAULT_DRAFTING, attorney: "Saved Lawyer", firm: "Saved Firm", searchApiKey: "saved-fixture-exa", approvedSources: ["saved.example"] },
     requests: [] as { method: string; path: string; query: Record<string, string>; body: Record<string, unknown> }[],
-    unexpected: [] as string[], policyFailures: 0, readbackFailures: 0, detailsFailures: 0, preferenceReadbackFailures: 0, probeFailures: 0, researchTestFailures: 0,
+    unexpected: [] as string[], policyFailures: 0, readbackFailures: 0, detailsFailures: 0, preferenceReadbackFailures: 0, probeFailures: 0, researchTestFailures: 0, setupFailures: 0, jurisdictionsUnavailable: false,
     oauthStatus: "pending", commandStatus: "pending",
     reuseAvailable: false, reuseMixedStores: false, reuseSourceUnavailable: false, reuseDiscoveryUnavailable: false, reuseCopyFailures: 0, reusedGo: false, holdReuse: false,
     releaseReuse: undefined as (() => void) | undefined,
@@ -58,6 +58,7 @@ async function open(state: ReturnType<typeof fixture>) {
     if (pathname === "/api/dochaus/ready") return reply({ ready: true, consentState: "active" })
     if (pathname === "/setup") {
       if (method === "PATCH") {
+        if (state.setupFailures-- > 0) return reply({ error: "Research protection is still loading. Retry in a moment." }, 400)
         state.completed = state.completed.filter(step => step !== body.step)
         state.skipped = state.skipped.filter(step => step !== body.step)
         if (body.status === "completed") state.completed.push(String(body.step))
@@ -117,6 +118,7 @@ async function open(state: ReturnType<typeof fixture>) {
       return reply(state.preferences)
     }
     if (/^\/research\/(exa|courtlistener|courtlistener-mcp)\/test$/.test(pathname) && method === "POST") return state.researchTestFailures-- > 0 ? reply({ error: "Fixture research connection unavailable." }, 503) : reply({ status: "verified", message: "Fixture research connection verified without contacting an external service." })
+    if (pathname === "/jurisdictions" && state.jurisdictionsUnavailable) return reply({ error: "Fixture jurisdictions unavailable." }, 503)
     if (["/matters", "/jurisdictions", "/host/gcp-projects", "/host/aws-profiles"].includes(pathname)) return reply(pathname === "/host/gcp-projects" ? { projects: [] } : pathname === "/host/aws-profiles" ? { profiles: [] } : [])
     if (pathname.startsWith("/matters/")) return reply({ id: "fixture", title: "Fixture matter", dir: "/fixture-matter", documents: [] })
     if (pathname === "/api/session") return reply({ data: [], cursor: { next: null, prev: null } })
@@ -765,6 +767,29 @@ try {
       expect(state.preferences).toMatchObject({ attorney: "Entered Lawyer", firm: "Entered Firm", searchApiKey: "unsaved-fixture-key" })
       expect(state.unexpected).toEqual([]); expect(errors).toEqual([])
       await screenshot(page, "03-setup-completed")
+    } finally { await context.close() }
+  })
+  await scenario("a failed step save clears on a successful retry while a drafting details load error stays", async () => {
+    const state = fixture(); state.connected = true; state.ready = true; state.config = { model: "test-models/primary", small_model: "test-models/primary" }; state.completed = ["models"]
+    state.jurisdictionsUnavailable = true; state.setupFailures = 1
+    const { page, context, errors } = await open(state)
+    try {
+      await accept(page)
+      await currentStage(page, "Research")
+      const loadError = page.getByRole("alert").filter({ hasText: "Could not load drafting details. Retry setup." })
+      const saveError = page.getByRole("alert").filter({ hasText: "Research protection is still loading. Retry in a moment." })
+      await expect(loadError).toBeVisible()
+      await page.getByRole("button", { name: "Save and continue", exact: true }).click()
+      await expect(saveError).toBeVisible()
+      await currentStage(page, "Research")
+      expect(state.completed).toEqual(["models"])
+      await page.getByRole("button", { name: "Save and continue", exact: true }).click()
+      await currentStage(page, "Details")
+      await expect(saveError).toHaveCount(0)
+      await expect(loadError).toBeVisible()
+      expect(state.completed).toEqual(["models", "research"])
+      expect(state.unexpected).toEqual([]); expect(errors).toEqual([])
+      await screenshot(page, "25-step-save-retry")
     } finally { await context.close() }
   })
   await scenario("later, reload and normal Settings resume without overwriting optional preferences", async () => {

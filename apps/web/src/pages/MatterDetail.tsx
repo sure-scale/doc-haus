@@ -344,6 +344,7 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
 
       {viewing && (
         <DocumentViewer
+          key={viewing}
           matterId={matter.id}
           name={viewing}
           focusId={focusRedline}

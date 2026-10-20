@@ -29,14 +29,28 @@ export function setupRoutes(options: { directory: string; config?: () => { model
   const models = options.models ?? (async () => {
     const engine = process.env.OPENCODE_URL ?? `http://127.0.0.1:${process.env.DOC_HAUS_ENGINE_PORT ?? "4097"}`
     const password = process.env.OPENCODE_SERVER_PASSWORD
-    const res = await fetch(`${engine}/api/model`, {
-      signal: AbortSignal.timeout(8000),
-      ...(password ? { headers: { Authorization: `Basic ${btoa(`opencode:${password}`)}` } } : {}),
-    })
-    if (!res.ok) throw new Error("Could not check the engine model catalog. Retry when the engine is ready.")
-    const result = await res.json() as { data: CatalogModel[] }
-    if (!Array.isArray(result.data)) throw new Error("The engine returned an invalid model catalog.")
-    return result.data
+    const unavailable = "Could not check the engine model catalog. Retry when the engine is ready."
+    // Saving preferences reloads research consent protection, and the engine
+    // refuses catalog reads until it is active again. Wait out that short reload
+    // inside one 8 s budget, well within the web client's 12 s timeout.
+    const deadline = Date.now() + 8000
+    while (true) {
+      const res = await fetch(`${engine}/api/model`, {
+        signal: AbortSignal.timeout(Math.max(deadline - Date.now(), 1)),
+        ...(password ? { headers: { Authorization: `Basic ${btoa(`opencode:${password}`)}` } } : {}),
+      }).catch(() => { throw new Error(unavailable) })
+      if (res.ok) {
+        const result = await res.json() as { data: CatalogModel[] }
+        if (!Array.isArray(result.data)) throw new Error("The engine returned an invalid model catalog.")
+        return result.data
+      }
+      const readiness = res.status === 503 ? await res.json().catch(() => undefined) as { legalState?: string; consentState?: string } | undefined : undefined
+      const consent = readiness?.legalState === "active" ? readiness.consentState : undefined
+      if (consent === "pending" && Date.now() + 200 < deadline) { await Bun.sleep(200); continue }
+      if (consent === "pending") throw new Error("Research protection is still loading. Retry in a moment.")
+      if (consent) throw new Error("Research protection could not load, so the engine refuses setup checks. Restart doc.haus, then retry.")
+      throw new Error(unavailable)
+    }
   })
   function write(progress: Progress) {
     mkdirSync(options.directory, { recursive: true })
@@ -52,6 +66,9 @@ export function setupRoutes(options: { directory: string; config?: () => { model
     if (!existsSync(file)) write(progress)
     if (progress.version !== 1 || !Array.isArray(progress.completed) || !Array.isArray(progress.skipped))
       throw new Error("Setup progress could not be read. Open Settings to check your configuration.")
+    return summary(progress, ready)
+  }
+  function summary(progress: Progress, ready: boolean): SetupProgress {
     const completed = progress.completed.filter(step => SETUP_STEPS.includes(step) && (step !== "models" || ready))
     const skipped = progress.skipped.filter(step => step !== "models" && SETUP_STEPS.includes(step) && !completed.includes(step))
     return { version: 1, completed, skipped, next: SETUP_STEPS.find(step => !completed.includes(step) && !skipped.includes(step)) ?? "done", ready }
@@ -74,7 +91,8 @@ export function setupRoutes(options: { directory: string; config?: () => { model
       const progress: Progress = { version: 1, completed: current.completed.filter(step => step !== value.step), skipped: current.skipped.filter(step => step !== value.step) }
       progress[value.status].push(value.step)
       write(progress)
-      return c.json(await read())
+      // A second catalog read could land in a new consent reload and report a saved step as failed.
+      return c.json(summary(progress, current.ready))
     } catch (error) { return c.json({ error: error instanceof Error ? error.message : "Could not save setup progress." }, 400) }
   })
   return routes

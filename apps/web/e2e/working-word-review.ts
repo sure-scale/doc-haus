@@ -41,6 +41,8 @@ await mkdir(evidence, { recursive: true })
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 const PT = "http://powertools.codeplex.com/2011"
 const NAME = "synthetic-services-agreement.docx"
+// A second deliverable, opened only to check that switching documents clears the first one's Prepare result.
+const OTHER = "synthetic-supply-schedule.docx"
 const FIRST = "Extend the delivery period to seven days, raise the service credit to three percent and say the services are performed."
 const SECOND = "Extend the payment period to forty-five days."
 const THIRD = "Raise the liability cap to two hundred thousand pounds."
@@ -58,6 +60,11 @@ const plans: Record<string, { before_quote: string; replacement: string; target_
   [THIRD]: [
     { before_quote: "One hundred thousand pounds", replacement: "Two hundred thousand pounds", target_context: "liability cap table value", reason: "Requested liability cap." },
   ],
+}
+// Open items the legal pass reports beside its proposals.
+const openItems: Record<string, string[]> = {
+  [FIRST]: ["Confirm whether the revised service credit applies to invoices already issued."],
+  [THIRD]: ["Confirm with the client whether the cap applies per claim or in aggregate."],
 }
 const replacements = Object.fromEntries(Object.values(plans).flat().map(row => [row.before_quote, row.replacement]))
 
@@ -165,7 +172,7 @@ const fixture = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: async (reques
       const instructions = JSON.parse(draft[1]) as string
       fixtureRequests.push({ method: "POST", path: url.pathname, directory, instructions })
       if (!plans[instructions]) { unexpected.push(`fixture instructions ${instructions}`); return new Response(null, { status: 500 }) }
-      return reply({ amendments: plans[instructions], open_items: [] })
+      return reply({ amendments: plans[instructions], open_items: openItems[instructions] ?? [] })
     }
     const candidates = JSON.parse(prompt.match(/<candidates>([\s\S]*)<\/candidates>/)?.[1] ?? "[]") as { amendment_id: string; target_handle: string }[]
     const ids = JSON.parse(prompt.match(/<frozen_amendments>([\s\S]*?)<\/frozen_amendments>/)?.[1] ?? "[]") as { amendment_id: string }[]
@@ -279,6 +286,7 @@ try {
   const pending = async () => await (await api(`/matters/${file.matter}/redlines?name=${encodeURIComponent(NAME)}`)).json() as { id: number; new_text: string; stale?: boolean }[]
   const render = dialog.locator(".docx-render")
   const status = dialog.locator("#document-edit-request").getByRole("status")
+  const open = dialog.getByRole("list", { name: "Open items", exact: true }).getByRole("listitem")
   const acceptAll = dialog.getByRole("button", { name: "Accept all", exact: true })
   const staleReason = "The paragraph this change targets has changed since it was prepared. Prepare a fresh change list."
   const exportRefusal = "A proposal no longer resolves against this Word revision."
@@ -304,6 +312,8 @@ try {
     const form = new FormData(); form.append("file", new File([syntheticDocx()], NAME))
     expect((await api(`/matters/${matter.id}/deliverables`, { method: "POST", body: form })).status).toBe(200)
     Object.assign(file, { matter: matter.id, dir: matter.dir, path: path.join(matter.dir, NAME) })
+    const other = new FormData(); other.append("file", new File([syntheticDocx()], OTHER))
+    expect((await api(`/matters/${matter.id}/deliverables`, { method: "POST", body: other })).status).toBe(200)
     hashes.seeded = await current()
     seeded = inspect(await Bun.file(file.path).bytes())
     expect(seeded.numbered).toHaveLength(3)
@@ -319,12 +329,15 @@ try {
     await render.screenshot({ path: path.join(evidence, "02-document-render.png") })
   })
 
+  // The line counts the batch's proposals once the change list has refetched;
+  // the open items sit in their own list.
   async function prepare(instructions: string, message: string) {
     const request = dialog.getByRole("button", { name: "Request edits", exact: true })
     if (await request.getAttribute("aria-expanded") !== "true") await request.click()
     await dialog.getByLabel("Describe the changes you want to review", { exact: true }).fill(instructions)
     await dialog.getByRole("button", { name: "Prepare changes", exact: true }).click()
     await expect(status).toHaveText(message, { timeout: 60_000 })
+    await expect(open).toHaveText(openItems[instructions] ?? [])
     await expect(render).toBeVisible()
   }
 
@@ -367,6 +380,9 @@ try {
     await expect(sibling.getByRole("button", { name: "Reject", exact: true })).toBeEnabled()
     await expect(acceptAll).toBeDisabled()
     await expect(render).toContainText("The Supplier shall deliver the services within seven days.")
+    // One of the batch is left to review; the stale one is the stale notice's. Open items stay.
+    await expect(status).toHaveText("1 proposed change ready for review.")
+    await expect(open).toHaveText(openItems[FIRST])
     hashes.firstAccepted = await current()
     expect(hashes.firstAccepted).not.toBe(hashes.seeded)
     expect(working()).toBe(hashes.firstAccepted)
@@ -379,6 +395,9 @@ try {
     await expect(cards.nth(0)).toContainText("perform the services")
     await expect(cards.nth(0)).toContainText(staleReason)
     await expect(render.locator("td, th").filter({ hasText: "Three percent" })).toHaveCount(1)
+    // Nothing fresh is left from the batch, so the line goes; the open items do not.
+    await expect(status).toHaveCount(0)
+    await expect(open).toHaveText(openItems[FIRST])
     hashes.accepted = await current()
     expect(hashes.accepted).not.toBe(hashes.firstAccepted)
     expect(working()).toBe(hashes.accepted)
@@ -434,7 +453,7 @@ try {
     await shot("06-stale-excluded-download")
   })
 
-  await step("7 restart ingest on the same root; reload keeps the hash and stale card; a fresh Prepare and Accept succeed", async () => {
+  await step("7 restart ingest on the same root; reload keeps the hash, stale card and open items; a fresh Prepare and Accept succeed", async () => {
     await stopIngest()
     await startIngest()
     await page.reload()
@@ -445,6 +464,8 @@ try {
     await expect(cards).toHaveCount(1)
     await expect(cards.nth(0)).toContainText(staleReason)
     await expect(cards.nth(0).getByRole("button", { name: "Accept", exact: true })).toBeDisabled()
+    // The last Prepare's open items are stored with the matter, not in the page.
+    await expect(open).toHaveText(openItems[FIRST])
     await shot("07-after-restart")
     await prepare(SECOND, "1 proposed change ready for review.")
     expect(await current()).toBe(hashes.accepted)
@@ -459,6 +480,7 @@ try {
     await expect(cards).toHaveCount(1)
     await expect(cards.nth(0)).toContainText("perform the services")
     await expect(render).toContainText("The Customer shall pay each invoice within forty-five days.")
+    await expect(status).toHaveCount(0)
     hashes.reaccepted = await current()
     expect(hashes.reaccepted).not.toBe(hashes.accepted)
     expect(working()).toBe(hashes.reaccepted)
@@ -478,6 +500,8 @@ try {
     }
     await expect(dialog.locator(".changes-panel")).toHaveCount(0)
     expect(await pending()).toEqual([])
+    await expect(status).toHaveCount(0)
+    await expect(open).toHaveText(openItems[THIRD])
     await expect(render).toContainText("One hundred thousand pounds")
     const [download] = await Promise.all([page.waitForEvent("download"), dialog.getByRole("button", { name: "Download", exact: true }).click()])
     expect(download.suggestedFilename()).toBe(NAME)
@@ -486,6 +510,22 @@ try {
     expect(hash(bytes)).toBe(hashes.reaccepted)
     expectPreserved(seeded, inspect(bytes), ["within five days", "Two percent", "within thirty days"])
     await shot("08-rejected-and-downloaded")
+  })
+
+  await step("9 switching documents shows only each document's own open items; switching back restores them", async () => {
+    await expect(open).toHaveText(openItems[THIRD])
+    // The viewer traps no focus, so the Documents drawer behind it is reachable from the keyboard.
+    await page.getByRole("button", { name: OTHER, exact: true }).press("Enter")
+    const other = page.getByRole("dialog", { name: OTHER, exact: true })
+    await expect(other.locator(".docx-render:not(.docx-skeleton)")).toBeVisible({ timeout: 30_000 })
+    await expect(dialog).toHaveCount(0)
+    await expect(other.getByRole("list", { name: "Open items", exact: true })).toHaveCount(0)
+    await expect(other.getByRole("button", { name: "Request edits", exact: true })).toHaveAttribute("aria-expanded", "false")
+    await expect(other.locator("#document-edit-request")).toHaveCount(0)
+    await shot("09-switched-document")
+    await page.getByRole("button", { name: NAME, exact: true }).press("Enter")
+    await expect(dialog.locator(".docx-render:not(.docx-skeleton)")).toBeVisible({ timeout: 30_000 })
+    await expect(open).toHaveText(openItems[THIRD])
   })
 
   await step("no page errors, unexpected requests or unscripted generation", async () => {

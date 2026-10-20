@@ -7,7 +7,7 @@ import path from "node:path"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { AlignmentType, Document, Footer, Header, LevelFormat, Packer, Paragraph, Table, TableCell, TableRow, TextRun } from "docx"
 import { paragraphTargets, withParagraphPointers } from "../../../dochaus/lib/drafting-amendment"
-import { openDb, getDocumentRole, getRedline, listDocuments, listSourceDocuments, upsertDocument } from "./db"
+import { openDb, deleteDocument, getDocumentRole, getRedline, listDocuments, listSourceDocuments, upsertDocument } from "./db"
 import { readWorkingDocx } from "../../../dochaus/lib/working-docx"
 import { createDocxLocalization, createDocxRevision, openRevision, verifyPreservation } from "../../../dochaus/lib/docx-amendments"
 import { withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
@@ -609,10 +609,15 @@ test("a locator unresolved_reason becomes a visible open item without a pending 
     ]}]})))))
     const original = await Bun.file(file).bytes()
     const rows = () => {const db=openDb(directory);try {return db.query("SELECT * FROM redlines").all() as Array<{find_text:string;status:string;target_json:string}>} finally {db.close()}}
+    // Open items live only in the Prepare reply unless kept; the viewer reads them back.
+    const prepared = async () => await (await documentAmendmentRoutes({directory:() => directory}).request("http://local/matter/documents/amendments?name=working.docx")).json()
+    expect(await prepared()).toBeNull()
+    expect(await (await documentAmendmentRoutes({directory:() => directory}).request("http://local/matter/documents/amendments?name=schedule.xlsx")).json()).toBeNull()
     await withPreparation(directory,engine,async (prepare) => {
       const refused = await prepare("Update the governing notice period and the retention period.")
       expect(refused.status).toBe(200)
       expect(await refused.json()).toMatchObject({proposed:0,open_items:["Confirm the client's retention policy.",ambiguous,ambiguous]})
+      expect(await prepared()).toEqual({redline_ids:[],open_items:["Confirm the client's retention policy.",ambiguous,ambiguous]})
       expect(rows()).toEqual([])
       expect(await Bun.file(file).bytes()).toEqual(original)
       expect(readWorkingDocx(directory,file)).toBeUndefined()
@@ -623,12 +628,16 @@ test("a locator unresolved_reason becomes a visible open item without a pending 
       const body = await partial.json() as {proposed:number;redline_ids:number[];open_items:string[]}
       expect(body.proposed).toBe(1)
       expect(body.open_items).toEqual(["Confirm the client's retention policy.",ambiguous])
+      expect(await prepared()).toEqual({redline_ids:body.redline_ids,open_items:body.open_items})
       // Only the resolved amendment is recorded; the unresolved quote has no row.
       expect(rows().map((row) => [row.find_text,row.status,JSON.parse(row.target_json).amendment_id])).toEqual([["three months","pending","amendment-2"]])
       expect(await Bun.file(file).bytes()).toEqual(original)
       expect(readWorkingDocx(directory,file)).toBeUndefined()
     })
     expect(engine.prompts).toHaveLength(4)
+    const db = openDb(directory)
+    try {deleteDocument(db,file)} finally {db.close()}
+    expect(await prepared()).toBeNull()
   } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
 })
 

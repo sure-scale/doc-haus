@@ -36,6 +36,7 @@ export default function CitationView({ citations, matterId, documents }: { citat
       ))}
     </details>
     {viewing && document && matterId && typeof window !== "undefined" && createPortal(<DocumentViewer
+      key={document.name}
       matterId={matterId}
       name={document.name}
       citation={viewing}

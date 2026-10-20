@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
-import { combinedNotUpdatedNotice, DownloadActions, notesNotUpdatedNotice, redlineNotUpdatedNotice, staleExportNotice } from "../src/components/DocumentViewer"
+import { combinedNotUpdatedNotice, DownloadActions, notesNotUpdatedNotice, preparedNotice, redlineNotUpdatedNotice, staleExportNotice } from "../src/components/DocumentViewer"
 import { acceptAllRedlines, acceptRedline, type Redline } from "../src/api/ingest/redlines"
 
 const proposal = (id: number, stale?: true): Redline => ({
@@ -33,6 +33,21 @@ describe("document viewer downloads", () => {
       "1 stale proposal is left out of the tracked changes and the redline download. Reject it to clear it; prepare a fresh change list if the change is still needed.")
     expect(staleExportNotice([proposal(1, true), proposal(3, true)])).toStartWith("2 stale proposals are left out")
     expect(staleExportNotice([proposal(1, true), proposal(3, true)])).toContain("Reject them to clear them")
+  })
+})
+
+describe("the Prepare line", () => {
+  test("counts only the batch's proposals still pending and fresh, and goes when none is left", () => {
+    expect(preparedNotice([1, 2, 3], [proposal(1), proposal(2), proposal(3)])).toBe("3 proposed changes ready for review.")
+    // An older stale proposal outside the batch is the stale notice's to report.
+    expect(preparedNotice([2, 3], [proposal(1, true), proposal(2), proposal(3)])).toBe("2 proposed changes ready for review.")
+    // Card 1 accepted, card 3 stale since: one is left to review.
+    expect(preparedNotice([1, 2, 3], [proposal(2), proposal(3, true)])).toBe("1 proposed change ready for review.")
+    expect(preparedNotice([1, 2, 3], [proposal(3, true)])).toBeUndefined()
+    expect(preparedNotice([1, 2], [])).toBeUndefined()
+    // Before the list refetches, a new batch is not yet counted.
+    expect(preparedNotice([4], [proposal(3, true)])).toBeUndefined()
+    expect(preparedNotice([], [proposal(3)])).toBe("No changes were proposed.")
   })
 })
 

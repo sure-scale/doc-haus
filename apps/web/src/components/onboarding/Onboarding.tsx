@@ -34,6 +34,8 @@ export default function Onboarding({ onClose }: { onClose: () => void }) {
   const [primary, setPrimary] = useState("")
   const [fast, setFast] = useState("")
   const [notice, setNotice] = useState("")
+  // A failed step save clears on the next save attempt; other notices stay.
+  const [saveNotice, setSaveNotice] = useState("")
   const [loading, setLoading] = useState(true)
   const [loaded, setLoaded] = useState(false)
   const [failed, setFailed] = useState(false)
@@ -134,7 +136,7 @@ export default function Onboarding({ onClose }: { onClose: () => void }) {
   }
   async function advance(which: "details" | "research", status: "completed" | "skipped") {
     if (advancing) return
-    setAdvancing(true)
+    setAdvancing(true); setSaveNotice("")
     try {
       const next = await saveSetup(which, status)
       setProgress(next)
@@ -167,6 +169,7 @@ export default function Onboarding({ onClose }: { onClose: () => void }) {
       <div ref={body} className="onboarding-body" aria-busy={loading}>
         <div className="onboarding-stage-heading"><h2 ref={heading} tabIndex={-1}>{step === "setup" && phase === "connection" ? `Connect ${selected?.name ?? "a local endpoint"}` : stage.title}</h2><p id="onboarding-description">{stage.description}</p></div>
         {notice && <p role="alert" className="settings-notice">{notice}</p>}
+        {saveNotice && <p role="alert" className="settings-notice">{saveNotice}</p>}
         {loading && loaded && <p className="settings-notice" role="status">Refreshing providers and your saved choices…</p>}
         {failed && loaded && <div className="onboarding-status"><p>Could not refresh setup. Retry to update the provider catalog.</p><button onClick={() => void load()}>Retry setup</button></div>}
         {loading && !loaded ? <div className="onboarding-status" role="status"><span className="onboarding-loading-dot" aria-hidden="true" />Loading providers and your saved choices…</div>
@@ -199,7 +202,7 @@ export default function Onboarding({ onClose }: { onClose: () => void }) {
           </>}
           {currentStage === "details" && <DraftingDetailsStep drafting={drafting} setDrafting={setDrafting} jurisdictions={jurisdictions} selectedJx={selectedJx} setSelectedJx={setSelectedJx} setStep={setStep} onClose={() => advance("details", "completed")} />}
           {(mounted.research || currentStage === "research") && <div className="onboarding-stage-content onboarding-research" hidden={currentStage !== "research"} inert={currentStage !== "research"}>
-            <ResearchTab heading="Sources and connections" actionLabel="Save and continue" secondaryActions={busy => <button disabled={busy || advancing} onClick={() => { setPhase("models"); setStep("setup") }}>Back to models</button>} onComplete={() => { void advance("research", "completed").catch(() => setNotice("Could not save setup progress. Retry.")) }} />
+            <ResearchTab heading="Sources and connections" actionLabel="Save and continue" secondaryActions={busy => <button disabled={busy || advancing} onClick={() => { setPhase("models"); setStep("setup") }}>Back to models</button>} onComplete={() => { void advance("research", "completed").catch(error => setSaveNotice(error instanceof Error ? error.message : "Could not save setup progress. Retry.")) }} />
           </div>}
         </>}
       </div>

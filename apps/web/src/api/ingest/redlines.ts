@@ -41,6 +41,14 @@ export async function prepareDocumentChanges(id:string,name:string,instructions:
   return result
 }
 
+// The latest Prepare's batch and open items for one document; null before any.
+export type PreparedChanges = { redline_ids: number[]; open_items: string[] }
+export async function fetchPreparedChanges(id: string, name: string): Promise<PreparedChanges | null> {
+  const res = await fetch(`${INGEST_URL}/matters/${id}/documents/amendments?name=${encodeURIComponent(name)}`)
+  if (!res.ok) throw new Error(`Could not load the open items for ${name} (${res.status})`)
+  return res.json()
+}
+
 // Present only when the accepted file is the body of a completed drafting run:
 // whether that run's drafting notes recorded the accepted change and its
 // delivered redline was rebuilt from the accepted body, and if not, why. The

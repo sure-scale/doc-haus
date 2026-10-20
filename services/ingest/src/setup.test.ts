@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { setupRoutes, validModelPair } from "./setup"
@@ -101,4 +101,50 @@ test("setup rejects credential fields", async () => {
   const setup = fixture(pair)
   try { expect((await patch(setup.app, { step: "research", status: "completed", apiKey: "must-not-persist" })).status).toBe(400) }
   finally { setup.dispose() }
+})
+async function withEngine(respond: () => Response, run: (app: ReturnType<typeof setupRoutes>, file: string) => Promise<void>) {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "dochaus-setup-consent-"))
+  const previousURL = process.env.OPENCODE_URL
+  const engine = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: respond })
+  try {
+    process.env.OPENCODE_URL = engine.url.origin
+    await run(setupRoutes({ directory, config: () => pair }), path.join(directory, "setup.json"))
+  } finally {
+    if (previousURL === undefined) delete process.env.OPENCODE_URL
+    else process.env.OPENCODE_URL = previousURL
+    engine.stop(true)
+    rmSync(directory, { recursive: true, force: true })
+  }
+}
+test("a step saved while research consent reloads waits for it and reads the catalog once", async () => {
+  let requests = 0
+  // Saving preferences reloads research consent; the engine refuses inventory reads until it settles.
+  await withEngine(() => ++requests === 3 ? Response.json({ data: models }) : Response.json({ ready: false, legalState: "active", consentState: "pending" }, { status: 503 }), async (app, file) => {
+    writeFileSync(file, JSON.stringify({ version: 1, completed: ["models"], skipped: [] }))
+    const response = await patch(app, { step: "research", status: "completed" })
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ version: 1, completed: ["models", "research"], skipped: [], next: "details", ready: true })
+    expect(requests).toBe(3)
+    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ version: 1, completed: ["models", "research"], skipped: [] })
+  })
+})
+test("failed research consent protection is named and never saves first-run progress as not ready", async () => {
+  let requests = 0
+  await withEngine(() => { requests++; return Response.json({ ready: false, legalState: "active", consentState: "failed" }, { status: 503 }) }, async (app, file) => {
+    expect((await app.request("/setup")).status).toBe(503)
+    const response = await patch(app, { step: "research", status: "completed" })
+    expect(response.status).toBe(400)
+    expect((await response.json()).error).toContain("Research protection")
+    expect(requests).toBe(2)
+    expect(existsSync(file)).toBe(false)
+  })
+})
+test("an unreachable engine is reported as the catalog check, not a raw network error", async () => {
+  await withEngine(() => Response.json({ data: models }), async (app, file) => {
+    // withEngine restores the URL afterwards; nothing listens on the discard port.
+    process.env.OPENCODE_URL = "http://127.0.0.1:9"
+    const response = await patch(app, { step: "research", status: "completed" })
+    expect(await response.json()).toEqual({ error: "Could not check the engine model catalog. Retry when the engine is ready." })
+    expect(existsSync(file)).toBe(false)
+  })
 })

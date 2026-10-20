@@ -58,9 +58,10 @@
 .document-reader .changes-head { background: var(--panel); }
 .document-reader .change-card { border: 0; border-bottom: 1px solid var(--border); border-radius: 0; padding: 20px 0; box-shadow: none; }
 .document-reader .change-card.focused { border: 0; border-bottom: 1px solid var(--accent-border); box-shadow: inset 3px 0 var(--accent); padding-left: 14px; }
-.document-reader .document-edit-request { max-width: 760px; margin: 0 auto 24px; padding: 22px 24px; background: var(--panel); border: 1px solid var(--border); border-radius: 6px; }
+.document-reader .document-edit-request, .document-reader .document-open-items { max-width: 760px; margin: 0 auto 24px; padding: 22px 24px; background: var(--panel); border: 1px solid var(--border); border-radius: 6px; }
 .document-edit-request label { display: block; font-weight: 500; font-size: 14px; margin-bottom: 12px; }
 .document-edit-request textarea { margin-bottom: 12px; }
+.document-open-items ul { margin: 8px 0 0; padding-left: 20px; }
 /* Overflow menu: a square icon control matching the buttons beside it. */
 .viewer-more-actions { position: relative; }
 .viewer-more-actions > summary { display: flex; align-items: center; justify-content: center; width: 36px; height: 36px; list-style: none; cursor: pointer; color: var(--text-secondary); background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-md); transition: background var(--duration-fast) var(--ease-out), border-color var(--duration-fast) var(--ease-out); }
@@ -87,7 +88,7 @@
   .document-reader .pdf-render { min-height: 65dvh; }
   .document-reader .docx-render { padding: 30px 24px; }
   .document-reader .changes-panel { width: 100%; overflow: visible; padding: 0 18px 18px; border-left: 0; border-top: 1px solid var(--border); }
-  .document-reader .document-edit-request { padding: 18px; }
+  .document-reader .document-edit-request, .document-reader .document-open-items { padding: 18px; }
 }
 @media (max-width: 420px) {
   .document-reader .viewer-bar-actions > button:not(.primary, .modal-close) { flex: none; width: 44px; padding: 0; }
