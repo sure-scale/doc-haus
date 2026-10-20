@@ -69,7 +69,7 @@ try {
     page.setDefaultTimeout(60_000)
     const calls: string[] = []
     const writes: string[] = []
-    // The viewer only reads: the redlined bytes (clean when nothing is pending), the change list and the stored file.
+    // The viewer only reads: the redlined bytes (clean when nothing is pending), the change list, the last Prepare and the stored file.
     await page.route("http://viewer.invalid/**", route => {
       const request = route.request()
       const url = new URL(request.url())
@@ -82,6 +82,7 @@ try {
       if (bytes && /^\/matters\/matter-viewer\/documents\/(redlined|content)$/.test(url.pathname))
         return route.fulfill({ status: 200, contentType: `${CT}.document`, body: Buffer.from(bytes) })
       if (url.pathname === "/matters/matter-viewer/redlines") return route.fulfill({ status: 200, contentType: "application/json", body: "[]" })
+      if (url.pathname === "/matters/matter-viewer/documents/amendments") return route.fulfill({ status: 200, contentType: "application/json", body: "null" })
       return route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: `Unexpected ${url.pathname}` }) })
     })
     await page.goto(`${server.url.href}#${encodeURIComponent(name)}`)

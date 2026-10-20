@@ -6,8 +6,9 @@ import { createDocxRevision, createDocxLocalization, applyDocxLocalization, Docx
 import { workingDocxKey, readWorkingDocx } from "../../../dochaus/lib/working-docx"
 import { paragraphTargets, resolveParagraphTarget } from "../../../dochaus/lib/drafting-amendment"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
-import { resolveMatterDocumentTarget } from "./document-identity"
-import { getDocumentRole, getMeta, openDb, setMeta } from "./db"
+import { existsSync } from "node:fs"
+import { MatterDocumentIdentityError, resolveMatterDocumentTarget } from "./document-identity"
+import { getDocumentRole, getMeta, getPreparedChanges, openDb, setMeta, setPreparedChanges, type PreparedChanges } from "./db"
 import { draftingAttribution } from "../../../dochaus/lib/docx-attribution"
 
 export class DocumentAmendmentConflictError extends Error {}
@@ -55,6 +56,17 @@ export function documentAmendmentRoutes(options: { directory: (id: string) => st
         ...(reference ? {diagnostic_ref:reference,diagnostic_hint:"Inspect the latest private preparation diagnostic in this matter before trying again."} : {})},409)
     }
   })
+  // The latest Prepare's batch and open items for one Word document; null before any.
+  app.get("/:id/documents/amendments", (c) => {
+    const name = c.req.query("name")
+    if (!name || path.basename(name) !== name || !name.toLowerCase().endsWith(".docx")) return c.json({error:"Provide a Word filename."},400)
+    const directory = options.directory(c.req.param("id"))
+    if (!existsSync(path.join(directory,".dochaus","legal.db"))) return c.json(null)
+    const db = openDb(directory)
+    try {return c.json(getPreparedChanges(db,resolveMatterDocumentTarget(directory,name).docPath))}
+    catch(error) {if (error instanceof MatterDocumentIdentityError) return c.json(null); throw error}
+    finally {db.close()}
+  })
   return app
 }
 
@@ -96,7 +108,10 @@ async function prepare(directory:string,name:string,instructions:string,diagnost
   diagnostic.record("legal_parse",{first_text:first.text,first_pass:pass(first)})
   const legal = parseLegal(first.text)
   diagnostic.record("candidate_extraction",{frozen_legal_proposals:legal})
-  if (!legal.amendments.length) return {proposed:0,open_items:legal.open_items,passes:[pass(first)]}
+  if (!legal.amendments.length) {
+    await recordPrepared(directory,name,{redline_ids:[],open_items:legal.open_items})
+    return {proposed:0,open_items:legal.open_items,passes:[pass(first)]}
+  }
   const amendments = legal.amendments.map((row,index) => ({id:`amendment-${index+1}`,before_quote:row.before_quote,replacement:row.replacement}))
   const packet = await createDocxLocalization(initial.bytes, amendments)
   diagnostic.record("locator_prompt",{candidates:packet.candidates})
@@ -124,7 +139,10 @@ async function prepare(directory:string,name:string,instructions:string,diagnost
     return [{row,amendment:amendments[index],selection}]
   })
   const openItems = [...legal.open_items,...selections.flatMap((row) => typeof row.unresolved_reason === "string" ? [row.unresolved_reason] : [])]
-  if (!resolved.length) return {proposed:0,open_items:openItems,passes:[pass(first),pass(second)]}
+  if (!resolved.length) {
+    await recordPrepared(directory,name,{redline_ids:[],open_items:openItems})
+    return {proposed:0,open_items:openItems,passes:[pass(first),pass(second)]}
+  }
   // Pure private-copy validation qualifies the complete batch before persistence.
   // It does not publish this save or imply human approval.
   diagnostic.record("batch_qualification")
@@ -154,15 +172,27 @@ async function prepare(directory:string,name:string,instructions:string,diagnost
       if (getDocumentRole(db,target.docPath) !== "deliverable")
         throw new DocumentAmendmentConflictError("The document's registered role changed while preparing changes.")
       const author = draftingAttribution().author
-      return db.transaction(() => resolved.map(({row},index) => {
-        return Number(db.run("INSERT INTO redlines (doc_path,doc_name,scope,find_text,old_text,new_text,author,review_comment,anchor_id,target_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",[
+      return db.transaction(() => {
+        const ids = resolved.map(({row},index) => Number(db.run("INSERT INTO redlines (doc_path,doc_name,scope,find_text,old_text,new_text,author,review_comment,anchor_id,target_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",[
           target.docPath,target.name,"phrase",row.before_quote,row.before_quote,row.replacement,author,row.reason,null,
           JSON.stringify(bindings[index]),Date.now(),
-        ]).lastInsertRowid)
-      })).immediate()
+        ]).lastInsertRowid))
+        setPreparedChanges(db,target.docPath,{redline_ids:ids,open_items:openItems})
+        return ids
+      }).immediate()
     } finally {db.close()}
   })
   return {proposed:ids.length,redline_ids:ids,base_sha256:revision.source_sha256,open_items:openItems,passes:[pass(first),pass(second)]}
+}
+
+// A Prepare with no proposals still reports open items; keep them for the viewer.
+async function recordPrepared(directory:string,name:string,prepared:PreparedChanges) {
+  await withArtifactMutationLocksAsync(directory,[name],async () => {
+    const target = resolveMatterDocumentTarget(directory,name)
+    const db = openDb(directory)
+    try {if (getDocumentRole(db,target.docPath) === "deliverable") setPreparedChanges(db,target.docPath,prepared)}
+    finally {db.close()}
+  })
 }
 
 export async function acceptedWorkingDocxUpdate(directory:string,name:string,bytes:Uint8Array) {

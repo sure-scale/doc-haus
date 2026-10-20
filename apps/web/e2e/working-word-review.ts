@@ -453,7 +453,7 @@ try {
     await shot("06-stale-excluded-download")
   })
 
-  await step("7 restart ingest on the same root; reload keeps the hash and stale card; a fresh Prepare and Accept succeed", async () => {
+  await step("7 restart ingest on the same root; reload keeps the hash, stale card and open items; a fresh Prepare and Accept succeed", async () => {
     await stopIngest()
     await startIngest()
     await page.reload()
@@ -464,6 +464,8 @@ try {
     await expect(cards).toHaveCount(1)
     await expect(cards.nth(0)).toContainText(staleReason)
     await expect(cards.nth(0).getByRole("button", { name: "Accept", exact: true })).toBeDisabled()
+    // The last Prepare's open items are stored with the matter, not in the page.
+    await expect(open).toHaveText(openItems[FIRST])
     await shot("07-after-restart")
     await prepare(SECOND, "1 proposed change ready for review.")
     expect(await current()).toBe(hashes.accepted)
@@ -510,7 +512,7 @@ try {
     await shot("08-rejected-and-downloaded")
   })
 
-  await step("9 switching documents clears the previous document's Prepare line, open items and request", async () => {
+  await step("9 switching documents shows only each document's own open items; switching back restores them", async () => {
     await expect(open).toHaveText(openItems[THIRD])
     // The viewer traps no focus, so the Documents drawer behind it is reachable from the keyboard.
     await page.getByRole("button", { name: OTHER, exact: true }).press("Enter")
@@ -521,6 +523,9 @@ try {
     await expect(other.getByRole("button", { name: "Request edits", exact: true })).toHaveAttribute("aria-expanded", "false")
     await expect(other.locator("#document-edit-request")).toHaveCount(0)
     await shot("09-switched-document")
+    await page.getByRole("button", { name: NAME, exact: true }).press("Enter")
+    await expect(dialog.locator(".docx-render:not(.docx-skeleton)")).toBeVisible({ timeout: 30_000 })
+    await expect(open).toHaveText(openItems[THIRD])
   })
 
   await step("no page errors, unexpected requests or unscripted generation", async () => {
