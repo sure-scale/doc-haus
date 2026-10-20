@@ -249,7 +249,7 @@ describe("sectioned draft stage", () => {
     expect(result.status).toBe("done")
     expect(model.prompts[1]!.text).toContain('The outline has no "Acting for:" line.')
     expect(readLeanPlan(directory)?.acting_for).toEqual({ party: "the sender", stated: true })
-    expect(model.prompts[2]!.text).toContain("<acting_for>\nThe lawyer acts for: the sender (as the request states).\n</acting_for>")
+    expect(model.prompts[2]!.text).toContain("<acting_for>\nThe lawyer acts for: the sender.\n</acting_for>")
     expect(model.prompts[3]!.text).not.toContain("<acting_for>")
   }, 60_000)
 

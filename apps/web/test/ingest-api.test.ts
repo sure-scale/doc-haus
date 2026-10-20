@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test"
 import completed from "../../../dochaus/workflows/lean/fixtures/status-completed.json"
-import { deleteMatterSession } from "../src/api/ingest/matters"
+import { createMatter, deleteMatterSession, renameMatter } from "../src/api/ingest/matters"
 import { dispatchMatterContinuation } from "../src/api/ingest/drafting-run"
 import { DocumentExistsError, uploadDocument } from "../src/api/ingest/documents"
 import { getDraftingStatus } from "../src/api/ingest/drafting-status"
@@ -62,6 +62,24 @@ test("conversation deletion goes through the matter service", async () => {
     { status: 409 },
   ))
   await expect(deleteMatterSession("matter-a", "ses_owner")).rejects.toThrow("unfinished drafting run")
+})
+
+test("matter saves send the client only when the caller passes one", async () => {
+  const bodies: unknown[] = []
+  globalThis.fetch = (async (_input, init) => {
+    bodies.push(JSON.parse(String(init?.body)))
+    return Response.json({ id: "matter-a", title: "Supply", dir: "/m", created_at: 1 })
+  }) as typeof fetch
+
+  await renameMatter("matter-a", "Supply", "2026-0042", ["EW"], "playbook-nda")
+  await renameMatter("matter-a", "Supply", "2026-0042", ["EW"], "playbook-nda", "Northwind Traders Ltd")
+  await renameMatter("matter-a", "Supply", "2026-0042", ["EW"], "playbook-nda", "")
+  await createMatter("Supply", undefined, undefined, undefined, "Northwind Traders Ltd")
+
+  expect(bodies[0]).not.toHaveProperty("client")
+  expect(bodies[1]).toMatchObject({ client: "Northwind Traders Ltd" })
+  expect(bodies[2]).toMatchObject({ client: "" })
+  expect(bodies[3]).toMatchObject({ title: "Supply", client: "Northwind Traders Ltd" })
 })
 
 test("continuation dispatch goes through the matter backend and validates its claim response", async () => {

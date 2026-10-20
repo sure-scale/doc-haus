@@ -68,7 +68,7 @@ test("a completed lean run registers its Word files as matter deliverables and d
     ["drafting_notes", ".dochaus/lean/delivered-notes.docx", "Supply note - drafting notes.docx"],
     ["drafting_notes_markdown", ".dochaus/lean/delivered-notes.md", null],
   ])
-  expect(leanDraftingStatus(directory)?.plan).toEqual({ documents: [{ id: "d1", title: "Supply note", purpose: "" }] })
+  expect(leanDraftingStatus(directory)?.plan?.documents).toEqual([{ id: "d1", title: "Supply note", purpose: "" }])
   // Keep the older completed-run contract while allowing additive preparation
   // and review stages (this fixture starts without a model).
   expect(shape({ ...leanDraftingStatus(directory), model: recordedCompleted.model })).toMatchObject(shape(recordedCompleted) as Record<string, unknown>)

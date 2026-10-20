@@ -25,12 +25,15 @@ export const WORKSPACE_ROOT = workspaceRoot()
 // (cross-border deal), so it is a list — see dochaus/jurisdiction/ (issue #18).
 // playbook is the single playbook skill name (e.g. "playbook-nda") the matter is
 // reviewed against; one matter binds at most one playbook, so it is a string.
+// client is whom the firm acts for, as the lawyer typed it; drafting takes that
+// side when the request does not say whom the lawyer acts for.
 export type Matter = {
   id: string
   title: string
   reference?: string
   jurisdictions?: string[]
   playbook?: string
+  client?: string
   conflicts?: Conflicts
   dir: string
   created_at: number
@@ -122,19 +125,38 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
-export function createMatter(title: string, reference?: string, jurisdictions?: string[], playbook?: string): Matter {
+export class MatterValidationError extends Error {}
+
+const CLIENT_MAX_LENGTH = 200
+
+// One line: control characters (newlines, tabs) become spaces and whitespace
+// runs collapse. Over the cap is refused, never truncated, so a party name is
+// never silently cut. Empty means no client.
+function normalizeClient(value: string) {
+  if (typeof value !== "string") throw new MatterValidationError("client must be a string")
+  const client = value.replace(/\p{Cc}/gu, " ").replace(/\s+/g, " ").trim()
+  if (client.length > CLIENT_MAX_LENGTH)
+    throw new MatterValidationError(`client must be at most ${CLIENT_MAX_LENGTH} characters, got ${client.length}`)
+  return client || undefined
+}
+
+export function createMatter(title: string, reference?: string, jurisdictions?: string[], playbook?: string, client?: string): Matter {
+  const party = client === undefined ? undefined : normalizeClient(client)
   const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")
   const id = `${slug}-${crypto.randomUUID().slice(0, 6)}`
   const dir = matterDir(id)
   mkdirSync(dir, { recursive: true })
-  const matter: Matter = { id, title, reference, jurisdictions, playbook, dir, created_at: Date.now() }
+  const matter: Matter = { id, title, reference, jurisdictions, playbook, client: party, dir, created_at: Date.now() }
   return withMatterMutationLocks(dir, () => persistMatterLocked(matter, "create"))
 }
 
 // Rename keeps the directory id stable (it backs every session and document
 // path); only the display title/reference/jurisdictions/playbook in matter.json change.
-export function renameMatter(id: string, title: string, reference?: string, jurisdictions?: string[], playbook?: string): Matter {
-  return mutateMatter(id, "rename", (matter) => ({ ...matter, title, reference, jurisdictions, playbook }))
+// client changes only when given (empty clears it), so callers that do not
+// edit it keep the stored one.
+export function renameMatter(id: string, title: string, reference?: string, jurisdictions?: string[], playbook?: string, client?: string): Matter {
+  const party = client === undefined ? {} : { client: normalizeClient(client) }
+  return mutateMatter(id, "rename", (matter) => ({ ...matter, title, reference, jurisdictions, playbook, ...party }))
 }
 
 // Records a conflicts-check outcome on the matter. Each exit carries the fields

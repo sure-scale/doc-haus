@@ -42,7 +42,7 @@ import { EmbeddingModelUnavailableError, migrateEmbeddings } from "./embed"
 import { migrateSections, migrateStructure } from "./structure"
 import { pdfToDocx } from "./convert"
 import { buildRedlined, bake, redlineState, redlineStaleReason, RedlinePreviewConflictError } from "./redline"
-import { listMatters, createMatter, getMatter, renameMatter, deleteMatter, recordConflicts, matterDir, listJurisdictions, listPlaybooks, updatePlaybook, deletePlaybook, PlaybookError, PLAYBOOK_DIR, type Conflicts } from "./matter"
+import { listMatters, createMatter, getMatter, renameMatter, deleteMatter, recordConflicts, matterDir, listJurisdictions, listPlaybooks, updatePlaybook, deletePlaybook, PlaybookError, PLAYBOOK_DIR, MatterValidationError, type Conflicts } from "./matter"
 import { listTemplates, templatePath, setTemplateDescription, removeTemplateDescription, TEMPLATES_DIR } from "./template"
 import { listWorkflows, createWorkflow, updateWorkflow, deleteWorkflow, NAME_RE, WORKFLOWS_DIR } from "./workflow"
 import { listSkills, createSkill, updateSkill, deleteSkill, importSkill, setSkillEnabled, SKILLS_DIR } from "./skill"
@@ -91,6 +91,7 @@ const app = new Hono()
 app.onError((error, c) => {
   if (error instanceof PreferencesValidationError) return c.json({ error: error.message }, 400)
   if (error instanceof PreferencesUnavailableError) return c.json({ error: error.message }, 503)
+  if (error instanceof MatterValidationError) return c.json({ error: error.message }, 400)
   if (error instanceof EmbeddingModelUnavailableError)
     return c.json({ error: error.message, code: "embedding_model_unavailable" }, 503)
   if (error instanceof HTTPException) return error.getResponse()
@@ -385,23 +386,27 @@ app.patch("/agents/:name", async (c) => {
 })
 
 app.post("/matters", async (c) => {
-  const { title, reference, jurisdictions, playbook } = await c.req.json<{
+  const { title, reference, jurisdictions, playbook, client } = await c.req.json<{
     title: string
     reference?: string
     jurisdictions?: string[]
     playbook?: string
+    client?: string
   }>()
-  return c.json(createMatter(title, reference, jurisdictions, playbook))
+  return c.json(createMatter(title, reference, jurisdictions, playbook, client))
 })
 
+// A body without a client key keeps the stored client; "" clears it.
 app.patch("/matters/:id", async (c) => {
-  const { title, reference, jurisdictions, playbook } = await c.req.json<{
+  const body = await c.req.json<{
     title: string
     reference?: string
     jurisdictions?: string[]
     playbook?: string
+    client?: string
   }>()
-  return c.json(renameMatter(c.req.param("id"), title, reference, jurisdictions, playbook))
+  const { title, reference, jurisdictions, playbook } = body
+  return c.json(renameMatter(c.req.param("id"), title, reference, jurisdictions, playbook, "client" in body ? body.client : undefined))
 })
 
 // The conflicts intake gate: records that a conflicts check happened and how it

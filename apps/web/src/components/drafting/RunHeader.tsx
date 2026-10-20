@@ -103,6 +103,8 @@ export default function RunHeader({
     )
 
   const titles = new Map((status.plan?.documents ?? []).map((row) => [row.id, cleanTitle(row.title)]))
+  // Whom the plan says the lawyer acts for; unknown before the outline or from an older ingest.
+  const acting = status.plan?.acting_for
   const attention = attentionItems(status)
   // Once delivered, what is left to look at; before then, how the final check
   // settled the open items once it ran, else the run's own count.
@@ -125,6 +127,8 @@ export default function RunHeader({
   const draftLabel = drafts.length === 1 ? "Open draft" : "View drafts"
   const meta = [
     ...head.meta,
+    // Shown without opening Details: every stage takes this side.
+    acting ? `Acting for: ${acting.stated ? acting.party : "not stated — drafting is neutral"}` : null,
     asks > 0 && head.tone !== "input" ? <span className="run-head-asks">{asks === 1 ? "1 question for you" : `${asks} questions for you`}</span> : null,
     status.pending_requests > 0 && !stopped ? "Request queued" : null,
     statusError ? `Reconnecting… as of ${checkedAt ? formatAgo(checkedAt, now) : "earlier"}` : null,

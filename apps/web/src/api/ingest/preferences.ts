@@ -10,7 +10,6 @@ export type DraftingPreferences = {
   formality: "formal" | "plain"
   detail: "concise" | "detailed"
   strategyApproval: "off" | "interactive"
-  materialDecisionCheckpoints: "off" | "interactive"
   dateFormat: "month-day-year" | "day-month-year" | "iso"
   numberStyle: "words-and-numerals" | "numerals"
   houseStyle: string
