@@ -12,6 +12,7 @@ import { stageSourceChange, writeSourceArtifacts } from "./source-artifacts"
 import { canonicalArtifactIdentity, withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
 import { chunkText } from "../../../dochaus/lib/chunk-text"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
+import { markTrackedChanges } from "../../../dochaus/lib/docx-tracked-text"
 import { draftingTraceReference } from "../../../dochaus/lib/drafting-trace-identity"
 import { commitDocumentWriteAsync } from "./atomic-document-write"
 import { MatterDocumentIdentityError, resolveMatterDocumentTarget } from "./document-identity"
@@ -328,7 +329,8 @@ async function commitIngestedDocument(
   }, { backupPath: input.mutation.documentBackup })
 }
 
-// Pull plain text from a source document. DOCX goes through mammoth; PDF through
+// Pull plain text from a source document. DOCX goes through mammoth, with pending
+// tracked changes labelled first (see dochaus/lib/docx-tracked-text.ts); PDF through
 // LiteParse/markitdown/unpdf with an OCR fallback for flat scans (see pdf.ts). Always
 // normalized (see sanitize.ts) so every consumer — indexing, the document/template
 // text routes, and through them the agents' read-document tool — sees the same
@@ -341,7 +343,7 @@ async function extractRawText(fileName: string, buffer: Buffer) {
   if (fileName.toLowerCase().endsWith(".pdf")) return pdfToText(buffer)
   if (fileName.toLowerCase().endsWith(".eml")) return emlToText(buffer)
   if (fileName.toLowerCase().endsWith(".xlsx")) return xlsxToText(buffer)
-  return (await mammoth.extractRawText({ buffer })).value
+  return (await mammoth.extractRawText({ buffer: markTrackedChanges(buffer) })).value
 }
 
 // Spreadsheet sources (cap tables, waterfalls, payout models) are zip-based but
