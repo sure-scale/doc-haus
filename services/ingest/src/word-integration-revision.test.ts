@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test"
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { strFromU8, unzipSync } from "fflate"
@@ -21,13 +21,14 @@ import { registerLeanDeliverable } from "./lean-deliverables"
 // saved combined file is rebuilt, and a refused save leaves the file as it was.
 // A real ingest process with real local embeddings; no generation engine.
 
-const temporary = mkdtempSync(path.join(tmpdir(), "dochaus-word-integration-"))
+let temporary = ""
 let ingest: ReturnType<typeof Bun.spawn>
 let engine: ReturnType<typeof Bun.serve>
 let base = ""
 const priorIngestUrl = process.env.INGEST_URL
 
 beforeAll(async () => {
+  temporary = mkdtempSync(path.join(tmpdir(), "dochaus-word-integration-"))
   const workspace = path.join(temporary, "workspace")
   const config = path.join(temporary, "config")
   await Bun.write(path.join(config, "opencode.json"), "{}")
@@ -47,7 +48,7 @@ beforeAll(async () => {
     await Bun.sleep(50)
   }
   process.env.INGEST_URL = base
-})
+}, 30_000)
 
 afterAll(async () => {
   if (priorIngestUrl === undefined) delete process.env.INGEST_URL
@@ -55,7 +56,7 @@ afterAll(async () => {
   ingest?.kill()
   await ingest?.exited
   engine?.stop(true)
-  rmSync(temporary, { recursive: true, force: true })
+  if (temporary) rmSync(temporary, { recursive: true, force: true })
 })
 
 function closedPort() {
@@ -130,8 +131,8 @@ test("a refused or unreachable save reports the edit as not saved and leaves the
   try {
     const unreachable = await replace(matter.dir, "Notice.docx", "registered post", "courier")
     expect(unreachable).toBeString()
-    expect(unreachable as string).toStartWith("Edit not saved")
-    expect(unreachable as string).toEndWith("Notice.docx is unchanged.")
+    expect(unreachable as string).toStartWith("Edit not confirmed")
+    expect(unreachable as string).toEndWith("Read Notice.docx again before retrying.")
   } finally { process.env.INGEST_URL = base }
   expect(readFileSync(path.join(matter.dir, "Notice.docx"))).toEqual(registered)
 
@@ -143,7 +144,7 @@ test("a refused or unreachable save reports the edit as not saved and leaves the
   expect(refused as string).toStartWith("Edit not saved")
   expect(refused as string).toContain("404")
   expect(refused as string).toContain("not registered")
-  expect(refused as string).toEndWith("Loose.docx is unchanged.")
+  expect(refused as string).toEndWith("Loose.docx was not changed by this edit.")
   expect(new Uint8Array(readFileSync(path.join(matter.dir, "Loose.docx")))).toEqual(loose)
 }, 120_000)
 
@@ -191,4 +192,57 @@ test("editing a part of a saved combined file rebuilds the combined file with th
   expect(result).toMatchObject({ title: `Edited ${part}`, metadata: { edits: 1 } })
   expect(documentXml(readFileSync(path.join(matter.dir, part)))).toContain("by rail")
   expect(documentXml(readFileSync(path.join(matter.dir, saved!)))).toContain("by rail")
+}, 120_000)
+
+test("an edit saved by someone else after this one was read is refused, not overwritten", async () => {
+  const matter = await newMatter("Word edit overtaken")
+  await register(matter.route, "documents", "Terms.docx", await docx("Payment is due within thirty days."))
+  const file = path.join(matter.dir, "Terms.docx")
+  const overtaking = await docx("Payment is due within fourteen days.")
+  // Between this edit's read and its save, another revision of the same source lands.
+  let overtaken = false
+  const proxy = Bun.serve({
+    port: 0,
+    async fetch(incoming) {
+      const url = new URL(incoming.url)
+      if (!overtaken && url.pathname.endsWith("/documents/revisions")) {
+        overtaken = true
+        const form = new FormData()
+        form.append("file", new File([overtaking], "Terms.docx"))
+        expect((await request(`${matter.route}/documents/revisions`, { method: "POST", body: form })).status).toBe(200)
+      }
+      return fetch(base + url.pathname + url.search, { method: incoming.method, headers: incoming.headers, body: await incoming.arrayBuffer() })
+    },
+  })
+  process.env.INGEST_URL = `http://127.0.0.1:${proxy.port}`
+  try {
+    const result = await replace(matter.dir, "Terms.docx", "thirty days", "sixty days")
+    expect(overtaken).toBe(true)
+    expect(result).toBeString()
+    expect(result as string).toStartWith("Edit not saved")
+    expect(result as string).toContain("409")
+    expect(result as string).toEndWith("Terms.docx was not changed by this edit.")
+  } finally {
+    process.env.INGEST_URL = base
+    proxy.stop(true)
+  }
+  expect(documentXml(readFileSync(file))).toContain("fourteen days")
+  expect(documentXml(readFileSync(file))).not.toContain("sixty days")
+}, 120_000)
+
+test("a document outside the matter folder is refused before approval and no registered file changes", async () => {
+  const matter = await newMatter("Word edit nested")
+  const registered = await docx("Rent is reviewed every year.")
+  await register(matter.route, "documents", "Rent.docx", registered)
+  const nested = await docx("Rent is reviewed every two years.")
+  mkdirSync(path.join(matter.dir, "copies"))
+  writeFileSync(path.join(matter.dir, "copies", "Rent.docx"), nested)
+  let asked = 0
+  const result = await wordIntegration.execute({ document: "copies/Rent.docx", action: "replace", find: "two years", replace: "three years" },
+    { ...context(matter.dir), async ask() { asked++ } })
+  expect(result).toBeString()
+  expect(result as string).toContain("copies/Rent.docx")
+  expect(asked).toBe(0)
+  expect(new Uint8Array(readFileSync(path.join(matter.dir, "Rent.docx")))).toEqual(registered)
+  expect(new Uint8Array(readFileSync(path.join(matter.dir, "copies", "Rent.docx")))).toEqual(nested)
 }, 120_000)

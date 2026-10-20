@@ -33,6 +33,11 @@ export default tool({
       try {return {title:`Read ${name}`,output:session.project().markdown}} finally {session.close()}
     }
 
+    // Ingest registers documents by name in the matter folder itself, so only a
+    // document there can be saved; a same-named file elsewhere would replace it.
+    if (path.dirname(path.resolve(file)) !== path.resolve(ctx.directory))
+      return `Only documents saved directly in this matter can be edited: ${args.document}`
+
     // Replace rewrites the canonical .docx with no review step, so it is gated
     // on the matter owner's approval (permission "word-integration" in
     // opencode.json). ctx.ask blocks until they reply and throws on reject —
@@ -64,7 +69,7 @@ export default tool({
     if (typeof edit === "string") return edit
 
     // Saved only through ingest; the file is never written here. The prior hash
-    // lets ingest refuse a deliverable that changed after it was read.
+    // lets ingest refuse a document that changed after it was read.
     const form = new FormData()
     form.append("file", new File([new Uint8Array(edit.bytes)], name))
     const ingestUrl = process.env.INGEST_URL ?? "http://127.0.0.1:4500"
@@ -78,11 +83,12 @@ export default tool({
         if (response.ok) return
         const body = await response.json().catch(() => undefined) as { error?: unknown } | undefined
         const reason = typeof body?.error === "string" ? body.error.replace(/\.$/, "") : response.statusText
-        return `ingest refused the revision (${response.status}${reason ? `: ${reason}` : ""})`
+        return `Edit not saved: ingest refused the revision (${response.status}${reason ? `: ${reason}` : ""}). ${name} was not changed by this edit.`
       },
-      (error: unknown) => `the ingest service could not be reached (${error instanceof Error ? error.message : String(error)})`,
+      // A request that fails after it was sent may still have been saved.
+      (error: unknown) => `Edit not confirmed: the ingest service could not be reached (${error instanceof Error ? error.message : String(error)}). Read ${name} again before retrying.`,
     )
-    if (refusal) return `Edit not saved: ${refusal}. ${name} is unchanged.`
+    if (refusal) return refusal
     return {title:`Edited ${name}`,
       output:`Replaced ${edit.edits} occurrence(s) of ${JSON.stringify(args.find)} with ${JSON.stringify(args.replace)} in ${name}.`,
       metadata:{document:file,find:args.find,replace:args.replace,edits:edit.edits}}

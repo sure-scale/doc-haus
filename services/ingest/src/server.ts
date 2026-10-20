@@ -63,7 +63,7 @@ import { compareVersions } from "../../../dochaus/lib/version-compare"
 import { pendingRedlinesForDoc } from "../../../dochaus/lib/redlines"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
 import { draftingTraceReference } from "../../../dochaus/lib/drafting-trace-identity"
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import { healSourceArtifacts } from "./source-artifacts"
 import { MatterSessionDeletionConflictError, MatterSessionDeletionError, deleteMatterSession } from "./matter-session"
@@ -649,6 +649,9 @@ app.post("/matters/:id/documents/revisions", async (c) => {
     return await withArtifactMutationLocksAsync(dir, [target.name, ...runCombinedLock(dir, target.docPath), ".dochaus/source-corpus"], async () => {
       if (readWorkingDocx(dir,target.docPath) && !/^[a-f0-9]{64}$/.test(priorSha256 ?? ""))
         return c.json({error:"Provide the exact current Word hash in x-document-prior-sha256 before replacing an accepted revision."},409)
+      // A deliverable's prior hash is checked by its writer; a source's here.
+      if (priorSha256 && role === "source" && sha256Hex(readFileSync(target.docPath)) !== priorSha256)
+        return c.json({error:"The document changed after it was read. Read it again before editing."},409)
       const combined = await prepareCombinedFile(dir, target.docPath)
       return c.json({ ...await writeDocumentRevision(dir, target.name, bytes,[],priorSha256), ...await rebuildCombinedFile(combined) })
     })
