@@ -55,7 +55,9 @@ test("every format ingest reads can be added; any other file is refused before u
     expect(matterDocumentKind(name)).toBe(kind)
     expect(newUpload(1, new File(["synthetic"], name))).toMatchObject({ key: 1, status: "queued" })
   }
-  for (const name of ["Notes.msg", "Old.doc", "Table.csv", "eml", "mail.eml.txt", "Agreement"]) {
+  // Like path.extname, which ingest checks: a name whose only dot leads it has no extension.
+  for (const [name, kind] of [[".hidden.eml", "eml"], ["..pdf", "pdf"]] as const) expect(matterDocumentKind(name)).toBe(kind)
+  for (const name of ["Notes.msg", "Old.doc", "Table.csv", "eml", "mail.eml.txt", "Agreement", ".pdf", ".DOCX", " .xlsx"]) {
     expect(matterDocumentKind(name)).toBeUndefined()
     expect(newUpload(2, new File(["synthetic"], name))).toMatchObject({
       status: "failed",

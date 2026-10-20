@@ -25,8 +25,13 @@ export type Document = {
 export const MATTER_DOCUMENT_EXTENSIONS = [".docx", ".pdf", ".eml", ".xlsx"] as const
 export type MatterDocumentKind = "docx" | "pdf" | "eml" | "xlsx"
 
+// Read the extension as ingest does (path.extname of the trimmed name): from the
+// base name's last dot, and none when that dot leads the name (".pdf").
 export function matterDocumentKind(name: string): MatterDocumentKind | undefined {
-  const extension = name.slice(name.lastIndexOf(".")).toLowerCase()
+  const trimmed = name.trim()
+  const base = trimmed.slice(trimmed.lastIndexOf("/") + 1)
+  const dot = base.lastIndexOf(".")
+  const extension = dot > 0 ? base.slice(dot).toLowerCase() : ""
   return (MATTER_DOCUMENT_EXTENSIONS as readonly string[]).includes(extension) ? (extension.slice(1) as MatterDocumentKind) : undefined
 }
 
