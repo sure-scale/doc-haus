@@ -1,5 +1,14 @@
 import { useEffect, useRef, useState } from "react"
-import { deleteDocument, DocumentExistsError, uploadDocument, type Document, type ExistingSourceChoice } from "../api/ingest/documents"
+import {
+  deleteDocument,
+  DocumentExistsError,
+  MATTER_DOCUMENT_EXTENSIONS,
+  matterDocumentKind,
+  uploadDocument,
+  type Document,
+  type ExistingSourceChoice,
+  type MatterDocumentKind,
+} from "../api/ingest/documents"
 import { humanizeError } from "../api/ingest/errors"
 import type { LeanDraftingStatus } from "../api/ingest/lean"
 import { formatDate, formatDateTime, formatTime } from "../lib/format"
@@ -26,7 +35,6 @@ type Upload = {
   choice?: ExistingSourceChoice
 }
 
-const ACCEPTED = /\.(docx|pdf)$/i
 const READY_LINGER_MS = 3000
 
 // A newest-first document timeline with grouped deliverables and a persistent
@@ -116,11 +124,7 @@ export default function DocumentUpload({
   }
 
   function onFiles(files: File[]) {
-    const added = files.map((file): Upload => {
-      const key = nextKey.current++
-      if (ACCEPTED.test(file.name)) return { key, file, status: "queued" }
-      return { key, file, status: "failed", error: "Only Word (.docx) and PDF files can be added." }
-    })
+    const added = files.map((file) => newUpload(nextKey.current++, file))
     setUploads((prev) => [...prev, ...added])
     added.filter((u) => u.status === "queued").forEach(enqueue)
   }
@@ -172,9 +176,7 @@ export default function DocumentUpload({
       content: (
       <div className="doc-row is-uploaded">
         <div className="doc-row-main">
-          <span className={`doc-type is-${d.name.toLowerCase().endsWith(".pdf") ? "pdf" : "docx"}`} aria-hidden>
-            <IconFile />
-          </span>
+          <DocumentType kind={matterDocumentKind(d.name) ?? "docx"} />
           <button className="linklike" onClick={() => onView(d.name)}>
             {d.name}
           </button>
@@ -306,16 +308,23 @@ export default function DocumentUpload({
       </div>
       <footer className="docs-drawer-footer">
         <Dropzone
-          accept=".docx,.pdf"
+          accept={MATTER_DOCUMENT_EXTENSIONS.join(",")}
           busy={working > 0}
           compact
           onFiles={onFiles}
           title={working > 0 ? `Uploading ${working} document${working === 1 ? "" : "s"}…` : "Upload documents"}
         />
-        <p>Drop Word or PDF files here, or click to browse.</p>
+        <p>Drop Word, PDF, email or Excel files here, or click to browse.</p>
       </footer>
     </section>
   )
+}
+
+// Every file the picker or a drop hands over (the composer's too) gets a row. A
+// format ingest cannot read is refused here, with the formats it can.
+export function newUpload(key: number, file: File): Upload {
+  if (matterDocumentKind(file.name)) return { key, file, status: "queued" }
+  return { key, file, status: "failed", error: "Only Word (.docx), PDF, email (.eml) and Excel (.xlsx) files can be added." }
 }
 
 // A same-name clash asks the lawyer what to do with the existing document; any
@@ -405,6 +414,41 @@ function IconFile() {
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
       <polyline points="14 2 14 8 20 8" />
+    </svg>
+  )
+}
+
+// The file-type glyph beside a document name: emails and spreadsheets get their
+// own, so they read apart from the Word and PDF files beside them.
+const DOCUMENT_TYPE_LABEL: Record<MatterDocumentKind, string> = {
+  docx: "Word document",
+  pdf: "PDF document",
+  eml: "Email",
+  xlsx: "Excel spreadsheet",
+}
+
+function DocumentType({ kind }: { kind: MatterDocumentKind }) {
+  return (
+    <span className={`doc-type is-${kind}`} title={DOCUMENT_TYPE_LABEL[kind]} aria-hidden>
+      {kind === "eml" ? <IconEmail /> : kind === "xlsx" ? <IconSheet /> : <IconFile />}
+    </span>
+  )
+}
+
+function IconEmail() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="5" width="18" height="14" rx="2" />
+      <polyline points="3 7 12 13 21 7" />
+    </svg>
+  )
+}
+
+function IconSheet() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="3" width="18" height="18" rx="2" />
+      <path d="M3 9h18M3 15h18M9 3v18" />
     </svg>
   )
 }
