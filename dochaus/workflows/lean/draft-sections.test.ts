@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite"
 import { afterEach, describe, expect, test } from "bun:test"
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { strFromU8, unzipSync } from "fflate"
@@ -12,7 +12,7 @@ import { NOT_STATED, leanPlanIssue, parsePlan, readLeanPlan, writeLeanPlan } fro
 import { stagePrompt } from "./prompts"
 import { stageInputSha } from "./runner"
 import { acceptStageReply, LEAN_STAGE_AGENTS, type StageSessionPort } from "./stages"
-import { initLeanState, leanFile, writeLeanText } from "./state"
+import { initLeanState, leanFile, updateLeanStage, writeLeanText } from "./state"
 import { rowsBody } from "./template-coverage"
 
 // Real plan parser, section checks, assembly, renderer and pointer writer.
@@ -94,7 +94,8 @@ describe("sectioned draft stage", () => {
     expect(pointers.toSorted()).toEqual(rows.map(row => row.pid).toSorted())
     const measured = rowsBody(plan, rows)
     expect(measured.partOf).toEqual(rows.map(row => row.draft_part ?? undefined))
-    expect([...measured.headings].map(index => measured.paragraphs[index])).toEqual(["Notice letter", "Terms"])
+    // A letter's planned title does not print.
+    expect([...measured.headings].map(index => measured.paragraphs[index])).toEqual(["Terms"])
     const repeated = rows.filter(row => row.text === "Repeated text.")
     const final = rows.flatMap(row => row.pid === repeated[1]!.pid ? [{ ...row, text: "Changed terms." }] : [row])
     expect(rowsBody(plan, rows, final).partOf).toEqual(measured.partOf)
@@ -318,13 +319,42 @@ describe("a planned document's form", () => {
     expect(readFileSync(leanFile(directory, "d1/draft.md"), "utf8")).toBe([
       "# Notice letter", "", "We write about the terms.", "", "\"Notice must be given in writing\" [source: terms.docx].", "", "We await your reply.", "",
     ].join("\n"))
-    const body = strFromU8(unzipSync(new Uint8Array(readFileSync(leanFile(directory, "d1/body.docx"))))["word/document.xml"]!)
+    const parts = unzipSync(new Uint8Array(readFileSync(leanFile(directory, "d1/body.docx"))))
+    const body = strFromU8(parts["word/document.xml"]!)
+    // Neither the planning labels nor the planned title print: the record keeps the title.
     expect(body).not.toContain('w:val="Heading2"')
-    expect(body).toContain('w:val="Heading1"')
+    expect(body).not.toContain('w:val="Heading1"')
     const rows = readParagraphs(directory, "d1")
     expect(rows.map(row => [row.text, row.draft_part, row.draft_heading])).toEqual([
-      ["Notice letter", null, true], ["We write about the terms.", 0, false], ["\"Notice must be given in writing\" [source: terms.docx].", 1, false], ["We await your reply.", 2, false],
+      ["We write about the terms.", 0, false], ["\"Notice must be given in writing\" [source: terms.docx].", 1, false], ["We await your reply.", 2, false],
     ])
+    // A letter is numbered from its second page and carries no draft line or legend.
+    expect(body).toContain("<w:titlePg")
+    expect(Object.keys(parts).filter(name => /^word\/(header|footer)\d+\.xml$/.test(name)).sort()).toEqual(["word/footer1.xml", "word/footer2.xml"])
+  }, 60_000)
+
+  test("an agreement's body carries the firm's legend and a draft line dated by its draft step, outside its paragraphs", async () => {
+    const { directory, state } = matter()
+    const workspace = mkdtempSync(path.join(tmpdir(), "lean-furniture-prefs-"))
+    directories.push(workspace)
+    mkdirSync(path.join(workspace, ".preferences"))
+    const root = process.env.WORKSPACE_ROOT
+    process.env.WORKSPACE_ROOT = workspace
+    try {
+      writeFileSync(path.join(workspace, ".preferences", "preferences.json"), JSON.stringify({ firm: "Doe & Partners LLP", agreementLegend: "Subject to contract", dateFormat: "day-month-year" }))
+      writeLeanPlan(directory, [{ title: "Supply terms", purpose: "", parts: [{ heading: "Delivery", scope: "" }], form: "agreement" }])
+      updateLeanStage(directory, state, "d1.draft", { status: "running", started_at: "2026-10-20T12:00:00.000Z" })
+      expect((await acceptStageReply(directory, "d1.draft", "# Supply terms\n\n## Delivery\n\nGoods are delivered on the agreed date.\n")).issues).toEqual([])
+      const parts = unzipSync(new Uint8Array(readFileSync(leanFile(directory, "d1/body.docx"))))
+      const header = strFromU8(parts["word/header1.xml"]!)
+      expect(header).toContain("Subject to contract")
+      expect(header).toContain("Doe &amp; Partners LLP draft: 20 October 2026")
+      expect(strFromU8(parts["word/footer1.xml"]!)).toContain(" PAGE ")
+      expect(readParagraphs(directory, "d1").map(row => row.text)).toEqual(["Supply terms", "Delivery", "Goods are delivered on the agreed date."])
+    } finally {
+      if (root === undefined) delete process.env.WORKSPACE_ROOT
+      else process.env.WORKSPACE_ROOT = root
+    }
   }, 60_000)
 
   test("a saved plan reads with or without a form; an edited form must be one of the forms, and it keys the draft", () => {

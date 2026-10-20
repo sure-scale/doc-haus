@@ -322,8 +322,9 @@ export async function runDraftStage(
     drafted.push(written.value)
     writeLeanText(directory, `${document}/draft-in-progress.md`, assembleDraft(plan, drafted, false))
   }
-  const presentation = plan.parts.some(part => part.display_heading !== undefined)
-    ? { source: assembleDraft(plan, drafted, false), parts: drafted.map((text, part) => ({ heading: headingText(text.split("\n")[0]!.replace(/^##\s+/, "")), display_heading: plan.parts[part]?.display_heading, part })) }
+  const letter = plan.form === "letter"
+  const presentation = letter || plan.parts.some(part => part.display_heading !== undefined)
+    ? { source: assembleDraft(plan, drafted, false), parts: drafted.map((text, part) => ({ heading: headingText(text.split("\n")[0]!.replace(/^##\s+/, "")), display_heading: plan.parts[part]?.display_heading, part })), ...(letter ? { title: false as const } : {}) }
     : undefined
   const accepted = await acceptStageReply(directory, step, assembleDraft(plan, drafted), { presentation })
   if (accepted.issues.length) return failed("assembled document", accepted.issues)

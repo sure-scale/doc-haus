@@ -332,8 +332,10 @@ export async function acceptStageReply(directory: string, step: StepID, reply: s
   if (stage === "draft") {
     const check = checkDraft(directory, reply)
     if (check.issues.length) return { ...check, outputs: [] }
-    const rendered = await renderMarkdownToDocx(options.presentation?.source ?? reply)
-      .then(result => options.presentation ? presentDraft(result.bytes, options.presentation.parts) : { bytes: result.bytes, attribution: undefined })
+    // A plan without a form (a legacy plan, or an outline's last attempt) carries the plain page numbers.
+    const furniture = renderedFurniture(directory, plannedDocument(directory, document)?.form ?? "other", step)
+    const rendered = await renderMarkdownToDocx(options.presentation?.source ?? reply, undefined, furniture)
+      .then(result => options.presentation ? presentDraft(result.bytes, options.presentation.parts, options.presentation.title !== false) : { bytes: result.bytes, attribution: undefined })
       .then(result => result, (error: unknown) => ({ error }))
     if ("error" in rendered)
       return { issues: [`The document could not be rendered to Word (${message(rendered.error)}). Use plain Markdown headings, paragraphs, lists and tables.`], openItems: [], outputs: [] }
