@@ -211,7 +211,8 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
   async function patch(fields: Partial<Pick<Detail, "title" | "reference" | "jurisdictions" | "playbook" | "client">>) {
     if (!matter) return
     const next = { ...matter, ...fields }
-    const updated = await renameMatter(matter.id, next.title, next.reference, next.jurisdictions, next.playbook, next.client).catch((e) => {
+    // The client goes only with its own edit, so another field's save never reverts a newer one.
+    const updated = await renameMatter(matter.id, next.title, next.reference, next.jurisdictions, next.playbook, "client" in fields ? next.client : undefined).catch((e) => {
       toast("error", humanizeError(e, "Could not save the matter. Try again."))
       return undefined
     })

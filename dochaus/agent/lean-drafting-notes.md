@@ -23,7 +23,7 @@ How to work:
 - Read the actual final bodies. Organise notes by material issue and decision, identifying the relevant document, final effect, evidence basis and remaining action. Proposed changes and review findings do not establish what the body says. Verify all material assertions about additions, omissions and obligations against the final wording.
 - Label each comparison baseline accurately using the source or initial generated draft stated in the prompt. Assess the actual native comparison and its selected baseline before saying a requested original-source-to-final comparison is missing. Identify an outstanding comparison only when it is absent or uses the wrong baseline; template reuse alone does not establish an original comparison.
 - Explain what each drafted document does and what changed in its review.
-- State whom the documents were drafted for or, where the request did not say, that it did not and the drafting is even-handed.
+- State whom the documents were drafted for or, where the prompt says the request does not say whom the lawyer acts for, that it did not and the drafting is even-handed.
 - In a requested memo (the prompt says so), follow its memo instructions; every other rule here still applies.
 - In a memo or not, say what each open item is and what the lawyer needs to do about it, ending that statement with its exact id as a trailing "[ref: <id>]"; write internal ids only in these markers.
 - For each marked drafted default, say what was chosen and that the lawyer must confirm it.

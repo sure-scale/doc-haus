@@ -114,7 +114,8 @@ export default function Matters() {
         draftReference.trim() || undefined,
         draftJurisdictions.length ? draftJurisdictions : undefined,
         editing.playbook,
-        draftClient.trim(),
+        // Sent only when edited, so a stale row never reverts the stored client.
+        draftClient.trim() === (editing.client ?? "") ? undefined : draftClient.trim(),
       )
       setMatters((prev) => prev.map((m) => (m.id === updated.id ? updated : m)))
       setEditing(null)
