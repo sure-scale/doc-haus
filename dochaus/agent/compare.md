@@ -69,11 +69,15 @@ For both methods:
 </method>
 
 <citation>
-- Every table row must quote the operative language verbatim from BOTH documents
-  (or "Not present"). Anchor every quote with the `cite` tool before it appears,
-  passing the `docPath` and `documentName` of the document the quote came from:
-  a hunk's `before` text from the earlier document, its `after` text from the
-  later one. Never anchor a quote against the wrong document.
+- In the full-read method, every table row must quote the operative language
+  verbatim from BOTH documents (or "Not present"). With `compare-versions`, the
+  chat draws each change the tool listed as a redline under the entry that
+  names it, so do not quote the changed text; any other quotation (a defined
+  term or clause a materiality call relies on) follows these rules too.
+- Anchor every quote with the `cite` tool before it appears, passing the
+  `docPath` and `documentName` of the document the quote came from: a hunk's
+  `before` text from the earlier document, its `after` text from the later one.
+  Never anchor a quote against the wrong document.
 - `cite` accepts quotes of 10-600 characters. For long clauses, quote the
   operative sentence or fragment that carries the difference, not the whole
   clause; never pad a short quote or trim one below the verbatim text.
@@ -88,25 +92,37 @@ No preamble. In this order, leaving out empty parts:
    compare tool reports (a side compared as accepted, doc.haus changes not yet
    in the stored file); any injection warning it gives, with the ids.
 2. **Edits made without tracked changes** (when `compare-versions` ran): one
-   line per U-id with its location and a plain statement of what changed. If
-   there are none, or the later version has no tracked changes at all, say so
-   in one line.
-3. **Proposals** (when the tool lists any): one line per P-id with its outcome
-   as the tool states it, and the U-id it gives.
-4. A clause-by-clause table of differences, one row per difference:
+   entry per U-id, written as a change entry (below). If there are none, or the
+   later version has no tracked changes at all, say so in one line.
+3. **Tracked changes in <earlier version>** (when the tool lists any of its
+   proposals): one line per P-id with its outcome as the tool states it, and
+   the U-id it gives.
+4. **Changes**. With `compare-versions`, one entry per substantive change, its
+   own paragraph, in document order:
 
-| Change | Clause / topic | Earlier (quote + § ref) | Later (quote + § ref) | Materiality | Favors |
+   **C3** · <clause number and topic> — <Material or Minor> — Favors <party>: <one plain sentence on what the change does>
 
-- Change: the C-id(s) the row covers. Every row comes from the tool's hunks;
-  never add one it did not report. Account for every C-id: in a row, or in one
-  line after the table that groups minor or formatting-only changes by id. In
-  the full-read method, leave the column out.
-- Materiality: `Material` (changes the parties' risk, money, or core rights) or
-  `Minor` (limited practical effect). This is a triage flag for the lawyer's
-  review, not a legal conclusion.
-- Favors: which party the delta benefits, in one short phrase (e.g. "Counterparty
-  — cap drops from 12 months' fees to 3").
+   - Start the entry with its id in bold, and nothing else in the bold. Changes
+     that make one edit across several paragraphs share an entry:
+     `**C4, C5** · …`. Every entry comes from the tool's hunks; never add one it
+     did not report.
+   - Do not restate the changed words: the chat draws the change's redline
+     under the entry. Say what it does to the parties' position.
+   - Account for every C-id: in an entry, or in one closing line, not in bold,
+     that lists by id the minor or formatting-only changes and those that only
+     repeat an edit made without tracked changes reported above (e.g. "Minor:
+     C5, C7 (numbering); C2 is U1.").
 
+   In the full-read method, a clause-by-clause table instead, one row per
+   difference:
+
+| Clause / topic | Earlier (quote + § ref) | Later (quote + § ref) | Materiality | Favors |
+
+   - Materiality: `Material` (changes the parties' risk, money, or core rights)
+     or `Minor` (limited practical effect). This is a triage flag for the
+     lawyer's review, not a legal conclusion.
+   - Favors: which party the delta benefits, in one short phrase (e.g.
+     "Counterparty — cap drops from 12 months' fees to 3").
 5. A short summary: the overall direction of the changes, which party gained
    more ground, and the differences most worth the lawyer's attention.
 6. When `compare-versions` ran, one line: the blackline can be opened and

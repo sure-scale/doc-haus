@@ -9,16 +9,16 @@ export default function CompareView({ compares = [], onOpen }: { compares?: Vers
   if (compares.length === 0) return null
   return (
     <div className="drafts">
-      {compares.map(({ changes, untracked, ...params }, i) => (
+      {compares.map(({ changes, untracked, ...compare }, i) => (
         <div className="draft-card compare-card" key={i}>
           <span className="draft-icon">
             <CompareIcon />
           </span>
           <span className="draft-doc">
-            {`Compared ${params.left} → ${params.right}: ${changes} change${changes === 1 ? "" : "s"}, ${untracked} made without tracked changes`}
+            {`Compared ${compare.left} → ${compare.right}: ${changes} change${changes === 1 ? "" : "s"}, ${untracked} made without tracked changes`}
           </span>
           {onOpen && (
-            <button className="linklike" onClick={() => onOpen(params)}>
+            <button className="linklike" onClick={() => onOpen(compareParams(compare))}>
               Open blackline
             </button>
           )}
@@ -26,4 +26,9 @@ export default function CompareView({ compares = [], onOpen }: { compares?: Vers
       ))}
     </div>
   )
+}
+
+// The comparison to open, without what the turn listed of it.
+export function compareParams({ left, right, leftLabel, rightLabel, ignoreFormatting, detectMoves, headersFooters }: Omit<VersionCompare, "changes" | "untracked">): CompareParams {
+  return { left, right, leftLabel, rightLabel, ignoreFormatting, detectMoves, headersFooters }
 }

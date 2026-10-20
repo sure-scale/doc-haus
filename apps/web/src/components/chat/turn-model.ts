@@ -1,5 +1,5 @@
 import type { Part } from "../../api/session-view"
-import type { CompareParams } from "../../api/ingest/compare"
+import type { ChangeHunk, CompareParams } from "../../api/ingest/compare"
 import type { Citation } from "../../api/opencode/parts"
 import type { Todo } from "../TodoView"
 import { basename, stepLabel } from "./step-labels"
@@ -17,8 +17,10 @@ export type Step =
 export type RedlineProposal = { id?: number; document: string; oldText: string; newText: string; comment?: string }
 
 // A comparison of two Word versions the compare-versions tool ran: what to send
-// back to the blackline route, plus the counts the turn's card reports.
-export type VersionCompare = Required<CompareParams> & { changes: number; untracked: number }
+// back to the blackline route, the counts the turn's card reports, and the
+// changes its pages listed, so the answer can draw each one it names.
+export type VersionCompare = Required<CompareParams> & { changes: number; untracked: number; hunks: ListedChange[] }
+export type ListedChange = Pick<ChangeHunk, "id" | "kind" | "before" | "after">
 
 // id is the server message id, carried on user turns so edit/retry can revert
 // the session back to that exact message. Optimistic turns added before a
@@ -101,29 +103,45 @@ function draftsOf(parts: Part[]): string[] {
 }
 
 // The compare-versions tool stamps the comparison it ran on its metadata. Keep
-// only a complete record: anything else could open the wrong blackline.
+// only a complete record: anything else could open the wrong blackline. Pages
+// of one comparison make one entry holding every change they listed.
 function comparesOf(parts: Part[]): VersionCompare[] {
-  return parts
-    .filter((p): p is Extract<Part, { type: "tool" }> => p.type === "tool")
-    .filter((p) => p.tool === "compare-versions" && p.state.status === "completed")
-    .flatMap((p) => {
-      const compare = (p.state as { metadata?: { compare?: unknown } }).metadata?.compare as Record<string, unknown> | undefined
-      const options = (compare?.options ?? {}) as Record<string, unknown>
-      const counts = (compare?.counts ?? {}) as Record<string, unknown>
-      const text = (value: unknown) => typeof value === "string" && value.length > 0
-      if (!compare || !text(compare.left) || !text(compare.right) || typeof counts.changes !== "number" || typeof counts.untracked !== "number") return []
-      return [{
-        left: compare.left as string,
-        right: compare.right as string,
-        leftLabel: text(compare.leftLabel) ? (compare.leftLabel as string) : "",
-        rightLabel: text(compare.rightLabel) ? (compare.rightLabel as string) : "",
-        ignoreFormatting: options.ignoreFormatting !== false,
-        detectMoves: options.detectMoves !== false,
-        headersFooters: options.headersFooters !== false,
-        changes: counts.changes,
-        untracked: counts.untracked,
-      }]
-    })
+  const compares = new Map<string, VersionCompare>()
+  for (const p of parts) {
+    if (p.type !== "tool" || p.tool !== "compare-versions" || p.state.status !== "completed") continue
+    const metadata = (p.state as { metadata?: { compare?: unknown; hunks?: unknown } }).metadata
+    const compare = metadata?.compare as Record<string, unknown> | undefined
+    const options = (compare?.options ?? {}) as Record<string, unknown>
+    const counts = (compare?.counts ?? {}) as Record<string, unknown>
+    const text = (value: unknown) => typeof value === "string" && value.length > 0
+    if (!compare || !text(compare.left) || !text(compare.right) || typeof counts.changes !== "number" || typeof counts.untracked !== "number") continue
+    const entry: VersionCompare = {
+      left: compare.left as string,
+      right: compare.right as string,
+      leftLabel: text(compare.leftLabel) ? (compare.leftLabel as string) : "",
+      rightLabel: text(compare.rightLabel) ? (compare.rightLabel as string) : "",
+      ignoreFormatting: options.ignoreFormatting !== false,
+      detectMoves: options.detectMoves !== false,
+      headersFooters: options.headersFooters !== false,
+      changes: counts.changes,
+      untracked: counts.untracked,
+      hunks: [],
+    }
+    const key = JSON.stringify([entry.left, entry.right, entry.leftLabel, entry.rightLabel, entry.ignoreFormatting, entry.detectMoves, entry.headersFooters])
+    const seen = compares.get(key) ?? entry
+    compares.set(key, seen)
+    for (const hunk of Array.isArray(metadata?.hunks) ? metadata.hunks : [])
+      if (listedChange(hunk) && !seen.hunks.some((known) => known.id === hunk.id)) seen.hunks.push(hunk)
+  }
+  return [...compares.values()]
+}
+
+const CHANGE_KINDS: unknown[] = ["modified", "inserted", "deleted", "moved"] satisfies ChangeHunk["kind"][]
+function listedChange(value: unknown): value is ListedChange {
+  const hunk = value as Partial<Record<keyof ListedChange, unknown>> | null
+  const side = (text: unknown) => text === undefined || typeof text === "string"
+  return typeof hunk?.id === "string" && CHANGE_KINDS.includes(hunk.kind) && side(hunk.before) && side(hunk.after)
+    && (typeof hunk.before === "string" || typeof hunk.after === "string")
 }
 
 // The redline and tracked-changes tools both record a pending proposal and return

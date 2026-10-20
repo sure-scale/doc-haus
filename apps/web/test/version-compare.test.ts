@@ -7,8 +7,9 @@ import { choiceParams, compareCandidates } from "../src/components/CompareDialog
 import CompareDialog from "../src/components/CompareDialog"
 import { RevisionPresentation } from "docxodus"
 import BlacklineViewer, { BLACKLINE_RENDER_OPTIONS, ComparePanel, changeBlock, excerpt, hunkLocation, saveDocx, wordDiff } from "../src/components/BlacklineViewer"
+import CompareAnswer, { chatCompare } from "../src/components/chat/CompareAnswer"
 import CompareView from "../src/components/chat/CompareView"
-import { toTurns } from "../src/components/chat/turn-model"
+import { toTurns, type ListedChange } from "../src/components/chat/turn-model"
 import DocumentUpload from "../src/components/DocumentUpload"
 import DocumentViewer from "../src/components/DocumentViewer"
 import type { Document } from "../src/api/ingest/documents"
@@ -404,18 +405,24 @@ describe("chat compare card", () => {
       options: { ignoreFormatting: true, detectMoves: false, headersFooters: true }, counts: { changes: 4, untracked: 1 },
     },
   }
-  const turn = (metadata: Record<string, unknown>, status: "completed" | "running" = "completed") => {
-    const part: Part = {
-      type: "tool", id: "call", sessionID: "session", messageID: "msg", tool: "compare-versions",
+  const turnOf = (metadatas: Record<string, unknown>[], status: "completed" | "running" = "completed") => {
+    const parts: Part[] = metadatas.map((metadata, i) => ({
+      type: "tool", id: `call-${i}`, sessionID: "session", messageID: "msg", tool: "compare-versions",
       state: status === "completed" ? { status, input: {}, title: "Compared", output: "{}", metadata } : { status, input: {}, title: "Comparing" },
-    }
-    return toTurns([{ info: { id: "msg", role: "assistant" }, parts: [part] }], "")[0]!
+    }))
+    return toTurns([{ info: { id: "msg", role: "assistant" }, parts }], "")[0]!
   }
+  const turn = (metadata: Record<string, unknown>, status: "completed" | "running" = "completed") => turnOf([metadata], status)
+  const hunks: ListedChange[] = [
+    { id: "U1", kind: "modified", before: "Payment is due within thirty days.", after: "Payment is due within sixty days." },
+    { id: "C1", kind: "inserted", after: "Delivery is complete on signed receipt." },
+    { id: "C2", kind: "deleted", before: "Draft for discussion" },
+  ]
 
   test("reads the tool's compare metadata as the blackline to open", () => {
     expect(turn(meta).compares).toEqual([{
       left: "Our draft.docx", right: "Their draft.docx", leftLabel: "Our draft", rightLabel: "Their draft",
-      ignoreFormatting: true, detectMoves: false, headersFooters: true, changes: 4, untracked: 1,
+      ignoreFormatting: true, detectMoves: false, headersFooters: true, changes: 4, untracked: 1, hunks: [],
     }])
     expect(turn({ compare: { left: "Our draft.docx" } }).compares).toEqual([])
     expect(turn(meta, "running").compares).toEqual([])
@@ -426,6 +433,68 @@ describe("chat compare card", () => {
     const html = renderToStaticMarkup(createElement(CompareView, { compares: turn(meta).compares!, onOpen: (value) => opened.push(value) }))
     expect(html).toContain("Compared Our draft.docx → Their draft.docx: 4 changes, 1 made without tracked changes")
     expect(html).toContain("Open blackline")
+  })
+
+  test("each page's changes join one comparison, once each, and malformed ones are skipped", () => {
+    const junk = [{ id: "C9", kind: "rewritten", after: "x" }, { id: 3, kind: "inserted", after: "x" }, { id: "C8", kind: "inserted" }, "C7"]
+    const { compares } = turnOf([{ ...meta, hunks: hunks.slice(0, 2) }, { ...meta, hunks: [hunks[1], hunks[2], ...junk] }])
+    expect(compares).toHaveLength(1)
+    expect(compares![0]!.hunks).toEqual(hunks)
+    const other = { compare: { ...meta.compare, right: "Their draft (2).docx" }, hunks: [hunks[0]] }
+    expect(turnOf([{ ...meta, hunks }, other]).compares!.map((compare) => compare.right)).toEqual(["Their draft.docx", "Their draft (2).docx"])
+  })
+
+  test("the chat answer reads as entries, each followed by its change's redline", () => {
+    const answer = [
+      "Version order taken from the file names.",
+      "",
+      "**Edits made without tracked changes**",
+      "",
+      "- **U1** · 4.2 Payment — Material — Favors the Supplier: payment moves out",
+      "  without a tracked change.",
+      "",
+      "**Changes**",
+      "",
+      "**C1, C2** · Delivery — Minor — Favors neither party: wording tidied.",
+      "",
+      "**C9** · Not in this comparison.",
+      "",
+      "Minor: C2 (footer). P1 accepted.",
+      "",
+      "Overall the changes favour the Supplier.",
+    ].join("\n")
+    const compare = turn({ ...meta, hunks }).compares![0]!
+    const html = renderToStaticMarkup(createElement(CompareAnswer, { text: answer, compare, onOpen: () => {} }))
+    const at = (text: string) => {
+      expect(html).toContain(text)
+      return html.indexOf(text)
+    }
+    const order = [
+      at("Version order taken"),
+      at("<strong>U1</strong> · 4.2 Payment"),
+      at("without a tracked change."),
+      at("Payment is due within <ins>sixty</ins><del>thirty</del> days."),
+      at("<strong>Changes</strong>"),
+      at("<strong>C1, C2</strong>"),
+      at(">C1</span>"),
+      at("<ins>Delivery is complete on signed receipt.</ins>"),
+      at(">C2</span>"),
+      at("<del>Draft for discussion</del>"),
+      at("<strong>C9</strong>"),
+      at("Minor: C2 (footer)"),
+      at("Overall the changes"),
+    ]
+    expect(order).toEqual([...order].sort((a, b) => a - b))
+    expect(html).not.toContain("<li><strong>U1")
+    expect(html.match(/class="compare-redline"/g)).toHaveLength(3)
+    expect(html.match(/Show in blackline/g)).toHaveLength(3)
+  })
+
+  test("the chat answer draws redlines only for one comparison with changes listed", () => {
+    expect(chatCompare(turn({ ...meta, hunks }).compares)?.right).toBe("Their draft.docx")
+    expect(chatCompare(turn(meta).compares)).toBeUndefined()
+    expect(chatCompare(turnOf([{ ...meta, hunks }, { compare: { ...meta.compare, right: "Their draft (2).docx" }, hunks }]).compares)).toBeUndefined()
+    expect(chatCompare(undefined)).toBeUndefined()
   })
 })
 

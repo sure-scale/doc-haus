@@ -65,6 +65,9 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
   // returns to it when the dialog is cancelled.
   const [comparing, setComparing] = useState<{ name: string; fromViewer?: boolean }>()
   const [blackline, setBlackline] = useState<CompareParams>()
+  // The change to show when the blackline opens, set when the user follows a
+  // chat answer's "Show in blackline" link (undefined otherwise).
+  const [focusChange, setFocusChange] = useState<string>()
   // The title-area fields are inline-click-editable: clicking one swaps its label
   // for an input (or, for jurisdictions, the shared multi-select) seeded with the
   // current value. Each commit persists the whole matter via the ingest service
@@ -287,7 +290,10 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
               setFocusRedline(redlineId)
               setViewing(name)
             }}
-            onOpenBlackline={setBlackline}
+            onOpenBlackline={(params, change) => {
+              setFocusChange(change)
+              setBlackline(params)
+            }}
             onDocumentsChanged={refresh}
             feed={drafting}
           />
@@ -364,12 +370,13 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
           }}
           onCompare={(params) => {
             setComparing(undefined)
+            setFocusChange(undefined)
             setBlackline(params)
           }}
         />
       )}
 
-      {blackline && <BlacklineViewer matterId={matter.id} params={blackline} onClose={() => setBlackline(undefined)} />}
+      {blackline && <BlacklineViewer matterId={matter.id} params={blackline} focus={focusChange} onClose={() => setBlackline(undefined)} />}
     </>
   )
 }

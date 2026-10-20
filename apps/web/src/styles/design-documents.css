@@ -354,7 +354,7 @@
    voids its change-bar offset and lays the bar over the first letter. As a
    registered length, 0 substitutes as 0px. */
 @property --rev-change-bar-indent { syntax: "<length>"; inherits: true; initial-value: 0px; }
-.blackline-reader { --redline-ins: #1a4fd6; --redline-del: #c62828; --redline-move: #00873c; --redline-untracked: #ffd98c; }
+:root { --redline-ins: #1a4fd6; --redline-del: #c62828; --redline-move: #00873c; --redline-untracked: #ffd98c; }
 .blackline-reader .docx-render ins.rev-ins:not(.rev-move-to),
 .compare-redline ins:not(.is-move),
 .redline-ins { color: var(--redline-ins); background: none; text-decoration: underline double; text-decoration-skip-ink: none; }
@@ -372,6 +372,13 @@
 .compare-hunk.is-linked { cursor: pointer; }
 .compare-hunk-location button.compare-show { font: inherit; color: inherit; overflow-wrap: anywhere; }
 .compare-hunk.is-linked:hover .compare-show { color: var(--accent); text-decoration: underline; }
+/* A chat answer's changes, each drawn under the entry that names it. */
+.compare-answer .compare-entry { margin: 10px 0; }
+.compare-entry-change { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 14px; margin: 4px 0 8px; padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--panel); }
+.compare-entry-change > :is(.compare-entry-id, .compare-redline) { flex-basis: 100%; }
+.compare-entry-id { font-size: 11px; font-weight: 600; color: var(--muted); }
+.compare-entry-change .compare-more { margin: 0; }
+.compare-entry-change .compare-show { font-size: 12px; }
 /* A change shown from the panel flashes in the page. */
 .docx-render .compare-focus { animation: compare-focus 1.6s ease-out; }
 .docx-render .compare-focus:focus:not(:focus-visible) { outline: none; }

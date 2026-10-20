@@ -29,7 +29,8 @@ import { ModalClose } from "./ModalHeader"
 // apart in the Word file.
 export const BLACKLINE_RENDER_OPTIONS = { ...DOCX_RENDER_OPTIONS, revisionPresentation: RevisionPresentation.Word }
 
-export default function BlacklineViewer({ matterId, params, onClose }: { matterId: string; params: CompareParams; onClose: () => void }) {
+// focus: a change (C- or U-id) to show once the page is painted.
+export default function BlacklineViewer({ matterId, params, focus, onClose }: { matterId: string; params: CompareParams; focus?: string; onClose: () => void }) {
   const { isReady, error: wasmError, convertToHtml } = useDocxodus("/wasm/")
   const panel = useRef<HTMLDivElement>(null)
   const page = useRef<HTMLDivElement>(null)
@@ -111,6 +112,15 @@ export default function BlacklineViewer({ matterId, params, onClose }: { matterI
     const root = page.current?.querySelector<HTMLElement>(".docx-render:not(.docx-skeleton)")
     if (root) focusChange(root, hunk)
   }
+
+  // Opened from a chat answer's change: show it in the page and in the list.
+  useEffect(() => {
+    const hunk = focus && html && comparison && [...comparison.untracked, ...comparison.changes].find((change) => change.id === focus)
+    if (!hunk) return
+    document.getElementById(`compare-${hunk.id}`)?.scrollIntoView({ block: "nearest" })
+    showChange(hunk)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focus, html, comparison])
 
   const failed = renderError ?? (wasmError && `Viewer failed to load: ${wasmError.message}`)
   return (
@@ -449,7 +459,7 @@ function CompareRef({ id, section }: { id: string; section: string }) {
 // insertions underlined, moved text marked as moved.
 export type Piece = { kind: "same" | "del" | "ins" | "move"; text: string }
 
-function hunkPieces(hunk: ChangeHunk): Piece[] {
+export function hunkPieces(hunk: Pick<ChangeHunk, "kind" | "before" | "after">): Piece[] {
   if (hunk.kind === "moved" && hunk.before === hunk.after) return [{ kind: "move", text: hunk.after ?? "" }]
   if (!hunk.before) return [{ kind: "ins", text: hunk.after ?? "" }]
   if (!hunk.after) return [{ kind: "del", text: hunk.before }]
@@ -545,7 +555,7 @@ export function excerpt(pieces: Piece[]): Piece[] {
   return cut ? out : pieces
 }
 
-function Redline({ pieces }: { pieces: Piece[] }) {
+export function Redline({ pieces }: { pieces: Piece[] }) {
   const [open, setOpen] = useState(false)
   const short = useMemo(() => excerpt(pieces), [pieces])
   return (

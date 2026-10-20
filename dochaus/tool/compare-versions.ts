@@ -16,6 +16,9 @@ const DEFAULT_LIMIT = 40
 // Code points shown per before/after or proposal text; the full paragraph stays readable
 // with read-document.
 const TEXT_CAP = 600
+// Code points per side a change may have and still be drawn whole as a chat
+// redline; a longer one is left to the blackline.
+const REDLINE_CAP = 4_000
 // Listing code points per page, so a page of long paragraphs stays bounded; an
 // oversized first item is capped to it rather than dropped. The tool owns this
 // bound and its exact cursor (see plugin/legal/tool-output.ts).
@@ -187,6 +190,7 @@ export default tool({
           options: body.options,
           counts: { changes: body.changes.length, untracked: body.untracked.length, proposals: proposals.length },
         },
+        hunks: page.flatMap(item => "hunk" in item && item.hunk ? [item.hunk] : []),
         page: range,
         // Tool-owned page bound: native output truncation leaves it intact.
         truncated: next_offset !== null,
@@ -218,7 +222,10 @@ function prepare(hunk: Hunk, section: "untracked" | "changes", markUntracked: bo
     ...(before !== undefined ? [`  before: ${block(before)}`] : []),
     ...(after !== undefined ? [`  after: ${block(after)}`] : []),
   ].join("\n")
-  return { id: hunk.id, section, rules, text }
+  // The chat draws the change as a redline from the whole paragraph text.
+  const whole = [before, after].every(side => side === undefined || Array.from(side).length <= REDLINE_CAP)
+  const shown = whole ? { id: hunk.id, kind: hunk.kind, ...before !== undefined && { before }, ...after !== undefined && { after } } : undefined
+  return { id: hunk.id, section, rules, text, hunk: shown }
 }
 
 function prepareProposal(proposal: Proposal, editRef: (id: string) => string) {

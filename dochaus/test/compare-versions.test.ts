@@ -148,6 +148,12 @@ test("edits made without tracked changes come first, then changes, with location
       options: { ignoreFormatting: true, detectMoves: true, headersFooters: true },
       counts: { changes: 3, untracked: 1, proposals: 0 },
     },
+    hunks: [
+      { id: "U1", kind: "inserted", after: "Delivery is complete on signed receipt." },
+      { id: "C1", kind: "modified", before: "The Buyer shall pay within 30 days.", after: "The Buyer shall pay within 45 days." },
+      { id: "C2", kind: "inserted", after: "Delivery is complete on signed receipt." },
+      { id: "C3", kind: "deleted", before: "Draft for discussion" },
+    ],
     page: { offset: 0, items: 4, total_items: 4, next_offset: null },
     truncated: false,
   })
@@ -182,6 +188,9 @@ test("pages follow an exact offset across untracked edits and changes", async ()
   expect(second.output).toContain("C36 ·")
   expect(second.output).toContain("C45 ·")
   expect(second.output).toContain("End of the comparison.")
+  // The chat draws each listed change as a redline from the page's own hunks.
+  expect((first.metadata!.hunks as { id: string }[]).map(hunk => hunk.id)).toEqual([...untracked, ...changes.slice(0, 35)].map(hunk => hunk.id))
+  expect((second.metadata!.hunks as { id: string }[]).map(hunk => hunk.id)).toEqual(changes.slice(35).map(hunk => hunk.id))
   const small = await run({ offset: 3, limit: 4 })
   expect(small.metadata!.page).toEqual({ offset: 3, items: 4, total_items: 50, next_offset: 7 })
   expect(small.output).toContain("U4 ·")
@@ -210,6 +219,7 @@ test("each of left's proposals is listed with its outcome between the untracked 
   expect(output).not.toContain("[injection warning]")
   expect((result.metadata!.compare as { counts: unknown }).counts).toEqual({ changes: 3, untracked: 1, proposals: 3 })
   expect(result.metadata!.page).toEqual({ offset: 0, items: 7, total_items: 7, next_offset: null })
+  expect((result.metadata!.hunks as { id: string }[]).map(hunk => hunk.id)).toEqual(["U1", "C1", "C2", "C3"])
 })
 
 test("a route without proposals, or with none, lists no proposals section and no outcome line", async () => {
@@ -267,6 +277,15 @@ test("long proposal text is capped like changed text and counts toward the page 
   expect(page.items).toBeLessThan(40)
   expect(page.next_offset).toBe(page.items)
   expect(result.output.length).toBeLessThan(24_000)
+})
+
+test("a paragraph too long for the chat redline is left out of the page's hunks", async () => {
+  const long = "x".repeat(4001)
+  route(() => Response.json(comparison({ untracked: [], changes: [
+    { id: "C1", kind: "modified", location: { scope: "body", paragraph: 1, side: "right" }, before: long, after: long + "y", untracked: false },
+    { id: "C2", kind: "inserted", location: { scope: "body", paragraph: 2, side: "right" }, after: "Short clause.", untracked: false },
+  ] })))
+  expect((await run({})).metadata!.hunks).toEqual([{ id: "C2", kind: "inserted", after: "Short clause." }])
 })
 
 test("instruction-like or invisible text in a proposal is flagged, never rewritten", async () => {
@@ -349,6 +368,8 @@ test("long paragraph text is capped with a note and the page stays inside its ch
   expect(page.items).toBeLessThan(40)
   expect(page.next_offset).toBe(page.items)
   expect(result.output.length).toBeLessThan(24_000)
+  // The full paragraph, not the model's capped text, so the chat redline is whole.
+  expect((result.metadata!.hunks as { after?: string }[])[0]!.after).toBe(long + "Amended.")
 })
 
 test("a right side without tracked changes says plainly that every difference was made without tracking", async () => {
@@ -363,6 +384,7 @@ test("a right side without tracked changes says plainly that every difference wa
   expect(result.output).not.toMatch(/warning/i)
   expect(result.metadata!.page).toEqual({ offset: 0, items: 3, total_items: 3, next_offset: null })
   expect((result.metadata!.compare as { counts: unknown }).counts).toEqual({ changes: 3, untracked: 3, proposals: 0 })
+  expect((result.metadata!.hunks as { id: string }[]).map(hunk => hunk.id)).toEqual(["C1", "C2", "C3"])
 })
 
 test("instruction-like text in a change is flagged, never rewritten, and invisible characters are reported", async () => {
