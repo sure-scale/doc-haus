@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import { DEFAULT_DRAFTING, LEGEND_MAX_LENGTH as SERVER_LEGEND_MAX_LENGTH } from "../../../dochaus/lib/drafting-preferences"
-import { NOTES_MARKING as SERVER_NOTES_MARKING, formatDraftDate as serverDate, pageFurniture } from "../../../dochaus/lib/page-furniture"
+import { NOTES_MARKING as SERVER_NOTES_MARKING, PAGE_NUMBER_AFFIXES, formatDraftDate as serverDate, pageFurniture } from "../../../dochaus/lib/page-furniture"
 import { ADVICE_LEGENDS, AGREEMENT_LEGENDS, LEGEND_MAX_LENGTH, NOTES_MARKING, agreementFurniture, draftLineText, formatDraftDate, pageNumberText, suggestedLegends } from "../src/components/settings/page-layout"
 
 test("legend suggestions follow the jurisdiction family and are empty elsewhere", () => {
@@ -26,8 +26,6 @@ test("the preview text matches the server's page furniture", () => {
   expect(NOTES_MARKING).toBe(SERVER_NOTES_MARKING)
   const at = new Date(2026, 9, 20, 12)
   for (const dateFormat of ["month-day-year", "day-month-year", "iso"] as const) expect(formatDraftDate(at, dateFormat)).toBe(serverDate(at.toISOString(), dateFormat)!)
-  // Page 1's text for each format, as the engine's footer prints it.
-  const printed = { plain: "1", page: "Page 1", dashed: "- 1 -" } as const
   const formats = ["plain", "page", "dashed", "off"] as const
   let cases = 0
   for (const firm of ["Fixture Partners LLP", "  "])
@@ -42,7 +40,8 @@ test("the preview text matches the server's page furniture", () => {
               const server = pageFurniture("agreement", prefs, at.toISOString())
               const web = agreementFurniture(prefs, at)
               expect(web.header).toEqual(server?.header ?? [])
-              expect(web.pageNumber?.text).toBe(server?.pageNumber && printed[server.pageNumber.format])
+              // Page 1's text, as the engine's footer prints it.
+              expect(web.pageNumber?.text).toBe(server?.pageNumber && PAGE_NUMBER_AFFIXES[server.pageNumber.format].join("1"))
               expect(web.pageNumber?.align).toBe(server?.pageNumber?.align)
               expect(web.firstPage).toBe(server?.firstPage)
               cases++

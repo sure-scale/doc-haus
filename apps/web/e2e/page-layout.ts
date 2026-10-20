@@ -164,6 +164,9 @@ try {
         await expect(custom).toHaveValue("Fixture advice legend")
         await page.getByRole("radiogroup", { name: "Agreement legend" }).evaluate((node: HTMLElement) => node.scrollIntoView({ block: "start" }))
         await shot(page, `settings-page-layout-${width}x${height}-legends`)
+        // Without a firm name there is nothing to include.
+        await modal.getByLabel("Firm", { exact: true }).fill("")
+        await expect(check(page, "Include the firm name")).toHaveCount(0)
         await modal.getByLabel("Firm", { exact: true }).fill("Other Fixture LLP")
         await expect(modal.getByText('On agreements, advice and letters: "Other Fixture LLP draft: 20 October 2026", dated when the draft is first made.')).toBeVisible()
         await check(page, "Include the firm name").uncheck()

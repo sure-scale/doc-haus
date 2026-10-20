@@ -192,7 +192,7 @@ export default function DraftingTab({ onSaved }: { onSaved: (text: string) => vo
               { value: "on", label: "On" },
             ]}
           />
-          {prefs.draftLine && (
+          {prefs.draftLine && !!prefs.firm.trim() && (
             <CheckRow
               id="drafting-draft-line-firm"
               label="Include the firm name"
