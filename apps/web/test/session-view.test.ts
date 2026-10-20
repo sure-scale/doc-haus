@@ -42,3 +42,13 @@ test("native permission events retain the decision target and document resource"
     },
   }])
 })
+
+test("only the engine's execution success settles a chat turn, not the end of one of its steps", () => {
+  const native = (type: string, data: Record<string, unknown>) =>
+    ({ type, id: `evt_${type}`, created: 1, durable: { aggregateID: "ses_matter", seq: 1, version: 1 }, data: { sessionID: "ses_matter", ...data } }) as V2Event
+  // An answer built over several steps completes an assistant message per step.
+  expect(projectEvent(native("session.step.ended", { assistantMessageID: "msg_step", finish: "tool-calls" }))).toEqual([])
+  expect(projectEvent(native("session.execution.succeeded", {}))).toEqual([
+    { type: "session.idle", properties: { sessionID: "ses_matter" } },
+  ])
+})

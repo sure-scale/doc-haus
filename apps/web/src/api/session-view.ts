@@ -132,6 +132,9 @@ export function projectEvent(event: V2Event): Event[] {
   if (event.type === "session.status") return [{ type: event.type, properties: event.data }]
   if (event.type === "session.deleted") return [{ type: event.type, properties: event.data }]
   if (event.type === "session.idle") return [{ type: event.type, properties: event.data }]
+  // The engine ends a turn with its execution outcome, not session.idle. A
+  // success settles the chat; a failure or interruption rejects sendPrompt.
+  if (event.type === "session.execution.succeeded") return [{ type: "session.idle", properties: event.data }]
   if (event.type === "session.step.failed")
     return [{ type: "session.error", properties: { sessionID: event.data.sessionID, error: { name: event.data.error.type, data: { message: event.data.error.message } } } }]
   return []

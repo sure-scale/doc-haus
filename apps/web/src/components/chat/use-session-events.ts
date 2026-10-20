@@ -387,10 +387,12 @@ export function useSessionEvents({
     //    message is the PRIOR turn's completed assistant — already in seenRef.
     //  - just after dispatch, before the server has persisted this turn's messages,
     //    the last message is still that prior completed assistant.
-    // While streaming, the last message is this turn's assistant but not yet
-    // completed; once it completes it is new (not in seenRef) and we finalize.
+    // A multi-step answer also completes an assistant message at the end of each
+    // step while the engine runs the next one, so only an idle session settles.
     const last = msgs[msgs.length - 1]?.info
-    if (last?.role === "assistant" && last.time.completed && !seenRef.current.has(last.id)) finalize()
+    if (last?.role !== "assistant" || !last.time.completed || seenRef.current.has(last.id)) return
+    const status = await bounded(getSessionStatus(client, sessionRef.current), 5_000, "Session status").catch(() => undefined)
+    if (status?.type === "idle" && !signal.aborted && retiredSession.current !== sessionRef.current) finalize()
   }
 
   async function reconcilePermissions(signal: AbortSignal) {
