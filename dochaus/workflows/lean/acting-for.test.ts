@@ -1,4 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test"
+import { writeFileSync } from "node:fs"
+import path from "node:path"
+import { matterClient } from "../../lib/matter-client"
+import { coveragePlanHash, planCoverageCurrent, readLeanCoverage } from "./package-coverage"
 import { NOT_STATED, nameKey, namedIn, operativeDocument, parsePlan, planActingFor, readLeanPlan, writeLeanPlan, type StepID } from "./plan"
 import { stagePrompt } from "./prompts"
 import { runLean } from "./runner"
@@ -20,6 +24,9 @@ const actingFor = (party: string): Reply => {
   return (prompt, index) => draft(prompt, index).replace("Acting for: not stated", `Acting for: ${party}`)
 }
 const promptsOf = (model: ReturnType<typeof scriptedModel>, agent: string) => model.prompts.filter(prompt => prompt.agent === agent).map(prompt => prompt.text)
+// The ingest service writes matter.json; a synthetic one stands in for it.
+const recordMatter = (directory: string, fields: Record<string, unknown>) =>
+  writeFileSync(path.join(directory, "matter.json"), JSON.stringify({ id: "matter-fixture", name: "Supply note", ...fields }))
 
 describe("whom the lawyer acts for", () => {
   test("when the request does not say, the plan records it and every stage is told to take no side", async () => {
@@ -46,7 +53,7 @@ describe("whom the lawyer acts for", () => {
     expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
 
     expect(readLeanPlan(directory)?.acting_for).toEqual({ party: "the supplier", stated: true })
-    const block = "<acting_for>\nThe lawyer acts for: the supplier (as the request states).\n</acting_for>"
+    const block = "<acting_for>\nThe lawyer acts for: the supplier.\n</acting_for>"
     expect(promptsOf(model, AGENT.draft)[1]).toContain(block)
     const review = promptsOf(model, AGENT.review)[0]!
     expect(review).toContain(block)
@@ -66,6 +73,72 @@ describe("whom the lawyer acts for", () => {
     expect(outlines).toHaveLength(LEAN_MAX_RETRIES)
     expect(promptsOf(model, AGENT.review)[0]).toContain(NEUTRAL_REVIEW)
   }, 120_000)
+
+  test("when the request does not say, the plan takes the client recorded on the matter, and every stage is told", async () => {
+    const directory = matter()
+    recordMatter(directory, { client: "  Northwind   Traders Ltd\n" })
+    const model = scriptedModel(happyPath)
+    expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+
+    const client = { party: "Northwind Traders Ltd", stated: true }
+    const plan = readLeanPlan(directory)!
+    expect(plan.acting_for).toEqual(client)
+    // The coverage record is keyed on the side the plan saves.
+    expect(readLeanCoverage(directory)?.plan).toBe(coveragePlanHash(plan.documents, client))
+    expect(readLeanCoverage(directory)?.plan).not.toBe(coveragePlanHash(plan.documents, NOT_STATED))
+    expect(planCoverageCurrent(directory)).toBe(true)
+    const [outline, firstPart] = promptsOf(model, AGENT.draft)
+    expect(outline).toContain('"Acting for: not stated"')
+    const block = "<acting_for>\nThe lawyer acts for: Northwind Traders Ltd.\n</acting_for>"
+    expect(firstPart).toContain(block)
+    const review = promptsOf(model, AGENT.review)[0]!
+    expect(review).toContain(block)
+    expect(review).toContain(SIDED_REVIEW)
+    expect(promptsOf(model, AGENT.finalize)[0]).toContain(block)
+  }, 120_000)
+
+  test("a party the request names prevails over the client recorded on the matter", async () => {
+    const directory = matter()
+    recordMatter(directory, { client: "Northwind Traders Ltd" })
+    writeLeanText(directory, "request.md", "Draft a short supply note from the supply terms. We act for the supplier.")
+    const model = scriptedModel({ ...happyPath, [AGENT.draft]: actingFor("the supplier") })
+    expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+
+    expect(readLeanPlan(directory)?.acting_for).toEqual({ party: "the supplier", stated: true })
+    expect(promptsOf(model, AGENT.draft)[1]).toContain("<acting_for>\nThe lawyer acts for: the supplier.\n</acting_for>")
+    expect(promptsOf(model, AGENT.review)[0]).not.toContain("Northwind Traders Ltd")
+  }, 120_000)
+
+  test("a party the request does not name is still retried, and the plan then takes the matter's client", async () => {
+    const directory = matter()
+    recordMatter(directory, { client: "Northwind Traders Ltd" })
+    const model = scriptedModel({ ...happyPath, [AGENT.draft]: actingFor("the distributor") })
+    expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+
+    expect(readLeanPlan(directory)?.acting_for).toEqual({ party: "Northwind Traders Ltd", stated: true })
+    expect(promptsOf(model, AGENT.draft).filter(text => text.includes('"Acting for:" line names "the distributor"'))).toHaveLength(LEAN_MAX_RETRIES)
+  }, 120_000)
+
+  test("a matter that records no client leaves the plan not stated", async () => {
+    const directory = matter()
+    recordMatter(directory, { client: " " })
+    const model = scriptedModel(happyPath)
+    expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+
+    expect(readLeanPlan(directory)?.acting_for).toEqual(NOT_STATED)
+    expect(promptsOf(model, AGENT.draft)[1]).toContain(NEUTRAL)
+    expect(promptsOf(model, AGENT.review)[0]).toContain(NEUTRAL_REVIEW)
+  }, 120_000)
+
+  test("the matter's client is one line of its recorded text, or empty when it records none", () => {
+    const directory = matter()
+    expect(matterClient(directory)).toBe("")
+    for (const [recorded, client] of [[{}, ""], [{ client: "" }, ""], [{ client: "\t \n" }, ""], [{ client: 42 }, ""], [{ client: null }, ""],
+      [{ client: ["Northwind Traders Ltd"] }, ""], [{ client: " Northwind\n\tTraders  Ltd " }, "Northwind Traders Ltd"]] as const) {
+      recordMatter(directory, recorded)
+      expect(matterClient(directory)).toBe(client)
+    }
+  })
 
   test("non-answers on the Acting for line are not a party, and a stated party must be named in the request", () => {
     const outline = (line: string) => `Acting for: ${line}\n# Title\nForm: other\n## One`

@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite"
 import { createHash } from "node:crypto"
 import { getMeta, setMeta } from "./db"
+import { proposedView } from "../../../dochaus/lib/docx-tracked-text"
 
 // Deterministic legal-document structure extraction. Each extractor is
 // signal-driven and optional: it records marked definitions, numbered
@@ -203,17 +204,20 @@ export function clearStructure(db: Database, docPath: string) {
 
 export function extractStructure(db: Database, docPath: string, docName: string, text: string) {
   clearStructure(db, docPath)
-  for (const t of extractDefinedTerms(text))
+  // Patterns read a Word markup's proposed wording; a stored definition keeps
+  // the verbatim paragraph, labels included.
+  const view = proposedView(text)
+  for (const t of extractDefinedTerms(view))
     db.run(
       "INSERT INTO defined_terms (doc_path, doc_name, term, definition, char_start, char_end) VALUES (?, ?, ?, ?, ?, ?)",
-      [docPath, docName, t.term, t.definition, t.charStart, t.charEnd],
+      [docPath, docName, t.term, text.slice(t.charStart, t.charEnd).trim(), t.charStart, t.charEnd],
     )
-  for (const r of extractSectionRefs(text))
+  for (const r of extractSectionRefs(view))
     db.run(
       "INSERT INTO section_refs (doc_path, doc_name, ref_kind, ref_label, char_start, char_end) VALUES (?, ?, ?, ?, ?, ?)",
       [docPath, docName, r.refKind, r.refLabel, r.charStart, r.charEnd],
     )
-  for (const p of extractParties(text))
+  for (const p of extractParties(view))
     db.run("INSERT INTO parties (doc_path, doc_name, name, role, char_start, char_end) VALUES (?, ?, ?, ?, ?, ?)", [
       docPath,
       docName,
@@ -222,12 +226,12 @@ export function extractStructure(db: Database, docPath: string, docName: string,
       p.charStart,
       p.charEnd,
     ])
-  for (const a of extractAmendments(text))
+  for (const a of extractAmendments(view))
     db.run(
       "INSERT INTO doc_relations (doc_path, doc_name, relation, target_name, char_start, char_end) VALUES (?, ?, 'amends', ?, ?, ?)",
       [docPath, docName, a.targetName, a.charStart, a.charEnd],
     )
-  for (const op of extractSectionOps(text))
+  for (const op of extractSectionOps(view))
     db.run(
       "INSERT INTO section_ops (doc_path, doc_name, section_label, operation, char_start, char_end) VALUES (?, ?, ?, ?, ?, ?)",
       [docPath, docName, op.sectionLabel, op.operation, op.charStart, op.charEnd],
@@ -296,12 +300,15 @@ export function sectionize(text: string): Section[] {
   const sections: Section[] = []
   let current: Section = { label: "Preamble", title: "Preamble", number: null, opening: true, text: "", charStart: 0, charEnd: 0 }
   let offset = 0
+  // Headings are read from a Word markup's proposed wording, so a label does not
+  // hide an inserted heading and a deleted one does not open a section.
+  const view = proposedView(text).split("\n")
 
-  for (const line of text.split("\n")) {
+  for (const [index, line] of text.split("\n").entries()) {
     // PDF extractors can emit Markdown headings; strip hashes so "## 7.2 Termination"
     // sections the same as a plain "7.2 Termination" line.
-    const markdown = line.trim().match(/^(#{1,6})\s+/)
-    const trimmed = line.trim().slice(markdown?.[0].length ?? 0)
+    const markdown = view[index]!.trim().match(/^(#{1,6})\s+/)
+    const trimmed = view[index]!.trim().slice(markdown?.[0].length ?? 0)
     const isMdHeading = Boolean(markdown)
     const clause = trimmed.match(CLAUSE_RE)
     const isHeading = clause || (isMdHeading ? isMarkdownHeading(trimmed) : trimmed.length > 0 && HEADING_RE.test(trimmed))

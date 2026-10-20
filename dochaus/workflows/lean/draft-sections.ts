@@ -1,5 +1,6 @@
 import { rmSync } from "node:fs"
 import { isLetter } from "../../lib/page-furniture"
+import { matterClient } from "../../lib/matter-client"
 import { playbookSelectionIssues } from "./playbook-review"
 import { TOOL_SYNTAX_ISSUE, checkDraft, printedToolCall, readParagraphs } from "./checks"
 import { appendLeanEvent, leanElapsedMs } from "./events"
@@ -203,10 +204,14 @@ export async function runDraftStage(
     const basis = outlineBasis(directory)
     // The lawyer's own words ground requested file names and the memo.
     const request = [readLeanText(directory, "request.md"), readLeanText(directory, "updated-notes.md"), answeredQuestionsText(directory)].filter(Boolean).join("\n\n")
+    // A party the lawyer's words name prevails; when they name none, the plan
+    // takes the client recorded on the matter.
+    const client = matterClient(directory)
     const best: { value?: LeanOutline } = {}
     const checkOutline = (reply: string): Checked<LeanOutline> => {
       const parsed = parsePlan(reply, request)
       if (!parsed.value) return parsed
+      if (!parsed.value.acting_for.stated && client) parsed.value.acting_for = { party: client, stated: true }
       const selectionIssues = playbookSelectionIssues(directory, parsed.value.documents)
       if (selectionIssues.length) { delete best.value; return { issues: selectionIssues } }
       best.value = parsed.value

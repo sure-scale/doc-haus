@@ -96,6 +96,15 @@ test("retired process values do not alter standing drafting instructions", async
   expect(legacyPlan).not.toContain("<plan_first_drafting>")
 })
 
+test("a retired stored setting is kept as saved and adds no drafting instruction", () => {
+  expect(DEFAULT_DRAFTING).not.toHaveProperty("materialDecisionCheckpoints")
+  for (const value of ["interactive", "off", "unsupported"]) {
+    const saved = normalizePreferences({ materialDecisionCheckpoints: value })
+    expect(saved).toHaveProperty("materialDecisionCheckpoints", value)
+    expect(renderInstructions(saved)).toBe(renderInstructions(DEFAULT_DRAFTING))
+  }
+})
+
 test("invalid drafting field types and choices fall back to the same valid defaults", () => {
   const baseline = renderInstructions(normalizePreferences(DEFAULT_DRAFTING))
   expect(baseline).toContain("Use formal legal drafting style throughout.")

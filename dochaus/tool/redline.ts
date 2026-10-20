@@ -50,6 +50,10 @@ export default tool({
     const target = session.findByText(args.clause, { ignoreWhitespace: true })
     if (!target) {
       session.close()
+      // Search and read show a Word file's pending revisions as labels; changes
+      // to such a file wait until they are resolved, as at accept.
+      if (/\[Tracked (insertion|deletion|move)/.test(args.clause))
+        return `${path.basename(file)} contains tracked changes. Accept or reject them in Word before proposing changes to it.`
       return `Clause not found in ${path.basename(file)}: ${JSON.stringify(args.clause)}`
     }
     session.close()

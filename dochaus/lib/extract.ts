@@ -1,4 +1,5 @@
 import { statSync } from "node:fs"
+import { markTrackedChanges } from "./docx-tracked-text"
 import { normalizeExtractedText } from "./untrusted"
 
 // Live-document extraction shared by the citation plugin (which re-checks every
@@ -77,7 +78,7 @@ async function extract(docPath: string, buffer: Buffer) {
   if (name.endsWith(".eml")) return emlToText(buffer)
   if (name.endsWith(".xlsx")) return xlsxToText(buffer)
   const { default: mammoth } = await import("mammoth")
-  return (await mammoth.extractRawText({ buffer })).value
+  return (await mammoth.extractRawText({ buffer: markTrackedChanges(buffer) })).value
 }
 
 // Email sources (.eml) are MIME documents, not zip-based Office files. Mirrors

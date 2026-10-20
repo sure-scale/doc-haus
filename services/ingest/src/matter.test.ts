@@ -256,6 +256,65 @@ test("recordConflicts rejects half-recorded checks", () => {
   matter.deleteMatter(created.id)
 })
 
+test("client is stored as one normalised line and omitted when empty", () => {
+  const created = matter.createMatter("Client Create", undefined, undefined, undefined, "  Northwind\tTraders\r\n\u0007Ltd  ")
+  expect(created.client).toBe("Northwind Traders Ltd")
+  expect(readMatterJson(created.id).client).toBe("Northwind Traders Ltd")
+  expect(matter.listMatters().find((m) => m.id === created.id)!.client).toBe("Northwind Traders Ltd")
+
+  const blank = matter.createMatter("Client Blank", undefined, undefined, undefined, " \n\t ")
+  expect("client" in readMatterJson(blank.id)).toBe(false)
+  const absent = matter.createMatter("Client Absent")
+  expect("client" in readMatterJson(absent.id)).toBe(false)
+
+  matter.deleteMatter(created.id)
+  matter.deleteMatter(blank.id)
+  matter.deleteMatter(absent.id)
+})
+
+test("client over 200 characters or not a string is refused, never truncated", () => {
+  const before = matter.listMatters().length
+  expect(() => matter.createMatter("Client Long", undefined, undefined, undefined, "N".repeat(201))).toThrow(
+    matter.MatterValidationError,
+  )
+  expect(() => matter.createMatter("Client Number", undefined, undefined, undefined, 42 as unknown as string)).toThrow(
+    /client must be a string/,
+  )
+  expect(matter.listMatters()).toHaveLength(before)
+  // The cap applies after normalising, so padding does not count.
+  expect(matter.createMatter("Client Cap", undefined, undefined, undefined, ` ${"N".repeat(200)}\n`).client).toHaveLength(200)
+
+  const created = matter.createMatter("Client Rename Refusal", undefined, undefined, undefined, "Northwind Traders Ltd")
+  expect(() => matter.renameMatter(created.id, "Client Rename Refusal", undefined, undefined, undefined, "N".repeat(201))).toThrow(
+    /at most 200 characters/,
+  )
+  expect(() => matter.renameMatter(created.id, "Client Rename Refusal", undefined, undefined, undefined, null as unknown as string)).toThrow(
+    matter.MatterValidationError,
+  )
+  expect(readMatterJson(created.id).client).toBe("Northwind Traders Ltd")
+
+  matter.deleteMatter(created.id)
+})
+
+test("rename changes the client only when one is given", () => {
+  const created = matter.createMatter("Client Rename", "2026-0007", ["EW"], undefined, "Northwind Traders Ltd")
+
+  // Callers that do not edit the client (title or playbook edits) keep it.
+  matter.renameMatter(created.id, "Client Rename Kept", "2026-0008", ["EW"], "playbook-nda")
+  expect(readMatterJson(created.id)).toMatchObject({ title: "Client Rename Kept", reference: "2026-0008", client: "Northwind Traders Ltd" })
+
+  const set = matter.renameMatter(created.id, "Client Rename Kept", "2026-0008", ["EW"], "playbook-nda", "Contoso\nHoldings plc")
+  expect(set.client).toBe("Contoso Holdings plc")
+  expect(readMatterJson(created.id).client).toBe("Contoso Holdings plc")
+
+  matter.renameMatter(created.id, "Client Rename Kept", "2026-0008", ["EW"], "playbook-nda", "")
+  const cleared = readMatterJson(created.id)
+  expect("client" in cleared).toBe(false)
+  expect(cleared).toMatchObject({ title: "Client Rename Kept", reference: "2026-0008", playbook: "playbook-nda" })
+
+  matter.deleteMatter(created.id)
+})
+
 test("listJurisdictions surfaces the bundled EW pack from the dochaus config layer", () => {
   const ew = matter.listJurisdictions().find((j) => j.code === "EW")
   expect(ew).toBeDefined()
@@ -288,6 +347,10 @@ function lineage(id: string) {
     .trim()
     .split("\n")
     .map((row) => JSON.parse(row) as TestLineageRow)
+}
+
+function readMatterJson(id: string) {
+  return JSON.parse(readFileSync(path.join(matter.matterDir(id), "matter.json"), "utf8")) as Record<string, unknown>
 }
 
 function matterLineage(id: string) {

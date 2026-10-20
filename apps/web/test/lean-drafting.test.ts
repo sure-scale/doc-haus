@@ -344,6 +344,20 @@ test("a run with several planned documents groups its steps per document", () =>
   expect(isLeanDraftingStatus({ ...two, stages: { "d1.draft": done } })).toBe(false)
 })
 
+test("the run's Details say whom the lawyer acts for once the plan records it, and an older ingest without it is still read", () => {
+  const idle: RunActions = { busy: false, pausing: false, stopping: false, error: "", errorFor: undefined, resuming: false, resume: async () => true, answer: async () => true, choose: async () => true, decide: async () => true, update: async () => true, refine: async () => true, pause: async () => true, stop: async () => true }
+  const withActingFor = (acting_for: unknown) => ({ ...completed, plan: { ...completed.plan, acting_for } })
+  const render = (value: unknown) =>
+    renderToStaticMarkup(createElement(RunHeader, { status: lean(value), actions: idle, own: true, onOpen: () => {}, onShowDrafts: () => {} }))
+  expect(render(withActingFor({ party: "Northwind Traders Ltd", stated: true }))).toContain("Acting for: Northwind Traders Ltd")
+  expect(render(withActingFor({ party: "", stated: false }))).toContain("Acting for: not stated — drafting is neutral")
+  expect(completed.plan).not.toHaveProperty("acting_for")
+  expect(render(completed)).not.toContain("Acting for")
+  expect(render({ ...completed, plan: null })).not.toContain("Acting for")
+  expect(isLeanDraftingStatus(withActingFor({ party: "Northwind Traders Ltd", stated: "yes" }))).toBe(false)
+  expect(isLeanDraftingStatus(withActingFor("Northwind Traders Ltd"))).toBe(false)
+})
+
 test("the question card shows how many are answered and Send waits for an answer", () => {
   const calls = respond({ answers: {}, revision: 0 })
   const open = blockedQuestion.questions.map((question) => ({ ...question, status: "open" as const }))
