@@ -70,6 +70,12 @@ describe("_base.docx styles", () => {
     expect(headingSpacing(styles, "Heading2")).toEqual({ before: 280, after: 140 })
     expect(headingSpacing(styles, "Heading3")).toEqual({ before: 220, after: 120 })
   })
+
+  test("the page margins place page furniture half an inch from the page edge", () => {
+    const document = strFromU8(unzipSync(readFileSync("templates/_base.docx"))["word/document.xml"]!)
+    const margins = new DOMParser().parseFromString(document, "application/xml").getElementsByTagNameNS(W, "pgMar")[0]!
+    expect(["header", "footer", "gutter"].map(name => margins.getAttributeNS(W, name))).toEqual(["720", "720", "0"])
+  })
 })
 
 function headingSpacing(styles: string, styleId: string) {
