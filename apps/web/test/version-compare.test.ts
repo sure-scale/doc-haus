@@ -6,7 +6,7 @@ import { compareUrl, fetchBlacklineBytes, fetchComparison, type ChangeHunk, type
 import { choiceParams, compareCandidates } from "../src/components/CompareDialog"
 import CompareDialog from "../src/components/CompareDialog"
 import { RevisionPresentation } from "docxodus"
-import BlacklineViewer, { BLACKLINE_RENDER_OPTIONS, ComparePanel, changeBlock, excerpt, hunkLocation, saveDocx, wordDiff } from "../src/components/BlacklineViewer"
+import BlacklineViewer, { BLACKLINE_RENDER_OPTIONS, ComparePanel, changeBlock, excerpt, hunkLocation, hunkPieces, saveDocx, wordDiff } from "../src/components/BlacklineViewer"
 import CompareAnswer, { chatCompare } from "../src/components/chat/CompareAnswer"
 import CompareView from "../src/components/chat/CompareView"
 import { toTurns, type ListedChange } from "../src/components/chat/turn-model"
@@ -338,6 +338,11 @@ describe("redline as lawyers read it", () => {
     const card = proposals.slice(proposals.indexOf('id="compare-P1"'), proposals.indexOf('id="compare-P2"'))
     expect(card).not.toContain("compare-show")
   })
+})
+
+test("a whole inserted or deleted text is marked without the white space around it", () => {
+  expect(hunkPieces({ kind: "inserted", after: " It excludes 24 December." })).toEqual([{ kind: "ins", text: "It excludes 24 December." }])
+  expect(hunkPieces({ kind: "deleted", before: ", without set-off \n" })).toEqual([{ kind: "del", text: ", without set-off" }])
 })
 
 describe("finding a change in the painted blackline", () => {

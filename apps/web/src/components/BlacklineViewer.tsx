@@ -462,8 +462,8 @@ export type Piece = { kind: "same" | "del" | "ins" | "move"; text: string }
 
 export function hunkPieces(hunk: Pick<ChangeHunk, "kind" | "before" | "after">): Piece[] {
   if (hunk.kind === "moved" && hunk.before === hunk.after) return [{ kind: "move", text: hunk.after ?? "" }]
-  if (!hunk.before) return [{ kind: "ins", text: hunk.after ?? "" }]
-  if (!hunk.after) return [{ kind: "del", text: hunk.before }]
+  if (!hunk.before) return [{ kind: "ins", text: (hunk.after ?? "").trim() }]
+  if (!hunk.after) return [{ kind: "del", text: hunk.before.trim() }]
   return wordDiff(hunk.before, hunk.after)
 }
 
