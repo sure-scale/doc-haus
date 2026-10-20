@@ -11,6 +11,9 @@ export default function DraftingTab({ onSaved }: { onSaved: (text: string) => vo
   const [prefs, setPrefs] = useState<DraftingPreferences | null>(null)
   const [today] = useState(() => new Date())
   const [saving, setSaving] = useState(false)
+  // Bumped on each save, so the legend choices start again from the text the
+  // server kept (it trims and caps a legend; blank custom text is no legend).
+  const [saves, setSaves] = useState(0)
   const [error, setError] = useState("")
   const [reload, setReload] = useState(0)
   const mounted = useRef(false)
@@ -180,6 +183,7 @@ export default function DraftingTab({ onSaved }: { onSaved: (text: string) => vo
             ]}
           />
           <LegendField
+            key={`agreement-${saves}`}
             id="drafting-agreement-legend"
             label="Agreement legend"
             hint="At the top of every page of an agreement."
@@ -188,6 +192,7 @@ export default function DraftingTab({ onSaved }: { onSaved: (text: string) => vo
             onChange={(agreementLegend) => set({ agreementLegend })}
           />
           <LegendField
+            key={`advice-${saves}`}
             id="drafting-advice-legend"
             label="Advice legend"
             hint="At the top of every page of advice, such as a memo or opinion."
@@ -223,6 +228,7 @@ export default function DraftingTab({ onSaved }: { onSaved: (text: string) => vo
               const saved = await savePreferences(prefs)
               if (!mounted.current) return
               setPrefs(saved)
+              setSaves(count => count + 1)
               onSaved("Drafting preferences saved. They apply to new replies, resumed drafting and documents rendered from now on.")
             } catch {
               if (mounted.current) setError("Could not save drafting preferences. Your changes are still here. Try again.")
