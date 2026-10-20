@@ -612,6 +612,7 @@ test("a locator unresolved_reason becomes a visible open item without a pending 
     // Open items live only in the Prepare reply unless kept; the viewer reads them back.
     const prepared = async () => await (await documentAmendmentRoutes({directory:() => directory}).request("http://local/matter/documents/amendments?name=working.docx")).json()
     expect(await prepared()).toBeNull()
+    expect(await (await documentAmendmentRoutes({directory:() => directory}).request("http://local/matter/documents/amendments?name=schedule.xlsx")).json()).toBeNull()
     await withPreparation(directory,engine,async (prepare) => {
       const refused = await prepare("Update the governing notice period and the retention period.")
       expect(refused.status).toBe(200)

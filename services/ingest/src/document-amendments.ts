@@ -56,10 +56,12 @@ export function documentAmendmentRoutes(options: { directory: (id: string) => st
         ...(reference ? {diagnostic_ref:reference,diagnostic_hint:"Inspect the latest private preparation diagnostic in this matter before trying again."} : {})},409)
     }
   })
-  // The latest Prepare's batch and open items for one Word document; null before any.
+  // The latest Prepare's batch and open items for one Word document; null before
+  // any, and for other files, which the viewer also opens.
   app.get("/:id/documents/amendments", (c) => {
     const name = c.req.query("name")
-    if (!name || path.basename(name) !== name || !name.toLowerCase().endsWith(".docx")) return c.json({error:"Provide a Word filename."},400)
+    if (!name || path.basename(name) !== name) return c.json({error:"Provide a filename."},400)
+    if (!name.toLowerCase().endsWith(".docx")) return c.json(null)
     const directory = options.directory(c.req.param("id"))
     if (!existsSync(path.join(directory,".dochaus","legal.db"))) return c.json(null)
     const db = openDb(directory)
@@ -190,8 +192,11 @@ async function recordPrepared(directory:string,name:string,prepared:PreparedChan
   await withArtifactMutationLocksAsync(directory,[name],async () => {
     const target = resolveMatterDocumentTarget(directory,name)
     const db = openDb(directory)
-    try {if (getDocumentRole(db,target.docPath) === "deliverable") setPreparedChanges(db,target.docPath,prepared)}
-    finally {db.close()}
+    try {
+      if (getDocumentRole(db,target.docPath) !== "deliverable")
+        throw new DocumentAmendmentConflictError("The document's registered role changed while preparing changes.")
+      setPreparedChanges(db,target.docPath,prepared)
+    } finally {db.close()}
   })
 }
 
