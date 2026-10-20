@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test"
+import blockedGate from "../../../dochaus/workflows/lean/fixtures/status-blocked-gate.json"
 import completed from "../../../dochaus/workflows/lean/fixtures/status-completed.json"
-import { isLeanDraftingStatus } from "../src/api/ingest/lean"
+import failedRun from "../../../dochaus/workflows/lean/fixtures/status-failed.json"
+import { isLeanDraftingStatus, type LeanDraftingStatus } from "../src/api/ingest/lean"
 import type { Part } from "../src/api/session-view"
 import { readTurn } from "../src/components/chat/turn-model"
 import { statusbarLabel } from "../src/components/matter/MatterRail"
@@ -36,8 +38,14 @@ test("a live answer names its running step in plain words, and nothing between s
   expect(activity({ type: "text", id: "t1", sessionID: "ses", messageID: "msg", text: "The letter is dated 12 October." })).toBeUndefined()
 })
 
-const done = completed as unknown
-if (!isLeanDraftingStatus(done)) throw new Error("fixture is not a lean drafting status")
+function fixture(value: unknown): LeanDraftingStatus {
+  if (!isLeanDraftingStatus(value)) throw new Error("fixture is not a lean drafting status")
+  return value
+}
+const done = fixture(completed)
+const blocked = fixture(blockedGate)
+const failed = fixture(failedRun)
+const running = { ...done, status: "running", in_flight: true } satisfies LeanDraftingStatus
 
 test("the status bar shows a chat answer while it works, and the drafting label or Ready otherwise", () => {
   expect(statusbarLabel()).toEqual({ text: "Ready", findings: false })
@@ -46,4 +54,12 @@ test("the status bar shows a chat answer while it works, and the drafting label 
   // Drafting keeps its label when no answer runs, and yields only while one does.
   expect(statusbarLabel(done)).toEqual({ text: "Drafting complete", status: "completed", findings: false })
   expect(statusbarLabel(done, {})).toEqual({ text: "Answer in progress", status: "running", findings: false })
+})
+
+test("a drafting run that is running, needs attention or was interrupted keeps the status bar over a chat answer", () => {
+  const answering = { activity: "Searching matter documents" }
+  expect(statusbarLabel(running, answering)).toEqual({ text: "Drafting in progress", status: "running", findings: false })
+  expect(statusbarLabel({ ...running, in_flight: false }, answering).text).toBe("Drafting paused")
+  expect(statusbarLabel(blocked, answering)).toEqual({ text: "Drafting needs your attention", status: "blocked", findings: false })
+  expect(statusbarLabel(failed, answering)).toEqual({ text: "Drafting interrupted", status: "failed", findings: false })
 })

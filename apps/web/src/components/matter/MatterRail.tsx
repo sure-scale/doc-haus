@@ -38,10 +38,11 @@ export default function MatterRail({
   )
 }
 
-/** The status bar's label. A chat answer in progress is what the matter is
- * doing while it runs; otherwise the drafting run's label, or Ready. */
+/** The status bar's label. A drafting run that is running, needs attention or
+ * was interrupted keeps it; otherwise a chat answer in progress shows while it
+ * runs, then the drafting run's label, or Ready. */
 export function statusbarLabel(drafting?: LeanDraftingStatus, chat?: { activity?: string }) {
-  if (chat)
+  if (chat && (!drafting || drafting.status === "completed"))
     return {
       text: chat.activity ? `Answer in progress · ${chat.activity}` : "Answer in progress",
       status: "running",
