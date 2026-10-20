@@ -58,14 +58,15 @@ export type Turn = {
   superseded?: boolean
 }
 
-// Reduce a message's parts to its visible text, search-document citations, and
-// any redline proposals.
+// Reduce a turn's parts to its visible text, search-document citations, and
+// any redline proposals. Each text part (one per step) stays its own block, as
+// in the live view (readTurn).
 function contentOf(parts: Part[]) {
   const text = parts
     .filter((p): p is Extract<Part, { type: "text" }> => p.type === "text")
     .filter((p) => !p.synthetic)
     .map((p) => p.text)
-    .join("")
+    .join("\n\n")
   const citations = parts
     .filter((p): p is Extract<Part, { type: "tool" }> => p.type === "tool")
     .filter((p) => p.tool === "search-document" && p.state.status === "completed")
