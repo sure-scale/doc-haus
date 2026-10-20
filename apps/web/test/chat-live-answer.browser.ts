@@ -40,7 +40,8 @@ function send(type: string, data: Record<string, unknown>) {
 function step(id: string, content: Extract<SessionMessageInfo, { type: "assistant" }>["content"], finish: "tool-calls" | "stop") {
   send("session.step.started", { assistantMessageID: id, agent: "qa", model, started: Date.now() })
   transcript.push({ type: "assistant", id, agent: "qa", model, finish, time: { created: Date.now(), completed: Date.now() }, content })
-  send("session.text.ended", { assistantMessageID: id, ordinal: 0, text: "" })
+  for (const [ordinal, part] of content.filter(part => part.type === "text").entries())
+    send("session.text.ended", { assistantMessageID: id, ordinal, text: part.text })
   send("session.step.ended", { assistantMessageID: id, finish })
 }
 
@@ -152,7 +153,7 @@ try {
   const before = { ...reads }
   await page.clock.fastForward(15_000)
   await until(() => reads.messages > before.messages, "the resync poll reads the conversation")
-  await Bun.sleep(300)
+  await until(() => reads.active > before.active, "the resync poll asks whether the session is idle")
   assert.equal(await page.evaluate(() => (window as unknown as { busy: boolean }).busy), true, "the turn settled between its steps")
   assert.equal(await live.count(), 1, "the live answer left the conversation between steps")
   console.log("PASS a resync between two steps of one answer leaves the turn working")
