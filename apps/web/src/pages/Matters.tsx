@@ -25,6 +25,7 @@ export default function Matters() {
   const [loadError, setLoadError] = useState<string>()
   const [title, setTitle] = useState("")
   const [reference, setReference] = useState("")
+  const [client, setClient] = useState("")
   // New matters start from the firm's default jurisdictions (Settings → Matter
   // defaults) instead of empty.
   const [newJurisdictions, setNewJurisdictions] = useState<string[]>(() => loadPrefs().defaultJurisdictions)
@@ -35,6 +36,7 @@ export default function Matters() {
   const [editing, setEditing] = useState<Matter | null>(null)
   const [draftTitle, setDraftTitle] = useState("")
   const [draftReference, setDraftReference] = useState("")
+  const [draftClient, setDraftClient] = useState("")
   const [draftJurisdictions, setDraftJurisdictions] = useState<string[]>([])
   const toast = useToast()
   const navigate = useNavigate()
@@ -70,6 +72,8 @@ export default function Matters() {
         title.trim(),
         reference.trim() || undefined,
         newJurisdictions.length ? newJurisdictions : undefined,
+        undefined,
+        client.trim() || undefined,
       )
       toast("success", `Created matter "${matter.title}".`)
       // A new matter is opened straight away: the next step is always adding its
@@ -96,6 +100,7 @@ export default function Matters() {
     setEditing(m)
     setDraftTitle(m.title)
     setDraftReference(m.reference ?? "")
+    setDraftClient(m.client ?? "")
     setDraftJurisdictions(m.jurisdictions ?? [])
   }
 
@@ -109,6 +114,7 @@ export default function Matters() {
         draftReference.trim() || undefined,
         draftJurisdictions.length ? draftJurisdictions : undefined,
         editing.playbook,
+        draftClient.trim(),
       )
       setMatters((prev) => prev.map((m) => (m.id === updated.id ? updated : m)))
       setEditing(null)
@@ -152,6 +158,15 @@ export default function Matters() {
             onChange={(e) => setReference(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && onCreate()}
             className="matter-create-reference"
+          />
+          <input
+            placeholder="Client you act for (optional)"
+            aria-label="Client you act for (optional)"
+            maxLength={200}
+            value={client}
+            onChange={(e) => setClient(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && onCreate()}
+            className="matter-create-client"
           />
           <JurisdictionSelect
             jurisdictions={jurisdictions}
@@ -272,6 +287,16 @@ export default function Matters() {
                 <input
                   value={draftReference}
                   onChange={(e) => setDraftReference(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && onSaveEdit()}
+                />
+              </label>
+              <label className="matter-edit-field">
+                <span>Client</span>
+                <input
+                  placeholder="Whom you act for (optional)"
+                  maxLength={200}
+                  value={draftClient}
+                  onChange={(e) => setDraftClient(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && onSaveEdit()}
                 />
               </label>

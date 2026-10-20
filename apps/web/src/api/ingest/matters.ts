@@ -12,6 +12,9 @@ export type Matter = {
   reference?: string
   jurisdictions?: string[]
   playbook?: string
+  // Whom the firm acts for on the matter; drafting takes that side when the
+  // request does not say whom the lawyer acts for.
+  client?: string
   dir: string
   created_at: number
 }
@@ -55,27 +58,31 @@ export async function createMatter(
   reference?: string,
   jurisdictions?: string[],
   playbook?: string,
+  client?: string,
 ): Promise<Matter> {
   const res = await fetch(`${INGEST_URL}/matters`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ title, reference, jurisdictions, playbook }),
+    body: JSON.stringify({ title, reference, jurisdictions, playbook, client }),
   })
   if (!res.ok) throw new Error(await ingestError(res, "Could not create the matter"))
   return res.json()
 }
 
+// An undefined client drops out of the JSON body, which keeps the stored client;
+// "" clears it. Callers that do not edit the client therefore never wipe it.
 export async function renameMatter(
   id: string,
   title: string,
   reference?: string,
   jurisdictions?: string[],
   playbook?: string,
+  client?: string,
 ): Promise<Matter> {
   const res = await fetch(`${INGEST_URL}/matters/${id}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ title, reference, jurisdictions, playbook }),
+    body: JSON.stringify({ title, reference, jurisdictions, playbook, client }),
   })
   if (!res.ok) throw new Error(await ingestError(res, "Could not save the matter"))
   return res.json()

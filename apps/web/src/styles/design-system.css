@@ -90,6 +90,7 @@ input:not([type="checkbox"]):not([type="radio"]), select, textarea {
 .matter-create-row { flex-wrap: wrap; align-items: stretch; }
 .matter-create-row .matter-create-title { flex: 1 1 260px; min-width: 0; }
 .matter-create-row .matter-create-reference { flex: 0 1 180px; min-width: 0; }
+.matter-create-row .matter-create-client { flex: 0 1 220px; min-width: 0; }
 .matter-create-row .jx-select { flex: 0 1 220px; min-width: 0; }
 .matter-create-row input,
 .matter-create-row button { height: var(--ctl-h); min-height: var(--ctl-h); padding: 0 12px; font-size: 14px; line-height: 20px; border-radius: var(--radius-md); }

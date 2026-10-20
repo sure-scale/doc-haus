@@ -10,6 +10,11 @@ export default function MatterHeader({
   draftRef,
   setDraftRef,
   commitRef,
+  editingClient,
+  setEditingClient,
+  draftClient,
+  setDraftClient,
+  commitClient,
   renaming,
   setRenaming,
   draftTitle,
@@ -24,12 +29,17 @@ export default function MatterHeader({
   draftRef: string
   setDraftRef: (draft: string) => void
   commitRef: () => Promise<void>
+  editingClient: boolean
+  setEditingClient: (editing: boolean) => void
+  draftClient: string
+  setDraftClient: (draft: string) => void
+  commitClient: () => Promise<void>
   renaming: boolean
   setRenaming: (renaming: boolean) => void
   draftTitle: string
   setDraftTitle: (draft: string) => void
   commitRename: () => Promise<void>
-  patch: (fields: Partial<Pick<Detail, "title" | "reference" | "jurisdictions" | "playbook">>) => Promise<void>
+  patch: (fields: Partial<Pick<Detail, "title" | "reference" | "jurisdictions" | "playbook" | "client">>) => Promise<void>
 }) {
   const refField = editingRef ? (
     <input
@@ -59,8 +69,37 @@ export default function MatterHeader({
     </button>
   )
 
-  // A permanent route back to the matter list, then one quiet line of facts: the matter number and the
-  // jurisdictions, each a ghost "+ …" button until set, then its chip.
+  const clientField = editingClient ? (
+    <input
+      className="matter-ref-input"
+      autoFocus
+      placeholder="Whom you act for"
+      aria-label="Client you act for"
+      maxLength={200}
+      value={draftClient}
+      onChange={(e) => setDraftClient(e.target.value)}
+      onBlur={commitClient}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") commitClient()
+        if (e.key === "Escape") setEditingClient(false)
+      }}
+    />
+  ) : (
+    <button
+      type="button"
+      className={matter.client ? "matter-ref matter-field" : "matter-meta-add"}
+      title={matter.client ? "Edit the client you act for" : "Add the client you act for"}
+      onClick={() => {
+        setDraftClient(matter.client ?? "")
+        setEditingClient(true)
+      }}
+    >
+      {matter.client ? `Client: ${matter.client}` : "+ Client"}
+    </button>
+  )
+
+  // A permanent route back to the matter list, then one quiet line of facts: the matter number, the
+  // client and the jurisdictions, each a ghost "+ …" button until set, then its chip.
   return (
     <header className="page-head matter-page-head">
       <div className="matter-head">
@@ -109,6 +148,10 @@ export default function MatterHeader({
 
         <div className="matter-meta">
           {refField}
+          <span className="matter-meta-sep" aria-hidden>
+            ·
+          </span>
+          {clientField}
           <span className="matter-meta-sep" aria-hidden>
             ·
           </span>

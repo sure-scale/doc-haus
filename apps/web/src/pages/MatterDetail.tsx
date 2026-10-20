@@ -71,11 +71,13 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
   // The title-area fields are inline-click-editable: clicking one swaps its label
   // for an input (or, for jurisdictions, the shared multi-select) seeded with the
   // current value. Each commit persists the whole matter via the ingest service
-  // and updates in place. Reference and title each track their own edit flag/draft.
+  // and updates in place. Reference, client and title each track their own edit flag/draft.
   const [renaming, setRenaming] = useState(false)
   const [draftTitle, setDraftTitle] = useState("")
   const [editingRef, setEditingRef] = useState(false)
   const [draftRef, setDraftRef] = useState("")
+  const [editingClient, setEditingClient] = useState(false)
+  const [draftClient, setDraftClient] = useState("")
   // The session id the composer just minted. The first send flips the `session`
   // param, remounting ChatPanel under the new id; this lets that remount know it
   // is the same composer (not a rail reopen) so it keeps the cursor seated.
@@ -206,15 +208,15 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
   // One persist path for every title-area field: merge the changed fields over the
   // current matter, write the whole record, and reflect what came back. Sessions
   // refresh too so the sidebar/picker pick up a renamed or re-referenced matter.
-  async function patch(fields: Partial<Pick<Detail, "title" | "reference" | "jurisdictions" | "playbook">>) {
+  async function patch(fields: Partial<Pick<Detail, "title" | "reference" | "jurisdictions" | "playbook" | "client">>) {
     if (!matter) return
     const next = { ...matter, ...fields }
-    const updated = await renameMatter(matter.id, next.title, next.reference, next.jurisdictions, next.playbook).catch((e) => {
+    const updated = await renameMatter(matter.id, next.title, next.reference, next.jurisdictions, next.playbook, next.client).catch((e) => {
       toast("error", humanizeError(e, "Could not save the matter. Try again."))
       return undefined
     })
     if (!updated) return
-    setMatter((m) => m && { ...m, title: updated.title, reference: updated.reference, jurisdictions: updated.jurisdictions, playbook: updated.playbook })
+    setMatter((m) => m && { ...m, title: updated.title, reference: updated.reference, jurisdictions: updated.jurisdictions, playbook: updated.playbook, client: updated.client })
     onSessionsChanged()
   }
 
@@ -232,6 +234,14 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
     await patch({ reference: next || undefined })
   }
 
+  // "" clears the client; undefined would keep the stored one.
+  async function commitClient() {
+    setEditingClient(false)
+    const next = draftClient.trim()
+    if (!matter || next === (matter.client ?? "")) return
+    await patch({ client: next })
+  }
+
   function changePlaybook(next?: string) {
     return patch({ playbook: next })
   }
@@ -246,6 +256,11 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
         draftRef={draftRef}
         setDraftRef={setDraftRef}
         commitRef={commitRef}
+        editingClient={editingClient}
+        setEditingClient={setEditingClient}
+        draftClient={draftClient}
+        setDraftClient={setDraftClient}
+        commitClient={commitClient}
         renaming={renaming}
         setRenaming={setRenaming}
         draftTitle={draftTitle}
