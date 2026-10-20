@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react"
-import type { DraftingPreferences } from "../../api/ingest/preferences"
-import { LEGEND_MAX_LENGTH, agreementFurniture } from "./page-layout"
+import { LEGEND_MAX_LENGTH, agreementFurniture, type LayoutPreferences } from "./page-layout"
 import "./PageLayout.css"
 
 // One legend setting: none, a preset or the firm's own text. Radios rather than
@@ -82,11 +81,28 @@ export function LegendField({
   )
 }
 
+// A yes/no detail of the setting above it, ticked in that setting's control
+// column.
+export function CheckRow({ id, label, hint, checked, onChange }: { id: string; label: string; hint?: string; checked: boolean; onChange: (checked: boolean) => void }) {
+  return (
+    <div className="settings-form-row page-layout-check-row">
+      <div className="settings-field-copy" aria-hidden="true" />
+      <div className="settings-field-control">
+        <label className="page-layout-check" htmlFor={id}>
+          <input id={id} type="checkbox" checked={checked} aria-describedby={hint ? `${id}-hint` : undefined} onChange={event => onChange(event.target.checked)} />
+          <span>{label}</span>
+        </label>
+        {hint && <p id={`${id}-hint`} className="settings-hint muted">{hint}</p>}
+      </div>
+    </div>
+  )
+}
+
 // A small picture of an agreement's first page: the header lines and the page
 // number the renderer adds under these settings, dated today as an example.
-export function PageLayoutPreview({ prefs }: { prefs: Pick<DraftingPreferences, "firm" | "dateFormat" | "pageNumbers" | "pageNumberPosition" | "draftLine" | "agreementLegend"> }) {
+export function PageLayoutPreview({ prefs }: { prefs: LayoutPreferences }) {
   const [today] = useState(() => new Date())
-  const { header, pageNumber } = agreementFurniture(prefs, today)
+  const { header, pageNumber, firstPage } = agreementFurniture(prefs, today)
   return (
     <figure className="page-layout-preview" aria-label="Agreement page preview">
       <div className="page-layout-sheet">
@@ -95,7 +111,7 @@ export function PageLayoutPreview({ prefs }: { prefs: Pick<DraftingPreferences, 
         </div>
         <div className="page-layout-body" aria-hidden="true"><span /><span /><span /><span /></div>
         <div className={`page-layout-footer is-${pageNumber?.align ?? "center"}`} data-preview="footer">
-          {pageNumber ? pageNumber.text : <span className="page-layout-empty">No page number</span>}
+          {pageNumber && !firstPage ? pageNumber.text : <span className="page-layout-empty">{pageNumber ? "Numbered from page 2" : "No page number"}</span>}
         </div>
       </div>
       <figcaption className="settings-hint muted">An agreement's first page. The draft line carries the date the draft is first made.</figcaption>

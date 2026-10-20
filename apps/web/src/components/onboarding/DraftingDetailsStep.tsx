@@ -86,7 +86,7 @@ export default function DraftingDetailsStep({
         <LegendField
           id="onboarding-advice-legend"
           label="Advice legend"
-          hint="At the top of every page of advice, such as a memo or opinion."
+          hint="At the top of every page of advice, such as a memo, opinion or advice letter."
           presets={ADVICE_LEGENDS}
           suggested={suggested.advice}
           disabled={busy || !drafting}

@@ -43,19 +43,31 @@ export function formatDraftDate(date: Date, style: DraftingPreferences["dateForm
   return `${MONTHS[month]} ${day}, ${year}`
 }
 
-/** "Doe & Partners LLP draft: 20 October 2026", or "Draft: …" with no firm. */
-export function draftLineText(firm: string, style: DraftingPreferences["dateFormat"], date: Date) {
-  return `${firm.trim() ? `${firm.trim()} draft` : "Draft"}: ${formatDraftDate(date, style)}`
+/** "Doe & Partners LLP draft: 20 October 2026", or "Draft: …" with no firm or
+ * when the firm leaves its name out. */
+export function draftLineText(prefs: Pick<DraftingPreferences, "firm" | "draftLineFirm" | "dateFormat">, date: Date) {
+  const firm = prefs.draftLineFirm ? prefs.firm.trim() : ""
+  return `${firm ? `${firm} draft` : "Draft"}: ${formatDraftDate(date, prefs.dateFormat)}`
 }
 
-type LayoutPreferences = Pick<DraftingPreferences, "firm" | "dateFormat" | "pageNumbers" | "pageNumberPosition" | "draftLine" | "agreementLegend">
+/** A page number as the footer prints it: "2", "Page 2" or "- 2 -". */
+export function pageNumberText(format: Exclude<DraftingPreferences["pageNumbers"], "off">, page: number) {
+  if (format === "page") return `Page ${page}`
+  if (format === "dashed") return `- ${page} -`
+  return String(page)
+}
 
-/** What an agreement's first page carries: header lines in order, then the
- * footer's page number, as the renderer writes them. */
+export type LayoutPreferences = Pick<DraftingPreferences, "firm" | "dateFormat" | "pageNumbers" | "pageNumberPosition" | "numberFirstPage" | "draftLine" | "draftLineFirm" | "agreementLegend">
+
+/** What an agreement carries, as the renderer writes it: header lines in order,
+ * the footer's page number as page 1 would print it, and `firstPage:
+ * "unnumbered"` when page 1 leaves it out. */
 export function agreementFurniture(prefs: LayoutPreferences, date: Date) {
   const legend = prefs.agreementLegend.trim()
+  const format = prefs.pageNumbers === "off" ? undefined : prefs.pageNumbers
   return {
-    header: [...(legend ? [legend] : []), ...(prefs.draftLine ? [draftLineText(prefs.firm, prefs.dateFormat, date)] : [])],
-    pageNumber: prefs.pageNumbers === "off" ? undefined : { text: prefs.pageNumbers === "page" ? "Page 1" : "1", align: prefs.pageNumberPosition },
+    header: [...(legend ? [legend] : []), ...(prefs.draftLine ? [draftLineText(prefs, date)] : [])],
+    pageNumber: format ? { text: pageNumberText(format, 1), align: prefs.pageNumberPosition } : undefined,
+    ...(format && !prefs.numberFirstPage ? { firstPage: "unnumbered" as const } : {}),
   }
 }

@@ -129,3 +129,32 @@
   font-family: var(--font-sans);
   font-style: italic;
 }
+
+/* A yes/no detail sits close under the setting it belongs to, in its control
+   column; narrow, where the label column stacks, its empty label goes. */
+.page-layout-check-row {
+  padding-top: 0;
+}
+
+.page-layout-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  font-size: 12.5px;
+  font-weight: 400;
+  line-height: 1.4;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.page-layout-check > input[type="checkbox"] {
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+@media (max-width: 560px) {
+  .page-layout-check-row > .settings-field-copy {
+    display: none;
+  }
+}
