@@ -12,7 +12,9 @@ import { requestedFilesItems } from "./requested-files"
 import { combinedFileItems, DELIVERED_NOTES, requestedMemo } from "./deliverables"
 import { evidenceOutputValid } from "./evidence"
 import { currentResearchGaps, researchOutputValid } from "./research"
-import { readFirmDraftingPreferences } from "../../lib/drafting-preferences"
+import { normalizePreferences, readFirmDraftingPreferences } from "../../lib/drafting-preferences"
+import { pageFurniture, type FurnitureKind } from "../../lib/page-furniture"
+import { readFirmPreferences } from "../../lib/preferences"
 import { existsSync, readFileSync } from "node:fs"
 import { ensureParagraphPointers, paragraphSha256 } from "../../lib/drafting-amendment"
 import { renderMarkdownToDocx } from "../../lib/render"
@@ -39,6 +41,7 @@ import {
   answeredQuestionsText,
   hashStageInputs,
   leanFile,
+  readLeanState,
   readLeanText,
   readLeanJson,
   readOpenItems,
@@ -368,8 +371,21 @@ export async function acceptStageReply(directory: string, step: StepID, reply: s
   const notes = advisory ? `${reply.trimEnd()}\n\n${advisory}\n` : reply
   writeLeanText(directory, "drafting-notes.md", ensureNewline(notes))
   const previous = leanFile(directory, "drafting-notes.docx")
-  writeLeanBytes(directory, "drafting-notes.docx", (await renderMarkdownToDocx(notes, existsSync(previous) ? readFileSync(previous) : undefined)).bytes)
+  writeLeanBytes(directory, "drafting-notes.docx", (await renderMarkdownToDocx(notes, existsSync(previous) ? readFileSync(previous) : undefined, notesFurniture(directory))).bytes)
   return { ...check, outputs: stepOutputs(step) }
+}
+
+/** The page furniture a file the run renders carries under the firm's current
+ * settings, dated by its step's start in run state rather than the render
+ * clock, so every render of it in the run reads the same date. */
+export function renderedFurniture(directory: string, kind: FurnitureKind, step: StepID) {
+  return pageFurniture(kind, normalizePreferences(readFirmPreferences()), readLeanState(directory)?.stages[step]?.started_at ?? undefined)
+}
+
+/** The notes are a document for the reader when the request asks for a memo,
+ * dated by the finalize step that writes them; otherwise they are internal. */
+export function notesFurniture(directory: string) {
+  return renderedFurniture(directory, requestedMemo(directory) ? "advice" : "notes", "finalize")
 }
 
 /** Gives every body paragraph a pointer (rewriting the docx when one is added)
