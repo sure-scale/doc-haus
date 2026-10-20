@@ -6,6 +6,7 @@ import { DELIVERED_NOTES } from "./deliverables"
 import { deliveredNotes, finalGate, notesCoverageReport } from "./gate"
 import { writeLeanPlan } from "./plan"
 import { openItem } from "./quotes"
+import { issueRegister } from "./register"
 import { checklistOutputState, stageOutputValid } from "./stages"
 import { readLeanState, updateLeanStage, writeLeanBytes, writeLeanText } from "./state"
 import { cleanupMatters, matter } from "./test-support"
@@ -201,6 +202,7 @@ test("without drafting notes or a memo, requirements left open alone are deliver
   // The gate's validity asks for the delivered notes whenever it writes them.
   writeLeanText(directory, "gate.json", JSON.stringify(gate))
   writeLeanText(directory, "drafting-notes-coverage.md", notesCoverageReport(gate))
+  writeLeanText(directory, "register.json", JSON.stringify(issueRegister(directory)))
   expect(stageOutputValid(directory, "gate")).toBe(false)
   writeLeanText(directory, DELIVERED_NOTES.markdown, delivered!)
   writeLeanBytes(directory, DELIVERED_NOTES.docx, (await renderMarkdownToDocx(delivered!)).bytes)

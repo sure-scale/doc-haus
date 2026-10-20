@@ -22,12 +22,13 @@ const KEEP_OUT = "Do not report the memo as missing from this body, and do not i
 const KEEP_OWN = "Content this document's own purpose or the request assigns to it still belongs in this body. Advice belongs in this body only when this document's purpose is advice, and a reference to the memo only when the request requires one."
 const BLOCK = `<package_composition>\n${SEPARATE}\n${KEEP_OUT}\n${KEEP_OWN}\n</package_composition>`
 const COMBINED_BLOCK = `<package_composition>\n${SEPARATE}\n${COMBINED}\n${KEEP_OUT}\n${KEEP_OWN}\n</package_composition>`
-const REVIEW_MEMO = "- Review only this document. Content the request assigns to the accompanying memo is not missing from this one; do not report it here."
-const CHANGES_MEMO = "- Amend only this document. Content the request assigns to the accompanying memo belongs there; leave out a finding that asks for it here."
-const REVIEW_BOTH = "- Review only this document. Content the request assigns to another planned document or the accompanying memo is not missing from this one; do not report it here."
-const CHANGES_BOTH = "- Amend only this document. Content the request assigns to another planned document or the accompanying memo belongs there; leave out a finding that asks for it here."
-const REVIEW_PLANNED = "- Review only this document. Content the request assigns to another planned document is not missing from this one; do not report it here."
-const CHANGES_PLANNED = "- Amend only this document. Content the request assigns to another planned document belongs in that document; leave out a finding that asks for it here."
+// The review guards route a finding about other output to it rather than drop it.
+const REVIEW_PLANNED = "- Where a problem concerns another planned document rather than this one, report it with that document's id as its document; the run carries it to that document. Content the request assigns to another planned document is not missing from this one."
+const REVIEW_MEMO = '- Where a point belongs in the accompanying memo rather than in a document body, report it with the document "memo"; the run carries it to the memo.'
+const REVIEW_BOTH = `${REVIEW_PLANNED}\n${REVIEW_MEMO}`
+const CHANGES_MEMO = "- Amend only this document. Content the request assigns to the accompanying memo belongs there, and findings about it reach it separately; do not draft it here."
+const CHANGES_BOTH = "- Amend only this document. Content the request assigns to another planned document or the accompanying memo belongs there, and findings about it reach it separately; do not draft it here."
+const CHANGES_PLANNED = "- Amend only this document. Content the request assigns to another planned document belongs in that document, and findings about it reach it separately; do not draft it here."
 const PACKAGE_LINE = "The requested memo is the run-wide drafting notes, delivered separately from the document bodies; where a document and the memo share one file, the code places the memo before that body at delivery. Memo, cover-note or advice text meant for the memo that appears inside a document body is a body finding against that document. Content a document's own purpose or the request assigns to that document still belongs in its body. Advice belongs in a body only when that document's purpose is advice, and a reference to the memo only when the request requires one."
 
 const NOTE: Omit<PlannedDocument, "id"> = { title: "Supply note", purpose: "Operative terms", parts: [{ heading: "Delivery", scope: "Delivery terms" }] }
@@ -89,7 +90,8 @@ describe("a requested memo in the body stages' context", () => {
     for (const prompt of Object.values(bodyPrompts(directory, "d1"))) {
       expect(prompt).not.toContain("package_composition")
       expect(prompt).not.toContain("accompanying memo")
-      expect(prompt).not.toContain("Review only this document.")
+      expect(prompt).not.toContain("report it with that document's id")
+      expect(prompt).not.toContain('report it with the document "memo"')
       expect(prompt).not.toContain("Amend only this document.")
     }
     writeLeanPlan(directory, [SCHEDULE, NOTE])

@@ -33,6 +33,9 @@ function matter() {
   writeFileSync(path.join(directory, "source-index.json"), JSON.stringify({ sources: [] }))
   return directory
 }
+// A saved independent review as the review stage records it (review-findings.ts).
+const reviewRecord = (document: string, finding: string) =>
+  JSON.stringify({ findings: [{ id: "f-0123456789", document, origin: "source_conflict", finding, sources: [] }] })
 function research(directory: string, limitation = 'The request says "no market research"; no authority findings were retrieved.') {
   writeLeanText(directory, "research.json", JSON.stringify({ status: "not-needed", findings: [], limitations: [limitation] }))
   writeLeanText(directory, "research-review.json", JSON.stringify({ approved: [], rejected: [], limitations: ["No current-law certification."] }))
@@ -62,28 +65,28 @@ function port(reply?: ChecklistFinding) {
 
 test("method inspection exposes existing records by exact target, without inlining reviews or creating another record", () => {
   const directory = matter(), detail = research(directory)
-  writeLeanText(directory, "d1/review-independent.md", "Initial inventory source review: compare the disputed count with the original record.")
+  writeLeanText(directory, "d1/review-independent.json", reviewRecord("d1", "Initial inventory source review: compare the disputed count with the original record."))
   writeLeanText(directory, "d1/changes.json", JSON.stringify({ amendments: [] }))
   writeLeanText(directory, "d1/apply.json", JSON.stringify({ applied: [] }))
-  writeLeanText(directory, "d2/review-independent.md", "Unrelated confidential review.")
+  writeLeanText(directory, "d2/review-independent.json", reviewRecord("d2", "Unrelated confidential review."))
   const context = buildChecklistDocumentContext(directory, { item_id: "method", item })
   expect(context.input.item).toBe(item)
   expect(context.workflow.map(row => row.artifact)).toEqual([
     ".dochaus/lean/research.json", ".dochaus/lean/research-review.json", ".dochaus/lean/research-context.txt",
-    ".dochaus/lean/d1/review-independent.md", ".dochaus/lean/d1/changes.json", ".dochaus/lean/d1/apply.json",
+    ".dochaus/lean/d1/review-independent.json", ".dochaus/lean/d1/changes.json", ".dochaus/lean/d1/apply.json",
   ])
   expect(context.input.retrieval).toContain("navigation only")
   expect(context.input.retrieval).toContain("not proof of final wording")
   expect(context.input.retrieval).not.toContain(detail)
   expect(context.input.retrieval).not.toContain("Unrelated confidential review")
-  expect(readFileSync(leanFile(directory, "d1/review-independent.md"), "utf8")).toContain("disputed count")
+  expect(readFileSync(leanFile(directory, "d1/review-independent.json"), "utf8")).toContain("disputed count")
   expect(checklistWorkflowEvidence(directory, { ...item, target: { ...item.target, document: "unknown.docx" } }).some(row => row.artifact.includes("/d1/"))).toBe(false)
 })
 
 test("exact workflow quotes are accepted only as artifact observations; changed text, identity, kind and source authority are rejected", async () => {
   const directory = matter(), text = research(directory)
-  writeLeanText(directory, "d1/review-independent.md", "The recorded inventory total needs source verification.")
-  writeLeanText(directory, "d2/review-independent.md", "Different schedule review.")
+  writeLeanText(directory, "d1/review-independent.json", reviewRecord("d1", "The recorded inventory total needs source verification."))
+  writeLeanText(directory, "d2/review-independent.json", reviewRecord("d2", "Different schedule review."))
   const input = buildChecklistDocumentContext(directory, { item_id: "method", item }).input
   const evidence = { document: ".dochaus/lean/research.json", locator: "/limitations/0", text, kind: "artifact" as const }
   const valid = { ...finding(input), evidence: [evidence] }
@@ -91,7 +94,7 @@ test("exact workflow quotes are accepted only as artifact observations; changed 
   expect((await runChecklistCheckJob(directory, baseline, input)).status).toBe("succeeded")
   const rules = baseline.permissions[0]!.permissions!
   expect(Permission.evaluate("read", evidence.document, rules).effect).toBe("allow")
-  for (const resource of [".dochaus/lean/d2/review-independent.md", ".dochaus/lean/state.json", ".env", "/tmp/unrelated.txt", "../other-matter/.dochaus/lean/research.json"]) {
+  for (const resource of [".dochaus/lean/d2/review-independent.json", ".dochaus/lean/state.json", ".env", "/tmp/unrelated.txt", "../other-matter/.dochaus/lean/research.json"]) {
     expect(Permission.evaluate("read", resource, [{ action: "read", resource: "*", effect: "allow" }], rules).effect).toBe("deny")
   }
   expect(Permission.evaluate("external_directory", "/tmp/*", rules).effect).toBe("deny")
@@ -100,7 +103,7 @@ test("exact workflow quotes are accepted only as artifact observations; changed 
   // not evidence of model reasoning or of substantive method compliance.
   for (const changed of [
     { ...valid, evidence: [{ ...evidence, text: "All sources and every current paragraph were fully verified." }] },
-    { ...valid, evidence: [{ ...evidence, document: ".dochaus/lean/d2/review-independent.md", text: "Different schedule review." }] },
+    { ...valid, evidence: [{ ...evidence, document: ".dochaus/lean/d2/review-independent.json", locator: "/findings/0/finding", text: "Different schedule review." }] },
     { ...valid, evidence: [{ ...evidence, kind: "body" }] },
     { ...valid, source_refs: [{ document: evidence.document, locator: evidence.locator, quote: text }] },
   ]) {

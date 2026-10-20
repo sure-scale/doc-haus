@@ -667,9 +667,9 @@ test("parallel specialist reviews narrate their own work, completion and paused 
   expect(stageMilestones(lean({ ...status, status: "failed", in_flight: false })).map(line => line.text)).toEqual([
     "Paused while reviewing problematic wording", "Paused while reviewing client disadvantage",
   ])
-  expect(fileLabel(".dochaus/lean/d1/review-wording.md")).toBe("the wording review notes")
-  expect(fileLabel(".dochaus/lean/d1/review-client-disadvantage.md")).toBe("the client disadvantage review notes")
-  expect(fileLabel(".dochaus/lean/d1/review-independent.md")).toBe("the independent review notes")
+  expect(fileLabel(".dochaus/lean/d1/review-wording.json")).toBe("the wording review findings")
+  expect(fileLabel(".dochaus/lean/d1/review-client-disadvantage.json")).toBe("the client disadvantage review findings")
+  expect(fileLabel(".dochaus/lean/d1/review-independent.json")).toBe("the independent review findings")
 })
 
 

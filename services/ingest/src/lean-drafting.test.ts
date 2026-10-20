@@ -23,7 +23,7 @@ import {
   writeQuestions,
   type Question,
 } from "../../../dochaus/workflows/lean/state"
-import { FIXTURE_SOURCE_TEXT, happyPath, leanFixtureMatter, scriptedModel, noChanges } from "../../../dochaus/workflows/lean/test-support"
+import { FIXTURE_SOURCE_TEXT, NO_FINDINGS, happyPath, leanFixtureMatter, scriptedModel, noChanges } from "../../../dochaus/workflows/lean/test-support"
 import {
   draftingStartProfile,
   leanDraftingIdle,
@@ -433,7 +433,7 @@ test("the HTTP answer flow holds a run until every intake question is answered",
       }
       return JSON.stringify({ ready: true, jurisdiction: "Singapore law", scope: "Supplied terms" })
     },
-    [LEAN_STAGE_AGENTS.review]: () => "No corrections needed.",
+    [LEAN_STAGE_AGENTS.review]: () => NO_FINDINGS,
     [LEAN_STAGE_AGENTS.changes]: noChanges,
   })
   const deps = { sessions: model.port }
@@ -507,7 +507,7 @@ test("creating an empty source index during registration preserves applied updat
   directories.push(directory)
   rmSync(path.join(directory, ".dochaus/legal.db"))
   enqueueLeanRequest(directory, { kind: "update", text: "Keep headings concise." })
-  const model = scriptedModel({ ...happyPath, [LEAN_STAGE_AGENTS.review]: () => "No corrections required.", [LEAN_STAGE_AGENTS.changes]: noChanges })
+  const model = scriptedModel({ ...happyPath, [LEAN_STAGE_AGENTS.review]: () => NO_FINDINGS, [LEAN_STAGE_AGENTS.changes]: noChanges })
   const registerDeliverable: NonNullable<LeanDeps["registerDeliverable"]> = async (matter, filename, bytes) => {
     const db = new Database(path.join(matter, ".dochaus/legal.db"))
     db.run("CREATE TABLE IF NOT EXISTS chunks (doc_name TEXT, text TEXT)")
@@ -798,7 +798,7 @@ describe("pausing and stopping a lean drafting run", () => {
     const settled = readLeanState(directory)!
     expect(settled.revision).toBe(body.status.revision)
     expect(settled.stages["d1.review"]).toMatchObject({ status: "pending", outputs: [] })
-    expect(existsSync(path.join(leanDir(directory), "d1", "review.md"))).toBe(false)
+    expect(existsSync(path.join(leanDir(directory), "d1", "review.json"))).toBe(false)
     expect(readLeanEvents(directory).filter((event) => event.stage === "review" && event.event === "done")).toEqual([])
     expect(readLeanEvents(directory).filter((event) => event.event === "paused")).toHaveLength(1)
     for (const step of FINISHED) expect(settled.stages[step]).toEqual(finished[step])

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import type { GateResult } from "./gate"
 import { runLean } from "./runner"
-import { leanFile, readLeanJson, readLeanText } from "./state"
+import { leanFile, readLeanJson, readLeanText, writeLeanText } from "./state"
 import { AGENT, DRAFT, DRAFTED, LETTER, SUPPORT, changesFirst, cleanupMatters, drafter, happyPath, listed, matter, pidOf, scriptedModel, type Reply } from "./test-support"
 import { existsSync } from "node:fs"
 
@@ -38,7 +38,10 @@ describe("cross-document review findings", () => {
     const model = scriptedModel({ ...happyPath, [AGENT.draft]: drafter(DRAFT, LETTER), [AGENT.review]: reviews(), [AGENT.changes]: changesFirst })
     expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
 
-    promptsOf(model, AGENT.review, "Supply note").forEach(prompt => expect(prompt).not.toContain("is not missing from this one"))
+    promptsOf(model, AGENT.review, "Supply note").forEach(prompt => {
+      expect(prompt).not.toContain("do not report it here")
+      expect(prompt).toContain("report it with that document's id as its document")
+    })
     expect(promptsOf(model, AGENT["change-plan"], "Supply note")[0]).not.toContain(FORWARD)
     expect(promptsOf(model, AGENT["change-plan"], "Covering letter")[0]).toContain(FORWARD)
     expect(promptsOf(model, AGENT.draft, "Covering letter").some(prompt => prompt.includes(FORWARD))).toBe(true)
@@ -56,6 +59,7 @@ describe("cross-document review findings", () => {
 
   test("a finding for the accompanying memo reaches the notes", async () => {
     const directory = matter()
+    writeLeanText(directory, "request.md", "Draft a short supply note from the supply terms, a covering letter and a cover memo.\n")
     const draft = drafter(DRAFT, LETTER)
     const outline: Reply = (prompt, index) => /^Draft part \d+ of \d+ of /m.test(prompt) ? draft(prompt, index) : `Memo: cover memo\n${draft(prompt, index)}`
     const model = scriptedModel({ ...happyPath, [AGENT.draft]: outline, [AGENT.review]: reviews(true), [AGENT.changes]: changesFirst })
@@ -78,7 +82,7 @@ describe("cross-document review findings", () => {
       ["d2", "d1", "request", "source", FORWARD],
     ].toSorted())
     register.entries.forEach(row => expect(row.id).toMatch(/^f-[0-9a-f]{10}$/))
-    expect(register.entries.find(row => row.finding === BACKWARD)!.disposition).toBe("deferred")
+    expect(register.entries.find(row => row.finding === BACKWARD)!.disposition).toBe("earlier_document")
     const notes = readLeanText(directory, "drafting-notes.md")!
     register.entries.forEach(row => expect(notes).not.toContain(row.id))
   }, 120_000)

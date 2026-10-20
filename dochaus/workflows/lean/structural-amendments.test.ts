@@ -18,7 +18,7 @@ import { readRepairRound } from "./repairs"
 import { runLean, stageInputSha } from "./runner"
 import { paragraphRows, stageInputs } from "./stages"
 import { leanFile, readLeanJson, readLeanState, readLeanText, replaceStageOpenItems, writeLeanBytes, writeLeanText, writeQuestions } from "./state"
-import { AGENT, cleanupMatters, drafter, happyPath, matter, pidOf, scriptedModel, type Reply } from "./test-support"
+import { AGENT, cleanupMatters, drafter, happyPath, listedFindingIDs, matter, pidOf, scriptedModel, type Reply } from "./test-support"
 
 afterEach(cleanupMatters)
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -57,12 +57,12 @@ function replies() {
   return {
     ...happyPath,
     [AGENT.draft]: drafter(DRAFT),
-    [AGENT.review]: () => "Apply the expressly supplied withdrawal, paragraph separation and storage instruction.",
+    [AGENT.review]: () => JSON.stringify({ findings: [{ origin: "request", finding: "Apply the expressly supplied withdrawal, paragraph separation and storage instruction.", sources: Object.values(SUPPORT).flat() }] }),
     [AGENT["change-plan"]]: (prompt: string) => JSON.stringify({
       shared_decisions: ["Preserve all duties except the withdrawn retired form instruction."],
       groups: [{ id: "inspection-instructions", pids: amendments(prompt).map(row => row.pid),
         goal: "Delete the withdrawn instruction, separate the duties, and use the designated cabinet without changing adjacent instructions.",
-        sources: Object.values(SUPPORT).flat(), limitations: [] }], dismissed: [], findings: [], questions: [],
+        sources: Object.values(SUPPORT).flat(), limitations: [], resolves: listedFindingIDs(prompt) }], dismissed: [], findings: [], questions: [],
     }),
     [AGENT["change-prepare"]]: changes,
     [AGENT.changes]: changes,

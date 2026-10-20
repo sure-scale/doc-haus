@@ -9,12 +9,31 @@ import { enqueueLeanRequest } from "./requests"
 import { runLean } from "./runner"
 import { acceptStageReply, LEAN_CHILD_PERMISSIONS } from "./stages"
 import { leanFile, readLeanJson, readLeanState, readOpenItems, readQuestions, writeLeanText } from "./state"
-import { AGENT, DRAFT, SOURCE, SUPPORT, changes, cleanupMatters, drafter, happyPath, matter, noChanges, pidOf, sameSession, scriptedModel, type Reply } from "./test-support"
+import { AGENT, DRAFT, NO_FINDINGS, SOURCE, SUPPORT, changes, cleanupMatters, drafter, happyPath, matter, noChanges, pidOf, sameSession, scriptedModel, type Reply } from "./test-support"
 
 // Real coordinator, checkers, renderer, pointer applier and comparison. Only the
 // model is scripted: each agent's reply is a function of the prompt it received.
 
 const NO_HEADING = "Here is the requested document."
+
+/** The lawyer edits the wording of the saved review's finding; its id, and so
+ * what the change plan adjudicates, stays the same. */
+function reviewAgain(directory: string) {
+  const record = JSON.parse(readFileSync(leanFile(directory, "d1/review.json"), "utf8")) as { findings: { finding: string }[] }
+  expect(record.findings).toHaveLength(1)
+  record.findings[0]!.finding = `${record.findings[0]!.finding} Reviewed again by the lawyer.`
+  writeFileSync(leanFile(directory, "d1/review.json"), `${JSON.stringify(record, null, 2)}\n`)
+}
+
+/** A change plan that records each listed review finding as a recommendation
+ * in the finding's own words, so its dispositions follow the review's text. */
+const recommending: Reply = prompt => {
+  const listed = JSON.parse(/<review_findings>\n([\s\S]*?)\n<\/review_findings>/.exec(prompt)?.[1] ?? "[]") as { id: string; finding: string; sources: unknown[] }[]
+  return JSON.stringify({ shared_decisions: [], groups: [], dismissed: [], questions: [], findings: listed.map(row => ({
+    disposition: "recommendation", kind: "suggestion", detail: row.finding, reason: "The changes stage amends for it.", documents: ["d1"],
+    sources: row.sources, limitations: ["Scripted fixture."], resolves: [row.id],
+  })) })
+}
 
 afterEach(cleanupMatters)
 
@@ -62,7 +81,8 @@ describe("lean drafting runner", () => {
 
   test("resume skips every stage whose inputs are unchanged and re-runs only downstream of an edit", async () => {
     const directory = matter()
-    const first = await runLean(directory, { sessions: scriptedModel(happyPath).port })
+    const replies = { ...happyPath, [AGENT["change-plan"]]: recommending }
+    const first = await runLean(directory, { sessions: scriptedModel(replies).port })
     expect(first.status).toBe("completed")
 
     const idle = scriptedModel({})
@@ -71,11 +91,11 @@ describe("lean drafting runner", () => {
     expect(resumed.status).toBe("completed")
     expect(resumed.stages["d1.apply"]?.finished_at).toBe(first.stages["d1.apply"]?.finished_at)
 
-    // This saved planner fixture predates structured findings. Its review history
-    // feeds the notes directly: editing review re-runs changes and finalize,
-    // while identical amendments leave apply untouched.
-    writeFileSync(leanFile(directory, "d1/review.md"), `${readFileSync(leanFile(directory, "d1/review.md"), "utf8")}\nReviewed again by the lawyer.\n`)
-    const reviewed = scriptedModel(happyPath)
+    // This scripted plan records the finding in its own words, so the review
+    // reaches the notes through the plan's dispositions: editing review re-runs
+    // changes and finalize, while identical amendments leave apply untouched.
+    reviewAgain(directory)
+    const reviewed = scriptedModel(replies)
     const afterReview = await runLean(directory, { sessions: reviewed.port })
     expect(afterReview.status).toBe("completed")
     expect(reviewed.counts()).toEqual([0, 0, 1, 1])
@@ -88,7 +108,7 @@ describe("lean drafting runner", () => {
     const list = JSON.parse(readFileSync(leanFile(directory, "d1/changes.json"), "utf8"))
     list.amendments[0].reason = "Edited by the lawyer."
     writeFileSync(leanFile(directory, "d1/changes.json"), JSON.stringify(list, null, 2))
-    const edited = scriptedModel(happyPath)
+    const edited = scriptedModel(replies)
     const rerun = await runLean(directory, { sessions: edited.port })
     expect(rerun.status).toBe("completed")
     expect(edited.counts()).toEqual([0, 0, 0, 1])
@@ -99,16 +119,19 @@ describe("lean drafting runner", () => {
 
   test("a review edit with unchanged adjudicated dispositions does not re-run final notes", async () => {
     const directory = matter()
-    const replies = { ...happyPath,
-      [AGENT["change-plan"]]: () => JSON.stringify({ shared_decisions: [], groups: [], dismissed: [], questions: [], findings: [] }),
-    }
+    // The scripted plan rejects the finding by its id in fixed words, so an edit
+    // to the finding's wording leaves the adjudicated dispositions unchanged.
+    const replies = happyPath
     const first = await runLean(directory, { sessions: scriptedModel(replies).port })
     expect(first.status).toBe("completed")
-    writeFileSync(leanFile(directory, "d1/review.md"), `${readFileSync(leanFile(directory, "d1/review.md"), "utf8")}\nReviewed again by the lawyer.\n`)
+    const plan = readLeanJson(directory, "d1/change-plan.json")
+    reviewAgain(directory)
     const reviewed = scriptedModel(replies)
     const afterReview = await runLean(directory, { sessions: reviewed.port })
     expect(afterReview.status).toBe("completed")
     expect(reviewed.counts()).toEqual([0, 0, 1, 0])
+    expect(reviewed.count(AGENT["change-plan"])).toBe(1)
+    expect(readLeanJson(directory, "d1/change-plan.json")).toEqual(plan)
     expect(afterReview.stages["d1.apply"]?.finished_at).toBe(first.stages["d1.apply"]?.finished_at)
     expect(afterReview.stages.finalize?.input_sha).toBe(first.stages.finalize?.input_sha)
     expect(afterReview.stages.finalize?.finished_at).toBe(first.stages.finalize?.finished_at)
@@ -125,7 +148,7 @@ describe("lean drafting runner", () => {
         reason: "The quoted period is not in the supply terms.", sources: SUPPORT }],
       questions: [],
     })
-    const model = scriptedModel({ ...happyPath, [AGENT.draft]: drafter(draft), [AGENT.review]: () => "No corrections are needed.", [AGENT.changes]: noChanges })
+    const model = scriptedModel({ ...happyPath, [AGENT.draft]: drafter(draft), [AGENT.review]: () => NO_FINDINGS, [AGENT.changes]: noChanges })
     const state = await runLean(directory, { sessions: model.port })
 
     const draftItem = readOpenItems(directory).find(item => item.stage === "draft")!

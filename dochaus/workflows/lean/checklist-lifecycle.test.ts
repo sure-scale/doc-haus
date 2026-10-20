@@ -13,16 +13,29 @@ import { enqueueLeanRequest } from "./requests"
 import { CHECKLIST_JOB_AGENTS } from "./checklist-job"
 import { readRepairRound } from "./repairs"
 import { finalBodyParagraphs } from "./checks"
-import { AGENT, cleanupMatters, happyPath, matter, registering, scriptedModel, drafter, draftingNotes, pidOf, DRAFT, SOURCE, SUPPORT, type Reply } from "./test-support"
+import { AGENT, NO_FINDINGS, cleanupMatters, happyPath, listedFindingIDs, matter, registering, scriptedModel, drafter, draftingNotes, pidOf, DRAFT, SOURCE, SUPPORT, type Reply } from "./test-support"
 import { DELIVERY_ARTIFACTS_ROW, checklistTextMeasuresMeaning, isDeliveryArtifactEvidence, type ChecklistCheckerInput, type ChecklistProducerInput } from "./checklist-contract"
 
 afterEach(cleanupMatters)
 
+type ScriptedEntry = { resolves?: string[] } & Record<string, unknown>
+type ScriptedPlan = { groups: ScriptedEntry[]; findings?: ScriptedEntry[]; questions: ScriptedEntry[] } & Record<string, unknown>
+// A full change plan adjudicates every review finding its prompt lists. As the
+// shared scripted plan does, it rejects those its own entries leave out: the
+// scripted changes stage amends from the findings it is shown.
+function adjudicating(text: string, plan: ScriptedPlan) {
+  const named = new Set([...plan.groups, ...(plan.findings ?? []), ...plan.questions].flatMap(row => row.resolves ?? []))
+  const resolves = listedFindingIDs(text).filter(id => !named.has(id))
+  return JSON.stringify(resolves.length ? { ...plan, findings: [...(plan.findings ?? []), { disposition: "rejected", kind: "suggestion",
+    detail: "The scripted plan adjudicates the review findings.", reason: "The scripted changes stage decides the amendments.", documents: ["d1"], sources: [], limitations: ["Scripted fixture."], resolves }] } : plan)
+}
+
 // The focused repair adjudicator defers the supplied assessment without a
-// supported correction; every other change plan proposes nothing.
-const deferChecklistRepair = (text: string) => JSON.stringify({ shared_decisions: [], groups: [], dismissed: [], questions: [],
-  ...(text.includes("ONE supplied checklist assessment") ? { superseded_findings: [], superseded_decisions: [], findings: [{ disposition: "deferred", kind: "information",
-    detail: "The assessed requirement still needs a supported correction.", reason: "No supported correction is identified for this assessment.", documents: ["d1"], sources: [], limitations: ["No supported correction identified."] }] } : {}) })
+// supported correction; every other change plan proposes no group.
+const deferChecklistRepair = (text: string) => text.includes("ONE supplied checklist assessment")
+  ? JSON.stringify({ shared_decisions: [], groups: [], dismissed: [], questions: [], superseded_findings: [], superseded_decisions: [], findings: [{ disposition: "deferred", kind: "information",
+    detail: "The assessed requirement still needs a supported correction.", reason: "No supported correction is identified for this assessment.", documents: ["d1"], sources: [], limitations: ["No supported correction identified."] }] })
+  : adjudicating(text, { shared_decisions: [], groups: [], dismissed: [], questions: [] })
 
 // `broken` adds a second requirement whose check job always fails: an integrity
 // failure, so the checklist stage blocks. `second` adds it satisfied instead,
@@ -174,7 +187,7 @@ const LATE_PAYMENT = "Payment shall be due on delivery."
 const latePlan = (late: string): Reply => text => text.includes("ONE supplied checklist assessment")
   ? deferChecklistRepair(text).replace("still needs a supported correction", "still needs a supported correction after the later input")
   : !text.includes(late) ? deferChecklistRepair(text)
-  : JSON.stringify({ shared_decisions: [], groups: [{ id: "payment", pids: [pidOf(text, "Payment is due on delivery.")], goal: "State the payment timing the lawyer gave.",
+  : adjudicating(text, { shared_decisions: [], groups: [{ id: "payment", pids: [pidOf(text, "Payment is due on delivery.")], goal: "State the payment timing the lawyer gave.",
     sources: [{ source_id: SOURCE, quote: "Payment is due on delivery." }], limitations: [] }], dismissed: [], questions: [] })
 const latePreparation: Reply = text => JSON.stringify({ amendments: [{ pid: pidOf(text, "Payment is due on delivery."), updated: LATE_PAYMENT,
   reason: "States the payment timing the lawyer gave.", sources: [{ source_id: SOURCE, quote: "Payment is due on delivery." }] }], questions: [] })
@@ -218,7 +231,7 @@ for (const interruption of ["a pause", "a runtime failure", "a question"] as con
     interrupted = true
     if (interruption === "a runtime failure") throw new Error("Scripted ordinary plan failure")
     if (interruption === "a pause") { pause.abort(); return latePlan(late)(text, index) }
-    return JSON.stringify({ shared_decisions: [], groups: [], dismissed: [], questions: [{ pid: pidOf(text, "Payment is due on delivery."), question: "Is payment due on delivery or on invoice?", kind: "instruction", context: "The update and the terms differ." }] })
+    return adjudicating(text, { shared_decisions: [], groups: [], dismissed: [], questions: [{ pid: pidOf(text, "Payment is due on delivery."), question: "Is payment due on delivery or on invoice?", kind: "instruction", context: "The update and the terms differ." }] })
   }
   const stopped = await runLean(directory, { sessions: model(directory, "unsatisfied", {}, {}, { [AGENT["change-plan"]]: interrupt }).port, pause: pause.signal })
   expect(interrupted).toBe(true)
@@ -955,7 +968,7 @@ test("a source-backed omission is repaired automatically through cumulative chan
   let initial: { bytes: Buffer<ArrayBuffer>; extraction: unknown; before: string[]; counts: { changes: number; draft: number; research: number } } | undefined
   const scripted = scriptedModel({ ...happyPath,
     [AGENT.draft]: drafter(initialDraft),
-    [AGENT.review]: () => "No further findings.",
+    [AGENT.review]: () => NO_FINDINGS,
     [AGENT["change-plan"]]: text => {
       repairing ||= text.includes("ONE supplied checklist assessment")
       if (repairing) {
@@ -1019,9 +1032,9 @@ async function declinedRepairRun(reinspected: "unsatisfied" | "open" = "unsatisf
     [AGENT["change-plan"]]: text => {
       const focused = text.includes("ONE supplied checklist assessment")
       if (focused) Object.assign(initial, { delivered: outputs(), applied: readLeanState(directory)!.stages["d1.apply"]!.started_at! })
-      return JSON.stringify({ shared_decisions: [], groups: [], dismissed: [], questions: [],
-        ...(focused ? { superseded_findings: [], superseded_decisions: [], findings: [{ disposition: "rejected", kind: "information",
-          detail: "The assessed timing repair is not required.", reason: "DECLINED_REASON: the supplied terms already state the delivery period.", documents: ["d1"], sources: SUPPORT, limitations: [] }] } : {}) })
+      if (!focused) return adjudicating(text, { shared_decisions: [], groups: [], dismissed: [], questions: [] })
+      return JSON.stringify({ shared_decisions: [], groups: [], dismissed: [], questions: [], superseded_findings: [], superseded_decisions: [], findings: [{ disposition: "rejected", kind: "information",
+        detail: "The assessed timing repair is not required.", reason: "DECLINED_REASON: the supplied terms already state the delivery period.", documents: ["d1"], sources: SUPPORT, limitations: [] }] })
     },
     [CHECKLIST_JOB_AGENTS.extract]: text => {
       const input = JSON.parse(text.split("SOURCE_INPUT:\n\n")[1]!) as ChecklistProducerInput

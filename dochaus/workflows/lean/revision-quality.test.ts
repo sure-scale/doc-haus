@@ -12,7 +12,7 @@ import { runLean, stageInputSha } from "./runner"
 import { leanFile, readLeanJson, readLeanText, writeLeanText, writeLeanBytes } from "./state"
 import { documentTemplate, templateContract } from "./template-contract"
 import { writeLegalCompactionPrompt } from "../../plugin/legal/compaction"
-import { AGENT, cleanupMatters, drafter, happyPath, matter, pidOf, scriptedModel, SOURCE, SUPPORT } from "./test-support"
+import { AGENT, cleanupMatters, drafter, happyPath, matter, NO_FINDINGS, pidOf, scriptedModel, SOURCE, SUPPORT } from "./test-support"
 
 afterEach(cleanupMatters)
 
@@ -45,7 +45,7 @@ test("initial revision explanations become native comments without fake amendmen
   const directory = matter(original)
   writeLeanText(directory, "request.md", request)
   writeFileSync(path.join(directory, SOURCE), (await renderMarkdownToDocx(original)).bytes)
-  const model = scriptedModel({ ...happyPath, [AGENT.draft]: outline, [AGENT.review]: () => "No corrections needed.", [AGENT.changes]: explanations })
+  const model = scriptedModel({ ...happyPath, [AGENT.draft]: outline, [AGENT.review]: () => NO_FINDINGS, [AGENT.changes]: explanations })
   const result = await runLean(directory, { sessions: model.port, registerDeliverable: async (dir, name, bytes) => { writeFileSync(path.join(dir, name), bytes); return name } })
   expect(result.status).toBe("completed")
   expect(readChangeList(directory, "d1")!.amendments).toEqual([])
@@ -89,6 +89,12 @@ test("later documents retain the accepted rationale and rekey when only that rat
   expect(stagePrompt(directory, "d2.draft")).toContain("A corrected source-linked rationale.")
 })
 
+/** A saved playbook review, as the review stage records it: its coverage of
+ * the guidance positions beside its findings. */
+function playbookReview(coverage: string) {
+  return JSON.stringify({ findings: [], coverage: `### Coverage\n${coverage}` })
+}
+
 test("dependent advice retains selected guidance conclusions and rekeys without reopening the earlier review", () => {
   const directory = matter()
   const guidance = { sources: SUPPORT, reason: "Supplied terms govern delivery advice." }
@@ -101,7 +107,7 @@ test("dependent advice retains selected guidance conclusions and rekeys without 
   const earlierKey = stageInputSha(directory, "d1.review-playbook")
   const adviceKey = stageInputSha(directory, "d2.change-plan")
   const conclusion = "The original omission leaves delivery timing unspecified; the proposed period supplies a clear deadline."
-  writeLeanText(directory, "d1/review-playbook.md", `### Coverage\n[p111111111111] ${conclusion}\nSource: ${SOURCE}.`)
+  writeLeanText(directory, "d1/review-playbook.json", playbookReview(`[p111111111111] ${conclusion}\nSource: ${SOURCE}.`))
   expect(stageInputSha(directory, "d2.change-plan")).not.toBe(adviceKey)
   expect(stageInputSha(directory, "d1.review-playbook")).toBe(earlierKey)
   const context = completedDocumentsText(directory, "d2")
@@ -110,7 +116,7 @@ test("dependent advice retains selected guidance conclusions and rekeys without 
   expect(context).not.toContain("p111111111111")
   expect(stagePrompt(directory, "d1.review-independent")).not.toContain(conclusion)
   const updatedKey = stageInputSha(directory, "d2.change-plan")
-  writeLeanText(directory, "d1/review-playbook.md", `### Coverage\n[p111111111111] Updated source interpretation must be checked against final wording.`)
+  writeLeanText(directory, "d1/review-playbook.json", playbookReview("[p111111111111] Updated source interpretation must be checked against final wording."))
   expect(stageInputSha(directory, "d2.change-plan")).not.toBe(updatedKey)
   writeLeanPlan(directory, documents.map(row => ({ ...row, playbook_review: undefined })))
   expect(completedDocumentsText(directory, "d2")).not.toContain("Updated source interpretation")
@@ -127,7 +133,7 @@ for (const fixture of [
   writeLeanText(directory, "request.md", requested)
   writeFileSync(path.join(directory, SOURCE), (await renderMarkdownToDocx(source)).bytes)
   const agent = drafter(draft)
-  const model = scriptedModel({ ...happyPath, [AGENT.review]: () => "No further correction.", [AGENT.draft]: (prompt, index) => {
+  const model = scriptedModel({ ...happyPath, [AGENT.review]: () => NO_FINDINGS, [AGENT.draft]: (prompt, index) => {
     const reply = agent(prompt, index)
     return prompt.includes("Draft part ") ? reply : reply.replace(`# ${fixture.title}`, `# ${fixture.title}\nMode: revise\nDeliverable: redline\nCompare against: ${SOURCE}\nFile: revised-document.docx`)
   }, [AGENT.changes]: prompt => JSON.stringify({ amendments: [], explanations: [{ pid: pidOf(prompt, fixture.after), reason: fixture.rationale, sources: [{ source_id: "request", quote: fixture.instruction }, { source_id: SOURCE, quote: fixture.before }] }], questions: [] }) })
@@ -175,7 +181,7 @@ test("accepted exact sections remain retrievable after a section-boundary compac
   writeLeanText(directory, "request.md", request)
   const draft = drafter(revised)
   let compacted = false
-  const model = scriptedModel({ ...happyPath, [AGENT.review]: () => "No corrections.", [AGENT.changes]: explanations,
+  const model = scriptedModel({ ...happyPath, [AGENT.review]: () => NO_FINDINGS, [AGENT.changes]: explanations,
     [AGENT.draft]: (prompt, index) => {
       if (prompt.includes('Draft part 2 of')) {
         // Discard dependence on the previous reply: retrieve exact text using
@@ -213,7 +219,7 @@ test("package repair corrects only native explanations and refreshes downstream 
       const reply = draft(prompt, index)
       return prompt.includes("Draft part ") ? reply : reply.replace("# Supply note", `# Supply note\nMode: revise\nDeliverable: redline\nCompare against: ${SOURCE}\nFile: supply-review.docx`)
     },
-    [AGENT.review]: () => "No operative correction.",
+    [AGENT.review]: () => NO_FINDINGS,
     [AGENT.changes]: prompt => {
       if (!/\[p[0-9a-f]{12}\] The supplier shall/.test(prompt)) return JSON.stringify({ amendments: [], explanations: [], questions: [] })
       bodyChanges += 1

@@ -10,7 +10,7 @@ import { stagePrompt } from "./prompts"
 import { parsePlan, writeLeanPlan } from "./plan"
 import { acceptStageReply } from "./stages"
 import { currentOpenItems, leanFile, readLeanJson, readLeanState, readOpenItems, readQuestions, replaceStageOpenItems, updateLeanStage, writeLeanText } from "./state"
-import { AGENT, DRAFT, SOURCE, SUPPORT, changes, cleanupMatters, drafter, happyPath, matter, noChanges, pidOf, sameSession, scriptedModel, type Reply } from "./test-support"
+import { AGENT, DRAFT, NO_FINDINGS, SOURCE, SUPPORT, changes, cleanupMatters, drafter, happyPath, matter, noChanges, pidOf, sameSession, scriptedModel, type Reply } from "./test-support"
 
 // Regression and causal tests for the lean gate, the repair loop and the
 // applier's outcomes. Real coordinator, checkers, applier and gate; only the
@@ -58,7 +58,7 @@ const twoEdits = (second: string): Reply => prompt => JSON.stringify({
   questions: [],
 })
 const gateOf = (directory: string) => readLeanJson(directory, "gate.json") as GateResult
-const quiet = { [AGENT.review]: () => "No corrections are needed.", [AGENT.changes]: noChanges }
+const quiet = { [AGENT.review]: () => NO_FINDINGS, [AGENT.changes]: noChanges }
 
 describe("applier outcomes are visible open items", () => {
   test("conflicting edits to one paragraph: apply keeps the first, the second is unapplied with the applier's detail and disclosed", async () => {
