@@ -386,17 +386,18 @@ app.patch("/agents/:name", async (c) => {
 })
 
 app.post("/matters", async (c) => {
-  const { title, reference, jurisdictions, playbook, client } = await c.req.json<{
+  const { title, reference, jurisdictions, playbook, client, posture } = await c.req.json<{
     title: string
     reference?: string
     jurisdictions?: string[]
     playbook?: string
     client?: string
+    posture?: string
   }>()
-  return c.json(createMatter(title, reference, jurisdictions, playbook, client))
+  return c.json(createMatter(title, reference, jurisdictions, playbook, client, posture))
 })
 
-// A body without a client key keeps the stored client; "" clears it.
+// A body without a client or posture key keeps the stored one; "" clears it.
 app.patch("/matters/:id", async (c) => {
   const body = await c.req.json<{
     title: string
@@ -404,9 +405,11 @@ app.patch("/matters/:id", async (c) => {
     jurisdictions?: string[]
     playbook?: string
     client?: string
+    posture?: string
   }>()
   const { title, reference, jurisdictions, playbook } = body
-  return c.json(renameMatter(c.req.param("id"), title, reference, jurisdictions, playbook, "client" in body ? body.client : undefined))
+  return c.json(renameMatter(c.req.param("id"), title, reference, jurisdictions, playbook,
+    "client" in body ? body.client : undefined, "posture" in body ? body.posture : undefined))
 })
 
 // The conflicts intake gate: records that a conflicts check happened and how it
