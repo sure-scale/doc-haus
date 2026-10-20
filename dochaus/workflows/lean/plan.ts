@@ -14,7 +14,9 @@ import { REVIEW_STAGES, readLeanJson, readLeanText, writeLeanText, type ReviewSt
 // the outline is redone only when they change and a lawyer's edit is followed.
 // It also records whom the lawyer acts for, as the outline read it from the
 // request: every model stage is told, and a stage that is not told takes no side.
-// Code never infers the party; a lawyer sets it by editing plan.json.
+// When the request does not say, code takes the client recorded on the matter,
+// if any. Code never infers the party from the sources; a lawyer can still edit
+// plan.json.
 
 export const DOC_STAGES = ["draft", ...REVIEW_STAGES, "review-playbook", "change-plan", "change-prepare", "changes", "change-review", "apply"] as const
 export type DocStage = (typeof DOC_STAGES)[number]

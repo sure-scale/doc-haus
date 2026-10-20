@@ -1,13 +1,21 @@
 import { afterEach, expect, test } from "bun:test"
+import { writeFileSync } from "node:fs"
+import path from "node:path"
 import { readParagraphs } from "./checks"
+import { researchPrompt } from "./research"
 import { enqueueLeanRequest } from "./requests"
 import { runLean } from "./runner"
-import { readLeanText, readQuestions, writeLeanText, writeQuestions } from "./state"
+import { LEAN_PROMPT_VERSION, researchBasis, stageInputs } from "./stages"
+import { hashStageInputs, readLeanText, readQuestions, writeLeanText, writeQuestions } from "./state"
 import { AGENT, DRAFT, NO_FINDINGS, cleanupMatters, drafter, happyPath, matter, noChanges, pidOf, scriptedModel } from "./test-support"
 
 afterEach(cleanupMatters)
 
 const quiet = { ...happyPath, [AGENT.review]: () => NO_FINDINGS, [AGENT.changes]: noChanges }
+// The ingest service writes matter.json; a synthetic one stands in for it.
+const recordMatter = (directory: string, fields: Record<string, unknown>) =>
+  writeFileSync(path.join(directory, "matter.json"), JSON.stringify({ id: "matter-fixture", name: "Supply note", ...fields }))
+const CLIENT_BLOCK = "<matter_client>\nThe lawyer's client as recorded on the matter: Northwind Traders Ltd\n"
 
 test("a complete brief reaches drafting without forcing an unnecessary questionnaire", async () => {
   const directory = matter()
@@ -81,3 +89,34 @@ test("a changed answer during review re-runs the review and reaches the accepted
   expect(readParagraphs(directory, "d1").map(row => row.text)).toContain(DRAFTED)
   expect(readParagraphs(directory, "d1", "paragraphs-applied.json").some(row => row.text === AMENDED)).toBe(true)
 }, 120_000)
+
+test("intake alone reads the client recorded on the matter, as data that a party the lawyer names overrides", async () => {
+  const directory = matter()
+  const intake = () => researchPrompt(directory, "intake", researchBasis(directory))
+  expect(intake()).not.toContain("<matter_client>")
+  recordMatter(directory, { client: "" })
+  expect(intake()).not.toContain("<matter_client>")
+  recordMatter(directory, { client: "Northwind Traders Ltd" })
+  expect(intake()).toContain(CLIENT_BLOCK)
+  expect(intake()).toContain("Do not ask whom the lawyer acts for")
+  for (const stage of ["research", "research-review"] as const) expect(researchPrompt(directory, stage, researchBasis(directory))).not.toContain("Northwind Traders Ltd")
+
+  const model = scriptedModel(quiet)
+  expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+  expect(model.prompts.find(row => row.agent === AGENT.intake)!.text).toContain(CLIENT_BLOCK)
+}, 120_000)
+
+test("intake is keyed on the matter's client only when one is recorded; no other step is", () => {
+  const directory = matter()
+  const steps = ["discrepancy", "intake", "research", "research-review", "spine"] as const
+  const keys = () => steps.map(step => hashStageInputs(step, LEAN_PROMPT_VERSION, stageInputs(directory, step)))
+  const before = keys()
+  expect(stageInputs(directory, "intake").map(row => row.name)).not.toContain("matter-client")
+  for (const fields of [{}, { client: "" }, { client: " \n " }, { client: 42 }]) {
+    recordMatter(directory, fields)
+    expect(keys()).toEqual(before)
+  }
+  recordMatter(directory, { client: "Northwind Traders Ltd" })
+  expect(stageInputs(directory, "intake")).toContainEqual({ name: "matter-client", bytes: "Northwind Traders Ltd" })
+  expect(keys().map((key, index) => key !== before[index])).toEqual([false, true, false, false, false])
+})

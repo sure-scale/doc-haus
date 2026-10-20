@@ -193,12 +193,12 @@ export function retryPrompt(stage: StageID | "advise", issues: string[]) {
   ].join("\n")
 }
 
-/** Whom the lawyer acts for, as data every model stage reads. When the request
- * does not say, the stages take no side. */
+/** Whom the lawyer acts for, as data every model stage reads. When neither the
+ * request nor the matter's recorded client says, the stages take no side. */
 export function actingForBlock(directory: string) {
   const actingFor = planActingFor(directory)
   return tagged("acting_for", actingFor.stated
-    ? `The lawyer acts for: ${actingFor.party} (as the request states).`
+    ? `The lawyer acts for: ${actingFor.party}.`
     : "The request does not say whom the lawyer acts for. Work even-handedly: where the parties' interests diverge, draft wording balanced between them " +
       "marking only a new substantive choice not already settled by instructions or answers for confirmation, rather than favouring either party. " +
       "Ask the lawyer only for information the request and the sources do not give.")

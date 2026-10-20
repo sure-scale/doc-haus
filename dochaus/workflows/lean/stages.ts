@@ -14,6 +14,7 @@ import { evidenceOutputValid } from "./evidence"
 import { currentResearchGaps, researchOutputValid } from "./research"
 import { normalizeLegend, normalizePreferences, readFirmDraftingPreferences } from "../../lib/drafting-preferences"
 import { pageFurniture, type FurnitureKind, type RequestedFurniture } from "../../lib/page-furniture"
+import { matterClient } from "../../lib/matter-client"
 import { readFirmPreferences } from "../../lib/preferences"
 import { existsSync, readFileSync } from "node:fs"
 import { ensureParagraphPointers, paragraphSha256 } from "../../lib/drafting-amendment"
@@ -251,7 +252,11 @@ function baseStageInputs(directory: string, step: StepID, options: { repairConte
   const planned = readLeanPlan(directory)?.documents.map(row => row.id) ?? []
   if (step === "checklist-check") return [{ name: "checklist-refinement-contract", bytes: "source-unit-refinement-1" }, { name: "checklist-refinement-selection", bytes: JSON.stringify(checklistRefinementSelections(directory)) }, file("checklist/refinements.json"), file("request.md"), file("plan.json"), file("checklist/extraction.json"), file("drafting-notes.docx"), file("research-context.txt"), ...planned.flatMap(id => [file(`${id}/body.docx`), file(`${id}/body-applied.docx`), file(`${id}/redline.docx`), file(`${id}/review-independent.json`), file(`${id}/changes.json`), file(`${id}/apply.json`)])]
   if (step === "discrepancy") return outlineInputs(directory)
-  if (step === "intake") return [...outlineInputs(directory), file("discrepancy.json")]
+  if (step === "intake") {
+    // Only with a client recorded on the matter, so a matter without one keeps its key.
+    const client = matterClient(directory)
+    return [...outlineInputs(directory), file("discrepancy.json"), ...(client ? [{ name: "matter-client", bytes: client }] : [])]
+  }
   if (step === "spine") return [...outlineInputs(directory), file("discrepancy.json"), file("intake.json"), file("research.json"), file("research-review.json")]
   // Applied deletion evidence includes the original paragraph's exact wording.
   if (step === "package-review") return [file("checklist/refinements.json"), file("checklist/checks.json"), file("checklist/report.md"), file("request.md"), file("plan.json"), file("drafting-notes.md"), ...planned.flatMap(id => [file(`${id}/paragraphs.json`), file(`${id}/paragraphs-applied.json`), file(`${id}/apply.json`), file(`${id}/changes.json`), file(`${id}/redline.docx`), ...(plannedDocument(directory, id)?.playbook_review?.sources.length ? [file(`${id}/review-playbook.json`)] : [])]), file("open-items.json")]

@@ -11,11 +11,6 @@ export type DraftingPreferences = {
   // Stored setting kept for settings-page compatibility; it no longer adds
   // drafting instructions.
   strategyApproval: "off" | "interactive"
-  // Optional matter/run checkpoint for material human judgment that the
-  // available record, authority, and standing instructions cannot resolve.
-  // Kept separate from strategy approval so either control can be enabled
-  // without silently changing the other's workflow.
-  materialDecisionCheckpoints: "off" | "interactive"
   dateFormat: "month-day-year" | "day-month-year" | "iso"
   numberStyle: "words-and-numerals" | "numerals"
   houseStyle: string
@@ -74,7 +69,6 @@ export const DEFAULT_DRAFTING: DraftingPreferences = {
   formality: "formal",
   detail: "concise",
   strategyApproval: "off",
-  materialDecisionCheckpoints: "off",
   dateFormat: "month-day-year",
   numberStyle: "numerals",
   houseStyle: "",
@@ -118,10 +112,6 @@ export function normalizePreferences(value: unknown): DraftingPreferences {
     approvedSources: normalizeApprovedSources(input.approvedSources),
     courtlistenerMcpEnabled: input.courtlistenerMcpEnabled === true,
     strategyApproval: input.strategyApproval === "interactive" ? "interactive" : DEFAULT_DRAFTING.strategyApproval,
-    materialDecisionCheckpoints:
-      input.materialDecisionCheckpoints === "interactive"
-        ? "interactive"
-        : DEFAULT_DRAFTING.materialDecisionCheckpoints,
     telemetry: normalizeTelemetry(input.telemetry),
     pageNumbers: input.pageNumbers === "page" || input.pageNumbers === "dashed" || input.pageNumbers === "off" ? input.pageNumbers : DEFAULT_DRAFTING.pageNumbers,
     pageNumberPosition: input.pageNumberPosition === "right" ? "right" : DEFAULT_DRAFTING.pageNumberPosition,
