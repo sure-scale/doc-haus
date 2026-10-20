@@ -19,19 +19,19 @@ export type FindingOrigin = (typeof FINDING_ORIGINS)[number]
 /** The target of a finding that belongs in the accompanying memo. */
 export const MEMO_TARGET = "memo"
 export type FindingTarget = DocID | typeof MEMO_TARGET
-type ReviewFinding = { id: string; document: FindingTarget; pid?: string; origin: FindingOrigin; finding: string; sources: SourceQuote[] }
+type ReviewFinding = { id: string; document: FindingTarget; pids?: string[]; origin: FindingOrigin; finding: string; instead?: string; sources: SourceQuote[] }
 /** A playbook review also records its coverage of the guidance's positions. */
 type ReviewRecord = { findings: ReviewFinding[]; coverage?: string }
 /** A finding with the document and stage whose review raised it. */
 export type RaisedFinding = ReviewFinding & { raised_in: DocID; stage: ReviewStageID }
 
-export const REVIEW_FINDINGS_CONTRACT = 'Reply with exactly one JSON object: {"findings":[{"document":"id of the planned document the finding concerns; leave out for this document","pid":"pid of the affected paragraph of this draft, or where missing wording belongs; leave out for another document","origin":"request|source_conflict|missing_fact|missing_protection|law|drafting","finding":"what is wrong and why, and what the document should say instead","sources":[{"source_id":"exact matter document name, request or approved authority URL","quote":"exact supporting words"}]}]}. ' +
+export const REVIEW_FINDINGS_CONTRACT = 'Reply with exactly one JSON object: {"findings":[{"document":"id of the planned document the finding concerns; leave out for this document","pids":["pid of each paragraph of this draft the finding affects, or where missing wording belongs; leave out for another document"],"origin":"request|source_conflict|missing_fact|missing_protection|law|drafting","finding":"what is wrong and why","instead":"what those paragraphs should say instead, in proposed wording where you can give it; leave out for a decision only the lawyer can make","sources":[{"source_id":"exact matter document name, request or approved authority URL","quote":"exact supporting words"}]}]}. ' +
   "origin says where the finding comes from: request (the draft departs from or misses what the request or the lawyer's answers ask), source_conflict (it misstates or conflicts with a matter source, or the sources disagree), missing_fact (it needs a fact or decision the matter does not give), missing_protection (it lacks a protection a careful drafter would include), law (its wording does not work under the governing law) or drafting (ambiguous, inconsistent or wrongly cross-referenced wording). " +
   "A decision only the lawyer can make is a finding with origin missing_fact saying what must be decided; there is no other list. " +
   "sources may be empty when the finding rests on your view of the law or general practice. Return an empty findings array only when there is nothing to correct or decide."
 
 /** Checks one review reply. Code gives each finding its id from the reviewed
- * document, the stage and the finding's target, paragraph and text; a repeated
+ * document, the stage and the finding's target, paragraphs and text; a repeated
  * finding is kept once. Quotations the sources do not contain are open items,
  * as before. */
 export function acceptReviewReply(directory: string, document: DocID, stage: ReviewStageID, reply: string, paragraphs: ParagraphRow[]):
@@ -59,21 +59,25 @@ export function acceptReviewReply(directory: string, document: DocID, stage: Rev
     }
     const target = nonempty(row.document) ? row.document.trim() : document
     if (!targets.includes(target)) issues.push(`${at}.document must be one of ${targets.map(id => `"${id}"`).join(", ")}, or left out for this document.`)
-    // A pid points into this draft only; it is not kept for another document.
-    const pid = target === document && nonempty(row.pid) ? row.pid.trim().replace(/^\[(.*)\]$/, "$1") : undefined
-    if (pid && !known.has(pid)) issues.push(`${at}: [${pid}] is not a paragraph of the draft. Use only the [pid] values listed with the draft.`)
-    issues.push(...unknownPids(at, row.finding))
+    // A pid points into this draft only; none is kept for another document. A
+    // single "pid" is read as one of the pids.
+    const pids = target === document ? [...new Set([...(Array.isArray(row.pids) ? row.pids : [row.pids]), row.pid].filter(nonempty)
+      .map(pid => pid.trim().replace(/^\[(.*)\]$/, "$1")))] : []
+    pids.filter(pid => !known.has(pid)).forEach(pid => issues.push(`${at}: [${pid}] is not a paragraph of the draft. Use only the [pid] values listed with the draft.`))
+    const instead = nonempty(row.instead) ? row.instead.trim() : undefined
+    issues.push(...unknownPids(at, row.finding), ...(instead ? unknownPids(`${at}.instead`, instead) : []))
     const sources = row.sources ?? []
     if (!Array.isArray(sources) || !sources.every(source => record(source) && nonempty(source.source_id) && nonempty(source.quote))) {
       issues.push(`${at}.sources must list {"source_id","quote"} pairs with exact nonempty quotes, or be empty.`)
       return
     }
     const finding: ReviewFinding = {
-      id: `f-${shortHash(`${document}/${stage}\0${target}\0${pid ?? ""}\0${row.finding.trim().toLowerCase().replace(/\s+/g, " ")}`)}`,
+      id: `f-${shortHash(`${document}/${stage}\0${target}\0${pids.toSorted().join(",")}\0${row.finding.trim().toLowerCase().replace(/\s+/g, " ")}`)}`,
       document: target as FindingTarget,
-      ...(pid ? { pid } : {}),
+      ...(pids.length ? { pids } : {}),
       origin: row.origin as FindingOrigin,
       finding: row.finding.trim(),
+      ...(instead ? { instead } : {}),
       sources: sources.map(source => ({ source_id: String(source.source_id).trim(), quote: String(source.quote).trim() })),
     }
     if (!findings.has(finding.id)) findings.set(finding.id, finding)
@@ -85,6 +89,7 @@ export function acceptReviewReply(directory: string, document: DocID, stage: Rev
       ...row.sources.filter(source => !quoteFound(directory, source)).map(source =>
         openItem(stage, "quote_miss", `Quoted text was not found verbatim in source "${source.source_id}".`, { source_id: source.source_id, quote: source.quote })),
       ...quoteMissItems(directory, stage, row.finding),
+      ...(row.instead ? quoteMissItems(directory, stage, row.instead) : []),
     ]),
     ...(playbook ? quoteMissItems(directory, stage, String(value.coverage)) : []),
   ]
@@ -97,7 +102,7 @@ export function readReviewRecord(directory: string, document: DocID, stage: Revi
   const value = readLeanJson(directory, `${document}/${stage}.json`)
   if (!record(value) || !Array.isArray(value.findings)) return
   const findings = value.findings.filter((row): row is ReviewFinding => record(row) && nonempty(row.id) && nonempty(row.document) &&
-    nonempty(row.finding) && FINDING_ORIGINS.includes(row.origin as FindingOrigin) && Array.isArray(row.sources))
+    nonempty(row.finding) && FINDING_ORIGINS.includes(row.origin as FindingOrigin) && Array.isArray(row.sources) && (row.pids === undefined || Array.isArray(row.pids)))
   if (findings.length !== value.findings.length) return
   return { findings, ...(typeof value.coverage === "string" ? { coverage: value.coverage } : {}) }
 }
@@ -147,7 +152,12 @@ export function routedFindingItems(directory: string): OpenItem[] {
 
 /** The omission item that discloses a finding, filed under `document` when given. */
 export function findingItem(row: RaisedFinding, document?: DocID) {
-  return openItem("change-plan", "omission", row.finding.replace(PID_REFERENCE, "(a paragraph)"), { ...(document ? { document } : {}), finding: row.id })
+  return openItem("change-plan", "omission", findingDetail(row).replace(PID_REFERENCE, "(a paragraph)"), { ...(document ? { document } : {}), finding: row.id })
+}
+
+/** A finding's text with what it says the document should say instead. */
+function findingDetail(row: ReviewFinding) {
+  return row.instead ? `${row.finding} Instead: ${row.instead}` : row.finding
 }
 
 /** Findings as a prompt lists them: each with its id, the review that raised
@@ -156,9 +166,10 @@ export function findingItem(row: RaisedFinding, document?: DocID) {
 export function findingsText(findings: RaisedFinding[], document: DocID, options: { ids?: false } = {}) {
   return JSON.stringify(findings.map(row => {
     const own = row.raised_in === document
+    const text = (value: string) => own ? value : value.replace(PID_REFERENCE, "(earlier paragraph)")
     return {
       ...(options.ids === false ? {} : { id: row.id }), review: row.stage, ...(own ? {} : { raised_by: row.raised_in }),
-      ...(row.pid ? { pid: row.pid } : {}), origin: row.origin, finding: own ? row.finding : row.finding.replace(PID_REFERENCE, "(earlier paragraph)"), sources: row.sources,
+      ...(row.pids ? { pids: row.pids } : {}), origin: row.origin, finding: text(row.finding), ...(row.instead ? { instead: text(row.instead) } : {}), sources: row.sources,
     }
   }), null, 2)
 }
@@ -170,7 +181,7 @@ export function reviewText(directory: string, document: DocID, stage: ReviewStag
   const review = readReviewRecord(directory, document, stage)
   if (!review) return undefined
   const text = JSON.stringify({ ...(review.coverage !== undefined ? { coverage: review.coverage } : {}),
-    findings: review.findings.map(({ id: _id, pid, ...row }) => ({ ...(pid && !options.strip ? { pid } : {}), ...row })) }, null, 2)
+    findings: review.findings.map(({ id: _id, pids, ...row }) => ({ ...(pids && !options.strip ? { pids } : {}), ...row })) }, null, 2)
   return options.strip ? text.replace(PID_REFERENCE, "(earlier paragraph)") : text
 }
 

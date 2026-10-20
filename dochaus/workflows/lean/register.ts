@@ -19,10 +19,11 @@ export type RegisterEntry = {
   document: FindingTarget
   raised_in: DocID
   stage: ReviewStageID
-  pid?: string
+  pids?: string[]
   origin: FindingOrigin
   basis: "authority" | "source" | "practice"
   finding: string
+  instead?: string
   /** amended when an amendment for it was applied; not_amended when its group's
    * amendments were withheld, unapplied or never made; earlier_document when it
    * concerns a document already final, disclosed in the notes. */
@@ -40,8 +41,8 @@ export function issueRegister(directory: string): { entries: RegisterEntry[] } {
   const questions = new Map(readQuestions(directory).map(row => [row.id, row]))
   const order = documentOrder(directory)
   return { entries: raisedFindings(directory).map(row => {
-    const base = { id: row.id, document: row.document, raised_in: row.raised_in, stage: row.stage, ...(row.pid ? { pid: row.pid } : {}),
-      origin: row.origin, basis: findingBasis(directory, row.sources), finding: row.finding, amendments: [] }
+    const base = { id: row.id, document: row.document, raised_in: row.raised_in, stage: row.stage, ...(row.pids ? { pids: row.pids } : {}),
+      origin: row.origin, basis: findingBasis(directory, row.sources), finding: row.finding, ...(row.instead ? { instead: row.instead } : {}), amendments: [] }
     const route = findingRoute(order, row)
     if (route === "memo") return { ...base, disposition: "memo" as const }
     if (route === "earlier") return { ...base, disposition: "earlier_document" as const }

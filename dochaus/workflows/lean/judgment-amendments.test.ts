@@ -346,8 +346,8 @@ describe("a marked judgment amendment through the run", () => {
 })
 
 describe("prompt version", () => {
-  test("the contract change is lean-19-typed-findings, and a run keyed under lean-18-advised-questions re-runs every model step", async () => {
-    expect(LEAN_PROMPT_VERSION).toBe("lean-19-typed-findings")
+  test("the contract change is lean-20-finding-pids, and a run keyed under lean-19-typed-findings re-runs every model step", async () => {
+    expect(LEAN_PROMPT_VERSION).toBe("lean-20-finding-pids")
     const directory = matter()
     expect((await runLean(directory, { sessions: scriptedModel(happyPath).port })).status).toBe("completed")
     const idle = scriptedModel({})
@@ -358,7 +358,7 @@ describe("prompt version", () => {
     writeLeanState(directory, {
       ...state,
       stages: Object.fromEntries(Object.entries(state.stages).map(([step, row]) =>
-        [step, { ...row!, input_sha: hashStageInputs(step as StepID, "lean-18-advised-questions", stageInputs(directory, step as StepID)) }])),
+        [step, { ...row!, input_sha: hashStageInputs(step as StepID, "lean-19-typed-findings", stageInputs(directory, step as StepID)) }])),
     })
     const rerun = scriptedModel(happyPath)
     expect((await runLean(directory, { sessions: rerun.port })).status).toBe("completed")
