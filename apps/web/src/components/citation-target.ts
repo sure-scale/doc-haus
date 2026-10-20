@@ -1,5 +1,5 @@
 import type { Citation } from "../api/opencode/parts"
-import type { Document } from "../api/ingest/documents"
+import { matterDocumentKind, type Document } from "../api/ingest/documents"
 
 // Resolve against this matter's registry, never turn tool metadata into a URL or
 // an arbitrary filesystem request. The viewer receives only a registered name.
@@ -7,7 +7,7 @@ export function citationDocument(citation: Citation, documents: Document[] = [])
   const matches = documents.filter((document) =>
     document.name === citation.documentName &&
     !/[\\/\u0000]/.test(document.name) &&
-    /\.(docx|pdf)$/i.test(document.name) &&
+    matterDocumentKind(document.name) !== undefined &&
     (citation.docPath === document.doc_path || citation.docPath === document.name),
   )
   return matches.length === 1 ? matches[0] : undefined

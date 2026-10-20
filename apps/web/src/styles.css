@@ -1399,6 +1399,14 @@ li.list-row {
   color: #b3423a;
 }
 
+.doc-type.is-eml {
+  color: #6a5a8c;
+}
+
+.doc-type.is-xlsx {
+  color: #2f7a4a;
+}
+
 .dropzone-title {
   display: block;
   margin-top: 6px;
@@ -4034,6 +4042,20 @@ button.linklike:hover:not(:disabled) {
     0 28px 56px -28px rgba(45, 74, 62, 0.14);
   text-rendering: optimizeLegibility;
   font-kerning: normal;
+}
+
+/* Emails and spreadsheets: their extracted text on the same sheet, line breaks
+   kept; a spreadsheet's CSV rows read best in a fixed-width face. */
+.docx-render.document-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.docx-render.document-text.is-xlsx {
+  font-family: var(--font-mono);
+  font-size: 13px;
 }
 
 /* Margin comments need gutter width — relax the measure when they exist. */

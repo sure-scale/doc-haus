@@ -21,8 +21,8 @@ export default function ChatEmpty({
         <IconUpload />
         <p className="chat-empty-title">Start by adding this matter's documents</p>
         <p className="muted">
-          Drop Word or PDF files onto the message box below, or add them in Documents. Once they are read you can ask
-          about them here, and every answer cites the source section.
+          Drop Word, PDF, email or Excel files onto the message box below, or add them in Documents. Once they are read
+          you can ask about them here, and every answer cites the source section.
         </p>
         {onAddDocuments && (
           <button type="button" className="primary chat-empty-action" onClick={onAddDocuments}>
