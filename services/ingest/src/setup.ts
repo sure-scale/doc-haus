@@ -29,14 +29,16 @@ export function setupRoutes(options: { directory: string; config?: () => { model
   const models = options.models ?? (async () => {
     const engine = process.env.OPENCODE_URL ?? `http://127.0.0.1:${process.env.DOC_HAUS_ENGINE_PORT ?? "4097"}`
     const password = process.env.OPENCODE_SERVER_PASSWORD
+    const unavailable = "Could not check the engine model catalog. Retry when the engine is ready."
     // Saving preferences reloads research consent protection, and the engine
-    // refuses catalog reads until it is active again. Wait out that short reload.
-    const deadline = Date.now() + 5000
+    // refuses catalog reads until it is active again. Wait out that short reload
+    // inside one 8 s budget, well within the web client's 12 s timeout.
+    const deadline = Date.now() + 8000
     while (true) {
       const res = await fetch(`${engine}/api/model`, {
-        signal: AbortSignal.timeout(8000),
+        signal: AbortSignal.timeout(Math.max(deadline - Date.now(), 1)),
         ...(password ? { headers: { Authorization: `Basic ${btoa(`opencode:${password}`)}` } } : {}),
-      })
+      }).catch(() => { throw new Error(unavailable) })
       if (res.ok) {
         const result = await res.json() as { data: CatalogModel[] }
         if (!Array.isArray(result.data)) throw new Error("The engine returned an invalid model catalog.")
@@ -44,10 +46,10 @@ export function setupRoutes(options: { directory: string; config?: () => { model
       }
       const readiness = res.status === 503 ? await res.json().catch(() => undefined) as { legalState?: string; consentState?: string } | undefined : undefined
       const consent = readiness?.legalState === "active" ? readiness.consentState : undefined
-      if (consent === "pending" && Date.now() < deadline) { await Bun.sleep(200); continue }
+      if (consent === "pending" && Date.now() + 200 < deadline) { await Bun.sleep(200); continue }
       if (consent === "pending") throw new Error("Research protection is still loading. Retry in a moment.")
       if (consent) throw new Error("Research protection could not load, so the engine refuses setup checks. Restart doc.haus, then retry.")
-      throw new Error("Could not check the engine model catalog. Retry when the engine is ready.")
+      throw new Error(unavailable)
     }
   })
   function write(progress: Progress) {

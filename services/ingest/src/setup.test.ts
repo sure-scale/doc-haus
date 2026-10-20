@@ -139,3 +139,12 @@ test("failed research consent protection is named and never saves first-run prog
     expect(existsSync(file)).toBe(false)
   })
 })
+test("an unreachable engine is reported as the catalog check, not a raw network error", async () => {
+  await withEngine(() => Response.json({ data: models }), async (app, file) => {
+    // withEngine restores the URL afterwards; nothing listens on the discard port.
+    process.env.OPENCODE_URL = "http://127.0.0.1:9"
+    const response = await patch(app, { step: "research", status: "completed" })
+    expect(await response.json()).toEqual({ error: "Could not check the engine model catalog. Retry when the engine is ready." })
+    expect(existsSync(file)).toBe(false)
+  })
+})
