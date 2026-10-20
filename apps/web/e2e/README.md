@@ -50,7 +50,9 @@ lists, the event stream) and the release update check are intercepted. It
 seeds a synthetic Word deliverable with a numbered list and a table, then
 covers Prepare, single acceptance, stale proposals, API refusals, a redline
 export that leaves stale proposals out, restart persistence, rejection and the
-downloaded package XML.
+downloaded package XML. Prepare's line must count only the batch's proposals
+still fresh after each accept, its open items must stay listed, and switching
+to a second seeded deliverable must clear both.
 The temporary data root is removed afterwards.
 
 Run the matter chat layout regression with the same environment as the

@@ -33,12 +33,14 @@ export async function fetchRedlines(id: string, name: string): Promise<Redline[]
   return res.json()
 }
 
-export async function prepareDocumentChanges(id:string,name:string,instructions:string):Promise<{proposed:number;open_items:string[]}> {
+// redline_ids names the batch Prepare recorded; the service omits it when the
+// batch is empty.
+export async function prepareDocumentChanges(id:string,name:string,instructions:string):Promise<{proposed:number;redline_ids:number[];open_items:string[]}> {
   const response = await fetch(`${INGEST_URL}/matters/${id}/documents/amendments`,{method:"POST",
     headers:{"content-type":"application/json"},body:JSON.stringify({name,instructions})})
   const result = await response.json()
   if (!response.ok) throw new Error(typeof result.error === "string" ? result.error : "Could not prepare changes")
-  return result
+  return {...result,redline_ids:result.redline_ids ?? []}
 }
 
 // Present only when the accepted file is the body of a completed drafting run:

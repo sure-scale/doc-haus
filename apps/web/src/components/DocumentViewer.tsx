@@ -77,7 +77,10 @@ export default function DocumentViewer({
   const [busy, setBusy] = useState<number | "all" | "prepare">()
   const [editing,setEditing] = useState(false)
   const [instructions,setInstructions] = useState("")
-  const [preparation,setPreparation] = useState<string>()
+  // The last Prepare's batch and open items. The count line is derived from the
+  // refetched change list; the open items stay until the next Prepare. A
+  // different document remounts the viewer (keyed by name), clearing both.
+  const [preparation,setPreparation] = useState<{ids:number[];openItems:string[]}>()
   // Bumped after an accept/reject resolves so the load effect re-runs — the
   // document re-renders and the change list shrinks without duplicating fetch logic.
   const [reload, setReload] = useState(0)
@@ -161,10 +164,9 @@ export default function DocumentViewer({
   async function prepare() {
     setBusy("prepare")
     setError(undefined)
-    setPreparation(undefined)
     try {
       const result = await prepareDocumentChanges(matterId,name,instructions)
-      setPreparation(`${result.proposed} proposed change${result.proposed === 1 ? "" : "s"} ready for review.${result.open_items.length ? ` Open items: ${result.open_items.join(" ")}` : ""}`)
+      setPreparation({ids:result.redline_ids,openItems:result.open_items})
       onChanged?.()
       setReload((value) => value+1)
     } catch (cause) {setError(cause instanceof Error ? cause.message : String(cause))}
@@ -193,6 +195,7 @@ export default function DocumentViewer({
     } catch(cause) {setError(cause instanceof Error ? cause.message : String(cause))}
   }
   const staleNotice = staleExportNotice(redlines)
+  const prepared = preparation && preparedNotice(preparation.ids, redlines)
 
   // Convert this PDF into an editable .docx sibling, index it, and swap the viewer
   // onto the new document so it can be redlined like any other contract.
@@ -312,7 +315,11 @@ export default function DocumentViewer({
               <textarea id="document-edit-instructions" value={instructions} maxLength={24000} disabled={busy !== undefined}
                 onChange={(event) => setInstructions(event.target.value)} rows={4} style={{width:"100%"}} />
               <button className="primary" onClick={prepare} disabled={busy !== undefined || !instructions.trim()}>{busy === "prepare" ? "Preparing changes…" : "Prepare changes"}</button>
-              {preparation && <p role="status">{preparation}</p>}
+              {prepared && <p role="status">{prepared}</p>}
+            </div>}
+            {preparation && preparation.openItems.length > 0 && <div className="document-open-items">
+              <strong id="document-open-items">Open items</strong>
+              <ul aria-labelledby="document-open-items">{preparation.openItems.map((item, index) => <li key={index}>{item}</li>)}</ul>
             </div>}
             {wasmError && <p className="muted">Viewer failed to load: {wasmError.message}</p>}
             {error && <p className="muted">{error}</p>}
@@ -427,6 +434,15 @@ export function staleExportNotice(redlines: Redline[]) {
   const one = stale === 1
   return `${one ? "1 stale proposal is" : `${stale} stale proposals are`} left out of the tracked changes and the redline download. ` +
     `Reject ${one ? "it" : "them"} to clear ${one ? "it" : "them"}; prepare a fresh change list if the change is still needed.`
+}
+
+// Prepare's batch counted against the refetched change list: accepted, rejected
+// and stale proposals drop out (the stale notice names the last), so the line
+// goes once none is left to review. An empty batch says so.
+export function preparedNotice(batch: number[], redlines: Redline[]) {
+  if (!batch.length) return "No changes were proposed."
+  const fresh = redlines.filter((row) => batch.includes(row.id) && !row.stale).length
+  if (fresh) return `${fresh} proposed change${fresh === 1 ? "" : "s"} ready for review.`
 }
 
 // An accept into a drafting run's body also records the change in the run's
