@@ -4,7 +4,7 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { LegalPlugin } from "../plugin/legal/policy"
 import { recordSessionAgent } from "../plugin/legal/session"
-import { DEFAULT_DRAFTING, normalizePreferences, renderInstructions } from "../lib/drafting-preferences"
+import { DEFAULT_DRAFTING, LEGEND_MAX_LENGTH, normalizeLegend, normalizePreferences, renderInstructions } from "../lib/drafting-preferences"
 
 const previous = process.env.WORKSPACE_ROOT
 const workspace = mkdtempSync(path.join(tmpdir(), "drafting-preferences-"))
@@ -135,4 +135,19 @@ test("an existing invalid saved drafting value cannot block the model context ho
   expect(system).toContain("Keep explanations concise")
   expect(system).not.toContain("undefined")
   expect(system).not.toContain("synthetic-secret")
+})
+
+test("page layout settings default to numbered pages and no legend, and stay out of model instructions", () => {
+  const prefs = normalizePreferences({ pageNumbers: "roman", pageNumberPosition: "left", draftLine: "no", notesMarking: 0, agreementLegend: 7 })
+  expect([prefs.pageNumbers, prefs.pageNumberPosition, prefs.draftLine, prefs.notesMarking, prefs.agreementLegend, prefs.adviceLegend]).toEqual(["plain", "center", true, true, "", ""])
+  const set = normalizePreferences({ pageNumbers: "off", pageNumberPosition: "right", draftLine: false, notesMarking: false, agreementLegend: "Subject to contract" })
+  expect([set.pageNumbers, set.pageNumberPosition, set.draftLine, set.notesMarking]).toEqual(["off", "right", false, false])
+  expect(renderInstructions(set)).toBe(renderInstructions(DEFAULT_DRAFTING))
+})
+
+test("a legend is one capped line of the firm's own text, its script's format characters kept", () => {
+  expect(normalizeLegend("  Subject\nto\tcontract  ")).toBe("Subject to contract")
+  expect(normalizeLegend("x".repeat(LEGEND_MAX_LENGTH + 10))).toHaveLength(LEGEND_MAX_LENGTH)
+  expect(normalizeLegend("محرمانه‌است")).toBe("محرمانه‌است")
+  expect(normalizeLegend(null)).toBe("")
 })

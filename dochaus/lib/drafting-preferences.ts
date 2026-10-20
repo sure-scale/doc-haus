@@ -127,11 +127,12 @@ export function normalizePreferences(value: unknown): DraftingPreferences {
   }
 }
 
-/** A legend is one line of plain text: control characters and line breaks
- * become spaces, runs of white space collapse, and the text is capped. */
+/** A legend is one line of the firm's own text: control characters and line
+ * breaks become spaces, runs of white space collapse, and the text is capped.
+ * Format characters (joiners, direction marks) stay: some scripts need them. */
 export function normalizeLegend(input: unknown): string {
   if (typeof input !== "string") return ""
-  return input.normalize("NFC").replace(/[\p{Cc}\p{Cf}\u2028\u2029]+/gu, " ").replace(/\s+/g, " ").trim().slice(0, LEGEND_MAX_LENGTH).trim()
+  return input.normalize("NFC").replace(/[\p{Cc}\u2028\u2029]+/gu, " ").replace(/\s+/g, " ").trim().slice(0, LEGEND_MAX_LENGTH).trim()
 }
 
 // An absent choice uses the default for fresh and legacy preferences. An invalid
