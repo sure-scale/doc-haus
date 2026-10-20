@@ -47,9 +47,8 @@ const DOCUMENT_RELS = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
   <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/>
 </Relationships>`
 
-// Docxodus's HTML converter requires a settings part — without it conversion
-// fails with "ArgumentNull_Generic ... part" — even though editing sessions
-// open the document fine.
+// Word packages normally carry a settings part. Docxodus 6 also needed one to
+// convert to HTML; 13 renders without it (apps/web/test/document-viewer.browser.ts).
 const SETTINGS = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"/>`
 
