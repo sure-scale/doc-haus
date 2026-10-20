@@ -15,7 +15,7 @@ const doc = { title: "Supply note", purpose: "Record supplied terms", parts: [{ 
 test("planning routes the optional review per document and rejects invented evidence", () => {
   const directory = matter()
   expect(leanSteps(directory)).not.toContain("d1.review-playbook")
-  const parsed = parsePlan(`Acting for: not stated\n# Supply note\nRecord terms\nPlaybook review: ${JSON.stringify(selection)}\n## Delivery\nDeliver goods\n# Factual inventory\nList sources only\nPlaybook review: {"sources":[],"reason":"A factual inventory imposes no supply terms."}\n## Sources\nList sources`)
+  const parsed = parsePlan(`Acting for: not stated\n# Supply note\nRecord terms\nForm: other\nPlaybook review: ${JSON.stringify(selection)}\n## Delivery\nDeliver goods\n# Factual inventory\nList sources only\nForm: other\nPlaybook review: {"sources":[],"reason":"A factual inventory imposes no supply terms."}\n## Sources\nList sources`)
   expect(parsed.issues).toEqual([])
   expect(playbookSelectionIssues(directory, parsed.value!.documents)).toEqual([])
   writeLeanPlan(directory, parsed.value!.documents)

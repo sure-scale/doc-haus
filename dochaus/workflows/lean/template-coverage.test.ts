@@ -12,11 +12,12 @@ import { AGENT, cleanupMatters, drafter, draftingNotes, noChanges, pidIn, sameSe
 
 // Template coverage through the real coordinator. Only the model is scripted.
 
-const LETTER = "# Covering letter\n\n## Enclosure\n\nWe enclose the help desk agreement for signature.\n\n## Charges\n\nThe charges are as the agreement states.\n"
+const LETTER = "# Covering letter\nForm: letter\n\n## Enclosure\n\nWe enclose the help desk agreement for signature.\n\n## Charges\n\nThe charges are as the agreement states.\n"
 const PART_PROMPT = /^Draft part \d+ of \d+ of "[^"]*": .+$/m
 const NO_FINDINGS: Reply = () => "No corrections are needed."
 const ACTING = "Acting for: not stated"
-const REFERENCED_OUTLINE = [ACTING, TITLE, `Template: ${TEMPLATE}`, heading(PARTS.scope), heading(PARTS.charges), "The charges, with the charging schedule of Annex B.",
+const FORM = "Form: agreement"
+const REFERENCED_OUTLINE = [ACTING, TITLE, FORM, `Template: ${TEMPLATE}`, heading(PARTS.scope), heading(PARTS.charges), "The charges, with the charging schedule of Annex B.",
   heading(PARTS.credits), heading(PARTS.duration), heading(PARTS.annexA)].join("\n")
 const REFERENCED = [TITLE, PARTS.scope, PARTS.charges, PARTS.credits, PARTS.duration, PARTS.annexA].join("\n\n")
 const kinds = (directory: string, kind: string) => readOpenItems(directory).filter(item => item.kind === kind)
@@ -26,7 +27,7 @@ afterEach(cleanupMatters)
 describe("template coverage in a lean run", () => {
   test("unheaded template parts still carry their text and later removal still fails coverage", async () => {
     const directory = templateMatter()
-    const outline = [ACTING, TITLE, `Template: ${TEMPLATE}`, ...Object.values(PARTS).map(part => `${heading(part)}\nDisplay heading: none`)].join("\n")
+    const outline = [ACTING, TITLE, FORM, `Template: ${TEMPLATE}`, ...Object.values(PARTS).map(part => `${heading(part)}\nDisplay heading: none`)].join("\n")
     const model = scriptedModel(replies(templateDrafter([AGREEMENT], { outline: () => outline })))
     const state = await runLean(directory, { sessions: model.port })
     expect(state.status).toBe("completed")
@@ -55,7 +56,7 @@ describe("template coverage in a lean run", () => {
   }, 120_000)
 
   test("an outline that does not account for an annex is asked again to place it or leave it out with a reason", async () => {
-    const short = [ACTING, TITLE, ...Object.values(PARTS).filter(part => part !== PARTS.annexB).map(heading)].join("\n")
+    const short = [ACTING, TITLE, FORM, ...Object.values(PARTS).filter(part => part !== PARTS.annexB).map(heading)].join("\n")
     const directory = templateMatter()
     const model = scriptedModel(replies(templateDrafter([AGREEMENT], { template: TEMPLATE, outline: index => index === 0 ? short : undefined })))
     const state = await runLean(directory, { sessions: model.port })
@@ -67,7 +68,7 @@ describe("template coverage in a lean run", () => {
   }, 120_000)
 
   test("a templated outline with no Acting for line is asked for it together with the template parts it misses", async () => {
-    const short = [TITLE, ...Object.values(PARTS).filter(part => part !== PARTS.annexB).map(heading)].join("\n")
+    const short = [TITLE, FORM, ...Object.values(PARTS).filter(part => part !== PARTS.annexB).map(heading)].join("\n")
     const directory = templateMatter()
     const model = scriptedModel(replies(templateDrafter([AGREEMENT], { template: TEMPLATE, outline: index => index === 0 ? short : undefined })))
     const state = await runLean(directory, { sessions: model.port })
@@ -123,7 +124,7 @@ describe("template coverage in a lean run", () => {
   }, 120_000)
 
   test("a template part the outline leaves out with a reason is not retried or asked for, and the drafting notes disclose the removal", async () => {
-    const outline = [ACTING, TITLE, `Template: ${TEMPLATE}`, 'Left out: "3. Service Credits" – the customer asked for no service credits.',
+    const outline = [ACTING, TITLE, FORM, `Template: ${TEMPLATE}`, 'Left out: "3. Service Credits" – the customer asked for no service credits.',
       ...Object.values(PARTS).filter(part => part !== PARTS.credits).map(heading)].join("\n")
     const draft = [TITLE, ...Object.values(PARTS).filter(part => part !== PARTS.credits)].join("\n\n")
     const directory = templateMatter()
@@ -176,7 +177,7 @@ describe("template coverage in a lean run", () => {
   }, 120_000)
 
   test("a template with no headed parts is not checked", async () => {
-    const outline = [ACTING, TITLE, `Template: ${PLAIN}`, heading(PARTS.scope), heading(PARTS.charges), heading(PARTS.duration)].join("\n")
+    const outline = [ACTING, TITLE, FORM, `Template: ${PLAIN}`, heading(PARTS.scope), heading(PARTS.charges), heading(PARTS.duration)].join("\n")
     const directory = templateMatter()
     const draft = [TITLE, PARTS.scope, PARTS.charges, PARTS.duration].join("\n\n")
     const model = scriptedModel(replies(templateDrafter([draft], { outline: () => outline })))
@@ -207,8 +208,8 @@ describe("template coverage in a lean run", () => {
   test("documents drafted from one template that share its parts between them are each held only to their own share", async () => {
     const annexes = ["# Help desk annexes", PARTS.annexA, PARTS.annexB].join("\n\n")
     const agreement = [TITLE, PARTS.scope, PARTS.charges, PARTS.credits, PARTS.duration].join("\n\n")
-    const outline = [ACTING, TITLE, `Template: ${TEMPLATE}`, ...[PARTS.scope, PARTS.charges, PARTS.credits, PARTS.duration].map(heading),
-      "# Help desk annexes", `Template: ${TEMPLATE}`, heading(PARTS.annexA), heading(PARTS.annexB)].join("\n")
+    const outline = [ACTING, TITLE, FORM, `Template: ${TEMPLATE}`, ...[PARTS.scope, PARTS.charges, PARTS.credits, PARTS.duration].map(heading),
+      "# Help desk annexes", FORM, `Template: ${TEMPLATE}`, heading(PARTS.annexA), heading(PARTS.annexB)].join("\n")
     const directory = templateMatter()
     const model = scriptedModel(replies(templateDrafter([agreement, annexes], { outline: () => outline })))
     const state = await runLean(directory, { sessions: model.port })

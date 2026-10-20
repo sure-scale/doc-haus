@@ -29,7 +29,7 @@ const REVISE = "Your reply did not pass the draft checks:"
 const ANSWER = "Deliver them as planned."
 
 const outline = (...lines: string[]) => ["Acting for: not stated", ...lines].join("\n")
-const letter = (...lines: string[]) => ["# Release letter", ...lines, "## Release", "The release."].join("\n")
+const letter = (...lines: string[]) => ["# Release letter", "Form: letter", ...lines, "## Release", "The release."].join("\n")
 const BODY = outline("Memo: cover memo", letter())
 const COMBINED = outline("Memo: cover memo", letter("Deliverable: combined"))
 
@@ -109,7 +109,7 @@ describe("requested files through the run", () => {
 
   test("a files revision that also renames a document is not adopted: it is spent, and the next revision starts from the earlier outline", async () => {
     const directory = prepared()
-    const renamed = outline("Memo: cover memo", "# Release pack letter", "Deliverable: combined", "## Release", "The release.")
+    const renamed = outline("Memo: cover memo", "# Release pack letter", "Form: letter", "Deliverable: combined", "## Release", "The release.")
     // The first revision renames the document as it combines it; the second only combines it.
     const draft: Reply = text => !text.startsWith(REVISE) ? outliner(BODY)(text, 0) : revisions(model).length === 1 ? renamed : COMBINED
     const model = scriptedModel(replies({ [AGENT.draft]: draft, [AGENT.files]: filesOf(PACKED) }))
@@ -125,7 +125,7 @@ describe("requested files through the run", () => {
 
   test("from a files revision only the delivery is adopted: a part it also changes is not, and neither job is asked again", async () => {
     const directory = prepared()
-    const reworked = outline("Memo: cover memo", "# Release letter", "Deliverable: combined", "## Release terms", "The release terms.")
+    const reworked = outline("Memo: cover memo", "# Release letter", "Form: letter", "Deliverable: combined", "## Release terms", "The release terms.")
     const model = scriptedModel(replies({ [AGENT.draft]: outliner(BODY, reworked), [AGENT.files]: filesOf(PACKED) }))
     expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
 
@@ -139,7 +139,7 @@ describe("requested files through the run", () => {
 
   test("a files revision whose titles differ only in case and spacing is adopted, keeping the plan's spelling", async () => {
     const directory = prepared()
-    const respaced = outline("Memo: cover memo", "# release  LETTER", "Deliverable: combined", "## Release", "The release.")
+    const respaced = outline("Memo: cover memo", "# release  LETTER", "Form: letter", "Deliverable: combined", "## Release", "The release.")
     const model = scriptedModel(replies({ [AGENT.draft]: outliner(BODY, respaced), [AGENT.files]: filesOf(PACKED) }))
     expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
 
@@ -150,7 +150,7 @@ describe("requested files through the run", () => {
 
   test("a files revision's delivery is taken only for the documents its issues concern", async () => {
     const directory = prepared(`${REQUEST} Also prepare a deposit notice for the Orchard Committee.`)
-    const notice = ["# Deposit notice", "Deliverable: redline", "## Deposit", "The deposit."]
+    const notice = ["# Deposit notice", "Form: other", "Deliverable: redline", "## Deposit", "The deposit."]
     // The revision combines the letter and leaves out the notice's Deliverable line.
     const revised = outline("Memo: cover memo", letter("Deliverable: combined"), ...notice.filter(line => !line.startsWith("Deliverable")))
     const model = scriptedModel(replies({ [AGENT.draft]: outliner(outline("Memo: cover memo", letter(), ...notice), revised), [AGENT.files]: filesOf(PACKED) }))

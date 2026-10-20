@@ -14,7 +14,7 @@ import { AGENT, DRAFT, LETTER, changesFirst, cleanupMatters, drafter, happyPath,
 
 afterEach(cleanupMatters)
 
-const document = (title: string, ...lines: string[]) => [`# ${title}`, "What it is for.", ...lines, "## Terms", "What it covers."].join("\n")
+const document = (title: string, ...lines: string[]) => [`# ${title}`, "What it is for.", "Form: other", ...lines, "## Terms", "What it covers."].join("\n")
 const outline = (...lines: string[]) => ["Acting for: not stated", ...lines].join("\n")
 const REMEDY = 'Remove that document, or, if the request asks for a separate memo with its own audience or purpose, leave out the "Memo:" line.'
 const repeats = (title: string, memo: string) => `The document "${title}" repeats the requested memo "${memo}", which the run writes as its notes. ${REMEDY}`

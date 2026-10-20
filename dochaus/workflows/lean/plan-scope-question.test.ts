@@ -41,9 +41,9 @@ const ANSWER = "Keep the package to the release letter; the committee's approval
 
 // One document executed by the party who does not take the act, and the same
 // with a companion document executed by the party who does.
-const ONE = "Acting for: not stated\n# Release letter\nExecuted by: Kestrel Works\n## Terms\nThe release."
-const TWO = "Acting for: not stated\n# Committee resolution\nExecuted by: the Orchard Committee\n## Terms\nThe approval.\n" +
-  "# Release letter\nExecuted by: Kestrel Works\n## Terms\nThe release."
+const ONE = "Acting for: not stated\n# Release letter\nForm: letter\nExecuted by: Kestrel Works\n## Terms\nThe release."
+const TWO = "Acting for: not stated\n# Committee resolution\nForm: other\nExecuted by: the Orchard Committee\n## Terms\nThe approval.\n" +
+  "# Release letter\nForm: letter\nExecuted by: Kestrel Works\n## Terms\nThe release."
 
 const act: CoverageAct = { act: "approve the revised schedule", source: "request", quote: APPROVE, parties: ["the Orchard Committee"], document: "d1" }
 const ACTS = JSON.stringify({ acts: [act] })

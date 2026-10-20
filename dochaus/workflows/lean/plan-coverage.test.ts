@@ -24,9 +24,9 @@ const REVISE = "Your reply did not pass the draft checks:"
 
 // One document executed by the wrong party, then the same with a companion
 // document executed by the party that takes the act.
-const ONE = "Acting for: not stated\n# Release letter\nExecuted by: Kestrel Works\n## Terms\nThe release."
-const TWO = "Acting for: not stated\n# Committee resolution\nExecuted by: the Orchard Committee\n## Terms\nThe approval.\n" +
-  "# Release letter\nExecuted by: Kestrel Works\n## Terms\nThe release."
+const ONE = "Acting for: not stated\n# Release letter\nForm: letter\nExecuted by: Kestrel Works\n## Terms\nThe release."
+const TWO = "Acting for: not stated\n# Committee resolution\nForm: other\nExecuted by: the Orchard Committee\n## Terms\nThe approval.\n" +
+  "# Release letter\nForm: letter\nExecuted by: Kestrel Works\n## Terms\nThe release."
 
 const act: CoverageAct = { act: "approve the revised schedule", source: "request", quote: APPROVE, parties: ["the Orchard Committee"], document: "d1" }
 const ACTS = JSON.stringify({ acts: [act] })
@@ -128,7 +128,7 @@ describe("plan coverage at the outline step", () => {
     writeLeanText(directory, "request.md", `${REQUEST} ${EXCLUDE}.`)
     const excluded: CoverageAct = { ...act, document: null, excluded_by: EXCLUDE }
     const released: CoverageAct = { act: "release the deposit", source: "request", quote: "Kestrel Works then releases the deposit", parties: ["Kestrel Works"], document: "d1" }
-    const SHARED = "Acting for: not stated\n# Release letter\nExecuted by: Kestrel Works; the Orchard Committee\n## Terms\nThe release."
+    const SHARED = "Acting for: not stated\n# Release letter\nForm: letter\nExecuted by: Kestrel Works; the Orchard Committee\n## Terms\nThe release."
     const model = scriptedModel({ [AGENT.draft]: outliner(SHARED), [AGENT.coverage]: () => JSON.stringify({ acts: [released, excluded] }) })
     expect((await run(directory, state, model)).status).toBe("done")
 

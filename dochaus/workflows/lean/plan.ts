@@ -1,3 +1,4 @@
+import { DOCUMENT_FORMS, type DocumentForm } from "../../lib/page-furniture"
 import { TOOL_SYNTAX_ISSUE, printedToolCall } from "./checks"
 import { REVIEW_STAGES, readLeanJson, readLeanText, writeLeanText, type ReviewStageID, type StageID } from "./state"
 
@@ -33,12 +34,14 @@ export type LeftOutPart = { part: string; reason: string }
  * `combined`, to one file holding the requested memo and then the body.
  * `executed_by` names the parties who execute the document, from an
  * "Executed by:" line; an empty list says it takes no legal act, and an absent
- * one that the outline did not say. Legacy plans
+ * one that the outline did not say. `form` is the kind of document it is, from
+ * a "Form:" line; it sets the document's page furniture, and a letter's parts
+ * are planned unheaded unless the outline shows them. Legacy plans
  * without these fields retain their existing behaviour. The title is the
  * document's own title and never carries the file name. */
 export type PlaybookReview = { sources: { source_id: string; quote: string }[]; reason: string }
 export type PlannedDocument = {
-  id: DocID; title: string; purpose: string; parts: PlannedPart[]; playbook_review?: PlaybookReview; mode?: "new" | "revise"; deliverable?: "body" | "redline" | "combined"; template?: string; comparison?: string; left_out?: LeftOutPart[]; file?: string; executed_by?: string[]
+  id: DocID; title: string; purpose: string; parts: PlannedPart[]; playbook_review?: PlaybookReview; mode?: "new" | "revise"; deliverable?: "body" | "redline" | "combined"; template?: string; comparison?: string; left_out?: LeftOutPart[]; file?: string; executed_by?: string[]; form?: DocumentForm
 }
 export type ActingFor = { party: string; stated: boolean }
 /** `memo` is the name of the memo the request asks for and `notes_file` the
@@ -175,6 +178,11 @@ export function earlierDocuments(directory: string, id: DocID): PlannedDocument[
  * request does not give is dropped and the title kept without Markdown code marks.
  * A missing "Executed by:" line is not an issue; the package-coverage check
  * holds the parties it names to the request and sources.
+ * A "Form:" line under each title gives the document's form, one of
+ * DOCUMENT_FORMS. A missing line or another value is retried, and on the last
+ * attempt the document stands with no form, as a legacy plan does. A letter's
+ * parts are planned unheaded, except a part with its own "Display heading:"
+ * line, unless a "Headings: shown" line under its title keeps their labels.
  * An optional "Memo:" line before the first title names, in the request's own
  * words, a memo the request asks to accompany the documents. It must be words
  * the request uses and fit in a file name; otherwise it is retry feedback and,
@@ -188,7 +196,7 @@ export function parsePlan(reply: string, request?: string): Checked<LeanOutline>
   if (!reply.trim()) return { issues: [`The reply was empty. ${OUTLINE_SHAPE}`] }
   if (printedToolCall(reply)) return { issues: [TOOL_SYNTAX_ISSUE] }
   const documents: {
-    title: string; purpose: string[]; playbook_review?: PlaybookReview; mode?: "new" | "revise"; deliverable?: "body" | "redline" | "combined"; template?: string; comparison?: string; file?: string; executed_by?: string[]; left_out: LeftOutPart[]; parts: { heading: string; scope: string[]; display_heading?: string }[]
+    title: string; purpose: string[]; playbook_review?: PlaybookReview; mode?: "new" | "revise"; deliverable?: "body" | "redline" | "combined"; template?: string; comparison?: string; file?: string; executed_by?: string[]; form?: string; headings?: "shown"; left_out: LeftOutPart[]; parts: { heading: string; scope: string[]; display_heading?: string }[]
   }[] = []
   const acting: string[] = []
   const memos: string[] = []
@@ -217,6 +225,9 @@ export function parsePlan(reply: string, request?: string): Checked<LeanOutline>
     const leftOut = /^[-*]?\s*left\s+out\s*:\s*(.+)$/i.exec(plain)?.[1]
     const file = /^[-*]?\s*file(?:\s+name)?\s*:\s*(.+)$/i.exec(plain)?.[1]?.replace(/^["'`“]+|["'`”.]+$/g, "").trim()
     const executed = /^executed\s+by\s*:\s*(.*)$/i.exec(line.replace(/^[-*]\s+/, "").replace(/[*`]/g, ""))?.[1]
+    // The value as written, so an unknown form can be named back in the retry.
+    const form = /^form\s*:\s*(.*)$/i.exec(line.replace(/^[-*]\s+/, "").replace(/[*`]/g, ""))?.[1]?.replace(/^["'“]+|["'”.\s]+$/g, "").trim()
+    const headingsShown = /^headings\s*:\s*shown[.\s]*$/i.test(line.replace(/^[-*]\s+/, "").replace(/[*`]/g, ""))
     const playbook = /^[-*]?\s*playbook review\s*:\s*(.+)$/i.exec(line)?.[1]
     const displayHeading = /^display heading\s*:\s*(.*)$/i.exec(line)?.[1]
     if (playbook && current && !current.parts.length) {
@@ -235,6 +246,8 @@ export function parsePlan(reply: string, request?: string): Checked<LeanOutline>
     else if (comparison && current && !current.parts.length) current.comparison = comparison
     else if (file && current && !current.parts.length) current.file = file
     else if (executed !== undefined && current && !current.parts.length) current.executed_by = executingParties(executed, current.executed_by)
+    else if (form !== undefined && current && !current.parts.length) current.form = form
+    else if (headingsShown && current && !current.parts.length) current.headings = "shown"
     else if (leftOut && current) current.left_out.push(leftOutPart(leftOut))
     else if (line && !line.startsWith("#") && current)
       (current.parts.at(-1)?.scope ?? current.purpose).push(line.replace(/^[-*]\s+/, ""))
@@ -267,9 +280,11 @@ export function parsePlan(reply: string, request?: string): Checked<LeanOutline>
     ...(combined.length && !memo.name ? [COMBINED_NEEDS_MEMO] : []),
     ...(combined.length > 1 ? [combinedMoreThanOne(combined)] : []),
   ]
+  const forms = documents.map(document => documentForm(document.form))
   return {
     issues: [
       ...(!acting.length ? [ACTING_FOR_MISSING] : ungrounded ? [actingForUngrounded(party)] : []),
+      ...documents.flatMap((document, index) => forms[index] ? [] : [formIssue(plainTitle(document.title), document.form)]),
       ...documents.flatMap(document => titleIssues(document.title)),
       ...files.flatMap(file => file.issues),
       ...(repeatedFiles.length ? [`These file names are given to more than one document: ${repeatedFiles.map(name => `"${name}"`).join(", ")}. Give each document its own file name.`] : []),
@@ -282,7 +297,8 @@ export function parsePlan(reply: string, request?: string): Checked<LeanOutline>
         title: plainTitle(document.title),
         purpose: document.purpose.join(" "),
         ...(document.playbook_review ? { playbook_review: document.playbook_review } : {}),
-        parts: document.parts.map(part => ({ heading: part.heading, scope: part.scope.join(" "), ...(part.display_heading !== undefined ? { display_heading: part.display_heading } : {}) })),
+        // A letter reads as one letter: its planning labels are not its headings.
+        parts: document.parts.map(part => plannedPart(part, forms[index] === "letter" && !document.headings)),
         ...(document.mode ? { mode: document.mode } : {}),
         // A combined file that cannot be built stands as the body on the last attempt.
         ...(document.deliverable ? { deliverable: document.deliverable === "combined" && (combinedIssues.length || !memoName) ? "body" as const : document.deliverable } : {}),
@@ -291,11 +307,19 @@ export function parsePlan(reply: string, request?: string): Checked<LeanOutline>
         ...(document.left_out.length ? { left_out: document.left_out } : {}),
         ...(document.executed_by ? { executed_by: document.executed_by } : {}),
         ...(files[index]?.name && !repeatedFiles.includes(files[index].name) ? { file: files[index].name } : {}),
+        ...(forms[index] ? { form: forms[index] } : {}),
       })),
       acting_for: party !== undefined && !ungrounded ? { party, stated: true } : NOT_STATED,
       ...(memoName ? { memo: memoName } : {}),
     },
   }
+}
+
+/** A planned part; with `unheaded`, a part without its own "Display heading:"
+ * line is unheaded. */
+function plannedPart(part: { heading: string; scope: string[]; display_heading?: string }, unheaded: boolean): PlannedPart {
+  const display = part.display_heading ?? (unheaded ? "" : undefined)
+  return { heading: part.heading, scope: part.scope.join(" "), ...(display !== undefined ? { display_heading: display } : {}) }
 }
 
 export function headingText(text: string) {
@@ -395,6 +419,18 @@ const COMBINED_NEEDS_MEMO = "\"Deliverable: combined\" puts a document and the r
 const combinedMoreThanOne = (titles: string[]) =>
   `"Deliverable: combined" is under ${titles.map(title => `"${title}"`).join(", ")}, but only one document can share the file with the memo. ` +
   "Keep it under the document the request asks to deliver with the memo, and write \"Deliverable: body\" under the others."
+
+/** A "Form:" value as one of DOCUMENT_FORMS, ignoring case; undefined when the
+ * line is missing or names another form. */
+function documentForm(value: string | undefined) {
+  return DOCUMENT_FORMS.find(form => form === value?.toLowerCase())
+}
+
+const FORM_VALUES = DOCUMENT_FORMS.map(form => `"Form: ${form}"`).join(", ")
+const formIssue = (title: string, value: string | undefined) => (!value
+  ? `The document "${title}" has no "Form:" line.`
+  : `The "Form:" line of "${title}" gives "${value}", which is not one of the forms.`) +
+  ` Under its title, before its first "## " part, write one of ${FORM_VALUES}.`
 
 const OUTLINE_SHAPE = "Reply with the outline: for each document, one \"# \" title line, then one \"## \" line per part."
 const ACTING_FOR_MISSING = "The outline has no \"Acting for:\" line. Before the first \"# \" title, write \"Acting for: <party>\" when the request says " +
@@ -500,6 +536,7 @@ function isPlannedDocument(value: unknown): value is PlannedDocument {
     (row.mode === undefined || ["new", "revise"].includes(row.mode)) && (row.deliverable === undefined || ["body", "redline", "combined"].includes(row.deliverable)) &&
     (row.comparison === undefined || typeof row.comparison === "string") && (row.template === undefined || typeof row.template === "string") && (row.file === undefined || typeof row.file === "string") &&
     (row.executed_by === undefined || (Array.isArray(row.executed_by) && row.executed_by.every(party => typeof party === "string"))) &&
+    (row.form === undefined || DOCUMENT_FORMS.includes(row.form)) &&
     (row.left_out === undefined || (Array.isArray(row.left_out) && row.left_out.every(item => typeof item?.part === "string" && typeof item.reason === "string")))
 }
 

@@ -22,7 +22,7 @@ afterEach(cleanupMatters)
 // proposals. Exercise that apply/notes boundary directly: runLean batches
 // consolidate replacements before change-review, so they never reach it.
 async function applyLegacyList(directory: string, model: ReturnType<typeof scriptedModel>, draft = DRAFT) {
-  const plan = parsePlan(`Acting for: not stated\n${draft}`)
+  const plan = parsePlan(`Acting for: not stated\n${draft.replace(/^# .+$/m, "$&\nForm: other")}`)
   expect(plan.issues).toEqual([])
   writeLeanPlan(directory, plan.value!.documents)
   const rendered = await acceptStageReply(directory, "d1.draft", draft)

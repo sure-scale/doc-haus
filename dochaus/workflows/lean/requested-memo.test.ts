@@ -29,7 +29,7 @@ const MEMO_ORDER = "Lead with the discrepancies found and the choices made, then
 const NOTES_OPENING = "This is a lean drafting run. Write the drafting notes that go to the lawyer with the drafted documents."
 const MARKER_RULE = 'end that statement with the item\'s exact id as a trailing "[ref: <id>]"'
 
-const outline = (line: string) => `Acting for: not stated\n${line}\n# Supply note\n## Delivery`
+const outline = (line: string) => `Acting for: not stated\n${line}\n# Supply note\nForm: other\n## Delivery`
 /** The scripted drafter whose outline reply carries this Memo line. */
 const memoDrafter = (line: string): Reply => {
   const draft = drafter(DRAFT)
@@ -55,7 +55,7 @@ describe("the outline's Memo line", () => {
       expect(parsed.value).not.toHaveProperty("memo")
     }
     // Under a title the line is that document's purpose, not the run's memo.
-    const under = parsePlan("Acting for: not stated\n# Supply note\nMemo: cover memo\n## Delivery", REQUEST)
+    const under = parsePlan("Acting for: not stated\n# Supply note\nForm: other\nMemo: cover memo\n## Delivery", REQUEST)
     expect(under.value).not.toHaveProperty("memo")
     expect(under.value?.documents[0]?.purpose).toBe("Memo: cover memo")
   })
@@ -63,7 +63,7 @@ describe("the outline's Memo line", () => {
   test("a name is a non-answer only as a whole, the first line wins, and without the request it is not grounded", () => {
     expect(parsePlan(outline("Memo: Unclear points memo"), "Draft a short supply note, with an unclear points memo for the lawyer."))
       .toEqual({ issues: [], value: expect.objectContaining({ memo: "Unclear points memo" }) })
-    expect(parsePlan("Acting for: not stated\nMemo: cover memo\nMemo: open points\n# Supply note\n## Delivery", REQUEST).value?.memo).toBe("cover memo")
+    expect(parsePlan("Acting for: not stated\nMemo: cover memo\nMemo: open points\n# Supply note\nForm: other\n## Delivery", REQUEST).value?.memo).toBe("cover memo")
     expect(parsePlan(outline("Memo: advice letter"))).toEqual({ issues: [], value: expect.objectContaining({ memo: "advice letter" }) })
   })
 

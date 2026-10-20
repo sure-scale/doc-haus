@@ -60,7 +60,7 @@ import {
 // one planned document keep their files under that document's id (d1/, d2/...).
 
 export const LEAN_PROMPT_VERSION = "lean-18-advised-questions"
-const OUTLINE_CONTRACT = "document-executing-parties-memo-6"
+const OUTLINE_CONTRACT = "document-form-7"
 const DELIVERY_REVIEW_CONTRACT = "grounded-delivery-selection-4"
 const STRUCTURAL_AMENDMENT_CONTRACT = "explicit-paragraph-cardinality-1"
 const DRAFTING_NOTES_CONTRACT = "lawyer-facing-notes-plain-refs-3"
@@ -380,12 +380,13 @@ export async function paragraphRows(docxPath: string): Promise<ParagraphRow[]> {
 
 /** A draft step's accepted document: planned, with its Word body and its paragraphs. */
 /** What a document's draft prompt and code read of its plan entry: its title,
- * purpose and parts, its mode, the template it is drawn from and the template
- * parts it leaves out. Its file and deliverable (which package review rewrites),
+ * purpose and parts, its mode, the template it is drawn from, the template
+ * parts it leaves out and its form, which sets the rendered body's page
+ * furniture. Its file and deliverable (which package review rewrites),
  * executing parties and guidance selection are not read by the draft. */
 function draftedEntry(entry: PlannedDocument | undefined) {
   if (!entry) return null
-  return { title: entry.title, purpose: entry.purpose, parts: entry.parts, mode: entry.mode, template: templateSource(entry), left_out: entry.left_out }
+  return { title: entry.title, purpose: entry.purpose, parts: entry.parts, mode: entry.mode, template: templateSource(entry), left_out: entry.left_out, form: entry.form }
 }
 
 export function draftOutputValid(directory: string, step: StepID) {

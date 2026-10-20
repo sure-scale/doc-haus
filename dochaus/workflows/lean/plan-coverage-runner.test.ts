@@ -29,8 +29,8 @@ const REVISE = "Your reply did not pass the draft checks:"
 
 // Outlines. A part headed "Approval" carries the committee's approval and one
 // headed "Release" the release of the deposit.
-const RELEASE_LETTER = "# Release letter\nExecuted by: Kestrel Works\n## Release\nThe release."
-const RESOLUTION = "# Committee resolution\nExecuted by: the Orchard Committee\n## Approval\nThe approval."
+const RELEASE_LETTER = "# Release letter\nForm: letter\nExecuted by: Kestrel Works\n## Release\nThe release."
+const RESOLUTION = "# Committee resolution\nForm: other\nExecuted by: the Orchard Committee\n## Approval\nThe approval."
 const outline = (...documents: string[]) => ["Acting for: not stated", ...documents].join("\n")
 
 type Instructed = { act: string; quote: string; parties: string[]; heading: string }
@@ -146,11 +146,11 @@ describe("plan coverage through the run", () => {
   // document executed by its party.
   for (const [name, first, revised, carrier] of [
     ["the revision adds the party to the carrying document's Executed by line",
-      outline("# Schedule approval\nExecuted by: Kestrel Works\n## Approval\nThe approval.", RELEASE_LETTER),
-      outline("# Schedule approval\nExecuted by: the Orchard Committee; Kestrel Works\n## Approval\nThe approval.", RELEASE_LETTER),
+      outline("# Schedule approval\nForm: other\nExecuted by: Kestrel Works\n## Approval\nThe approval.", RELEASE_LETTER),
+      outline("# Schedule approval\nForm: other\nExecuted by: the Orchard Committee; Kestrel Works\n## Approval\nThe approval.", RELEASE_LETTER),
       { id: "d1", title: "Schedule approval", executed_by: ["the Orchard Committee", "Kestrel Works"] }],
     ["the revision moves the act to a companion document executed by its party",
-      outline("# Schedule approval\nExecuted by: Kestrel Works\n## Approval\nThe approval.\n## Release\nThe release."),
+      outline("# Schedule approval\nForm: other\nExecuted by: Kestrel Works\n## Approval\nThe approval.\n## Release\nThe release."),
       outline(RESOLUTION, RELEASE_LETTER),
       { id: "d1", title: "Committee resolution", executed_by: ["the Orchard Committee"] }],
   ] as const)
