@@ -23,7 +23,7 @@ const CT = "http://schemas.openxmlformats.org/package/2006/content-types"
 const DRAFTED = new Date(2026, 9, 20, 12).toISOString()
 const BODY = "# Services Agreement\n\n## 1. Term\n\nThe term is one year.\n\n## 2. Fees\n\nThe fees are payable monthly."
 const AGREEMENT: PageFurniture = { header: ["Subject to contract", "Draft: October 20, 2026"], pageNumber: { format: "page", align: "center" } }
-const LETTER: PageFurniture = { header: [], pageNumber: { format: "plain", align: "center" }, firstPage: "blank" }
+const LETTER: PageFurniture = { header: [], pageNumber: { format: "plain", align: "center" }, firstPage: "unnumbered" }
 
 // The render lint reads the firm's date style; an empty workspace keeps the default.
 let workspace: string
@@ -42,18 +42,24 @@ describe("pageFurniture", () => {
   const prefs = (change: Partial<DraftingPreferences> = {}) => ({ ...DEFAULT_DRAFTING, ...change })
 
   test("legends are off by default: each form gets the draft line or nothing, and a page number", () => {
-    expect(pageFurniture("agreement", prefs(), DRAFTED)).toEqual({ header: ["Draft: October 20, 2026"], pageNumber: { format: "plain", align: "center" } })
-    expect(pageFurniture("advice", prefs(), DRAFTED)).toEqual({ header: ["Draft: October 20, 2026"], pageNumber: { format: "plain", align: "center" } })
-    expect(pageFurniture("other", prefs(), DRAFTED)).toEqual({ header: [], pageNumber: { format: "plain", align: "center" } })
-    expect(pageFurniture("letter", prefs(), DRAFTED)).toEqual({ header: [], pageNumber: { format: "plain", align: "center" }, firstPage: "blank" })
-    expect(pageFurniture("notes", prefs(), DRAFTED)).toEqual({ header: [NOTES_MARKING], pageNumber: { format: "plain", align: "center" } })
+    const numbered = { format: "plain", align: "center" }
+    expect(pageFurniture("agreement", prefs(), DRAFTED)).toEqual({ header: ["Draft: October 20, 2026"], pageNumber: numbered })
+    expect(pageFurniture("advice", prefs(), DRAFTED)).toEqual({ header: ["Draft: October 20, 2026"], pageNumber: numbered })
+    expect(pageFurniture("other", prefs(), DRAFTED)).toEqual({ header: [], pageNumber: numbered })
+    // A letter, advising or not, is marked as a draft on every page and numbered from page 2.
+    for (const kind of ["letter", "advice letter"] as const)
+      expect(pageFurniture(kind, prefs(), DRAFTED)).toEqual({ header: ["Draft: October 20, 2026"], pageNumber: numbered, firstPage: "unnumbered" })
+    expect(pageFurniture("notes", prefs(), DRAFTED)).toEqual({ header: [NOTES_MARKING], pageNumber: numbered })
   })
 
   test("each form carries only its own legend, above the draft line", () => {
     const legends = prefs({ agreementLegend: "Subject to contract", adviceLegend: "Privileged & confidential" })
     expect(pageFurniture("agreement", legends, DRAFTED)?.header).toEqual(["Subject to contract", "Draft: October 20, 2026"])
     expect(pageFurniture("advice", legends, DRAFTED)?.header).toEqual(["Privileged & confidential", "Draft: October 20, 2026"])
-    for (const kind of ["letter", "other"] as const) expect(pageFurniture(kind, legends, DRAFTED)?.header).toEqual([])
+    // A letter giving advice carries the advice legend; another letter, to anyone, carries none.
+    expect(pageFurniture("advice letter", legends, DRAFTED)?.header).toEqual(["Privileged & confidential", "Draft: October 20, 2026"])
+    expect(pageFurniture("letter", legends, DRAFTED)?.header).toEqual(["Draft: October 20, 2026"])
+    expect(pageFurniture("other", legends, DRAFTED)?.header).toEqual([])
     expect(pageFurniture("notes", legends, DRAFTED)?.header).toEqual([NOTES_MARKING])
   })
 
@@ -63,6 +69,7 @@ describe("pageFurniture", () => {
     expect(line({ firm: "   " })).toEqual(["Draft: October 20, 2026"])
     expect(line({ dateFormat: "day-month-year" })).toEqual(["Draft: 20 October 2026"])
     expect(line({ dateFormat: "iso" })).toEqual(["Draft: 2026-10-20"])
+    expect(line({ firm: "Doe & Partners LLP", draftLineFirm: false })).toEqual(["Draft: October 20, 2026"])
   })
 
   test("no draft line without a draft time, with an unreadable one, or when turned off", () => {
@@ -74,8 +81,28 @@ describe("pageFurniture", () => {
   test("page numbers follow the format and position, or are left out", () => {
     expect(pageFurniture("other", prefs({ pageNumbers: "page", pageNumberPosition: "right" }))?.pageNumber).toEqual({ format: "page", align: "right" })
     expect(pageFurniture("agreement", prefs({ pageNumbers: "off" }), DRAFTED)).toEqual({ header: ["Draft: October 20, 2026"] })
-    expect(pageFurniture("letter", prefs({ pageNumbers: "off" }), DRAFTED)).toBeUndefined()
+    expect(pageFurniture("advice", prefs({ pageNumbers: "dashed" }), DRAFTED)?.pageNumber).toEqual({ format: "dashed", align: "center" })
+    // Without numbers, a letter has no first page to leave unnumbered.
+    expect(pageFurniture("letter", prefs({ pageNumbers: "off" }), DRAFTED)).toEqual({ header: ["Draft: October 20, 2026"] })
+    expect(pageFurniture("letter", prefs({ pageNumbers: "off", draftLine: false }), DRAFTED)).toBeUndefined()
     expect(pageFurniture("other", prefs({ pageNumbers: "off" }), DRAFTED)).toBeUndefined()
+  })
+
+  test("a firm that does not number page 1 leaves every first page unnumbered; a letter's never is", () => {
+    for (const kind of ["agreement", "advice", "other", "notes", "letter"] as const)
+      expect(pageFurniture(kind, prefs({ numberFirstPage: false }), DRAFTED)?.firstPage).toBe("unnumbered")
+    expect(pageFurniture("letter", prefs({ numberFirstPage: true }), DRAFTED)?.firstPage).toBe("unnumbered")
+    expect(pageFurniture("agreement", prefs({ numberFirstPage: false, pageNumbers: "off" }), DRAFTED)).toEqual({ header: ["Draft: October 20, 2026"] })
+  })
+
+  test("what the request asks of a document replaces the firm's settings for it", () => {
+    const firm = prefs({ agreementLegend: "Subject to contract", adviceLegend: "Privileged & confidential" })
+    expect(pageFurniture("agreement", firm, DRAFTED, { legend: "Without prejudice" })?.header).toEqual(["Without prejudice", "Draft: October 20, 2026"])
+    expect(pageFurniture("letter", firm, DRAFTED, { legend: "Without prejudice save as to costs" })?.header).toEqual(["Without prejudice save as to costs", "Draft: October 20, 2026"])
+    expect(pageFurniture("advice letter", firm, DRAFTED, { legend: "" })?.header).toEqual(["Draft: October 20, 2026"])
+    expect(pageFurniture("agreement", firm, DRAFTED, { draftLine: false })?.header).toEqual(["Subject to contract"])
+    expect(pageFurniture("agreement", firm, DRAFTED, { pageNumbers: false })).toEqual({ header: ["Subject to contract", "Draft: October 20, 2026"] })
+    expect(pageFurniture("other", prefs(), DRAFTED, { pageNumbers: false })).toBeUndefined()
   })
 
   test("the notes marking can be turned off", () => {
@@ -122,7 +149,7 @@ describe("applyPageFurniture", () => {
     expect(await dx.convertDocxToHtml(bytes)).toContain("The term is one year.")
   }, 120000)
 
-  test("a letter's first page has explicit empty parts and the title-page switch", async () => {
+  test("an unnumbered first page has its own parts, the same header and an empty footer, and the title-page switch", async () => {
     const bytes = applyPageFurniture((await renderMarkdownToDocx(BODY)).bytes, { ...LETTER, header: ["Private"] })
     const parts = unzipSync(bytes)
     const section = sectPr(bytes)
@@ -132,7 +159,7 @@ describe("applyPageFurniture", () => {
     const byType = Object.fromEntries(elementChildren(section).slice(0, 4).map(node => [`${node.localName}:${node.getAttributeNS(W, "type")}`, paragraphs(story(node))]))
     expect(byType).toEqual({
       "headerReference:default": [{ style: "Header", align: "right", text: "Private" }],
-      "headerReference:first": [{ style: "Header", align: "right", text: "" }],
+      "headerReference:first": [{ style: "Header", align: "right", text: "Private" }],
       // The default footer first appears on page 2.
       "footerReference:default": [{ style: "Footer", align: "center", text: "2" }],
       "footerReference:first": [{ style: "Footer", align: "center", text: "" }],
@@ -145,6 +172,17 @@ describe("applyPageFurniture", () => {
     const header = strict(unzipSync(bytes)["word/header1.xml"]!)
     expect(all(header, W, "r")).toHaveLength(2)
     expect(paragraphs(header).map(row => row.text)).toEqual([text, "Tab here and a control character"])
+  }, 120000)
+
+  test("a dashed page number puts the PAGE field between dashes", async () => {
+    const footer = strict(unzipSync(applyPageFurniture((await renderMarkdownToDocx(BODY)).bytes, { header: [], pageNumber: { format: "dashed", align: "center" } }))["word/footer1.xml"]!)
+    expect(paragraphs(footer)).toEqual([{ style: "Footer", align: "center", text: "- 1 -" }])
+    expect(all(footer, W, "instrText").map(node => node.textContent)).toEqual([" PAGE "])
+  }, 120000)
+
+  test("without a page number there is no first-page switch, even when asked for an unnumbered first page", async () => {
+    const bytes = applyPageFurniture((await renderMarkdownToDocx(BODY)).bytes, { header: ["Draft: October 20, 2026"], firstPage: "unnumbered" })
+    expect(childNames(sectPr(bytes))).toEqual(["headerReference", "pgSz", "pgMar"])
   }, 120000)
 
   test("empty header lines with a page number write only the footer", async () => {
@@ -170,7 +208,7 @@ describe("applyPageFurniture", () => {
     const rendered = (await renderMarkdownToDocx(BODY)).bytes
     for (const own of [AGREEMENT, { header: [], pageNumber: { format: "plain", align: "center" } } satisfies PageFurniture]) {
       const furnished = applyPageFurniture(rendered, own)
-      expect(applyPageFurniture(furnished, { header: ["Privileged & confidential"], pageNumber: { format: "page", align: "right" }, firstPage: "blank" })).toBe(furnished)
+      expect(applyPageFurniture(furnished, { header: ["Privileged & confidential"], pageNumber: { format: "page", align: "right" }, firstPage: "unnumbered" })).toBe(furnished)
     }
     // A section break's own header counts too.
     const parts = unzipSync(rendered)

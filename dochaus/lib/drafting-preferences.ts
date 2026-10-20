@@ -44,9 +44,12 @@ export type DraftingPreferences = {
   // Page furniture (dochaus/lib/page-furniture.ts), read at render and never
   // rendered into drafting.md, so a change re-keys no running draft. Legends
   // have legal effect: they are the firm's own text, empty (none) by default.
-  pageNumbers: "plain" | "page" | "off"
+  pageNumbers: "plain" | "page" | "dashed" | "off"
   pageNumberPosition: "center" | "right"
+  // A letter's first page is never numbered, whatever this says.
+  numberFirstPage: boolean
   draftLine: boolean
+  draftLineFirm: boolean
   agreementLegend: string
   adviceLegend: string
   notesMarking: boolean
@@ -83,7 +86,9 @@ export const DEFAULT_DRAFTING: DraftingPreferences = {
   telemetry: { retention_days: 90, retention_days_source: "default", rate_overrides: {} },
   pageNumbers: "plain",
   pageNumberPosition: "center",
+  numberFirstPage: true,
   draftLine: true,
+  draftLineFirm: true,
   agreementLegend: "",
   adviceLegend: "",
   notesMarking: true,
@@ -118,9 +123,11 @@ export function normalizePreferences(value: unknown): DraftingPreferences {
         ? "interactive"
         : DEFAULT_DRAFTING.materialDecisionCheckpoints,
     telemetry: normalizeTelemetry(input.telemetry),
-    pageNumbers: input.pageNumbers === "page" || input.pageNumbers === "off" ? input.pageNumbers : DEFAULT_DRAFTING.pageNumbers,
+    pageNumbers: input.pageNumbers === "page" || input.pageNumbers === "dashed" || input.pageNumbers === "off" ? input.pageNumbers : DEFAULT_DRAFTING.pageNumbers,
     pageNumberPosition: input.pageNumberPosition === "right" ? "right" : DEFAULT_DRAFTING.pageNumberPosition,
+    numberFirstPage: input.numberFirstPage !== false,
     draftLine: input.draftLine !== false,
+    draftLineFirm: input.draftLineFirm !== false,
     agreementLegend: normalizeLegend(input.agreementLegend),
     adviceLegend: normalizeLegend(input.adviceLegend),
     notesMarking: input.notesMarking !== false,

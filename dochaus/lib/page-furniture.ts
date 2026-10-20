@@ -11,40 +11,53 @@ import type { DraftingPreferences } from "./drafting-preferences"
 // keeps it.
 
 /** A planned document's form, from its outline "Form:" line. */
-export type DocumentForm = "agreement" | "advice" | "letter" | "other"
-export const DOCUMENT_FORMS: readonly DocumentForm[] = ["agreement", "advice", "letter", "other"]
+export type DocumentForm = "agreement" | "advice" | "letter" | "advice letter" | "other"
+export const DOCUMENT_FORMS: readonly DocumentForm[] = ["agreement", "advice", "letter", "advice letter", "other"]
+
+/** A letter, advising or not: numbered from its second page, its planning
+ * labels unheaded. */
+export function isLetter(form: string | undefined) {
+  return form === "letter" || form === "advice letter"
+}
 
 /** What a rendered file is: a planned document's form, or the run's internal drafting notes. */
 export type FurnitureKind = DocumentForm | "notes"
 
+/** What a request asks of one document's furniture in place of the firm's
+ * settings. `legend` is the request's own words, or "" for none. */
+export type FurnitureOverrides = { legend?: string; draftLine?: false; pageNumbers?: false }
+
 /** `header` lines are written in order at the top of every page; `pageNumber`
- * goes in the footer; `firstPage: "blank"` leaves the first page without either
- * (a letter is numbered from its second page). */
+ * goes in the footer; `firstPage: "unnumbered"` leaves the first page's number
+ * out (a letter, or a firm that does not number page 1), keeping its header. */
 export type PageFurniture = {
   header: string[]
-  pageNumber?: { format: "plain" | "page"; align: "center" | "right" }
-  firstPage?: "blank"
+  pageNumber?: { format: "plain" | "page" | "dashed"; align: "center" | "right" }
+  firstPage?: "unnumbered"
 }
 
 export const NOTES_MARKING = "Internal drafting notes — not for circulation"
 
-type FurniturePreferences = Pick<DraftingPreferences, "firm" | "dateFormat" | "pageNumbers" | "pageNumberPosition" | "draftLine" | "agreementLegend" | "adviceLegend" | "notesMarking">
+type FurniturePreferences = Pick<DraftingPreferences, "firm" | "dateFormat" | "pageNumbers" | "pageNumberPosition" | "numberFirstPage" | "draftLine" | "draftLineFirm" | "agreementLegend" | "adviceLegend" | "notesMarking">
 
-/** The furniture a kind of file carries under the firm's settings, or
- * undefined when it carries none. `draftedAt` is the time the draft was made
- * (an ISO timestamp kept in run state, never the render clock); without it
- * there is no draft line. */
-export function pageFurniture(kind: FurnitureKind, prefs: FurniturePreferences, draftedAt?: string): PageFurniture | undefined {
-  const legend = kind === "agreement" ? prefs.agreementLegend : kind === "advice" ? prefs.adviceLegend : ""
-  const date = draftedAt && prefs.draftLine && (kind === "agreement" || kind === "advice") ? formatDraftDate(draftedAt, prefs.dateFormat) : undefined
+/** The furniture a kind of file carries under the firm's settings and what the
+ * request asks of it, or undefined when it carries none. `draftedAt` is the
+ * time the draft was made (an ISO timestamp kept in run state, never the
+ * render clock); without it there is no draft line. */
+export function pageFurniture(kind: FurnitureKind, prefs: FurniturePreferences, draftedAt?: string, overrides: FurnitureOverrides = {}): PageFurniture | undefined {
+  const legend = overrides.legend ?? (kind === "agreement" ? prefs.agreementLegend : kind === "advice" || kind === "advice letter" ? prefs.adviceLegend : "")
+  const drafted = draftedAt && prefs.draftLine && overrides.draftLine !== false && (kind === "agreement" || kind === "advice" || isLetter(kind))
+  const date = drafted ? formatDraftDate(draftedAt, prefs.dateFormat) : undefined
+  const firm = prefs.draftLineFirm ? prefs.firm.trim() : ""
   const header = [
     ...(legend ? [legend] : []),
-    ...(date ? [`${prefs.firm.trim() ? `${prefs.firm.trim()} draft` : "Draft"}: ${date}`] : []),
+    ...(date ? [`${firm ? `${firm} draft` : "Draft"}: ${date}`] : []),
     ...(kind === "notes" && prefs.notesMarking ? [NOTES_MARKING] : []),
   ]
-  const pageNumber = prefs.pageNumbers === "off" ? undefined : { format: prefs.pageNumbers, align: prefs.pageNumberPosition }
+  const pageNumber = prefs.pageNumbers === "off" || overrides.pageNumbers === false ? undefined : { format: prefs.pageNumbers, align: prefs.pageNumberPosition }
   if (!header.length && !pageNumber) return undefined
-  return { header, ...(pageNumber ? { pageNumber } : {}), ...(kind === "letter" ? { firstPage: "blank" as const } : {}) }
+  const unnumbered = pageNumber && (isLetter(kind) || !prefs.numberFirstPage)
+  return { header, ...(pageNumber ? { pageNumber } : {}), ...(unnumbered ? { firstPage: "unnumbered" as const } : {}) }
 }
 
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
@@ -67,14 +80,15 @@ const XML = "http://www.w3.org/XML/1998/namespace"
 const BODY = "word/document.xml"
 const RELS = "word/_rels/document.xml.rels"
 const TYPES = "[Content_Types].xml"
-type Row = { text: string; align: "center" | "right"; page?: string }
+type Row = { text: string; align: "center" | "right"; page?: string; after?: string }
 
 /** Writes `furniture` into a rendered body's last section as new header and
  * footer parts: the header lines right-aligned, one paragraph each, and the
- * page number in its own footer paragraph, a PAGE field after any "Page ". No
- * NUMPAGES: the combined memo and body file restarts the body at 1, so a page
- * count would count the memo. A first page left blank gets explicit empty
- * first-page parts, so no reader falls back to the others. A document that
+ * page number in its own footer paragraph, a PAGE field after any "Page " or
+ * between dashes. No NUMPAGES: the combined memo and body file restarts the
+ * body at 1, so a page count would count the memo. An unnumbered first page
+ * gets explicit first-page parts, the same header and an empty footer, so no
+ * reader falls back to the others. A document that
  * already has a header or footer anywhere (a template's or an uploaded file's
  * own) is returned unchanged. Pure; fixed zip entry times keep identical input
  * byte-identical. */
@@ -90,7 +104,7 @@ export function applyPageFurniture(docx: Uint8Array, furniture: PageFurniture): 
   const types = parse(parts[TYPES]!)
   const ids = new Set(Array.from(relationships.getElementsByTagNameNS(R, "Relationship")).map(row => row.getAttribute("Id")))
   const references: Element[] = []
-  const blank = furniture.firstPage === "blank"
+  const unnumbered = furniture.firstPage === "unnumbered" && furniture.pageNumber !== undefined
   const add = (kind: "header" | "footer", type: "default" | "first", rows: Row[]) => {
     let n = 1
     while (parts[`word/${kind}${n}.xml`]) n++
@@ -113,15 +127,16 @@ export function applyPageFurniture(docx: Uint8Array, furniture: PageFurniture): 
     references.push(reference)
   }
   if (furniture.header.length) {
-    add("header", "default", furniture.header.map(text => ({ text, align: "right" })))
-    if (blank) add("header", "first", [{ text: "", align: "right" }])
+    const rows = furniture.header.map(text => ({ text, align: "right" as const }))
+    add("header", "default", rows)
+    if (unnumbered) add("header", "first", rows)
   }
   if (furniture.pageNumber) {
     const { format, align } = furniture.pageNumber
     // The cached result is what a reader that does not lay out pages shows: the
     // number of the first page this footer appears on.
-    add("footer", "default", [{ text: format === "page" ? "Page " : "", align, page: blank ? "2" : "1" }])
-    if (blank) add("footer", "first", [{ text: "", align }])
+    add("footer", "default", [{ text: format === "page" ? "Page " : format === "dashed" ? "- " : "", align, page: unnumbered ? "2" : "1", ...(format === "dashed" ? { after: " -" } : {}) }])
+    if (unnumbered) add("footer", "first", [{ text: "", align }])
   }
   // Header and footer references come first in a section's properties; the
   // title-page switch goes before the elements the schema puts after it.
@@ -129,7 +144,7 @@ export function applyPageFurniture(docx: Uint8Array, furniture: PageFurniture): 
   for (const reference of references) section.insertBefore(reference, first)
   // Declared once on the root, not on every reference.
   if (!document.documentElement.lookupNamespaceURI("r")) document.documentElement.setAttributeNS("http://www.w3.org/2000/xmlns/", "xmlns:r", O)
-  if (blank) {
+  if (unnumbered) {
     const existing = elementChildren(section).find(node => node.localName === "titlePg")
     if (existing) existing.removeAttributeNS(W, "val")
     else section.insertBefore(document.createElementNS(W, "w:titlePg"), elementChildren(section)
@@ -144,8 +159,8 @@ export function applyPageFurniture(docx: Uint8Array, furniture: PageFurniture): 
 
 // One header or footer part, a paragraph per row in the part's style. Text goes
 // in as text nodes, never as markup, as one line without the characters XML 1.0
-// forbids (a firm name is free text). A row with `page` ends in a PAGE field
-// cached as it. Serialized as Docxodus saves a part it has read (its declaration,
+// forbids (a firm name is free text). A row with `page` has a PAGE field cached
+// as it, then any `after` text. Serialized as Docxodus saves a part it has read (its declaration,
 // a space before "/>"; xmldom escapes text as it does), so a later engine save,
 // as in applying amendments, leaves the part byte-identical.
 function storyPart(kind: "header" | "footer", rows: Row[]) {
@@ -172,6 +187,7 @@ function storyPart(kind: "header" | "footer", rows: Row[]) {
     make(make(paragraph, "r"), "fldChar", { fldCharType: "separate" })
     text(paragraph, "t", row.page)
     make(make(paragraph, "r"), "fldChar", { fldCharType: "end" })
+    if (row.after) text(paragraph, "t", row.after)
   }
   return strToU8(new XMLSerializer().serializeToString(doc).replaceAll("/>", " />"))
 }

@@ -138,10 +138,11 @@ test("an existing invalid saved drafting value cannot block the model context ho
 })
 
 test("page layout settings default to numbered pages and no legend, and stay out of model instructions", () => {
-  const prefs = normalizePreferences({ pageNumbers: "roman", pageNumberPosition: "left", draftLine: "no", notesMarking: 0, agreementLegend: 7 })
-  expect([prefs.pageNumbers, prefs.pageNumberPosition, prefs.draftLine, prefs.notesMarking, prefs.agreementLegend, prefs.adviceLegend]).toEqual(["plain", "center", true, true, "", ""])
-  const set = normalizePreferences({ pageNumbers: "off", pageNumberPosition: "right", draftLine: false, notesMarking: false, agreementLegend: "Subject to contract" })
-  expect([set.pageNumbers, set.pageNumberPosition, set.draftLine, set.notesMarking]).toEqual(["off", "right", false, false])
+  const prefs = normalizePreferences({ pageNumbers: "roman", pageNumberPosition: "left", numberFirstPage: "no", draftLine: "no", draftLineFirm: 0, notesMarking: 0, agreementLegend: 7 })
+  expect([prefs.pageNumbers, prefs.pageNumberPosition, prefs.numberFirstPage, prefs.draftLine, prefs.draftLineFirm, prefs.notesMarking, prefs.agreementLegend, prefs.adviceLegend]).toEqual(["plain", "center", true, true, true, true, "", ""])
+  const set = normalizePreferences({ pageNumbers: "off", pageNumberPosition: "right", numberFirstPage: false, draftLine: false, draftLineFirm: false, notesMarking: false, agreementLegend: "Subject to contract" })
+  expect([set.pageNumbers, set.pageNumberPosition, set.numberFirstPage, set.draftLine, set.draftLineFirm, set.notesMarking]).toEqual(["off", "right", false, false, false, false])
+  expect(normalizePreferences({ pageNumbers: "dashed" }).pageNumbers).toBe("dashed")
   expect(renderInstructions(set)).toBe(renderInstructions(DEFAULT_DRAFTING))
 })
 
