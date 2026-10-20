@@ -18,8 +18,9 @@ export function chatCompare(compares: VersionCompare[] | undefined) {
 type Segment = { markdown: string } | { entry: string; ids: string[] }
 
 // An entry opens with its change ids in bold, "**C3** · …" or "- **C2, C4** · …",
-// and runs to a blank line or the next block.
-const ENTRY = /^ {0,3}(?:[-*+]\s+|\d+[.)]\s+)?(\*\*\s*[CU]\d+\b[^*]*\*\*.*)$/
+// and runs to a blank line or the next block. P-ids are the earlier version's
+// own tracked changes.
+const ENTRY = /^ {0,3}(?:[-*+]\s+|\d+[.)]\s+)?(\*\*\s*[CUP]\d+\b[^*]*\*\*.*)$/
 const BLOCK = /^\s*(?:[-*+]\s|\d+[.)]\s|#|\||>)/
 
 export function answerSegments(text: string): Segment[] {
@@ -27,7 +28,7 @@ export function answerSegments(text: string): Segment[] {
   let markdown: string[] = []
   let entry: string[] | undefined
   const close = () => {
-    if (entry) out.push({ entry: entry.join("\n"), ids: [...new Set(entry[0]!.split("**")[1]!.match(/\b[CU]\d+\b/g))] })
+    if (entry) out.push({ entry: entry.join("\n"), ids: [...new Set(entry[0]!.split("**")[1]!.match(/\b[CUP]\d+\b/g))] })
     entry = undefined
   }
   for (const line of text.split("\n")) {

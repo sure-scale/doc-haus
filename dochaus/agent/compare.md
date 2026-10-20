@@ -95,8 +95,9 @@ No preamble. In this order, leaving out empty parts:
    entry per U-id, written as a change entry (below). If there are none, or the
    later version has no tracked changes at all, say so in one line.
 3. **Tracked changes in <earlier version>** (when the tool lists any of its
-   proposals): one line per P-id with its outcome as the tool states it, and
-   the U-id it gives.
+   proposals): one entry per P-id, its own paragraph, led by the id in bold:
+   `**P1** · <outcome as the tool states it, with the U-id it gives>`. The chat
+   draws the text the proposal inserts or deletes under it.
 4. **Changes**. With `compare-versions`, one entry per substantive change, its
    own paragraph, in document order:
 

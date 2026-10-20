@@ -113,12 +113,13 @@ export default function BlacklineViewer({ matterId, params, focus, onClose }: { 
     if (root) focusChange(root, hunk)
   }
 
-  // Opened from a chat answer's change: show it in the page and in the list.
+  // Opened from a chat answer's change: show it in the list and, unless it is
+  // one of the earlier version's tracked changes, in the page.
   useEffect(() => {
-    const hunk = focus && html && comparison && [...comparison.untracked, ...comparison.changes].find((change) => change.id === focus)
-    if (!hunk) return
-    document.getElementById(`compare-${hunk.id}`)?.scrollIntoView({ block: "nearest" })
-    showChange(hunk)
+    if (!focus || !html || !comparison) return
+    document.getElementById(`compare-${focus}`)?.scrollIntoView({ block: "nearest" })
+    const hunk = [...comparison.untracked, ...comparison.changes].find((change) => change.id === focus)
+    if (hunk) showChange(hunk)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focus, html, comparison])
 

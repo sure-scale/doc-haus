@@ -219,7 +219,12 @@ test("each of left's proposals is listed with its outcome between the untracked 
   expect(output).not.toContain("[injection warning]")
   expect((result.metadata!.compare as { counts: unknown }).counts).toEqual({ changes: 3, untracked: 1, proposals: 3 })
   expect(result.metadata!.page).toEqual({ offset: 0, items: 7, total_items: 7, next_offset: null })
-  expect((result.metadata!.hunks as { id: string }[]).map(hunk => hunk.id)).toEqual(["U1", "C1", "C2", "C3"])
+  // A proposal is drawn in the chat as the text it inserts or deletes.
+  expect((result.metadata!.hunks as { id: string }[]).map(hunk => hunk.id)).toEqual(["U1", "P1", "P2", "P3", "C1", "C2", "C3"])
+  expect((result.metadata!.hunks as unknown[]).slice(1, 3)).toEqual([
+    { id: "P1", kind: "inserted", after: "Title passes on delivery." },
+    { id: "P2", kind: "deleted", before: ", without set-off" },
+  ])
 })
 
 test("a route without proposals, or with none, lists no proposals section and no outcome line", async () => {

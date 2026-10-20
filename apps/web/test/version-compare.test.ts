@@ -417,6 +417,7 @@ describe("chat compare card", () => {
     { id: "U1", kind: "modified", before: "Payment is due within thirty days.", after: "Payment is due within sixty days." },
     { id: "C1", kind: "inserted", after: "Delivery is complete on signed receipt." },
     { id: "C2", kind: "deleted", before: "Draft for discussion" },
+    { id: "P1", kind: "inserted", after: "Title passes on delivery." },
   ]
 
   test("reads the tool's compare metadata as the blackline to open", () => {
@@ -437,7 +438,7 @@ describe("chat compare card", () => {
 
   test("each page's changes join one comparison, once each, and malformed ones are skipped", () => {
     const junk = [{ id: "C9", kind: "rewritten", after: "x" }, { id: 3, kind: "inserted", after: "x" }, { id: "C8", kind: "inserted" }, "C7"]
-    const { compares } = turnOf([{ ...meta, hunks: hunks.slice(0, 2) }, { ...meta, hunks: [hunks[1], hunks[2], ...junk] }])
+    const { compares } = turnOf([{ ...meta, hunks: hunks.slice(0, 2) }, { ...meta, hunks: [...hunks.slice(1), ...junk] }])
     expect(compares).toHaveLength(1)
     expect(compares![0]!.hunks).toEqual(hunks)
     const other = { compare: { ...meta.compare, right: "Their draft (2).docx" }, hunks: [hunks[0]] }
@@ -452,6 +453,10 @@ describe("chat compare card", () => {
       "",
       "- **U1** · 4.2 Payment — Material — Favors the Supplier: payment moves out",
       "  without a tracked change.",
+      "",
+      "**Tracked changes in Our draft**",
+      "",
+      "- **P1** · accepted.",
       "",
       "**Changes**",
       "",
@@ -474,6 +479,8 @@ describe("chat compare card", () => {
       at("<strong>U1</strong> · 4.2 Payment"),
       at("without a tracked change."),
       at("Payment is due within <ins>sixty</ins><del>thirty</del> days."),
+      at("<strong>P1</strong> · accepted."),
+      at("<ins>Title passes on delivery.</ins>"),
       at("<strong>Changes</strong>"),
       at("<strong>C1, C2</strong>"),
       at(">C1</span>"),
@@ -486,8 +493,8 @@ describe("chat compare card", () => {
     ]
     expect(order).toEqual([...order].sort((a, b) => a - b))
     expect(html).not.toContain("<li><strong>U1")
-    expect(html.match(/class="compare-redline"/g)).toHaveLength(3)
-    expect(html.match(/Show in blackline/g)).toHaveLength(3)
+    expect(html.match(/class="compare-redline"/g)).toHaveLength(4)
+    expect(html.match(/Show in blackline/g)).toHaveLength(4)
   })
 
   test("the chat answer draws redlines only for one comparison with changes listed", () => {

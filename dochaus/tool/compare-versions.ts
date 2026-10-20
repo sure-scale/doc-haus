@@ -190,7 +190,7 @@ export default tool({
           options: body.options,
           counts: { changes: body.changes.length, untracked: body.untracked.length, proposals: proposals.length },
         },
-        hunks: page.flatMap(item => "hunk" in item && item.hunk ? [item.hunk] : []),
+        hunks: page.flatMap(item => item.hunk ? [item.hunk] : []),
         page: range,
         // Tool-owned page bound: native output truncation leaves it intact.
         truncated: next_offset !== null,
@@ -222,7 +222,8 @@ function prepare(hunk: Hunk, section: "untracked" | "changes", markUntracked: bo
     ...(before !== undefined ? [`  before: ${block(before)}`] : []),
     ...(after !== undefined ? [`  after: ${block(after)}`] : []),
   ].join("\n")
-  // The chat draws the change as a redline from the whole paragraph text.
+  // The chat draws the change as a redline from the whole paragraph text, and
+  // a proposal as the text it inserts or deletes.
   const whole = [before, after].every(side => side === undefined || Array.from(side).length <= REDLINE_CAP)
   const shown = whole ? { id: hunk.id, kind: hunk.kind, ...before !== undefined && { before }, ...after !== undefined && { after } } : undefined
   return { id: hunk.id, section, rules, text, hunk: shown }
@@ -244,7 +245,9 @@ function prepareProposal(proposal: Proposal, editRef: (id: string) => string) {
     ...(rules.length ? [`flagged: ${rules.join(", ")}`] : []),
     where({ ...proposal.location, heading }),
   ]
-  return { id: proposal.id, section: "proposals" as const, rules, text: `${proposal.id} · ${tags.join(" · ")}\n  text: ${block(text ?? "")}` }
+  const whole = text !== undefined && Array.from(text).length <= REDLINE_CAP
+  const hunk = whole ? { id: proposal.id, kind: proposal.kind, ...proposal.kind === "inserted" ? { after: text } : { before: text } } : undefined
+  return { id: proposal.id, section: "proposals" as const, rules, text: `${proposal.id} · ${tags.join(" · ")}\n  text: ${block(text ?? "")}`, hunk }
 }
 
 function where(location: Hunk["location"]) {
