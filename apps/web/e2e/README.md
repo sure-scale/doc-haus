@@ -97,7 +97,9 @@ bun apps/web/e2e/page-layout.ts
 
 At 1440×1000 and 400×860 it sets every Page layout control in Settings →
 Drafting and checks the agreement page preview and the saved body: flat keys,
-with no new nested object. In onboarding's details step it checks that default
+with no new nested object. The first-page and firm-name checkboxes must hide
+while page numbers or the draft line are off and keep their value when shown
+again. In onboarding's details step it checks that default
 jurisdictions only mark suggested legends, that nothing is chosen for the
 lawyer, that the preview follows the firm name and legend, and that Save sends
 the two legends as flat keys, empty when left alone. The clock is fixed so the

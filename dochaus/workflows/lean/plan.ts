@@ -1,4 +1,5 @@
-import { DOCUMENT_FORMS, type DocumentForm } from "../../lib/page-furniture"
+import { normalizeLegend } from "../../lib/drafting-preferences"
+import { DOCUMENT_FORMS, isLetter, type DocumentForm } from "../../lib/page-furniture"
 import { TOOL_SYNTAX_ISSUE, printedToolCall } from "./checks"
 import { REVIEW_STAGES, readLeanJson, readLeanText, writeLeanText, type ReviewStageID, type StageID } from "./state"
 
@@ -36,12 +37,15 @@ export type LeftOutPart = { part: string; reason: string }
  * "Executed by:" line; an empty list says it takes no legal act, and an absent
  * one that the outline did not say. `form` is the kind of document it is, from
  * a "Form:" line; it sets the document's page furniture, and a letter's parts
- * are planned unheaded unless the outline shows them. Legacy plans
- * without these fields retain their existing behaviour. The title is the
- * document's own title and never carries the file name. */
+ * are planned unheaded unless the outline shows them. `furniture` is what the
+ * request asks of its page furniture beyond the firm's settings, from "Legend:"
+ * and "Page numbers: none" lines; it is rendered, never drafted.
+ * Legacy plans without these fields retain their existing behaviour. The title
+ * is the document's own title and never carries the file name. */
 export type PlaybookReview = { sources: { source_id: string; quote: string }[]; reason: string }
 export type PlannedDocument = {
   id: DocID; title: string; purpose: string; parts: PlannedPart[]; playbook_review?: PlaybookReview; mode?: "new" | "revise"; deliverable?: "body" | "redline" | "combined"; template?: string; comparison?: string; left_out?: LeftOutPart[]; file?: string; executed_by?: string[]; form?: DocumentForm
+  furniture?: { legend?: string; page_numbers?: false }
 }
 export type ActingFor = { party: string; stated: boolean }
 /** `memo` is the name of the memo the request asks for and `notes_file` the
@@ -130,11 +134,12 @@ export function plannedDocument(directory: string, id: DocID): PlannedDocument |
 }
 
 /** Output naming, the requested memo's name included, does not change operative
- * drafting inputs. Consumers of the full delivery plan (notes, package review
- * and registration) retain it. */
+ * drafting inputs, nor does page furniture, which is rendered and never drafted.
+ * Consumers of the full delivery plan (notes, package review and registration)
+ * retain them; the draft step's key keeps the furniture it renders. */
 export function operativeDocument(document: PlannedDocument | undefined) {
   if (!document) return null
-  const { file, deliverable, ...operative } = document
+  const { file, deliverable, furniture, ...operative } = document
   return operative
 }
 
@@ -183,6 +188,12 @@ export function earlierDocuments(directory: string, id: DocID): PlannedDocument[
  * attempt the document stands with no form, as a legacy plan does. A letter's
  * parts are planned unheaded, except a part with its own "Display heading:"
  * line, unless a "Headings: shown" line under its title keeps their labels.
+ * Optional "Legend:" and "Page numbers: none" lines under a title give what the
+ * request asks of that document's page furniture; the first of each stands. A
+ * legend must be the request's own words and is shown with the firm's, and
+ * "Legend: none" asks nothing: a request never removes the firm's legend. An
+ * ungrounded legend or another page numbers value is retry feedback and, on the
+ * last attempt, dropped.
  * An optional "Memo:" line before the first title names, in the request's own
  * words, a memo the request asks to accompany the documents. It must be words
  * the request uses and fit in a file name; otherwise it is retry feedback and,
@@ -196,7 +207,7 @@ export function parsePlan(reply: string, request?: string): Checked<LeanOutline>
   if (!reply.trim()) return { issues: [`The reply was empty. ${OUTLINE_SHAPE}`] }
   if (printedToolCall(reply)) return { issues: [TOOL_SYNTAX_ISSUE] }
   const documents: {
-    title: string; purpose: string[]; playbook_review?: PlaybookReview; mode?: "new" | "revise"; deliverable?: "body" | "redline" | "combined"; template?: string; comparison?: string; file?: string; executed_by?: string[]; form?: string; headings?: "shown"; left_out: LeftOutPart[]; parts: { heading: string; scope: string[]; display_heading?: string }[]
+    title: string; purpose: string[]; playbook_review?: PlaybookReview; mode?: "new" | "revise"; deliverable?: "body" | "redline" | "combined"; template?: string; comparison?: string; file?: string; executed_by?: string[]; form?: string; headings?: "shown"; furniture: FurnitureLines; left_out: LeftOutPart[]; parts: { heading: string; scope: string[]; display_heading?: string }[]
   }[] = []
   const acting: string[] = []
   const memos: string[] = []
@@ -228,6 +239,10 @@ export function parsePlan(reply: string, request?: string): Checked<LeanOutline>
     // The value as written, so an unknown form can be named back in the retry.
     const form = /^form\s*:\s*(.*)$/i.exec(line.replace(/^[-*]\s+/, "").replace(/[*`]/g, ""))?.[1]?.replace(/^["'“]+|["'”.\s]+$/g, "").trim()
     const headingsShown = /^headings\s*:\s*shown[.\s]*$/i.test(line.replace(/^[-*]\s+/, "").replace(/[*`]/g, ""))
+    // Furniture values as written; documentFurniture cleans and checks them.
+    const unmarked = line.replace(/^[-*]\s+/, "").replace(/[*`]/g, "")
+    const legend = /^legend\s*:\s*(.*)$/i.exec(unmarked)?.[1]
+    const pageNumbers = /^page\s+numbers\s*:\s*(.*)$/i.exec(unmarked)?.[1]
     const playbook = /^[-*]?\s*playbook review\s*:\s*(.+)$/i.exec(line)?.[1]
     const displayHeading = /^display heading\s*:\s*(.*)$/i.exec(line)?.[1]
     if (playbook && current && !current.parts.length) {
@@ -237,7 +252,7 @@ export function parsePlan(reply: string, request?: string): Checked<LeanOutline>
       else selectionIssues.push(`In "${current.title}", Playbook review must be one JSON object with sources [{source_id,quote}] and a nonempty reason, once per document.`)
       continue
     }
-    if (title) documents.push({ title: headingText(title), purpose: [], left_out: [], parts: [] })
+    if (title) documents.push({ title: headingText(title), purpose: [], furniture: {}, left_out: [], parts: [] })
     else if (heading && current) current.parts.push({ heading: headingText(heading), scope: [] })
     else if (displayHeading !== undefined && current?.parts.length) current.parts.at(-1)!.display_heading = /^none$/i.test(displayHeading.trim()) ? "" : headingText(displayHeading)
     else if (mode && current && !current.parts.length) current.mode = mode
@@ -248,6 +263,8 @@ export function parsePlan(reply: string, request?: string): Checked<LeanOutline>
     else if (executed !== undefined && current && !current.parts.length) current.executed_by = executingParties(executed, current.executed_by)
     else if (form !== undefined && current && !current.parts.length) current.form = form
     else if (headingsShown && current && !current.parts.length) current.headings = "shown"
+    else if (legend !== undefined && current && !current.parts.length) current.furniture.legend ??= legend
+    else if (pageNumbers !== undefined && current && !current.parts.length) current.furniture.page_numbers ??= pageNumbers
     else if (leftOut && current) current.left_out.push(leftOutPart(leftOut))
     else if (line && !line.startsWith("#") && current)
       (current.parts.at(-1)?.scope ?? current.purpose).push(line.replace(/^[-*]\s+/, ""))
@@ -281,10 +298,12 @@ export function parsePlan(reply: string, request?: string): Checked<LeanOutline>
     ...(combined.length > 1 ? [combinedMoreThanOne(combined)] : []),
   ]
   const forms = documents.map(document => documentForm(document.form))
+  const furniture = documents.map(document => documentFurniture(plainTitle(document.title), document.furniture, request))
   return {
     issues: [
       ...(!acting.length ? [ACTING_FOR_MISSING] : ungrounded ? [actingForUngrounded(party)] : []),
       ...documents.flatMap((document, index) => forms[index] ? [] : [formIssue(plainTitle(document.title), document.form)]),
+      ...furniture.flatMap(row => row.issues),
       ...documents.flatMap(document => titleIssues(document.title)),
       ...files.flatMap(file => file.issues),
       ...(repeatedFiles.length ? [`These file names are given to more than one document: ${repeatedFiles.map(name => `"${name}"`).join(", ")}. Give each document its own file name.`] : []),
@@ -298,7 +317,7 @@ export function parsePlan(reply: string, request?: string): Checked<LeanOutline>
         purpose: document.purpose.join(" "),
         ...(document.playbook_review ? { playbook_review: document.playbook_review } : {}),
         // A letter reads as one letter: its planning labels are not its headings.
-        parts: document.parts.map(part => plannedPart(part, forms[index] === "letter" && !document.headings)),
+        parts: document.parts.map(part => plannedPart(part, isLetter(forms[index]) && !document.headings)),
         ...(document.mode ? { mode: document.mode } : {}),
         // A combined file that cannot be built stands as the body on the last attempt.
         ...(document.deliverable ? { deliverable: document.deliverable === "combined" && (combinedIssues.length || !memoName) ? "body" as const : document.deliverable } : {}),
@@ -308,6 +327,7 @@ export function parsePlan(reply: string, request?: string): Checked<LeanOutline>
         ...(document.executed_by ? { executed_by: document.executed_by } : {}),
         ...(files[index]?.name && !repeatedFiles.includes(files[index].name) ? { file: files[index].name } : {}),
         ...(forms[index] ? { form: forms[index] } : {}),
+        ...(furniture[index]?.value ? { furniture: furniture[index].value } : {}),
       })),
       acting_for: party !== undefined && !ungrounded ? { party, stated: true } : NOT_STATED,
       ...(memoName ? { memo: memoName } : {}),
@@ -420,10 +440,11 @@ const combinedMoreThanOne = (titles: string[]) =>
   `"Deliverable: combined" is under ${titles.map(title => `"${title}"`).join(", ")}, but only one document can share the file with the memo. ` +
   "Keep it under the document the request asks to deliver with the memo, and write \"Deliverable: body\" under the others."
 
-/** A "Form:" value as one of DOCUMENT_FORMS, ignoring case; undefined when the
- * line is missing or names another form. */
+/** A "Form:" value as one of DOCUMENT_FORMS, ignoring case and spelling
+ * "advice letter" with a hyphen or underscore; undefined when the line is
+ * missing or names another form. */
 function documentForm(value: string | undefined) {
-  return DOCUMENT_FORMS.find(form => form === value?.toLowerCase())
+  return DOCUMENT_FORMS.find(form => form === value?.toLowerCase().replace(/[-_]/g, " "))
 }
 
 const FORM_VALUES = DOCUMENT_FORMS.map(form => `"Form: ${form}"`).join(", ")
@@ -431,6 +452,41 @@ const formIssue = (title: string, value: string | undefined) => (!value
   ? `The document "${title}" has no "Form:" line.`
   : `The "Form:" line of "${title}" gives "${value}", which is not one of the forms.`) +
   ` Under its title, before its first "## " part, write one of ${FORM_VALUES}.`
+
+type FurnitureLines = { legend?: string; page_numbers?: string }
+
+/** A document's furniture lines as the plan keeps them, each key only when its
+ * line stands: a legend the request uses as written, cleaned as a firm's legend
+ * is, or "Page numbers: none". Wrapping quotes and trailing full stops are not
+ * part of a value; an empty legend or "Legend: none" is no line. */
+function documentFurniture(title: string, lines: FurnitureLines, request: string | undefined): { value?: PlannedDocument["furniture"]; issues: string[] } {
+  const clean = (value: string) => normalizeLegend(value.trim().replace(/^["'“‘]+|["'”’.]+$/g, ""))
+  const written = clean(lines.legend ?? "")
+  const asked = /^none$/i.test(written) ? "" : written
+  const legend = asked && (request === undefined || wordsIn(request, asked)) ? asked : undefined
+  const pageNumbers = lines.page_numbers === undefined ? undefined : /^none$/i.test(clean(lines.page_numbers))
+  const value = { ...(legend ? { legend } : {}), ...(pageNumbers ? { page_numbers: false as const } : {}) }
+  const issues = [
+    ...(asked && !legend ? [legendUngrounded(title, asked)] : []),
+    ...(pageNumbers === false ? [pageNumbersNotNone(title, lines.page_numbers!.trim())] : []),
+  ]
+  return { ...(Object.keys(value).length ? { value } : {}), issues }
+}
+
+/** Whether `text` uses `words` as written, ignoring case, spacing and the
+ * forms of quotes and dashes, not starting or ending inside a word. */
+function wordsIn(text: string, words: string) {
+  const fold = (value: string) => value.normalize("NFKC").toLowerCase().replace(/[‘’]/g, "'").replace(/[“”]/g, '"').replace(/[‐-―−]/g, "-").replace(/\s+/g, " ")
+  const key = fold(words).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  return new RegExp((WORD_START.test(key) ? `(?<!${WORD})` : "") + key + (WORD_END.test(key) ? `(?!${WORD})` : ""), "u").test(fold(text))
+}
+
+const legendUngrounded = (title: string, legend: string) =>
+  `The "Legend:" line of "${title}" gives "${legend}", but the request does not use those words. Write a "Legend:" line only when the request asks for a document's header legend, ` +
+  "in the request's own words; otherwise leave the line out."
+const pageNumbersNotNone = (title: string, value: string) =>
+  `The "Page numbers:" line of "${title}" gives "${value}", but the only value it takes is "Page numbers: none". ` +
+  "Write it only when the request asks for the document without page numbers; otherwise leave the line out."
 
 const OUTLINE_SHAPE = "Reply with the outline: for each document, one \"# \" title line, then one \"## \" line per part."
 const ACTING_FOR_MISSING = "The outline has no \"Acting for:\" line. Before the first \"# \" title, write \"Acting for: <party>\" when the request says " +
@@ -536,8 +592,14 @@ function isPlannedDocument(value: unknown): value is PlannedDocument {
     (row.mode === undefined || ["new", "revise"].includes(row.mode)) && (row.deliverable === undefined || ["body", "redline", "combined"].includes(row.deliverable)) &&
     (row.comparison === undefined || typeof row.comparison === "string") && (row.template === undefined || typeof row.template === "string") && (row.file === undefined || typeof row.file === "string") &&
     (row.executed_by === undefined || (Array.isArray(row.executed_by) && row.executed_by.every(party => typeof party === "string"))) &&
-    (row.form === undefined || DOCUMENT_FORMS.includes(row.form)) &&
+    (row.form === undefined || DOCUMENT_FORMS.includes(row.form)) && (row.furniture === undefined || isPlannedFurniture(row.furniture)) &&
     (row.left_out === undefined || (Array.isArray(row.left_out) && row.left_out.every(item => typeof item?.part === "string" && typeof item.reason === "string")))
+}
+
+function isPlannedFurniture(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false
+  const row = value as NonNullable<PlannedDocument["furniture"]>
+  return (row.legend === undefined || typeof row.legend === "string") && (row.page_numbers === undefined || row.page_numbers === false)
 }
 
 function isPlaybookReview(value: unknown): value is PlaybookReview {

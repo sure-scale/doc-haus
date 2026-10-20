@@ -93,6 +93,7 @@ const preview = (page: Page) => ({
 })
 const choice = (page: Page, group: string, label: string) => page.getByRole("radiogroup", { name: group }).getByRole("radio", { name: label, exact: true })
 const segment = (page: Page, group: string, label: string) => page.getByRole("group", { name: group }).getByRole("button", { name: label, exact: true })
+const check = (page: Page, label: string) => page.getByRole("checkbox", { name: label, exact: true })
 const shot = (page: Page, name: string) => page.screenshot({ path: path.join(evidence!, `${name}.png`) })
 // The picker opens below its trigger; start with the trigger at the top so the
 // list is in view at a narrow height too.
@@ -101,7 +102,7 @@ async function openJurisdictions(page: Page) {
   await trigger.evaluate((node: HTMLElement) => node.scrollIntoView({ block: "start" }))
   await trigger.click()
 }
-const layoutKeys = ["pageNumbers", "pageNumberPosition", "draftLine", "agreementLegend", "adviceLegend", "notesMarking"]
+const layoutKeys = ["pageNumbers", "pageNumberPosition", "numberFirstPage", "draftLine", "draftLineFirm", "agreementLegend", "adviceLegend", "notesMarking"]
 
 try {
   for (const [width, height] of sizes) {
@@ -115,12 +116,16 @@ try {
         const heading = modal.getByRole("heading", { name: "Page layout", exact: true })
         await heading.scrollIntoViewIfNeeded()
         await expect(segment(page, "Page numbers", "2")).toHaveAttribute("aria-pressed", "true")
+        await expect(segment(page, "Page numbers", "- 2 -")).toHaveAttribute("aria-pressed", "false")
         await expect(segment(page, "Page number position", "Center")).toHaveAttribute("aria-pressed", "true")
+        await expect(check(page, "Number the first page")).toBeChecked()
+        await expect(check(page, "Number the first page")).toHaveAccessibleDescription("Letters always start numbering on page 2.")
         await expect(segment(page, "Draft line", "On")).toHaveAttribute("aria-pressed", "true")
+        await expect(check(page, "Include the firm name")).toBeChecked()
         await expect(choice(page, "Agreement legend", "None")).toBeChecked()
         await expect(choice(page, "Advice legend", "None")).toBeChecked()
         await expect(segment(page, "Drafting notes marking", "On")).toHaveAttribute("aria-pressed", "true")
-        await expect(modal.getByText('On agreements and advice: "Fixture Partners LLP draft: 20 October 2026", dated when the draft is first made.')).toBeVisible()
+        await expect(modal.getByText('On agreements, advice and letters: "Fixture Partners LLP draft: 20 October 2026", dated when the draft is first made.')).toBeVisible()
         await expect(preview(page).header).toHaveText(["Fixture Partners LLP draft: 20 October 2026"])
         await expect(preview(page).footer).toHaveText("1")
         await expect(modal.getByText(/without prejudice/i)).toHaveCount(0)
@@ -128,11 +133,25 @@ try {
 
         await segment(page, "Page numbers", "Off").click()
         await expect(page.getByRole("group", { name: "Page number position" })).toHaveCount(0)
+        await expect(check(page, "Number the first page")).toHaveCount(0)
         await expect(preview(page).footer).toHaveText("No page number")
         await segment(page, "Page numbers", "Page 2").click()
         await segment(page, "Page number position", "Right").click()
         await expect(preview(page).footer).toHaveText("Page 1")
         await expect(preview(page).footer).toHaveClass(/is-right/)
+        await segment(page, "Page numbers", "- 2 -").click()
+        await expect(preview(page).footer).toHaveText("- 1 -")
+        await check(page, "Number the first page").uncheck()
+        await expect(preview(page).footer).toHaveText("Numbered from page 2")
+        await expect(preview(page).footer).toHaveClass(/is-right/)
+        // Hidden with page numbers off, and still unticked when they return.
+        await segment(page, "Page numbers", "Off").click()
+        await expect(check(page, "Number the first page")).toHaveCount(0)
+        await segment(page, "Page numbers", "- 2 -").click()
+        await expect(check(page, "Number the first page")).not.toBeChecked()
+        await expect(preview(page).footer).toHaveText("Numbered from page 2")
+        await modal.locator(".settings-form-row", { has: page.getByRole("group", { name: "Page numbers" }) }).evaluate((node: HTMLElement) => node.scrollIntoView({ block: "start" }))
+        await shot(page, `settings-page-layout-${width}x${height}-numbering`)
         await choice(page, "Agreement legend", "Subject to contract").check()
         await expect(preview(page).header).toHaveText(["Subject to contract", "Fixture Partners LLP draft: 20 October 2026"])
         await choice(page, "Advice legend", "Custom text").check()
@@ -145,10 +164,21 @@ try {
         await expect(custom).toHaveValue("Fixture advice legend")
         await page.getByRole("radiogroup", { name: "Agreement legend" }).evaluate((node: HTMLElement) => node.scrollIntoView({ block: "start" }))
         await shot(page, `settings-page-layout-${width}x${height}-legends`)
+        // Without a firm name there is nothing to include.
+        await modal.getByLabel("Firm", { exact: true }).fill("")
+        await expect(check(page, "Include the firm name")).toHaveCount(0)
         await modal.getByLabel("Firm", { exact: true }).fill("Other Fixture LLP")
-        await expect(modal.getByText('On agreements and advice: "Other Fixture LLP draft: 20 October 2026", dated when the draft is first made.')).toBeVisible()
+        await expect(modal.getByText('On agreements, advice and letters: "Other Fixture LLP draft: 20 October 2026", dated when the draft is first made.')).toBeVisible()
+        await check(page, "Include the firm name").uncheck()
+        await expect(modal.getByText('On agreements, advice and letters: "Draft: 20 October 2026", dated when the draft is first made.')).toBeVisible()
+        await expect(preview(page).header).toHaveText(["Subject to contract", "Draft: 20 October 2026"])
         await segment(page, "Draft line", "Off").click()
+        await expect(check(page, "Include the firm name")).toHaveCount(0)
         await expect(preview(page).header).toHaveText(["Subject to contract"])
+        await segment(page, "Draft line", "On").click()
+        await expect(check(page, "Include the firm name")).not.toBeChecked()
+        await expect(preview(page).header).toHaveText(["Subject to contract", "Draft: 20 October 2026"])
+        await segment(page, "Draft line", "Off").click()
         await segment(page, "Drafting notes marking", "Off").click()
         await preview(page).footer.scrollIntoViewIfNeeded()
         await shot(page, `settings-page-layout-${width}x${height}-changed`)
@@ -157,7 +187,7 @@ try {
         await expect(page.getByRole("status")).toContainText("Drafting preferences saved.")
         expect(state.puts).toHaveLength(1)
         const body = state.puts[0]!
-        expect(body).toMatchObject({ firm: "Other Fixture LLP", pageNumbers: "page", pageNumberPosition: "right", draftLine: false, agreementLegend: "Subject to contract", adviceLegend: "Fixture advice legend", notesMarking: false })
+        expect(body).toMatchObject({ firm: "Other Fixture LLP", pageNumbers: "dashed", pageNumberPosition: "right", numberFirstPage: false, draftLine: false, draftLineFirm: false, agreementLegend: "Subject to contract", adviceLegend: "Fixture advice legend", notesMarking: false })
         // Flat keys: the ingest save merges top-level keys only, so a nested
         // object would replace its siblings. Only the existing two stay nested.
         expect(Object.entries(body).filter(([, value]) => value !== null && typeof value === "object").map(([key]) => key).sort()).toEqual(["approvedSources", "telemetry"])
