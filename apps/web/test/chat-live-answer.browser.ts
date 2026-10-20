@@ -13,7 +13,8 @@ const directory = await mkdtemp(path.join(os.tmpdir(), "dochaus-chat-live-"))
 const shots = process.env.CHAT_LIVE_SCREENSHOTS
 const sessionID = "ses_chat"
 const model = { providerID: "test", id: "model" }
-// A settled first exchange; the follow-up is answered over two steps.
+// A settled first exchange; the follow-up is answered over two steps, and a
+// second follow-up is answered by the recovery of a printed tool call.
 const transcript: SessionMessageInfo[] = [
   { type: "user", id: "msg_u1", text: "Who are the parties?", time: { created: 1 } },
   { type: "assistant", id: "msg_a1", agent: "qa", model, finish: "stop", time: { created: 2, completed: 3 }, content: [{ type: "text", text: "Acme Ltd and Beta LLP." }] },
@@ -24,7 +25,8 @@ let stream: ReadableStreamDefaultController<Uint8Array> | undefined
 let release = () => {}
 let seq = 0
 const prompts: string[] = []
-const reads = { messages: 0, active: 0 }
+const recoveries: string[] = []
+const reads = { messages: 0, outcomes: 0, active: 0 }
 const unknown: string[] = []
 
 function send(type: string, data: Record<string, unknown>) {
@@ -51,7 +53,7 @@ import { MemoryRouter } from ${JSON.stringify(fileURLToPath(import.meta.resolve(
 import ChatPanel from ${source("components/ChatPanel.tsx")}
 createRoot(document.getElementById("root")).render(createElement(MemoryRouter, null,
   createElement(ChatPanel, {
-    directory: "/matter", sessionID: ${JSON.stringify(sessionID)}, agent: "qa", available: new Set(["qa"]),
+    directory: "/matter", matterId: "matter", sessionID: ${JSON.stringify(sessionID)}, agent: "qa", available: new Set(["qa"]),
     pinned: { name: "qa", label: "Q&A", description: "Answers questions." },
     onAgentChange: () => {}, onViewDocument: () => {}, onBusyChange: (busy) => { window.busy = busy },
   })))
@@ -79,18 +81,35 @@ const server = Bun.serve({
       return json({ data: running ? { [sessionID]: { type: "running" } } : {} })
     }
     if (route === "GET /api/permission/request") return json({ location: { directory: "/matter" }, data: [] })
+    if (route === `GET /api/session/${sessionID}/form`) return json({ data: [] })
+    if (route === "GET /ingest/matters/matter/drafting-status") return json(null)
+    if (route === `GET /ingest/matters/matter/answer-drafts/session.${sessionID}`) return json({ answers: {}, revision: 0 })
+    if (route === `GET /api/session/${sessionID}`)
+      return json({ data: { id: sessionID, projectID: "project", agent: "qa", model, location: { directory: "/matter" }, cost: 0, tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }, time: { created: 1, updated: 1 } } })
     if (route === `GET /api/session/${sessionID}/message`) {
       reads.messages += 1
+      // Only sendPrompt reads newest first, to confirm how the turn ended.
+      if (url.searchParams.get("order") === "desc") reads.outcomes += 1
       const ordered = url.searchParams.get("order") === "desc" ? [...transcript].reverse() : transcript
       return json({ data: ordered.slice(0, Number(url.searchParams.get("limit") ?? ordered.length)), cursor: {} })
+    }
+    // Ingest admits the recovery prompt, and the engine runs it as a new execution.
+    if (route === "POST /ingest/matters/matter/continuations/dispatch") {
+      const { progressToken } = (await request.json()) as { progressToken: string }
+      recoveries.push(progressToken)
+      running = true
+      const marker = `<dochaus-recovery kind="malformed-tool" run-id="${sessionID}" progress-token="${progressToken}" />`
+      transcript.push({ type: "user", id: `msg_recovery_${progressToken.slice("malformed:".length)}`, text: `${marker}\nContinue.`, time: { created: Date.now() } })
+      return json({ accepted: true, attempted: true, existing: false, executing: true, persisted: true, uncertain: false })
     }
     if (route === `POST /api/session/${sessionID}/agent` || route === `POST /api/session/${sessionID}/model`) return new Response(null, { status: 204 })
     if (route === `POST /api/session/${sessionID}/prompt`) {
       const { text } = (await request.json()) as { text: string }
       prompts.push(text)
       running = true
-      transcript.push({ type: "user", id: "msg_u2", text, time: { created: Date.now() } })
-      return json({ data: { id: "msg_u2", sessionID, time: { created: Date.now() }, type: "user", payload: { text }, delivery: "queue" } })
+      const id = `msg_u${prompts.length + 1}`
+      transcript.push({ type: "user", id, text, time: { created: Date.now() } })
+      return json({ data: { id, sessionID, time: { created: Date.now() }, type: "user", payload: { text }, delivery: "queue" } })
     }
     if (route === `POST /api/experimental/session/${sessionID}/wait`) {
       await new Promise<void>(resolve => { release = resolve })
@@ -155,8 +174,50 @@ try {
   await answers.nth(1).getByText("I'll check the letter's date.").waitFor()
   await answers.nth(1).getByText("The letter is dated 12 October 2026.").waitFor()
   if (shots) await page.screenshot({ path: path.join(shots, "2-settled-final-answer.png"), fullPage: true })
-  assert.deepEqual(unknown, [])
   console.log("PASS the engine's execution success settles the whole answer without a reload")
+
+  // The next answer prints a tool call instead of making it. Its success sends
+  // the recovery, which the engine runs as a new execution.
+  await page.getByRole("textbox").fill("Which invoice is unpaid?")
+  await page.getByRole("button", { name: "Send message", exact: true }).click()
+  await until(() => prompts.length === 2, "the second follow-up is sent")
+  step("msg_s3", [{ type: "text", text: 'call:search-document{"query":"unpaid invoice"}' }], "stop")
+  transcript.push({ type: "idle", id: "msg_i3", outcome: "succeeded", time: { created: Date.now() } })
+  running = false
+  const sent = { ...reads }
+  release()
+  await until(() => reads.outcomes > sent.outcomes, "the follow-up's outcome is confirmed")
+  send("session.execution.succeeded", {})
+  await until(() => recoveries.length === 1, "the printed tool call is recovered")
+  step("msg_r1", [
+    { type: "text", text: "I'll look up the unpaid invoice." },
+    { type: "tool", id: "call_invoice", name: "search-document", time: { created: Date.now(), completed: Date.now() }, state: {
+      status: "completed", input: { query: "unpaid invoice" }, content: [{ type: "text", text: "Invoice 2 remains unpaid." }],
+      metadata: { citations: [{ document: "Invoices.docx", section: "2", excerpt: "Invoice 2 remains unpaid." }] },
+    } },
+  ], "tool-calls")
+  await live.getByText("I'll look up the unpaid invoice.").waitFor()
+  // The recovery is still running when the finalize retry fires 2 s after it
+  // was admitted. The retry must not settle the turn here.
+  const admitted = { ...reads }
+  await page.clock.fastForward(2_000)
+  await until(() => reads.messages > admitted.messages || reads.active > admitted.active, "the finalize retry runs")
+  step("msg_r2", [{ type: "text", text: "Invoice 2 is unpaid." }], "stop")
+  await live.getByText("Invoice 2 is unpaid.").waitFor()
+  assert.equal(await page.evaluate(() => (window as unknown as { busy: boolean }).busy), true, "the recovery settled while the engine still ran it")
+  if (shots) await page.screenshot({ path: path.join(shots, "3-live-recovery-answer.png"), fullPage: true })
+  console.log("PASS a malformed-tool recovery that runs past the finalize retry renders its answer live")
+
+  transcript.push({ type: "idle", id: "msg_i4", outcome: "succeeded", time: { created: Date.now() } })
+  running = false
+  send("session.execution.succeeded", {})
+  await live.waitFor({ state: "detached" })
+  assert.equal(await page.evaluate(() => (window as unknown as { busy: boolean }).busy), false)
+  await answers.last().getByText("I'll look up the unpaid invoice.").waitFor()
+  await answers.last().getByText("Invoice 2 is unpaid.").waitFor()
+  assert.deepEqual(recoveries, ["malformed:msg_s3"])
+  assert.deepEqual(unknown, [])
+  console.log("PASS the recovery's execution success settles its answer without a reload")
 } finally {
   await browser.close()
   server.stop(true)

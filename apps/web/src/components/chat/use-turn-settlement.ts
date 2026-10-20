@@ -1,5 +1,6 @@
 import type { Client } from "../../api/opencode/client"
 import { sendMalformedToolRecovery } from "../../api/opencode/recovery"
+import { getSessionStatus } from "../../api/opencode/sessions"
 import { toTurns } from "./turn-model"
 import { loadConversation, bounded } from "./conversation"
 import { malformedToolRecoveryCount, malformedToolRecoveryDue } from "./turn-recovery"
@@ -47,13 +48,17 @@ export function useTurnSettlement({
     finalizeRetryRef.current = undefined
   }
 
+  // An admitted recovery runs as a new execution, whose success settles the
+  // turn. Settle here only once the engine reports the session idle; while the
+  // recovery still runs, leave it to that success or the resync poll.
   function scheduleFinalizeRetry() {
     clearFinalizeRetry()
     const session = sessionRef.current
-    finalizeRetryRef.current = setTimeout(() => {
+    finalizeRetryRef.current = setTimeout(async () => {
       finalizeRetryRef.current = undefined
       if (!busyRef.current || sessionRef.current !== session) return
-      finalize()
+      const status = await bounded(getSessionStatus(client, session), 5_000, "Session status").catch(() => undefined)
+      if (status?.type === "idle" && busyRef.current && sessionRef.current === session) finalize()
     }, 2_000)
   }
 
