@@ -10,7 +10,7 @@ import { applyAmendments } from "./drafting-amendment-apply"
 import { compareDocxWithPointers } from "./drafting-amendment"
 import { DEFAULT_DRAFTING, type DraftingPreferences } from "./drafting-preferences"
 import { docxodus } from "./docxodus"
-import { applyPageFurniture, NOTES_MARKING, pageFurniture, type PageFurniture } from "./page-furniture"
+import { applyPageFurniture, NOTES_MARKING, PAGE_NUMBER_AFFIXES, pageFurniture, type PageFurniture } from "./page-furniture"
 import { renderMarkdownToDocx } from "./render"
 import { presentDraft } from "../workflows/lean/draft-presentation"
 import { paragraphRows } from "../workflows/lean/stages"
@@ -95,12 +95,13 @@ describe("pageFurniture", () => {
     expect(pageFurniture("agreement", prefs({ numberFirstPage: false, pageNumbers: "off" }), DRAFTED)).toEqual({ header: ["Draft: October 20, 2026"] })
   })
 
-  test("what the request asks of a document replaces the firm's settings for it", () => {
+  test("what the request asks of a document adds to the firm's settings for it, never removing the firm's legend or draft line", () => {
     const firm = prefs({ agreementLegend: "Subject to contract", adviceLegend: "Privileged & confidential" })
-    expect(pageFurniture("agreement", firm, DRAFTED, { legend: "Without prejudice" })?.header).toEqual(["Without prejudice", "Draft: October 20, 2026"])
+    expect(pageFurniture("agreement", firm, DRAFTED, { legend: "Without prejudice" })?.header).toEqual(["Subject to contract", "Without prejudice", "Draft: October 20, 2026"])
     expect(pageFurniture("letter", firm, DRAFTED, { legend: "Without prejudice save as to costs" })?.header).toEqual(["Without prejudice save as to costs", "Draft: October 20, 2026"])
-    expect(pageFurniture("advice letter", firm, DRAFTED, { legend: "" })?.header).toEqual(["Draft: October 20, 2026"])
-    expect(pageFurniture("agreement", firm, DRAFTED, { draftLine: false })?.header).toEqual(["Subject to contract"])
+    // The firm's legend asked for again is not repeated.
+    expect(pageFurniture("advice letter", firm, DRAFTED, { legend: "PRIVILEGED & CONFIDENTIAL" })?.header).toEqual(["Privileged & confidential", "Draft: October 20, 2026"])
+    expect(pageFurniture("advice letter", firm, DRAFTED, { legend: "" })?.header).toEqual(["Privileged & confidential", "Draft: October 20, 2026"])
     expect(pageFurniture("agreement", firm, DRAFTED, { pageNumbers: false })).toEqual({ header: ["Subject to contract", "Draft: October 20, 2026"] })
     expect(pageFurniture("other", prefs(), DRAFTED, { pageNumbers: false })).toBeUndefined()
   })
@@ -174,10 +175,13 @@ describe("applyPageFurniture", () => {
     expect(paragraphs(header).map(row => row.text)).toEqual([text, "Tab here and a control character"])
   }, 120000)
 
-  test("a dashed page number puts the PAGE field between dashes", async () => {
-    const footer = strict(unzipSync(applyPageFurniture((await renderMarkdownToDocx(BODY)).bytes, { header: [], pageNumber: { format: "dashed", align: "center" } }))["word/footer1.xml"]!)
-    expect(paragraphs(footer)).toEqual([{ style: "Footer", align: "center", text: "- 1 -" }])
-    expect(all(footer, W, "instrText").map(node => node.textContent)).toEqual([" PAGE "])
+  test("a dashed page number puts the PAGE field between dashes, each format printing its affixes", async () => {
+    const body = (await renderMarkdownToDocx(BODY)).bytes
+    const footer = (format: "plain" | "page" | "dashed") => strict(unzipSync(applyPageFurniture(body, { header: [], pageNumber: { format, align: "center" } }))["word/footer1.xml"]!)
+    expect(paragraphs(footer("dashed"))).toEqual([{ style: "Footer", align: "center", text: "- 1 -" }])
+    expect(all(footer("dashed"), W, "instrText").map(node => node.textContent)).toEqual([" PAGE "])
+    // The settings preview prints page numbers from the same affixes.
+    for (const format of ["plain", "page", "dashed"] as const) expect(paragraphs(footer(format))[0]?.text).toBe(PAGE_NUMBER_AFFIXES[format].join("1"))
   }, 120000)
 
   test("without a page number there is no first-page switch, even when asked for an unnumbered first page", async () => {

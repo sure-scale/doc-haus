@@ -8,7 +8,7 @@ import { paragraphSha256 } from "../../lib/drafting-amendment"
 import { readParagraphs } from "./checks"
 import { checkSection, runDraftStage } from "./draft-sections"
 import { readLeanEvents } from "./events"
-import { NOT_STATED, leanPlanIssue, parsePlan, readLeanPlan, writeLeanPlan, type PlannedDocument } from "./plan"
+import { NOT_STATED, leanPlanIssue, operativeDocument, parsePlan, readLeanPlan, writeLeanPlan, type PlannedDocument } from "./plan"
 import { stagePrompt } from "./prompts"
 import { stageInputSha } from "./runner"
 import { acceptStageReply, LEAN_MAX_RETRIES, LEAN_STAGE_AGENTS, type StageSessionPort } from "./stages"
@@ -378,12 +378,12 @@ describe("a planned document's form", () => {
     expect(readParagraphs(directory, "d1").map(row => row.text)).toEqual(["We advise that notice be given in writing."])
   }, 60_000)
 
-  test("what the plan asks of a document's furniture replaces the firm's settings in its body", async () => {
+  test("what the plan asks of a document's furniture adds to the firm's settings in its body", async () => {
     const firm = { adviceLegend: "Privileged and confidential" }
-    const header = ["Without prejudice", "Draft: 20 October 2026"]
+    const header = ["Privileged and confidential", "Without prejudice", "Draft: 20 October 2026"]
     const cases: [PlannedDocument["furniture"], Record<string, string[]>][] = [
       [{ legend: "Without prejudice" }, { "header:default": header, "header:first": header, "footer:default": ["2"], "footer:first": [""] }],
-      [{ legend: "", draft_line: false, page_numbers: false }, {}],
+      [{ legend: "", page_numbers: false }, { "header:default": ["Privileged and confidential", "Draft: 20 October 2026"] }],
     ]
     for (const [furniture, lines] of cases) {
       const { directory, state } = matter()
@@ -438,24 +438,25 @@ describe("a planned document's form", () => {
 })
 
 // What a request asks of one document's page furniture, from optional lines
-// under its title: they replace the firm's settings for that document only.
+// under its title: they add to the firm's settings for that document only.
 describe("a document's furniture lines", () => {
   const REQUEST = "Draft a short notice letter marked Without prejudice save as to costs, and leave out the page numbers."
   const outline = (...lines: string[]) => ["Acting for: not stated", "# Notice letter", "Form: letter", ...lines, "## Opening", "Why we write."].join("\n")
   const UNGROUNDED = 'The "Legend:" line of "Notice letter" gives "Strictly private", but the request does not use those words. Write a "Legend:" line only when the request ' +
-    'asks for a document\'s header legend, in the request\'s own words, or "Legend: none" when it asks for none; otherwise leave the line out.'
+    'asks for a document\'s header legend, in the request\'s own words; otherwise leave the line out.'
 
   test("the outline prompt asks for them only when the request asks, the legend in its own words", () => {
-    expect(stagePrompt(matter().directory, "d1.draft", { outline: true })).toContain("- Only when the request asks for a document's page header legend, draft line or page numbers to differ, " +
-      'write under its title "Legend: <the legend in the request\'s own words>" or "Legend: none", "Draft line: none" or "Page numbers: none" as it asks.')
+    expect(stagePrompt(matter().directory, "d1.draft", { outline: true })).toContain('- Only when the request asks for a page header legend on a document, write under its title ' +
+      '"Legend: <the legend in the request\'s own words>"; only when it asks for a document without page numbers, "Page numbers: none".')
   })
 
-  test("are read under a title, ignoring case, list, bold or code marks, wrapping quotes and a trailing full stop, a legend in the request's words", () => {
+  test("are read under a title, ignoring case, list, emphasis or code marks, wrapping quotes and a trailing full stop, a legend in the request's words, the first of each standing", () => {
     for (const [lines, furniture] of [
       [["Legend: Without prejudice save as to costs"], { legend: "Without prejudice save as to costs" }],
       [['- **Legend:** "without prejudice   save as to costs."'], { legend: "without prejudice save as to costs" }],
-      [["Legend: none", "Draft line: none", "Page numbers: none"], { legend: "", draft_line: false, page_numbers: false }],
-      [["- **Draft line:** `None`.", "PAGE NUMBERS: none"], { draft_line: false, page_numbers: false }],
+      [["*Legend:* WITHOUT PREJUDICE SAVE AS TO COSTS", "Legend: Strictly private"], { legend: "WITHOUT PREJUDICE SAVE AS TO COSTS" }],
+      [["Legend: Without prejudice save as to costs", "Page numbers: none"], { legend: "Without prejudice save as to costs", page_numbers: false }],
+      [["- **Page numbers:** `None`."], { page_numbers: false }],
     ] as const) {
       const parsed = parsePlan(outline(...lines), REQUEST)
       expect(parsed.issues).toEqual([])
@@ -468,18 +469,25 @@ describe("a document's furniture lines", () => {
     expect(under.value?.documents[0]?.parts[0]?.scope).toBe("Why we write. Legend: none")
   })
 
-  test("a legend the request does not use is retry feedback and is dropped, the other lines kept", () => {
+  test("a legend the request does not use as written is retry feedback and is dropped, the other lines kept", () => {
     const parsed = parsePlan(outline("Legend: Strictly private", "Page numbers: none"), REQUEST)
     expect(parsed.issues).toEqual([UNGROUNDED])
     expect(parsed.value?.documents[0]?.furniture).toEqual({ page_numbers: false })
-    // "none" needs no grounding.
-    expect(parsePlan(outline("Legend: none"), REQUEST)).toMatchObject({ issues: [], value: { documents: [{ furniture: { legend: "" } }] } })
+    // Its words as the request writes them, not a party name's folded forms or part of a word.
+    for (const legend of ["The without prejudice save as to costs", "Without prejudice, save as to costs", "Without prejudice save as to cost"])
+      expect(parsePlan(outline(`Legend: ${legend}`), REQUEST).issues).toEqual([UNGROUNDED.replace("Strictly private", legend)])
+    expect(parsePlan(outline("Legend: Without prejudice – save as to costs"), "Mark it Without prejudice - save as to costs.").issues).toEqual([])
   })
 
-  test("a draft line or page numbers value other than none is retry feedback naming the only value, and is dropped", () => {
-    const parsed = parsePlan(outline("Draft line: shown", "Page numbers: bottom right"), REQUEST)
+  test("a request never removes the firm's legend or draft line: those lines ask nothing", () => {
+    const parsed = parsePlan(outline("Legend: none", "Draft line: none"), "Draft a short notice letter with no legend and no draft line.")
+    expect(parsed.issues).toEqual([])
+    expect(parsed.value?.documents[0]).not.toHaveProperty("furniture")
+  })
+
+  test("a page numbers value other than none is retry feedback naming the only value, and is dropped", () => {
+    const parsed = parsePlan(outline("Page numbers: bottom right"), REQUEST)
     expect(parsed.issues).toEqual([
-      'The "Draft line:" line of "Notice letter" gives "shown", but the only value it takes is "Draft line: none". Write it only when the request asks for the document without a draft line; otherwise leave the line out.',
       'The "Page numbers:" line of "Notice letter" gives "bottom right", but the only value it takes is "Page numbers: none". Write it only when the request asks for the document without page numbers; otherwise leave the line out.',
     ])
     expect(parsed.value?.documents[0]).not.toHaveProperty("furniture")
@@ -488,30 +496,32 @@ describe("a document's furniture lines", () => {
   test("an ungrounded legend is retried in the outline session; one that stands to the last attempt is dropped and the firm's legend kept", async () => {
     const part = "We advise that notice be given in writing."
     const reply = (legend: string) => `Acting for: not stated\n# Advice on the notice\nForm: advice letter\nLegend: ${legend}\n## Advice\nThe advice.`
-    for (const [given, legend] of [[1, "Without prejudice save as to costs"], [4, "Privileged and confidential"]] as const) {
+    for (const [given, requested] of [[1, ["Without prejudice save as to costs"]], [4, []]] as const) {
       const { directory, state } = matter()
       writeLeanText(directory, "request.md", REQUEST)
       const model = scripted((text, index) => text.includes("Draft part") ? part : reply(index < given ? "Strictly private" : "Without prejudice save as to costs"))
       const result = await withFirm({ adviceLegend: "Privileged and confidential" }, () => runDraftStage(directory, dated(directory, state), { sessions: model.sessions }, () => {}, "d1", () => {}))
       expect(result.status).toBe("done")
       expect(model.prompts.filter(prompt => prompt.text.includes(UNGROUNDED.replace("Notice letter", "Advice on the notice")))).toHaveLength(given === 1 ? 1 : LEAN_MAX_RETRIES)
-      expect(readLeanPlan(directory)?.documents[0]?.furniture).toEqual(given === 1 ? { legend } : undefined)
-      expect(furnitureLines(unzipSync(new Uint8Array(readFileSync(leanFile(directory, "d1/body.docx")))))["header:default"]).toEqual([legend, "Draft: 20 October 2026"])
+      expect(readLeanPlan(directory)?.documents[0]?.furniture).toEqual(given === 1 ? { legend: requested[0] } : undefined)
+      expect(furnitureLines(unzipSync(new Uint8Array(readFileSync(leanFile(directory, "d1/body.docx")))))["header:default"]).toEqual(["Privileged and confidential", ...requested, "Draft: 20 October 2026"])
     }
   }, 60_000)
 
-  test("a saved plan's furniture is checked as a lawyer may edit it, and it keys the draft", () => {
+  test("a saved plan's furniture is checked as a lawyer may edit it, keys the draft and is not drafted", () => {
     const { directory } = matter()
     writeLeanPlan(directory, [{ title: "Notice letter", purpose: "", parts: [{ heading: "Notice", scope: "" }], form: "letter" }])
     const plan = readLeanPlan(directory)!
     const unedited = stageInputSha(directory, "d1.draft")
     const edited = (furniture: unknown) => writeLeanText(directory, "plan.json", JSON.stringify({ ...plan, documents: [{ ...plan.documents[0]!, furniture }] }))
-    for (const furniture of [{ legend: "" }, { draft_line: false }, { legend: "Without prejudice", draft_line: false, page_numbers: false }] satisfies PlannedDocument["furniture"][]) {
+    for (const furniture of [{ legend: "" }, { page_numbers: false }, { legend: "Without prejudice", page_numbers: false }] satisfies PlannedDocument["furniture"][]) {
       edited(furniture)
       expect(readLeanPlan(directory)?.documents[0]?.furniture).toEqual(furniture)
     }
     expect(stageInputSha(directory, "d1.draft")).not.toBe(unedited)
-    for (const furniture of [null, [], "none", { legend: 1 }, { draft_line: true }, { page_numbers: "none" }]) {
+    // The drafter's outline leaves it out: the header is rendered, not drafted.
+    expect(operativeDocument(readLeanPlan(directory)!.documents[0])).not.toHaveProperty("furniture")
+    for (const furniture of [null, [], "none", { legend: 1 }, { page_numbers: "none" }]) {
       edited(furniture)
       expect(readLeanPlan(directory)).toBeUndefined()
       expect(leanPlanIssue(directory)).toBe("document 1 is not a valid planned document")

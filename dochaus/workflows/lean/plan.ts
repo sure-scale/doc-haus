@@ -38,14 +38,14 @@ export type LeftOutPart = { part: string; reason: string }
  * one that the outline did not say. `form` is the kind of document it is, from
  * a "Form:" line; it sets the document's page furniture, and a letter's parts
  * are planned unheaded unless the outline shows them. `furniture` is what the
- * request asks of its page furniture in place of the firm's settings, from
- * "Legend:", "Draft line:" and "Page numbers:" lines; a `legend` of "" is none.
+ * request asks of its page furniture beyond the firm's settings, from "Legend:"
+ * and "Page numbers: none" lines; it is rendered, never drafted.
  * Legacy plans without these fields retain their existing behaviour. The title
  * is the document's own title and never carries the file name. */
 export type PlaybookReview = { sources: { source_id: string; quote: string }[]; reason: string }
 export type PlannedDocument = {
   id: DocID; title: string; purpose: string; parts: PlannedPart[]; playbook_review?: PlaybookReview; mode?: "new" | "revise"; deliverable?: "body" | "redline" | "combined"; template?: string; comparison?: string; left_out?: LeftOutPart[]; file?: string; executed_by?: string[]; form?: DocumentForm
-  furniture?: { legend?: string; draft_line?: false; page_numbers?: false }
+  furniture?: { legend?: string; page_numbers?: false }
 }
 export type ActingFor = { party: string; stated: boolean }
 /** `memo` is the name of the memo the request asks for and `notes_file` the
@@ -134,11 +134,12 @@ export function plannedDocument(directory: string, id: DocID): PlannedDocument |
 }
 
 /** Output naming, the requested memo's name included, does not change operative
- * drafting inputs. Consumers of the full delivery plan (notes, package review
- * and registration) retain it. */
+ * drafting inputs, nor does page furniture, which is rendered and never drafted.
+ * Consumers of the full delivery plan (notes, package review and registration)
+ * retain them; the draft step's key keeps the furniture it renders. */
 export function operativeDocument(document: PlannedDocument | undefined) {
   if (!document) return null
-  const { file, deliverable, ...operative } = document
+  const { file, deliverable, furniture, ...operative } = document
   return operative
 }
 
@@ -187,11 +188,12 @@ export function earlierDocuments(directory: string, id: DocID): PlannedDocument[
  * attempt the document stands with no form, as a legacy plan does. A letter's
  * parts are planned unheaded, except a part with its own "Display heading:"
  * line, unless a "Headings: shown" line under its title keeps their labels.
- * Optional "Legend:", "Draft line: none" and "Page numbers: none" lines under a
- * title give what the request asks of that document's page furniture. A legend
- * other than "none" must be words the request uses, and another value of the
- * other two lines is not accepted; either is retry feedback and, on the last
- * attempt, dropped, so the firm's setting stands.
+ * Optional "Legend:" and "Page numbers: none" lines under a title give what the
+ * request asks of that document's page furniture; the first of each stands. A
+ * legend must be the request's own words and is shown with the firm's, and
+ * "Legend: none" asks nothing: a request never removes the firm's legend. An
+ * ungrounded legend or another page numbers value is retry feedback and, on the
+ * last attempt, dropped.
  * An optional "Memo:" line before the first title names, in the request's own
  * words, a memo the request asks to accompany the documents. It must be words
  * the request uses and fit in a file name; otherwise it is retry feedback and,
@@ -238,9 +240,8 @@ export function parsePlan(reply: string, request?: string): Checked<LeanOutline>
     const form = /^form\s*:\s*(.*)$/i.exec(line.replace(/^[-*]\s+/, "").replace(/[*`]/g, ""))?.[1]?.replace(/^["'“]+|["'”.\s]+$/g, "").trim()
     const headingsShown = /^headings\s*:\s*shown[.\s]*$/i.test(line.replace(/^[-*]\s+/, "").replace(/[*`]/g, ""))
     // Furniture values as written; documentFurniture cleans and checks them.
-    const unmarked = line.replace(/^[-*]\s+/, "").replace(/\*\*|`/g, "")
+    const unmarked = line.replace(/^[-*]\s+/, "").replace(/[*`]/g, "")
     const legend = /^legend\s*:\s*(.*)$/i.exec(unmarked)?.[1]
-    const draftLine = /^draft\s+line\s*:\s*(.*)$/i.exec(unmarked)?.[1]
     const pageNumbers = /^page\s+numbers\s*:\s*(.*)$/i.exec(unmarked)?.[1]
     const playbook = /^[-*]?\s*playbook review\s*:\s*(.+)$/i.exec(line)?.[1]
     const displayHeading = /^display heading\s*:\s*(.*)$/i.exec(line)?.[1]
@@ -262,9 +263,8 @@ export function parsePlan(reply: string, request?: string): Checked<LeanOutline>
     else if (executed !== undefined && current && !current.parts.length) current.executed_by = executingParties(executed, current.executed_by)
     else if (form !== undefined && current && !current.parts.length) current.form = form
     else if (headingsShown && current && !current.parts.length) current.headings = "shown"
-    else if (legend !== undefined && current && !current.parts.length) current.furniture.legend = legend
-    else if (draftLine !== undefined && current && !current.parts.length) current.furniture.draft_line = draftLine
-    else if (pageNumbers !== undefined && current && !current.parts.length) current.furniture.page_numbers = pageNumbers
+    else if (legend !== undefined && current && !current.parts.length) current.furniture.legend ??= legend
+    else if (pageNumbers !== undefined && current && !current.parts.length) current.furniture.page_numbers ??= pageNumbers
     else if (leftOut && current) current.left_out.push(leftOutPart(leftOut))
     else if (line && !line.startsWith("#") && current)
       (current.parts.at(-1)?.scope ?? current.purpose).push(line.replace(/^[-*]\s+/, ""))
@@ -453,35 +453,40 @@ const formIssue = (title: string, value: string | undefined) => (!value
   : `The "Form:" line of "${title}" gives "${value}", which is not one of the forms.`) +
   ` Under its title, before its first "## " part, write one of ${FORM_VALUES}.`
 
-type FurnitureLines = { legend?: string; draft_line?: string; page_numbers?: string }
+type FurnitureLines = { legend?: string; page_numbers?: string }
 
 /** A document's furniture lines as the plan keeps them, each key only when its
- * line stands: "none" for no legend, draft line or page numbers, or a legend in
- * words the request uses, cleaned as a firm's legend is. Wrapping quotes and
- * trailing full stops are not part of a value; an empty legend is no line. */
+ * line stands: a legend the request uses as written, cleaned as a firm's legend
+ * is, or "Page numbers: none". Wrapping quotes and trailing full stops are not
+ * part of a value; an empty legend or "Legend: none" is no line. */
 function documentFurniture(title: string, lines: FurnitureLines, request: string | undefined): { value?: PlannedDocument["furniture"]; issues: string[] } {
   const clean = (value: string) => normalizeLegend(value.trim().replace(/^["'“‘]+|["'”’.]+$/g, ""))
-  const none = (value: string | undefined) => value !== undefined && /^none$/i.test(clean(value))
   const written = clean(lines.legend ?? "")
-  const legend = none(written) ? "" : written && (request === undefined || namedIn(request, written)) ? written : undefined
-  const value = {
-    ...(legend !== undefined ? { legend } : {}),
-    ...(none(lines.draft_line) ? { draft_line: false as const } : {}),
-    ...(none(lines.page_numbers) ? { page_numbers: false as const } : {}),
-  }
+  const asked = /^none$/i.test(written) ? "" : written
+  const legend = asked && (request === undefined || wordsIn(request, asked)) ? asked : undefined
+  const pageNumbers = lines.page_numbers === undefined ? undefined : /^none$/i.test(clean(lines.page_numbers))
+  const value = { ...(legend ? { legend } : {}), ...(pageNumbers ? { page_numbers: false as const } : {}) }
   const issues = [
-    ...(written && legend === undefined ? [legendUngrounded(title, written)] : []),
-    ...([["Draft line", lines.draft_line], ["Page numbers", lines.page_numbers]] as const).flatMap(([name, line]) => line !== undefined && !none(line) ? [furnitureNotNone(title, name, line.trim())] : []),
+    ...(asked && !legend ? [legendUngrounded(title, asked)] : []),
+    ...(pageNumbers === false ? [pageNumbersNotNone(title, lines.page_numbers!.trim())] : []),
   ]
   return { ...(Object.keys(value).length ? { value } : {}), issues }
 }
 
+/** Whether `text` uses `words` as written, ignoring case, spacing and the
+ * forms of quotes and dashes, not starting or ending inside a word. */
+function wordsIn(text: string, words: string) {
+  const fold = (value: string) => value.normalize("NFKC").toLowerCase().replace(/[‘’]/g, "'").replace(/[“”]/g, '"').replace(/[‐-―−]/g, "-").replace(/\s+/g, " ")
+  const key = fold(words).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  return new RegExp((WORD_START.test(key) ? `(?<!${WORD})` : "") + key + (WORD_END.test(key) ? `(?!${WORD})` : ""), "u").test(fold(text))
+}
+
 const legendUngrounded = (title: string, legend: string) =>
   `The "Legend:" line of "${title}" gives "${legend}", but the request does not use those words. Write a "Legend:" line only when the request asks for a document's header legend, ` +
-  "in the request's own words, or \"Legend: none\" when it asks for none; otherwise leave the line out."
-const furnitureNotNone = (title: string, name: "Draft line" | "Page numbers", value: string) =>
-  `The "${name}:" line of "${title}" gives "${value}", but the only value it takes is "${name}: none". ` +
-  `Write it only when the request asks for the document without ${name === "Draft line" ? "a draft line" : "page numbers"}; otherwise leave the line out.`
+  "in the request's own words; otherwise leave the line out."
+const pageNumbersNotNone = (title: string, value: string) =>
+  `The "Page numbers:" line of "${title}" gives "${value}", but the only value it takes is "Page numbers: none". ` +
+  "Write it only when the request asks for the document without page numbers; otherwise leave the line out."
 
 const OUTLINE_SHAPE = "Reply with the outline: for each document, one \"# \" title line, then one \"## \" line per part."
 const ACTING_FOR_MISSING = "The outline has no \"Acting for:\" line. Before the first \"# \" title, write \"Acting for: <party>\" when the request says " +
@@ -594,7 +599,7 @@ function isPlannedDocument(value: unknown): value is PlannedDocument {
 function isPlannedFurniture(value: unknown) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false
   const row = value as NonNullable<PlannedDocument["furniture"]>
-  return (row.legend === undefined || typeof row.legend === "string") && (row.draft_line === undefined || row.draft_line === false) && (row.page_numbers === undefined || row.page_numbers === false)
+  return (row.legend === undefined || typeof row.legend === "string") && (row.page_numbers === undefined || row.page_numbers === false)
 }
 
 function isPlaybookReview(value: unknown): value is PlaybookReview {

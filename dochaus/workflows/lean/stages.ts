@@ -13,7 +13,7 @@ import { combinedFileItems, DELIVERED_NOTES, requestedMemo } from "./deliverable
 import { evidenceOutputValid } from "./evidence"
 import { currentResearchGaps, researchOutputValid } from "./research"
 import { normalizeLegend, normalizePreferences, readFirmDraftingPreferences } from "../../lib/drafting-preferences"
-import { pageFurniture, type FurnitureKind, type FurnitureOverrides } from "../../lib/page-furniture"
+import { pageFurniture, type FurnitureKind, type RequestedFurniture } from "../../lib/page-furniture"
 import { readFirmPreferences } from "../../lib/preferences"
 import { existsSync, readFileSync } from "node:fs"
 import { ensureParagraphPointers, paragraphSha256 } from "../../lib/drafting-amendment"
@@ -382,18 +382,15 @@ export async function acceptStageReply(directory: string, step: StepID, reply: s
  * settings and what the request asks of it, dated by the run's start in run
  * state rather than the render clock or a step's start (steps restart), so
  * every file and render in the run reads the same date. */
-export function renderedFurniture(directory: string, kind: FurnitureKind, overrides?: FurnitureOverrides) {
-  return pageFurniture(kind, normalizePreferences(readFirmPreferences()), readLeanState(directory)?.created_at, overrides)
+export function renderedFurniture(directory: string, kind: FurnitureKind, requested?: RequestedFurniture) {
+  return pageFurniture(kind, normalizePreferences(readFirmPreferences()), readLeanState(directory)?.created_at, requested)
 }
 
-/** A planned document's furniture lines as overrides; a lawyer's edited legend
- * is cleaned as the outline's is. */
-function requestedFurniture(furniture: PlannedDocument["furniture"]): FurnitureOverrides {
-  return {
-    ...(furniture?.legend !== undefined ? { legend: normalizeLegend(furniture.legend) } : {}),
-    ...(furniture?.draft_line === false ? { draftLine: false as const } : {}),
-    ...(furniture?.page_numbers === false ? { pageNumbers: false as const } : {}),
-  }
+/** A planned document's furniture lines as the renderer takes them; a lawyer's
+ * edited legend is cleaned as the outline's is. */
+function requestedFurniture(furniture: PlannedDocument["furniture"]): RequestedFurniture {
+  const legend = normalizeLegend(furniture?.legend)
+  return { ...(legend ? { legend } : {}), ...(furniture?.page_numbers === false ? { pageNumbers: false as const } : {}) }
 }
 
 /** The notes are a document for the reader when the request asks for a memo;

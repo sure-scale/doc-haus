@@ -23,9 +23,11 @@ export function isLetter(form: string | undefined) {
 /** What a rendered file is: a planned document's form, or the run's internal drafting notes. */
 export type FurnitureKind = DocumentForm | "notes"
 
-/** What a request asks of one document's furniture in place of the firm's
- * settings. `legend` is the request's own words, or "" for none. */
-export type FurnitureOverrides = { legend?: string; draftLine?: false; pageNumbers?: false }
+/** What a request asks of one document's furniture: `legend` is a legend in
+ * the request's own words, shown after the firm's, and `pageNumbers: false`
+ * leaves the page numbers out. A request never removes the firm's legend or
+ * draft line; only the firm's settings do. */
+export type RequestedFurniture = { legend?: string; pageNumbers?: false }
 
 /** `header` lines are written in order at the top of every page; `pageNumber`
  * goes in the footer; `firstPage: "unnumbered"` leaves the first page's number
@@ -43,22 +45,28 @@ type FurniturePreferences = Pick<DraftingPreferences, "firm" | "dateFormat" | "p
 /** The furniture a kind of file carries under the firm's settings and what the
  * request asks of it, or undefined when it carries none. `draftedAt` is the
  * time the draft was made (an ISO timestamp kept in run state, never the
- * render clock); without it there is no draft line. */
-export function pageFurniture(kind: FurnitureKind, prefs: FurniturePreferences, draftedAt?: string, overrides: FurnitureOverrides = {}): PageFurniture | undefined {
-  const legend = overrides.legend ?? (kind === "agreement" ? prefs.agreementLegend : kind === "advice" || kind === "advice letter" ? prefs.adviceLegend : "")
-  const drafted = draftedAt && prefs.draftLine && overrides.draftLine !== false && (kind === "agreement" || kind === "advice" || isLetter(kind))
+ * render clock); without it there is no draft line. A requested legend the
+ * firm's already reads, ignoring case, is not repeated. */
+export function pageFurniture(kind: FurnitureKind, prefs: FurniturePreferences, draftedAt?: string, requested: RequestedFurniture = {}): PageFurniture | undefined {
+  const legend = kind === "agreement" ? prefs.agreementLegend : kind === "advice" || kind === "advice letter" ? prefs.adviceLegend : ""
+  const extra = requested.legend && requested.legend.toLowerCase() !== legend.toLowerCase() ? requested.legend : ""
+  const drafted = draftedAt && prefs.draftLine && (kind === "agreement" || kind === "advice" || isLetter(kind))
   const date = drafted ? formatDraftDate(draftedAt, prefs.dateFormat) : undefined
   const firm = prefs.draftLineFirm ? prefs.firm.trim() : ""
   const header = [
     ...(legend ? [legend] : []),
+    ...(extra ? [extra] : []),
     ...(date ? [`${firm ? `${firm} draft` : "Draft"}: ${date}`] : []),
     ...(kind === "notes" && prefs.notesMarking ? [NOTES_MARKING] : []),
   ]
-  const pageNumber = prefs.pageNumbers === "off" || overrides.pageNumbers === false ? undefined : { format: prefs.pageNumbers, align: prefs.pageNumberPosition }
+  const pageNumber = prefs.pageNumbers === "off" || requested.pageNumbers === false ? undefined : { format: prefs.pageNumbers, align: prefs.pageNumberPosition }
   if (!header.length && !pageNumber) return undefined
   const unnumbered = pageNumber && (isLetter(kind) || !prefs.numberFirstPage)
   return { header, ...(pageNumber ? { pageNumber } : {}), ...(unnumbered ? { firstPage: "unnumbered" as const } : {}) }
 }
+
+/** The text each page number format prints before and after the PAGE field. */
+export const PAGE_NUMBER_AFFIXES = { plain: ["", ""], page: ["Page ", ""], dashed: ["- ", " -"] } as const
 
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
 
@@ -133,9 +141,10 @@ export function applyPageFurniture(docx: Uint8Array, furniture: PageFurniture): 
   }
   if (furniture.pageNumber) {
     const { format, align } = furniture.pageNumber
+    const [before, after] = PAGE_NUMBER_AFFIXES[format]
     // The cached result is what a reader that does not lay out pages shows: the
     // number of the first page this footer appears on.
-    add("footer", "default", [{ text: format === "page" ? "Page " : format === "dashed" ? "- " : "", align, page: unnumbered ? "2" : "1", ...(format === "dashed" ? { after: " -" } : {}) }])
+    add("footer", "default", [{ text: before, align, page: unnumbered ? "2" : "1", ...(after ? { after } : {}) }])
     if (unnumbered) add("footer", "first", [{ text: "", align }])
   }
   // Header and footer references come first in a section's properties; the
