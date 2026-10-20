@@ -5,7 +5,8 @@ import { INGEST_URL } from "../src/config"
 import { compareUrl, fetchBlacklineBytes, fetchComparison, type ChangeHunk, type ComparisonJson, type ProposalOutcome } from "../src/api/ingest/compare"
 import { choiceParams, compareCandidates } from "../src/components/CompareDialog"
 import CompareDialog from "../src/components/CompareDialog"
-import BlacklineViewer, { ComparePanel, hunkLocation, saveDocx } from "../src/components/BlacklineViewer"
+import { RevisionPresentation } from "docxodus"
+import BlacklineViewer, { BLACKLINE_RENDER_OPTIONS, ComparePanel, changeBlock, excerpt, hunkLocation, saveDocx, wordDiff } from "../src/components/BlacklineViewer"
 import CompareView from "../src/components/chat/CompareView"
 import { toTurns } from "../src/components/chat/turn-model"
 import DocumentUpload from "../src/components/DocumentUpload"
@@ -194,21 +195,21 @@ describe("proposal outcomes", () => {
   test("no section when the earlier version proposed nothing", () => {
     for (const value of [comparison(), comparison({ proposals: [] })]) {
       const html = panel(value)
-      expect(html).not.toContain("Proposals in")
+      expect(html).not.toContain("Tracked changes in")
       expect(html).not.toContain("compare-proposals")
     }
   })
 
   test("the section sits after the untracked edits and counts each outcome", () => {
     const html = panel(withProposals())
-    expect(html).toContain("Proposals in Our draft")
-    expect(html).toContain("3 proposals: 1 still pending, 1 accepted, 1 rejected or changed.")
-    expect(html.indexOf("Edits made without tracked changes")).toBeLessThan(html.indexOf("Proposals in Our draft"))
-    expect(html.indexOf("Proposals in Our draft")).toBeLessThan(html.indexOf("All changes"))
+    expect(html).toContain("Tracked changes in Our draft")
+    expect(html).toContain("3 tracked changes: 1 still pending, 1 accepted, 1 rejected or changed.")
+    expect(html.indexOf("Edits made without tracked changes")).toBeLessThan(html.indexOf("Tracked changes in Our draft"))
+    expect(html.indexOf("Tracked changes in Our draft")).toBeLessThan(html.indexOf("All changes"))
     expect(html.indexOf('id="compare-P1"')).toBeLessThan(html.indexOf('id="compare-P2"'))
     expect(html.indexOf('id="compare-P2"')).toBeLessThan(html.indexOf('id="compare-P3"'))
     const accepted = panel(withProposals({ proposals: [proposal("P1", "accepted"), proposal("P2", "accepted")] }))
-    expect(accepted).toContain("2 proposals: 2 accepted.")
+    expect(accepted).toContain("2 tracked changes: 2 accepted.")
     expect(accepted).not.toContain("is-rejected")
   })
 
@@ -223,10 +224,11 @@ describe("proposal outcomes", () => {
     expect(html).toContain('id="compare-P2" class="change-card compare-hunk compare-proposal"')
     expect(html).toContain("5. Term · paragraph 9 in Our draft")
     expect(html).toContain("Paragraph 7 in Our draft")
-    expect(html).toContain("Proposed insertion")
-    expect(html).toContain("Proposed deletion")
-    expect(html).toMatch(/class="change-old">Payment may be withheld\.</)
-    expect(html).toMatch(/class="change-new">Either party may terminate on notice\.</)
+    expect(html).toContain("<span>Insertion</span><span>Ann Lawyer</span>")
+    expect(html).toContain("<span>Deletion</span><span>Ann Lawyer</span>")
+    expect(html).not.toContain("Proposed")
+    expect(html).toContain('<div class="compare-redline"><del>Payment may be withheld.</del></div>')
+    expect(html).toContain('<div class="compare-redline"><ins>Either party may terminate on notice.</ins></div>')
   })
 
   test("a pending or accepted proposal whose paragraph has an untracked edit points to that edit too", () => {
@@ -237,7 +239,7 @@ describe("proposal outcomes", () => {
     expect(html).toMatch(/Accepted<\/span><span[^>]*>Same paragraph has an untracked edit — see <button[^>]*>U2<\/button>/)
     expect(html.match(/Same paragraph has an untracked edit/g)).toHaveLength(2)
     expect(html).not.toContain("is-rejected")
-    expect(html).not.toContain("Removes your")
+    expect(html).not.toContain("Removes tracked")
   })
 
   test("a pending proposal their tracked change reverses is counted and tagged apart", () => {
@@ -246,11 +248,11 @@ describe("proposal outcomes", () => {
         proposal("P1", "pending"), proposal("P2", "countered"), proposal("P3", "accepted"), proposal("P4", "rejected", { untracked: "U2" }),
       ],
     }))
-    expect(html).toContain("4 proposals: 1 still pending, 1 reversed by their tracked change, 1 accepted, 1 rejected or changed.")
-    expect(html).toMatch(/<span>P2<\/span><span>Proposed insertion<\/span><span class="compare-outcome-tag">Still pending — their tracked change reverses it<\/span>/)
+    expect(html).toContain("4 tracked changes: 1 still pending, 1 reversed by their tracked change, 1 accepted, 1 rejected or changed.")
+    expect(html).toMatch(/<span>P2<\/span><span>Insertion<\/span><span>Ann Lawyer<\/span><span class="compare-outcome-tag">Still pending — their tracked change reverses it<\/span>/)
     expect(html).toContain('id="compare-P2" class="change-card compare-hunk compare-proposal"')
     const withEdit = panel(withProposals({ proposals: [proposal("P1", "countered", { untracked: "U1" })] }))
-    expect(withEdit).toContain("1 proposal: 1 reversed by their tracked change.")
+    expect(withEdit).toContain("1 tracked change: 1 reversed by their tracked change.")
     expect(withEdit).toMatch(/Still pending — their tracked change reverses it<\/span><span[^>]*>Same paragraph has an untracked edit — see <button[^>]*>U1<\/button>/)
   })
 
@@ -259,23 +261,110 @@ describe("proposal outcomes", () => {
     const one = panel(withProposals({
       proposals: [proposal("P1", "pending"), proposal("P2", "rejected", { untracked: "U2" }), proposal("P3", "accepted")],
     }))
-    expect(card(one, "U2")).toMatch(/Removes your proposal <button[^>]*title="Show P2 under Proposals in Our draft"[^>]*>P2<\/button>/)
+    expect(card(one, "U2")).toMatch(/Removes tracked change <button[^>]*title="Show P2 under Tracked changes in Our draft"[^>]*>P2<\/button>/)
     expect(one).toContain('id="compare-P2" class="change-card compare-hunk compare-proposal is-rejected"')
-    expect(card(one, "U1")).not.toContain("Removes your")
-    expect(one.match(/Removes your/g)).toHaveLength(1)
+    expect(card(one, "U1")).not.toContain("Removes tracked")
+    expect(one.match(/Removes tracked/g)).toHaveLength(1)
     const several = panel(withProposals({
       proposals: [proposal("P2", "rejected", { untracked: "U2" }), proposal("P4", "pending", { untracked: "U2" }), proposal("P5", "rejected", { untracked: "U2" })],
     }))
-    expect(card(several, "U2")).toMatch(/Removes your proposals <button[^>]*>P2<\/button>, <button[^>]*>P5<\/button><\/span>/)
-    expect(several).toContain("3 proposals: 1 still pending, 2 rejected or changed.")
+    expect(card(several, "U2")).toMatch(/Removes tracked changes <button[^>]*>P2<\/button>, <button[^>]*>P5<\/button><\/span>/)
+    expect(several).toContain("3 tracked changes: 1 still pending, 2 rejected or changed.")
   })
 
-  test("the disclosure says the blackline compares accepted text and points to the proposals", () => {
+  test("the disclosure says the blackline compares accepted text and points to its tracked changes", () => {
     const html = panel(withProposals())
     expect(html).toContain(
-      "Our draft had 3 tracked changes (by Ann Lawyer); the blackline compares its text with those changes accepted. “Proposals in Our draft” above shows what became of each in Their draft.",
+      "Our draft had 3 tracked changes (by Ann Lawyer); the blackline compares its text with those changes accepted. “Tracked changes in Our draft” above shows what became of each in Their draft.",
     )
     expect(html).not.toContain("Our draft had 3 tracked changes (by Ann Lawyer); compared as accepted.")
+  })
+})
+
+describe("redline as lawyers read it", () => {
+  test("a card shows the changed words inline, not the whole paragraph struck and retyped", () => {
+    const html = panel(comparison())
+    expect(html).toContain('<div class="compare-redline">Payment is due within <del>thirty</del><ins>sixty</ins> days.</div>')
+    expect(html).toContain('<div class="compare-redline"><ins>A new &lt;b&gt;late fee&lt;/b&gt; applies.</ins></div>')
+    expect(html).not.toContain("change-old")
+    expect(html).not.toContain("change-new")
+  })
+
+  test("words and the spaces between changed words read as one deletion and one insertion", () => {
+    expect(wordDiff("pay within 30 days", "pay within 45 business days")).toEqual([
+      { kind: "same", text: "pay within " }, { kind: "del", text: "30" }, { kind: "ins", text: "45 business" }, { kind: "same", text: " days" },
+    ])
+    expect(wordDiff("one two", "three four")).toEqual([{ kind: "del", text: "one two" }, { kind: "ins", text: "three four" }])
+    expect(wordDiff("a b c d e", "a x c y e")).toEqual([
+      { kind: "same", text: "a " }, { kind: "del", text: "b" }, { kind: "ins", text: "x" }, { kind: "same", text: " c " },
+      { kind: "del", text: "d" }, { kind: "ins", text: "y" }, { kind: "same", text: " e" },
+    ])
+    expect(wordDiff("Fees are due.", "Fees are due.\nInterest accrues.")).toEqual([{ kind: "same", text: "Fees are due." }, { kind: "ins", text: "\nInterest accrues." }])
+    const moved = panel(comparison({ changes: [hunk("C1", false, { kind: "moved", before: "Clause text.", after: "Clause text." })] }))
+    expect(moved).toContain('<div class="compare-redline"><ins class="is-move">Clause text.</ins></div>')
+  })
+
+  test("long unchanged text around a change is cut to nearby words, with a way to see it all", () => {
+    const words = (from: number, to: number) => Array.from({ length: to - from }, (_, i) => `w${from + i}`).join(" ")
+    const pieces = wordDiff(`${words(0, 30)} old ${words(30, 60)} gone ${words(60, 90)}`, `${words(0, 30)} new ${words(30, 60)} here ${words(60, 90)}`)
+    const short = excerpt(pieces)
+    const text = short.map((piece) => piece.text).join("|")
+    expect(text.startsWith("… w18 ")).toBe(true)
+    expect(text).toContain("w29 |old|new| w30 ")
+    expect(text).toContain(" w41 … w48 ")
+    expect(text.endsWith(" w71…")).toBe(true)
+    expect(excerpt(wordDiff("Fees are due.", "Fees are owed."))).toEqual(wordDiff("Fees are due.", "Fees are owed."))
+  })
+
+  test("the key names the marks in use; the untracked highlight only when the page shows it", () => {
+    const key = (html: string) => html.slice(html.indexOf('class="compare-legend"'), html.indexOf("</div>", html.indexOf('class="compare-legend"')))
+    expect(key(panel(comparison()))).toMatch(/redline-ins">Inserted.*redline-del">Deleted.*redline-move">Moved.*redline-untracked">Not tracked/)
+    expect(key(panel(comparison({ attribution: "label" })))).not.toContain("Not tracked")
+    expect(key(panel(comparison({ untracked: [] })))).not.toContain("Not tracked")
+    expect(key(panel(comparison({ options: { ignoreFormatting: true, detectMoves: false, headersFooters: true } })))).not.toContain("Moved")
+  })
+
+  test("the page uses Word's markup, so it reads like the downloaded file", () => {
+    expect(BLACKLINE_RENDER_OPTIONS.revisionPresentation).toBe(RevisionPresentation.Word)
+    expect(BLACKLINE_RENDER_OPTIONS.renderTrackedChanges).toBe(true)
+  })
+
+  test("a change's place reads as a link to it in the blackline once the page is painted", () => {
+    const linked = renderToStaticMarkup(createElement(ComparePanel, { comparison: comparison(), onShow: () => {} }))
+    expect(linked).toContain('<button type="button" class="linklike compare-show" title="Show this change in the blackline">2. Payment · 2.1</button>')
+    expect(panel(comparison())).not.toContain("compare-show")
+    const proposals = renderToStaticMarkup(createElement(ComparePanel, { comparison: withProposals(), onShow: () => {} }))
+    const card = proposals.slice(proposals.indexOf('id="compare-P1"'), proposals.indexOf('id="compare-P2"'))
+    expect(card).not.toContain("compare-show")
+  })
+})
+
+describe("finding a change in the painted blackline", () => {
+  const block = (before: string, after = before, marked = before !== after) => ({ before, after, marked })
+  const page = [
+    block("Services Agreement"),
+    block("Payment is due within thirty days."),
+    block("Payment is due within thirty days.", "Payment is due within sixty days."),
+    block("2.3 Interest accrues.", "2.3 "),
+    block("Payment is due within thirty days."),
+  ]
+
+  test("the paragraph whose new text holds the change, preferring one with a revision", () => {
+    expect(changeBlock(page, hunk("C1", false))).toBe(2)
+    expect(changeBlock(page, hunk("C2", false, { kind: "deleted", after: undefined, before: "Interest accrues." }))).toBe(3)
+  })
+
+  test("repeated wording goes to the paragraph nearest the change's own place", () => {
+    const repeated = [block("Notice."), block("x"), block("x"), block("Notice.")]
+    const at = (paragraph: number) => hunk("C1", false, { kind: "inserted", before: undefined, after: "Notice.", location: { scope: "body", paragraph, side: "right" } })
+    expect(changeBlock(repeated, at(1))).toBe(0)
+    expect(changeBlock(repeated, at(4))).toBe(3)
+  })
+
+  test("an untracked edit read without their tracked change finds the revised paragraph sharing most of its words", () => {
+    const mixed = [block("Payment terms apply."), block("The Customer shall pay the Fees within 30 days.", "The Customer shall promptly pay the Fees within 45 days.")]
+    expect(changeBlock(mixed, hunk("U1", true, { after: "The Customer shall pay the Fees within 45 days." }))).toBe(1)
+    expect(changeBlock(mixed, hunk("U1", true, { after: "Something else entirely." }))).toBeUndefined()
   })
 })
 

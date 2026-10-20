@@ -1,4 +1,5 @@
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react"
+import { RevisionPresentation } from "docxodus"
 import { useDocxodus } from "docxodus/react"
 import {
   compareUrl,
@@ -16,14 +17,22 @@ import { fileStem } from "./CompareDialog"
 import { DOCX_RENDER_OPTIONS, ViewerTitle } from "./DocumentViewer"
 import { ModalClose } from "./ModalHeader"
 
-// The blackline of two Word versions, painted with the same render as the
-// document viewer, beside a list of the edits the later version made without
-// tracked changes, what became of the earlier version's own tracked changes,
-// and then every change. View and download only: the blackline
-// is generated on demand and never saved into the matter.
+// The blackline of two Word versions beside a list of the edits the later
+// version made without tracked changes, what became of the earlier version's
+// own tracked changes, and then every change. View and download only: the
+// blackline is generated on demand and never saved into the matter.
+//
+// The page uses Word's markup (a change bar per changed paragraph, green
+// double-lined moves, no fills), coloured as comparisons usually are: blue
+// double-underlined insertions and red struck deletions. Edits made without
+// tracked changes sit on an amber highlight, as their own author sets them
+// apart in the Word file.
+export const BLACKLINE_RENDER_OPTIONS = { ...DOCX_RENDER_OPTIONS, revisionPresentation: RevisionPresentation.Word }
+
 export default function BlacklineViewer({ matterId, params, onClose }: { matterId: string; params: CompareParams; onClose: () => void }) {
   const { isReady, error: wasmError, convertToHtml } = useDocxodus("/wasm/")
   const panel = useRef<HTMLDivElement>(null)
+  const page = useRef<HTMLDivElement>(null)
   // The fetched blackline, painted on screen and saved by Download.
   const [blackline, setBlackline] = useState<Uint8Array>()
   const [html, setHtml] = useState<string>()
@@ -78,7 +87,7 @@ export default function BlacklineViewer({ matterId, params, onClose }: { matterI
   useEffect(() => {
     if (!isReady || !blackline) return
     let cancelled = false
-    convertToHtml(blackline, DOCX_RENDER_OPTIONS).then(
+    convertToHtml(blackline, BLACKLINE_RENDER_OPTIONS).then(
       (out) => !cancelled && setHtml(out),
       (cause) => !cancelled && setRenderError(humanizeError(cause, "Could not show the blackline.")),
     )
@@ -87,6 +96,21 @@ export default function BlacklineViewer({ matterId, params, onClose }: { matterI
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isReady, blackline])
+
+  // Mark the edits made without tracked changes in the page itself. They carry
+  // their own author only when the blackline's re-labelling held.
+  useEffect(() => {
+    const root = page.current
+    if (!root || !html || comparison?.attribution !== "authors") return
+    const author = untrackedAuthor(comparison.right.label)
+    for (const mark of root.querySelectorAll<HTMLElement>("ins[data-author], del[data-author]"))
+      mark.classList.toggle("is-untracked", mark.dataset.author === author)
+  }, [html, comparison])
+
+  const showChange = (hunk: ChangeHunk) => {
+    const root = page.current?.querySelector<HTMLElement>(".docx-render:not(.docx-skeleton)")
+    if (root) focusChange(root, hunk)
+  }
 
   const failed = renderError ?? (wasmError && `Viewer failed to load: ${wasmError.message}`)
   return (
@@ -108,7 +132,7 @@ export default function BlacklineViewer({ matterId, params, onClose }: { matterI
           </div>
         </div>
         <div className="viewer-body">
-          <div className="viewer-doc">
+          <div ref={page} className="viewer-doc">
             {failed && <p className="muted">{failed}</p>}
             {!failed && !html && (
               <div className="docx-render docx-skeleton" aria-label="Comparing documents">
@@ -118,7 +142,7 @@ export default function BlacklineViewer({ matterId, params, onClose }: { matterI
             {documentPreview}
           </div>
           {comparison ? (
-            <ComparePanel comparison={comparison} />
+            <ComparePanel comparison={comparison} onShow={html ? showChange : undefined} />
           ) : panelError ? (
             // One refusal (a PDF, a missing file) fails both requests; say it once.
             panelError !== renderError && (
@@ -167,6 +191,8 @@ const SCOPE: Record<ChangeLocation["scope"], string | undefined> = {
   endnote: "Endnote",
 }
 const plural = (count: number, one: string, many = `${one}s`) => `${count} ${count === 1 ? one : many}`
+// The Word author of an edit made without tracked changes, as the blackline sets it.
+const untrackedAuthor = (label: string) => `Not tracked (${label})`
 
 // Where a change sits: its part of the document, the nearest heading, then the
 // paragraph's own clause number or, failing one, its ordinal in the version the
@@ -204,14 +230,14 @@ const OUTCOME: Record<ProposalOutcome["outcome"], string> = {
   rejected: "rejected or changed",
 }
 
-// "3 proposals: 1 still pending, 1 accepted, 1 rejected or changed."
+// "3 tracked changes: 1 still pending, 1 accepted, 1 rejected or changed."
 // Outcomes that did not happen are left out.
 function proposalSummary(proposals: ProposalOutcome[]) {
   const parts = (Object.keys(OUTCOME) as ProposalOutcome["outcome"][]).flatMap((outcome) => {
     const count = proposals.filter((proposal) => proposal.outcome === outcome).length
     return count ? [`${count} ${OUTCOME[outcome]}`] : []
   })
-  return `${plural(proposals.length, "proposal")}: ${parts.join(", ")}.`
+  return `${plural(proposals.length, "tracked change")}: ${parts.join(", ")}.`
 }
 
 const hadRevisions = ({ label, trackedChanges: { count, authors } }: ComparisonSide) =>
@@ -221,17 +247,17 @@ const hadRevisions = ({ label, trackedChanges: { count, authors } }: ComparisonS
 function disclosures({ left, right, options, attribution, untracked, proposals = [] }: ComparisonJson) {
   const lines: string[] = []
   if (attribution === "label") lines.push(`Untracked edits are listed here only; in the Word file every change shows under ${right.label}.`)
-  else if (untracked.length) lines.push(`In the Word file, edits made without tracked changes show under “Not tracked (${right.label})”.`)
+  else if (untracked.length) lines.push(`In the Word file, edits made without tracked changes show under “${untrackedAuthor(right.label)}”.`)
   // The blackline reads left with its own tracked changes accepted; the
-  // proposals section, not this line, says what became of each.
+  // section listing them, not this line, says what became of each.
   const leftCount = left.trackedChanges.count
   if (leftCount)
     lines.push(
       `${hadRevisions(left)}; the blackline compares its text with ${leftCount === 1 ? "that change" : "those changes"} accepted.` +
-        (proposals.length ? ` “Proposals in ${left.label}” above shows what became of each in ${right.label}.` : ""),
+        (proposals.length ? ` “${trackedIn(left)}” above shows what became of each in ${right.label}.` : ""),
     )
   if (right.trackedChanges.count) lines.push(`${hadRevisions(right)}; compared as accepted.`)
-  // Not "pending": that word belongs to the earlier version's proposals.
+  // Not "pending": that word belongs to the earlier version's tracked changes.
   for (const side of [left, right])
     if (side.pendingProposals)
       lines.push(`${side.label} has ${plural(side.pendingProposals, "change")} in doc.haus that ${side.pendingProposals === 1 ? "is" : "are"} not in the file yet, so ${side.pendingProposals === 1 ? "it is" : "they are"} not included.`)
@@ -241,7 +267,12 @@ function disclosures({ left, right, options, attribution, untracked, proposals =
   return lines
 }
 
-export function ComparePanel({ comparison }: { comparison: ComparisonJson }) {
+// The earlier version's own tracked changes, named neutrally: the earlier file
+// is not always ours.
+const trackedIn = (side: ComparisonSide) => `Tracked changes in ${side.label}`
+
+// onShow, once the blackline is painted, scrolls it to a change.
+export function ComparePanel({ comparison, onShow }: { comparison: ComparisonJson; onShow?: (hunk: ChangeHunk) => void }) {
   const { left, right, changes, untracked, proposals = [] } = comparison
   const status = untrackedStatus(comparison)
   return (
@@ -253,6 +284,7 @@ export function ComparePanel({ comparison }: { comparison: ComparisonJson }) {
         <span className="compare-sides-line">
           {left.label} → {right.label}
         </span>
+        <Legend comparison={comparison} />
       </div>
       <section className={`compare-section compare-untracked is-${status.tone}`} aria-labelledby="compare-untracked-title">
         <h3 id="compare-untracked-title">
@@ -265,6 +297,7 @@ export function ComparePanel({ comparison }: { comparison: ComparisonJson }) {
             key={hunk.id}
             hunk={hunk}
             comparison={comparison}
+            onShow={onShow}
             removes={proposals.filter((proposal) => proposal.outcome === "rejected" && proposal.untracked === hunk.id).map((proposal) => proposal.id)}
           />
         ))}
@@ -272,7 +305,7 @@ export function ComparePanel({ comparison }: { comparison: ComparisonJson }) {
       {proposals.length > 0 && (
         <section className="compare-section compare-proposals" aria-labelledby="compare-proposals-title">
           <h3 id="compare-proposals-title">
-            {`Proposals in ${left.label}`}
+            {trackedIn(left)}
             <span className="compare-count">{proposals.length}</span>
           </h3>
           <p className="compare-status">{proposalSummary(proposals)}</p>
@@ -285,7 +318,7 @@ export function ComparePanel({ comparison }: { comparison: ComparisonJson }) {
         <h3 id="compare-all-title">All changes</h3>
         {changes.length === 0 && <p className="compare-status">No differences found.</p>}
         {changes.map((hunk) => (
-          <HunkCard key={hunk.id} hunk={hunk} comparison={comparison} marked />
+          <HunkCard key={hunk.id} hunk={hunk} comparison={comparison} marked onShow={onShow} />
         ))}
       </section>
       <div className="compare-disclosures">
@@ -297,30 +330,60 @@ export function ComparePanel({ comparison }: { comparison: ComparisonJson }) {
   )
 }
 
-// One change. An untracked edit names the proposals it removed, listed below.
-function HunkCard({ hunk, comparison, marked, removes = [] }: { hunk: ChangeHunk; comparison: ComparisonJson; marked?: boolean; removes?: string[] }) {
-  const before = hunk.before && !(hunk.kind === "moved" && hunk.before === hunk.after) ? hunk.before : undefined
+// The marks in use, as a comparison's key would list them.
+function Legend({ comparison: { options, attribution, untracked } }: { comparison: ComparisonJson }) {
   return (
-    <div id={`compare-${hunk.id}`} className={`change-card compare-hunk${marked && hunk.untracked ? " is-untracked" : ""}`}>
+    <div className="compare-legend" aria-label="Key">
+      <span className="redline-ins">Inserted</span>
+      <span className="redline-del">Deleted</span>
+      {options.detectMoves && <span className="redline-move">Moved</span>}
+      {attribution === "authors" && untracked.length > 0 && <span className="redline-untracked">Not tracked</span>}
+    </div>
+  )
+}
+
+// One change, shown as its own redline. An untracked edit names the earlier
+// version's tracked changes it removed, listed below. With onShow, a click on
+// the card (or its place, for the keyboard) shows the change in the blackline.
+function HunkCard({ hunk, comparison, marked, removes = [], onShow }: { hunk: ChangeHunk; comparison: ComparisonJson; marked?: boolean; removes?: string[]; onShow?: (hunk: ChangeHunk) => void }) {
+  const pieces = useMemo(() => hunkPieces(hunk), [hunk])
+  const location = hunkLocation(hunk.location, comparison)
+  // Not when the click lands on a control or ends a text selection.
+  const show = onShow && ((event: MouseEvent) => {
+    if (!(event.target as Element).closest("button") && !window.getSelection()?.toString()) onShow(hunk)
+  })
+  return (
+    <div
+      id={`compare-${hunk.id}`}
+      className={`change-card compare-hunk${marked && hunk.untracked ? " is-untracked" : ""}${onShow ? " is-linked" : ""}`}
+      onClick={show}
+    >
       <div className="change-author compare-hunk-meta">
         <span>{hunk.id}</span>
         <span>{KIND[hunk.kind]}</span>
         {marked && hunk.untracked && <span className="compare-untracked-tag">Not tracked</span>}
         {removes.length > 0 && (
           <span className="compare-outcome-tag is-warn">
-            {`Removes your ${removes.length === 1 ? "proposal" : "proposals"} `}
+            {`Removes tracked ${removes.length === 1 ? "change" : "changes"} `}
             {removes.map((id, index) => (
               <Fragment key={id}>
                 {index > 0 && ", "}
-                <CompareRef id={id} section={`Proposals in ${comparison.left.label}`} />
+                <CompareRef id={id} section={trackedIn(comparison.left)} />
               </Fragment>
             ))}
           </span>
         )}
       </div>
-      <div className="compare-hunk-location">{hunkLocation(hunk.location, comparison)}</div>
-      {before && <ClippedText className="change-old" text={before} />}
-      {hunk.after && <ClippedText className="change-new" text={hunk.after} />}
+      <div className="compare-hunk-location">
+        {onShow ? (
+          <button type="button" className="linklike compare-show" title="Show this change in the blackline" onClick={() => onShow(hunk)}>
+            {location}
+          </button>
+        ) : (
+          location
+        )}
+      </div>
+      <Redline pieces={pieces} />
     </div>
   )
 }
@@ -331,9 +394,10 @@ const OUTCOME_TAG: Record<Exclude<ProposalOutcome["outcome"], "rejected">, strin
   accepted: "Accepted",
 }
 
-// One tracked change the earlier version proposed and what became of it. A
+// One tracked change pending in the earlier version and what became of it. A
 // rejected one names the untracked edit that removed it; any other names an
-// untracked edit in its paragraph. Both edits sit above.
+// untracked edit in its paragraph. Both edits sit above. Not a blackline
+// change itself, so it has no place in the page to show.
 function ProposalCard({ proposal, comparison }: { proposal: ProposalOutcome; comparison: ComparisonJson }) {
   const rejected = proposal.outcome === "rejected"
   const ref = proposal.untracked
@@ -342,7 +406,8 @@ function ProposalCard({ proposal, comparison }: { proposal: ProposalOutcome; com
     <div id={`compare-${proposal.id}`} className={`change-card compare-hunk compare-proposal${rejected ? " is-rejected" : ""}`}>
       <div className="change-author compare-hunk-meta">
         <span>{proposal.id}</span>
-        <span>{proposal.kind === "inserted" ? "Proposed insertion" : "Proposed deletion"}</span>
+        <span>{proposal.kind === "inserted" ? "Insertion" : "Deletion"}</span>
+        {proposal.author && <span>{proposal.author}</span>}
         {proposal.outcome === "rejected" ? (
           <span className="compare-outcome-tag is-warn">
             {`Rejected or changed — not shown as a tracked change${ref ? ", see " : ""}`}
@@ -361,7 +426,7 @@ function ProposalCard({ proposal, comparison }: { proposal: ProposalOutcome; com
         )}
       </div>
       <div className="compare-hunk-location">{hunkLocation(proposal.location, comparison)}</div>
-      <ClippedText className={proposal.kind === "inserted" ? "change-new" : "change-old"} text={proposal.text} />
+      <Redline pieces={[{ kind: proposal.kind === "inserted" ? "ins" : "del", text: proposal.text }]} />
     </div>
   )
 }
@@ -380,19 +445,186 @@ function CompareRef({ id, section }: { id: string; section: string }) {
   )
 }
 
-// Paragraph text can run long; show the start and let the lawyer expand it.
+// A change's text as a redline: unchanged words plain, deletions struck,
+// insertions underlined, moved text marked as moved.
+export type Piece = { kind: "same" | "del" | "ins" | "move"; text: string }
+
+function hunkPieces(hunk: ChangeHunk): Piece[] {
+  if (hunk.kind === "moved" && hunk.before === hunk.after) return [{ kind: "move", text: hunk.after ?? "" }]
+  if (!hunk.before) return [{ kind: "ins", text: hunk.after ?? "" }]
+  if (!hunk.after) return [{ kind: "del", text: hunk.before }]
+  return wordDiff(hunk.before, hunk.after)
+}
+
+// Words, runs of white space and single other characters, so a changed word
+// reads whole.
+const tokens = (text: string) => text.match(/\s+|[\p{L}\p{N}\p{M}]+|[^\s\p{L}\p{N}\p{M}]/gu) ?? []
+
+// Word-level redline of one change. The common start and end are set aside
+// first, so the table covers only the changed middle; a middle too large to
+// align reads as one deletion and one insertion.
+export function wordDiff(before: string, after: string): Piece[] {
+  const a = tokens(before), b = tokens(after)
+  let head = 0
+  while (head < a.length && head < b.length && a[head] === b[head]) head++
+  let tail = 0
+  while (tail < a.length - head && tail < b.length - head && a[a.length - 1 - tail] === b[b.length - 1 - tail]) tail++
+  const x = a.slice(head, a.length - tail), y = b.slice(head, b.length - tail)
+  const middle: Piece[] = []
+  if (x.length * y.length > 250_000) middle.push({ kind: "del", text: x.join("") }, { kind: "ins", text: y.join("") })
+  else {
+    // Longest common run of tokens from x[i] and y[j] onwards.
+    const width = y.length + 1
+    const common = new Uint32Array((x.length + 1) * width)
+    for (let i = x.length - 1; i >= 0; i--)
+      for (let j = y.length - 1; j >= 0; j--)
+        common[i * width + j] = x[i] === y[j] ? common[(i + 1) * width + j + 1] + 1 : Math.max(common[(i + 1) * width + j], common[i * width + j + 1])
+    let i = 0, j = 0
+    while (i < x.length || j < y.length) {
+      if (i < x.length && j < y.length && x[i] === y[j]) middle.push({ kind: "same", text: x[i++] }), j++
+      else if (i < x.length && (j === y.length || common[(i + 1) * width + j] >= common[i * width + j + 1])) middle.push({ kind: "del", text: x[i++] })
+      else middle.push({ kind: "ins", text: y[j++] })
+    }
+  }
+  return merged([{ kind: "same", text: a.slice(0, head).join("") }, ...middle, { kind: "same", text: a.slice(a.length - tail).join("") }])
+}
+
+// Each run of changes reads as one deletion then one insertion, as Word's
+// redline does. White space alone between two changes joins the run, and
+// goes to each side that continues after it.
+function merged(pieces: Piece[]): Piece[] {
+  const out: Piece[] = []
+  let del = "", ins = "", gap = { del: "", ins: "" }
+  const flush = () => {
+    if (del) out.push({ kind: "del", text: del })
+    if (ins) out.push({ kind: "ins", text: ins })
+    del = ins = ""
+    gap = { del: "", ins: "" }
+  }
+  pieces.forEach((piece, index) => {
+    if (!piece.text) return
+    if (piece.kind === "del") (del += (del ? gap.del : "") + piece.text), (gap.del = "")
+    else if (piece.kind === "ins") (ins += (ins ? gap.ins : "") + piece.text), (gap.ins = "")
+    else if ((del || ins) && !piece.text.trim() && pieces.slice(index + 1).find((next) => next.text)?.kind !== "same")
+      (gap.del += piece.text), (gap.ins += piece.text)
+    else {
+      flush()
+      const last = out.at(-1)
+      if (last?.kind === "same") last.text += piece.text
+      else out.push({ ...piece })
+    }
+  })
+  flush()
+  return out
+}
+
+// Unchanged words kept either side of a change, and the characters of an
+// inserted or deleted run shown before "Show all".
+const CONTEXT = 12
 const CLIP = 320
-function ClippedText({ className, text }: { className: string; text: string }) {
+
+// The redline as first shown: long unchanged text cut to the words nearest a
+// change and long runs clipped. The same array when nothing was cut.
+export function excerpt(pieces: Piece[]): Piece[] {
+  let cut = false
+  const out = pieces.map((piece, index): Piece => {
+    if (piece.kind !== "same") {
+      if (piece.text.length <= CLIP) return piece
+      cut = true
+      return { ...piece, text: `${piece.text.slice(0, CLIP).trimEnd()}…` }
+    }
+    // Each word with the white space around it.
+    const words = piece.text.match(/\s*\S+\s*/g) ?? []
+    const first = index === 0, last = index === pieces.length - 1
+    if (first && words.length > CONTEXT + 3) return (cut = true), { ...piece, text: `… ${words.slice(-CONTEXT).join("")}` }
+    if (last && words.length > CONTEXT + 3) return (cut = true), { ...piece, text: `${words.slice(0, CONTEXT).join("").trimEnd()}…` }
+    if (!first && !last && words.length > 2 * CONTEXT + 3)
+      return (cut = true), { ...piece, text: `${words.slice(0, CONTEXT).join("")}… ${words.slice(-CONTEXT).join("")}` }
+    return piece
+  })
+  return cut ? out : pieces
+}
+
+function Redline({ pieces }: { pieces: Piece[] }) {
   const [open, setOpen] = useState(false)
-  const long = text.length > CLIP
+  const short = useMemo(() => excerpt(pieces), [pieces])
   return (
     <>
-      <div className={className}>{long && !open ? `${text.slice(0, CLIP).trimEnd()}…` : text}</div>
-      {long && (
+      <div className="compare-redline">
+        {(open ? pieces : short).map((piece, index) =>
+          piece.kind === "same" ? (
+            <Fragment key={index}>{piece.text}</Fragment>
+          ) : piece.kind === "del" ? (
+            <del key={index}>{piece.text}</del>
+          ) : (
+            <ins key={index} className={piece.kind === "move" ? "is-move" : undefined}>
+              {piece.text}
+            </ins>
+          ),
+        )}
+      </div>
+      {short !== pieces && (
         <button type="button" className="linklike compare-more" onClick={() => setOpen((value) => !value)}>
           {open ? "Show less" : "Show all"}
         </button>
       )}
     </>
   )
+}
+
+// A paragraph of the painted blackline, read as each version has it: before
+// without its insertions, after without its deletions.
+export type BlockText = { before: string; after: string; marked: boolean }
+const squash = (text: string) => text.replace(/\s+/g, " ").trim()
+const words = (text: string) => text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []
+
+// The paragraph a change sits in: the one whose text, read as the change's
+// side, holds the change's first line. Repeated wording prefers a paragraph
+// with a revision, then the one nearest the change's own place. An untracked
+// edit is read without their tracked changes, so where those share its
+// paragraph no text holds it whole; the revised paragraph sharing most of its
+// words is taken instead.
+export function changeBlock(blocks: BlockText[], hunk: ChangeHunk): number | undefined {
+  const side = hunk.after ? "after" : "before"
+  const line = squash((hunk[side] ?? "").split("\n").find((text) => text.trim()) ?? "")
+  if (!line) return undefined
+  const distance = (index: number) => Math.abs(index + 1 - hunk.location.paragraph)
+  const holders = blocks.flatMap((block, index) => (block[side].includes(line) ? [index] : []))
+  if (holders.length) return holders.sort((a, b) => Number(blocks[b].marked) - Number(blocks[a].marked) || distance(a) - distance(b))[0]
+  const wanted = new Set(words(line))
+  let best: number | undefined, score = 0.5
+  blocks.forEach((block, index) => {
+    if (!block.marked) return
+    const have = new Set(words(block[side]))
+    const shared = [...wanted].filter((word) => have.has(word)).length / wanted.size
+    if (shared > score) (best = index), (score = shared)
+  })
+  return best
+}
+
+// Leaf blocks only: a list item holding paragraphs is read through them.
+const BLOCKS = "p, li, h1, h2, h3, h4, h5, h6"
+
+function blockText(block: Element, drop: string) {
+  const copy = block.cloneNode(true) as Element
+  for (const node of copy.querySelectorAll(drop)) node.remove()
+  return squash(copy.textContent ?? "")
+}
+
+// Scroll the painted blackline to a change's paragraph, flash it and move
+// focus there, as a click in Word's revisions list does.
+function focusChange(root: HTMLElement, hunk: ChangeHunk) {
+  const blocks = [...root.querySelectorAll<HTMLElement>(BLOCKS)].filter((block) => !block.querySelector(BLOCKS))
+  const index = changeBlock(
+    blocks.map((block) => ({ before: blockText(block, "ins"), after: blockText(block, "del"), marked: !!block.querySelector("ins, del") })),
+    hunk,
+  )
+  if (index === undefined) return
+  const block = blocks[index]
+  block.classList.remove("compare-focus")
+  void block.offsetWidth // restarts the flash when the same change is shown again
+  block.classList.add("compare-focus")
+  block.tabIndex = -1
+  block.scrollIntoView({ block: "center", behavior: "smooth" })
+  block.focus({ preventScroll: true })
 }

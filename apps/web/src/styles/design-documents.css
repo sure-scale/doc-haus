@@ -312,7 +312,7 @@
 .compare-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
 
 /* Blackline side panel: untracked edits first, then what became of the earlier
-   version's proposals, then every change. */
+   version's tracked changes, then every change. */
 @media (min-width: 721px) {
   .blackline-reader .compare-panel { width: 380px; }
 }
@@ -345,3 +345,32 @@
 .compare-disclosures { padding-top: 12px; border-top: 1px solid var(--border); }
 .compare-disclosures p { margin: 0 0 6px; font-size: 12px; line-height: 1.5; color: var(--muted); }
 .compare-card .draft-icon { display: inline-flex; }
+/* Comparison marks, alike in the page, the cards and the key: blue
+   double-underlined insertions, red struck deletions, green double-lined moves
+   and an amber highlight on edits made without tracked changes. Word's markup
+   draws the change bars and the moves; these override its author colours. */
+.blackline-reader { --redline-ins: #1a4fd6; --redline-del: #c62828; --redline-move: #00873c; --redline-untracked: #ffd98c; }
+.blackline-reader .docx-render ins.rev-ins:not(.rev-move-to),
+.compare-redline ins:not(.is-move),
+.redline-ins { color: var(--redline-ins); text-decoration: underline double; text-decoration-skip-ink: none; }
+.blackline-reader .docx-render del.rev-del:not(.rev-move-from),
+.compare-redline del,
+.redline-del { color: var(--redline-del); text-decoration: line-through; }
+.compare-redline ins.is-move,
+.redline-move { color: var(--redline-move); text-decoration: underline double; text-decoration-skip-ink: none; }
+.blackline-reader .docx-render :is(ins, del) span { color: inherit; }
+.blackline-reader .docx-render :is(ins, del).is-untracked,
+.redline-untracked { background: var(--redline-untracked); }
+.compare-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; font-weight: 400; }
+.compare-legend .redline-untracked { padding: 0 3px; color: var(--text); }
+.compare-redline { font-size: 13px; line-height: 1.55; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+.compare-hunk.is-linked { cursor: pointer; }
+.compare-hunk-location button.compare-show { font: inherit; color: inherit; overflow-wrap: anywhere; }
+.compare-hunk.is-linked:hover .compare-show { color: var(--accent); text-decoration: underline; }
+/* A change shown from the panel flashes in the page. */
+.docx-render .compare-focus { animation: compare-focus 1.6s ease-out; }
+.docx-render .compare-focus:focus:not(:focus-visible) { outline: none; }
+@keyframes compare-focus { from { background-color: #fff0a3; } }
+@media (prefers-reduced-motion: reduce) {
+  .docx-render .compare-focus { animation: none; }
+}
