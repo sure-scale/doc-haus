@@ -115,13 +115,13 @@ jobs:
       - name: Test provider response limits and streaming errors
         working-directory: packages/core
         run: bun test test/provider-response-size.test.ts --timeout 30000
-      - name: Test ordinary settings and setup
+      - name: Test ordinary settings, matter fields and setup
         working-directory: services/ingest
         # This suite sets WORKSPACE_ROOT before loading the installation singleton.
         # A separate process prevents another test file's imports from caching it first.
         run: |
           bun test src/preferences.test.ts --timeout 30000
-          bun test src/engine-config.test.ts src/setup.test.ts src/research-connections.test.ts src/auth-reuse.test.ts src/identifiers.test.ts src/source-artifacts.test.ts src/playbook-library.test.ts --timeout 30000
+          bun test src/engine-config.test.ts src/setup.test.ts src/research-connections.test.ts src/auth-reuse.test.ts src/identifiers.test.ts src/source-artifacts.test.ts src/playbook-library.test.ts src/matter.test.ts src/matter-http.test.ts --timeout 30000
       - name: Test Word proposals through a LibreOffice save
         working-directory: services/ingest
         # Committed LibreOffice-saved fixtures and a scripted engine; no model.
@@ -137,9 +137,9 @@ jobs:
         working-directory: dochaus
         # Synthetic Word files and indexes in temporary matters; no network or model.
         run: bun test test/redline-preview-attribution.test.ts test/search-document-filters.test.ts --timeout 30000
-      - name: Test research scope and connector consent
+      - name: Test drafting preferences, research scope and connector consent
         working-directory: dochaus
-        run: bun test test/drafting-preferences.test.ts test/research-scope.test.ts test/research-source-fetch.test.ts test/research-source-exa.test.ts test/research-mcp.test.ts
+        run: bun test test/drafting-preferences.test.ts workflows/lean/posture.test.ts test/research-scope.test.ts test/research-source-fetch.test.ts test/research-source-exa.test.ts test/research-mcp.test.ts
       - name: Test web model selection and proxy
         working-directory: apps/web
         run: bun test test --timeout 30000
