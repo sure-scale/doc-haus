@@ -86,3 +86,19 @@ to its end. At each position the summary must stay in view at the scroller's
 top edge, be the element under its own centre and have an opaque background in
 the run header's colour. A real pointer click just past the summary must fold
 the list. It sends no writes.
+
+Run the page layout regression with the same environment:
+
+```sh
+PLAYWRIGHT_BASE_URL=http://127.0.0.1:5189 \
+DOCHAUS_EVIDENCE_DIR=/tmp/doc-haus-page-layout-evidence \
+bun apps/web/e2e/page-layout.ts
+```
+
+At 1440×1000 and 400×860 it sets every Page layout control in Settings →
+Drafting and checks the agreement page preview and the saved body: flat keys,
+with no new nested object. In onboarding's details step it checks that default
+jurisdictions only mark suggested legends, that nothing is chosen for the
+lawyer, that the preview follows the firm name and legend, and that Save sends
+the two legends as flat keys, empty when left alone. The clock is fixed so the
+draft line's date is stable. Saves reach only the in-memory fixture.
