@@ -228,6 +228,10 @@ function localize(opened: Opened, proposed: DocxAmendment[], limits: Limits) {
   if (!Number.isSafeInteger(bounded.maxCandidates) || bounded.maxCandidates < 1
     || !Number.isSafeInteger(bounded.maxContextCharacters) || bounded.maxContextCharacters < 1) throw new Error("invalid_localization_limits")
   const bindings = new Map<string, Binding>()
+  const views = opened.revision.paragraphs
+  // Context stops at the paragraph's edge, so a whole-paragraph quote has none;
+  // the adjacent paragraphs in the same part give its position.
+  const neighbour = (ordinal: number, index: number) => views[index]?.scope === views[ordinal]!.scope ? views[index]!.text : null
   const candidates = amendments.flatMap(amendment => {
     if (/[\r\n\t]/.test(amendment.before_quote)) throw new Error("unsupported_cross_block_quote")
     const matches = opened.session.grep(literal(amendment.before_quote), { scope: 63, whitespace: 0, contextChars: 160 })
@@ -239,7 +243,9 @@ function localize(opened: Opened, proposed: DocxAmendment[], limits: Limits) {
       bindings.set(`${amendment.id}:${handle}`, { handle, amendment, match, ordinal })
       return { amendment_id: amendment.id, target_handle: handle, exact_text: match.text,
         context_before: match.contextBefore, context_after: match.contextAfter,
-        paragraph: opened.revision.paragraphs[ordinal],
+        previous_paragraph: neighbour(ordinal, ordinal - 1)?.slice(-160) ?? null,
+        next_paragraph: neighbour(ordinal, ordinal + 1)?.slice(0, 160) ?? null,
+        paragraph: views[ordinal],
         touched_formatting: match.fragments.map(fragment => ({ text: fragment.text, formatting: fragment.formatting })),
       }
     })

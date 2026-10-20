@@ -239,6 +239,15 @@ test("context localization retains run formatting for insertion, deletion, no-op
   }
 })
 
+test("a whole-paragraph candidate carries its neighbouring paragraphs, clipped at the edge nearest the quote", async () => {
+  const before = `Earlier wording ${"a".repeat(200)} ends here.`
+  const after = `Later wording begins ${"b".repeat(200)}.`
+  const source = (await renderMarkdownToDocx(`${before}\n\nWhole paragraph.\n\n${after}\n`)).bytes
+  const packet = await createDocxLocalization(source, [{ id: "whole", before_quote: "Whole paragraph.", replacement: "Changed paragraph." }])
+  expect(packet.candidates.map(row => [row.context_before, row.context_after, row.previous_paragraph, row.next_paragraph]))
+    .toEqual([["", "", before.slice(-160), after.slice(0, 160)]])
+})
+
 // Word writes paragraphs whose only content is a break, tab or field code. grep
 // projects w:t text only, so these have no match; they must be skipped, not
 // mapped onto the next text paragraph, and must survive an edit elsewhere.
@@ -310,6 +319,9 @@ test("the revision view labels page header and footer text apart from the body; 
   // The header remains a target when a change is about it; the footer's page-number paragraph is refused.
   const legend = await createDocxLocalization(source, [{ id: "legend", before_quote: "Subject to contract", replacement: "Subject to board approval" }])
   const header = legend.candidates.find(candidate => candidate.paragraph.scope === "hdr1")!
+  // A candidate's neighbouring paragraphs stay inside its own part.
+  expect(legend.candidates.map(row => [row.paragraph.scope, row.previous_paragraph, row.next_paragraph])).toEqual([
+    ["body", "Notice must be given within five days.", null], ["hdr1", null, "Doe & Partners LLP draft: 20 October 2026"]])
   const output = await applyDocxLocalization(source, legend, [{ amendment_id: "legend", target_handle: header.target_handle }])
   expect((await createDocxRevision(output.bytes)).paragraphs.map(row => row.text)).toEqual(["Notice must be given within five days.",
     "Subject to contract, the parties will meet monthly.", "Subject to board approval", "Doe & Partners LLP draft: 20 October 2026", "Page 1"])

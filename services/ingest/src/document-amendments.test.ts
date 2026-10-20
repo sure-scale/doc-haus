@@ -154,18 +154,20 @@ test("mixed and malformed targeting never silently export or apply legacy propos
 })
 
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
-type Candidate = {amendment_id:string;target_handle:string}
+type Candidate = {amendment_id:string;target_handle:string;previous_paragraph?:string|null}
 type LegalPass = {amendments:Array<{before_quote:string;replacement:string;target_context:string;reason:string}>;open_items:string[]}
 
 // Protocol fixture only: a local stand-in for the engine's generate route. The
-// first pass returns frozen legal proposals; the second returns locator rows.
-function syntheticEngine(legal:() => LegalPass,locate:(candidates:Candidate[]) => unknown[]) {
+// first pass returns frozen legal proposals; the second returns locator rows,
+// or, when locate returns anything but an array, that value as the whole reply.
+function syntheticEngine(legal:() => LegalPass,locate:(candidates:Candidate[]) => unknown) {
   const prompts:string[] = []
   const server = Bun.serve({port:0,fetch:async (request) => {
     const {prompt} = await request.json() as {prompt:string}
     prompts.push(prompt)
+    const located = prompt.includes("<draft_view") ? undefined : locate(JSON.parse(prompt.match(/<candidates>([\s\S]*)<\/candidates>/)![1]) as Candidate[])
     const text = prompt.includes("<draft_view") ? JSON.stringify(legal())
-      : JSON.stringify({selections:locate(JSON.parse(prompt.match(/<candidates>([\s\S]*)<\/candidates>/)![1]) as Candidate[])})
+      : JSON.stringify(Array.isArray(located) ? {selections:located} : located)
     return Response.json({data:{text,model:{providerID:"fixture",id:"isolated"},elapsed_ms:1,usage:null}})
   }})
   return {server,prompts}
@@ -638,6 +640,62 @@ test("a locator unresolved_reason becomes a visible open item without a pending 
     const db = openDb(directory)
     try {deleteDocument(db,file)} finally {db.close()}
     expect(await prepared()).toBeNull()
+  } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
+})
+
+test("a whole-paragraph quote, with no context inside its paragraph, is placed by its neighbouring paragraphs", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(),"dochaus-word-whole-paragraph-"))
+  const file = path.join(directory,"working.docx")
+  // A locator that confirms position only from evidence; without it, the bare top-level row the old prompt allowed.
+  const unconfirmed = {amendment_id:"amendment-1",unresolved_reason:"The candidate has no context before or after the quote to confirm its position."}
+  const engine = syntheticEngine(() => ({amendments:[
+    {before_quote:"Dear Directors,",replacement:"Dear Sir or Madam,",target_context:"the salutation line after the date",reason:"Requested salutation change."},
+  ],open_items:[]}),(candidates) => candidates.every((row) => row.previous_paragraph === "1 March 2026") ? firstCandidate(candidates) : unconfirmed)
+  const paragraphs = ["Our ref: AB/2026/01","1 March 2026","Dear Directors,","Re: Supply agreement","We write about the supply agreement."]
+  try {
+    await writeDeliverable(directory,"working.docx",Buffer.from(withParagraphPointers(await Packer.toBuffer(new Document({sections:[{children:
+      paragraphs.map((text) => new Paragraph(text))}]})))))
+    const original = await Bun.file(file).bytes()
+    const ids = await withPreparation(directory,engine,async (prepare) => {
+      const response = await prepare("Change the salutation \"Dear Directors,\" to \"Dear Sir or Madam,\". Make no other change.")
+      expect(response.status).toBe(200)
+      const body = await response.json() as {proposed:number;redline_ids:number[];open_items:string[]}
+      expect(body).toMatchObject({proposed:1,open_items:[]})
+      return body.redline_ids
+    })
+    const [candidate] = JSON.parse(engine.prompts[1].match(/<candidates>([\s\S]*)<\/candidates>/)![1]) as Array<Record<string,unknown>>
+    expect([candidate.context_before,candidate.context_after,candidate.previous_paragraph,candidate.next_paragraph]).toEqual(["","","1 March 2026","Re: Supply agreement"])
+    // Pins the wording only: an unresolved amendment is a row inside selections, so the prompt offers no shape the validator refuses.
+    expect(engine.prompts[1]).toContain("{\"selections\":[...]} with one row per frozen amendment")
+    const db = openDb(directory)
+    const rows = (() => {try {return ids.map((id) => getRedline(db,id)!)} finally {db.close()}})()
+    expect(await Bun.file(file).bytes()).toEqual(original)
+    expect((await createDocxRevision(await bake(original,rows))).paragraphs.map((row) => row.text))
+      .toEqual(paragraphs.map((text) => text === "Dear Directors," ? "Dear Sir or Madam," : text))
+  } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
+})
+
+test("a locator reply outside the selection contract is refused in plain words and changes nothing", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(),"dochaus-word-unplaced-"))
+  const file = path.join(directory,"working.docx")
+  const engine = syntheticEngine(() => ({amendments:[
+    {before_quote:"five days",replacement:"seven days",target_context:"notice clause",reason:"Requested notice update."},
+  ],open_items:[]}),() => ({amendment_id:"amendment-1",unresolved_reason:"The position cannot be confirmed."}))
+  try {
+    await writeDeliverable(directory,"working.docx",Buffer.from(withParagraphPointers(await Packer.toBuffer(new Document({sections:[{children:[
+      new Paragraph("Notice must arrive within five days."),
+    ]}]})))))
+    const original = await Bun.file(file).bytes()
+    await withPreparation(directory,engine,async (prepare) => {
+      const refused = await prepare("Change the notice period to seven days.")
+      expect(refused.status).toBe(409)
+      const {error} = await refused.json() as {error:string}
+      expect(error).toStartWith("The requested changes could not be placed in the document. No proposals were recorded;")
+      expect(error).not.toContain("locator")
+    })
+    const db = openDb(directory)
+    try {expect(db.query("SELECT * FROM redlines").all()).toEqual([])} finally {db.close()}
+    expect(await Bun.file(file).bytes()).toEqual(original)
   } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
 })
 
