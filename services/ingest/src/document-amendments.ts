@@ -123,18 +123,19 @@ async function prepare(directory:string,name:string,instructions:string,diagnost
   diagnostic.record("locator_parse",{second_text:second.text,second_pass:pass(second)})
   const localized = object(parseJSON(second.text))
   diagnostic.record("locator_validation",{selections:localized.selections})
+  const unplaced = "The requested changes could not be placed in the document. No proposals were recorded; try again, or say where each change goes."
   if (Object.keys(localized).join(",") !== "selections" || !Array.isArray(localized.selections))
-    throw new DocumentAmendmentConflictError("The locator did not return the requested selections. No proposals were recorded.")
+    throw new DocumentAmendmentConflictError(unplaced)
   const selections = localized.selections.map((value) => {
     const row = object(value)
     if (typeof row.amendment_id !== "string" || !amendments.some((item) => item.id === row.amendment_id) ||
       !(Object.keys(row).sort().join(",") === "amendment_id,target_handle" && typeof row.target_handle === "string" && row.target_handle ||
         Object.keys(row).sort().join(",") === "amendment_id,unresolved_reason" && typeof row.unresolved_reason === "string" && row.unresolved_reason.trim()))
-      throw new DocumentAmendmentConflictError("The locator changed the selection contract. No proposals were recorded.")
+      throw new DocumentAmendmentConflictError(unplaced)
     return row
   })
   if (selections.length !== amendments.length || new Set(selections.map((row) => row.amendment_id)).size !== amendments.length)
-    throw new DocumentAmendmentConflictError("The locator omitted or duplicated a proposal. No proposals were recorded.")
+    throw new DocumentAmendmentConflictError(unplaced)
   const resolved = legal.amendments.flatMap((row,index) => {
     const selection = selections.find((value) => value.amendment_id === amendments[index].id)!
     if (typeof selection.unresolved_reason === "string") return []

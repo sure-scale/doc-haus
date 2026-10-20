@@ -675,6 +675,30 @@ test("a whole-paragraph quote, with no context inside its paragraph, is placed b
   } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
 })
 
+test("a locator reply outside the selection contract is refused in plain words and changes nothing", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(),"dochaus-word-unplaced-"))
+  const file = path.join(directory,"working.docx")
+  const engine = syntheticEngine(() => ({amendments:[
+    {before_quote:"five days",replacement:"seven days",target_context:"notice clause",reason:"Requested notice update."},
+  ],open_items:[]}),() => ({amendment_id:"amendment-1",unresolved_reason:"The position cannot be confirmed."}))
+  try {
+    await writeDeliverable(directory,"working.docx",Buffer.from(withParagraphPointers(await Packer.toBuffer(new Document({sections:[{children:[
+      new Paragraph("Notice must arrive within five days."),
+    ]}]})))))
+    const original = await Bun.file(file).bytes()
+    await withPreparation(directory,engine,async (prepare) => {
+      const refused = await prepare("Change the notice period to seven days.")
+      expect(refused.status).toBe(409)
+      const {error} = await refused.json() as {error:string}
+      expect(error).toStartWith("The requested changes could not be placed in the document. No proposals were recorded;")
+      expect(error).not.toContain("locator")
+    })
+    const db = openDb(directory)
+    try {expect(db.query("SELECT * FROM redlines").all()).toEqual([])} finally {db.close()}
+    expect(await Bun.file(file).bytes()).toEqual(original)
+  } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
+})
+
 test("accepting paragraph-bound amendments to a numbered list paragraph and a table paragraph preserves numbering, tables, sibling paragraphs and untouched runs", async () => {
   const directory = await mkdtemp(path.join(tmpdir(),"dochaus-word-numbered-"))
   const file = path.join(directory,"working.docx")
