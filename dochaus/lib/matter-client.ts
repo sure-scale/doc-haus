@@ -18,9 +18,15 @@ export function matterClient(directory: string) {
 }
 
 /** The matter's own Posture, or undefined when it records none (or a value
- * ingest would not write), so the firm's applies. */
+ * ingest would not write), so the firm's applies. Every chat turn reads it, so
+ * an unreadable matter.json means no Posture rather than a failed turn. */
 export function matterPosture(directory: string): Posture | undefined {
-  const posture = readMatter(directory).posture
+  let posture: unknown
+  try {
+    posture = readMatter(directory).posture
+  } catch {
+    return undefined
+  }
   return isPosture(posture) ? posture : undefined
 }
 
