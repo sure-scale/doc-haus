@@ -10,6 +10,7 @@ import { readFirmPreferences } from "./preferences"
 import { normalizePreferences } from "./drafting-preferences"
 import { prepareMarkdownRenderText } from "./markdown-render-text"
 import { withGeneratedDocxAttribution } from "./docx-attribution"
+import { applyPageFurniture, type PageFurniture } from "./page-furniture"
 
 // Shared markdown -> .docx -> deliverable render core for doc.haus drafting.
 // draft-document (from-scratch create) and the lean drafting stages compose a
@@ -35,7 +36,9 @@ const ingestUrl = process.env.INGEST_URL ?? `http://127.0.0.1:${process.env.DOC_
 // bytes plus the advisory consistency lint. Caller owns the deliverable write via
 // uploadDeliverable so each tool can name the file and report independently.
 // A re-render of an earlier render's unchanged text keeps its paragraph ids.
-export async function renderMarkdownToDocx(content: string, previous?: Uint8Array) {
+// `furniture` (page-furniture.ts) adds the header and footer the document's
+// form carries.
+export async function renderMarkdownToDocx(content: string, previous?: Uint8Array, furniture?: PageFurniture) {
   const text = prepareMarkdownRenderText(splitBlocks(content))
   const dx = await docxodus()
   const session = dx.openDocxSession(await Bun.file(baseSeed).bytes(), {})
@@ -71,7 +74,12 @@ export async function renderMarkdownToDocx(content: string, previous?: Uint8Arra
       .join("\n"),
   )
 
-  const bytes = withGeneratedDocxAttribution(withParagraphPointers(highlightOpenItemsInDocx(composed), previous))
+  // Furniture goes in only now: the restore expects each placeholder once, in
+  // document.xml, and a header date would trip the lint's date-style rule.
+  // Highlighting and paragraph pointers read document.xml only, so header and
+  // footer text takes neither.
+  const furnished = furniture ? applyPageFurniture(composed, furniture) : composed
+  const bytes = withGeneratedDocxAttribution(withParagraphPointers(highlightOpenItemsInDocx(furnished), previous))
   return { bytes, lint }
 }
 
