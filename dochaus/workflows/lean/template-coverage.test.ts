@@ -8,13 +8,12 @@ import { leanFile, readLeanJson, readOpenItems } from "./state"
 import { plannedContract } from "./template-contract"
 import { contractGaps, rowsBody } from "./template-coverage"
 import { AGREEMENT, PARTS, PLAIN, TEMPLATE, TITLE, heading, templateMatter } from "./template-test-support"
-import { AGENT, cleanupMatters, drafter, draftingNotes, noChanges, pidIn, sameSession, scriptedModel, type Reply } from "./test-support"
+import { AGENT, NO_FINDINGS, cleanupMatters, drafter, draftingNotes, noChanges, pidIn, sameSession, scriptedModel, type Reply } from "./test-support"
 
 // Template coverage through the real coordinator. Only the model is scripted.
 
 const LETTER = "# Covering letter\nForm: letter\n\n## Enclosure\n\nWe enclose the help desk agreement for signature.\n\n## Charges\n\nThe charges are as the agreement states.\n"
 const PART_PROMPT = /^Draft part \d+ of \d+ of "[^"]*": .+$/m
-const NO_FINDINGS: Reply = () => "No corrections are needed."
 const ACTING = "Acting for: not stated"
 const FORM = "Form: agreement"
 const REFERENCED_OUTLINE = [ACTING, TITLE, FORM, `Template: ${TEMPLATE}`, heading(PARTS.scope), heading(PARTS.charges), "The charges, with the charging schedule of Annex B.",
@@ -239,5 +238,5 @@ function templateDrafter(documents: string[], options: { template?: string; outl
 }
 
 function replies(draft: Reply): Record<string, Reply> {
-  return { [AGENT.draft]: draft, [AGENT.review]: NO_FINDINGS, [AGENT.changes]: noChanges, [AGENT.finalize]: draftingNotes }
+  return { [AGENT.draft]: draft, [AGENT.review]: () => NO_FINDINGS, [AGENT.changes]: noChanges, [AGENT.finalize]: draftingNotes }
 }

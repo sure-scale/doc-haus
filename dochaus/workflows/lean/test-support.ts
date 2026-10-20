@@ -60,14 +60,22 @@ export function scriptedModel(replies: Record<string, Reply>) {
         [AGENT.coverage]: () => JSON.stringify({ acts: [] }),
         // The outline's files job finds no lawyer instruction on the files to deliver.
         [AGENT.files]: () => JSON.stringify({ stated: false, files: [] }),
-        [AGENT["change-plan"]]: () => JSON.stringify({ shared_decisions: [], groups: [], dismissed: [], questions: [] }),
+        // The plan rejects every listed review finding: the scripted changes
+        // stage amends from the findings it is shown, whatever the plan says.
+        [AGENT["change-plan"]]: prompt => {
+          const resolves = listedFindingIDs(prompt)
+          return JSON.stringify({ shared_decisions: [], groups: [], dismissed: [], questions: [], findings: resolves.length ? [{
+            disposition: "rejected", kind: "suggestion", detail: "The scripted plan adjudicates the review findings.", reason: "The scripted changes stage decides the amendments.",
+            documents: [/^- (d\d+) "[^"]*" \(this document\)$/m.exec(prompt)?.[1] ?? "d1"], sources: [], limitations: ["Scripted fixture."], resolves,
+          }] : [] })
+        },
         [AGENT["change-prepare"]]: () => JSON.stringify({ amendments: [], questions: [] }),
         [AGENT["change-review"]]: () => JSON.stringify({ status: "pass", findings: [], limitations: [] }),
         [AGENT.discrepancy]: () => JSON.stringify({ entries: [], limitations: [] }),
         [AGENT.spine]: () => JSON.stringify({ entries: [], limitations: [] }),
-        [AGENT["review-independent"]]: () => "No changes needed.",
-        [AGENT["review-wording"]]: () => "No changes needed.",
-        [AGENT["review-client-disadvantage"]]: () => "No changes needed.",
+        [AGENT["review-independent"]]: () => NO_FINDINGS,
+        [AGENT["review-wording"]]: () => NO_FINDINGS,
+        [AGENT["review-client-disadvantage"]]: () => NO_FINDINGS,
         [AGENT["package-review"]]: () => JSON.stringify({ status: "pass", findings: [], limitations: [], delivery: [] }),
         [AGENT.intake]: () => JSON.stringify({ ready: true, jurisdiction: "No external legal determination needed for this supplied-source fixture", scope: "Reproduce supplied terms only" }),
         [AGENT.research]: () => JSON.stringify({ status: "not-needed", findings: [], limitations: ["This fixture requests a note from supplied terms only."] }),
@@ -129,8 +137,18 @@ export function sameSession(reply: Reply): Reply {
   }
 }
 
-export const review: Reply = prompt =>
-  `- [${pidOf(prompt, "The supplier shall deliver the goods.")}] The delivery period is missing. The terms say "within thirty days of the order date" [source: ${SOURCE}].`
+/** A review reply with no findings. */
+export const NO_FINDINGS = JSON.stringify({ findings: [] })
+
+export const review: Reply = prompt => JSON.stringify({ findings: [{
+  pid: pidOf(prompt, "The supplier shall deliver the goods."), origin: "source_conflict", finding: "The delivery period is missing.", sources: SUPPORT,
+}] })
+
+/** The review finding ids a change plan prompt lists for adjudication. */
+export function listedFindingIDs(prompt: string) {
+  const block = /<review_findings>\n([\s\S]*?)\n<\/review_findings>/.exec(prompt)?.[1] ?? "[]"
+  return (JSON.parse(block) as { id: string }[]).map(row => row.id)
+}
 
 export const changes: Reply = prompt => JSON.stringify({
   amendments: [{
@@ -165,7 +183,7 @@ export const QUESTION = "Should late delivery carry a remedy?"
 
 // The supply note's paragraph gets the supported delivery period; other
 // documents need no correction.
-export const reviewFirst: Reply = (prompt, index) => listed(prompt, DRAFTED) ? review(prompt, index) : "No corrections are needed."
+export const reviewFirst: Reply = (prompt, index) => listed(prompt, DRAFTED) ? review(prompt, index) : NO_FINDINGS
 export const changesFirst: Reply = (prompt, index) => listed(prompt, DRAFTED) ? changes(prompt, index) : noChanges(prompt, index)
 
 /** Whether the prompt lists a paragraph with exactly this text. */

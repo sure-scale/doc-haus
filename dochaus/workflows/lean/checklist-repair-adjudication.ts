@@ -114,7 +114,8 @@ function supersessionSourceIssues(directory: string, at: string, sources: unknow
 /** Merge only new shared-PID repair goals, never replay completed historical
  * groups. The existing cumulative changes file is unchanged; final reconciliation
  * retains its supported amendments and resolves dependencies with these goals. */
-export function mergeRepairAdjudications(previous: ChangePlan, results: RepairAdjudication[]): ChangePlan {
+export function mergeRepairAdjudications(previous: ChangePlan, adjudications: RepairAdjudication[]): ChangePlan {
+  const results = adjudications.map(row => carryResolves(previous, row))
   const removedFindings = new Set(results.flatMap(row => row.superseded_findings.map(row => row.index)))
   const removedDecisions = new Set(results.flatMap(row => row.superseded_decisions.map(row => row.index)))
   const groups: ChangeGroup[] = []
@@ -123,12 +124,26 @@ export function mergeRepairAdjudications(previous: ChangePlan, results: RepairAd
     if (!overlap.length) { groups.push({ ...group, pids: [...group.pids] }); continue }
     const merged = [...overlap, group]
     for (const row of overlap) groups.splice(groups.indexOf(row), 1)
-    groups.push({ id: merged.map(row => row.id).join(" + "), pids: [...new Set(merged.flatMap(row => row.pids))], goal: merged.map(row => row.goal).join("\n"), sources: merged.flatMap(row => row.sources), limitations: merged.flatMap(row => row.limitations) })
+    const resolves = [...new Set(merged.flatMap(row => row.resolves ?? []))]
+    groups.push({ id: merged.map(row => row.id).join(" + "), pids: [...new Set(merged.flatMap(row => row.pids))], goal: merged.map(row => row.goal).join("\n"), sources: merged.flatMap(row => row.sources), limitations: merged.flatMap(row => row.limitations), ...(resolves.length ? { resolves } : {}) })
   }
   return { shared_decisions: [...new Set([...previous.shared_decisions.filter((_, index) => !removedDecisions.has(index)), ...results.flatMap(row => row.shared_decisions)])], groups,
+    // Earlier groups are not prepared again, but keep the review findings they resolve.
+    settled_groups: [...(previous.settled_groups ?? []), ...previous.groups],
     dismissed: [...previous.dismissed, ...results.flatMap(row => row.dismissed)],
     findings: [...(previous.findings ?? []).filter((_, index) => !removedFindings.has(index)), ...results.flatMap(row => row.findings ?? [])],
     questions: [...previous.questions, ...results.flatMap(row => row.questions)] }
+}
+
+/** The review findings a superseded disposition resolved pass to the first
+ * entry the same adjudication returns in its place. */
+function carryResolves(previous: ChangePlan, row: RepairAdjudication): RepairAdjudication {
+  const resolves = row.superseded_findings.flatMap(superseded => previous.findings?.[superseded.index]?.resolves ?? [])
+  if (!resolves.length) return row
+  const add = <T extends { resolves?: string[] }>([first, ...rest]: T[]): T[] => [{ ...first!, resolves: [...new Set([...(first!.resolves ?? []), ...resolves])] }, ...rest]
+  if (row.groups.length) return { ...row, groups: add(row.groups) }
+  if (row.findings?.length) return { ...row, findings: add(row.findings) }
+  return row.questions.length ? { ...row, questions: add(row.questions) } : row
 }
 
 export async function runFocusedRepairAdjudication(directory: string, state: LeanState, deps: LeanDeps, document: DocID, progress: (patch: Partial<LeanStageState>) => void) {
@@ -161,7 +176,9 @@ export async function runFocusedRepairAdjudication(directory: string, state: Lea
   if (key !== stageInputSha(directory, `${document}.change-plan`)) return { status: "restart" as const }
   if (failures.length) return { status: "failed" as const, reason: `${document}.change-plan: ${failures.join(" ")}` }
   const ordered = jobs.map(input => results.find(row => row.item_id === input.assessment.item_id)!)
-  const accepted = acceptChangePlan(directory, document, JSON.stringify(mergeRepairAdjudications(previous, ordered.map(row => row.value))))
+  // Taken only when the plan already adjudicates every current review finding
+  // (runner.ts); the merge keeps that, so coverage is not retried.
+  const accepted = acceptChangePlan(directory, document, JSON.stringify(mergeRepairAdjudications(previous, ordered.map(row => row.value))), { final: true })
   if (accepted.issues.length) return { status: "failed" as const, reason: `${document}.change-plan: focused merge: ${accepted.issues.join(" ")}` }
   const output = `${document}/repair-adjudications.json`
   writeLeanText(directory, output, `${JSON.stringify({ assessments: ordered }, null, 2)}\n`)

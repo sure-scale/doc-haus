@@ -9,6 +9,7 @@ import { changeListIDs, memoMode, runItemIDs, withoutRefMarkers } from "./delive
 import { notesForReader } from "./gate"
 import { excerpt, openItem, proseQuoteFound, quoteMissIssue, quoteMissItems, sourceQuotes } from "./quotes"
 import { readLeanPlan, type DocID } from "./plan"
+import { raisedFindings } from "./review-findings"
 import { readLeanJson, type OpenItem, type Question, type StageID } from "./state"
 
 // Deterministic checks for the lean drafting stages. Each check returns retry
@@ -48,7 +49,7 @@ export type ChangeList = {
 export const TOOL_SYNTAX_ISSUE =
   "The reply contains tool-call syntax as text. Call tools through the tool interface, then reply with the requested output only."
 
-const PID_REFERENCE = /\[(p[0-9a-f]{12})\]/g
+export const PID_REFERENCE = /\[(p[0-9a-f]{12})\]/g
 const PRINTED_TOOL_CALL = [
   /<\/?\s*(?:tool_call|tool_use|function_call|function_calls|invoke)\b[^>]*>/i,
   /^\s*(?:```(?:json)?\s*)?\{\s*"(?:tool|tool_name|function|name)"\s*:\s*"[^"]+"\s*,\s*"(?:args|arguments|input|parameters)"\s*:/,
@@ -62,21 +63,6 @@ export function checkDraft(directory: string, content: string): StageCheck {
   const issues = documentShapeIssues(content, "document")
   if (issues.length) return { issues, openItems: [] }
   return { issues, openItems: bodyOpenItems(directory, "draft", content) }
-}
-
-export function checkReview(directory: string, content: string, paragraphs: ParagraphRow[]): StageCheck {
-  const known = new Set(paragraphs.map(row => row.pid))
-  const unknown = [...new Set([...content.matchAll(PID_REFERENCE)].map(match => match[1]!).filter(pid => !known.has(pid)))]
-  const issues = [
-    ...(!content.trim() ? ["The reply was empty. Reply with the review findings in Markdown."] : []),
-    ...(printedToolCall(content) ? [TOOL_SYNTAX_ISSUE] : []),
-    ...(unknown.length
-      ? [`These paragraph references do not exist in the draft: ${unknown.map(pid => `[${pid}]`).join(", ")}. ` +
-        "Refer to paragraphs only by the [pid] values listed with the draft."]
-      : []),
-  ]
-  if (issues.length) return { issues, openItems: [] }
-  return { issues, openItems: quoteMissItems(directory, "review", content) }
 }
 
 /** Settles the applier's report against the change list. Every requested
@@ -209,10 +195,12 @@ export const CITED = NOT_PROSE.slice(1)
 const REF_MARKER = /\[[ \t]*refs?[ \t]*:([^\]\n]*)\]/gi
 
 /** The ids the notes check keeps out of the reader's text: each run id no
- * lawyer would write as prose (readerVisibleID), each planned document's id
- * and each recorded change id. Delivery removes the same ids (notesForReader). */
+ * lawyer would write as prose (readerVisibleID), each planned document's id,
+ * each recorded change id and each review finding id. Delivery removes the
+ * same ids (notesForReader). */
 export function readerIDs(directory: string, items: OpenItem[]) {
-  return [...new Set([...runItemIDs(directory, items).filter(readerVisibleID), ...(readLeanPlan(directory)?.documents ?? []).map(row => row.id), ...runChangeIDs(directory, items)])]
+  return [...new Set([...runItemIDs(directory, items).filter(readerVisibleID), ...(readLeanPlan(directory)?.documents ?? []).map(row => row.id), ...runChangeIDs(directory, items),
+    ...raisedFindings(directory).map(row => row.id)])]
 }
 
 /** The change ids the run records for its planned documents (each change

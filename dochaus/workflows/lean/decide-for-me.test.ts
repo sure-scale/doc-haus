@@ -171,7 +171,10 @@ test("the same words typed, picked or adopted give the same answers text and the
 // own plan entry, never answers. Change-review, finalize and the gate were
 // re-pinned when stage keys stopped carrying when a question was answered (and
 // its kind, options and advice), and the draft when the outline gained its
-// Form line. The same pins hold however the lawyer gave an answer.
+// Form line. The checklist check, change plan, changes and change-review were
+// re-pinned when reviews were saved as typed findings (dN/<stage>.json) and the
+// change plan began keying the findings earlier documents forward to it. The
+// same pins hold however the lawyer gave an answer.
 const ANSWERS = "- [package-scope-d1] Q: Which documents are in scope?\n  A: Only the supply note.\n- [q-law] Q: Which law should govern?\n  A: Singapore law."
 const INPUTS: Record<string, string> = {
   "discrepancy": "8dac7eefaf1e988e35ffbe6c7f765a951943e9b1299546a9b94dc10e99950a72",
@@ -184,13 +187,13 @@ const INPUTS: Record<string, string> = {
   "d1.review-independent": "9f1fe22f3e0db01ef5fffe96a09ddf917b5e371a89c58988eb875bcfbbae4aa4",
   "d1.review-wording": "7f86222090d292207f576968b1171dab74bedab8cf5dbc4e3593752d2584b6f5",
   "d1.review-client-disadvantage": "be6786003165e1b19571bc525b2d6dd3ba4afad3a7f707c7f2e58fe4f69ffac1",
-  "d1.change-plan": "27e6854d53eef220e0881676aa0ea75d3dd349ddf1a4f2dadab7d7905790946f",
+  "d1.change-plan": "64bc4586e950cb2aaee6d57179adf09500aee75e27b358e054ae5076f770d7d8",
   "d1.change-prepare": "0e65f05f5cdbac92e874b5150ac1dd21f355a34be5b6a1b918b1be46f580591f",
-  "d1.changes": "332ce3588588c3dc6fd37068e9202f5612a4e6a9f21d9632e0e2b15a7bba5271",
-  "d1.change-review": "a0507849a8675a5bee6aeb4099030ae99b4a13d0c0377a8cdf0a1aa7cde59e60",
+  "d1.changes": "6c1572e8f947889bf8dcb84f6bb75ba8380fbade2de920ba3a2dcb28c2cf3449",
+  "d1.change-review": "0c98552192e0c314b273e3508140684f7d71a97934b771f9e644e5a8f3a0eddc",
   "d1.apply": "3fc66df6877ed50af811c9f7a5bbdf1ccb1c269dc8b176cf392941cd2da83149",
   "finalize": "fcb7ded51c54fad4bb3fd616ba57fbdfe8aa15a2dc1becf5ec5df4e69b537793",
-  "checklist-check": "bf9d2570d825f9efdf7d09b08a635561362fda11c11812346212a16ead317e10",
+  "checklist-check": "725f51d8b50889f0f431847a3299d55942561e8fabc2bece75410442fd0fa5a7",
   "package-review": "dde115af0ba46b8cb1ecf9bf7eb0c40aff3b78f4d6be9e0f0da3dff2d5d4066f",
   "gate": "0950183c873a0bd663d5367c064a7013025084deb8884311b2f38a54fcb8e229",
 }

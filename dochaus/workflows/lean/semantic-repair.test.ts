@@ -5,13 +5,13 @@ import { LEAN_MAX_SUBSTANTIVE_REPAIRS, runLean } from "./runner"
 import { readLeanState, writeLeanState, writeLeanText } from "./state"
 import { readRepairRound } from "./repairs"
 import { enqueueLeanRequest } from "./requests"
-import { AGENT, APPLIED, DRAFT, LETTER, SUPPORT, changesFirst, cleanupMatters, drafter, happyPath, matter, pidOf, reviewFirst, sameSession, scriptedModel } from "./test-support"
+import { AGENT, APPLIED, DRAFT, LETTER, NO_FINDINGS, SUPPORT, changesFirst, cleanupMatters, drafter, happyPath, matter, pidOf, reviewFirst, sameSession, scriptedModel } from "./test-support"
 
 afterEach(cleanupMatters)
 
 test("semantic body correction routes through changes while independent reviews remain separate", async () => {
   const directory = matter()
-  const model = scriptedModel({ ...happyPath, [AGENT["review-independent"]]: () => "Source fidelity independently checked.",
+  const model = scriptedModel({ ...happyPath, [AGENT["review-independent"]]: () => NO_FINDINGS,
     [AGENT["package-review"]]: (_, index) => JSON.stringify(index ? { status: "pass", delivery: [], findings: [], limitations: [] } : {
       status: "changes-required", delivery: [], findings: [{ target: "body", document: "d1", detail: "State the operative payment timing precisely from supplied terms." }], limitations: [],
     }),
@@ -131,7 +131,7 @@ test("independent reviews run concurrently while acceptance stays in stage order
     if (input.agent === AGENT["review-independent"]) {
       started = true
       await independent
-      return "Independent source fidelity review complete."
+      return NO_FINDINGS
     }
     if (input.agent === AGENT.review) {
       expect(started).toBe(true)

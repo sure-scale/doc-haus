@@ -9,6 +9,7 @@ import { packageCompositionBlock } from "./prompts"
 import { drainLeanRequests, enqueueLeanRequest } from "./requests"
 import { runLean } from "./runner"
 import { LEAN_CHILD_PERMISSIONS } from "./stages"
+import { readReviewRecord } from "./review-findings"
 import { readLeanJson, readLeanState, readLeanText, writeLeanText } from "./state"
 import { cleanupMatters, happyPath, matter, requestMemo, scriptedModel, SOURCE, SUPPORT } from "./test-support"
 
@@ -19,7 +20,10 @@ async function fixture() {
   const paragraphs = readParagraphs(directory, "d1")
   const delivery = paragraphs.find(row => row.text === "The supplier shall deliver the goods.")!
   const payment = paragraphs.find(row => row.text === "Payment is due on delivery.")!
-  const plan = { shared_decisions: [], groups: [{ id: "delivery", pids: [delivery.pid], goal: "State the supplied delivery period, preserving related payment timing.", sources: SUPPORT, limitations: [] }], dismissed: [], questions: [], findings: [] }
+  // The delivery group amends for the review's delivery-period finding.
+  const resolves = readReviewRecord(directory, "d1", "review")!.findings.map(row => row.id)
+  expect(resolves).toHaveLength(1)
+  const plan = { shared_decisions: [], groups: [{ id: "delivery", pids: [delivery.pid], goal: "State the supplied delivery period, preserving related payment timing.", sources: SUPPORT, limitations: [], resolves }], dismissed: [], questions: [], findings: [] }
   expect(acceptChangePlan(directory, "d1", JSON.stringify(plan)).issues).toEqual([])
   const value = { amendments: [{ pid: delivery.pid, updated: "The supplier shall deliver the goods within thirty days of the order date.", reason: "States the source period.", sources: SUPPORT }], explanations: [{ pid: payment.pid, reason: "The initial draft preserves the source payment term.", sources: [{ source_id: SOURCE, quote: "Payment is due on delivery." }] }], questions: [] }
   const checked = checkChanges(directory, JSON.stringify(value), paragraphs, { document: "d1" })
@@ -35,7 +39,8 @@ test("coverage includes the current group, ungrouped explanation and unresolved 
     { disposition: "rejected", kind: "suggestion", detail: "UNRELATED_REJECTED_HISTORY", reason: "Not requested.", documents: ["d1"], sources: SUPPORT, limitations: [] },
   ] }
   expect(acceptChangePlan(directory, "d1", JSON.stringify(full)).issues).toEqual([])
-  writeLeanText(directory, "d1/review-wording.md", "UNRELATED_RAW_REVIEW_HISTORY".repeat(2000))
+  writeLeanText(directory, "d1/review-wording.json", JSON.stringify({ findings: [{ id: "f-0000000000", document: "d1", origin: "drafting", finding: "UNRELATED_RAW_REVIEW_HISTORY".repeat(2000), sources: [] }] }))
+  expect(readReviewRecord(directory, "d1", "review-wording")?.findings).toHaveLength(1)
   const inputs = focusedChangeReviewInputs(directory, "d1")
   expect(inputs).toHaveLength(3)
   expect(inputs.flatMap(row => row.pids)).toContain(delivery.pid)

@@ -5,7 +5,7 @@ import { openItem } from "./quotes"
 import { enqueueLeanRequest, queuedAnswerIDs, type StoredLeanRequest } from "./requests"
 import { runLean } from "./runner"
 import { answeredQuestionsText, delegable, readLeanJson, readOpenItems, readQuestions, writeOpenItems } from "./state"
-import { AGENT, cleanupMatters, happyPath, matter, noChanges, scriptedModel, SUPPORT } from "./test-support"
+import { AGENT, cleanupMatters, happyPath, matter, NO_FINDINGS, noChanges, scriptedModel, SUPPORT } from "./test-support"
 
 // "Decide for me" through the real coordinator, end to end: a run blocks on an
 // advised judgment question, the lawyer adopts its recommendation through the
@@ -33,7 +33,7 @@ test("an adopted recommendation runs through the queue as the lawyer's answer, r
   const directory = matter()
   const model = scriptedModel({
     ...happyPath,
-    [AGENT.review]: () => "No changes needed.",
+    [AGENT.review]: () => NO_FINDINGS,
     [AGENT.changes]: noChanges,
     [AGENT.intake]: (_prompt, index) => index === 0
       ? JSON.stringify({ questions: [

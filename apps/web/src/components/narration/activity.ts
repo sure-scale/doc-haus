@@ -42,16 +42,17 @@ const RUN_FILES: Record<string, string> = {
   "coverage.json": "the plan coverage check",
   "requested-files.json": "the requested files",
   "draft.md": "the working draft",
-  "review.md": "the review notes",
-  "review-playbook.md": "the playbook review notes",
-  "review-independent.md": "the independent review notes",
-  "review-wording.md": "the wording review notes",
-  "review-client-disadvantage.md": "the client disadvantage review notes",
+  "review.json": "the review findings",
+  "review-playbook.json": "the playbook review findings",
+  "review-independent.json": "the independent review findings",
+  "review-wording.json": "the wording review findings",
+  "review-client-disadvantage.json": "the client disadvantage review findings",
   "change-plan.json": "the amendment plan",
   "change-preparation.json": "the prepared amendments",
   "changes.json": "the reconciled change list",
   "change-review.json": "the proposed amendment review",
   "drafting-notes.md": "the drafting notes",
+  "register.json": "the issue register",
 }
 
 // Each stage in words: what it is doing while it runs, and its finished line.

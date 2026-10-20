@@ -24,7 +24,6 @@ import {
   checkDraft,
   finalBodyParagraphs,
   checkDraftingNotes,
-  checkReview,
   readChangeList,
   readParagraphs,
   type ApplyResult,
@@ -32,6 +31,7 @@ import {
   type StageCheck,
 } from "./checks"
 import { reviewStages, FIRST_DOCUMENT, planActingFor, operativeDocument, operativePlan, plannedDocument, readLeanPlan, stepDocument, stepStage, type PlannedDocument, type StepID } from "./plan"
+import { acceptReviewReply, forwardedFindings, readReviewRecord } from "./review-findings"
 import { templateSource } from "./template-contract"
 import { completedDocumentsText, packageCompositionBlock } from "./prompts"
 import { matterSourceBasis, matterSourceIDs } from "./quotes"
@@ -62,7 +62,7 @@ import {
 // goes to the pointer applier as data, addressed by paragraph pointer. Steps of
 // one planned document keep their files under that document's id (d1/, d2/...).
 
-export const LEAN_PROMPT_VERSION = "lean-18-advised-questions"
+export const LEAN_PROMPT_VERSION = "lean-20-finding-pids"
 const OUTLINE_CONTRACT = "document-form-7"
 const DELIVERY_REVIEW_CONTRACT = "grounded-delivery-selection-4"
 const STRUCTURAL_AMENDMENT_CONTRACT = "explicit-paragraph-cardinality-1"
@@ -177,14 +177,14 @@ export function stepOutputs(step: StepID): string[] {
   const at = (names: string[]) => names.map(name => `${document}/${name}`)
   const stage = stepStage(step)
   if (stage === "draft") return [...(document === FIRST_DOCUMENT ? ["plan.json", "coverage.json", "requested-files.json"] : []), ...at(["draft.md", "body.docx", "paragraphs.json"])]
-  if (isReviewStage(stage)) return at([`${stage}.md`])
+  if (isReviewStage(stage)) return at([`${stage}.json`])
   if (stage === "change-plan") return at(["change-plan.json"])
   if (stage === "change-prepare") return at(["change-preparation.json"])
   if (stage === "change-review") return at(["change-review.json"])
   if (stage === "changes") return at(["changes.json"])
   if (stage === "apply") return at(["apply.json", "body-applied.docx", "paragraphs-applied.json", "redline.docx"])
   if (stage === "finalize") return ["drafting-notes.md", "drafting-notes.docx"]
-  return ["gate.json", "drafting-notes-coverage.md"]
+  return ["gate.json", "drafting-notes-coverage.md", "register.json"]
 }
 
 // Items the drafting notes must disclose. Draft and review findings are re-derived from the
@@ -249,12 +249,12 @@ function baseStageInputs(directory: string, step: StepID, options: { repairConte
   const answers = { name: "answers", bytes: answeredQuestionsText(directory) }
   const sources = { name: "sources", bytes: matterSourceIDs(directory).join("\n") }
   const planned = readLeanPlan(directory)?.documents.map(row => row.id) ?? []
-  if (step === "checklist-check") return [{ name: "checklist-refinement-contract", bytes: "source-unit-refinement-1" }, { name: "checklist-refinement-selection", bytes: JSON.stringify(checklistRefinementSelections(directory)) }, file("checklist/refinements.json"), file("request.md"), file("plan.json"), file("checklist/extraction.json"), file("drafting-notes.docx"), file("research-context.txt"), ...planned.flatMap(id => [file(`${id}/body.docx`), file(`${id}/body-applied.docx`), file(`${id}/redline.docx`), file(`${id}/review-independent.md`), file(`${id}/changes.json`), file(`${id}/apply.json`)])]
+  if (step === "checklist-check") return [{ name: "checklist-refinement-contract", bytes: "source-unit-refinement-1" }, { name: "checklist-refinement-selection", bytes: JSON.stringify(checklistRefinementSelections(directory)) }, file("checklist/refinements.json"), file("request.md"), file("plan.json"), file("checklist/extraction.json"), file("drafting-notes.docx"), file("research-context.txt"), ...planned.flatMap(id => [file(`${id}/body.docx`), file(`${id}/body-applied.docx`), file(`${id}/redline.docx`), file(`${id}/review-independent.json`), file(`${id}/changes.json`), file(`${id}/apply.json`)])]
   if (step === "discrepancy") return outlineInputs(directory)
   if (step === "intake") return [...outlineInputs(directory), file("discrepancy.json")]
   if (step === "spine") return [...outlineInputs(directory), file("discrepancy.json"), file("intake.json"), file("research.json"), file("research-review.json")]
   // Applied deletion evidence includes the original paragraph's exact wording.
-  if (step === "package-review") return [file("checklist/refinements.json"), file("checklist/checks.json"), file("checklist/report.md"), file("request.md"), file("plan.json"), file("drafting-notes.md"), ...planned.flatMap(id => [file(`${id}/paragraphs.json`), file(`${id}/paragraphs-applied.json`), file(`${id}/apply.json`), file(`${id}/changes.json`), file(`${id}/redline.docx`), ...(plannedDocument(directory, id)?.playbook_review?.sources.length ? [file(`${id}/review-playbook.md`)] : [])]), file("open-items.json")]
+  if (step === "package-review") return [file("checklist/refinements.json"), file("checklist/checks.json"), file("checklist/report.md"), file("request.md"), file("plan.json"), file("drafting-notes.md"), ...planned.flatMap(id => [file(`${id}/paragraphs.json`), file(`${id}/paragraphs-applied.json`), file(`${id}/apply.json`), file(`${id}/changes.json`), file(`${id}/redline.docx`), ...(plannedDocument(directory, id)?.playbook_review?.sources.length ? [file(`${id}/review-playbook.json`)] : [])]), file("open-items.json")]
   if (step === "research") {
     // Without a gap round the key is unchanged.
     const gaps = options.researchGaps === false ? undefined : currentResearchGaps(directory, researchBasis(directory))
@@ -285,9 +285,11 @@ function baseStageInputs(directory: string, step: StepID, options: { repairConte
   const repairs = options.repairContext === false || !["change-plan", "change-prepare", "changes", "change-review"].includes(stage) ? undefined : documentRepairs(directory, document)
   if (isReviewStage(stage)) return [{ name: "playbook-selection", bytes: JSON.stringify(plannedDocument(directory, document)?.playbook_review ?? null) }, file("request.md"), at("paragraphs.json"), sources, finished, acting, scope, ...composed]
   if (stage === "change-prepare") return [file("request.md"), entry, at("paragraphs.json"), at("change-plan.json"), answers, sources, finished, acting, scope, ...composed, { name: "repairs", bytes: JSON.stringify(repairs ?? null) }]
-  if (stage === "change-review") return [...(repairs?.items.every(item => item.stage === "checklist-check") ? [{ name: "focused-review-contract", bytes: "prepared-dependency-component-review-2-proposed-body" }] : []), { name: "review-contract", bytes: "phase-aware-owned-body-review-2" }, file("request.md"), entry, at("paragraphs.json"), at("changes.json"), at("change-plan.json"), at("change-preparation.json"), ...reviewStages(directory, document).map(stage => at(`${stage}.md`)), answers, sources, finished, acting, scope, ...composed, { name: "questions", bytes: keyedQuestions(directory) }, { name: "repairs", bytes: JSON.stringify(repairs ?? null) }]
+  if (stage === "change-review") return [...(repairs?.items.every(item => item.stage === "checklist-check") ? [{ name: "focused-review-contract", bytes: "prepared-dependency-component-review-2-proposed-body" }] : []), { name: "review-contract", bytes: "phase-aware-owned-body-review-2" }, file("request.md"), entry, at("paragraphs.json"), at("changes.json"), at("change-plan.json"), at("change-preparation.json"), ...reviewStages(directory, document).map(stage => at(`${stage}.json`)), answers, sources, finished, acting, scope, ...composed, { name: "questions", bytes: keyedQuestions(directory) }, { name: "repairs", bytes: JSON.stringify(repairs ?? null) }]
   if (stage === "changes" || stage === "change-plan") {
-    return [...(stage === "changes" && repairs?.items.every(item => item.stage === "checklist-check") ? [{ name: "focused-reconciliation-contract", bytes: "prepared-operation-components-1" }] : []), ...(stage === "change-plan" && repairs?.items.every(item => item.stage === "checklist-check") ? [{ name: "focused-repair-contract", bytes: "one-assessment-source-adjudication-2" }] : []), file("request.md"), entry, ...(stage === "changes" ? [at("change-plan.json"), at("change-preparation.json")] : []), ...reviewStages(directory, document).map(stage => at(`${stage}.md`)), at("paragraphs.json"), { name: "repairs", bytes: repairs ? JSON.stringify(repairs) : "" }, answers, sources,
+    return [...(stage === "changes" && repairs?.items.every(item => item.stage === "checklist-check") ? [{ name: "focused-reconciliation-contract", bytes: "prepared-operation-components-1" }] : []), ...(stage === "change-plan" && repairs?.items.every(item => item.stage === "checklist-check") ? [{ name: "focused-repair-contract", bytes: "one-assessment-source-adjudication-2" }] : []), file("request.md"), entry, ...(stage === "changes" ? [at("change-plan.json"), at("change-preparation.json")] : []), ...reviewStages(directory, document).map(stage => at(`${stage}.json`)),
+      // Earlier documents' findings about this one; a later document's never key it.
+      ...(stage === "change-plan" ? [{ name: "forwarded-findings", bytes: JSON.stringify(forwardedFindings(directory, document)) }] : []), at("paragraphs.json"), { name: "repairs", bytes: repairs ? JSON.stringify(repairs) : "" }, answers, sources,
       { name: "draft-items", bytes: JSON.stringify(readOpenItems(directory).filter(item =>
         (item.stage === "draft" || isReviewStage(item.stage)) && (item.ref.document ?? FIRST_DOCUMENT) === document)) },
       finished, acting, scope, ...composed]
@@ -327,7 +329,7 @@ export async function acceptStageReply(directory: string, step: StepID, reply: s
     writeLeanText(directory, "package-review.json", `${JSON.stringify(value, null, 2)}\n`)
     return { issues: [], outputs: stepOutputs(step), openItems: [] }
   }
-  if (stage === "change-plan") return acceptChangePlan(directory, document, reply)
+  if (stage === "change-plan") return acceptChangePlan(directory, document, reply, { final: options.final })
   if (stage === "change-review") return acceptChangeReview(directory, document, reply)
   if (stage === "draft") {
     const check = checkDraft(directory, reply)
@@ -349,9 +351,10 @@ export async function acceptStageReply(directory: string, step: StepID, reply: s
     return { ...check, outputs: stepOutputs(step) }
   }
   if (isReviewStage(stage)) {
-    const check = checkReview(directory, reply, readParagraphs(directory, document))
-    if (!check.issues.length) writeLeanText(directory, `${document}/${stage}.md`, ensureNewline(reply))
-    return { ...check, openItems: check.openItems.map(item => ({ ...item, stage })), outputs: stepOutputs(step) }
+    const check = acceptReviewReply(directory, document, stage, reply, readParagraphs(directory, document))
+    if (!check.record) return { issues: check.issues, openItems: [], outputs: [] }
+    writeLeanText(directory, `${document}/${stage}.json`, `${JSON.stringify(check.record, null, 2)}\n`)
+    return { issues: [], openItems: check.openItems, outputs: stepOutputs(step) }
   }
   if (stage === "changes") {
     const check = checkChanges(directory, reply, readParagraphs(directory, document), { withholdUnverified: options.final, document })
@@ -431,7 +434,7 @@ export function stageOutputValid(directory: string, step: StepID) {
   if (stage === "change-plan") return Boolean(readChangePlan(directory, document))
   if (stage === "change-prepare") return preparationOutputValid(directory, document)
   if (stage === "change-review") return Boolean(readChangeReview(directory, document))
-  if (isReviewStage(stage)) return !checkReview(directory, text(`${document}/${stage}.md`), readParagraphs(directory, document)).issues.length
+  if (isReviewStage(stage)) return Boolean(readReviewRecord(directory, document, stage))
   if (stage === "changes") {
     const pids = new Set(readParagraphs(directory, document).map(row => row.pid))
     const list = readChangeList(directory, document)

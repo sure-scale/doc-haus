@@ -6,10 +6,13 @@ import { changePlanPrompt } from "./change-pipeline"
 import { runLean, stageInputSha } from "./runner"
 import { LEAN_CHILD_PERMISSIONS } from "./stages"
 import { readLeanText, writeLeanText } from "./state"
-import { AGENT, DRAFT, SOURCE, SOURCE_TEXT, cleanupMatters, drafter, happyPath, matter, scriptedModel } from "./test-support"
+import { AGENT, DRAFT, DRAFTED, SOURCE, SOURCE_TEXT, SUPPORT, cleanupMatters, drafter, happyPath, matter, pidOf, scriptedModel } from "./test-support"
 
 afterEach(cleanupMatters)
 const selection = { sources: [{ source_id: SOURCE, quote: SOURCE_TEXT }], reason: "The supplied drafting guidance applies to this supply note." }
+const PLAYBOOK_FINDING = "Correction required at the delivery paragraph: the supplied terms require the stated delivery period."
+/** The review findings a change plan prompt lists for adjudication. */
+const listedFindings = (prompt: string) => JSON.parse(/<review_findings>\n([\s\S]*?)\n<\/review_findings>/.exec(prompt)?.[1] ?? "[]") as Record<string, unknown>[]
 const doc = { title: "Supply note", purpose: "Record supplied terms", parts: [{ heading: "Delivery", scope: "Delivery" }] }
 
 test("planning routes the optional review per document and rejects invented evidence", () => {
@@ -53,24 +56,27 @@ test("the native coordinator accepts the specialist before adjudication and fina
     if (input.agent === AGENT["review-playbook"]) {
       expect(input.text).toContain(JSON.stringify(selection))
       checked = true
-      return "Playbook coverage: supplied terms require the stated delivery period. Correction required at the delivery paragraph."
+      return JSON.stringify({ coverage: "Playbook coverage: supplied terms require the stated delivery period.", findings: [{
+        pid: pidOf(input.text, DRAFTED), origin: "request", finding: PLAYBOOK_FINDING, sources: SUPPORT,
+      }] })
     }
     if (input.agent === AGENT["change-plan"]) {
       expect(checked).toBe(true)
-      expect(input.text).toContain("review-playbook:\nPlaybook coverage:")
+      // The plan adjudicates the specialist's finding, listed with its review.
+      expect(listedFindings(input.text)).toContainEqual(expect.objectContaining({ review: "review-playbook", finding: PLAYBOOK_FINDING }))
     }
     if (input.agent === AGENT["package-review"]) expect(input.text).toContain("Playbook coverage:")
     return base.port.prompt(input)
   } }
   const state = await runLean(directory, { sessions })
   expect(state.status).toBe("completed")
-  expect(state.stages["d1.review-playbook"]).toMatchObject({ status: "done", outputs: ["d1/review-playbook.md"] })
+  expect(state.stages["d1.review-playbook"]).toMatchObject({ status: "done", outputs: ["d1/review-playbook.json"] })
   expect(base.sessions.find(session => session.agent === AGENT["review-playbook"])?.permissions).toEqual(LEAN_CHILD_PERMISSIONS)
   expect(plannedDocument(directory, "d1")?.playbook_review).toEqual(selection)
-  expect(changePlanPrompt(directory, "d1")).toContain("Playbook coverage:")
+  expect(listedFindings(changePlanPrompt(directory, "d1"))).toContainEqual(expect.objectContaining({ review: "review-playbook", finding: PLAYBOOK_FINDING }))
   expect(packageReviewPrompt(directory)).toContain("Playbook coverage:")
   const before = stageInputSha(directory, "d1.change-plan")
-  writeLeanText(directory, "d1/review-playbook.md", "Revised coverage after a source-backed correction.")
+  writeLeanText(directory, "d1/review-playbook.json", JSON.stringify({ coverage: "Revised coverage after a source-backed correction.", findings: [] }))
   expect(stageInputSha(directory, "d1.change-plan")).not.toBe(before)
 }, 120_000)
 

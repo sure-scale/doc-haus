@@ -11,15 +11,16 @@ import { restoreLeanStage } from "./restore-stage"
 import { LEAN_MAX_SUBSTANTIVE_REPAIRS, runLean, stageInputSha } from "./runner"
 import { acceptStageReply, LEAN_CHILD_PERMISSIONS, stageOutputValid } from "./stages"
 import { answerQuestion, leanFile, readLeanJson, readLeanState, readOpenItems, readQuestions, writeLeanText } from "./state"
-import { AGENT, DRAFT, SOURCE, SUPPORT, changes, cleanupMatters, drafter, happyPath, matter, pidOf, sameSession, scriptedModel, type Reply } from "./test-support"
+import { AGENT, DRAFT, SOURCE, SUPPORT, changes, cleanupMatters, drafter, happyPath, listedFindingIDs, matter, pidOf, sameSession, scriptedModel, type Reply } from "./test-support"
 
 afterEach(cleanupMatters)
 const BODY = DRAFT.replace("Payment is due on delivery.", "Payment timing remains to be agreed.")
 const PAYMENT = "Payment shall be due on delivery."
 const DELIVERY = "The supplier shall deliver the goods within thirty days of the order date."
 const PAYMENT_SUPPORT = [{ source_id: SOURCE, quote: "Payment is due on delivery." }]
+// The delivery group amends for the review's delivery-period finding.
 const plan: Reply = prompt => JSON.stringify({ shared_decisions: ["Use supplied terms; retain unrelated wording."], groups: [
-  { id: "delivery", pids: [pidOf(prompt, "The supplier shall deliver the goods.")], goal: "State the source delivery period.", sources: SUPPORT, limitations: [] },
+  { id: "delivery", pids: [pidOf(prompt, "The supplier shall deliver the goods.")], goal: "State the source delivery period.", sources: SUPPORT, limitations: [], resolves: listedFindingIDs(prompt) },
   { id: "payment", pids: [pidOf(prompt, "Payment timing remains to be agreed.")], goal: "State agreed payment timing.", sources: PAYMENT_SUPPORT, limitations: [] },
 ], dismissed: [], questions: [] })
 function preparing(badQuote = false): Reply {
