@@ -1,5 +1,6 @@
 import type { Client } from "./client"
 import { abortSession, createSession, deleteSession, getMessages } from "./sessions"
+import { errorOf } from "../../components/chat/turn-model"
 
 // Pick the chat's "Auto" assistant by asking the engine's small model which real
 // assistant should answer. Routing runs entirely through OpenCode, so it adapts
@@ -32,25 +33,31 @@ export async function routeAgent(input: {
   // return an off-list name; on that miss, escalate the same route to the primary
   // model. Primary is only paid for on a miss (and never when it equals small),
   // so the common case stays one cheap call. If neither can route, report that
-  // failure instead of silently changing the user's requested operation.
+  // failure instead of silently changing the user's requested operation. When a
+  // router reply failed (an expired API key, an exhausted quota), report the
+  // provider's own error, as an ordinary chat turn does, so the lawyer sees what
+  // to fix rather than a retry hint that cannot help.
   const small = await routeOnce(input.client, input.smallModel, prompt, names)
-  if (small) return small
+  if (small.name) return small.name
+  let error = small.error
   if (input.primaryModel && input.primaryModel !== input.smallModel) {
     const primary = await routeOnce(input.client, input.primaryModel, prompt, names)
-    if (primary) return primary
+    if (primary.name) return primary.name
+    error = primary.error ?? error
   }
-  throw new Error("Auto could not choose an assistant. Try again or select an assistant manually.")
+  throw new Error(error ?? "Auto could not choose an assistant. Try again or select an assistant manually.")
 }
 
 // One routing attempt on a "provider/model" spec: spin up the throwaway router
-// session, prompt it, and return the matched candidate name — or null on a bad
-// spec, timeout, or off-list reply so the caller can escalate or report failure.
-async function routeOnce(client: Client, spec: string, prompt: string, names: string[]): Promise<string | null> {
+// session, prompt it, and return the matched candidate name — or no name on a
+// bad spec, timeout, or off-list reply so the caller can escalate or report
+// failure, with the reply's error text when the router turn itself failed.
+async function routeOnce(client: Client, spec: string, prompt: string, names: string[]): Promise<{ name?: string; error?: string }> {
   const slash = spec.indexOf("/")
-  if (slash < 1) return null
+  if (slash < 1) return {}
   const model = { providerID: spec.slice(0, slash), modelID: spec.slice(slash + 1) }
   const id = (await createSession(client, "doc.haus router").catch(() => null))?.id
-  if (!id) return null
+  if (!id) return {}
   try {
     // Routing is a best-effort pre-step that must never block the user's turn. The
     // ephemeral router turn has been seen to never complete, which would hang the
@@ -68,15 +75,17 @@ async function routeOnce(client: Client, spec: string, prompt: string, names: st
     // hosted model to produce their first token. Give them enough time to route
     // without silently degrading the user's request to an unrelated assistant.
     const res = await Promise.race([turn, new Promise<null>((resolve) => setTimeout(() => resolve(null), 30000))])
-    if (!res) return null
-    const reply = (res.filter((message) => message.info.role === "assistant").flatMap((message) => message.parts))
+    if (!res) return {}
+    const replies = res.filter((message) => message.info.role === "assistant")
+    const reply = replies.flatMap((message) => message.parts)
       .filter((p) => p.type === "text")
       .map((p) => p.text)
       .join("")
       .trim()
     // The model is told to reply with exactly one name; tolerate stray wrapping by
-    // also accepting a name embedded in the reply. Off-list => null.
-    return names.find((n) => reply === n) ?? names.find((n) => reply.toLowerCase().includes(n.toLowerCase())) ?? null
+    // also accepting a name embedded in the reply. Off-list => no name.
+    const name = names.find((n) => reply === n) ?? names.find((n) => reply.toLowerCase().includes(n.toLowerCase()))
+    return { name, error: errorOf(replies.findLast((message) => message.info.error)?.info.error) }
   } finally {
     await abortSession(client, id).catch(() => {})
     await deleteSession(client, id).catch(() => {})
