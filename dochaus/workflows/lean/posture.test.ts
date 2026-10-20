@@ -1,12 +1,14 @@
 import { afterEach, beforeEach, expect, test } from "bun:test"
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { readFirmDraftingPreferences } from "../../lib/drafting-preferences"
 import { matterPosture } from "../../lib/matter-client"
-import { leanSteps, readLeanPlan, runPosture, writeLeanPlan } from "./plan"
+import { leanSteps, readLeanPlan, runPosture, stepStage, writeLeanPlan } from "./plan"
+import { stagePrompt } from "./prompts"
 import { runLean, stageInputSha } from "./runner"
 import { stageInputs } from "./stages"
+import { isReviewStage } from "./state"
 import { AGENT, cleanupMatters, happyPath, matter, scriptedModel } from "./test-support"
 
 // How far the run's drafts lean toward the party the lawyer acts for: the
@@ -121,4 +123,48 @@ test("a matter without a Posture keeps its stage keys, and a plan saved without 
   // A Posture of its own reaches every step but the accepted draft.
   recordMatter(directory, { posture: "conservative" })
   expect(leanSteps(directory).filter((step, index) => keys()[index] === before[index])).toEqual(leanSteps(directory).filter(step => step.endsWith(".draft")))
+})
+
+test("every review takes the frozen Posture's standard for the side the lawyer acts for; with no side stated it reviews even-handedly", () => {
+  const directory = matter()
+  const documents = [{ title: "Supply note", purpose: "Record supplied terms", parts: [{ heading: "Delivery", scope: "Delivery" }] }]
+  const reviews = () => leanSteps(directory).filter(step => isReviewStage(stepStage(step)))
+  const PROTECTS = "whether it protects that party's position, and whether a protection a careful drafter would include for that party is missing."
+  const MARKET = "whether it lacks what a conventional, market-standard document for that side would include. Do not press for protections beyond market practice"
+  const NEUTRAL = "Assess each provision as a reviewing lawyer who acts for neither party"
+  // The live settings say Client-favorable; the plan's frozen Posture governs.
+  save({ posture: "client-favorable" })
+  recordMatter(directory, { posture: "client-favorable" })
+  for (const posture of ["client-favorable", "balanced", "conservative"] as const) {
+    writeLeanPlan(directory, documents, undefined, { party: "Northwind Traders Ltd", stated: true }, undefined, posture)
+    expect(reviews().length).toBeGreaterThan(1)
+    for (const step of reviews()) {
+      const prompt = stagePrompt(directory, step)
+      expect(prompt).toContain("Assess each provision as the reviewing lawyer for the party the lawyer acts for")
+      if (posture === "client-favorable") {
+        expect(prompt).toContain(PROTECTS)
+        expect(prompt).not.toContain("market practice")
+      } else {
+        expect(prompt).toContain(MARKET)
+        expect(prompt).not.toContain("whether it protects that party's position")
+      }
+    }
+    // No side stated: the same neutral review under every Posture.
+    writeLeanPlan(directory, documents, undefined, undefined, undefined, posture)
+    for (const step of reviews()) {
+      const prompt = stagePrompt(directory, step)
+      expect(prompt).toContain(NEUTRAL)
+      expect(prompt).not.toContain("market practice")
+      expect(prompt).not.toContain("whether it protects that party's position")
+    }
+  }
+})
+
+test("the review agents defer to the prompt's standard for the party rather than setting their own", () => {
+  for (const name of ["lean-review", "lean-review-independent", "lean-review-client-disadvantage"]) {
+    const text = readFileSync(path.join(import.meta.dir, "..", "..", "agent", `${name}.md`), "utf8")
+    expect(text).toContain("by the standard")
+    expect(text).not.toContain("whether it protects that party's position")
+    expect(text).not.toContain("a protection a careful drafter would include for that party")
+  }
 })
