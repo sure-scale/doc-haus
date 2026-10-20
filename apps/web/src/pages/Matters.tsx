@@ -13,6 +13,7 @@ import JurisdictionSelect from "../components/JurisdictionSelect"
 import { useToast } from "../components/Toast"
 import ModalHeader from "../components/ModalHeader"
 import { humanizeError } from "../api/ingest/errors"
+import { POSTURES, type Posture } from "../api/ingest/preferences"
 import { formatDate } from "../lib/format"
 import { loadPrefs } from "../prefs"
 
@@ -26,6 +27,8 @@ export default function Matters() {
   const [title, setTitle] = useState("")
   const [reference, setReference] = useState("")
   const [client, setClient] = useState("")
+  // "" leaves the matter on the firm's Posture (Settings → Drafting).
+  const [posture, setPosture] = useState<Posture | "">("")
   // New matters start from the firm's default jurisdictions (Settings → Matter
   // defaults) instead of empty.
   const [newJurisdictions, setNewJurisdictions] = useState<string[]>(() => loadPrefs().defaultJurisdictions)
@@ -37,6 +40,7 @@ export default function Matters() {
   const [draftTitle, setDraftTitle] = useState("")
   const [draftReference, setDraftReference] = useState("")
   const [draftClient, setDraftClient] = useState("")
+  const [draftPosture, setDraftPosture] = useState<Posture | "">("")
   const [draftJurisdictions, setDraftJurisdictions] = useState<string[]>([])
   const toast = useToast()
   const navigate = useNavigate()
@@ -74,6 +78,7 @@ export default function Matters() {
         newJurisdictions.length ? newJurisdictions : undefined,
         undefined,
         client.trim() || undefined,
+        posture || undefined,
       )
       toast("success", `Created matter "${matter.title}".`)
       // A new matter is opened straight away: the next step is always adding its
@@ -101,6 +106,7 @@ export default function Matters() {
     setDraftTitle(m.title)
     setDraftReference(m.reference ?? "")
     setDraftClient(m.client ?? "")
+    setDraftPosture(m.posture ?? "")
     setDraftJurisdictions(m.jurisdictions ?? [])
   }
 
@@ -114,8 +120,9 @@ export default function Matters() {
         draftReference.trim() || undefined,
         draftJurisdictions.length ? draftJurisdictions : undefined,
         editing.playbook,
-        // Sent only when edited, so a stale row never reverts the stored client.
+        // Sent only when edited, so a stale row never reverts the stored client or Posture.
         draftClient.trim() === (editing.client ?? "") ? undefined : draftClient.trim(),
+        draftPosture === (editing.posture ?? "") ? undefined : draftPosture,
       )
       setMatters((prev) => prev.map((m) => (m.id === updated.id ? updated : m)))
       setEditing(null)
@@ -169,6 +176,20 @@ export default function Matters() {
             onKeyDown={(e) => e.key === "Enter" && onCreate()}
             className="matter-create-client"
           />
+          <select
+            aria-label="Posture for this matter"
+            title="How hard drafts lean toward your client on this matter"
+            value={posture}
+            onChange={(e) => setPosture(e.target.value as Posture | "")}
+            className="matter-create-posture"
+          >
+            <option value="">Posture: firm default</option>
+            {POSTURES.map((row) => (
+              <option key={row.value} value={row.value}>
+                Posture: {row.label}
+              </option>
+            ))}
+          </select>
           <JurisdictionSelect
             jurisdictions={jurisdictions}
             selected={newJurisdictions}
@@ -300,6 +321,17 @@ export default function Matters() {
                   onChange={(e) => setDraftClient(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && onSaveEdit()}
                 />
+              </label>
+              <label className="matter-edit-field">
+                <span>Posture</span>
+                <select value={draftPosture} onChange={(e) => setDraftPosture(e.target.value as Posture | "")}>
+                  <option value="">Firm default</option>
+                  {POSTURES.map((row) => (
+                    <option key={row.value} value={row.value}>
+                      {row.label}
+                    </option>
+                  ))}
+                </select>
               </label>
               <div className="matter-edit-field">
                 <span>Jurisdictions</span>

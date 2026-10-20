@@ -13,7 +13,7 @@ import {
   type RequestedFiles,
 } from "./requested-files"
 import {
-  FIRST_DOCUMENT, headingText, normalizedHeading, parsePlan, plannedDocument, readLeanPlan, withDocumentIDs, writeLeanPlan,
+  FIRST_DOCUMENT, headingText, normalizedHeading, parsePlan, plannedDocument, readLeanPlan, runPosture, withDocumentIDs, writeLeanPlan,
   type ActingFor, type DocID, type LeanOutline, type PlannedDocument, type PlannedPart, type StepID,
 } from "./plan"
 import { actingForBlock, packageCompositionBlock, retryPrompt, stagePrompt } from "./prompts"
@@ -207,6 +207,8 @@ export async function runDraftStage(
     // A party the lawyer's words name prevails; when they name none, the plan
     // takes the client recorded on the matter.
     const client = matterClient(directory)
+    // The Posture the stages so far drafted to; the plan freezes it for the rest of the run.
+    const posture = runPosture(directory)
     const best: { value?: LeanOutline } = {}
     const checkOutline = (reply: string): Checked<LeanOutline> => {
       const parsed = parsePlan(reply, request)
@@ -286,7 +288,7 @@ export async function runDraftStage(
       appendLeanEvent(directory, { stage: "draft", document, event: "requested_files", step: "files", outcome: "unchecked",
         reason: "The files job's reply did not pass its check, so the files the lawyer asks to receive could not be confirmed; the plan delivers its files as outlined and the drafting notes say so." })
     } else rmSync(leanFile(directory, "requested-files.json"), { force: true })
-    writeLeanPlan(directory, named?.documents ?? value.documents, basis, value.acting_for, memo && { name: memo.name, file: named?.notes_file ?? memo.file })
+    writeLeanPlan(directory, named?.documents ?? value.documents, basis, value.acting_for, memo && { name: memo.name, file: named?.notes_file ?? memo.file }, posture)
   } else if (document === FIRST_DOCUMENT && !planCoverageCurrent(directory)) {
     const saved = readLeanPlan(directory)!
     const coverage = await covering(saved.documents)

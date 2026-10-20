@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react"
-import { getPreferences, savePreferences, type DraftingPreferences } from "../../api/ingest/preferences"
+import { getPreferences, POSTURES, savePreferences, type DraftingPreferences } from "../../api/ingest/preferences"
 import { FieldRow, SegRow } from "./controls"
 import { CheckRow, LegendField, PageLayoutPreview } from "./PageLayout"
 import { ADVICE_LEGENDS, AGREEMENT_LEGENDS, NOTES_MARKING, draftLineText } from "./page-layout"
@@ -72,14 +72,10 @@ export default function DraftingTab({ onSaved }: { onSaved: (text: string) => vo
           </FieldRow>
           <SegRow
             label="Posture"
-            hint="How hard negotiated terms lean toward your client."
+            hint="How hard negotiated terms lean toward your client. A matter can set its own."
             value={prefs.posture}
             onChange={(posture) => set({ posture: posture as DraftingPreferences["posture"] })}
-            options={[
-              { value: "client-favorable", label: "Client-favorable" },
-              { value: "balanced", label: "Balanced" },
-              { value: "conservative", label: "Conservative" },
-            ]}
+            options={POSTURES}
           />
           <SegRow
             label="Style"

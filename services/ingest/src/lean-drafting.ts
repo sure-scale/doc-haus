@@ -9,7 +9,7 @@ import { researchStatus } from "../../../dochaus/workflows/lean/research"
 import { readLeanDocuments, requestedMemo, type LeanDocuments } from "../../../dochaus/workflows/lean/deliverables"
 import { sha256File } from "../../../dochaus/lib/lineage"
 import { lastLeanEventAt } from "../../../dochaus/workflows/lean/events"
-import { planActingFor, readLeanPlan } from "../../../dochaus/workflows/lean/plan"
+import { planActingFor, readLeanPlan, runPosture } from "../../../dochaus/workflows/lean/plan"
 import { enqueueLeanRequest, pendingLeanRequests, leanUserUpdates, queuedAnswerIDs, isChecklistRefinement } from "../../../dochaus/workflows/lean/requests"
 import { runLean, stageInputSha, stopLeanRun } from "../../../dochaus/workflows/lean/runner"
 import { leanSteps } from "../../../dochaus/workflows/lean/plan"
@@ -248,11 +248,11 @@ function combinedOutput(directory: string): { document: string; name: string; fi
   return parts ? { document: parts.document, name: parts.name, file: parts.file, body: parts.body, notes: parts.notes } : null
 }
 
-/** The run's planned documents without their parts, and whom the lawyer acts
- * for, or null before the outline. */
+/** The run's planned documents without their parts, whom the lawyer acts
+ * for and the Posture the stages draft to, or null before the outline. */
 function plannedDocuments(directory: string) {
   const plan = readLeanPlan(directory)
-  return plan ? { documents: plan.documents.map(row => ({ id: row.id, title: row.title, purpose: row.purpose })), acting_for: planActingFor(directory) } : null
+  return plan ? { documents: plan.documents.map(row => ({ id: row.id, title: row.title, purpose: row.purpose })), acting_for: planActingFor(directory), posture: runPosture(directory) } : null
 }
 
 /** Pause: stops the coordinator working on this matter. It interrupts the

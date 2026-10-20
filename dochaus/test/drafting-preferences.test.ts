@@ -5,6 +5,7 @@ import path from "node:path"
 import { LegalPlugin } from "../plugin/legal/policy"
 import { recordSessionAgent } from "../plugin/legal/session"
 import { DEFAULT_DRAFTING, LEGEND_MAX_LENGTH, normalizeLegend, normalizePreferences, renderInstructions } from "../lib/drafting-preferences"
+import { writeLeanPlan } from "../workflows/lean/plan"
 
 const previous = process.env.WORKSPACE_ROOT
 const workspace = mkdtempSync(path.join(tmpdir(), "drafting-preferences-"))
@@ -20,10 +21,10 @@ afterAll(() => {
   rmSync(workspace, { recursive: true, force: true })
 })
 
-async function systemFor() {
+async function systemFor(agent = "lean-body") {
   const hooks = await LegalPlugin({ directory } as Parameters<typeof LegalPlugin>[0])
-  const sessionID = "drafting-preferences"
-  recordSessionAgent(sessionID, "lean-body")
+  const sessionID = `drafting-preferences-${agent}`
+  recordSessionAgent(sessionID, agent)
   const output = { system: [] as string[] }
   await hooks["experimental.chat.system.transform"]!({ sessionID } as never, output)
   return output.system.join("\n")
@@ -41,6 +42,28 @@ test("fresh workspaces apply displayed defaults without creating preference file
   expect(system).toContain("Keep explanations concise")
   expect(system).not.toContain("<plan_first_drafting>")
   expect(existsSync(preferences)).toBe(false)
+})
+
+test("a drafting run's stages take the Posture frozen in its plan; other work on the matter takes the matter's, else the firm's", async () => {
+  const FAVOR = "Favor the represented person's", CONSERVATIVE = "Draft conservatively", BALANCED = "Use an even-handed, conventional approach"
+  save({ posture: "client-favorable" })
+  try {
+    for (const agent of ["lean-review", "legal-review"]) expect(await systemFor(agent)).toContain(FAVOR)
+    writeFileSync(path.join(directory, "matter.json"), JSON.stringify({ id: "matter", title: "Supply", posture: "conservative" }))
+    for (const agent of ["lean-review", "legal-review"]) {
+      const system = await systemFor(agent)
+      expect(system).toContain(CONSERVATIVE)
+      expect(system).not.toContain(FAVOR)
+    }
+    writeLeanPlan(directory, [{ title: "Supply note", purpose: "Record supplied terms", parts: [{ heading: "Delivery", scope: "Delivery" }] }], undefined, undefined, undefined, "balanced")
+    const stage = await systemFor("lean-review")
+    expect(stage).toContain(BALANCED)
+    expect(stage).not.toContain(CONSERVATIVE)
+    expect(await systemFor("legal-review")).toContain(CONSERVATIVE)
+  } finally {
+    rmSync(path.join(directory, "matter.json"), { force: true })
+    rmSync(path.join(directory, ".dochaus"), { recursive: true, force: true })
+  }
 })
 
 test("research defaults to the entire web and preserves explicit saved scope", () => {

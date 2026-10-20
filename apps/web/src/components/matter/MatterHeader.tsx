@@ -1,6 +1,10 @@
 import { Link } from "react-router-dom"
 import JurisdictionSelect from "../JurisdictionSelect"
 import type { Jurisdiction, MatterDetail as Detail } from "../../api/ingest/matters"
+import { POSTURES, type Posture } from "../../api/ingest/preferences"
+
+/** The title-area fields one save changes; "" clears the matter's Posture. */
+export type MatterFields = Partial<Pick<Detail, "title" | "reference" | "jurisdictions" | "playbook" | "client">> & { posture?: Posture | "" }
 
 export default function MatterHeader({
   matter,
@@ -39,7 +43,7 @@ export default function MatterHeader({
   draftTitle: string
   setDraftTitle: (draft: string) => void
   commitRename: () => Promise<void>
-  patch: (fields: Partial<Pick<Detail, "title" | "reference" | "jurisdictions" | "playbook" | "client">>) => Promise<void>
+  patch: (fields: MatterFields) => Promise<void>
 }) {
   const refField = editingRef ? (
     <input
@@ -98,8 +102,27 @@ export default function MatterHeader({
     </button>
   )
 
+  // How hard drafts lean toward the client here: one choice, saved as soon as it is picked.
+  const postureField = (
+    <select
+      className={`matter-posture${matter.posture ? "" : " is-default"}`}
+      aria-label="Posture for this matter"
+      title="How hard drafts lean toward your client on this matter"
+      value={matter.posture ?? ""}
+      onChange={(e) => patch({ posture: e.target.value as Posture | "" })}
+    >
+      <option value="">Posture: firm default</option>
+      {POSTURES.map((row) => (
+        <option key={row.value} value={row.value}>
+          Posture: {row.label}
+        </option>
+      ))}
+    </select>
+  )
+
   // A permanent route back to the matter list, then one quiet line of facts: the matter number, the
-  // client and the jurisdictions, each a ghost "+ …" button until set, then its chip.
+  // client, the Posture and the jurisdictions, each a ghost "+ …" button (the Posture its firm
+  // default) until set, then its chip.
   return (
     <header className="page-head matter-page-head">
       <div className="matter-head">
@@ -152,6 +175,10 @@ export default function MatterHeader({
             ·
           </span>
           {clientField}
+          <span className="matter-meta-sep" aria-hidden>
+            ·
+          </span>
+          {postureField}
           <span className="matter-meta-sep" aria-hidden>
             ·
           </span>

@@ -39,7 +39,7 @@ export function matter(sourceText = SOURCE_TEXT) {
 /** The current plan, now also naming a requested memo, as an outline does. */
 export function requestMemo(directory: string) {
   const plan = readLeanPlan(directory)!
-  writeLeanPlan(directory, plan.documents.map(({ id, ...document }) => document), plan.basis, plan.acting_for, { name: "cover memo", file: "cover memo.docx" })
+  writeLeanPlan(directory, plan.documents.map(({ id, ...document }) => document), plan.basis, plan.acting_for, { name: "cover memo", file: "cover memo.docx" }, plan.posture)
 }
 
 export function scriptedModel(replies: Record<string, Reply>) {

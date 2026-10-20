@@ -1,4 +1,5 @@
-import { normalizeLegend } from "../../lib/drafting-preferences"
+import { isPosture, normalizeLegend, type Posture } from "../../lib/drafting-preferences"
+import { effectivePosture } from "../../lib/matter-client"
 import { DOCUMENT_FORMS, isLetter, type DocumentForm } from "../../lib/page-furniture"
 import { TOOL_SYNTAX_ISSUE, printedToolCall } from "./checks"
 import { REVIEW_STAGES, readLeanJson, readLeanText, writeLeanText, type ReviewStageID, type StageID } from "./state"
@@ -15,7 +16,9 @@ import { REVIEW_STAGES, readLeanJson, readLeanText, writeLeanText, type ReviewSt
 // It also records whom the lawyer acts for: the party the outline reads from the
 // request, else the client recorded on the matter. Every model stage is told,
 // and a stage that is not told takes no side. Code never infers the party from
-// the sources; a lawyer can still edit plan.json.
+// the sources; a lawyer can still edit plan.json. Beside it the plan freezes the
+// Posture the run drafts to (runPosture), so a later settings or matter change
+// cannot split the run's stages.
 
 export const DOC_STAGES = ["draft", ...REVIEW_STAGES, "review-playbook", "change-plan", "change-prepare", "changes", "change-review", "apply"] as const
 export type DocStage = (typeof DOC_STAGES)[number]
@@ -51,7 +54,7 @@ export type PlannedDocument = {
 export type ActingFor = { party: string; stated: boolean }
 /** `memo` is the name of the memo the request asks for and `notes_file` the
  * file the notes are delivered as; both are delivery metadata. */
-export type LeanPlan = { schema: "dochaus.lean.plan/1"; documents: PlannedDocument[]; acting_for?: ActingFor; basis?: string; memo?: string; notes_file?: string }
+export type LeanPlan = { schema: "dochaus.lean.plan/1"; documents: PlannedDocument[]; acting_for?: ActingFor; posture?: Posture; basis?: string; memo?: string; notes_file?: string }
 /** `memo` is the request's own words for a memo that accompanies the documents,
  * from a "Memo:" line; the run writes and names the drafting notes as that memo. */
 export type LeanOutline = { documents: Omit<PlannedDocument, "id">[]; acting_for: ActingFor; memo?: string }
@@ -115,10 +118,11 @@ function planIssue(value: unknown): string | undefined {
 }
 
 /** A requested memo is saved as its name and the notes file it is delivered
- * as; a plan without one carries neither key. */
-export function writeLeanPlan(directory: string, documents: Omit<PlannedDocument, "id">[], basis?: string, actingFor?: ActingFor, memo?: { name: string; file: string }): LeanPlan {
+ * as; a plan without one carries neither key, nor a plan without a Posture
+ * the Posture key. */
+export function writeLeanPlan(directory: string, documents: Omit<PlannedDocument, "id">[], basis?: string, actingFor?: ActingFor, memo?: { name: string; file: string }, posture?: Posture): LeanPlan {
   const plan: LeanPlan = {
-    schema: LEAN_PLAN_SCHEMA, documents: withDocumentIDs(documents), acting_for: actingFor, basis,
+    schema: LEAN_PLAN_SCHEMA, documents: withDocumentIDs(documents), acting_for: actingFor, posture, basis,
     ...(memo ? { memo: memo.name, notes_file: memo.file } : {}),
   }
   writeLeanText(directory, "plan.json", `${JSON.stringify(plan, null, 2)}\n`)
@@ -157,6 +161,15 @@ export function planActingFor(directory: string): ActingFor {
   if (typeof value !== "object" || value === null) return NOT_STATED
   const row = value as Partial<ActingFor>
   return typeof row.party === "string" && row.party.trim() && row.stated !== false ? { party: row.party.trim(), stated: true } : NOT_STATED
+}
+
+/** How far the run's drafts lean toward the party the lawyer acts for: the
+ * Posture the outline froze into the plan. Before the outline, and for a plan
+ * saved without one, the matter's Posture, else the firm's, read live as
+ * before. Every lean stage renders its drafting preferences with it. */
+export function runPosture(directory: string): Posture {
+  const posture: unknown = readLeanPlan(directory)?.posture
+  return isPosture(posture) ? posture : effectivePosture(directory)
 }
 
 /** The documents planned before `id`, in drafting order. */
