@@ -19,11 +19,13 @@ export function presentDraft(bytes: Uint8Array, parts: DraftPresentation["parts"
   const attribution = new Map<string, { draft_part: number | null; draft_heading: boolean }>()
   let next = 0
   let part: number | null = null
+  let titled = title
   for (const paragraph of Array.from(document.getElementsByTagNameNS(namespace, "p"))) {
     const text = Array.from(paragraph.getElementsByTagNameNS(namespace, "t")).map(node => node.textContent ?? "").join("")
     const style = paragraph.getElementsByTagNameNS(namespace, "pStyle")[0]?.getAttributeNS(namespace, "val")
-    // The assembled title is the only Heading 1: part replies cannot carry one.
-    if (!title && style === "Heading1") {
+    // The assembled title is the first Heading 1.
+    if (!titled && style === "Heading1") {
+      titled = true
       paragraph.parentNode?.removeChild(paragraph)
       continue
     }
