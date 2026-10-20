@@ -149,7 +149,7 @@ function normalizeClient(value: string) {
 function normalizePosture(value: string) {
   if (value === "") return undefined
   if (!isPosture(value))
-    throw new MatterValidationError(`posture must be "client-favorable", "balanced" or "conservative", got ${JSON.stringify(value)}`)
+    throw new MatterValidationError("Posture must be Client-favorable, Balanced or Conservative.")
   return value
 }
 

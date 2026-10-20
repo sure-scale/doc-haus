@@ -367,10 +367,16 @@ test("the run header shows the Posture the run drafts to beside whom the lawyer 
   expect(render(withPlan({ acting_for: northwind, posture: "balanced" }))).toContain("Acting for: Northwind Traders Ltd · Balanced")
   expect(render(withPlan({ acting_for: northwind, posture: "client-favorable" }))).toContain("Acting for: Northwind Traders Ltd · Client-favorable")
   expect(render(withPlan({ acting_for: northwind, posture: "conservative" }))).toContain("Acting for: Northwind Traders Ltd · Conservative")
-  // With no side, nothing leans; an older ingest sends no Posture.
-  const neutral = render(withPlan({ acting_for: { party: "", stated: false }, posture: "client-favorable" }))
-  expect(neutral).toContain("Acting for: not stated — drafting is neutral")
-  expect(neutral).not.toContain("Client-favorable")
+  // With no side stated the stages still take the Posture: only Balanced, or an
+  // older ingest that sends none, reads as neutral drafting.
+  const unstated = { party: "", stated: false }
+  expect(render(withPlan({ acting_for: unstated, posture: "client-favorable" }))).toContain("Acting for: not stated · Client-favorable</span>")
+  expect(render(withPlan({ acting_for: unstated, posture: "conservative" }))).toContain("Acting for: not stated · Conservative</span>")
+  for (const posture of ["balanced", undefined]) {
+    const neutral = render(withPlan({ acting_for: unstated, posture }))
+    expect(neutral).toContain("Acting for: not stated — drafting is neutral</span>")
+    expect(neutral).not.toContain("not stated ·")
+  }
   expect(render(withPlan({ acting_for: northwind }))).toContain("Acting for: Northwind Traders Ltd</span>")
   expect(isLeanDraftingStatus(withPlan({ acting_for: northwind, posture: "aggressive" }))).toBe(false)
   expect(isLeanDraftingStatus(withPlan({ acting_for: northwind, posture: 2 }))).toBe(false)

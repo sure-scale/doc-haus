@@ -46,6 +46,12 @@ test("before the outline, the run takes the matter's Posture when it records one
     expect(matterPosture(directory)).toBeUndefined()
     expect(runPosture(directory)).toBe("client-favorable")
   }
+  // A matter.json that cannot be read records no Posture: the firm's applies.
+  for (const text of ["{", "null", "[]", '{"posture":']) {
+    writeFileSync(path.join(directory, "matter.json"), text)
+    expect(matterPosture(directory)).toBeUndefined()
+    expect(runPosture(directory)).toBe("client-favorable")
+  }
   recordMatter(directory, { posture: "conservative" })
   expect(matterPosture(directory)).toBe("conservative")
   expect(runPosture(directory)).toBe("conservative")
@@ -61,18 +67,20 @@ test("the outline freezes the run's Posture into the plan, and a settings or mat
   recordMatter(directory, { posture: "conservative" })
   const model = scriptedModel(happyPath)
   let changed = false
+  let frozen: unknown
   const sessions = { ...model.port, async prompt(input: Parameters<typeof model.port.prompt>[0]) {
     if (input.agent === AGENT.review && !changed) {
       changed = true
-      expect(readLeanPlan(directory)?.posture).toBe("conservative")
+      frozen = readLeanPlan(directory)?.posture
       save({ posture: "balanced" })
       recordMatter(directory, { posture: "client-favorable" })
     }
     return model.port.prompt(input)
   } }
   const state = await runLean(directory, { sessions })
-  expect(state.status).toBe("completed")
   expect(changed).toBe(true)
+  expect(frozen).toBe("conservative")
+  expect(state.status).toBe("completed")
   expect(readLeanPlan(directory)?.posture).toBe("conservative")
   expect(runPosture(directory)).toBe("conservative")
   // No stage was revisited: the change reached neither a running stage nor any key.
