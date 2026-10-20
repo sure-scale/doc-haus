@@ -14,7 +14,7 @@ import CompareDialog from "../components/CompareDialog"
 import BlacklineViewer from "../components/BlacklineViewer"
 import ChatPanel from "../components/ChatPanel"
 import ReviewGrid from "../components/ReviewGrid"
-import MatterHeader from "../components/matter/MatterHeader"
+import MatterHeader, { type MatterFields } from "../components/matter/MatterHeader"
 import MatterRail from "../components/matter/MatterRail"
 import useDraftingStatus from "../components/drafting/useDraftingStatus"
 import useNeedsYouTitle from "../components/drafting/useNeedsYouTitle"
@@ -208,16 +208,17 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
   // One persist path for every title-area field: merge the changed fields over the
   // current matter, write the whole record, and reflect what came back. Sessions
   // refresh too so the sidebar/picker pick up a renamed or re-referenced matter.
-  async function patch(fields: Partial<Pick<Detail, "title" | "reference" | "jurisdictions" | "playbook" | "client">>) {
+  async function patch(fields: MatterFields) {
     if (!matter) return
     const next = { ...matter, ...fields }
-    // The client goes only with its own edit, so another field's save never reverts a newer one.
-    const updated = await renameMatter(matter.id, next.title, next.reference, next.jurisdictions, next.playbook, "client" in fields ? next.client : undefined).catch((e) => {
+    // The client and the Posture go only with their own edit, so another field's save never reverts a newer one.
+    const updated = await renameMatter(matter.id, next.title, next.reference, next.jurisdictions, next.playbook,
+      "client" in fields ? next.client : undefined, "posture" in fields ? next.posture : undefined).catch((e) => {
       toast("error", humanizeError(e, "Could not save the matter. Try again."))
       return undefined
     })
     if (!updated) return
-    setMatter((m) => m && { ...m, title: updated.title, reference: updated.reference, jurisdictions: updated.jurisdictions, playbook: updated.playbook, client: updated.client })
+    setMatter((m) => m && { ...m, title: updated.title, reference: updated.reference, jurisdictions: updated.jurisdictions, playbook: updated.playbook, client: updated.client, posture: updated.posture })
     onSessionsChanged()
   }
 

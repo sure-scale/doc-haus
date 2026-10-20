@@ -33,6 +33,21 @@ export type DraftingPreferences = {
   notesMarking: boolean
 }
 
+/** How hard negotiated terms lean toward the client: the firm's setting, which
+ * a matter may set for itself. */
+export type Posture = DraftingPreferences["posture"]
+
+/** The Posture choices, as Settings → Drafting and a matter offer them. */
+export const POSTURES: { value: Posture; label: string }[] = [
+  { value: "client-favorable", label: "Client-favorable" },
+  { value: "balanced", label: "Balanced" },
+  { value: "conservative", label: "Conservative" },
+]
+
+export function postureLabel(posture: Posture) {
+  return POSTURES.find((row) => row.value === posture)?.label ?? posture
+}
+
 export type RateOverride = Partial<{
   input_per_mtok: number
   output_per_mtok: number

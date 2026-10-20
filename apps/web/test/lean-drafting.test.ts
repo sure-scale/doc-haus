@@ -358,6 +358,25 @@ test("the run's Details say whom the lawyer acts for once the plan records it, a
   expect(isLeanDraftingStatus(withActingFor("Northwind Traders Ltd"))).toBe(false)
 })
 
+test("the run header shows the Posture the run drafts to beside whom the lawyer acts for", () => {
+  const idle: RunActions = { busy: false, pausing: false, stopping: false, error: "", errorFor: undefined, resuming: false, resume: async () => true, answer: async () => true, choose: async () => true, decide: async () => true, update: async () => true, refine: async () => true, pause: async () => true, stop: async () => true }
+  const withPlan = (fields: Record<string, unknown>) => ({ ...completed, plan: { ...completed.plan, ...fields } })
+  const render = (value: unknown) =>
+    renderToStaticMarkup(createElement(RunHeader, { status: lean(value), actions: idle, own: true, onOpen: () => {}, onShowDrafts: () => {} }))
+  const northwind = { party: "Northwind Traders Ltd", stated: true }
+  expect(render(withPlan({ acting_for: northwind, posture: "balanced" }))).toContain("Acting for: Northwind Traders Ltd · Balanced")
+  expect(render(withPlan({ acting_for: northwind, posture: "client-favorable" }))).toContain("Acting for: Northwind Traders Ltd · Client-favorable")
+  expect(render(withPlan({ acting_for: northwind, posture: "conservative" }))).toContain("Acting for: Northwind Traders Ltd · Conservative")
+  // With no side, nothing leans; an older ingest sends no Posture.
+  const neutral = render(withPlan({ acting_for: { party: "", stated: false }, posture: "client-favorable" }))
+  expect(neutral).toContain("Acting for: not stated — drafting is neutral")
+  expect(neutral).not.toContain("Client-favorable")
+  expect(render(withPlan({ acting_for: northwind }))).toContain("Acting for: Northwind Traders Ltd</span>")
+  expect(isLeanDraftingStatus(withPlan({ acting_for: northwind, posture: "aggressive" }))).toBe(false)
+  expect(isLeanDraftingStatus(withPlan({ acting_for: northwind, posture: 2 }))).toBe(false)
+  expect(isLeanDraftingStatus(withPlan({ acting_for: northwind, posture: "conservative" }))).toBe(true)
+})
+
 test("the question card shows how many are answered and Send waits for an answer", () => {
   const calls = respond({ answers: {}, revision: 0 })
   const open = blockedQuestion.questions.map((question) => ({ ...question, status: "open" as const }))

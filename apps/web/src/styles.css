@@ -1908,6 +1908,28 @@ li.list-row {
   color: var(--accent);
 }
 
+/* The matter's Posture: a bare select that reads as one of the facts, muted
+   while it follows the firm default. */
+.matter-posture {
+  height: auto;
+  padding: 0 14px 0 0;
+  border: none;
+  background-color: transparent;
+  background-position: right 0 center;
+  background-size: 10px;
+  font: inherit;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.matter-posture.is-default {
+  color: var(--muted);
+}
+
+.matter-posture:hover {
+  color: var(--accent);
+}
+
 /* Jurisdictions read as badges in the header; the bare trigger resets button
    chrome so the chips sit flush, then opens the same picker popover on click. */
 .jx-trigger-bare {

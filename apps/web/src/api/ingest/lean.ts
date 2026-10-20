@@ -1,4 +1,5 @@
 import { INGEST_URL } from "../../config"
+import { POSTURES, type Posture } from "./preferences"
 
 // The lean drafting profile as ingest serves it. Its drafting status is the run's
 // state.json plus the coordinator's projection (in_flight, open questions and
@@ -141,10 +142,11 @@ export type LeanDraftingStatus = {
    * (`since` is when it ran); `missing` is the subset no longer in the matter.
    * The gate's verdict above is not re-evaluated. */
   changed_after_check?: { since: string | null; documents: string[]; missing: string[] } | null
-  /** The documents the run plans to draft, in order, and whom the lawyer acts
-   * for (`stated` false, with no party, when the request did not say); null
-   * before the outline, `acting_for` absent from an older ingest. */
-  plan: { documents: LeanPlannedDocument[]; acting_for?: { party: string; stated: boolean } } | null
+  /** The documents the run plans to draft, in order, whom the lawyer acts
+   * for (`stated` false, with no party, when the request did not say) and the
+   * Posture the run drafts to; null before the outline, `acting_for` and
+   * `posture` absent from an older ingest. */
+  plan: { documents: LeanPlannedDocument[]; acting_for?: { party: string; stated: boolean }; posture?: Posture } | null
   /** The name the plan gives the memo the lawyer asked for, which the run's
    * drafting notes are written and delivered as; null when none was requested,
    * absent from an older ingest. */
@@ -201,7 +203,8 @@ export function isLeanDraftingStatus(value: unknown): value is LeanDraftingStatu
       (record(value.plan) &&
         Array.isArray(value.plan.documents) &&
         (value.plan.acting_for === undefined ||
-          (record(value.plan.acting_for) && typeof value.plan.acting_for.party === "string" && typeof value.plan.acting_for.stated === "boolean")))) &&
+          (record(value.plan.acting_for) && typeof value.plan.acting_for.party === "string" && typeof value.plan.acting_for.stated === "boolean")) &&
+        (value.plan.posture === undefined || POSTURES.map((row) => row.value).includes(value.plan.posture as Posture)))) &&
     (value.memo == null || typeof value.memo === "string") &&
     (value.combined_output == null ||
       (record(value.combined_output) &&
