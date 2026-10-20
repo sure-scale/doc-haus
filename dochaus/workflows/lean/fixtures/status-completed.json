@@ -32,7 +32,7 @@
       "status": "done",
       "input_sha": "0a9b7026bf2457cff6061f04d2d0536b4691b83e0c7aa2f69002e926dbd83559",
       "outputs": [
-        "d1/review.md"
+        "d1/review.json"
       ],
       "session_id": "ses_child3",
       "attempts": 1,

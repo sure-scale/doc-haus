@@ -12,7 +12,7 @@ import { checklistFindingRecovery } from "./checklist-contract"
 import { buildChecklistRefinementContext } from "./checklist-refinement-context"
 import { runChecklistRefinementFlow, readEffectiveChecklistItems, runChecklistExtractionFlow, runChecklistCheckFlow, type ChecklistCheckResult } from "./checklist-flow"
 import { selectedDeliveryPlan } from "./delivery-selection"
-import { changePlanPrompt, changeReviewPrompt, readChangeReview, runChangePreparation } from "./change-pipeline"
+import { changePlanPrompt, changeReviewPrompt, readChangeReview, runChangePreparation, unadjudicatedFindings } from "./change-pipeline"
 import { packageReviewPrompt, readPackageReview } from "./package-review"
 import { LEAN_MAX_SUBSTANTIVE_REPAIRS, checklistRepairItems, readRepairRound, repairedChecklistItems, startRepairRound } from "./repairs"
 import { acceptEvidenceReply, evidencePrompt } from "./evidence"
@@ -22,6 +22,7 @@ import { DELIVERED_NOTES, forgetUnplannedDocuments, recordLeanDocuments } from "
 import { runDraftStage } from "./draft-sections"
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { checklistFindingLabel, deliveredNotes, finalGate, notesCoverageReport } from "./gate"
+import { issueRegister } from "./register"
 import { leanPlanIssue, readLeanPlan, reviewStages, leanSteps, stepDocument, stepStage, type StepID } from "./plan"
 import { retryPrompt, stagePrompt } from "./prompts"
 import { excerpt, inDocument, openItem, withSourceSnapshot } from "./quotes"
@@ -579,7 +580,8 @@ function runStep(directory: string, state: LeanState, step: StepID, deps: LeanDe
   if (stage === "apply" && document) return runApply(directory, state, document)
   if (stage === "gate") return runGate(directory)
   if (stage === "checklist-check") return runChecklistStage(directory, state, deps, reinspectChecklist)
-  if (stage === "change-plan" && document && !roundPlanned(directory, state, recorded) && focusedChecklistRepairs(directory, document)) return runFocusedRepairAdjudication(directory, state, deps, document, progress)
+  // A review that re-ran since the plan has findings only a full plan sees.
+  if (stage === "change-plan" && document && !roundPlanned(directory, state, recorded) && focusedChecklistRepairs(directory, document) && !unadjudicatedFindings(directory, document).length) return runFocusedRepairAdjudication(directory, state, deps, document, progress)
   if (stage === "change-review" && document && focusedChecklistRepairs(directory, document)) return runFocusedChangeReview(directory, state, deps, document, progress)
   if (stage === "changes" && document && focusedChecklistRepairs(directory, document)) return runChangeReconciliation(directory, state, deps, document, progress)
   if (stage === "change-prepare" && document) return runChangePreparation(directory, state, deps, document, progress)
@@ -694,6 +696,7 @@ async function runGate(directory: string): Promise<StageRun> {
   })
   writeLeanText(directory, "gate.json", `${JSON.stringify(gate, null, 2)}\n`)
   writeLeanText(directory, "drafting-notes-coverage.md", notesCoverageReport(gate))
+  writeLeanText(directory, "register.json", `${JSON.stringify(issueRegister(directory), null, 2)}\n`)
   // The drafting notes are delivered as the reader gets them, with any
   // unresolved checklist findings and disclosed requirements left open in plain
   // words: whenever any of them exists, as the gate's validity requires

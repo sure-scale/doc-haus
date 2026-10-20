@@ -4,7 +4,7 @@ import { renderMarkdownToDocx } from "../../lib/render"
 import { readDocxCommentParagraphs } from "../../lib/docx-comments"
 import { readFileSync } from "node:fs"
 import { buildRepairAdjudicationInput, mergeRepairAdjudications, repairAdjudicationIssues, runFocusedRepairAdjudication, type RepairAdjudication } from "./checklist-repair-adjudication"
-import { acceptChangePlan, changePreparationPrompt, type ChangePlan } from "./change-pipeline"
+import { acceptChangePlan, changePlanPrompt, changePreparationPrompt, type ChangePlan } from "./change-pipeline"
 import { writeLeanPlan, type StepID } from "./plan"
 import { packageCompositionBlock } from "./prompts"
 import { hashStageInputs, updateLeanStage, writeQuestions, leanFile, readLeanState, readLeanText, writeLeanBytes, writeLeanText } from "./state"
@@ -29,7 +29,7 @@ async function setup() {
   const finding: ChecklistFinding = { item_id: "timing", status: "unsatisfied", reason: "Timing uncertainty missing.", evidence: [{ document: "d1", locator: "paragraph0", kind: "body", text: "Timing is missing." }], source_refs: item.source_refs, inspection_scope: "Current target.", limitation: "No approval assumed.", action_status: "not_fulfilled", open_decisions: ["Approval"] }
   const assessment = { item_id: "timing", item, finding }
   startRepairRound(directory, [openItem("checklist-check", "omission", `Reassess source.\n${JSON.stringify(assessment)}`, { document: "d1", repair_target: "body", pid })], true)
-  writeLeanText(directory, "d1/review.md", "UNRELATED_REVIEW_SENTINEL ".repeat(1000))
+  writeLeanText(directory, "d1/review.json", JSON.stringify({ findings: [{ id: "f-0000000001", document: "d1", origin: "drafting", finding: "UNRELATED_REVIEW_SENTINEL ".repeat(1000).trim(), sources: [] }] }))
   writeLeanText(directory, "research.json", JSON.stringify({ limitations: ["GENERATED_SCOPE_IS_NOT_WAIVER"] }))
   updateLeanStage(directory, readLeanState(directory)!, "d1.apply", { status: "done", input_sha: hashStageInputs("d1.apply", LEAN_PROMPT_VERSION, stageInputs(directory, "d1.apply")) })
   return { directory, assessment }
@@ -42,6 +42,8 @@ test("one assessment gets original instructions and exact current/initial passag
   expect(input.prompt).toContain("Generated research limits")
   expect(input.prompt).toContain("flagging or proposing")
   expect(input.prompt).not.toContain("UNRELATED_REVIEW_SENTINEL")
+  // The saved review is a readable record: the full change plan lists it.
+  expect(changePlanPrompt(directory, "d1")).toContain("UNRELATED_REVIEW_SENTINEL")
   expect(input.prompt).not.toContain("GENERATED_SCOPE_IS_NOT_WAIVER")
   expect(input.prompt).toContain(`[${pid}] Timing is missing.`)
   expect(input.finding_indices).toEqual([0])

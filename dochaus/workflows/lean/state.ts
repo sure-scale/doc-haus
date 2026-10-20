@@ -80,6 +80,8 @@ export type OpenItem = {
     template_part?: string
     /** The planned document whose body the item is about. */
     document?: DocID
+    /** The review finding the item discloses (review-findings.ts). */
+    finding?: string
     /** The current checklist item a checklist_open or checklist_unresolved
      * item discloses; for a refined parent's coverage, the parent item. */
     checklist_item?: string

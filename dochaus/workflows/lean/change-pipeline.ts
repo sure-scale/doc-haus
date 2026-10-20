@@ -13,6 +13,7 @@ import { matterSourceIDs, openItem, quoteFound, quoteMissIssue } from "./quotes"
 import { changesRepairSections, documentRepairs } from "./repairs"
 import { drainLeanRequests } from "./requests"
 import { approvedResearch } from "./research"
+import { findingItem, findingsFor, findingsText, reviewText, routedFindingItems } from "./review-findings"
 import { LEAN_CHILD_PERMISSIONS, LEAN_MAX_RETRIES, LEAN_PROMPT_VERSION, LEAN_STAGE_AGENTS, stageInputs, stepSessionTitle, type LeanDeps } from "./stages"
 import { QUESTION_KIND_CONTRACT, hashStageInputs, leanFile, questionContent, readLeanJson, readLeanText, readQuestions, writeLeanText, type LeanState, type LeanStageState, type Question } from "./state"
 
@@ -22,6 +23,8 @@ export type ChangeGroup = {
   goal: string
   sources: { source_id: string; quote: string }[]
   limitations: string[]
+  /** The review findings the group amends for (review-findings.ts). */
+  resolves?: string[]
 }
 export type ReviewDisposition = {
   disposition: "deferred" | "recommendation" | "rejected"
@@ -31,8 +34,11 @@ export type ReviewDisposition = {
   documents: DocID[]
   sources: { source_id: string; quote: string }[]
   limitations: string[]
+  resolves?: string[]
 }
-export type ChangePlan = { shared_decisions: string[]; groups: ChangeGroup[]; dismissed: string[]; questions: Question[]; findings?: ReviewDisposition[] }
+/** settled_groups are earlier groups a focused repair merge keeps for the
+ * findings they resolve; they are prepared again only by a full re-plan. */
+export type ChangePlan = { shared_decisions: string[]; groups: ChangeGroup[]; dismissed: string[]; questions: (Question & { resolves?: string[] })[]; findings?: ReviewDisposition[]; settled_groups?: ChangeGroup[] }
 export type ChangePreparation = { groups: { group: string; changes: ChangeList }[] }
 export type ChangeReview = { status: "pass" | "changes-required"; findings: { target?: "body" | "research"; document?: DocID; pid?: string; detail: string }[]; limitations: string[] }
 const PREPARATION_WIDTH = 4
@@ -43,7 +49,8 @@ export function changePlanPrompt(directory: string, document: DocID) {
     stagePrompt(directory, `${document}.change-plan`, { contextOnly: true }),
     `<draft_paragraphs>\n${readParagraphs(directory, document).map(row => `[${row.pid}] ${row.text}`).join("\n\n")}\n</draft_paragraphs>`,
     draftingStyleWarningsBlock(readParagraphs(directory, document)),
-    `<findings>\n${reviewStages(directory, document).map(stage => `${stage}:\n${readLeanText(directory, `${document}/${stage}.md`) ?? "Missing review"}`).join("\n\n")}\n</findings>`,
+    `<review_findings>\n${findingsText(findingsFor(directory, document), document)}\n</review_findings>`,
+    "Each review finding above concerns this document; one with raised_by was found by the review of that earlier document. Adjudicate every one: name its id in the resolves of the group that amends for it, of the findings entry (disposition) that defers, recommends or rejects it, or of the question it needs. One entry may resolve several findings. A review finding that needs no change is a rejected entry with its reason; dismissed resolves nothing.",
     ...changesRepairSections(directory, document),
     ...(readChangePlan(directory, document) ? [`<previous_review_dispositions>\n${reviewDispositionText(directory, document)}\n</previous_review_dispositions>`, "Retain still-material prior dispositions in your replacement plan. Resolve or reject them only when current evidence or settled instructions supply the reason; do not lose deferred advice during a wording repair."] : []),
     ...(documentRepairs(directory, document)?.items.some(item => item.stage === "package-review" || item.stage === "change-review" || item.stage === "checklist-check") ? [
@@ -54,8 +61,8 @@ export function changePlanPrompt(directory: string, document: DocID) {
     "Before any amendment drafting, ask only indispensable unanswered decisions needed for an essential requested function. Ask each decision once, plainly, with why it matters and one affected initial draft pid. Do not repeat answered decisions, infer an answer, ask the human to supply research, or turn optional refinements into blockers. Routine missing details may remain disclosed placeholders.",
     "Keep source-supported negotiating recommendations labelled as proposals rather than agreed terms; no prior approval does not itself prevent proposing them. Human questions concern only indispensable missing information or decisions, never internal paragraph routing or artifact mechanics. Initial-draft revision explanations are authored separately by the final reconciler; do not demand no-op amendments to generate comments.",
     "Group paragraphs whose changes depend on each other into one group: definitions, conditions, exceptions, cross-references and combined effects must be prepared together. A pid belongs to at most one group. Each independent group receives its specific operative goal and exact supporting source passages; disclose unsupported drafting judgment in limitations so resulting wording carries the required new confirmation marker. Record common settled decisions for all groups. Empty groups are valid when no operative wording correction is needed; explanation-only corrections must still reach the final reconciler through the repair findings, without a no-op amendment; record non-amendment dispositions in findings. Previous supported amendments are not silently dropped during repair.",
-    "Retain each material finding that does not become an amendment in findings, consolidating duplicate observations. Use deferred for unresolved information or research that must remain visible with the needed action, recommendation for an optional supported proposal, and rejected only when evidence or scope supplies a reason it need not be pursued. Do not put deferred work or advice recommendations in dismissed. Name affected planned documents; this is routing context, not a restriction on later advice about the originating document. Keep source passages separate from uncertainty in limitations; an unresolved research proposition is not verified authority. Required wording still belongs in groups; deferral alone cannot fulfill it. Indispensable decisions still belong in questions. A usable review draft can retain a disclosed gap without an additional human question.",
-    'Reply with exactly one JSON object: {"shared_decisions":["settled decision and relevant dependency"],"groups":[{"id":"group label","pids":["initial draft pid"],"goal":"accepted findings, intended operative effects and what must be preserved","sources":[{"source_id":"exact matter name, request or approved authority URL","quote":"exact supporting words"}],"limitations":["source limits or judgment requiring confirmation"]}],"dismissed":[],"findings":[{"disposition":"deferred|recommendation|rejected","kind":"information|research|suggestion","detail":"material issue or proposal and action remaining","reason":"why no amendment is made and the practical consequence","documents":["affected planned document id"],"sources":[{"source_id":"canonical matter source, request or approved authority URL","quote":"exact supporting words"}],"limitations":["what remains uncertain or unsupported"]}],"questions":[{"pid":"initial draft pid","question":"one essential unresolved decision","kind":"fact|instruction|judgment","context":"why needed","id":"existing question id only when repeating"}]}. All five arrays are required; they may be empty. ' + QUESTION_KIND_CONTRACT + ' No file writes.',
+    "Retain each finding that does not become an amendment or a question in findings, consolidating duplicate observations. Use deferred for unresolved information or research that must remain visible with the needed action, recommendation for an optional supported proposal, and rejected only when evidence or scope supplies a reason it need not be pursued. Do not put deferred work or advice recommendations in dismissed. Name affected planned documents; this is routing context, not a restriction on later advice about the originating document. Keep source passages separate from uncertainty in limitations; an unresolved research proposition is not verified authority. Required wording still belongs in groups; deferral alone cannot fulfill it. Indispensable decisions still belong in questions. A usable review draft can retain a disclosed gap without an additional human question.",
+    'Reply with exactly one JSON object: {"shared_decisions":["settled decision and relevant dependency"],"groups":[{"id":"group label","pids":["initial draft pid"],"goal":"accepted findings, intended operative effects and what must be preserved","sources":[{"source_id":"exact matter name, request or approved authority URL","quote":"exact supporting words"}],"limitations":["source limits or judgment requiring confirmation"],"resolves":["review finding id"]}],"dismissed":[],"findings":[{"disposition":"deferred|recommendation|rejected","kind":"information|research|suggestion","detail":"material issue or proposal and action remaining","reason":"why no amendment is made and the practical consequence","documents":["affected planned document id"],"sources":[{"source_id":"canonical matter source, request or approved authority URL","quote":"exact supporting words"}],"limitations":["what remains uncertain or unsupported"],"resolves":["review finding id"]}],"questions":[{"pid":"initial draft pid","question":"one essential unresolved decision","kind":"fact|instruction|judgment","context":"why needed","id":"existing question id only when repeating","resolves":["review finding id"]}]}. All five arrays are required; they may be empty. ' + QUESTION_KIND_CONTRACT + ' No file writes.',
   ].join("\n\n")
 }
 
@@ -71,8 +78,8 @@ export function checkChangePlan(directory: string, document: DocID, value: unkno
   return [
     ...value.groups.flatMap((group, index) => {
       const at = `groups[${index}]`
-      if (!record(group) || !nonempty(group.id) || !strings(group.pids) || !group.pids.length || !nonempty(group.goal) || !Array.isArray(group.sources) || !strings(group.limitations))
-        return [`${at} needs id, nonempty pids, goal, sources and limitations.`]
+      if (!record(group) || !nonempty(group.id) || !strings(group.pids) || !group.pids.length || !nonempty(group.goal) || !Array.isArray(group.sources) || !strings(group.limitations) || !resolvesShape(group))
+        return [`${at} needs id, nonempty pids, goal, sources, limitations and a resolves list of review finding ids.`]
       const issues = seen.has(group.id) ? [`${at}: duplicate group id.`] : []
       seen.add(group.id)
       for (const pid of group.pids) {
@@ -94,8 +101,8 @@ export function checkChangePlan(directory: string, document: DocID, value: unkno
       const at = `findings[${index}]`
       if (!record(finding) || !["deferred", "recommendation", "rejected"].includes(String(finding.disposition)) ||
         !["information", "research", "suggestion"].includes(String(finding.kind)) || !nonempty(finding.detail) || !nonempty(finding.reason) ||
-        !strings(finding.documents) || !finding.documents.length || !Array.isArray(finding.sources) || !strings(finding.limitations))
-        return [`${at} needs disposition, kind, detail, reason, affected documents, sources and limitations.`]
+        !strings(finding.documents) || !finding.documents.length || !Array.isArray(finding.sources) || !strings(finding.limitations) || !resolvesShape(finding))
+        return [`${at} needs disposition, kind, detail, reason, affected documents, sources, limitations and a resolves list of review finding ids.`]
       const key = finding.detail.trim().toLowerCase().replace(/\s+/g, " ")
       const issues = findings.has(key) ? [`${at}: consolidate duplicate findings into one disposition with all affected documents.`] : []
       findings.add(key)
@@ -114,21 +121,54 @@ export function checkChangePlan(directory: string, document: DocID, value: unkno
     ...value.questions.flatMap((question, index) => [
       ...questionIssues(question, index, paragraphs, new Map(readQuestions(directory).map(row => [row.id, row]))),
       ...(!record(question) || !nonempty(question.pid) ? [`questions[${index}] must identify an affected initial draft pid.`] : []),
+      ...(record(question) && !resolvesShape(question) ? [`questions[${index}].resolves must list review finding ids.`] : []),
     ]),
   ]
 }
 
-export function acceptChangePlan(directory: string, document: DocID, reply: string) {
+/** Ids a plan names that are not listed review findings are dropped. On the
+ * last attempt (`final`), a plan that leaves review findings unadjudicated is
+ * saved as it is; the findings it leaves out are disclosed
+ * (unadjudicatedFindingItems). Earlier attempts retry it. */
+export function acceptChangePlan(directory: string, document: DocID, reply: string, options: { final?: boolean } = {}) {
   const value = json(reply)
   const issues = checkChangePlan(directory, document, value)
   if (issues.length || !record(value)) return { issues, outputs: [], openItems: [] }
   const asked = new Map(readQuestions(directory).map(row => [row.id, row]))
-  const questions = askedQuestions(value.questions as Record<string, unknown>[], asked, document)
-    .filter((row): row is Question => Boolean(row)).map(row => ({ ...row, stage: "change-plan" as const }))
-  const plan = { ...value, questions }
+  const raw = value.questions as Record<string, unknown>[]
+  const known = new Set(findingsFor(directory, document).map(row => row.id))
+  const keepKnown = <T extends { resolves?: string[] }>(row: T): T => row.resolves ? { ...row, resolves: row.resolves.filter(id => known.has(id)) } : row
+  const kept = askedQuestions(raw, asked, document).map((row, index) => row && { question: { ...row, stage: "change-plan" as const }, resolves: raw[index]!.resolves as string[] | undefined })
+  const questions = kept.flatMap(row => row ? [row.question] : [])
+  const plan: ChangePlan = { ...value as ChangePlan, groups: (value.groups as ChangeGroup[]).map(row => keepKnown(row)),
+    ...(value.findings ? { findings: (value.findings as ReviewDisposition[]).map(row => keepKnown(row)) } : {}),
+    questions: kept.flatMap(row => row ? [keepKnown({ ...row.question, ...(row.resolves ? { resolves: row.resolves } : {}) })] : []) }
+  const named = resolvedIDs(plan)
+  const missing = [...known].filter(id => !named.has(id))
+  // An answered question is not asked again, so what it resolved is open again.
+  const answered = kept.some((row, index) => !row && Array.isArray(raw[index]!.resolves) && (raw[index]!.resolves as unknown[]).length)
+  if (!options.final && missing.length) return { issues: [`These review findings are not adjudicated: ${missing.join(", ")}. Add each id to the resolves of the group that amends for it, of the findings entry that defers, recommends or rejects it, or of the question it needs.${answered ? " An answered question no longer adjudicates a finding: amend for the answer or record the finding." : ""}`], outputs: [], openItems: [] }
   writeLeanText(directory, `${document}/change-plan.json`, `${JSON.stringify(plan, null, 2)}\n`)
   return { issues: [], outputs: [`${document}/change-plan.json`], questions,
     openItems: questions.map(row => openItem("change-plan", "question", row.question, { question_id: row.id, pid: row.pid })) }
+}
+
+/** The review finding ids a plan adjudicates: the resolves of its groups,
+ * settled groups, findings entries and questions. */
+export function resolvedIDs(plan: ChangePlan) {
+  return new Set([...plan.groups, ...(plan.settled_groups ?? []), ...(plan.findings ?? []), ...plan.questions].flatMap(row => row.resolves ?? []))
+}
+
+/** The plan as amendment writers and reviewers see it: finding ids and the
+ * groups an earlier merge settled are for adjudication and the register only. */
+export function writerPlan(plan: ChangePlan) {
+  const { settled_groups: _settled, ...rest } = plan
+  return { ...rest, groups: rest.groups.map(writerGroup), ...(rest.findings ? { findings: rest.findings.map(({ resolves: _r, ...row }) => row) } : {}),
+    questions: rest.questions.map(({ resolves: _r, ...row }) => row) }
+}
+
+export function writerGroup({ resolves: _resolves, ...group }: ChangeGroup) {
+  return group
 }
 
 export function readChangePlan(directory: string, document: DocID): ChangePlan | undefined {
@@ -147,20 +187,35 @@ export function reviewDispositionText(directory: string, document: DocID, priorD
     origin_document: document,
     // Strip authored paragraph references for other-document consumers, while
     // retaining verbatim source passages and the saved decision record.
-    findings: (plan.findings ?? []).map(row => ({ ...row, detail: navigation(row.detail), reason: navigation(row.reason), limitations: row.limitations.map(navigation) })),
+    findings: (plan.findings ?? []).map(({ resolves: _resolves, ...row }) => ({ ...row, detail: navigation(row.detail), reason: navigation(row.reason), limitations: row.limitations.map(navigation) })),
     ...(plan.dismissed.length ? { legacy_decisions: plan.dismissed.map(navigation) } : {}),
     ...(plan.findings === undefined ? { unadjudicated_review_history: reviewStages(directory, document).map(stage => ({ stage,
-      text: (readLeanText(directory, `${document}/${stage}.md`) ?? "").replace(/\[p[0-9a-f]{12}\]/g, "(earlier paragraph)"),
+      text: reviewText(directory, document, stage, { strip: true }) ?? "",
     })) } : {}),
   }, null, 2)
 }
 
 /** Deferred gaps project into the existing disclosure gate directly from the
- * plan. Optional recommendations and rejected ideas are not open decisions. */
+ * plan. Optional recommendations and rejected ideas are not open decisions.
+ * Review findings no plan adjudicates (routedFindingItems) and those a last
+ * attempt left unadjudicated are disclosed with them. */
 export function deferredFindingItems(directory: string) {
-  return (readLeanPlan(directory)?.documents ?? []).flatMap(document =>
-    (readChangePlan(directory, document.id)?.findings ?? []).filter(row => row.disposition === "deferred").map(row =>
-      openItem("change-plan", row.kind === "research" ? "research_gap" : "omission", `${row.detail} ${row.reason}`, { document: document.id })))
+  return [...(readLeanPlan(directory)?.documents ?? []).flatMap(document => [
+    ...(readChangePlan(directory, document.id)?.findings ?? []).filter(row => row.disposition === "deferred").map(row =>
+      openItem("change-plan", row.kind === "research" ? "research_gap" : "omission", `${row.detail} ${row.reason}`, { document: document.id })),
+    ...unadjudicatedFindingItems(directory, document.id),
+  ]), ...routedFindingItems(directory)]
+}
+
+/** The findings about `document` that its saved plan resolves nowhere. */
+export function unadjudicatedFindings(directory: string, document: DocID, plan = readChangePlan(directory, document)) {
+  if (!plan) return []
+  const named = resolvedIDs(plan)
+  return findingsFor(directory, document).filter(row => !named.has(row.id))
+}
+
+function unadjudicatedFindingItems(directory: string, document: DocID) {
+  return unadjudicatedFindings(directory, document).map(row => findingItem(row, document))
 }
 
 export function changePreparationPrompt(directory: string, document: DocID, plan: ChangePlan, group: ChangeGroup) {
@@ -176,7 +231,7 @@ export function changePreparationPrompt(directory: string, document: DocID, plan
     ] : [stagePrompt(directory, `${document}.change-prepare`, { contextOnly: true })]),
     `<adjudicated_dependencies_not_independent_authority>\n${plan.shared_decisions.join("\n")}\n</adjudicated_dependencies_not_independent_authority>`,
     "These generated dependencies summarize prior source adjudication. They do not themselves establish a human decision, override original source instructions or waive unresolved work. Actual source instructions and human answers govern; disclose a conflict rather than silently adopting a generated scope limit.",
-    `<group_goal_and_evidence>\n${JSON.stringify(group, null, 2)}\n</group_goal_and_evidence>`,
+    `<group_goal_and_evidence>\n${JSON.stringify(writerGroup(group), null, 2)}\n</group_goal_and_evidence>`,
     `<draft_paragraphs>\n${readParagraphs(directory, document).filter(row => pids.has(row.pid)).map(row => `[${row.pid}] ${row.text}`).join("\n\n")}\n</draft_paragraphs>`,
     `<previous_group_changes>\n${JSON.stringify([...(prior?.amendments ?? []), ...(prior?.withheld ?? []).map(row => row.amendment)].filter(row => pids.has(row.pid)), null, 2)}\n</previous_group_changes>`,
     "Amend the listed initial draft paragraphs, not paragraphs reconstructed from the supplied original: the original is evidence and the comparison baseline, while the listed draft is the amendment target. Use the listed group pids exactly. A scope mismatch is a preparation limitation for the reconciler, not a question for the human about internal identifiers. Ask only a genuinely indispensable human decision; never request paragraph bookkeeping from the user.",
@@ -292,6 +347,7 @@ export function repairBodyText(directory: string, document: DocID, projected: bo
 }
 
 export function changeReviewPrompt(directory: string, document: DocID) {
+  const adjudicated = readChangePlan(directory, document)
   return [
     stagePrompt(directory, `${document}.change-review`, { contextOnly: true }),
     '<artifact_phase>before-apply</artifact_phase>',
@@ -300,7 +356,7 @@ export function changeReviewPrompt(directory: string, document: DocID) {
     `<projected_full_body>\n${projectedChangeParagraphs(directory, document).map(row => `[${row.pid}] ${row.text}`).join("\n\n")}\n</projected_full_body>`,
     ...earlierDocuments(directory, document).map(row => `<earlier_body document="${row.id}">\n${finalBodyParagraphs(directory, row.id).map(paragraph => `[${paragraph.pid}] ${paragraph.text}`).join("\n\n")}\n</earlier_body>`),
     `<reconciled_changes>\n${readLeanText(directory, `${document}/changes.json`)}\n</reconciled_changes>`,
-    `<adjudicated_goals>\n${readLeanText(directory, `${document}/change-plan.json`)}\n</adjudicated_goals>`,
+    `<adjudicated_goals>\n${adjudicated ? JSON.stringify(writerPlan(adjudicated), null, 2) : "No prior adjudication."}\n</adjudicated_goals>`,
     `<questions>\n${JSON.stringify(readQuestions(directory).map(questionContent), null, 2)}\n</questions>`,
     `<preparation_limits>\n${JSON.stringify((readLeanJson(directory, `${document}/change-preparation.json`) as ChangePreparation | undefined)?.groups?.map(row => ({ group: row.group, withheld: row.changes.withheld, questions: row.changes.questions })) ?? [], null, 2)}\n</preparation_limits>`,
     "Preparation limits describe unverified proposals, not final application outcomes. Assess whether their accepted goals are correctly fulfilled by the final projected wording; do not repeat a proposal limit as an outstanding defect after it is corrected.",
@@ -360,3 +416,4 @@ function json(reply: string): unknown {
 }
 function nonempty(value: unknown): value is string { return typeof value === "string" && Boolean(value.trim()) }
 function strings(value: unknown): value is string[] { return Array.isArray(value) && value.every(nonempty) }
+function resolvesShape(value: Record<string, unknown>) { return value.resolves === undefined || strings(value.resolves) }

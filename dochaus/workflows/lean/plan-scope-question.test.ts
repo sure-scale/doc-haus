@@ -13,7 +13,7 @@ import { enqueueLeanRequest } from "./requests"
 import { runLean } from "./runner"
 import { outlineBasis } from "./stages"
 import { leanFile, readLeanJson, readLeanState, readQuestions, shortHash, updateLeanStage, writeLeanText, writeQuestions, type LeanState, type Question } from "./state"
-import { AGENT, cleanupMatters, draftingNotes, matter, noChanges, scriptedModel, type Reply } from "./test-support"
+import { AGENT, NO_FINDINGS, cleanupMatters, draftingNotes, matter, noChanges, scriptedModel, type Reply } from "./test-support"
 
 // The plan step's package-scope question: when the outline's coverage check
 // still leaves an instructed act without a document executed by the parties
@@ -81,7 +81,7 @@ const outliner = (first: string, revised = first): Reply => text =>
 const replies = (extra: Record<string, Reply> = {}): Record<string, Reply> => ({
   [AGENT.draft]: outliner(ONE),
   [AGENT.coverage]: () => ACTS,
-  [AGENT.review]: () => "No corrections are needed.",
+  [AGENT.review]: () => NO_FINDINGS,
   [AGENT.changes]: noChanges,
   [AGENT.finalize]: draftingNotes,
   ...extra,

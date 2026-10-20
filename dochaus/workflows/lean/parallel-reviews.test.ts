@@ -5,11 +5,21 @@ import { stagePrompt } from "./prompts"
 import { enqueueLeanRequest } from "./requests"
 import { runLean, stageInputSha } from "./runner"
 import { LEAN_CHILD_PERMISSIONS, stepOutputs } from "./stages"
-import { REVIEW_STAGES, currentOpenItems, leanFile, readLeanState, readLeanText, readOpenItems, writeLeanText } from "./state"
-import { AGENT, SOURCE, cleanupMatters, happyPath, matter, noChanges, scriptedModel } from "./test-support"
+import { REVIEW_STAGES, currentOpenItems, leanFile, readLeanJson, readLeanState, readOpenItems, writeLeanText } from "./state"
+import { AGENT, NO_FINDINGS, SOURCE, cleanupMatters, happyPath, matter, noChanges, scriptedModel } from "./test-support"
 
 afterEach(cleanupMatters)
 const reviewers: readonly string[] = REVIEW_STAGES.map(stage => AGENT[stage])
+
+/** A review reply with one finding in these words. */
+const finding = (text: string, sources: { source_id: string; quote: string }[] = []) =>
+  JSON.stringify({ findings: [{ origin: "drafting", finding: text, sources }] })
+
+/** The review findings a change plan prompt lists, as [review stage, finding]. */
+function listedFindings(prompt: string) {
+  const block = /<review_findings>\n([\s\S]*?)\n<\/review_findings>/.exec(prompt)?.[1] ?? "[]"
+  return (JSON.parse(block) as { review: string; finding: string }[]).map(row => [row.review, row.finding])
+}
 
 function barrier(count: number) {
   let release: (() => void) | undefined
@@ -30,13 +40,11 @@ test("all four independent reviews run together and fan into adjudication before
     if (reviewers.includes(input.agent)) {
       await calls.arrive(input.agent)
       REVIEW_STAGES.forEach(stage => expect(readLeanState(directory)?.stages[`d1.${stage}`]?.status).toBe("running"))
-      return `Independent finding from ${input.agent}.`
+      return finding(`Independent finding from ${input.agent}.`)
     }
     if (input.agent === AGENT["change-plan"]) {
-      REVIEW_STAGES.forEach(stage => {
-        expect(readLeanState(directory)?.stages[`d1.${stage}`]?.status).toBe("done")
-        expect(input.text).toContain(`${stage}:\nIndependent finding from ${AGENT[stage]}.`)
-      })
+      REVIEW_STAGES.forEach(stage => expect(readLeanState(directory)?.stages[`d1.${stage}`]?.status).toBe("done"))
+      expect(listedFindings(input.text)).toEqual(REVIEW_STAGES.map(stage => [stage, `Independent finding from ${AGENT[stage]}.`]))
       expect(input.text).toContain("Consolidate duplicates")
       expect(input.text).toContain("Reviewer agreement and exact quotation matching alone do not establish")
     }
@@ -57,7 +65,7 @@ test("all four independent reviews run together and fan into adjudication before
   expect(model.count(AGENT.changes)).toBe(1)
   expect(model.count(AGENT["change-review"])).toBe(1)
   REVIEW_STAGES.forEach(stage => {
-    expect(state.stages[`d1.${stage}`]).toMatchObject({ status: "done", attempts: 1, calls: 1, outputs: [`d1/${stage}.md`] })
+    expect(state.stages[`d1.${stage}`]).toMatchObject({ status: "done", attempts: 1, calls: 1, outputs: [`d1/${stage}.json`] })
     expect(model.sessions.find(session => session.agent === AGENT[stage])).toMatchObject({ parentID: "ses_owner", permissions: LEAN_CHILD_PERMISSIONS })
   })
   expect(readLeanEvents(directory).filter(event => event.event === "done" && reviewers.includes(AGENT[event.stage as typeof REVIEW_STAGES[number]])).map(event => event.stage)).toEqual([...REVIEW_STAGES])
@@ -70,14 +78,14 @@ test("resume preserves completed reviews; specialist edits rekey consumers and m
   expect((await runLean(directory, { sessions: idle.port })).status).toBe("completed")
   expect(idle.sessions).toHaveLength(0)
   const key = stageInputSha(directory, "d1.changes")
-  writeLeanText(directory, "d1/review-wording.md", "Wording rechecked by the lawyer.")
+  writeLeanText(directory, "d1/review-wording.json", `${JSON.stringify({ findings: [{ id: "f-0123456789", document: "d1", origin: "drafting", finding: "Wording rechecked by the lawyer.", sources: [] }] }, null, 2)}\n`)
   expect(stageInputSha(directory, "d1.changes")).not.toBe(key)
   const edited = scriptedModel(happyPath)
   expect((await runLean(directory, { sessions: edited.port })).status).toBe("completed")
   expect(edited.count(AGENT.changes)).toBe(1)
   reviewers.forEach(agent => expect(edited.count(agent)).toBe(0))
-  rmSync(leanFile(directory, "d1/review-wording.md"))
-  rmSync(leanFile(directory, "d1/review-client-disadvantage.md"))
+  rmSync(leanFile(directory, "d1/review-wording.json"))
+  rmSync(leanFile(directory, "d1/review-client-disadvantage.json"))
   const resumed = scriptedModel(happyPath)
   const calls = barrier(2)
   const added: readonly string[] = [AGENT["review-wording"], AGENT["review-client-disadvantage"]]
@@ -85,7 +93,7 @@ test("resume preserves completed reviews; specialist edits rekey consumers and m
     if (added.includes(input.agent)) {
       await calls.arrive(input.agent)
       expect(input.text).not.toContain("Wording rechecked by the lawyer.")
-      return "No corrections needed."
+      return NO_FINDINGS
     }
     return resumed.port.prompt(input)
   } }
@@ -98,11 +106,17 @@ test("resume preserves completed reviews; specialist edits rekey consumers and m
 test("a review-boundary update discards prefetched old replies and re-reviews before changes", async () => {
   const directory = matter()
   const model = scriptedModel(happyPath)
+  // The update arrives once, while the first reviews are in flight. A retry
+  // prompt does not repeat the instructions, so it must not enqueue another.
+  const update = { sent: false }
   const port = { ...model.port, async prompt(input: Parameters<typeof model.port.prompt>[0]) {
     if (reviewers.includes(input.agent)) {
       const current = input.text.includes("Use the updated instructions.")
-      if (input.agent === AGENT.review && !current) enqueueLeanRequest(directory, { kind: "update", text: "Use the updated instructions." })
-      return `${current ? "Current" : "Stale"} independent review from ${input.agent}.`
+      if (input.agent === AGENT.review && !current && !update.sent) {
+        update.sent = true
+        enqueueLeanRequest(directory, { kind: "update", text: "Use the updated instructions." })
+      }
+      return finding(`${current ? "Current" : "Stale"} independent review from ${input.agent}.`)
     }
     if (input.agent === AGENT["change-plan"] || input.agent === AGENT.changes) {
       expect(input.text).not.toContain("Stale independent review")
@@ -115,7 +129,8 @@ test("a review-boundary update discards prefetched old replies and re-reviews be
   } }
   expect((await runLean(directory, { sessions: port })).status).toBe("completed")
   expect(model.count(AGENT.changes)).toBe(1)
-  REVIEW_STAGES.forEach(stage => expect(readLeanText(directory, `d1/${stage}.md`)).toStartWith("Current independent review"))
+  REVIEW_STAGES.forEach(stage => expect((readLeanJson(directory, `d1/${stage}.json`) as { findings: { finding: string }[] }).findings.map(row => row.finding))
+    .toEqual([`Current independent review from ${AGENT[stage]}.`]))
   reviewers.forEach(agent => expect(model.sessions.filter(session => session.agent === agent)).toHaveLength(2))
 }, 120_000)
 
@@ -129,7 +144,7 @@ test("a failed reviewer settles siblings without saving them or applying; resume
       await calls.arrive(input.agent)
       settled.push(input.agent)
       if (input.agent === AGENT["review-wording"]) throw new Error("review transport unavailable")
-      return "No corrections needed."
+      return NO_FINDINGS
     }
     return model.port.prompt(input)
   } }
@@ -141,7 +156,7 @@ test("a failed reviewer settles siblings without saving them or applying; resume
   expect(failed.stages["d1.review-independent"]?.status).toBe("done")
   expect(failed.stages["d1.review-wording"]?.status).toBe("failed")
   expect(failed.stages["d1.review-client-disadvantage"]?.status).toBe("pending")
-  expect(existsSync(leanFile(directory, "d1/review-client-disadvantage.md"))).toBe(false)
+  expect(existsSync(leanFile(directory, "d1/review-client-disadvantage.json"))).toBe(false)
   expect(model.count(AGENT.changes)).toBe(0)
   const resumed = scriptedModel(happyPath)
   expect((await runLean(directory, { sessions: resumed.port })).status).toBe("completed")
@@ -154,8 +169,8 @@ test("a failed reviewer settles siblings without saving them or applying; resume
 test("specialist source misses reach reconciliation and are superseded by the checked body", async () => {
   const directory = matter()
   const model = scriptedModel({ ...happyPath,
-    [AGENT["review-wording"]]: () => `Unsupported reviewer passage "words absent from the supplied terms" [source: ${SOURCE}].`,
-    [AGENT["review-client-disadvantage"]]: () => "Optional negotiating point, preserving the agreed terms.",
+    [AGENT["review-wording"]]: () => finding("Unsupported reviewer passage.", [{ source_id: SOURCE, quote: "words absent from the supplied terms" }]),
+    [AGENT["review-client-disadvantage"]]: () => finding("Optional negotiating point, preserving the agreed terms."),
     [AGENT.changes]: noChanges,
   })
   expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
@@ -165,7 +180,7 @@ test("specialist source misses reach reconciliation and are superseded by the ch
   expect(prompt).toContain("words absent from the supplied terms")
   expect(currentOpenItems(directory).some(item => item.stage === "review-wording")).toBe(false)
   REVIEW_STAGES.forEach(stage => {
-    expect(stepOutputs(`d1.${stage}`)).toEqual([`d1/${stage}.md`])
+    expect(stepOutputs(`d1.${stage}`)).toEqual([`d1/${stage}.json`])
     const review = stagePrompt(directory, `d1.${stage}`)
     expect(review).not.toContain("Optional negotiating point")
     expect(review).not.toContain("words absent from the supplied terms")
@@ -177,14 +192,14 @@ test("specialist source misses reach reconciliation and are superseded by the ch
 test("a specialist checker retries only that reviewer in the same session", async () => {
   const directory = matter()
   const model = scriptedModel({ ...happyPath,
-    [AGENT["review-wording"]]: (_, index) => index ? "No corrections needed." : "[pffffffffffff] Invalid draft pointer.",
+    [AGENT["review-wording"]]: (_, index) => index ? NO_FINDINGS : JSON.stringify({ findings: [{ pid: "pffffffffffff", origin: "drafting", finding: "Invalid draft pointer." }] }),
   })
   const state = await runLean(directory, { sessions: model.port })
   expect(state.status).toBe("completed")
   const prompts = model.prompts.filter(row => row.agent === AGENT["review-wording"])
   expect(prompts).toHaveLength(2)
   expect(prompts[1]!.sessionID).toBe(prompts[0]!.sessionID)
-  expect(prompts[1]!.text).toContain("These paragraph references do not exist")
+  expect(prompts[1]!.text).toContain("findings[0]: [pffffffffffff] is not a paragraph of the draft.")
   expect(state.stages["d1.review-wording"]).toMatchObject({ attempts: 2, calls: 2 })
   reviewers.filter(agent => agent !== AGENT["review-wording"]).forEach(agent => expect(model.sessions.filter(session => session.agent === agent)).toHaveLength(1))
 }, 120_000)
@@ -203,7 +218,7 @@ test("session creation failure leaves unstarted reviews pending and waits for al
       if (input.agent === AGENT["review-independent"]) {
         await new Promise(resolve => setTimeout(resolve, 1))
         settled = true
-        return "No corrections needed."
+        return NO_FINDINGS
       }
       return model.port.prompt(input)
     },
@@ -216,5 +231,5 @@ test("session creation failure leaves unstarted reviews pending and waits for al
   expect(state.stages["d1.review-independent"]?.status).toBe("pending")
   expect(state.stages["d1.review-wording"]?.status).toBe("failed")
   expect(model.count(AGENT.changes)).toBe(0)
-  expect(existsSync(leanFile(directory, "d1/review-independent.md"))).toBe(false)
+  expect(existsSync(leanFile(directory, "d1/review-independent.json"))).toBe(false)
 }, 120_000)

@@ -3,11 +3,11 @@ import { readParagraphs } from "./checks"
 import { enqueueLeanRequest } from "./requests"
 import { runLean } from "./runner"
 import { readLeanText, readQuestions, writeLeanText, writeQuestions } from "./state"
-import { AGENT, DRAFT, cleanupMatters, drafter, happyPath, matter, noChanges, pidOf, scriptedModel } from "./test-support"
+import { AGENT, DRAFT, NO_FINDINGS, cleanupMatters, drafter, happyPath, matter, noChanges, pidOf, scriptedModel } from "./test-support"
 
 afterEach(cleanupMatters)
 
-const quiet = { ...happyPath, [AGENT.review]: () => "No changes needed.", [AGENT.changes]: noChanges }
+const quiet = { ...happyPath, [AGENT.review]: () => NO_FINDINGS, [AGENT.changes]: noChanges }
 
 test("a complete brief reaches drafting without forcing an unnecessary questionnaire", async () => {
   const directory = matter()
@@ -68,7 +68,7 @@ test("a changed answer during review re-runs the review and reaches the accepted
         changed = true
         enqueueLeanRequest(directory, { kind: "answer", question_id: "q-law", answer: "Singapore law." })
       }
-      return "No changes needed."
+      return NO_FINDINGS
     },
     [AGENT.changes]: (prompt, index) => prompt.includes("Singapore law.") ? JSON.stringify({ amendments: [{ pid: pidOf(prompt, DRAFTED), updated: AMENDED,
       reason: "Follows the lawyer's answer on governing law.", sources: [{ source_id: "request", quote: "Singapore law." }] }], questions: [] }) : noChanges(prompt, index),

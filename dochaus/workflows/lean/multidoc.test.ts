@@ -18,8 +18,8 @@ import {
 // Runs that plan more than one document. Real coordinator, checkers, renderer,
 // applier and gate; only the model is scripted, as a function of each prompt.
 
-const REVIEW_SCOPE = "Review only this document. Content the request assigns to another planned document is not missing from this one"
-const CHANGES_SCOPE = "Amend only this document. Content the request assigns to another planned document belongs in that document"
+const REVIEW_SCOPE = "Where a problem concerns another planned document rather than this one, report it with that document's id as its document; the run carries it to that document. Content the request assigns to another planned document is not missing from this one."
+const CHANGES_SCOPE = "Amend only this document. Content the request assigns to another planned document belongs in that document, and findings about it reach it separately; do not draft it here."
 const SCHEDULE = "# Delivery schedule\n\n## Timetable\n\nDelivery follows the supply note and the covering letter.\n"
 
 afterEach(cleanupMatters)

@@ -16,7 +16,7 @@ import {
   currentOpenItems, readLeanJson, readLeanState, readOpenItems, readQuestions, replaceStageOpenItems, updateLeanStage, writeLeanText, writeOpenItems, writeQuestions,
   type OpenItem,
 } from "./state"
-import { AGENT, SOURCE, cleanupMatters, draftingNotes, matter, noChanges, scriptedModel, type Reply } from "./test-support"
+import { AGENT, NO_FINDINGS, SOURCE, cleanupMatters, draftingNotes, matter, noChanges, scriptedModel, type Reply } from "./test-support"
 
 // Plan coverage left open after the plan step reaches the lawyer: the open
 // items are derived from the current coverage.json, never stored, so the
@@ -368,7 +368,7 @@ const outliner: Reply = text => /^Draft part \d+ of \d+ of "/m.test(text) ? "The
 const replies: Record<string, Reply> = {
   [AGENT.draft]: outliner,
   [AGENT.coverage]: () => JSON.stringify({ acts: [act] }),
-  [AGENT.review]: () => "No corrections are needed.",
+  [AGENT.review]: () => NO_FINDINGS,
   [AGENT.changes]: noChanges,
   [AGENT.finalize]: draftingNotes,
 }

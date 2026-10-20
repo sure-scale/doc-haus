@@ -4,6 +4,7 @@ import { DELIVERED_NOTES } from "./deliverables"
 import { deliveredNotes, finalGate, notesCoverageReport } from "./gate"
 import { checkPackageReview, packageReviewPrompt, readPackageReview, withheldDeliveryItems, type WithheldDelivery } from "./package-review"
 import { readLeanPlan, writeLeanPlan } from "./plan"
+import { issueRegister } from "./register"
 import { LEAN_REQUESTED_FILES_SCHEMA, requestedFilesItems, requestedFilesPlanned, writeRequestedFiles } from "./requested-files"
 import { stagePrompt } from "./prompts"
 import { acceptStageReply, stageOutputValid } from "./stages"
@@ -515,6 +516,7 @@ test("a gate that discloses a file name not applied needs its delivered notes, e
   expect(delivered).toContain("# File names not applied")
   writeLeanText(directory, "gate.json", JSON.stringify(gate))
   writeLeanText(directory, "drafting-notes-coverage.md", notesCoverageReport(gate))
+  writeLeanText(directory, "register.json", JSON.stringify(issueRegister(directory)))
   expect(stageOutputValid(directory, "gate")).toBe(false)
   writeLeanText(directory, DELIVERED_NOTES.markdown, delivered)
   writeLeanBytes(directory, DELIVERED_NOTES.docx, (await renderMarkdownToDocx(delivered)).bytes)
@@ -536,18 +538,22 @@ test("changes always retain request and legal research without a later update", 
   const prompt = stagePrompt(directory, "d1.changes")
   expect(prompt).toContain("<request>")
   expect(prompt).toContain("<legal_research>")
-  writeLeanText(directory, "d1/review.md", "First independent review")
-  writeLeanText(directory, "d1/review-independent.md", "Second independent review")
-  expect(stagePrompt(directory, "d1.changes")).toContain("review:\nFirst independent review\n\nreview-independent:\nSecond independent review")
+  // Each saved review reaches the changes stage under its stage name, in order.
+  const saved = (finding: string, id: string) => JSON.stringify({ findings: [{ id, document: "d1", origin: "drafting", finding, sources: [] }] })
+  writeLeanText(directory, "d1/review.json", saved("First independent review", "f-0000000001"))
+  writeLeanText(directory, "d1/review-independent.json", saved("Second independent review", "f-0000000002"))
+  expect(stagePrompt(directory, "d1.changes")).toMatch(/<findings>\nreview:\n\{[^]*"finding": "First independent review"[^]*\}\n\nreview-independent:\n\{[^]*"finding": "Second independent review"[^]*\}\n<\/findings>/)
 })
 
 test("review sessions receive different substantive focus without another reviewer’s findings", () => {
   const directory = matter()
-  writeLeanText(directory, "d1/review.md", "Prior review content must stay independent")
+  writeLeanText(directory, "d1/review.json", JSON.stringify({ findings: [{ id: "f-0000000001", document: "d1", origin: "drafting", finding: "Prior review content must stay independent", sources: [] }] }))
   expect(stagePrompt(directory, "d1.review")).toContain("Function, anatomy and package completeness")
   const prompt = stagePrompt(directory, "d1.review-independent")
   expect(prompt).toContain("Source and legal-commercial fidelity")
   expect(prompt).not.toContain("Prior review content must stay independent")
+  // The saved review is a readable record: the changes stage is shown it.
+  expect(stagePrompt(directory, "d1.changes")).toContain("Prior review content must stay independent")
 })
 
 test("final semantic review reads memo with live source access", () => {

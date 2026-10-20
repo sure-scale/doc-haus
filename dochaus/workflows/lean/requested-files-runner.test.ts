@@ -11,7 +11,7 @@ import { FILES_REVISION_SCOPE, LEAN_REQUESTED_FILES_SCHEMA, readRequestedFiles, 
 import { runLean } from "./runner"
 import { LEAN_CHILD_PERMISSIONS, LEAN_MAX_RETRIES, disclosableItems, outlineBasis } from "./stages"
 import { leanFile, readLeanJson, readLeanText, readQuestions, writeLeanText } from "./state"
-import { AGENT, cleanupMatters, draftingNotes, matter, noChanges, registering, scriptedModel, type Reply } from "./test-support"
+import { AGENT, NO_FINDINGS, cleanupMatters, draftingNotes, matter, noChanges, registering, scriptedModel, type Reply } from "./test-support"
 
 // Requested files through the whole run (runLean): the outline's files job,
 // its revision requests to the outline session, the plan-time question on a
@@ -46,7 +46,7 @@ const outliner = (first: string, revised = first): Reply => text =>
 
 /** A whole run whose later steps find nothing to change. */
 const replies = (extra: Record<string, Reply>): Record<string, Reply> => ({
-  [AGENT.review]: () => "No corrections are needed.",
+  [AGENT.review]: () => NO_FINDINGS,
   [AGENT.changes]: noChanges,
   [AGENT.finalize]: draftingNotes,
   ...extra,

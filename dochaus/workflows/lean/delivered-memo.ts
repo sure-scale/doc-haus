@@ -1,4 +1,5 @@
 import { deferredFindingItems } from "./change-pipeline"
+import { raisedFindings } from "./review-findings"
 import { finalBodyParagraphs, readChangeList, readParagraphs, record, standingIDPattern } from "./checks"
 import { requestedMemo } from "./deliverables"
 import { readLeanPlan, type DocID } from "./plan"
@@ -83,6 +84,7 @@ const ID_KINDS = [
   { shape: /^[aw]\d+$/, one: "a proposed change", bare: "proposed change", many: "proposed changes", names: ["change", "amendment"] },
   { shape: /^i\d+$/, one: "an explanation", bare: "explanation", many: "explanations", names: ["explanation"] },
   { shape: /^p[0-9a-f]{12}$/, one: "a paragraph", bare: "paragraph", many: "paragraphs", names: ["paragraph"] },
+  { shape: /^f-[0-9a-f]{10}$/, one: "a review finding", bare: "review finding", many: "review findings", names: ["finding"] },
   { shape: /^source-[0-9a-f]{12}-\d+/, one: "another requirement", bare: "other requirement", many: "other requirements", names: ["requirement", "item"] },
   { shape: /^[^\s:]+:[^\s:]+:[^\s:]+$/, one: "an open item", bare: "open item", many: "open items", names: ["item"] },
 ]
@@ -153,7 +155,7 @@ const OPENING = /^$|(?:(?<!\.[A-Za-z]|\b(?=[^\W\d_]*[a-z])[^\W\dAEIOUYaeiouy_]+)
 /** Every internal id the run records that its notes may name: open, deferred
  * and repair items (and `items`, such as the gate's) with their amendment,
  * checklist and paragraph references, each planned document's id, paragraph
- * pointers and change-list ids, and the checklist's item ids. Question ids are
+ * pointers and change-list ids, review finding ids and the checklist's item ids. Question ids are
  * not included: the model chooses them and they may be ordinary words. */
 export function runItemIDs(directory: string, items: OpenItem[] = []) {
   const repair = readRepairRound(directory)
@@ -165,6 +167,7 @@ export function runItemIDs(directory: string, items: OpenItem[] = []) {
       .flatMap(item => [item.id, item.ref.amendment_id, item.ref.checklist_item, item.ref.pid]),
     ...(readLeanPlan(directory)?.documents ?? []).flatMap(({ id: document }) =>
       [document, ...[...readParagraphs(directory, document), ...finalBodyParagraphs(directory, document)].map(row => row.pid), ...changeListIDs(directory, document)]),
+    ...raisedFindings(directory).map(row => row.id),
     ...(repair?.checklist_items ?? []),
     ...rows(checks, "expected_items"),
     ...rows(checks, "checks").map(row => record(row) ? row.item_id : undefined),

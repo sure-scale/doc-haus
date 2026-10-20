@@ -6,9 +6,9 @@ import { packageReviewPrompt } from "./package-review"
 import { writeLeanPlan } from "./plan"
 import { completedDocumentsText, stagePrompt } from "./prompts"
 import { runLean, stageInputSha } from "./runner"
-import { disclosableItems } from "./stages"
+import { acceptStageReply, disclosableItems } from "./stages"
 import { readLeanJson, readOpenItems, writeLeanText } from "./state"
-import { AGENT, APPLIED, DRAFT, LETTER, SUPPORT, changesFirst, cleanupMatters, drafter, happyPath, matter, pidOf, reviewFirst, scriptedModel } from "./test-support"
+import { AGENT, APPLIED, DRAFT, LETTER, SUPPORT, changesFirst, cleanupMatters, drafter, happyPath, listedFindingIDs, matter, pidOf, reviewFirst, scriptedModel } from "./test-support"
 
 afterEach(cleanupMatters)
 
@@ -80,10 +80,21 @@ test("changed dispositions invalidate dependent consumers while leaving every dr
   expect(steps.map((step, index) => stageInputSha(directory, step) !== before[index])).toEqual([false, false, true, true, true, true, true])
 })
 
-test("legacy dismissal retains review navigation without being treated as evidence-backed rejection", () => {
+test("legacy dismissal retains review navigation without being treated as evidence-backed rejection", async () => {
   const directory = setup()
-  writeLeanText(directory, "d1/review-independent.md", "[p111111111111] Further authority is needed before relying on enforceability.")
-  expect(acceptChangePlan(directory, "d1", JSON.stringify({ shared_decisions: [], groups: [], dismissed: ["Defer the research proposition to advice."], questions: [] })).issues).toEqual([])
+  const reviewed = await acceptStageReply(directory, "d1.review-independent", JSON.stringify({ findings: [
+    { pid: "p111111111111", origin: "law", finding: "Further authority is needed before relying on enforceability.", sources: [] },
+  ] }))
+  expect(reviewed.issues).toEqual([])
+  const id = (readLeanJson(directory, "d1/review-independent.json") as { findings: { id: string }[] }).findings[0]!.id
+  // A legacy plan, with a free-text dismissal and no structured dispositions,
+  // adjudicates no finding: it is retried, and the last attempt saves it with
+  // the finding left open and disclosed.
+  const legacy = JSON.stringify({ shared_decisions: [], groups: [], dismissed: ["Defer the research proposition to advice."], questions: [] })
+  expect(acceptChangePlan(directory, "d1", legacy).issues.join(" ")).toContain(`These review findings are not adjudicated: ${id}.`)
+  expect(acceptChangePlan(directory, "d1", legacy, { final: true }).issues).toEqual([])
+  expect(deferredFindingItems(directory)).toContainEqual(expect.objectContaining({ stage: "change-plan", kind: "omission",
+    detail: "Further authority is needed before relying on enforceability.", ref: expect.objectContaining({ document: "d1", finding: id }) }))
   const context = reviewDispositionText(directory, "d1")
   expect(context).toContain("legacy_decisions")
   expect(context).toContain("unadjudicated_review_history")
@@ -115,7 +126,7 @@ test("coordinator applies accepted amendments while deferred findings survive ap
     [AGENT["change-plan"]]: prompt => {
       const own = /<draft_paragraphs>\n([\s\S]*?)\n<\/draft_paragraphs>/.exec(prompt)?.[1] ?? ""
       if (!own.includes("The supplier shall deliver the goods.")) return JSON.stringify(plan([]))
-      return JSON.stringify({ ...plan(), groups: [{ id: "delivery", pids: [pidOf(own, "The supplier shall deliver the goods.")], goal: "Retain the supplied delivery period.", sources: SUPPORT, limitations: [] }] })
+      return JSON.stringify({ ...plan(), groups: [{ id: "delivery", pids: [pidOf(own, "The supplier shall deliver the goods.")], goal: "Retain the supplied delivery period.", sources: SUPPORT, limitations: [], resolves: listedFindingIDs(prompt) }] })
     },
   })
   const result = await runLean(directory, { sessions: model.port })
@@ -125,6 +136,8 @@ test("coordinator applies accepted amendments while deferred findings survive ap
   expect(readLeanJson(directory, "d1/apply.json")).toMatchObject({ applied: [{ mode: "code" }] })
   expect(finalGate(directory)).toMatchObject({ status: "pass", delivery: "review_draft" })
   expect(readOpenItems(directory).some(row => row.detail === findings[0].detail)).toBe(false)
+  // The delivery group adjudicates the review's finding, so no finding is left open.
+  expect(readChangePlan(directory, "d1")?.groups[0]?.resolves).toHaveLength(1)
   expect(deferredFindingItems(directory)).toHaveLength(2)
   const resumed = scriptedModel({})
   expect((await runLean(directory, { sessions: resumed.port })).status).toBe("completed")

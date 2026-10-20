@@ -10,7 +10,7 @@ import { enqueueLeanRequest } from "./requests"
 import { runLean } from "./runner"
 import { LEAN_MAX_RETRIES } from "./stages"
 import { leanFile, readLeanJson, readLeanText, readOpenItems, readQuestions, writeLeanText, writeOpenItems } from "./state"
-import { AGENT, cleanupMatters, draftingNotes, matter, noChanges, registering, scriptedModel, type Reply } from "./test-support"
+import { AGENT, NO_FINDINGS, cleanupMatters, draftingNotes, matter, noChanges, registering, scriptedModel, type Reply } from "./test-support"
 
 // Plan coverage through the whole run (runLean): the outline's coverage job,
 // its revision requests to the outline session, and what the later steps
@@ -66,7 +66,7 @@ const draftItems = (directory: string, document: string) => readOpenItems(direct
 
 /** A whole run whose later steps find nothing to change. */
 const replies = (extra: Record<string, Reply>): Record<string, Reply> => ({
-  [AGENT.review]: () => "No corrections are needed.",
+  [AGENT.review]: () => NO_FINDINGS,
   [AGENT.changes]: noChanges,
   [AGENT.finalize]: draftingNotes,
   ...extra,

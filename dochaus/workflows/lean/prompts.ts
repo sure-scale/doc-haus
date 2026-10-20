@@ -1,6 +1,6 @@
 import { draftingStyleWarningsBlock } from "./style-warnings"
 import { boundPlaybookContext } from "../../lib/playbook-source"
-import { repairBodyText, reviewDispositionText } from "./change-pipeline"
+import { readChangePlan, repairBodyText, reviewDispositionText, writerPlan } from "./change-pipeline"
 import { appliedChangeEvidence, nativeExportEvidence } from "./review-evidence"
 import { comparisonDescription } from "./comparison"
 import { combinedDelivery, deliveryArtifactEvidence, requestedMemo } from "./deliverables"
@@ -9,6 +9,7 @@ import { finalBodyParagraphs, readChangeList, readParagraphs, type ApplyResult }
 import { reviewStages, FIRST_DOCUMENT, earlierDocuments, planActingFor, operativeDocument, plannedDocument, readLeanPlan, stepDocument, stepStage, type DocID, type StepID } from "./plan"
 import { REQUEST_SOURCE, matterSourceIDs } from "./quotes"
 import { readRepairRound, changesRepairSections } from "./repairs"
+import { MEMO_TARGET, REVIEW_FINDINGS_CONTRACT, findingsText, forwardedFindings, reviewText } from "./review-findings"
 import { disclosableItems } from "./stages"
 import { QUESTION_KIND_CONTRACT, isReviewStage, answeredQuestionsText, readLeanJson, readLeanText, readQuestions, type OpenItem, type StageID } from "./state"
 import { plannedContract } from "./template-contract"
@@ -64,7 +65,7 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
   const title = plannedDocument(directory, document)?.title
   const finished = completedDocumentsBlock(directory, document)
   const paragraphs = tagged("draft", readParagraphs(directory, document).map(row => `[${row.pid}] ${row.text}`).join("\n\n"))
-  const adjudicated = readLeanText(directory, `${document}/change-plan.json`)
+  const adjudicated = stage === "changes" ? readChangePlan(directory, document) : undefined
   const named = title ? ` of "${title}"` : ""
   const template = stage === "draft" || stage === "changes" ? plannedContract(directory, document)?.source : undefined
   const acting = actingForBlock(directory)
@@ -114,7 +115,7 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
     ] : [
       `This is a lean drafting run. You draft "${title ?? document}", one of the documents the request asks for, in parts: one part per reply.`,
       ...(plannedDocument(directory, document)?.purpose ? [`This document is for: ${plannedDocument(directory, document)!.purpose}`] : []),
-      request, spineBlock, acting, answerBlock, sources, composition, finished,
+      request, spineBlock, acting, answerBlock, sources, composition, finished, forwardedBlock(directory, document),
       tagged("output_contract", [
         ...SOURCE_RULES,
         ...(finished ? ["- Carry accepted source-supported change explanations into this document when its purpose calls for advice or a summary. Explain the original issue, consequence, proposed solution and remaining decision. Verify the actual final wording and source context; an earlier explanation is not authority and may need correction. This document must agree with the finished documents above in their final wording: names, defined terms, figures, dates and cross-references."] : []),
@@ -131,32 +132,34 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
       ...(stage === "review-wording" ? [draftingStyleWarningsBlock(readParagraphs(directory, document))] : []),
       tagged("output_contract", [
         "- Check the draft against the request and the sources (search-document, read-document, verify-quote).",
-        ...(assigned ? [`- Review only this document. Content the request assigns to ${assigned} is not missing from this one; do not report it here.`] : []),
-        "- Report each problem as a finding that names the affected paragraph by its [pid], says what is wrong and why, and what the paragraph should say instead.",
+        ...(planned ? ["- Where a problem concerns another planned document rather than this one, report it with that document's id as its document; the run carries it to that document. Content the request assigns to another planned document is not missing from this one."] : []),
+        ...(composition ? [`- Where a point belongs in the accompanying memo rather than in a document body, report it with the document "${MEMO_TARGET}"; the run carries it to the memo.`] : []),
+        "- Report each problem as a finding with the pids of the paragraphs it affects, or where missing wording belongs, saying what is wrong and why, and in instead what those paragraphs should say.",
         actingFor.stated
           ? "- Assess each provision as the reviewing lawyer for the party the lawyer acts for: whether it works under the governing law the request and sources point to, whether it protects that party's position, and whether a protection a careful drafter would include for that party is missing."
           : "- Assess each provision as a reviewing lawyer who acts for neither party: whether it works under the governing law the request and sources point to, and whether wording a careful drafter would include is missing. Where an essential provision needs a new drafting choice on which the parties' interests diverge, propose balanced wording within the requested scope and mark that new choice for confirmation; retain decisions already supplied without another confirmation.",
         "- Ask for governing law only when an unresolved jurisdiction is necessary for the requested document function or legal analysis. A factual record or other work whose stated purpose does not require that analysis needs no governing-law question; never assume a jurisdiction for legal conclusions.",
-        "- Review every provision, marked or not; wording without an open item is not presumed to work. Report defects affecting rights, obligations, remedies or risk within the requested purpose, including a missing protection essential to that purpose; distinguish optional protections as non-blocking recommendations. Leave out pure style points that change none of these, except the supplied date/number preference warnings assigned to the wording reviewer. Report each on the paragraph it affects, or where missing wording belongs.",
+        "- Review every provision, marked or not; wording without an open item is not presumed to work. Report defects affecting rights, obligations, remedies or risk within the requested purpose, including a missing protection essential to that purpose; distinguish optional protections as non-blocking recommendations. Leave out pure style points that change none of these, except the supplied date/number preference warnings assigned to the wording reviewer.",
         "- Preserve agreed terms and answered decisions. Report a specific supported legal defect or material conflict with the requested purpose as a finding; an optional improvement or generic risk is not grounds to reopen the decision as a question.",
         "- Where sources disagree, reconcile the point with explicit instructions, later updates and answers first. Say which evidence or instruction controls. Ask only if a material conflict remains unresolved and prevents fulfilling an essential requested requirement; otherwise disclose the source discrepancy without another question.",
-        ...(finished ? ["- The finished documents are not under review. Where the draft disagrees with one of them, report a finding on the draft's paragraph when the draft should change; otherwise disclose the inconsistency, asking only if it leaves an indispensable material decision unresolved under scope_and_decisions."] : []),
-        "- Support findings from the sources, quoting word for word as \"exact words\" [source: document name].",
+        ...(finished ? ["- The finished documents are not under review. Where the draft disagrees with one of them, report a finding on the draft's paragraph when the draft should change; otherwise report the inconsistency with that finished document's id as its document, for the lawyer to resolve, raising it as a decision only if it leaves an indispensable material decision unresolved under scope_and_decisions."] : []),
+        "- Support each finding from the sources in its sources list, copying their words exactly.",
         "- Where a finding rests on your view of the law rather than a passage in the sources, say so; it will be flagged for the lawyer, not applied silently.",
-        "- Report only genuinely unresolved material information or decisions that only the lawyer can supply as questions, subject to scope_and_decisions. Do not turn routine placeholders, optional refinements, already answered choices or legal research gaps into questions. Ask each indispensable decision once, even where several paragraphs depend on it.",
-        "- Reply with the findings in Markdown only. If there is nothing to correct, say so.",
+        "- Report as a decision for the lawyer only genuinely unresolved material information or decisions that only the lawyer can supply, subject to scope_and_decisions. Do not turn routine placeholders, optional refinements, already answered choices or legal research gaps into decisions for the lawyer. Report each indispensable decision once, even where several paragraphs depend on it.",
+        `- ${REVIEW_FINDINGS_CONTRACT}`,
+        ...(stage === "review-playbook" ? ['- Also return "coverage": your coverage of the guidance positions, in Markdown, beside "findings".'] : []),
         "- Read-only tools are available; file-writing and publication tools are unavailable. Your final reply is saved as the review.",
       ].join("\n")),
     ],
     changes: stage === "changes" ? [
       request,
       `This is a lean drafting run. Turn the review findings into paragraph amendments for the draft${named} below.`,
-      tagged("change_plan", readLeanText(directory, `${document}/change-plan.json`) ?? "No prior adjudication."),
+      tagged("change_plan", adjudicated ? JSON.stringify(writerPlan(adjudicated), null, 2) : "No prior adjudication."),
       "The change plan and shared_decisions are generated source-adjudication records, not independent client instructions or waivers. Original sources and actual human answers determine scope. Preserve supported goals and dependencies, but do not let a generated research limit or prior decision silently override them; retain a genuine unresolved issue explicitly.",
       tagged("prepared_changes", readLeanText(directory, `${document}/change-preparation.json`) ?? "No prepared amendments."),
       ...(adjudicated ? ["Act as the final global reconciler. Prepared amendments are proposals, not authority. Preserve every supported correction, reconcile dependent paragraphs and common definitions, and check actual source support. Emit one explicit replacement, deletion or split per initial paragraph incorporating every accepted change; do not select the last proposal or silently discard a supported correction. Retain still-supported prior amendments during repair. If new evidence reveals an indispensable unanswered decision, ask it instead of assuming an answer."] : []),
       paragraphs, ...(readRepairRound(directory)?.items.some(item => (item.stage === "package-review" || item.stage === "change-review" || item.stage === "checklist-check") && item.ref.document === document) ? [tagged("current_final_body", "The semantic review refers to this resulting body (projected before apply or actual final after apply). Translate its finding to the corresponding initial draft paragraph above; output amendments using only initial draft pids. Your list replaces the whole change list: retain prior supported amendments and incorporate the correction so applying the cumulative list to the initial draft produces the intended final body.\n\n" + repairBodyText(directory, document, Boolean(readRepairRound(directory)?.items.some(item => item.stage === "change-review" && item.ref.document === document)), Boolean(readRepairRound(directory)?.items.some(item => item.stage === "checklist-check" && item.ref.document === document))))] : []), ...(adjudicated ? [] : [tagged("findings", reviewStages(directory, document).map(stage => {
-        const finding = readLeanText(directory, `${document}/${stage}.md`)
+        const finding = reviewText(directory, document, stage)
         return finding ? `${stage}:\n${finding}` : ""
       }).filter(Boolean).join("\n\n"))]), ...changesRepairSections(directory, document),
       spineBlock, acting, answerBlock, sources, planned, composition, outline, finished,
@@ -167,7 +170,7 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
         '- Also return "explanations":[{"pid":"initial draft paragraph where the change is explained","reason":"actual source-to-initial-draft substantive change, rationale and consequence","sources":[{"source_id":"canonical source or request","quote":"exact supporting words"}]}]. Review the supplied original against the initial draft and explain every material initial revision, including omissions. These are separate comment records, not body text or amendments; never submit an identical replacement merely to create a comment. Anchor a removed provision’s explanation to its related surviving paragraph and explicitly identify the omission. Retain still-valid explanations during repair and correct them against the projected final text. Where no initial source comparison exists, this array may be empty.',
         "- One amendment replaces the whole text of one existing paragraph and stays one paragraph. To add wording, extend the most closely related paragraph. To remove a whole paragraph, use operation delete with an empty updated string and supporting source or settled-instruction passages. To split one initial paragraph into several, use operation split with updated as an array of at least two complete nonempty single-paragraph strings. Keep the initial pid as the operation target; the runner supplies distinct final pids. Empty replacement strings never imply deletion. Unsupported or uncertain deletion retains the wording with a new [open item: confirm ...] marker instead. Do not collapse a split or discard any accepted effect.",
         ...(finished ? ["- Amend only paragraphs of the draft below. The finished documents are shown for agreement and cannot be amended here."] : []),
-        ...(assigned ? [`- Amend only this document. Content the request assigns to ${assigned} belongs ${composition ? "there" : "in that document"}; leave out a finding that asks for it here.`] : []),
+        ...(assigned ? [`- Amend only this document. Content the request assigns to ${assigned} belongs ${composition ? "there" : "in that document"}, and findings about it reach it separately; do not draft it here.`] : []),
         "- Quote a passage that supports an amendment whenever one exists, copied exactly from a matter document, or from the request or the lawyer's answers under the source name \"request\". The passage must itself support the change.",
         "- Where no passage supports the change, or the change goes beyond what its passage says, it rests on drafting judgment or a view of the law: its updated paragraph must carry a new visible [open item: confirm ...] marker saying what the lawyer is to confirm. Sources may then be empty.",
         ...(template ? [`- Where an amendment takes out or shortens text the draft carries from its template "${template}", its reason says why.`] : []),
@@ -234,14 +237,22 @@ function plannedDocumentsBlock(directory: string, document: DocID) {
 export function completedDocumentsText(directory: string, document: DocID) {
   return earlierDocuments(directory, document)
     .map(row => {
-      const guidanceReview = row.playbook_review?.sources.length ? readLeanText(directory, `${row.id}/review-playbook.md`) : undefined
+      const guidanceReview = row.playbook_review?.sources.length ? reviewText(directory, row.id, "review-playbook", { strip: true }) : undefined
       return `<document title="${attribute(row.title)}">\n${finalBodyParagraphs(directory, row.id).map(paragraph => paragraph.text).join("\n\n")}\n<accepted_change_explanations>\n${JSON.stringify(appliedChangeEvidence(directory, row.id).map(change => ({
       change_origin: change.change_origin, operation: change.operation, deleted_text: change.deleted_text, result_text: change.result_paragraphs.map(row => row.text), reason: change.reason, sources: change.sources, evidence_basis: change.evidence_basis,
       final_text: finalBodyParagraphs(directory, row.id).find(paragraph => paragraph.pid === change.pid)?.text ?? "",
       comment_status: change.native_comment.status,
-    })), null, 2)}\n</accepted_change_explanations>\n<review_dispositions>\n${reviewDispositionText(directory, row.id, true)}\n</review_dispositions>${guidanceReview ? `\n<prior_playbook_review>\nEarlier guidance review is a navigation aid, not approval. Verify its conclusions against the canonical guidance, current instructions and final wording. When this document provides advice, explain the material original exposure and proposed effect; preserve conditions, exceptions and proposal status. Earlier paragraph references are not amendment targets in this document.\n${guidanceReview.replace(/\[p[0-9a-f]{12}\]/g, "(earlier paragraph)")}\n</prior_playbook_review>` : ""}\n</document>`
+    })), null, 2)}\n</accepted_change_explanations>\n<review_dispositions>\n${reviewDispositionText(directory, row.id, true)}\n</review_dispositions>${guidanceReview ? `\n<prior_playbook_review>\nEarlier guidance review is a navigation aid, not approval. Verify its conclusions against the canonical guidance, current instructions and final wording. When this document provides advice, explain the material original exposure and proposed effect; preserve conditions, exceptions and proposal status. Earlier paragraph references are not amendment targets in this document.\n${guidanceReview}\n</prior_playbook_review>` : ""}\n</document>`
     })
     .join("\n\n")
+}
+
+/** Earlier documents' review findings about this one, shown to its draft. Its
+ * change plan adjudicates them; the draft key leaves them out,
+ * so a drafted document is not drafted again for them. */
+function forwardedBlock(directory: string, document: DocID) {
+  const forwarded = forwardedFindings(directory, document)
+  return forwarded.length ? tagged("findings_for_this_document", `Reviews of the finished documents found these points for this document. Deal with them where this document's purpose calls for it; its change plan checks them again.\n${findingsText(forwarded, document, { ids: false })}`) : ""
 }
 
 function completedDocumentsBlock(directory: string, document: DocID) {
