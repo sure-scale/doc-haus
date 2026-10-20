@@ -350,6 +350,10 @@
    and an amber highlight on edits made without tracked changes. Word's markup
    draws the change bars and the moves; these override its author colours and
    the document viewer's highlighter. */
+/* Word's markup sets this indent to a bare 0 where a paragraph has none, which
+   voids its change-bar offset and lays the bar over the first letter. As a
+   registered length, 0 substitutes as 0px. */
+@property --rev-change-bar-indent { syntax: "<length>"; inherits: true; initial-value: 0px; }
 .blackline-reader { --redline-ins: #1a4fd6; --redline-del: #c62828; --redline-move: #00873c; --redline-untracked: #ffd98c; }
 .blackline-reader .docx-render ins.rev-ins:not(.rev-move-to),
 .compare-redline ins:not(.is-move),

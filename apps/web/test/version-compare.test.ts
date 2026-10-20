@@ -282,22 +282,22 @@ describe("proposal outcomes", () => {
 })
 
 describe("redline as lawyers read it", () => {
-  test("a card shows the changed words inline, not the whole paragraph struck and retyped", () => {
+  test("a card shows the changed words inline, in the page's order, not the whole paragraph struck and retyped", () => {
     const html = panel(comparison())
-    expect(html).toContain('<div class="compare-redline">Payment is due within <del>thirty</del><ins>sixty</ins> days.</div>')
+    expect(html).toContain('<div class="compare-redline">Payment is due within <ins>sixty</ins><del>thirty</del> days.</div>')
     expect(html).toContain('<div class="compare-redline"><ins>A new &lt;b&gt;late fee&lt;/b&gt; applies.</ins></div>')
     expect(html).not.toContain("change-old")
     expect(html).not.toContain("change-new")
   })
 
-  test("words and the spaces between changed words read as one deletion and one insertion", () => {
+  test("words and the spaces between changed words read as one insertion and one deletion", () => {
     expect(wordDiff("pay within 30 days", "pay within 45 business days")).toEqual([
-      { kind: "same", text: "pay within " }, { kind: "del", text: "30" }, { kind: "ins", text: "45 business" }, { kind: "same", text: " days" },
+      { kind: "same", text: "pay within " }, { kind: "ins", text: "45 business" }, { kind: "del", text: "30" }, { kind: "same", text: " days" },
     ])
-    expect(wordDiff("one two", "three four")).toEqual([{ kind: "del", text: "one two" }, { kind: "ins", text: "three four" }])
+    expect(wordDiff("one two", "three four")).toEqual([{ kind: "ins", text: "three four" }, { kind: "del", text: "one two" }])
     expect(wordDiff("a b c d e", "a x c y e")).toEqual([
-      { kind: "same", text: "a " }, { kind: "del", text: "b" }, { kind: "ins", text: "x" }, { kind: "same", text: " c " },
-      { kind: "del", text: "d" }, { kind: "ins", text: "y" }, { kind: "same", text: " e" },
+      { kind: "same", text: "a " }, { kind: "ins", text: "x" }, { kind: "del", text: "b" }, { kind: "same", text: " c " },
+      { kind: "ins", text: "y" }, { kind: "del", text: "d" }, { kind: "same", text: " e" },
     ])
     expect(wordDiff("Fees are due.", "Fees are due.\nInterest accrues.")).toEqual([{ kind: "same", text: "Fees are due." }, { kind: "ins", text: "\nInterest accrues." }])
     const moved = panel(comparison({ changes: [hunk("C1", false, { kind: "moved", before: "Clause text.", after: "Clause text." })] }))
@@ -310,7 +310,7 @@ describe("redline as lawyers read it", () => {
     const short = excerpt(pieces)
     const text = short.map((piece) => piece.text).join("|")
     expect(text.startsWith("… w18 ")).toBe(true)
-    expect(text).toContain("w29 |old|new| w30 ")
+    expect(text).toContain("w29 |new|old| w30 ")
     expect(text).toContain(" w41 … w48 ")
     expect(text.endsWith(" w71…")).toBe(true)
     expect(excerpt(wordDiff("Fees are due.", "Fees are owed."))).toEqual(wordDiff("Fees are due.", "Fees are owed."))

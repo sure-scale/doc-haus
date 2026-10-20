@@ -489,15 +489,15 @@ export function wordDiff(before: string, after: string): Piece[] {
   return merged([{ kind: "same", text: a.slice(0, head).join("") }, ...middle, { kind: "same", text: a.slice(a.length - tail).join("") }])
 }
 
-// Each run of changes reads as one deletion then one insertion, as Word's
-// redline does. White space alone between two changes joins the run, and
-// goes to each side that continues after it.
+// Each run of changes reads as one insertion then one deletion, the order the
+// blackline itself uses. White space alone between two changes joins the
+// run, and goes to each side that continues after it.
 function merged(pieces: Piece[]): Piece[] {
   const out: Piece[] = []
   let del = "", ins = "", gap = { del: "", ins: "" }
   const flush = () => {
-    if (del) out.push({ kind: "del", text: del })
     if (ins) out.push({ kind: "ins", text: ins })
+    if (del) out.push({ kind: "del", text: del })
     del = ins = ""
     gap = { del: "", ins: "" }
   }
