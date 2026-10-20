@@ -353,7 +353,7 @@ test("rename changes the posture only when one is given, and refuses one outside
   expect(readMatterJson(created.id)).toMatchObject({ client: "Contoso Holdings plc", posture: "balanced" })
 
   expect(() => matter.renameMatter(created.id, "Posture Rename Kept", "2026-0010", ["EW"], "playbook-nda", undefined, "aggressive")).toThrow(
-    /posture must be/,
+    "Posture must be Client-favorable, Balanced or Conservative.",
   )
   expect(readMatterJson(created.id).posture).toBe("balanced")
 

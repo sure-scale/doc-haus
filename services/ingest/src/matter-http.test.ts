@@ -48,7 +48,7 @@ test("matter routes round-trip the posture and refuse one outside the three", as
 
     const refused = await send("PATCH", `/matters/${matter.id}`, { title: "Supply renamed", posture: "aggressive" })
     expect(refused.status).toBe(400)
-    expect(((await refused.json()) as { error: string }).error).toContain("posture must be")
+    expect(((await refused.json()) as { error: string }).error).toBe("Posture must be Client-favorable, Balanced or Conservative.")
     expect((await send("POST", "/matters", { title: "Refused", posture: 42 })).status).toBe(400)
 
     expect((await send("PATCH", `/matters/${matter.id}`, { title: "Supply renamed", posture: "balanced" })).status).toBe(200)
