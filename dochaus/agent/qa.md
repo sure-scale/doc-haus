@@ -18,6 +18,7 @@ tools:
   amendment-chain: true
   verify-quote: true
   cite: true
+  compare-versions: true
   skill: true
   python_run_python_code: true
 # Q&A holds no editing tools, so the editing skills are off limits too: loading

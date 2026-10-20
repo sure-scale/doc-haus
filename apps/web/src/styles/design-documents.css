@@ -269,3 +269,128 @@
 .document-label-badge select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .document-label-badge select:disabled { cursor: wait; opacity: .6; }
 .document-label-badge > svg { position: absolute; right: 5px; width: 8px; height: 8px; opacity: .55; pointer-events: none; }
+
+/* ---------- Compare versions ---------- */
+/* Row action beside remove in the documents drawer; revealed on hover like it. */
+.doc-compare { margin-left: auto; display: inline-flex; padding: 4px; border: none; background: none; color: var(--muted); cursor: pointer; opacity: 0; transition: opacity var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out); }
+.doc-row:hover .doc-compare,
+.doc-row:focus-within .doc-compare,
+.doc-compare:focus-visible { opacity: 1; }
+.doc-compare:hover:not(:disabled) { color: var(--accent); background: none; border: none; }
+.matter-files-collection .doc-compare + .doc-remove { margin-left: 0; }
+.drafted-compare { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; opacity: .65; }
+.drafted-row:hover .drafted-compare,
+.drafted-row:focus-within .drafted-compare { opacity: 1; }
+.docs-drawer .matter-files-collection .drafted-compare { position: absolute; top: 8px; right: 40px; background: var(--panel); border-color: var(--border); opacity: 0; }
+.docs-drawer .matter-files-collection .drafted-row:hover .drafted-compare,
+.docs-drawer .matter-files-collection .drafted-row:focus-within .drafted-compare { opacity: 1; }
+@media (hover: none) {
+  .doc-compare, .drafted-compare,
+  .docs-drawer .matter-files-collection .drafted-compare { opacity: 1; }
+  .docs-drawer .matter-files-collection .drafted-row:has(.drafted-compare) { padding-right: 76px; }
+}
+
+/* Dialog: this file fixed on one side, the other picked or uploaded. */
+.picker-panel.compare-dialog { max-width: 520px; }
+.compare-form { gap: 12px; padding: 16px 20px 20px; }
+.compare-side { display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg); }
+.compare-side-role { font-size: 11px; font-weight: 600; letter-spacing: var(--tracking-caps); text-transform: uppercase; color: var(--muted); }
+.compare-file { display: flex; align-items: center; gap: 8px; min-height: var(--ctl-h); min-width: 0; font-weight: 500; }
+.compare-file-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.compare-file-tag { flex: none; padding: 0 7px; border-radius: var(--radius-pill); background: var(--accent-soft); color: var(--accent); font-size: 11px; font-weight: 500; line-height: 18px; }
+.compare-pick { display: flex; flex-wrap: wrap; gap: 8px; }
+.compare-pick select { flex: 1 1 200px; min-width: 0; }
+.compare-label { margin-top: 2px; font-size: 12px; color: var(--muted); }
+.compare-side input { width: 100%; }
+.compare-swap { align-self: center; display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px; font-size: 12.5px; }
+.compare-swap svg { color: var(--muted); }
+.compare-hint { margin: 0; font-size: 12px; line-height: 1.5; color: var(--muted); }
+.compare-options { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 0; padding: 0; border: 0; }
+.compare-options legend { margin-bottom: 8px; padding: 0; font-size: 12px; font-weight: 600; color: var(--text-secondary); }
+.compare-options label { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
+.compare-error { margin: 0; font-size: 13px; color: var(--danger); }
+.compare-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+
+/* Blackline side panel: untracked edits first, then what became of the earlier
+   version's tracked changes, then every change. */
+@media (min-width: 721px) {
+  .blackline-reader .compare-panel { width: 380px; }
+}
+.compare-panel .changes-head { gap: 4px; }
+.compare-sides-line { font-size: 12px; font-weight: 400; overflow-wrap: anywhere; }
+.compare-section { margin-bottom: 20px; }
+.compare-section h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 6px; font-family: var(--font-sans); font-size: 13px; font-weight: 600; color: var(--text); }
+.compare-count { padding: 0 7px; border-radius: var(--radius-pill); background: var(--bg-sunken); color: var(--text-secondary); font-size: 11px; line-height: 18px; }
+.compare-status { margin: 0 0 6px; font-size: 12.5px; line-height: 1.5; color: var(--text-secondary); }
+.compare-untracked,
+.compare-proposals { padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg); }
+.compare-untracked.is-warning { border-color: var(--warn-border); background: var(--warn-soft); }
+.compare-untracked.is-warning h3,
+.compare-untracked.is-warning .compare-status { color: var(--warn); }
+.compare-untracked.is-warning .compare-count { background: var(--warn); color: var(--text-on-accent); }
+.compare-untracked.is-info { border-color: transparent; background: var(--info-soft); }
+.compare-untracked.is-ok { border-color: var(--accent-border); background: var(--accent-tint); }
+.document-reader :is(.compare-untracked, .compare-proposals) .change-card { padding: 12px 0; background: transparent; }
+.document-reader :is(.compare-untracked, .compare-proposals) .change-card:last-child { padding-bottom: 0; border-bottom: 0; }
+.compare-hunk-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 4px; }
+.compare-untracked-tag,
+.compare-outcome-tag { padding: 0 6px; border: 1px solid var(--warn-border); border-radius: 4px; background: var(--warn-soft); color: var(--warn); font-size: 11px; font-weight: 500; letter-spacing: 0; line-height: 16px; text-transform: none; }
+/* Outcome tags read neutral; a rejected proposal and a link to an untracked edit warn. */
+.compare-outcome-tag:not(.is-warn) { border-color: var(--border); background: var(--panel); color: var(--text-secondary); }
+.compare-outcome-tag .compare-ref { font: inherit; color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+.document-reader .compare-hunk.is-untracked,
+.document-reader .compare-proposal.is-rejected { padding-left: 12px; box-shadow: inset 3px 0 var(--warn); }
+.compare-hunk-location { margin-bottom: 8px; font-size: 12px; color: var(--text-secondary); overflow-wrap: anywhere; }
+.compare-more { margin: 2px 0 6px; font-size: 12px; }
+.compare-disclosures { padding-top: 12px; border-top: 1px solid var(--border); }
+.compare-disclosures p { margin: 0 0 6px; font-size: 12px; line-height: 1.5; color: var(--muted); }
+.compare-card .draft-icon { display: inline-flex; }
+/* Comparison marks, alike in the page, the cards and the key: blue
+   double-underlined insertions, red struck deletions, green double-lined moves
+   and an amber highlight on edits made without tracked changes. Word's markup
+   draws the change bars and the moves; these override its author colours and
+   the document viewer's highlighter. */
+/* Word's markup sets this indent to a bare 0 where a paragraph has none, which
+   voids its change-bar offset and lays the bar over the first letter. As a
+   registered length, 0 substitutes as 0px. */
+@property --rev-change-bar-indent { syntax: "<length>"; inherits: true; initial-value: 0px; }
+:root { --redline-ins: #1a4fd6; --redline-del: #c62828; --redline-move: #00873c; --redline-untracked: #ffd98c; }
+.blackline-reader .docx-render ins.rev-ins:not(.rev-move-to),
+.compare-redline ins:not(.is-move),
+.redline-ins { color: var(--redline-ins); background: none; text-decoration: underline double; text-decoration-skip-ink: none; }
+.blackline-reader .docx-render del.rev-del:not(.rev-move-from),
+.compare-redline del,
+.redline-del { color: var(--redline-del); opacity: 1; text-decoration: line-through; }
+.compare-redline ins.is-move,
+.redline-move { color: var(--redline-move); text-decoration: underline double; text-decoration-skip-ink: none; }
+.blackline-reader .docx-render :is(ins, del) span { color: inherit; }
+.blackline-reader .docx-render :is(ins.rev-ins, del.rev-del).is-untracked,
+.redline-untracked { background: var(--redline-untracked); }
+.compare-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; font-weight: 400; }
+.compare-legend .redline-untracked { padding: 0 3px; color: var(--text); }
+.compare-redline { font-size: 13px; line-height: 1.55; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+.compare-hunk.is-linked { cursor: pointer; }
+.compare-hunk-location button.compare-show { font: inherit; color: inherit; overflow-wrap: anywhere; }
+.compare-hunk.is-linked:hover .compare-show { color: var(--accent); text-decoration: underline; }
+/* A chat answer's changes, one row each as in a reviewing pane: the id (a
+   link into the blackline) beside the redline, the assistant's note below. */
+.compare-answer .change-row { display: grid; grid-template-columns: 2.5em minmax(0, 1fr); align-items: baseline; gap: 2px 8px; padding: 7px 0; border-top: 1px solid var(--border-soft); }
+.compare-answer .change-row:has(+ :not(.change-row)) { border-bottom: 1px solid var(--border-soft); margin-bottom: 10px; }
+.change-row > .change-meta { grid-column: 2; }
+:is(.change-id, .change-ref) { padding: 0; border: 0; background: none; font: 600 12px var(--font-mono); color: var(--accent); }
+button:is(.change-id, .change-ref) { cursor: pointer; }
+button:is(.change-id, .change-ref):hover { text-decoration: underline; }
+.change-redline .compare-redline { font-size: 14px; line-height: 1.5; }
+.change-redline .compare-more { margin: 0; }
+.change-meta { font-size: 12.5px; line-height: 1.5; color: var(--text-secondary); }
+.change-meta > span + span::before { content: "·"; margin: 0 6px; color: var(--muted); }
+.change-level.is-material { color: var(--warn); font-weight: 600; }
+.change-level.is-minor,
+.change-favors { color: var(--muted); }
+/* A change shown from the panel flashes in the page. */
+.docx-render .compare-focus { animation: compare-focus 1.6s ease-out; }
+.docx-render .compare-focus:focus:not(:focus-visible) { outline: none; }
+@keyframes compare-focus { from { background-color: #fff0a3; } }
+@media (prefers-reduced-motion: reduce) {
+  .docx-render .compare-focus { animation: none; }
+}

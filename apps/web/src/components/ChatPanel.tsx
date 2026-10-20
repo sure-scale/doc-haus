@@ -1,5 +1,6 @@
 import { draftingUpdateAdmission } from "../../../../dochaus/lib/drafting-update-admission"
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
+import type { CompareParams } from "../api/ingest/compare"
 import type { Document } from "../api/ingest/documents"
 import type { LeanDraftingStatus } from "../api/ingest/lean"
 import { matterClient, type Client } from "../api/opencode/client"
@@ -8,7 +9,7 @@ import CitationView from "./CitationView"
 import IssuesView, { parseIssues, stripIssues } from "./IssuesView"
 import TodoView from "./TodoView"
 import Markdown from "./markdown/Markdown"
-import { isEmptyAnswer, readTurn } from "./chat/turn-model"
+import { isEmptyAnswer, readTurn, type VersionCompare } from "./chat/turn-model"
 import { agentLabel, basename } from "./chat/step-labels"
 import { IconPencil, IconRetry } from "./chat/icons"
 import ChatSkeleton from "./chat/ChatSkeleton"
@@ -16,6 +17,8 @@ import StepsPanel from "./chat/StepsPanel"
 import PermissionCard from "./chat/PermissionCard"
 import RedlineView from "./chat/RedlineView"
 import DraftView from "./chat/DraftView"
+import CompareView from "./chat/CompareView"
+import CompareAnswer, { chatCompare } from "./chat/CompareAnswer"
 import Composer from "./chat/Composer"
 import DocumentsDock from "./chat/DocumentsDock"
 import { setDocumentsDrawer } from "./matter/documents-drawer"
@@ -68,6 +71,7 @@ export default function ChatPanel({
   onSessionPersisted,
   onSessionStarted,
   onViewDocument,
+  onOpenBlackline,
   onDocumentsChanged,
   onBusyChange,
   feed,
@@ -123,6 +127,9 @@ export default function ChatPanel({
   // Open the redline viewer on a document, optionally scrolled to a specific
   // proposal — fired by the in-chat redline preview's "View in document" link.
   onViewDocument: (name: string, redlineId?: number) => void
+  // Open the blackline of a comparison the compare-versions tool ran,
+  // optionally at one of its changes (a C- or U-id).
+  onOpenBlackline?: (params: CompareParams, change?: string) => void
   // Called once the first message lazily mints a session, so the parent can put
   // its id in the URL — a reload then restores the conversation instead of a
   // blank chat. Fired at the first safe idle boundary, before any automatic
@@ -258,6 +265,12 @@ export default function ChatPanel({
     }
   }
   const asked = run ? openQuestions(run) : []
+  // A comparison's answer draws each change it names as a redline.
+  const answer = (text: string, compares?: VersionCompare[]) => {
+    const compare = chatCompare(compares)
+    return compare ? <CompareAnswer text={text} compare={compare} onOpen={onOpenBlackline} /> : <Markdown>{text}</Markdown>
+  }
+
   const narrationView = own && matterId && (
     <DraftingNarration
       narration={narration}
@@ -386,14 +399,15 @@ export default function ChatPanel({
                 <div className="msg assistant">
                   {t.agent && <div className="msg-agent">{agentLabel(t.agent)}</div>}
                   <StepsPanel steps={t.steps} busy={false} answered={!isEmptyAnswer(t.text)} />
-                  {t.text && !isEmptyAnswer(t.text) && <Markdown>{stripIssues(t.text)}</Markdown>}
+                  {t.text && !isEmptyAnswer(t.text) && answer(stripIssues(t.text), t.compares)}
                   <IssuesView issues={parseIssues(t.text)} />
                   {t.error && <div className="msg-error">{t.error}</div>}
                   {!t.superseded &&
                     !t.error &&
                     isEmptyAnswer(t.text) &&
                     t.redlines.length === 0 &&
-                    t.drafts.length === 0 && (
+                    t.drafts.length === 0 &&
+                    !t.compares?.length && (
                       <div className="msg-error">
                         No answer was produced for this question.{" "}
                         <button
@@ -411,6 +425,7 @@ export default function ChatPanel({
                   <CitationView citations={t.citations} matterId={matterId} documents={documents} />
                   <RedlineView redlines={t.redlines} onView={onViewDocument} />
                   <DraftView drafts={t.drafts} onView={onViewDocument} />
+                  <CompareView compares={t.compares} onOpen={onOpenBlackline} />
                 </div>
               )}
               {anchor === i && narrationView}
@@ -434,7 +449,7 @@ export default function ChatPanel({
               <div className="msg-agent">{agentLabel(isAuto(agent) && resolvedAgent ? resolvedAgent : agent)}</div>
               <StepsPanel steps={live.steps} busy answered={Boolean(live.text)} />
               {live.text ? (
-                <Markdown>{stripIssues(live.text)}</Markdown>
+                answer(stripIssues(live.text), live.compares)
               ) : (
                 live.steps.length === 0 && (
                   <span className="working" aria-label="Working">
@@ -449,6 +464,7 @@ export default function ChatPanel({
               <CitationView citations={live.citations} matterId={matterId} documents={documents} />
               {live.text && <RedlineView redlines={live.redlines} onView={onViewDocument} />}
               <DraftView drafts={live.drafts} onView={onViewDocument} />
+              <CompareView compares={live.compares} onOpen={onOpenBlackline} />
             </div>
           )}
         </div>

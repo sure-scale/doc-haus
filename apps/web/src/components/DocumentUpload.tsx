@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react"
-import { deleteDocument, uploadDocument, type Document } from "../api/ingest/documents"
+import { deleteDocument, DocumentExistsError, uploadDocument, type Document, type ExistingSourceChoice } from "../api/ingest/documents"
 import { humanizeError } from "../api/ingest/errors"
 import type { LeanDraftingStatus } from "../api/ingest/lean"
 import { formatDate, formatDateTime, formatTime } from "../lib/format"
+import { CompareIcon } from "./CompareDialog"
 import DocumentLabelBadge from "./DocumentLabel"
 import DraftedList from "./drafting/DraftedList"
 import { deliverableGroups, type DraftedOutput } from "./drafting/model"
@@ -14,10 +15,15 @@ import { useToast } from "./Toast"
 type Upload = {
   key: number
   file: File
-  status: "queued" | "uploading" | "reading" | "ready" | "failed"
+  status: "queued" | "uploading" | "reading" | "ready" | "failed" | "exists"
   error?: string
   // A wrong file type cannot succeed on retry, so the row offers Remove only.
   retryable?: boolean
+  // A document of this name is already in the matter. The row asks the lawyer to
+  // replace an uploaded source or keep both, or to keep both beside a generated
+  // deliverable, and the choice is sent on retry.
+  existing?: { name: string; role: "source" | "deliverable" }
+  choice?: ExistingSourceChoice
 }
 
 const ACCEPTED = /\.(docx|pdf)$/i
@@ -34,6 +40,7 @@ export default function DocumentUpload({
   onClose,
   incoming,
   onIncoming,
+  onCompare,
 }: {
   matterId: string
   documents: Document[]
@@ -44,6 +51,8 @@ export default function DocumentUpload({
   // Files added elsewhere (dropped on the composer) to upload through this list.
   incoming?: File[]
   onIncoming?: () => void
+  // Compare a Word file with another version of it.
+  onCompare?: (name: string) => void
 }) {
   const [uploads, setUploads] = useState<Upload[]>([])
   const [removing, setRemoving] = useState<string>()
@@ -81,7 +90,10 @@ export default function DocumentUpload({
   async function run(upload: Upload) {
     update(upload.key, { status: "uploading", error: undefined })
     try {
-      const result = await uploadDocument(matterId, upload.file, () => update(upload.key, { status: "reading" }))
+      const result = await uploadDocument(matterId, upload.file, {
+        onSent: () => update(upload.key, { status: "reading" }),
+        existing: upload.choice,
+      })
       update(upload.key, { status: "ready" })
       setTimeout(() => setUploads((prev) => prev.filter((u) => u.key !== upload.key)), READY_LINGER_MS)
       onUploaded()
@@ -99,7 +111,7 @@ export default function DocumentUpload({
       }
       toast("success", `${result.name} is ready (${result.sections} section${result.sections === 1 ? "" : "s"}).`)
     } catch (e) {
-      update(upload.key, { status: "failed", error: humanizeError(e, `Could not read ${upload.file.name}.`), retryable: true })
+      update(upload.key, failedUpload(e, upload.file))
     }
   }
 
@@ -144,7 +156,7 @@ export default function DocumentUpload({
       return {
         key: `draft:${output.name}`,
         createdAt: document.created_at,
-        content: <DraftedList matterId={matterId} groups={[{ main: output, extras: [] }]} onView={onView} pending={draftedPending} fresh={watched.current}
+        content: <DraftedList matterId={matterId} groups={[{ main: output, extras: [] }]} onView={onView} onCompare={onCompare} pending={draftedPending} fresh={watched.current}
           renderLabel={() => <>
             <time className="document-time" dateTime={new Date(document.created_at).toISOString()} title={`Saved to matter: ${formatDateTime(document.created_at)}`}>
               {formatTime(document.created_at)}
@@ -177,6 +189,11 @@ export default function DocumentUpload({
           <time className="document-time" dateTime={new Date(d.created_at).toISOString()} title={`Added to matter: ${formatDateTime(d.created_at)}`}>
             {formatTime(d.created_at)}
           </time>
+          {onCompare && /\.docx$/i.test(d.name) && (
+            <button className="doc-compare" onClick={() => onCompare(d.name)} title="Compare with another version" aria-label={`Compare ${d.name} with another version`}>
+              <CompareIcon />
+            </button>
+          )}
           {confirmId === d.id ? (
             <button
               className="icon-btn danger"
@@ -224,6 +241,10 @@ export default function DocumentUpload({
               onRetry={() => {
                 update(u.key, { status: "queued", error: undefined })
                 enqueue(u)
+              }}
+              onChoose={(choice) => {
+                update(u.key, { status: "queued", choice })
+                enqueue({ ...u, choice })
               }}
               onDismiss={() => setUploads((prev) => prev.filter((x) => x.key !== u.key))}
             />
@@ -297,25 +318,41 @@ export default function DocumentUpload({
   )
 }
 
+// A same-name clash asks the lawyer what to do with the existing document; any
+// other failure can be retried.
+export function failedUpload(error: unknown, file: File): Partial<Upload> {
+  if (error instanceof DocumentExistsError) return { status: "exists", existing: { name: error.existing, role: error.role } }
+  return { status: "failed", error: humanizeError(error, `Could not read ${file.name}.`), retryable: true }
+}
+
 const UPLOAD_LABEL: Record<Upload["status"], string> = {
   queued: "Waiting…",
   uploading: "Uploading…",
   reading: "Reading the document…",
   ready: "Ready",
   failed: "Not added",
+  exists: "Already in this matter. Keep both or replace it?",
 }
+const DELIVERABLE_EXISTS = "A document created by Doc.Haus has this name. Keep both?"
 
-function UploadRow({ upload, onRetry, onDismiss }: { upload: Upload; onRetry: () => void; onDismiss: () => void }) {
+export function UploadRow({ upload, onRetry, onChoose, onDismiss }: {
+  upload: Upload
+  onRetry: () => void
+  onChoose: (choice: ExistingSourceChoice) => void
+  onDismiss: () => void
+}) {
   return (
     <li className={`doc-row upload-row is-${upload.status}`} aria-live="polite">
       <div className="doc-row-main">
         <span className="upload-icon" aria-hidden>
-          {upload.status === "failed" ? <IconAlert /> : upload.status === "ready" ? <IconCheck /> : <span className="upload-spinner" />}
+          {upload.status === "failed" || upload.status === "exists" ? <IconAlert /> : upload.status === "ready" ? <IconCheck /> : <span className="upload-spinner" />}
         </span>
         <span className="upload-name">{upload.file.name}</span>
       </div>
       <div className="doc-row-meta">
-        <span className="upload-status">{upload.error ?? UPLOAD_LABEL[upload.status]}</span>
+        <span className="upload-status">
+          {upload.error ?? (upload.existing?.role === "deliverable" ? DELIVERABLE_EXISTS : UPLOAD_LABEL[upload.status])}
+        </span>
         {upload.status === "failed" && (
           <span className="upload-actions">
             {upload.retryable && (
@@ -325,6 +362,27 @@ function UploadRow({ upload, onRetry, onDismiss }: { upload: Upload; onRetry: ()
             )}
             <button type="button" className="icon-btn" onClick={onDismiss}>
               Remove
+            </button>
+          </span>
+        )}
+        {upload.status === "exists" && (
+          <span className="upload-actions">
+            {/* Keep both loses nothing, so it leads; Replace overwrites and stays plain. */}
+            <button type="button" className="icon-btn upload-keep-both" title="Add this file under a new name and keep both" onClick={() => onChoose("keep-both")}>
+              Keep both
+            </button>
+            {upload.existing?.role === "source" && (
+              <button
+                type="button"
+                className="icon-btn"
+                title={`Replace ${upload.existing.name} with this file — the current file is overwritten`}
+                onClick={() => onChoose("replace")}
+              >
+                Replace
+              </button>
+            )}
+            <button type="button" className="icon-btn" onClick={onDismiss}>
+              Cancel
             </button>
           </span>
         )}

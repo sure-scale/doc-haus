@@ -166,6 +166,12 @@ function toolActivity(part: ToolPart, state: ActivityLine["state"], matter: stri
     const text = `${running ? "Searching" : "Searched"} ${where} for ${query}`
     return { text, group: "search", target: query, detail: full.length > SEARCH_CHARS ? `"${full}"` : undefined }
   }
+  if (part.tool === "compare-versions") {
+    const [left, right] = [input.left, input.right].map((value) => (typeof value === "string" && value ? fileLabel(value) : undefined))
+    const pair = left && right ? `${left} with ${right}` : "versions"
+    if (state === "error") return { text: `Could not compare ${pair}` }
+    return { text: `${running ? "Comparing" : "Compared"} ${pair}` }
+  }
   if (part.tool === "verify-quote") {
     const where = document ? `in ${document}` : "in the sources"
     if (running) return { text: `Checking a quotation ${where}`, group: "quote", target: document }

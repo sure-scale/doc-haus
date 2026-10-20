@@ -31,25 +31,60 @@ export type IngestResult = {
   injection: { findings: InjectionFinding[]; flaggedChunks: number } | null
 }
 
+// What an upload does when a source of the same name is already in the matter:
+// replace it, or keep both by storing the upload under the next free name
+// ("Name (2).docx"), returned as the result's `name`. Without a choice the
+// upload is refused with DocumentExistsError, so a lawyer's file is never
+// replaced silently. A generated deliverable is never replaced by an upload;
+// only keep both stores beside it.
+export type ExistingSourceChoice = "replace" | "keep-both"
+
+// A document of the upload's name is already in the matter: an uploaded source
+// or a generated deliverable. `existing` is its stored name.
+export class DocumentExistsError extends Error {
+  constructor(readonly existing: string, readonly role: "source" | "deliverable", message: string) {
+    super(message)
+  }
+}
+
 // XHR rather than fetch so the row can tell "uploading" (bytes still leaving the
 // browser) from "reading" (ingest parsing, OCR and indexing on the server).
-export function uploadDocument(id: string, file: File, onSent?: () => void): Promise<IngestResult> {
+export function uploadDocument(
+  id: string,
+  file: File,
+  options: { onSent?: () => void; existing?: ExistingSourceChoice } = {},
+): Promise<IngestResult> {
   const form = new FormData()
   form.append("file", file)
+  if (options.existing) form.append("existing", options.existing)
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest()
     xhr.open("POST", `${INGEST_URL}/matters/${id}/documents`)
     xhr.timeout = UPLOAD_TIMEOUT_MS
-    xhr.upload.onload = () => onSent?.()
+    xhr.upload.onload = () => options.onSent?.()
     xhr.onerror = () => reject(new TypeError("Failed to fetch"))
     xhr.ontimeout = () => reject(new DOMException("Upload timed out", "TimeoutError"))
     xhr.onload = () => {
       const res = new Response(xhr.responseText, { status: xhr.status })
+      const exists = documentExists(xhr.status, xhr.responseText)
+      if (exists) return reject(exists)
       if (!res.ok) return ingestError(res, `Could not read ${file.name}`).then((message) => reject(new Error(message)))
       return res.json().then(resolve, reject)
     }
     xhr.send(form)
   })
+}
+
+function documentExists(status: number, text: string) {
+  if (status !== 409) return
+  try {
+    const body = JSON.parse(text) as { code?: unknown; name?: unknown; error?: unknown }
+    const role = body.code === "source_exists" ? "source" : body.code === "deliverable_exists" ? "deliverable" : undefined
+    if (!role || typeof body.name !== "string") return
+    return new DocumentExistsError(body.name, role, typeof body.error === "string" ? body.error : `${body.name} is already in this matter.`)
+  } catch {
+    return
+  }
 }
 
 export async function deleteDocument(id: string, name: string): Promise<void> {

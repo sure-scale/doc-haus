@@ -1,5 +1,6 @@
 import type { ReactNode } from "react"
 import { documentContentUrl } from "../../api/ingest/documents"
+import { CompareIcon } from "../CompareDialog"
 import { OUTPUT_ROLE, type DraftedGroup, type DraftedOutput } from "./model"
 
 // The Word files a drafting run produced: each draft with its redline (and, for
@@ -12,6 +13,7 @@ export default function DraftedList({
   matterId,
   groups,
   onView,
+  onCompare,
   pending,
   fresh,
   renderLabel,
@@ -19,6 +21,8 @@ export default function DraftedList({
   matterId: string
   groups: DraftedGroup[]
   onView?: (name: string) => void
+  /** Compare a Word file with another version; the row offers it when given. */
+  onCompare?: (name: string) => void
   /** Pending redline changes per file, shown as a badge on its row. */
   pending?: Map<string, number>
   fresh?: boolean
@@ -33,13 +37,13 @@ export default function DraftedList({
             {group.combined ? (
               <CombinedRow matterId={matterId} name={group.combined} />
             ) : (
-              <OutputRow matterId={matterId} output={group.main} onView={onView} pending={pending?.get(group.main.name)} label={renderLabel?.(group.main)} main />
+              <OutputRow matterId={matterId} output={group.main} onView={onView} onCompare={onCompare} pending={pending?.get(group.main.name)} label={renderLabel?.(group.main)} main />
             )}
             {beneath.length > 0 && (
               <ul className="drafted-extras">
                 {beneath.map((output) => (
                   <li key={output.name}>
-                    <OutputRow matterId={matterId} output={output} onView={onView} pending={pending?.get(output.name)} label={renderLabel?.(output)} />
+                    <OutputRow matterId={matterId} output={output} onView={onView} onCompare={onCompare} pending={pending?.get(output.name)} label={renderLabel?.(output)} />
                   </li>
                 ))}
               </ul>
@@ -83,6 +87,7 @@ function OutputRow({
   matterId,
   output,
   onView,
+  onCompare,
   pending,
   main,
   label,
@@ -90,6 +95,7 @@ function OutputRow({
   matterId: string
   output: DraftedOutput
   onView?: (name: string) => void
+  onCompare?: (name: string) => void
   pending?: number
   main?: boolean
   label?: ReactNode
@@ -117,6 +123,17 @@ function OutputRow({
           {pending}
         </span>
       ) : null}
+      {onCompare && /\.docx$/i.test(output.name) && (
+        <button
+          type="button"
+          className="icon-btn drafted-compare"
+          onClick={() => onCompare(output.name)}
+          aria-label={`Compare ${output.name} with another version`}
+          title="Compare with another version"
+        >
+          <CompareIcon size={14} />
+        </button>
+      )}
       <a
         className="icon-btn drafted-download"
         href={documentContentUrl(matterId, output.name)}

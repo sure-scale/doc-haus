@@ -17,6 +17,7 @@ export default function DocumentsDrawer({
   onIncoming,
   onUploaded,
   onView,
+  onCompare,
 }: {
   matterId: string
   documents: Document[]
@@ -27,6 +28,7 @@ export default function DocumentsDrawer({
   onIncoming: () => void
   onUploaded: () => void
   onView: (name: string) => void
+  onCompare?: (name: string) => void
 }) {
   const [slot, setSlot] = useState<HTMLElement | null>(null)
 
@@ -58,6 +60,7 @@ export default function DocumentsDrawer({
           onClose={close}
           incoming={incoming}
           onIncoming={onIncoming}
+          onCompare={onCompare}
         />
       </aside>
     </>,

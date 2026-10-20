@@ -4,6 +4,7 @@ export const legalTools = [
   ["case-law", () => import("./case-law")],
   ["check-citations", () => import("./check-citations")],
   ["cite", () => import("./cite")],
+  ["compare-versions", () => import("./compare-versions")],
   ["copy-document", () => import("./copy-document")],
   ["create-agent", () => import("./create-agent")],
   ["create-playbook", () => import("./create-playbook")],

@@ -9,7 +9,7 @@ import { readEngineSettings, patchEngineConfig, engineConfigFile } from "./engin
 import { setupRoutes } from "./setup"
 import { authReuseRoutes } from "./auth-reuse"
 import { Hono } from "hono"
-import { inlineDocumentDisposition } from "./content-disposition"
+import { attachmentDocumentDisposition, inlineDocumentDisposition } from "./content-disposition"
 import { createHash } from "node:crypto"
 import { cors } from "hono/cors"
 import { HTTPException } from "hono/http-exception"
@@ -28,7 +28,9 @@ import {
   ingestDocument,
   extractDocumentText,
   matterDocumentName,
+  DeliverableDocumentExistsError,
   SourceDocumentConflictError,
+  SourceDocumentExistsError,
 } from "./ingest"
 import {
   deliverableDocumentName,
@@ -57,6 +59,8 @@ import { documentAmendmentRoutes, acceptedWorkingDocxUpdate } from "./document-a
 import { readWorkingDocx } from "../../../dochaus/lib/working-docx"
 import { withParagraphPointers, withStableRevisionDates } from "../../../dochaus/lib/drafting-amendment"
 import { DocxTrackedRevisionsError } from "../../../dochaus/lib/docx-amendments"
+import { compareVersions } from "../../../dochaus/lib/version-compare"
+import { pendingRedlinesForDoc } from "../../../dochaus/lib/redlines"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
 import { draftingTraceReference } from "../../../dochaus/lib/drafting-trace-identity"
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
@@ -550,10 +554,19 @@ app.post("/matters/:id/documents", async (c) => {
   if (!(file instanceof File)) return c.json({ error: "A source document file is required." }, 400)
   const name = matterDocumentName(file.name)
   if (!name) return c.json({ error: "The source document filename or extension is not supported." }, 400)
+  // A same-name source is never replaced silently: without an `existing` choice
+  // the upload is refused with source_exists so the lawyer can choose.
+  const existing = body["existing"]
+  if (existing !== undefined && existing !== "replace" && existing !== "keep-both")
+    return c.json({ error: "Choose replace or keep-both for an existing document." }, 400)
   const buffer = Buffer.from(await file.arrayBuffer())
   try {
-    return c.json(await ingestDocument(dir, name, buffer))
+    return c.json(await ingestDocument(dir, name, buffer, { existing }))
   } catch (error) {
+    if (error instanceof SourceDocumentExistsError)
+      return c.json({ error: error.message, code: "source_exists", name: error.existing }, 409)
+    if (error instanceof DeliverableDocumentExistsError)
+      return c.json({ error: error.message, code: "deliverable_exists", name: error.existing }, 409)
     if (error instanceof SourceDocumentConflictError) return c.json({ error: error.message }, 409)
     throw error
   }
@@ -651,8 +664,9 @@ app.post("/matters/:id/documents/revisions", async (c) => {
 
 // Convert an uploaded .pdf into an editable .docx sibling and index it, so a PDF
 // contract can enter the DOCX redline pipeline. The source .pdf is kept; the new
-// .docx lands beside it under the same base name. LibreOffice is used when present
-// on the host, otherwise a MIT text-only rebuild (see convert.ts).
+// .docx lands beside it under the same base name, or the next free one when that
+// name is taken, so a conversion never overwrites a document. LibreOffice is used
+// when present on the host, otherwise a MIT text-only rebuild (see convert.ts).
 app.post("/matters/:id/documents/convert", async (c) => {
   const dir = matterDir(c.req.param("id"))
   const name = matterDocumentName(c.req.query("name") ?? "")
@@ -673,7 +687,7 @@ app.post("/matters/:id/documents/convert", async (c) => {
     db.close()
     if (role !== "source") return c.json({ error: `${target.name} is not a registered source document.` }, 409)
     const docxName = target.name.replace(/\.pdf$/i, ".docx")
-    const result = await ingestDocument(dir, docxName, await pdfToDocx(Buffer.from(await Bun.file(file).bytes())))
+    const result = await ingestDocument(dir, docxName, await pdfToDocx(Buffer.from(await Bun.file(file).bytes())), { existing: "keep-both" })
     return c.json(result)
   })
 })
@@ -871,6 +885,82 @@ app.get("/matters/:id/documents/redlined", async (c) => {
   })
 })
 
+// Compare two versions of a matter document, left (the earlier) with right (the
+// later): a Word Compare-style blackline (format=docx, the default) or its
+// paragraph changes, the edits right made without tracked changes and what
+// became of each of left's tracked proposals (format=json). The stored bytes
+// are compared; pending doc.haus proposals are counted, not applied. Read
+// only: no model call and nothing written to the matter, so no artifact lock
+// (it would create its lock folder): document writes replace
+// the whole file by rename, so each read sees one complete version, and legal.db
+// is opened read-only, never created or migrated.
+app.get("/matters/:id/compare", async (c) => {
+  const refuse = (status: 400 | 404 | 422, error: string, message: string) => c.json({ error, message }, status)
+  const unknown = (name: string) => refuse(404, "not_found", `${name} is not a document in this matter.`)
+  const dir = matterDir(c.req.param("id"))
+  const requested = [c.req.query("left")?.trim() ?? "", c.req.query("right")?.trim() ?? ""]
+  if (!requested[0] || !requested[1]) return refuse(400, "missing_name", "Choose two documents to compare.")
+  if (!existsSync(dir)) return refuse(404, "not_found", "This matter does not exist.")
+  const [leftName, rightName] = requested.map((name) => registeredDocumentName(name))
+  if (!leftName) return unknown(requested[0])
+  if (!rightName) return unknown(requested[1])
+  // A symbolic-link alias, inside or out of the matter, resolves to no target.
+  const left = readDocumentTarget(dir, leftName)
+  if (!left || !existsSync(left.docPath)) return unknown(leftName)
+  const right = readDocumentTarget(dir, rightName)
+  if (!right || !existsSync(right.docPath)) return unknown(rightName)
+  for (const target of [left, right])
+    if (path.extname(target.name).toLowerCase() !== ".docx")
+      return refuse(400, "not_docx", `${target.name} is not a Word document. Use Convert to DOCX on it first, then compare the converted file.`)
+  if (left.identity === right.identity) return refuse(400, "same_document", `Both sides are ${left.name}. Choose two different documents.`)
+  const stem = (name: string) => path.parse(name).name
+  // A label becomes a Word revision author: one line, capped as the compare tool caps it.
+  const oneLine = (text: string) => Array.from(text.replace(/[\p{Cc}\s]+/gu, " ").trim()).slice(0, 120).join("").trim()
+  const label = (key: string, name: string) => oneLine(c.req.query(key) ?? "") || oneLine(stem(name))
+  const flag = (key: string) => c.req.query(key) !== "0"
+  const options = { ignoreFormatting: flag("ignoreFormatting"), detectMoves: flag("moves"), headersFooters: flag("headers") }
+  const labels = { left: label("leftLabel", left.name), right: label("rightLabel", right.name) }
+  // A document deleted, or between the two renames of a replacement, since it was resolved.
+  const read = (file: string) => Bun.file(file).bytes().catch((error: unknown) => {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return undefined
+    throw error
+  })
+  const leftBytes = await read(left.docPath)
+  if (!leftBytes) return unknown(left.name)
+  const rightBytes = await read(right.docPath)
+  if (!rightBytes) return unknown(right.name)
+  const pending = { left: pendingRedlinesForDoc(dir, left.docPath).length, right: pendingRedlinesForDoc(dir, right.docPath).length }
+  const comparison = await compareVersions(
+    { bytes: leftBytes, label: labels.left },
+    { bytes: rightBytes, label: labels.right },
+    options,
+    new Date().toISOString(),
+  ).catch((error: unknown) => {
+    console.warn("[compare] comparison failed", diagnosticErrorMetadata(error))
+    return undefined
+  })
+  if (!comparison)
+    return refuse(422, "compare_failed", `${left.name} and ${right.name} could not be compared. One of them may be damaged or not a standard Word file: open it in Word, save it again and retry.`)
+  const blacklineName = `Blackline - ${stem(left.name)} vs ${stem(right.name)}.docx`
+  if (c.req.query("format") === "json")
+    return c.json({
+      left: { name: left.name, label: labels.left, trackedChanges: comparison.left, pendingProposals: pending.left },
+      right: { name: right.name, label: labels.right, trackedChanges: comparison.right, pendingProposals: pending.right },
+      options,
+      attribution: comparison.attribution,
+      changes: comparison.changes,
+      untracked: comparison.untracked,
+      proposals: comparison.proposals,
+      blacklineName,
+    })
+  return new Response(new Uint8Array(comparison.blackline), {
+    headers: {
+      "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "Content-Disposition": c.req.query("download") === "1" ? attachmentDocumentDisposition(blacklineName) : inlineDocumentDisposition(blacklineName),
+    },
+  })
+})
+
 // Accept a single redline: bake it into the canonical .docx (the new accepted
 // state, no tracked changes) and mark it accepted. Source revisions are
 // re-indexed; deliverable revisions remain outside source retrieval. Re-resolves
@@ -1016,7 +1106,7 @@ async function writeDocumentRevision(
     acceptedRedlineIDs.forEach((id) => setRedlineStatus(registry,id,"accepted"))
   }
   if (role === "deliverable") return writeDeliverableRevision(directory, name, bytes, { updateRegistry,priorSha256,updateWorkingRevision:working })
-  return ingestDocument(directory, name, bytes, { requireExistingSource: true, updateRegistry })
+  return ingestDocument(directory, name, bytes, { existing: "replace", requireExistingSource: true, updateRegistry })
 }
 
 /** The document's role and the bytes writeDocumentRevision stores for `input`:

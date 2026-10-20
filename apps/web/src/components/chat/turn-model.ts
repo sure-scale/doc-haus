@@ -1,4 +1,5 @@
 import type { Part } from "../../api/session-view"
+import type { ChangeHunk, CompareParams, ProposalOutcome } from "../../api/ingest/compare"
 import type { Citation } from "../../api/opencode/parts"
 import type { Todo } from "../TodoView"
 import { basename, stepLabel } from "./step-labels"
@@ -15,6 +16,13 @@ export type Step =
 // link into the full tracked-changes review (see RedlineView, DocumentViewer).
 export type RedlineProposal = { id?: number; document: string; oldText: string; newText: string; comment?: string }
 
+// A comparison of two Word versions the compare-versions tool ran: what to send
+// back to the blackline route, the counts the turn's card reports, and the
+// changes its pages listed, so the answer can draw each one it names.
+export type VersionCompare = Required<CompareParams> & { changes: number; untracked: number; hunks: ListedChange[] }
+// A proposal (P-id) also carries its outcome and the untracked edit it names.
+export type ListedChange = Pick<ChangeHunk, "id" | "kind" | "before" | "after"> & Partial<Pick<ProposalOutcome, "outcome" | "untracked">>
+
 // id is the server message id, carried on user turns so edit/retry can revert
 // the session back to that exact message. Optimistic turns added before a
 // finalize reload have no id, so their actions stay hidden until settled.
@@ -29,6 +37,9 @@ export type Turn = {
   // Documents the turn created (draft-document tool), as matter-relative names —
   // each renders as a card linking into the document viewer.
   drafts: string[]
+  // Versions the turn compared (compare-versions tool), each a card that opens
+  // the blackline view.
+  compares?: VersionCompare[]
   // The latest completeness self-audit checklist the turn streamed via the
   // upstream todowrite tool — draft mode's term/number/cross-reference audit or
   // the reviewer's per-area present/absent/deviating walk.
@@ -47,19 +58,20 @@ export type Turn = {
   superseded?: boolean
 }
 
-// Reduce a message's parts to its visible text, search-document citations, and
-// any redline proposals.
+// Reduce a turn's parts to its visible text, search-document citations, and
+// any redline proposals. Each text part (one per step) stays its own block, as
+// in the live view (readTurn).
 function contentOf(parts: Part[]) {
   const text = parts
     .filter((p): p is Extract<Part, { type: "text" }> => p.type === "text")
     .filter((p) => !p.synthetic)
     .map((p) => p.text)
-    .join("")
+    .join("\n\n")
   const citations = parts
     .filter((p): p is Extract<Part, { type: "tool" }> => p.type === "tool")
     .filter((p) => p.tool === "search-document" && p.state.status === "completed")
     .flatMap((p) => ((p.state as { metadata?: { citations?: Citation[] } }).metadata?.citations ?? []))
-  return { text, citations, redlines: redlinesOf(parts), drafts: draftsOf(parts), todos: todosOf(parts) }
+  return { text, citations, redlines: redlinesOf(parts), drafts: draftsOf(parts), compares: comparesOf(parts), todos: todosOf(parts) }
 }
 
 // The upstream todowrite tool emits the WHOLE checklist on every call (it is a
@@ -90,6 +102,49 @@ function draftsOf(parts: Part[]): string[] {
       const document = (p.state as { metadata?: Record<string, unknown> }).metadata?.document
       return typeof document === "string" ? [basename(document)] : []
     })
+}
+
+// The compare-versions tool stamps the comparison it ran on its metadata. Keep
+// only a complete record: anything else could open the wrong blackline. Pages
+// of one comparison make one entry holding every change they listed.
+function comparesOf(parts: Part[]): VersionCompare[] {
+  const compares = new Map<string, VersionCompare>()
+  for (const p of parts) {
+    if (p.type !== "tool" || p.tool !== "compare-versions" || p.state.status !== "completed") continue
+    const metadata = (p.state as { metadata?: { compare?: unknown; hunks?: unknown } }).metadata
+    const compare = metadata?.compare as Record<string, unknown> | undefined
+    const options = (compare?.options ?? {}) as Record<string, unknown>
+    const counts = (compare?.counts ?? {}) as Record<string, unknown>
+    const text = (value: unknown) => typeof value === "string" && value.length > 0
+    if (!compare || !text(compare.left) || !text(compare.right) || typeof counts.changes !== "number" || typeof counts.untracked !== "number") continue
+    const entry: VersionCompare = {
+      left: compare.left as string,
+      right: compare.right as string,
+      leftLabel: text(compare.leftLabel) ? (compare.leftLabel as string) : "",
+      rightLabel: text(compare.rightLabel) ? (compare.rightLabel as string) : "",
+      ignoreFormatting: options.ignoreFormatting !== false,
+      detectMoves: options.detectMoves !== false,
+      headersFooters: options.headersFooters !== false,
+      changes: counts.changes,
+      untracked: counts.untracked,
+      hunks: [],
+    }
+    const key = JSON.stringify([entry.left, entry.right, entry.leftLabel, entry.rightLabel, entry.ignoreFormatting, entry.detectMoves, entry.headersFooters])
+    const seen = compares.get(key) ?? entry
+    compares.set(key, seen)
+    for (const hunk of Array.isArray(metadata?.hunks) ? metadata.hunks : [])
+      if (listedChange(hunk) && !seen.hunks.some((known) => known.id === hunk.id)) seen.hunks.push(hunk)
+  }
+  return [...compares.values()]
+}
+
+const CHANGE_KINDS: unknown[] = ["modified", "inserted", "deleted", "moved"] satisfies ChangeHunk["kind"][]
+const OUTCOMES: unknown[] = [undefined, "pending", "countered", "accepted", "rejected"] satisfies (ProposalOutcome["outcome"] | undefined)[]
+function listedChange(value: unknown): value is ListedChange {
+  const hunk = value as Partial<Record<keyof ListedChange, unknown>> | null
+  const optional = (text: unknown) => text === undefined || typeof text === "string"
+  return typeof hunk?.id === "string" && CHANGE_KINDS.includes(hunk.kind) && optional(hunk.before) && optional(hunk.after)
+    && (typeof hunk.before === "string" || typeof hunk.after === "string") && OUTCOMES.includes(hunk.outcome) && optional(hunk.untracked)
 }
 
 // The redline and tracked-changes tools both record a pending proposal and return
@@ -232,6 +287,7 @@ export function readTurn(parts: Map<string, Part>, roles: Map<string, string>, m
     citations,
     redlines: redlinesOf(work),
     drafts: draftsOf(work),
+    compares: comparesOf(work),
     todos,
     steps: partsToSteps(work, matter, all),
   }

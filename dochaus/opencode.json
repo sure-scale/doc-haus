@@ -62,6 +62,7 @@
     "delete-agent": "ask",
     "read-document": "allow",
     "read-record": "allow",
+    "compare-versions": "allow",
     "python_run_python_code": "allow",
     "courtlistener_*": "allow",
     "draft-document": "ask",

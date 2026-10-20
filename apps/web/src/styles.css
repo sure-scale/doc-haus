@@ -1025,6 +1025,14 @@ li.list-row {
   animation: panel-in 220ms var(--ease-out);
 }
 
+.picker-panel .viewer-bar-actions > .modal-close {
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
+  padding: 8px;
+}
+.picker-panel .modal-close svg { flex-shrink: 0; }
+
 .picker-body {
   overflow: auto;
   padding: 12px;
