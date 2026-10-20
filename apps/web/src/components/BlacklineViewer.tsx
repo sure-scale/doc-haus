@@ -621,7 +621,7 @@ function focusChange(root: HTMLElement, hunk: ChangeHunk) {
   )
   if (index === undefined) return
   const block = blocks[index]
-  block.classList.remove("compare-focus")
+  for (const shown of root.querySelectorAll(".compare-focus")) shown.classList.remove("compare-focus")
   void block.offsetWidth // restarts the flash when the same change is shown again
   block.classList.add("compare-focus")
   block.tabIndex = -1

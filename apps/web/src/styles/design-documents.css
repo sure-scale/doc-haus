@@ -348,18 +348,19 @@
 /* Comparison marks, alike in the page, the cards and the key: blue
    double-underlined insertions, red struck deletions, green double-lined moves
    and an amber highlight on edits made without tracked changes. Word's markup
-   draws the change bars and the moves; these override its author colours. */
+   draws the change bars and the moves; these override its author colours and
+   the document viewer's highlighter. */
 .blackline-reader { --redline-ins: #1a4fd6; --redline-del: #c62828; --redline-move: #00873c; --redline-untracked: #ffd98c; }
 .blackline-reader .docx-render ins.rev-ins:not(.rev-move-to),
 .compare-redline ins:not(.is-move),
-.redline-ins { color: var(--redline-ins); text-decoration: underline double; text-decoration-skip-ink: none; }
+.redline-ins { color: var(--redline-ins); background: none; text-decoration: underline double; text-decoration-skip-ink: none; }
 .blackline-reader .docx-render del.rev-del:not(.rev-move-from),
 .compare-redline del,
-.redline-del { color: var(--redline-del); text-decoration: line-through; }
+.redline-del { color: var(--redline-del); opacity: 1; text-decoration: line-through; }
 .compare-redline ins.is-move,
 .redline-move { color: var(--redline-move); text-decoration: underline double; text-decoration-skip-ink: none; }
 .blackline-reader .docx-render :is(ins, del) span { color: inherit; }
-.blackline-reader .docx-render :is(ins, del).is-untracked,
+.blackline-reader .docx-render :is(ins.rev-ins, del.rev-del).is-untracked,
 .redline-untracked { background: var(--redline-untracked); }
 .compare-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; font-weight: 400; }
 .compare-legend .redline-untracked { padding: 0 3px; color: var(--text); }
