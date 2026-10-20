@@ -372,13 +372,21 @@
 .compare-hunk.is-linked { cursor: pointer; }
 .compare-hunk-location button.compare-show { font: inherit; color: inherit; overflow-wrap: anywhere; }
 .compare-hunk.is-linked:hover .compare-show { color: var(--accent); text-decoration: underline; }
-/* A chat answer's changes, each drawn under the entry that names it. */
-.compare-answer .compare-entry { margin: 10px 0; }
-.compare-entry-change { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 14px; margin: 4px 0 8px; padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--panel); }
-.compare-entry-change > :is(.compare-entry-id, .compare-redline) { flex-basis: 100%; }
-.compare-entry-id { font-size: 11px; font-weight: 600; color: var(--muted); }
-.compare-entry-change .compare-more { margin: 0; }
-.compare-entry-change .compare-show { font-size: 12px; }
+/* A chat answer's changes, one row each as in a reviewing pane: the id (a
+   link into the blackline) beside the redline, the assistant's note below. */
+.compare-answer .change-row { display: grid; grid-template-columns: 2.5em minmax(0, 1fr); align-items: baseline; gap: 2px 8px; padding: 7px 0; border-top: 1px solid var(--border-soft); }
+.compare-answer .change-row:has(+ :not(.change-row)) { border-bottom: 1px solid var(--border-soft); margin-bottom: 10px; }
+.change-row > .change-meta { grid-column: 2; }
+:is(.change-id, .change-ref) { padding: 0; border: 0; background: none; font: 600 12px var(--font-mono); color: var(--accent); }
+button:is(.change-id, .change-ref) { cursor: pointer; }
+button:is(.change-id, .change-ref):hover { text-decoration: underline; }
+.change-redline .compare-redline { font-size: 14px; line-height: 1.5; }
+.change-redline .compare-more { margin: 0; }
+.change-meta { font-size: 12.5px; line-height: 1.5; color: var(--text-secondary); }
+.change-meta > span + span::before { content: "·"; margin: 0 6px; color: var(--muted); }
+.change-level.is-material { color: var(--warn); font-weight: 600; }
+.change-level.is-minor,
+.change-favors { color: var(--muted); }
 /* A change shown from the panel flashes in the page. */
 .docx-render .compare-focus { animation: compare-focus 1.6s ease-out; }
 .docx-render .compare-focus:focus:not(:focus-visible) { outline: none; }

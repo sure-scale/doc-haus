@@ -417,7 +417,8 @@ describe("chat compare card", () => {
     { id: "U1", kind: "modified", before: "Payment is due within thirty days.", after: "Payment is due within sixty days." },
     { id: "C1", kind: "inserted", after: "Delivery is complete on signed receipt." },
     { id: "C2", kind: "deleted", before: "Draft for discussion" },
-    { id: "P1", kind: "inserted", after: "Title passes on delivery." },
+    { id: "P1", kind: "inserted", after: "Title passes on delivery.", outcome: "accepted" },
+    { id: "P2", kind: "deleted", before: ", without set-off", outcome: "rejected", untracked: "U1" },
   ]
 
   test("reads the tool's compare metadata as the blackline to open", () => {
@@ -445,7 +446,7 @@ describe("chat compare card", () => {
     expect(turnOf([{ ...meta, hunks }, other]).compares!.map((compare) => compare.right)).toEqual(["Their draft.docx", "Their draft (2).docx"])
   })
 
-  test("the chat answer reads as entries, each followed by its change's redline", () => {
+  test("the chat answer reads as one compact row per change: its id, its redline, then the model's note", () => {
     const answer = [
       "Version order taken from the file names.",
       "",
@@ -456,7 +457,8 @@ describe("chat compare card", () => {
       "",
       "**Tracked changes in Our draft**",
       "",
-      "- **P1** · accepted.",
+      "- **P1** · accepted: an insertion by Avery Drafter.",
+      "- **P2** · rejected (U1).",
       "",
       "**Changes**",
       "",
@@ -476,25 +478,36 @@ describe("chat compare card", () => {
     }
     const order = [
       at("Version order taken"),
-      at("<strong>U1</strong> · 4.2 Payment"),
-      at("without a tracked change."),
+      at(">U1</button>"),
       at("Payment is due within <ins>sixty</ins><del>thirty</del> days."),
-      at("<strong>P1</strong> · accepted."),
+      at('<span class="change-clause">4.2 Payment</span>'),
+      at('<span class="change-level is-material">Material</span>'),
+      at('<span class="change-favors">Favors the Supplier</span>'),
+      at("payment moves out without a tracked change."),
+      at(">P1</button>"),
       at("<ins>Title passes on delivery.</ins>"),
-      at("<strong>Changes</strong>"),
-      at("<strong>C1, C2</strong>"),
-      at(">C1</span>"),
+      at('<span class="change-outcome">Accepted</span>'),
+      at(">P2</button>"),
+      at("<del>, without set-off</del>"),
+      at("Rejected or changed — not shown as a tracked change, see"),
+      at(">C1</button>"),
       at("<ins>Delivery is complete on signed receipt.</ins>"),
-      at(">C2</span>"),
+      at(">C2</button>"),
       at("<del>Draft for discussion</del>"),
-      at("<strong>C9</strong>"),
+      at('<span class="change-level is-minor">Minor</span>'),
+      at("wording tidied."),
+      at("<strong>C9</strong> · Not in this comparison."),
       at("Minor: C2 (footer)"),
       at("Overall the changes"),
     ]
     expect(order).toEqual([...order].sort((a, b) => a - b))
-    expect(html).not.toContain("<li><strong>U1")
-    expect(html.match(/class="compare-redline"/g)).toHaveLength(4)
-    expect(html.match(/Show in blackline/g)).toHaveLength(4)
+    // One row per entry with a change to draw; the ids link to the blackline.
+    expect(html.match(/class="change-row"/g)).toHaveLength(4)
+    expect(html).toContain('title="Show U1 in the blackline"')
+    expect(html).not.toContain("Show in blackline")
+    // A proposal's line comes from the comparison, not the model's wording.
+    expect(html).not.toContain("an insertion by Avery Drafter")
+    expect(html).not.toContain("<li>")
   })
 
   test("the chat answer draws redlines only for one comparison with changes listed", () => {

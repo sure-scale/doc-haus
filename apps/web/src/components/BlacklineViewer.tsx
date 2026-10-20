@@ -399,7 +399,7 @@ function HunkCard({ hunk, comparison, marked, removes = [], onShow }: { hunk: Ch
   )
 }
 
-const OUTCOME_TAG: Record<Exclude<ProposalOutcome["outcome"], "rejected">, string> = {
+export const OUTCOME_TAG: Record<Exclude<ProposalOutcome["outcome"], "rejected">, string> = {
   pending: "Still pending",
   countered: "Still pending — their tracked change reverses it",
   accepted: "Accepted",

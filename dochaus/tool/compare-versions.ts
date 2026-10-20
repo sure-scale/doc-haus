@@ -113,7 +113,7 @@ export default tool({
     }
     const items = [
       ...(noTracked ? [] : body.untracked.map(hunk => prepare(hunk, "untracked", true, removes.get(hunk.id)))),
-      ...proposals.map(proposal => prepareProposal(proposal, editRef)),
+      ...proposals.map(proposal => prepareProposal(proposal, editRef, id => listedAs(id) ?? id)),
       ...body.changes.map(hunk => prepare(hunk, "changes", !noTracked, noTracked ? removes.get(hunk.id) : undefined)),
     ]
     const offset = args.offset ?? 0
@@ -229,7 +229,7 @@ function prepare(hunk: Hunk, section: "untracked" | "changes", markUntracked: bo
   return { id: hunk.id, section, rules, text, hunk: shown }
 }
 
-function prepareProposal(proposal: Proposal, editRef: (id: string) => string) {
+function prepareProposal(proposal: Proposal, editRef: (id: string) => string, listedId: (id: string) => string) {
   const { texts: [heading, author, text], rules } = scanned([proposal.location.heading || undefined, oneLine(proposal.author ?? "") || undefined, proposal.text])
   const ref = proposal.untracked ? ` (${editRef(proposal.untracked)})` : ""
   const outcome = {
@@ -246,7 +246,9 @@ function prepareProposal(proposal: Proposal, editRef: (id: string) => string) {
     where({ ...proposal.location, heading }),
   ]
   const whole = text !== undefined && Array.from(text).length <= REDLINE_CAP
-  const hunk = whole ? { id: proposal.id, kind: proposal.kind, ...proposal.kind === "inserted" ? { after: text } : { before: text } } : undefined
+  const hunk = whole
+    ? { id: proposal.id, kind: proposal.kind, ...proposal.kind === "inserted" ? { after: text } : { before: text }, outcome: proposal.outcome, ...proposal.untracked && { untracked: listedId(proposal.untracked) } }
+    : undefined
   return { id: proposal.id, section: "proposals" as const, rules, text: `${proposal.id} · ${tags.join(" · ")}\n  text: ${block(text ?? "")}`, hunk }
 }
 

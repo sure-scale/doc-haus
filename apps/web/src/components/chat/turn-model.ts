@@ -1,5 +1,5 @@
 import type { Part } from "../../api/session-view"
-import type { ChangeHunk, CompareParams } from "../../api/ingest/compare"
+import type { ChangeHunk, CompareParams, ProposalOutcome } from "../../api/ingest/compare"
 import type { Citation } from "../../api/opencode/parts"
 import type { Todo } from "../TodoView"
 import { basename, stepLabel } from "./step-labels"
@@ -20,7 +20,8 @@ export type RedlineProposal = { id?: number; document: string; oldText: string; 
 // back to the blackline route, the counts the turn's card reports, and the
 // changes its pages listed, so the answer can draw each one it names.
 export type VersionCompare = Required<CompareParams> & { changes: number; untracked: number; hunks: ListedChange[] }
-export type ListedChange = Pick<ChangeHunk, "id" | "kind" | "before" | "after">
+// A proposal (P-id) also carries its outcome and the untracked edit it names.
+export type ListedChange = Pick<ChangeHunk, "id" | "kind" | "before" | "after"> & Partial<Pick<ProposalOutcome, "outcome" | "untracked">>
 
 // id is the server message id, carried on user turns so edit/retry can revert
 // the session back to that exact message. Optimistic turns added before a
@@ -137,11 +138,12 @@ function comparesOf(parts: Part[]): VersionCompare[] {
 }
 
 const CHANGE_KINDS: unknown[] = ["modified", "inserted", "deleted", "moved"] satisfies ChangeHunk["kind"][]
+const OUTCOMES: unknown[] = [undefined, "pending", "countered", "accepted", "rejected"] satisfies (ProposalOutcome["outcome"] | undefined)[]
 function listedChange(value: unknown): value is ListedChange {
   const hunk = value as Partial<Record<keyof ListedChange, unknown>> | null
-  const side = (text: unknown) => text === undefined || typeof text === "string"
-  return typeof hunk?.id === "string" && CHANGE_KINDS.includes(hunk.kind) && side(hunk.before) && side(hunk.after)
-    && (typeof hunk.before === "string" || typeof hunk.after === "string")
+  const optional = (text: unknown) => text === undefined || typeof text === "string"
+  return typeof hunk?.id === "string" && CHANGE_KINDS.includes(hunk.kind) && optional(hunk.before) && optional(hunk.after)
+    && (typeof hunk.before === "string" || typeof hunk.after === "string") && OUTCOMES.includes(hunk.outcome) && optional(hunk.untracked)
 }
 
 // The redline and tracked-changes tools both record a pending proposal and return

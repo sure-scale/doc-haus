@@ -222,8 +222,8 @@ test("each of left's proposals is listed with its outcome between the untracked 
   // A proposal is drawn in the chat as the text it inserts or deletes.
   expect((result.metadata!.hunks as { id: string }[]).map(hunk => hunk.id)).toEqual(["U1", "P1", "P2", "P3", "C1", "C2", "C3"])
   expect((result.metadata!.hunks as unknown[]).slice(1, 3)).toEqual([
-    { id: "P1", kind: "inserted", after: "Title passes on delivery." },
-    { id: "P2", kind: "deleted", before: ", without set-off" },
+    { id: "P1", kind: "inserted", after: "Title passes on delivery.", outcome: "accepted" },
+    { id: "P2", kind: "deleted", before: ", without set-off", outcome: "rejected", untracked: "U1" },
   ])
 })
 
@@ -314,11 +314,14 @@ test("instruction-like or invisible text in a proposal is flagged, never rewritt
 test("with no tracked changes in right, a rejected proposal names the change that lists its untracked edit, and that change names the proposal", async () => {
   const changes = [{ ...reversal, id: "C1", untracked: true }]
   route(() => Response.json(comparison({ leftCount: 1, rightCount: 0, changes, untracked: [reversal], proposals: [outcomes[1]!] })))
-  const output = (await run({})).output
+  const result = await run({})
+  const output = result.output
   expect(output).not.toContain("## Edits made without tracked changes")
   expect(output).toContain("Left's 1 proposal (its pending tracked changes): 0 still pending in right, 0 reversed by right's tracked change, 0 accepted, 1 rejected or changed without a tracked change.")
   expect(output).toContain("P2 · deleted by Avery Drafter · rejected or changed, with no tracked change in right (U1, listed as C1) · ")
   expect(output).toContain('C1 · modified · removes proposal P2 · no. 2.1, under "2. Payment", paragraph 4 of right')
+  // The chat links the proposal to the id the answer can name.
+  expect((result.metadata!.hunks as { id: string; untracked?: string }[]).find(hunk => hunk.id === "P2")?.untracked).toBe("C1")
 })
 
 test("a pending or accepted proposal whose paragraph also has an untracked edit says so, and only rejected ones are removed by it", async () => {
