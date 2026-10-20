@@ -20,8 +20,8 @@ const docx = (body: string) => Buffer.from(zipSync({
   "word/document.xml": strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document ${W}><w:body>${body}</w:body></w:document>`),
 }))
 const run = (text: string) => `<w:r><w:t xml:space="preserve">${text}</w:t></w:r>`
-const revision = (kind: "ins" | "del", text: string) =>
-  `<w:${kind} w:id="1" w:author="Counterparty" w:date="2026-01-01T00:00:00Z"><w:r><w:${kind === "del" ? "delText" : "t"} xml:space="preserve">${text}</w:${kind === "del" ? "delText" : "t"}></w:r></w:${kind}>`
+const revision = (kind: "ins" | "del", text: string, author = "Counterparty") =>
+  `<w:${kind} w:id="1" w:author="${author}" w:date="2026-01-01T00:00:00Z"><w:r><w:${kind === "del" ? "delText" : "t"} xml:space="preserve">${text}</w:${kind === "del" ? "delText" : "t"}></w:r></w:${kind}>`
 
 const markup = docx(
   `<w:p>${run("1. Indemnity")}</w:p>`
@@ -54,6 +54,29 @@ test("a counterparty markup is indexed with its proposals labelled, and citation
     const verified = await verifyCitation({ documentName: "Markup.docx", docPath, section: "1", excerpt, charStart, charEnd: charStart + excerpt.length })
     expect(verified).toMatchObject({ verified: true, charStart })
     expect(verified?.reanchored).toBeUndefined()
+  } finally {
+    db.close()
+  }
+}, 120_000)
+
+test("structure reads a markup's proposed wording, not its labels or struck text", async () => {
+  const author = "Counterparty Holdings LLC"
+  await ingestDocument(directory, "Structure.docx", docx(
+    `<w:p>${run("1. Definitions")}</w:p>`
+    + `<w:p>${revision("del", '"Affiliate" means any entity under common control.', author)}</w:p>`
+    + `<w:p>${revision("del", "Section 9 is hereby deleted.", author)}</w:p>`
+    + `<w:p>${revision("ins", "2. Termination", author)}</w:p>`
+    + `<w:p>${run("Either party may terminate on notice.")}</w:p>`,
+  ))
+  const docPath = path.join(directory, "Structure.docx")
+  const db = openDb(directory)
+  try {
+    const rows = (sql: string) => db.query(sql).all(docPath)
+    expect(rows("SELECT label, heading FROM sections WHERE doc_path = ? AND label IS NOT NULL ORDER BY ordinal"))
+      .toEqual([{ label: "1", heading: "Definitions" }, { label: "2", heading: "Termination" }])
+    expect(rows("SELECT term FROM defined_terms WHERE doc_path = ?")).toEqual([])
+    expect(rows("SELECT section_label FROM section_ops WHERE doc_path = ?")).toEqual([])
+    expect(rows("SELECT name FROM parties WHERE doc_path = ?")).toEqual([])
   } finally {
     db.close()
   }

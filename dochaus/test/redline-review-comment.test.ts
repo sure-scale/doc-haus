@@ -82,4 +82,21 @@ describe("redline review comments", () => {
       "Clarifies the integration wording while retaining a single operative clause.",
     )
   })
+
+  test("a clause copied with tracked-change labels is refused with the reason", async () => {
+    const fixture = await documentFixture()
+    const result = await redline.execute(
+      {
+        document: "agreement.docx",
+        clause: "The sample workshop inventory records [Tracked insertion by Counterparty: wooden] counters",
+        replacement: "The sample workshop inventory records counters.",
+        comment: "Restores the earlier inventory wording.",
+        author: "Reviewing Lawyer",
+      },
+      ctxFor(fixture.directory),
+    )
+
+    expect(result).toBe("agreement.docx contains tracked changes. Accept or reject them in Word before proposing changes to it.")
+    expect(pendingRedlinesForDoc(fixture.directory, fixture.document)).toEqual([])
+  })
 })

@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import mammoth from "mammoth"
 import { strToU8, zipSync } from "fflate"
-import { markTrackedChanges } from "./docx-tracked-text"
+import { markTrackedChanges, proposedView } from "./docx-tracked-text"
 import { docxodus } from "./docxodus"
 import { renderMarkdownToDocx } from "./render"
 
@@ -73,6 +73,32 @@ test("a deleted paragraph and a deleted table row keep their place and are label
   expect(extracted).toContain("[Tracked deletion by Reviewer: Deleted row.]")
 })
 
+test("a deleted row whose text is not itself tracked is still dropped, never read as agreed text", async () => {
+  const row = `<w:tbl><w:tr><w:trPr><w:del w:id="12" w:author="Reviewer"/></w:trPr><w:tc><w:p>${run("Untracked row text.")}</w:p></w:tc></w:tr></w:tbl>`
+  const alone = docx(row)
+  expect(markTrackedChanges(alone)).toBe(alone)
+  const extracted = await text(docx(`<w:p>${ins("Reviewer", run("Added."))}</w:p>${row}`))
+  expect(extracted).toContain("[Tracked insertion by Reviewer: Added.]")
+  expect(extracted).not.toContain("Untracked row text.")
+})
+
+test("changes in parts the reader skips are neither labelled nor counted", async () => {
+  const field = `<w:fldSimple w:instr=" DATE "><w:del w:id="13" w:author="Reviewer">${deleted("1 January")}</w:del></w:fldSimple>`
+  const textBox = `<mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"><mc:Choice Requires="wps"><w:r><w:drawing><w:txbxContent><w:p>${ins("Reviewer", run("Box text."))}</w:p></w:txbxContent></w:drawing></w:r></mc:Choice><mc:Fallback/></mc:AlternateContent>`
+  const skipped = docx(`<w:p>${run("Dated ")}${field}${textBox}</w:p>`)
+  expect(markTrackedChanges(skipped)).toBe(skipped)
+  const extracted = await text(docx(`<w:p>${run("Dated ")}${field}${ins("Reviewer", run("today"))}</w:p>`))
+  expect(extracted).toStartWith("[This Word file contains 1 pending tracked change by Reviewer,")
+  expect(extracted).toContain("Dated [Tracked insertion by Reviewer: today]")
+  // A dropped row's changes are unread too; a bare text box is read and labelled.
+  const droppedRow = `<w:tbl><w:tr><w:trPr><w:del w:id="14" w:author="Reviewer"/></w:trPr><w:tc><w:p>${run("Plain cell.")}${ins("Reviewer", run("Row insertion."))}</w:p></w:tc></w:tr></w:tbl>`
+  const bareBox = `<w:p><w:r><w:drawing><w:txbxContent><w:p>${ins("Reviewer", run("Box text."))}</w:p></w:txbxContent></w:drawing></w:r></w:p>`
+  const mixed = await text(docx(`${droppedRow}${bareBox}`))
+  expect(mixed).toStartWith("[This Word file contains 1 pending tracked change by Reviewer,")
+  expect(mixed).toContain("[Tracked insertion by Reviewer: Box text.]")
+  expect(mixed).not.toContain("Row insertion.")
+})
+
 test("text inserted by one author and deleted by another carries both labels", async () => {
   const nested = docx(`<w:p>${run("Term ")}${ins("Reviewer A", `${run("one ")}${del("Reviewer B", deleted("two"))}`)}</w:p>`)
   expect(await text(nested)).toContain("Term [Tracked insertion by Reviewer A: one [Tracked deletion by Reviewer B: two]]")
@@ -86,6 +112,30 @@ test("author names cannot break a label, a missing author is omitted, and commen
   const extracted = await text(awkward)
   expect(extracted).toContain("[Tracked insertion by Ops Team: added][Tracked deletion: removed]")
   expect(extracted).toStartWith("[This Word file contains 2 pending tracked changes by Ops Team, marked inline below. Pending tracked changes are not accepted text. It also contains 2 comments, which are not shown.]")
+})
+
+test("a removed break or symbol without wording stays unread beside a labelled change", async () => {
+  const extracted = await text(docx(`<w:p>${run("One")}${del("Reviewer", "<w:r><w:br/></w:r>")}${run("line")}${ins("Reviewer", run("."))}</w:p>`))
+  expect(extracted).toContain("Oneline[Tracked insertion by Reviewer: .]")
+})
+
+test("the proposed view blanks labels and removed wording at the same offsets", async () => {
+  const labelled = await text(docx(
+    `<w:p>${run("Notice ")}${del("Reviewer", deleted("within [five] days"))}${ins("Reviewer", run("within [ten] days"))}${run(".")}</w:p>`
+    + `<w:p>${ins("Reviewer", run("7.2 Termination"))}</w:p>`,
+  ))
+  const view = proposedView(labelled)
+  expect(view.length).toBe(labelled.length)
+  expect(view.split("\n").length).toBe(labelled.split("\n").length)
+  expect(view.split("\n").map(line => line.trim().replace(/\s+/g, " ")).filter(Boolean))
+    .toEqual(["Notice within [ten] days .", "7.2 Termination"])
+  const unpaired = await text(docx(
+    `<w:p>${del("Reviewer", deleted("half [open"))}${run(" kept.")}</w:p><w:p>${run("3. Remedies")}</w:p>`,
+  ))
+  expect(proposedView(unpaired).split("\n").map(line => line.trim()).filter(Boolean).at(-1)).toBe("3. Remedies")
+  // Without the summary line a file has no labels, even if its wording looks like one.
+  const clean = "[Tracked insertion: 4. Literal Heading] stays as written."
+  expect(proposedView(clean)).toBe(clean)
 })
 
 test("a Word redline produced by comparison is labelled", async () => {
