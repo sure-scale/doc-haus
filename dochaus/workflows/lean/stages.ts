@@ -12,8 +12,8 @@ import { requestedFilesItems } from "./requested-files"
 import { combinedFileItems, DELIVERED_NOTES, requestedMemo } from "./deliverables"
 import { evidenceOutputValid } from "./evidence"
 import { currentResearchGaps, researchOutputValid } from "./research"
-import { normalizePreferences, readFirmDraftingPreferences } from "../../lib/drafting-preferences"
-import { pageFurniture, type FurnitureKind } from "../../lib/page-furniture"
+import { normalizeLegend, normalizePreferences, readFirmDraftingPreferences } from "../../lib/drafting-preferences"
+import { pageFurniture, type FurnitureKind, type FurnitureOverrides } from "../../lib/page-furniture"
 import { readFirmPreferences } from "../../lib/preferences"
 import { existsSync, readFileSync } from "node:fs"
 import { ensureParagraphPointers, paragraphSha256 } from "../../lib/drafting-amendment"
@@ -333,7 +333,8 @@ export async function acceptStageReply(directory: string, step: StepID, reply: s
     const check = checkDraft(directory, reply)
     if (check.issues.length) return { ...check, outputs: [] }
     // A plan without a form (a legacy plan, or an outline's last attempt) carries the plain page numbers.
-    const furniture = renderedFurniture(directory, plannedDocument(directory, document)?.form ?? "other")
+    const planned = plannedDocument(directory, document)
+    const furniture = renderedFurniture(directory, planned?.form ?? "other", requestedFurniture(planned?.furniture))
     const rendered = await renderMarkdownToDocx(options.presentation?.source ?? reply, undefined, furniture)
       .then(result => options.presentation ? presentDraft(result.bytes, options.presentation.parts, options.presentation.title !== false) : { bytes: result.bytes, attribution: undefined })
       .then(result => result, (error: unknown) => ({ error }))
@@ -378,11 +379,21 @@ export async function acceptStageReply(directory: string, step: StepID, reply: s
 }
 
 /** The page furniture a file the run renders carries under the firm's current
- * settings, dated by the run's start in run state rather than the render clock
- * or a step's start (steps restart), so every file and render in the run reads
- * the same date. */
-export function renderedFurniture(directory: string, kind: FurnitureKind) {
-  return pageFurniture(kind, normalizePreferences(readFirmPreferences()), readLeanState(directory)?.created_at)
+ * settings and what the request asks of it, dated by the run's start in run
+ * state rather than the render clock or a step's start (steps restart), so
+ * every file and render in the run reads the same date. */
+export function renderedFurniture(directory: string, kind: FurnitureKind, overrides?: FurnitureOverrides) {
+  return pageFurniture(kind, normalizePreferences(readFirmPreferences()), readLeanState(directory)?.created_at, overrides)
+}
+
+/** A planned document's furniture lines as overrides; a lawyer's edited legend
+ * is cleaned as the outline's is. */
+function requestedFurniture(furniture: PlannedDocument["furniture"]): FurnitureOverrides {
+  return {
+    ...(furniture?.legend !== undefined ? { legend: normalizeLegend(furniture.legend) } : {}),
+    ...(furniture?.draft_line === false ? { draftLine: false as const } : {}),
+    ...(furniture?.page_numbers === false ? { pageNumbers: false as const } : {}),
+  }
 }
 
 /** The notes are a document for the reader when the request asks for a memo;
@@ -400,12 +411,12 @@ export async function paragraphRows(docxPath: string): Promise<ParagraphRow[]> {
 /** A draft step's accepted document: planned, with its Word body and its paragraphs. */
 /** What a document's draft prompt and code read of its plan entry: its title,
  * purpose and parts, its mode, the template it is drawn from, the template
- * parts it leaves out and its form, which sets the rendered body's page
- * furniture. Its file and deliverable (which package review rewrites),
+ * parts it leaves out, and its form and furniture lines, which set the rendered
+ * body's page furniture. Its file and deliverable (which package review rewrites),
  * executing parties and guidance selection are not read by the draft. */
 function draftedEntry(entry: PlannedDocument | undefined) {
   if (!entry) return null
-  return { title: entry.title, purpose: entry.purpose, parts: entry.parts, mode: entry.mode, template: templateSource(entry), left_out: entry.left_out, form: entry.form }
+  return { title: entry.title, purpose: entry.purpose, parts: entry.parts, mode: entry.mode, template: templateSource(entry), left_out: entry.left_out, form: entry.form, furniture: entry.furniture }
 }
 
 export function draftOutputValid(directory: string, step: StepID) {

@@ -93,6 +93,8 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
         "- Under each title write its form: \"Form: agreement\" for an instrument its parties execute to create, vary or end rights or obligations, " +
         "\"Form: advice\" for legal analysis or advice set out as a memorandum or note rather than correspondence, \"Form: advice letter\" for a letter " +
         "giving the client legal advice, \"Form: letter\" for other correspondence addressed to a recipient and signed by the sender, otherwise \"Form: other\".",
+        "- Only when the request asks for a document's page header legend, draft line or page numbers to differ, write under its title \"Legend: <the legend in the request's own words>\" " +
+        "or \"Legend: none\", \"Draft line: none\" or \"Page numbers: none\" as it asks.",
         "- Under each title write \"Executed by: <party>; <party>\" naming each party who executes that document, as the request or sources name them, or \"Executed by: none\" for a document that takes no legal act. Leave the line out when neither says who executes it. " +
         "Plan no document the instructions leave out of this package. For each legal act the instructions direct, unless they leave out the document of the party who can take it, " +
         "plan the act in a document that party executes, adding a companion document where none is planned.",
