@@ -379,7 +379,8 @@ export function useSessionEvents({
     if (childRef.current.size !== knownChildren) void reconcilePermissions(signal)
     bump((n) => n + 1)
     // Finalize only when THIS turn produced a NEW settled answer: the last message
-    // overall is a completed assistant whose id we have not already settled.
+    // overall is a completed assistant whose id we have not already settled, and
+    // the engine reports the session idle.
     // seenRef holds every settled message id (see load/finalize). Two cases this
     // rules out, both of which otherwise dropped the optimistic in-flight turn and
     // hid the bubble until a later session.idle re-rendered it all at once:
@@ -387,10 +388,15 @@ export function useSessionEvents({
     //    message is the PRIOR turn's completed assistant — already in seenRef.
     //  - just after dispatch, before the server has persisted this turn's messages,
     //    the last message is still that prior completed assistant.
-    // While streaming, the last message is this turn's assistant but not yet
-    // completed; once it completes it is new (not in seenRef) and we finalize.
+    // A multi-step answer also completes an assistant message at the end of each
+    // step while the engine runs the next one, so only an idle session settles.
     const last = msgs[msgs.length - 1]?.info
-    if (last?.role === "assistant" && last.time.completed && !seenRef.current.has(last.id)) finalize()
+    if (last?.role !== "assistant" || !last.time.completed || seenRef.current.has(last.id)) return
+    const status = await bounded(getSessionStatus(client, sessionRef.current), 5_000, "Session status").catch(
+      () => undefined,
+    )
+    if (status?.type !== "idle" || signal.aborted || retiredSession.current === sessionRef.current) return
+    if (busyRef.current && !seenRef.current.has(last.id)) finalize()
   }
 
   async function reconcilePermissions(signal: AbortSignal) {
