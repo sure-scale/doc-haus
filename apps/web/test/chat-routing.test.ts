@@ -193,6 +193,26 @@ describe("chat dispatch", () => {
     ).toBe(true)
   })
 
+  test("a saved turn keeps each step's text apart, as the live view does", () => {
+    const text = (id: string, messageID: string, value: string) => ({
+      type: "text" as const,
+      id,
+      sessionID: "ses_current",
+      messageID,
+      text: value,
+      time: { start: 1, end: 2 },
+    })
+    const [, answer] = toTurns(
+      [
+        { info: { id: "msg_user", role: "user", agent: "compare" }, parts: [text("part-user", "msg_user", "Compare the drafts.")] },
+        { info: { id: "msg_step1", role: "assistant" }, parts: [text("part-1", "msg_step1", "Comparing the two drafts.")] },
+        { info: { id: "msg_step2", role: "assistant" }, parts: [text("part-2", "msg_step2", "**Changes**\n\nOne change.")] },
+      ],
+      "",
+    )
+    expect(answer!.text).toBe("Comparing the two drafts.\n\n**Changes**\n\nOne change.")
+  })
+
   test("keeps a hidden recovery instruction as an assistant-turn boundary", () => {
     const text = (id: string, messageID: string, value: string) => ({
       type: "text" as const,
