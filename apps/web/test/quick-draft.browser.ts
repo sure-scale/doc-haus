@@ -14,10 +14,11 @@ const directory = await mkdtemp(path.join(os.tmpdir(), "dochaus-quick-draft-"))
 const shots = process.env.QUICK_DRAFT_SCREENSHOTS
 const model = { providerID: "test", id: "model" }
 const BANNER = "Quick draft — full drafting checks not run."
-// A quick answer as the engine stores it: a narration line before its first
-// tool call, then the form line, the draft with a placeholder, its sources and
+// A quick answer as the engine stores it: narration lines in the steps that
+// call tools, then the form line, the draft with a placeholder, its sources and
 // an open-items list that misses the placeholder.
 const NARRATION = "Quick draft on your invoices — I'll pull the payment terms."
+const LATER_NARRATION = "I've got the figures — now I'll verify them."
 const QUICK_TEXT = "Dear [Client contact], both invoices remain unpaid [Letter.docx § 1].\n\nSources:\n- unpaid invoices [Letter.docx § 1]\n\nOpen items:\nNone."
 const QUICK_ANSWER = `Form: advice letter\n\n${QUICK_TEXT}`
 const LEGEND = "Privileged & confidential"
@@ -177,6 +178,10 @@ const server = Bun.serve({
                   { type: "text", text: NARRATION },
                   { type: "tool", id: `call_${n}`, name: "search-document", time, state: { status: "completed", input: { query: "invoices" }, content: [{ type: "text", text: "Both invoices remain unpaid." }], metadata: { citations: [] } } },
                 ] },
+                { type: "assistant", id: `msg_c${n}`, agent, model, finish: "tool-calls", time, content: [
+                  { type: "text", text: LATER_NARRATION },
+                  { type: "tool", id: `call_c${n}`, name: "cite", time, state: { status: "completed", input: { quote: "Both invoices remain unpaid." }, content: [{ type: "text", text: "Verified." }] } },
+                ] },
                 { type: "assistant", id: `msg_b${n}`, agent, model, finish: "stop", time, content: [{ type: "text", text: QUICK_ANSWER }] },
               ]
             : [{ type: "assistant", id: `msg_a${n}`, agent, model, finish: "stop", time, content: [{ type: "text", text: "Answered." }] }]
@@ -266,6 +271,7 @@ try {
     // Only the draft is the quick text: no narration line, no form line, and
     // no legend while the firm has none.
     assert.equal(await quick.getByText(NARRATION).count(), 0, "the narration line is not quick text")
+    assert.equal(await quick.getByText(LATER_NARRATION).count(), 0, "narration in a later working step is not quick text")
     assert.equal(await quick.getByText("Form: advice letter").count(), 0, "the form line is not shown")
     assert.equal(await quick.locator(".quick-draft-legend").count(), 0, "no legend while the firm's advice legend is none")
     // Code lists the placeholder the answer's own open items missed.

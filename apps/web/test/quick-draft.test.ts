@@ -251,14 +251,15 @@ describe("quick text", () => {
     state: { status: "completed" as const, input: { query: "payment terms" }, output: "", title: "search-document" },
   })
   const NARRATION = "Quick draft on your supplier comparison — I'll pull the caps and payment terms."
+  const LATER_NARRATION = "I've got the key figures — now I'll verify the details."
   const DRAFT = "Dear client,\n\nThe caps and payment terms are below."
   const conversation = (agent: string, steps: { info: { id: string; role: "assistant" }; parts: ReturnType<typeof text | typeof tool>[] }[]) =>
     toTurns([{ info: { id: "msg_u", role: "user", agent }, parts: [text("msg_u", "Draft a short email on the caps.")] }, ...steps], "")
 
-  test("a quick draft's text leaves out what it wrote before its first tool call; the working draft follows", () => {
+  test("a quick draft's text leaves out what it wrote in steps that call a tool; the working draft follows", () => {
     const steps = [
       { info: { id: "msg_1", role: "assistant" as const }, parts: [text("msg_1", NARRATION), tool("msg_1")] },
-      { info: { id: "msg_2", role: "assistant" as const }, parts: [tool("msg_2")] },
+      { info: { id: "msg_2", role: "assistant" as const }, parts: [text("msg_2", LATER_NARRATION), tool("msg_2")] },
       { info: { id: "msg_3", role: "assistant" as const }, parts: [text("msg_3", DRAFT)] },
     ]
     const turns = conversation(QUICK_DRAFT, steps)
@@ -266,17 +267,11 @@ describe("quick text", () => {
     expect(turns[1]!.steps.length).toBeGreaterThan(0)
     expect(upgradeInput(turns, 1)?.workingDraft).toBe(DRAFT)
     // Other assistants keep each step's text, as before.
-    expect(conversation("qa", steps)[1]!.text).toBe(`${NARRATION}\n\n${DRAFT}`)
+    expect(conversation("qa", steps)[1]!.text).toBe(`${NARRATION}\n\n${LATER_NARRATION}\n\n${DRAFT}`)
   })
 
-  test("text written after retrieval began stays, even in a step that calls a tool", () => {
-    const turns = conversation(QUICK_DRAFT, [
-      { info: { id: "msg_1", role: "assistant" as const }, parts: [tool("msg_1")] },
-      { info: { id: "msg_2", role: "assistant" as const }, parts: [text("msg_2", DRAFT), tool("msg_2")] },
-      { info: { id: "msg_3", role: "assistant" as const }, parts: [text("msg_3", "Sources: [Letter.docx § 1]")] },
-    ])
-    expect(turns[1]!.text).toBe(`${DRAFT}\n\nSources: [Letter.docx § 1]`)
-    // An answer with no tool call is all answer.
+  test("an answer with no tool call is all answer; a turn with text only in working steps keeps it", () => {
     expect(conversation(QUICK_DRAFT, [{ info: { id: "msg_1", role: "assistant" as const }, parts: [text("msg_1", DRAFT)] }])[1]!.text).toBe(DRAFT)
+    expect(conversation(QUICK_DRAFT, [{ info: { id: "msg_1", role: "assistant" as const }, parts: [text("msg_1", NARRATION), tool("msg_1")] }])[1]!.text).toBe(NARRATION)
   })
 })
