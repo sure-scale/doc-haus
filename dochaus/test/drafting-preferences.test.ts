@@ -128,12 +128,14 @@ test("a retired stored setting is kept as saved and adds no drafting instruction
   }
 })
 
-test("the quick-draft offer is a stored chat setting: Ask by default, Off kept, never an instruction", () => {
+test("the quick-draft offer is a stored chat setting: Ask by default, Automatic and Off kept, never an instruction", () => {
   expect(DEFAULT_DRAFTING.quickDraftOffer).toBe("ask")
-  expect(normalizePreferences({ quickDraftOffer: "off" }).quickDraftOffer).toBe("off")
-  for (const invalid of ["always", "quick", true, null, 1])
+  for (const saved of ["ask", "auto", "off"]) {
+    expect(normalizePreferences({ quickDraftOffer: saved }).quickDraftOffer).toBe(saved)
+    expect(renderInstructions(normalizePreferences({ quickDraftOffer: saved }))).toBe(renderInstructions(DEFAULT_DRAFTING))
+  }
+  for (const invalid of ["always", "quick", "automatic", true, null, 1])
     expect(normalizePreferences({ quickDraftOffer: invalid }).quickDraftOffer).toBe("ask")
-  expect(renderInstructions(normalizePreferences({ quickDraftOffer: "off" }))).toBe(renderInstructions(DEFAULT_DRAFTING))
 })
 
 test("invalid drafting field types and choices fall back to the same valid defaults", () => {

@@ -351,6 +351,43 @@ try {
     await context.close()
   }
   {
+    // Automatic: the firm's setting is the consent, so Auto starts the quick
+    // draft with no question, under its banner and upgrade.
+    const before = counts()
+    config.offer = "auto"
+    const request = "Draft a short covering email to the client on the invoices."
+    const { context, page, send } = await open()
+    await send(request)
+    await until(() => prompts.length === before.prompts + 1, "Automatic sends the request to Quick draft")
+    assert.equal(prompts.at(-1)!.agent, "quick-draft")
+    assert.equal(prompts.at(-1)!.text, request)
+    await page.getByRole("note").filter({ hasText: BANNER }).waitFor()
+    await page.getByRole("button", { name: "Run full drafting cycle", exact: true }).waitFor()
+    await settle()
+    assert.equal(forms.length, before.forms, "no question under Automatic")
+    assert.equal(starts.length, before.starts, "no full run under Automatic")
+    if (shots) await page.screenshot({ path: path.join(shots, "6-automatic-quick-draft.png") })
+    config.offer = "ask"
+    console.log("PASS Automatic: an eligible request starts a quick draft with no question; the banner and upgrade show")
+    await context.close()
+  }
+  {
+    // Automatic leaves eligibility alone: legal effect still runs in full.
+    const before = counts()
+    config.offer = "auto"
+    config.router = scope({ legal_effect: "yes" })
+    const { context, send } = await open()
+    await send("Draft a short notice terminating the supply agreement.")
+    await until(() => starts.length === before.starts + 1, "the full run starts")
+    await settle()
+    assert.equal(forms.length, before.forms, "no question under Automatic")
+    assert.equal(prompts.length, before.prompts, "no quick draft for a request with legal effect")
+    config.router = scope()
+    config.offer = "ask"
+    console.log("PASS Automatic: a request with legal effect starts the full run with no question")
+    await context.close()
+  }
+  {
     // A request with legal effect is not eligible: Full, with no question.
     const before = counts()
     config.router = scope({ legal_effect: "yes" })

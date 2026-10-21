@@ -131,11 +131,12 @@ export default function DraftingTab({ onSaved }: { onSaved: (text: string) => vo
           </FieldRow>
           <SegRow
             label="Quick drafts in chat"
-            hint="When Auto sees a short request a quick draft can serve, ask before starting a full drafting run."
+            hint="When Auto sees a short request a quick draft can serve, ask before starting a full drafting run. Automatic: start a quick draft without asking when the request suits one."
             value={prefs.quickDraftOffer}
             onChange={(quickDraftOffer) => set({ quickDraftOffer: quickDraftOffer as DraftingPreferences["quickDraftOffer"] })}
             options={[
               { value: "ask", label: "Ask" },
+              { value: "auto", label: "Automatic" },
               { value: "off", label: "Off" },
             ]}
           />
