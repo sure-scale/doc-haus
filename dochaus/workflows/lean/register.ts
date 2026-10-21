@@ -3,7 +3,7 @@ import { readChangeList, type ApplyResult } from "./checks"
 import { readLeanPlan, type DocID } from "./plan"
 import { REQUEST_SOURCE, matterSourceIDs, type SourceQuote } from "./quotes"
 import { approvedResearch } from "./research"
-import { documentOrder, findingRoute, raisedFindings, type FindingOrigin, type FindingTarget } from "./review-findings"
+import { documentOrder, findingRoute, heldBackReason, holdsBeyondMarket, raisedFindings, type FindingOrigin, type FindingTarget } from "./review-findings"
 import { readLeanJson, readQuestions, type ReviewStageID } from "./state"
 
 // The issue register: a view over the run's own records, built beside the
@@ -13,7 +13,7 @@ import { readLeanJson, readQuestions, type ReviewStageID } from "./state"
 // the group whose paragraph it amends; apply.json gives its outcome. Nothing
 // is recorded for the register itself, and it carries no text into delivery.
 
-export type RegisterDisposition = "amended" | "not_amended" | "deferred" | "recommendation" | "rejected" | "question" | "earlier_document" | "memo" | "unadjudicated"
+export type RegisterDisposition = "amended" | "not_amended" | "deferred" | "recommendation" | "rejected" | "question" | "earlier_document" | "memo" | "held_back" | "unadjudicated"
 export type RegisterEntry = {
   id: string
   document: FindingTarget
@@ -26,7 +26,8 @@ export type RegisterEntry = {
   instead?: string
   /** amended when an amendment for it was applied; not_amended when its group's
    * amendments were withheld, unapplied or never made; earlier_document when it
-   * concerns a document already final, disclosed in the notes. */
+   * concerns a document already final, disclosed in the notes; held_back when
+   * the run's Posture held it back as beyond market, disclosed in the notes. */
   disposition: RegisterDisposition
   /** For a finding a group resolves, each amendment of the group's paragraphs and what apply did with it. */
   amendments: { id: string; pid: string; outcome: "applied" | "unapplied" | "withheld" | "pending" }[]
@@ -40,10 +41,12 @@ export function issueRegister(directory: string): { entries: RegisterEntry[] } {
   const plans = new Map((readLeanPlan(directory)?.documents ?? []).map(row => [row.id as string, readChangePlan(directory, row.id)]))
   const questions = new Map(readQuestions(directory).map(row => [row.id, row]))
   const order = documentOrder(directory)
+  const holds = holdsBeyondMarket(directory)
   return { entries: raisedFindings(directory).map(row => {
     const base = { id: row.id, document: row.document, raised_in: row.raised_in, stage: row.stage, ...(row.pids ? { pids: row.pids } : {}),
       origin: row.origin, basis: findingBasis(directory, row.sources), finding: row.finding, ...(row.instead ? { instead: row.instead } : {}), amendments: [] }
-    const route = findingRoute(order, row)
+    const route = findingRoute(order, row, holds)
+    if (route === "held") return { ...base, disposition: "held_back" as const, reason: heldBackReason(directory, row) }
     if (route === "memo") return { ...base, disposition: "memo" as const }
     if (route === "earlier") return { ...base, disposition: "earlier_document" as const }
     const target = row.document as DocID

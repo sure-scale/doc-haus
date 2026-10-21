@@ -1090,3 +1090,20 @@ test("status reports the Posture the run drafts to: the plan's, else the matter'
   writeLeanPlan(directory, [SUPPLY_NOTE], undefined, undefined, undefined, "conservative")
   expect(leanDraftingStatus(directory)?.plan?.posture).toBe("conservative")
 })
+
+test("status counts the review findings the run's Posture held back as beyond market, and none under Client-favorable", () => {
+  const directory = leanFixtureMatter("lean-held-back-status-")
+  directories.push(directory)
+  const northwind = { party: "Northwind Traders Ltd", stated: true }
+  const finding = (balance: string, origin: string) =>
+    ({ id: `f-${balance}-${origin}`, document: "d1", origin, balance, favours: northwind.party, finding: `A ${balance} ${origin} point.`, sources: [] })
+  writeLeanPlan(directory, [SUPPLY_NOTE], undefined, northwind, undefined, "balanced")
+  expect(leanDraftingStatus(directory)?.plan?.held_back).toBe(0)
+  mkdirSync(path.join(directory, ".dochaus", "lean", "d1"), { recursive: true })
+  // An instruction is never held back; a market finding is drafted.
+  writeFileSync(path.join(directory, ".dochaus", "lean", "d1", "review.json"), JSON.stringify({ findings: [
+    finding("beyond_market", "missing_protection"), finding("beyond_market", "law"), finding("beyond_market", "request"), finding("market", "missing_protection")] }))
+  expect(leanDraftingStatus(directory)?.plan?.held_back).toBe(2)
+  writeLeanPlan(directory, [SUPPLY_NOTE], undefined, northwind, undefined, "client-favorable")
+  expect(leanDraftingStatus(directory)?.plan?.held_back).toBe(0)
+})
