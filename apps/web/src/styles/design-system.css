@@ -79,32 +79,40 @@ input:not([type="checkbox"]):not([type="radio"]), select, textarea {
 .list-row-actions .icon-btn.is-primary { border-color: transparent; background: var(--accent-soft); }
 .badge-quiet { font-weight: 400; background: transparent; border-color: var(--border); }
 
-/* The section border supplies the Matters divider; keep search with its list. */
-.page-head.matters-head { margin-bottom: 0; border-bottom: 0; }
+/* Keep search with the matter collection in the shared library layout. */
 .matters-list-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 12px 24px; margin-bottom: 12px; }
 .matters-index-list > .list-row { margin-inline: 0; padding-inline: 0; }
-.matters-list-toolbar h2 { margin: 0; text-transform: none; }
 .matters-list-toolbar .page-filter { width: min(100%, 300px); min-width: 0; }
+.matters-layout > .matter-create-panel { grid-column: 2; grid-row: 1; }
+.matters-layout > .library-collection { grid-column: 1; grid-row: 1; }
+.matter-create-toggle { display: none; }
 
-/* New-matter fields use one control size, including the custom picker. */
-.matter-create-row { flex-wrap: wrap; align-items: stretch; }
-.matter-create-row .matter-create-title { flex: 1 1 260px; min-width: 0; }
-.matter-create-row .matter-create-reference { flex: 0 1 180px; min-width: 0; }
-.matter-create-row .matter-create-client { flex: 0 1 220px; min-width: 0; }
-.matter-create-row .matter-create-posture { flex: 0 1 220px; min-width: 0; }
-.matter-create-row .jx-select { flex: 0 1 220px; min-width: 0; }
+/* Pair optional fields when the right-hand panel has room. */
+.matter-create-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; container-type: inline-size; }
+.matter-create-row > .matter-create-title,
+.matter-create-row > button { grid-column: 1 / -1; }
+.matter-create-row > input,
+.matter-create-row > select,
+.matter-create-row > .jx-select { width: 100%; min-width: 0; }
 .matter-create-row input,
 .matter-create-row select,
 .matter-create-row button { height: var(--ctl-h); min-height: var(--ctl-h); padding: 0 12px; font-size: 14px; line-height: 20px; border-radius: var(--radius-md); }
 .matter-create-row select { padding-right: 32px; }
 .matter-create-row .jx-trigger { width: 100%; min-width: 0; font-weight: 400; }
 .matter-create-row .jx-trigger.is-empty { color: var(--placeholder); }
-.matter-create-row > button { flex-shrink: 0; }
 
-@media (max-width: 700px) {
-  .matter-create-row > input,
-  .matter-create-row > .jx-select,
-  .matter-create-row > button { flex: 1 1 100%; width: 100%; }
+@container (max-width: 420px) {
+  .matter-create-row > * { grid-column: 1 / -1; }
+}
+
+@media (max-width: 760px) {
+  .matters-layout > .matter-create-panel { grid-column: auto; grid-row: auto; padding: 0; border: 0; }
+  .matters-layout > .library-collection { grid-column: auto; grid-row: auto; padding-top: 24px; border-top: 1px solid var(--border-soft); }
+  .matter-create-heading { display: block; margin-bottom: 0; }
+  .matter-create-label { display: none; }
+  .matter-create-toggle { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; min-height: 44px; padding: 10px 12px; color: var(--accent); background: var(--accent-soft); border-color: var(--accent-border); font-size: 14px; font-weight: 600; }
+  .matter-create-row { margin-top: 16px; }
+  .matter-create-row:not(.is-open) { display: none; }
 }
 
 /* Keep the actual extraction/review model; only remove the outer card. */
