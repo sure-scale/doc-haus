@@ -1,5 +1,5 @@
 {
-  "version": 5,
-  "name": "2.0.3",
-  "notes": "Compare two versions of a Word document: download a blackline with edits the other side made without tracking listed first, and ask in chat what each change does and who it favours. Record the client you act for on a matter, and optionally the matter's own Posture, so drafting knows whose side you're on. The other side's tracked changes are read as proposals, not agreed text. Drafts carry page numbers, a dated draft line and, if you set one, your firm's legend. Also: add emails and Excel files to a matter, chat answers that appear live and show while they're working, and uploading a file with an existing name no longer replaces it."
+  "version": 6,
+  "name": "2.0.4",
+  "notes": "Quick drafts in chat: ask for a short email or letter and get a draft back in the chat, then run the full drafting cycle with one click if it needs more. In Settings, choose whether Auto asks first or starts a quick draft on its own. Stop a chat answer partway and keep what it has written so far. Answer a drafting question with \"use your judgement\" and the decision is made for you, then listed in the drafting notes to confirm. Also: export the review table to CSV or Word, redaction that also clears names from links and other hidden parts of a Word file, cleaner headings in drafts, a check for broken cross-references and defined terms, and setup asks for your firm's date format."
 }
