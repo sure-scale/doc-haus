@@ -25,6 +25,10 @@ export type GridCellData = {
 }
 export type GridCellComment = { id: string; text: string; at: number }
 export type Grid = { columns: GridColumn[]; cells: Record<string, GridCellData> }
+
+export function cellKey(docName: string, columnId: string) {
+  return `${docName}::${columnId}`
+}
 export type RecheckScope = { passages: number; read: number; candidates: number; reread: number; terms: string[]; channels: string[] }
 export type GridRecheck = { outcome: "found" | "not_found" } & RecheckScope
 export type RecheckPassages = { citations: Citation[]; passages: string; scope: RecheckScope }

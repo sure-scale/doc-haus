@@ -12,6 +12,7 @@
   "dependencies": {
     "@opencode/client": "workspace:*",
     "@fontsource/space-grotesk": "^5.2.10",
+    "docx": "9.7.1",
     "docxodus": "^13.0.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
