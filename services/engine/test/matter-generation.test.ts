@@ -26,12 +26,14 @@ test("cold native matter generation uses the selected model/variant and refuses 
   await symlink(path.join(original, "dochaus", "plugin", "legal-v2.ts"), path.join(repository, "dochaus", "plugin", "legal-v2.ts"))
   await symlink(path.join(original, "dochaus", "plugin", "research-mcp.ts"), path.join(repository, "dochaus", "plugin", "research-mcp.ts"))
   const requests: { model: string; stream?: boolean; messages: { role: string; content: unknown }[];
-    temperature?: number; headers: { variant: string | null; session: string | null } }[] = []
-  const fixture = { fail: false }
+    temperature?: number; max_tokens?: number; max_completion_tokens?: number; headers: { variant: string | null; session: string | null } }[] = []
+  const fixture = { fail: false, healthStatus: 0 }
   const provider = Bun.serve({ port: 0, async fetch(request) {
     if (new URL(request.url).pathname !== "/v1/chat/completions") return Response.json({ error: { message: "Unexpected fixture route" } }, { status: 404 })
     const body = await request.json()
     requests.push({ ...body, headers: { variant: request.headers.get("x-fixture-variant"), session: request.headers.get("x-opencode-session") } })
+    if (fixture.healthStatus) return Response.json({ error: { message: fixture.healthStatus === 401
+      ? "Synthetic API key has expired: synthetic-private-value" : "Account credits expired; authentication allowance exceeded" } }, { status: fixture.healthStatus })
     if (fixture.fail) return Response.json({ error: { message: "Synthetic model refusal", type: "invalid_request_error", code: "model_unavailable" } }, { status: 400 })
     // Generate.text returns one string, but native LLM.generate collects a
     // provider stream. Support both protocol modes without changing the engine.
@@ -133,6 +135,35 @@ test("cold native matter generation uses the selected model/variant and refuses 
     refusals.push({ name: "malformed JSON", status: malformed.status, expected: 400 })
     expect(refusals.filter(refusal => refusal.status !== refusal.expected), JSON.stringify(refusals)).toEqual([])
     expect(requests).toHaveLength(1)
+    const testConnection = (body: object = { providerID: "generation-fixture", modelID: "configured-note" }, directory = matter, authorized = true) =>
+      fetch(base + "/api/dochaus/provider-test", { method: "POST", headers: { "content-type": "application/json", "x-opencode-directory": directory,
+        ...(authorized ? { authorization } : {}) }, body: JSON.stringify(body) })
+    expect((await testConnection(undefined, matter, false)).status).toBe(401)
+    expect((await testConnection(undefined, outside)).status).toBe(403)
+    expect((await testConnection({ providerID: "generation-fixture", modelID: "configured-note", prompt: "No custom prompt" })).status).toBe(400)
+    expect(requests).toHaveLength(1)
+    const healthy = await Promise.all([testConnection(), testConnection()])
+    expect(await healthy[0].json()).toEqual({ ok: true })
+    expect(await healthy[1].json()).toEqual({ ok: true })
+    expect(requests).toHaveLength(2)
+    expect(requests[1].max_completion_tokens ?? requests[1].max_tokens).toBeUndefined()
+    expect(requests[1].headers.session).toMatch(/^ses_/)
+    expect(JSON.stringify(requests[1].messages)).toContain("Reply with OK.")
+    expect(JSON.stringify(requests[1].messages)).not.toContain("working note")
+    fixture.healthStatus = 401
+    expect(await (await testConnection()).json()).toEqual({ ok: true })
+    expect(requests).toHaveLength(2)
+    const expired = await testConnection({ providerID: "generation-fixture", modelID: "configured-note", force: true })
+    expect(expired.status).toBe(503)
+    const expiry = await expired.json()
+    expect(expiry).toMatchObject({ ok: false, kind: "auth", expired: true })
+    expect(JSON.stringify(expiry)).not.toContain("synthetic-private-value")
+    fixture.healthStatus = 429
+    expect(await (await testConnection({ providerID: "generation-fixture", modelID: "configured-note", force: true })).json()).toMatchObject({ kind: "unavailable" })
+    const beforeUnknown = requests.length
+    expect(await (await testConnection({ providerID: "generation-fixture", modelID: "unavailable-note", force: true })).json()).toMatchObject({ kind: "model" })
+    expect(requests).toHaveLength(beforeUnknown)
+    fixture.healthStatus = 0
     fixture.fail = true
     expect((await request({ prompt: "Exercise a configured provider refusal." })).status).toBe(503)
     expect(requests.every(request => request.model === "configured-note")).toBe(true)

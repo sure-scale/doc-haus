@@ -2,6 +2,8 @@ import { startupObservation, startupObservationEnabled, startupObservationSpan }
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
 import { appendTrace, describeError, ensureTraceRoot, resolveTraceRoot, sha256, TRACE_ROOT_ENV } from "../../../dochaus/lib/trace-sink"
 import { NodeServices } from "@effect/platform-node"
+import { LLMClient } from "@opencode/ai"
+import { RequestExecutor } from "@opencode/ai/route"
 import { Config } from "@opencode/core/config"
 import { AbsolutePath } from "@opencode/core/schema"
 import { Bus } from "@opencode/core/bus"
@@ -25,14 +27,13 @@ import { Plugin } from "@opencode/core/plugin"
 import { Agent } from "@opencode/schema/agent"
 import { Model } from "@opencode/core/model"
 import { Provider } from "@opencode/core/provider"
-import { Generate } from "@opencode/core/generate"
 import { Permission } from "@opencode/schema/permission"
 import { Session as SessionSchema } from "@opencode/schema/session"
 import { makeLocationNode } from "@opencode/util/effect/app-node"
 import { FSUtil } from "@opencode/util/fs-util"
 import { Global } from "@opencode/util/global"
 import { Context, Deferred, Effect, Layer, Logger, Option, References, Schema, Tracer } from "effect"
-import { HttpEffect, HttpMiddleware, HttpRouter, HttpServer, HttpServerRequest } from "effect/unstable/http"
+import { HttpClient, HttpEffect, HttpMiddleware, HttpRouter, HttpServer, HttpServerRequest } from "effect/unstable/http"
 import path from "node:path"
 import { existsSync, mkdirSync, openSync, closeSync, readFileSync, unlinkSync, writeFileSync, realpathSync } from "node:fs"
 import { dataPaths } from "./data-paths"
@@ -43,6 +44,7 @@ import { createReusedCredential, credentialReuse, credentialReuseHandler, native
 import { researchConsentStatus } from "../../../dochaus/lib/research-consent-status"
 import { providerCatalog } from "./provider-catalog"
 import { modelHttp } from "./model-http"
+import { probeProvider, providerTestCache, providerTestFailure, providerTestInput, unavailableModel } from "./provider-health"
 
 const repository = path.resolve(import.meta.dir, "../../..")
 const legal = path.join(repository, "dochaus")
@@ -57,6 +59,7 @@ const verbosity = process.env.DOCHAUS_LOG_LEVEL?.trim().toLowerCase()
 const minimumLogLevel = verbosity === "debug" ? "Debug" : verbosity === "info" ? "Info" : "Warn"
 // Request helpers start independent fibers too; share the threshold with startup.
 const runEngine = Effect.runPromiseWith(Context.make(References.MinimumLogLevel, minimumLogLevel))
+const cachedProviderTest = providerTestCache()
 process.env.OPENCODE_CONFIG_DIR = legal
 process.env.WORKSPACE_ROOT = workspace
 process.env.DOCHAUS_RUNTIME_DIR = runtime
@@ -190,6 +193,12 @@ await runEngine(
         .pipe(HttpMiddleware.cors({ allowedOrigins: origin => /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin), credentials: true, maxAge: 86_400 }), HttpEffect.toWebHandlerWith(httpContext))
       const sessions = Context.get(context, Session.Service)
       const locations = Context.get(context, LocationServiceMap.Service)
+      const credentials = Context.get(context, Credential.Service)
+      // Stateless health requests use the same native executor and HTTP client;
+      // models still resolve in the sealed installation Location graph.
+      const probeClient = Context.get(yield* Layer.build(LLMClient.layer.pipe(Layer.provide(
+        RequestExecutor.layer.pipe(Layer.provide(Layer.succeed(HttpClient.HttpClient, Context.get(context, HttpClient.HttpClient)))),
+      ))), LLMClient.Service)
       const restartRelease = yield* Deferred.make<void>()
       const shutdown = yield* Deferred.make<void>()
       let shuttingDown = false
@@ -225,7 +234,7 @@ await runEngine(
           if (pathname === "/api/dochaus/generate" && request.method === "POST")
             return generateText(request, locations)
           if (pathname === "/api/dochaus/provider-test" && request.method === "POST")
-            return testProvider(request, locations)
+            return testProvider(request, locations, credentials, probeClient)
           if (pathname === "/api/dochaus/provider-catalog" && request.method === "GET")
             return listProviderCatalog(request, locations)
           if (request.method === "POST" && (/^\/api\/session\/[^/]+\/(prompt|generate)$/.test(pathname) ||
@@ -343,40 +352,33 @@ async function listProviderCatalog(request: Request, locations: Context.Service.
   } catch { return managedJson(request, { error: "Could not discover provider setup. Retry when the engine is ready." }, 503) }
 }
 
-async function testProvider(request: Request, locations: Context.Service.Shape<typeof LocationServiceMap.Service>) {
+async function testProvider(request: Request, locations: Context.Service.Shape<typeof LocationServiceMap.Service>,
+  credentials: Credential.Interface, client: Context.Service.Shape<typeof LLMClient.Service>) {
   const ready = await managedReadinessResponse(request, locations)
   if (!ready.ok) return ready
   const input: unknown = await request.json().catch(() => undefined)
-  if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).sort().join(",") !== "modelID,providerID" ||
-      !("providerID" in input) || !("modelID" in input) || typeof input.providerID !== "string" || typeof input.modelID !== "string" ||
-      !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(input.providerID) || !input.modelID || input.modelID.length > 256 || /[\s#]/.test(input.modelID))
-    return managedJson(request, { ok: false, error: "Choose a catalog provider and model for the connection test." }, 400)
+  if (!providerTestInput(input))
+    return managedJson(request, { ok: false, kind: "model", error: "Choose a catalog provider and model for the connection test." }, 400)
   try {
     const policy = readEffectiveSettings()
     if (Array.isArray(policy.disabled_providers) && policy.disabled_providers.includes(input.providerID) ||
         Array.isArray(policy.enabled_providers) && !policy.enabled_providers.includes(input.providerID))
-      return managedJson(request, { ok: false, error: "This provider is disabled by installation policy." }, 403)
+      return managedJson(request, { ...unavailableModel, error: "This provider is disabled by installation policy." }, 403)
     const ref = Model.Ref.parse(`${input.providerID}/${input.modelID}`)
     const directory = requestRef(HttpServerRequest.fromWeb(request)).directory
-    const result = await runEngine(Effect.gen(function* () {
-      const model = yield* Model.Service.use(models => models.get(ref.providerID, ref.id))
-      if (!model?.enabled) return { ok: false, error: "This model is unavailable or disabled by provider policy." }
-      // This is the sole setup bypass: fixed text, explicit enabled catalog
-      // model, stateless Generate (no tools/session), bounded user-click test.
-      yield* Generate.Service.use(generate => generate.text({ prompt: "Reply with OK.", model: ref }))
-      return { ok: true }
-    }).pipe(Effect.provide(locations.get(Location.Ref.make({ directory })))), {
-      signal: AbortSignal.any([request.signal, AbortSignal.timeout(20_000)]),
-    })
-    return managedJson(request, result, result.ok ? 200 : 400)
-  } catch (error) {
-    const text = error instanceof Error ? error.message : String(error)
-    const message = /timeout|abort|interrupt/i.test(text) ? "The provider test timed out. Check the endpoint and credentials, then retry."
-      : /auth|credential|401|403|permission/i.test(text) ? "The provider rejected authentication or account access. Check the connected account and permissions."
-      : /quota|rate.limit|429|402|credit/i.test(text) ? "The provider rejected the test because of quota or account allowance."
-      : "The provider test failed. Check the configured endpoint, model access and credentials."
-    return managedJson(request, { ok: false, error: message }, 503)
-  }
+    const graph = locations.get(Location.Ref.make({ directory }))
+    const fingerprint = await runEngine(Effect.gen(function* () {
+      const provider = yield* Provider.Service.use(providers => providers.get(ref.providerID))
+      const stored = yield* credentials.all()
+      return sha256(JSON.stringify({ directory, ref, policy, credentials: stored.filter(credential =>
+        credential.integrationID === (provider?.integrationID ?? ref.providerID)) }))
+    }).pipe(Effect.provide(graph)), { signal: AbortSignal.any([request.signal, AbortSignal.timeout(10_000)]) })
+    // A disconnected browser must not cancel the shared check for other tabs.
+    // The check has its own deadline, and replacing credentials changes the key.
+    const result = await cachedProviderTest(fingerprint, input.force === true, () =>
+      runEngine(probeProvider(ref).pipe(Effect.provide(graph), Effect.provideService(LLMClient.Service, client)), { signal: AbortSignal.timeout(20_000) }))
+    return managedJson(request, result, result.ok ? 200 : result.kind === "model" ? 400 : 503)
+  } catch (error) { return managedJson(request, providerTestFailure(error), 503) }
 }
 
 function managedJson(request: Request, body: object, status: number) {

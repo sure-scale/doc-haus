@@ -28,6 +28,20 @@ It covers initial focus, native modal Tab containment, Escape/Close/backdrop
 dismissal, opener restoration, nested jurisdiction search and unsaved model
 choices. Its Save check writes only to the intercepted in-memory config fixture.
 
+Run startup provider health and reconnection acceptance with the same environment:
+
+```sh
+PLAYWRIGHT_BASE_URL=http://127.0.0.1:5189 \
+DOCHAUS_EVIDENCE_DIR=/tmp/doc-haus-provider-health-evidence \
+bun apps/web/e2e/provider-health.ts
+```
+
+It covers launch/setup gating, one check per distinct selected model, verified,
+expired-key, model-access and transient states, native scoped event failures,
+and recovery after replacing a synthetic key. Desktop and 390px screenshots
+also verify pointer targets and horizontal overflow. No real credentials or
+provider traffic are used.
+
 Run the working Word review acceptance against a Vite server whose `/ingest`
 proxy targets a free port and whose `/engine` proxy targets an unused port:
 

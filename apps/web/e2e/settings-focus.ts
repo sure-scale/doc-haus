@@ -30,6 +30,7 @@ await context.route("**/*", async route => {
   if (request.method() === "OPTIONS") return route.fulfill({ status: 204, headers })
   requests.push({ method: request.method(), path: pathname })
   const reply = (body: unknown) => route.fulfill({ status: 200, headers, contentType: "application/json", body: JSON.stringify(body) })
+  if (request.method() === "POST" && pathname === "/api/dochaus/provider-test") return reply({ ok: true })
   if (request.method() === "PATCH" && pathname === "/engine/config") {
     config = { ...config, ...request.postDataJSON() as typeof config }
     return reply(config)
@@ -101,7 +102,7 @@ try {
     await expect(modal).toBeVisible()
     await modal.getByRole("button", { name: "Models", exact: true }).click()
     await expect(modal.getByLabel("Primary model", { exact: true })).toHaveValue("fixture/fast")
-    expect(requests.filter(request => request.method !== "GET")).toEqual([])
+    expect(requests.filter(request => request.method !== "GET" && request.path !== "/api/dochaus/provider-test")).toEqual([])
     await modal.getByRole("button", { name: "Close", exact: true }).focus()
     await page.keyboard.press("Enter")
     await expect(opener).toBeFocused()

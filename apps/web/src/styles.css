@@ -5320,3 +5320,24 @@ button.linklike:hover:not(:disabled) {
     transition: none;
   }
 }
+
+/* A failed provider sign-in stays visible while the lawyer fixes it. */
+.provider-connection-banner {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  margin: 12px 20px; padding: 14px 18px; border: 1px solid var(--warn-border);
+  border-radius: 10px; background: var(--warn-soft);
+}
+.provider-connection-banner p { margin: 4px 0 0; line-height: 1.5; }
+.provider-connection-actions { display: flex; gap: 8px; flex-shrink: 0; }
+.provider-connection-actions button { min-height: 44px; }
+.settings-provider-health { display: block; margin-top: 4px; max-width: 46em; white-space: normal; }
+@media (max-width: 700px) {
+  .provider-connection-banner { align-items: stretch; flex-direction: column; margin: 10px; }
+  .provider-connection-actions { flex-wrap: wrap; }
+}
+
+.settings-native-connect form { display: grid; gap: 12px; }
+.settings-native-connect form > label { display: grid; gap: 6px; }
+.settings-native-connect form > label > :is(input:not([type="checkbox"]), select) { width: 100%; min-width: 0; }
+.settings-native-connect form > button { justify-self: start; min-height: 44px; }
+.settings-conn:has(.settings-provider-health[data-status="auth"], .settings-provider-health[data-status="model"], .settings-provider-health[data-status="unavailable"]) .settings-conn-name::before { background: var(--warn); }

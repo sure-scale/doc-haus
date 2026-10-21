@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react"
+import { useEffect, useRef, useState, type ReactNode } from "react"
 import type { FormAnswer, FormField, IntegrationInfo, IntegrationMethod } from "@opencode/client"
 import { location, type Client } from "../../api/opencode/client"
 import { listIntegrations } from "../../api/opencode/providers"
@@ -25,9 +25,10 @@ function initialAnswer(method?: IntegrationMethod): FormAnswer {
   return method && "form" in method ? Object.fromEntries((method.form ?? []).flatMap(field => "default" in field && field.default !== undefined ? [[field.key, field.default]] : [])) : {}
 }
 
-export default function NativeProviderConnect({ client, onConnected, showExistingSignIn = true, integrationID, onboarding = false, savedSignIn, discoveryNotice }: { client: Client; onConnected: (integrationID: string) => Promise<void>; showExistingSignIn?: boolean; integrationID?: string; onboarding?: boolean; savedSignIn?: ReactNode; discoveryNotice?: ReactNode }) {
+export default function NativeProviderConnect({ client, onConnected, showExistingSignIn = true, integrationID, onboarding = false, savedSignIn, discoveryNotice, initialProviderID }: { initialProviderID?: string; client: Client; onConnected: (integrationID: string) => Promise<void>; showExistingSignIn?: boolean; integrationID?: string; onboarding?: boolean; savedSignIn?: ReactNode; discoveryNotice?: ReactNode }) {
   const [integrations, setIntegrations] = useState<IntegrationInfo[]>([])
-  const [pick, setPick] = useState("")
+  const [pick, setPick] = useState(initialProviderID ?? "")
+  const section = useRef<HTMLElement>(null)
   const [methodIndex, setMethodIndex] = useState("")
   const [key, setKey] = useState("")
   const [code, setCode] = useState("")
@@ -52,6 +53,13 @@ export default function NativeProviderConnect({ client, onConnected, showExistin
     finally { setLoading(false) }
   }
   useEffect(() => { void refresh() }, [client])
+  useEffect(() => {
+    if (!initialProviderID || loading) return
+    setPick(initialProviderID)
+    setMethodIndex("")
+    section.current?.scrollIntoView({ block: "nearest" })
+    section.current?.querySelector<HTMLSelectElement>("select")?.focus()
+  }, [initialProviderID, loading])
   useEffect(() => { setMethodIndex(""); setAnswer({}); setKey(""); setCode("") }, [integrationID])
   useEffect(() => { if (onboarding) setAnswer(initialAnswer(method)) }, [onboarding, integrationID, selection])
   function remember(value: Attempt | null) {
@@ -79,9 +87,9 @@ export default function NativeProviderConnect({ client, onConnected, showExistin
       remember(null)
     }
   }
-  return <><section className={`settings-section${onboarding ? " onboarding-native-connect" : ""}`}>
+  return <><section ref={section} className={`settings-section${onboarding ? " onboarding-native-connect" : " settings-native-connect"}`}>
     {!onboarding && <><h3>Connect a provider</h3>
-    <p className="settings-hint muted">Choose a sign-in method for this provider. Credentials are stored in this installation. Connecting does not run a model test.</p></>}
+    <p className="settings-hint muted">Choose a sign-in method for this provider. Credentials are stored in this installation. Your selected models are checked after connecting.</p></>}
     {onboarding && loading && !integration && <p className="settings-hint muted" role="status">Loading connection options…</p>}
     {onboarding && !pending && (methods.length + (savedSignIn ? 1 : 0) > 1) && <label className="onboarding-field">Connection method<select disabled={busy} value={selection} onChange={event => { setMethodIndex(event.target.value); setAnswer(initialAnswer(integration?.methods[Number(event.target.value)])); setKey("") }}>
       {savedSignIn && <option value="__saved__">Use saved sign-in</option>}
@@ -122,7 +130,7 @@ export default function NativeProviderConnect({ client, onConnected, showExistin
       const result = await client.integration.command.connect({ integrationID: integration.id, methodID: method.id, location: location(client) }, { signal: AbortSignal.timeout(15000) })
       remember({ integrationID: integration.id, attemptID: result.data.attemptID, type: "command" }); setInstructions(""); setURL(""); setStatus("pending")
     }) }}>
-      {integrationID === undefined && <label>Provider<select value={pick} disabled={busy} onChange={event => { setPick(event.target.value); setMethodIndex(""); setAnswer({}); setKey("") }}><option value="">Choose a provider</option>{integrations.map(item => <option key={item.id} value={item.id}>{item.name}{item.connections.length ? " · connected" : ""}</option>)}</select></label>}
+      {integrationID === undefined && <label>Provider<select value={pick} disabled={busy} onChange={event => { setPick(event.target.value); setMethodIndex(""); setAnswer({}); setKey("") }}><option value="">Choose a provider</option>{integrations.map(item => <option key={item.id} value={item.id}>{item.name}{item.connections.length ? " · saved sign-in" : ""}</option>)}</select></label>}
       {!onboarding && integration && <label>Sign-in method<select disabled={busy} value={methodIndex} onChange={event => { setMethodIndex(event.target.value); setAnswer(initialAnswer(integration.methods[Number(event.target.value)])); setKey("") }}><option value="">Choose a method</option>{integration.methods.map((item, index) => <option key={index} value={index}>{item.type === "env" ? "Host environment" : item.label || "API key"}</option>)}</select></label>}
       {method && selection !== "" && <>
         {method.type === "env" ? <p>Set {method.names.join(", ")} on the engine host, then refresh the catalog. No browser key is needed.</p> : <>

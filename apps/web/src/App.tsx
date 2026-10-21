@@ -13,6 +13,7 @@ import Onboarding from "./components/onboarding/Onboarding"
 import Sidebar from "./components/Sidebar"
 import BootScreen from "./components/BootScreen"
 import ConnectionBanner from "./components/ConnectionBanner"
+import ProviderConnectionBanner from "./components/ProviderConnectionBanner"
 import LaunchNotice, { hasAcceptedLaunchNotice } from "./components/LaunchNotice"
 import { ToastProvider } from "./components/Toast"
 import { getSetup, type SetupProgress } from "./api/ingest/setup"
@@ -23,6 +24,7 @@ import { useUpdates, UpdateButton, UpdateModal } from "./components/Updates"
 export default function App() {
   const [acknowledged, setAcknowledged] = useState(hasAcceptedLaunchNotice)
   const [settings, setSettings] = useState(false)
+  const [reconnectProvider, setReconnectProvider] = useState<string | undefined>()
   // Text size lands as a data attribute on <html> the stylesheet keys off.
   useEffect(() => {
     applyAppearance()
@@ -78,11 +80,12 @@ export default function App() {
   return (
     <ToastProvider>
       <div className={`shell${location.pathname.startsWith("/matter/") ? " shell-matter" : ""}`}>
-        <Sidebar onOpenSettings={() => setSettings(true)} sessionsVersion={sessionsVersion} updateButton={<UpdateButton updates={updates} />} />
+        <Sidebar onOpenSettings={() => { setReconnectProvider(undefined); setSettings(true) }} sessionsVersion={sessionsVersion} updateButton={<UpdateButton updates={updates} />} />
         {/* The open matter's documents drawer portals here, between the rail and the canvas. */}
         <div id="matter-drawer-slot" className="matter-drawer-slot" />
         <main className="content">
           <ConnectionBanner />
+          <ProviderConnectionBanner enabled={setup?.next === "done" && !onboarding} onOpenSettings={providerID => { setReconnectProvider(providerID); setSettings(true) }} />
           {setup?.next !== "done" && !onboarding && <p className="settings-notice">Setup is incomplete. {setup?.ready ? "Your models are saved. Finish or skip the remaining optional steps before starting assistant work." : "Save your model choices before starting assistant work."} <button onClick={() => setOnboarding(true)}>Resume setup</button></p>}
           {/* Keyed on the path so each page settles in with a short fade. */}
           <div className={`container route-fade${location.pathname.startsWith("/matter/") ? " matter-container" : ""}`} key={location.pathname}>
@@ -109,6 +112,8 @@ export default function App() {
         )}
         {settings && (
           <Settings
+            initialTab={reconnectProvider !== undefined ? "providers" : undefined}
+            reconnectProvider={reconnectProvider}
             onClose={() => {
               setSettings(false)
               void refreshSetup()
