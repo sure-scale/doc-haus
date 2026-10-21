@@ -44,6 +44,9 @@ export default function Onboarding({ onClose }: { onClose: () => void }) {
   const [drafting, setDrafting] = useState<DraftingPreferences | null>(null)
   const [jurisdictions, setJurisdictions] = useState<Jurisdiction[]>([])
   const [selectedJx, setSelectedJx] = useState<string[]>(() => loadPrefs().defaultJurisdictions)
+  // The firm's own date format pick; until it picks, the Details step follows
+  // its default jurisdictions.
+  const [dateFormatChoice, setDateFormatChoice] = useState<DraftingPreferences["dateFormat"] | null>(null)
   const [verified, setVerified] = useState<Set<string>>(loadVerified)
   const [advancing, setAdvancing] = useState(false)
   const [progress, setProgress] = useState<SetupProgress | null>(null)
@@ -200,7 +203,7 @@ export default function Onboarding({ onClose }: { onClose: () => void }) {
             <div className="onboarding-provider-summary"><span className="onboarding-provider-icon" aria-hidden="true">✓</span><div><span className="onboarding-eyebrow">Model provider</span><strong>{selected?.name ?? provider}</strong></div><span className="onboarding-provider-ready">Connected</span></div>
             <ModelPickerStep hideProviderSelector connectedProviders={ready.filter(item => item.id === provider)} provider={provider} changeProvider={changeProvider} primary={primary} setPrimary={setPrimary} providerModels={models.filter(model => model.providerId === provider)} fast={fast} setFast={setFast} setForceConnect={() => setPhase("connection")} setNotice={setNotice} onSaved={async () => { const next = await saveSetup("models", "completed"); setProgress(next); if (next.next === "done") onClose(); else setStep(next.next === "models" ? "setup" : next.next) }} />
           </>}
-          {currentStage === "details" && <DraftingDetailsStep drafting={drafting} setDrafting={setDrafting} jurisdictions={jurisdictions} selectedJx={selectedJx} setSelectedJx={setSelectedJx} setStep={setStep} onClose={() => advance("details", "completed")} />}
+          {currentStage === "details" && <DraftingDetailsStep drafting={drafting} setDrafting={setDrafting} jurisdictions={jurisdictions} selectedJx={selectedJx} setSelectedJx={setSelectedJx} dateFormatChoice={dateFormatChoice} setDateFormatChoice={setDateFormatChoice} setStep={setStep} onClose={() => advance("details", "completed")} />}
           {(mounted.research || currentStage === "research") && <div className="onboarding-stage-content onboarding-research" hidden={currentStage !== "research"} inert={currentStage !== "research"}>
             <ResearchTab heading="Sources and connections" actionLabel="Save and continue" secondaryActions={busy => <button disabled={busy || advancing} onClick={() => { setPhase("models"); setStep("setup") }}>Back to models</button>} onComplete={() => { void advance("research", "completed").catch(error => setSaveNotice(error instanceof Error ? error.message : "Could not save setup progress. Retry.")) }} />
           </div>}

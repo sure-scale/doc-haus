@@ -6,6 +6,7 @@ import { partActivity, TOOL_GROUPS } from "../narration/activity"
 import { basename, stepLabel } from "./step-labels"
 import { isDraftingRecoveryMessage } from "./drafting-recovery"
 import { templateResult, type TemplateResult } from "./template-result"
+import { QUICK_DRAFT } from "../../agents"
 
 // One row in the assistant's reasoning timeline: a thinking block or a tool call.
 export type Step =
@@ -57,6 +58,8 @@ export type Turn = {
   // A durable recovery user message starts a new assistant boundary and marks
   // the preceding interrupted assistant group as replaced by that recovery.
   superseded?: boolean
+  // The answer was stopped before it finished; what it had produced is kept.
+  stopped?: boolean
 }
 
 // Reduce a turn's parts to its visible text, search-document citations, and
@@ -309,7 +312,10 @@ function activityOf(work: Part[], matter: string) {
 // assistant messages (one per model step); merging their parts reconstructs the
 // whole reasoning timeline instead of showing only the final answer bubble.
 export function toTurns(
-  msgs: { info: { id: string; role: "user" | "assistant"; agent?: string; error?: MessageError }; parts: Part[] }[],
+  msgs: {
+    info: { id: string; role: "user" | "assistant"; agent?: string; error?: MessageError; stopped?: boolean }
+    parts: Part[]
+  }[],
   matter: string,
   pool?: Part[],
 ): Turn[] {
@@ -320,6 +326,7 @@ export function toTurns(
     agent?: string
     error?: string
     superseded?: boolean
+    stopped?: boolean
   }[] = []
   // An assistant turn answers the most recent user turn, so it inherits that
   // user message's agent — the server only stamps the agent on user messages.
@@ -337,12 +344,22 @@ export function toTurns(
       continue
     }
     if (m.info.role === "user" && m.info.agent) lastAgent = m.info.agent
+    // Stopping fails the running step as aborted; that is the stop, not an error.
+    const error = m.info.stopped && m.info.error?.name === "aborted" ? undefined : errorOf(m.info.error)
     const last = groups[groups.length - 1]
     if (!recoveryBoundary && last && last.role === "assistant" && m.info.role === "assistant") {
       last.parts.push(...m.parts)
-      last.error = last.error ?? errorOf(m.info.error)
+      last.error = last.error ?? error
+      last.stopped = last.stopped || m.info.stopped
     } else
-      groups.push({ role: m.info.role, id: m.info.id, parts: [...m.parts], agent: lastAgent, error: errorOf(m.info.error) })
+      groups.push({
+        role: m.info.role,
+        id: m.info.id,
+        parts: [...m.parts],
+        agent: lastAgent,
+        error,
+        stopped: m.info.stopped,
+      })
     recoveryBoundary = false
   }
   return groups
@@ -361,12 +378,23 @@ export function toTurns(
         agent: g.agent,
         error: g.error,
         superseded: g.superseded,
-        ...contentOf(g.parts),
+        stopped: g.stopped,
+        ...contentOf(g.role === "assistant" && g.agent === QUICK_DRAFT ? withoutNarration(g.parts) : g.parts),
         todos,
         steps: g.role === "assistant" ? partsToSteps(g.parts, matter, pool) : [],
       }
     })
-    .filter((t) => t.text || t.citations.length || t.steps.length || t.error)
+    .filter((t) => t.text || t.citations.length || t.steps.length || t.error || t.stopped)
+}
+
+// A quick draft's answer is its closing step. Text in a step that also calls a
+// tool is narration ("I'll pull the terms", "now I'll verify"), never the draft:
+// it is left out of the quick text and of the working draft an upgrade carries.
+// A turn whose only text sits in such steps (stopped mid-way) keeps it.
+function withoutNarration(parts: Part[]) {
+  const working = new Set(parts.filter((p) => p.type === "tool").map((p) => p.messageID))
+  const kept = parts.filter((p) => p.type !== "text" || !working.has(p.messageID))
+  return kept.some((p) => p.type === "text") ? kept : parts
 }
 
 // The provider error the engine stamps on a failed assistant message. Shape is

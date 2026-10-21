@@ -2559,6 +2559,39 @@ li.list-row {
   font-size: 13px;
 }
 
+/* A quick draft says, in one line, what it did not run, and offers the full run. */
+.quick-draft-banner {
+  margin: 0 0 6px;
+  padding-left: 10px;
+  border-left: 2px solid var(--border-strong);
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* The firm's legend for a quick draft's form, set like a page header. */
+.quick-draft-legend {
+  margin: 0 0 6px;
+  text-align: right;
+  font-size: 13px;
+}
+
+/* Placeholders code found in a quick draft, listed as its open items. */
+.quick-draft-open {
+  margin: 6px 0 0;
+  padding-left: 10px;
+  border-left: 2px solid var(--border-strong);
+  font-size: 13px;
+}
+
+/* A stopped answer keeps what it produced and says it did not finish. */
+.msg-stopped {
+  margin: 6px 0 0;
+  padding-left: 10px;
+  border-left: 2px solid var(--border-strong);
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .working {
   display: inline-flex;
   gap: 4px;

@@ -1,10 +1,13 @@
 import { draftingUpdateAdmission } from "../../../../dochaus/lib/drafting-update-admission"
+import { furnitureLegend } from "../../../../dochaus/lib/furniture-legend"
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import type { CompareParams } from "../api/ingest/compare"
 import type { Document } from "../api/ingest/documents"
 import type { LeanDraftingStatus } from "../api/ingest/lean"
 import { matterClient, type Client } from "../api/opencode/client"
-import { isAuto, type AssistantMeta, type WorkflowMeta } from "../agents"
+import { QUICK_DRAFT, isAuto, type AssistantMeta, type WorkflowMeta } from "../agents"
+import { QUICK_BANNER, quickDraftAnswer } from "./chat/quick-draft"
+import { getPreferences } from "../api/ingest/preferences"
 import CitationView from "./CitationView"
 import IssuesView, { parseIssues, stripIssues } from "./IssuesView"
 import TodoView from "./TodoView"
@@ -182,7 +185,21 @@ export default function ChatPanel({
     onForeignPart: narration.onForeignPart,
     onForeignSession: narration.acceptsSession,
   })
-  const { onSend, runWorkflow, resendFrom, onPermissionReply } = useChatActions({
+  // The request a pending quick-draft offer holds: nothing has run for it yet.
+  const [pendingRoute, setPendingRoute] = useState<string>()
+  const {
+    onSend,
+    onStop,
+    runWorkflow,
+    resendFrom,
+    onPermissionReply,
+    chooseDraft,
+    dismissDraftOffer,
+    upgradeQuickDraft,
+    quickLimit,
+    dismissQuickLimit,
+    runFullInstead,
+  } = useChatActions({
     state,
     settlement,
     client,
@@ -193,6 +210,7 @@ export default function ChatPanel({
     onSessionPersisted,
     onSessionStarted,
     onDraftingStarted: (owner, turn) => setDrafting({ owner, turn }),
+    sourceCount: documents?.filter((document) => document.role !== "deliverable").length,
   })
   const {
     turns,
@@ -213,6 +231,7 @@ export default function ChatPanel({
     logRef,
     stickRef,
     inputRef,
+    turnRef,
   } = state
 
   const scroll = useStickToBottom(logRef, stickRef)
@@ -242,7 +261,24 @@ export default function ChatPanel({
   }, [busy])
 
   const live = readTurn(partsRef.current, rolesRef.current, matterName, sessionRef.current)
+  const liveAgent = isAuto(agent) && resolvedAgent ? resolvedAgent : agent
   const activity = busy ? live.activity : undefined
+  // The firm's legends, read once a quick draft shows, as a rendered document
+  // reads them: a quick draft carries its form's legend from the firm's
+  // settings, never one the model wrote.
+  const [legends, setLegends] = useState<{ agreementLegend: string; adviceLegend: string }>()
+  const showsQuick = turns.some((t) => t.agent === QUICK_DRAFT) || (busy && liveAgent === QUICK_DRAFT)
+  useEffect(() => {
+    if (!showsQuick || legends) return
+    let current = true
+    getPreferences()
+      .then((prefs) => current && setLegends({ agreementLegend: prefs.agreementLegend ?? "", adviceLegend: prefs.adviceLegend ?? "" }))
+      .catch(() => undefined)
+    return () => {
+      current = false
+    }
+  }, [showsQuick, legends])
+  const stopping = busy && turnRef.current.stopped
   useEffect(() => {
     onBusyChange?.(busy, activity)
   }, [busy, activity, onBusyChange])
@@ -269,10 +305,47 @@ export default function ChatPanel({
     }
   }
   const asked = run ? openQuestions(run) : []
+  // Only the latest quick draft can be upgraded, and only while no drafting
+  // run is taking updates on this matter.
+  const latestQuick = turns.findLastIndex((t) => t.role === "assistant" && t.agent === QUICK_DRAFT)
+  const canUpgrade = Boolean(matterId) && !busy && !updatingRun && !pendingRoute
+  const quickBanner = (index?: number) => (
+    <p className="quick-draft-banner" role="note">
+      {QUICK_BANNER}
+      {index !== undefined && index === latestQuick && canUpgrade && (
+        <>
+          {" "}
+          <button type="button" className="linklike" onClick={() => void upgradeQuickDraft(index)}>
+            Run full drafting cycle
+          </button>
+        </>
+      )}
+    </p>
+  )
+  // After a reload the offer's request is not in the stored history yet.
+  const showPendingRoute = pendingRoute !== undefined && !(turns.at(-1)?.role === "user" && turns.at(-1)?.text === pendingRoute)
   // A comparison's answer draws each change it names as a redline.
   const answer = (text: string, compares?: VersionCompare[]) => {
     const compare = chatCompare(compares)
     return compare ? <CompareAnswer text={text} compare={compare} onOpen={onOpenBlackline} /> : <Markdown>{text}</Markdown>
+  }
+  // A quick draft shows the firm's legend for its form, its text without the
+  // form line and, once settled, the placeholders left in the draft as open
+  // items, which code finds rather than trusting the answer's own list.
+  const quickAnswer = (text: string, settled: boolean) => {
+    const quick = quickDraftAnswer(text)
+    const legend = quick.form && legends ? furnitureLegend(quick.form, legends).trim() : ""
+    return (
+      <>
+        {legend && <p className="quick-draft-legend">{legend}</p>}
+        {answer(stripIssues(quick.text))}
+        {settled && quick.placeholders.length > 0 && (
+          <p className="quick-draft-open" role="note">
+            Open items in the draft: {quick.placeholders.join(", ")}
+          </p>
+        )}
+      </>
+    )
   }
 
   const narrationView = own && matterId && (
@@ -306,7 +379,9 @@ export default function ChatPanel({
       input={input}
       setInput={setInput}
       onSend={updatingRun ? sendRunUpdate : onSend}
-      busy={busy || (updatingRun && (actions.busy || updateTooLate))}
+      onStop={busy ? onStop : undefined}
+      stopping={stopping}
+      busy={busy || pendingRoute !== undefined || (updatingRun && (actions.busy || updateTooLate))}
     />
   )
 
@@ -346,7 +421,7 @@ export default function ChatPanel({
             </div>
           )}
           {loading && turns.length === 0 && <ChatSkeleton />}
-          {!loading && !loadError && turns.length === 0 && !busy && !own && !updatingRun && (
+          {!loading && !loadError && turns.length === 0 && !busy && !own && !updatingRun && pendingRoute === undefined && (
             <ChatEmpty
               hint={emptyHint}
               starters={starters}
@@ -402,11 +477,20 @@ export default function ChatPanel({
               ) : (
                 <div className="msg assistant">
                   {t.agent && <div className="msg-agent">{agentLabel(t.agent)}</div>}
+                  {t.agent === QUICK_DRAFT && !t.error && !isEmptyAnswer(t.text) && quickBanner(i)}
                   <StepsPanel steps={t.steps} busy={false} answered={!isEmptyAnswer(t.text)} />
-                  {t.text && !isEmptyAnswer(t.text) && answer(stripIssues(t.text), t.compares)}
+                  {t.text &&
+                    !isEmptyAnswer(t.text) &&
+                    (t.agent === QUICK_DRAFT ? quickAnswer(t.text, true) : answer(stripIssues(t.text), t.compares))}
                   <IssuesView issues={parseIssues(t.text)} />
                   {t.error && <div className="msg-error">{t.error}</div>}
+                  {t.stopped && !t.superseded && (
+                    <p className="msg-stopped" role="note">
+                      {isEmptyAnswer(t.text) ? "Stopped before an answer." : "Stopped. This answer is incomplete."}
+                    </p>
+                  )}
                   {!t.superseded &&
+                    !t.stopped &&
                     !t.error &&
                     isEmptyAnswer(t.text) &&
                     t.redlines.length === 0 &&
@@ -436,6 +520,13 @@ export default function ChatPanel({
             </Fragment>
           ))}
           {anchor === undefined && narrationView}
+          {showPendingRoute && (
+            <div className="msg-user-wrap">
+              <div className="msg user">
+                <UserText text={pendingRoute} />
+              </div>
+            </div>
+          )}
           {(own || updatingRun) && (run?.updates?.length ?? 0) > 0 && (
             <div className="run-updates">
               {run!.updates!.map((update) => (
@@ -450,9 +541,10 @@ export default function ChatPanel({
           )}
           {busy && (
             <div className={`msg assistant${live.text ? " streaming" : ""}`}>
-              <div className="msg-agent">{agentLabel(isAuto(agent) && resolvedAgent ? resolvedAgent : agent)}</div>
+              <div className="msg-agent">{agentLabel(liveAgent)}</div>
+              {liveAgent === QUICK_DRAFT && quickBanner()}
               <StepsPanel steps={live.steps} busy answered={Boolean(live.text)} />
-              {live.text && answer(stripIssues(live.text), live.compares)}
+              {live.text && (liveAgent === QUICK_DRAFT ? quickAnswer(live.text, false) : answer(stripIssues(live.text), live.compares))}
               {/* The answer is still coming: before its first step, during each step and between them. */}
               <p className="msg-working" role="status">
                 <span className="working" aria-hidden>
@@ -460,7 +552,7 @@ export default function ChatPanel({
                   <span className="working-dot" />
                   <span className="working-dot" />
                 </span>
-                {activity ?? "Working"}
+                {stopping ? "Stopping" : (activity ?? "Working")}
               </p>
               <IssuesView issues={parseIssues(live.text)} />
               <TodoView todos={live.todos} />
@@ -518,7 +610,26 @@ export default function ChatPanel({
         pendingRef={pendingFormsRef}
         refreshRef={formsRefreshRef}
         directory={directory}
+        onRoute={(request, choice) => void chooseDraft(request, choice)}
+        onRouteDismissed={dismissDraftOffer}
+        onRoutePending={setPendingRoute}
       />}
+      {quickLimit && (
+        <div className="question-card route-offer" role="status">
+          <p className="question-text">
+            {quickLimit.reason} A quick draft covers one short document from a few of the matter's documents, with no
+            outside law, firm template or legal effect.
+          </p>
+          <div className="question-actions">
+            <button type="button" className="icon-btn" onClick={dismissQuickLimit}>
+              Dismiss
+            </button>
+            <button type="button" className="primary" disabled={busy} onClick={() => void runFullInstead()}>
+              Run full drafting cycle
+            </button>
+          </div>
+        </div>
+      )}
       {updatingRun && (
         <p className="run-note" role="status">
           {updateTooLate

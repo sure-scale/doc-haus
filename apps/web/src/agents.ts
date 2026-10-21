@@ -51,6 +51,12 @@ export const CHAT_ASSISTANTS: AssistantMeta[] = [
     description: "Drafts new documents into this matter — from a firm template or from scratch.",
   },
   {
+    name: "quick-draft",
+    label: "Quick draft",
+    description:
+      "Writes one short document here in chat from a few of this matter's documents. Quotes are verified; full drafting checks are not run.",
+  },
+  {
     name: "compare",
     label: "Compare",
     description:
@@ -69,6 +75,14 @@ export const CHAT_ASSISTANTS: AssistantMeta[] = [
       "Imports a firm playbook DOCX uploaded to this matter into the firm playbook library.",
   },
 ]
+
+// The explicit Quick draft choice. Picking it is the lawyer's consent to a
+// quick draft, so Auto never routes to it: Auto offers it only by asking.
+export const QUICK_DRAFT = "quick-draft"
+
+// The assistants Auto may route a message to: every chat assistant except Quick
+// draft, which only the lawyer chooses.
+export const AUTO_CANDIDATES = CHAT_ASSISTANTS.filter((a) => a.name !== QUICK_DRAFT)
 
 export const PLAYBOOK_BUILDER: AssistantMeta = {
   name: "playbook-importer",

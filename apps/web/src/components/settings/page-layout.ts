@@ -33,6 +33,21 @@ export function suggestedLegends(codes: string[]) {
   }
 }
 
+/** The date format choices, as Settings → Drafting and setup offer them. */
+export const DATE_FORMATS: { value: DraftingPreferences["dateFormat"]; label: string }[] = [
+  { value: "month-day-year", label: "June 11, 2026" },
+  { value: "day-month-year", label: "11 June 2026" },
+  { value: "iso", label: "2026-06-11" },
+]
+
+/** The date format setup preselects: day-month-year when no jurisdiction is a
+ * US one, month-day-year when all are, none for a mix or no jurisdictions. */
+export function suggestedDateFormat(codes: string[]): DraftingPreferences["dateFormat"] | undefined {
+  const us = codes.filter(code => code.split("-")[0]!.toUpperCase() === "US").length
+  if (!codes.length || (us && us < codes.length)) return undefined
+  return us ? "month-day-year" : "day-month-year"
+}
+
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
 
 /** A date in the firm's date style, as the draft line prints it. */

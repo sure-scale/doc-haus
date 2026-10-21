@@ -39,6 +39,7 @@ export function useTurnSettlement({
     finalizeRetryRef,
     seenRef,
     busyRef,
+    turnRef,
     updatePermissions,
   } = state
 
@@ -87,14 +88,18 @@ export function useTurnSettlement({
       malformedToolRecoveryRef.current = malformedToolRecoveryCount(msgs)
       const pendingSessionError = sessionErrorRef.current
       const malformedProgressToken = malformedToolRecoveryDue(msgs, matterId)
+      // A stopped turn ends here: no recovery, and approvals it was waiting on
+      // ended with it.
+      const stopped = turnRef.current.stopped
       const recoverableToolCall =
+        !stopped &&
         !sessionErrorRef.current &&
         permissionsRef.current.length === 0 &&
         draftingTurnRecoveryMode(malformedProgressToken) === "malformed-tool"
       if (msgs.length) setTurns(settled)
       for (const m of msgs) seenRef.current.add(m.info.id)
       persistFreshSessionRoute()
-      if (permissionsRef.current.length) return
+      if (permissionsRef.current.length && !stopped) return
       if (recoverableToolCall) {
         partsRef.current.clear()
         rolesRef.current.clear()

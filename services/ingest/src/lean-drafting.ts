@@ -76,7 +76,7 @@ export function draftingStartProfile(value: unknown): DraftingProfile | undefine
 
 export async function startLeanDraftingRun(
   directory: string,
-  input: { request: string; agent: string; model: LeanModel },
+  input: { request: string; agent: string; model: LeanModel; workingDraft?: string },
   deps: LeanDeps = defaultDeps(),
 ) {
   if (running.has(directory)) throw new LeanDraftingConflictError("A lean drafting run is already in progress for this matter.", "lean_run_in_progress")
@@ -99,7 +99,7 @@ export async function startLeanDraftingRun(
     running.delete(directory)
     throw error
   })
-  initLeanState(directory, { request: input.request, ownerSessionID, model: input.model })
+  initLeanState(directory, { request: input.request, ownerSessionID, model: input.model, workingDraft: input.workingDraft })
   launch(directory, deps)
   return { profile: "lean" as const, mode: "started" as const, ownerSessionID, status: leanDraftingStatus(directory) }
 }

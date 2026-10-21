@@ -182,6 +182,9 @@ export function matterRelative(directory: string, text: string) {
     .reduce((out, root) => out.replaceAll(`${root}${path.sep}`, "").replaceAll(root, "."), text)
 }
 
+/** The lean file holding an unverified working draft a run started from. */
+export const WORKING_DRAFT = "working-draft.md"
+
 export function leanDir(directory: string) {
   return path.join(directory, ".dochaus", "lean")
 }
@@ -218,9 +221,13 @@ export function syncLeanSteps(directory: string, state: LeanState, steps: StepID
   return writeLeanState(directory, { ...state, stages: Object.fromEntries(steps.map(step => [step, state.stages[step] ?? emptyStage()])) })
 }
 
-export function initLeanState(directory: string, input: { request: string; ownerSessionID: string; model: LeanModel | null }) {
+export function initLeanState(directory: string, input: { request: string; ownerSessionID: string; model: LeanModel | null; workingDraft?: string }) {
   mkdirSync(leanDir(directory), { recursive: true, mode: 0o700 })
   writeLeanText(directory, "request.md", `${input.request.replace(/\r\n/g, "\n").trim()}\n`)
+  // A quick draft carried into a full run: an unverified starting draft, kept
+  // apart from the request so it is never read as the lawyer's words.
+  const workingDraft = input.workingDraft?.replace(/\r\n/g, "\n").trim()
+  if (workingDraft) writeLeanText(directory, WORKING_DRAFT, `${workingDraft}\n`)
   const now = new Date().toISOString()
   return writeLeanState(directory, {
     schema: LEAN_STATE_SCHEMA,

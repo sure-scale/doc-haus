@@ -48,6 +48,7 @@ agent/*.md
 !agent/playbook-importer.md
 !agent/playbook-reviewer.md
 !agent/qa.md
+!agent/quick-draft.md
 !agent/redactor.md
 !agent/redliner.md
 !agent/research.md

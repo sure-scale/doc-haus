@@ -7,7 +7,8 @@ import { errorOf } from "../../components/chat/turn-model"
 // to whatever provider the small model lives on — Vertex, Bedrock, Azure, OpenAI,
 // Ollama — and reuses the engine's own credentials and model resolution, with no
 // parallel provider SDK to keep in sync. The router agent (dochaus/agent/router.md)
-// has no tools and a neutral prompt, so it just returns one candidate name. It
+// has no tools and a neutral prompt; it returns one candidate name and, for the
+// draft mode, the request's scope (see parseRoute). It
 // runs on the matter's own client (passed in) — NOT a directory-less client. A
 // header-less prompt routes to the server's cwd, a different directory than the
 // matter, which forces the engine to cold-boot a whole second instance for cwd
@@ -25,7 +26,7 @@ export async function routeAgent(input: {
   candidates: { name: string; description: string }[]
   history: string[]
   text: string
-}): Promise<string> {
+}): Promise<Route> {
   const names = input.candidates.map((c) => c.name)
   if (!names.length) throw new Error("No assistants are available.")
   const prompt = routePrompt(input)
@@ -38,21 +39,21 @@ export async function routeAgent(input: {
   // provider's own error, as an ordinary chat turn does, so the lawyer sees what
   // to fix rather than a retry hint that cannot help.
   const small = await routeOnce(input.client, input.smallModel, prompt, names)
-  if (small.name) return small.name
+  if (small.route) return small.route
   let error = small.error
   if (input.primaryModel && input.primaryModel !== input.smallModel) {
     const primary = await routeOnce(input.client, input.primaryModel, prompt, names)
-    if (primary.name) return primary.name
+    if (primary.route) return primary.route
     error = primary.error ?? error
   }
   throw new Error(error ?? "Auto could not choose an assistant. Try again or select an assistant manually.")
 }
 
 // One routing attempt on a "provider/model" spec: spin up the throwaway router
-// session, prompt it, and return the matched candidate name — or no name on a
-// bad spec, timeout, or off-list reply so the caller can escalate or report
-// failure, with the reply's error text when the router turn itself failed.
-async function routeOnce(client: Client, spec: string, prompt: string, names: string[]): Promise<{ name?: string; error?: string }> {
+// session, prompt it, and return the validated route — or none on a bad spec,
+// timeout, or invalid reply so the caller can escalate or report failure, with
+// the reply's error text when the router turn itself failed.
+async function routeOnce(client: Client, spec: string, prompt: string, names: string[]): Promise<{ route?: Route; error?: string }> {
   const slash = spec.indexOf("/")
   if (slash < 1) return {}
   const model = { providerID: spec.slice(0, slash), modelID: spec.slice(slash + 1) }
@@ -82,10 +83,7 @@ async function routeOnce(client: Client, spec: string, prompt: string, names: st
       .map((p) => p.text)
       .join("")
       .trim()
-    // The model is told to reply with exactly one name; tolerate stray wrapping by
-    // also accepting a name embedded in the reply. Off-list => no name.
-    const name = names.find((n) => reply === n) ?? names.find((n) => reply.toLowerCase().includes(n.toLowerCase()))
-    return { name, error: errorOf(replies.findLast((message) => message.info.error)?.info.error) }
+    return { route: parseRoute(reply, names), error: errorOf(replies.findLast((message) => message.info.error)?.info.error) }
   } finally {
     await abortSession(client, id).catch(() => {})
     await deleteSession(client, id).catch(() => {})
@@ -104,4 +102,64 @@ function routePrompt(input: { candidates: { name: string; description: string }[
     input.text,
     "</message>",
   ].join("\n")
+}
+
+// What a drafting request needs, as the router judged it from the message: five
+// closed estimates, not verified facts about sources nobody has read yet.
+export type DraftScope = {
+  documents: "one" | "several"
+  legal_effect: "yes" | "no"
+  outside_law: "yes" | "no"
+  firm_material: "yes" | "no"
+  sources: "few" | "many"
+}
+export type Route = { name: string; scope?: DraftScope }
+
+const SCOPE: { [K in keyof DraftScope]: readonly DraftScope[K][] } = {
+  documents: ["one", "several"],
+  legal_effect: ["yes", "no"],
+  outside_law: ["yes", "no"],
+  firm_material: ["yes", "no"],
+  sources: ["few", "many"],
+}
+
+// The router replies with one JSON object (dochaus/agent/router.md): the route,
+// plus the five scope fields for the draft mode. Validation is strict: an
+// off-list or missing route is no route, and the scope is kept only when it has
+// exactly the five fields with allowed values; anything else reads as no scope,
+// which never offers a quick draft. A bare exact candidate name (no JSON) is a
+// route without scope. One surrounding code fence is tolerated.
+export function parseRoute(reply: string, names: string[]): Route | undefined {
+  const text = reply.trim()
+  if (names.includes(text)) return { name: text }
+  let value: unknown
+  try {
+    value = JSON.parse(text.replace(/^```(?:json)?\s*([\s\S]*?)\s*```$/, "$1"))
+  } catch {
+    return undefined
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined
+  const { route, ...fields } = value as Record<string, unknown>
+  if (typeof route !== "string" || !names.includes(route)) return undefined
+  return { name: route, scope: parseScope(fields) }
+}
+
+function parseScope(fields: Record<string, unknown>): DraftScope | undefined {
+  const keys = Object.keys(SCOPE) as (keyof DraftScope)[]
+  if (Object.keys(fields).length !== keys.length) return undefined
+  for (const key of keys) if (!(SCOPE[key] as readonly unknown[]).includes(fields[key])) return undefined
+  return fields as DraftScope
+}
+
+// A quick draft may be offered only when every estimate allows it: one
+// document, no legal effect, no outside law, no firm template or playbook, and
+// few sources. A missing or invalid scope is ineligible.
+export function quickDraftEligible(scope: DraftScope | undefined) {
+  return (
+    scope?.documents === "one" &&
+    scope.legal_effect === "no" &&
+    scope.outside_law === "no" &&
+    scope.firm_material === "no" &&
+    scope.sources === "few"
+  )
 }
