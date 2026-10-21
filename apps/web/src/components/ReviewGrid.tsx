@@ -1,8 +1,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { utils, write } from "xlsx"
-import { readReviewAnswer } from "../api/review-answer"
-import { getGrid, saveGrid, type Grid, type GridCellData } from "../api/ingest/grid"
+import { computeCell, describeRecheck, needsFill } from "../api/review-recheck"
+import { getGrid, recheckPassages, saveGrid, type Grid, type GridCellData } from "../api/ingest/grid"
 import { humanizeError } from "../api/ingest/errors"
 import type { Document } from "../api/ingest/documents"
 import { createSession, getMessages, sendPrompt } from "../api/opencode/sessions"
@@ -14,7 +14,9 @@ import { formatDate, formatDateTime } from "../lib/format"
 // questions, each cell is an extracted answer with a source citation. The grid is
 // the durable diligence work product — columns and cells persist server-side
 // (see api/ingest getGrid/saveGrid). Cells compute once and are cached; only
-// empty or stale cells recompute, and `reviewed` cells are frozen.
+// empty or stale cells recompute, and `reviewed` cells are frozen. A cell left
+// without a citation gets exactly one re-check of its own document as part of
+// the same computation (api/review-recheck).
 
 const POOL = 5 // concurrent cell extractions; the engine handles one prompt each
 
@@ -111,29 +113,26 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
     commitCell(key, { ...cell, comments: (cell.comments ?? []).filter((c) => c.id !== id) })
   }
 
-  // Extract one cell: a scoped, throwaway session titled so it stays out of the
-  // sidebar's conversation list (which filters "doc.haus"-titled sessions).
-  async function extract(docName: string, question: string): Promise<GridCellData> {
-    const session = await createSession(client, `doc.haus grid: ${docName}`)
-    await sendPrompt(client, session.id, "extract", `Document: "${docName}". Question: ${question}`)
-    const messages = await getMessages(client, session.id)
-    // A tool-using turn emits several assistant messages (one per model step): the
-    // search-document call lands on an earlier one, the final answer text on the
-    // last. Read every assistant part so the citation is not dropped.
-    const { text, citation } = readReviewAnswer(messages.filter((m) => m.info.role === "assistant"))
-    return {
-      answer: text || "Not addressed",
-      citation: citation && {
-        documentName: citation.documentName,
-        docPath: citation.docPath,
-        section: citation.section,
-        excerpt: citation.excerpt,
-        charStart: citation.charStart,
-        charEnd: citation.charEnd,
-      },
-      status: "filled",
-      questionHash: hashQuestion(question),
-    }
+  // One extract turn in a scoped, throwaway session titled so it stays out of
+  // the sidebar's conversation list (which filters "doc.haus"-titled sessions).
+  // A tool-using turn emits several assistant messages (one per model step): the
+  // search-document call lands on an earlier one, the final answer text on the
+  // last. Return every assistant message so the citation is not dropped.
+  async function extractTurn(title: string, prompt: string, permissions?: Parameters<typeof createSession>[3]) {
+    const session = await createSession(client, title, undefined, permissions)
+    await sendPrompt(client, session.id, "extract", prompt)
+    return (await getMessages(client, session.id)).filter((m) => m.info.role === "assistant")
+  }
+
+  // Extract one cell. A cell left without a citation gets its one re-check: the
+  // deterministic pass over this document only, then, if it found candidate
+  // passages, one extract call that may use no tools and sees only those.
+  function extract(docName: string, question: string): Promise<GridCellData> {
+    return computeCell({ document: docName, question, questionHash: hashQuestion(question) }, {
+      extract: (prompt) => extractTurn(`doc.haus grid: ${docName}`, prompt),
+      passages: (seen) => recheckPassages(matterId, { document: docName, question, seen }),
+      recheck: (prompt) => extractTurn(`doc.haus grid re-check: ${docName}`, prompt, [{ action: "*", resource: "*", effect: "deny" }]),
+    })
   }
 
   // Run a set of (document, column) targets through a small concurrency pool so a
@@ -164,9 +163,9 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
     const targets = documents.flatMap((doc) =>
       grid.columns
         .filter((col) => {
-          const cell = grid.cells[cellKey(doc.name, col.id)]
-          // Compute blanks and stale cells; never touch a reviewed (locked) cell.
-          return !cell || (cell.status !== "reviewed" && cell.questionHash !== hashQuestion(col.question))
+          // Compute blank, stale and never re-checked negative cells; never touch a
+          // reviewed (locked) cell or one already re-checked for this question.
+          return needsFill(grid.cells[cellKey(doc.name, col.id)], hashQuestion(col.question))
         })
         .map((column) => ({ docName: doc.name, column })),
     )
@@ -187,6 +186,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
         const cell = grid.cells[cellKey(doc.name, col.id)]
         const note = [
           cell?.citation && `Source: ${cell.citation.documentName} § ${cell.citation.section}`,
+          cell?.recheck && describeRecheck(cell.recheck),
           ...(cell?.comments ?? []).map((m) => `Comment (${formatDate(m.at)}): ${m.text}`),
         ]
           .filter((line): line is string => Boolean(line))
@@ -300,6 +300,11 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
                               {cell.answer}
                               {cell.citation && <span className="review-cite"> [{cell.citation.documentName} § {cell.citation.section}]</span>}
                             </button>
+                            {cell.recheck && (
+                              <span className="review-recheck" title={describeRecheck(cell.recheck)}>
+                                {cell.recheck.outcome === "found" ? "Found on re-check" : "Not found after re-check"}
+                              </span>
+                            )}
                             <div className="review-cell-actions">
                               <button
                                 className={`icon-btn review-note${cell.comments?.length ? " has-comments" : ""}`}
@@ -353,6 +358,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
               <ModalHeader title={detail.question} onClose={() => setDetail(undefined)} />
               <div className="picker-body">
                 <p className="review-detail-answer">{detailCell.answer}</p>
+                {detailCell.recheck && <p className="review-recheck-detail">{describeRecheck(detailCell.recheck)}</p>}
                 {detailCell.citation && (
                   <div className="citation">
                     <div className="ref">[{detailCell.citation.documentName} § {detailCell.citation.section}]</div>

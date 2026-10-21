@@ -1,5 +1,8 @@
+import { Database } from "bun:sqlite"
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import path from "node:path"
+import { formatCitations } from "../../../dochaus/lib/citations"
+import { indexIsContained, lexicalChannel, phraseChannel, type ChunkRow } from "../../../dochaus/lib/search/channels"
 
 // The tabular-review grid for a matter. Persisted as a single JSON file next to
 // the matter's retrieval index (`<matter>/.dochaus/grid.json`) so the review
@@ -28,7 +31,17 @@ export type GridCell = {
   questionHash: string
   // Reviewer comment thread on the cell; survives recomputes.
   comments?: { id: string; text: string; at: number }[]
+  // A cell computed without a citation gets one re-check of its own document
+  // (see recheckPassages); this records its outcome and what it searched.
+  recheck?: GridRecheck
 }
+
+export type GridRecheck = { outcome: "found" | "not_found" } & RecheckScope
+
+// What one re-check searched: the document's indexed passages, how many the
+// first extraction's search had already returned, how many further passages
+// matched and were shown to the model, the question terms and the channels.
+export type RecheckScope = { passages: number; read: number; candidates: number; terms: string[]; channels: string[] }
 
 // Cells are keyed `<documentName>::<columnId>`.
 export type Grid = { columns: GridColumn[]; cells: Record<string, GridCell> }
@@ -46,4 +59,144 @@ export function readGrid(matterDir: string): Grid {
 export function writeGrid(matterDir: string, grid: Grid) {
   mkdirSync(path.join(matterDir, ".dochaus"), { recursive: true })
   writeFileSync(gridFile(matterDir), JSON.stringify(grid, null, 2))
+}
+
+// --- Re-check of a negative cell -------------------------------------------
+//
+// A cell with no citation ("Not addressed", or an answer whose source label did
+// not resolve) gets one deterministic pass over its own document: the question's
+// terms through the lexical and phrase channels, excluding the passages the
+// first extraction already saw. With no candidates the cell stays negative with
+// this scope and no model call; otherwise the web app shows the candidates to
+// one extract call and adopts its answer only if it cites one of them.
+
+export type RecheckRequest = { document: string; question: string; seen: Array<{ docPath: string; charStart: number; charEnd: number }> }
+
+export type RecheckCitation = {
+  documentName: string
+  docPath: string
+  section: string
+  structuralPath?: string
+  party?: string
+  excerpt: string
+  charStart: number
+  charEnd: number
+  score: number
+  flagged: boolean
+}
+
+// Candidates shown to the one re-check call: a small, focused set.
+const RECHECK_PASSAGES = 8
+const RECHECK_CHANNELS = ["lexical", "phrase"]
+const RRF_K = 60
+
+// Words that carry no subject on their own: question words, articles,
+// auxiliaries, pronouns and prepositions. Everything else in the question is a
+// term the document would have to contain to address it.
+const STOPWORDS = new Set(
+  ("a an the and or but nor not no if then than so as of in on at to for from by with without within about into onto upon " +
+    "over under between among after before during until per via is are was were be been being am do does did doing have has had " +
+    "having can could shall should will would may might must what which who whom whose when where why how whether there here " +
+    "this that these those it its they them their theirs he him his she her hers we us our ours you your yours i me my any all " +
+    "each every some such other own same also only just very more most less least much many both either neither one ones " +
+    "anything something nothing everything document documents").split(" "),
+)
+
+export function recheckRequest(value: unknown): RecheckRequest | undefined {
+  if (!value || typeof value !== "object") return
+  const { document, question, seen } = value as Record<string, unknown>
+  if (typeof document !== "string" || !document.trim() || typeof question !== "string" || !question.trim() || !Array.isArray(seen)) return
+  const spans = seen.flatMap((span) => {
+    const { docPath, charStart, charEnd } = (span ?? {}) as Record<string, unknown>
+    return typeof docPath === "string" && Number.isInteger(charStart) && Number.isInteger(charEnd)
+      ? [{ docPath, charStart: charStart as number, charEnd: charEnd as number }]
+      : []
+  })
+  return spans.length === seen.length ? { document, question, seen: spans } : undefined
+}
+
+/** The question's searchable terms: every content word and exact anchor (a
+ * number, amount, date, identifier or section reference), plus as phrases the
+ * quoted strings and runs of adjacent content words. Punctuation ends a run. */
+export function questionTerms(question: string) {
+  const words: string[] = []
+  const phrases: string[] = []
+  const add = (list: string[], term: string) => {
+    if (!list.some((known) => known.toLowerCase() === term.toLowerCase())) list.push(term)
+  }
+  for (const [, quoted] of question.matchAll(/["\u201C\u201D]([^"\u201C\u201D]+)["\u201C\u201D]/g)) {
+    const term = quoted!.trim()
+    if (/[\p{L}\p{N}]/u.test(term)) add(term.split(/\s+/).length > 1 ? phrases : words, term)
+  }
+  let run: string[] = []
+  const close = () => {
+    if (run.length > 1) add(phrases, run.join(" "))
+    run = []
+  }
+  for (const raw of question.split(/\s+/)) {
+    const token = raw.replace(/^[^\p{L}\p{N}$\u00A3\u20AC\u00A7]+/u, "").replace(/[^\p{L}\p{N}%]+$/u, "")
+    const term = /\p{N}/u.test(token) || (token.length > 1 && /\p{L}/u.test(token) && !STOPWORDS.has(token.toLowerCase()))
+    if (term) {
+      add(words, token)
+      run.push(token)
+    } else close()
+    if (!term || !raw.endsWith(token)) close()
+  }
+  close()
+  return { words, phrases }
+}
+
+/** The one deterministic re-check pass for a negative cell: passages of the
+ * cell's own document that contain the question's terms and that the first
+ * extraction did not see, best first, rendered with the shared
+ * untrusted-excerpt framing for the re-check call. */
+export function recheckPassages(matterDir: string, request: RecheckRequest) {
+  const { words, phrases } = questionTerms(request.question)
+  const terms = [...phrases, ...words]
+  const none = { citations: [] as RecheckCitation[], passages: "", scope: { passages: 0, read: 0, candidates: 0, terms, channels: RECHECK_CHANNELS } }
+  const dbPath = path.join(matterDir, ".dochaus", "legal.db")
+  if (!existsSync(dbPath) || !indexIsContained(matterDir, dbPath)) return none
+  const db = new Database(dbPath, { readonly: true })
+  try {
+    const scope = { document: request.document }
+    const identity = (span: { docPath: string; charStart: number; charEnd: number }) => JSON.stringify([span.docPath, span.charStart, span.charEnd])
+    const span = (row: ChunkRow) => identity({ docPath: row.doc_path, charStart: row.char_start, charEnd: row.char_end })
+    const seen = new Set(request.seen.map(identity))
+    const rows = db.query("SELECT doc_path, char_start, char_end FROM chunks WHERE doc_name = ?").all(request.document) as ChunkRow[]
+    // Reciprocal-rank fusion, as search-document fuses its channels.
+    const fused = new Map<number, { row: ChunkRow; score: number }>()
+    const channels = [
+      words.length ? lexicalChannel(db, words.join(" "), scope) : [],
+      ...phrases.map((phrase) => phraseChannel(db, phrase, scope)),
+    ]
+    for (const channel of channels)
+      channel.forEach((row, rank) => {
+        const entry = fused.get(row.id) ?? { row, score: 0 }
+        entry.score += 1 / (RRF_K + 1 + rank)
+        fused.set(row.id, entry)
+      })
+    const citations = [...fused.values()]
+      .filter(({ row }) => !seen.has(span(row)))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, RECHECK_PASSAGES)
+      .map(({ row, score }): RecheckCitation => ({
+        documentName: row.doc_name,
+        docPath: row.doc_path,
+        section: row.section,
+        structuralPath: row.structural_path || undefined,
+        party: row.party || undefined,
+        excerpt: row.text,
+        charStart: row.char_start,
+        charEnd: row.char_end,
+        score,
+        flagged: row.flagged === 1,
+      }))
+    return {
+      citations,
+      passages: formatCitations(citations, { full: true }),
+      scope: { passages: rows.length, read: rows.filter((row) => seen.has(span(row))).length, candidates: citations.length, terms, channels: RECHECK_CHANNELS },
+    }
+  } finally {
+    db.close()
+  }
 }

@@ -2,15 +2,11 @@ import type { Citation } from "./opencode/parts"
 import type { Part } from "./session-view"
 
 // Keep the final answer separate from intermediate progress text. Retrieval
-// citations may belong to earlier provider steps in the same extraction.
-export function readReviewAnswer(messages: Array<{ parts: Part[] }>) {
+// citations may belong to earlier provider steps in the same extraction. A
+// re-check passes its own candidate passages as the only citations it accepts.
+export function readReviewAnswer(messages: Array<{ parts: Part[] }>, citations = retrievedCitations(messages)) {
   const final = messages.findLast(message => message.parts.some(part => part.type === "text" && part.text.trim()))
   const raw = (final?.parts ?? []).filter(part => part.type === "text").map(part => part.text).join("").trim()
-  const citations = messages.flatMap(message => message.parts)
-    .filter((part): part is Extract<Part, { type: "tool" }> => part.type === "tool")
-    .flatMap(part => part.tool === "search-document" && part.state.status === "completed"
-      ? (part.state.metadata?.citations ?? []) as Citation[]
-      : [])
   const source = raw.match(/\n\s*Source:\s*§?\s*(.+?)\s*$/i)
   const section = source?.[1]?.trim()
   const matches = citations.filter(citation => section && (citation.section === section ||
@@ -22,4 +18,13 @@ export function readReviewAnswer(messages: Array<{ parts: Part[] }>) {
     text: source ? raw.slice(0, source.index).trim() : raw,
     citation: identities.size === 1 ? identities.values().next().value : undefined,
   }
+}
+
+// Every passage the extraction's search-document calls returned.
+export function retrievedCitations(messages: Array<{ parts: Part[] }>) {
+  return messages.flatMap(message => message.parts)
+    .filter((part): part is Extract<Part, { type: "tool" }> => part.type === "tool")
+    .flatMap(part => part.tool === "search-document" && part.state.status === "completed"
+      ? (part.state.metadata?.citations ?? []) as Citation[]
+      : [])
 }
