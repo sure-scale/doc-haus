@@ -8,25 +8,28 @@ import { supersedeMatchingRedlines, withRedlineDocumentLock } from "../lib/redli
 
 // doc.haus redact tool. TRUE redaction: removes the sensitive text from the
 // .docx itself — every body/header/footer/footnote/endnote/comment occurrence
-// via Docxodus, plus the package metadata Docxodus cannot address (docProps
-// title/creator/keywords, comment author attributes, textbox and field text) via
-// a raw OOXML scrub — and verifies zero residue before writing. This is the
-// opposite of an overlay "redaction" (a black box drawn over intact text), the
-// recurring data-breach vector this tool exists to prevent.
+// via Docxodus, plus what Docxodus cannot address (docProps, attribute values
+// such as alt text, link targets and document variables, other XML parts) via a
+// package walk — and re-scans every readable value of the package before
+// writing, naming the parts it cannot read. This is the opposite of an overlay
+// "redaction" (a black box drawn over intact text), the recurring data-breach
+// vector this tool exists to prevent.
 //
 // Removal is destructive and irreversible, so it is all-or-nothing: any
 // occurrence the engine cannot remove (text spanning a paragraph boundary,
-// residue surviving the scrub) aborts the whole operation before the file is
-// touched, and the user approves via permission "redact" before anything is
-// removed. Every redaction is recorded in the matter's redaction log; once the
-// file is written, a log write that fails is reported in the result, not thrown,
-// so the re-index that drops the removed text from search still runs.
+// residue surviving the scrub, such as a value split across runs outside the
+// Docxodus projection or a copy inside a binary part) aborts the whole
+// operation before the file is touched, and the user approves via permission
+// "redact" before anything is removed. Every redaction is recorded in the
+// matter's redaction log; once the file is written, a log write that fails is
+// reported in the result, not thrown, so the re-index that drops the removed
+// text from search still runs.
 
 const ingestUrl = process.env.INGEST_URL ?? "http://127.0.0.1:4500"
 
 export default tool({
   description:
-    "Permanently remove sensitive text from the matter's Word (.docx) document — true redaction, not an overlay. Finds every occurrence of the exact text across body, headers, footers, footnotes, endnotes, and comments, replaces each with a redaction label, scrubs the text from document metadata (title, author, keywords, comment authors), verifies nothing remains, and records the redaction in the matter's redaction log. The user approves before anything is removed. THIS IS IRREVERSIBLE — the text is gone from the file. Use search-document or read-document first to confirm the exact text, and give a reason a privilege or redaction log can cite.",
+    "Permanently remove sensitive text from the matter's Word (.docx) document — true redaction, not an overlay. Finds every occurrence of the exact text across body, headers, footers, footnotes, endnotes, and comments, replaces each with a redaction label, scrubs the text from document metadata and attribute values (title, author, comment authors, image alt text, link targets, document variables), re-scans every readable part of the file and names any binary parts it cannot read, and records the redaction in the matter's redaction log. The user approves before anything is removed. THIS IS IRREVERSIBLE — the text is gone from the file. Use search-document or read-document first to confirm the exact text, and give a reason a privilege or redaction log can cite.",
   args: {
     document: tool.schema.string().describe("Document file name within the matter (the docPath from a citation)"),
     text: tool.schema.string().describe("The exact sensitive text to remove everywhere it appears (case-sensitive)"),
@@ -73,7 +76,7 @@ export default tool({
     // keyword) with no visible occurrence — surface those parts so the user
     // approves the real scope of the removal. Parts grep already covers are
     // excluded; what remains is docProps and other unprojected parts.
-    const allParts = docxPackageResidue(bytes, args.text)
+    const allParts = [...new Set(docxPackageResidue(bytes, args.text).hits.map((hit) => hit.part))]
     const metadataParts = allParts.filter(
       (p) => !/^word\/(document|header\d*|footer\d*|footnotes|endnotes|comments)\.xml$/.test(p),
     )
@@ -119,7 +122,7 @@ export default tool({
         currentSession.close()
         return { error: `Redaction aborted, document unchanged: ${currentCrossBlock.length} occurrence(s) now span a paragraph boundary.` }
       }
-      const currentParts = docxPackageResidue(currentBytes, args.text)
+      const currentParts = docxPackageResidue(currentBytes, args.text).hits
       if (!currentMatches.length && !currentParts.length) {
         currentSession.close()
         return { error: `Text is no longer present in ${path.basename(file)} after approval.` }
@@ -141,8 +144,10 @@ export default tool({
       currentSession.close()
       const scrub = scrubDocxPackage(replaced, args.text, label)
       const residue = docxPackageResidue(scrub.bytes, args.text)
-      if (residue.length)
-        return { error: `Redaction aborted, document unchanged: the text still appears in ${residue.join(", ")} after removal. The document needs manual review.` }
+      if (residue.hits.length)
+        return {
+          error: `Redaction aborted, document unchanged: the text still appears after removal where this tool cannot safely remove it: ${residue.hits.map((hit) => `${hit.part} (${hit.where})`).join("; ")}. The document needs manual review.`,
+        }
 
       assertDirectWorkingDocxWriteAllowed(ctx.directory, file)
       await Bun.write(file, scrub.bytes)
@@ -165,7 +170,7 @@ export default tool({
           metadataHits: Object.values(scrub.hits).reduce((a, b) => a + b, 0),
         }),
       )
-      return { scrub, stale, id, occurrences: currentMatches.length }
+      return { scrub, residue, stale, id, occurrences: currentMatches.length }
     })
     if ("error" in redaction) return redaction.error
 
@@ -189,21 +194,22 @@ export default tool({
         `WARNING: pending redlines that reference the removed text were not retired (${stale.message}). Reject any that still propose or anchor to the removed text in the redline review.`,
       !reingest?.ok &&
         "WARNING: re-indexing failed — the matter's search index may still contain the removed text until the document is re-ingested.",
-      redaction.scrub.unreachable.length &&
-        `NOTE: the document embeds ${redaction.scrub.unreachable.length} image/object part(s) (${redaction.scrub.unreachable.join(", ")}) this tool cannot inspect — review them manually if they could depict the redacted content.`,
+      redaction.residue.unread.length &&
+        `NOTE: ${redaction.residue.unread.length} part(s) are not readable text (${redaction.residue.unread.join(", ")}). The scan searched them only for a literal copy of the text and found none; it cannot see compressed, encoded or image content, so review them manually if they could contain or depict it.`,
       !(stale instanceof Error) && stale.length && `Retired ${stale.length} pending redline(s) that referenced the removed text.`,
     ].filter(Boolean)
 
     return {
       title: `Redacted ${path.basename(file)}`,
       output: [
-        `Permanently removed ${JSON.stringify(args.text)} from ${path.basename(file)}: ${redaction.occurrences} text occurrence(s) replaced with ${JSON.stringify(label)}, ${Object.keys(redaction.scrub.hits).length} package part(s) scrubbed. Verified zero residue.${id instanceof Error ? "" : ` Recorded as redaction log entry #${id} (reason: ${args.reason}, by ${author}).`}`,
+        `Permanently removed ${JSON.stringify(args.text)} from ${path.basename(file)}: ${redaction.occurrences} text occurrence(s) replaced with ${JSON.stringify(label)}, ${Object.keys(redaction.scrub.hits).length} package part(s) scrubbed. Verified zero residue in the text the scan reads: every text node, attribute value and run-joined paragraph in ${redaction.residue.read.length} XML part(s)${redaction.residue.unread.length ? `; ${redaction.residue.unread.length} part(s) not read (see note)` : ""}.${id instanceof Error ? "" : ` Recorded as redaction log entry #${id} (reason: ${args.reason}, by ${author}).`}`,
         ...warnings,
       ].join("\n"),
       metadata: {
         document: file,
         occurrences: redaction.occurrences,
         scrubbedParts: redaction.scrub.hits,
+        unreadParts: redaction.residue.unread,
         redaction: id instanceof Error ? null : id,
         reason: args.reason,
         author,

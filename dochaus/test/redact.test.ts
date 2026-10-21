@@ -36,6 +36,7 @@ function ctxFor(directory: string, ask: () => Promise<void> = async () => {}) {
   return {
     sessionID: "test",
     messageID: "test",
+    callID: "test",
     agent: "test",
     directory,
     worktree: directory,
@@ -63,6 +64,10 @@ function buildFixture() {
   return zipSync(parts)
 }
 
+function residueParts(bytes: Uint8Array, needle: string) {
+  return [...new Set(docxPackageResidue(bytes, needle).hits.map((hit) => hit.part))]
+}
+
 async function matterWith(bytes: Uint8Array) {
   const dir = mkdtempSync(path.join(tmpdir(), "redact-matter-"))
   const file = path.join(dir, "personnel.docx")
@@ -73,10 +78,10 @@ async function matterWith(bytes: Uint8Array) {
 describe("metadata scrub", () => {
   test("removes the needle from docProps text nodes and reports residue correctly", () => {
     const fixture = buildFixture()
-    expect(docxPackageResidue(fixture, SSN)).toContain("docProps/core.xml")
+    expect(residueParts(fixture, SSN)).toContain("docProps/core.xml")
     const scrub = scrubDocxPackage(fixture, SSN, "[REDACTED]")
     expect(scrub.hits["docProps/core.xml"]).toBe(2)
-    expect(docxPackageResidue(scrub.bytes, SSN)).not.toContain("docProps/core.xml")
+    expect(residueParts(scrub.bytes, SSN)).not.toContain("docProps/core.xml")
     expect(strFromU8(unzipSync(scrub.bytes)["docProps/core.xml"])).toContain("Agent [REDACTED]")
   })
 })
@@ -101,14 +106,14 @@ describe("redact tool", () => {
       ctxFor(dir),
     )
     expect(result).toBeObject()
-    if (typeof result === "string") throw new Error(result)
+    if (!result || typeof result === "string") throw new Error(String(result))
     expect(result.output).toContain("3 text occurrence(s)")
     expect(result.output).toContain("re-indexing failed")
     expect(result.metadata?.reingested).toBe(false)
 
     // The file itself is clean: raw package residue zero, Docxodus flat-text zero.
     const redacted = await Bun.file(file).bytes()
-    expect(docxPackageResidue(redacted, SSN)).toEqual([])
+    expect(docxPackageResidue(redacted, SSN).hits).toEqual([])
     const session = dx.openDocxSession(redacted, {})
     expect(session.grep(SSN.replace(/-/g, "\\-"), { scope: dx.ProjectionScopes.All })).toEqual([])
     // The projection escapes markdown punctuation; normalize before asserting.
@@ -247,12 +252,12 @@ describe("redact tool", () => {
     }
 
     // The irreversible removal happened, and the index was asked to drop the text.
-    expect(docxPackageResidue(await Bun.file(file).bytes(), SSN)).toEqual([])
+    expect(docxPackageResidue(await Bun.file(file).bytes(), SSN).hits).toEqual([])
     expect({
       thrown: result instanceof Error ? result.message : null,
       reindexRequests: requests.filter((url) => url.endsWith("/documents/revisions")).length,
     }).toEqual({ thrown: null, reindexRequests: 1 })
-    if (typeof result === "string" || result instanceof Error) throw new Error(String(result))
+    if (!result || typeof result === "string" || result instanceof Error) throw new Error(String(result))
     expect(result.output).toContain("Permanently removed")
     expect(result.output).not.toContain("Recorded as redaction log entry")
     expect(result.output).not.toContain("Retired")
@@ -263,4 +268,157 @@ describe("redact tool", () => {
     expect(listRedactions(dir)).toEqual([])
     expect(pendingRedlinesForDoc(dir, file)).toHaveLength(1)
   }, 30_000)
+})
+
+// A hand-built synthetic package with one fictional surname planted in every
+// kind of place a DOCX can carry text: projected story text (body with a value
+// split across differently formatted runs, header, footer, comment, footnote),
+// docProps, attribute values (image alt text, hyperlink tooltip, mailto target,
+// document variable, people-part author under the w15 prefix), a .vml part, and
+// two binary parts (an image and a package thumbnail).
+const NAME = "Thistlewood"
+const W_NS = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"'
+const DRAWING_NS = 'xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"'
+const REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+const XML_DECL = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+const PNG = Uint8Array.from(atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="), (c) => c.charCodeAt(0))
+const JPEG = Uint8Array.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01, 0xff, 0xd9])
+const para = (inner: string) => `<w:p>${inner}</w:p>`
+const run = (text: string, props = "") => `<w:r>${props}<w:t xml:space="preserve">${text}</w:t></w:r>`
+
+function plantedParts(): Record<string, Uint8Array> {
+  const body = [
+    para(run("Synthetic workshop record.")),
+    para(run("Contact ") + run("Thistle") + run("wood", "<w:rPr><w:b/></w:rPr>") + run(" about the record.")),
+    para(`<w:hyperlink r:id="rIdLink" w:tooltip="Write to ${NAME}">${run("Email the records desk")}</w:hyperlink>`),
+    para(`<w:r><w:drawing><wp:inline><wp:extent cx="9525" cy="9525"/><wp:docPr id="1" name="Picture 1" descr="Portrait of ${NAME}" title="${NAME}"/><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic><pic:nvPicPr><pic:cNvPr id="0" name="image1.png"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="rIdImg"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="9525" cy="9525"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>`),
+    para(`<w:commentRangeStart w:id="0"/>${run("Reviewed.")}<w:commentRangeEnd w:id="0"/><w:r><w:commentReference w:id="0"/></w:r>`),
+    para(`${run("See note.")}<w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:footnoteReference w:id="1"/></w:r>`),
+  ].join("")
+  const override = (part: string, type: string) => `<Override PartName="/${part}" ContentType="application/vnd.openxmlformats-officedocument.${type}"/>`
+  return {
+    "[Content_Types].xml": strToU8(`${XML_DECL}<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/><Default Extension="jpeg" ContentType="image/jpeg"/><Default Extension="vml" ContentType="application/vnd.openxmlformats-officedocument.vmlDrawing"/>${override("word/document.xml", "wordprocessingml.document.main+xml")}${override("word/settings.xml", "wordprocessingml.settings+xml")}${override("word/header1.xml", "wordprocessingml.header+xml")}${override("word/footer1.xml", "wordprocessingml.footer+xml")}${override("word/comments.xml", "wordprocessingml.comments+xml")}${override("word/footnotes.xml", "wordprocessingml.footnotes+xml")}${override("word/people.xml", "wordprocessingml.people+xml")}<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>${override("docProps/app.xml", "extended-properties+xml")}</Types>`),
+    "_rels/.rels": strToU8(`${XML_DECL}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${REL}/officeDocument" Target="word/document.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/><Relationship Id="rId3" Type="${REL}/extended-properties" Target="docProps/app.xml"/><Relationship Id="rId4" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/thumbnail" Target="docProps/thumbnail.jpeg"/></Relationships>`),
+    "word/document.xml": strToU8(`${XML_DECL}<w:document ${W_NS} ${DRAWING_NS}><w:body>${body}<w:sectPr><w:headerReference w:type="default" r:id="rIdHdr"/><w:footerReference w:type="default" r:id="rIdFtr"/><w:pgSz w:w="12240" w:h="15840"/></w:sectPr></w:body></w:document>`),
+    "word/_rels/document.xml.rels": strToU8(`${XML_DECL}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdSet" Type="${REL}/settings" Target="settings.xml"/><Relationship Id="rIdHdr" Type="${REL}/header" Target="header1.xml"/><Relationship Id="rIdFtr" Type="${REL}/footer" Target="footer1.xml"/><Relationship Id="rIdCom" Type="${REL}/comments" Target="comments.xml"/><Relationship Id="rIdFn" Type="${REL}/footnotes" Target="footnotes.xml"/><Relationship Id="rIdPeople" Type="http://schemas.microsoft.com/office/2011/relationships/people" Target="people.xml"/><Relationship Id="rIdImg" Type="${REL}/image" Target="media/image1.png"/><Relationship Id="rIdLink" Type="${REL}/hyperlink" Target="mailto:records@example.test?subject=${NAME}" TargetMode="External"/></Relationships>`),
+    "word/settings.xml": strToU8(`${XML_DECL}<w:settings ${W_NS}><w:docVars><w:docVar w:name="ClientSurname" w:val="${NAME}"/></w:docVars></w:settings>`),
+    "word/header1.xml": strToU8(`${XML_DECL}<w:hdr ${W_NS}>${para(run(`${NAME} file`))}</w:hdr>`),
+    "word/footer1.xml": strToU8(`${XML_DECL}<w:ftr ${W_NS}>${para(run(`Prepared for ${NAME}`))}</w:ftr>`),
+    "word/comments.xml": strToU8(`${XML_DECL}<w:comments ${W_NS}><w:comment w:id="0" w:author="Reviewer" w:initials="R">${para(run(`Ask ${NAME} to confirm.`))}</w:comment></w:comments>`),
+    "word/footnotes.xml": strToU8(`${XML_DECL}<w:footnotes ${W_NS}><w:footnote w:type="separator" w:id="-1">${para("<w:r><w:separator/></w:r>")}</w:footnote><w:footnote w:type="continuationSeparator" w:id="0">${para("<w:r><w:continuationSeparator/></w:r>")}</w:footnote><w:footnote w:id="1">${para(run(`Source: ${NAME} interview.`))}</w:footnote></w:footnotes>`),
+    "word/people.xml": strToU8(`${XML_DECL}<w15:people xmlns:w15="http://schemas.microsoft.com/office/word/2012/wordml"><w15:person w15:author="${NAME}"><w15:presenceInfo w15:providerId="None" w15:userId="${NAME}"/></w15:person></w15:people>`),
+    "word/vmlDrawing1.vml": strToU8(`<xml xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office"><v:shape id="s1" alt="${NAME} signature" o:title="${NAME}"><v:textbox><div>Signed by ${NAME}</div></v:textbox></v:shape></xml>`),
+    "word/media/image1.png": PNG,
+    "docProps/core.xml": strToU8(`${XML_DECL}<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:creator>${NAME}</dc:creator></cp:coreProperties>`),
+    "docProps/app.xml": strToU8(`${XML_DECL}<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"><Company>${NAME} Holdings</Company></Properties>`),
+    "docProps/thumbnail.jpeg": JPEG,
+  }
+}
+
+// A chart title whose value is split across two DrawingML runs: outside the
+// Docxodus projection, so only the package walk can see it.
+const SPLIT_CHART = strToU8(`${XML_DECL}<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><c:chart><c:title><c:tx><c:rich><a:bodyPr/><a:p><a:r><a:t>Thistle</a:t></a:r><a:r><a:rPr b="1"/><a:t>wood</a:t></a:r></a:p></c:rich></c:tx></c:title></c:chart></c:chartSpace>`)
+
+// Independent oracle: the needle in any part's raw bytes (attributes included)
+// or in any part's text once every tag is stripped (so split runs rejoin).
+function leaks(bytes: Uint8Array, needle: string) {
+  return Object.entries(unzipSync(bytes)).flatMap(([name, data]) => {
+    const raw = strFromU8(data, true)
+    return [
+      raw.includes(needle) && `${name}: raw`,
+      raw.replace(/<[^>]*>/g, "").includes(needle) && `${name}: joined text`,
+    ].filter((leak): leak is string => !!leak)
+  })
+}
+
+describe("package residue scan", () => {
+  test("reads attribute values, .vml parts and text split across runs", () => {
+    const parts = plantedParts()
+    parts["word/charts/chart1.xml"] = SPLIT_CHART
+    const where = docxPackageResidue(zipSync(parts), NAME).hits.map((hit) => `${hit.part} | ${hit.where}`)
+    expect(where).toEqual(
+      expect.arrayContaining([
+        "word/document.xml | attribute descr on <wp:docPr>",
+        "word/document.xml | attribute title on <wp:docPr>",
+        "word/document.xml | attribute w:tooltip on <w:hyperlink>",
+        "word/document.xml | text split across runs in <w:p>",
+        "word/_rels/document.xml.rels | attribute Target on <Relationship>",
+        "word/settings.xml | attribute w:val on <w:docVar>",
+        "word/people.xml | attribute w15:author on <w15:person>",
+        "word/vmlDrawing1.vml | attribute alt on <v:shape>",
+        "word/vmlDrawing1.vml | text in <div>",
+        "word/charts/chart1.xml | text split across runs in <a:p>",
+      ]),
+    )
+  })
+
+  test("a deliberately unscrubbed attribute fails the residue check", () => {
+    const parts = unzipSync(scrubDocxPackage(zipSync(plantedParts()), NAME, "[REDACTED]").bytes)
+    expect(residueParts(zipSync(parts), NAME)).not.toContain("word/settings.xml")
+    parts["word/settings.xml"] = strToU8(`${XML_DECL}<w:settings ${W_NS}><w:docVars><w:docVar w:name="ClientSurname" w:val="${NAME}"/></w:docVars></w:settings>`)
+    expect(docxPackageResidue(zipSync(parts), NAME).hits).toContainEqual({ part: "word/settings.xml", where: "attribute w:val on <w:docVar>" })
+  })
+
+  test("lists every part it cannot read, including a thumbnail, and flags a literal copy inside one", () => {
+    const parts = plantedParts()
+    expect(docxPackageResidue(zipSync(parts), NAME).unread.sort()).toEqual(["docProps/thumbnail.jpeg", "word/media/image1.png"])
+    parts["docProps/thumbnail.jpeg"] = new Uint8Array([...JPEG.subarray(0, 12), ...strToU8(`Artist ${NAME}`), 0xff, 0xd9])
+    expect(docxPackageResidue(zipSync(parts), NAME).hits).toContainEqual({
+      part: "docProps/thumbnail.jpeg",
+      where: "literal bytes in a part the scan cannot parse",
+    })
+  })
+
+  test("a number inside a longer typed identifier is not the redacted value", () => {
+    const parts = plantedParts()
+    parts["word/settings.xml"] = strToU8(`${XML_DECL}<w:settings ${W_NS}><w:rsids><w:rsidRoot w:val="00451200"/></w:rsids></w:settings>`)
+    expect(residueParts(zipSync(parts), "4512")).toEqual([])
+  })
+})
+
+describe("redact tool across the whole package", () => {
+  test("removes the value from every readable part and scopes its claim to what the scan read", async () => {
+    const { dir, file } = await matterWith(zipSync(plantedParts()))
+    expect(leaks(await Bun.file(file).bytes(), NAME).length).toBeGreaterThan(0)
+
+    const result = await redact.execute(
+      { document: "personnel.docx", text: NAME, reason: "Client identity", author: undefined, label: undefined },
+      ctxFor(dir),
+    )
+    if (!result || typeof result === "string") throw new Error(String(result))
+    const redacted = await Bun.file(file).bytes()
+    expect(leaks(redacted, NAME)).toEqual([])
+    expect(docxPackageResidue(redacted, NAME).hits).toEqual([])
+    // The message claims only what the scan read and names what it could not.
+    expect(result.output).toContain("Verified zero residue in the text the scan reads")
+    expect(result.output).not.toMatch(/zero residue\.(\s|$)/)
+    expect(result.output).toContain("2 part(s) not read")
+    expect(result.output).toContain("docProps/thumbnail.jpeg")
+    expect(result.output).toContain("word/media/image1.png")
+    expect(result.metadata?.unreadParts).toEqual(expect.arrayContaining(["docProps/thumbnail.jpeg", "word/media/image1.png"]))
+    // Rewritten parts stay well formed: Docxodus reopens the file and the
+    // mailto link and alt text carry the label.
+    const session = dx.openDocxSession(redacted, {})
+    expect(session.project().markdown).toContain("Contact")
+    session.close()
+    const parts = unzipSync(redacted)
+    expect(strFromU8(parts["word/_rels/document.xml.rels"])).toContain('Target="mailto:records@example.test?subject=[REDACTED]"')
+    expect(strFromU8(parts["word/document.xml"])).toContain('descr="Portrait of [REDACTED]"')
+  })
+
+  test("aborts naming the part when a split value sits outside the Docxodus projection", async () => {
+    const parts = plantedParts()
+    parts["word/charts/chart1.xml"] = SPLIT_CHART
+    const { dir, file } = await matterWith(zipSync(parts))
+    const before = await Bun.file(file).bytes()
+    const result = await redact.execute(
+      { document: "personnel.docx", text: NAME, reason: "Client identity", author: undefined, label: undefined },
+      ctxFor(dir),
+    )
+    expect(result).toBeString()
+    expect(result as string).toContain("Redaction aborted, document unchanged")
+    expect(result as string).toContain("word/charts/chart1.xml (text split across runs in <a:p>)")
+    expect(await Bun.file(file).bytes()).toEqual(before)
+    expect(listRedactions(dir)).toEqual([])
+  })
 })
