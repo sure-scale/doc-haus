@@ -196,13 +196,14 @@ export function retryPrompt(stage: StageID | "advise", issues: string[]) {
 /** The standard every reviewer applies for the party the lawyer acts for, by
  * the run's Posture: Client-favorable looks for every protection a careful
  * drafter would include for that party; Balanced and Conservative hold it to
- * what a market-standard document for that side would include. */
+ * what a market-standard document for that side would include. Each finding's
+ * balance, not this wording, keeps what goes beyond market out of the draft
+ * (review-findings.ts). */
 export function sidedReviewStandard(directory: string) {
   const assess = "- Assess each provision as the reviewing lawyer for the party the lawyer acts for: whether it works under the governing law the request and sources point to, "
   return runPosture(directory) === "client-favorable"
     ? `${assess}whether it protects that party's position, and whether a protection a careful drafter would include for that party is missing.`
-    : `${assess}whether it has a real adverse effect on that party's position, and whether it lacks what a conventional, market-standard document for that side would include. ` +
-      "Do not press for protections beyond market practice: a position more favourable to that party than market practice gives is not a finding, not even as an optional negotiating improvement."
+    : `${assess}whether it has a real adverse effect on that party's position, and whether it lacks what a conventional, market-standard document for that side would include.`
 }
 
 /** Whom the lawyer acts for, as data every model stage reads. When neither the

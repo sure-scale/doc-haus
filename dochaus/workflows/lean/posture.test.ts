@@ -4,12 +4,16 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { readFirmDraftingPreferences } from "../../lib/drafting-preferences"
 import { matterPosture } from "../../lib/matter-client"
-import { leanSteps, readLeanPlan, runPosture, stepStage, writeLeanPlan } from "./plan"
+import { acceptChangePlan, changePlanPrompt, deferredFindingItems } from "./change-pipeline"
+import { packageReviewPrompt } from "./package-review"
+import { leanSteps, readLeanPlan, runPosture, stepStage, writeLeanPlan, type ActingFor } from "./plan"
 import { stagePrompt } from "./prompts"
+import { issueRegister } from "./register"
+import { findingsFor, routedFindingItems } from "./review-findings"
 import { runLean, stageInputSha } from "./runner"
-import { stageInputs } from "./stages"
-import { isReviewStage } from "./state"
-import { AGENT, cleanupMatters, happyPath, matter, scriptedModel } from "./test-support"
+import { acceptStageReply, stageInputs } from "./stages"
+import { isReviewStage, writeLeanText } from "./state"
+import { AGENT, SOURCE, SUPPORT, cleanupMatters, happyPath, matter, pidOf, scriptedModel } from "./test-support"
 
 // How far the run's drafts lean toward the party the lawyer acts for: the
 // matter's Posture when it records one, else the firm's, frozen into the plan by
@@ -130,8 +134,9 @@ test("every review takes the frozen Posture's standard for the side the lawyer a
   const documents = [{ title: "Supply note", purpose: "Record supplied terms", parts: [{ heading: "Delivery", scope: "Delivery" }] }]
   const reviews = () => leanSteps(directory).filter(step => isReviewStage(stepStage(step)))
   const PROTECTS = "whether it protects that party's position, and whether a protection a careful drafter would include for that party is missing."
-  const MARKET = "whether it lacks what a conventional, market-standard document for that side would include. Do not press for protections beyond market practice"
+  const MARKET = "whether it lacks what a conventional, market-standard document for that side would include."
   const NEUTRAL = "Assess each provision as a reviewing lawyer who acts for neither party"
+  const BALANCE = '"balance":"neutral|market|beyond_market"'
   // The live settings say Client-favorable; the plan's frozen Posture governs.
   save({ posture: "client-favorable" })
   recordMatter(directory, { posture: "client-favorable" })
@@ -141,9 +146,12 @@ test("every review takes the frozen Posture's standard for the side the lawyer a
     for (const step of reviews()) {
       const prompt = stagePrompt(directory, step)
       expect(prompt).toContain("Assess each provision as the reviewing lawyer for the party the lawyer acts for")
+      // Every finding states its balance; code, not a plea, holds back what goes beyond market.
+      expect(prompt).toContain(BALANCE)
+      expect(prompt).not.toContain("Do not press")
       if (posture === "client-favorable") {
         expect(prompt).toContain(PROTECTS)
-        expect(prompt).not.toContain("market practice")
+        expect(prompt).not.toContain(MARKET)
       } else {
         expect(prompt).toContain(MARKET)
         expect(prompt).not.toContain("whether it protects that party's position")
@@ -154,11 +162,82 @@ test("every review takes the frozen Posture's standard for the side the lawyer a
     for (const step of reviews()) {
       const prompt = stagePrompt(directory, step)
       expect(prompt).toContain(NEUTRAL)
-      expect(prompt).not.toContain("market practice")
+      expect(prompt).toContain(BALANCE)
+      expect(prompt).not.toContain(MARKET)
       expect(prompt).not.toContain("whether it protects that party's position")
     }
   }
 })
+
+// A review finding that gives one party more than market practice is held back
+// unless the run acts for a side under Client-favorable: it reaches no change
+// plan and is disclosed as a recommendation naming the side it favours.
+const NORTHWIND: ActingFor = { party: "Northwind Traders Ltd", stated: true }
+const PID = "p111111111111"
+const BEYOND = "Delivery gives the buyer no right to cancel the whole contract for any late delivery."
+const MARKET_GAP = "Delivery gives the buyer no remedy for late delivery."
+const INSTRUCTED = "The draft leaves out the delivery period the request asks for."
+const GUIDANCE = "The firm's guidance asks for a buyer's right to cancel for late delivery."
+const raised = (finding: string, origin: string, balance: string) =>
+  ({ pids: [PID], origin, balance, ...(balance === "neutral" ? {} : { favours: "Northwind Traders Ltd" }), finding, sources: [] })
+
+async function reviewed(actingFor: ActingFor | undefined, posture: "client-favorable" | "balanced" | "conservative") {
+  const directory = matter()
+  writeLeanPlan(directory, [{ title: "Supply note", purpose: "Record supplied terms", parts: [{ heading: "Delivery", scope: "Delivery" }],
+    playbook_review: { sources: [{ source_id: SOURCE, quote: SUPPORT[0]!.quote }], reason: "The firm's supply guidance applies." } }], undefined, actingFor, undefined, posture)
+  writeLeanText(directory, "d1/paragraphs.json", JSON.stringify([{ pid: PID, sha256: "initial", text: "The supplier shall deliver the goods." }]))
+  const replies = {
+    "d1.review-client-disadvantage": { findings: [raised(BEYOND, "missing_protection", "beyond_market"), raised(MARKET_GAP, "missing_protection", "market")] },
+    // An instruction and the firm's chosen guidance are never held back, whatever their balance.
+    "d1.review": { findings: [raised(INSTRUCTED, "request", "beyond_market")] },
+    "d1.review-playbook": { coverage: "- Late delivery: correction required.", findings: [raised(GUIDANCE, "drafting", "beyond_market")] },
+  } as const
+  for (const [step, reply] of Object.entries(replies)) expect((await acceptStageReply(directory, step as keyof typeof replies, JSON.stringify(reply))).issues).toEqual([])
+  return directory
+}
+
+test("a beyond-market finding is held back unless the run acts for a side under Client-favorable, and reaches the notes as a recommendation naming that side", async () => {
+  const cases = [[NORTHWIND, "client-favorable", ""], [NORTHWIND, "balanced", "the run's Posture is Balanced"], [NORTHWIND, "conservative", "the run's Posture is Conservative"],
+    [undefined, "client-favorable", "the run acts for neither party"], [undefined, "balanced", "the run acts for neither party"]] as const
+  for (const [actingFor, posture, because] of cases) {
+    const directory = await reviewed(actingFor, posture)
+    const held = Boolean(because)
+    const planned = findingsFor(directory, "d1").map(row => row.finding)
+    expect(planned).toEqual(expect.arrayContaining([MARKET_GAP, INSTRUCTED, GUIDANCE]))
+    expect(planned.includes(BEYOND)).toBe(!held)
+    expect(changePlanPrompt(directory, "d1").includes(BEYOND)).toBe(!held)
+    // Held back is a recommendation, never an open decision.
+    expect(routedFindingItems(directory)).toEqual([])
+    const adjudicated = { shared_decisions: [], groups: [], dismissed: [], questions: [], findings: [{ disposition: "rejected", kind: "suggestion",
+      detail: "The fixture needs no change.", reason: "Scripted adjudication.", documents: ["d1"], sources: [], limitations: ["Fixture."], resolves: findingsFor(directory, "d1").map(row => row.id) }] }
+    expect(acceptChangePlan(directory, "d1", JSON.stringify(adjudicated)).issues).toEqual([])
+    expect(deferredFindingItems(directory)).toEqual([])
+    // A re-plan is not handed it back as a prior disposition.
+    expect(changePlanPrompt(directory, "d1").includes(BEYOND)).toBe(!held)
+    const disclosure = `Not drafted: it favours Northwind Traders Ltd beyond market practice, and ${because}.`
+    for (const prompt of [stagePrompt(directory, "finalize"), packageReviewPrompt(directory)]) {
+      expect(prompt.includes(BEYOND)).toBe(held)
+      expect(prompt.includes(disclosure)).toBe(held)
+    }
+    expect(issueRegister(directory).entries.find(row => row.finding === BEYOND)).toMatchObject(held ? { disposition: "held_back", reason: disclosure } : { disposition: "rejected" })
+  }
+}, 120_000)
+
+test("on a matter whose client is recorded under a Balanced Posture, the coordinator drafts no beyond-market finding and the notes disclose it", async () => {
+  const directory = matter()
+  recordMatter(directory, { client: "Northwind Traders Ltd", posture: "balanced" })
+  const model = scriptedModel({ ...happyPath,
+    [AGENT["review-client-disadvantage"]]: prompt => JSON.stringify({ findings: [{ ...raised(BEYOND, "missing_protection", "beyond_market"), pids: [pidOf(prompt, "The supplier shall deliver the goods.")] }] }) })
+  const state = await runLean(directory, { sessions: model.port })
+  expect(state.status).toBe("completed")
+  expect(readLeanPlan(directory)).toMatchObject({ acting_for: NORTHWIND, posture: "balanced" })
+  const shown = (agent: string) => model.prompts.filter(row => row.agent === agent).map(row => row.text).join("\n")
+  expect(shown(AGENT["review-client-disadvantage"])).toContain("beyond_market")
+  for (const agent of [AGENT["change-plan"], AGENT.changes]) expect(shown(agent)).not.toContain(BEYOND)
+  expect(shown(AGENT.finalize)).toContain(BEYOND)
+  expect(shown(AGENT.finalize)).toContain("Not drafted: it favours Northwind Traders Ltd beyond market practice, and the run's Posture is Balanced.")
+  expect(readFileSync(path.join(directory, ".dochaus", "lean", "register.json"), "utf8")).toContain('"disposition": "held_back"')
+}, 120_000)
 
 test("the review agents defer to the prompt's standard for the party rather than setting their own", () => {
   for (const name of ["lean-review", "lean-review-independent", "lean-review-client-disadvantage"]) {

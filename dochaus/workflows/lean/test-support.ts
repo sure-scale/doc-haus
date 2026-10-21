@@ -142,7 +142,7 @@ export function sameSession(reply: Reply): Reply {
 export const NO_FINDINGS = JSON.stringify({ findings: [] })
 
 export const review: Reply = prompt => JSON.stringify({ findings: [{
-  pid: pidOf(prompt, "The supplier shall deliver the goods."), origin: "source_conflict", finding: "The delivery period is missing.", sources: SUPPORT,
+  pid: pidOf(prompt, "The supplier shall deliver the goods."), origin: "source_conflict", balance: "neutral", finding: "The delivery period is missing.", sources: SUPPORT,
 }] })
 
 /** The review finding ids a change plan prompt lists for adjudication. */

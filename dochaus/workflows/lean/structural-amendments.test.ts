@@ -57,7 +57,7 @@ function replies() {
   return {
     ...happyPath,
     [AGENT.draft]: drafter(DRAFT),
-    [AGENT.review]: () => JSON.stringify({ findings: [{ origin: "request", finding: "Apply the expressly supplied withdrawal, paragraph separation and storage instruction.", sources: Object.values(SUPPORT).flat() }] }),
+    [AGENT.review]: () => JSON.stringify({ findings: [{ origin: "request", balance: "neutral", finding: "Apply the expressly supplied withdrawal, paragraph separation and storage instruction.", sources: Object.values(SUPPORT).flat() }] }),
     [AGENT["change-plan"]]: (prompt: string) => JSON.stringify({
       shared_decisions: ["Preserve all duties except the withdrawn retired form instruction."],
       groups: [{ id: "inspection-instructions", pids: amendments(prompt).map(row => row.pid),

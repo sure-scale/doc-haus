@@ -1,7 +1,7 @@
 import { parseJsonObject } from "./change-checks"
 import { PID_REFERENCE, TOOL_SYNTAX_ISSUE, printedToolCall, record, type ParagraphRow } from "./checks"
 import { requestedMemo } from "./deliverables"
-import { readLeanPlan, reviewStages, type DocID } from "./plan"
+import { planActingFor, readLeanPlan, reviewStages, runPosture, type DocID } from "./plan"
 import { openItem, quoteFound, quoteMissItems, type SourceQuote } from "./quotes"
 import { readLeanJson, shortHash, type OpenItem, type ReviewStageID } from "./state"
 
@@ -13,20 +13,32 @@ import { readLeanJson, shortHash, type OpenItem, type ReviewStageID } from "./st
 // a finding for an earlier document, which is final by then, or for the memo
 // is disclosed in the notes. The register (register.ts) is a view over these
 // records and the change plans; nothing here is recorded twice.
+//
+// Each finding also says how far its change moves rights or risk toward one
+// party, measured against a market-standard document of the kind. The run's
+// Posture decides in code what that permits: unless it acts for a side under
+// Client-favorable, a beyond-market finding is held back. It reaches no change
+// plan and the notes disclose it as a recommendation naming the side it favours.
 
 const FINDING_ORIGINS = ["request", "source_conflict", "missing_fact", "missing_protection", "law", "drafting"] as const
 export type FindingOrigin = (typeof FINDING_ORIGINS)[number]
+const FINDING_BALANCES = ["neutral", "market", "beyond_market"] as const
+export type FindingBalance = (typeof FINDING_BALANCES)[number]
 /** The target of a finding that belongs in the accompanying memo. */
 export const MEMO_TARGET = "memo"
 export type FindingTarget = DocID | typeof MEMO_TARGET
-type ReviewFinding = { id: string; document: FindingTarget; pids?: string[]; origin: FindingOrigin; finding: string; instead?: string; sources: SourceQuote[] }
+type ReviewFinding = { id: string; document: FindingTarget; pids?: string[]; origin: FindingOrigin; balance?: FindingBalance; favours?: string; finding: string; instead?: string; sources: SourceQuote[] }
 /** A playbook review also records its coverage of the guidance's positions. */
 type ReviewRecord = { findings: ReviewFinding[]; coverage?: string }
 /** A finding with the document and stage whose review raised it. */
 export type RaisedFinding = ReviewFinding & { raised_in: DocID; stage: ReviewStageID }
 
-export const REVIEW_FINDINGS_CONTRACT = 'Reply with exactly one JSON object: {"findings":[{"document":"id of the planned document the finding concerns; leave out for this document","pids":["pid of each paragraph of this draft the finding affects, or where missing wording belongs; leave out for another document"],"origin":"request|source_conflict|missing_fact|missing_protection|law|drafting","finding":"what is wrong and why","instead":"what those paragraphs should say instead, in proposed wording where you can give it; leave out for a decision only the lawyer can make","sources":[{"source_id":"exact matter document name, request or approved authority URL","quote":"exact supporting words"}]}]}. ' +
+export const REVIEW_FINDINGS_CONTRACT = 'Reply with exactly one JSON object: {"findings":[{"document":"id of the planned document the finding concerns; leave out for this document","pids":["pid of each paragraph of this draft the finding affects, or where missing wording belongs; leave out for another document"],"origin":"request|source_conflict|missing_fact|missing_protection|law|drafting","balance":"neutral|market|beyond_market","favours":"the party the change favours; leave out when neutral","finding":"what is wrong and why","instead":"what those paragraphs should say instead, in proposed wording where you can give it; leave out for a decision only the lawyer can make","sources":[{"source_id":"exact matter document name, request or approved authority URL","quote":"exact supporting words"}]}]}. ' +
   "origin says where the finding comes from: request (the draft departs from or misses what the request or the lawyer's answers ask), source_conflict (it misstates or conflicts with a matter source, or the sources disagree), missing_fact (it needs a fact or decision the matter does not give), missing_protection (it lacks a protection a careful drafter would include), law (its wording does not work under the governing law) or drafting (ambiguous, inconsistent or wrongly cross-referenced wording). " +
+  "balance says how far the change moves rights, obligations, remedies or risk toward one party, against a conventional, market-standard document of this kind: " +
+  "neutral (toward neither, or it carries out the request, the lawyer's answers or a position the sources record as instructed or agreed), " +
+  "market (toward one party, as far as such a document commonly goes) or beyond_market (further than that, including terms a party may seek in negotiation that such a document does not commonly contain). " +
+  "favours names that party. " +
   "A decision only the lawyer can make is a finding with origin missing_fact saying what must be decided; there is no other list. " +
   "sources may be empty when the finding rests on your view of the law or general practice. Return an empty findings array only when there is nothing to correct or decide."
 
@@ -53,10 +65,13 @@ export function acceptReviewReply(directory: string, document: DocID, stage: Rev
   const findings = new Map<string, ReviewFinding>()
   value.findings.forEach((row, index) => {
     const at = `findings[${index}]`
-    if (!record(row) || !nonempty(row.finding) || !FINDING_ORIGINS.includes(row.origin as FindingOrigin)) {
-      issues.push(`${at} needs a finding and an origin (${FINDING_ORIGINS.join(", ")}).`)
+    if (!record(row) || !nonempty(row.finding) || !FINDING_ORIGINS.includes(row.origin as FindingOrigin) || !FINDING_BALANCES.includes(row.balance as FindingBalance)) {
+      issues.push(`${at} needs a finding, an origin (${FINDING_ORIGINS.join(", ")}) and a balance (${FINDING_BALANCES.join(", ")}).`)
       return
     }
+    const balance = row.balance as FindingBalance
+    const favours = balance !== "neutral" && nonempty(row.favours) ? row.favours.trim().replace(/\s+/g, " ") : undefined
+    if (balance !== "neutral" && !favours) issues.push(`${at}.favours must name the party the change favours when its balance is market or beyond_market.`)
     const target = nonempty(row.document) ? row.document.trim() : document
     if (!targets.includes(target)) issues.push(`${at}.document must be one of ${targets.map(id => `"${id}"`).join(", ")}, or left out for this document.`)
     // A pid points into this draft only; none is kept for another document. A
@@ -76,6 +91,8 @@ export function acceptReviewReply(directory: string, document: DocID, stage: Rev
       document: target as FindingTarget,
       ...(pids.length ? { pids } : {}),
       origin: row.origin as FindingOrigin,
+      balance,
+      ...(favours ? { favours } : {}),
       finding: row.finding.trim(),
       ...(instead ? { instead } : {}),
       sources: sources.map(source => ({ source_id: String(source.source_id).trim(), quote: String(source.quote).trim() })),
@@ -102,7 +119,8 @@ export function readReviewRecord(directory: string, document: DocID, stage: Revi
   const value = readLeanJson(directory, `${document}/${stage}.json`)
   if (!record(value) || !Array.isArray(value.findings)) return
   const findings = value.findings.filter((row): row is ReviewFinding => record(row) && nonempty(row.id) && nonempty(row.document) &&
-    nonempty(row.finding) && FINDING_ORIGINS.includes(row.origin as FindingOrigin) && Array.isArray(row.sources) && (row.pids === undefined || Array.isArray(row.pids)))
+    nonempty(row.finding) && FINDING_ORIGINS.includes(row.origin as FindingOrigin) && Array.isArray(row.sources) && (row.pids === undefined || Array.isArray(row.pids)) &&
+    (row.balance === undefined || FINDING_BALANCES.includes(row.balance as FindingBalance)))
   if (findings.length !== value.findings.length) return
   return { findings, ...(typeof value.coverage === "string" ? { coverage: value.coverage } : {}) }
 }
@@ -113,11 +131,24 @@ export function raisedFindings(directory: string): RaisedFinding[] {
     (readReviewRecord(directory, id, stage)?.findings ?? []).map(row => ({ ...row, raised_in: id, stage }))))
 }
 
-/** Where a finding goes: to its document's change plan when that document is
- * the reviewed one or a later one, to the notes under its document when that
- * document is earlier and so final, or to the notes for the memo. A later
- * document's finding never reaches an earlier plan, so keys run one way. */
-export function findingRoute(order: Map<string, number>, row: RaisedFinding): "plan" | "earlier" | "memo" {
+/** Whether the run holds back beyond-market findings: it does unless it acts
+ * for a side under the Client-favorable Posture frozen into its plan. */
+export function holdsBeyondMarket(directory: string) {
+  return !planActingFor(directory).stated || runPosture(directory) !== "client-favorable"
+}
+
+/** Origins the Posture never holds back: an instruction, a source the draft
+ * misstates and a decision only the lawyer can make. */
+const KEPT_ORIGINS: FindingOrigin[] = ["request", "source_conflict", "missing_fact"]
+
+/** Where a finding goes: held back when the run holds back what goes beyond
+ * market (`holds`) and the finding does, unless the firm's chosen guidance or
+ * a kept origin raised it; otherwise to its document's change plan when that
+ * document is the reviewed one or a later one, to the notes under its document
+ * when that document is earlier and so final, or to the notes for the memo. A
+ * later document's finding never reaches an earlier plan, so keys run one way. */
+export function findingRoute(order: Map<string, number>, row: RaisedFinding, holds: boolean): "held" | "plan" | "earlier" | "memo" {
+  if (holds && row.balance === "beyond_market" && row.stage !== "review-playbook" && !KEPT_ORIGINS.includes(row.origin)) return "held"
   if (row.document === MEMO_TARGET) return "memo"
   return (order.get(row.document) ?? 0) < (order.get(row.raised_in) ?? 0) ? "earlier" : "plan"
 }
@@ -131,7 +162,8 @@ export function documentOrder(directory: string) {
  * findings about it, then earlier documents' findings about it. */
 export function findingsFor(directory: string, document: DocID): RaisedFinding[] {
   const order = documentOrder(directory)
-  const rows = raisedFindings(directory).filter(row => row.document === document && findingRoute(order, row) === "plan")
+  const holds = holdsBeyondMarket(directory)
+  const rows = raisedFindings(directory).filter(row => row.document === document && findingRoute(order, row, holds) === "plan")
   return [...rows.filter(row => row.raised_in === document), ...rows.filter(row => row.raised_in !== document)]
 }
 
@@ -144,10 +176,31 @@ export function forwardedFindings(directory: string, document: DocID) {
  * under that document, and one for the memo. Each is an item the notes disclose. */
 export function routedFindingItems(directory: string): OpenItem[] {
   const order = documentOrder(directory)
+  const holds = holdsBeyondMarket(directory)
   return raisedFindings(directory).flatMap(row => {
-    const route = findingRoute(order, row)
-    return route === "plan" ? [] : [findingItem(row, route === "earlier" ? row.document as DocID : undefined)]
+    const route = findingRoute(order, row, holds)
+    return route === "plan" || route === "held" ? [] : [findingItem(row, route === "earlier" ? row.document as DocID : undefined)]
   })
+}
+
+/** Findings raised in `document` that the run held back, as the recommendation
+ * dispositions the notes and package review read beside its change plan's. */
+export function heldBackDispositions(directory: string, document: DocID) {
+  return heldBackFindings(directory).filter(row => row.raised_in === document).map(row => ({
+    disposition: "recommendation" as const, kind: "suggestion" as const, detail: findingDetail(row).replace(PID_REFERENCE, "(a paragraph)"), reason: heldBackReason(directory, row),
+    documents: [row.document === MEMO_TARGET ? row.raised_in : row.document as DocID], sources: row.sources, limitations: [] as string[],
+  }))
+}
+
+/** Why a held-back finding was not drafted: the side it favours and the run's Posture. */
+export function heldBackReason(directory: string, row: ReviewFinding) {
+  return `Not drafted: it favours ${row.favours ?? "one party"} beyond market practice, and ${planActingFor(directory).stated
+    ? `the run's Posture is ${runPosture(directory) === "conservative" ? "Conservative" : "Balanced"}` : "the run acts for neither party"}.`
+}
+
+function heldBackFindings(directory: string) {
+  const order = documentOrder(directory)
+  return holdsBeyondMarket(directory) ? raisedFindings(directory).filter(row => findingRoute(order, row, true) === "held") : []
 }
 
 /** The omission item that discloses a finding, filed under `document` when given. */
@@ -180,8 +233,10 @@ export function findingsText(findings: RaisedFinding[], document: DocID, options
 export function reviewText(directory: string, document: DocID, stage: ReviewStageID, options: { strip?: boolean } = {}) {
   const review = readReviewRecord(directory, document, stage)
   if (!review) return undefined
+  // A held-back finding reaches no writer; balance only routes.
+  const held = new Set(heldBackFindings(directory).map(row => row.id))
   const text = JSON.stringify({ ...(review.coverage !== undefined ? { coverage: review.coverage } : {}),
-    findings: review.findings.map(({ id: _id, pids, ...row }) => ({ ...(pids && !options.strip ? { pids } : {}), ...row })) }, null, 2)
+    findings: review.findings.filter(row => !held.has(row.id)).map(({ id: _id, pids, balance: _balance, favours: _favours, ...row }) => ({ ...(pids && !options.strip ? { pids } : {}), ...row })) }, null, 2)
   return options.strip ? text.replace(PID_REFERENCE, "(earlier paragraph)") : text
 }
 
