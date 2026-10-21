@@ -1,5 +1,5 @@
 {
-  "version": 4,
-  "name": "2.0.2",
-  "notes": "Documents arrive the way you ask: one combined Word file, a file name you choose, or separate files. Questions come with options and a recommendation, and Decide for me goes with it. Instructions sent after a document is drafted amend it instead of starting over, and the redline shows what changed. If your AI provider sign-in stops working, drafting stops and tells you what to fix in Settings. Also: accept suggested edits one by one, cover memos written to your client, and much faster uploads on large matters."
+  "version": 5,
+  "name": "2.0.3",
+  "notes": "Compare two versions of a Word document: download a blackline with edits the other side made without tracking listed first, and ask in chat what each change does and who it favours. Record the client you act for on a matter, and optionally the matter's own Posture, so drafting knows whose side you're on. The other side's tracked changes are read as proposals, not agreed text. Drafts carry page numbers, a dated draft line and, if you set one, your firm's legend. Also: add emails and Excel files to a matter, chat answers that appear live and show while they're working, and uploading a file with an existing name no longer replaces it."
 }
