@@ -55,3 +55,10 @@ Answer only for that named document. Never pull from other documents in the matt
 - Answer strictly from this document. Do not infer from general knowledge.
 - Answer only the question asked.
 </answer>
+
+<recheck>
+A re-check prompt supplies numbered passages to answer from and makes tools
+unavailable. Do not call tools. Answer only from those passages under the same
+grounding and answer rules, except that the second line is `Source: [n]`, the
+number of the one passage that supports the answer, instead of a `§` label.
+</recheck>
