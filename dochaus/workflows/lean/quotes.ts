@@ -162,11 +162,12 @@ function elision(directory: string, quote: SourceQuote) {
 }
 
 /** The request, each included update and each answer, quoted one at a time so a
- * quotation never runs across two of them. The questions are the model's words
- * and are not included. */
+ * quotation never runs across two of them, with the lawyer's own words of a
+ * delegating answer recorded as an adoption. The questions are the model's
+ * words and are not included. */
 export function lawyerWords(directory: string) {
   return [readLeanText(directory, "request.md") ?? "", ...leanUserUpdates(directory).filter(update => update.status === "included").map(update => update.text), ...readQuestions(directory).flatMap(question =>
-    question.status === "answered" && question.answer ? [question.answer] : [])]
+    question.status === "answered" && question.answer ? [question.answer, ...(question.lawyer_words ? [question.lawyer_words] : [])] : [])]
 }
 
 /** Actionable retry feedback for one unverified quote. When the words are in a

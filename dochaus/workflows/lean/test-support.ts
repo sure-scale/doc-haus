@@ -82,6 +82,8 @@ export function scriptedModel(replies: Record<string, Reply>) {
         [AGENT["research-review"]]: () => JSON.stringify({ approved: [], rejected: [], limitations: [], gaps: [] }),
         // Every asked question is advised; the fixture's advisor recommends nothing.
         [AGENT.advise]: () => JSON.stringify({ unavailable: { reason: "The scripted advisor recommends nothing." } }),
+        // Every answer in the lawyer's words is read as their own answer.
+        [AGENT.answer]: () => JSON.stringify({ class: "answered" }),
       }
       const reply = replies[input.agent] ?? preparation[input.agent]
       if (!reply) throw new Error(`No scripted reply for ${input.agent}.`)
@@ -164,11 +166,12 @@ export const changes: Reply = prompt => JSON.stringify({
 export const noChanges: Reply = () => JSON.stringify({ amendments: [], questions: [] })
 
 // Discloses every open item the coordinator lists, in every document's block,
-// as the drafting-notes contract asks: in words, each ending with its id in a
-// trailing "[ref: <id>]".
+// and every delegated question, as the drafting-notes contract asks: in words,
+// each ending with its id in a trailing "[ref: <id>]".
 export const draftingNotes: Reply = prompt => {
   const blocks = [...prompt.matchAll(/<open_items>\n([\s\S]*?)\n<\/open_items>/g)].map(match => match[1]!)
-  const ids = blocks.flatMap(block => [...block.matchAll(/^- (\S+):/gm)].map(match => match[1]))
+  const delegated = /<delegated_decisions>\n([\s\S]*?)\n<\/delegated_decisions>/.exec(prompt)?.[1] ?? ""
+  const ids = [...blocks.flatMap(block => [...block.matchAll(/^- (\S+):/gm)].map(match => match[1])), ...[...delegated.matchAll(/^- \[(\S+)\] Q:/gm)].map(match => match[1])]
   return ["# Drafting notes", "", "The draft states the delivery period from the supply terms.", "",
     ...ids.map(id => `- The lawyer must resolve this before the draft is used. [ref: ${id}]`)].join("\n")
 }

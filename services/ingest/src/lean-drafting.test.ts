@@ -266,7 +266,7 @@ describe("lean drafting start and Continue", () => {
         expect(await refusal("q-cost", body)).toEqual({ qid: "q-cost", status: 400, code: "invalid_answer" })
       for (const body of [{ decide_for_me: true }, { option_id: "o1" }])
         expect(await refusal("q-unknown", body)).toEqual({ qid: "q-unknown", status: 404, code: "not_found" })
-      for (const qid of ["q-fact", "q-instruction", "q-conflict", "q-file", "q-mixed", "q-unavailable"])
+      for (const qid of ["q-fact", "q-conflict", "q-file", "q-mixed", "q-unavailable"])
         expect(await refusal(qid, { decide_for_me: true })).toEqual({ qid, status: 409, code: "not_delegable" })
       expect(await refusal("q-law", { decide_for_me: true })).toEqual({ qid: "q-law", status: 409, code: "already_answered" })
       expect(pendingLeanRequests(directory)).toEqual([])
@@ -278,19 +278,23 @@ describe("lean drafting start and Continue", () => {
       expect(status).not.toHaveProperty("queued_handed_back_ids")
       expect((await post("q-pick", { option_id: "o1" })).status).toBe(202)
       expect((await post("q-scope", { decide_for_me: true })).status).toBe(202)
+      // Leaving an instruction question to the drafter's judgment is the instruction it asks for.
+      expect((await post("q-instruction", { decide_for_me: true })).status).toBe(202)
       expect(queuedRequests(directory)).toEqual([
         { kind: "answer", question_id: "q-cost", adopt: true },
         { kind: "answer", question_id: "q-pick", option_id: "o1" },
         { kind: "answer", question_id: "q-scope", adopt: true },
+        { kind: "answer", question_id: "q-instruction", adopt: true },
       ])
     } finally { model.release() }
 
     await leanDraftingIdle(directory)
-    expect(doneOutcomes(directory)).toEqual(["answered", "answered", "answered"])
+    expect(doneOutcomes(directory)).toEqual(["answered", "answered", "answered", "answered"])
     const recorded = (id: string) => leanDraftingStatus(directory)!.questions.find(question => question.id === id)!
     expect(recorded("q-cost")).toMatchObject({ status: "answered", answer: "The seller.", answer_kind: "adopted", option_id: "o2" })
     expect(recorded("q-pick")).toMatchObject({ status: "answered", answer: "The buyer.", answer_kind: "option", option_id: "o1" })
     expect(recorded("q-scope")).toMatchObject({ status: "answered", answer: "The seller.", answer_kind: "adopted", option_id: "o2" })
+    expect(recorded("q-instruction")).toMatchObject({ status: "answered", answer: "The seller.", answer_kind: "adopted", option_id: "o2" })
     expect(recorded("q-law")).not.toHaveProperty("answer_kind")
 
     // An adopted answer is answered; the lawyer's own words still replace it.

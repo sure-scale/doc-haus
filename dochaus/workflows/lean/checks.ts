@@ -11,7 +11,7 @@ import { excerpt, openItem, proseQuoteFound, quoteMissIssue, quoteMissItems, sou
 import { readLeanPlan, type DocID } from "./plan"
 import { researchFindingIDs } from "./research"
 import { raisedFindings } from "./review-findings"
-import { readLeanJson, type OpenItem, type Question, type StageID } from "./state"
+import { delegatedQuestions, readLeanJson, type OpenItem, type Question, type StageID } from "./state"
 
 // Deterministic checks for the lean drafting stages. Each check returns retry
 // feedback (`issues`, shown verbatim to the model on its next attempt) and legal
@@ -125,6 +125,9 @@ export function checkDraftingNotes(directory: string, content: string, items: Op
   const markers = [...content.matchAll(REF_MARKER)].map(match => match[1]!)
   const undisclosed = items.filter(item => !markers.some(marker => standingID(item.id).test(marker)) && !(options.final && !memo && standingID(item.id).test(content)))
     .map(item => item.id)
+  // Each delegated question is listed (delegatedDecisionsText); on the last
+  // attempt notes that miss one are saved as written.
+  const unlisted = options.final ? [] : delegatedQuestions(directory).map(question => question.id).filter(id => !markers.some(marker => standingID(id).test(marker)))
   const delivered = withoutRefMarkers(content)
   const ids = !options.final
   const stray = ids ? runItemIDs(directory, items).filter(id => readerVisibleID(id) && standingID(id).test(delivered)) : []
@@ -151,6 +154,9 @@ export function checkDraftingNotes(directory: string, content: string, items: Op
     issues: [
       ...(undisclosed.length
         ? [`The drafting notes do not mention these open items: ${undisclosed.join(", ")}. Say what each is and what the lawyer needs to do about it, ending that statement with its exact id as "[ref: <id>]".`]
+        : []),
+      ...(unlisted.length
+        ? [`The drafting notes do not list these delegated questions: ${unlisted.join(", ")}. For each, say in words what was decided and why, or why the point stays open, ending with its exact id as "[ref: <id>]".`]
         : []),
       ...(stray.length
         ? [`These internal ids appear outside a "[ref: …]" marker: ${stray.join(", ")}. ${reader} for the reader: describe each point in words and keep each id only in the marker that ends its statement.`]

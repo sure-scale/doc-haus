@@ -18,7 +18,7 @@ import { LEAN_MAX_SUBSTANTIVE_REPAIRS, readRepairRound, repairedChecklistItems }
 import { requestedFilesItems } from "./requested-files"
 import { combinedFileItems } from "./deliverables"
 import { withheldChecklistRepair } from "./requests"
-import { isReviewStage, currentOpenItems, readLeanText, readLeanJson, readLeanState, readQuestions, type LeanState, type OpenItem, type Question } from "./state"
+import { isReviewStage, currentOpenItems, readLeanText, readLeanJson, readLeanState, readQuestions, undecidedQuestion, type LeanState, type OpenItem, type Question } from "./state"
 
 // Final legal gate: the only place an open item blocks delivery. It covers every
 // planned document; each item is settled against the final body of the
@@ -126,7 +126,8 @@ export function finalGate(directory: string): GateResult {
     ...checked.unresolvedParents.map(row => checklistUnresolvedParentItem(directory, row))] : []
   // A file name in the instructions the package review withheld is disclosed with the
   // draft, never blocking it: the notes were written before that review.
-  const items = [...unresolved, ...[...currentOpenItems(directory), ...deferredFindingItems(directory), ...coverageItems(directory), ...requestedFilesItems(directory), ...combinedFileItems(directory)].map(item => settle(item, context)),
+  const current = currentOpenItems(directory)
+  const items = [...unresolved, ...[...current, ...undecidedQuestionItems(context.questions, current), ...deferredFindingItems(directory), ...coverageItems(directory), ...requestedFilesItems(directory), ...combinedFileItems(directory)].map(item => settle(item, context)),
     ...semantic, ...projected, ...withheldDeliveryItems(directory)]
   if (checked && !checked.valid) items.push(openItem("checklist-check", "omission", "Effective checklist findings or source-unit coverage are incomplete or stale, or a check or its reinspection failed; see checklist/report.md.", {}))
   // Focused checks can correctly preserve a source-dependent open issue
@@ -748,6 +749,15 @@ function sentence(text: string) {
   return /[.!?]$/.test(text.trim()) ? text.trim() : `${text.trim()}.`
 }
 
+/** An item for each question the lawyer delegated or gave no answer to that no
+ * decision settled (undecidedQuestion) and no stage's item already carries: it
+ * still needs the lawyer's answer, so it stays an open item, disclosed once the
+ * drafting notes name it. */
+function undecidedQuestionItems(questions: Map<string, Question>, items: OpenItem[]) {
+  return [...questions.values()].filter(question => undecidedQuestion(question) && !items.some(item => item.kind === "question" && item.ref.question_id === question.id))
+    .map(question => openItem(question.stage, "question", `${question.answer_class === "declined" ? "You did not answer this question, and it needs your answer" : "You asked us to decide, but this needs your answer"}: ${question.question}`, { question_id: question.id }))
+}
+
 function settle(item: OpenItem, context: SettleContext): OpenItem {
   const resolved = (resolution: string): OpenItem => ({ ...item, status: "resolved", resolution })
   const disclosed = (resolution: string): OpenItem => ({ ...item, status: "disclosed", resolution })
@@ -768,7 +778,11 @@ function settle(item: OpenItem, context: SettleContext): OpenItem {
       : open("the drafting notes do not name this removal of a template part")
   if (item.kind === "question") {
     const question = item.ref.question_id ? context.questions.get(item.ref.question_id) : undefined
-    if (question?.status === "answered") return resolved("answered by the lawyer")
+    if (question && undecidedQuestion(question)) {
+      const why = question.answer_class === "declined" ? "not answered; this needs your answer" : "you asked us to decide, but this needs your answer"
+      return named || context.notes.includes(question.id) ? disclosed(`${why}; named in the drafting notes`) : open(`${why}; the drafting notes do not name it`)
+    }
+    if (question?.status === "answered") return resolved(question.answer_kind === "adopted" ? "delegated by the lawyer; the recommended option was adopted" : "answered by the lawyer")
     // A question asked again by a later document points into that document; the
     // item's own paragraph is in the document it was found in.
     const pid = item.ref.pid ?? ((question?.document ?? FIRST_DOCUMENT) === document ? question?.pid : undefined)

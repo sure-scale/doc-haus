@@ -541,12 +541,15 @@ test("Other, the lawyer's own words, is always offered", () => {
   expect(questionCard([unavailable(advised)])).toMatch(/<label class="question-label" for="lean-answer-q-remedy">Your answer<\/label>/)
 })
 
-test("Decide for me is offered only where the run may take the recommendation: judgment and pure scope questions", () => {
+test("Decide for me is offered only where the run may take the recommendation: judgment, instruction and pure scope questions", () => {
   const offered = (question: LeanQuestion) => questionCard([question]).includes(">Decide for me</button>")
   expect(offered(advised)).toBe(true)
   // Decided by the question's kind and advice, never by its id.
   expect(offered({ ...advised, id: "package-scope-d1", kind: "scope" })).toBe(true)
-  for (const kind of ["fact", "instruction", "conflict", "file_name"] as const) expect(offered({ ...advised, kind })).toBe(false)
+  // Leaving an instruction question to the drafter's judgment is the instruction it asks for.
+  expect(offered({ ...advised, kind: "instruction" })).toBe(true)
+  expect(delegableQuestion({ ...advised, kind: "instruction" })).toBe(true)
+  for (const kind of ["fact", "conflict", "file_name"] as const) expect(offered({ ...advised, kind })).toBe(false)
   // A scope card that also asks for facts or approvals needs the lawyer's own answer.
   expect(offered({ ...advised, kind: "scope", mixed: true })).toBe(false)
   expect(offered(unavailable(advised))).toBe(false)

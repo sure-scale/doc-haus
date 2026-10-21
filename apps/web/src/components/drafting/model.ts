@@ -1,4 +1,5 @@
 import type { LeanDocument, LeanDraftingStatus, LeanOpenItem, LeanQuestion, LeanStageStatus } from "../../api/ingest/lean"
+import { delegatedOption } from "../../../../../dochaus/lib/question-delegation"
 
 // Pure view model for the drafting run header: plain step names, steps grouped per
 // planned document, the run's state in four words, and open items grouped by
@@ -140,11 +141,11 @@ export function recommendedOption(question: LeanQuestion) {
   return advice && "recommendation" in advice ? questionOptions(question).find((option) => option.id === advice.recommendation.option) : undefined
 }
 
-/** Decide for me answers with the recommended option. As ingest allows, it is
- * offered on an open judgment question, or a scope question that asks for
- * nothing else, whose advice recommends an offered option. */
+/** Decide for me answers with the recommended option. It is offered on an open
+ * question the run takes it for, by the run's own rule (judgment, instruction or
+ * pure scope, with a recommended offered option). */
 export function delegableQuestion(question: LeanQuestion) {
-  return question.status === "open" && (question.kind === "judgment" || (question.kind === "scope" && !question.mixed)) && recommendedOption(question) !== undefined
+  return question.status === "open" && delegatedOption(question) !== undefined
 }
 
 /** The note under the chat while answers wait for the run to take them. */
