@@ -11,9 +11,9 @@ import { AGENT, cleanupMatters, happyPath, matter, NO_FINDINGS, noChanges, scrip
 // advised judgment question, the lawyer adopts its recommendation through the
 // request queue the ingest answer route uses, and every later stage reads the
 // adopted option's words as the lawyer's answer, exactly as typed words. The
-// gate settles it as answered; an unchanged Continue or a replayed adoption
-// does no model work; the lawyer's later words replace it. Synthetic matter;
-// only the model is scripted.
+// drafting notes list it as delegated by the lawyer and the gate settles it
+// so; an unchanged Continue or a replayed adoption does no model work; the
+// lawyer's later words replace it. Synthetic matter; only the model is scripted.
 
 afterEach(cleanupMatters)
 
@@ -67,20 +67,22 @@ test("an adopted recommendation runs through the queue as the lawyer's answer, r
   for (const agent of [AGENT.discrepancy, AGENT.intake, AGENT.research, AGENT["research-review"], AGENT.spine, AGENT.draft, AGENT.coverage,
     AGENT.review, AGENT["review-independent"], AGENT["review-wording"], AGENT["review-client-disadvantage"], AGENT["change-plan"], AGENT.changes, AGENT["package-review"]])
     expect([agent, prompts.some(prompt => prompt.agent === agent && prompt.text.includes(line))]).toEqual([agent, true])
-  expect(prompts.find(prompt => prompt.agent === AGENT.finalize)!.text).toContain(`- ${late.id} (answered): ${QUESTION}\n  Answer: ${CHOSEN}`)
+  const notes = prompts.find(prompt => prompt.agent === AGENT.finalize)!.text
+  expect(notes).toContain(`- ${late.id} (answered): ${QUESTION}\n  Answer: ${CHOSEN}`)
+  expect(notes).toContain(`<delegated_decisions>\n- [${late.id}] Q: ${QUESTION}\n  Delegated by the lawyer.\n  Decision taken, for the lawyer to confirm: ${CHOSEN}\n  Reason: The terms fix the delivery period and add no remedy.`)
   for (const prompt of prompts) {
     expect([prompt.agent, LEFT_TO_DRAFTER.exec(prompt.text)?.[0], BUTTON.exec(prompt.text)?.[0]]).toEqual([prompt.agent, undefined, undefined])
     expect([prompt.agent, prompt.text.includes("A: undefined")]).toEqual([prompt.agent, false])
   }
 
-  // 3. The gate settles it as answered by the lawyer and lists nothing as left to the drafter.
+  // 3. The gate settles it as delegated by the lawyer and lists nothing as left to the drafter.
   const gate = readLeanJson(directory, "gate.json") as GateResult
   expect(gate).toMatchObject({ status: "pass", delivery: "execution_ready", blocking: [] })
   expect(gate.items.filter(item => item.ref.question_id === late.id)).toEqual([])
   expect(JSON.stringify(gate)).not.toMatch(LEFT_TO_DRAFTER)
   writeOpenItems(directory, [...readOpenItems(directory), openItem("changes", "question", QUESTION, { question_id: late.id, pid: "p-none" })])
   expect(finalGate(directory).items.find(item => item.kind === "question" && item.ref.question_id === late.id))
-    .toMatchObject({ status: "resolved", resolution: "answered by the lawyer" })
+    .toMatchObject({ status: "resolved", resolution: "delegated by the lawyer; the recommended option was adopted" })
   writeOpenItems(directory, readOpenItems(directory).filter(item => item.ref.question_id !== late.id))
 
   // 4. An unchanged Continue, and an adoption replayed into the queue, run no model stage.

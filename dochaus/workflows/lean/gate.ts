@@ -745,7 +745,7 @@ function settle(item: OpenItem, context: SettleContext): OpenItem {
       : open("the drafting notes do not name this removal of a template part")
   if (item.kind === "question") {
     const question = item.ref.question_id ? context.questions.get(item.ref.question_id) : undefined
-    if (question?.status === "answered") return resolved("answered by the lawyer")
+    if (question?.status === "answered") return resolved(question.answer_kind === "adopted" ? "delegated by the lawyer; the recommended option was adopted" : "answered by the lawyer")
     // A question asked again by a later document points into that document; the
     // item's own paragraph is in the document it was found in.
     const pid = item.ref.pid ?? ((question?.document ?? FIRST_DOCUMENT) === document ? question?.pid : undefined)

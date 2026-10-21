@@ -160,7 +160,11 @@ test("the same words typed, picked or adopted give the same answers text and the
   const typed = keys({ text: RECOMMENDED })
   expect(typed.answers).toContain(`- [q-cap] Q: ${OPEN.question}\n  A: ${RECOMMENDED}`)
   expect(keys({ option_id: "o2" })).toEqual(typed)
-  expect(keys({ adopt: true })).toEqual(typed)
+  // The drafting notes list an adopted recommendation as delegated, so their key reads it.
+  const { finalize, ...adopted } = keys({ adopt: true })
+  const { finalize: typedNotes, ...steps } = typed
+  expect(adopted).toEqual(steps)
+  expect(finalize).not.toBe(typedNotes)
   // Other words are another answer.
   expect(keys({ option_id: "o1" }).intake).not.toBe(typed.intake)
 })
@@ -174,7 +178,8 @@ test("the same words typed, picked or adopted give the same answers text and the
 // Form line and when part labels were planned unheaded. The checklist check, change plan, changes and change-review were
 // re-pinned when reviews were saved as typed findings (dN/<stage>.json) and the
 // change plan began keying the findings earlier documents forward to it. The
-// same pins hold however the lawyer gave an answer.
+// same pins hold however the lawyer gave an answer, except finalize's for an
+// adopted recommendation, which the drafting notes list as delegated.
 const ANSWERS = "- [package-scope-d1] Q: Which documents are in scope?\n  A: Only the supply note.\n- [q-law] Q: Which law should govern?\n  A: Singapore law."
 const INPUTS: Record<string, string> = {
   "discrepancy": "8dac7eefaf1e988e35ffbe6c7f765a951943e9b1299546a9b94dc10e99950a72",
@@ -197,6 +202,7 @@ const INPUTS: Record<string, string> = {
   "package-review": "dde115af0ba46b8cb1ecf9bf7eb0c40aff3b78f4d6be9e0f0da3dff2d5d4066f",
   "gate": "0950183c873a0bd663d5367c064a7013025084deb8884311b2f38a54fcb8e229",
 }
+const ADOPTED_FINALIZE = "cd7309db261d1d8cdb140eee5536389acafff32c46564e6d43467ce9f2ed72c4"
 
 test("the answers text and every step's inputs are pinned, however the lawyer gave the answer", () => {
   const previous = process.env.WORKSPACE_ROOT
@@ -216,7 +222,8 @@ test("the answers text and every step's inputs are pinned, however the lawyer ga
       ])
       if (form) answerQuestion(directory, "q-law", form)
       expect(answeredQuestionsText(directory)).toBe(ANSWERS)
-      expect(Object.fromEntries(leanSteps(directory).map(step => [step, withSourceSnapshot(() => hashStageInputs(step, "pin", stageInputs(directory, step)))]))).toEqual(INPUTS)
+      const pinned = Object.fromEntries(leanSteps(directory).map(step => [step, withSourceSnapshot(() => hashStageInputs(step, "pin", stageInputs(directory, step)))]))
+      expect(pinned).toEqual(form && "adopt" in form ? { ...INPUTS, finalize: ADOPTED_FINALIZE } : INPUTS)
     }
   } finally {
     if (previous === undefined) delete process.env.WORKSPACE_ROOT

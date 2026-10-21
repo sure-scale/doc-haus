@@ -11,7 +11,7 @@ import { REQUEST_SOURCE, matterSourceIDs } from "./quotes"
 import { readRepairRound, changesRepairSections } from "./repairs"
 import { MEMO_TARGET, REVIEW_FINDINGS_CONTRACT, findingsText, forwardedFindings, reviewText } from "./review-findings"
 import { disclosableItems } from "./stages"
-import { QUESTION_KIND_CONTRACT, isReviewStage, answeredQuestionsText, readLeanJson, readLeanText, readQuestions, type OpenItem, type StageID } from "./state"
+import { QUESTION_KIND_CONTRACT, isReviewStage, answeredQuestionsText, delegatedQuestions, questionOptions, readLeanJson, readLeanText, readQuestions, type OpenItem, type Question, type StageID } from "./state"
 import { plannedContract } from "./template-contract"
 
 // Prompts of the lean model steps. Each step's first prompt carries everything
@@ -184,7 +184,7 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
   return (sections[isReviewStage(stage) ? "review" : stage] ?? []).filter(Boolean).join("\n\n")
 }
 
-export function retryPrompt(stage: StageID | "advise", issues: string[]) {
+export function retryPrompt(stage: StageID | "advise" | "answer", issues: string[]) {
   return [
     `Your reply did not pass the ${stage} checks:`,
     ...issues.map(issue => `- ${issue}`),
@@ -278,6 +278,7 @@ function draftingNotesSections(directory: string, request: string) {
   const planned = new Set(plan.map(row => row.id))
   const loose = items.filter(item => !item.ref.document || !planned.has(item.ref.document))
   const questions = readQuestions(directory)
+  const delegated = delegatedDecisionsText(directory)
   const memo = requestedMemo(directory)
   return [
     memo
@@ -292,6 +293,7 @@ function draftingNotesSections(directory: string, request: string) {
     ...plan.map(row => `<document id="${row.id}" title="${attribute(row.title)}">\n${documentSections(directory, row.id, items).join("\n\n")}\n</document>`),
     loose.length ? tagged("open_items", openItemLines(loose)) : "",
     tagged("questions", questions.map(question => `- ${question.id} (${question.status}): ${question.question}${question.answer ? `\n  Answer: ${question.answer}` : ""}`).join("\n") || "None."),
+    delegated ? tagged("delegated_decisions", delegated) : "",
     tagged("output_contract", [
       "- Follow the lawyer's explanation-detail, formality and house-style preferences when writing the notes. Translate the supplied records into their practical meaning rather than copying workflow field names, raw paths or stage status. Retain source support, comparison baselines, applied/unapplied outcomes, limitations and every required open-item id. Name documents where this helps locate them.",
       "- Separate actual unresolved instructions, corrections and decisions from professional review before issue. Do not turn settled instructions or internal output-handling steps into new confirmation requirements.",
@@ -305,6 +307,7 @@ function draftingNotesSections(directory: string, request: string) {
       ...(memo ? ["- These notes are the requested memo; title it as that memo. Lead with the discrepancies found and the choices made, then give the recommendations and the open points, in plain language. The memo carries only what these records show."] : []),
       "- Say what each open item is and what the lawyer needs to do about it, and end that statement with the item's exact id as a trailing \"[ref: <id>]\". Write internal ids only in these markers, and name each document by its title or file name, never by its internal id; describe each change by what it does, never by its change id.",
       "- For each marked drafted default, say what was chosen and that the lawyer must confirm it.",
+      ...(delegated ? ['- delegated_decisions lists the questions the lawyer delegated to the drafter\'s judgment or did not answer. Give them a section of their own. For each decision taken, say in words what was decided, why, the evidence it rests on and the alternatives not taken, that the lawyer delegated it, and that it is for the lawyer to confirm. For each with no decision taken, say that the point stays open, why, and what the lawyer needs to do. End each statement with the question\'s exact id as "[ref: <id>]".'] : []),
       "- Use applied_changes.evidence_basis and the actual sources array to describe a change’s evidential basis. application_mode describes only how text was applied; code or already_applied says nothing about source support. Where source passages are provided, assess them before claiming support or a gap. For no-source-passage changes, disclose drafting judgment or a view of the law and the required lawyer confirmation. Do not invent an open-item marker or confirmation requirement that the final body and evidence do not show.",
       "- operation describes the requested amendment, the only one for its paragraph; result_paragraphs reports the paragraph's actual final wording, and an empty result records deletion. Describe the actual result and disclose unresolved explanations honestly.",
       "- Quote sources only word for word as \"exact words\" [source: document name], and cite only authority supported by matter sources or the approved legal research handoff.",
@@ -312,6 +315,33 @@ function draftingNotesSections(directory: string, request: string) {
       "- Read-only tools are available; file-writing tools are unavailable. Your final reply is saved as the drafting notes.",
     ].join("\n")),
   ]
+}
+
+/** Each question the lawyer delegated or did not answer (delegatedQuestions),
+ * as the drafting notes disclose it: who delegated it and, for an adopted
+ * recommendation, the decision taken with the advisor's checked reason,
+ * evidence and the alternatives not taken; otherwise why no decision was
+ * taken. Empty when there is none. */
+export function delegatedDecisionsText(directory: string) {
+  return delegatedQuestions(directory).map(question => [`- [${question.id}] Q: ${question.question}`, ...delegatedLines(question).map(line => `  ${line}`)].join("\n")).join("\n")
+}
+
+function delegatedLines(question: Question) {
+  const words = question.lawyer_words ?? (question.answer_kind === "adopted" ? undefined : question.answer)
+  const who = question.answer_class === "declined" ? "Not answered by the lawyer" : "Delegated by the lawyer"
+  const attribution = words === undefined ? `${who}.` : `${who}, in their words: "${words}"`
+  const advice = question.advice
+  if (question.answer_kind === "adopted") {
+    const recommendation = advice && "recommendation" in advice ? advice.recommendation : undefined
+    return [attribution, `Decision taken, for the lawyer to confirm: ${question.answer}`,
+      ...(recommendation ? [`Reason: ${recommendation.rationale}`, ...recommendation.basis.map(row => `Evidence: "${row.quote}" [source: ${row.source_id}]`)] : []),
+      ...questionOptions(question).filter(option => option.id !== question.option_id).map(option => `Alternative not taken: ${option.text}`)]
+  }
+  const why = question.answer_class === "declined" ? "the point stays open for the lawyer."
+    : question.kind !== "judgment" && !(question.kind === "scope" && !question.mixed) ? "it asks for a fact or an instruction that only the lawyer can give."
+    : advice && "unavailable" in advice ? `no option was supported: ${advice.unavailable.reason}`
+    : "no checked recommendation is available."
+  return [attribution, `No decision taken: ${why}`]
 }
 
 function documentSections(directory: string, document: DocID, items: OpenItem[]) {

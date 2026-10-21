@@ -1,4 +1,5 @@
 import { adviseQuestions } from "./advise"
+import { classifyAnswers } from "./answer-class"
 import { runFocusedChangeReview } from "./focused-change-review"
 import { DRAFTING_STOPPED_REASON } from "../../lib/drafting-update-admission"
 import { PROVIDER_STOP_MESSAGES, providerStopKind, type ProviderStopKind } from "../../lib/provider-stop"
@@ -58,6 +59,7 @@ import {
   replaceStageQuestions,
   snapshotStage,
   syncLeanSteps,
+  unclassifiedAnswer,
   updateLeanStage,
   writeOpenItems,
   writeQuestions,
@@ -203,6 +205,14 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
     const unanswered = readQuestions(directory).filter(question => question.status === "open" && question.stage !== "gate")
     if (unanswered.length)
       return { state: writeLeanState(directory, { ...state, status: "blocked", stop_reason: `Waiting for your answers: ${unanswered.map(question => question.id).join(", ")}` }) }
+    // How the lawyer's own words answer each question is read once, before any
+    // step reads them; a delegating answer is recorded as an adoption.
+    if ((index === 0 || changes.answered) && readQuestions(directory).some(unclassifiedAnswer)) {
+      await classifyAnswers(directory, state, deps)
+      if (paused()) return { state: settlePause(directory, state), paused: true }
+      if (preferencesChanged()) return { state, restart: true }
+      if (provider.stop) return { state: settleProviderStop(directory, state, provider.stop) }
+    }
     if ((changes.answered || changes.updated) &&
       withSourceSnapshot(() => settled.some(done => stageInputSha(directory, done) !== state.stages[done]?.input_sha)))
       return { state, restart: true }
