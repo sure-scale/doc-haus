@@ -6,9 +6,11 @@ import { chunkText } from "../../lib/chunk-text"
 // The headed parts of a matter document read as a template. Parts come from the
 // shape of the canonical source lines only: a numbered line with a short
 // capitalised title, an all-capitals line, a Markdown heading, or a label line
-// (a capitalised word followed by a letter, number or roman numeral). Nothing
-// here knows what a part is called or what a document should contain. A source
-// with no such lines has no parts, and every check built on it is a no-op.
+// (a capitalised word followed by a letter, number or roman numeral). A title
+// in sentence case heads a part only alone on its line, so a numbered sentence
+// stays body text. Nothing here knows what a part is called or what a document
+// should contain. A source with no such lines has no parts, and every check
+// built on it is a no-op.
 //
 // The numbered clauses are the document's backbone. An unnumbered heading among
 // the clauses, followed by a clause that continues their numbering, is part of
@@ -188,7 +190,8 @@ function headingLine(raw: string): { level: number; number?: number[]; title: st
     if (/^["“'‘]/.test(numbered[2]!) || /^[^:]{1,80}:\s+\p{Ll}/u.test(numbered[2]!)) return
     const title = numbered[2]!.split(/[.:]\s/)[0]!.replace(/[.:;,]$/, "").trim()
     const words = countWords(title)
-    if (!words || words > MAX_TITLE_WORDS || !(capitals(title) || titleCase(title))) return
+    const alone = title === numbered[2] && /^\p{Lu}/u.test(title)
+    if (!words || words > MAX_TITLE_WORDS || !(capitals(title) || titleCase(title) || alone)) return
     const number = numbered[1]!.split(".").map(Number)
     return { level: number.length, number, title, display: `${numbered[1]} ${title}` }
   }
@@ -209,9 +212,12 @@ function titleCase(text: string) {
 }
 
 /** A capitalised word followed by a letter, number or roman numeral, then
- * nothing or a title ("Annex A", "Part 2 – Charges"): the shape of a part label. */
+ * nothing or a title ("Annex A", "Part 2 – Charges"): the shape of a part label.
+ * A title in sentence case is one with no sentence break ("Schedule 1  Site
+ * and hours"). */
 function labelLine(line: string) {
-  return /^\p{Lu}\p{Ll}+\s+(?:[A-Z]|\d+|[IVXLC]+)(?:$|\s*[-–—:.)]\s*\S|\s+\S)/u.test(line) && titleCase(line)
+  const title = /^\p{Lu}\p{Ll}+\s+(?:[A-Z]|\d+|[IVXLC]+)(?:$|\s*[-–—:.)]\s*(?=\S)|\s+(?=\S))(.*)$/u.exec(line)?.[1]
+  return title !== undefined && (titleCase(line) || (/^\p{Lu}/u.test(title) && !/[.:]\s/.test(title)))
 }
 
 /** A label with no title of its own: one word and a letter, number or roman numeral. */
@@ -227,13 +233,16 @@ function headingSegments(text: string) {
 }
 
 /** A heading's wordings: the whole heading and, when it joins a label and a
- * title (on two lines, or with a colon or dash), each side. Wordings too short
- * to name a part are dropped. */
+ * title (on two lines, with a colon or dash, or with only spacing between a
+ * label and a capitalised title), each side. Wordings too short to name a part
+ * are dropped. */
 function headingWordings(titles: string[]) {
   const named = (texts: string[]) => texts.map(tokens).filter(words => words.length >= 2 || words.some(word => word.length >= 4))
   const split = (title: string) => {
     const sides = title.split(/\s*[:–—]\s*|\s+-\s+/).filter(Boolean)
-    return sides.length > 1 ? sides : []
+    if (sides.length > 1) return sides
+    const label = /^(\p{Lu}\p{Ll}+\s+(?:[A-Z]|\d+|[IVXLC]+))\s+(\p{Lu}.*)$/u.exec(title)
+    return label ? [label[1]!, label[2]!] : []
   }
   return { whole: named([titles.join(" ")]), sides: named([...(titles.length > 1 ? titles : []), ...titles.flatMap(split)]) }
 }
