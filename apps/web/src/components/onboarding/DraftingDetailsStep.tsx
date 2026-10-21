@@ -3,8 +3,23 @@ import { savePreferences, type DraftingPreferences } from "../../api/ingest/pref
 import type { Jurisdiction } from "../../api/ingest/matters"
 import { savePrefs } from "../../prefs"
 import JurisdictionSelect from "../JurisdictionSelect"
+import { SegRow } from "../settings/controls"
 import { LegendField, PageLayoutPreview } from "../settings/PageLayout"
-import { ADVICE_LEGENDS, AGREEMENT_LEGENDS, suggestedLegends } from "../settings/page-layout"
+import { ADVICE_LEGENDS, AGREEMENT_LEGENDS, DATE_FORMATS, suggestedDateFormat, suggestedLegends } from "../settings/page-layout"
+
+type DateFormat = DraftingPreferences["dateFormat"]
+
+/** What Save and finish stores. The date format is the firm's pick in setup,
+ * else the one its default jurisdictions suggest, else the saved setting. */
+export function detailsPreferences(drafting: DraftingPreferences, selectedJx: string[], dateFormatChoice: DateFormat | null) {
+  return {
+    attorney: drafting.attorney,
+    firm: drafting.firm,
+    agreementLegend: drafting.agreementLegend,
+    adviceLegend: drafting.adviceLegend,
+    dateFormat: dateFormatChoice ?? suggestedDateFormat(selectedJx) ?? drafting.dateFormat,
+  }
+}
 
 export default function DraftingDetailsStep({
   drafting,
@@ -12,6 +27,8 @@ export default function DraftingDetailsStep({
   jurisdictions,
   selectedJx,
   setSelectedJx,
+  dateFormatChoice,
+  setDateFormatChoice,
   setStep,
   onClose,
 }: {
@@ -20,12 +37,16 @@ export default function DraftingDetailsStep({
   jurisdictions: Jurisdiction[]
   selectedJx: string[]
   setSelectedJx: (codes: string[]) => void
+  dateFormatChoice: DateFormat | null
+  setDateFormatChoice: (dateFormat: DateFormat) => void
   setStep: (step: "setup" | "details" | "research") => void
   onClose: () => Promise<void>
 }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState("")
   const suggested = suggestedLegends(selectedJx)
+  const suggestedDate = suggestedDateFormat(selectedJx)
+  const dateFormat = drafting && detailsPreferences(drafting, selectedJx, dateFormatChoice).dateFormat
   return (
     <>
       {error && <p role="alert" className="settings-warning">{error}</p>}
@@ -68,6 +89,18 @@ export default function DraftingDetailsStep({
       </section>
 
       <section className="settings-section">
+        <h3>Dates</h3>
+        <SegRow
+          label="Date format"
+          hint={`Used for every date in your documents, including the draft line.${suggestedDate && !dateFormatChoice ? " Suggested from your default jurisdictions." : ""}`}
+          disabled={busy || !drafting}
+          value={dateFormat ?? ""}
+          onChange={(value) => setDateFormatChoice(value as DateFormat)}
+          options={DATE_FORMATS}
+        />
+      </section>
+
+      <section className="settings-section">
         <h3>Legends</h3>
         <p className="settings-hint muted">
           A legend has legal effect, so doc.haus adds none unless you choose one. Each appears only on the documents
@@ -93,7 +126,7 @@ export default function DraftingDetailsStep({
           value={drafting?.adviceLegend ?? ""}
           onChange={(adviceLegend) => setDrafting((d) => d && { ...d, adviceLegend })}
         />
-        {drafting && <PageLayoutPreview prefs={drafting} />}
+        {drafting && dateFormat && <PageLayoutPreview prefs={{ ...drafting, dateFormat }} />}
         <p className="settings-hint muted">Page numbers and the draft line can be changed in Settings → Drafting.</p>
       </section>
 
@@ -106,7 +139,7 @@ export default function DraftingDetailsStep({
             if (!drafting || busy) return
             setBusy(true); setError("")
             try {
-              await savePreferences({ attorney: drafting.attorney, firm: drafting.firm, agreementLegend: drafting.agreementLegend, adviceLegend: drafting.adviceLegend })
+              await savePreferences(detailsPreferences(drafting, selectedJx, dateFormatChoice))
               savePrefs({ defaultJurisdictions: selectedJx })
               await onClose()
             } catch { setError("Could not save drafting details. Retry.") }
