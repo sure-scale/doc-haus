@@ -1,4 +1,5 @@
 import { useState } from "react"
+import { providerHealth } from "../../api/opencode/provider-health"
 import { setModelPair } from "../../api/opencode/config"
 import type { ModelOption } from "../../models"
 import type { useToast } from "../Toast"
@@ -87,6 +88,7 @@ export default function ModelsTab({
             setSaving(true)
             try {
               await setModelPair(model, smallModel || model)
+              void providerHealth.check(true)
               if (firstRun) return onClose()
               toast("success", "Models saved.")
             } catch (error) { toast("error", error instanceof Error ? error.message : "Could not save models. Retry.") }

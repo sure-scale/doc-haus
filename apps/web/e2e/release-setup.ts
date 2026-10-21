@@ -98,7 +98,7 @@ async function open(state: ReturnType<typeof fixture>) {
     if (pathname === "/api/provider") return reply({ data: [...(state.publicModels ? [publicProvider] : []), ...(state.connected || state.nativeEnv ? [provider, ...(state.secondProvider ? [{ ...provider, id: "second-models", name: "Second Models" }] : [])] : []), ...(state.nativeBedrock ? [bedrock] : []), ...(state.hostConfigured ? [vertex] : []), ...(state.reusedGo ? [go] : [])] })
     if (pathname === "/api/model") return reply({ data: [...publicCatalog, ...catalog, ...(state.secondProvider ? [{ providerID: "second-models", id: "other", name: "Other", enabled: true }] : []), ...(state.nativeBedrock ? [{ providerID: "amazon-bedrock", id: "bedrock-fixture", name: "Bedrock Fixture", enabled: true }] : []), ...(state.hostConfigured ? [{ providerID: "google-vertex", id: "gemini-fixture", name: "Gemini Fixture", enabled: true }] : []), ...(state.reusedGo ? [{ providerID: "opencode-go", id: "go-fixture", name: "Go Fixture", enabled: true }] : [])] })
     if (pathname === "/host/probe-vertex") return reply({ ok: true })
-    if (pathname === "/api/dochaus/provider-test") return state.probeFailures-- > 0 ? reply({ ok: false, error: "Fixture model access unavailable." }, 400) : reply({ ok: true })
+    if (pathname === "/api/dochaus/provider-test") return state.probeFailures-- > 0 ? reply({ ok: false, kind: "model", error: "Fixture model access unavailable." }, 400) : reply({ ok: true })
     if (pathname === "/api/integration") return reply({ data: [...(state.publicModels ? [{ id: "opencode", name: "OpenCode Zen", methods: [{ type: "oauth", id: "console-account", label: "Console account" }, { type: "key", label: "API key" }], connections: [] }] : []), { id: "test-login", name: "Fixture Sign-in", methods: [
       { type: "oauth", id: "workspace-oauth", label: "Workspace sign-in", form: [{ key: "account", type: "string", required: true, options: [{ value: "workspace", label: "Workspace" }, { value: "personal", label: "Personal" }] }, { key: "tenant", type: "string", title: "Workspace ID", required: true, when: [{ key: "account", op: "eq", value: "workspace" }] }] },
       { type: "key", label: "API key" }, { type: "command", id: "host-login", label: "Host sign-in", command: ["fixture-auth", "login"] }, { type: "env", names: ["FIXTURE_MODEL_KEY"] },
@@ -747,6 +747,7 @@ try {
       const modelWrites = state.requests.filter(request => request.path === "/engine/config" && request.method === "PATCH")
       expect(modelWrites.map(request => request.body)).toEqual(Array(3).fill({ model: "test-models/primary", small_model: "test-models/primary" }))
       expect(state.requests.filter(request => request.path === "/updates")).toHaveLength(0)
+      expect(state.requests.filter(request => request.path === "/api/dochaus/provider-test")).toHaveLength(0)
       await page.getByLabel("Exa API key", { exact: true }).fill("unsaved-fixture-key")
       await expect(page.getByRole("button", { name: "Skip research setup", exact: true })).toHaveCount(0)
       await page.getByRole("button", { name: "Save and continue", exact: true }).click()
@@ -764,6 +765,7 @@ try {
       await page.getByRole("button", { name: "Save and finish", exact: true }).click()
       await expect(page.getByRole("dialog", { name: "Let's get you set up" })).toHaveCount(0)
       await expect.poll(() => state.requests.filter(request => request.path === "/updates").length).toBeGreaterThan(0)
+      await expect.poll(() => state.requests.filter(request => request.path === "/api/dochaus/provider-test").map(request => request.body)).toEqual([{ providerID: "test-models", modelID: "primary" }])
       expect(state.preferences).toMatchObject({ attorney: "Entered Lawyer", firm: "Entered Firm", searchApiKey: "unsaved-fixture-key" })
       expect(state.unexpected).toEqual([]); expect(errors).toEqual([])
       await screenshot(page, "03-setup-completed")

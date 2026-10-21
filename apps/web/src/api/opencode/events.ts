@@ -2,6 +2,7 @@ import { projectEvent } from "../session-view"
 import type { Event } from "../session-view"
 import { location, type Client } from "./client"
 import { getMessages } from "./sessions"
+import { providerHealth } from "./provider-health"
 
 // Subscribe to the server event stream and invoke onEvent for each event.
 // Caller passes an AbortSignal to stop. Errors after abort are swallowed.
@@ -78,6 +79,13 @@ export async function subscribeEvents(
             const timer = refreshTimers.get(sessionID)
             if (timer) clearTimeout(timer)
             refreshTimers.delete(sessionID)
+          }
+          if (event.type === "session.step.failed" && ["provider.auth", "provider.no-route"].includes(event.data.error.type)) {
+            const observedVersion = providerHealth.version()
+            const failure = event.data.error
+            void client.session.get({ sessionID }, { signal: AbortSignal.any([signal, AbortSignal.timeout(5000)]) }).then(info => {
+              if (!signal.aborted && info.model) providerHealth.rejected(info.model, failure, observedVersion)
+            }).catch(() => { /* The turn still shows its native failure if model lookup is unavailable. */ })
           }
           if (event.type.startsWith("form.")) options.onFormsChanged?.()
           for (const projected of projectEvent(event)) onEvent(projected)

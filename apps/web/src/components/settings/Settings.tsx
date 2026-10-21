@@ -34,7 +34,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "appearance", label: "Appearance" },
 ]
 
-export default function Settings({ onClose, firstRun = false }: { onClose: () => void; firstRun?: boolean }) {
+export default function Settings({ onClose, firstRun = false, initialTab, reconnectProvider }: { onClose: () => void; firstRun?: boolean; initialTab?: Tab; reconnectProvider?: string }) {
   const dialog = useRef<HTMLDialogElement>(null)
   const titleId = useId()
   useLayoutEffect(() => {
@@ -50,7 +50,7 @@ export default function Settings({ onClose, firstRun = false }: { onClose: () =>
 
   // First run is about getting a provider connected, so land there; otherwise
   // open on the models people come back to tweak.
-  const [tab, setTab] = useState<Tab>(firstRun ? "providers" : "models")
+  const [tab, setTab] = useState<Tab>(initialTab ?? (firstRun ? "providers" : "models"))
   const toast = useToast()
   const client = useMemo<Client>(() => settingsClient(), [])
   const [all, setAll] = useState<Provider[]>([])
@@ -301,6 +301,7 @@ export default function Settings({ onClose, firstRun = false }: { onClose: () =>
 
             {tab === "providers" && (
               <ProvidersTab
+                reconnectProvider={reconnectProvider}
                 readyProviders={readyProviders}
                 needsSetup={needsSetup}
                 disabled={disabled}

@@ -1,3 +1,5 @@
+import { useSyncExternalStore } from "react"
+import { connectionMessage, providerConnection, providerHealth } from "../../api/opencode/provider-health"
 import { addLocalProvider } from "../../api/opencode/config"
 import type { Client } from "../../api/opencode/client"
 import { isGated } from "../../providers"
@@ -9,6 +11,7 @@ import LocalEndpoint from "./LocalEndpoint"
 import NativeProviderConnect from "./NativeProviderConnect"
 
 export default function ProvidersTab({
+  reconnectProvider,
   readyProviders,
   needsSetup,
   disabled,
@@ -26,6 +29,7 @@ export default function ProvidersTab({
   toast,
   load,
 }: {
+  reconnectProvider?: string
   readyProviders: Provider[]
   needsSetup: Provider[]
   disabled: string[]
@@ -43,13 +47,13 @@ export default function ProvidersTab({
   toast: ReturnType<typeof useToast>
   load: () => Promise<void>
 }) {
+  const connections = useSyncExternalStore(providerHealth.subscribe, providerHealth.getSnapshot)
   return (
     <>
       <section className="settings-section">
-        <h3>Ready to use</h3>
+        <h3>Saved connections</h3>
         <p className="settings-hint muted">
-          Model providers the engine already has credentials for — picked up from the server's sign-in (a
-          gcloud or AWS login on the host). Nothing to set up; choose your primary model under Models.
+          Saved credentials do not guarantee access. Your selected models are checked when doc.haus opens and after you reconnect.
         </p>
 
         <div className="settings-connected">
@@ -62,6 +66,7 @@ export default function ProvidersTab({
                 <span className="settings-conn-name">{p.name}</span>
                 <span className="settings-conn-meta muted">
                   {statusLabel(p, methods)} · {Object.keys(p.models).length} models
+                  {providerConnection(connections, p.id) && <span className="settings-provider-health" data-status={providerConnection(connections, p.id)?.status}>{connectionMessage(providerConnection(connections, p.id)!)}</span>}
                 </span>
               </div>
               <div className="settings-provider-actions">
@@ -142,7 +147,7 @@ export default function ProvidersTab({
         </section>
       )}
 
-      <NativeProviderConnect client={client} onConnected={async () => { await load() }} />
+      <NativeProviderConnect client={client} initialProviderID={[...readyProviders, ...needsSetup].find(provider => provider.id === reconnectProvider)?.integrationID ?? reconnectProvider} onConnected={async id => { await load(); if (id) void providerHealth.check(true) }} />
 
       <LocalEndpoint
         onAdd={async (input) => {

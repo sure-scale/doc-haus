@@ -41,6 +41,7 @@ try {
       const headers = { "access-control-allow-origin": new URL(baseURL).origin, "access-control-allow-credentials": "true", "access-control-allow-headers": "*", "access-control-allow-methods": "*" }
       if (request.method() === "OPTIONS") return route.fulfill({ status: 204, headers })
       const reply = (body: unknown, code = 200) => route.fulfill({ status: code, headers, contentType: "application/json", body: JSON.stringify(body) })
+      if (request.method() === "POST" && pathname === "/api/dochaus/provider-test") return reply({ ok: true })
       if (request.method() !== "GET") {
         writes.push(`${request.method()} ${pathname}`)
         return reply({ error: "Fixture refuses writes." }, 409)
@@ -48,6 +49,7 @@ try {
       const list = { data: [], cursor: { previous: null, next: null } }
       if (pathname === "/api/dochaus/ready") return reply({ ready: true, consentState: "active" })
       if (pathname === "/setup") return reply({ version: 1, ready: true, completed: ["models", "research", "details"], skipped: [], next: "done" })
+      if (pathname === "/engine/config") return reply({ model: "fixture/primary", small_model: "fixture/primary" })
       if (pathname === "/matters") return reply([{ ...matter, documents: undefined }])
       if (pathname === `/matters/${matter.id}`) return reply(matter)
       if (pathname === `/matters/${matter.id}/drafting-status`) return reply(status)
@@ -78,7 +80,7 @@ try {
       return box.top >= 0 && box.bottom <= innerHeight && box.left >= 0 && box.right <= innerWidth && Boolean(hit && node.contains(hit))
     }, selector)
     const actions: Record<string, boolean> = {}
-    for (const [name, selector] of [["continue", ".run-head-actions .run-head-cta"], ["check", ".run-checklist-refinement button[type=submit]"], ["details", ".run-head-toggle"]]) {
+    for (const [name, selector] of [["continue", ".run-head-actions .primary.run-head-cta"], ["check", ".run-checklist-refinement button[type=submit]"], ["details", ".run-head-toggle"]]) {
       if (width <= 700) await page.locator(selector).scrollIntoViewIfNeeded()
       actions[name] = await reachable(selector)
     }

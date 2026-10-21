@@ -48,6 +48,18 @@ matching connections are offered, and copying requires your explicit selection.
 The source is preserved; global configuration, plugins, instructions and sessions
 are never imported. An existing sign-in remains subject to its account policy.
 
+After setup is complete and the launch notice is accepted, opening the app checks
+access to the saved primary and fast models with a small fixed test request.
+Identical models share one check; recent checks are briefly reused across tabs.
+No matter content is sent and no drafting is resumed. These requests may consume
+provider allowance. Saved connections remain listed in Settings, with their
+latest verification result. A rejected sign-in shows a persistent reconnect
+prompt; an expired API key requires a replacement key from the provider console.
+Network or account-allowance failures ask you to check the connection instead.
+Reconnect or save new model choices to check again, or use Check again in the
+prompt. Authentication failures during assistant work also show the prompt.
+After reconnecting, return to the draft and choose Continue when ready.
+
 New installations default to Entire web; existing saved research choices are
 preserved. Approved sources only shows the built-in host/domain list and lets you
 add trusted hosts. Optional keys start empty and CourtListener is off. Enable the
