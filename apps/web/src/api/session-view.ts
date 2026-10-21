@@ -29,6 +29,8 @@ export type Message = {
     summary?: boolean
     finish?: string
     error?: { name: string; data?: { message?: string } }
+    // The last answer step of a turn that was stopped before it finished.
+    stopped?: boolean
     time: { created: number; completed?: number }
   }
   parts: Part[]
@@ -76,9 +78,18 @@ export function contentParts(sessionID: string, messageID: string, content: Extr
 export function projectMessages(sessionID: string, messages: SessionMessageInfo[]): Message[] {
   let latestUser: string | undefined
   let currentAgent: string | undefined
+  // The newest answer step since the last idle marker, i.e. of the current turn.
+  let answer: Message | undefined
   return messages.flatMap((message): Message[] => {
     if (message.type === "agent-switched") {
       currentAgent = message.agent
+      return []
+    }
+    // The engine closes every turn with an idle marker. An interrupted one
+    // (Stop, or the chat's stall watchdog) marks the turn's answer stopped.
+    if (message.type === "idle") {
+      if (message.outcome === "interrupted" && answer) answer.info.stopped = true
+      answer = undefined
       return []
     }
     if (message.type === "user" || message.type === "synthetic") {
@@ -89,7 +100,7 @@ export function projectMessages(sessionID: string, messages: SessionMessageInfo[
       }]
     }
     if (message.type !== "assistant") return []
-    return [{
+    answer = {
       info: {
         id: message.id,
         sessionID,
@@ -101,7 +112,8 @@ export function projectMessages(sessionID: string, messages: SessionMessageInfo[
         time: message.time,
       },
       parts: contentParts(sessionID, message.id, message.content),
-    }]
+    }
+    return [answer]
   })
 }
 

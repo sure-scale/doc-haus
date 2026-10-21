@@ -60,6 +60,9 @@ export function useChatState(sessionID: string | undefined) {
   // created once and would otherwise capture a stale value.
   const busyRef = useRef(false)
   busyRef.current = busy
+  // The running turn: whether the lawyer stopped it, and whether a send in this
+  // panel still owns it (that send settles a stopped turn; otherwise Stop does).
+  const turnRef = useRef({ stopped: false, owned: false })
 
   function updatePermissions(
     update: PermissionRequest[] | ((current: PermissionRequest[]) => PermissionRequest[]),
@@ -105,6 +108,7 @@ export function useChatState(sessionID: string | undefined) {
     stickRef,
     inputRef,
     busyRef,
+    turnRef,
     updatePermissions,
   }
 }
