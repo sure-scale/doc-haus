@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import { DEFAULT_DRAFTING, LEGEND_MAX_LENGTH as SERVER_LEGEND_MAX_LENGTH } from "../../../dochaus/lib/drafting-preferences"
 import { NOTES_MARKING as SERVER_NOTES_MARKING, PAGE_NUMBER_AFFIXES, formatDraftDate as serverDate, pageFurniture } from "../../../dochaus/lib/page-furniture"
-import { ADVICE_LEGENDS, AGREEMENT_LEGENDS, LEGEND_MAX_LENGTH, NOTES_MARKING, agreementFurniture, draftLineText, formatDraftDate, pageNumberText, suggestedLegends } from "../src/components/settings/page-layout"
+import { ADVICE_LEGENDS, AGREEMENT_LEGENDS, LEGEND_MAX_LENGTH, NOTES_MARKING, agreementFurniture, draftLineText, formatDraftDate, pageNumberText, suggestedDateFormat, suggestedLegends } from "../src/components/settings/page-layout"
 
 test("legend suggestions follow the jurisdiction family and are empty elsewhere", () => {
   const us = { agreement: ["Draft — for discussion purposes only"], advice: ["Privileged & confidential — attorney-client communication"] }
@@ -11,6 +11,13 @@ test("legend suggestions follow the jurisdiction family and are empty elsewhere"
   for (const code of ["EW", "SCT", "NIR", "IE", "AU", "AU-NSW", "NZ", "SG", "HK"]) expect(suggestedLegends([code])).toEqual(commonwealth)
   for (const codes of [[], ["FR"], ["CA-ON"], ["EU"], ["ZA"]]) expect(suggestedLegends(codes)).toEqual({ agreement: [], advice: [] })
   expect(suggestedLegends(["EW", "US-CA", "IE"])).toEqual({ agreement: ["Subject to contract", "Draft — for discussion purposes only"], advice: ["Privileged & confidential", "Privileged & confidential — attorney-client communication"] })
+})
+
+test("the date format suggestion is day-month-year with no US jurisdiction, month-day-year with only US ones", () => {
+  for (const code of ["EW", "SCT", "IE", "AU-NSW", "NZ", "SG", "FR", "DE", "CA-ON", "EU"]) expect(suggestedDateFormat([code])).toBe("day-month-year")
+  expect(suggestedDateFormat(["EW", "FR"])).toBe("day-month-year")
+  for (const codes of [["US"], ["US-DE"], ["US-NY", "US-CA"], ["us-tx"]]) expect(suggestedDateFormat(codes)).toBe("month-day-year")
+  for (const codes of [[], ["EW", "US-NY"]]) expect(suggestedDateFormat(codes)).toBeUndefined()
 })
 
 test("presets offer no without-prejudice legend and every suggestion is a preset", () => {

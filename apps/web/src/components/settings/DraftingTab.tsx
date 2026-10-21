@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react"
 import { getPreferences, POSTURES, savePreferences, type DraftingPreferences } from "../../api/ingest/preferences"
 import { FieldRow, SegRow } from "./controls"
 import { CheckRow, LegendField, PageLayoutPreview } from "./PageLayout"
-import { ADVICE_LEGENDS, AGREEMENT_LEGENDS, NOTES_MARKING, draftLineText } from "./page-layout"
+import { ADVICE_LEGENDS, AGREEMENT_LEGENDS, DATE_FORMATS, NOTES_MARKING, draftLineText } from "./page-layout"
 
 // Firm-wide drafting preferences. The engine renders the saved structured
 // settings into standing instructions for each drafting or explanation turn;
@@ -102,11 +102,7 @@ export default function DraftingTab({ onSaved }: { onSaved: (text: string) => vo
             hint="The date format used in documents."
             value={prefs.dateFormat}
             onChange={(dateFormat) => set({ dateFormat: dateFormat as DraftingPreferences["dateFormat"] })}
-            options={[
-              { value: "month-day-year", label: "June 11, 2026" },
-              { value: "day-month-year", label: "11 June 2026" },
-              { value: "iso", label: "2026-06-11" },
-            ]}
+            options={DATE_FORMATS}
           />
           <SegRow
             label="Numbers"
