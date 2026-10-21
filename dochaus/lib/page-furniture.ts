@@ -1,6 +1,7 @@
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import type { DraftingPreferences } from "./drafting-preferences"
+import { furnitureLegend } from "./furniture-legend"
 
 // Page furniture for documents doc.haus renders: page numbers, the draft line
 // and the firm's chosen legend. The planner picks only each document's form
@@ -48,7 +49,7 @@ type FurniturePreferences = Pick<DraftingPreferences, "firm" | "dateFormat" | "p
  * render clock); without it there is no draft line. A requested legend the
  * firm's already reads, ignoring case, is not repeated. */
 export function pageFurniture(kind: FurnitureKind, prefs: FurniturePreferences, draftedAt?: string, requested: RequestedFurniture = {}): PageFurniture | undefined {
-  const legend = kind === "agreement" ? prefs.agreementLegend : kind === "advice" || kind === "advice letter" ? prefs.adviceLegend : ""
+  const legend = furnitureLegend(kind, prefs)
   const extra = requested.legend && requested.legend.toLowerCase() !== legend.toLowerCase() ? requested.legend : ""
   const drafted = draftedAt && prefs.draftLine && (kind === "agreement" || kind === "advice" || isLetter(kind))
   const date = drafted ? formatDraftDate(draftedAt, prefs.dateFormat) : undefined

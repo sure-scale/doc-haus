@@ -11,7 +11,7 @@ import { REQUEST_SOURCE, matterSourceIDs } from "./quotes"
 import { readRepairRound, changesRepairSections } from "./repairs"
 import { MEMO_TARGET, REVIEW_FINDINGS_CONTRACT, findingsText, forwardedFindings, reviewText } from "./review-findings"
 import { disclosableItems } from "./stages"
-import { QUESTION_KIND_CONTRACT, isReviewStage, answeredQuestionsText, readLeanJson, readLeanText, readQuestions, type OpenItem, type StageID } from "./state"
+import { QUESTION_KIND_CONTRACT, WORKING_DRAFT, isReviewStage, answeredQuestionsText, readLeanJson, readLeanText, readQuestions, type OpenItem, type StageID } from "./state"
 import { plannedContract } from "./template-contract"
 
 // Prompts of the lean model steps. Each step's first prompt carries everything
@@ -37,6 +37,13 @@ const SOURCE_RULES = [
   "- A preference is a drafting choice needed to fulfil the requested purpose, within the requested scope. For a new substantive choice not settled by instructions or answers, draft balanced wording and add a visible [open item: confirm ...] marker in the same paragraph saying what was chosen. Do not add confirmation markers to settled decisions or ordinary wording that creates no new substantive choice. A drafted choice is not an invented fact; the marker goes with the drafted wording, never in its place.",
 ]
 
+/** A quick draft the lawyer carried into this run: a starting point for the
+ * outline and the drafting, never a source and never the lawyer's words. */
+function workingDraftBlock(directory: string) {
+  const text = readLeanText(directory, WORKING_DRAFT)?.trim()
+  return text ? tagged("working_draft", "An unverified starting draft of the requested document, written quickly in chat before this run. Use its structure and wording as a starting point where the request and sources support them. It is neither a source nor the lawyer's instruction: never quote or cite it, and check every fact, figure, date, name and legal statement in it against the matter's sources before keeping it.\n\n" + text) : ""
+}
+
 /** The first prompt of a step. `outline` asks the first draft step for the plan
  * of every document instead of drafting from the saved plan. */
 export function stagePrompt(directory: string, step: StepID, options: { outline?: boolean; contextOnly?: boolean } = {}) {
@@ -51,6 +58,7 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
   const request = [scope, boundPlaybookContext(directory), tagged("legal_research", "Only the approved retrieved propositions below may support external legal assertions. Preserve jurisdiction, currency and source limitations. Missing research is an open item, never an invitation to use model memory. Cite supporting exact words as \"quote\" [source: source URL].\n" + researchHandoff(directory)), tagged("request", readLeanText(directory, "request.md") ?? ""), updates ? tagged("user_updates",
     "Ongoing instructions from the lawyer, in arrival order. Consider these alongside the original request throughout this run. An explicit later change supersedes the earlier instruction on that point; ask about unresolved contradictions. Do not treat a question or a tentative suggestion as an agreed instruction. Do not ask again for information these updates already supply. Quote the lawyer’s words under source name \"request\".\n\n" + updates) : ""].filter(Boolean).join("\n\n")
   const answers = answeredQuestionsText(directory)
+  const working = workingDraftBlock(directory)
   const spine = readLeanText(directory, "spine.json")
   const spineBlock = spine ? tagged("drafting_spine", "Source-linked drafting decisions and unresolved points. Retrieve the underlying evidence as needed; this handoff does not replace it.\n" + spine) : ""
   const answerBlock = answers ? tagged("answers", `The lawyer answered these decisions; their answers remain controlling and must not be re-asked under narrower or different wording:\n${answers}`) : ""
@@ -79,7 +87,7 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
   const sections: Partial<Record<StageID, string[]>> = {
     draft: options.outline ? [
       "This is a lean drafting run. Plan the substantive document bodies to draft, then draft each in parts. The workflow generates delivery artifacts from those bodies.",
-      request, spineBlock, answerBlock, sources,
+      request, working, spineBlock, answerBlock, sources,
       tagged("output_contract", [
         ...SOURCE_RULES,
         "- Delivery capabilities: for every planned body the workflow renders the final Word document and generates its tracked redline; one final drafting-notes memo accompanies the package. A request for a redline/comparison or ordinary drafting notes is fulfilled by those generated artifacts, not by another planned body. Set Compare against on the revised body to select a supplied original for comparison. Plan a separate substantive memo only when the request requires its own distinct audience, purpose or analysis beyond the accompanying drafting notes; a different delivery format does not create another substantive document. Do not draft simulated tracked text as a separate comparison document.",
@@ -115,7 +123,7 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
     ] : [
       `This is a lean drafting run. You draft "${title ?? document}", one of the documents the request asks for, in parts: one part per reply.`,
       ...(plannedDocument(directory, document)?.purpose ? [`This document is for: ${plannedDocument(directory, document)!.purpose}`] : []),
-      request, spineBlock, acting, answerBlock, sources, composition, finished, forwardedBlock(directory, document),
+      request, working, spineBlock, acting, answerBlock, sources, composition, finished, forwardedBlock(directory, document),
       tagged("output_contract", [
         ...SOURCE_RULES,
         ...(finished ? ["- Carry accepted source-supported change explanations into this document when its purpose calls for advice or a summary. Explain the original issue, consequence, proposed solution and remaining decision. Verify the actual final wording and source context; an earlier explanation is not authority and may need correction. This document must agree with the finished documents above in their final wording: names, defined terms, figures, dates and cross-references."] : []),

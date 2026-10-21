@@ -63,6 +63,14 @@ describe("pageFurniture", () => {
     expect(pageFurniture("notes", legends, DRAFTED)?.header).toEqual([NOTES_MARKING])
   })
 
+  test("no shipped agent or skill hands a model legend text to write: legends are the firm's", () => {
+    const root = path.join(import.meta.dir, "..")
+    const prompts = ["agent/*.md", "skill/*/SKILL.md"].flatMap((pattern) => [...new Bun.Glob(pattern).scanSync(root)])
+    expect(prompts.length).toBeGreaterThan(10)
+    const legend = /privileged\s*&\s*confidential|attorney[- ]client communication|attorney work product|subject to contract|for discussion purposes only/i
+    expect(prompts.filter((file) => legend.test(readFileSync(path.join(root, file), "utf8")))).toEqual([])
+  })
+
   test("the draft line names the firm when set and follows the firm's date style", () => {
     const line = (change: Partial<DraftingPreferences>) => pageFurniture("agreement", prefs(change), DRAFTED)?.header
     expect(line({ firm: "  Doe & Partners LLP " })).toEqual(["Doe & Partners LLP draft: October 20, 2026"])

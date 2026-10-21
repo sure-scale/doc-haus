@@ -24,6 +24,8 @@ export async function startDraftingRun(
     request: string
     agent: string
     model: { providerID: string; modelID: string }
+    // An upgraded quick draft, carried as an unverified working draft.
+    workingDraft?: string
   },
 ): Promise<LeanDraftingStart> {
   const res = await fetch(`${INGEST_URL}/matters/${matterId}/drafting-runs/start`, {

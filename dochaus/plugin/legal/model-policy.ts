@@ -64,12 +64,16 @@ export function applyAgentThinkingBudget(agent: string, model: string, output: {
   }
 }
 
+// Room for the router's JSON reply: a route and five closed scope fields.
+const ROUTER_OUTPUT_TOKENS = 96
+
 // Auto routing is a classification turn whose entire useful response is one
-// short assistant id. Keep the user's selected model, but do not pay that
-// model's normal deliberation and output budgets before the substantive legal
-// turn begins. Provider-specific no-thinking controls are applied only where
-// their request dialect is known. Only non-reasoning models get a visible-output
-// cap; reasoning models retain the engine-resolved total response allowance.
+// short JSON object: an assistant id and, for drafting, five closed scope
+// fields. Keep the user's selected model, but do not pay that model's normal
+// deliberation and output budgets before the substantive legal turn begins.
+// Provider-specific no-thinking controls are applied only where their request
+// dialect is known. Only non-reasoning models get a visible-output cap;
+// reasoning models retain the engine-resolved total response allowance.
 export function optimizeRouterParams(
   agent: string,
   model: string,
@@ -78,7 +82,7 @@ export function optimizeRouterParams(
 ) {
   if (agent !== "router") return
   output.temperature = 0
-  if (!reasoning) output.maxOutputTokens = Math.min(output.maxOutputTokens ?? 16, 16)
+  if (!reasoning) output.maxOutputTokens = Math.min(output.maxOutputTokens ?? ROUTER_OUTPUT_TOKENS, ROUTER_OUTPUT_TOKENS)
   if (supportsBooleanThinking(model)) {
     output.options.chat_template_kwargs = { ...(output.options.chat_template_kwargs ?? {}), enable_thinking: false }
     output.options.thinkingConfig = { includeThoughts: false, thinkingLevel: "minimal" }

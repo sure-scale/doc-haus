@@ -55,6 +55,7 @@ test("drafting start without a profile runs lean; a legacy profile is refused; a
     expect(body).toMatchObject({ profile: "lean", mode: "started", ownerSessionID: "ses_stand_in_1", status: { schema: "dochaus.lean.state/2", profile: "lean" } })
     expect(sessionCreates[0]).toMatchObject({ directory: lean.dir, body: { metadata: { dochaus_role: "lean-drafting-owner" } } })
     expect(existsSync(path.join(lean.dir, ".dochaus", "lean", "state.json"))).toBe(true)
+    expect(existsSync(path.join(lean.dir, ".dochaus", "lean", "working-draft.md"))).toBe(false)
     expect(await (await request(`/matters/${lean.id}/drafting-status`)).json()).toMatchObject({ profile: "lean", owner_session_id: "ses_stand_in_1" })
 
     const other = await createMatter("Named profiles")
@@ -85,6 +86,16 @@ test("drafting start without a profile runs lean; a legacy profile is refused; a
     const archived = readdirSync(path.join(finished.dir, ".dochaus", "lean-archive"))
     expect(archived).toHaveLength(1)
     expect(await readFile(path.join(finished.dir, ".dochaus", "lean-archive", archived[0]!, "request.md"), "utf8")).toBe("Draft the first note.\n")
+
+    // An upgraded quick draft rides along as the run's working draft, apart
+    // from the request; a working draft that is not text is refused.
+    const upgraded = await createMatter("Upgraded quick draft")
+    const quick = { ...start, workingDraft: "Dear client,\r\n\r\nThe two invoices remain unpaid.\n" }
+    expect((await request(`/matters/${upgraded.id}/drafting-runs/start`, json({ ...quick, workingDraft: 7 }))).status).toBe(400)
+    expect(existsSync(path.join(upgraded.dir, ".dochaus", "lean"))).toBe(false)
+    expect((await request(`/matters/${upgraded.id}/drafting-runs/start`, json(quick))).status).toBe(200)
+    expect(await readFile(path.join(upgraded.dir, ".dochaus", "lean", "request.md"), "utf8")).toBe(`${start.request}\n`)
+    expect(await readFile(path.join(upgraded.dir, ".dochaus", "lean", "working-draft.md"), "utf8")).toBe("Dear client,\n\nThe two invoices remain unpaid.\n")
 
     const open = await createMatter("Blocked lean run")
     previousRun(open.dir, "blocked")

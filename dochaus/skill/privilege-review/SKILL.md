@@ -33,9 +33,10 @@ leaves the workspace, walk every item:
 - **Quoting and summarizing** — reproducing the substance of privileged advice
   in a new document extends the privilege question to that document, and
   disclosing it can waive privilege over the underlying advice (subject-matter waiver).
-- **Markings** — privileged material must be labeled `Privileged & Confidential
-  — Attorney-Client Communication` or `Attorney Work Product`; a label does not
-  create privilege, but its absence invites accidental disclosure.
+- **Markings** — check whether privileged material carries the firm's marking;
+  a label does not create privilege, but its absence invites accidental
+  disclosure. A legend is the firm's own text, which doc.haus applies from the
+  firm's settings: never write one into a draft.
 - **Clawback** — if production is governed by a protective order or a
   clawback/non-waiver agreement (FRE 502(d)/(e) or the local equivalent),
   confirm it covers this disclosure before relying on it.

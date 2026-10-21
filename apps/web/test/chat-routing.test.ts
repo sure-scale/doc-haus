@@ -569,6 +569,19 @@ describe("provider errors", () => {
     expect(prompts).toEqual(["opencode-go/small", "opencode-go/primary"])
   })
 
+  test("Auto returns the draft route with its closed scope on the first model", async () => {
+    const scope = { documents: "one", legal_effect: "no", outside_law: "no", firm_material: "no", sources: "few" } as const
+    const { client, prompts } = routerClient({ text: JSON.stringify({ route: "draft", ...scope }) })
+    expect(await route(client)).toEqual({ name: "draft", scope })
+    expect(prompts).toEqual(["opencode-go/small"])
+  })
+
+  test("Auto no longer reads a candidate name out of prose: both models miss and the lawyer is told", async () => {
+    const { client, prompts } = routerClient({ text: "The best candidate is draft." })
+    await expect(route(client)).rejects.toThrow("Auto could not choose an assistant.")
+    expect(prompts).toEqual(["opencode-go/small", "opencode-go/primary"])
+  })
+
   test("Auto keeps the could-not-choose message for an empty router reply", async () => {
     const { client } = routerClient({ text: "" })
     await expect(route(client)).rejects.toThrow(

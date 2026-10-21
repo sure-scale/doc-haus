@@ -20,12 +20,23 @@ import { boundLargeToolOutput } from "./tool-output"
 // The plugin instance is matter-scoped through x-opencode-directory, so every
 // hook and extracted policy receives the same active matter directory.
 
+const pendingConflicts = (owner: string | undefined) =>
+  `This matter's conflicts check is recorded as pending, owned by ${owner}. ` +
+  `Document edits and drafts are blocked until the check is cleared or a documented ` +
+  `bypass is recorded. POST /matters/:id/conflicts on the ingest service records the outcome.`
+
 export const LegalPlugin: LegalPolicy = async (input) => {
   // Captured here because hook parameters shadow the plugin input: the
   // tool.execute.* hooks receive { tool, sessionID, callID } with no directory.
   const directory = input.directory
   return {
     "chat.params": async (input, output) => {
+      // Quick draft writes a document in its answer, with no drafting tool for
+      // the conflicts gate below to stop, so a pending check stops the agent.
+      if (input.agent === "quick-draft") {
+        const conflicts = readMatterConflicts(directory)
+        if (conflicts?.status === "pending") throw new Error(pendingConflicts(conflicts.owner))
+      }
       const activeModel = modelID(input.model)
       recordSessionAgent(input.sessionID, input.agent)
       recordTelemetrySession(input.sessionID, { directory, agent: input.agent, model: `${input.model.providerID}/${activeModel}` })
@@ -164,12 +175,7 @@ export const LegalPlugin: LegalPolicy = async (input) => {
         // requires reading the matter.
         if (["redline", "tracked-changes", "word-integration", "draft-document"].includes(input.tool)) {
           const conflicts = readMatterConflicts(directory)
-          if (conflicts?.status === "pending")
-            throw new Error(
-              `This matter's conflicts check is recorded as pending, owned by ${conflicts.owner}. ` +
-                `Document edits and drafts are blocked until the check is cleared or a documented ` +
-                `bypass is recorded. POST /matters/:id/conflicts on the ingest service records the outcome.`,
-            )
+          if (conflicts?.status === "pending") throw new Error(pendingConflicts(conflicts.owner))
         }
         if (input.tool === "python_run_python_code") {
           const pyCode = String(output.args.python_code ?? output.args.code ?? "")

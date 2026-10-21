@@ -4,9 +4,17 @@ import { useEffect, useRef, useState, type MutableRefObject } from "react"
 import { boundedRequest, type Client } from "../../api/opencode/client"
 import QuestionDockShell from "./QuestionDockShell"
 import { ModalClose } from "../ModalHeader"
+import { routeChoice, routeRequest, type DraftChoice } from "./quick-draft"
 
 type PendingForm = Awaited<ReturnType<Client["session"]["form"]["list"]>>[number]
 type Answer = Parameters<Client["session"]["form"]["reply"]>[0]["answer"]
+
+// A field's own default stands until the lawyer changes it.
+function defaults(form: PendingForm): Answer {
+  return Object.fromEntries(
+    form.fields.flatMap((field) => ("default" in field && field.default !== undefined ? [[field.key, field.default]] : [])),
+  )
+}
 
 export default function SessionQuestions({
   client,
@@ -15,6 +23,9 @@ export default function SessionQuestions({
   refreshRef,
   directory,
   matterId,
+  onRoute,
+  onRouteDismissed,
+  onRoutePending,
 }: {
   client: Client
   sessionRef: MutableRefObject<string>
@@ -22,6 +33,12 @@ export default function SessionQuestions({
   refreshRef: MutableRefObject<() => void>
   directory: string
   matterId: string
+  // A route form (the quick-draft offer) carries a request, not a question for
+  // a model. The engine only records its answer; the chat dispatches it here,
+  // once the reply has settled, and takes the request back on Cancel.
+  onRoute?: (request: string, choice: DraftChoice) => void
+  onRouteDismissed?: (request: string) => void
+  onRoutePending?: (request: string | undefined) => void
 }) {
   const [forms, setForms] = useState<PendingForm[]>([])
   const [error, setError] = useState("")
@@ -40,8 +57,11 @@ export default function SessionQuestions({
       const next = await boundedRequest(client.session.form.list({ sessionID }), 5000, "Questions load")
       if (owner.current !== sessionID) return
       const questions = next.filter((form) => form.metadata?.kind === "question")
+      const routes = next.filter((form) => routeRequest(form) !== undefined)
+      // Only a model's question holds a running turn open.
       pendingRef.current = questions.length
-      setForms(questions)
+      setForms([...routes, ...questions])
+      onRoutePending?.(routes[0] && routeRequest(routes[0]))
       setError("")
     } catch (error) {
       if (owner.current === sessionID) setError(error instanceof Error ? error.message : "Could not load questions.")
@@ -57,6 +77,7 @@ export default function SessionQuestions({
         owner.current = sessionRef.current
         pendingRef.current = 0
         setForms([])
+        onRoutePending?.(undefined)
         setError("")
         setReplyError("")
         setBusy(false)
@@ -79,23 +100,28 @@ export default function SessionQuestions({
   async function settle(form: PendingForm, dismiss = false) {
     setBusy(true)
     setReplyError("")
+    const request = routeRequest(form)
+    const answer = Object.fromEntries(
+      Object.entries({ ...defaults(form), ...answers[form.id] }).map(([key, value]) => [
+        key,
+        Array.isArray(value) ? value.filter((item) => item.trim()) : value,
+      ]),
+    )
     try {
       if (dismiss) await client.session.form.cancel({ sessionID: form.sessionID, formID: form.id })
-      if (!dismiss)
-        await client.session.form.reply({
-          sessionID: form.sessionID,
-          formID: form.id,
-          answer: Object.fromEntries(
-            Object.entries(answers[form.id] ?? {}).map(([key, value]) => [
-              key,
-              Array.isArray(value) ? value.filter((item) => item.trim()) : value,
-            ]),
-          ),
-        })
+      if (!dismiss) await client.session.form.reply({ sessionID: form.sessionID, formID: form.id, answer })
       if (owner.current !== form.sessionID) return
       drafts.set(form.id, undefined)
       setForms((previous) => previous.filter((row) => row.id !== form.id))
-      pendingRef.current = Math.max(0, pendingRef.current - 1)
+      if (request === undefined) pendingRef.current = Math.max(0, pendingRef.current - 1)
+      else {
+        onRoutePending?.(undefined)
+        // Dispatched only after the engine settled this answer: a form that
+        // was already answered elsewhere fails above and starts nothing.
+        const choice = routeChoice(answer)
+        if (dismiss) onRouteDismissed?.(request)
+        else if (choice) onRoute?.(request, choice)
+      }
       await sync()
     } catch {
       if (owner.current !== form.sessionID) return
@@ -116,7 +142,7 @@ export default function SessionQuestions({
       </div>
     ) : null
   const fields = form.fields.filter((field) => field.type === "string" || field.type === "multiselect")
-  const answer = answers[form.id] ?? {}
+  const answer = { ...defaults(form), ...answers[form.id] }
   const update = (key: string, value: string | string[]) =>
     drafts.set(form.id, { ...answers[form.id], [key]: value })
   const values = (key: string) => (Array.isArray(answer[key]) ? (answer[key] as string[]) : [])
@@ -125,6 +151,45 @@ export default function SessionQuestions({
       ? values(field.key).some((value) => value.trim())
       : String(answer[field.key] ?? "").trim().length > 0,
   )
+  const request = routeRequest(form)
+  if (request !== undefined) {
+    const field = fields[0]
+    return (
+      <section className="question-card route-offer" key={form.id} aria-labelledby={`${form.id}-title`}>
+        <h2 id={`${form.id}-title`} className="question-label">
+          {field?.title ?? form.title}
+        </h2>
+        <div role="radiogroup" aria-labelledby={`${form.id}-title`}>
+          {field?.options?.map((option) => (
+            <label className="question-label" key={option.value}>
+              <input
+                type="radio"
+                name={`${form.id}-${field.key}`}
+                checked={answer[field.key] === option.value}
+                disabled={busy || !drafts.loaded}
+                onChange={() => update(field.key, option.value)}
+              />{" "}
+              {option.label}
+              {option.description && <span className="question-context"> — {option.description}</span>}
+            </label>
+          ))}
+        </div>
+        {(replyError || error) && (
+          <div className="msg-error" role="alert">
+            {replyError || error}
+          </div>
+        )}
+        <div className="question-actions">
+          <button type="button" className="icon-btn" disabled={busy || !drafts.loaded} onClick={() => void settle(form, true)}>
+            Cancel
+          </button>
+          <button type="button" className="primary" disabled={busy || !drafts.loaded || !complete} onClick={() => void settle(form)}>
+            {busy ? "Starting…" : "Start"}
+          </button>
+        </div>
+      </section>
+    )
+  }
   return (
     <QuestionDockShell
       key={form.id}

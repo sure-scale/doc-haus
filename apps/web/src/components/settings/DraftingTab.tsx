@@ -129,6 +129,16 @@ export default function DraftingTab({ onSaved }: { onSaved: (text: string) => vo
               onChange={(e) => set({ houseStyle: e.target.value })}
             />
           </FieldRow>
+          <SegRow
+            label="Quick drafts in chat"
+            hint="When Auto sees a short request a quick draft can serve, ask before starting a full drafting run."
+            value={prefs.quickDraftOffer}
+            onChange={(quickDraftOffer) => set({ quickDraftOffer: quickDraftOffer as DraftingPreferences["quickDraftOffer"] })}
+            options={[
+              { value: "ask", label: "Ask" },
+              { value: "off", label: "Off" },
+            ]}
+          />
         </fieldset>
       </section>
       <section className="settings-section">
