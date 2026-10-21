@@ -95,7 +95,8 @@ describe("template coverage in a lean run", () => {
 
     expect(state.status).toBe("completed")
     expect(model.count(AGENT.draft)).toBe(1 + 5)
-    expect(drafted.markdown).toBe(`${REFERENCED}\n`)
+    // The outline's part labels are not printed.
+    expect(drafted.markdown).toBe(`${REFERENCED.replace(/^## .+\n\n/gm, "")}\n`)
     expect(readFileSync(leanFile(directory, "d1/draft.md"), "utf8")).toBe(drafted.markdown!)
     expect(readFileSync(leanFile(directory, "d1/body.docx")).equals(drafted.body!)).toBe(true)
     const gaps = readOpenItems(directory).filter(item => item.stage === "draft" && item.kind === "omission")

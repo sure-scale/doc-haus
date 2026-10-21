@@ -273,7 +273,7 @@ describe("who executes each planned document", () => {
   test("a missing Executed by line is no issue and leaves the plan as before", () => {
     expect(parsePlan(outline(""), "Approve the schedule.")).toStrictEqual({
       issues: [],
-      value: { documents: [{ title: "Resolution", purpose: "Records the approval.", parts: [{ heading: "Approval", scope: "The approval." }], form: "other" }], acting_for: NOT_STATED },
+      value: { documents: [{ title: "Resolution", purpose: "Records the approval.", parts: [{ heading: "Approval", scope: "The approval.", display_heading: "" }], form: "other" }], acting_for: NOT_STATED },
     })
   })
 

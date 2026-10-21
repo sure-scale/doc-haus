@@ -6,12 +6,12 @@ import path from "node:path"
 import { strFromU8, unzipSync } from "fflate"
 import { paragraphSha256 } from "../../lib/drafting-amendment"
 import { readParagraphs } from "./checks"
-import { checkSection, runDraftStage } from "./draft-sections"
+import { assembleDraft, checkSection, runDraftStage, sectionPrompt } from "./draft-sections"
 import { readLeanEvents } from "./events"
 import { NOT_STATED, leanPlanIssue, operativeDocument, parsePlan, readLeanPlan, writeLeanPlan, type PlannedDocument } from "./plan"
 import { stagePrompt } from "./prompts"
 import { stageInputSha } from "./runner"
-import { acceptStageReply, LEAN_MAX_RETRIES, LEAN_STAGE_AGENTS, type StageSessionPort } from "./stages"
+import { acceptStageReply, LEAN_MAX_RETRIES, LEAN_STAGE_AGENTS, outlineBasis, type StageSessionPort } from "./stages"
 import { initLeanState, leanFile, updateLeanStage, writeLeanState, writeLeanText, type LeanState } from "./state"
 import { rowsBody } from "./template-coverage"
 
@@ -77,17 +77,58 @@ function furnitureLines(parts: Record<string, Uint8Array>) {
     .map(([, kind, type, id]) => [`${kind}:${type}`, lines(strFromU8(parts[`word/${target(id!)}`]!))]))
 }
 
+/** The rendered body's paragraphs: text, heading style and the spacing before it. */
+function styledParagraphs(directory: string) {
+  const body = strFromU8(unzipSync(new Uint8Array(readFileSync(leanFile(directory, "d1/body.docx"))))["word/document.xml"]!)
+  return [...body.matchAll(/<w:p\b[\s\S]*?<\/w:p>/g)].map(([xml]) => [
+    [...xml.matchAll(/<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>/g)].map(match => match[1]).join(""),
+    /<w:pStyle w:val="([^"]+)"/.exec(xml)?.[1], /<w:spacing w:before="(\d+)"/.exec(xml)?.[1],
+  ])
+}
+
 // A notice letter whose text uses headings.
 const OUTLINE = "Acting for: not stated\n# Notice letter\nForm: letter\nHeadings: shown\n## Background\nWhat happened.\n## Notice\nThe notice itself.\n## Next steps\nWhat follows."
 
 describe("sectioned draft stage", () => {
-  test("a presentation failure returns render feedback through the normal stage path", async () => {
+  test("a part boundary the Word body does not show is presented without it; the draft is not failed for it", async () => {
     const { directory } = matter()
     const source = "# Letter\n\n## Opening\n\nText."
     expect((await acceptStageReply(directory, "d1.draft", source)).issues).toEqual([])
-    const rejected = await acceptStageReply(directory, "d1.draft", source, { presentation: { source, parts: [{ heading: "Missing boundary", display_heading: "" }] } })
-    expect(rejected.issues).toEqual([expect.stringContaining("Rendered draft does not contain all planned part boundaries in order")])
-    expect(rejected.outputs).toEqual([])
+    const accepted = await acceptStageReply(directory, "d1.draft", source,
+      { presentation: { source, parts: [{ heading: "Opening", display_heading: "", part: 0 }, { heading: "Missing boundary", display_heading: "", part: 1 }] } })
+    expect(accepted.issues).toEqual([])
+    expect(readParagraphs(directory, "d1").map(row => [row.text, row.draft_part, row.draft_heading])).toEqual([["Letter", null, true], ["Text.", 0, false]])
+  }, 60_000)
+
+  test("part labels whose rendered heading reads differently from their Markdown are still found, left out and attributed", async () => {
+    const { directory, state } = matter()
+    const labels = ["Fees*", "Recitals ~~old~~", "Execution page <!-- note -->"]
+    const outline = `Acting for: not stated\n# Deed\nForm: other\n${labels.map(label => `## ${label}\nWhat it covers.`).join("\n")}`
+    const model = scripted((text, index) => {
+      if (index === 0) return outline
+      const at = labels.findIndex((_, part) => text.includes(`part ${part + 1} of 3`))
+      return `## ${labels[at]}\n\n### ${at + 1}. Clause\n\nText ${at + 1}.`
+    })
+    const result = await runDraftStage(directory, state, { sessions: model.sessions }, () => {}, "d1", () => {})
+    expect(result.status).toBe("done")
+    expect(readParagraphs(directory, "d1").map(row => [row.text, row.draft_part, row.draft_heading])).toEqual([
+      ["Deed", null, true], ["1. Clause", 0, false], ["Text 1.", 0, false], ["2. Clause", 1, false], ["Text 2.", 1, false], ["3. Clause", 2, false], ["Text 3.", 2, false],
+    ])
+    expect(readLeanEvents(directory).filter(event => event.step === "presentation")).toEqual([])
+  }, 60_000)
+
+  test("a part label the Word body does not render as a heading leaves the label as rendered, counts its text with the part before, and is recorded", async () => {
+    const { directory, state } = matter()
+    const outline = "Acting for: not stated\n# Deed\nForm: other\n## Background\nWhat happened.\n## ---\nWhat follows."
+    const model = scripted((text, index) => index === 0 ? outline : text.includes("part 1 of 2") ? "## Background\n\nThe parties met." : "## ---\n\nThe deed follows.")
+    const result = await runDraftStage(directory, state, { sessions: model.sessions }, () => {}, "d1", () => {})
+    expect(result.status).toBe("done")
+    const rows = readParagraphs(directory, "d1")
+    expect(rows.find(row => row.text === "The deed follows.")?.draft_part).toBe(0)
+    expect(rows.some(row => row.draft_part === 1)).toBe(false)
+    expect(readLeanEvents(directory).filter(event => event.step === "presentation").map(event => [event.event, event.issues])).toEqual([["checker", [
+      'The Word body could not place the part "---": its label stays as rendered, and its paragraphs count with the part before it when the draft is checked against a template.',
+    ]]])
   }, 60_000)
 
   test("explicit presentation changes headings without losing repeated paragraphs, tables or part attribution", async () => {
@@ -129,6 +170,87 @@ describe("sectioned draft stage", () => {
     expect(rowsBody(plan, rows, final).partOf).toEqual(measured.partOf)
     expect(model.prompts).toHaveLength(4)
     expect(model.prompts[1]!.text).toContain("the renderer omits it")
+  }, 60_000)
+
+  test("a new outline keeps part labels internal: the drafter's own headings stand alone, the title prints once, and the text stays attributed to its parts", async () => {
+    const { directory, state } = matter()
+    const outline = "Acting for: not stated\n# Rent Deposit Deed\nForm: other\n## Parties and recitals\nWho gives the deed.\n## Deposit and interest\nHow the deposit is held."
+    const model = scripted((text, index) => {
+      if (index === 0) return outline
+      if (text.includes("part 1 of 2")) return "## Parties and recitals\n\n**RENT DEPOSIT DEED**\n\n**1. Parties**\n\n1.1 The landlord and the tenant."
+      if (text.startsWith("Your reply did not pass the draft checks:")) return "## Parties and recitals\n\n**1. Parties**\n\n1.1 The landlord and the tenant."
+      return "## Deposit and interest\n\n**2. Deposit and interest**\n\n2.1 Text."
+    })
+    const result = await runDraftStage(directory, state, { sessions: model.sessions }, () => {}, "d1", () => {})
+    expect(result.status).toBe("done")
+    const plan = readLeanPlan(directory)!.documents[0]!
+    expect(plan.parts.map(part => part.display_heading)).toEqual(["", ""])
+    expect(model.prompts[1]!.text).toContain("That first line is an internal part label; the renderer omits it. Write the headings the document itself needs")
+    expect(model.prompts[2]!.text).toContain('The part opens with the document title "Rent Deposit Deed".')
+    expect(readFileSync(leanFile(directory, "d1/draft.md"), "utf8")).toBe("# Rent Deposit Deed\n\n**1. Parties**\n\n1.1 The landlord and the tenant.\n\n**2. Deposit and interest**\n\n2.1 Text.\n")
+    const rows = readParagraphs(directory, "d1")
+    expect(rows.map(row => [row.text, row.draft_part, row.draft_heading])).toEqual([
+      ["Rent Deposit Deed", null, true],
+      ["1. Parties", 0, false], ["1.1 The landlord and the tenant.", 0, false],
+      ["2. Deposit and interest", 1, false], ["2.1 Text.", 1, false],
+    ])
+    expect(rowsBody(plan, rows).partOf).toEqual([undefined, 0, 0, 1, 1])
+  }, 60_000)
+
+  test("a part whose label is not printed has its own headings one level up in the Markdown and the Word body; a part with a printed heading keeps its levels", async () => {
+    const { directory, state } = matter()
+    const outline = "Acting for: not stated\n# Supply Agreement\nForm: agreement\n## Parties\nWho is bound.\n## Goods\nDisplay heading: Schedule\nWhat is supplied."
+    const model = scripted((text, index) => {
+      if (index === 0) return outline
+      if (text.includes("part 1 of 2")) return "## Parties\n\n### 1. Parties\n\n1.1 The supplier and the buyer.\n\n#### 1.2 Definitions\n\nWords have their defined meanings."
+      return "## Goods\n\n### Goods supplied\n\nThe goods in the order."
+    })
+    const result = await runDraftStage(directory, state, { sessions: model.sessions }, () => {}, "d1", () => {})
+    expect(result.status).toBe("done")
+    expect(readFileSync(leanFile(directory, "d1/draft.md"), "utf8")).toBe("# Supply Agreement\n\n## 1. Parties\n\n1.1 The supplier and the buyer.\n\n" +
+      "### 1.2 Definitions\n\nWords have their defined meanings.\n\n## Schedule\n\n### Goods supplied\n\nThe goods in the order.\n")
+    // Text, heading style and the spacing rendering gives that style.
+    expect(styledParagraphs(directory)).toEqual([
+      ["Supply Agreement", "Heading1", "320"],
+      ["1. Parties", "Heading2", "280"], ["1.1 The supplier and the buyer.", undefined, undefined],
+      ["1.2 Definitions", "Heading3", "220"], ["Words have their defined meanings.", undefined, undefined],
+      ["Schedule", "Heading2", "280"], ["Goods supplied", "Heading3", "220"], ["The goods in the order.", undefined, undefined],
+    ])
+    expect(readParagraphs(directory, "d1").map(row => [row.text, row.draft_part, row.draft_heading])).toEqual([
+      ["Supply Agreement", null, true],
+      ["1. Parties", 0, false], ["1.1 The supplier and the buyer.", 0, false], ["1.2 Definitions", 0, false], ["Words have their defined meanings.", 0, false],
+      ["Schedule", 1, true], ["Goods supplied", 1, false], ["The goods in the order.", 1, false],
+    ])
+  }, 60_000)
+
+  test("a part whose label is not printed and whose headings start below \"### \" has its shallowest heading at the second level in the Markdown and the Word body", async () => {
+    const { directory, state } = matter()
+    const outline = "Acting for: not stated\n# Payment Demand\nForm: other\n## Demand\nWhat is demanded.\n## Terms\nThe terms."
+    const model = scripted((text, index) => {
+      if (index === 0) return outline
+      if (text.includes("part 1 of 2")) return "## Demand\n\n#### Demand for payment\n\nPay the sum due.\n\n##### Interest\n\nInterest runs daily."
+      return "## Terms\n\n### Terms\n\nThe terms apply."
+    })
+    const result = await runDraftStage(directory, state, { sessions: model.sessions }, () => {}, "d1", () => {})
+    expect(result.status).toBe("done")
+    expect(readFileSync(leanFile(directory, "d1/draft.md"), "utf8")).toBe("# Payment Demand\n\n## Demand for payment\n\nPay the sum due.\n\n### Interest\n\nInterest runs daily.\n\n## Terms\n\nThe terms apply.\n")
+    expect(styledParagraphs(directory)).toEqual([
+      ["Payment Demand", "Heading1", "320"],
+      ["Demand for payment", "Heading2", "280"], ["Pay the sum due.", undefined, undefined],
+      ["Interest", "Heading3", "220"], ["Interest runs daily.", undefined, undefined],
+      ["Terms", "Heading2", "280"], ["The terms apply.", undefined, undefined],
+    ])
+  }, 60_000)
+
+  test("a plan saved before labels were planned unheaded keeps them as visible headings and tells the drafter so", async () => {
+    const { directory, state } = matter()
+    writeLeanPlan(directory, [{ title: "Notice letter", purpose: "", parts: [{ heading: "Background", scope: "" }, { heading: "Notice", scope: "" }] }], outlineBasis(directory), NOT_STATED)
+    const model = scripted(text => text.includes("part 1 of 2") ? "## Background\n\nThe parties signed the terms." : "## Notice\n\nNotice is given in writing.")
+    const result = await runDraftStage(directory, state, { sessions: model.sessions }, () => {}, "d1", () => {})
+    expect(result.status).toBe("done")
+    expect(model.prompts[0]!.text).toContain("The renderer prints that first line as the part's heading. Do not repeat it in the body.")
+    expect(readFileSync(leanFile(directory, "d1/draft.md"), "utf8")).toBe("# Notice letter\n\n## Background\n\nThe parties signed the terms.\n\n## Notice\n\nNotice is given in writing.\n")
+    expect(readParagraphs(directory, "d1").map(row => row.text)).toEqual(["Notice letter", "Background", "The parties signed the terms.", "Notice", "Notice is given in writing."])
   }, 60_000)
 
   test("each section gets current decisions and dependency scopes without repeating the evidence bundle", async () => {
@@ -214,12 +336,12 @@ describe("sectioned draft stage", () => {
     expect(parsePlan("# Title\n## Terms\n## terms").issues.join(" ")).toContain("appear more than once")
     expect(parsePlan("# Title\n## One\n# title\n## Two").issues.join(" ")).toContain("document titles appear more than once")
     expect(parsePlan("Acting for: not stated\n# Title ##\nForm: other\n## One\n- covers the start\n## Two").value?.documents)
-      .toEqual([{ title: "Title", purpose: "", parts: [{ heading: "One", scope: "covers the start" }, { heading: "Two", scope: "" }], form: "other" }])
+      .toEqual([{ title: "Title", purpose: "", parts: [{ heading: "One", scope: "covers the start", display_heading: "" }, { heading: "Two", scope: "", display_heading: "" }], form: "other" }])
     // Several documents: each "# " starts one, its plain lines before the first
     // part are its purpose, and the same part heading may recur across documents.
     expect(parsePlan("Acting for: not stated\n# First\nWhat the first is for.\nForm: agreement\n## Terms\n# Second\nForm: advice\n## Terms\nCovers terms.").value?.documents).toEqual([
-      { title: "First", purpose: "What the first is for.", parts: [{ heading: "Terms", scope: "" }], form: "agreement" },
-      { title: "Second", purpose: "", parts: [{ heading: "Terms", scope: "Covers terms." }], form: "advice" },
+      { title: "First", purpose: "What the first is for.", parts: [{ heading: "Terms", scope: "", display_heading: "" }], form: "agreement" },
+      { title: "Second", purpose: "", parts: [{ heading: "Terms", scope: "Covers terms.", display_heading: "" }], form: "advice" },
     ])
   })
 
@@ -273,6 +395,65 @@ describe("sectioned draft stage", () => {
     expect(checkSection("## One\n\nText.\n\n# T", outline, 0).issues[0]).toContain("\"# \" title line")
     expect(checkSection("", outline, 1).issues[0]).toContain("The reply was empty")
   })
+
+  test("the part that opens the document is retried for an opening line repeating the printed title, naming the line; a later part, or a mention, keeps it", () => {
+    const deed = { title: "Rent Deposit Deed", form: "other" as const, parts: [{ heading: "One", scope: "", display_heading: "" }, { heading: "Two", scope: "", display_heading: "" }] }
+    const issue = (line: string) => `The part opens with the document title "Rent Deposit Deed". The title is printed once at the top of the document: keep the "## " line first and remove the line "${line}" after it.`
+    for (const [reply, line] of [["## One\n\n**RENT DEPOSIT DEED**\n\nThis deed is made on [date].", "**RENT DEPOSIT DEED**"], ["**Rent deposit deed.**\n\nText.", "**Rent deposit deed.**"], ["## One\n\n### _Rent  Deposit_ `Deed`\n\nText.", "### _Rent  Deposit_ `Deed`"]])
+      expect(checkSection(reply!, deed, 0).issues).toEqual([issue(line!)])
+    expect(checkSection("## One\n\n**RENT DEPOSIT DEED**", deed, 0).issues).toEqual([issue("**RENT DEPOSIT DEED**"), 'The part "One" has no text under its heading.'])
+    expect(checkSection("## One\n\nThis Rent Deposit Deed is made on [date].", deed, 0)).toEqual({ issues: [], value: "## One\n\nThis Rent Deposit Deed is made on [date]." })
+    expect(checkSection("## One\n\n**1. Parties**\n\nText.\n\n**RENT DEPOSIT DEED**\n\nSigned as a deed.", deed, 0).issues).toEqual([])
+    // On the last attempt the repeated title is left out rather than failing the stage.
+    expect(checkSection("## One\n\n**RENT DEPOSIT DEED**\n\nText.", deed, 0, true)).toEqual({ issues: [issue("**RENT DEPOSIT DEED**")], value: "## One\n\nText." })
+    // After a cover sheet the deed itself may restate its title.
+    expect(checkSection("## Two\n\nRENT DEPOSIT DEED\n\nTHIS DEED is dated [date].", deed, 1)).toEqual({ issues: [], value: "## Two\n\nRENT DEPOSIT DEED\n\nTHIS DEED is dated [date]." })
+    // A letter's planned title is not printed, so its text may open with it.
+    for (const form of ["letter", "advice letter"] as const)
+      expect(checkSection("## One\n\n**Rent Deposit Deed**\n\nWe write about the deposit.", { ...deed, form }, 0)).toEqual({ issues: [], value: "## One\n\n**Rent Deposit Deed**\n\nWe write about the deposit." })
+  })
+
+  test("a part that opens by repeating the heading printed for it is retried, naming the line, and on the last attempt kept without it", () => {
+    const outline = { title: "Rent Deposit Deed", parts: [
+      { heading: "Parties", scope: "", display_heading: "" }, { heading: "Deposit and interest", scope: "", display_heading: "2. Deposit and interest" }] }
+    const reply = "## Deposit and interest\n\n**2. Deposit and interest**\n\n2.1 The deposit is held in a separate account."
+    const issue = 'The part opens with its heading "2. Deposit and interest", which is printed from its "## " line: keep the "## " line first and remove the line "**2. Deposit and interest**" after it.'
+    expect(checkSection(reply, outline, 1)).toEqual({ issues: [issue] })
+    expect(checkSection(reply, outline, 1, true)).toEqual({ issues: [issue], value: "## Deposit and interest\n\n2.1 The deposit is held in a separate account." })
+    expect(checkSection("## Deposit and interest\n\n2.1 The deposit of the 2. Deposit and interest clause.", outline, 1).issues).toEqual([])
+    // A label printed as the part's heading: a plan saved before labels were unheaded, or headings shown.
+    const shown = { title: "Notice letter", parts: [{ heading: "Background", scope: "" }, { heading: "Notice", scope: "" }] }
+    expect(checkSection("## Notice\n\n### Notice\n\nNotice is given.", shown, 1).issues)
+      .toEqual(['The part opens with its heading "Notice", which is printed from its "## " line: keep the "## " line first and remove the line "### Notice" after it.'])
+    // A part whose label is not printed opens with its own heading.
+    expect(checkSection("## Parties\n\n### Parties\n\nThe landlord and the tenant.", outline, 0).issues).toEqual([])
+  })
+
+  test("a part whose label is not printed is told to write its document's headings, following its source's unless changed; a letter's is told to write none", () => {
+    const outline = { title: "Services agreement", form: "agreement" as const, parts: [{ heading: "Scope", scope: "", display_heading: "" }, { heading: "Duration", scope: "", display_heading: "" }] }
+    const prompt = sectionPrompt(outline, 1, { source: "template.docx", parts: ["4 Duration"], left: ["3 Service Credits"] })
+    expect(prompt).toContain('Write the headings the document itself needs in the part\'s text, in its own style, following the heading text and hierarchy of the template "template.docx" except where the outline or the instructions change them.')
+    expect(prompt).toContain("Keep defined terms, numbering and cross-references consistent with the outline, the instructions and the parts already drafted.")
+    expect(prompt.match(/numbering/g)).toHaveLength(1)
+    expect(sectionPrompt({ ...outline, mode: "revise" }, 0)).toContain("following the heading text and hierarchy of the original except where the outline or the instructions change them.")
+    expect(sectionPrompt(outline, 0)).toContain("Write the headings the document itself needs in the part's text, in its own style.\n")
+    const letter = sectionPrompt({ ...outline, form: "letter" }, 0)
+    expect(letter).toContain("That first line is an internal part label; the renderer omits it. Begin the body with the document text itself, without a replacement heading.")
+    expect(letter).not.toContain("Write the headings")
+  })
+
+  test("assembly prints a part label only where the plan keeps it; a part without a printed heading moves its own headings up to the second level", () => {
+    const parts = ["## One\n\n### 1. One\n\nText.\n\n#### 1.1 Detail\n\nMore.", "## Two\n\n### Sub\n\nMore."]
+    const outline = { title: "T", parts: [{ heading: "One", scope: "" }, { heading: "Two", scope: "", display_heading: "Second" }] }
+    expect(assembleDraft(outline, parts)).toBe("# T\n\n## One\n\n### 1. One\n\nText.\n\n#### 1.1 Detail\n\nMore.\n\n## Second\n\n### Sub\n\nMore.\n")
+    const unheaded = { ...outline, parts: [{ ...outline.parts[0]!, display_heading: "" }, outline.parts[1]!] }
+    expect(assembleDraft(unheaded, parts)).toBe("# T\n\n## 1. One\n\nText.\n\n### 1.1 Detail\n\nMore.\n\n## Second\n\n### Sub\n\nMore.\n")
+    expect(assembleDraft(unheaded, parts, false)).toBe(`# T\n\n${parts.join("\n\n")}\n`)
+    // The part's shallowest heading becomes a second-level heading, keeping the depth below it; a part with none is unchanged.
+    expect(assembleDraft(unheaded, ["## One\n\n#### 1. One\n\nText.\n\n###### 1.1 Detail\n\nMore.", "## Two\n\nPlain."]))
+      .toBe("# T\n\n## 1. One\n\nText.\n\n#### 1.1 Detail\n\nMore.\n\n## Second\n\nPlain.\n")
+    expect(assembleDraft(unheaded, ["## One\n\nPlain text.", "## Two\n\nMore."])).toBe("# T\n\nPlain text.\n\n## Second\n\nMore.\n")
+  })
 })
 
 // Each planned document's form, from its "Form:" line: page furniture follows
@@ -282,12 +463,15 @@ describe("a planned document's form", () => {
   const outline = (lines: string) => `Acting for: not stated\n# Notice letter\n${lines}\n## Opening\nWhy we write.\n## Terms\nDisplay heading: Terms of notice\nThe notice.\n## Closing\nDisplay heading: none\nWhat follows.`
   const shown = (lines: string) => parsePlan(outline(lines)).value?.documents[0]?.parts.map(part => part.display_heading)
 
-  test("the outline prompt asks for each document's form and says a letter's labels are unheaded unless shown", () => {
+  test("the outline prompt asks for each document's form and says labels are not printed, unless a letter shows them", () => {
     const prompt = stagePrompt(matter().directory, "d1.draft", { outline: true })
     expect(prompt).toContain('- Under each title write its form: "Form: agreement" for')
     expect(prompt).toContain('"Form: advice letter" for a letter giving the client legal advice, "Form: letter" for other correspondence addressed to a recipient')
     expect(prompt).toContain('otherwise "Form: other".')
-    expect(prompt).toContain('except in a letter, whose labels are not shown unless you write "Headings: shown" under its title')
+    expect(prompt).toContain("Each part's ## label identifies the drafting job and is not printed; the part's text carries the document's own headings in its style. " +
+      "To print a heading in a label's place, add Display heading: <publication heading> immediately under that label.")
+    expect(prompt).toContain('For a letter whose text uses headings, write "Headings: shown" under its title to print its labels as its headings.')
+    expect(prompt).toContain("print a heading they change as its part's Display heading.")
   })
 
   test("is read from one line under each title, ignoring case and list, bold or code marks, and an advice letter's hyphen or underscore", () => {
@@ -303,16 +487,16 @@ describe("a planned document's form", () => {
     // Under a part the line is that part's scope, not the document's form.
     const missing = parsePlan("Acting for: not stated\n# Notice letter\n## Opening\nForm: letter")
     expect(missing.issues).toEqual([`The document "Notice letter" has no "Form:" line. Under its title, before its first "## " part, write one of ${FORMS}.`])
-    expect(missing.value?.documents[0]).toEqual({ title: "Notice letter", purpose: "", parts: [{ heading: "Opening", scope: "Form: letter" }] })
+    expect(missing.value?.documents[0]).toEqual({ title: "Notice letter", purpose: "", parts: [{ heading: "Opening", scope: "Form: letter", display_heading: "" }] })
     expect(parsePlan(outline("Form:")).issues).toEqual([expect.stringContaining('The document "Notice letter" has no "Form:" line.')])
     const unknown = parsePlan(`${outline("Form: memo")}\n# Supply terms\nForm: agreement\n## Delivery`)
     expect(unknown.issues).toEqual([`The "Form:" line of "Notice letter" gives "memo", which is not one of the forms. Under its title, before its first "## " part, write one of ${FORMS}.`])
     expect(unknown.value?.documents.map(row => row.form)).toEqual([undefined, "agreement"])
-    // Without a form the parts keep their labels as headings, as before.
-    expect(unknown.value?.documents[0]?.parts.map(part => part.display_heading)).toEqual([undefined, "Terms of notice", ""])
+    // Without a form the parts are unheaded too.
+    expect(unknown.value?.documents[0]?.parts.map(part => part.display_heading)).toEqual(["", "Terms of notice", ""])
   })
 
-  test("a missing Form line is retried in the outline session; an outline that never gives one is saved without a form, its labels kept as headings", async () => {
+  test("a missing Form line is retried in the outline session; an outline that never gives one is saved without a form, its labels unheaded", async () => {
     const part = (text: string) => text.includes("part 1 of 3") ? "The parties signed the terms." : text.includes("part 2 of 3") ? "Notice is given." : "We will wait."
     const formless = OUTLINE.replace("Form: letter\nHeadings: shown\n", "")
     for (const [given, form] of [[1, "letter"], [4, undefined]] as const) {
@@ -321,15 +505,14 @@ describe("a planned document's form", () => {
       expect((await runDraftStage(directory, state, { sessions: model.sessions }, () => {}, "d1", () => {})).status).toBe("done")
       expect(model.prompts[1]!.text).toContain(`The document "Notice letter" has no "Form:" line. Under its title, before its first "## " part, write one of ${FORMS}.`)
       expect(readLeanPlan(directory)?.documents[0]?.form).toBe(form)
-      expect(readFileSync(leanFile(directory, "d1/draft.md"), "utf8").includes("## Background")).toBe(!form)
+      expect(readFileSync(leanFile(directory, "d1/draft.md"), "utf8").includes("Background")).toBe(false)
     }
   }, 60_000)
 
-  test("a letter's parts, advice letter or not, are unheaded unless the outline shows them; its own Display heading lines stand", () => {
-    for (const form of ["letter", "advice letter", "Advice-Letter"]) expect(shown(`Form: ${form}`)).toEqual(["", "Terms of notice", ""])
-    for (const lines of ["Form: letter\nHeadings: shown", "- **Headings:** Shown.\nForm: Letter", "Form: advice letter\nHeadings: shown"]) expect(shown(lines)).toEqual([undefined, "Terms of notice", ""])
-    // Other forms keep their labels as headings; the Headings line changes nothing for them.
-    for (const lines of ["Form: agreement", "Form: advice", "Form: other", "Form: agreement\nHeadings: shown"]) expect(shown(lines)).toEqual([undefined, "Terms of notice", ""])
+  test("every document's parts, of any form, are unheaded unless the outline shows them; its own Display heading lines stand", () => {
+    for (const form of ["letter", "advice letter", "Advice-Letter", "agreement", "advice", "other"]) expect(shown(`Form: ${form}`)).toEqual(["", "Terms of notice", ""])
+    for (const lines of ["Form: letter\nHeadings: shown", "- **Headings:** Shown.\nForm: Letter", "Form: advice letter\nHeadings: shown", "Form: agreement\nHeadings: shown"])
+      expect(shown(lines)).toEqual([undefined, "Terms of notice", ""])
   })
 
   test("an unheaded letter, advice letter or not, goes through the draft stage's presentation path and keeps no planning label or title as a heading", async () => {
