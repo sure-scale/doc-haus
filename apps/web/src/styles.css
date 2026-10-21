@@ -2200,6 +2200,19 @@ li.list-row {
   font-size: 12px;
 }
 
+/* A negative cell's one re-check: its outcome in the cell, the scope searched in
+   the tooltip and the detail view. */
+.review-recheck {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.review-recheck-detail {
+  color: var(--muted);
+  font-size: 13px;
+  margin: 0 0 12px;
+}
+
 /* Idle cells stay calm: Lock/Refresh appear on hover or focus. Comment counts,
    the locked state, and stale flags always show. */
 .review-cell-actions {
