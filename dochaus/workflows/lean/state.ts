@@ -148,8 +148,8 @@ export type Question = {
   /** The option picked or adopted, with answer_kind. */
   option_id?: string
   /** How the lawyer's own words answer the question, read once before any
-   * step reads them (answer-class.ts). A delegating answer to a question
-   * Decide for me could take is recorded as that adoption (classifiedAnswer). */
+   * step reads them (answer-class.ts). A delegating answer to a question the
+   * delegation settles is recorded as an adoption (classifiedAnswer). */
   answer_class?: AnswerClass
   /** The lawyer's own words of a delegating answer recorded as an adoption. */
   lawyer_words?: string
@@ -389,16 +389,10 @@ function recommendedOption(question: Question) {
   return advice && "recommendation" in advice ? questionOptions(question).find(option => option.id === advice.recommendation.option) : undefined
 }
 
-/** The option adopting `question`'s recommendation records: the recommended
- * option of a judgment or pure scope question. */
-function adoptableOption(question: Question) {
-  return question.kind === "judgment" || (question.kind === "scope" && !question.mixed) ? recommendedOption(question) : undefined
-}
-
 /** Whether the lawyer may adopt the question's recommendation: it is open, it is
  * a judgment or pure scope question, and its advice recommends an offered option. */
 export function delegable(question: Question) {
-  return question.status === "open" && adoptableOption(question) !== undefined
+  return question.status === "open" && (question.kind === "judgment" || (question.kind === "scope" && !question.mixed)) && recommendedOption(question) !== undefined
 }
 
 /** `target` answered in `form`, or the refusal: not_found, invalid_answer (empty
@@ -443,13 +437,21 @@ export function unclassifiedAnswer(question: Question) {
   return question.status === "answered" && typeof question.answer === "string" && !question.answer_kind && !question.answer_class
 }
 
+/** Whether words leaving `question` to the drafter's judgment settle it: a
+ * question Decide for me could take (judgment or pure scope), or an instruction
+ * question, whose instruction those words are. A fact, an approval (mixed scope)
+ * or which source governs (conflict) needs what only the lawyer can give. */
+export function delegationSettles(question: Question) {
+  return question.kind === "judgment" || question.kind === "instruction" || (question.kind === "scope" && !question.mixed)
+}
+
 /** `question`, answered in the lawyer's own words, with their class. A
- * delegating answer to a question Decide for me could take is recorded as
- * Decide for me records it (answerWith): the recommended option's words with
- * answer_kind "adopted", the lawyer's words kept beside them. Any other keeps
- * the lawyer's words. */
+ * delegating answer to a question the delegation settles, with a recommended
+ * option, is recorded as Decide for me records an adoption (answerWith): the
+ * recommended option's words with answer_kind "adopted", the lawyer's words
+ * kept beside them. Any other keeps the lawyer's words. */
 export function classifiedAnswer(question: Question, answerClass: AnswerClass): Question {
-  const option = answerClass === "delegated" ? adoptableOption(question) : undefined
+  const option = answerClass === "delegated" && delegationSettles(question) ? recommendedOption(question) : undefined
   return option
     ? { ...question, answer: option.text, answer_kind: "adopted", option_id: option.id, answer_class: answerClass, lawyer_words: question.answer }
     : { ...question, answer_class: answerClass }

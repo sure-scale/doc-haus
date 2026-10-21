@@ -11,7 +11,7 @@ import { REQUEST_SOURCE, matterSourceIDs } from "./quotes"
 import { readRepairRound, changesRepairSections } from "./repairs"
 import { MEMO_TARGET, REVIEW_FINDINGS_CONTRACT, findingsText, forwardedFindings, reviewText } from "./review-findings"
 import { disclosableItems } from "./stages"
-import { QUESTION_KIND_CONTRACT, isReviewStage, answeredQuestionsText, delegatedQuestions, questionOptions, readLeanJson, readLeanText, readQuestions, type OpenItem, type Question, type StageID } from "./state"
+import { QUESTION_KIND_CONTRACT, isReviewStage, answeredQuestionsText, delegatedQuestions, delegationSettles, questionOptions, readLeanJson, readLeanText, readQuestions, type OpenItem, type Question, type StageID } from "./state"
 import { plannedContract } from "./template-contract"
 
 // Prompts of the lean model steps. Each step's first prompt carries everything
@@ -338,7 +338,7 @@ function delegatedLines(question: Question) {
       ...questionOptions(question).filter(option => option.id !== question.option_id).map(option => `Alternative not taken: ${option.text}`)]
   }
   const why = question.answer_class === "declined" ? "the point stays open for the lawyer."
-    : question.kind !== "judgment" && !(question.kind === "scope" && !question.mixed) ? "it asks for a fact or an instruction that only the lawyer can give."
+    : !delegationSettles(question) ? "it needs a fact or an approval that only the lawyer can give."
     : advice && "unavailable" in advice ? `no option was supported: ${advice.unavailable.reason}`
     : "no checked recommendation is available."
   return [attribution, `No decision taken: ${why}`]

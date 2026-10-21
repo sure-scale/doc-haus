@@ -38,10 +38,12 @@ test("a delegating reply to a question the recommendation can settle is recorded
   expect(classifiedAnswer(answered(ASKED), "delegated")).toEqual({
     ...answered(ASKED), answer: RECOMMENDED, answer_kind: "adopted", option_id: "o1", answer_class: "delegated", lawyer_words: DELEGATION,
   })
-  // Pure scope as Decide for me takes it.
-  expect(classifiedAnswer(answered({ ...ASKED, kind: "scope" }), "delegated")).toMatchObject({ answer: RECOMMENDED, answer_kind: "adopted" })
-  // Nothing Decide for me could not adopt is adopted: the words stand, with their class.
-  for (const question of [{ ...ASKED, kind: "fact" as const }, { ...ASKED, kind: "instruction" as const }, { ...ASKED, kind: "scope" as const, mixed: true as const },
+  // Pure scope as Decide for me takes it, and an instruction question: words
+  // leaving it to the drafter's judgment are the instruction it asks for.
+  for (const kind of ["scope", "instruction"] as const)
+    expect(classifiedAnswer(answered({ ...ASKED, kind }), "delegated")).toMatchObject({ answer: RECOMMENDED, answer_kind: "adopted", lawyer_words: DELEGATION })
+  // A fact, approval or source conflict is not settled by delegating: the words stand, with their class.
+  for (const question of [{ ...ASKED, kind: "fact" as const }, { ...ASKED, kind: "conflict" as const }, { ...ASKED, kind: "scope" as const, mixed: true as const },
     { ...ASKED, advice: { options: [], unavailable: { reason: "Nothing in the sources supports one option." } } }, { ...ASKED, advice: undefined }])
     expect(classifiedAnswer(answered(question), "delegated")).toEqual({ ...answered(question), answer_class: "delegated" })
   expect(classifiedAnswer(answered(ASKED), "declined")).toEqual({ ...answered(ASKED), answer_class: "declined" })
@@ -120,7 +122,7 @@ test("the drafting notes' input gives each delegated question its attribution an
   expect(delegatedDecisionsText(directory)).toBe([
     decided("q-a", "Delegated by the lawyer."),
     decided("q-b", `Delegated by the lawyer, in their words: "${DELEGATION}"`),
-    `- [q-c] Q: Who signs for the buyer?\n  Delegated by the lawyer, in their words: "${DELEGATION}"\n  No decision taken: it asks for a fact or an instruction that only the lawyer can give.`,
+    `- [q-c] Q: Who signs for the buyer?\n  Delegated by the lawyer, in their words: "${DELEGATION}"\n  No decision taken: it needs a fact or an approval that only the lawyer can give.`,
     `- [q-d] Q: Should title pass on delivery?\n  Not answered by the lawyer, in their words: "I do not know."\n  No decision taken: the point stays open for the lawyer.`,
   ].join("\n"))
 })
