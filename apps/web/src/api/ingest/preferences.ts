@@ -32,8 +32,9 @@ export type DraftingPreferences = {
   adviceLegend: string
   notesMarking: boolean
   // Whether Auto offers a quick draft in chat for a short drafting request
-  // ("ask") or always starts the full run ("off"). Never sent to the model.
-  quickDraftOffer: "ask" | "off"
+  // ("ask"), starts one without asking ("auto") or always starts the full run
+  // ("off"). Never sent to the model.
+  quickDraftOffer: "ask" | "auto" | "off"
 }
 
 /** How hard negotiated terms lean toward the client: the firm's setting, which

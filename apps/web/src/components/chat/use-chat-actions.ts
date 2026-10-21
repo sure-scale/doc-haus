@@ -38,7 +38,7 @@ const DRAFT_ONLY: AssistantMeta[] = CHAT_ASSISTANTS.filter((a) => a.name === "dr
 // setting keeps the default, Ask.
 async function quickDraftOffer() {
   const prefs = await bounded(getPreferences(), 3_000, "Drafting preferences").catch(() => undefined)
-  return prefs?.quickDraftOffer === "off" ? "off" : "ask"
+  return prefs?.quickDraftOffer === "auto" || prefs?.quickDraftOffer === "off" ? prefs.quickDraftOffer : "ask"
 }
 
 const userTurn = (text: string): Turn => ({ role: "user", text, citations: [], redlines: [], drafts: [], todos: [], steps: [] })
@@ -188,7 +188,8 @@ export function useChatActions({
       // the route on the primary model before surfacing failure. Omitted when it
       // equals small, so a single-model setup never pays for a duplicate call.
       primaryModel: config?.model,
-      // Quick draft is never a candidate: Auto offers it only by asking.
+      // Quick draft is never a candidate: Auto offers it by asking, or starts
+      // it under the firm's Automatic setting, only for an eligible request.
       candidates: candidates.map((a) => ({ name: a.name, description: a.description })),
       history,
       text,
@@ -381,12 +382,18 @@ export function useChatActions({
       const resolved = await resolveAgent(text, prior)
       // Stopped while Auto chose the assistant.
       if (turn.stopped) return cancelUnsent(text)
+      let target = resolved.name
       if (resolved.name === "draft" && matterId) {
-        // A request Auto judged a quick draft can serve is offered, unless the
-        // firm turned the offer off; any other drafting request runs in full.
-        if (isAuto(agent) && quickDraftEligible(withMatterSources(resolved.scope, sourceCount)) && (await quickDraftOffer()) === "ask")
-          return await offerQuickDraft(text, turn)
-        return await startFullRun(text, prior.length)
+        // A request Auto judged a quick draft can serve is offered, or started
+        // under the firm's Automatic setting, unless the firm turned quick
+        // drafts off; any other drafting request runs in full.
+        const offer = isAuto(agent) && quickDraftEligible(withMatterSources(resolved.scope, sourceCount)) ? await quickDraftOffer() : "off"
+        if (offer === "ask") return await offerQuickDraft(text, turn)
+        if (offer === "off") return await startFullRun(text, prior.length)
+        // Automatic is the firm's consent, as the Quick draft pick is the
+        // lawyer's: the request goes to Quick draft like that pick.
+        target = QUICK_DRAFT
+        setResolvedAgent(target)
       }
       // Other chats create their ordinary conversation lazily.
       if (!sessionRef.current) {
@@ -397,7 +404,7 @@ export function useChatActions({
       }
       if (turn.stopped) return cancelUnsent(text)
       sent = true
-      await sendPrompt(client, sessionRef.current, resolved.name, text)
+      await sendPrompt(client, sessionRef.current, target, text)
     } catch (e) {
       if (turn.stopped) return sent ? settleStopped() : cancelUnsent(text)
       // Routing happens before a fresh session is minted, so there is no stored
