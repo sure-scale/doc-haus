@@ -5,10 +5,11 @@ import type { AppliedAmendment, UnappliedAmendment } from "../../lib/drafting-am
 import { openItemMarkers } from "../../lib/open-items"
 import { draftingPlaceholders } from "../../lib/placeholder-resolution"
 import { normalize } from "../../lib/quote-verify"
-import { changeListIDs, memoMode, runItemIDs, withoutRefMarkers } from "./delivered-memo"
+import { changeListIDs, memoMode, mintedQuestionID, runItemIDs, withoutRefMarkers } from "./delivered-memo"
 import { notesForReader } from "./gate"
 import { excerpt, openItem, proseQuoteFound, quoteMissIssue, quoteMissItems, sourceQuotes } from "./quotes"
 import { readLeanPlan, type DocID } from "./plan"
+import { researchFindingIDs } from "./research"
 import { raisedFindings } from "./review-findings"
 import { readLeanJson, type OpenItem, type Question, type StageID } from "./state"
 
@@ -99,9 +100,9 @@ export function settleApply(changes: ChangeList, result: ApplyResult | undefined
 
 /** The drafting notes must disclose every open item: they say what it is and
  * end that statement with its id in a "[ref: …]" marker. The notes are
- * delivered with only those markers removed, so a run id, planned document id
- * or recorded change id written anywhere else, which would reach the reader, is
- * retried. Their own quotes and citations must be supported: they cannot
+ * delivered with only those markers removed, so a run id, planned document id,
+ * recorded change id or research finding id written anywhere else, which would
+ * reach the reader, is retried. Their own quotes and citations must be supported: they cannot
  * disclose themselves, so a defect there is retried. So is a placeholder in the
  * notes' own text, a gap no open item records. The notes may quote a body
  * placeholder exactly as its open item records it, and neither a "[ref: …]"
@@ -135,6 +136,9 @@ export function checkDraftingNotes(directory: string, content: string, items: Op
   const strayDocuments = ids ? (readLeanPlan(directory)?.documents ?? []).map(row => row.id).filter(id => standingID(id).test(prose)) : []
   // So is a recorded change id ("a1"): the reader knows a change by its effect.
   const strayChanges = ids ? runChangeIDs(directory, items).filter(id => standingID(id).test(prose)) : []
+  // So is a research finding id ("r1"): the reader knows an authority by its
+  // title or citation.
+  const strayResearch = ids ? researchFindingIDs(directory).filter(id => standingID(id).test(prose)) : []
   const recorded = new Set(items.flatMap(item => item.ref.placeholder ? [item.ref.placeholder.toLowerCase()] : []))
   const own = items.reduce((text, item) => text.replaceAll(item.id, " "), delivered).replace(QUOTED, " ")
   const gaps = options.final ? [] : textPlaceholders(own)
@@ -156,6 +160,9 @@ export function checkDraftingNotes(directory: string, content: string, items: Op
         : []),
       ...(strayChanges.length
         ? [`These change ids appear outside a "[ref: …]" marker: ${strayChanges.join(", ")}. ${reader} for the reader: describe each change by what it does, not its id.`]
+        : []),
+      ...(strayResearch.length
+        ? [`These research finding ids appear outside a "[ref: …]" marker: ${strayResearch.join(", ")}. ${reader} for the reader: name each authority by its title or approved citation, not its research id.`]
         : []),
       ...(gaps.length
         ? [`The drafting notes leave these placeholders in their own text: ${gaps.join(", ")}. State the point in words, or quote the body's placeholder exactly as its open item records it.`]
@@ -196,11 +203,11 @@ const REF_MARKER = /\[[ \t]*refs?[ \t]*:([^\]\n]*)\]/gi
 
 /** The ids the notes check keeps out of the reader's text: each run id no
  * lawyer would write as prose (readerVisibleID), each planned document's id,
- * each recorded change id and each review finding id. Delivery removes the
- * same ids (notesForReader). */
+ * each recorded change id, each review finding id and each research finding
+ * id. Delivery removes the same ids (notesForReader). */
 export function readerIDs(directory: string, items: OpenItem[]) {
   return [...new Set([...runItemIDs(directory, items).filter(readerVisibleID), ...(readLeanPlan(directory)?.documents ?? []).map(row => row.id), ...runChangeIDs(directory, items),
-    ...raisedFindings(directory).map(row => row.id)])]
+    ...raisedFindings(directory).map(row => row.id), ...researchFindingIDs(directory)])]
 }
 
 /** The change ids the run records for its planned documents (each change
@@ -230,12 +237,13 @@ export function standingIDPattern(ids: string) {
 
 /** A run id no lawyer would write as prose: at least eight characters with a
  * digit and no space, joined by ":" or "-" (open item and checklist ids, which
- * carry a hash) or a paragraph pointer. Short labels such as a document or
- * amendment id ("d1", "a1", "w1", "i1") and word-like ids with no digit are
- * not counted here; the notes' planned document ids and recorded change ids
- * are checked on their own. */
+ * carry a hash), a paragraph pointer, or a question id the run minted, whose
+ * hash may hold no digit. Short labels such as a document or amendment id
+ * ("d1", "a1", "w1", "i1") and other word-like ids with no digit are not
+ * counted here; the notes' planned document ids, recorded change ids and
+ * research finding ids are checked on their own. */
 function readerVisibleID(id: string) {
-  return id.length >= 8 && /\d/.test(id) && !/\s/.test(id) && (/[:-]/.test(id) || /^p[0-9a-f]{12}$/.test(id))
+  return mintedQuestionID(id) || id.length >= 8 && /\d/.test(id) && !/\s/.test(id) && (/[:-]/.test(id) || /^p[0-9a-f]{12}$/.test(id))
 }
 
 /** A planned document's final body, as its apply step left it. */

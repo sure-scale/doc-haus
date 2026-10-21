@@ -67,7 +67,7 @@ test("an adopted recommendation runs through the queue as the lawyer's answer, r
   for (const agent of [AGENT.discrepancy, AGENT.intake, AGENT.research, AGENT["research-review"], AGENT.spine, AGENT.draft, AGENT.coverage,
     AGENT.review, AGENT["review-independent"], AGENT["review-wording"], AGENT["review-client-disadvantage"], AGENT["change-plan"], AGENT.changes, AGENT["package-review"]])
     expect([agent, prompts.some(prompt => prompt.agent === agent && prompt.text.includes(line))]).toEqual([agent, true])
-  expect(prompts.find(prompt => prompt.agent === AGENT.finalize)!.text).toContain(`- ${late.id} (answered): ${QUESTION}\n  Answer: ${CHOSEN}`)
+  expect(prompts.find(prompt => prompt.agent === AGENT.finalize)!.text).toContain(`- (answered) ${QUESTION}\n  Answer: ${CHOSEN}`)
   for (const prompt of prompts) {
     expect([prompt.agent, LEFT_TO_DRAFTER.exec(prompt.text)?.[0], BUTTON.exec(prompt.text)?.[0]]).toEqual([prompt.agent, undefined, undefined])
     expect([prompt.agent, prompt.text.includes("A: undefined")]).toEqual([prompt.agent, false])
