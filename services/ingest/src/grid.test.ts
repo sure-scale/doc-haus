@@ -88,6 +88,7 @@ describe("grid negative-cell re-check passages", () => {
       passages: CONTRACT.length,
       read: 5,
       candidates: result.citations.length,
+      reread: 0,
       terms: expect.arrayContaining(["liquidated damages", "late delivery", "liquidated", "damages"]),
       channels: ["lexical", "phrase"],
     })
@@ -114,7 +115,7 @@ describe("grid negative-cell re-check passages", () => {
     })
     expect(result.citations).toEqual([])
     expect(result.passages).toBe("")
-    expect(result.scope).toEqual({ passages: CONTRACT.length, read: 2, candidates: 0, terms: ["non-compete restriction", "non-compete", "restriction"], channels: ["lexical", "phrase"] })
+    expect(result.scope).toEqual({ passages: CONTRACT.length, read: 2, candidates: 0, reread: 0, terms: ["non-compete restriction", "non-compete", "restriction"], channels: ["lexical", "phrase"] })
   }))
 
   test("another matter document holding the term is never searched", () => withMatter((dir) => {
@@ -130,15 +131,51 @@ describe("grid negative-cell re-check passages", () => {
     expect(result.citations.some((citation) => citation.section === "9")).toBe(false)
   }))
 
+  test("an uncited cell's re-check leads with the passages already read, from its own document only", () => withMatter((dir) => {
+    seed(dir, { "Supply.docx": CONTRACT, "Side letter.docx": SIDE_LETTER })
+    const sideLetter = { docPath: path.join(dir, "Side letter.docx"), charStart: 0, charEnd: SIDE_LETTER[0]![1]!.length }
+    const result = recheckPassages(dir, {
+      document: "Supply.docx",
+      question: "What liquidated damages are payable for late delivery?",
+      // The first search read the price and late-delivery clauses, and the side letter.
+      seen: [...seenPassages(dir, "Supply.docx", CONTRACT, [2, 8]), sideLetter],
+      includeSeen: true,
+    })
+    // Read passages come first, best term match first; the side letter stays out.
+    expect(result.citations.slice(0, 2).map((citation) => citation.section)).toEqual(["9", "3"])
+    expect(result.citations.every((citation) => citation.documentName === "Supply.docx")).toBe(true)
+    expect(result.scope).toMatchObject({ passages: CONTRACT.length, read: 2, reread: 2, candidates: result.citations.length })
+    // Each candidate's number in the rendered list is its re-check label.
+    expect(result.passages).toContain("1. [Supply.docx › §9]")
+    expect(result.passages).toContain("2. [Supply.docx › §3]")
+  }))
+
+  test("an uncited cell's re-check holds at most eight passages, read ones first", () => withMatter((dir) => {
+    seed(dir, { "Supply.docx": CONTRACT })
+    const result = recheckPassages(dir, {
+      document: "Supply.docx",
+      question: "What liquidated damages are payable?",
+      seen: seenPassages(dir, "Supply.docx", CONTRACT, [0, 1, 2, 3, 4, 5, 6, 7, 9]),
+      includeSeen: true,
+    })
+    expect(result.citations).toHaveLength(8)
+    expect(result.scope).toMatchObject({ read: 9, reread: 8, candidates: 8 })
+    // The unread §9 is the only term match but every slot went to a read passage.
+    expect(result.citations.some((citation) => citation.section === "9")).toBe(false)
+  }))
+
   test("an unindexed matter records an empty scope", () => withMatter((dir) => {
     expect(recheckPassages(dir, { document: "Supply.docx", question: "What is the governing law?", seen: [] })).toEqual({
-      citations: [], passages: "", scope: { passages: 0, read: 0, candidates: 0, terms: ["governing law", "governing", "law"], channels: ["lexical", "phrase"] },
+      citations: [], passages: "", scope: { passages: 0, read: 0, candidates: 0, reread: 0, terms: ["governing law", "governing", "law"], channels: ["lexical", "phrase"] },
     })
   }))
 
   test("a re-check request names one document, a question and the passages already read", () => {
     expect(recheckRequest({ document: "Supply.docx", question: "Q?", seen: [{ docPath: "/m/Supply.docx", charStart: 0, charEnd: 5 }] }))
       .toEqual({ document: "Supply.docx", question: "Q?", seen: [{ docPath: "/m/Supply.docx", charStart: 0, charEnd: 5 }] })
+    expect(recheckRequest({ document: "Supply.docx", question: "Q?", seen: [], includeSeen: true }))
+      .toEqual({ document: "Supply.docx", question: "Q?", seen: [], includeSeen: true })
+    expect(recheckRequest({ document: "Supply.docx", question: "Q?", seen: [], includeSeen: "yes" })).toBeUndefined()
     expect(recheckRequest({ document: "", question: "Q?", seen: [] })).toBeUndefined()
     expect(recheckRequest({ document: "Supply.docx", question: "Q?" })).toBeUndefined()
     expect(recheckRequest({ document: "Supply.docx", question: "Q?", seen: [{ docPath: "/m/Supply.docx", charStart: "0", charEnd: 5 }] })).toBeUndefined()

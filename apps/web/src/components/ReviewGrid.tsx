@@ -130,7 +130,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
   function extract(docName: string, question: string): Promise<GridCellData> {
     return computeCell({ document: docName, question, questionHash: hashQuestion(question) }, {
       extract: (prompt) => extractTurn(`doc.haus grid: ${docName}`, prompt),
-      passages: (seen) => recheckPassages(matterId, { document: docName, question, seen }),
+      passages: (request) => recheckPassages(matterId, { document: docName, question, ...request }),
       recheck: (prompt) => extractTurn(`doc.haus grid re-check: ${docName}`, prompt, [{ action: "*", resource: "*", effect: "deny" }]),
     })
   }

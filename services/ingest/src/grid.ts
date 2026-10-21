@@ -39,9 +39,10 @@ export type GridCell = {
 export type GridRecheck = { outcome: "found" | "not_found" } & RecheckScope
 
 // What one re-check searched: the document's indexed passages, how many the
-// first extraction's search had already returned, how many further passages
-// matched and were shown to the model, the question terms and the channels.
-export type RecheckScope = { passages: number; read: number; candidates: number; terms: string[]; channels: string[] }
+// first extraction's search had already returned, how many passages were shown
+// to the model and how many of those were already read (only an uncited
+// answer's re-check re-reads them), the question terms and the channels.
+export type RecheckScope = { passages: number; read: number; candidates: number; reread: number; terms: string[]; channels: string[] }
 
 // Cells are keyed `<documentName>::<columnId>`.
 export type Grid = { columns: GridColumn[]; cells: Record<string, GridCell> }
@@ -63,14 +64,21 @@ export function writeGrid(matterDir: string, grid: Grid) {
 
 // --- Re-check of a negative cell -------------------------------------------
 //
-// A cell with no citation ("Not addressed", or an answer whose source label did
-// not resolve) gets one deterministic pass over its own document: the question's
-// terms through the lexical and phrase channels, excluding the passages the
-// first extraction already saw. With no candidates the cell stays negative with
-// this scope and no model call; otherwise the web app shows the candidates to
-// one extract call and adopts its answer only if it cites one of them.
+// A cell with no citation gets one deterministic pass over its own document:
+// the question's terms through the lexical and phrase channels. For "Not
+// addressed" the passages the first extraction already saw are skipped, since
+// the miss was retrieval; for an answer whose source label did not resolve
+// (`includeSeen`) they lead the candidates, since the answer most likely came
+// from one of them. With no candidates the cell stays negative with this scope
+// and no model call; otherwise the web app shows the numbered candidates to one
+// extract call and adopts its answer only if it cites one of them by number.
 
-export type RecheckRequest = { document: string; question: string; seen: Array<{ docPath: string; charStart: number; charEnd: number }> }
+export type RecheckRequest = {
+  document: string
+  question: string
+  seen: Array<{ docPath: string; charStart: number; charEnd: number }>
+  includeSeen?: boolean
+}
 
 export type RecheckCitation = {
   documentName: string
@@ -104,15 +112,17 @@ const STOPWORDS = new Set(
 
 export function recheckRequest(value: unknown): RecheckRequest | undefined {
   if (!value || typeof value !== "object") return
-  const { document, question, seen } = value as Record<string, unknown>
+  const { document, question, seen, includeSeen } = value as Record<string, unknown>
   if (typeof document !== "string" || !document.trim() || typeof question !== "string" || !question.trim() || !Array.isArray(seen)) return
+  if (includeSeen !== undefined && typeof includeSeen !== "boolean") return
   const spans = seen.flatMap((span) => {
     const { docPath, charStart, charEnd } = (span ?? {}) as Record<string, unknown>
     return typeof docPath === "string" && Number.isInteger(charStart) && Number.isInteger(charEnd)
       ? [{ docPath, charStart: charStart as number, charEnd: charEnd as number }]
       : []
   })
-  return spans.length === seen.length ? { document, question, seen: spans } : undefined
+  if (spans.length !== seen.length) return
+  return includeSeen === undefined ? { document, question, seen: spans } : { document, question, seen: spans, includeSeen }
 }
 
 /** The question's searchable terms: every content word and exact anchor (a
@@ -147,13 +157,14 @@ export function questionTerms(question: string) {
 }
 
 /** The one deterministic re-check pass for a negative cell: passages of the
- * cell's own document that contain the question's terms and that the first
- * extraction did not see, best first, rendered with the shared
- * untrusted-excerpt framing for the re-check call. */
+ * cell's own document that contain the question's terms, best first, either
+ * skipping or (`includeSeen`) leading with the passages the first extraction
+ * saw, rendered with the shared untrusted-excerpt framing for the re-check call.
+ * A candidate's number in that list is its label for this re-check. */
 export function recheckPassages(matterDir: string, request: RecheckRequest) {
   const { words, phrases } = questionTerms(request.question)
   const terms = [...phrases, ...words]
-  const none = { citations: [] as RecheckCitation[], passages: "", scope: { passages: 0, read: 0, candidates: 0, terms, channels: RECHECK_CHANNELS } }
+  const none = { citations: [] as RecheckCitation[], passages: "", scope: { passages: 0, read: 0, candidates: 0, reread: 0, terms, channels: RECHECK_CHANNELS } }
   const dbPath = path.join(matterDir, ".dochaus", "legal.db")
   if (!existsSync(dbPath) || !indexIsContained(matterDir, dbPath)) return none
   const db = new Database(dbPath, { readonly: true })
@@ -161,8 +172,13 @@ export function recheckPassages(matterDir: string, request: RecheckRequest) {
     const scope = { document: request.document }
     const identity = (span: { docPath: string; charStart: number; charEnd: number }) => JSON.stringify([span.docPath, span.charStart, span.charEnd])
     const span = (row: ChunkRow) => identity({ docPath: row.doc_path, charStart: row.char_start, charEnd: row.char_end })
-    const seen = new Set(request.seen.map(identity))
-    const rows = db.query("SELECT doc_path, char_start, char_end FROM chunks WHERE doc_name = ?").all(request.document) as ChunkRow[]
+    // First-search order of each passage already read.
+    const seen = new Map<string, number>()
+    for (const passage of request.seen) if (!seen.has(identity(passage))) seen.set(identity(passage), seen.size)
+    const rows = db.query(
+      "SELECT id, doc_name, doc_path, section, structural_path, party, text, char_start, char_end, flagged FROM chunks WHERE doc_name = ?",
+    ).all(request.document) as ChunkRow[]
+    const read = rows.filter((row) => seen.has(span(row)))
     // Reciprocal-rank fusion, as search-document fuses its channels.
     const fused = new Map<number, { row: ChunkRow; score: number }>()
     const channels = [
@@ -175,11 +191,14 @@ export function recheckPassages(matterDir: string, request: RecheckRequest) {
         entry.score += 1 / (RRF_K + 1 + rank)
         fused.set(row.id, entry)
       })
-    const citations = [...fused.values()]
-      .filter(({ row }) => !seen.has(span(row)))
-      .sort((a, b) => b.score - a.score)
-      .slice(0, RECHECK_PASSAGES)
-      .map(({ row, score }): RecheckCitation => ({
+    const score = (row: ChunkRow) => fused.get(row.id)?.score ?? 0
+    const reread = request.includeSeen
+      ? [...read].sort((a, b) => score(b) - score(a) || seen.get(span(a))! - seen.get(span(b))!)
+      : []
+    const further = [...fused.values()].filter(({ row }) => !seen.has(span(row))).sort((a, b) => b.score - a.score).map(({ row }) => row)
+    const picked = [...reread, ...further].slice(0, RECHECK_PASSAGES)
+    const citations = picked
+      .map((row): RecheckCitation => ({
         documentName: row.doc_name,
         docPath: row.doc_path,
         section: row.section,
@@ -188,13 +207,20 @@ export function recheckPassages(matterDir: string, request: RecheckRequest) {
         excerpt: row.text,
         charStart: row.char_start,
         charEnd: row.char_end,
-        score,
+        score: score(row),
         flagged: row.flagged === 1,
       }))
     return {
       citations,
       passages: formatCitations(citations, { full: true }),
-      scope: { passages: rows.length, read: rows.filter((row) => seen.has(span(row))).length, candidates: citations.length, terms, channels: RECHECK_CHANNELS },
+      scope: {
+        passages: rows.length,
+        read: read.length,
+        candidates: citations.length,
+        reread: picked.filter((row) => seen.has(span(row))).length,
+        terms,
+        channels: RECHECK_CHANNELS,
+      },
     }
   } finally {
     db.close()

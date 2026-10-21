@@ -25,7 +25,7 @@ export type GridCellData = {
 }
 export type GridCellComment = { id: string; text: string; at: number }
 export type Grid = { columns: GridColumn[]; cells: Record<string, GridCellData> }
-export type RecheckScope = { passages: number; read: number; candidates: number; terms: string[]; channels: string[] }
+export type RecheckScope = { passages: number; read: number; candidates: number; reread: number; terms: string[]; channels: string[] }
 export type GridRecheck = { outcome: "found" | "not_found" } & RecheckScope
 export type RecheckPassages = { citations: Citation[]; passages: string; scope: RecheckScope }
 export type SeenPassage = { docPath: string; charStart: number; charEnd: number }
@@ -46,8 +46,12 @@ export async function saveGrid(id: string, grid: Grid): Promise<void> {
 }
 
 // The deterministic re-check pass for one negative cell: passages of that one
-// document holding the question's terms that the first extraction did not see.
-export async function recheckPassages(id: string, request: { document: string; question: string; seen: SeenPassage[] }): Promise<RecheckPassages> {
+// document holding the question's terms, skipping the passages the first
+// extraction saw or, with `includeSeen`, leading with them.
+export async function recheckPassages(
+  id: string,
+  request: { document: string; question: string; seen: SeenPassage[]; includeSeen: boolean },
+): Promise<RecheckPassages> {
   const res = await fetch(`${INGEST_URL}/matters/${id}/grid/recheck`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

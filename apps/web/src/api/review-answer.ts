@@ -2,22 +2,25 @@ import type { Citation } from "./opencode/parts"
 import type { Part } from "./session-view"
 
 // Keep the final answer separate from intermediate progress text. Retrieval
-// citations may belong to earlier provider steps in the same extraction. A
-// re-check passes its own candidate passages as the only citations it accepts.
-export function readReviewAnswer(messages: Array<{ parts: Part[] }>, citations = retrievedCitations(messages)) {
-  const final = messages.findLast(message => message.parts.some(part => part.type === "text" && part.text.trim()))
-  const raw = (final?.parts ?? []).filter(part => part.type === "text").map(part => part.text).join("").trim()
-  const source = raw.match(/\n\s*Source:\s*§?\s*(.+?)\s*$/i)
-  const section = source?.[1]?.trim()
+// citations may belong to earlier provider steps in the same extraction.
+export function readReviewAnswer(messages: Array<{ parts: Part[] }>) {
+  const { text, source } = readAnswerText(messages)
+  const citations = retrievedCitations(messages)
+  const section = source?.replace(/^§\s*/, "")
   const matches = citations.filter(citation => section && (citation.section === section ||
     citation.structuralPath?.split("›").at(-1)?.trim().replace(/^§\s*/, "") === section))
   const identities = new Map(matches.map(citation => [JSON.stringify([
     citation.docPath, citation.section, citation.charStart, citation.charEnd,
   ]), citation]))
-  return {
-    text: source ? raw.slice(0, source.index).trim() : raw,
-    citation: identities.size === 1 ? identities.values().next().value : undefined,
-  }
+  return { text, citation: identities.size === 1 ? identities.values().next().value : undefined }
+}
+
+// The final answer text and its raw `Source:` label (as written, `§` kept).
+export function readAnswerText(messages: Array<{ parts: Part[] }>) {
+  const final = messages.findLast(message => message.parts.some(part => part.type === "text" && part.text.trim()))
+  const raw = (final?.parts ?? []).filter(part => part.type === "text").map(part => part.text).join("").trim()
+  const source = raw.match(/\n\s*Source:\s*(.+?)\s*$/i)
+  return { text: source ? raw.slice(0, source.index).trim() : raw, source: source?.[1]?.trim() }
 }
 
 // Every passage the extraction's search-document calls returned.
