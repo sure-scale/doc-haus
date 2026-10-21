@@ -50,6 +50,7 @@ import {
   questionContent,
   writeLeanBytes,
   writeLeanText,
+  WORKING_DRAFT,
   type LeanModel,
   type OpenItem,
   type Question,
@@ -319,7 +320,9 @@ export function stageDraftingPreferences(directory: string) {
 function outlineInputs(directory: string) {
   const request = leanFile(directory, "request.md")
   const updates = readLeanText(directory, "updated-notes.md")
-  return [{ name: "drafting-preferences", bytes: stageDraftingPreferences(directory) }, { name: "source-content", bytes: matterSourceBasis(directory) }, { name: "answers", bytes: answeredQuestionsText(directory) }, ...(updates ? [{ name: "updated-notes.md", bytes: updates }] : []), { name: "request.md", bytes: existsSync(request) ? readFileSync(request) : "" }, { name: "sources", bytes: matterSourceIDs(directory).join("\n") }]
+  // Only with a working draft, so a run without one keeps its keys.
+  const working = readLeanText(directory, WORKING_DRAFT)
+  return [{ name: "drafting-preferences", bytes: stageDraftingPreferences(directory) }, { name: "source-content", bytes: matterSourceBasis(directory) }, { name: "answers", bytes: answeredQuestionsText(directory) }, ...(updates ? [{ name: "updated-notes.md", bytes: updates }] : []), { name: "request.md", bytes: existsSync(request) ? readFileSync(request) : "" }, { name: "sources", bytes: matterSourceIDs(directory).join("\n") }, ...(working ? [{ name: WORKING_DRAFT, bytes: working }] : [])]
 }
 
 /** Checks a model reply and, when it passes, writes the step's output files. */
