@@ -34,6 +34,7 @@ export default function Matters() {
   const [newJurisdictions, setNewJurisdictions] = useState<string[]>(() => loadPrefs().defaultJurisdictions)
   const [filter, setFilter] = useState("")
   const [busy, setBusy] = useState(false)
+  const [creating, setCreating] = useState(false)
   const [confirmId, setConfirmId] = useState<string | null>(null)
   // The matter being edited in the modal, plus its draft fields. null when closed.
   const [editing, setEditing] = useState<Matter | null>(null)
@@ -148,7 +149,76 @@ export default function Matters() {
         </div>
       </header>
 
-      <div className="library-layout">
+      <div className="library-layout matters-layout">
+        <section className="library-builder matter-create-panel" aria-labelledby="new-matter-heading">
+          <div className="library-heading matter-create-heading">
+            <h2 id="new-matter-heading">
+              <span className="matter-create-label">New matter</span>
+              <button
+                type="button"
+                className="matter-create-toggle"
+                aria-expanded={creating}
+                aria-controls="new-matter-fields"
+                onClick={() => setCreating((open) => !open)}
+              >
+                New matter
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                  <path d={creating ? "m6 15 6-6 6 6" : "m6 9 6 6 6-6"} />
+                </svg>
+              </button>
+            </h2>
+          </div>
+          <div id="new-matter-fields" className={`matter-create-row${creating ? " is-open" : ""}`}>
+            <input
+              placeholder="Matter title, e.g. Acme MSA review"
+              aria-label="Matter title"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && onCreate()}
+              className="matter-create-title"
+            />
+            <input
+              placeholder="Matter no. (optional)"
+              aria-label="Matter number (optional)"
+              value={reference}
+              onChange={(e) => setReference(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && onCreate()}
+              className="matter-create-reference"
+            />
+            <input
+              placeholder="Client you act for (optional)"
+              aria-label="Client you act for (optional)"
+              maxLength={200}
+              value={client}
+              onChange={(e) => setClient(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && onCreate()}
+              className="matter-create-client"
+            />
+            <select
+              aria-label="Posture for this matter"
+              title="How hard drafts lean toward your client on this matter"
+              value={posture}
+              onChange={(e) => setPosture(e.target.value as Posture | "")}
+              className="matter-create-posture"
+            >
+              <option value="">Posture: firm default</option>
+              {POSTURES.map((row) => (
+                <option key={row.value} value={row.value}>
+                  Posture: {row.label}
+                </option>
+              ))}
+            </select>
+            <JurisdictionSelect
+              jurisdictions={jurisdictions}
+              selected={newJurisdictions}
+              onChange={setNewJurisdictions}
+              align="right"
+            />
+            <button className={`primary${busy ? " btn-loading" : ""}`} onClick={onCreate} disabled={busy || !title.trim()}>
+              Create matter
+            </button>
+          </div>
+        </section>
         <section className="library-collection" aria-labelledby="your-matters-heading">
           <div className="library-heading">
             <h2 id="your-matters-heading">Your matters</h2>
@@ -239,61 +309,6 @@ export default function Matters() {
               ))}
             </ul>
           )}
-        </section>
-        <section className="library-builder" aria-labelledby="new-matter-heading">
-          <div className="library-heading">
-            <h2 id="new-matter-heading">New matter</h2>
-          </div>
-          <div className="matter-create-row">
-            <input
-              placeholder="Matter title, e.g. Acme MSA review"
-              aria-label="Matter title"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && onCreate()}
-              className="matter-create-title"
-            />
-            <input
-              placeholder="Matter no. (optional)"
-              aria-label="Matter number (optional)"
-              value={reference}
-              onChange={(e) => setReference(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && onCreate()}
-              className="matter-create-reference"
-            />
-            <input
-              placeholder="Client you act for (optional)"
-              aria-label="Client you act for (optional)"
-              maxLength={200}
-              value={client}
-              onChange={(e) => setClient(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && onCreate()}
-              className="matter-create-client"
-            />
-            <select
-              aria-label="Posture for this matter"
-              title="How hard drafts lean toward your client on this matter"
-              value={posture}
-              onChange={(e) => setPosture(e.target.value as Posture | "")}
-              className="matter-create-posture"
-            >
-              <option value="">Posture: firm default</option>
-              {POSTURES.map((row) => (
-                <option key={row.value} value={row.value}>
-                  Posture: {row.label}
-                </option>
-              ))}
-            </select>
-            <JurisdictionSelect
-              jurisdictions={jurisdictions}
-              selected={newJurisdictions}
-              onChange={setNewJurisdictions}
-              align="right"
-            />
-            <button className={`primary${busy ? " btn-loading" : ""}`} onClick={onCreate} disabled={busy || !title.trim()}>
-              Create matter
-            </button>
-          </div>
         </section>
       </div>
 

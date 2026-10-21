@@ -36,7 +36,8 @@ export default function JurisdictionSelect({
 
   // Close on outside click so the popover behaves like the native select it
   // replaces, and on outside scroll since the fixed-position anchor goes stale
-  // when the surrounding container scrolls. Bound only while open.
+  // when the container scrolls or viewport width changes. Ignore height-only
+  // changes so a mobile keyboard can open without dismissing the picker.
   useEffect(() => {
     if (!open) return
     const onDown = (e: MouseEvent) => {
@@ -48,11 +49,17 @@ export default function JurisdictionSelect({
       if (popRef.current?.contains(e.target as Node)) return
       setOpen(false)
     }
+    const width = window.innerWidth
+    const onResize = () => {
+      if (window.innerWidth !== width) setOpen(false)
+    }
     window.addEventListener("mousedown", onDown)
     window.addEventListener("scroll", onScroll, true)
+    window.addEventListener("resize", onResize)
     return () => {
       window.removeEventListener("mousedown", onDown)
       window.removeEventListener("scroll", onScroll, true)
+      window.removeEventListener("resize", onResize)
     }
   }, [open])
 
