@@ -70,8 +70,7 @@ test("an adopted recommendation runs through the queue as the lawyer's answer, r
   expect(notes).toContain(`- (delegated; see delegated_decisions) ${QUESTION}\n`)
   expect(notes).not.toContain(`Answer: ${CHOSEN}`)
   expect(notes).not.toContain(`A: ${CHOSEN}`)
-  expect(notes).not.toContain(late.id)
-  expect(notes).toContain(`<delegated_decisions>\n- Q: ${QUESTION}\n  Delegated by the lawyer.\n  Decision taken, for the lawyer to confirm: ${CHOSEN}\n  Reason: The terms fix the delivery period and add no remedy.`)
+  expect(notes).toContain(`<delegated_decisions>\n- [${late.id}] Q: ${QUESTION}\n  Delegated by the lawyer.\n  Decision taken, for the lawyer to confirm: ${CHOSEN}\n  Reason: The terms fix the delivery period and add no remedy.`)
   for (const prompt of prompts) {
     expect([prompt.agent, LEFT_TO_DRAFTER.exec(prompt.text)?.[0], BUTTON.exec(prompt.text)?.[0]]).toEqual([prompt.agent, undefined, undefined])
     expect([prompt.agent, prompt.text.includes("A: undefined")]).toEqual([prompt.agent, false])

@@ -332,7 +332,7 @@ function draftingNotesSections(directory: string, request: string) {
  * evidence and the alternatives not taken; otherwise why no decision was
  * taken. Empty when there is none. */
 export function delegatedDecisionsText(directory: string) {
-  return delegatedQuestions(directory).map(question => [`- Q: ${question.question}`, ...delegatedLines(question).map(line => `  ${line}`)].join("\n")).join("\n")
+  return delegatedQuestions(directory).map(question => [`- [${question.id}] Q: ${question.question}`, ...delegatedLines(question).map(line => `  ${line}`)].join("\n")).join("\n")
 }
 
 function delegatedLines(question: Question) {

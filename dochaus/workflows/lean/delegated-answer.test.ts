@@ -224,7 +224,7 @@ test("a question delegated in the lawyer's own words runs through the queue as a
   const notesPrompt = prompts.findLast(prompt => prompt.agent === AGENT.finalize)!.text
   expect(notesPrompt).toContain(`<delegated_decisions>\n- [${id}] Q: ${QUESTION}\n  Delegated by the lawyer, in their words: "${DELEGATION}"\n  Decision taken, for the lawyer to confirm: ${RECOMMENDED}\n  Reason: ${RATIONALE}`)
   // The notes' list of questions points to that section rather than calling it answered.
-  expect(notesPrompt).toContain(`- ${id} (delegated; see delegated_decisions): ${QUESTION}\n`)
+  expect(notesPrompt).toContain(`- (delegated; see delegated_decisions) ${QUESTION}\n`)
   expect(notesPrompt).not.toContain(`Answer: ${RECOMMENDED}`)
   expect(readLeanJson(directory, "state.json")).toMatchObject({ status: "completed" })
   const notes = readLeanJson(directory, "gate.json") as GateResult
