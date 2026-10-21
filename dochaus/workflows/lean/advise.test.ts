@@ -195,7 +195,8 @@ describe("advising asked questions", () => {
     const model = scriptedModel({ [AGENT.intake]: asks(LAW) })
     expect((await runLean(directory, { sessions: model.port })).status).toBe("blocked")
     expect(model.count(AGENT.intake)).toBe(1)
-    expect(readQuestions(directory)).toEqual([answered, expect.objectContaining({ question: LAW.question, status: "open", kind: "instruction", advice: expect.anything() })])
+    // The answer is kept, read once as the lawyer's own.
+    expect(readQuestions(directory)).toEqual([{ ...answered, answer_class: "answered" }, expect.objectContaining({ question: LAW.question, status: "open", kind: "instruction", advice: expect.anything() })])
   }, 120_000)
 
   test("a question passed to the open item still asking it keeps its kind, options and advice", () => {

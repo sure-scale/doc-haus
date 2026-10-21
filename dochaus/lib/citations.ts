@@ -52,7 +52,9 @@ export type DocumentCitation = {
   }
 }
 
-export function formatCitations(citations: DocumentCitation[]) {
+// `full` shows every excerpt unclipped, for a job that cannot read further
+// (the review grid's re-check sees only the passages it is given).
+export function formatCitations(citations: DocumentCitation[], options: { full?: boolean } = {}) {
   if (!citations.length) return ""
   const body = citations
     .map((c, i) => {
@@ -70,7 +72,7 @@ export function formatCitations(citations: DocumentCitation[]) {
       // supplied one; append the parties so the passage carries its matter context.
       const heading = c.structuralPath || `${c.documentName} § ${c.section}`
       const party = c.party ? `\n   parties: ${c.party}` : ""
-      return `${i + 1}. [${heading}]${score}${flag}${superseded}${party}\n${displayExcerpt(c.excerpt)}${reason}`
+      return `${i + 1}. [${heading}]${score}${flag}${superseded}${party}\n${options.full ? c.excerpt : displayExcerpt(c.excerpt)}${reason}`
     })
     .join("\n\n")
   return `${UNTRUSTED_EXCERPT_NOTICE}\n\n${body}`

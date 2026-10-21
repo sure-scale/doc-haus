@@ -11,7 +11,6 @@ export const legalTools = [
   ["create-skill", () => import("./create-skill")],
   ["create-template", () => import("./create-template")],
   ["create-workflow", () => import("./create-workflow")],
-  ["cross-reference-defined-terms", () => import("./cross-reference-defined-terms")],
   ["current-section", () => import("./current-section")],
   ["define", () => import("./define")],
   ["delete-agent", () => import("./delete-agent")],

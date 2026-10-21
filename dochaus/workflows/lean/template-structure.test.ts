@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { sectionPrompt } from "./draft-sections"
-import { parsePlan } from "./plan"
+import type { Amendment } from "../../lib/drafting-amendment"
+import type { ParagraphRow } from "./checks"
+import { parsePlan, writeLeanPlan } from "./plan"
 import { documentTemplate, expectedWords, outlineCoverageIssues, partCarries, templateContract } from "./template-contract"
-import { contractGaps, rowsBody } from "./template-coverage"
+import { contractGaps, draftTemplateItems, rowsBody, templateItems } from "./template-coverage"
 import { parseTemplateUnits, sourceText } from "./template-structure"
-import { PARTS, PLAIN_TEXT, TEMPLATE, TEMPLATE_TEXT, TITLE, bodyOf, contractOf, heading, insertChunks, templateMatter } from "./template-test-support"
+import { PARTS, PLAIN_TEXT, TEMPLATE, TEMPLATE_TEXT, TITLE, bodyOf, contractOf, heading, insertChunks, templateMatter, textParagraphs } from "./template-test-support"
 import { cleanupMatters, matter } from "./test-support"
 
 // Template structure, coverage contract and measurement on invented templates.
@@ -44,6 +46,28 @@ const ALTERNATIVES = [
   "Option B\nEach party's total liability under these terms is limited to twice the charges paid in the twelve months before the claim arose.",
   "3. Term\nThese terms run for one year and renew each year unless either party gives the other three months' written notice.",
 ].join("\n\n")
+
+// Clause headings in sentence case on lines of their own, one of them a single
+// word, then a schedule under a sentence-case label whose table holds a line
+// that opens with a number.
+const SENTENCE_CASE_CLAUSES = {
+  scope: ["1  Scope of services", "1.1  The contractor shall clean the offices at the address in the schedule on each working day, using its own trained staff and its own equipment and materials."],
+  waste: ["2  Waste",
+    "2.1  The contractor shall remove all general waste from the offices each evening and shall separate paper, glass and plastics for recycling as the client's written waste policy requires.",
+    "2.2  The contractor shall not leave waste in shared corridors or the loading bay overnight, and shall report a full or damaged bin to the client's facilities manager on the same day."],
+  fees: ["3  Fees and invoicing",
+    "3.1  The client shall pay the monthly fee within thirty days after receiving a correct invoice. The fee is fixed for the first year and covers all labour, equipment and cleaning materials.",
+    "3.2  Additional cleaning the client asks for in writing is charged at the hourly rate in the schedule and invoiced with the next monthly fee, with a note of the hours worked."],
+  ending: ["4  Ending the agreement",
+    "4.1  Either party may end this agreement by giving the other two months' written notice. Either party may end it at once by notice if the other commits a serious breach and does not put it right within fourteen days.",
+    "4.2  Ending this agreement does not affect rights that have already accrued, and the contractor shall return all keys and access cards within two working days."],
+  liability: ["5  Liability and insurance",
+    "5.1  The contractor is responsible for loss or damage its staff cause at the offices and shall keep public liability insurance of at least the amount in the schedule throughout the term, showing the client the certificate on request."],
+  schedule: ["Schedule 1  Site and hours",
+    "The offices are on the second floor of the client's building, and the contractor cleans them between six and nine in the evening on each working day.",
+    "Term", "1 March 2027 to 28 February 2028", "Hourly rate", "Thirty pounds for each additional hour, invoiced monthly in arrears."],
+}
+const SENTENCE_CASE = ["Office cleaning agreement", ...Object.values(SENTENCE_CASE_CLAUSES).flat()].join("\n\n")
 
 describe("template structure", () => {
   test("a template's numbered sections and annexes are its parts; prose with no headed lines has none", () => {
@@ -127,6 +151,24 @@ describe("template structure", () => {
     expect(sectionPrompt(built.documents[0]!, 1, { source: "template.docx", parts: carries.carried.map(unit => unit.label), left: carries.left.map(unit => unit.label) }))
       .toContain('Leave out "Option B" of the template "template.docx", as the outline records.')
   })
+
+  test("a clause heading in sentence case on its own line opens its own part, so each clause is measured by its own text", () => {
+    const clauses = Object.values(SENTENCE_CASE_CLAUSES)
+    const wordsOf = (lines: string[]) => lines.join(" ").match(/[\p{L}\p{N}]+/gu)!.length
+    const outline = ["# Office cleaning agreement", ...clauses.map(([title]) => `## ${title!.replace(/^(\d+) /, "$1.").replace("Schedule 1 ", "Schedule 1 –")}`)].join("\n")
+    const built = contractOf(SENTENCE_CASE, outline)
+    expect(built.contract.top.map(unit => [unit.label, unit.words])).toEqual(clauses.map(([title, ...body]) => [title!.replace(/^(\d+) {2}/, "$1 "), wordsOf(body)]))
+    expect(built.contract.unaccounted).toEqual([])
+    const drafted = clauses.map(([, ...body], at) => [`## ${built.documents[0]!.parts[at]!.heading}`, ...body].join("\n\n"))
+    expect(gapsOf(built, ...drafted)).toEqual([])
+    const cut = drafted.map((text, at) => at === 1 ? `## ${built.documents[0]!.parts[1]!.heading}\n\n2.1 The contractor clears the bins each evening.` : text)
+    expect(gapsOf(built, ...cut)).toEqual([["2 Waste", "thin"]])
+    // The schedule's label names it under a reworded title.
+    const rename = (text: string) => text.replace("Schedule 1 – Site and hours", "Schedule 1 – Premises and cleaning times")
+    const renamed = contractOf(SENTENCE_CASE, rename(outline))
+    expect(renamed.contract.unaccounted).toEqual([])
+    expect(gapsOf(renamed, ...drafted.map(rename))).toEqual([])
+  })
 })
 
 describe("coverage contract", () => {
@@ -202,7 +244,44 @@ describe("coverage contract", () => {
   })
 })
 
+// A rendered draft whose part labels are not printed: the title, then each
+// part's text, its own headings included, attributed to its part.
+const unlabelled = (texts: string[]): ParagraphRow[] => [{ pid: "p-title", sha256: "", text: "Help desk agreement", draft_part: null, draft_heading: true },
+  ...texts.flatMap((text, part) => textParagraphs(text).map((paragraph, at) => ({ pid: `p-${part}-${at}`, sha256: "", text: paragraph, draft_part: part, draft_heading: false })))]
+// Each part's text under its own heading, the template's, where its label was.
+const OWN_HEADINGS = Object.values(PARTS).map(text => text.replace(/^## /, "### "))
+const RENAMED = OWN_HEADINGS.map(text => text.replace("### 2. Charges", "### Fees"))
+
 describe("template coverage", () => {
+  test("in a revision, a part of the original under an unprinted label with no heading naming it lacks its heading; a printed heading or label holds it, and a new draft adapts headings freely", () => {
+    const built = contractOf(TEMPLATE_TEXT, OUTLINE)
+    const revision = { ...built.documents[0]!, mode: "revise" as const }
+    const gaps = (texts: string[], outline: Parameters<typeof rowsBody>[0] = revision) => contractGaps(built.contract, rowsBody(outline, unlabelled(texts))).map(gap => [gap.unit.label, gap.gap])
+    expect(gaps(OWN_HEADINGS)).toEqual([])
+    expect(gaps(RENAMED)).toEqual([["2 Charges", "unheaded"]])
+    expect(gaps(OWN_HEADINGS.map(text => text.replace("### 2. Charges\n\n", "")))).toEqual([["2 Charges", "unheaded"]])
+    expect(gaps(RENAMED, { ...revision, parts: revision.parts.map((part, at) => at === 1 ? { ...part, display_heading: "Fees" } : part) })).toEqual([])
+    expect(gaps(RENAMED, { ...revision, parts: revision.parts.map(({ display_heading: _, ...part }) => part) })).toEqual([])
+    expect(gaps(RENAMED, built.documents[0]!)).toEqual([])
+  })
+
+  test("a revision's part without its heading is a draft open item; in the final text it is an omission, or a removal where an applied amendment took the heading out", () => {
+    const built = contractOf(TEMPLATE_TEXT, OUTLINE)
+    writeLeanPlan(built.directory, built.documents.map(document => ({ ...document, mode: "revise" as const })))
+    const item = (rows: OpenItemRows) => rows.map(row => [row.kind, row.detail])
+    type OpenItemRows = ReturnType<typeof draftTemplateItems>
+    expect(item(draftTemplateItems(built.directory, "d1", unlabelled(RENAMED))))
+      .toEqual([["omission", 'The template part "2 Charges" of "template.docx" is in the draft without its heading.']])
+    const draft = unlabelled(OWN_HEADINGS)
+    const heading = draft.find(row => row.text === "2. Charges")!
+    const final = draft.map(row => row.pid === heading.pid ? { ...row, text: "Fees" } : row)
+    expect(item(templateItems(built.directory, "d1", draft, final, [], new Set())))
+      .toEqual([["omission", 'The heading of the template part "2 Charges" of "template.docx" is not in the final text; check whether it should be restored.']])
+    const renamed = { id: "a1", pid: heading.pid, existing_sha256: "", updated: "Fees", reason: "The parties call the charges fees.", sources: [] } as unknown as Amendment
+    expect(item(templateItems(built.directory, "d1", draft, final, [renamed], new Set(["a1"])))).toEqual([["template_removal",
+      'The heading of the template part "2 Charges" of "template.docx" is taken out by amendment a1. Reason given: a1: The parties call the charges fees.']])
+  })
+
   test("a part is measured in the part the contract gives it, under any heading and in any position", () => {
     const built = contractOf(TEMPLATE_TEXT, OUTLINE)
     expect(gapsOf(built, ...Object.values(PARTS))).toEqual([])

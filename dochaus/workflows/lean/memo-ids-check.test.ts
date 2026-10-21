@@ -7,12 +7,14 @@ import { checkDraftingNotes, readChangeList } from "./checks"
 import { DELIVERED_NOTES, memoNotesFile } from "./deliverables"
 import { runItemIDs, withoutRefMarkers } from "./delivered-memo"
 import { deliveredNotes, notesForReader, type GateResult } from "./gate"
+import { intakeQuestions } from "./intake"
+import { packageScopeQuestionID } from "./package-scope"
 import { readLeanPlan, writeLeanPlan } from "./plan"
 import { stagePrompt } from "./prompts"
 import { openItem } from "./quotes"
 import { runLean } from "./runner"
 import { acceptStageReply, disclosableItems, LEAN_MAX_RETRIES, stageOutputValid } from "./stages"
-import { leanFile, readLeanJson, readLeanState, readLeanText, writeLeanText, writeOpenItems } from "./state"
+import { leanFile, readLeanJson, readLeanState, readLeanText, writeLeanText, writeOpenItems, writeQuestions, type Question } from "./state"
 import { AGENT, DRAFT, DRAFTED, cleanupMatters, drafter, draftingNotes, happyPath, matter, pidOf, sameSession, scriptedModel, type Reply } from "./test-support"
 
 // In the drafting notes, a requested memo or not, an internal id may appear
@@ -169,6 +171,96 @@ describe("a requested memo", () => {
       ...ids.map(() => "- The lawyer must resolve this before the draft is used.")))
     expect(stageOutputValid(directory, "finalize")).toBe(true)
   }, 120_000)
+})
+
+describe("a question id the run minted, in a requested memo", () => {
+  // The run mints every question id itself, as a fixed prefix and a short
+  // hash, so one written in the memo's prose would reach the reader as an
+  // internal id.
+  /** An intake question and a package-scope question, with the ids the run
+   * gives them, and a question saved under a word-like id the run never mints. */
+  function questionMatter() {
+    const directory = memoMatter()
+    const [intake] = intakeQuestions(directory, JSON.stringify({ questions: [{ question: "Which delivery period applies?", kind: "fact", context: "The supply terms give two periods." }] }))!.value!
+    const scope: Question = { id: packageScopeQuestionID(["deliver the goods"]), stage: "gate", question: "Does the package carry the delivery instruction?", context: "The plan has no document for it.", status: "open" }
+    const worded: Question = { id: "delivery-period", stage: "intake", question: "Which delivery period applies?", context: "Saved under a word.", status: "answered", answer: "Thirty days." }
+    writeQuestions(directory, [intake!, scope, worded])
+    writeOpenItems(directory, [GAP, CONDITION])
+    return { directory, intake: intake!.id, scope: scope.id }
+  }
+  const disclosed = `[refs: ${GAP.id}; ${CONDITION.id}]`
+
+  test("outside a marker it is retried by name, with the stray-id error, and nothing is saved", async () => {
+    const { directory, intake, scope } = questionMatter()
+    expect(intake).toMatch(/^q-[0-9a-f]{10}$/)
+    const reply = memo(`The lawyer's answer to the ${intake} question settles the delivery period. ${disclosed}`, `- ${scope}: The scope of the package is open.`)
+    expect(checkDraftingNotes(directory, reply, [GAP, CONDITION]).issues).toEqual([STRAY([intake, scope])])
+    expect((await acceptStageReply(directory, "finalize", reply)).issues).toEqual([STRAY([intake, scope])])
+    expect(readLeanText(directory, "drafting-notes.md")).toBeUndefined()
+  })
+
+  test("a minted id whose hash has no digit is retried too", () => {
+    const { directory } = questionMatter()
+    writeQuestions(directory, [{ id: "q-abcdefabcd", stage: "intake", question: "Which delivery period applies?", context: "The supply terms give two periods.", status: "open" }])
+    expect(checkDraftingNotes(directory, memo(`Question q-abcdefabcd is open. ${disclosed}`), [GAP, CONDITION]).issues).toEqual([STRAY(["q-abcdefabcd"])])
+  })
+
+  test("inside a marker it is no stray id, and delivery removes it", () => {
+    const { directory, intake } = questionMatter()
+    const notes = memo(`The delivery period waits on the lawyer's answer. [refs: ${GAP.id}; ${CONDITION.id}; ${intake}]`)
+    expect(checkDraftingNotes(directory, notes, [GAP, CONDITION]).issues).toEqual([])
+    expect(notesForReader(directory, notes, [GAP, CONDITION])).toBe(memo("The delivery period waits on the lawyer's answer."))
+  })
+
+  test("an ordinary word, or a saved question id the run did not mint, is no stray id", () => {
+    const { directory } = questionMatter()
+    const notes = memo(`The delivery-period question, question q-1 and the q-abc12 note stand; the question is open. ${disclosed}`)
+    expect(checkDraftingNotes(directory, notes, [GAP, CONDITION]).issues).toEqual([])
+    expect(runItemIDs(directory)).not.toContain("delivery-period")
+  })
+
+  test("on the last attempt it does not fail the memo, and delivery names the question in words", () => {
+    const { directory, intake, scope } = questionMatter()
+    const notes = memo(`The lawyer's answer to the ${intake} question settles the delivery period. ${disclosed}`, `- ${scope}: The scope of the package is open.`)
+    expect(checkDraftingNotes(directory, notes, [GAP, CONDITION], { final: true }).issues).toEqual([])
+    // Was "The lawyer's answer to the q-… question settles …".
+    expect(notesForReader(directory, notes, [GAP, CONDITION])).toBe(memo(`The lawyer's answer to the "Which delivery period applies?" question settles the delivery period.`, "- The scope of the package is open."))
+  })
+
+  test("the finalize prompt lists the answers and questions without their ids", () => {
+    const { directory, intake, scope } = questionMatter()
+    const prompt = stagePrompt(directory, "finalize")
+    expect(prompt).toContain("- (open) Which delivery period applies?")
+    expect(prompt).toContain("- Q: Which delivery period applies?\n  A: Thirty days.")
+    for (const id of [intake, scope, "delivery-period"]) expect(prompt).not.toContain(id)
+  })
+})
+
+describe("a research finding id in a requested memo", () => {
+  const RESEARCH_STRAY = (ids: string[]) =>
+    `These research finding ids appear outside a "[ref: …]" marker: ${ids.join(", ")}. The memo is for the reader: name each authority by its title or approved citation, not its research id.`
+  /** A memo run whose research recorded findings r1 and r2, as the research stage numbers them. */
+  function researchMatter() {
+    const directory = memoMatter()
+    const row = (id: string) => ({ id, claim: "Notice is required.", title: "Notice provision", citation: "", url: "https://example.gov/notice", snapshot: "0".repeat(64), quote: "Notice is required.", jurisdiction: "Supplied", currentness: "Retrieved", limitations: "" })
+    writeLeanText(directory, "research.json", JSON.stringify({ status: "completed", findings: [row("r1"), row("r2")], limitations: [] }))
+    writeOpenItems(directory, [GAP, CONDITION])
+    return directory
+  }
+  const disclosed = `[refs: ${GAP.id}; ${CONDITION.id}]`
+
+  test("outside a marker it is retried before the last attempt, and delivery words it on the last", () => {
+    const directory = researchMatter()
+    const notes = memo(`Per r2, notice is required; the r1 authority confirms it. ${disclosed}`, "- r1: the period is unconfirmed.")
+    expect(checkDraftingNotes(directory, notes, [GAP, CONDITION]).issues).toEqual([RESEARCH_STRAY(["r1", "r2"])])
+    expect(checkDraftingNotes(directory, notes, [GAP, CONDITION], { final: true }).issues).toEqual([])
+    expect(notesForReader(directory, notes, [GAP, CONDITION])).toBe(memo("Per a research finding, notice is required; the authority confirms it.", "- the period is unconfirmed."))
+  })
+
+  test("an id no finding has, one inside a longer number or id, or one inside a marker is no stray", () => {
+    const directory = researchMatter()
+    expect(checkDraftingNotes(directory, memo(`Rows r3, r1.2 and r12 stand. [refs: ${GAP.id}; ${CONDITION.id}; r1]`), [GAP, CONDITION]).issues).toEqual([])
+  })
 })
 
 describe("a recorded change id in a requested memo", () => {

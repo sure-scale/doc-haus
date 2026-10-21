@@ -169,7 +169,22 @@ test("the last research attempt keeps a path as written and saves its files", ()
   expect(final.outputs).toEqual(["research.json", "research-context.txt"])
   expect(readLeanJson(directory, "research.json")).toEqual(value)
   expect(readLeanText(directory, "research-context.txt")).toContain("Canonical extracted text:")
-  expect(final.openItems.map(item => item.detail)).toEqual([...research.limitations, `r1: ${leak}`])
+  expect(final.openItems.map(item => item.detail)).toEqual([...research.limitations, `Research finding limitation: ${leak}`])
+})
+
+test("research open items and the research handoff name no finding by its id", () => {
+  const directory = matter()
+  const research = retrieved(directory)
+  const second = { ...research.findings[0]!, id: "r2", limitations: "Duplicates r1." }
+  expect(acceptResearchReply(directory, "research", JSON.stringify({ ...research, findings: [research.findings[0], second], limitations: ["Currency of r1 and r2 is unconfirmed."] })).openItems.map(item => item.detail))
+    // Was "Currency of r1 and r2 is unconfirmed.", "r1: Currency remains to be confirmed", "r2: Duplicates r1.".
+    .toEqual(["Currency of research findings is unconfirmed.", "Research finding limitation: Currency remains to be confirmed", "Research finding limitation: Duplicates a research finding."])
+  const review = acceptResearchReply(directory, "research-review", JSON.stringify({ approved: ["r1"], rejected: [{ id: "r2", reason: "It repeats r1." }], limitations: ["r1: currency unconfirmed."], gaps: [] }))
+  expect(review.openItems.map(item => item.detail)).toEqual(["currency unconfirmed.", "Rejected research finding: It repeats a research finding."])
+  const handoff = JSON.parse(researchHandoff(directory)) as { findings: Record<string, unknown>[]; limitations: string[] }
+  expect(handoff.findings).toEqual([(({ id: _, ...row }) => row)(research.findings[0]!)])
+  expect(handoff.limitations).toEqual(["Currency of research findings is unconfirmed.", "currency unconfirmed.", "Rejected research finding: It repeats a research finding."])
+  expect(researchHandoff(directory)).not.toMatch(/\br[12]\b/)
 })
 
 test("a research review that names an internal file on every attempt completes on the last one with its words kept", async () => {

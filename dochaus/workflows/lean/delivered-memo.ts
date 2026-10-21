@@ -3,8 +3,9 @@ import { raisedFindings } from "./review-findings"
 import { finalBodyParagraphs, readChangeList, readParagraphs, record, standingIDPattern } from "./checks"
 import { requestedMemo } from "./deliverables"
 import { readLeanPlan, type DocID } from "./plan"
+import { excerpt } from "./quotes"
 import { readRepairRound } from "./repairs"
-import { readLeanJson, readOpenItems, type OpenItem } from "./state"
+import { SHORT_HASH_LENGTH, readLeanJson, readOpenItems, readQuestions, type OpenItem } from "./state"
 
 // The drafting notes, and the memo they are written as when the request asks
 // for one, refer to each open item in plain words with a trailing
@@ -31,11 +32,12 @@ export function withoutRefMarkers(text: string) {
  * occurrence of a known id, with a wrapping code mark, bold or quote: ids that
  * label the line or sit alone in brackets go whole; any other run of them is
  * named in plain words, or goes where a word beside it names its kind
- * (idPhrase). Text inside straight or curly double quotes is kept byte for
- * byte, though a quote holding only an id is that id. Only the lines that
- * changed are tidied. A line left with no content is dropped; every other line
- * keeps its exact text. */
-export function withoutInternalIDs(text: string, ids: Iterable<string>) {
+ * (idPhrase); a question the run asked (`questions`) is named by its asking.
+ * Text inside straight or curly double quotes is kept byte for byte, though a
+ * quote holding only an id is that id. Only the lines that changed are tidied.
+ * A line left with no content is dropped; every other line keeps its exact
+ * text. */
+export function withoutInternalIDs(text: string, ids: Iterable<string>, questions: ReadonlyMap<string, QuestionName> = new Map()) {
   const known = [...new Set([...ids].filter(id => id.length > 1))].toSorted((a, b) => b.length - a.length).map(escape).join("|")
   // A known id stands alone as the memo check reads it (standingIDPattern,
   // which bounds the whole wrapped token): not part of a longer id, word or
@@ -62,7 +64,7 @@ export function withoutInternalIDs(text: string, ids: Iterable<string>) {
     const quotes: string[] = []
     const shielded = unmarked.replace(quoted, (quote, id: unknown) => typeof id === "string" ? id : (quotes.push(quote), QUOTE))
     const named = label && bracketed && listed ? shielded.replace(label, "").replace(bracketed, "")
-      .replace(listed, (match, offset: number, whole: string) => idPhrase([...match.matchAll(each)].map(row => row[0]), /[ \t]or[ \t]/.test(match), whole.slice(0, offset), whole.slice(offset + match.length))) : shielded
+      .replace(listed, (match, offset: number, whole: string) => idPhrase([...match.matchAll(each)].map(row => row[0]), /[ \t]or[ \t]/.test(match), whole.slice(0, offset), whole.slice(offset + match.length), questions)) : shielded
     if (unmarked === content && named === shielded) return [line]
     const tidied = tidy(named).replace(new RegExp(QUOTE, "g"), () => quotes.shift()!)
     return tidied ? [`${prefix}${tidied}${trail}`] : []
@@ -72,10 +74,47 @@ export function withoutInternalIDs(text: string, ids: Iterable<string>) {
 /** A Unicode noncharacter, never in document text, holding a quotation's place. */
 const QUOTE = "\uFDD0"
 
+/** The id the run gives a question it asks: a fixed lowercase prefix and a
+ * hash of shortHash's default length, as intake and the change steps mint
+ * "q-…", and the package-scope, requested-files and checklist-conflict
+ * questions theirs. The model never chooses one. A question saved under an id
+ * of any other form, such as a word, is not matched, so no ordinary word is. */
+const MINTED_QUESTION_ID = new RegExp(`^[a-z]+(?:-[a-z]+)*-[0-9a-f]{${SHORT_HASH_LENGTH}}$`)
+
+/** Whether `id` has the form the run gives its own question ids. */
+export function mintedQuestionID(id: string) {
+  return MINTED_QUESTION_ID.test(id)
+}
+
+/** A question the run asked, as delivered text names it in place of its id:
+ * its asking (questionWords) and whether the lawyer answered it. */
+export type QuestionName = { words: string; answered: boolean }
+
+/** Each question the run recorded under an id it minted, by that id, as
+ * delivered text names it. */
+export function questionNames(directory: string): ReadonlyMap<string, QuestionName> {
+  return new Map(readQuestions(directory).filter(question => mintedQuestionID(question.id))
+    .map(question => [question.id, { words: questionWords(question.question), answered: question.status === "answered" }]))
+}
+
+/** A question's asking as delivered text quotes it: up to the end of its first
+ * sentence (a "?", a "." before a capital, or a ":" that opens a list, which
+ * is dropped), cut to an excerpt, its double quotation marks made single so
+ * the quotation it is put in stays whole. */
+function questionWords(question: string) {
+  const flat = question.replace(/\s+/g, " ").trim()
+  const first = /^.*?(?:\?|\.(?= [A-Z])|:(?= |$))/.exec(flat)?.[0] ?? flat
+  return excerpt(first.replace(/:$/, "").replace(/["\u201c\u201d]/g, "'"), QUESTION_EXCERPT)
+}
+
+const QUESTION_EXCERPT = 120
+
 /** What a run id names, told apart by the shape its producer gives it: a
  * planned document "d1", a proposed change "a1" or a withheld one "w1", an
- * explanation "i1", a paragraph pointer, a checklist requirement (its refined
- * and comparison checks included) and an open item "stage:kind:hash". Each
+ * explanation "i1", a paragraph pointer, a review finding "f-…", a question
+ * the run asked (MINTED_QUESTION_ID, which also matches a review finding's id,
+ * so it comes after it), a research finding "r1", a checklist requirement (its
+ * refined and comparison checks included) and an open item "stage:kind:hash". Each
  * kind is said with its article, after a determiner, and for several; `names`
  * are the words that already name it, beside which its id is only a label. A
  * memo finding is itself a requirement, so another one it cites is "another". */
@@ -85,6 +124,8 @@ const ID_KINDS = [
   { shape: /^i\d+$/, one: "an explanation", bare: "explanation", many: "explanations", names: ["explanation"] },
   { shape: /^p[0-9a-f]{12}$/, one: "a paragraph", bare: "paragraph", many: "paragraphs", names: ["paragraph"] },
   { shape: /^f-[0-9a-f]{10}$/, one: "a review finding", bare: "review finding", many: "review findings", names: ["finding"] },
+  { shape: MINTED_QUESTION_ID, one: "a question", bare: "question", many: "questions", names: ["question"] },
+  { shape: /^r\d+$/, one: "a research finding", bare: "research finding", many: "research findings", names: ["finding", "authority"] },
   { shape: /^source-[0-9a-f]{12}-\d+/, one: "another requirement", bare: "other requirement", many: "other requirements", names: ["requirement", "item"] },
   { shape: /^[^\s:]+:[^\s:]+:[^\s:]+$/, one: "an open item", bare: "open item", many: "open items", names: ["item"] },
 ]
@@ -99,8 +140,11 @@ const ANY_ID = { one: "an item", bare: "item", many: "items", names: ["item"] }
  * number the run takes ("the a1 change", "a1/a2 changes"; in the other number
  * it is a verb, "a1 changes the price", as is a singular one after an
  * auxiliary, "does a1 change it"), the ids then giving way to "the" where no
- * determiner or name leads them. */
-function idPhrase(ids: string[], or: boolean, before: string, after: string) {
+ * determiner or name leads them. A run of questions the run asked is named
+ * by their asking (questionPhrase). */
+function idPhrase(ids: string[], or: boolean, before: string, after: string, questions: ReadonlyMap<string, QuestionName>) {
+  const asked = questionPhrase(ids, or, before, after, questions)
+  if (asked !== undefined) return asked
   const kinds = ids.map(id => ID_KINDS.find(kind => kind.shape.test(id)) ?? ANY_ID)
   const distinct = [...new Set(kinds)]
   const names = distinct.flatMap(kind => kind.names)
@@ -114,6 +158,36 @@ function idPhrase(ids: string[], or: boolean, before: string, after: string) {
   const text = phrases.length > 1 ? `${phrases.slice(0, -1).join(", ")} ${or ? "or" : "and"} ${phrases.at(-1)}` : phrases[0]!
   return OPENING.test(before) ? text[0]!.toUpperCase() + text.slice(1) : text
 }
+
+/** A run of ids that are all questions the run asked, between `before` and
+ * `after`, named by their asking in quotation marks (QuestionName), so the
+ * reader knows which question is meant: only its words after "question" or
+ * "answer" ("to" its words) or before a noun for either ("the "…" question");
+ * in parentheses after a noun for an answer ("Settled instruction (your
+ * answer to "…") directs"); after a determiner as the answer to it or the
+ * question; and otherwise, once answered, as the lawyer's answer to it, or as
+ * the question while it is open or before "asked", capitalized where a
+ * sentence starts. Undefined when any id is not such a question. */
+function questionPhrase(ids: string[], or: boolean, before: string, after: string, questions: ReadonlyMap<string, QuestionName>) {
+  const rows = ids.flatMap(id => questions.get(id) ?? [])
+  if (!rows.length || rows.length < ids.length) return undefined
+  const quoted = rows.map(row => `"${row.words}"`)
+  const list = quoted.length > 1 ? `${quoted.slice(0, -1).join(", ")} ${or ? "or" : "and"} ${quoted.at(-1)}` : quoted[0]!
+  const s = !or && rows.length > 1 ? "s" : ""
+  const answered = rows.every(row => row.answered)
+  const word = /([A-Za-z]+)[ \t]+$/.exec(before)?.[1]?.toLowerCase() ?? ""
+  const next = /^[ \t]+([A-Za-z]+)(?![\w-])/.exec(after)?.[1]?.toLowerCase() ?? ""
+  if (/^questions?$/.test(word) || /^(?:questions?|answers?)$/.test(next) || ANSWER_NOUN.test(next)) return list
+  if (/^answers?$/.test(word)) return `to ${list}`
+  const answer = `your answer${s} to ${list}`, question = `the question${s} ${list}`
+  if (ANSWER_NOUN.test(word)) return `(${answered ? answer : question})`
+  if (DETERMINED.test(before)) return answered ? `answer${s} to ${list}` : `question${s} ${list}`
+  const text = answered && !/^ask(?:s|ed)$/.test(next) ? answer : question
+  return OPENING.test(before) ? text[0]!.toUpperCase() + text.slice(1) : text
+}
+
+/** A noun for the lawyer's answer to a question, which a question's id may label. */
+const ANSWER_NOUN = /^(?:instructions?|directions?|decisions?|choices?|repl(?:y|ies)|responses?|confirmations?)$/
 
 /** An auxiliary, a modal or "let" before an id no name leads: the word after it is a verb. */
 const AUXILIARY = /\b(?:[Dd]o|[Dd]oes|[Dd]id|[Ww]ill|[Ww]ould|[Cc]an|[Cc]ould|[Mm]ay|[Mm]ight|[Mm]ust|[Ss]hall|[Ss]hould|[Ll]et)[ \t]+$/
@@ -155,16 +229,17 @@ const OPENING = /^$|(?:(?<!\.[A-Za-z]|\b(?=[^\W\d_]*[a-z])[^\W\dAEIOUYaeiouy_]+)
 /** Every internal id the run records that its notes may name: open, deferred
  * and repair items (and `items`, such as the gate's) with their amendment,
  * checklist and paragraph references, each planned document's id, paragraph
- * pointers and change-list ids, review finding ids and the checklist's item ids. Question ids are
- * not included: the model chooses them and they may be ordinary words. */
+ * pointers and change-list ids, review finding ids, the checklist's item ids,
+ * and the question ids the run minted (mintedQuestionID), saved or named by
+ * an item. */
 export function runItemIDs(directory: string, items: OpenItem[] = []) {
   const repair = readRepairRound(directory)
   const checks = readLeanJson(directory, "checklist/checks.json")
   const extraction = readLeanJson(directory, "checklist/extraction.json")
   const rows = (value: unknown, key: string) => record(value) && Array.isArray(value[key]) ? value[key] as unknown[] : []
+  const recorded = [...readOpenItems(directory), ...deferredFindingItems(directory), ...(repair?.items ?? []), ...items]
   return [...new Set([
-    ...[...readOpenItems(directory), ...deferredFindingItems(directory), ...(repair?.items ?? []), ...items]
-      .flatMap(item => [item.id, item.ref.amendment_id, item.ref.checklist_item, item.ref.pid]),
+    ...recorded.flatMap(item => [item.id, item.ref.amendment_id, item.ref.checklist_item, item.ref.pid]),
     ...(readLeanPlan(directory)?.documents ?? []).flatMap(({ id: document }) =>
       [document, ...[...readParagraphs(directory, document), ...finalBodyParagraphs(directory, document)].map(row => row.pid), ...changeListIDs(directory, document)]),
     ...raisedFindings(directory).map(row => row.id),
@@ -172,6 +247,7 @@ export function runItemIDs(directory: string, items: OpenItem[] = []) {
     ...rows(checks, "expected_items"),
     ...rows(checks, "checks").map(row => record(row) ? row.item_id : undefined),
     ...rows(extraction, "sources").flatMap(source => rows(source, "items").map(row => record(row) ? row.id : undefined)),
+    ...[...readQuestions(directory).map(question => question.id), ...recorded.map(item => item.ref.question_id)].filter(id => id !== undefined && mintedQuestionID(id)),
   ].filter((value): value is string => typeof value === "string" && value.length > 0))]
 }
 

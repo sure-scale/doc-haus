@@ -20,6 +20,7 @@ agent/*.md
 !agent/document-reviewer.md
 !agent/extract.md
 !agent/lean-advise.md
+!agent/lean-answer.md
 !agent/lean-change-plan.md
 !agent/lean-change-prepare.md
 !agent/lean-change-review.md

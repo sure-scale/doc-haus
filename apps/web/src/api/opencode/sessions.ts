@@ -14,8 +14,10 @@ export async function disposeInstance(_client: Client) {
 
 // Session control is the web flow's control plane. A lost engine response must
 // not pin the composer, router, credential probe, or cleanup path indefinitely.
-export async function createSession(client: Client, title: string, timeoutMs = 10_000) {
-  return boundedRequest(client.session.create({ title, location: location(client) }), timeoutMs, "Session creation")
+// Optional native permission rules narrow the session's tools (e.g. a grid
+// re-check that may only read the passages in its prompt).
+export async function createSession(client: Client, title: string, timeoutMs = 10_000, permissions?: Array<{ action: string; resource: string; effect: "allow" | "deny" | "ask" }>) {
+  return boundedRequest(client.session.create({ title, location: location(client), ...(permissions ? { permissions } : {}) }), timeoutMs, "Session creation")
 }
 
 // Every session the engine holds for this matter (scoped by the client's

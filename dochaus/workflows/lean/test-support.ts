@@ -82,6 +82,8 @@ export function scriptedModel(replies: Record<string, Reply>) {
         [AGENT["research-review"]]: () => JSON.stringify({ approved: [], rejected: [], limitations: [], gaps: [] }),
         // Every asked question is advised; the fixture's advisor recommends nothing.
         [AGENT.advise]: () => JSON.stringify({ unavailable: { reason: "The scripted advisor recommends nothing." } }),
+        // Every answer in the lawyer's words is read as their own answer.
+        [AGENT.answer]: () => JSON.stringify({ class: "answered" }),
       }
       const reply = replies[input.agent] ?? preparation[input.agent]
       if (!reply) throw new Error(`No scripted reply for ${input.agent}.`)
@@ -97,15 +99,16 @@ export function scriptedModel(replies: Record<string, Reply>) {
  * an "Acting for: not stated" line, then each part prompt gets the text of the
  * part it names in the document it names. A "Form:" or "Headings:" line between
  * a title and its first part is an outline line of that document, which is
- * otherwise planned as "Form: other". Each assembled draft is the document
- * itself, without those lines. */
+ * otherwise planned as "Form: other" with "Headings: shown", its "## " parts
+ * printed as its headings. Each assembled draft is then the document itself,
+ * without those lines. */
 export function drafter(...documents: string[]): Reply {
   const planned = documents.map(document => {
     const [head = "", ...parts] = document.split(/^(?=## )/m)
     const lines = head.split("\n").filter(line => /^(?:form|headings)\s*:/i.test(line))
     return {
       title: /^# (.+)$/m.exec(document)?.[1],
-      outline: lines.some(line => /^form\s*:/i.test(line)) ? lines : ["Form: other", ...lines],
+      outline: lines.some(line => /^form\s*:/i.test(line)) ? lines : ["Form: other", ...(lines.length ? [] : ["Headings: shown"]), ...lines],
       parts: parts.map(part => part.trim()),
     }
   })
@@ -141,7 +144,7 @@ export function sameSession(reply: Reply): Reply {
 export const NO_FINDINGS = JSON.stringify({ findings: [] })
 
 export const review: Reply = prompt => JSON.stringify({ findings: [{
-  pid: pidOf(prompt, "The supplier shall deliver the goods."), origin: "source_conflict", finding: "The delivery period is missing.", sources: SUPPORT,
+  pid: pidOf(prompt, "The supplier shall deliver the goods."), origin: "source_conflict", balance: "neutral", finding: "The delivery period is missing.", sources: SUPPORT,
 }] })
 
 /** The review finding ids a change plan prompt lists for adjudication. */
@@ -163,11 +166,12 @@ export const changes: Reply = prompt => JSON.stringify({
 export const noChanges: Reply = () => JSON.stringify({ amendments: [], questions: [] })
 
 // Discloses every open item the coordinator lists, in every document's block,
-// as the drafting-notes contract asks: in words, each ending with its id in a
-// trailing "[ref: <id>]".
+// and every delegated question, as the drafting-notes contract asks: in words,
+// each ending with its id in a trailing "[ref: <id>]".
 export const draftingNotes: Reply = prompt => {
   const blocks = [...prompt.matchAll(/<open_items>\n([\s\S]*?)\n<\/open_items>/g)].map(match => match[1]!)
-  const ids = blocks.flatMap(block => [...block.matchAll(/^- (\S+):/gm)].map(match => match[1]))
+  const delegated = /<delegated_decisions>\n([\s\S]*?)\n<\/delegated_decisions>/.exec(prompt)?.[1] ?? ""
+  const ids = [...blocks.flatMap(block => [...block.matchAll(/^- (\S+):/gm)].map(match => match[1])), ...[...delegated.matchAll(/^- \[(\S+)\] Q:/gm)].map(match => match[1])]
   return ["# Drafting notes", "", "The draft states the delivery period from the supply terms.", "",
     ...ids.map(id => `- The lawyer must resolve this before the draft is used. [ref: ${id}]`)].join("\n")
 }

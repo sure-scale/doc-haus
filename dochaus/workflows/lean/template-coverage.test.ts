@@ -95,14 +95,15 @@ describe("template coverage in a lean run", () => {
 
     expect(state.status).toBe("completed")
     expect(model.count(AGENT.draft)).toBe(1 + 5)
-    expect(drafted.markdown).toBe(`${REFERENCED}\n`)
+    // The outline's part labels are not printed.
+    expect(drafted.markdown).toBe(`${REFERENCED.replace(/^## .+\n\n/gm, "")}\n`)
     expect(readFileSync(leanFile(directory, "d1/draft.md"), "utf8")).toBe(drafted.markdown!)
     expect(readFileSync(leanFile(directory, "d1/body.docx")).equals(drafted.body!)).toBe(true)
     const gaps = readOpenItems(directory).filter(item => item.stage === "draft" && item.kind === "omission")
     expect(gaps).toEqual([expect.objectContaining({ ref: { template_part: "ANNEX B – CHARGING SCHEDULE", source_id: TEMPLATE, document: "d1" } })])
     const asked = model.prompts.filter(prompt => prompt.agent === AGENT["change-plan"])
     expect(asked).toHaveLength(1)
-    expect(asked[0]!.text).toMatch(new RegExp(`<required_repairs>[\\s\\S]*- ${gaps[0]!.id} \\(template part missing or cut short in the draft\\): ${gaps[0]!.detail.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[\\s\\S]*</required_repairs>`))
+    expect(asked[0]!.text).toMatch(new RegExp(`<required_repairs>[\\s\\S]*- ${gaps[0]!.id} \\(template part missing, cut short or without its heading in the draft\\): ${gaps[0]!.detail.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[\\s\\S]*</required_repairs>`))
     // The part names no paragraph: the change cycle is told to add it from the template.
     expect(asked[0]!.text).toContain("For a template part missing or cut short in the draft, which names no paragraph, add the missing wording from the template: " +
       "split the paragraph the part belongs after, or replace a paragraph of the part with its full wording.")

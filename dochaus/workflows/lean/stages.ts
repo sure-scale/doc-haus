@@ -34,7 +34,7 @@ import {
 import { reviewStages, FIRST_DOCUMENT, planActingFor, operativeDocument, operativePlan, plannedDocument, readLeanPlan, runPosture, stepDocument, stepStage, type PlannedDocument, type StepID } from "./plan"
 import { acceptReviewReply, forwardedFindings, readReviewRecord } from "./review-findings"
 import { templateSource } from "./template-contract"
-import { completedDocumentsText, packageCompositionBlock } from "./prompts"
+import { completedDocumentsText, delegatedDecisionsText, packageCompositionBlock } from "./prompts"
 import { matterSourceBasis, matterSourceIDs } from "./quotes"
 import { documentRepairs, readRepairRound } from "./repairs"
 import {
@@ -64,8 +64,8 @@ import {
 // goes to the pointer applier as data, addressed by paragraph pointer. Steps of
 // one planned document keep their files under that document's id (d1/, d2/...).
 
-export const LEAN_PROMPT_VERSION = "lean-21-posture-review"
-const OUTLINE_CONTRACT = "document-form-8"
+export const LEAN_PROMPT_VERSION = "lean-23-neutral-market-reference"
+const OUTLINE_CONTRACT = "document-form-unheaded-labels-9"
 const DELIVERY_REVIEW_CONTRACT = "grounded-delivery-selection-4"
 const STRUCTURAL_AMENDMENT_CONTRACT = "explicit-paragraph-cardinality-1"
 const DRAFTING_NOTES_CONTRACT = "lawyer-facing-notes-plain-refs-3"
@@ -103,6 +103,8 @@ export const LEAN_STAGE_AGENTS = {
   files: "lean-files",
   // A job of the asking step, not a stage: it advises on one question before it is recorded.
   advise: "lean-advise",
+  // A job of taking an answer, not a stage: it reads how the lawyer's own words answer one question.
+  answer: "lean-answer",
 } as const
 
 export type PermissionRule = { action: string; resource: string; effect: "allow" | "deny" | "ask" }
@@ -218,6 +220,8 @@ export function stageInputs(directory: string, step: StepID, options: { repairCo
       ? [{ name: "structural-amendment-contract", bytes: STRUCTURAL_AMENDMENT_CONTRACT }] : []),
     ...(step === "finalize" ? [{ name: "drafting-notes-contract", bytes: DRAFTING_NOTES_CONTRACT }] : []),
     ...(step === "finalize" && requestedMemo(directory) ? [{ name: "requested-memo-contract", bytes: REQUESTED_MEMO_CONTRACT }] : []),
+    // Only with a delegated question, so a run without one keeps its key.
+    ...(step === "finalize" && delegatedDecisionsText(directory) ? [{ name: "delegated-decisions", bytes: delegatedDecisionsText(directory) }] : []),
     ...(["finalize", "package-review", "gate"].includes(step) ? [{ name: "review-dispositions", bytes: JSON.stringify((readLeanPlan(directory)?.documents ?? []).map(row => reviewDispositionText(directory, row.id))) }] : []),
     ...(["finalize", "package-review"].includes(step) ? [{ name: "delivery-review-contract", bytes: DELIVERY_REVIEW_CONTRACT }] : []),
     ...(step === "gate" ? [{ name: "gate-contract", bytes: GATE_CONTRACT }] : []),

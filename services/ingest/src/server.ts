@@ -50,7 +50,7 @@ import { listAgents, createAgent, updateAgent, deleteAgent, setAgentEnabled, AGE
 import { docxodus } from "./docxodus"
 import { listGcpProjects, listAwsProfiles, probeVertex } from "./host"
 import { parserCapabilitiesRoutes } from "./parser-capabilities-route"
-import { readGrid, writeGrid, type Grid } from "./grid"
+import { readGrid, recheckPassages, recheckRequest, writeGrid, type Grid } from "./grid"
 import { PreferencesUnavailableError, PreferencesValidationError, readDraftingPreferences, readDraftingTelemetryRetentionPreference, writeDraftingPreferences } from "./preferences"
 import { researchConnectionRoutes } from "./research-connections"
 import { readLeanPayload, readDetailPayload, readStoragePayload } from "./telemetry"
@@ -729,6 +729,14 @@ app.get("/matters/:id/grid", (c) => c.json(readGrid(matterDir(c.req.param("id"))
 app.put("/matters/:id/grid", async (c) => {
   writeGrid(matterDir(c.req.param("id")), await c.req.json<Grid>())
   return c.json({ ok: true })
+})
+
+// One deterministic re-check pass for a negative grid cell, scoped to its own
+// document: read-only candidates and the scope searched (see grid.ts).
+app.post("/matters/:id/grid/recheck", async (c) => {
+  const request = recheckRequest(await c.req.json().catch(() => undefined))
+  if (!request) return c.json({ error: "A re-check needs one document name, the question and the passages already read." }, 400)
+  return c.json(recheckPassages(matterDir(c.req.param("id")), request))
 })
 
 // Serve a matter's .docx bytes so the web app can render the redline in-browser

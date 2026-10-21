@@ -11,7 +11,7 @@ import { readLeanPlan, writeLeanPlan } from "./plan"
 import { openItem } from "./quotes"
 import { runLean } from "./runner"
 import { acceptStageReply } from "./stages"
-import { leanFile, readLeanState, readLeanText, readOpenItems, updateLeanStage, writeLeanText, writeOpenItems, type OpenItem } from "./state"
+import { leanFile, readLeanState, readLeanText, readOpenItems, updateLeanStage, writeLeanText, writeOpenItems, writeQuestions, type OpenItem, type Question } from "./state"
 import { AGENT, DRAFT, cleanupMatters, drafter, happyPath, matter, pidOf, registering, sameSession, scriptedModel, type Reply } from "./test-support"
 
 // The drafting notes, a requested memo or not, are delivered at the gate
@@ -171,6 +171,36 @@ test("names an id left in prose by what it is, with its article, number and capi
     ["Changes a1–a3 were applied; w1 was withheld (i1).", "Changes were applied; a proposed change was withheld."],
   ]
   expect(withoutInternalIDs(cases.map(([text]) => text).join("\n"), ids).split("\n")).toEqual(cases.map(([, expected]) => expected))
+})
+
+test("names a review finding, a question and a research finding by kind; a review finding's id, which also has a question id's form, stays a review finding", () => {
+  const ids = ["f-0123456789", "q-0a1b2c3d4e", "r1", "r2"]
+  const cases = [
+    ["Per f-0123456789 and q-0a1b2c3d4e, the period stands.", "Per a review finding and a question, the period stands."],
+    ["The r1 authority and r2 support it; f-0123456789 does not.", "The authority and a research finding support it; a review finding does not."],
+    ["- r1: the threshold is unconfirmed.", "- the threshold is unconfirmed."],
+  ]
+  expect(withoutInternalIDs(cases.map(([text]) => text).join("\n"), ids).split("\n")).toEqual(cases.map(([, expected]) => expected))
+})
+
+test("names a question the run asked by its asking, in words that read where its id stood", () => {
+  const answered = { words: "Which delivery period applies?", answered: true }
+  const open = { words: "Does delivery start at dispatch?", answered: false }
+  const questions = new Map([["q-0a1b2c3d4e", answered], ["q-5f6a7b8c9d", open]])
+  const cases = [
+    // Was "Settled instruction an item directs thirty days."
+    ["Settled instruction q-0a1b2c3d4e directs thirty days.", `Settled instruction (your answer to "${answered.words}") directs thirty days.`],
+    ["Per q-0a1b2c3d4e, delivery is due in thirty days.", `Per your answer to "${answered.words}", delivery is due in thirty days.`],
+    ["q-5f6a7b8c9d asked when delivery starts; q-0a1b2c3d4e settled the period.", `The question "${open.words}" asked when delivery starts; your answer to "${answered.words}" settled the period.`],
+    ["q-0a1b2c3d4e asked which period applies.", `The question "${answered.words}" asked which period applies.`],
+    ["The question q-5f6a7b8c9d is open and the q-0a1b2c3d4e answer governs.", `The question "${open.words}" is open and the "${answered.words}" answer governs.`],
+    ["The lawyer's answer q-0a1b2c3d4e governs; see the q-0a1b2c3d4e.", `The lawyer's answer to "${answered.words}" governs; see the answer to "${answered.words}".`],
+    ["Questions answered: q-0a1b2c3d4e and q-5f6a7b8c9d.", `Questions answered: The questions "${answered.words}" and "${open.words}".`],
+    // A label of the line or of the words before it, alone in brackets, goes whole.
+    ["- q-0a1b2c3d4e: thirty days applies.", "- thirty days applies."],
+    ["Current human instruction (q-0a1b2c3d4e) to use thirty days.", "Current human instruction to use thirty days."],
+  ]
+  expect(withoutInternalIDs(cases.map(([text]) => text).join("\n"), ["q-0a1b2c3d4e", "q-5f6a7b8c9d"], questions).split("\n")).toEqual(cases.map(([, expected]) => expected))
 })
 
 const DOCUMENT = { title: "Supply note", purpose: "Record supplied terms", parts: [{ heading: "Delivery", scope: "Delivery" }] }
@@ -339,6 +369,45 @@ test("a memo finding keeps its source quote whole and names the requirement and 
   requestMemo(directory)
   expect(deliveredNotes(directory, finalGate(directory))!.split("\n").at(-2))
     .toBe(`- The note states the delivery period. ${OMISSION} Reason: It conflicts with another requirement, which requires 60 days; a paragraph omits it. Limitation: Comments not inspected. Source: request: "${quote}"`)
+})
+
+test("a question id the checker cites in a finding's reason is delivered as words naming the question it asked or the lawyer answered", () => {
+  const directory = checklistMatter()
+  const answered: Question = { id: "q-0a1b2c3d4e", stage: "intake", question: "Which delivery period applies? The terms give two.", context: "The terms differ.", status: "answered", answer: "Thirty days." }
+  const open: Question = { id: "package-scope-5f6a7b8c9d", stage: "gate", question: "The checklist check left this instruction open, so the package may not carry it: Deliver the goods.", context: "Scope.", status: "open" }
+  writeQuestions(directory, [answered, open])
+  saveFindings(directory, [finding("c1", { reason: `Settled instruction ${answered.id} directs thirty days; ${open.id} is unanswered.`, open_decisions: [`Whether ${answered.id} covers dispatch`] }), finding("c2", { status: "satisfied" })])
+  requestMemo(directory)
+  const notes = deliveredNotes(directory, finalGate(directory))!
+  // Was "Reason: Settled instruction q-0a1b2c3d4e directs thirty days; package-scope-5f6a7b8c9d is unanswered."
+  expect(notes.split("\n").at(-2)).toBe(`- The note states the delivery period. ${OMISSION} Reason: Settled instruction (your answer to "Which delivery period applies?") directs thirty days; the question "The checklist check left this instruction open, so the package may not carry it" is unanswered. Limitation: Comments not inspected. Open decisions: Whether your answer to "Which delivery period applies?" covers dispatch. Source: request: "Deliver within thirty days of the order."`)
+  for (const id of [answered.id, open.id]) expect(notes).not.toContain(id)
+})
+
+test("a finding names each source as the lawyer knows it with its quote, once per passage, never the extracted-text path, line range or retrieval note it was located by", () => {
+  const directory = checklistMatter()
+  const terms = (quote: string, locator: string) => ({ document: "supply-terms.docx", locator, quote })
+  const item = { ...ITEMS[0]!.item, source_refs: [terms("Delivery: within thirty days of the order.", "sources/supply-terms-docx-0123456789ab.txt lines 1-26"),
+    terms("Delivery:  within thirty days\nof the order.", "Preamble"),
+    // The same passage, its first version with a curly apostrophe and edge spaces.
+    terms(" The Buyer\u2019s risk passes on delivery. ", "full source text read-document view=source offset 0"), terms("The Buyer's risk passes on delivery.", "clause 4"),
+    // The same words in another source stay that source's.
+    { document: "order-form.docx", locator: "sources/order-form-docx-0123456789ab.txt lines 1-9", quote: "The Buyer's risk passes on delivery." },
+    { document: "playbook:playbook-supply", locator: "read-document playbook:playbook-supply lines 1-3", quote: "Accept delivery periods up to thirty days." },
+    { document: "https://example.com/supply-guidance", locator: "webfetch offset 0", quote: "Delivery periods over thirty days are unusual." },
+    ...ITEMS[0]!.item.source_refs] }
+  writeLeanText(directory, "checklist/extraction.json", JSON.stringify({ expected_sources: ["request"], sources: [{ key: "request", status: "succeeded", items: [{ id: "c1", item }, ITEMS[1]!] }] }))
+  saveFindings(directory, [finding("c1"), finding("c2", { status: "satisfied" })])
+  // Was `Source: supply-terms.docx, sources/supply-terms-docx-0123456789ab.txt lines 1-26: "…"; supply-terms.docx, Preamble: "…"; …`.
+  const line = `- The note states the delivery period. ${OMISSION} Reason: Paragraph omits it. Limitation: Comments not inspected. Source: supply-terms.docx: "Delivery: within thirty days of the order."; supply-terms.docx: "The Buyer\u2019s risk passes on delivery."; order-form.docx: "The Buyer's risk passes on delivery."; SUPPLY playbook: "Accept delivery periods up to thirty days."; https://example.com/supply-guidance: "Delivery periods over thirty days are unusual."; request: "Deliver within thirty days of the order."`
+  const internal = ["sources/", ".txt", "lines 1-", "Preamble", "view=source", "offset 0", "clause 4", "playbook:playbook", "read-document", "webfetch", REQUEST_LOCATOR]
+  const notes = deliveredNotes(directory, finalGate(directory))!
+  expect(notes.split("\n")).toContain(line)
+  for (const text of internal) expect(notes).not.toContain(text)
+  requestMemo(directory)
+  const memo = deliveredNotes(directory, finalGate(directory))!
+  expect(memo.split("\n").at(-2)).toBe(line)
+  for (const text of internal) expect(memo).not.toContain(text)
 })
 
 test("a memo finding's status says, in plain words for each class, what is not confirmed and what to check, never the stage that left it", () => {

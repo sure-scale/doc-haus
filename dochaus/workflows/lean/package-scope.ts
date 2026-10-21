@@ -167,9 +167,10 @@ type ShownQuote = { quote: string; parties?: string[][]; row?: string[] }
 // or UNNAMED, so an id holding "]", or those words, is read whole.
 const UNNAMED = "parties the instructions and sources do not name"
 const ACT_LINE = new RegExp(`, directed by "(.*?)" \\[source: .*?\\]; to be taken by (".*?"|${UNNAMED}); (?:no planned document carries it|planned in )`, "g")
-// The gate's row (gate.ts checklistRequirement): `<id>: <check> Sources:
-// <document> "<quote>", ...`, each quote longer than GATE_EXCERPT cut to an
-// excerpt that long, and then its open decisions or the lack of one.
+// The gate's row (gate.ts packageScopeQuestion), one per line: `<check>
+// Sources: <document> "<quote>", ...`, each quote longer than GATE_EXCERPT cut
+// to an excerpt that long, and then its open decisions or the lack of one.
+// Rows it wrote earlier, run together and each led by its item id, read alike.
 const SOURCES = / Sources: (.*?)" (?:Open decisions: |No open decision recorded)/g
 export const GATE_EXCERPT = 160
 // Either line is read from the words that open it, `, directed by "` or `

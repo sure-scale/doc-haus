@@ -10,6 +10,7 @@ import { readLeanDocuments, requestedMemo, type LeanDocuments } from "../../../d
 import { sha256File } from "../../../dochaus/lib/lineage"
 import { lastLeanEventAt } from "../../../dochaus/workflows/lean/events"
 import { planActingFor, readLeanPlan, runPosture } from "../../../dochaus/workflows/lean/plan"
+import { heldBackCount } from "../../../dochaus/workflows/lean/review-findings"
 import { enqueueLeanRequest, pendingLeanRequests, leanUserUpdates, queuedAnswerIDs, isChecklistRefinement } from "../../../dochaus/workflows/lean/requests"
 import { runLean, stageInputSha, stopLeanRun } from "../../../dochaus/workflows/lean/runner"
 import { leanSteps } from "../../../dochaus/workflows/lean/plan"
@@ -249,10 +250,11 @@ function combinedOutput(directory: string): { document: string; name: string; fi
 }
 
 /** The run's planned documents without their parts, whom the lawyer acts
- * for and the Posture the stages draft to, or null before the outline. */
+ * for, the Posture the stages draft to and how many review findings that
+ * Posture held back as beyond market (derived), or null before the outline. */
 function plannedDocuments(directory: string) {
   const plan = readLeanPlan(directory)
-  return plan ? { documents: plan.documents.map(row => ({ id: row.id, title: row.title, purpose: row.purpose })), acting_for: planActingFor(directory), posture: runPosture(directory) } : null
+  return plan ? { documents: plan.documents.map(row => ({ id: row.id, title: row.title, purpose: row.purpose })), acting_for: planActingFor(directory), posture: runPosture(directory), held_back: heldBackCount(directory) } : null
 }
 
 /** Pause: stops the coordinator working on this matter. It interrupts the
