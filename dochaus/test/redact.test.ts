@@ -324,7 +324,15 @@ const SPLIT_CHART = strToU8(`${XML_DECL}<c:chartSpace xmlns:c="http://schemas.op
 function leaks(bytes: Uint8Array, needle: string) {
   return Object.entries(unzipSync(bytes)).flatMap(([name, data]) => {
     const raw = strFromU8(data, true)
+    const decoded = raw.replace(/(?:%[0-9A-Fa-f]{2})+/g, (run) => {
+      try {
+        return decodeURIComponent(run)
+      } catch {
+        return run
+      }
+    })
     return [
+      decoded !== raw && decoded.includes(needle) && `${name}: percent-decoded`,
       raw.includes(needle) && `${name}: raw`,
       raw.replace(/<[^>]*>/g, "").includes(needle) && `${name}: joined text`,
     ].filter((leak): leak is string => !!leak)
@@ -420,5 +428,54 @@ describe("redact tool across the whole package", () => {
     expect(result as string).toContain("word/charts/chart1.xml (text split across runs in <a:p>)")
     expect(await Bun.file(file).bytes()).toEqual(before)
     expect(listRedactions(dir)).toEqual([])
+  })
+})
+
+// A two-word needle whose only copies are percent-encoded inside URLs: an external
+// mailto target, a HYPERLINK field instruction, and an internal relationship
+// target (a part name, which cannot be rewritten).
+const FULL_NAME = `Orla ${NAME}`
+function percentEncodedParts() {
+  const parts = plantedParts()
+  const rels = strFromU8(parts["word/_rels/document.xml.rels"])
+  parts["word/_rels/document.xml.rels"] = strToU8(rels.replace(`subject=${NAME}"`, `subject=Orla%20${NAME}"`))
+  const field = `<w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> HYPERLINK "mailto:records@example.test?subject=Orla%20${NAME}" </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r>${run("records")}<w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>`
+  parts["word/document.xml"] = strToU8(strFromU8(parts["word/document.xml"]).replace("<w:sectPr>", `${field}<w:sectPr>`))
+  return parts
+}
+
+describe("percent-encoded copies in URLs", () => {
+  test("the scan decodes percent escapes, and a part-name copy stays residue after the scrub", () => {
+    const parts = percentEncodedParts()
+    const where = docxPackageResidue(zipSync(parts), FULL_NAME).hits.map((hit) => `${hit.part} | ${hit.where}`)
+    expect(where).toEqual(
+      expect.arrayContaining([
+        "word/_rels/document.xml.rels | attribute Target on <Relationship> (percent-encoded)",
+        "word/document.xml | text in <w:instrText> (percent-encoded)",
+      ]),
+    )
+    const rels = strFromU8(parts["word/_rels/document.xml.rels"])
+    parts["word/_rels/document.xml.rels"] = strToU8(rels.replace("media/image1.png", "media/Orla%20Thistlewood.png"))
+    const scrubbed = scrubDocxPackage(zipSync(parts), FULL_NAME, "[REDACTED]").bytes
+    expect(docxPackageResidue(scrubbed, FULL_NAME).hits).toEqual([
+      { part: "word/_rels/document.xml.rels", where: "attribute Target on <Relationship> (percent-encoded)" },
+    ])
+  })
+
+  test("the redact tool rewrites encoded copies with an encoded label", async () => {
+    const { dir, file } = await matterWith(zipSync(percentEncodedParts()))
+    expect(leaks(await Bun.file(file).bytes(), FULL_NAME).length).toBeGreaterThan(0)
+    const result = await redact.execute(
+      { document: "personnel.docx", text: FULL_NAME, reason: "Client identity", author: undefined, label: undefined },
+      ctxFor(dir),
+    )
+    if (!result || typeof result === "string") throw new Error(String(result))
+    expect(result.output).toContain("Verified zero residue in the text the scan reads")
+    const redacted = await Bun.file(file).bytes()
+    expect(leaks(redacted, FULL_NAME)).toEqual([])
+    expect(docxPackageResidue(redacted, FULL_NAME).hits).toEqual([])
+    const parts = unzipSync(redacted)
+    expect(strFromU8(parts["word/_rels/document.xml.rels"])).toContain('Target="mailto:records@example.test?subject=%5BREDACTED%5D"')
+    expect(strFromU8(parts["word/document.xml"])).toContain('HYPERLINK "mailto:records@example.test?subject=%5BREDACTED%5D"')
   })
 })

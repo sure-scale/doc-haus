@@ -163,8 +163,35 @@ function* values(part: string, node: Node): Generator<Value> {
   }
 }
 
-function contains(value: Value, needle: string) {
-  return value.exact ? value.text === needle : value.text.includes(needle)
+// Percent-decode each run of %XX escapes (URLs in link targets and field
+// instructions), leaving malformed runs as they are. No other decoding.
+function percentDecoded(text: string) {
+  return text.replace(/(?:%[0-9A-Fa-f]{2})+/g, (run) => {
+    try {
+      return decodeURIComponent(run)
+    } catch {
+      return run
+    }
+  })
+}
+
+// The needle as it can appear in a URL: each character literal or as its
+// percent-encoded UTF-8 bytes (either hex case), so "Jane%20Doe" matches.
+function urlNeedle(needle: string) {
+  const hex = (byte: number) =>
+    byte.toString(16).toUpperCase().padStart(2, "0").replace(/[A-F]/g, (digit) => `[${digit}${digit.toLowerCase()}]`)
+  const source = [...needle]
+    .map((char) => `(?:${char.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}|${[...Buffer.from(char, "utf8")].map((byte) => `%${hex(byte)}`).join("")})`)
+    .join("")
+  return new RegExp(source, "g")
+}
+
+// Where a value holds the needle: literally, or (for a percent-escaped copy)
+// only once decoded.
+function holds(value: Value, needle: string) {
+  if (value.exact) return value.text === needle ? value.where : undefined
+  if (value.text.includes(needle)) return value.where
+  if (percentDecoded(value.text).includes(needle)) return `${value.where} (percent-encoded)`
 }
 
 // Paragraph text joined across runs. A value split over differently formatted
@@ -216,10 +243,16 @@ export function scrubDocxPackage(bytes: Uint8Array, needle: string, label: strin
     const document = readXml(data)
     if (!document) continue
     let count = 0
+    // A percent-escaped copy gets the percent-encoded label, which is valid in
+    // any URL position; a literal copy gets the label as written.
+    const pattern = urlNeedle(needle)
     for (const value of values(name, document)) {
-      if (!value.set || !value.text.includes(needle)) continue
-      count += value.text.split(needle).length - 1
-      value.set(value.text.replaceAll(needle, label))
+      if (!value.set || !holds(value, needle)) continue
+      const next = value.text.replace(pattern, (copy) => {
+        count += 1
+        return copy === needle ? label : encodeURIComponent(label)
+      })
+      if (next !== value.text) value.set(next)
     }
     if (count > 0) {
       parts[name] = strToU8(new XMLSerializer().serializeToString(document))
@@ -230,10 +263,10 @@ export function scrubDocxPackage(bytes: Uint8Array, needle: string, label: strin
 }
 
 // Residue check across the whole package. Every XML part (by content, whatever
-// its extension: .xml, .rels, .vml) is parsed and every readable value checked,
-// plus paragraph text joined across runs. Every other part is searched for a
-// literal copy and listed as unread. No hits means the needle is absent from
-// everything the scan reads, and only from that.
+// its extension: .xml, .rels, .vml) is parsed and every readable value checked
+// (percent-decoded too), plus paragraph text joined across runs. Every other
+// part is searched for a literal copy and listed as unread. No hits means the
+// needle is absent from everything the scan reads, and only from that.
 export function docxPackageResidue(bytes: Uint8Array, needle: string) {
   const hits: ResidueHit[] = []
   const read: string[] = []
@@ -248,7 +281,7 @@ export function docxPackageResidue(bytes: Uint8Array, needle: string) {
     }
     read.push(part)
     const where = new Set([
-      ...[...values(part, document)].filter((value) => contains(value, needle)).map((value) => value.where),
+      ...[...values(part, document)].flatMap((value) => holds(value, needle) ?? []),
       ...splitRunHits(document, needle),
     ])
     for (const location of where) hits.push({ part, where: location })
