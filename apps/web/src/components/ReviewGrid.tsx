@@ -39,6 +39,20 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
     return () => modal?.close()
   }, [])
 
+  // Escape closes only the open cell detail. Consumed here, on document (before
+  // ModalHeader's window listeners) and wherever focus is, so neither those
+  // listeners nor the dialog's native cancel also close the table on that press.
+  useEffect(() => {
+    if (!detail) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented) return
+      e.preventDefault()
+      setDetail(undefined)
+    }
+    document.addEventListener("keydown", onKey)
+    return () => document.removeEventListener("keydown", onKey)
+  }, [detail])
+
   useEffect(() => {
     getGrid(matterId).then((g) => commit(g)).catch((e) => setError(humanizeError(e)))
     // eslint-disable-next-line react-hooks/exhaustive-deps
