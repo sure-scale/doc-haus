@@ -84,8 +84,10 @@ input:not([type="checkbox"]):not([type="radio"]), select, textarea {
 .matters-index-list > .list-row { margin-inline: 0; padding-inline: 0; }
 .matters-list-toolbar .page-filter { width: min(100%, 300px); min-width: 0; }
 
-/* Stack the new-matter fields in the right-hand library panel. */
-.matter-create-row { display: grid; gap: 12px; }
+/* Pair optional fields when the right-hand panel has room. */
+.matter-create-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; container-type: inline-size; }
+.matter-create-row > .matter-create-title,
+.matter-create-row > button { grid-column: 1 / -1; }
 .matter-create-row > input,
 .matter-create-row > select,
 .matter-create-row > .jx-select { width: 100%; min-width: 0; }
@@ -95,6 +97,10 @@ input:not([type="checkbox"]):not([type="radio"]), select, textarea {
 .matter-create-row select { padding-right: 32px; }
 .matter-create-row .jx-trigger { width: 100%; min-width: 0; font-weight: 400; }
 .matter-create-row .jx-trigger.is-empty { color: var(--placeholder); }
+
+@container (max-width: 420px) {
+  .matter-create-row > * { grid-column: 1 / -1; }
+}
 
 /* Keep the actual extraction/review model; only remove the outer card. */
 .card.review { border: 0; border-radius: 0; padding: 20px 0; box-shadow: none; }
