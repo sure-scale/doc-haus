@@ -199,6 +199,11 @@ export function heldBackReason(directory: string, row: ReviewFinding) {
     ? `the run's Posture is ${runPosture(directory) === "conservative" ? "Conservative" : "Balanced"}` : "the run acts for neither party"}.`
 }
 
+/** How many review findings the run held back, for the run header. */
+export function heldBackCount(directory: string) {
+  return heldBackFindings(directory).length
+}
+
 function heldBackFindings(directory: string) {
   const order = documentOrder(directory)
   return holdsBeyondMarket(directory) ? raisedFindings(directory).filter(row => findingRoute(order, row, true) === "held") : []
