@@ -135,9 +135,20 @@ export default function RunHeader({
     : acting.stated ? `Acting for: ${acting.party}${posture ? ` · ${postureLabel(posture)}` : ""}`
     : posture && posture !== "balanced" ? `Acting for: not stated · ${postureLabel(posture)}`
     : "Acting for: not stated — drafting is neutral"
+  // Review suggestions the Posture kept out of the drafts as one-sided, each
+  // disclosed in the notes; nothing when none, or from an older ingest.
+  const heldBack = status.plan?.held_back ?? 0
+  const notesFile = status.documents?.status === "completed"
+    ? status.documents.documents.find((row) => row.kind === "drafting_notes" && row.deliverable)?.deliverable : undefined
+  const heldText = `${heldBack} one-sided suggestion${heldBack === 1 ? "" : "s"} held back (${acting?.stated && posture ? postureLabel(posture) : "neutral drafting"}) — `
+  const seeNotes = `see ${notesWording(status.memo).phrase}`
+  const heldLine = heldBack === 0 ? null
+    : notesFile ? <>{heldText}<button type="button" className="linklike" onClick={() => onOpen(notesFile)}>{seeNotes}</button></>
+    : `${heldText}${seeNotes}`
   const meta = [
     ...head.meta,
     actingLine,
+    heldLine,
     asks > 0 && head.tone !== "input" ? <span className="run-head-asks">{asks === 1 ? "1 question for you" : `${asks} questions for you`}</span> : null,
     status.pending_requests > 0 && !stopped ? "Request queued" : null,
     statusError ? `Reconnecting… as of ${checkedAt ? formatAgo(checkedAt, now) : "earlier"}` : null,

@@ -1,5 +1,6 @@
 import { draftingStyleWarningsBlock } from "./style-warnings"
 import { boundPlaybookContext } from "../../lib/playbook-source"
+import { delegationSettles } from "../../lib/question-delegation"
 import { readChangePlan, repairBodyText, reviewDispositionText, writerPlan } from "./change-pipeline"
 import { appliedChangeEvidence, nativeExportEvidence } from "./review-evidence"
 import { comparisonDescription } from "./comparison"
@@ -11,7 +12,7 @@ import { REQUEST_SOURCE, matterSourceIDs } from "./quotes"
 import { readRepairRound, changesRepairSections } from "./repairs"
 import { MEMO_TARGET, REVIEW_FINDINGS_CONTRACT, findingsText, forwardedFindings, reviewText } from "./review-findings"
 import { disclosableItems } from "./stages"
-import { QUESTION_KIND_CONTRACT, isReviewStage, answeredQuestionsText, readLeanJson, readLeanText, readQuestions, type OpenItem, type StageID } from "./state"
+import { QUESTION_KIND_CONTRACT, isReviewStage, answeredQuestions, answeredQuestionsText, delegatedQuestions, questionOptions, readLeanJson, readLeanText, readQuestions, type OpenItem, type Question, type StageID } from "./state"
 import { plannedContract } from "./template-contract"
 
 // Prompts of the lean model steps. Each step's first prompt carries everything
@@ -102,7 +103,7 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
         "- An answer that leaves a point undecided keeps the instructions as they stand: plan every act they direct. It does not license narrowing the package.",
         "- Under each title write \"Mode: revise\" when revising a supplied original, otherwise \"Mode: new\". For a revision, name the supplied original with Compare against and retain it as the drafting foundation. Also write \"Deliverable: redline\" when the requested named artifact is an annotated markup/comparison, \"Deliverable: combined\" when the request asks for this document and its memo in one named file, otherwise \"Deliverable: body\"; combined needs the \"Memo:\" line. These select the requested artifact role; filenames do not determine it.",
         '- Inspect the supplied documents and bound library guidance before outlining. Decide which are playbooks or drafting guidance from their contents, scope and the request, not filenames alone. Under each title add Playbook review: {"sources":[{"source_id":"exact canonical guidance source","quote":"exact source words establishing its scope or a relevant position"}],"reason":"why this guidance applies to this body"}. Select all applicable guidance, and use sources: [] with a reason when none applies. An uploaded playbook stays a matter source; do not publish it to the shared library. This schedules a dedicated check after drafting only for selected bodies. Read the whole guidance later; these quotes select sources, not an exhaustive position list.',
-        "- Titles become document text. Each part's ## label identifies the drafting job. Its label is also its visible heading by default, except in a letter, whose labels are not shown unless you write \"Headings: shown\" under its title for a letter whose text uses headings. Add Display heading: <publication heading> immediately under a label to use a different heading, or Display heading: none when the document should flow straight into that part's text. Choose presentation suited to the requested document. For a revision preserve the original heading structure unless the instructions require a structural change. Put internal source mappings and planning explanations in scope notes, not in visible headings or operative wording. Keep client advice in its own appropriate explanatory artifact rather than appending it to an operative agreement.",
+        "- Titles become document text. Each part's ## label identifies the drafting job and is not printed; the part's text carries the document's own headings in its style. To print a heading in a label's place, add Display heading: <publication heading> immediately under that label. For a letter whose text uses headings, write \"Headings: shown\" under its title to print its labels as its headings. Choose presentation suited to the requested document. For a revision preserve the original heading structure unless the instructions require a structural change; print a heading they change as its part's Display heading. Put internal source mappings and planning explanations in scope notes, not in visible headings or operative wording. Keep client advice in its own appropriate explanatory artifact rather than appending it to an operative agreement.",
         "- Where the request gives the file name a document is to be delivered under, add the line \"File: <file name as the request gives it>\" " +
         "under that document's title. File and Deliverable map the requested output artifact; Compare against and Template identify inputs. A source filename mentioned for revision is not itself an output naming instruction. The \"# \" line is the document's own title as it will read in the document: no file name and no Markdown.",
         "- Where the request expressly asks to revise a supplied original and deliver a comparison against it, add \"Compare against: <exact matter DOCX document name>\" under the title. This is the redline baseline, separate from a reusable Template; do not infer it from template use alone.",
@@ -184,7 +185,7 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
   return (sections[isReviewStage(stage) ? "review" : stage] ?? []).filter(Boolean).join("\n\n")
 }
 
-export function retryPrompt(stage: StageID | "advise", issues: string[]) {
+export function retryPrompt(stage: StageID | "advise" | "answer", issues: string[]) {
   return [
     `Your reply did not pass the ${stage} checks:`,
     ...issues.map(issue => `- ${issue}`),
@@ -196,13 +197,15 @@ export function retryPrompt(stage: StageID | "advise", issues: string[]) {
 /** The standard every reviewer applies for the party the lawyer acts for, by
  * the run's Posture: Client-favorable looks for every protection a careful
  * drafter would include for that party; Balanced and Conservative hold it to
- * what a market-standard document for that side would include. */
+ * what a neutral, mid-market document of the kind, prepared for neither party,
+ * would contain (a market document for that side would itself lean). Each finding's
+ * balance, not this wording, keeps what goes beyond market out of the draft
+ * (review-findings.ts). */
 export function sidedReviewStandard(directory: string) {
   const assess = "- Assess each provision as the reviewing lawyer for the party the lawyer acts for: whether it works under the governing law the request and sources point to, "
   return runPosture(directory) === "client-favorable"
     ? `${assess}whether it protects that party's position, and whether a protection a careful drafter would include for that party is missing.`
-    : `${assess}whether it has a real adverse effect on that party's position, and whether it lacks what a conventional, market-standard document for that side would include. ` +
-      "Do not press for protections beyond market practice: a position more favourable to that party than market practice gives is not a finding, not even as an optional negotiating improvement."
+    : `${assess}whether it has a real adverse effect on that party's position, and whether it lacks a protection for that party that a neutral, mid-market document of this kind, prepared for neither party, would contain.`
 }
 
 /** Whom the lawyer acts for, as data every model stage reads. When neither the
@@ -278,20 +281,28 @@ function draftingNotesSections(directory: string, request: string) {
   const planned = new Set(plan.map(row => row.id))
   const loose = items.filter(item => !item.ref.document || !planned.has(item.ref.document))
   const questions = readQuestions(directory)
+  const delegated = delegatedDecisionsText(directory)
+  const delegatedIDs = new Set(delegatedQuestions(directory).map(question => question.id))
   const memo = requestedMemo(directory)
+  // The notes never name a question by its id, so their prompt shows none: an
+  // open question is disclosed by its open item's id.
+  const answers = answeredQuestions(directory).filter(question => !delegatedIDs.has(question.id)).map(question => `- Q: ${question.question}\n  A: ${question.answer}`).join("\n")
   return [
     memo
       ? `This is a lean drafting run. The request asks for a memo to accompany the drafted documents, "${memo.name}". Write the drafting notes as that memo.`
       : "This is a lean drafting run. Write the drafting notes that go to the lawyer with the drafted documents.",
     tagged("required_repairs", (readRepairRound(directory)?.items ?? []).filter(item => item.stage === "package-review" || item.ref.repair_target === "memo").map(item => `- ${item.detail}`).join("\n") || "None."),
-    request, actingForBlock(directory), answeredQuestionsText(directory) ? tagged("answers", answeredQuestionsText(directory)) : "",
+    request, actingForBlock(directory), answers ? tagged("answers", answers) : "",
     tagged("sources", matterSourceIDs(directory).join("\n")),
     tagged("delivery_artifacts", JSON.stringify(deliveryArtifactEvidence(directory), null, 2)),
     tagged("drafting_spine", readLeanText(directory, "spine.json") ?? "None."),
     tagged("discrepancies", readLeanText(directory, "discrepancy.json") ?? "None."),
     ...plan.map(row => `<document id="${row.id}" title="${attribute(row.title)}">\n${documentSections(directory, row.id, items).join("\n\n")}\n</document>`),
     loose.length ? tagged("open_items", openItemLines(loose)) : "",
-    tagged("questions", questions.map(question => `- ${question.id} (${question.status}): ${question.question}${question.answer ? `\n  Answer: ${question.answer}` : ""}`).join("\n") || "None."),
+    tagged("questions", questions.map(question => delegatedIDs.has(question.id)
+      ? `- (${question.answer_class === "declined" ? "not answered" : "delegated"}; see delegated_decisions) ${question.question}`
+      : `- (${question.status}) ${question.question}${question.answer ? `\n  Answer: ${question.answer}` : ""}`).join("\n") || "None."),
+    delegated ? tagged("delegated_decisions", delegated) : "",
     tagged("output_contract", [
       "- Follow the lawyer's explanation-detail, formality and house-style preferences when writing the notes. Translate the supplied records into their practical meaning rather than copying workflow field names, raw paths or stage status. Retain source support, comparison baselines, applied/unapplied outcomes, limitations and every required open-item id. Name documents where this helps locate them.",
       "- Separate actual unresolved instructions, corrections and decisions from professional review before issue. Do not turn settled instructions or internal output-handling steps into new confirmation requirements.",
@@ -305,6 +316,7 @@ function draftingNotesSections(directory: string, request: string) {
       ...(memo ? ["- These notes are the requested memo; title it as that memo. Lead with the discrepancies found and the choices made, then give the recommendations and the open points, in plain language. The memo carries only what these records show."] : []),
       "- Say what each open item is and what the lawyer needs to do about it, and end that statement with the item's exact id as a trailing \"[ref: <id>]\". Write internal ids only in these markers, and name each document by its title or file name, never by its internal id; describe each change by what it does, never by its change id.",
       "- For each marked drafted default, say what was chosen and that the lawyer must confirm it.",
+      ...(delegated ? ['- delegated_decisions lists the questions the lawyer delegated to the drafter\'s judgment or did not answer. Give them a section of their own. For each decision taken, say in words what was decided, why, the evidence it rests on and the alternatives not taken, that the lawyer delegated it, and that it is for the lawyer to confirm. For each with no decision taken, say that the point stays open, why, and what the lawyer needs to do. End each statement with the question\'s exact id as "[ref: <id>]".'] : []),
       "- Use applied_changes.evidence_basis and the actual sources array to describe a change’s evidential basis. application_mode describes only how text was applied; code or already_applied says nothing about source support. Where source passages are provided, assess them before claiming support or a gap. For no-source-passage changes, disclose drafting judgment or a view of the law and the required lawyer confirmation. Do not invent an open-item marker or confirmation requirement that the final body and evidence do not show.",
       "- operation describes the requested amendment, the only one for its paragraph; result_paragraphs reports the paragraph's actual final wording, and an empty result records deletion. Describe the actual result and disclose unresolved explanations honestly.",
       "- Quote sources only word for word as \"exact words\" [source: document name], and cite only authority supported by matter sources or the approved legal research handoff.",
@@ -312,6 +324,33 @@ function draftingNotesSections(directory: string, request: string) {
       "- Read-only tools are available; file-writing tools are unavailable. Your final reply is saved as the drafting notes.",
     ].join("\n")),
   ]
+}
+
+/** Each question the lawyer delegated or did not answer (delegatedQuestions),
+ * as the drafting notes disclose it: who delegated it and, for an adopted
+ * recommendation, the decision taken with the advisor's checked reason,
+ * evidence and the alternatives not taken; otherwise why no decision was
+ * taken. Empty when there is none. */
+export function delegatedDecisionsText(directory: string) {
+  return delegatedQuestions(directory).map(question => [`- [${question.id}] Q: ${question.question}`, ...delegatedLines(question).map(line => `  ${line}`)].join("\n")).join("\n")
+}
+
+function delegatedLines(question: Question) {
+  const words = question.lawyer_words ?? (question.answer_kind === "adopted" ? undefined : question.answer)
+  const who = question.answer_class === "declined" ? "Not answered by the lawyer" : "Delegated by the lawyer"
+  const attribution = words === undefined ? `${who}.` : `${who}, in their words: "${words}"`
+  const advice = question.advice
+  if (question.answer_kind === "adopted") {
+    const recommendation = advice && "recommendation" in advice ? advice.recommendation : undefined
+    return [attribution, `Decision taken, for the lawyer to confirm: ${question.answer}`,
+      ...(recommendation ? [`Reason: ${recommendation.rationale}`, ...recommendation.basis.map(row => `Evidence: "${row.quote}" [source: ${row.source_id}]`)] : []),
+      ...questionOptions(question).filter(option => option.id !== question.option_id).map(option => `Alternative not taken: ${option.text}`)]
+  }
+  const why = question.answer_class === "declined" ? "the point stays open for the lawyer."
+    : !delegationSettles(question) ? "it needs a fact or an approval that only the lawyer can give."
+    : advice && "unavailable" in advice ? `no option was supported: ${advice.unavailable.reason}`
+    : "no checked recommendation is available."
+  return [attribution, `No decision taken: ${why}`]
 }
 
 function documentSections(directory: string, document: DocID, items: OpenItem[]) {

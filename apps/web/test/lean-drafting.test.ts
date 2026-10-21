@@ -383,6 +383,29 @@ test("the run header shows the Posture the run drafts to beside whom the lawyer 
   expect(isLeanDraftingStatus(withPlan({ acting_for: northwind, posture: "conservative" }))).toBe(true)
 })
 
+test("the run header counts the one-sided suggestions the Posture held back and points to the notes; with none it says nothing", () => {
+  const idle: RunActions = { busy: false, pausing: false, stopping: false, error: "", errorFor: undefined, resuming: false, resume: async () => true, answer: async () => true, choose: async () => true, decide: async () => true, update: async () => true, refine: async () => true, pause: async () => true, stop: async () => true }
+  const withPlan = (fields: Record<string, unknown>, base: Record<string, unknown> = completed) => ({ ...base, plan: { ...completed.plan, ...fields } })
+  const render = (value: unknown) =>
+    renderToStaticMarkup(createElement(RunHeader, { status: lean(value), actions: idle, own: true, onOpen: () => {}, onShowDrafts: () => {} }))
+  const northwind = { party: "Northwind Traders Ltd", stated: true }
+  const unstated = { party: "", stated: false }
+  // Delivered: the pointer opens the drafting notes, where each is disclosed.
+  const two = render(withPlan({ acting_for: northwind, posture: "balanced", held_back: 2 }))
+  expect(two).toContain("2 one-sided suggestions held back (Balanced) — ")
+  expect(two).toContain('<button type="button" class="linklike">see the drafting notes</button>')
+  expect(render(withPlan({ acting_for: northwind, posture: "conservative", held_back: 1 }))).toContain("1 one-sided suggestion held back (Conservative)")
+  expect(render(withPlan({ acting_for: unstated, posture: "client-favorable", held_back: 1 }))).toContain("1 one-sided suggestion held back (neutral drafting)")
+  // Before the notes exist the pointer is text.
+  expect(render(withPlan({ acting_for: northwind, posture: "balanced", held_back: 1 }, { ...completed, documents: null })))
+    .toContain("1 one-sided suggestion held back (Balanced) — see the drafting notes</span>")
+  // None held back, or an older ingest that does not report it: nothing shown.
+  expect(render(withPlan({ acting_for: northwind, posture: "balanced", held_back: 0 }))).not.toContain("held back")
+  expect(render(withPlan({ acting_for: northwind, posture: "balanced" }))).not.toContain("held back")
+  for (const held_back of ["2", -1, 1.5]) expect(isLeanDraftingStatus(withPlan({ acting_for: northwind, posture: "balanced", held_back }))).toBe(false)
+  expect(isLeanDraftingStatus(withPlan({ acting_for: northwind, posture: "balanced", held_back: 2 }))).toBe(true)
+})
+
 test("the question card shows how many are answered and Send waits for an answer", () => {
   const calls = respond({ answers: {}, revision: 0 })
   const open = blockedQuestion.questions.map((question) => ({ ...question, status: "open" as const }))
@@ -518,12 +541,15 @@ test("Other, the lawyer's own words, is always offered", () => {
   expect(questionCard([unavailable(advised)])).toMatch(/<label class="question-label" for="lean-answer-q-remedy">Your answer<\/label>/)
 })
 
-test("Decide for me is offered only where the run may take the recommendation: judgment and pure scope questions", () => {
+test("Decide for me is offered only where the run may take the recommendation: judgment, instruction and pure scope questions", () => {
   const offered = (question: LeanQuestion) => questionCard([question]).includes(">Decide for me</button>")
   expect(offered(advised)).toBe(true)
   // Decided by the question's kind and advice, never by its id.
   expect(offered({ ...advised, id: "package-scope-d1", kind: "scope" })).toBe(true)
-  for (const kind of ["fact", "instruction", "conflict", "file_name"] as const) expect(offered({ ...advised, kind })).toBe(false)
+  // Leaving an instruction question to the drafter's judgment is the instruction it asks for.
+  expect(offered({ ...advised, kind: "instruction" })).toBe(true)
+  expect(delegableQuestion({ ...advised, kind: "instruction" })).toBe(true)
+  for (const kind of ["fact", "conflict", "file_name"] as const) expect(offered({ ...advised, kind })).toBe(false)
   // A scope card that also asks for facts or approvals needs the lawyer's own answer.
   expect(offered({ ...advised, kind: "scope", mixed: true })).toBe(false)
   expect(offered(unavailable(advised))).toBe(false)

@@ -57,7 +57,7 @@ test("the native coordinator accepts the specialist before adjudication and fina
       expect(input.text).toContain(JSON.stringify(selection))
       checked = true
       return JSON.stringify({ coverage: "Playbook coverage: supplied terms require the stated delivery period.", findings: [{
-        pid: pidOf(input.text, DRAFTED), origin: "request", finding: PLAYBOOK_FINDING, sources: SUPPORT,
+        pid: pidOf(input.text, DRAFTED), origin: "request", balance: "neutral", finding: PLAYBOOK_FINDING, sources: SUPPORT,
       }] })
     }
     if (input.agent === AGENT["change-plan"]) {

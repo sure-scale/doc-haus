@@ -26,10 +26,10 @@ function promptsOf(model: ReturnType<typeof scriptedModel>, agent: string, title
  * note, which is final by then. */
 const reviews = (memo = false): Reply => prompt => JSON.stringify({
   findings: listed(prompt, DRAFTED) ? [
-    { pid: pidOf(prompt, DRAFTED), origin: "source_conflict", finding: "The delivery period is missing.", sources: SUPPORT },
-    { document: "d2", origin: "request", finding: FORWARD, sources: SUPPORT },
-    ...(memo ? [{ document: "memo", origin: "request", finding: MEMO, sources: [] }] : []),
-  ] : [{ document: "d1", origin: "drafting", finding: BACKWARD, sources: [] }],
+    { pid: pidOf(prompt, DRAFTED), origin: "source_conflict", balance: "neutral", finding: "The delivery period is missing.", sources: SUPPORT },
+    { document: "d2", origin: "request", balance: "neutral", finding: FORWARD, sources: SUPPORT },
+    ...(memo ? [{ document: "memo", origin: "request", balance: "neutral", finding: MEMO, sources: [] }] : []),
+  ] : [{ document: "d1", origin: "drafting", balance: "neutral", finding: BACKWARD, sources: [] }],
 })
 
 describe("cross-document review findings", () => {

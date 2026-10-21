@@ -83,7 +83,7 @@ test("changed dispositions invalidate dependent consumers while leaving every dr
 test("legacy dismissal retains review navigation without being treated as evidence-backed rejection", async () => {
   const directory = setup()
   const reviewed = await acceptStageReply(directory, "d1.review-independent", JSON.stringify({ findings: [
-    { pid: "p111111111111", origin: "law", finding: "Further authority is needed before relying on enforceability.", sources: [] },
+    { pid: "p111111111111", origin: "law", balance: "neutral", finding: "Further authority is needed before relying on enforceability.", sources: [] },
   ] }))
   expect(reviewed.issues).toEqual([])
   const id = (readLeanJson(directory, "d1/review-independent.json") as { findings: { id: string }[] }).findings[0]!.id

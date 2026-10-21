@@ -167,7 +167,7 @@ test("each stage run is one row that updates in place, in plain words, with its 
 test("a settled or stalled run says in one line where it stands and how the lawyer moves it on", () => {
   expect(runOutcome(running)).toBeUndefined()
   expect(runOutcome(done)).toEqual({ tone: "done", text: "Drafting is complete." })
-  // A question Decide for me can take (a judgment or pure scope question with a
+  // A question Decide for me can take (a judgment, instruction or pure scope question with a
   // recommendation) may be answered or settled by the recommendation; any other
   // (here one with no kind or advice, or a fact reading) only the lawyer answers.
   expect(runOutcome(question)).toEqual({ tone: "attention", text: "Drafting is waiting on a question only you can answer." })

@@ -4,6 +4,7 @@ import { existsSync, statSync } from "node:fs"
 import path from "node:path"
 import { normalize, normalizeWithMap } from "../../lib/quote-verify"
 import { readResearchSourceSnapshot } from "../../lib/research-source-snapshot"
+import { withoutInternalIDs } from "./delivered-memo"
 import { readRepairRound } from "./repairs"
 import { intakeQuestions } from "./intake"
 import { matterSourceIDs, openItem } from "./quotes"
@@ -73,12 +74,40 @@ export function researchStatus(directory: string) {
   return { ...value, status: limited ? "limited" : value.status }
 }
 
+/** The approved findings and the research limitations for later stages. A
+ * finding goes without its id, which no later stage needs (they cite an
+ * authority by its URL or quotation) and which would reach the lawyer's notes;
+ * the limitations name none (withoutFindingIDs). */
 export function researchHandoff(directory: string) {
   const findings = approvedResearch(directory)
   const research = readLeanJson(directory, "research.json") as Research | undefined
   const review = readLeanJson(directory, "research-review.json") as ResearchReview | undefined
-  return JSON.stringify({ findings, limitations: [...(research?.limitations ?? []), ...(review?.limitations ?? []), ...(review?.gaps ?? []).map(gapText),
-    ...(review?.rejected ?? []).map(row => `${row.id}: ${row.reason}`)] }, null, 2)
+  const ids = researchFindingIDs(directory)
+  return JSON.stringify({ findings: findings.map(({ id: _, ...row }) => ({ ...row, limitations: withoutFindingIDs(row.limitations, ids) })),
+    limitations: [...(research?.limitations ?? []), ...(review?.limitations ?? []), ...(review?.gaps ?? []).map(gapText)].map(text => withoutFindingIDs(text, ids))
+      .concat((review?.rejected ?? []).map(row => rejectedText(row, ids))) }, null, 2)
+}
+
+/** The ids of the run's research findings in the shape the research stage
+ * writes them ("r1"), which delivery words as a research finding (ID_KINDS in
+ * delivered-memo.ts). Only this shape is read as one, so a word is never. */
+export function researchFindingIDs(directory: string) {
+  const research = readLeanJson(directory, "research.json")
+  return record(research) && Array.isArray(research.findings)
+    ? [...new Set(research.findings.flatMap(row => record(row) && typeof row.id === "string" && /^r\d+$/.test(row.id) ? [row.id] : []))] : []
+}
+
+/** Research text the lawyer reads (an open item, or the handoff the drafter
+ * and the notes read) with each of the findings' `ids` in plain words, as
+ * delivery words them (withoutInternalIDs): "r1: …" loses its label, and
+ * "carried in r5 and r9" reads "carried in research findings". */
+function withoutFindingIDs(text: string, ids: string[]) {
+  return ids.length ? withoutInternalIDs(text, ids) : text
+}
+
+/** A rejected finding as the lawyer reads it: why it was rejected, without its id. */
+function rejectedText(row: { reason: string }, ids: string[]) {
+  return `Rejected research finding: ${withoutFindingIDs(row.reason, ids)}`
 }
 
 /** The gaps sent to research for its current basis (stages.ts researchBasis),
@@ -199,12 +228,15 @@ export function acceptResearchReply(directory: string, stage: ResearchStage, rep
   if (issues.length) return { issues, outputs: [], openItems: [] }
   if (stage === "research") writeLeanText(directory, "research-context.txt", readableResearchContext(directory, (value as Research).findings))
   writeLeanText(directory, `${stage}.json`, `${JSON.stringify(value, null, 2)}\n`)
+  // The lawyer reads these as open items, so none names a finding by its id.
+  const ids = researchFindingIDs(directory)
   const limitations = stage === "intake" || stage === "research" && (value as Research).status === "not-needed" ? [] : (value as Research).limitations
-  const rejected = stage === "research-review" ? (value as ResearchReview).rejected.map(row => `${row.id}: ${row.reason}`) : []
+  const rejected = stage === "research-review" ? (value as ResearchReview).rejected.map(row => rejectedText(row, ids)) : []
   // Disclosed like limitations; a review after the gap round replaces them.
   const gaps = stage === "research-review" ? ((value as ResearchReview).gaps ?? []).map(gapText) : []
-  const sourceLimits = stage === "research" ? (value as Research).findings.flatMap(row => row.limitations.trim() ? [`${row.id}: ${row.limitations}`] : []) : []
-  return { issues: [], outputs: [`${stage}.json`, ...(stage === "research" ? ["research-context.txt"] : [])], openItems: [...limitations, ...rejected, ...gaps, ...sourceLimits].map(detail => openItem(stage, "research_gap", detail, {})) }
+  const sourceLimits = stage === "research" ? (value as Research).findings.flatMap(row => row.limitations.trim() ? [`Research finding limitation: ${withoutFindingIDs(row.limitations, ids)}`] : []) : []
+  return { issues: [], outputs: [`${stage}.json`, ...(stage === "research" ? ["research-context.txt"] : [])],
+    openItems: [...limitations.map(text => withoutFindingIDs(text, ids)), ...rejected, ...gaps.map(text => withoutFindingIDs(text, ids)), ...sourceLimits].map(detail => openItem(stage, "research_gap", detail, {})) }
 }
 
 function checkReview(directory: string, value: unknown, saved = false) {

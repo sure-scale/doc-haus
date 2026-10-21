@@ -13,7 +13,7 @@ import { matterSourceIDs, openItem, quoteFound, quoteMissIssue } from "./quotes"
 import { changesRepairSections, documentRepairs } from "./repairs"
 import { drainLeanRequests } from "./requests"
 import { approvedResearch } from "./research"
-import { findingItem, findingsFor, findingsText, reviewText, routedFindingItems } from "./review-findings"
+import { findingItem, findingsFor, findingsText, heldBackDispositions, reviewText, routedFindingItems } from "./review-findings"
 import { LEAN_CHILD_PERMISSIONS, LEAN_MAX_RETRIES, LEAN_PROMPT_VERSION, LEAN_STAGE_AGENTS, stageInputs, stepSessionTitle, type LeanDeps } from "./stages"
 import { QUESTION_KIND_CONTRACT, hashStageInputs, leanFile, questionContent, readLeanJson, readLeanText, readQuestions, writeLeanText, type LeanState, type LeanStageState, type Question } from "./state"
 
@@ -52,7 +52,7 @@ export function changePlanPrompt(directory: string, document: DocID) {
     `<review_findings>\n${findingsText(findingsFor(directory, document), document)}\n</review_findings>`,
     "Each review finding above concerns this document; one with raised_by was found by the review of that earlier document. Adjudicate every one: name its id in the resolves of the group that amends for it, of the findings entry (disposition) that defers, recommends or rejects it, or of the question it needs. One entry may resolve several findings. A review finding that needs no change is a rejected entry with its reason; dismissed resolves nothing.",
     ...changesRepairSections(directory, document),
-    ...(readChangePlan(directory, document) ? [`<previous_review_dispositions>\n${reviewDispositionText(directory, document)}\n</previous_review_dispositions>`, "Retain still-material prior dispositions in your replacement plan. Resolve or reject them only when current evidence or settled instructions supply the reason; do not lose deferred advice during a wording repair."] : []),
+    ...(readChangePlan(directory, document) ? [`<previous_review_dispositions>\n${reviewDispositionText(directory, document, false, false)}\n</previous_review_dispositions>`, "Retain still-material prior dispositions in your replacement plan. Resolve or reject them only when current evidence or settled instructions supply the reason; do not lose deferred advice during a wording repair."] : []),
     ...(documentRepairs(directory, document)?.items.some(item => item.stage === "package-review" || item.stage === "change-review" || item.stage === "checklist-check") ? [
       `<current_final_body>\n${repairBodyText(directory, document, documentRepairs(directory, document)!.items.some(item => item.stage === "change-review"), documentRepairs(directory, document)!.items.some(item => item.stage === "checklist-check"))}\n</current_final_body>`,
       "Semantic findings refer to the current final body. Map them to initial draft pids; the eventual changes list is cumulative against that initial draft.",
@@ -178,8 +178,10 @@ export function readChangePlan(directory: string, document: DocID): ChangePlan |
 
 /** A view of the existing adjudication record, not a second findings ledger.
  * Old records retain their unstructured decisions and review navigation until
- * the planner re-runs; never infer rejection merely from an old dismissal. */
-export function reviewDispositionText(directory: string, document: DocID, priorDocument = false) {
+ * the planner re-runs; never infer rejection merely from an old dismissal.
+ * Findings the run held back for its Posture follow as recommendations, except
+ * for the change plan's own re-plan (`heldBack` false), which never adjudicates them. */
+export function reviewDispositionText(directory: string, document: DocID, priorDocument = false, heldBack = true) {
   const plan = readChangePlan(directory, document)
   if (!plan) return "No adjudicated review dispositions available."
   const navigation = (text: string) => priorDocument ? text.replace(/\bp[0-9a-f]{12}\b/g, "earlier paragraph") : text
@@ -187,7 +189,8 @@ export function reviewDispositionText(directory: string, document: DocID, priorD
     origin_document: document,
     // Strip authored paragraph references for other-document consumers, while
     // retaining verbatim source passages and the saved decision record.
-    findings: (plan.findings ?? []).map(({ resolves: _resolves, ...row }) => ({ ...row, detail: navigation(row.detail), reason: navigation(row.reason), limitations: row.limitations.map(navigation) })),
+    findings: [...(plan.findings ?? []), ...(heldBack ? heldBackDispositions(directory, document) : [])]
+      .map(({ resolves: _resolves, ...row }: ReviewDisposition) => ({ ...row, detail: navigation(row.detail), reason: navigation(row.reason), limitations: row.limitations.map(navigation) })),
     ...(plan.dismissed.length ? { legacy_decisions: plan.dismissed.map(navigation) } : {}),
     ...(plan.findings === undefined ? { unadjudicated_review_history: reviewStages(directory, document).map(stage => ({ stage,
       text: reviewText(directory, document, stage, { strip: true }) ?? "",

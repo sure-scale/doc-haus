@@ -13,7 +13,7 @@ const reviewers: readonly string[] = REVIEW_STAGES.map(stage => AGENT[stage])
 
 /** A review reply with one finding in these words. */
 const finding = (text: string, sources: { source_id: string; quote: string }[] = []) =>
-  JSON.stringify({ findings: [{ origin: "drafting", finding: text, sources }] })
+  JSON.stringify({ findings: [{ origin: "drafting", balance: "neutral", finding: text, sources }] })
 
 /** The review findings a change plan prompt lists, as [review stage, finding]. */
 function listedFindings(prompt: string) {
@@ -192,7 +192,7 @@ test("specialist source misses reach reconciliation and are superseded by the ch
 test("a specialist checker retries only that reviewer in the same session", async () => {
   const directory = matter()
   const model = scriptedModel({ ...happyPath,
-    [AGENT["review-wording"]]: (_, index) => index ? NO_FINDINGS : JSON.stringify({ findings: [{ pid: "pffffffffffff", origin: "drafting", finding: "Invalid draft pointer." }] }),
+    [AGENT["review-wording"]]: (_, index) => index ? NO_FINDINGS : JSON.stringify({ findings: [{ pid: "pffffffffffff", origin: "drafting", balance: "neutral", finding: "Invalid draft pointer." }] }),
   })
   const state = await runLean(directory, { sessions: model.port })
   expect(state.status).toBe("completed")

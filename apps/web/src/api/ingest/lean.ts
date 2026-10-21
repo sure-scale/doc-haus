@@ -144,9 +144,11 @@ export type LeanDraftingStatus = {
   changed_after_check?: { since: string | null; documents: string[]; missing: string[] } | null
   /** The documents the run plans to draft, in order, whom the lawyer acts
    * for (`stated` false, with no party, when the request did not say) and the
-   * Posture the run drafts to; null before the outline, `acting_for` and
-   * `posture` absent from an older ingest. */
-  plan: { documents: LeanPlannedDocument[]; acting_for?: { party: string; stated: boolean }; posture?: Posture } | null
+   * Posture the run drafts to, and `held_back`, how many review findings that
+   * Posture kept out of the drafts as beyond market (each disclosed in the
+   * notes); null before the outline, `acting_for`, `posture` and `held_back`
+   * absent from an older ingest. */
+  plan: { documents: LeanPlannedDocument[]; acting_for?: { party: string; stated: boolean }; posture?: Posture; held_back?: number } | null
   /** The name the plan gives the memo the lawyer asked for, which the run's
    * drafting notes are written and delivered as; null when none was requested,
    * absent from an older ingest. */
@@ -204,7 +206,8 @@ export function isLeanDraftingStatus(value: unknown): value is LeanDraftingStatu
         Array.isArray(value.plan.documents) &&
         (value.plan.acting_for === undefined ||
           (record(value.plan.acting_for) && typeof value.plan.acting_for.party === "string" && typeof value.plan.acting_for.stated === "boolean")) &&
-        (value.plan.posture === undefined || POSTURES.map((row) => row.value).includes(value.plan.posture as Posture)))) &&
+        (value.plan.posture === undefined || POSTURES.map((row) => row.value).includes(value.plan.posture as Posture)) &&
+        (value.plan.held_back === undefined || (Number.isInteger(value.plan.held_back) && (value.plan.held_back as number) >= 0)))) &&
     (value.memo == null || typeof value.memo === "string") &&
     (value.combined_output == null ||
       (record(value.combined_output) &&
