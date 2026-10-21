@@ -171,7 +171,7 @@ test("the same words typed, picked or adopted give the same answers text and the
 // own plan entry, never answers. Change-review, finalize and the gate were
 // re-pinned when stage keys stopped carrying when a question was answered (and
 // its kind, options and advice), and the draft when the outline gained its
-// Form line. The checklist check, change plan, changes and change-review were
+// Form line and when part labels were planned unheaded. The checklist check, change plan, changes and change-review were
 // re-pinned when reviews were saved as typed findings (dN/<stage>.json) and the
 // change plan began keying the findings earlier documents forward to it. The
 // same pins hold however the lawyer gave an answer.
@@ -182,7 +182,7 @@ const INPUTS: Record<string, string> = {
   "research": "64a0d22c3dd780907955b2e56b3122b94ea72101092d694f899a15e2af0cb13b",
   "research-review": "f30467728cba33fbf89ff10cfba8903cd7aa9647cbd6849d4a3caf293f27a65b",
   "spine": "c038d3823819fc2e8ef176dc1cb855fd7f7a87e1fe077efb1c2aee41f922e076",
-  "d1.draft": "c911ed211c7a0b38bc715cf335db26c4b6980737b65e57a1ddc9ad9d908652c8",
+  "d1.draft": "68f34f0d87312276c4f5d676b490753a5050865d40c0448aaae368a7d6252376",
   "d1.review": "e80f5bbe084c8ef90d2864358d2caafa09139822584fb0f12cb14d0976e76416",
   "d1.review-independent": "9f1fe22f3e0db01ef5fffe96a09ddf917b5e371a89c58988eb875bcfbbae4aa4",
   "d1.review-wording": "7f86222090d292207f576968b1171dab74bedab8cf5dbc4e3593752d2584b6f5",

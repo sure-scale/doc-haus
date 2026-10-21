@@ -97,15 +97,16 @@ export function scriptedModel(replies: Record<string, Reply>) {
  * an "Acting for: not stated" line, then each part prompt gets the text of the
  * part it names in the document it names. A "Form:" or "Headings:" line between
  * a title and its first part is an outline line of that document, which is
- * otherwise planned as "Form: other". Each assembled draft is the document
- * itself, without those lines. */
+ * otherwise planned as "Form: other" with "Headings: shown", its "## " parts
+ * printed as its headings. Each assembled draft is then the document itself,
+ * without those lines. */
 export function drafter(...documents: string[]): Reply {
   const planned = documents.map(document => {
     const [head = "", ...parts] = document.split(/^(?=## )/m)
     const lines = head.split("\n").filter(line => /^(?:form|headings)\s*:/i.test(line))
     return {
       title: /^# (.+)$/m.exec(document)?.[1],
-      outline: lines.some(line => /^form\s*:/i.test(line)) ? lines : ["Form: other", ...lines],
+      outline: lines.some(line => /^form\s*:/i.test(line)) ? lines : ["Form: other", ...(lines.length ? [] : ["Headings: shown"]), ...lines],
       parts: parts.map(part => part.trim()),
     }
   })

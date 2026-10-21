@@ -1,6 +1,6 @@
 import { isPosture, normalizeLegend, type Posture } from "../../lib/drafting-preferences"
 import { effectivePosture } from "../../lib/matter-client"
-import { DOCUMENT_FORMS, isLetter, type DocumentForm } from "../../lib/page-furniture"
+import { DOCUMENT_FORMS, type DocumentForm } from "../../lib/page-furniture"
 import { TOOL_SYNTAX_ISSUE, printedToolCall } from "./checks"
 import { REVIEW_STAGES, readLeanJson, readLeanText, writeLeanText, type ReviewStageID, type StageID } from "./state"
 
@@ -26,7 +26,9 @@ export type DocID = `d${number}`
 export type StepID = `${DocID}.${DocStage}` | "discrepancy" | "intake" | "research" | "research-review" | "spine" | "finalize" | "checklist-check" | "package-review" | "gate"
 
 /** heading identifies the drafting part; absent display_heading preserves it
- * in publication, while an empty display_heading makes the part unheaded. */
+ * in publication (a plan saved before labels were planned unheaded, or one
+ * whose outline shows its headings), while an empty display_heading makes the
+ * part unheaded. */
 export type PlannedPart = { heading: string; scope: string; display_heading?: string }
 /** A template part the outline leaves out on purpose, with its reason. */
 export type LeftOutPart = { part: string; reason: string }
@@ -199,9 +201,10 @@ export function earlierDocuments(directory: string, id: DocID): PlannedDocument[
  * holds the parties it names to the request and sources.
  * A "Form:" line under each title gives the document's form, one of
  * DOCUMENT_FORMS. A missing line or another value is retried, and on the last
- * attempt the document stands with no form, as a legacy plan does. A letter's
- * parts are planned unheaded, except a part with its own "Display heading:"
- * line, unless a "Headings: shown" line under its title keeps their labels.
+ * attempt the document stands with no form, as a legacy plan does. A part's
+ * label names a drafting job, not a heading of the document: every part is
+ * planned unheaded, except a part with its own "Display heading:" line, unless
+ * a "Headings: shown" line under its title keeps that document's labels.
  * Optional "Legend:" and "Page numbers: none" lines under a title give what the
  * request asks of that document's page furniture; the first of each stands. A
  * legend must be the request's own words and is shown with the firm's, and
@@ -330,8 +333,8 @@ export function parsePlan(reply: string, request?: string): Checked<LeanOutline>
         title: plainTitle(document.title),
         purpose: document.purpose.join(" "),
         ...(document.playbook_review ? { playbook_review: document.playbook_review } : {}),
-        // A letter reads as one letter: its planning labels are not its headings.
-        parts: document.parts.map(part => plannedPart(part, isLetter(forms[index]) && !document.headings)),
+        // Planning labels are not the document's headings.
+        parts: document.parts.map(part => plannedPart(part, !document.headings)),
         ...(document.mode ? { mode: document.mode } : {}),
         // A combined file that cannot be built stands as the body on the last attempt.
         ...(document.deliverable ? { deliverable: document.deliverable === "combined" && (combinedIssues.length || !memoName) ? "body" as const : document.deliverable } : {}),

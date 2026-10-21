@@ -122,6 +122,12 @@ function looksLikeMarkdownRow(xml: string) {
   return text.startsWith("|") && text.endsWith("|")
 }
 
+/** Gives each heading paragraph the spacing of its style, as rendering does;
+ * for a document whose heading levels changed after rendering. */
+export function polishHeadingSpacing(xml: string) {
+  return xml.replace(PARAGRAPH_RE, paragraph => polishHeadingParagraph(paragraph))
+}
+
 function polishHeadingParagraph(xml: string) {
   const style = xml.match(/<w:pStyle\b[^>]*w:val="(Heading[123])"[^>]*\/>/)?.[1] as keyof typeof HEADING_SPACING | undefined
   if (!style) return xml

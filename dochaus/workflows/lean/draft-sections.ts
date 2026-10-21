@@ -1,4 +1,5 @@
 import { rmSync } from "node:fs"
+import { visibleInlineText } from "../../lib/markdown-visible-text"
 import { isLetter } from "../../lib/page-furniture"
 import { matterClient } from "../../lib/matter-client"
 import { playbookSelectionIssues } from "./playbook-review"
@@ -14,7 +15,7 @@ import {
 } from "./requested-files"
 import {
   FIRST_DOCUMENT, headingText, normalizedHeading, parsePlan, plannedDocument, readLeanPlan, runPosture, withDocumentIDs, writeLeanPlan,
-  type ActingFor, type DocID, type LeanOutline, type PlannedDocument, type PlannedPart, type StepID,
+  type ActingFor, type DocID, type LeanOutline, type PlannedDocument, type StepID,
 } from "./plan"
 import { actingForBlock, packageCompositionBlock, retryPrompt, stagePrompt } from "./prompts"
 import {
@@ -79,7 +80,7 @@ import { draftTemplateItems } from "./template-coverage"
 // step: the draft is never rewritten for it, the change cycle receives it as a
 // required repair, and the apply step records any gap left in the final body.
 
-export type DraftOutline = { title: string; parts: PlannedPart[] }
+export type DraftOutline = Pick<PlannedDocument, "title" | "parts" | "form" | "mode">
 
 export type DraftStageRun =
   | { status: "done"; outputs: string[]; openItems: OpenItem[]; questions?: Question[] }
@@ -325,7 +326,7 @@ export async function runDraftStage(
     const brief = sectionHandoff(directory, document)
     // The outline's session saw the run context before the plan named a memo.
     const text = [...(index > 0 ? [] : outlined ? [actingForBlock(directory), packageCompositionBlock(directory, document)] : [stagePrompt(directory, step)]), brief, section].filter(Boolean).join("\n\n")
-    const written = await ask(label, text, reply => checkSection(reply, plan, index))
+    const written = await ask(label, text, (reply, final) => checkSection(reply, plan, index, final))
     if (!written.value) return failed(`${label} "${part.heading}"`, written.issues)
     drafted.push(written.value)
     writeLeanText(directory, `${document}/draft-in-progress.md`, assembleDraft(plan, drafted, false))
@@ -336,6 +337,13 @@ export async function runDraftStage(
     : undefined
   const accepted = await acceptStageReply(directory, step, assembleDraft(plan, drafted), { presentation })
   if (accepted.issues.length) return failed("assembled document", accepted.issues)
+  // A part label the Word body could not place (presentDraft) leaves the part
+  // without paragraphs of its own; the draft stands, and the record says what
+  // that changes.
+  const placed = new Set(readParagraphs(directory, document).map(row => row.draft_part))
+  const unplaced = presentation?.parts.filter(row => !placed.has(row.part)) ?? []
+  if (unplaced.length) appendLeanEvent(directory, { stage: "draft", document, event: "checker", step: "presentation", issues: unplaced.map(row =>
+    `The Word body could not place the part "${row.heading}": its label stays as rendered, and its paragraphs count with the part before it when the draft is checked against a template.`) })
   // Recorded with the body, so a pause or restart before the step settles keeps it.
   progress({ input_sha: key })
   return { status: "done", outputs: accepted.outputs, openItems: [...accepted.openItems, ...draftTemplateItems(directory, document, readParagraphs(directory, document))], questions: accepted.questions }
@@ -344,6 +352,7 @@ export async function runDraftStage(
 export function sectionPrompt(outline: DraftOutline, index: number, template?: { source: string; parts: string[]; left?: string[] }) {
   const part = outline.parts[index]!
   const names = (labels: string[]) => labels.map(name => `"${name}"`).join("; ")
+  const original = outline.mode === "revise" ? "the original" : template ? `the template "${template.source}"` : undefined
   return [
     `Draft part ${index + 1} of ${outline.parts.length} of "${outline.title}": ${part.heading}`,
     ...(part.scope ? [`This part covers: ${part.scope}`] : []),
@@ -359,8 +368,13 @@ export function sectionPrompt(outline: DraftOutline, index: number, template?: {
     "",
     "Reply with the full text of this part only, in Markdown:",
     `- Begin with the line "## ${part.heading}". Use "### " or lower headings inside the part if it needs them.`,
-    ...(part.display_heading !== undefined ? [part.display_heading ? `- The renderer replaces that first line with the visible heading "${part.display_heading}". Do not repeat it in the body.` : "- That first line is an internal part label; the renderer omits it. Begin the body with the document text itself, without a replacement heading."] : []),
-    "- Do not repeat the title or write any other part. Keep defined terms, numbering and cross-references consistent with the outline and the parts already drafted.",
+    part.display_heading === undefined ? "- The renderer prints that first line as the part's heading. Do not repeat it in the body."
+      : part.display_heading ? `- The renderer replaces that first line with the visible heading "${part.display_heading}". Do not repeat it in the body.`
+      // A letter reads as one letter; another document's headings are in its text.
+      : isLetter(outline.form) ? "- That first line is an internal part label; the renderer omits it. Begin the body with the document text itself, without a replacement heading."
+      : "- That first line is an internal part label; the renderer omits it. Write the headings the document itself needs in the part's text, in its own style" +
+        (original ? `, following the heading text and hierarchy of ${original} except where the outline or the instructions change them.` : "."),
+    "- Do not repeat the title or write any other part. Keep defined terms, numbering and cross-references consistent with the outline, the instructions and the parts already drafted.",
     "- The source, quotation and open item rules of the first prompt still apply.",
   ].join("\n")
 }
@@ -383,13 +397,23 @@ function sectionHandoff(directory: string, document: DocID) {
 }
 
 /** Checks one part reply. The outlined heading is the authority for the part's
- * first line: a reply that starts straight into its text gets that heading. */
-export function checkSection(reply: string, outline: DraftOutline, index: number): Checked<string> {
-  const heading = outline.parts[index]!.heading
+ * first line: a reply that starts straight into its text gets that heading.
+ * The document title, where publication prints it (not in a letter), is
+ * printed once, above the first part, and a part's display heading, or its
+ * label where that is printed, from its first line: a part whose text opens
+ * with a line repeating what is printed above it (openingRepeats) is retried,
+ * and on the last attempt (`final`) kept without that line. */
+export function checkSection(reply: string, outline: DraftOutline, index: number, final = false): Checked<string> {
+  const { heading, display_heading: display } = outline.parts[index]!
   if (!reply.trim()) return { issues: [`The reply was empty. Reply with the text of the part "${heading}".`] }
   if (printedToolCall(reply)) return { issues: [TOOL_SYNTAX_ISSUE] }
   const body = reply.trim().replace(/\r\n/g, "\n")
-  const text = /^#{1,2}\s/.test(body) ? body : `## ${heading}\n\n${body}`
+  const drafted = /^#{1,2}\s/.test(body) ? body : `## ${heading}\n\n${body}`
+  const opening = openingRepeats(drafted, {
+    title: index === 0 && !isLetter(outline.form) ? outline.title : undefined,
+    heading: display === undefined ? heading : display || undefined,
+  })
+  const text = opening.text
   const [first = "", ...rest] = text.split("\n")
   const others = new Set(outline.parts.filter((_, at) => at !== index).map(part => normalizedHeading(part.heading)))
   const strays = rest.map(line => /^##\s+(.+)$/.exec(line.trim())?.[1]).filter((name): name is string => Boolean(name) && others.has(normalizedHeading(name!)))
@@ -408,15 +432,62 @@ export function checkSection(reply: string, outline: DraftOutline, index: number
       : []),
     ...(!rest.some(line => line.trim() && !/^#{1,6}\s/.test(line.trim())) ? [`The part "${heading}" has no text under its heading.`] : []),
   ]
-  return issues.length ? { issues } : { issues, value: text }
+  const repeated = opening.issues
+  if (issues.length) return { issues: [...repeated, ...issues] }
+  return repeated.length && !final ? { issues: repeated } : { issues: repeated, value: text }
 }
 
+/** A part's text ("## " label first) without the lines at the very start of
+ * its text that repeat what is printed above them: the document title, over
+ * the part that opens the document, and the heading printed from the part's
+ * label (markup, case and closing punctuation aside). Each is left out once,
+ * with an issue naming the line; a later line is never touched, so a title
+ * restated after a cover sheet or a mention in the text stays. */
+function openingRepeats(text: string, printed: { title?: string; heading?: string }) {
+  const [label = "", ...lines] = text.split("\n")
+  const left = { ...printed }
+  const issues: string[] = []
+  let rest = lines
+  for (;;) {
+    const opening = rest.findIndex(line => line.trim())
+    const line = rest[opening]?.trim()
+    if (!line) break
+    const plain = plainLine(line)
+    const kind = left.title && plain === plainLine(left.title) ? "title" : left.heading && plainLine(left.heading) && plain === plainLine(left.heading) ? "heading" : undefined
+    if (!kind) break
+    issues.push(kind === "title"
+      ? `The part opens with the document title "${left.title}". The title is printed once at the top of the document: keep the "## " line first and remove the line "${line}" after it.`
+      : `The part opens with its heading "${left.heading}", which is printed from its "## " line: keep the "## " line first and remove the line "${line}" after it.`)
+    delete left[kind]
+    rest = rest.slice(opening + 1)
+  }
+  if (!issues.length) return { text, issues }
+  const kept = rest.join("\n").replace(/^\s*\n/, "").trimEnd()
+  return { text: kept ? `${label}\n\n${kept}` : label, issues }
+}
+
+/** A line's visible words, for comparing a part's opening line with what is printed above it. */
+function plainLine(line: string) {
+  return visibleInlineText(line.trim().replace(/^#{1,6}\s+/, "")).replace(/[*_`]/g, "").replace(/[\s.:;,]+$/, "").replace(/\s+/g, " ").trim().toLowerCase()
+}
+
+/** The draft from its parts. With `presentation`, each part label gives way to
+ * its display heading, and a part that prints none has its own headings moved
+ * up, keeping their relative depth, until the shallowest is a second-level
+ * heading under the title, as presentDraft does in the Word body; without it,
+ * the labels stay as the internal boundaries the renderer and paragraph
+ * attribution read. */
 export function assembleDraft(outline: DraftOutline, parts: string[], presentation = true) {
   return `# ${outline.title}\n\n${parts.map(part => {
     const text = part.trim()
     const label = headingText(text.split("\n")[0]!.replace(/^##\s+/, ""))
     const display = outline.parts.find(row => normalizedHeading(row.heading) === normalizedHeading(label))?.display_heading
     if (!presentation || display === undefined) return text
-    return [display ? `## ${display}` : "", text.split("\n").slice(1).join("\n").trim()].filter(Boolean).join("\n\n")
+    const body = text.split("\n").slice(1).join("\n").trim()
+    if (display) return [`## ${display}`, body].filter(Boolean).join("\n\n")
+    const levels = [...body.matchAll(/^[ \t]*(#{3,6})[ \t]/gm)].map(match => match[1]!.length)
+    if (!levels.length) return body
+    const shift = Math.min(...levels) - 2
+    return body.replace(/^([ \t]*)(#{3,6})(?=[ \t])/gm, (_, indent: string, marks: string) => `${indent}${"#".repeat(marks.length - shift)}`)
   }).join("\n\n")}\n`
 }
