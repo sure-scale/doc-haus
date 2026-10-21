@@ -48,6 +48,10 @@ export type DraftingPreferences = {
   agreementLegend: string
   adviceLegend: string
   notesMarking: boolean
+  // Chat operation, not drafting: whether Auto offers a quick draft for a short
+  // drafting request ("ask") or always starts the full run ("off"). Read by the
+  // web app and never rendered into drafting.md.
+  quickDraftOffer: "ask" | "off"
 }
 
 /** How hard negotiated terms lean toward the lawyer's client: the firm's
@@ -91,6 +95,7 @@ export const DEFAULT_DRAFTING: DraftingPreferences = {
   agreementLegend: "",
   adviceLegend: "",
   notesMarking: true,
+  quickDraftOffer: "ask",
 }
 
 /** Longest legend kept: a legend is one short line of page furniture. */
@@ -126,6 +131,7 @@ export function normalizePreferences(value: unknown): DraftingPreferences {
     agreementLegend: normalizeLegend(input.agreementLegend),
     adviceLegend: normalizeLegend(input.adviceLegend),
     notesMarking: input.notesMarking !== false,
+    quickDraftOffer: input.quickDraftOffer === "off" ? "off" : DEFAULT_DRAFTING.quickDraftOffer,
   }
 }
 

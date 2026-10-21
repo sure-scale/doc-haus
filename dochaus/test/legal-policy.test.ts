@@ -187,6 +187,17 @@ describe("conflicts gate", () => {
     }
   })
 
+  test("pending blocks a quick draft before its model turn; cleared lets it run", async () => {
+    const pending = await pluginFor(matterWith({ status: "pending", owner: "K. Counsel" }))
+    const quick = chatParamsForAgent("quick-pending", "quick-draft")
+    await expect(pending["chat.params"]!(quick.input, quick.output)).rejects.toThrow("K. Counsel")
+    const qa = chatParamsForAgent("qa-pending", "qa")
+    await pending["chat.params"]!(qa.input, qa.output)
+    const cleared = await pluginFor(matterWith({ status: "cleared", by: "K. Counsel" }))
+    const allowed = chatParamsForAgent("quick-cleared", "quick-draft")
+    await cleared["chat.params"]!(allowed.input, allowed.output)
+  })
+
   test("an absent record never blocks — legacy matters predate the field", async () => {
     const hooks = await pluginFor(matterWith(undefined))
     await hooks["tool.execute.before"]!(...callArgs("redline", {}))
@@ -306,7 +317,8 @@ describe("router model policy", () => {
     optimizeRouterParams("router", "gemma-4-26b-a4b-it-maas", output, false)
     expect(output).toEqual({
       temperature: 0,
-      maxOutputTokens: 16,
+      // Room for the JSON route and its five scope fields.
+      maxOutputTokens: 96,
       options: {
         chat_template_kwargs: { enable_thinking: false, other: "kept" },
         thinkingConfig: { includeThoughts: false, thinkingLevel: "minimal" },

@@ -4,7 +4,8 @@ import type { CompareParams } from "../api/ingest/compare"
 import type { Document } from "../api/ingest/documents"
 import type { LeanDraftingStatus } from "../api/ingest/lean"
 import { matterClient, type Client } from "../api/opencode/client"
-import { isAuto, type AssistantMeta, type WorkflowMeta } from "../agents"
+import { QUICK_DRAFT, isAuto, type AssistantMeta, type WorkflowMeta } from "../agents"
+import { QUICK_BANNER } from "./chat/quick-draft"
 import CitationView from "./CitationView"
 import IssuesView, { parseIssues, stripIssues } from "./IssuesView"
 import TodoView from "./TodoView"
@@ -182,7 +183,21 @@ export default function ChatPanel({
     onForeignPart: narration.onForeignPart,
     onForeignSession: narration.acceptsSession,
   })
-  const { onSend, onStop, runWorkflow, resendFrom, onPermissionReply } = useChatActions({
+  // The request a pending quick-draft offer holds: nothing has run for it yet.
+  const [pendingRoute, setPendingRoute] = useState<string>()
+  const {
+    onSend,
+    onStop,
+    runWorkflow,
+    resendFrom,
+    onPermissionReply,
+    chooseDraft,
+    dismissDraftOffer,
+    upgradeQuickDraft,
+    quickLimit,
+    dismissQuickLimit,
+    runFullInstead,
+  } = useChatActions({
     state,
     settlement,
     client,
@@ -271,6 +286,25 @@ export default function ChatPanel({
     }
   }
   const asked = run ? openQuestions(run) : []
+  // Only the latest quick draft can be upgraded, and only while no drafting
+  // run is taking updates on this matter.
+  const latestQuick = turns.findLastIndex((t) => t.role === "assistant" && t.agent === QUICK_DRAFT)
+  const canUpgrade = Boolean(matterId) && !busy && !updatingRun && !pendingRoute
+  const quickBanner = (index?: number) => (
+    <p className="quick-draft-banner" role="note">
+      {QUICK_BANNER}
+      {index !== undefined && index === latestQuick && canUpgrade && (
+        <>
+          {" "}
+          <button type="button" className="linklike" onClick={() => void upgradeQuickDraft(index)}>
+            Run full drafting cycle
+          </button>
+        </>
+      )}
+    </p>
+  )
+  // After a reload the offer's request is not in the stored history yet.
+  const showPendingRoute = pendingRoute !== undefined && !(turns.at(-1)?.role === "user" && turns.at(-1)?.text === pendingRoute)
   // A comparison's answer draws each change it names as a redline.
   const answer = (text: string, compares?: VersionCompare[]) => {
     const compare = chatCompare(compares)
@@ -310,7 +344,7 @@ export default function ChatPanel({
       onSend={updatingRun ? sendRunUpdate : onSend}
       onStop={busy ? onStop : undefined}
       stopping={stopping}
-      busy={busy || (updatingRun && (actions.busy || updateTooLate))}
+      busy={busy || pendingRoute !== undefined || (updatingRun && (actions.busy || updateTooLate))}
     />
   )
 
@@ -350,7 +384,7 @@ export default function ChatPanel({
             </div>
           )}
           {loading && turns.length === 0 && <ChatSkeleton />}
-          {!loading && !loadError && turns.length === 0 && !busy && !own && !updatingRun && (
+          {!loading && !loadError && turns.length === 0 && !busy && !own && !updatingRun && pendingRoute === undefined && (
             <ChatEmpty
               hint={emptyHint}
               starters={starters}
@@ -406,6 +440,7 @@ export default function ChatPanel({
               ) : (
                 <div className="msg assistant">
                   {t.agent && <div className="msg-agent">{agentLabel(t.agent)}</div>}
+                  {t.agent === QUICK_DRAFT && !t.error && !isEmptyAnswer(t.text) && quickBanner(i)}
                   <StepsPanel steps={t.steps} busy={false} answered={!isEmptyAnswer(t.text)} />
                   {t.text && !isEmptyAnswer(t.text) && answer(stripIssues(t.text), t.compares)}
                   <IssuesView issues={parseIssues(t.text)} />
@@ -446,6 +481,13 @@ export default function ChatPanel({
             </Fragment>
           ))}
           {anchor === undefined && narrationView}
+          {showPendingRoute && (
+            <div className="msg-user-wrap">
+              <div className="msg user">
+                <UserText text={pendingRoute} />
+              </div>
+            </div>
+          )}
           {(own || updatingRun) && (run?.updates?.length ?? 0) > 0 && (
             <div className="run-updates">
               {run!.updates!.map((update) => (
@@ -461,6 +503,7 @@ export default function ChatPanel({
           {busy && (
             <div className={`msg assistant${live.text ? " streaming" : ""}`}>
               <div className="msg-agent">{agentLabel(isAuto(agent) && resolvedAgent ? resolvedAgent : agent)}</div>
+              {(isAuto(agent) && resolvedAgent ? resolvedAgent : agent) === QUICK_DRAFT && quickBanner()}
               <StepsPanel steps={live.steps} busy answered={Boolean(live.text)} />
               {live.text && answer(stripIssues(live.text), live.compares)}
               {/* The answer is still coming: before its first step, during each step and between them. */}
@@ -528,7 +571,26 @@ export default function ChatPanel({
         pendingRef={pendingFormsRef}
         refreshRef={formsRefreshRef}
         directory={directory}
+        onRoute={(request, choice) => void chooseDraft(request, choice)}
+        onRouteDismissed={dismissDraftOffer}
+        onRoutePending={setPendingRoute}
       />}
+      {quickLimit && (
+        <div className="question-card route-offer" role="status">
+          <p className="question-text">
+            {quickLimit.reason} A quick draft covers one short document from a few of the matter's documents, with no
+            outside law, firm template or legal effect.
+          </p>
+          <div className="question-actions">
+            <button type="button" className="icon-btn" onClick={dismissQuickLimit}>
+              Dismiss
+            </button>
+            <button type="button" className="primary" disabled={busy} onClick={() => void runFullInstead()}>
+              Run full drafting cycle
+            </button>
+          </div>
+        </div>
+      )}
       {updatingRun && (
         <p className="run-note" role="status">
           {updateTooLate
