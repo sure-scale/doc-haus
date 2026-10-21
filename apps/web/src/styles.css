@@ -2546,6 +2546,15 @@ li.list-row {
   font-size: 13px;
 }
 
+/* A stopped answer keeps what it produced and says it did not finish. */
+.msg-stopped {
+  margin: 6px 0 0;
+  padding-left: 10px;
+  border-left: 2px solid var(--border-strong);
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .working {
   display: inline-flex;
   gap: 4px;

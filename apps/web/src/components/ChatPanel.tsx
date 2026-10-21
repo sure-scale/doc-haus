@@ -182,7 +182,7 @@ export default function ChatPanel({
     onForeignPart: narration.onForeignPart,
     onForeignSession: narration.acceptsSession,
   })
-  const { onSend, runWorkflow, resendFrom, onPermissionReply } = useChatActions({
+  const { onSend, onStop, runWorkflow, resendFrom, onPermissionReply } = useChatActions({
     state,
     settlement,
     client,
@@ -213,6 +213,7 @@ export default function ChatPanel({
     logRef,
     stickRef,
     inputRef,
+    turnRef,
   } = state
 
   const scroll = useStickToBottom(logRef, stickRef)
@@ -243,6 +244,7 @@ export default function ChatPanel({
 
   const live = readTurn(partsRef.current, rolesRef.current, matterName, sessionRef.current)
   const activity = busy ? live.activity : undefined
+  const stopping = busy && turnRef.current.stopped
   useEffect(() => {
     onBusyChange?.(busy, activity)
   }, [busy, activity, onBusyChange])
@@ -306,6 +308,8 @@ export default function ChatPanel({
       input={input}
       setInput={setInput}
       onSend={updatingRun ? sendRunUpdate : onSend}
+      onStop={busy ? onStop : undefined}
+      stopping={stopping}
       busy={busy || (updatingRun && (actions.busy || updateTooLate))}
     />
   )
@@ -406,7 +410,13 @@ export default function ChatPanel({
                   {t.text && !isEmptyAnswer(t.text) && answer(stripIssues(t.text), t.compares)}
                   <IssuesView issues={parseIssues(t.text)} />
                   {t.error && <div className="msg-error">{t.error}</div>}
+                  {t.stopped && !t.superseded && (
+                    <p className="msg-stopped" role="note">
+                      {isEmptyAnswer(t.text) ? "Stopped before an answer." : "Stopped. This answer is incomplete."}
+                    </p>
+                  )}
                   {!t.superseded &&
+                    !t.stopped &&
                     !t.error &&
                     isEmptyAnswer(t.text) &&
                     t.redlines.length === 0 &&
@@ -460,7 +470,7 @@ export default function ChatPanel({
                   <span className="working-dot" />
                   <span className="working-dot" />
                 </span>
-                {activity ?? "Working"}
+                {stopping ? "Stopping" : (activity ?? "Working")}
               </p>
               <IssuesView issues={parseIssues(live.text)} />
               <TodoView todos={live.todos} />

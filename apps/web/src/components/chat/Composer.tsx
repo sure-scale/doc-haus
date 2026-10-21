@@ -24,6 +24,8 @@ export default function Composer({
   input,
   setInput,
   onSend,
+  onStop,
+  stopping = false,
   busy,
   draftingUpdate = false,
   draftingClarification = false,
@@ -46,6 +48,9 @@ export default function Composer({
   input: string
   setInput: ChatState["setInput"]
   onSend: () => Promise<void>
+  // Present while a chat answer runs: Stop takes Send's place.
+  onStop?: () => void
+  stopping?: boolean
   busy: boolean
   draftingUpdate?: boolean
   draftingClarification?: boolean
@@ -123,29 +128,50 @@ export default function Composer({
             <kbd>Shift + Enter</kbd> new line
           </span>
         </span>
-        <button
-          type="button"
-          className="send-btn"
-          onClick={onSend}
-          disabled={busy || !input.trim()}
-          aria-label={draftingClarification ? "Send checklist clarification" : draftingUpdate ? "Send drafting update" : "Send message"}
-        >
-          <span>{draftingClarification ? "Clarify checklist" : draftingUpdate ? "Update draft" : "Send"}</span>
-          <svg
-            width="16"
-            height="16"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2.2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
+        {onStop ? (
+          <button
+            type="button"
+            className="send-btn stop-btn"
+            onClick={onStop}
+            disabled={stopping}
+            aria-label={stopping ? "Stopping answer" : "Stop answer"}
           >
-            <path d="M12 19V5" />
-            <path d="m5 12 7-7 7 7" />
-          </svg>
-        </button>
+            <span>{stopping ? "Stopping…" : "Stop"}</span>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <rect x="6" y="6" width="12" height="12" rx="2" />
+            </svg>
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="send-btn"
+            onClick={onSend}
+            disabled={busy || !input.trim()}
+            aria-label={
+              draftingClarification
+                ? "Send checklist clarification"
+                : draftingUpdate
+                  ? "Send drafting update"
+                  : "Send message"
+            }
+          >
+            <span>{draftingClarification ? "Clarify checklist" : draftingUpdate ? "Update draft" : "Send"}</span>
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M12 19V5" />
+              <path d="m5 12 7-7 7 7" />
+            </svg>
+          </button>
+        )}
       </div>
     </div>
   )

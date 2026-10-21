@@ -40,6 +40,11 @@ export async function abortSession(client: Client, sessionID: string, timeoutMs 
   return boundedRequest(client.session.interrupt({ sessionID }), timeoutMs, "Session abort")
 }
 
+// Resolves once the session has no running execution.
+export async function waitForSession(client: Client, sessionID: string, timeoutMs = 10_000) {
+  return boundedRequest(client.session.wait({ sessionID }), timeoutMs, "Session settle")
+}
+
 // Settled messages for one session, each as { info, parts }, used to replay a
 // past conversation back into the chat panel.
 export async function getMessages(client: Client, sessionID: string) {

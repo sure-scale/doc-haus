@@ -94,6 +94,7 @@ export function useSessionEvents({
     permissionsRef,
     seenRef,
     busyRef,
+    turnRef,
     updatePermissions,
   } = state
   const { clearFinalizeRetry, finalize, failTurn } = settlement
@@ -290,6 +291,8 @@ export function useSessionEvents({
       return
     }
     if (event.type === "session.error" && event.properties.sessionID === sessionRef.current) {
+      // Stop fails the running step as interrupted; the stop settles the turn.
+      if (turnRef.current.stopped) return
       if (stallAbortRef.current) {
         stallAbortRef.current = false
         sessionErrorRef.current = undefined
