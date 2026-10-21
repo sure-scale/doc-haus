@@ -1,5 +1,6 @@
 import { draftingStyleWarningsBlock } from "./style-warnings"
 import { boundPlaybookContext } from "../../lib/playbook-source"
+import { delegationSettles } from "../../lib/question-delegation"
 import { readChangePlan, repairBodyText, reviewDispositionText, writerPlan } from "./change-pipeline"
 import { appliedChangeEvidence, nativeExportEvidence } from "./review-evidence"
 import { comparisonDescription } from "./comparison"
@@ -11,7 +12,7 @@ import { REQUEST_SOURCE, matterSourceIDs } from "./quotes"
 import { readRepairRound, changesRepairSections } from "./repairs"
 import { MEMO_TARGET, REVIEW_FINDINGS_CONTRACT, findingsText, forwardedFindings, reviewText } from "./review-findings"
 import { disclosableItems } from "./stages"
-import { QUESTION_KIND_CONTRACT, isReviewStage, answeredQuestionsText, delegatedQuestions, delegationSettles, questionOptions, readLeanJson, readLeanText, readQuestions, type OpenItem, type Question, type StageID } from "./state"
+import { QUESTION_KIND_CONTRACT, isReviewStage, answeredQuestionsText, delegatedQuestions, questionOptions, readLeanJson, readLeanText, readQuestions, type OpenItem, type Question, type StageID } from "./state"
 import { plannedContract } from "./template-contract"
 
 // Prompts of the lean model steps. Each step's first prompt carries everything
@@ -279,6 +280,7 @@ function draftingNotesSections(directory: string, request: string) {
   const loose = items.filter(item => !item.ref.document || !planned.has(item.ref.document))
   const questions = readQuestions(directory)
   const delegated = delegatedDecisionsText(directory)
+  const delegatedIDs = new Set(delegatedQuestions(directory).map(question => question.id))
   const memo = requestedMemo(directory)
   return [
     memo
@@ -292,7 +294,9 @@ function draftingNotesSections(directory: string, request: string) {
     tagged("discrepancies", readLeanText(directory, "discrepancy.json") ?? "None."),
     ...plan.map(row => `<document id="${row.id}" title="${attribute(row.title)}">\n${documentSections(directory, row.id, items).join("\n\n")}\n</document>`),
     loose.length ? tagged("open_items", openItemLines(loose)) : "",
-    tagged("questions", questions.map(question => `- ${question.id} (${question.status}): ${question.question}${question.answer ? `\n  Answer: ${question.answer}` : ""}`).join("\n") || "None."),
+    tagged("questions", questions.map(question => delegatedIDs.has(question.id)
+      ? `- ${question.id} (${question.answer_class === "declined" ? "not answered" : "delegated"}; see delegated_decisions): ${question.question}`
+      : `- ${question.id} (${question.status}): ${question.question}${question.answer ? `\n  Answer: ${question.answer}` : ""}`).join("\n") || "None."),
     delegated ? tagged("delegated_decisions", delegated) : "",
     tagged("output_contract", [
       "- Follow the lawyer's explanation-detail, formality and house-style preferences when writing the notes. Translate the supplied records into their practical meaning rather than copying workflow field names, raw paths or stage status. Retain source support, comparison baselines, applied/unapplied outcomes, limitations and every required open-item id. Name documents where this helps locate them.",

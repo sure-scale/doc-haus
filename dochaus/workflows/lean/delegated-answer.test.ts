@@ -8,7 +8,7 @@ import { openItem, quoteFound } from "./quotes"
 import { enqueueLeanRequest } from "./requests"
 import { runLean, stageInputSha } from "./runner"
 import type { StageSessionPort } from "./stages"
-import { answeredQuestionsText, answerQuestion, classifiedAnswer, delegatedQuestions, readLeanJson, readOpenItems, readQuestions, recordAnswerClasses, writeOpenItems, writeQuestions, type Question, type QuestionAdvice } from "./state"
+import { answeredQuestionsText, answerQuestion, classifiedAnswer, delegatedQuestions, readLeanJson, readOpenItems, readQuestions, recordAnswerClasses, writeLeanText, writeOpenItems, writeQuestions, type Question, type QuestionAdvice } from "./state"
 import { AGENT, cleanupMatters, happyPath, matter, NO_FINDINGS, noChanges, scriptedModel, SOURCE, SUPPORT } from "./test-support"
 
 // A lawyer who delegates a question in their own words ("proceed on your own
@@ -69,7 +69,7 @@ test("a class is recorded once, only on the words that were read; later words of
   for (const key of ["answer_kind", "option_id", "answer_class", "lawyer_words"]) expect(replaced).not.toHaveProperty(key)
 })
 
-test("a delegated decision reaches every stage as Decide for me does; only the notes' input names how it was delegated", () => {
+test("a delegated decision reaches every stage as Decide for me does, marked as delegated; only the notes' input names the lawyer's words", () => {
   const keys = (record: (directory: string) => void) => {
     const directory = matter()
     writeLeanPlan(directory, [{ title: "Supply note", purpose: "Supply note", file: "supply-note.docx", parts: [{ heading: "Delivery", scope: "Delivery terms" }] }])
@@ -83,13 +83,15 @@ test("a delegated decision reaches every stage as Decide for me does; only the n
     answerQuestion(directory, "q-late", { text: DELEGATION })
     recordAnswerClasses(directory, new Map([["q-late", { words: DELEGATION, answer_class: "delegated" as const }]]))
   })
-  expect(delegated.answers).toBe(`- [q-late] Q: ${QUESTION}\n  A: ${RECOMMENDED}`)
+  expect(typed.answers).toBe(`- [q-late] Q: ${QUESTION}\n  A: ${RECOMMENDED}`)
+  expect(delegated.answers).toBe(`- [q-late] Q: ${QUESTION}\n  A (delegated by the lawyer; the recommended option was adopted): ${RECOMMENDED}`)
   const { finalize: typedNotes, ...typedSteps } = typed
   const { finalize: adoptedNotes, ...adoptedSteps } = adopted
   const { finalize: delegatedNotes, ...delegatedSteps } = delegated
-  expect(adoptedSteps).toEqual(typedSteps)
-  expect(delegatedSteps).toEqual(typedSteps)
-  // The notes disclose a delegated decision, so their key reads it; typed words disclose none.
+  expect(delegatedSteps).toEqual(adoptedSteps)
+  // Every step reads the decision as delegated, not as the lawyer's own words.
+  for (const step of Object.keys(typedSteps)) expect([step, adoptedSteps[step] === typedSteps[step]]).toEqual([step, false])
+  // The notes are also given the lawyer's own delegating words.
   expect(new Set([typedNotes, adoptedNotes, delegatedNotes]).size).toBe(3)
 })
 
@@ -212,8 +214,8 @@ test("a question delegated in the lawyer's own words runs through the queue as a
   expect(asked()).toMatchObject({ status: "answered", answer: RECOMMENDED, answer_kind: "adopted", option_id: "o1", answer_class: "delegated", lawyer_words: DELEGATION })
   const prompts = model.prompts.slice(start)
   expect(prompts.filter(prompt => prompt.agent === AGENT.answer)).toHaveLength(1)
-  // Bound: every stage reads the decision as the lawyer's settled answer, never the delegating words.
-  const line = `- [${id}] Q: ${QUESTION}\n  A: ${RECOMMENDED}`
+  // Bound: every stage reads the decision as a delegated one, never the delegating words.
+  const line = `- [${id}] Q: ${QUESTION}\n  A (delegated by the lawyer; the recommended option was adopted): ${RECOMMENDED}`
   for (const agent of [AGENT.discrepancy, AGENT.intake, AGENT.research, AGENT.spine, AGENT.draft, AGENT.review, AGENT["change-plan"], AGENT.changes, AGENT["package-review"]])
     expect([agent, prompts.some(prompt => prompt.agent === agent && prompt.text.includes(line))]).toEqual([agent, true])
   for (const prompt of prompts.filter(prompt => prompt.agent !== AGENT.answer && prompt.agent !== AGENT.finalize))
@@ -221,6 +223,9 @@ test("a question delegated in the lawyer's own words runs through the queue as a
   // Disclosed: the notes are given the decision with its attribution, reason and evidence, and list it.
   const notesPrompt = prompts.findLast(prompt => prompt.agent === AGENT.finalize)!.text
   expect(notesPrompt).toContain(`<delegated_decisions>\n- [${id}] Q: ${QUESTION}\n  Delegated by the lawyer, in their words: "${DELEGATION}"\n  Decision taken, for the lawyer to confirm: ${RECOMMENDED}\n  Reason: ${RATIONALE}`)
+  // The notes' list of questions points to that section rather than calling it answered.
+  expect(notesPrompt).toContain(`- ${id} (delegated; see delegated_decisions): ${QUESTION}\n`)
+  expect(notesPrompt).not.toContain(`Answer: ${RECOMMENDED}`)
   expect(readLeanJson(directory, "state.json")).toMatchObject({ status: "completed" })
   const notes = readLeanJson(directory, "gate.json") as GateResult
   expect(notes.items.filter(item => item.ref.question_id === id)).toEqual([])
@@ -237,3 +242,41 @@ test("a question delegated in the lawyer's own words runs through the queue as a
   expect((await run()).status).toBe("completed")
   expect(model.prompts.length).toBe(settled)
 }, 180_000)
+
+test("a delegated question no decision could take stays open for the lawyer at the gate, never answered by them", () => {
+  const directory = matter()
+  const fact = { ...ASKED, id: "q-sign", kind: "fact" as const, question: "Who signs for the buyer?" }
+  const unsure = { ...ASKED, id: "q-title", question: "Should title pass on delivery?" }
+  const asked = { ...ASKED, id: "q-risk", kind: "fact" as const, question: "When does risk pass?" }
+  writeQuestions(directory, [answered(ASKED), answered(fact), answered(unsure, "I do not know."), answered(asked)])
+  recordAnswerClasses(directory, new Map([
+    ["q-late", { words: DELEGATION, answer_class: "delegated" as const }],
+    ["q-sign", { words: DELEGATION, answer_class: "delegated" as const }],
+    ["q-title", { words: "I do not know.", answer_class: "declined" as const }],
+    ["q-risk", { words: DELEGATION, answer_class: "delegated" as const }],
+  ]))
+  // A later stage's item for one of them is settled, not repeated.
+  const changesItem = openItem("changes", "question", "Question for the lawyer: When does risk pass?", { question_id: "q-risk" })
+  writeOpenItems(directory, [changesItem])
+  const items = () => finalGate(directory).items.filter(item => item.kind === "question")
+  // Stages read the undecided ones as open, in the lawyer's words.
+  expect(answeredQuestionsText(directory)).toContain(`- [q-sign] Q: Who signs for the buyer?\n  A (delegated by the lawyer, but it needs the lawyer's own answer, so it stays open): ${DELEGATION}`)
+  expect(answeredQuestionsText(directory)).toContain(`- [q-title] Q: Should title pass on delivery?\n  A (not answered by the lawyer, so it stays open): I do not know.`)
+
+  writeLeanText(directory, "drafting-notes.md", "# Notes\n\nNothing listed.\n")
+  expect(items().map(item => [item.ref.question_id, item.status, item.detail])).toEqual([
+    ["q-risk", "open", changesItem.detail],
+    ["q-sign", "open", "You asked us to decide, but this needs your answer: Who signs for the buyer?"],
+    ["q-title", "open", "You did not answer this question, and it needs your answer: Should title pass on delivery?"],
+  ])
+  for (const item of items()) expect(item.resolution).not.toContain("answered by the lawyer")
+  expect(finalGate(directory).status).toBe("blocked")
+
+  writeLeanText(directory, "drafting-notes.md", "# Notes\n\nStill needs the signatory [ref: q-sign]. Title [ref: q-title]. Risk [ref: q-risk].\n")
+  expect(items().map(item => [item.ref.question_id, item.status, item.resolution])).toEqual([
+    ["q-risk", "disclosed", "you asked us to decide, but this needs your answer; named in the drafting notes"],
+    ["q-sign", "disclosed", "you asked us to decide, but this needs your answer; named in the drafting notes"],
+    ["q-title", "disclosed", "not answered; this needs your answer; named in the drafting notes"],
+  ])
+  expect(finalGate(directory)).toMatchObject({ status: "pass", delivery: "review_draft" })
+})

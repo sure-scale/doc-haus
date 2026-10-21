@@ -16,8 +16,9 @@ import { cleanupMatters, matter, SUPPORT } from "./test-support"
 // "Decide for me" adopts the advisor's recommendation as the lawyer's answer.
 // An answer is the lawyer's typed words, an offered option picked, or the
 // recommended option adopted; each is stored as words, and every stage reads
-// the words alone. Adoption is open only for an open judgment or pure scope
-// question whose advice recommends an option. Synthetic matter; no model runs.
+// the words, an adopted one marked as delegated. Adoption is open only for an
+// open judgment, instruction or pure scope question whose advice recommends an
+// option (lib/question-delegation.ts). Synthetic matter; no model runs.
 
 afterEach(cleanupMatters)
 
@@ -79,13 +80,13 @@ test("an option the question does not offer, or empty words, is an invalid answe
   expect(readQuestions(directory).map(question => question.status)).toEqual(["open", "open"])
 })
 
-test("Decide for me is offered only for an open judgment or pure scope question whose advice recommends an option", () => {
+test("Decide for me is offered only for an open judgment, instruction or pure scope question whose advice recommends an option", () => {
   const directory = matter()
   const cases: [string, Question, string][] = [
     ["judgment", OPEN, "admitted"],
     ["pure scope", { ...OPEN, kind: "scope" }, "admitted"],
     ["fact", { ...OPEN, kind: "fact" }, "not_delegable"],
-    ["instruction", { ...OPEN, kind: "instruction" }, "not_delegable"],
+    ["instruction", { ...OPEN, kind: "instruction" }, "admitted"],
     ["conflict", { ...OPEN, kind: "conflict" }, "not_delegable"],
     ["file name", FILE_NAME, "not_delegable"],
     ["mixed scope", { ...OPEN, kind: "scope", mixed: true }, "not_delegable"],
@@ -148,7 +149,7 @@ test("an adoption replayed after a restart is already recorded and changes nothi
   expect(readQuestions(directory)).toEqual([applied])
 })
 
-test("the same words typed, picked or adopted give the same answers text and the same keys", () => {
+test("the same words typed or picked give the same answers text and keys; adopted, every step reads them as delegated", () => {
   const keys = (form: Parameters<typeof answerQuestion>[2]) => {
     const directory = matter()
     writeLeanPlan(directory, [{ title: "Supply note", purpose: "Supply note", file: "supply-note.docx", parts: [{ heading: "Delivery", scope: "Delivery terms" }] }])
@@ -160,11 +161,10 @@ test("the same words typed, picked or adopted give the same answers text and the
   const typed = keys({ text: RECOMMENDED })
   expect(typed.answers).toContain(`- [q-cap] Q: ${OPEN.question}\n  A: ${RECOMMENDED}`)
   expect(keys({ option_id: "o2" })).toEqual(typed)
-  // The drafting notes list an adopted recommendation as delegated, so their key reads it.
-  const { finalize, ...adopted } = keys({ adopt: true })
-  const { finalize: typedNotes, ...steps } = typed
-  expect(adopted).toEqual(steps)
-  expect(finalize).not.toBe(typedNotes)
+  // An adopted recommendation reads as delegated in every step's answers, so each key moves.
+  const adopted = keys({ adopt: true })
+  expect(adopted.answers).toContain(`- [q-cap] Q: ${OPEN.question}\n  A (delegated by the lawyer; the recommended option was adopted): ${RECOMMENDED}`)
+  for (const step of Object.keys(typed)) expect([step, adopted[step] === typed[step]]).toEqual([step, false])
   // Other words are another answer.
   expect(keys({ option_id: "o1" }).intake).not.toBe(typed.intake)
 })
@@ -178,9 +178,12 @@ test("the same words typed, picked or adopted give the same answers text and the
 // Form line and when part labels were planned unheaded. The checklist check, change plan, changes and change-review were
 // re-pinned when reviews were saved as typed findings (dN/<stage>.json) and the
 // change plan began keying the findings earlier documents forward to it. The
-// same pins hold however the lawyer gave an answer, except finalize's for an
-// adopted recommendation, which the drafting notes list as delegated.
+// same pins hold for typed or picked words; an adopted recommendation reads as
+// delegated, which moves every key that reads the answers and no other.
 const ANSWERS = "- [package-scope-d1] Q: Which documents are in scope?\n  A: Only the supply note.\n- [q-law] Q: Which law should govern?\n  A: Singapore law."
+const ADOPTED_ANSWERS = ANSWERS.replace("  A: Singapore law.", "  A (delegated by the lawyer; the recommended option was adopted): Singapore law.")
+// A draft keys its outline contract and plan entry, never answers.
+const UNANSWERED_STEPS = ["d1.draft"]
 const INPUTS: Record<string, string> = {
   "discrepancy": "8dac7eefaf1e988e35ffbe6c7f765a951943e9b1299546a9b94dc10e99950a72",
   "intake": "1e491eea042fb2cb31d8340459e58993849d22ce04ec26793d0e495a840061c6",
@@ -202,7 +205,6 @@ const INPUTS: Record<string, string> = {
   "package-review": "dde115af0ba46b8cb1ecf9bf7eb0c40aff3b78f4d6be9e0f0da3dff2d5d4066f",
   "gate": "0950183c873a0bd663d5367c064a7013025084deb8884311b2f38a54fcb8e229",
 }
-const ADOPTED_FINALIZE = "cd7309db261d1d8cdb140eee5536389acafff32c46564e6d43467ce9f2ed72c4"
 
 test("the answers text and every step's inputs are pinned, however the lawyer gave the answer", () => {
   const previous = process.env.WORKSPACE_ROOT
@@ -221,9 +223,11 @@ test("the answers text and every step's inputs are pinned, however the lawyer ga
         { id: "package-scope-d1", stage: "intake", question: "Which documents are in scope?", context: "Scope.", status: "answered", answer: "Only the supply note.", answered_at: "2026-10-18T09:05:00.000Z" },
       ])
       if (form) answerQuestion(directory, "q-law", form)
-      expect(answeredQuestionsText(directory)).toBe(ANSWERS)
+      const adopted = form !== undefined && "adopt" in form
+      expect(answeredQuestionsText(directory)).toBe(adopted ? ADOPTED_ANSWERS : ANSWERS)
       const pinned = Object.fromEntries(leanSteps(directory).map(step => [step, withSourceSnapshot(() => hashStageInputs(step, "pin", stageInputs(directory, step)))]))
-      expect(pinned).toEqual(form && "adopt" in form ? { ...INPUTS, finalize: ADOPTED_FINALIZE } : INPUTS)
+      if (adopted) expect(Object.keys(pinned).filter(step => pinned[step] === INPUTS[step])).toEqual(UNANSWERED_STEPS)
+      else expect(pinned).toEqual(INPUTS)
     }
   } finally {
     if (previous === undefined) delete process.env.WORKSPACE_ROOT

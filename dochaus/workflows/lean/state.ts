@@ -3,6 +3,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync
 import path from "node:path"
 import { readDurableJson, writeDurableBytes } from "../../lib/durable-json"
 import type { ProviderStopKind } from "../../lib/provider-stop"
+import { delegatedOption } from "../../lib/question-delegation"
 import type { ChecklistFindingClass } from "./checklist-classify"
 import type { DocID, StepID } from "./plan"
 
@@ -384,15 +385,11 @@ export function questionOptions(question: Question): QuestionOption[] {
   return question.options ?? question.advice?.options ?? []
 }
 
-function recommendedOption(question: Question) {
-  const advice = question.advice
-  return advice && "recommendation" in advice ? questionOptions(question).find(option => option.id === advice.recommendation.option) : undefined
-}
-
-/** Whether the lawyer may adopt the question's recommendation: it is open, it is
- * a judgment or pure scope question, and its advice recommends an offered option. */
+/** Whether the lawyer may adopt the question's recommendation: it is open and
+ * delegation settles it with an offered option (lib/question-delegation.ts, the
+ * rule a delegating answer in the lawyer's words and the web also follow). */
 export function delegable(question: Question) {
-  return question.status === "open" && (question.kind === "judgment" || (question.kind === "scope" && !question.mixed)) && recommendedOption(question) !== undefined
+  return question.status === "open" && delegatedOption(question) !== undefined
 }
 
 /** `target` answered in `form`, or the refusal: not_found, invalid_answer (empty
@@ -410,7 +407,7 @@ export function answerWith(target: Question | undefined, form: AnswerForm): Ques
     return answered(option.text, { answer_kind: "option", option_id: option.id })
   }
   if (target.status === "answered") throw new LeanQuestionError("This question is already answered.", "already_answered")
-  const option = delegable(target) ? recommendedOption(target) : undefined
+  const option = delegable(target) ? delegatedOption(target) : undefined
   if (!option) throw new LeanQuestionError("This question has no recommendation to adopt; it needs the lawyer's own answer.", "not_delegable")
   return answered(option.text, { answer_kind: "adopted", option_id: option.id })
 }
@@ -437,21 +434,13 @@ export function unclassifiedAnswer(question: Question) {
   return question.status === "answered" && typeof question.answer === "string" && !question.answer_kind && !question.answer_class
 }
 
-/** Whether words leaving `question` to the drafter's judgment settle it: a
- * question Decide for me could take (judgment or pure scope), or an instruction
- * question, whose instruction those words are. A fact, an approval (mixed scope)
- * or which source governs (conflict) needs what only the lawyer can give. */
-export function delegationSettles(question: Question) {
-  return question.kind === "judgment" || question.kind === "instruction" || (question.kind === "scope" && !question.mixed)
-}
-
 /** `question`, answered in the lawyer's own words, with their class. A
- * delegating answer to a question the delegation settles, with a recommended
- * option, is recorded as Decide for me records an adoption (answerWith): the
- * recommended option's words with answer_kind "adopted", the lawyer's words
- * kept beside them. Any other keeps the lawyer's words. */
+ * delegating answer to a question Decide for me could take is recorded as
+ * Decide for me records it (answerWith): the recommended option's words with
+ * answer_kind "adopted", the lawyer's words kept beside them. Any other keeps
+ * the lawyer's words. */
 export function classifiedAnswer(question: Question, answerClass: AnswerClass): Question {
-  const option = answerClass === "delegated" && delegationSettles(question) ? recommendedOption(question) : undefined
+  const option = answerClass === "delegated" ? delegatedOption(question) : undefined
   return option
     ? { ...question, answer: option.text, answer_kind: "adopted", option_id: option.id, answer_class: answerClass, lawyer_words: question.answer }
     : { ...question, answer_class: answerClass }
@@ -475,6 +464,12 @@ export function delegatedQuestions(directory: string) {
   return answeredQuestions(directory).filter(question => question.answer_kind === "adopted" || question.answer_class === "delegated" || question.answer_class === "declined")
 }
 
+/** An answered question the lawyer delegated or gave no answer to, with no
+ * decision recorded: it still needs the lawyer's own answer. */
+export function undecidedQuestion(question: Question) {
+  return question.status === "answered" && question.answer_kind !== "adopted" && (question.answer_class === "delegated" || question.answer_class === "declined")
+}
+
 /** Every answered question, ordered by id: questions.json's own order moves
  * when a step's questions replace its earlier ones. */
 export function answeredQuestions(directory: string) {
@@ -485,8 +480,17 @@ export function answeredQuestions(directory: string) {
  * of every drafting stage and its key. */
 export function answeredQuestionsText(directory: string) {
   return answeredQuestions(directory)
-    .map(question => `- [${question.id}] Q: ${question.question}\n  A: ${question.answer}`)
+    .map(question => `- [${question.id}] Q: ${question.question}\n  ${answerLabel(question)}: ${question.answer}`)
     .join("\n")
+}
+
+/** How every step reads an answer: a delegated decision or a point still open
+ * is marked as such, so no step reads it as the lawyer's own answer. */
+function answerLabel(question: Question) {
+  if (question.answer_kind === "adopted") return "A (delegated by the lawyer; the recommended option was adopted)"
+  if (question.answer_class === "delegated") return "A (delegated by the lawyer, but it needs the lawyer's own answer, so it stays open)"
+  if (question.answer_class === "declined") return "A (not answered by the lawyer, so it stays open)"
+  return "A"
 }
 
 export function shortHash(text: string, length = 10) {
