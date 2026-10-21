@@ -11,7 +11,8 @@ import { AGENT, NO_FINDINGS, SOURCE, cleanupMatters, drafter, draftingNotes, mat
 // thing about it.
 
 const doc = (lines: string[]): Para[] => lines.map((text, index) => ({ pid: `p${index + 1}`, text }))
-const details = (input: Parameters<typeof consistencyFindings>[0]) => consistencyFindings(input).map(row => row.detail)
+const check = (input: Parameters<typeof consistencyFindings>[0]) => consistencyFindings({ form: "agreement", ...input })
+const details = (input: Parameters<typeof consistencyFindings>[0]) => check(input).map(row => row.detail)
 const pack = (title: string, lines: string[], earlier = true): PackDocument => ({ title, paras: doc(lines), earlier })
 
 const PARTIES = 'This agreement is between Northfield Packaging Ltd (the "Supplier") and Eastmere Foods Ltd (the "Customer").'
@@ -73,7 +74,7 @@ describe("cross-references after changes", () => {
 
   test("a renumbered sub-clause is reported where the old number is gone, with its new number", () => {
     const final = BASE.map(line => line.startsWith("2.2 ") ? line.replace("2.2 ", "2.3 ") : line)
-    const found = consistencyFindings({ title: TITLE, final: doc(final), baselines: [doc(BASE)], others: [] })
+    const found = check({ title: TITLE, final: doc(final), baselines: [doc(BASE)], others: [] })
     expect(found).toEqual([{
       pid: `p${final.indexOf(PAYMENT[2]!) + 1}`,
       detail: "Clause 3.2 refers to clause 2.2, but no clause in the final text is numbered 2.2. What was clause 2.2 before the changes is now clause 2.3.",
@@ -99,6 +100,13 @@ describe("cross-references after changes", () => {
     expect(details({ title: "Covering letter", form: "letter", final: doc(letter), baselines: [], others: [] })).toEqual([])
   })
 
+  test("a document planned without a form, or with a form the plan does not know, is not checked", () => {
+    const final = BASE.filter(line => !LIABILITY.includes(line))
+    expect(details({ title: TITLE, final: doc(final), baselines: [doc(BASE)], others: [] })).toHaveLength(1)
+    expect(details({ title: TITLE, form: undefined, final: doc(final), baselines: [doc(BASE)], others: [] })).toEqual([])
+    expect(details({ title: TITLE, form: "memo", final: doc(final), baselines: [doc(BASE)], others: [] })).toEqual([])
+  })
+
   test("a document well past 10,000 characters is checked to its end", () => {
     const clauses = Array.from({ length: 40 }, (_, index) => index + 1).flatMap(number => [
       `${number}. Obligations part ${number}`,
@@ -108,7 +116,7 @@ describe("cross-references after changes", () => {
     clauses.splice(clauses.length - 1, 0, "40.3 The notice periods in clause 41 apply to every notice under this part.")
     const final = ["Long Agreement", ...clauses]
     expect(final.join("\n").length).toBeGreaterThan(10_000)
-    const found = consistencyFindings({ title: "Long Agreement", final: doc(final), baselines: [], others: [] })
+    const found = check({ title: "Long Agreement", final: doc(final), baselines: [], others: [] })
     expect(found).toEqual([{ pid: `p${final.indexOf("40.3 The notice periods in clause 41 apply to every notice under this part.") + 1}`,
       detail: "Clause 40.3 refers to clause 41, but no clause in the final text is numbered 41." }])
   })
@@ -177,6 +185,23 @@ const renumber: Reply = prompt => JSON.stringify({
   questions: [],
 })
 
+// A definition the changes take out while "the Specification" stays in use, and a
+// clause referred to twice from one paragraph and then renumbered.
+const DEFINED = [
+  "# Supply agreement", "", "## 1 Definitions", "", '1.1 "Goods" means the printed cartons described in the Specification.', "",
+  '1.2 "Specification" means the written description of the Goods agreed by the buyer.', "", '1.3 "Price" means the price stated in the Specification.', "",
+  '1.4 "Delivery Date" means the date stated in the Specification.', "", "## 2 Payment", "", "2.1 The buyer shall pay the Price on the Delivery Date.", "",
+  "2.2 Payment is made by bank transfer.", "", "## 3 Remedies", "", "3.1 Late payment under clause 2.2 carries interest, and clause 2.2 governs how that interest is paid.", "",
+  "3.2 The Goods remain at the seller's risk until they meet the Specification.", "",
+].join("\n")
+const undefine: Reply = prompt => JSON.stringify({
+  amendments: [
+    { pid: pidIn(prompt, '1\\.2 "Specification" means'), updated: "1.2 Specifications are agreed in writing.", reason: "How specifications are agreed is stated instead.", sources: [{ source_id: SOURCE, quote: "Payment is due on delivery." }] },
+    { pid: pidIn(prompt, "2\\.2 Payment is made"), updated: "2.3 Payment is made by bank transfer.", reason: "Leaves room for a new clause 2.2.", sources: [{ source_id: SOURCE, quote: "Payment is due on delivery." }] },
+  ],
+  questions: [],
+})
+
 describe("the check in a lean run", () => {
   afterEach(cleanupMatters)
 
@@ -200,5 +225,21 @@ describe("the check in a lean run", () => {
     writeFileSync(leanFile(directory, "drafting-notes.md"), "# Drafting notes\n\nNothing to report.\n")
     expect(finalGate(directory)).toMatchObject({ status: "blocked",
       blocking: [expect.objectContaining({ kind: "consistency", resolution: "the drafting notes do not name this cross-reference or defined-term problem" })] })
+  }, 120_000)
+
+  test("each underlying problem becomes exactly one open item", async () => {
+    const directory = matter()
+    const model = scriptedModel({ [AGENT.draft]: drafter(DEFINED), [AGENT.review]: () => NO_FINDINGS, [AGENT.changes]: sameSession(undefine), [AGENT.finalize]: draftingNotes })
+    const state = await runLean(directory, { sessions: model.port })
+
+    expect(state.status).toBe("completed")
+    const items = readOpenItems(directory)
+    // The twice-cited clause is one item, and the lost definition is not
+    // reported again as a term used without a definition.
+    expect(items.filter(item => item.kind === "consistency").map(item => item.detail)).toEqual([
+      "Clause 3.1 refers to clause 2.2, but no clause in the final text is numbered 2.2. What was clause 2.2 before the changes is now clause 2.3.",
+      'The term "Specification" is used in the final text (first in clause 1.1) but is no longer defined: before the changes it was defined in clause 1.2.',
+    ])
+    expect(items.filter(item => item.kind !== "consistency" && /clause 2\.2|"Specification"/.test(item.detail))).toEqual([])
   }, 120_000)
 })

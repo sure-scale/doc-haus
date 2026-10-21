@@ -1,3 +1,4 @@
+import { DOCUMENT_FORMS } from "../../lib/page-furniture"
 import { finalBodyParagraphs, type ParagraphRow } from "./checks"
 import { nameKey, namedIn, readLeanPlan, type DocID } from "./plan"
 import { excerpt, openItem } from "./quotes"
@@ -27,7 +28,8 @@ import { sourceText } from "./template-structure"
 // refers to nothing. A document whose clause numbers are not in its text
 // (Word's own numbering, or no numbering) has its clause references left
 // unchecked, and so has advice or a letter, which cites the clauses of the
-// documents it discusses.
+// documents it discusses. A document planned without a known form is not
+// checked at all.
 //
 // Defined terms. A term is defined by a quoted or "the"-introduced parenthetical
 // ("… Limited (the "Customer")", "(the Supplier)") or by a "means" definition.
@@ -67,6 +69,10 @@ export function consistencyItems(directory: string, document: DocID, draft: Para
 }
 
 export function consistencyFindings(input: { title: string; form?: string; final: Para[]; baselines: Para[][]; others: PackDocument[] }): ConsistencyFinding[] {
+  // A document planned without a known form (a legacy plan, or an outline's
+  // last attempt) may be a letter or advice as easily as an agreement; it is
+  // not checked rather than checked as the wrong kind of document.
+  if (!DOCUMENT_FORMS.some(form => form === input.form)) return []
   const final = outline(input.final)
   const baselines = input.baselines.map(rows => outline(rows))
   const pack = input.others.map(other => ({ ...other, outline: outline(other.paras) }))
