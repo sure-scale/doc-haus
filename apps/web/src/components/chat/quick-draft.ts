@@ -86,6 +86,36 @@ export function quickDraftLimit(scope: DraftScope | undefined) {
   if (scope.sources !== "few") return "This document draws on many of the matter's documents."
 }
 
+/** The router judges "sources" from the message alone; "few" is up to three
+ * of the matter's documents (dochaus/agent/router.md). A matter with at most
+ * three source documents can only need few, so its count decides. */
+export function withMatterSources(scope: DraftScope | undefined, sources: number | undefined): DraftScope | undefined {
+  return scope && sources !== undefined && sources <= 3 ? { ...scope, sources: "few" } : scope
+}
+
+// The quick-draft answer contract (dochaus/agent/quick-draft.md): a "Form:"
+// line, the draft, then "Sources" and "Open items".
+const FORM_LINE = /^[ \t]*[*_]*form[ \t]*:[ \t]*[*_]*[ \t]*(advice letter|advice|letter|agreement|other)[ \t]*[*_]*[ \t]*\.?[ \t]*$/im
+const SOURCES_LINE = /^[ \t]*(?:#{1,6}[ \t]+)?[*_]*sources[*_]*[ \t]*(?::|$)/im
+// Square brackets in a draft mark something still to fill or confirm; a
+// citation ("[<Document> § <section>]") and a Markdown link are not.
+const BRACKETED = /\[([^[\]\n]+)\](?![([:])/g
+
+/** A quick answer read by its contract: its form (which sets the firm's
+ * legend, applied by code), its text without the form line, and the bracketed
+ * placeholders left in the draft before its sources, each an open item. */
+export function quickDraftAnswer(answer: string) {
+  const match = FORM_LINE.exec(answer)
+  const text = match
+    ? `${answer.slice(0, match.index)}${answer.slice(match.index + match[0].length).replace(/^\s*\n/, "")}`.trim()
+    : answer.trim()
+  const draft = text.slice(0, SOURCES_LINE.exec(text)?.index ?? text.length)
+  const placeholders = [...draft.matchAll(BRACKETED)]
+    .filter((bracket) => /[\p{L}_●•]/u.test(bracket[1]!) && !bracket[1]!.includes("§"))
+    .map((bracket) => bracket[0])
+  return { form: match?.[1]?.toLowerCase(), text, placeholders: [...new Set(placeholders)] }
+}
+
 /** What a full run started from the quick draft at `index` carries: the request
  * that began the quick exchange, with the lawyer's later messages in it, as the
  * request; and the latest quick text as an unverified working draft, never as
@@ -102,8 +132,9 @@ export function upgradeInput(turns: Turn[], index: number) {
   const request = later.length
     ? `${first}\n\nLater messages from the lawyer, in order:\n${later.map((text) => `- ${text}`).join("\n")}`
     : first
-  // A quick answer that declined the request carries no draft.
-  const text = quick.text.trim()
+  // A quick answer that declined the request carries no draft. The form line
+  // is not draft text: the full run plans its own form.
+  const text = quickDraftAnswer(quick.text).text
   return { request, ...(DECLINED.test(text) ? {} : { workingDraft: text }) }
 }
 

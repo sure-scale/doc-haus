@@ -77,7 +77,12 @@ changing a file.
 </grounding>
 
 <output>
-- Give the draft first, ready to copy.
+- Begin with one line giving the draft's form: "Form: advice letter" for a
+  letter or email giving the client legal advice, "Form: advice" for legal
+  advice set out as a note rather than correspondence, "Form: letter" for other
+  correspondence, otherwise "Form: other". doc.haus adds the firm's legend for
+  that form, so write no legend or confidentiality marking.
+- Then give the draft, ready to copy.
 - Then "Sources": each fact the draft relies on, with a citation in the form
   `[<Document> § <section>]`.
 - Then "Open items", if any.

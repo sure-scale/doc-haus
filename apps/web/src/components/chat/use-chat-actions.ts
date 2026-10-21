@@ -15,6 +15,7 @@ import {
   rememberedChoice,
   routeForm,
   upgradeInput,
+  withMatterSources,
   type DraftChoice,
 } from "./quick-draft"
 import type { ChatState } from "./use-chat-state"
@@ -53,6 +54,7 @@ export function useChatActions({
   onSessionPersisted,
   onSessionStarted,
   onDraftingStarted,
+  sourceCount,
 }: {
   state: ChatState
   settlement: TurnSettlement
@@ -66,6 +68,9 @@ export function useChatActions({
   // A drafting run started from this chat: its owner session and the index of
   // the user turn that asked for it, where the run's narration is anchored.
   onDraftingStarted?: (ownerSessionID: string, turnIndex: number) => void
+  // How many source documents the matter holds, when known: with three or
+  // fewer, a drafting request can only draw on few of them.
+  sourceCount?: number
 }) {
   const {
     turns,
@@ -362,7 +367,7 @@ export function useChatActions({
       // The Quick draft pick is the lawyer's consent; a request outside its
       // scope is explained, with the full run offered, and nothing runs.
       if (agent === QUICK_DRAFT && matterId) {
-        const limit = quickDraftLimit((await routeMessage(text, prior, DRAFT_ONLY)).scope)
+        const limit = quickDraftLimit(withMatterSources((await routeMessage(text, prior, DRAFT_ONLY)).scope, sourceCount))
         if (turn.stopped) return cancelUnsent(text)
         if (limit) {
           setTurns((prev) => prev.slice(0, -1))
@@ -379,7 +384,7 @@ export function useChatActions({
       if (resolved.name === "draft" && matterId) {
         // A request Auto judged a quick draft can serve is offered, unless the
         // firm turned the offer off; any other drafting request runs in full.
-        if (isAuto(agent) && quickDraftEligible(resolved.scope) && (await quickDraftOffer()) === "ask")
+        if (isAuto(agent) && quickDraftEligible(withMatterSources(resolved.scope, sourceCount)) && (await quickDraftOffer()) === "ask")
           return await offerQuickDraft(text, turn)
         return await startFullRun(text, prior.length)
       }

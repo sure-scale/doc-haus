@@ -1,11 +1,13 @@
 import { draftingUpdateAdmission } from "../../../../dochaus/lib/drafting-update-admission"
+import { furnitureLegend } from "../../../../dochaus/lib/furniture-legend"
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import type { CompareParams } from "../api/ingest/compare"
 import type { Document } from "../api/ingest/documents"
 import type { LeanDraftingStatus } from "../api/ingest/lean"
 import { matterClient, type Client } from "../api/opencode/client"
 import { QUICK_DRAFT, isAuto, type AssistantMeta, type WorkflowMeta } from "../agents"
-import { QUICK_BANNER } from "./chat/quick-draft"
+import { QUICK_BANNER, quickDraftAnswer } from "./chat/quick-draft"
+import { getPreferences } from "../api/ingest/preferences"
 import CitationView from "./CitationView"
 import IssuesView, { parseIssues, stripIssues } from "./IssuesView"
 import TodoView from "./TodoView"
@@ -208,6 +210,7 @@ export default function ChatPanel({
     onSessionPersisted,
     onSessionStarted,
     onDraftingStarted: (owner, turn) => setDrafting({ owner, turn }),
+    sourceCount: documents?.filter((document) => document.role !== "deliverable").length,
   })
   const {
     turns,
@@ -258,7 +261,23 @@ export default function ChatPanel({
   }, [busy])
 
   const live = readTurn(partsRef.current, rolesRef.current, matterName, sessionRef.current)
+  const liveAgent = isAuto(agent) && resolvedAgent ? resolvedAgent : agent
   const activity = busy ? live.activity : undefined
+  // The firm's legends, read once a quick draft shows, as a rendered document
+  // reads them: a quick draft carries its form's legend from the firm's
+  // settings, never one the model wrote.
+  const [legends, setLegends] = useState<{ agreementLegend: string; adviceLegend: string }>()
+  const showsQuick = turns.some((t) => t.agent === QUICK_DRAFT) || (busy && liveAgent === QUICK_DRAFT)
+  useEffect(() => {
+    if (!showsQuick || legends) return
+    let current = true
+    getPreferences()
+      .then((prefs) => current && setLegends({ agreementLegend: prefs.agreementLegend ?? "", adviceLegend: prefs.adviceLegend ?? "" }))
+      .catch(() => undefined)
+    return () => {
+      current = false
+    }
+  }, [showsQuick, legends])
   const stopping = busy && turnRef.current.stopped
   useEffect(() => {
     onBusyChange?.(busy, activity)
@@ -309,6 +328,24 @@ export default function ChatPanel({
   const answer = (text: string, compares?: VersionCompare[]) => {
     const compare = chatCompare(compares)
     return compare ? <CompareAnswer text={text} compare={compare} onOpen={onOpenBlackline} /> : <Markdown>{text}</Markdown>
+  }
+  // A quick draft shows the firm's legend for its form, its text without the
+  // form line and, once settled, the placeholders left in the draft as open
+  // items, which code finds rather than trusting the answer's own list.
+  const quickAnswer = (text: string, settled: boolean) => {
+    const quick = quickDraftAnswer(text)
+    const legend = quick.form && legends ? furnitureLegend(quick.form, legends).trim() : ""
+    return (
+      <>
+        {legend && <p className="quick-draft-legend">{legend}</p>}
+        {answer(stripIssues(quick.text))}
+        {settled && quick.placeholders.length > 0 && (
+          <p className="quick-draft-open" role="note">
+            Open items in the draft: {quick.placeholders.join(", ")}
+          </p>
+        )}
+      </>
+    )
   }
 
   const narrationView = own && matterId && (
@@ -442,7 +479,9 @@ export default function ChatPanel({
                   {t.agent && <div className="msg-agent">{agentLabel(t.agent)}</div>}
                   {t.agent === QUICK_DRAFT && !t.error && !isEmptyAnswer(t.text) && quickBanner(i)}
                   <StepsPanel steps={t.steps} busy={false} answered={!isEmptyAnswer(t.text)} />
-                  {t.text && !isEmptyAnswer(t.text) && answer(stripIssues(t.text), t.compares)}
+                  {t.text &&
+                    !isEmptyAnswer(t.text) &&
+                    (t.agent === QUICK_DRAFT ? quickAnswer(t.text, true) : answer(stripIssues(t.text), t.compares))}
                   <IssuesView issues={parseIssues(t.text)} />
                   {t.error && <div className="msg-error">{t.error}</div>}
                   {t.stopped && !t.superseded && (
@@ -502,10 +541,10 @@ export default function ChatPanel({
           )}
           {busy && (
             <div className={`msg assistant${live.text ? " streaming" : ""}`}>
-              <div className="msg-agent">{agentLabel(isAuto(agent) && resolvedAgent ? resolvedAgent : agent)}</div>
-              {(isAuto(agent) && resolvedAgent ? resolvedAgent : agent) === QUICK_DRAFT && quickBanner()}
+              <div className="msg-agent">{agentLabel(liveAgent)}</div>
+              {liveAgent === QUICK_DRAFT && quickBanner()}
               <StepsPanel steps={live.steps} busy answered={Boolean(live.text)} />
-              {live.text && answer(stripIssues(live.text), live.compares)}
+              {live.text && (liveAgent === QUICK_DRAFT ? quickAnswer(live.text, false) : answer(stripIssues(live.text), live.compares))}
               {/* The answer is still coming: before its first step, during each step and between them. */}
               <p className="msg-working" role="status">
                 <span className="working" aria-hidden>

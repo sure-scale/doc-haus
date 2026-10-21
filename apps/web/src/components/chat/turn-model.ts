@@ -6,6 +6,7 @@ import { partActivity, TOOL_GROUPS } from "../narration/activity"
 import { basename, stepLabel } from "./step-labels"
 import { isDraftingRecoveryMessage } from "./drafting-recovery"
 import { templateResult, type TemplateResult } from "./template-result"
+import { QUICK_DRAFT } from "../../agents"
 
 // One row in the assistant's reasoning timeline: a thinking block or a tool call.
 export type Step =
@@ -378,12 +379,20 @@ export function toTurns(
         error: g.error,
         superseded: g.superseded,
         stopped: g.stopped,
-        ...contentOf(g.parts),
+        ...contentOf(g.role === "assistant" && g.agent === QUICK_DRAFT ? withoutOpening(g.parts) : g.parts),
         todos,
         steps: g.role === "assistant" ? partsToSteps(g.parts, matter, pool) : [],
       }
     })
     .filter((t) => t.text || t.citations.length || t.steps.length || t.error || t.stopped)
+}
+
+// A quick draft is written from what it retrieved, so text it wrote before its
+// first tool call is narration ("I'll pull the terms"), never the draft: it is
+// left out of the quick text and of the working draft an upgrade carries.
+function withoutOpening(parts: Part[]) {
+  const first = parts.findIndex((p) => p.type === "tool")
+  return first < 0 ? parts : parts.filter((p, index) => index > first || p.type !== "text")
 }
 
 // The provider error the engine stamps on a failed assistant message. Shape is

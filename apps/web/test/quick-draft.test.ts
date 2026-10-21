@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { parseRoute, quickDraftEligible, type DraftScope } from "../src/api/opencode/routing"
 import { AUTO_CANDIDATES, CHAT_ASSISTANTS, QUICK_DRAFT } from "../src/agents"
+import { furnitureLegend } from "../../../dochaus/lib/furniture-legend"
 import {
   QUICK_BANNER,
+  quickDraftAnswer,
   quickDraftLimit,
   rememberChoice,
   rememberedChoice,
@@ -10,8 +12,9 @@ import {
   routeForm,
   routeRequest,
   upgradeInput,
+  withMatterSources,
 } from "../src/components/chat/quick-draft"
-import type { Turn } from "../src/components/chat/turn-model"
+import { toTurns, type Turn } from "../src/components/chat/turn-model"
 
 // The quick-draft path (#282): the router's closed eligibility estimates, the
 // route form, the remembered pre-selection and what an upgrade carries.
@@ -75,6 +78,20 @@ describe("router reply", () => {
     }
     expect(quickDraftLimit(undefined)).toBeTruthy()
     expect(quickDraftLimit(ELIGIBLE)).toBeUndefined()
+  })
+
+  test("a matter with three or fewer source documents can only need few; more leaves the router's judgment", () => {
+    const many: DraftScope = { ...ELIGIBLE, sources: "many" }
+    for (const count of [0, 1, 3]) {
+      expect(withMatterSources(many, count)).toEqual(ELIGIBLE)
+      expect(quickDraftEligible(withMatterSources(many, count))).toBe(true)
+      expect(quickDraftLimit(withMatterSources(many, count))).toBeUndefined()
+    }
+    expect(withMatterSources(many, 4)).toEqual(many)
+    expect(withMatterSources(many, undefined)).toEqual(many)
+    // The count settles sources only; every other field stays the router's.
+    expect(quickDraftEligible(withMatterSources({ ...many, legal_effect: "yes" }, 1))).toBe(false)
+    expect(withMatterSources(undefined, 1)).toBeUndefined()
   })
 })
 
@@ -170,7 +187,96 @@ describe("upgrade", () => {
     expect(upgradeInput(turns, 1)).toEqual({ request: "Draft the termination notice." })
   })
 
+  test("the form line is not working-draft text", () => {
+    const turns = [
+      turn("user", "Draft a covering email on the two invoices.", undefined, "u1"),
+      turn("assistant", "Form: advice letter\n\nDear client, both remain unpaid.", QUICK_DRAFT, "a1"),
+    ]
+    expect(upgradeInput(turns, 1)).toEqual({ request: "Draft a covering email on the two invoices.", workingDraft: "Dear client, both remain unpaid." })
+  })
+
   test("the banner is one line naming what did not run", () => {
     expect(QUICK_BANNER).toBe("Quick draft — full drafting checks not run.")
+  })
+})
+
+describe("quick answer", () => {
+  const LEGENDS = { agreementLegend: "Subject to contract", adviceLegend: "Privileged & confidential" }
+
+  test("its form line picks the firm's legend, as a rendered document's form does; the line is not draft text", () => {
+    for (const line of ["Form: advice letter", "**Form:** advice letter", "**Form: Advice letter**"]) {
+      const answer = quickDraftAnswer(`${line}\n\nDear client,\n\nBoth invoices remain unpaid.`)
+      expect(answer.form).toBe("advice letter")
+      expect(answer.text).toBe("Dear client,\n\nBoth invoices remain unpaid.")
+    }
+    expect(furnitureLegend("advice letter", LEGENDS)).toBe("Privileged & confidential")
+    expect(furnitureLegend("advice", LEGENDS)).toBe("Privileged & confidential")
+    expect(furnitureLegend("letter", LEGENDS)).toBe("")
+    expect(furnitureLegend("other", LEGENDS)).toBe("")
+    // Legends are off by default: no firm legend, no legend.
+    expect(furnitureLegend("advice letter", { agreementLegend: "", adviceLegend: "" })).toBe("")
+    // No form line: no form, so no legend, and the text stands as written.
+    expect(quickDraftAnswer("Dear client,\n\nText.")).toEqual({ form: undefined, text: "Dear client,\n\nText.", placeholders: [] })
+  })
+
+  test("bracketed placeholders left in the draft are its open items; citations, links and the lists after it are not", () => {
+    const answer = [
+      "Form: letter",
+      "",
+      "Dear [Client contact],",
+      "",
+      "The cap is 150% of the fees [Cedar Vale proposal.docx § 5]. See [the portal](https://example.test). We meet on [open item: meeting date].",
+      "",
+      "Kind regards, [Client contact]",
+      "",
+      "**Sources:**",
+      "- cap at 150% [Cedar Vale proposal.docx § 5]",
+      "",
+      "Open items:",
+      "None — [Signatory] confirmed.",
+    ].join("\n")
+    expect(quickDraftAnswer(answer).placeholders).toEqual(["[Client contact]", "[open item: meeting date]"])
+    expect(quickDraftAnswer("Dear client,\n\nSee [Letter.docx § 1].\n\nSources:\n- [Letter.docx § 1]").placeholders).toEqual([])
+  })
+})
+
+describe("quick text", () => {
+  const text = (messageID: string, value: string) => ({ type: "text" as const, id: `${messageID}:text`, sessionID: "ses_1", messageID, text: value })
+  const tool = (messageID: string) => ({
+    type: "tool" as const,
+    id: `${messageID}:tool`,
+    sessionID: "ses_1",
+    messageID,
+    tool: "search-document",
+    state: { status: "completed" as const, input: { query: "payment terms" }, output: "", title: "search-document" },
+  })
+  const NARRATION = "Quick draft on your supplier comparison — I'll pull the caps and payment terms."
+  const DRAFT = "Dear client,\n\nThe caps and payment terms are below."
+  const conversation = (agent: string, steps: { info: { id: string; role: "assistant" }; parts: ReturnType<typeof text | typeof tool>[] }[]) =>
+    toTurns([{ info: { id: "msg_u", role: "user", agent }, parts: [text("msg_u", "Draft a short email on the caps.")] }, ...steps], "")
+
+  test("a quick draft's text leaves out what it wrote before its first tool call; the working draft follows", () => {
+    const steps = [
+      { info: { id: "msg_1", role: "assistant" as const }, parts: [text("msg_1", NARRATION), tool("msg_1")] },
+      { info: { id: "msg_2", role: "assistant" as const }, parts: [tool("msg_2")] },
+      { info: { id: "msg_3", role: "assistant" as const }, parts: [text("msg_3", DRAFT)] },
+    ]
+    const turns = conversation(QUICK_DRAFT, steps)
+    expect(turns[1]!.text).toBe(DRAFT)
+    expect(turns[1]!.steps.length).toBeGreaterThan(0)
+    expect(upgradeInput(turns, 1)?.workingDraft).toBe(DRAFT)
+    // Other assistants keep each step's text, as before.
+    expect(conversation("qa", steps)[1]!.text).toBe(`${NARRATION}\n\n${DRAFT}`)
+  })
+
+  test("text written after retrieval began stays, even in a step that calls a tool", () => {
+    const turns = conversation(QUICK_DRAFT, [
+      { info: { id: "msg_1", role: "assistant" as const }, parts: [tool("msg_1")] },
+      { info: { id: "msg_2", role: "assistant" as const }, parts: [text("msg_2", DRAFT), tool("msg_2")] },
+      { info: { id: "msg_3", role: "assistant" as const }, parts: [text("msg_3", "Sources: [Letter.docx § 1]")] },
+    ])
+    expect(turns[1]!.text).toBe(`${DRAFT}\n\nSources: [Letter.docx § 1]`)
+    // An answer with no tool call is all answer.
+    expect(conversation(QUICK_DRAFT, [{ info: { id: "msg_1", role: "assistant" as const }, parts: [text("msg_1", DRAFT)] }])[1]!.text).toBe(DRAFT)
   })
 })

@@ -14,12 +14,18 @@ const directory = await mkdtemp(path.join(os.tmpdir(), "dochaus-quick-draft-"))
 const shots = process.env.QUICK_DRAFT_SCREENSHOTS
 const model = { providerID: "test", id: "model" }
 const BANNER = "Quick draft — full drafting checks not run."
-const QUICK_TEXT = "Dear client, both invoices remain unpaid [Letter.docx § 1]."
+// A quick answer as the engine stores it: a narration line before its first
+// tool call, then the form line, the draft with a placeholder, its sources and
+// an open-items list that misses the placeholder.
+const NARRATION = "Quick draft on your invoices — I'll pull the payment terms."
+const QUICK_TEXT = "Dear [Client contact], both invoices remain unpaid [Letter.docx § 1].\n\nSources:\n- unpaid invoices [Letter.docx § 1]\n\nOpen items:\nNone."
+const QUICK_ANSWER = `Form: advice letter\n\n${QUICK_TEXT}`
+const LEGEND = "Privileged & confidential"
 const scope = (change: Record<string, string> = {}) =>
   JSON.stringify({ route: "draft", documents: "one", legal_effect: "no", outside_law: "no", firm_material: "no", sources: "few", ...change })
 
 // What the mocked services answer, set per scenario.
-const config = { router: scope(), offer: "ask", settled: false }
+const config = { router: scope(), offer: "ask", settled: false, legend: "" }
 // What reached them.
 const routerPrompts: string[] = []
 const prompts: { session: string; agent: string; text: string }[] = []
@@ -79,7 +85,7 @@ const server = Bun.serve({
       return json({ id: "matter", title: "Unpaid invoices", dir: "/matter", created_at: 1, documents: [{ id: 1, name: "Letter.docx", doc_path: "/matter/Letter.docx", created_at: 1, role: "source" }] })
     if (route === "GET /ingest/jurisdictions" || route === "GET /ingest/playbooks") return json([])
     if (route === "GET /ingest/workflows") return json({ dir: "/workflows", workflows: [] })
-    if (route === "GET /ingest/preferences") return json({ quickDraftOffer: config.offer })
+    if (route === "GET /ingest/preferences") return json({ quickDraftOffer: config.offer, agreementLegend: "", adviceLegend: config.legend })
     if (route === "GET /api/agent")
       return json({ data: ["qa", "draft", "quick-draft"].map((id) => ({ id, description: id, mode: "primary", hidden: id === "quick-draft" })) })
     if (route === "GET /ingest/matters/matter/telemetry")
@@ -163,10 +169,21 @@ const server = Bun.serve({
         const agent = agents.get(id!) ?? "qa"
         prompts.push({ session: id!, agent, text })
         const n = transcript.length
+        const time = { created: Date.now(), completed: Date.now() }
+        const answer: SessionMessageInfo[] =
+          agent === "quick-draft"
+            ? [
+                { type: "assistant", id: `msg_a${n}`, agent, model, finish: "tool-calls", time, content: [
+                  { type: "text", text: NARRATION },
+                  { type: "tool", id: `call_${n}`, name: "search-document", time, state: { status: "completed", input: { query: "invoices" }, content: [{ type: "text", text: "Both invoices remain unpaid." }], metadata: { citations: [] } } },
+                ] },
+                { type: "assistant", id: `msg_b${n}`, agent, model, finish: "stop", time, content: [{ type: "text", text: QUICK_ANSWER }] },
+              ]
+            : [{ type: "assistant", id: `msg_a${n}`, agent, model, finish: "stop", time, content: [{ type: "text", text: "Answered." }] }]
         transcripts.set(id!, [
           ...transcript,
           { type: "user", id: `msg_u${n}`, text, time: { created: Date.now() } },
-          { type: "assistant", id: `msg_a${n}`, agent, model, finish: "stop", time: { created: Date.now(), completed: Date.now() }, content: [{ type: "text", text: agent === "quick-draft" ? QUICK_TEXT : "Answered." }] },
+          ...answer,
           { type: "idle", id: `msg_i${n}`, outcome: "succeeded", time: { created: Date.now() } },
         ])
         // The engine reports the finished turn, which settles it in the panel.
@@ -243,10 +260,18 @@ try {
     assert.deepEqual(replies, [{ formID: forms[0]!.id, answer: { route: "quick" } }])
     assert.deepEqual(prompts[0], { session: sessionID, agent: "quick-draft", text: request })
     await page.getByRole("note").filter({ hasText: BANNER }).waitFor()
-    await page.locator(".msg.assistant", { hasText: "both invoices remain unpaid" }).waitFor()
+    const quick = page.locator(".msg.assistant", { hasText: "both invoices remain unpaid" })
+    await quick.waitFor()
     assert.equal(await page.evaluate(() => localStorage.getItem("dh.quickDraft.choice.matter")), "quick")
+    // Only the draft is the quick text: no narration line, no form line, and
+    // no legend while the firm has none.
+    assert.equal(await quick.getByText(NARRATION).count(), 0, "the narration line is not quick text")
+    assert.equal(await quick.getByText("Form: advice letter").count(), 0, "the form line is not shown")
+    assert.equal(await quick.locator(".quick-draft-legend").count(), 0, "no legend while the firm's advice legend is none")
+    // Code lists the placeholder the answer's own open items missed.
+    await quick.getByRole("note").filter({ hasText: "Open items in the draft: [Client contact]" }).waitFor()
     if (shots) await page.screenshot({ path: path.join(shots, "3-quick-draft.png") })
-    console.log("PASS Start dispatches the settled choice once: the quick draft answers in chat under the banner")
+    console.log("PASS Start dispatches the settled choice once: the quick draft answers in chat under the banner, its placeholder listed as an open item")
 
     await page.getByRole("button", { name: "Run full drafting cycle", exact: true }).click()
     await until(() => starts.length === 1, "the upgrade starts the full run")
@@ -344,6 +369,39 @@ try {
     assert.ok(routerPrompts.at(-1)!.includes("- draft:") && !routerPrompts.at(-1)!.includes("- qa:"), "the pick checks scope only")
     await page.getByRole("note").filter({ hasText: BANNER }).waitFor()
     console.log("PASS the explicit Quick draft pick is consent: no form, and the banner shows")
+    await context.close()
+  }
+  {
+    // A firm advice legend is applied by code to an advice letter's quick draft.
+    config.legend = LEGEND
+    const before = counts()
+    const { context, page, send, pick } = await open()
+    await pick("Quick draft")
+    await send("Draft a short email advising the client on the invoices.")
+    await until(() => prompts.length === before.prompts + 1, "the explicit pick sends to Quick draft")
+    const quick = page.locator(".msg.assistant", { hasText: "both invoices remain unpaid" })
+    await quick.waitFor()
+    assert.equal(await quick.locator(".quick-draft-legend").textContent(), LEGEND)
+    assert.equal(await quick.getByText("Form: advice letter").count(), 0)
+    config.legend = ""
+    if (shots) await page.screenshot({ path: path.join(shots, "5-quick-legend.png") })
+    console.log("PASS the firm's advice legend heads an advice letter's quick draft; the model's form line is not shown")
+    await context.close()
+  }
+  {
+    // A one-document matter can only need few sources, whatever the router said.
+    const before = counts()
+    config.router = scope({ sources: "many" })
+    const { context, send, card } = await open()
+    await send("Draft a short email to the client listing what the letter asks for.")
+    await until(() => forms.length === before.forms + 1, "the offer is made on a one-document matter")
+    await card.waitFor()
+    await card.getByRole("button", { name: "Cancel", exact: true }).click()
+    await card.waitFor({ state: "detached" })
+    await settle()
+    assert.equal(starts.length, before.starts, "no full run without the lawyer's choice")
+    config.router = scope()
+    console.log("PASS a one-document matter is offered the quick draft even when the router judged many sources")
     await context.close()
   }
   {
