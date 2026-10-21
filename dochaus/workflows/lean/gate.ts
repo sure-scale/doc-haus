@@ -743,6 +743,8 @@ function settle(item: OpenItem, context: SettleContext): OpenItem {
   if (item.kind === "template_removal")
     return named ? resolved("template part left out or cut down on purpose, with a recorded reason; named in the drafting notes")
       : open("the drafting notes do not name this removal of a template part")
+  if (item.kind === "consistency")
+    return named ? disclosed("cross-reference or defined-term problem named in the drafting notes") : open("the drafting notes do not name this cross-reference or defined-term problem")
   if (item.kind === "question") {
     const question = item.ref.question_id ? context.questions.get(item.ref.question_id) : undefined
     if (question?.status === "answered") return resolved("answered by the lawyer")

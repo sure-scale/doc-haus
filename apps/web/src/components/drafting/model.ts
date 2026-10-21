@@ -197,6 +197,7 @@ const KIND_LABELS: Record<string, string> = {
   question: "Questions for you",
   omission: "Points left out",
   template_removal: "Template text removed",
+  consistency: "Cross-references and defined terms to check",
   checklist_open: "Requirements left open by the checklist check",
   checklist_unresolved: "Unresolved checklist findings",
 }
