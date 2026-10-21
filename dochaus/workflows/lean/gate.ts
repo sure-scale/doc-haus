@@ -152,7 +152,7 @@ export function finalGate(directory: string): GateResult {
   const parties = gateScopeParties(directory)
   const shows = (question: Question, row: ChecklistOpenFinding) => scopeQuestionShows(question, quotes(row), parties(quotes(row)))
   const settled = scopeAnswers(scoped, quotes, asked.filter(answeredScopeQuestion), "gate", shows)
-  const scope = otherOpen ? undefined : packageScopeQuestion(settled.ask, settled.id)
+  const scope = otherOpen ? undefined : packageScopeQuestion(directory, settled.ask, settled.id)
   const scopeAsks = (row: ChecklistOpenFinding) => settled.by(row)[0] ?? (otherOpen && shows(otherOpen, row) ? otherOpen : scope)
   const asks = (row: ChecklistOpenFinding) => paired.has(row.item_id) ? conflict?.id : scoped.includes(row) ? scopeAsks(row)?.id : undefined
   if (checklistOpen) items.push(...checked.openFindings.map(row => checklistOpenItem(directory, row, asks(row))))
@@ -597,22 +597,26 @@ function instructionLeftOpen(directory: string, { item, finding }: ChecklistOpen
  * saved plan lacks needs this draft stopped, if unfinished, and a new one,
  * planned from the start. The plan-side route for
  * instructed acts is the package-coverage check before drafting; this asks
- * only what reached the gate still open. Its `id`, from scopeAnswers, keys
+ * only what reached the gate still open. Each instruction stands on its own
+ * line, without its checklist item id, and a planned document its check or
+ * open decisions name by id is named by its title. Its `id`, from scopeAnswers, keys
  * on the verbatim instruction quotes, never on extraction-ordinal item ids, so
  * re-extraction asks the same question, and the caller leaves out the
  * instructions an answered package-scope question settled (scopeAnswers), and
  * asks none once two of the gate's own are answered or while another stage's
  * is open. */
-function packageScopeQuestion(rows: ChecklistOpenFinding[], id: string): Question | undefined {
+function packageScopeQuestion(directory: string, rows: ChecklistOpenFinding[], id: string): Question | undefined {
   if (!rows.length) return undefined
   const several = rows.length > 1
+  const documents = readLeanPlan(directory)?.documents ?? []
+  const titled = (text: string) => withDocumentTitles(text, documents, [], title => title, "the drafting notes")
   return {
     id,
     stage: "gate",
     question: [`The checklist check left ${several ? "these instructions" : "this instruction"} open, so the package may not carry ${several ? "them" : "it"}:`,
-      ...rows.map(({ item_id, item, finding }) => `${checklistRequirement(item_id, item)} ${finding.open_decisions?.length
-        ? `Open decisions: ${sentence(finding.open_decisions.map(row => scopeField(row.trim())).join("; "))}` : "No open decision recorded; state what is missing."}`),
-      `${several ? "For each, answer" : "Answer"} the open decisions above (supply any missing fact or approval they name). If the package should carry it, say which planned document carries it; otherwise say it is outside this request.`].join(" "),
+      ...rows.map(({ item, finding }) => `${requirementText(item, titled)} ${finding.open_decisions?.length
+        ? `Open decisions: ${sentence(finding.open_decisions.map(row => scopeField(titled(row.trim()))).join("; "))}` : "No open decision recorded; state what is missing."}`),
+      `${several ? "For each, answer" : "Answer"} the open decisions above (supply any missing fact or approval they name). If the package should carry it, say which planned document carries it; otherwise say it is outside this request.`].join("\n"),
     context: `Until a later check settles ${several ? "these instructions, they are" : "this instruction, it is"} disclosed with the review draft as left open; delivery is not held for ${several ? "them" : "it"}. Your answer re-runs the stages that use it, including the checklist check; the document plan is kept as saved, and a drafted document changes only by amendment. A document the plan does not have is not added: to add one, stop this draft with "Stop draft" if it has not finished, then start a new one, which plans the package from the start.`,
     status: "open",
     // Besides the package's scope, it always asks for the open decisions' missing facts or approvals.
@@ -704,16 +708,13 @@ function conflictItemPairs(rows: ChecklistUnresolvedFinding[]) {
     .toSorted((a, b) => JSON.stringify(a.map(order)).localeCompare(JSON.stringify(b.map(order))))
 }
 
-/** A requirement as the gate's questions list it: its id, check and sources. */
-function checklistRequirement(id: string, item: ChecklistItem) {
-  return `${id}: ${requirementText(item)}`
-}
-
-/** A requirement's check and sources. The check is a model's words, so it
- * goes through scopeField, as the scope question's open decisions do:
- * questionQuotes reads only the rows the gate writes. The quotes are verbatim. */
-function requirementText(item: ChecklistItem) {
-  return `${sentence(scopeField(item.check))} Sources: ${checklistSources(item)}`
+/** A requirement's check and sources, as the gate's questions list it. The
+ * check is a model's words, so it goes through scopeField, as the scope
+ * question's open decisions do: questionQuotes reads only the rows the gate
+ * writes. `named` words the check first (the scope question names planned
+ * documents by title). The quotes are verbatim. */
+function requirementText(item: ChecklistItem, named = (text: string) => text) {
+  return `${sentence(scopeField(named(item.check)))} Sources: ${checklistSources(item)}`
 }
 
 function checklistSources(item: ChecklistItem) {

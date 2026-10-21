@@ -274,6 +274,8 @@ button.question-dock-cta:focus-visible {
   color: var(--text);
   font-size: 15px;
   line-height: 1.5;
+  /* A question listing several items puts each on its own line. */
+  white-space: pre-line;
 }
 
 .question-label {

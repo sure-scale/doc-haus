@@ -82,9 +82,10 @@ test("an instruction left open is asked once, in one package-scope question, and
   expect(question).toMatchObject({ stage: "gate", status: "open" })
   expect(question).not.toHaveProperty("pid")
   expect(question).not.toHaveProperty("document")
-  for (const text of ["c1: The note states the delivery period.", 'request "Deliver within thirty days of the order."', `Open decisions: ${SCOPE}.`, ` Answer ${CLOSING}`])
+  for (const text of ["\nThe note states the delivery period.", 'request "Deliver within thirty days of the order."', `Open decisions: ${SCOPE}.`, `\nAnswer ${CLOSING}`])
     expect(question.question).toContain(text)
-  expect(question.question).not.toContain("c2")
+  expect(question.question).not.toMatch(/\bc[12]\b/)
+  expect(question.question).not.toContain(PAYMENT.check)
   expect(question.question).not.toContain("For each")
   expect(question.context).toBe("Until a later check settles this instruction, it is disclosed with the review draft as left open; delivery is not held for it. " +
     "Your answer re-runs the stages that use it, including the checklist check; the document plan is kept as saved, and a drafted document changes only by amendment. " +
@@ -101,10 +102,10 @@ test("several instructions left open share one question, keyed by their verbatim
   const directory = checklistMatter([left("c1"), finding("c2", "open")])
   const [question, ...rest] = finalGate(directory).questions!
   expect(rest).toEqual([])
-  expect(question!.question).toContain(`c1: The note states the delivery period. Sources: request "Deliver within thirty days of the order." Open decisions: ${SCOPE}.`)
+  expect(question!.question).toContain(`\nThe note states the delivery period. Sources: request "Deliver within thirty days of the order." Open decisions: ${SCOPE}.\n`)
   // A finding that records no open decision asks the lawyer to name what is missing.
-  expect(question!.question).toContain('c2: The note states when payment falls due. Sources: request "Payment is due on delivery." No open decision recorded; state what is missing.')
-  expect(question!.question).toContain(`For each, answer ${CLOSING}`)
+  expect(question!.question).toContain('\nThe note states when payment falls due. Sources: request "Payment is due on delivery." No open decision recorded; state what is missing.\n')
+  expect(question!.question).toContain(`\nFor each, answer ${CLOSING}`)
   expect(question!.context).toContain("Until a later check settles these instructions, they are disclosed with the review draft as left open; delivery is not held for them.")
   expect(leftOpen(finalGate(directory)).map(item => item.ref.question_id)).toEqual([question!.id, question!.id])
   // Re-extraction renumbers the items, reorders them and rewords the checks;
@@ -130,8 +131,8 @@ test("an answered package-scope question settles only the instructions it showed
   const [second, ...rest] = gate.questions!
   expect(rest).toEqual([])
   expect(second!.id).not.toBe(question!.id)
-  expect(second!.question).toContain("c2: The note states when payment falls due.")
-  expect(second!.question).not.toContain("c1")
+  expect(second!.question).toContain("\nThe note states when payment falls due.")
+  expect(second!.question).not.toContain(PERIOD.check)
   expect(second!.question).not.toContain("For each")
   // The answered question asked about c1 only, so only c1 refers to it; c2 refers to the new one.
   expect(leftOpen(gate).map(item => item.ref)).toEqual([{ checklist_item: "c1", document: "d1", question_id: question!.id }, { checklist_item: "c2", document: "d1", question_id: second!.id }])
@@ -149,15 +150,15 @@ test("an answered package-scope question settles only the instructions it showed
   const planned = recordCoverage(checklistMatter([left("c1"), left("c2")]), [payment])
   writeQuestions(planned, [{ ...coverageScopeQuestion([payment], [])!, id: `${PACKAGE_SCOPE_QUESTION}planned`, status: "answered", answer: "The supply note." }])
   const asked = finalGate(planned)
-  expect(asked.questions).toEqual([expect.objectContaining({ stage: "gate", question: expect.stringContaining("c1: The note states the delivery period.") })])
-  expect(asked.questions![0]!.question).not.toContain("c2")
+  expect(asked.questions).toEqual([expect.objectContaining({ stage: "gate", question: expect.stringContaining("\nThe note states the delivery period.") })])
+  expect(asked.questions![0]!.question).not.toContain(PAYMENT.check)
   expect(leftOpen(asked).map(item => item.ref.question_id)).toEqual([asked.questions![0]!.id, `${PACKAGE_SCOPE_QUESTION}planned`])
   // A question that showed no instruction is referred to by none, and every instruction is asked.
   writeQuestions(planned, [{ id: `${PACKAGE_SCOPE_QUESTION}planned`, stage: "intake", question: "Which document carries each instruction?", context: "", status: "answered", answer: "The supply note." }])
   const none = finalGate(planned)
   expect(none.questions).toHaveLength(1)
-  expect(none.questions![0]!.question).toContain("c1:")
-  expect(none.questions![0]!.question).toContain("c2:")
+  expect(none.questions![0]!.question).toContain(PERIOD.check)
+  expect(none.questions![0]!.question).toContain(PAYMENT.check)
   expect(leftOpen(none).map(item => item.ref.question_id)).toEqual([none.questions![0]!.id, none.questions![0]!.id])
 })
 
@@ -197,7 +198,7 @@ test("a scope question that cut a long instruction to an excerpt shows that inst
   // An excerpt at least SHORT_QUOTE long shows the instruction; a shorter
   // fragment shows none, whether cut from its opening or its middle.
   const shows = (cut: string) => scopeQuestionShows({ id: `${PACKAGE_SCOPE_QUESTION}cut`, stage: "gate", context: "", status: "open",
-    question: `c2: The note states when payment falls due. Sources: request "${cut}" No open decision recorded; state what is missing.` }, ["Payment is due on delivery."])
+    question: `The note states when payment falls due. Sources: request "${cut}" No open decision recorded; state what is missing.` }, ["Payment is due on delivery."])
   expect(shows("Payment is due on deliv…")).toBe(true)
   expect(shows("Payment is due…")).toBe(false)
   expect(shows("is due on delivery…")).toBe(false)
@@ -247,8 +248,8 @@ test("an instruction left open that a source conflict names is asked only in the
   expect(conflict!.id).toMatch(/^checklist-conflict-/)
   expect(conflict!.question).toContain(`First: ${PERIOD.check} Sources: request "Deliver within thirty days of the order." Second: ${PAYMENT.check}`)
   expect(scope!.id.startsWith(PACKAGE_SCOPE_QUESTION)).toBe(true)
-  expect(scope!.question).toContain("c3: The note names the delivery address.")
-  expect(scope!.question).not.toContain("c2")
+  expect(scope!.question).toContain("\nThe note names the delivery address.")
+  expect(scope!.question).not.toContain(PAYMENT.check)
   // No item is asked about twice.
   for (const item of [PERIOD, PAYMENT, ADDRESS]) expect(gate.questions!.filter(row => row.question.includes(item.check))).toHaveLength(1)
   expect(gate.disclosed.find(item => item.kind === "checklist_unresolved")!.ref).toMatchObject({ checklist_item: "c1", question_id: conflict!.id })
@@ -345,17 +346,38 @@ test("every open decision recorded on an instruction is put to the lawyer, trimm
   const decisions = ["Whether a side letter carries the period", "  Which party bears late delivery costs ", "Approval of the period by the client"]
   const gate = finalGate(checklistMatter([finding("c1", "open", { open_decisions: decisions }), finding("c2", "satisfied")]))
   const recorded = "Open decisions: Whether a side letter carries the period; Which party bears late delivery costs; Approval of the period by the client."
-  expect(gate.questions!.map(row => row.question)).toEqual([expect.stringContaining(`c1: The note states the delivery period. Sources: request "Deliver within thirty days of the order." ${recorded} Answer the open decisions above`)])
+  expect(gate.questions!.map(row => row.question)).toEqual([expect.stringContaining(`\nThe note states the delivery period. Sources: request "Deliver within thirty days of the order." ${recorded}\nAnswer the open decisions above`)])
   expect(leftOpen(gate).map(item => item.detail)).toEqual([expect.stringContaining(recorded)])
 })
 
 test("the scope question on one instruction, and its disclosure, read exactly as recorded", () => {
   const gate = finalGate(checklistMatter([left("c1"), finding("c2", "satisfied")]))
-  expect(gate.questions!.map(row => row.question)).toStrictEqual(["The checklist check left this instruction open, so the package may not carry it: " +
-    'c1: The note states the delivery period. Sources: request "Deliver within thirty days of the order." Open decisions: Whether this deliverable is meant to carry it. ' +
+  expect(gate.questions!.map(row => row.question)).toStrictEqual(["The checklist check left this instruction open, so the package may not carry it:\n" +
+    'The note states the delivery period. Sources: request "Deliver within thirty days of the order." Open decisions: Whether this deliverable is meant to carry it.\n' +
     "Answer the open decisions above (supply any missing fact or approval they name). If the package should carry it, say which planned document carries it; otherwise say it is outside this request."])
   expect(leftOpen(gate).map(item => item.detail)).toStrictEqual(["Checklist requirement left open: The note states the delivery period. Finding: Focused result open. " +
     "Limitation: Comments not inspected. Open decisions: Whether this deliverable is meant to carry it."])
+})
+
+test("the scope question names no checklist item id or planned-document id, puts each instruction on its own line, and is still read once answered", () => {
+  const titled = requirement("d1 states the delivery period.", "Deliver within thirty days of the order.")
+  const directory = checklistMatter([finding("source-0a1b2c3d4e5f-1", "open", { open_decisions: ["Whether d1 is meant to carry it"] }), left("source-0a1b2c3d4e5f-2")],
+    [{ id: "source-0a1b2c3d4e5f-1", item: titled }, { id: "source-0a1b2c3d4e5f-2", item: PAYMENT }])
+  const [question, ...rest] = finalGate(directory).questions!
+  expect(rest).toEqual([])
+  expect(question!.question).not.toMatch(/source-0a1b2c3d4e5f|\bd1\b/)
+  expect(question!.question.split("\n")).toStrictEqual([
+    "The checklist check left these instructions open, so the package may not carry them:",
+    'The Supply note states the delivery period. Sources: request "Deliver within thirty days of the order." Open decisions: Whether the Supply note is meant to carry it.',
+    `The note states when payment falls due. Sources: request "Payment is due on delivery." Open decisions: ${SCOPE}.`,
+    `For each, answer ${CLOSING}`,
+  ])
+  // Answered, it settles both instructions: nothing more is asked, and each disclosure refers to it.
+  replaceStageQuestions(directory, "gate", null, [question!])
+  answerQuestion(directory, question!.id, { text: "It is outside this request." })
+  const gate = finalGate(directory)
+  expect(gate.questions).toBeUndefined()
+  expect(leftOpen(gate).map(item => item.ref.question_id)).toEqual([question!.id, question!.id])
 })
 
 // The carried case needs both signals: the saved plan's coverage record has an
@@ -480,8 +502,8 @@ test("with one instruction carried and another left out, the scope question list
   const [question, ...rest] = gate.questions!
   expect(rest).toEqual([])
   expect(question!.id).toBe(packageScopeQuestionID(["Payment is due on delivery."]))
-  expect(question!.question).toContain("c2: The note states when payment falls due.")
-  for (const text of ["c1", PERIOD_QUOTE, "For each"]) expect(question!.question).not.toContain(text)
+  expect(question!.question).toContain("\nThe note states when payment falls due.")
+  for (const text of [PERIOD.check, PERIOD_QUOTE, "For each"]) expect(question!.question).not.toContain(text)
   expect(leftOpen(gate).map(item => item.ref)).toEqual([{ checklist_item: "c1", document: "d1" }, { checklist_item: "c2", document: "d1", question_id: question!.id }])
 })
 
@@ -515,8 +537,8 @@ test("an instruction left open completes the run with one open gate question; re
   expect(readQuestions(directory)).toEqual([expect.objectContaining({ id: expect.stringMatching(/^package-scope-/), stage: "gate", status: "open" })])
   const question = readQuestions(directory)[0]!
   const ids = (readLeanJson(directory, "checklist/extraction.json") as any).sources.flatMap((row: any) => row.items).map((row: any) => row.id) as string[]
-  expect(question.question).toContain(`${ids[0]}: The note states the delivery period.`)
-  expect(question.question).not.toContain(ids[1]!)
+  expect(question.question).toContain("\nThe note states the delivery period.")
+  for (const text of [...ids, "The requested supply note is drafted."]) expect(question.question).not.toContain(text)
   expect((readLeanJson(directory, "gate.json") as any).disclosed).toContainEqual(expect.objectContaining({ kind: "checklist_open",
     ref: expect.objectContaining({ checklist_item: ids[0], question_id: question.id }) }))
   // The open question keys no step: a resume makes no call and does not stop
@@ -619,7 +641,7 @@ describe("scope matching: fix wave 3", () => {
       expect(earlier.question).toContain('"Payment is due on delivery."')
       writeFindings(directory, [first, left("c2")])
       const gate = finalGate(directory)
-      expect(gate.questions).toEqual([expect.objectContaining({ question: expect.stringContaining('c2: The note states when payment falls due. Sources: request "Payment is due on delivery."') })])
+      expect(gate.questions).toEqual([expect.objectContaining({ question: expect.stringContaining('\nThe note states when payment falls due. Sources: request "Payment is due on delivery."') })])
       expect(leftOpen(gate).map(item => item.ref.question_id)).toEqual([earlier.id, gate.questions![0]!.id])
     }
   })
@@ -733,8 +755,8 @@ describe("scope matching: fix wave 3", () => {
     for (const quote of ["The “Buyer” shall pay the price on completion.", 'The "Buyer" shall pay the price on completion.'])
       expect(planAsks(actOf(quote, ["the Buyer"]), [earlier])).toBe(false)
     const shown = (question: string, quote: string) => scopeQuestionShows({ id: `${PACKAGE_SCOPE_QUESTION}x`, stage: "gate", question, context: "", status: "answered" }, [quote])
-    expect(shown('The checklist check left this instruction open, so the package may not carry it: c1: The note names the buyer. Sources: request "The “Buyer” is the purchaser." ' +
-      "No open decision recorded; state what is missing. Answer the open decisions above.", 'The "Buyer" is the purchaser.')).toBe(true)
+    expect(shown('The checklist check left this instruction open, so the package may not carry it:\nThe note names the buyer. Sources: request "The “Buyer” is the purchaser." ' +
+      "No open decision recorded; state what is missing.\nAnswer the open decisions above.", 'The "Buyer" is the purchaser.')).toBe(true)
   })
 
   test("package-scope questions as both askers wrote them before this rule are still read", () => {
