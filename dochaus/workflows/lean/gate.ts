@@ -8,7 +8,7 @@ import { hasOpenItemMarker } from "../../lib/open-items"
 import { draftingPlaceholders } from "../../lib/placeholder-resolution"
 import { normalize } from "../../lib/quote-verify"
 import { CITED, finalBodyParagraphs, readerIDs, standingIDPattern, type ApplyResult } from "./checks"
-import { memoMode, runItemIDs, withoutInternalIDs, withoutRefMarkers } from "./delivered-memo"
+import { memoMode, questionNames, runItemIDs, withoutInternalIDs, withoutRefMarkers } from "./delivered-memo"
 import { FIRST_DOCUMENT, readLeanPlan, type DocID } from "./plan"
 import { isWithheldDeliveryItem, readPackageReview, withheldDeliveryItems } from "./package-review"
 import { coverageCarries, coverageItems, gateScopeParties } from "./package-coverage"
@@ -152,7 +152,7 @@ export function finalGate(directory: string): GateResult {
   const parties = gateScopeParties(directory)
   const shows = (question: Question, row: ChecklistOpenFinding) => scopeQuestionShows(question, quotes(row), parties(quotes(row)))
   const settled = scopeAnswers(scoped, quotes, asked.filter(answeredScopeQuestion), "gate", shows)
-  const scope = otherOpen ? undefined : packageScopeQuestion(settled.ask, settled.id)
+  const scope = otherOpen ? undefined : packageScopeQuestion(directory, settled.ask, settled.id)
   const scopeAsks = (row: ChecklistOpenFinding) => settled.by(row)[0] ?? (otherOpen && shows(otherOpen, row) ? otherOpen : scope)
   const asks = (row: ChecklistOpenFinding) => paired.has(row.item_id) ? conflict?.id : scoped.includes(row) ? scopeAsks(row)?.id : undefined
   if (checklistOpen) items.push(...checked.openFindings.map(row => checklistOpenItem(directory, row, asks(row))))
@@ -186,7 +186,8 @@ export function finalGate(directory: string): GateResult {
  * confirmed as met, one left open as left open; each is worded from the
  * checklist item's requirement and source quotes rather than the checker's
  * detail (findingEntries), so its lines name no internal id: no checklist
- * item, conflict list, request locator or paragraph pointer. */
+ * item, conflict list, source locator or paragraph pointer; a question the
+ * run asked is named by its asking. */
 export function deliveredNotes(directory: string, gate: GateResult): string | undefined {
   const drafted = readLeanText(directory, "drafting-notes.md")
   const read = drafted === undefined ? undefined : titled(directory, notesForReader(directory, drafted, gate.items))
@@ -227,7 +228,8 @@ export function deliveredNotes(directory: string, gate: GateResult): string | un
  * or locator's number outside a quotation (CITED) is held aside from both, as
  * the check reads it, so "3(d1)" stays as written; quotations are kept as
  * withoutInternalIDs keeps them, except one holding only such an id, which goes
- * as the id does (a planned document's by its title). Notes the check passed
+ * as the id does (a planned document's by its title). A question the run
+ * asked is named by its asking (questionNames). Notes the check passed
  * name none of these ids elsewhere, so beyond their markers and such a
  * quotation only notes saved on a last attempt, or kept on a resume, change;
  * every unchanged line keeps its exact text. */
@@ -243,7 +245,7 @@ export function notesForReader(directory: string, text: string, items: OpenItem[
     const kept = line.split(/("[^"\n]*"|\u201c[^\u201d\n]*\u201d)/).map((part, index) => index % 2 ? part : CITED.reduce((part, mask) => part.replace(mask, hold), part)).join("")
     return planned?.test(kept) ? withDocumentTitles(kept, documents, ids, hold, self) : kept
   })
-  return withoutInternalIDs(lines.join("\n"), ids).replace(/\uFDEF(\uFDEE+)\uFDEF/g, (_, count: string) => held[count.length - 1]!)
+  return withoutInternalIDs(lines.join("\n"), ids, questionNames(directory)).replace(/\uFDEF(\uFDEE+)\uFDEF/g, (_, count: string) => held[count.length - 1]!)
 }
 
 /** The notes as the reader gets them, under a plain title for what they are
@@ -258,7 +260,8 @@ function titled(directory: string, notes: string) {
 /** One section of the delivered notes in plain words: `heading`, the sentence
  * `intro` saying what it lists, then one line per entry. Each line names a
  * planned document by its title in place of its id, and the notes themselves
- * as this memo or these notes, then loses any `known` run id. The text an
+ * as this memo or these notes, then loses any `known` run id, a question the
+ * run asked named by its asking (questionNames). The text an
  * entry holds aside (`hold`, such as its source quotes) and the titles put in
  * for ids are kept from both passes and put back after them, so each reaches
  * the reader as written: quotation marks inside one pair with nothing else on
@@ -266,19 +269,21 @@ function titled(directory: string, notes: string) {
 function plainWordsSection(directory: string, known: string[], heading: string, intro: string, entries: ((hold: (text: string) => string) => string)[]) {
   const documents = readLeanPlan(directory)?.documents ?? []
   const self = memoMode(directory) ? "this memo" : "these notes"
+  const questions = questionNames(directory)
   return [heading, "", intro, "", ...entries.map(entry => {
     // The n-th text held aside stands as n U+FDEE between two U+FDEF:
     // noncharacters, never in document text, that neither pass reads.
     const held: string[] = []
     const hold = (text: string) => `\uFDEF${"\uFDEE".repeat(held.push(text))}\uFDEF`
     const line = entry(hold).replace(/\s+/g, " ").trim()
-    return withoutInternalIDs(withDocumentTitles(line, documents, known, hold, self), known).replace(/\uFDEF(\uFDEE+)\uFDEF/g, (_, count: string) => held[count.length - 1]!)
+    return withoutInternalIDs(withDocumentTitles(line, documents, known, hold, self), known, questions).replace(/\uFDEF(\uFDEE+)\uFDEF/g, (_, count: string) => held[count.length - 1]!)
   })]
 }
 
 /** Each unresolved or left-open checklist finding as a line for
- * plainWordsSection: its requirement, why it is unmet and its sources. The
- * request's locators (internal paths) give way to its label. A finding whose
+ * plainWordsSection: its requirement, why it is unmet and its sources, each
+ * named as the lawyer knows it (sourceName) with its quote and no locator,
+ * which is an internal path or note. A finding whose
  * item cannot be found takes its requirement from its detail, cut of its
  * conflict list, or falls back to that detail. Why it is unmet is a plain
  * status for its class, or that it was left open, then its reason. A checked
@@ -298,8 +303,15 @@ function findingEntries(directory: string, findings: OpenItem[], known: string[]
   return findings.map(finding => (hold: (text: string) => string) => {
     const id = finding.ref.checklist_item ?? finding.id
     const item = items.get(id)
-    const sources = (item?.source_refs ?? []).map(ref => `${ref.document === "request" || ref.locator.startsWith(".dochaus/") ? ref.document
-      : `${ref.document}, ${ref.locator}`}: ${hold(`"${ref.quote}"`.replace(/\s+/g, " "))}`)
+    // A locator is the check's working reference (an extracted-text path and
+    // line range, a retrieval note) and is not shown, so a passage cited twice
+    // in one source, as conflictKey compares quotes, is named once, as first cited.
+    const cited = new Map<string, string>()
+    for (const ref of item?.source_refs ?? []) {
+      const key = `${ref.document}\n${normalize(ref.quote)}`
+      if (!cited.has(key)) cited.set(key, `${sourceName(ref.document)}: ${hold(`"${ref.quote.replace(/\s+/g, " ").trim()}"`)}`)
+    }
+    const sources = [...cited.values()]
     const detail = finding.detail.replace(/ Conflicting checklist items: \S+(?:, \S+)*\.$/, "")
     // Why the requirement is unmet, chosen by what the gate item is: a checked
     // finding has a class, one left open is its own kind, a refined parent has
@@ -323,6 +335,16 @@ function findingEntries(directory: string, findings: OpenItem[], known: string[]
     const conflict = (conflicted.has(id) || detail !== finding.detail) && finding.ref.checklist_class !== "source_conflict" ? " It conflicts with another requirement." : ""
     return `- ${text}${conflict}${sources.length ? ` Source: ${sources.join("; ")}` : ""}`
   })
+}
+
+/** A cited source as the lawyer knows it: a matter file or web page by its own
+ * name, the request as "request", and the bound firm playbook (its
+ * "playbook:" source id) by the label the matter shows for it, its name
+ * without "playbook-" in capitals, as a playbook. */
+function sourceName(document: string) {
+  if (!document.startsWith("playbook:")) return document
+  const label = document.slice("playbook:".length).replace(/^playbook-/, "").toUpperCase()
+  return label ? `${label} playbook` : "firm playbook"
 }
 
 /** What a memo finding's class means for the reader and what the lawyer should
@@ -575,22 +597,26 @@ function instructionLeftOpen(directory: string, { item, finding }: ChecklistOpen
  * saved plan lacks needs this draft stopped, if unfinished, and a new one,
  * planned from the start. The plan-side route for
  * instructed acts is the package-coverage check before drafting; this asks
- * only what reached the gate still open. Its `id`, from scopeAnswers, keys
+ * only what reached the gate still open. Each instruction stands on its own
+ * line, without its checklist item id, and a planned document its check or
+ * open decisions name by id is named by its title. Its `id`, from scopeAnswers, keys
  * on the verbatim instruction quotes, never on extraction-ordinal item ids, so
  * re-extraction asks the same question, and the caller leaves out the
  * instructions an answered package-scope question settled (scopeAnswers), and
  * asks none once two of the gate's own are answered or while another stage's
  * is open. */
-function packageScopeQuestion(rows: ChecklistOpenFinding[], id: string): Question | undefined {
+function packageScopeQuestion(directory: string, rows: ChecklistOpenFinding[], id: string): Question | undefined {
   if (!rows.length) return undefined
   const several = rows.length > 1
+  const documents = readLeanPlan(directory)?.documents ?? []
+  const titled = (text: string) => withDocumentTitles(text, documents, [], title => title, "the drafting notes")
   return {
     id,
     stage: "gate",
     question: [`The checklist check left ${several ? "these instructions" : "this instruction"} open, so the package may not carry ${several ? "them" : "it"}:`,
-      ...rows.map(({ item_id, item, finding }) => `${checklistRequirement(item_id, item)} ${finding.open_decisions?.length
-        ? `Open decisions: ${sentence(finding.open_decisions.map(row => scopeField(row.trim())).join("; "))}` : "No open decision recorded; state what is missing."}`),
-      `${several ? "For each, answer" : "Answer"} the open decisions above (supply any missing fact or approval they name). If the package should carry it, say which planned document carries it; otherwise say it is outside this request.`].join(" "),
+      ...rows.map(({ item, finding }) => `${requirementText(item, titled)} ${finding.open_decisions?.length
+        ? `Open decisions: ${sentence(finding.open_decisions.map(row => scopeField(titled(row.trim()))).join("; "))}` : "No open decision recorded; state what is missing."}`),
+      `${several ? "For each, answer" : "Answer"} the open decisions above (supply any missing fact or approval they name). If the package should carry it, say which planned document carries it; otherwise say it is outside this request.`].join("\n"),
     context: `Until a later check settles ${several ? "these instructions, they are" : "this instruction, it is"} disclosed with the review draft as left open; delivery is not held for ${several ? "them" : "it"}. Your answer re-runs the stages that use it, including the checklist check; the document plan is kept as saved, and a drafted document changes only by amendment. A document the plan does not have is not added: to add one, stop this draft with "Stop draft" if it has not finished, then start a new one, which plans the package from the start.`,
     status: "open",
     // Besides the package's scope, it always asks for the open decisions' missing facts or approvals.
@@ -682,16 +708,13 @@ function conflictItemPairs(rows: ChecklistUnresolvedFinding[]) {
     .toSorted((a, b) => JSON.stringify(a.map(order)).localeCompare(JSON.stringify(b.map(order))))
 }
 
-/** A requirement as the gate's questions list it: its id, check and sources. */
-function checklistRequirement(id: string, item: ChecklistItem) {
-  return `${id}: ${requirementText(item)}`
-}
-
-/** A requirement's check and sources. The check is a model's words, so it
- * goes through scopeField, as the scope question's open decisions do:
- * questionQuotes reads only the rows the gate writes. The quotes are verbatim. */
-function requirementText(item: ChecklistItem) {
-  return `${sentence(scopeField(item.check))} Sources: ${checklistSources(item)}`
+/** A requirement's check and sources, as the gate's questions list it. The
+ * check is a model's words, so it goes through scopeField, as the scope
+ * question's open decisions do: questionQuotes reads only the rows the gate
+ * writes. `named` words the check first (the scope question names planned
+ * documents by title). The quotes are verbatim. */
+function requirementText(item: ChecklistItem, named = (text: string) => text) {
+  return `${sentence(scopeField(named(item.check)))} Sources: ${checklistSources(item)}`
 }
 
 function checklistSources(item: ChecklistItem) {

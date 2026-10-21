@@ -11,7 +11,7 @@ import { REQUEST_SOURCE, matterSourceIDs } from "./quotes"
 import { readRepairRound, changesRepairSections } from "./repairs"
 import { MEMO_TARGET, REVIEW_FINDINGS_CONTRACT, findingsText, forwardedFindings, reviewText } from "./review-findings"
 import { disclosableItems } from "./stages"
-import { QUESTION_KIND_CONTRACT, isReviewStage, answeredQuestionsText, readLeanJson, readLeanText, readQuestions, type OpenItem, type StageID } from "./state"
+import { QUESTION_KIND_CONTRACT, isReviewStage, answeredQuestions, answeredQuestionsText, readLeanJson, readLeanText, readQuestions, type OpenItem, type StageID } from "./state"
 import { plannedContract } from "./template-contract"
 
 // Prompts of the lean model steps. Each step's first prompt carries everything
@@ -281,19 +281,22 @@ function draftingNotesSections(directory: string, request: string) {
   const loose = items.filter(item => !item.ref.document || !planned.has(item.ref.document))
   const questions = readQuestions(directory)
   const memo = requestedMemo(directory)
+  // The notes never name a question by its id, so their prompt shows none: an
+  // open question is disclosed by its open item's id.
+  const answers = answeredQuestions(directory).map(question => `- Q: ${question.question}\n  A: ${question.answer}`).join("\n")
   return [
     memo
       ? `This is a lean drafting run. The request asks for a memo to accompany the drafted documents, "${memo.name}". Write the drafting notes as that memo.`
       : "This is a lean drafting run. Write the drafting notes that go to the lawyer with the drafted documents.",
     tagged("required_repairs", (readRepairRound(directory)?.items ?? []).filter(item => item.stage === "package-review" || item.ref.repair_target === "memo").map(item => `- ${item.detail}`).join("\n") || "None."),
-    request, actingForBlock(directory), answeredQuestionsText(directory) ? tagged("answers", answeredQuestionsText(directory)) : "",
+    request, actingForBlock(directory), answers ? tagged("answers", answers) : "",
     tagged("sources", matterSourceIDs(directory).join("\n")),
     tagged("delivery_artifacts", JSON.stringify(deliveryArtifactEvidence(directory), null, 2)),
     tagged("drafting_spine", readLeanText(directory, "spine.json") ?? "None."),
     tagged("discrepancies", readLeanText(directory, "discrepancy.json") ?? "None."),
     ...plan.map(row => `<document id="${row.id}" title="${attribute(row.title)}">\n${documentSections(directory, row.id, items).join("\n\n")}\n</document>`),
     loose.length ? tagged("open_items", openItemLines(loose)) : "",
-    tagged("questions", questions.map(question => `- ${question.id} (${question.status}): ${question.question}${question.answer ? `\n  Answer: ${question.answer}` : ""}`).join("\n") || "None."),
+    tagged("questions", questions.map(question => `- (${question.status}) ${question.question}${question.answer ? `\n  Answer: ${question.answer}` : ""}`).join("\n") || "None."),
     tagged("output_contract", [
       "- Follow the lawyer's explanation-detail, formality and house-style preferences when writing the notes. Translate the supplied records into their practical meaning rather than copying workflow field names, raw paths or stage status. Retain source support, comparison baselines, applied/unapplied outcomes, limitations and every required open-item id. Name documents where this helps locate them.",
       "- Separate actual unresolved instructions, corrections and decisions from professional review before issue. Do not turn settled instructions or internal output-handling steps into new confirmation requirements.",
