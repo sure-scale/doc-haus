@@ -14,19 +14,27 @@ import { countWords, headingUnits, tokens, type TemplateUnit } from "./template-
 // part or the next outlined part. A template part with no heading of its own
 // shares the text of the outlined parts the contract gives it with the other
 // such parts there, in proportion to their template words, so a full clause
-// under a renamed heading counts. Text inside square brackets (a placeholder or
-// an open-item marker) carries nothing. A part is missing when its region
-// carries no text, and thin when it carries less than a quarter of its template
-// words. A gap in the rendered draft is an open item of the draft step, which
+// under a renamed heading counts. A revision also keeps its original's
+// headings: where an outlined part a part of the original is given prints no
+// heading, the document's own headings are in the text, so that part's heading
+// must be too, unless a heading printed for one of its outlined parts names
+// it. A new document adapts its template's headings freely. Text inside square
+// brackets (a placeholder or an open-item marker) carries nothing. A part is
+// missing when its region carries no text, thin when it carries less than a
+// quarter of its template words, and unheaded when it carries text but needs a
+// heading no paragraph gives. A gap in the rendered draft is an open item of the draft step, which
 // the change cycle receives as a required repair; the final body records each
 // gap that remains as an open item for the drafting notes, and a part an
 // applied amendment took out, or the outline left out, as a recorded removal.
 // Nothing here judges the text.
 
-/** A body to measure: its paragraphs, the outlined part each belongs to, and
- * the paragraphs that are outlined headings (the title and each part's). */
-export type Body = { paragraphs: string[]; partOf: (number | undefined)[]; headings: Set<number> }
-export type UnitMeasure = { unit: TemplateUnit; expected: number; drafted: number; region: number[]; gap?: "missing" | "thin" }
+/** A body to measure: its paragraphs, the outlined part each belongs to, the
+ * paragraphs that are outlined headings (the title and each part's), and, for
+ * a revision, by outlined part the heading printed in its place ("" where none
+ * is). */
+export type Body = { paragraphs: string[]; partOf: (number | undefined)[]; headings: Set<number>; printed?: string[] }
+export type UnitMeasure = { unit: TemplateUnit; expected: number; drafted: number; region: number[]; gap?: "missing" | "thin" | "unheaded" }
+type Outline = { title: string; parts: PlannedPart[]; mode?: "new" | "revise" }
 
 /** Parts shorter than this in the template are not measured for length. */
 const MEASURED_PART_WORDS = 40
@@ -67,7 +75,10 @@ export function measureContract(contract: TemplateContract, body: Body): UnitMea
     const share = pooled.get(row.parts.join(","))!.reduce((sum, other) => sum + other.expected, 0)
     const pool = body.paragraphs.flatMap((_, at) => row.parts.includes(body.partOf[at]!) && !body.headings.has(at) && !owned.has(at) ? [at] : [])
     const total = pool.reduce((sum, at) => sum + carriedWords(body.paragraphs[at]!), 0)
-    return settle(row.unit, row.expected, share ? Math.round(total * row.expected / share) : total, pool, total)
+    const printed = body.printed
+    const unheaded = printed !== undefined && row.parts.some(part => printed[part] === "")
+      && !row.parts.some(part => headingUnits(printed[part] ?? "", contract.units).has(row.unit.index))
+    return settle(row.unit, row.expected, share ? Math.round(total * row.expected / share) : total, pool, total, unheaded)
   })
 }
 
@@ -80,7 +91,7 @@ export function contractGaps(contract: TemplateContract, body: Body) {
  * to the part its paragraph pointer had in the draft (a new one, to the part of
  * the paragraph before it). The document's title line, which the draft opens
  * with, is a heading too, so a title that holds a part's name heads no part. */
-export function rowsBody(outline: { title: string; parts: PlannedPart[] }, draft: ParagraphRow[], final?: ParagraphRow[]): Body {
+export function rowsBody(outline: Outline, draft: ParagraphRow[], final?: ParagraphRow[]): Body {
   if (draft.length && draft.every(row => row.draft_part !== undefined)) {
     const byPid = new Map(draft.map(row => [row.pid, row.draft_part ?? undefined]))
     const headingPids = new Set(draft.filter(row => row.draft_heading).map(row => row.pid))
@@ -89,6 +100,7 @@ export function rowsBody(outline: { title: string; parts: PlannedPart[] }, draft
       paragraphs: rows.map(row => row.text),
       partOf: rows.reduce<(number | undefined)[]>((acc, row) => [...acc, byPid.has(row.pid) ? byPid.get(row.pid) : acc.at(-1)], []),
       headings: new Set(rows.flatMap((row, at) => headingPids.has(row.pid) ? [at] : [])),
+      printed: printedHeadings(outline),
     }
   }
   const starts = outline.parts.reduce<{ at: number[]; from: number }>((acc, part) => {
@@ -106,7 +118,14 @@ export function rowsBody(outline: { title: string; parts: PlannedPart[] }, draft
     paragraphs: rows.map(row => row.text),
     partOf: rows.reduce<(number | undefined)[]>((acc, row) => [...acc, byPid.has(row.pid) ? byPid.get(row.pid) : acc.at(-1)], []),
     headings: new Set(rows.flatMap((row, at) => headingPids.has(row.pid) ? [at] : [])),
+    printed: printedHeadings(outline),
   }
+}
+
+/** For a revision, the heading publication prints in each outlined part's
+ * place: its display heading, else its label, "" for none. */
+function printedHeadings(outline: Outline) {
+  return outline.mode === "revise" ? outline.parts.map(part => part.display_heading ?? part.heading) : undefined
 }
 
 /** Open items of the draft step for the template parts its rendered body
@@ -119,7 +138,9 @@ export function draftTemplateItems(directory: string, document: DocID, rows: Par
   if (!contract || !outline) return []
   return contractGaps(contract, rowsBody(outline, rows)).map(gap => openItem("draft", "omission", gap.gap === "missing"
     ? `The template part "${gap.unit.label}" of "${contract.source}" is not in the draft.`
-    : `The template part "${gap.unit.label}" of "${contract.source}" is much shorter in the draft than in the template (about ${gap.expected} words).`,
+    : gap.gap === "thin"
+      ? `The template part "${gap.unit.label}" of "${contract.source}" is much shorter in the draft than in the template (about ${gap.expected} words).`
+      : `The template part "${gap.unit.label}" of "${contract.source}" is in the draft without its heading.`,
   { template_part: gap.unit.label, source_id: contract.source }))
 }
 
@@ -149,20 +170,22 @@ export function templateItems(
     const cut = amendments.filter(amendment => applied.has(amendment.id) && pids.has(amendment.pid))
     if (cut.length)
       return openItem("apply", "template_removal",
-        `The template part "${gap.unit.label}" of "${contract.source}" is ${gap.gap === "missing" ? "taken out" : "cut down"} by ` +
+        `${gap.gap === "unheaded" ? "The heading of the template part" : "The template part"} "${gap.unit.label}" of "${contract.source}" is ${gap.gap === "thin" ? "cut down" : "taken out"} by ` +
         `${cut.length > 1 ? "amendments" : "amendment"} ${cut.map(amendment => amendment.id).join(", ")}. ` +
         `Reason given: ${cut.map(amendment => `${amendment.id}: ${excerpt(amendment.reason)}`).join("; ")}`,
         ref(gap.unit))
     return openItem("apply", "omission", gap.gap === "missing"
       ? `The template part "${gap.unit.label}" of "${contract.source}" is not in the final text, and the outline does not record it as left out.`
-      : `The template part "${gap.unit.label}" of "${contract.source}" is much shorter in the final text than in the template, and the outline does not record what is left out.`,
+      : gap.gap === "thin"
+        ? `The template part "${gap.unit.label}" of "${contract.source}" is much shorter in the final text than in the template, and the outline does not record what is left out.`
+        : `The heading of the template part "${gap.unit.label}" of "${contract.source}" is not in the final text; check whether it should be restored.`,
     ref(gap.unit))
   })
   return [...leftOut, ...gaps]
 }
 
-function settle(unit: TemplateUnit, expected: number, drafted: number, region: number[], carried = drafted): UnitMeasure {
-  const gap = !carried ? "missing" : expected >= MEASURED_PART_WORDS && drafted * THIN_RATIO < expected ? "thin" : undefined
+function settle(unit: TemplateUnit, expected: number, drafted: number, region: number[], carried = drafted, unheaded = false): UnitMeasure {
+  const gap = !carried ? "missing" : expected >= MEASURED_PART_WORDS && drafted * THIN_RATIO < expected ? "thin" : unheaded ? "unheaded" : undefined
   return { unit, expected, drafted, region, ...(gap ? { gap } : {}) }
 }
 

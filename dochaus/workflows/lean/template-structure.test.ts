@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { sectionPrompt } from "./draft-sections"
-import { parsePlan } from "./plan"
+import type { Amendment } from "../../lib/drafting-amendment"
+import type { ParagraphRow } from "./checks"
+import { parsePlan, writeLeanPlan } from "./plan"
 import { documentTemplate, expectedWords, outlineCoverageIssues, partCarries, templateContract } from "./template-contract"
-import { contractGaps, rowsBody } from "./template-coverage"
+import { contractGaps, draftTemplateItems, rowsBody, templateItems } from "./template-coverage"
 import { parseTemplateUnits, sourceText } from "./template-structure"
-import { PARTS, PLAIN_TEXT, TEMPLATE, TEMPLATE_TEXT, TITLE, bodyOf, contractOf, heading, insertChunks, templateMatter } from "./template-test-support"
+import { PARTS, PLAIN_TEXT, TEMPLATE, TEMPLATE_TEXT, TITLE, bodyOf, contractOf, heading, insertChunks, templateMatter, textParagraphs } from "./template-test-support"
 import { cleanupMatters, matter } from "./test-support"
 
 // Template structure, coverage contract and measurement on invented templates.
@@ -242,7 +244,44 @@ describe("coverage contract", () => {
   })
 })
 
+// A rendered draft whose part labels are not printed: the title, then each
+// part's text, its own headings included, attributed to its part.
+const unlabelled = (texts: string[]): ParagraphRow[] => [{ pid: "p-title", sha256: "", text: "Help desk agreement", draft_part: null, draft_heading: true },
+  ...texts.flatMap((text, part) => textParagraphs(text).map((paragraph, at) => ({ pid: `p-${part}-${at}`, sha256: "", text: paragraph, draft_part: part, draft_heading: false })))]
+// Each part's text under its own heading, the template's, where its label was.
+const OWN_HEADINGS = Object.values(PARTS).map(text => text.replace(/^## /, "### "))
+const RENAMED = OWN_HEADINGS.map(text => text.replace("### 2. Charges", "### Fees"))
+
 describe("template coverage", () => {
+  test("in a revision, a part of the original under an unprinted label with no heading naming it lacks its heading; a printed heading or label holds it, and a new draft adapts headings freely", () => {
+    const built = contractOf(TEMPLATE_TEXT, OUTLINE)
+    const revision = { ...built.documents[0]!, mode: "revise" as const }
+    const gaps = (texts: string[], outline: Parameters<typeof rowsBody>[0] = revision) => contractGaps(built.contract, rowsBody(outline, unlabelled(texts))).map(gap => [gap.unit.label, gap.gap])
+    expect(gaps(OWN_HEADINGS)).toEqual([])
+    expect(gaps(RENAMED)).toEqual([["2 Charges", "unheaded"]])
+    expect(gaps(OWN_HEADINGS.map(text => text.replace("### 2. Charges\n\n", "")))).toEqual([["2 Charges", "unheaded"]])
+    expect(gaps(RENAMED, { ...revision, parts: revision.parts.map((part, at) => at === 1 ? { ...part, display_heading: "Fees" } : part) })).toEqual([])
+    expect(gaps(RENAMED, { ...revision, parts: revision.parts.map(({ display_heading: _, ...part }) => part) })).toEqual([])
+    expect(gaps(RENAMED, built.documents[0]!)).toEqual([])
+  })
+
+  test("a revision's part without its heading is a draft open item; in the final text it is an omission, or a removal where an applied amendment took the heading out", () => {
+    const built = contractOf(TEMPLATE_TEXT, OUTLINE)
+    writeLeanPlan(built.directory, built.documents.map(document => ({ ...document, mode: "revise" as const })))
+    const item = (rows: OpenItemRows) => rows.map(row => [row.kind, row.detail])
+    type OpenItemRows = ReturnType<typeof draftTemplateItems>
+    expect(item(draftTemplateItems(built.directory, "d1", unlabelled(RENAMED))))
+      .toEqual([["omission", 'The template part "2 Charges" of "template.docx" is in the draft without its heading.']])
+    const draft = unlabelled(OWN_HEADINGS)
+    const heading = draft.find(row => row.text === "2. Charges")!
+    const final = draft.map(row => row.pid === heading.pid ? { ...row, text: "Fees" } : row)
+    expect(item(templateItems(built.directory, "d1", draft, final, [], new Set())))
+      .toEqual([["omission", 'The heading of the template part "2 Charges" of "template.docx" is not in the final text; check whether it should be restored.']])
+    const renamed = { id: "a1", pid: heading.pid, existing_sha256: "", updated: "Fees", reason: "The parties call the charges fees.", sources: [] } as unknown as Amendment
+    expect(item(templateItems(built.directory, "d1", draft, final, [renamed], new Set(["a1"])))).toEqual([["template_removal",
+      'The heading of the template part "2 Charges" of "template.docx" is taken out by amendment a1. Reason given: a1: The parties call the charges fees.']])
+  })
+
   test("a part is measured in the part the contract gives it, under any heading and in any position", () => {
     const built = contractOf(TEMPLATE_TEXT, OUTLINE)
     expect(gapsOf(built, ...Object.values(PARTS))).toEqual([])
