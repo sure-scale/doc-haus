@@ -141,153 +141,160 @@ export default function Matters() {
 
   return (
     <>
-      <header className="page-head matters-head">
+      <header className="page-head library-head">
         <div>
           <h1>Matters</h1>
           <p className="page-sub">Every engagement, its documents, and its conversations.</p>
         </div>
       </header>
 
-      <div className="card">
-        <h2>New matter</h2>
-        <div className="row matter-create-row">
-          <input
-            placeholder="Matter title, e.g. Acme MSA review"
-            aria-label="Matter title"
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && onCreate()}
-            className="matter-create-title"
-          />
-          <input
-            placeholder="Matter no. (optional)"
-            aria-label="Matter number (optional)"
-            value={reference}
-            onChange={(e) => setReference(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && onCreate()}
-            className="matter-create-reference"
-          />
-          <input
-            placeholder="Client you act for (optional)"
-            aria-label="Client you act for (optional)"
-            maxLength={200}
-            value={client}
-            onChange={(e) => setClient(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && onCreate()}
-            className="matter-create-client"
-          />
-          <select
-            aria-label="Posture for this matter"
-            title="How hard drafts lean toward your client on this matter"
-            value={posture}
-            onChange={(e) => setPosture(e.target.value as Posture | "")}
-            className="matter-create-posture"
-          >
-            <option value="">Posture: firm default</option>
-            {POSTURES.map((row) => (
-              <option key={row.value} value={row.value}>
-                Posture: {row.label}
-              </option>
-            ))}
-          </select>
-          <JurisdictionSelect
-            jurisdictions={jurisdictions}
-            selected={newJurisdictions}
-            onChange={setNewJurisdictions}
-          />
-          <button className={`primary${busy ? " btn-loading" : ""}`} onClick={onCreate} disabled={busy || !title.trim()}>
-            Create matter
-          </button>
-        </div>
-      </div>
-
-      <div className="card">
-        {matters.length > 0 && (
-          <div className="matters-list-toolbar">
-            <h2>Your matters</h2>
+      <div className="library-layout">
+        <section className="library-collection" aria-labelledby="your-matters-heading">
+          <div className="library-heading">
+            <h2 id="your-matters-heading">Your matters</h2>
+            {!loading && !loadError && <span className="muted">{matters.length}</span>}
+          </div>
+          {matters.length > 0 && (
+            <div className="matters-list-toolbar">
+              <input
+                className="page-filter"
+                placeholder="Search by title or number"
+                aria-label="Filter matters"
+                value={filter}
+                onChange={(e) => setFilter(e.target.value)}
+              />
+            </div>
+          )}
+          {loading ? (
+            <div className="skeleton-list">
+              <div className="skeleton-row" />
+              <div className="skeleton-row" />
+              <div className="skeleton-row" />
+            </div>
+          ) : loadError ? (
+            <div className="load-error" role="alert">
+              <h3>Couldn&apos;t load your matters</h3>
+              <p>{loadError}</p>
+              <button type="button" onClick={load}>
+                Try again
+              </button>
+            </div>
+          ) : matters.length === 0 ? (
+            <div className="empty-state">
+              <svg className="empty-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+              </svg>
+              <h3>No matters yet</h3>
+              <p>A matter holds an engagement&apos;s documents, reviews, and conversations. Create a new matter to get started.</p>
+            </div>
+          ) : visible.length === 0 ? (
+            <p className="muted">No matters match "{filter}".</p>
+          ) : (
+            <ul className="matter-list matters-index-list">
+              {visible.map((m) => (
+                <li key={m.id} className="list-row">
+                  <Link to={`/matter/${m.id}`} className="list-row-main">
+                    <span className="list-row-title">
+                      {m.reference && <span className="matter-ref">{m.reference}</span>}
+                      {m.title}
+                    </span>
+                    <span className="list-row-meta">
+                      <span className="list-row-date">Opened {formatDate(m.created_at)}</span>
+                      {m.jurisdictions?.map((code) => (
+                        <span key={code} className="matter-jurisdiction">
+                          {jurisdictions.find((j) => j.code === code)?.name ?? code}
+                        </span>
+                      ))}
+                    </span>
+                  </Link>
+                  <div className="list-row-actions">
+                    <button className="icon-btn" title={`Edit ${m.title}`} onClick={() => openEdit(m)}>
+                      Edit
+                    </button>
+                    {confirmId === m.id ? (
+                      <button
+                        className="icon-btn danger"
+                        title="Confirm delete"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          onDelete(m)
+                        }}
+                      >
+                        Confirm
+                      </button>
+                    ) : (
+                      <button
+                        className="icon-btn"
+                        title={`Delete ${m.title}`}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setConfirmId(m.id)
+                        }}
+                      >
+                        Delete
+                      </button>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+        <section className="library-builder" aria-labelledby="new-matter-heading">
+          <div className="library-heading">
+            <h2 id="new-matter-heading">New matter</h2>
+          </div>
+          <div className="matter-create-row">
             <input
-              className="page-filter"
-              placeholder="Search by title or number"
-              aria-label="Filter matters"
-              value={filter}
-              onChange={(e) => setFilter(e.target.value)}
+              placeholder="Matter title, e.g. Acme MSA review"
+              aria-label="Matter title"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && onCreate()}
+              className="matter-create-title"
             />
-          </div>
-        )}
-        {loading ? (
-          <div className="skeleton-list">
-            <div className="skeleton-row" />
-            <div className="skeleton-row" />
-            <div className="skeleton-row" />
-          </div>
-        ) : loadError ? (
-          <div className="load-error" role="alert">
-            <h3>Couldn&apos;t load your matters</h3>
-            <p>{loadError}</p>
-            <button type="button" onClick={load}>
-              Try again
+            <input
+              placeholder="Matter no. (optional)"
+              aria-label="Matter number (optional)"
+              value={reference}
+              onChange={(e) => setReference(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && onCreate()}
+              className="matter-create-reference"
+            />
+            <input
+              placeholder="Client you act for (optional)"
+              aria-label="Client you act for (optional)"
+              maxLength={200}
+              value={client}
+              onChange={(e) => setClient(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && onCreate()}
+              className="matter-create-client"
+            />
+            <select
+              aria-label="Posture for this matter"
+              title="How hard drafts lean toward your client on this matter"
+              value={posture}
+              onChange={(e) => setPosture(e.target.value as Posture | "")}
+              className="matter-create-posture"
+            >
+              <option value="">Posture: firm default</option>
+              {POSTURES.map((row) => (
+                <option key={row.value} value={row.value}>
+                  Posture: {row.label}
+                </option>
+              ))}
+            </select>
+            <JurisdictionSelect
+              jurisdictions={jurisdictions}
+              selected={newJurisdictions}
+              onChange={setNewJurisdictions}
+              align="right"
+            />
+            <button className={`primary${busy ? " btn-loading" : ""}`} onClick={onCreate} disabled={busy || !title.trim()}>
+              Create matter
             </button>
           </div>
-        ) : matters.length === 0 ? (
-          <div className="empty-state">
-            <svg className="empty-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-              <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
-            </svg>
-            <h3>No matters yet</h3>
-            <p>A matter holds an engagement&apos;s documents, reviews, and conversations. Create one above to get started.</p>
-          </div>
-        ) : visible.length === 0 ? (
-          <p className="muted">No matters match "{filter}".</p>
-        ) : (
-          <ul className="matter-list matters-index-list">
-            {visible.map((m) => (
-              <li key={m.id} className="list-row">
-                <Link to={`/matter/${m.id}`} className="list-row-main">
-                  <span className="list-row-title">
-                    {m.reference && <span className="matter-ref">{m.reference}</span>}
-                    {m.title}
-                  </span>
-                  <span className="list-row-meta">
-                    <span className="list-row-date">Opened {formatDate(m.created_at)}</span>
-                    {m.jurisdictions?.map((code) => (
-                      <span key={code} className="matter-jurisdiction">
-                        {jurisdictions.find((j) => j.code === code)?.name ?? code}
-                      </span>
-                    ))}
-                  </span>
-                </Link>
-                <div className="list-row-actions">
-                  <button className="icon-btn" title={`Edit ${m.title}`} onClick={() => openEdit(m)}>
-                    Edit
-                  </button>
-                  {confirmId === m.id ? (
-                    <button
-                      className="icon-btn danger"
-                      title="Confirm delete"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        onDelete(m)
-                      }}
-                    >
-                      Confirm
-                    </button>
-                  ) : (
-                    <button
-                      className="icon-btn"
-                      title={`Delete ${m.title}`}
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        setConfirmId(m.id)
-                      }}
-                    >
-                      Delete
-                    </button>
-                  )}
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
+        </section>
       </div>
 
       {editing && (
