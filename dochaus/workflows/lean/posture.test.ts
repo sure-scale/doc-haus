@@ -129,12 +129,16 @@ test("a matter without a Posture keeps its stage keys, and a plan saved without 
   expect(leanSteps(directory).filter((step, index) => keys()[index] === before[index])).toEqual(leanSteps(directory).filter(step => step.endsWith(".draft")))
 })
 
-test("every review takes the frozen Posture's standard for the side the lawyer acts for; with no side stated it reviews even-handedly", () => {
+test("every review takes the frozen Posture's standard for the side the lawyer acts for, and measures balance against neutral market practice whoever it acts for; with no side stated it reviews even-handedly", () => {
   const directory = matter()
   const documents = [{ title: "Supply note", purpose: "Record supplied terms", parts: [{ heading: "Delivery", scope: "Delivery" }] }]
   const reviews = () => leanSteps(directory).filter(step => isReviewStage(stepStage(step)))
   const PROTECTS = "whether it protects that party's position, and whether a protection a careful drafter would include for that party is missing."
-  const MARKET = "whether it lacks what a conventional, market-standard document for that side would include."
+  const MARKET = "whether it lacks a protection for that party that a neutral, mid-market document of this kind, prepared for neither party, would contain."
+  // The balance label's reference is neutral market practice under every Posture and side,
+  // never a market document for the client's side (itself a push under Balanced).
+  const REFERENCE = "measured against what a neutral, mid-market document of this kind, prepared for neither party, would contain, whichever party the lawyer acts for"
+  const SIDED_FRAME = ["for that side", "market-standard document"]
   const NEUTRAL = "Assess each provision as a reviewing lawyer who acts for neither party"
   const BALANCE = '"balance":"neutral|market|beyond_market"'
   // The live settings say Client-favorable; the plan's frozen Posture governs.
@@ -148,6 +152,8 @@ test("every review takes the frozen Posture's standard for the side the lawyer a
       expect(prompt).toContain("Assess each provision as the reviewing lawyer for the party the lawyer acts for")
       // Every finding states its balance; code, not a plea, holds back what goes beyond market.
       expect(prompt).toContain(BALANCE)
+      expect(prompt).toContain(REFERENCE)
+      for (const frame of SIDED_FRAME) expect(prompt).not.toContain(frame)
       expect(prompt).not.toContain("Do not press")
       if (posture === "client-favorable") {
         expect(prompt).toContain(PROTECTS)
@@ -163,6 +169,8 @@ test("every review takes the frozen Posture's standard for the side the lawyer a
       const prompt = stagePrompt(directory, step)
       expect(prompt).toContain(NEUTRAL)
       expect(prompt).toContain(BALANCE)
+      expect(prompt).toContain(REFERENCE)
+      for (const frame of SIDED_FRAME) expect(prompt).not.toContain(frame)
       expect(prompt).not.toContain(MARKET)
       expect(prompt).not.toContain("whether it protects that party's position")
     }

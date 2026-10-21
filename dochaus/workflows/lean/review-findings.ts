@@ -15,7 +15,8 @@ import { readLeanJson, shortHash, type OpenItem, type ReviewStageID } from "./st
 // records and the change plans; nothing here is recorded twice.
 //
 // Each finding also says how far its change moves rights or risk toward one
-// party, measured against a market-standard document of the kind. The run's
+// party, measured against what a neutral, mid-market document of the kind,
+// prepared for neither party, would contain, whichever side the run takes. The run's
 // Posture decides in code what that permits: unless it acts for a side under
 // Client-favorable, a beyond-market finding is held back. It reaches no change
 // plan and the notes disclose it as a recommendation naming the side it favours.
@@ -35,7 +36,7 @@ export type RaisedFinding = ReviewFinding & { raised_in: DocID; stage: ReviewSta
 
 export const REVIEW_FINDINGS_CONTRACT = 'Reply with exactly one JSON object: {"findings":[{"document":"id of the planned document the finding concerns; leave out for this document","pids":["pid of each paragraph of this draft the finding affects, or where missing wording belongs; leave out for another document"],"origin":"request|source_conflict|missing_fact|missing_protection|law|drafting","balance":"neutral|market|beyond_market","favours":"the party the change favours; leave out when neutral","finding":"what is wrong and why","instead":"what those paragraphs should say instead, in proposed wording where you can give it; leave out for a decision only the lawyer can make","sources":[{"source_id":"exact matter document name, request or approved authority URL","quote":"exact supporting words"}]}]}. ' +
   "origin says where the finding comes from: request (the draft departs from or misses what the request or the lawyer's answers ask), source_conflict (it misstates or conflicts with a matter source, or the sources disagree), missing_fact (it needs a fact or decision the matter does not give), missing_protection (it lacks a protection a careful drafter would include), law (its wording does not work under the governing law) or drafting (ambiguous, inconsistent or wrongly cross-referenced wording). " +
-  "balance says how far the change moves rights, obligations, remedies or risk toward one party, against a conventional, market-standard document of this kind: " +
+  "balance says how far the change moves rights, obligations, remedies or risk toward one party, measured against what a neutral, mid-market document of this kind, prepared for neither party, would contain, whichever party the lawyer acts for: " +
   "neutral (toward neither, or it carries out the request, the lawyer's answers or a position the sources record as instructed or agreed), " +
   "market (toward one party, as far as such a document commonly goes) or beyond_market (further than that, including terms a party may seek in negotiation that such a document does not commonly contain). " +
   "favours names that party. " +
