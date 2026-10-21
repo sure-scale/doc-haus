@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
-import { combinedNotUpdatedNotice, DownloadActions, notesNotUpdatedNotice, preparedNotice, redlineNotUpdatedNotice, staleExportNotice } from "../src/components/DocumentViewer"
+import DocumentViewer, { citationStatus, combinedNotUpdatedNotice, DownloadActions, ExtractedText, notesNotUpdatedNotice, preparedNotice, redlineNotUpdatedNotice, staleExportNotice } from "../src/components/DocumentViewer"
 import { acceptAllRedlines, acceptRedline, type Redline } from "../src/api/ingest/redlines"
+import { fetchDocumentText } from "../src/api/ingest/documents"
+import { citationPassage } from "../src/components/citation-target"
 
 const proposal = (id: number, stale?: true): Redline => ({
   id, doc_name: "working.docx", scope: "phrase", find_text: "thirty days", old_text: "thirty days", new_text: "forty-five days",
@@ -101,5 +103,60 @@ describe("the saved combined file after an accept", () => {
     expect(combinedNotUpdatedNotice({ combined_updated: true })).toBeUndefined()
     expect(combinedNotUpdatedNotice({ notes_updated: false })).toBeUndefined()
     expect(combinedNotUpdatedNotice(undefined)).toBeUndefined()
+  })
+})
+
+describe("email and spreadsheet sources", () => {
+  const viewer = (name: string) => renderToStaticMarkup(createElement(DocumentViewer, { matterId: "m", name, onClose: () => {} }))
+
+  test("open as read-only extracted text, never on the Word or PDF path", () => {
+    for (const [name, kind] of [["Client instructions.eml", "Email"], ["Cap table.XLSX", "Excel spreadsheet"]]) {
+      const html = viewer(name)
+      expect(html).toContain(`<span class="viewer-title-meta">${kind} · extracted text, read-only</span>`)
+      expect(html).toContain('aria-label="Reading the text"')
+      for (const word of ["Word document", "Request edits", "Download", "Convert to DOCX", "<iframe"]) expect(html).not.toContain(word)
+    }
+  })
+
+  test("Word and PDF files keep their own viewers", () => {
+    expect(viewer("terms.docx")).toContain("Request edits")
+    expect(viewer("terms.docx")).toContain('<span class="viewer-title-meta">Word document</span>')
+    expect(viewer("scan.pdf")).toContain("Convert to DOCX")
+    expect(viewer("scan.pdf")).toContain('<iframe class="pdf-render"')
+  })
+
+  test("the cited excerpt is marked in the text the assistant read, whitespace-tolerant", () => {
+    const text = "Subject: Supply terms\nFrom: Synthetic Buyer <buyer@example.invalid>\n\nPayment is due\n on delivery.\nThanks"
+    const match = citationPassage(text, "Payment is due on delivery.")
+    const html = renderToStaticMarkup(createElement(ExtractedText, { kind: "eml", text, match }))
+    expect(html).toBe('<pre class="docx-render document-text is-eml">Subject: Supply terms\nFrom: Synthetic Buyer &lt;buyer@example.invalid&gt;\n\n' +
+      '<mark class="citation-passage" tabindex="-1">Payment is due\n on delivery.</mark>\nThanks</pre>')
+    // No match, or no citation, shows the plain text with nothing marked.
+    for (const unmatched of [citationPassage(text, "Payment is due in advance."), undefined])
+      expect(renderToStaticMarkup(createElement(ExtractedText, { kind: "xlsx", text, match: unmatched }))).not.toContain("<mark")
+    expect(renderToStaticMarkup(createElement(ExtractedText, { kind: "xlsx", text: "", match: undefined }))).toContain("No text was read from this file.")
+  })
+
+  test("the citation line says whether the excerpt was found", () => {
+    expect(citationStatus("cited passage", "matched")).toBe("Source section cited passage. The cited excerpt is highlighted.")
+    expect(citationStatus("Fees", "ambiguous")).toBe("Source section Fees. This excerpt appears more than once. The document is open; no exact passage was selected.")
+    expect(citationStatus("Fees", "unavailable")).toBe("Source section Fees. The cited excerpt could not be located in the current preview. The document is open; no exact passage was selected.")
+    expect(citationStatus("Fees", undefined)).toBe("Source section Fees. Locating the cited excerpt…")
+  })
+
+  describe("the text request", () => {
+    const originalFetch = globalThis.fetch
+    afterEach(() => { globalThis.fetch = originalFetch })
+
+    test("reads the matter document's extracted text from ingest and reports its error", async () => {
+      const requests: string[] = []
+      globalThis.fetch = (async (url: string) => {
+        requests.push(String(url))
+        return requests.length === 1 ? Response.json({ text: "Synthetic body", injection: null }) : Response.json({ error: "Not found" }, { status: 404 })
+      }) as unknown as typeof fetch
+      expect(await fetchDocumentText("m", "Client instructions.eml")).toBe("Synthetic body")
+      expect(requests[0]).toEndWith("/matters/m/documents/text?name=Client%20instructions.eml")
+      await expect(fetchDocumentText("m", "gone.xlsx")).rejects.toThrow("Not found")
+    })
   })
 })

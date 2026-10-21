@@ -1399,6 +1399,14 @@ li.list-row {
   color: #b3423a;
 }
 
+.doc-type.is-eml {
+  color: #6a5a8c;
+}
+
+.doc-type.is-xlsx {
+  color: #2f7a4a;
+}
+
 .dropzone-title {
   display: block;
   margin-top: 6px;
@@ -1905,6 +1913,28 @@ li.list-row {
 
 .matter-meta-add:hover,
 .jx-trigger-bare:hover .matter-meta-add {
+  color: var(--accent);
+}
+
+/* The matter's Posture: a bare select that reads as one of the facts, muted
+   while it follows the firm default. */
+.matter-posture {
+  height: auto;
+  padding: 0 14px 0 0;
+  border: none;
+  background-color: transparent;
+  background-position: right 0 center;
+  background-size: 10px;
+  font: inherit;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.matter-posture.is-default {
+  color: var(--muted);
+}
+
+.matter-posture:hover {
   color: var(--accent);
 }
 
@@ -2505,7 +2535,17 @@ li.list-row {
   }
 }
 
-/* Pre-token state: three rising dots instead of literal "Thinking..." text. */
+/* The line under a live answer that says it is still coming: three rising
+   dots and what the answer is doing now. */
+.msg-working {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .working {
   display: inline-flex;
   gap: 4px;
@@ -4034,6 +4074,20 @@ button.linklike:hover:not(:disabled) {
     0 28px 56px -28px rgba(45, 74, 62, 0.14);
   text-rendering: optimizeLegibility;
   font-kerning: normal;
+}
+
+/* Emails and spreadsheets: their extracted text on the same sheet, line breaks
+   kept; a spreadsheet's CSV rows read best in a fixed-width face. */
+.docx-render.document-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.docx-render.document-text.is-xlsx {
+  font-family: var(--font-mono);
+  font-size: 13px;
 }
 
 /* Margin comments need gutter width — relax the measure when they exist. */

@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react"
 import { Link } from "react-router-dom"
 import type { LeanDraftingStatus } from "../../api/ingest/lean"
+import { postureLabel } from "../../api/ingest/preferences"
 import { formatAgo, formatElapsed } from "../../lib/format"
 import { activeStep, providerStopMessage, stepActivityLabel, stoppedByTechnicalProblem } from "../narration/activity"
 import { draftedIn } from "../narration/timeline"
@@ -103,8 +104,10 @@ export default function RunHeader({
     )
 
   const titles = new Map((status.plan?.documents ?? []).map((row) => [row.id, cleanTitle(row.title)]))
-  // Whom the plan says the lawyer acts for; unknown before the outline or from an older ingest.
+  // Whom the plan says the lawyer acts for, and how hard the drafts lean their
+  // way; unknown before the outline or from an older ingest.
   const acting = status.plan?.acting_for
+  const posture = status.plan?.posture
   const attention = attentionItems(status)
   // Once delivered, what is left to look at; before then, how the final check
   // settled the open items once it ran, else the run's own count.
@@ -125,10 +128,16 @@ export default function RunHeader({
     onShowDrafts()
   }
   const draftLabel = drafts.length === 1 ? "Open draft" : "View drafts"
+  // Shown without opening Details: every stage takes this side, as far as the
+  // Posture says. With no side stated the stages still take the Posture, so only
+  // a Balanced (or unreported) one reads as neutral drafting.
+  const actingLine = !acting ? null
+    : acting.stated ? `Acting for: ${acting.party}${posture ? ` · ${postureLabel(posture)}` : ""}`
+    : posture && posture !== "balanced" ? `Acting for: not stated · ${postureLabel(posture)}`
+    : "Acting for: not stated — drafting is neutral"
   const meta = [
     ...head.meta,
-    // Shown without opening Details: every stage takes this side.
-    acting ? `Acting for: ${acting.stated ? acting.party : "not stated — drafting is neutral"}` : null,
+    actingLine,
     asks > 0 && head.tone !== "input" ? <span className="run-head-asks">{asks === 1 ? "1 question for you" : `${asks} questions for you`}</span> : null,
     status.pending_requests > 0 && !stopped ? "Request queued" : null,
     statusError ? `Reconnecting… as of ${checkedAt ? formatAgo(checkedAt, now) : "earlier"}` : null,

@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url"
 import path from "node:path"
 import type { ContentfulStatusCode } from "hono/utils/http-status"
 import { withArtifactMutationLocks } from "../../../dochaus/capabilities/artifacts/mutation-lock"
+import { isPosture, type Posture } from "../../../dochaus/lib/drafting-preferences"
 import { commitDocumentWrite } from "./atomic-document-write"
 import { dataPaths } from "../../engine/src/data-paths"
 
@@ -26,7 +27,9 @@ export const WORKSPACE_ROOT = workspaceRoot()
 // playbook is the single playbook skill name (e.g. "playbook-nda") the matter is
 // reviewed against; one matter binds at most one playbook, so it is a string.
 // client is whom the firm acts for, as the lawyer typed it; drafting takes that
-// side when the request does not say whom the lawyer acts for.
+// side when the request does not say whom the lawyer acts for. posture is how
+// hard drafts lean toward that client on this matter, one of the Settings →
+// Drafting choices; absent means the firm's.
 export type Matter = {
   id: string
   title: string
@@ -34,6 +37,7 @@ export type Matter = {
   jurisdictions?: string[]
   playbook?: string
   client?: string
+  posture?: Posture
   conflicts?: Conflicts
   dir: string
   created_at: number
@@ -140,23 +144,34 @@ function normalizeClient(value: string) {
   return client || undefined
 }
 
-export function createMatter(title: string, reference?: string, jurisdictions?: string[], playbook?: string, client?: string): Matter {
+// One of the three Settings → Drafting choices, exactly; anything else is
+// refused. Empty means the firm's Posture.
+function normalizePosture(value: string) {
+  if (value === "") return undefined
+  if (!isPosture(value))
+    throw new MatterValidationError("Posture must be Client-favorable, Balanced or Conservative.")
+  return value
+}
+
+export function createMatter(title: string, reference?: string, jurisdictions?: string[], playbook?: string, client?: string, posture?: string): Matter {
   const party = client === undefined ? undefined : normalizeClient(client)
+  const stance = posture === undefined ? undefined : normalizePosture(posture)
   const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")
   const id = `${slug}-${crypto.randomUUID().slice(0, 6)}`
   const dir = matterDir(id)
   mkdirSync(dir, { recursive: true })
-  const matter: Matter = { id, title, reference, jurisdictions, playbook, client: party, dir, created_at: Date.now() }
+  const matter: Matter = { id, title, reference, jurisdictions, playbook, client: party, posture: stance, dir, created_at: Date.now() }
   return withMatterMutationLocks(dir, () => persistMatterLocked(matter, "create"))
 }
 
 // Rename keeps the directory id stable (it backs every session and document
 // path); only the display title/reference/jurisdictions/playbook in matter.json change.
-// client changes only when given (empty clears it), so callers that do not
-// edit it keep the stored one.
-export function renameMatter(id: string, title: string, reference?: string, jurisdictions?: string[], playbook?: string, client?: string): Matter {
+// client and posture change only when given (empty clears each), so callers
+// that do not edit them keep the stored ones.
+export function renameMatter(id: string, title: string, reference?: string, jurisdictions?: string[], playbook?: string, client?: string, posture?: string): Matter {
   const party = client === undefined ? {} : { client: normalizeClient(client) }
-  return mutateMatter(id, "rename", (matter) => ({ ...matter, title, reference, jurisdictions, playbook, ...party }))
+  const stance = posture === undefined ? {} : { posture: normalizePosture(posture) }
+  return mutateMatter(id, "rename", (matter) => ({ ...matter, title, reference, jurisdictions, playbook, ...party, ...stance }))
 }
 
 // Records a conflicts-check outcome on the matter. Each exit carries the fields

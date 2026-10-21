@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState, type Ref } from "react"
 import { useDocxodus, type ConversionOptions } from "docxodus/react"
 import { CommentRenderMode } from "docxodus"
 import {
@@ -14,10 +14,10 @@ import {
   type PreparedChanges,
   type Redline,
 } from "../api/ingest/redlines"
-import { convertPdfToDocx, documentContentUrl } from "../api/ingest/documents"
+import { convertPdfToDocx, documentContentUrl, fetchDocumentText, matterDocumentKind } from "../api/ingest/documents"
 import { ModalClose } from "./ModalHeader"
 import { CompareIcon } from "./CompareDialog"
-import { focusCitationPassage, type CitationFocus } from "./citation-target"
+import { citationPassage, focusCitationPassage, type CitationFocus } from "./citation-target"
 import { useToast } from "./Toast"
 
 // How a Word file with tracked changes is painted: insertions green, deletions
@@ -31,13 +31,23 @@ export const DOCX_RENDER_OPTIONS: ConversionOptions = {
   commentRenderMode: CommentRenderMode.Margin,
 }
 
+// A matter document's viewer. Emails and spreadsheets have no Word package to
+// render or redline, so they open as the text ingest extracted from them; Word
+// files and PDFs open in the redline viewer.
+export default function DocumentViewer(props: Parameters<typeof WordDocumentViewer>[0]) {
+  const kind = matterDocumentKind(props.name)
+  if (kind === "eml" || kind === "xlsx")
+    return <DocumentTextViewer matterId={props.matterId} name={props.name} kind={kind} citation={props.citation} onClose={props.onClose} />
+  return <WordDocumentViewer {...props} />
+}
+
 // In-browser redline viewer. Fetches the matter's document with every pending
 // redline applied as native tracked changes and converts it to HTML with the WASM
 // runtime — insertions render green, deletions struck red, the redline lawyers
 // expect. The change list alongside it accepts or rejects each proposal, one block
 // at a time or the whole document at once. Bytes convert client-side, so the
 // document never leaves the browser for a third-party service.
-export default function DocumentViewer({
+function WordDocumentViewer({
   matterId,
   name,
   focusId,
@@ -305,13 +315,7 @@ export default function DocumentViewer({
         </div>
         <div className="viewer-body">
           <div className="viewer-doc">
-            {citation && <p role="status">Source section {citation.section}. {passage === "matched"
-              ? "The cited excerpt is highlighted."
-              : passage === "ambiguous"
-                ? "This excerpt appears more than once. The document is open; no exact passage was selected."
-                : passage === "unavailable"
-                  ? "The cited excerpt could not be located in the current preview. The document is open; no exact passage was selected."
-                  : "Locating the cited excerpt…"}</p>}
+            {citation && <p role="status">{citationStatus(citation.section, passage)}</p>}
             {editing && <div id="document-edit-request" className="change-card document-edit-request">
               <label htmlFor="document-edit-instructions">Describe the changes you want to review</label>
               <textarea id="document-edit-instructions" value={instructions} maxLength={24000} disabled={busy !== undefined}
@@ -390,6 +394,92 @@ export default function DocumentViewer({
         </div>
       </div>
     </div>
+  )
+}
+
+// Where a citation landed in the open document, said in the status line.
+export function citationStatus(section: string, passage?: "matched" | "ambiguous" | "unavailable") {
+  return `Source section ${section}. ${passage === "matched"
+    ? "The cited excerpt is highlighted."
+    : passage === "ambiguous"
+      ? "This excerpt appears more than once. The document is open; no exact passage was selected."
+      : passage === "unavailable"
+        ? "The cited excerpt could not be located in the current preview. The document is open; no exact passage was selected."
+        : "Locating the cited excerpt…"}`
+}
+
+// An email or spreadsheet, read-only, as the text ingest extracted from it:
+// the same text the assistant reads and cites, so a citation's excerpt is found
+// in it directly and highlighted. Nothing here edits, redlines or converts.
+function DocumentTextViewer({ matterId, name, kind, citation, onClose }: {
+  matterId: string
+  name: string
+  kind: "eml" | "xlsx"
+  citation?: CitationFocus
+  onClose: () => void
+}) {
+  const [text, setText] = useState<string>()
+  const [error, setError] = useState<string>()
+  const markRef = useRef<HTMLElement>(null)
+  const match = useMemo(() => (text !== undefined && citation ? citationPassage(text, citation.excerpt) : undefined), [text, citation])
+
+  useEffect(() => {
+    let cancelled = false
+    fetchDocumentText(matterId, name).then(
+      (value) => !cancelled && setText(value),
+      (cause) => !cancelled && setError(cause instanceof Error ? cause.message : String(cause)),
+    )
+    return () => {
+      cancelled = true
+    }
+  }, [matterId, name])
+
+  useEffect(() => {
+    markRef.current?.scrollIntoView({ block: "center" })
+    markRef.current?.focus({ preventScroll: true })
+  }, [match])
+
+  return (
+    <div className="viewer-overlay" onClick={onClose}>
+      <div className="viewer-panel document-reader" role="dialog" aria-modal="true" aria-label={name} onClick={(e) => e.stopPropagation()}>
+        <div className="viewer-bar">
+          <ViewerTitle name={name} kind={`${kind === "eml" ? "Email" : "Excel spreadsheet"} · extracted text, read-only`} />
+          <div className="viewer-bar-actions">
+            <ModalClose onClose={onClose} />
+          </div>
+        </div>
+        <div className="viewer-body">
+          <div className="viewer-doc">
+            {citation && <p role="status">{citationStatus(citation.section, error ? "unavailable" : match?.status)}</p>}
+            {error && <p className="muted">{error}</p>}
+            {!error && text === undefined && (
+              <div className="docx-render docx-skeleton" aria-label="Reading the text">
+                {Array.from({ length: 14 }, (_, i) => <div key={i} className="sk-line" />)}
+              </div>
+            )}
+            {text !== undefined && <ExtractedText kind={kind} text={text} match={match} markRef={markRef} />}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// The extracted text on the viewer's sheet, the matched excerpt marked in place.
+export function ExtractedText({ kind, text, match, markRef }: {
+  kind: "eml" | "xlsx"
+  text: string
+  match?: ReturnType<typeof citationPassage>
+  markRef?: Ref<HTMLElement>
+}) {
+  if (!text.trim()) return <p className="muted">No text was read from this file.</p>
+  if (match?.status !== "matched") return <pre className={`docx-render document-text is-${kind}`}>{text}</pre>
+  return (
+    <pre className={`docx-render document-text is-${kind}`}>
+      {text.slice(0, match.start)}
+      <mark className="citation-passage" tabIndex={-1} ref={markRef}>{text.slice(match.start, match.end)}</mark>
+      {text.slice(match.end)}
+    </pre>
   )
 }
 

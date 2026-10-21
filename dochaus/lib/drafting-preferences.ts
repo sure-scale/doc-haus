@@ -50,6 +50,11 @@ export type DraftingPreferences = {
   notesMarking: boolean
 }
 
+/** How hard negotiated terms lean toward the lawyer's client: the firm's
+ * setting, or a matter's own (ingest matter.ts), which a drafting run freezes
+ * into its plan (workflows/lean/plan.ts runPosture). */
+export type Posture = DraftingPreferences["posture"]
+
 export type RateOverride = Partial<{
   input_per_mtok: number
   output_per_mtok: number
@@ -168,7 +173,12 @@ function normalizeTelemetry(input: unknown): TelemetryPreferences {
   }
 }
 
-const POSTURE: Record<DraftingPreferences["posture"], string> = {
+/** One of the three Posture choices; anything else is no Posture. */
+export function isPosture(value: unknown): value is Posture {
+  return typeof value === "string" && Object.hasOwn(POSTURE, value)
+}
+
+const POSTURE: Record<Posture, string> = {
   "client-favorable":
     "Favor the represented person's or organization's stated objectives and protect its interests where reasonably defensible.",
   balanced: "Use an even-handed, conventional approach appropriate to the requested document and its legal or procedural posture.",
@@ -237,6 +247,9 @@ export function renderInstructions(prefs: DraftingPreferences, mode: "full" | "e
 
 // Read the structured source for every turn, including defaults before any save.
 // The generated markdown remains an inspectable export, never a second authority.
-export function readFirmDraftingPreferences(mode: "full" | "explanation" = "full") {
-  return renderInstructions(normalizePreferences(readFirmPreferences()), mode)
+// A given Posture (a matter's own, or the one a run froze) renders in place of
+// the firm's; with the firm's own, the text is exactly the firm's rendering.
+export function readFirmDraftingPreferences(mode: "full" | "explanation" = "full", posture?: Posture) {
+  const prefs = normalizePreferences(readFirmPreferences())
+  return renderInstructions(posture ? { ...prefs, posture } : prefs, mode)
 }

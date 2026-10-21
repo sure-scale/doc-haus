@@ -1080,3 +1080,13 @@ test("status reports whom the plan says the lawyer acts for, and not stated for 
   writeLeanPlan(directory, [SUPPLY_NOTE])
   expect(leanDraftingStatus(directory)?.plan?.acting_for).toEqual({ party: "", stated: false })
 })
+
+test("status reports the Posture the run drafts to: the plan's, else the matter's", () => {
+  const directory = leanFixtureMatter("lean-posture-status-")
+  directories.push(directory)
+  writeFileSync(path.join(directory, "matter.json"), JSON.stringify({ id: "matter-fixture", title: "Supply", posture: "client-favorable" }))
+  writeLeanPlan(directory, [SUPPLY_NOTE])
+  expect(leanDraftingStatus(directory)?.plan?.posture).toBe("client-favorable")
+  writeLeanPlan(directory, [SUPPLY_NOTE], undefined, undefined, undefined, "conservative")
+  expect(leanDraftingStatus(directory)?.plan?.posture).toBe("conservative")
+})

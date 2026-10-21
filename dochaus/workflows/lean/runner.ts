@@ -1,6 +1,5 @@
 import { adviseQuestions } from "./advise"
 import { runFocusedChangeReview } from "./focused-change-review"
-import { readFirmDraftingPreferences } from "../../lib/drafting-preferences"
 import { DRAFTING_STOPPED_REASON } from "../../lib/drafting-update-admission"
 import { PROVIDER_STOP_MESSAGES, providerStopKind, type ProviderStopKind } from "../../lib/provider-stop"
 import { renderMarkdownToDocx } from "../../lib/render"
@@ -36,6 +35,7 @@ import {
   acceptStageReply,
   notesFurniture,
   researchBasis,
+  stageDraftingPreferences,
   stageInputs,
   stageOutputValid,
   stepOutputs,
@@ -147,9 +147,10 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
   const unreadable = leanPlanIssue(directory)
   if (unreadable) return { state: writeLeanState(directory, { ...initial, status: "blocked",
     stop_reason: `.dochaus/lean/plan.json is not a valid document plan: ${unreadable}. Correct it, then Continue.` }) }
-  const preferences = readFirmDraftingPreferences()
+  // What the stages read: a Posture frozen in the plan masks a later change to it.
+  const preferences = stageDraftingPreferences(directory)
   const preferenceChange = { observed: false }
-  const preferencesChanged = () => preferenceChange.observed ||= readFirmDraftingPreferences() !== preferences
+  const preferencesChanged = () => preferenceChange.observed ||= stageDraftingPreferences(directory) !== preferences
   const pause = sourceDeps.pause
   const paused = () => pause?.aborted === true
   // The first provider or setup failure of the pass, whatever a helper makes of

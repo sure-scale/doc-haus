@@ -31,7 +31,7 @@ import {
   type ParagraphRow,
   type StageCheck,
 } from "./checks"
-import { reviewStages, FIRST_DOCUMENT, planActingFor, operativeDocument, operativePlan, plannedDocument, readLeanPlan, stepDocument, stepStage, type PlannedDocument, type StepID } from "./plan"
+import { reviewStages, FIRST_DOCUMENT, planActingFor, operativeDocument, operativePlan, plannedDocument, readLeanPlan, runPosture, stepDocument, stepStage, type PlannedDocument, type StepID } from "./plan"
 import { acceptReviewReply, forwardedFindings, readReviewRecord } from "./review-findings"
 import { templateSource } from "./template-contract"
 import { completedDocumentsText, packageCompositionBlock } from "./prompts"
@@ -63,7 +63,7 @@ import {
 // goes to the pointer applier as data, addressed by paragraph pointer. Steps of
 // one planned document keep their files under that document's id (d1/, d2/...).
 
-export const LEAN_PROMPT_VERSION = "lean-20-finding-pids"
+export const LEAN_PROMPT_VERSION = "lean-21-posture-review"
 const OUTLINE_CONTRACT = "document-form-8"
 const DELIVERY_REVIEW_CONTRACT = "grounded-delivery-selection-4"
 const STRUCTURAL_AMENDMENT_CONTRACT = "explicit-paragraph-cardinality-1"
@@ -212,7 +212,7 @@ export function stageInputs(directory: string, step: StepID, options: { repairCo
   const clarifications = leanClarifications(directory)
   const inputs = baseStageInputs(directory, step, options)
   return [...inputs,
-    ...(!inputs.some(part => part.name === "drafting-preferences") ? [{ name: "drafting-preferences", bytes: readFirmDraftingPreferences() }] : []),
+    ...(!inputs.some(part => part.name === "drafting-preferences") ? [{ name: "drafting-preferences", bytes: stageDraftingPreferences(directory) }] : []),
     ...(["change-plan", "change-prepare", "changes", "change-review", "apply", "finalize", "package-review", "gate"].includes(stepStage(step))
       ? [{ name: "structural-amendment-contract", bytes: STRUCTURAL_AMENDMENT_CONTRACT }] : []),
     ...(step === "finalize" ? [{ name: "drafting-notes-contract", bytes: DRAFTING_NOTES_CONTRACT }] : []),
@@ -309,10 +309,17 @@ export function outlineBasis(directory: string) {
   return hashStageInputs(`${FIRST_DOCUMENT}.draft`, LEAN_PROMPT_VERSION, [{ name: "outline-contract", bytes: OUTLINE_CONTRACT }, ...outlineInputs(directory), ...["research.json", "research-review.json"].map(name => ({ name, bytes: readLeanText(directory, name) ?? "" }))])
 }
 
+/** The drafting preferences every lean stage reads (the legal plugin renders
+ * the same for lean agents): the firm's, with the run's Posture. With the firm's
+ * own Posture the bytes, and so the keys, are the firm's rendering. */
+export function stageDraftingPreferences(directory: string) {
+  return readFirmDraftingPreferences("full", runPosture(directory))
+}
+
 function outlineInputs(directory: string) {
   const request = leanFile(directory, "request.md")
   const updates = readLeanText(directory, "updated-notes.md")
-  return [{ name: "drafting-preferences", bytes: readFirmDraftingPreferences() }, { name: "source-content", bytes: matterSourceBasis(directory) }, { name: "answers", bytes: answeredQuestionsText(directory) }, ...(updates ? [{ name: "updated-notes.md", bytes: updates }] : []), { name: "request.md", bytes: existsSync(request) ? readFileSync(request) : "" }, { name: "sources", bytes: matterSourceIDs(directory).join("\n") }]
+  return [{ name: "drafting-preferences", bytes: stageDraftingPreferences(directory) }, { name: "source-content", bytes: matterSourceBasis(directory) }, { name: "answers", bytes: answeredQuestionsText(directory) }, ...(updates ? [{ name: "updated-notes.md", bytes: updates }] : []), { name: "request.md", bytes: existsSync(request) ? readFileSync(request) : "" }, { name: "sources", bytes: matterSourceIDs(directory).join("\n") }]
 }
 
 /** Checks a model reply and, when it passes, writes the step's output files. */

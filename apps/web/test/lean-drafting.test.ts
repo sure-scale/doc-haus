@@ -358,6 +358,31 @@ test("the run's Details say whom the lawyer acts for once the plan records it, a
   expect(isLeanDraftingStatus(withActingFor("Northwind Traders Ltd"))).toBe(false)
 })
 
+test("the run header shows the Posture the run drafts to beside whom the lawyer acts for", () => {
+  const idle: RunActions = { busy: false, pausing: false, stopping: false, error: "", errorFor: undefined, resuming: false, resume: async () => true, answer: async () => true, choose: async () => true, decide: async () => true, update: async () => true, refine: async () => true, pause: async () => true, stop: async () => true }
+  const withPlan = (fields: Record<string, unknown>) => ({ ...completed, plan: { ...completed.plan, ...fields } })
+  const render = (value: unknown) =>
+    renderToStaticMarkup(createElement(RunHeader, { status: lean(value), actions: idle, own: true, onOpen: () => {}, onShowDrafts: () => {} }))
+  const northwind = { party: "Northwind Traders Ltd", stated: true }
+  expect(render(withPlan({ acting_for: northwind, posture: "balanced" }))).toContain("Acting for: Northwind Traders Ltd · Balanced")
+  expect(render(withPlan({ acting_for: northwind, posture: "client-favorable" }))).toContain("Acting for: Northwind Traders Ltd · Client-favorable")
+  expect(render(withPlan({ acting_for: northwind, posture: "conservative" }))).toContain("Acting for: Northwind Traders Ltd · Conservative")
+  // With no side stated the stages still take the Posture: only Balanced, or an
+  // older ingest that sends none, reads as neutral drafting.
+  const unstated = { party: "", stated: false }
+  expect(render(withPlan({ acting_for: unstated, posture: "client-favorable" }))).toContain("Acting for: not stated · Client-favorable</span>")
+  expect(render(withPlan({ acting_for: unstated, posture: "conservative" }))).toContain("Acting for: not stated · Conservative</span>")
+  for (const posture of ["balanced", undefined]) {
+    const neutral = render(withPlan({ acting_for: unstated, posture }))
+    expect(neutral).toContain("Acting for: not stated — drafting is neutral</span>")
+    expect(neutral).not.toContain("not stated ·")
+  }
+  expect(render(withPlan({ acting_for: northwind }))).toContain("Acting for: Northwind Traders Ltd</span>")
+  expect(isLeanDraftingStatus(withPlan({ acting_for: northwind, posture: "aggressive" }))).toBe(false)
+  expect(isLeanDraftingStatus(withPlan({ acting_for: northwind, posture: 2 }))).toBe(false)
+  expect(isLeanDraftingStatus(withPlan({ acting_for: northwind, posture: "conservative" }))).toBe(true)
+})
+
 test("the question card shows how many are answered and Send waits for an answer", () => {
   const calls = respond({ answers: {}, revision: 0 })
   const open = blockedQuestion.questions.map((question) => ({ ...question, status: "open" as const }))

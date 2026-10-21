@@ -6,7 +6,7 @@ import { comparisonDescription } from "./comparison"
 import { combinedDelivery, deliveryArtifactEvidence, requestedMemo } from "./deliverables"
 import { researchHandoff } from "./research"
 import { finalBodyParagraphs, readChangeList, readParagraphs, type ApplyResult } from "./checks"
-import { reviewStages, FIRST_DOCUMENT, earlierDocuments, planActingFor, operativeDocument, plannedDocument, readLeanPlan, stepDocument, stepStage, type DocID, type StepID } from "./plan"
+import { reviewStages, FIRST_DOCUMENT, earlierDocuments, planActingFor, operativeDocument, plannedDocument, readLeanPlan, runPosture, stepDocument, stepStage, type DocID, type StepID } from "./plan"
 import { REQUEST_SOURCE, matterSourceIDs } from "./quotes"
 import { readRepairRound, changesRepairSections } from "./repairs"
 import { MEMO_TARGET, REVIEW_FINDINGS_CONTRACT, findingsText, forwardedFindings, reviewText } from "./review-findings"
@@ -136,7 +136,7 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
         ...(composition ? [`- Where a point belongs in the accompanying memo rather than in a document body, report it with the document "${MEMO_TARGET}"; the run carries it to the memo.`] : []),
         "- Report each problem as a finding with the pids of the paragraphs it affects, or where missing wording belongs, saying what is wrong and why, and in instead what those paragraphs should say.",
         actingFor.stated
-          ? "- Assess each provision as the reviewing lawyer for the party the lawyer acts for: whether it works under the governing law the request and sources point to, whether it protects that party's position, and whether a protection a careful drafter would include for that party is missing."
+          ? sidedReviewStandard(directory)
           : "- Assess each provision as a reviewing lawyer who acts for neither party: whether it works under the governing law the request and sources point to, and whether wording a careful drafter would include is missing. Where an essential provision needs a new drafting choice on which the parties' interests diverge, propose balanced wording within the requested scope and mark that new choice for confirmation; retain decisions already supplied without another confirmation.",
         "- Ask for governing law only when an unresolved jurisdiction is necessary for the requested document function or legal analysis. A factual record or other work whose stated purpose does not require that analysis needs no governing-law question; never assume a jurisdiction for legal conclusions.",
         "- Review every provision, marked or not; wording without an open item is not presumed to work. Report defects affecting rights, obligations, remedies or risk within the requested purpose, including a missing protection essential to that purpose; distinguish optional protections as non-blocking recommendations. Leave out pure style points that change none of these, except the supplied date/number preference warnings assigned to the wording reviewer.",
@@ -191,6 +191,18 @@ export function retryPrompt(stage: StageID | "advise", issues: string[]) {
     "",
     "Reply again with the complete corrected output. The output contract above still applies.",
   ].join("\n")
+}
+
+/** The standard every reviewer applies for the party the lawyer acts for, by
+ * the run's Posture: Client-favorable looks for every protection a careful
+ * drafter would include for that party; Balanced and Conservative hold it to
+ * what a market-standard document for that side would include. */
+export function sidedReviewStandard(directory: string) {
+  const assess = "- Assess each provision as the reviewing lawyer for the party the lawyer acts for: whether it works under the governing law the request and sources point to, "
+  return runPosture(directory) === "client-favorable"
+    ? `${assess}whether it protects that party's position, and whether a protection a careful drafter would include for that party is missing.`
+    : `${assess}whether it has a real adverse effect on that party's position, and whether it lacks what a conventional, market-standard document for that side would include. ` +
+      "Do not press for protections beyond market practice: a position more favourable to that party than market practice gives is not a finding, not even as an optional negotiating improvement."
 }
 
 /** Whom the lawyer acts for, as data every model stage reads. When neither the

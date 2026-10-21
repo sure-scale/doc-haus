@@ -19,6 +19,22 @@ export type Document = {
   label?: DocumentLabel | null
 }
 
+// The source formats ingest reads (MATTER_DOCUMENT_EXTENSIONS in
+// services/ingest/src/ingest.ts). The upload picker, every drop target and the
+// citation link take this one list.
+export const MATTER_DOCUMENT_EXTENSIONS = [".docx", ".pdf", ".eml", ".xlsx"] as const
+export type MatterDocumentKind = "docx" | "pdf" | "eml" | "xlsx"
+
+// Read the extension as ingest does (path.extname of the trimmed name): from the
+// base name's last dot, and none when that dot leads the name (".pdf").
+export function matterDocumentKind(name: string): MatterDocumentKind | undefined {
+  const trimmed = name.trim()
+  const base = trimmed.slice(trimmed.lastIndexOf("/") + 1)
+  const dot = base.lastIndexOf(".")
+  const extension = dot > 0 ? base.slice(dot).toLowerCase() : ""
+  return (MATTER_DOCUMENT_EXTENSIONS as readonly string[]).includes(extension) ? (extension.slice(1) as MatterDocumentKind) : undefined
+}
+
 // A prompt-injection finding from ingest-time scanning: invisible Unicode, hidden
 // DOCX formatting, or instruction-like text (see services/ingest/src/sanitize.ts).
 export type InjectionFinding = { rule: string; detail: string; snippet?: string; charStart?: number; charEnd?: number }
@@ -106,6 +122,14 @@ export async function convertPdfToDocx(id: string, name: string): Promise<Ingest
 // from our own ingest service, so the file never leaves for a third-party service.
 export function documentContentUrl(id: string, name: string): string {
   return `${INGEST_URL}/matters/${id}/documents/content?name=${encodeURIComponent(name)}`
+}
+
+// The normalised text ingest extracted from a matter document: the same text the
+// assistant reads and cites. Emails and spreadsheets are viewed as this text.
+export async function fetchDocumentText(id: string, name: string): Promise<string> {
+  const res = await fetch(`${INGEST_URL}/matters/${id}/documents/text?name=${encodeURIComponent(name)}`)
+  if (!res.ok) throw new Error(await ingestError(res, `Could not read ${name}`))
+  return ((await res.json()) as { text: string }).text
 }
 
 export async function setDocumentLabel(id: string, name: string, label: DocumentLabel): Promise<void> {

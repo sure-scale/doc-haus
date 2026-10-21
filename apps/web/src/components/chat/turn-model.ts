@@ -2,6 +2,7 @@ import type { Part } from "../../api/session-view"
 import type { ChangeHunk, CompareParams, ProposalOutcome } from "../../api/ingest/compare"
 import type { Citation } from "../../api/opencode/parts"
 import type { Todo } from "../TodoView"
+import { partActivity, TOOL_GROUPS } from "../narration/activity"
 import { basename, stepLabel } from "./step-labels"
 import { isDraftingRecoveryMessage } from "./drafting-recovery"
 import { templateResult, type TemplateResult } from "./template-result"
@@ -290,7 +291,18 @@ export function readTurn(parts: Map<string, Part>, roles: Map<string, string>, m
     compares: comparesOf(work),
     todos,
     steps: partsToSteps(work, matter, all),
+    activity: activityOf(work, matter),
   }
+}
+
+// What a live answer is doing now, in the drafting narration's plain words: its
+// latest running tool, when that tool has one ("Searching matter documents").
+// Between steps, and for any other tool, it is simply working.
+function activityOf(work: Part[], matter: string) {
+  const group = work
+    .map((p) => partActivity(p, 0, matter))
+    .findLast((line) => line?.kind === "tool" && line.state === "running")?.group
+  return group ? TOOL_GROUPS[group]?.running : undefined
 }
 
 // Group stored messages into turns. A tool-using turn spans several consecutive

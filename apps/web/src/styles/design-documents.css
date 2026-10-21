@@ -180,6 +180,8 @@
 }
 .docs-drawer .matter-files-collection .doc-type.is-docx { background: #e9f0fb; color: #3661a8; }
 .docs-drawer .matter-files-collection .doc-type.is-pdf { background: #fbecea; color: #b3423a; }
+.docs-drawer .matter-files-collection .doc-type.is-eml { background: #f0edf6; color: #6a5a8c; }
+.docs-drawer .matter-files-collection .doc-type.is-xlsx { background: #e8f4ec; color: #2f7a4a; }
 .docs-drawer .matter-files-collection .drafted-file-icon { background: var(--accent-soft); color: var(--accent); }
 .docs-drawer .matter-files-collection .drafted-file-icon svg { width: 15px; height: 15px; }
 .docs-drawer .matter-files-collection .doc-row-main { align-items: center; gap: 10px; }

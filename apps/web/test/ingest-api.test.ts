@@ -82,6 +82,27 @@ test("matter saves send the client only when the caller passes one", async () =>
   expect(bodies[3]).toMatchObject({ title: "Supply", client: "Northwind Traders Ltd" })
 })
 
+test("matter saves send the posture only when the caller passes one", async () => {
+  const bodies: unknown[] = []
+  globalThis.fetch = (async (_input, init) => {
+    bodies.push(JSON.parse(String(init?.body)))
+    return Response.json({ id: "matter-a", title: "Supply", dir: "/m", created_at: 1 })
+  }) as typeof fetch
+
+  await renameMatter("matter-a", "Supply", "2026-0042", ["EW"], "playbook-nda", "Northwind Traders Ltd")
+  await renameMatter("matter-a", "Supply", "2026-0042", ["EW"], "playbook-nda", undefined, "conservative")
+  await renameMatter("matter-a", "Supply", "2026-0042", ["EW"], "playbook-nda", undefined, "")
+  await createMatter("Supply", undefined, undefined, undefined, "Northwind Traders Ltd", "client-favorable")
+  await createMatter("Supply")
+
+  expect(bodies[0]).not.toHaveProperty("posture")
+  expect(bodies[1]).toMatchObject({ posture: "conservative" })
+  expect(bodies[1]).not.toHaveProperty("client")
+  expect(bodies[2]).toMatchObject({ posture: "" })
+  expect(bodies[3]).toMatchObject({ title: "Supply", client: "Northwind Traders Ltd", posture: "client-favorable" })
+  expect(bodies[4]).not.toHaveProperty("posture")
+})
+
 test("continuation dispatch goes through the matter backend and validates its claim response", async () => {
   const calls: Array<{ url: string; init?: RequestInit }> = []
   globalThis.fetch = (async (input, init) => {

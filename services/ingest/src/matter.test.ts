@@ -315,6 +315,56 @@ test("rename changes the client only when one is given", () => {
   matter.deleteMatter(created.id)
 })
 
+test("posture is one of the three Settings choices, stored only when chosen", () => {
+  const created = matter.createMatter("Posture Create", undefined, undefined, undefined, undefined, "conservative")
+  expect(created.posture).toBe("conservative")
+  expect(readMatterJson(created.id).posture).toBe("conservative")
+  expect(matter.listMatters().find((m) => m.id === created.id)!.posture).toBe("conservative")
+  expect(matter.getMatter(created.id).posture).toBe("conservative")
+
+  // Empty or absent means the firm's Posture: nothing is stored.
+  const blank = matter.createMatter("Posture Blank", undefined, undefined, undefined, undefined, "")
+  expect("posture" in readMatterJson(blank.id)).toBe(false)
+  const absent = matter.createMatter("Posture Absent")
+  expect("posture" in readMatterJson(absent.id)).toBe(false)
+
+  const before = matter.listMatters().length
+  for (const posture of ["aggressive", "Balanced", " balanced", 42, null, ["balanced"]])
+    expect(() => matter.createMatter("Posture Refused", undefined, undefined, undefined, undefined, posture as unknown as string)).toThrow(
+      matter.MatterValidationError,
+    )
+  expect(matter.listMatters()).toHaveLength(before)
+
+  matter.deleteMatter(created.id)
+  matter.deleteMatter(blank.id)
+  matter.deleteMatter(absent.id)
+})
+
+test("rename changes the posture only when one is given, and refuses one outside the three", () => {
+  const created = matter.createMatter("Posture Rename", "2026-0009", ["EW"], undefined, "Northwind Traders Ltd", "client-favorable")
+
+  // Callers that do not edit the posture (title, client or playbook edits) keep it.
+  matter.renameMatter(created.id, "Posture Rename Kept", "2026-0010", ["EW"], "playbook-nda")
+  matter.renameMatter(created.id, "Posture Rename Kept", "2026-0010", ["EW"], "playbook-nda", "Contoso Holdings plc")
+  expect(readMatterJson(created.id)).toMatchObject({ title: "Posture Rename Kept", client: "Contoso Holdings plc", posture: "client-favorable" })
+
+  const set = matter.renameMatter(created.id, "Posture Rename Kept", "2026-0010", ["EW"], "playbook-nda", undefined, "balanced")
+  expect(set.posture).toBe("balanced")
+  expect(readMatterJson(created.id)).toMatchObject({ client: "Contoso Holdings plc", posture: "balanced" })
+
+  expect(() => matter.renameMatter(created.id, "Posture Rename Kept", "2026-0010", ["EW"], "playbook-nda", undefined, "aggressive")).toThrow(
+    "Posture must be Client-favorable, Balanced or Conservative.",
+  )
+  expect(readMatterJson(created.id).posture).toBe("balanced")
+
+  matter.renameMatter(created.id, "Posture Rename Kept", "2026-0010", ["EW"], "playbook-nda", undefined, "")
+  const cleared = readMatterJson(created.id)
+  expect("posture" in cleared).toBe(false)
+  expect(cleared).toMatchObject({ client: "Contoso Holdings plc", playbook: "playbook-nda" })
+
+  matter.deleteMatter(created.id)
+})
+
 test("listJurisdictions surfaces the bundled EW pack from the dochaus config layer", () => {
   const ew = matter.listJurisdictions().find((j) => j.code === "EW")
   expect(ew).toBeDefined()
