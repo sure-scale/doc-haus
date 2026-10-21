@@ -1,5 +1,5 @@
 import { utils, write } from "xlsx"
-import { cellKey, type Grid, type GridCellData } from "../api/ingest/grid"
+import { cellKey, isStale, type Grid, type GridCellData } from "../api/ingest/grid"
 import { describeRecheck } from "../api/review-recheck"
 import { formatDate } from "../lib/format"
 
@@ -14,6 +14,8 @@ export type ExportCell = {
   /** The #248 re-check record as the lawyer reads it. */
   recheck?: string
   reviewed: boolean
+  /** Computed for an earlier wording of the question (the grid's "stale"). */
+  stale: boolean
   comments: string[]
 }
 export type ReviewExport = { title: string; questions: string[]; rows: Array<{ document: string; cells: ExportCell[] }> }
@@ -22,23 +24,26 @@ export function reviewExport(title: string, grid: Grid, documents: string[]): Re
   return {
     title,
     questions: grid.columns.map((column) => column.question),
-    rows: documents.map((document) => ({ document, cells: grid.columns.map((column) => exportCell(grid.cells[cellKey(document, column.id)])) })),
+    rows: documents.map((document) => ({ document, cells: grid.columns.map((column) => exportCell(grid.cells[cellKey(document, column.id)], column.question)) })),
   }
 }
 
-function exportCell(cell: GridCellData | undefined): ExportCell {
+function exportCell(cell: GridCellData | undefined, question: string): ExportCell {
   return {
     answer: cell?.answer ?? "",
     source: cell?.citation && `${cell.citation.documentName} § ${cell.citation.section}`,
     recheck: cell?.recheck && describeRecheck(cell.recheck),
     reviewed: cell?.status === "reviewed",
+    stale: isStale(cell, question),
     comments: (cell?.comments ?? []).map((comment) => `Comment (${formatDate(comment.at)}): ${comment.text}`),
   }
 }
 
-/** The lines that travel with an answer: source, re-check, then comments. */
+/** The lines that travel with an answer in Excel and Word: its reviewed or
+ * stale state, source, re-check, then comments. */
 function notes(cell: ExportCell) {
-  return [cell.source && `Source: ${cell.source}`, cell.recheck, ...cell.comments].filter((line): line is string => Boolean(line))
+  return [cell.reviewed && "Reviewed", cell.stale && "Stale: question changed since this answer", cell.source && `Source: ${cell.source}`, cell.recheck, ...cell.comments]
+    .filter((line): line is string => Boolean(line))
 }
 
 /** Excel: the grid's shape, with each answer's notes as a native hidden note on its cell. */
@@ -59,9 +64,9 @@ export function reviewXlsx(model: ReviewExport): ArrayBuffer {
  * RFC 4180 with CRLF records; the BOM makes Excel read UTF-8 (every source has a §). */
 export function reviewCsv(model: ReviewExport) {
   const records = [
-    ["Document", "Question", "Answer", "Source", "Reviewed", "Re-check", "Comments"],
+    ["Document", "Question", "Answer", "Source", "Reviewed", "Stale", "Re-check", "Comments"],
     ...model.rows.flatMap((row) =>
-      row.cells.map((cell, c) => [row.document, model.questions[c], cell.answer, cell.source ?? "", cell.reviewed ? "Yes" : "No", cell.recheck ?? "", cell.comments.join("\n")]),
+      row.cells.map((cell, c) => [row.document, model.questions[c], cell.answer, cell.source ?? "", cell.reviewed ? "Yes" : "No", cell.stale ? "Yes" : "No", cell.recheck ?? "", cell.comments.join("\n")]),
     ),
   ]
   return `﻿${records.map((record) => record.map(csvField).join(",")).join("\r\n")}\r\n`
@@ -74,7 +79,13 @@ function csvField(value: string) {
   return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
 }
 
-const PAGE = { width: 11906, height: 16838, margin: 1440 } // A4 in twips, 1" margins
+// A4 in twips, 1" margins. The firm settings have no paper size (drafted documents
+// take theirs from the template), so the export uses A4.
+const PAGE = { width: 11906, height: 16838, margin: 1440 }
+
+// XML 1.0 cannot carry C0 controls other than tab, line feed and carriage return,
+// nor U+FFFE/U+FFFF; Word refuses a document.xml holding one (a PDF form feed).
+const xmlText = (text: string) => text.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g, "")
 
 /** Word: a heading and one table in the grid's shape; landscape from three questions. */
 export async function reviewDocx(model: ReviewExport): Promise<ArrayBuffer> {
@@ -85,7 +96,7 @@ export async function reviewDocx(model: ReviewExport): Promise<ArrayBuffer> {
   const rest = model.questions.length ? Math.floor((width - first) / model.questions.length) : 0
   const columnWidths = [first, ...model.questions.map(() => rest)]
   const lines = (text: string, run: { bold?: boolean; size?: number; color?: string } = {}) =>
-    text.split(/\r?\n|\r/).map((line) => new Paragraph({ children: [new TextRun({ text: line, ...run })] }))
+    xmlText(text).split(/\r?\n|\r/).map((line) => new Paragraph({ children: [new TextRun({ text: line, ...run })] }))
   const cell = (c: number, children: InstanceType<typeof Paragraph>[], header = false) =>
     new TableCell({
       children,
@@ -105,7 +116,7 @@ export async function reviewDocx(model: ReviewExport): Promise<ArrayBuffer> {
           children: [
             cell(0, lines(row.document)),
             ...row.cells.map((value, c) =>
-              cell(c + 1, [...lines(value.answer), ...(value.reviewed ? lines("Reviewed", note) : []), ...notes(value).flatMap((line) => lines(line, note))]),
+              cell(c + 1, [...lines(value.answer), ...notes(value).flatMap((line) => lines(line, note))]),
             ),
           ],
         }),
@@ -117,7 +128,7 @@ export async function reviewDocx(model: ReviewExport): Promise<ArrayBuffer> {
     sections: [
       {
         properties: { page: { size: { width: PAGE.width, height: PAGE.height, orientation: landscape ? PageOrientation.LANDSCAPE : PageOrientation.PORTRAIT }, margin: { top: PAGE.margin, right: PAGE.margin, bottom: PAGE.margin, left: PAGE.margin } } },
-        children: [new Paragraph({ heading: HeadingLevel.HEADING_1, children: [new TextRun(`Tabular review — ${model.title}`)] }), table],
+        children: [new Paragraph({ heading: HeadingLevel.HEADING_1, children: [new TextRun(xmlText(`Tabular review — ${model.title}`))] }), table],
       },
     ],
   })

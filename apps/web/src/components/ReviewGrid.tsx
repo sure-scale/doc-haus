@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { computeCell, describeRecheck, needsFill } from "../api/review-recheck"
-import { cellKey, getGrid, recheckPassages, saveGrid, type Grid, type GridCellData } from "../api/ingest/grid"
+import { cellKey, getGrid, hashQuestion, isStale, recheckPassages, saveGrid, type Grid, type GridCellData } from "../api/ingest/grid"
 import { humanizeError } from "../api/ingest/errors"
 import type { Document } from "../api/ingest/documents"
 import { createSession, getMessages, sendPrompt } from "../api/opencode/sessions"
@@ -19,14 +19,6 @@ import { formatDateTime } from "../lib/format"
 // the same computation (api/review-recheck).
 
 const POOL = 5 // concurrent cell extractions; the engine handles one prompt each
-
-// Stable id for a question column. Editing a question changes its hash, not its
-// id, so existing cells stay linked but flag themselves stale.
-function hashQuestion(q: string) {
-  let h = 5381
-  for (let i = 0; i < q.length; i++) h = (h * 33) ^ q.charCodeAt(i)
-  return (h >>> 0).toString(36)
-}
 
 export default function ReviewGrid({ matterId, title, directory, documents, onClose }: { matterId: string; title: string; directory: string; documents: Document[]; onClose: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null)
@@ -264,7 +256,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
                   {grid.columns.map((col) => {
                     const key = cellKey(doc.name, col.id)
                     const cell = grid.cells[key]
-                    const stale = cell && cell.status !== "reviewed" && cell.questionHash !== hashQuestion(col.question)
+                    const stale = isStale(cell, col.question)
                     return (
                       <td key={col.id} className={`review-cell${cell?.status === "reviewed" ? " reviewed" : ""}`}>
                         {!cell ? (

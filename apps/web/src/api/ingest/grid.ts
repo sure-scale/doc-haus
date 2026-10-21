@@ -29,6 +29,20 @@ export type Grid = { columns: GridColumn[]; cells: Record<string, GridCellData> 
 export function cellKey(docName: string, columnId: string) {
   return `${docName}::${columnId}`
 }
+
+// Stable id for a question column. Editing a question changes its hash, not its
+// id, so existing cells stay linked but flag themselves stale.
+export function hashQuestion(q: string) {
+  let h = 5381
+  for (let i = 0; i < q.length; i++) h = (h * 33) ^ q.charCodeAt(i)
+  return (h >>> 0).toString(36)
+}
+
+/** An answer computed for an earlier wording of its question. A reviewed
+ * (locked) answer is the lawyer's and is never stale. */
+export function isStale(cell: GridCellData | undefined, question: string) {
+  return !!cell && cell.status !== "reviewed" && cell.questionHash !== hashQuestion(question)
+}
 export type RecheckScope = { passages: number; read: number; candidates: number; reread: number; terms: string[]; channels: string[] }
 export type GridRecheck = { outcome: "found" | "not_found" } & RecheckScope
 export type RecheckPassages = { citations: Citation[]; passages: string; scope: RecheckScope }
