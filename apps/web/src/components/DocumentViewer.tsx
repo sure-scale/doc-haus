@@ -1,4 +1,6 @@
-import { useEffect, useMemo, useRef, useState, type Ref } from "react"
+import { useContext, useEffect, useMemo, useRef, useState, type Ref } from "react"
+import { Closing } from "./useExit"
+import { SplitButton } from "./SplitButton"
 import { useDocxodus, type ConversionOptions } from "docxodus/react"
 import { CommentRenderMode } from "docxodus"
 import {
@@ -101,6 +103,7 @@ function WordDocumentViewer({
   const focusRef = useRef<HTMLDivElement>(null)
   const modalRef = useRef<HTMLDivElement>(null)
   useModalFocus(modalRef)
+  const closing = useContext(Closing)
   const documentRef = useRef<HTMLDivElement>(null)
   const [passage, setPassage] = useState<"matched" | "ambiguous" | "unavailable">()
   const moreRef = useRef<HTMLDetailsElement>(null)
@@ -231,7 +234,7 @@ function WordDocumentViewer({
 
   if (isPdf)
     return (
-      <div className="viewer-overlay" {...backdropClose(() => onClose())}>
+      <div className={`viewer-overlay${closing ? " is-closing" : ""}`} inert={closing} {...backdropClose(() => onClose())}>
         <div ref={modalRef} className="viewer-panel document-reader" role="dialog" aria-modal="true" aria-label={name} tabIndex={-1} onClick={(e) => e.stopPropagation()} onKeyDown={(e) => {
           if (e.key === "Escape" && !e.defaultPrevented) { e.stopPropagation(); onClose() }
         }}>
@@ -262,7 +265,7 @@ function WordDocumentViewer({
     )
 
   return (
-    <div className="viewer-overlay" {...backdropClose(() => onClose())}>
+    <div className={`viewer-overlay${closing ? " is-closing" : ""}`} inert={closing} {...backdropClose(() => onClose())}>
       <div ref={modalRef} className="viewer-panel document-reader" role="dialog" aria-modal="true" aria-label={name} tabIndex={-1} onClick={(e) => e.stopPropagation()} onKeyDown={(e) => {
         if (e.key === "Escape" && !e.defaultPrevented) { e.stopPropagation(); onClose() }
       }}>
@@ -431,6 +434,7 @@ function DocumentTextViewer({ matterId, name, kind, citation, onClose }: {
   const markRef = useRef<HTMLElement>(null)
   const modalRef = useRef<HTMLDivElement>(null)
   useModalFocus(modalRef)
+  const closing = useContext(Closing)
   const match = useMemo(() => (text !== undefined && citation ? citationPassage(text, citation.excerpt) : undefined), [text, citation])
 
   useEffect(() => {
@@ -450,7 +454,7 @@ function DocumentTextViewer({ matterId, name, kind, citation, onClose }: {
   }, [match])
 
   return (
-    <div className="viewer-overlay" {...backdropClose(() => onClose())}>
+    <div className={`viewer-overlay${closing ? " is-closing" : ""}`} inert={closing} {...backdropClose(() => onClose())}>
       <div ref={modalRef} className="viewer-panel document-reader" role="dialog" aria-modal="true" aria-label={name} tabIndex={-1} onClick={(e) => e.stopPropagation()} onKeyDown={(e) => {
         if (e.key === "Escape" && !e.defaultPrevented) { e.stopPropagation(); onClose() }
       }}>
@@ -504,28 +508,44 @@ export function DownloadActions({ redlines, preview, onDownload }: {
 }) {
   // Labels are visually hidden on narrow screens, so the two downloads need
   // distinct glyphs: a plain arrow, and a document with a pen for tracked changes.
+  const download = (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 4v11" />
+      <path d="m7 10 5 5 5-5" />
+      <path d="M5 20h14" />
+    </svg>
+  )
+  const downloadTitle = "Download the current accepted Word file without pending changes"
+  if (!redlines.some((row) => !row.stale)) {
+    return (
+      <button onClick={() => onDownload(false)} title={downloadTitle}>
+        {download}
+        <span className="viewer-action-label">Download</span>
+      </button>
+    )
+  }
   return (
-    <>
-      {redlines.some((row) => !row.stale) && (
-        <button onClick={() => onDownload(true)} disabled={!preview} title="Download as a Word file with the pending changes as tracked changes">
+    <SplitButton
+      label={<span className="viewer-action-label">Download</span>}
+      icon={download}
+      title={downloadTitle}
+      onClick={() => onDownload(false)}
+      toggleLabel="More download options"
+      items={[{
+        label: "Download redline",
+        title: "Download as a Word file with the pending changes as tracked changes",
+        disabled: !preview,
+        onSelect: () => onDownload(true),
+        icon: (
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M13 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h4" />
             <path d="M13 3v5h5v3" />
             <path d="M8 13h5M8 17h2" />
             <path d="M19 14.5a1.8 1.8 0 0 1 2.5 2.5L16 22.5l-3.5 1 1-3.5z" />
           </svg>
-          <span className="viewer-action-label">Download redline</span>
-        </button>
-      )}
-      <button onClick={() => onDownload(false)} title="Download the current accepted Word file without pending changes">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="M12 4v11" />
-          <path d="m7 10 5 5 5-5" />
-          <path d="M5 20h14" />
-        </svg>
-        <span className="viewer-action-label">Download</span>
-      </button>
-    </>
+        ),
+      }]}
+    />
   )
 }
 

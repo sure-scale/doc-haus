@@ -1,6 +1,7 @@
 import { useState } from "react"
 import { AUTO_ASSISTANT, CHAT_ASSISTANTS, isAuto } from "../agents"
 import backdropClose from "./backdropClose"
+import { Exit } from "./useExit"
 
 // Picks who answers in the chat — a stateful mode selector (Auto, Q&A, Redline,
 // Research), like a model picker. The choice persists across messages and is
@@ -40,8 +41,8 @@ export default function ModelSelector({
           <path d="m6 9 6 6 6-6" />
         </svg>
       </button>
-      {open && (
-        <div className="viewer-overlay" {...backdropClose(() => setOpen(false))}>
+      <Exit when={open}>{(_, closing) => (
+        <div className={`viewer-overlay${closing ? " is-closing" : ""}`} inert={closing} {...backdropClose(() => setOpen(false))}>
           <div className="picker-panel picker-wide" onClick={(e) => e.stopPropagation()}>
             <div className="viewer-bar">
               <span className="viewer-title">Choose an assistant</span>
@@ -66,7 +67,7 @@ export default function ModelSelector({
             </div>
           </div>
         </div>
-      )}
+      )}</Exit>
     </>
   )
 }

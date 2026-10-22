@@ -312,7 +312,7 @@ a {
 }
 
 .container {
-  max-width: 1100px;
+  max-width: var(--content-max);
   margin: 0 auto;
   padding: 24px;
 }
@@ -723,7 +723,6 @@ li.list-row {
   display: flex;
   flex-direction: column;
   box-shadow: var(--shadow-xl);
-  animation: panel-in 220ms var(--ease-out);
 }
 
 .picker-panel .viewer-bar-actions > .modal-close {
@@ -1222,10 +1221,13 @@ li.list-row {
 .telemetry-overlay::backdrop {
   background: rgb(24 36 29 / 22%);
   opacity: 1;
-  transition: opacity 180ms ease;
+  transition: opacity var(--spring-effects-default-ms) var(--spring-effects-default);
 }
 
 .telemetry-overlay.is-closing::backdrop { opacity: 0; }
+/* The exit is shorter, on the fast effects spring that also times useExit. */
+.telemetry-overlay.is-closing::backdrop,
+.telemetry-overlay.is-closing .telemetry-drawer { transition-duration: var(--spring-effects-fast-ms); transition-timing-function: var(--spring-effects-fast); }
 
 .telemetry-drawer {
   position: absolute;
@@ -1239,7 +1241,7 @@ li.list-row {
   background: var(--panel);
   box-shadow: -12px 0 40px rgb(24 36 29 / 12%);
   transform: translateX(100%);
-  transition: transform 240ms cubic-bezier(0.22, 1, 0.36, 1);
+  transition: transform var(--spring-spatial-default-ms) var(--spring-spatial-default);
 }
 
 .telemetry-drawer > .viewer-bar {
@@ -3133,13 +3135,6 @@ button.linklike:hover:not(:disabled) {
   align-items: flex-start;
   padding: 32px;
   z-index: var(--z-overlay);
-  animation: overlay-in 160ms ease-out;
-}
-
-@keyframes overlay-in {
-  from {
-    opacity: 0;
-  }
 }
 
 @keyframes panel-in {
@@ -3160,7 +3155,6 @@ button.linklike:hover:not(:disabled) {
   flex-direction: column;
   overflow: hidden;
   box-shadow: var(--shadow-xl);
-  animation: panel-in 220ms var(--ease-out);
 }
 
 .viewer-bar {

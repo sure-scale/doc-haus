@@ -1,9 +1,10 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from "react"
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react"
 import { createPortal } from "react-dom"
 import { getTelemetry, getTelemetryDetail, type TelemetryDetail, type TelemetryLean } from "../api/ingest/telemetry"
 import { formatCost } from "../lib/format"
 import ModalHeader from "./ModalHeader"
 import backdropClose from "./backdropClose"
+import useExit from "./useExit"
 
 type Props = { matterId: string; sessionID?: string }
 
@@ -12,7 +13,7 @@ export default function TelemetryPanel({ matterId, sessionID }: Props) {
   const [lean, setLean] = useState<TelemetryLean>()
   const [detail, setDetail] = useState<TelemetryDetail>()
   const [open, setOpen] = useState(false)
-  const [closing, setClosing] = useState(false)
+  const [shown, closing] = useExit(open)
   const dialog = useRef<HTMLDialogElement>(null)
   const trigger = useRef<HTMLButtonElement>(null)
   const panelId = useId()
@@ -30,10 +31,10 @@ export default function TelemetryPanel({ matterId, sessionID }: Props) {
     setDetail(undefined)
     setDetailError(false)
     setOpen(false)
-    setClosing(false)
   }, [matterId])
 
-  useEffect(() => {
+  // Closes, and returns focus, as the exit starts; only the picture lingers.
+  useLayoutEffect(() => {
     if (!open) return
     const element = dialog.current
     element?.showModal()
@@ -69,11 +70,7 @@ export default function TelemetryPanel({ matterId, sessionID }: Props) {
   }, [open, matterId, sessionID, visible])
 
   function close() {
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-      setOpen(false)
-      return
-    }
-    setClosing(true)
+    setOpen(false)
   }
 
   const live = Boolean(lean?.current_activity)
@@ -91,10 +88,7 @@ export default function TelemetryPanel({ matterId, sessionID }: Props) {
         ref={trigger}
         className={`rail-strip-btn${open ? " is-active" : ""}`}
         type="button"
-        onClick={() => {
-          setClosing(false)
-          setOpen(true)
-        }}
+        onClick={() => setOpen(true)}
         aria-label={`Usage: ${total}`}
         aria-haspopup="dialog"
         aria-expanded={open}
@@ -104,11 +98,12 @@ export default function TelemetryPanel({ matterId, sessionID }: Props) {
         <span className="rail-strip-cost">{total}</span>
         {live && <span className="rail-dot is-live" aria-hidden />}
       </button>
-      {open && createPortal(
+      {shown && createPortal(
         <dialog
           ref={dialog}
           id={panelId}
           className={`telemetry-overlay${closing ? " is-closing" : ""}`}
+          inert={closing}
           autoFocus
           tabIndex={-1}
           aria-labelledby={`${panelId}-title`}
@@ -118,9 +113,7 @@ export default function TelemetryPanel({ matterId, sessionID }: Props) {
           }}
           {...backdropClose(() => close())}
         >
-          <div className="telemetry-drawer" onTransitionEnd={(event) => {
-            if (closing && event.target === event.currentTarget && event.propertyName === "transform") setOpen(false)
-          }}>
+          <div className="telemetry-drawer">
             <ModalHeader title={<span id={`${panelId}-title`}>Usage</span>} onClose={close} />
             <div className="telemetry-drawer-body">
               <TelemetrySection title="Overview">

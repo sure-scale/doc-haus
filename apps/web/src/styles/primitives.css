@@ -9,13 +9,16 @@ button {
   color: var(--text);
   min-height: var(--ctl-h);
   padding: 8px 16px;
-  border-radius: var(--radius-pill);
+  /* A pill, as a finite radius (half of 44px) rather than 999px: a radius
+     transition from 999px would sit clamped and snap at the very end. */
+  border-radius: 22px;
   transition:
     background var(--duration-fast) var(--ease-out),
     border-color var(--duration-fast) var(--ease-out),
     color var(--duration-fast) var(--ease-out),
     box-shadow var(--duration-fast) var(--ease-out),
-    transform var(--duration-fast) var(--ease-out);
+    transform var(--duration-fast) var(--ease-out),
+    border-radius var(--spring-spatial-fast-ms, var(--duration-fast)) var(--spring-spatial-fast, var(--ease-out));
 }
 
 button:hover:not(:disabled) {
@@ -23,8 +26,12 @@ button:hover:not(:disabled) {
   border-color: var(--border-strong);
 }
 
-button:active:not(:disabled) {
-  transform: translateY(1px);
+/* Press feedback is a shape change, not a nudge: a pill button squares off to
+   8px while held, so nothing moves. :where() keeps this at the specificity of
+   `button`, so a button that sets its own radius (circles, chips, squares) is
+   left alone. Segments and .btn-lg declare their own pressed corner. */
+button:where(:active:not(:disabled)) {
+  border-radius: var(--radius-sm);
 }
 
 /* Keyboard focus is an outline, not a box-shadow: later rules that reset
@@ -82,9 +89,35 @@ button.btn-sm {
   border-radius: var(--radius-sm);
 }
 
+/* Size L: the one hero action on a surface (Send, Create matter, Save and
+   finish). Pressed corner scales with size (M3): 12px. The :not()s only raise
+   specificity over context rules such as .onboarding-panel button:not(...). */
+button.btn-lg:not(.linklike):not(.ghost) {
+  min-height: 48px;
+  padding-inline: 24px;
+  font-size: 1rem;
+  border-radius: 24px;
+}
+
+button.btn-lg:not(.linklike):not(.ghost):active:not(:disabled) {
+  border-radius: var(--radius-md);
+}
+
 button:disabled {
   opacity: .6;
   cursor: not-allowed;
+}
+
+/* Reduced motion: the pressed shape still changes, instantly. */
+@media (prefers-reduced-motion: reduce) {
+  button {
+    transition:
+      background var(--duration-fast) var(--ease-out),
+      border-color var(--duration-fast) var(--ease-out),
+      color var(--duration-fast) var(--ease-out),
+      box-shadow var(--duration-fast) var(--ease-out),
+      transform var(--duration-fast) var(--ease-out);
+  }
 }
 
 /* Loading: keep the label's width (transparent, not removed) and spin a ring
@@ -298,6 +331,7 @@ input[type="radio"] { accent-color: var(--accent); width: 18px; height: 18px; }
 input[type="checkbox"] { flex-shrink: 0; }
 @media (pointer: coarse) {
   .icon-btn, button.btn-sm { min-height: max(44px, calc(44px / var(--ui-scale))); }
+  button.btn-lg:not(.linklike):not(.ghost) { min-height: max(48px, calc(44px / var(--ui-scale))); }
   input[type="checkbox"], input[type="radio"] { width: 22px; height: 22px; }
 }
 

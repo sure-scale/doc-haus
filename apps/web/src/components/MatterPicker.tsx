@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react"
+import { useContext, useEffect, useState } from "react"
+import { Closing } from "./useExit"
 import { listJurisdictions, listMatters, type Jurisdiction, type Matter } from "../api/ingest/matters"
 import ModalHeader from "./ModalHeader"
 import { formatDate } from "../lib/format"
@@ -18,6 +19,7 @@ export default function MatterPicker({
   onPick: (matter: Matter) => void
   onClose: () => void
 }) {
+  const closing = useContext(Closing)
   const [matters, setMatters] = useState<Matter[]>()
   const [jurisdictions, setJurisdictions] = useState<Jurisdiction[]>([])
 
@@ -29,7 +31,7 @@ export default function MatterPicker({
   const sorted = matters && [...matters].sort((a, b) => b.created_at - a.created_at)
 
   return (
-    <div className="viewer-overlay" {...backdropClose(() => onClose())}>
+    <div className={`viewer-overlay${closing ? " is-closing" : ""}`} inert={closing} {...backdropClose(() => onClose())}>
       <div className="picker-panel" onClick={(e) => e.stopPropagation()}>
         <ModalHeader title={title} onClose={onClose} />
         <div className="picker-body">

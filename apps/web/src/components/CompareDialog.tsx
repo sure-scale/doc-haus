@@ -1,4 +1,5 @@
-import { useRef, useState, type ReactNode } from "react"
+import { useContext, useRef, useState, type ReactNode } from "react"
+import { Closing } from "./useExit"
 import type { CompareOptions, CompareParams } from "../api/ingest/compare"
 import { uploadDocument, type Document } from "../api/ingest/documents"
 import { humanizeError } from "../api/ingest/errors"
@@ -65,6 +66,7 @@ export default function CompareDialog({
   onCompare: (params: CompareParams) => void
   onClose: () => void
 }) {
+  const closing = useContext(Closing)
   const [thisSide, setThisSide] = useState<"left" | "right">("left")
   const [other, setOther] = useState("")
   const [thisLabel, setThisLabel] = useState(fileStem(name))
@@ -143,7 +145,7 @@ export default function CompareDialog({
   const [left, right] = thisSide === "left" ? [mine, theirs] : [theirs, mine]
 
   return (
-    <div className="viewer-overlay" {...backdropClose(() => close())}>
+    <div className={`viewer-overlay${closing ? " is-closing" : ""}`} inert={closing} {...backdropClose(() => close())}>
       <div className="picker-panel compare-dialog" role="dialog" aria-modal="true" aria-labelledby="compare-dialog-title" onClick={(e) => e.stopPropagation()}>
         <ModalHeader title={<span id="compare-dialog-title">Compare versions</span>} onClose={close} />
         <form

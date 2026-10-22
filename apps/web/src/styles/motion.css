@@ -102,6 +102,124 @@
   animation: page-in var(--duration-base) var(--ease-out);
 }
 
+/* ---------- Overlays: dialogs, scrims and drawers ----------
+   Transitions, not keyframes, so the motion can turn back: reopening during an
+   exit (or closing during an entrance) continues from where it is. Overlays
+   enter from @starting-style on the default springs: the scrim fades in, a
+   dialog fades and rises 8px, the documents drawer slides out from under the
+   rail. While useExit keeps a closing overlay mounted, `is-closing` plays a
+   shorter exit on the fast effects spring, whose duration also times the
+   unmount. The overlay is inert by then and focus is back on its opener: only
+   the picture lingers. State selectors carry enough weight to beat the
+   overlays' own scrim colours in later sheets. */
+.viewer-overlay,
+.docs-drawer-scrim,
+:is(.review-modal, .matter-edit, .launch-notice, .question-dialog)::backdrop {
+  transition: background-color var(--spring-effects-default-ms) var(--spring-effects-default);
+}
+
+.picker-panel,
+.viewer-panel,
+.onboarding-panel,
+.launch-notice,
+.question-dialog {
+  transition:
+    opacity var(--spring-effects-default-ms) var(--spring-effects-default),
+    transform var(--spring-spatial-default-ms) var(--spring-spatial-default);
+}
+
+.docs-drawer {
+  transition: transform var(--spring-spatial-default-ms) var(--spring-spatial-default);
+}
+
+@starting-style {
+  .viewer-overlay:not(.is-closing),
+  .docs-drawer-scrim:not(.is-restored),
+  dialog:is(.review-modal, .matter-edit, .launch-notice, .question-dialog)[open]::backdrop {
+    background-color: transparent;
+  }
+  .picker-panel,
+  .viewer-panel,
+  .onboarding-panel,
+  :is(.launch-notice, .question-dialog)[open] {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  .docs-drawer:not(.is-restored) {
+    transform: translateX(-100%);
+  }
+}
+
+.viewer-overlay.is-closing,
+.docs-drawer-scrim.is-closing,
+dialog:is(.review-modal, .matter-edit, .launch-notice, .question-dialog).is-closing::backdrop {
+  background-color: transparent;
+}
+
+.viewer-overlay.is-closing > :is(.picker-panel, .viewer-panel, .onboarding-panel),
+:is(.review-modal, .matter-edit, .launch-notice, .question-dialog).is-closing {
+  opacity: 0;
+  transform: translateY(4px);
+}
+
+.docs-drawer.is-closing {
+  transform: translateX(-100%);
+}
+
+.viewer-overlay.is-closing,
+.viewer-overlay.is-closing > :is(.picker-panel, .viewer-panel, .onboarding-panel),
+.docs-drawer-scrim.is-closing,
+.docs-drawer.is-closing,
+:is(.review-modal, .matter-edit, .launch-notice, .question-dialog).is-closing,
+dialog:is(.review-modal, .matter-edit, .launch-notice, .question-dialog).is-closing::backdrop {
+  transition-duration: var(--spring-effects-fast-ms);
+  transition-timing-function: var(--spring-effects-fast);
+  pointer-events: none;
+}
+
+/* Wide windows push the canvas, which moves at once both ways: the drawer fades
+   in place in its new space rather than sliding into it, and leaves with the
+   canvas. A drawer restored with the matter appears as it was. */
+@media (min-width: 1200px) {
+  .docs-drawer {
+    transition: opacity var(--spring-effects-fast-ms) var(--spring-effects-fast);
+  }
+  @starting-style {
+    .docs-drawer:not(.is-restored) {
+      opacity: 0;
+      transform: none;
+    }
+  }
+  .docs-drawer.is-closing { display: none; }
+}
+
+/* A native dialog closes as its exit starts, so focus and the page are live at
+   once. `overlay` keeps it in the top layer for the exit; without it, it hides. */
+@supports (overlay: auto) {
+  /* Reopening mid-exit can restyle a dialog after it loses `is-closing` and
+     before showModal(); the same hold keeps it shown then, so it turns back
+     rather than restarting its entrance from nothing. */
+  dialog:is(.viewer-overlay, .review-modal, .matter-edit, .launch-notice, .question-dialog),
+  dialog:is(.viewer-overlay, .review-modal, .matter-edit, .launch-notice, .question-dialog)::backdrop {
+    transition-property: opacity, transform, background-color, display, overlay;
+    transition-duration: var(--spring-effects-default-ms), var(--spring-spatial-default-ms), var(--spring-effects-default-ms), var(--spring-effects-fast-ms), var(--spring-effects-fast-ms);
+    transition-timing-function: var(--spring-effects-default), var(--spring-spatial-default), var(--spring-effects-default), linear, linear;
+    transition-behavior: allow-discrete;
+  }
+  dialog.is-closing,
+  dialog.is-closing::backdrop {
+    transition-property: opacity, transform, background-color, display, overlay;
+    transition-duration: var(--spring-effects-fast-ms);
+    transition-timing-function: var(--spring-effects-fast);
+    transition-behavior: allow-discrete;
+  }
+}
+
+/* ::backdrop is outside the universal opt-out below; useExit unmounts at once. */
+@media (prefers-reduced-motion: reduce) {
+  ::backdrop { transition: none !important; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .route-fade,
   .matter-list li.upload-row,

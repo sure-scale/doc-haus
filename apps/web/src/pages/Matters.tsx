@@ -14,6 +14,7 @@ import JurisdictionSelect from "../components/JurisdictionSelect"
 import { useToast } from "../components/Toast"
 import ModalHeader from "../components/ModalHeader"
 import backdropClose from "../components/backdropClose"
+import useExit from "../components/useExit"
 import { humanizeError } from "../api/ingest/errors"
 import { POSTURES, type Posture } from "../api/ingest/preferences"
 import { formatDate } from "../lib/format"
@@ -40,6 +41,8 @@ export default function Matters() {
   const [confirmId, setConfirmId] = useState<string | null>(null)
   // The matter being edited in the modal, plus its draft fields. null when closed.
   const [editing, setEditing] = useState<Matter | null>(null)
+  // The dialog closes, and returns focus, as its exit starts.
+  const [editShown, editClosing] = useExit(editing)
   const [draftTitle, setDraftTitle] = useState("")
   const [draftReference, setDraftReference] = useState("")
   const [draftClient, setDraftClient] = useState("")
@@ -275,7 +278,7 @@ export default function Matters() {
                 />
               </div>
             </fieldset>
-            <button type="submit" className={`primary matter-create-submit${busy ? " btn-loading" : ""}`} disabled={busy} aria-busy={busy}>
+            <button type="submit" className={`primary btn-lg matter-create-submit${busy ? " btn-loading" : ""}`} disabled={busy} aria-busy={busy}>
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
               Create matter
             </button>
@@ -383,10 +386,11 @@ export default function Matters() {
         </section>
       </div>
 
-      {editing && (
+      {editShown && (
         <dialog
           ref={editDialog}
-          className="picker-panel matter-edit"
+          className={`picker-panel matter-edit${editClosing ? " is-closing" : ""}`}
+          inert={editClosing}
           aria-labelledby="edit-matter-heading"
           onCancel={(event) => { event.preventDefault(); setEditing(null) }}
           {...backdropClose(() => setEditing(null))}

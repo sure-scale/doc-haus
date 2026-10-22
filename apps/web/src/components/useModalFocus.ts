@@ -1,10 +1,14 @@
-import { useLayoutEffect, type RefObject } from "react"
+import { useContext, useLayoutEffect, type RefObject } from "react"
+import { Closing } from "./useExit"
 
 // Div-based dialogs and responsive sheets share native-dialog keyboard behavior.
 // A stack prevents a lower overlay stealing focus from a nested modal or portal.
+// A closing overlay lets go as its exit starts, so focus returns at once.
 const layers: HTMLElement[] = []
 const targets = 'button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), summary, iframe, [tabindex]:not([tabindex="-1"])'
-export default function useModalFocus(ref: RefObject<HTMLElement | null>, active = true) {
+export default function useModalFocus(ref: RefObject<HTMLElement | null>, open = true) {
+  const closing = useContext(Closing)
+  const active = open && !closing
   useLayoutEffect(() => {
     const panel = ref.current
     if (!active || !panel) return

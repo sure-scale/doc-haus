@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useContext, useEffect, useMemo, useRef, useState } from "react"
 import { getConfig } from "../../api/opencode/config"
 import { listProviders } from "../../api/opencode/providers"
 import { settingsClient, type Client } from "../../api/opencode/client"
@@ -8,6 +8,7 @@ import { getSetup, saveSetup, type SetupProgress } from "../../api/ingest/setup"
 import { pickForProvider, providerOf } from "../../models"
 import { isRemovedModel } from "../../api/opencode/provider-readiness"
 import { loadPrefs } from "../../prefs"
+import { Closing } from "../useExit"
 import { isGated, loadVerified } from "../../providers"
 import type { Provider } from "./types"
 import DraftingDetailsStep from "./DraftingDetailsStep"
@@ -28,6 +29,8 @@ const stages = [
 ]
 
 export default function Onboarding({ onClose }: { onClose: () => void }) {
+  // The trap lets go, and focus returns, as the exit starts.
+  const closing = useContext(Closing)
   const client = useMemo<Client>(() => settingsClient(), [])
   const [all, setAll] = useState<Provider[]>([])
   const [connected, setConnected] = useState<Set<string>>(new Set())
@@ -61,6 +64,7 @@ export default function Onboarding({ onClose }: { onClose: () => void }) {
   const stage = stages[current]!
 
   useEffect(() => {
+    if (closing) return
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null
     const overflow = document.body.style.overflow
     document.body.style.overflow = "hidden"
@@ -77,7 +81,7 @@ export default function Onboarding({ onClose }: { onClose: () => void }) {
     }
     document.addEventListener("keydown", onKey)
     return () => { document.body.style.overflow = overflow; document.removeEventListener("keydown", onKey); previous?.focus({ preventScroll: true }) }
-  }, [])
+  }, [closing])
   useEffect(() => {
     if (currentStage === "connection" || currentStage === "research") setMounted(previous => previous[currentStage] ? previous : { ...previous, [currentStage]: true })
     body.current?.scrollTo({ top: 0 })
@@ -152,7 +156,7 @@ export default function Onboarding({ onClose }: { onClose: () => void }) {
       setStep(next.next === "models" ? "setup" : next.next)
     } finally { setAdvancing(false) }
   }
-  return <div className="viewer-overlay onboarding-overlay">
+  return <div className={`viewer-overlay onboarding-overlay${closing ? " is-closing" : ""}`} inert={closing}>
     <div ref={panel} className="onboarding-panel" role="dialog" aria-modal="true" aria-labelledby="onboarding-title" aria-describedby="onboarding-description" onKeyDown={event => {
       if (event.key === "Escape" && !document.querySelector(".jx-popover")) { event.stopPropagation(); onClose() }
     }}>

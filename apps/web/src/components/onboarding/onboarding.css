@@ -14,7 +14,6 @@
   border-radius: var(--md-sys-shape-corner-extra-large);
   background: var(--panel);
   box-shadow: var(--shadow-xl);
-  animation: panel-in var(--md-sys-motion-duration-medium) var(--md-sys-motion-easing-emphasized);
 }
 
 .onboarding-header {

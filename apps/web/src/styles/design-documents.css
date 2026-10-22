@@ -119,9 +119,7 @@
   border-right: 1px solid var(--border-soft);
   background: var(--panel);
   box-shadow: none;
-  animation: docs-drawer-in var(--duration-base) var(--ease-out);
 }
-@keyframes docs-drawer-in { from { opacity: 0; transform: translateX(-16px); } }
 .docs-drawer-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .docs-drawer-head {
   display: flex;
@@ -231,9 +229,7 @@
     inset: 0;
     z-index: calc(var(--z-sticky) + 1);
     background: color-mix(in srgb, var(--text) 18%, transparent);
-    animation: docs-scrim-in 220ms var(--ease-out);
   }
-  @keyframes docs-scrim-in { from { opacity: 0; } }
 }
 
 /* Phones: the drawer takes the screen. */

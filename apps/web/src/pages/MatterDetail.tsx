@@ -19,6 +19,7 @@ import MatterRail from "../components/matter/MatterRail"
 import useDraftingStatus from "../components/drafting/useDraftingStatus"
 import useNeedsYouTitle from "../components/drafting/useNeedsYouTitle"
 import { useToast } from "../components/Toast"
+import useExit, { Exit } from "../components/useExit"
 import NotFound from "./NotFound"
 
 type Agent = { name: string; description?: string; mode?: string; hidden?: boolean }
@@ -33,6 +34,11 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
   // `view=documents` links open it over the chat.
   const view = params.get("view") === "review" ? "review" : "chat"
   const drawer = useDocumentsDrawer()
+  const [drawerShown, drawerClosing] = useExit(drawer.open)
+  // A drawer already open as the matter loads is restored, not opened: it
+  // appears in place instead of sliding in.
+  const [drawerRestored, setDrawerRestored] = useState(drawer.open)
+  if (drawerRestored && !drawer.open) setDrawerRestored(false)
   // Files dropped on the composer, waiting for the drawer's upload list.
   const [incoming, setIncoming] = useState<File[]>()
 
@@ -321,16 +327,18 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
         </div>
       </div>
 
-      {view === "review" && (
+      <Exit when={view === "review"}>{() => (
         <ReviewGrid matterId={matter.id} title={matter.title} directory={matter.dir} documents={matter.documents} onClose={() => {
           const next = new URLSearchParams(params)
           next.delete("view")
           setParams(next, { replace: true })
         }} />
-      )}
+      )}</Exit>
 
-      {drawer.open && (
+      {drawerShown && (
         <DocumentsDrawer
+          closing={drawerClosing}
+          restored={drawerRestored}
           matterId={matter.id}
           documents={matter.documents}
           drafting={drafting.status}
@@ -347,7 +355,7 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
 
       <MatterRail matter={matter} session={session} drafting={drafting.status} chat={chat} showStatusbar />
 
-      {viewing && (
+      <Exit when={viewing}>{(viewing) => (
         <DocumentViewer
           key={viewing}
           matterId={matter.id}
@@ -378,9 +386,9 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
               : undefined
           }
         />
-      )}
+      )}</Exit>
 
-      {comparing && (
+      <Exit when={comparing}>{(comparing) => (
         <CompareDialog
           matterId={matter.id}
           name={comparing.name}
@@ -396,9 +404,9 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
             setBlackline(params)
           }}
         />
-      )}
+      )}</Exit>
 
-      {blackline && <BlacklineViewer matterId={matter.id} params={blackline} focus={focusChange} onClose={() => setBlackline(undefined)} />}
+      <Exit when={blackline}>{(blackline) => <BlacklineViewer matterId={matter.id} params={blackline} focus={focusChange} onClose={() => setBlackline(undefined)} />}</Exit>
     </>
   )
 }

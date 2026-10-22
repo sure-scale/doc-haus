@@ -13,6 +13,7 @@ import Dropzone from "../components/Dropzone"
 import { humanizeError } from "../api/ingest/errors"
 import TemplateViewer from "../components/TemplateViewer"
 import MatterPicker from "../components/MatterPicker"
+import { Exit } from "../components/useExit"
 import ChatPanel from "../components/ChatPanel"
 import LibraryLayout from "../components/LibraryLayout"
 import { TEMPLATE_BUILDER } from "../agents"
@@ -271,17 +272,17 @@ export default function Templates() {
         )}
       </LibraryLayout>
 
-      {viewing && (
+      <Exit when={viewing}>{(viewing) => (
         <TemplateViewer name={viewing.name} placeholders={viewing.placeholders} onClose={() => setViewing(undefined)} />
-      )}
+      )}</Exit>
 
-      {using && (
+      <Exit when={using}>{(using) => (
         <MatterPicker
           title={`Use "${using.name}" in a matter`}
           onPick={(m) => useTemplate(using, m)}
           onClose={() => setUsing(undefined)}
         />
-      )}
+      )}</Exit>
     </>
   )
 }

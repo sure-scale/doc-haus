@@ -14,18 +14,19 @@ const proposal = (id: number, stale?: true): Redline => ({
 const buttons = (redlines: Redline[], preview = true) =>
   [...renderToStaticMarkup(createElement(DownloadActions, { redlines, preview, onDownload: () => {} }))
     .matchAll(/<button([^>]*)>([\s\S]*?)<\/button>/g)].map(([, attributes, content]) => ({
-    label: content.replace(/<[^>]+>/g, "").trim(), disabled: attributes.includes("disabled"),
+    label: content.replace(/<[^>]+>/g, "").trim() || attributes.match(/aria-label="([^"]*)"/)?.[1], disabled: attributes.includes("disabled"),
   }))
 
 describe("document viewer downloads", () => {
+  // The split button's menu stays in the markup, hidden when closed, so its items and disabled state are visible here.
   test("the current Word file stays downloadable whatever is pending", () => {
     expect(buttons([])).toEqual([{ label: "Download", disabled: false }])
     expect(buttons([proposal(1, true)])).toEqual([{ label: "Download", disabled: false }])
     expect(buttons([proposal(1, true), proposal(2)])).toEqual([
-      { label: "Download redline", disabled: false }, { label: "Download", disabled: false },
+      { label: "Download", disabled: false }, { label: "More download options", disabled: false }, { label: "Download redline", disabled: false },
     ])
     expect(buttons([proposal(2)], false)).toEqual([
-      { label: "Download redline", disabled: true }, { label: "Download", disabled: false },
+      { label: "Download", disabled: false }, { label: "More download options", disabled: false }, { label: "Download redline", disabled: true },
     ])
   })
 

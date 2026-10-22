@@ -133,7 +133,7 @@ export default function DraftingDetailsStep({
       <div className="onboarding-actions">
         <button disabled={busy} onClick={() => setStep("research")}>Back to research</button>
         <button
-          className="primary"
+          className="primary btn-lg"
           disabled={busy || !drafting}
           onClick={async () => {
             if (!drafting || busy) return

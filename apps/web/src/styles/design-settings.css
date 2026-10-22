@@ -540,6 +540,9 @@ details.settings-section > summary {
   border: none;
   color: var(--md-sys-color-on-primary-container);
 }
+.settings-seg button:active:not(:disabled) {
+  border-radius: var(--md-sys-shape-corner-extra-small);
+}
 .settings-seg button.active:active:not(:disabled) {
   background: linear-gradient(var(--md-sys-state-pressed), var(--md-sys-state-pressed)), var(--md-sys-color-primary-container);
 }

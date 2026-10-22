@@ -118,6 +118,15 @@ space. Complex review grids scroll horizontally rather than becoming unreadable 
 Motion tokens are 120/200/320ms with standard/emphasized easing. Prefer feedback
 through color, opacity and short spatial transitions; never animate document
 reading. All component animations/transitions respect `prefers-reduced-motion`.
+Overlays move on M3 springs (`--spring-spatial-*` 230/320/490ms with a slight
+overshoot for position, `--spring-effects-*` 150/240/330ms without one for
+opacity and color; each easing has a `-ms` duration). They enter on the default
+springs and exit on `--spring-effects-fast`, as transitions, so a reopen during
+an exit turns back from where it is. `useExit` (or `<Exit when>`) keeps a
+closing overlay mounted for that exit and sets `Closing` for it; focus returns
+and the page is live as the exit starts (native dialogs `close()` at once and
+`overlay` keeps them painted), so only the picture lingers. Reduced motion
+unmounts at once.
 Primary touch controls and text fields provide 44px targets; browser zoom and
 text preferences must not hide essential actions.
 

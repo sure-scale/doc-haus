@@ -1,0 +1,34 @@
+/* Two joined segments with a gap: pill on the outer corners, a small radius
+   where they meet. Fill, border and states come from the shared button rules. */
+/* Finite outer radius (half the height): a 999px radius would scale the 4px inner corners to square. */
+.split-button { --split-outer: calc(var(--ctl-h) / 2); position: relative; display: inline-flex; gap: 2px; }
+.split-button > button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
+.split-button-lead { border-radius: var(--split-outer) var(--md-sys-shape-corner-extra-small) var(--md-sys-shape-corner-extra-small) var(--split-outer); }
+.split-button-toggle { padding: 0 12px; border-radius: var(--md-sys-shape-corner-extra-small) var(--split-outer) var(--split-outer) var(--md-sys-shape-corner-extra-small); }
+.split-button-toggle svg { flex: none; transition: transform var(--spring-spatial-fast-ms, var(--duration-fast)) var(--spring-spatial-fast, var(--ease-out)); }
+.split-button.is-open .split-button-toggle svg { transform: rotate(180deg); }
+.split-button-menu { left: auto; right: 0; }
+.split-button-menu[hidden] { display: none; }
+.split-button-menu button { align-items: center; white-space: nowrap; }
+
+/* In the document viewer the segments match the toolbar buttons beside them. */
+.document-reader .viewer-bar-actions > .split-button > button { min-height: 40px; padding: 0 16px; font-size: 0.8125rem; white-space: nowrap; }
+.document-reader .viewer-bar-actions > .split-button > .split-button-toggle { padding: 0 12px; }
+.document-reader .split-button svg { color: var(--muted); }
+.document-reader .split-button .primary svg { color: inherit; }
+@media (max-width: 720px) {
+  .document-reader .viewer-bar-actions > .split-button { flex: 1; }
+  .document-reader .viewer-bar-actions > .split-button > .split-button-lead { flex: 1; padding: 0 10px; }
+}
+@media (max-width: 420px) {
+  .document-reader .viewer-bar-actions > .split-button { flex: none; }
+  .document-reader .viewer-bar-actions > .split-button > .split-button-lead { flex: none; width: 44px; padding: 0; }
+}
+@media (pointer: coarse) {
+  .split-button > button { min-height: max(44px, calc(44px / var(--ui-scale))); }
+  .split-button-toggle { min-width: max(44px, calc(44px / var(--ui-scale))); }
+  .document-reader .viewer-bar-actions > .split-button > button { min-height: max(44px, calc(44px / var(--ui-scale))); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .split-button-toggle svg { transition: none; }
+}

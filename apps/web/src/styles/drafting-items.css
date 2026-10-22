@@ -167,13 +167,8 @@ button.question-dock-cta:focus-visible {
   box-shadow: var(--shadow-xl);
 }
 
-.question-dialog[open] {
-  animation: panel-in 220ms var(--ease-out);
-}
-
 .question-dialog::backdrop {
   background: var(--overlay-scrim);
-  animation: overlay-in 160ms ease-out;
 }
 
 /* One question at a time, with its own labelled answer field. */
