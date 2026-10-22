@@ -29,7 +29,8 @@ import "./styles/launch-notice.css"
 
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <BrowserRouter>
+    {/* URL-driven overlays (the review modal) must reopen in the same frame; the app has no Suspense to gain from transitions. */}
+    <BrowserRouter useTransitions={false}>
       <App />
     </BrowserRouter>
   </React.StrictMode>,
