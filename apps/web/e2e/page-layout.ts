@@ -35,7 +35,7 @@ function fixture(setup: "done" | "details") {
 }
 
 async function open(state: ReturnType<typeof fixture>, width: number, height: number) {
-  const context = await browser.newContext({ viewport: { width, height }, reducedMotion: "reduce", timezoneId: "Europe/London" })
+  const context = await browser.newContext({ viewport: { width, height }, hasTouch: width <= 600, reducedMotion: "reduce", timezoneId: "Europe/London" })
   await context.addInitScript(() => sessionStorage.setItem("dh.launch-notice.v1", "accepted"))
   await context.route("**/*", async route => {
     const request = route.request()
@@ -113,7 +113,7 @@ try {
       try {
         await page.getByRole("button", { name: "Settings", exact: true }).click()
         const modal = page.getByRole("dialog", { name: "Settings", exact: true })
-        await modal.getByRole("button", { name: "Drafting", exact: true }).click()
+        await modal.getByRole("tab", { name: "Drafting", exact: true }).click()
         const heading = modal.getByRole("heading", { name: "Page layout", exact: true })
         await heading.scrollIntoViewIfNeeded()
         await expect(segment(page, "Page numbers", "2")).toHaveAttribute("aria-pressed", "true")
@@ -237,7 +237,7 @@ try {
 
         await dialog.getByRole("button", { name: "Save and finish", exact: true }).click()
         await expect(dialog).toHaveCount(0)
-        expect(state.puts).toEqual([{ attorney: "Fixture Lawyer", firm: "Fixture Partners LLP", agreementLegend: "Subject to contract", adviceLegend: "" }])
+        expect(state.puts).toEqual([{ attorney: "Fixture Lawyer", firm: "Fixture Partners LLP", agreementLegend: "Subject to contract", adviceLegend: "", dateFormat: "day-month-year" }])
         expect(state.unexpected).toEqual([]); expect(state.errors).toEqual([])
       } finally { await context.close() }
     })
@@ -254,7 +254,7 @@ try {
       await expect(dialog.getByText("Suggested", { exact: true })).toHaveCount(2)
       await dialog.getByRole("button", { name: "Save and finish", exact: true }).click()
       await expect(dialog).toHaveCount(0)
-      expect(state.puts).toEqual([{ attorney: "Fixture Lawyer", firm: "", agreementLegend: "", adviceLegend: "" }])
+      expect(state.puts).toEqual([{ attorney: "Fixture Lawyer", firm: "", agreementLegend: "", adviceLegend: "", dateFormat: "month-day-year" }])
       expect(state.unexpected).toEqual([]); expect(state.errors).toEqual([])
     } finally { await context.close() }
   })

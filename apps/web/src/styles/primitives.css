@@ -1,3 +1,213 @@
+/* ---------- Buttons ---------- */
+
+button {
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid var(--md-sys-color-outline);
+  background: var(--panel);
+  color: var(--text);
+  min-height: var(--ctl-h);
+  padding: 8px 16px;
+  border-radius: var(--radius-pill);
+  transition:
+    background var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out),
+    box-shadow var(--duration-fast) var(--ease-out),
+    transform var(--duration-fast) var(--ease-out);
+}
+
+button:hover:not(:disabled) {
+  background: var(--panel-hover);
+  border-color: var(--border-strong);
+}
+
+button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+button:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+
+button.primary {
+  background: var(--accent);
+  color: var(--text-on-accent);
+  border-color: var(--accent);
+  box-shadow: none;
+}
+
+button.primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+button.primary:active:not(:disabled) {
+  background: var(--accent-active);
+}
+
+button.danger {
+  background: var(--danger);
+  color: var(--text-on-accent);
+  border-color: var(--danger);
+}
+
+button.danger:hover:not(:disabled) {
+  background: var(--md-sys-color-on-error-container);
+  border-color: var(--md-sys-color-on-error-container);
+}
+
+button.ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--muted);
+}
+
+button.ghost:hover:not(:disabled) {
+  background: var(--bg);
+  border-color: transparent;
+  color: var(--text);
+}
+
+button.btn-sm {
+  min-height: 32px;
+  padding: 4px 12px;
+  font-size: .8125rem;
+  border-radius: var(--radius-sm);
+}
+
+button:disabled {
+  opacity: .6;
+  cursor: not-allowed;
+}
+
+/* Loading: keep the label's width (transparent, not removed) and spin a ring
+   over it so the button never jumps. */
+button.btn-loading {
+  position: relative;
+  color: transparent !important;
+  pointer-events: none;
+}
+
+button.btn-loading::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+  animation: btn-spin 0.6s linear infinite;
+}
+
+@keyframes btn-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---------- Form controls ---------- */
+
+input,
+select,
+textarea {
+  font: inherit;
+  padding: 6px 10px;
+  border: 1px solid var(--md-sys-color-outline);
+  border-radius: var(--radius-md);
+  background: var(--panel);
+  color: var(--text);
+  transition:
+    border-color var(--duration-fast) var(--ease-out),
+    box-shadow var(--duration-fast) var(--ease-out),
+    background var(--duration-fast) var(--ease-out);
+}
+
+input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
+select {
+  height: var(--ctl-h);
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+textarea {
+  padding: 8px 10px;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--placeholder);
+}
+
+input:hover:not(:disabled):not(:focus),
+select:hover:not(:disabled):not(:focus),
+textarea:hover:not(:disabled):not(:focus) {
+  border-color: var(--border-strong);
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+
+input:disabled,
+select:disabled {
+  background: var(--bg);
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 32px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b6b66' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+}
+
+input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 1.5px solid var(--md-sys-color-outline);
+  border-radius: 4px;
+  background: var(--panel);
+  display: inline-grid;
+  place-content: center;
+  cursor: pointer;
+  transition:
+    background var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out);
+}
+
+input[type="checkbox"]:hover {
+  border-color: var(--accent);
+}
+
+input[type="checkbox"]:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+input[type="checkbox"]:checked::before {
+  content: "";
+  width: 9px;
+  height: 9px;
+  background: #fff;
+  clip-path: polygon(14% 44%, 0 62%, 42% 100%, 100% 18%, 84% 4%, 40% 70%);
+}
+
 /* ---------- Shared primitives: card headings, row actions, dialogs ---------- */
 
 /* Card headings read as headings, in sentence case, not as tiny caps labels. */
@@ -38,28 +248,8 @@
   box-shadow: var(--focus-ring);
 }
 
-/* Secondary row actions (view, edit, delete) appear with the row's hover or
-   keyboard focus; the armed Confirm and the primary verb always show. Touch
-   screens have no hover, so they always show there. */
-.list-row-actions .icon-btn:not(.is-primary):not(.danger) {
-  opacity: 0;
-  transition:
-    opacity var(--duration-fast) var(--ease-out),
-    color var(--duration-fast) var(--ease-out),
-    border-color var(--duration-fast) var(--ease-out),
-    background var(--duration-fast) var(--ease-out);
-}
-
-.list-row:hover .list-row-actions .icon-btn,
-.list-row:focus-within .list-row-actions .icon-btn {
-  opacity: 1;
-}
-
-@media (hover: none) {
-  .list-row-actions .icon-btn:not(.is-primary):not(.danger) {
-    opacity: 1;
-  }
-}
+/* Row actions remain visible for keyboard, pointer and touch users. */
+.list-row-actions .icon-btn { opacity: 1; }
 
 /* Page-head filter box, sized by the stylesheet instead of inline. */
 .page-filter {
@@ -92,4 +282,67 @@
 /* Modal title bar: the × sits flush right after any actions. */
 .viewer-bar .viewer-bar-actions:only-child {
   margin-left: auto;
+}
+
+/* Tonal and outlined variants use the same native button contract. */
+button.tonal { color: var(--md-sys-color-on-secondary-container); background: var(--md-sys-color-secondary-container); border-color: transparent; }
+button.tonal:hover:not(:disabled) { background: var(--accent-soft-hover); border-color: transparent; }
+button.outlined { color: var(--accent); background: var(--panel); border-color: var(--md-sys-color-outline); }
+button.primary:disabled { color: var(--md-sys-state-on-disabled); background: var(--md-sys-state-disabled); border-color: transparent; box-shadow: none; opacity: 1; }
+button[aria-busy="true"] { cursor: progress; }
+input[aria-invalid="true"], textarea[aria-invalid="true"], select[aria-invalid="true"] { border-color: var(--danger); }
+input[type="radio"] { accent-color: var(--accent); width: 18px; height: 18px; }
+input[type="checkbox"] { flex-shrink: 0; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+@media (pointer: coarse) {
+  .icon-btn, button.btn-sm { min-height: 44px; }
+  input[type="checkbox"], input[type="radio"] { width: 22px; height: 22px; }
+}
+
+/* A 44px hit target contains a compact 44×28 track. The thumb stays centred
+   even when shared button/touch minimums change. State is carried by .on. */
+.switch {
+  position: relative;
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+}
+.switch::before {
+  content: "";
+  position: absolute;
+  top: 8px;
+  left: 0;
+  width: 44px;
+  height: 28px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  background: var(--md-sys-color-surface-container-highest);
+  transition: background var(--duration-base) var(--ease-out), border-color var(--duration-base) var(--ease-out);
+}
+.switch::after {
+  content: "";
+  position: absolute;
+  top: 12px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--panel);
+  box-shadow: var(--shadow-xs);
+  transition: transform var(--duration-base) var(--ease-out);
+}
+.switch.on::before { background: var(--accent); border-color: var(--accent); }
+.switch.on::after { transform: translateX(18px); }
+.switch:hover:not(:disabled) { background: transparent; border: 0; }
+.switch:hover:not(:disabled)::before { background: var(--md-sys-color-surface-container-high); }
+.switch.on:hover:not(:disabled)::before { background: var(--accent-hover); border-color: var(--accent-hover); }
+
+.switch-state {
+  font-size: 12px;
+  white-space: nowrap;
 }

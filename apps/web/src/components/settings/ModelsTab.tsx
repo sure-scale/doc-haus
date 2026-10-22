@@ -39,6 +39,8 @@ export default function ModelsTab({
   const valid = providerModels.some(item => item.value === model) && providerModels.some(item => item.value === (smallModel || model))
   return (
     <section className="settings-section">
+      <h3>Models</h3>
+      <p className="settings-hint muted">Choose the models your assistants use for replies and background tasks.</p>
       {models.length === 0 && (
         <p className="settings-hint muted">
           No provider is ready yet.{" "}

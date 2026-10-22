@@ -25,15 +25,16 @@ export default function LibraryLayout({
     <>
       <header className="page-head library-head">
         <div>
+          <p className="library-eyebrow">Firm library</p>
           <h1>{title}</h1>
           <p className="page-sub">{description}</p>
         </div>
       </header>
-      <div className={`library-layout${active ? " is-active" : ""}`}>
+      <div className={`library-layout${active ? " is-active" : ""}${assistant ? "" : " library-layout-single"}`}>
         <section className="library-collection" aria-labelledby={heading}>
           <div className="library-heading">
             <h2 id={heading}>{libraryTitle}</h2>
-            {count !== undefined && <span className="muted">{count}</span>}
+            {count !== undefined && <span className="library-count" aria-label={`${count} ${libraryTitle.toLowerCase()}`}>{count}</span>}
           </div>
           {upload && <div className="library-upload">{upload}</div>}
           <div className="library-items">{children}</div>

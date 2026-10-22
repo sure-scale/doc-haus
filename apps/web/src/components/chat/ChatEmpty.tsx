@@ -19,7 +19,8 @@ export default function ChatEmpty({
     return (
       <div className="chat-empty is-upload-first">
         <IconUpload />
-        <p className="chat-empty-title">Start by adding this matter's documents</p>
+        <p className="chat-empty-eyebrow">Your matter workspace</p>
+        <h2 className="chat-empty-title">Start with the source documents</h2>
         <p className="muted">
           Drop Word, PDF, email or Excel files onto the message box below, or add them in Documents. Once they are read
           you can ask about them here, and every answer cites the source section.
@@ -34,10 +35,16 @@ export default function ChatEmpty({
 
   return (
     <div className="chat-empty">
+      {documentCount !== undefined && (
+        <>
+          <p className="chat-empty-eyebrow">Your matter workspace</p>
+          <h2 className="chat-empty-title">Work with your documents</h2>
+        </>
+      )}
       <p className="chat-empty-intro">{hint}</p>
       <div className="starters">
         {starters.map((s) => (
-          <button key={s} className="starter" onClick={() => onPick(s)}>
+          <button key={s} type="button" className="starter" onClick={() => onPick(s)}>
             <span className="starter-text">{s}</span>
             <svg className="starter-arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
               <path d="M5 12h14" />

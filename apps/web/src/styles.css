@@ -1,94 +1,5 @@
-:root {
-  /* Surfaces */
-  --bg: #f7f7f5;
-  --bg-sunken: #f0f0ed;
-  --panel: #ffffff;
-  --panel-hover: #f8faf9;
-  --overlay-scrim: rgba(26, 30, 28, 0.4);
-
-  /* Ink */
-  --text: #1a1a18;
-  --text-secondary: #44443f;
-  --muted: #6b6b66;
-  --faint: #9a9a93;
-  --placeholder: #a6a69e;
-  --text-on-accent: #ffffff;
-
-  /* Borders */
-  --border: #e2e2dd;
-  --border-soft: #ecece7;
-  --border-strong: #cfcfc8;
-
-  /* Accent: one deep green, layered */
-  --accent: #2d4a3e;
-  --accent-hover: #243d33;
-  --accent-active: #1c3028;
-  --accent-soft: #eef2f0;
-  --accent-soft-hover: #e3eae6;
-  --accent-tint: #f6f9f7;
-  --accent-border: #c4d2cb;
-  --accent-muted: #5d7a6d;
-
-  /* Status */
-  --warn: #8a5a1a;
-  --warn-soft: #f7f1e6;
-  --warn-border: #e3d3b4;
-  --danger: #8a2a2a;
-  --danger-soft: #f9eeee;
-  --danger-border: #e6c8c8;
-  --info: #2a4a5a;
-  --info-soft: #ebf1f3;
-
-  /* Type */
-  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  --font-display: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
-  --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
-  --font-serif: "Charter", "Iowan Old Style", Georgia, "Times New Roman", serif;
-  --tracking-caps: 0.06em;
-  --tracking-display: -0.02em;
-
-  /* Radii */
-  --radius-sm: 6px;
-  --radius-md: 8px;
-  --radius-lg: 12px;
-  --radius-pill: 999px;
-
-  /* Elevation: green-gray ink, never pure black */
-  --shadow-xs: 0 1px 2px rgba(26, 30, 28, 0.05);
-  --shadow-sm: 0 1px 3px rgba(26, 30, 28, 0.07), 0 1px 2px rgba(26, 30, 28, 0.04);
-  --shadow-md: 0 4px 12px rgba(26, 30, 28, 0.08), 0 2px 4px rgba(26, 30, 28, 0.04);
-  --shadow-lg: 0 12px 28px rgba(26, 30, 28, 0.14), 0 4px 8px rgba(26, 30, 28, 0.06);
-  --shadow-xl: 0 24px 56px rgba(26, 30, 28, 0.22), 0 8px 16px rgba(26, 30, 28, 0.08);
-
-  /* Focus: a solid accent edge for contrast, then a soft halo */
-  --focus-ring: 0 0 0 1px var(--accent), 0 0 0 4px rgba(45, 74, 62, 0.16);
-  --focus-ring-danger: 0 0 0 1px var(--danger), 0 0 0 4px rgba(138, 42, 42, 0.16);
-
-  /* Motion */
-  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
-  --duration-fast: 120ms;
-  --duration-base: 180ms;
-  --duration-slow: 280ms;
-
-  /* Z-index */
-  --z-sticky: 10;
-  --z-overlay: 50;
-  --z-popover: 60;
-  --z-toast: 100;
-
-  /* Controls share one height so mixed rows align */
-  --ctl-h: 34px;
-}
-
-/* Text size (Settings → Appearance). Component sizes are in px, so scale the
-   whole UI rather than just the body font. */
-:root[data-text="compact"] body {
-  zoom: 0.92;
-}
-
-:root[data-text="large"] body {
-  zoom: 1.08;
-}
+/* Appearance scales the whole UI; viewport tokens compensate fixed regions. */
+body { zoom: var(--ui-scale); }
 
 * {
   box-sizing: border-box;
@@ -121,218 +32,10 @@ a {
   border-radius: var(--radius-sm);
 }
 
-/* ---------- Buttons ---------- */
-
-button {
-  font: inherit;
-  font-weight: 500;
-  cursor: pointer;
-  border: 1px solid var(--border);
-  background: var(--panel);
-  color: var(--text);
-  padding: 6px 13px;
-  border-radius: var(--radius-md);
-  transition:
-    background var(--duration-fast) var(--ease-out),
-    border-color var(--duration-fast) var(--ease-out),
-    color var(--duration-fast) var(--ease-out),
-    box-shadow var(--duration-fast) var(--ease-out),
-    transform 60ms var(--ease-out);
-}
-
-button:hover:not(:disabled) {
-  background: var(--panel-hover);
-  border-color: var(--border-strong);
-}
-
-button:active:not(:disabled) {
-  transform: translateY(1px);
-}
-
-button:focus-visible {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: var(--focus-ring);
-}
-
-button.primary {
-  background: var(--accent);
-  color: var(--text-on-accent);
-  border-color: var(--accent);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 1px 2px rgba(26, 30, 28, 0.12);
-}
-
-button.primary:hover:not(:disabled) {
-  background: var(--accent-hover);
-  border-color: var(--accent-hover);
-}
-
-button.primary:active:not(:disabled) {
-  background: var(--accent-active);
-}
-
-button.danger {
-  background: var(--danger);
-  color: var(--text-on-accent);
-  border-color: var(--danger);
-}
-
-button.danger:hover:not(:disabled) {
-  background: #76211f;
-  border-color: #76211f;
-}
-
-button.ghost {
-  background: transparent;
-  border-color: transparent;
-  color: var(--muted);
-}
-
-button.ghost:hover:not(:disabled) {
-  background: var(--bg);
-  border-color: transparent;
-  color: var(--text);
-}
-
-button.btn-sm {
-  padding: 3px 10px;
-  font-size: 12.5px;
-  border-radius: var(--radius-sm);
-}
-
-button:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
-/* Loading: keep the label's width (transparent, not removed) and spin a ring
-   over it so the button never jumps. */
-button.btn-loading {
-  position: relative;
-  color: transparent !important;
-  pointer-events: none;
-}
-
-button.btn-loading::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  margin: auto;
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  border: 2px solid rgba(255, 255, 255, 0.35);
-  border-top-color: #fff;
-  animation: btn-spin 0.6s linear infinite;
-}
-
-@keyframes btn-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-/* ---------- Form controls ---------- */
-
-input,
-select,
-textarea {
-  font: inherit;
-  padding: 6px 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--panel);
-  color: var(--text);
-  transition:
-    border-color var(--duration-fast) var(--ease-out),
-    box-shadow var(--duration-fast) var(--ease-out),
-    background var(--duration-fast) var(--ease-out);
-}
-
-input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
-select {
-  height: var(--ctl-h);
-  padding-top: 0;
-  padding-bottom: 0;
-}
-
-textarea {
-  padding: 8px 10px;
-}
-
-input::placeholder,
-textarea::placeholder {
-  color: var(--placeholder);
-}
-
-input:hover:not(:disabled):not(:focus),
-select:hover:not(:disabled):not(:focus),
-textarea:hover:not(:disabled):not(:focus) {
-  border-color: var(--border-strong);
-}
-
-input:focus,
-select:focus,
-textarea:focus {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: var(--focus-ring);
-}
-
-input:disabled,
-select:disabled {
-  background: var(--bg);
-  color: var(--muted);
-  cursor: not-allowed;
-}
-
-select {
-  appearance: none;
-  -webkit-appearance: none;
-  padding-right: 32px;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b6b66' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 10px center;
-}
-
-input[type="checkbox"] {
-  appearance: none;
-  -webkit-appearance: none;
-  width: 16px;
-  height: 16px;
-  padding: 0;
-  border: 1.5px solid var(--border-strong);
-  border-radius: 4px;
-  background: var(--panel);
-  display: inline-grid;
-  place-content: center;
-  cursor: pointer;
-  transition:
-    background var(--duration-fast) var(--ease-out),
-    border-color var(--duration-fast) var(--ease-out);
-}
-
-input[type="checkbox"]:hover {
-  border-color: var(--accent);
-}
-
-input[type="checkbox"]:checked {
-  background: var(--accent);
-  border-color: var(--accent);
-}
-
-input[type="checkbox"]:checked::before {
-  content: "";
-  width: 9px;
-  height: 9px;
-  background: #fff;
-  clip-path: polygon(14% 44%, 0 62%, 42% 100%, 100% 18%, 84% 4%, 40% 70%);
-}
-
 /* App shell: a collapsible left rail beside the scrolling content column. */
 .shell {
   display: flex;
-  min-height: 100vh;
+  min-height: var(--viewport-block);
 }
 
 .content {
@@ -343,7 +46,7 @@ input[type="checkbox"]:checked::before {
 .sidebar {
   position: sticky;
   top: 0;
-  height: 100vh;
+  height: var(--viewport-block);
   width: 264px;
   flex-shrink: 0;
   display: flex;
@@ -1018,7 +721,7 @@ li.list-row {
   border-radius: var(--radius-lg);
   width: 100%;
   max-width: 460px;
-  max-height: calc(100vh - 64px);
+  max-height: calc(var(--viewport-block) - 64px);
   display: flex;
   flex-direction: column;
   box-shadow: var(--shadow-xl);
@@ -1134,6 +837,12 @@ li.list-row {
 .jx-trigger {
   min-width: 180px;
   justify-content: space-between;
+  border-color: var(--md-sys-color-outline);
+}
+
+.jx-trigger:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--panel-hover);
 }
 
 /* Rendered in a body portal with a fixed-position anchor (set inline by the
@@ -1142,7 +851,8 @@ li.list-row {
 .jx-popover {
   position: fixed;
   z-index: var(--z-popover);
-  width: 280px;
+  width: min(280px, calc(var(--viewport-inline) - 16px));
+  max-height: calc(var(--viewport-block) - 16px);
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
@@ -1155,6 +865,7 @@ li.list-row {
 
 /* Full-bleed search with a hairline divider instead of a floating boxed input. */
 .jx-search {
+  flex-shrink: 0;
   margin: 0;
   width: 100%;
   border: none;
@@ -1171,7 +882,9 @@ li.list-row {
 }
 
 .jx-list {
+  min-height: 0;
   overflow: auto;
+  overscroll-behavior: contain;
   max-height: 320px;
   padding: 6px 8px 8px;
   display: flex;
@@ -1491,7 +1204,7 @@ li.list-row {
   position: fixed;
   inset: 0;
   width: 100%;
-  height: 100dvh;
+  height: var(--viewport-block);
   max-width: none;
   max-height: none;
   margin: 0;
@@ -1817,7 +1530,7 @@ li.list-row {
 .artifact {
   position: sticky;
   top: 24px;
-  max-height: calc(100vh - 48px);
+  max-height: calc(var(--viewport-block) - 48px);
   overflow: auto;
   border-left: 3px solid var(--accent);
 }
@@ -1870,7 +1583,7 @@ li.list-row {
   white-space: normal;
   word-break: break-word;
   box-shadow: var(--shadow-lg);
-  pointer-events: none;
+  pointer-events: auto;
 }
 
 /* Title-area: the title, then one quiet meta line (matter number · jurisdictions),
@@ -2040,289 +1753,6 @@ li.list-row {
   padding: 2px 8px;
 }
 
-/* ---------- Tabular review: documents (rows) x questions (columns) ---------- */
-
-.review-toolbar {
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 12px;
-}
-
-.review-toolbar h2 {
-  margin: 0;
-}
-
-.review-summary {
-  display: block;
-  font-size: 12px;
-  color: var(--muted);
-  margin-top: 2px;
-  font-variant-numeric: tabular-nums;
-}
-
-.review-running {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 12px;
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
-}
-
-.review-running::before {
-  content: "";
-  width: 11px;
-  height: 11px;
-  border-radius: 50%;
-  border: 2px solid var(--accent-soft);
-  border-top-color: var(--accent);
-  animation: step-spin 0.7s linear infinite;
-}
-
-.review-scroll {
-  overflow: auto;
-  max-height: calc(100vh - 160px);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--panel);
-}
-
-/* separate + spacing 0: collapsed borders detach from the sticky header/column
-   while scrolling. Each cell owns its bottom/right border instead. */
-.review-table {
-  border-collapse: separate;
-  border-spacing: 0;
-  width: 100%;
-  font-size: 13px;
-}
-
-.review-table th,
-.review-table td {
-  border-bottom: 1px solid var(--border);
-  border-right: 1px solid var(--border-soft);
-  padding: 10px 12px;
-  text-align: left;
-  vertical-align: top;
-  min-width: 180px;
-}
-
-.review-table th:last-child,
-.review-table td:last-child {
-  border-right: none;
-}
-
-.review-table tbody tr:last-child td {
-  border-bottom: none;
-}
-
-.review-table thead th {
-  position: sticky;
-  top: 0;
-  z-index: 2;
-  background: var(--accent-tint);
-  border-bottom: none;
-  box-shadow: inset 0 -1px 0 var(--border), 0 4px 8px -4px rgba(26, 30, 28, 0.1);
-}
-
-.review-doc-col {
-  position: sticky;
-  left: 0;
-  z-index: 1;
-  background: var(--accent-tint);
-  font-weight: 600;
-  min-width: 200px;
-  border-right: none;
-  box-shadow: inset -1px 0 0 var(--border), 6px 0 12px -6px rgba(26, 30, 28, 0.07);
-}
-
-.review-table thead .review-doc-col {
-  z-index: 3;
-}
-
-.review-table tbody tr:hover td {
-  background: var(--accent-tint);
-}
-
-.review-col-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 6px;
-}
-
-.review-col-q {
-  background: none;
-  border: none;
-  padding: 0;
-  color: var(--text);
-  font: inherit;
-  font-weight: 600;
-  text-align: left;
-  cursor: pointer;
-}
-
-.review-col-q:hover {
-  color: var(--accent);
-}
-
-/* Reviewed (locked) cell: tinted with an accent spine, distinct from hover. */
-.review-cell.reviewed {
-  background: var(--accent-soft);
-  box-shadow: inset 2px 0 0 var(--accent);
-}
-
-.review-table tbody tr:hover td.review-cell.reviewed {
-  background: var(--accent-soft-hover);
-}
-
-.review-cell-body {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.review-answer {
-  background: none;
-  border: none;
-  padding: 0;
-  color: var(--text);
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.review-answer:hover {
-  color: var(--accent);
-}
-
-.review-cite {
-  color: var(--accent);
-  font-size: 12px;
-}
-
-/* A negative cell's one re-check: its outcome in the cell, the scope searched in
-   the tooltip and the detail view. */
-.review-recheck {
-  color: var(--muted);
-  font-size: 11px;
-}
-
-.review-recheck-detail {
-  color: var(--muted);
-  font-size: 13px;
-  margin: 0 0 12px;
-}
-
-/* Idle cells stay calm: Lock/Refresh appear on hover or focus. Comment counts,
-   the locked state, and stale flags always show. */
-.review-cell-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  min-height: 22px;
-}
-
-.review-cell-actions .icon-btn {
-  opacity: 0;
-  transition: opacity var(--duration-fast) var(--ease-out);
-}
-
-.review-cell:hover .review-cell-actions .icon-btn,
-.review-cell:focus-within .review-cell-actions .icon-btn,
-.review-cell-actions .review-note.has-comments,
-.review-cell-actions .review-lock.locked {
-  opacity: 1;
-}
-
-.review-stale {
-  color: var(--warn);
-  background: var(--warn-soft);
-  border: 1px solid var(--warn-border);
-  border-radius: var(--radius-pill);
-  padding: 1px 7px;
-  font-size: 10px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-caps);
-}
-
-.review-note {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  font-size: 11px;
-}
-
-.review-note.has-comments {
-  color: var(--accent);
-  border-color: var(--accent);
-}
-
-.review-comments {
-  margin-top: 16px;
-  padding-top: 12px;
-  border-top: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.review-comment {
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  padding: 8px 10px;
-}
-
-.review-comment-meta {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-}
-
-.review-comment-text {
-  font-size: 13px;
-  white-space: pre-wrap;
-}
-
-.review-comment-compose {
-  display: flex;
-  gap: 8px;
-  align-items: flex-end;
-}
-
-.review-comment-compose textarea {
-  flex: 1;
-  min-height: 44px;
-  resize: vertical;
-}
-
-.review-cell-fill {
-  width: 100%;
-  font-size: 12px;
-  color: var(--muted);
-  background: none;
-  border: 1px dashed var(--border);
-  border-radius: var(--radius-sm);
-  padding: 6px 0;
-  transition:
-    color var(--duration-fast) var(--ease-out),
-    border-color var(--duration-fast) var(--ease-out);
-}
-
-.review-cell-fill:hover:not(:disabled) {
-  color: var(--accent);
-  border-color: var(--accent);
-  background: none;
-}
-
-.review-detail-answer {
-  font-size: 15px;
-  margin: 0 0 12px;
-}
-
 /* Tool strip above the composer holding the Workflows launcher. */
 .composer-tools {
   display: flex;
@@ -2376,8 +1806,8 @@ li.list-row {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  height: clamp(320px, calc(100vh - 330px), 900px);
-  height: clamp(320px, calc(100dvh - 330px), 900px);
+  height: clamp(320px, calc(var(--viewport-block) - 330px), 900px);
+  height: clamp(320px, calc(var(--viewport-block) - 330px), 900px);
   min-height: 0;
   overflow-y: auto;
   overflow-anchor: auto;
@@ -3195,131 +2625,6 @@ li.list-row {
   text-decoration: line-through;
 }
 
-/* The reviewer's structured issues register: one card per checklist area /
-   missing protection / playbook clause, severity-sorted, the colored left rail
-   keying the severity (red = critical/high, amber = medium, grey = low). Mirrors
-   the sources/todos disclosure grammar — collapsed behind a count pill, but
-   defaulted open when any row is blocking so critical/high risk is not hidden. */
-.issues {
-  margin-top: 10px;
-}
-
-.issues > summary {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  cursor: pointer;
-  color: var(--muted);
-  font-size: 12.5px;
-  font-weight: 500;
-  list-style: none;
-  padding: 4px 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-pill);
-  background: var(--panel);
-  transition:
-    border-color var(--duration-fast) var(--ease-out),
-    color var(--duration-fast) var(--ease-out);
-}
-
-.issues > summary:hover {
-  border-color: var(--accent-border);
-  color: var(--accent);
-}
-
-.issues > summary::-webkit-details-marker {
-  display: none;
-}
-
-.issue-list {
-  list-style: none;
-  margin: 8px 0 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.issue-card {
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--muted);
-  border-radius: var(--radius-md);
-  background: var(--panel);
-  padding: 12px 14px;
-  box-shadow: var(--shadow-xs);
-}
-
-.issue-critical,
-.issue-high {
-  border-left-color: var(--danger);
-}
-
-.issue-medium {
-  border-left-color: var(--warn);
-}
-
-.issue-head {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.issue-area {
-  font-weight: 600;
-  font-size: 13px;
-  flex: 1;
-}
-
-.issue-severity {
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-caps);
-  color: var(--muted);
-}
-
-.issue-critical .issue-severity,
-.issue-high .issue-severity {
-  color: var(--danger);
-}
-
-.issue-medium .issue-severity {
-  color: var(--warn);
-}
-
-.issue-status {
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-caps);
-  color: var(--muted);
-}
-
-.issue-rule {
-  font-size: 12.5px;
-  font-weight: 500;
-  margin-top: 6px;
-}
-
-.issue-why {
-  font-size: 13px;
-  color: var(--muted);
-  margin-top: 4px;
-  line-height: 1.45;
-}
-
-.issue-clause {
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-caps);
-  color: var(--muted);
-  margin-top: 6px;
-}
-
-.issue-redline {
-  margin-top: 6px;
-}
-
 /* Empty chat: a centered intro plus clickable starter questions. */
 .chat-empty {
   margin: auto 0;
@@ -3469,7 +2774,7 @@ li.list-row {
   align-items: center;
   justify-content: center;
   gap: 4px;
-  min-height: 100vh;
+  min-height: var(--viewport-block);
 }
 
 .boot-steps {
@@ -3781,7 +3086,7 @@ button.linklike:hover:not(:disabled) {
   font-variant-numeric: tabular-nums;
 }
 
-/* Destructive control earns its place on hover only. */
+/* Document actions stay discoverable without requiring hover. */
 .doc-remove {
   margin-left: auto;
   display: inline-flex;
@@ -3790,15 +3095,8 @@ button.linklike:hover:not(:disabled) {
   padding: 4px;
   color: var(--muted);
   cursor: pointer;
-  opacity: 0;
-  transition:
-    opacity var(--duration-fast) var(--ease-out),
-    color var(--duration-fast) var(--ease-out);
-}
-
-.doc-row:hover .doc-remove,
-.doc-remove:focus-visible {
   opacity: 1;
+  transition: color var(--duration-fast) var(--ease-out);
 }
 
 .doc-remove:hover:not(:disabled) {
@@ -3818,8 +3116,6 @@ button.linklike:hover:not(:disabled) {
   position: fixed;
   inset: 0;
   background: var(--overlay-scrim);
-  backdrop-filter: blur(4px) saturate(1.05);
-  -webkit-backdrop-filter: blur(4px) saturate(1.05);
   display: flex;
   justify-content: center;
   align-items: flex-start;
@@ -3847,7 +3143,7 @@ button.linklike:hover:not(:disabled) {
   border-radius: var(--radius-lg);
   width: 100%;
   max-width: 1240px;
-  max-height: calc(100vh - 64px);
+  max-height: calc(var(--viewport-block) - 64px);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -4181,7 +3477,7 @@ button.linklike:hover:not(:disabled) {
   height: 12px;
   border-radius: 3px;
   margin-bottom: 16px;
-  background: linear-gradient(90deg, #ecead4 25%, #f5f3ea 45%, #ecead4 65%);
+  background: linear-gradient(90deg, var(--bg-sunken) 25%, var(--panel) 45%, var(--bg-sunken) 65%);
   background-size: 200% 100%;
   animation: sk-shimmer 1.4s ease-in-out infinite;
 }
@@ -4412,643 +3708,6 @@ button.linklike:hover:not(:disabled) {
   transform: rotate(90deg);
 }
 
-/* Settings: opened from the sidebar. A left rail of tabs (models, providers,
-   drafting, defaults, approvals, appearance) beside one scrolling content pane,
-   inside the picker modal shell. Fixed height so switching tabs never resizes
-   the modal. */
-.settings-overlay {
-  margin: 0;
-  width: 100vw;
-  height: 100dvh;
-  max-width: none;
-  max-height: none;
-  border: none;
-  color: inherit;
-  overflow: hidden;
-}
-
-.settings-overlay:not([open]) {
-  display: none;
-}
-
-.settings-overlay::backdrop {
-  background: transparent;
-}
-
-.settings-panel {
-  max-width: 960px;
-  height: min(680px, calc(100vh - 64px));
-}
-
-.settings-body {
-  display: flex;
-  flex: 1;
-  min-height: 0;
-  overflow: hidden;
-}
-
-.settings-nav {
-  width: 184px;
-  flex-shrink: 0;
-  border-right: 1px solid var(--border);
-  background: var(--bg);
-  border-bottom-left-radius: var(--radius-lg);
-  padding: 14px 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.settings-nav button {
-  position: relative;
-  text-align: left;
-  padding: 8px 12px;
-  border: none;
-  background: none;
-  border-radius: var(--radius-sm);
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--muted);
-}
-
-.settings-nav button:hover:not(:disabled) {
-  background: rgba(26, 30, 28, 0.045);
-  border: none;
-  color: var(--text);
-}
-
-.settings-nav button.active {
-  background: var(--accent-soft);
-  color: var(--accent);
-  font-weight: 600;
-}
-
-.settings-nav button.active::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 7px;
-  bottom: 7px;
-  width: 3px;
-  border-radius: var(--radius-pill);
-  background: var(--accent);
-}
-
-.settings-content {
-  --settings-label-width: 180px;
-  flex: 1;
-  min-width: 0;
-  overflow: auto;
-  padding: 18px 24px 24px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  scrollbar-width: thin;
-  scrollbar-color: var(--border-strong) transparent;
-}
-
-/* A shared label and control grid keeps every settings tab aligned. */
-.settings-form-row,
-.settings-summary-row {
-  display: grid;
-  grid-template-columns: var(--settings-label-width) minmax(0, 1fr);
-  gap: 20px;
-  align-items: start;
-  padding: 8px 0;
-}
-
-.settings-field-copy {
-  min-width: 0;
-  padding-top: 6px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.settings-field-copy .settings-label {
-  font-size: 12.5px;
-  color: var(--text);
-  line-height: 1.45;
-}
-
-.settings-field-control {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.settings-field-control > input,
-.settings-field-control > select,
-.settings-field-control > textarea {
-  width: 100%;
-  min-width: 0;
-}
-
-.settings-field-control > select {
-  text-overflow: ellipsis;
-}
-
-.settings-field-control > .settings-hint {
-  max-width: none;
-}
-
-.settings-field-control .jx-trigger {
-  width: 100%;
-  min-width: 0;
-}
-
-.settings-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-left: calc(var(--settings-label-width) + 20px);
-  padding-top: 8px;
-}
-
-.settings-summary {
-  margin: 0;
-}
-
-.settings-summary-row {
-  border-bottom: 1px solid var(--border);
-  font-size: 12.5px;
-  line-height: 1.5;
-}
-
-.settings-summary-row dt {
-  color: var(--muted);
-}
-
-.settings-summary-row dd {
-  min-width: 0;
-  margin: 0;
-  overflow-wrap: anywhere;
-}
-
-/* Segmented choices use the same control column as inputs and selects. */
-.settings-seg {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 2px;
-  padding: 3px;
-  background: var(--bg-sunken);
-  border: 1px solid var(--border);
-  border-radius: 9px;
-}
-
-.settings-seg button {
-  flex: 1 0 auto;
-  min-height: 30px;
-  border: none;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  padding: 4px 13px;
-  font-size: 12.5px;
-  color: var(--muted);
-  font-weight: 500;
-}
-
-.settings-seg button:hover:not(:disabled) {
-  background: transparent;
-  border: none;
-  color: var(--text);
-}
-
-.settings-seg button.active {
-  background: var(--panel);
-  color: var(--accent);
-  font-weight: 600;
-  box-shadow: var(--shadow-sm);
-}
-
-.settings-textarea {
-  width: 100%;
-  resize: vertical;
-  font: inherit;
-  font-size: 13px;
-}
-
-.settings-toggle-text {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  font-size: 12.5px;
-}
-
-.settings-label {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--muted);
-}
-
-/* Hover-help badge beside a label (components Settings InfoTip), so dense guidance
-   lives in a tooltip instead of a paragraph under every field. */
-.info-tip {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 14px;
-  height: 14px;
-  margin-left: 5px;
-  border-radius: 50%;
-  border: 1px solid var(--border-strong);
-  color: var(--muted);
-  font-size: 9px;
-  font-weight: 700;
-  font-style: normal;
-  line-height: 1;
-  cursor: help;
-  vertical-align: middle;
-}
-
-.info-tip:hover {
-  color: var(--text);
-  border-color: var(--text);
-}
-
-.settings-connected {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-bottom: 4px;
-}
-
-/* Provider / toggle cards: paper card + status dot instead of a green slab. */
-.settings-conn {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 14px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--panel);
-  transition:
-    border-color var(--duration-fast) var(--ease-out),
-    box-shadow var(--duration-fast) var(--ease-out);
-}
-
-.settings-toggle-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 90px 38px;
-}
-
-.settings-toggle-row .switch-state {
-  text-align: right;
-}
-
-.settings-provider-copy {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  overflow-wrap: anywhere;
-}
-
-.settings-provider-copy .settings-conn-meta {
-  margin-left: 15px;
-}
-
-.settings-needs > .settings-provider-copy {
-  margin-bottom: 8px;
-}
-
-.settings-needs .settings-conn-meta {
-  margin-left: 0;
-}
-
-.settings-provider-actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 8px;
-  align-items: center;
-}
-
-.settings-component-list {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.settings-component {
-  padding: 10px 14px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  font-size: 12.5px;
-  line-height: 1.5;
-  overflow-wrap: anywhere;
-}
-
-.settings-component-copy {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.settings-conn:hover {
-  border-color: var(--border-strong);
-}
-
-.settings-connected .settings-conn-name {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.settings-connected .settings-conn-name::before {
-  content: "";
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--accent-muted);
-  box-shadow: 0 0 0 3px rgba(93, 122, 109, 0.18);
-}
-
-.settings-conn.off {
-  background: var(--bg);
-  opacity: 1;
-}
-
-.settings-conn.off .settings-conn-name {
-  color: var(--muted);
-}
-
-.settings-conn.off .settings-conn-name::before {
-  background: var(--border-strong);
-  box-shadow: none;
-}
-
-.settings-needs {
-  padding: 14px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--panel);
-  margin-bottom: 12px;
-}
-
-/* Field rows inside a needs-setup card: fixed-width labels so the inputs line
-   up, modest top gap so the rows read as one form under the provider name. */
-.settings-field {
-  margin-top: 8px;
-}
-
-.settings-field-label {
-  flex: 0 0 120px;
-}
-
-.settings-drafting-fields {
-  min-width: 0;
-  margin: 0;
-  padding: 0;
-  border: 0;
-}
-
-.settings-error {
-  display: block;
-  margin-top: 8px;
-  padding: 7px 10px;
-  font-size: 12px;
-  color: var(--danger);
-  background: var(--danger-soft);
-  border: 1px solid var(--danger-border);
-  border-radius: var(--radius-sm);
-}
-
-.settings-conn-name {
-  font-weight: 600;
-}
-
-.settings-conn-meta {
-  font-size: 12px;
-  margin-left: auto;
-}
-
-/* Real toggle switch: track + sliding knob, state carried by .on. */
-.switch {
-  position: relative;
-  flex-shrink: 0;
-  width: 38px;
-  height: 22px;
-  padding: 0;
-  border-radius: var(--radius-pill);
-  border: 1px solid var(--border-strong);
-  background: #e7e7e2;
-  transition:
-    background var(--duration-base) var(--ease-out),
-    border-color var(--duration-base) var(--ease-out);
-}
-
-.switch::after {
-  content: "";
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: #fff;
-  box-shadow: 0 1px 2px rgba(26, 30, 28, 0.3);
-  transition: transform var(--duration-base) var(--ease-out);
-}
-
-.switch.on {
-  background: var(--accent);
-  border-color: var(--accent);
-}
-
-.switch.on::after {
-  transform: translateX(16px);
-}
-
-.switch:hover:not(:disabled) {
-  background: #dededa;
-  border-color: var(--border-strong);
-}
-
-.switch.on:hover:not(:disabled) {
-  background: var(--accent-hover);
-  border-color: var(--accent-hover);
-}
-
-.switch-state {
-  font-size: 12px;
-  white-space: nowrap;
-}
-
-/* Local endpoint: a stacked label/field grid so the form reads as a unit; the
-   add button sits flush right on its own row. */
-.settings-add {
-  align-self: flex-start;
-  margin-top: 4px;
-}
-
-.settings-section {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 18px 0;
-  border-top: 1px solid var(--border);
-}
-
-.settings-section:first-of-type {
-  border-top: none;
-  padding-top: 4px;
-}
-
-.settings-section h3 {
-  margin: 0;
-  font-size: 13px;
-  font-weight: 650;
-  letter-spacing: 0.01em;
-}
-
-.settings-hint {
-  margin: 0;
-  font-size: 12.5px;
-  line-height: 1.45;
-  max-width: 60ch;
-}
-
-/* Callout variant for a hint the firm should act on (e.g. missing search key). */
-.settings-warning {
-  padding: 8px 10px;
-  border: 1px solid var(--danger-border);
-  border-radius: 6px;
-  background: var(--danger-soft);
-  color: var(--danger);
-}
-
-/* Masked API-key input + its show/hide toggle, sat on one row. */
-.settings-password {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  min-width: 0;
-}
-
-.settings-password > input {
-  flex: 1;
-  min-width: 0;
-}
-
-.settings-reveal {
-  flex: 0 0 auto;
-}
-
-.settings-row {
-  gap: 8px;
-  align-items: center;
-}
-
-/* Direct children only: the jurisdiction popover nests its own checkboxes
-   inside a settings-row and they must not inherit flex: 1. */
-.settings-row > input,
-.settings-row > select {
-  flex: 1;
-  min-width: 0;
-}
-
-.settings-grid {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.settings-notice {
-  margin: 0;
-  padding: 10px 12px;
-  border-radius: var(--radius-md);
-  background: var(--accent-soft);
-  border: 1px solid var(--accent-border);
-  border-left: 3px solid var(--accent);
-  color: var(--accent-active);
-  font-size: 12.5px;
-}
-
-@media (max-width: 700px) {
-  .settings-panel {
-    height: calc(100dvh - 24px);
-    max-height: calc(100dvh - 24px);
-  }
-
-  .settings-body {
-    flex-direction: column;
-  }
-
-  .settings-nav {
-    width: 100%;
-    flex-direction: row;
-    overflow-x: auto;
-    padding: 8px;
-    border-right: none;
-    border-bottom: 1px solid var(--border);
-    border-radius: 0;
-  }
-
-  .settings-nav button {
-    flex: 0 0 auto;
-    white-space: nowrap;
-  }
-
-  .settings-content {
-    padding: 16px;
-  }
-}
-
-@media (max-width: 560px) {
-  .settings-form-row,
-  .settings-summary-row {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 8px;
-  }
-
-  .settings-field-copy {
-    padding-top: 0;
-  }
-
-  .settings-actions {
-    margin-left: 0;
-  }
-
-  .settings-conn:not(.settings-toggle-row) {
-    flex-wrap: wrap;
-  }
-
-  .settings-provider-actions {
-    flex-basis: 100%;
-  }
-
-  .settings-toggle-row {
-    grid-template-columns: minmax(0, 1fr) 38px;
-    gap: 6px 12px;
-  }
-
-  .settings-toggle-row .settings-toggle-text {
-    grid-row: span 2;
-  }
-
-  .settings-toggle-row .switch-state {
-    grid-column: 2;
-    justify-self: center;
-    align-self: start;
-    font-size: 10px;
-  }
-
-  .settings-toggle-row .switch {
-    grid-column: 2;
-    grid-row: 1;
-    align-self: end;
-  }
-}
-
 /* Toasts: transient notifications stacked top-centre, above the doc viewer
    overlay and clear of the side rail and the composer. White card, soft
    shadow, a colored left border + icon keyed to type. */
@@ -5062,7 +3721,7 @@ button.linklike:hover:not(:disabled) {
   flex-direction: column;
   align-items: center;
   gap: 8px;
-  width: min(360px, calc(100vw - 32px));
+  width: min(360px, calc(var(--viewport-inline) - 32px));
   pointer-events: none;
 }
 

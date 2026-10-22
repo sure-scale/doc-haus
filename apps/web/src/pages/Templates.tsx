@@ -183,11 +183,12 @@ export default function Templates() {
                   onClick={() => setViewing(t)}
                 >
                   <div className="list-row-main">
-                    <span className="list-row-title">{t.name}</span>
+                    <span className="list-row-title"><button type="button" className="library-item-title" onClick={(e) => { e.stopPropagation(); setViewing(t) }}>{t.name}</button></span>
                     <span className="list-row-meta">
                       {editing === t.name ? (
                         <input
                           className="template-desc-input"
+                          aria-label={`Description for ${t.name}`}
                           autoFocus
                           defaultValue={t.description}
                           placeholder="Add description"
@@ -199,8 +200,10 @@ export default function Templates() {
                           }}
                         />
                       ) : (
-                        <span
+                        <button
+                          type="button"
                           className="list-row-desc template-desc"
+                          aria-label={`${t.description || "Add description"} — edit description for ${t.name}`}
                           title="Click to edit description"
                           onClick={(e) => {
                             e.stopPropagation()
@@ -208,7 +211,7 @@ export default function Templates() {
                           }}
                         >
                           {t.description || "Add description"}
-                        </span>
+                        </button>
                       )}
                       <span className="list-row-date">
                         {fills} placeholder{fills === 1 ? "" : "s"}

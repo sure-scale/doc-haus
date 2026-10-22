@@ -154,10 +154,10 @@ button.question-dock-cta:focus-visible {
   box-shadow: 0 0 0 1px var(--warn), 0 0 0 4px rgba(138, 90, 26, 0.2);
 }
 
-/* The questions open over the page, which frosts to white behind them. */
+/* Questions use the shared modal scrim so legal context stays legible. */
 .question-dialog {
-  width: min(560px, calc(100vw - 32px));
-  max-height: calc(100dvh - 64px);
+  width: min(560px, calc(var(--viewport-inline) - 32px));
+  max-height: calc(var(--viewport-block) - 64px);
   padding: 0;
   overflow: auto;
   border: 1px solid var(--border);
@@ -172,9 +172,7 @@ button.question-dock-cta:focus-visible {
 }
 
 .question-dialog::backdrop {
-  background: rgba(255, 255, 255, 0.6);
-  backdrop-filter: blur(12px) saturate(1.15);
-  -webkit-backdrop-filter: blur(12px) saturate(1.15);
+  background: var(--overlay-scrim);
   animation: overlay-in 160ms ease-out;
 }
 

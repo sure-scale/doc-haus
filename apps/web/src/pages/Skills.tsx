@@ -160,7 +160,7 @@ export default function Skills() {
               >
                 <div className="list-row-main">
                   <span className="list-row-title">
-                    {s.name}
+                    <button type="button" className="library-item-title" onClick={(e) => { e.stopPropagation(); setViewing(s) }}>{s.name}</button>
                     {s.builtin && <span className="badge badge-quiet">Built-in</span>}
                   </span>
                   <span className="list-row-meta">

@@ -70,7 +70,7 @@ export default function IssuesView({ issues }: { issues: Issue[] }) {
               <div className="issue-head">
                 <span className="issue-area">{issue.area}</span>
                 <span className="issue-severity">{s.label}</span>
-                <span className="issue-status">{issue.status}</span>
+                <span className="issue-status">{issue.status === "absent" ? "Missing" : issue.status === "deviating" ? "Deviates" : issue.status === "present" ? "Present" : issue.status}</span>
               </div>
               {issue.rule && <div className="issue-rule">{issue.rule}</div>}
               {issue.why && <div className="issue-why">{issue.why}</div>}

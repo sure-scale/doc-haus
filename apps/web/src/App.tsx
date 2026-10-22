@@ -80,10 +80,11 @@ export default function App() {
   return (
     <ToastProvider>
       <div className={`shell${location.pathname.startsWith("/matter/") ? " shell-matter" : ""}`}>
+        <a className="skip-link" href="#main-content">Skip to workspace</a>
         <Sidebar onOpenSettings={() => { setReconnectProvider(undefined); setSettings(true) }} sessionsVersion={sessionsVersion} updateButton={<UpdateButton updates={updates} />} />
         {/* The open matter's documents drawer portals here, between the rail and the canvas. */}
         <div id="matter-drawer-slot" className="matter-drawer-slot" />
-        <main className="content">
+        <main id="main-content" className="content" tabIndex={-1}>
           <ConnectionBanner />
           <ProviderConnectionBanner enabled={setup?.next === "done" && !onboarding} onOpenSettings={providerID => { setReconnectProvider(providerID); setSettings(true) }} />
           {setup?.next !== "done" && !onboarding && <p className="settings-notice">Setup is incomplete. {setup?.ready ? "Your models are saved. Finish or skip the remaining optional steps before starting assistant work." : "Save your model choices before starting assistant work."} <button onClick={() => setOnboarding(true)}>Resume setup</button></p>}

@@ -1,67 +1,95 @@
-/* Shared library pages: saved items and their assistant in the same view. */
-.page-head.library-head { border-bottom: 0; padding-bottom: 0; margin-bottom: 24px; }
-.library-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 32px; align-items: start; border-top: 1px solid var(--border-soft); padding-top: 24px; }
+/* Firm libraries share a collection / assistant composition. Collection rows
+   stay on white; only the supporting workspace uses a quiet tonal container. */
+.page-head.library-head { border-bottom: 0; padding-bottom: 0; margin-bottom: 28px; }
+.library-eyebrow { margin: 0 0 8px; color: var(--accent); font-size: .78rem; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; }
+.library-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); gap: 32px; align-items: start; }
+.library-layout.library-layout-single { grid-template-columns: minmax(0, 1fr); }
 .library-collection, .library-builder { min-width: 0; }
-.library-heading { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
-.library-heading h2 { margin: 0; font-size: 18px; font-weight: 550; letter-spacing: -.35px; }
-.library-heading > span { font-size: 12px; }
-.library-collection .dropzone { display: grid; grid-template-columns: 22px minmax(0, 1fr); column-gap: 12px; row-gap: 4px; padding: 16px; text-align: left; border-width: 1px; }
-.library-collection .dropzone > svg { grid-row: 1 / 3; align-self: center; color: var(--accent-muted); }
+.library-heading { display: flex; align-items: center; gap: 12px; min-height: 32px; margin-bottom: 16px; }
+.library-heading h2 { margin: 0; font-size: 1.15rem; font-weight: 650; letter-spacing: -.025em; }
+.library-count { display: inline-flex; align-items: center; justify-content: center; min-width: 28px; min-height: 28px; padding: 2px 8px; border-radius: var(--radius-pill); background: var(--md-sys-color-surface-container); color: var(--text-secondary); font-size: .8rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+.library-collection .dropzone { display: grid; grid-template-columns: 24px minmax(0, 1fr); column-gap: 12px; row-gap: 4px; min-height: 88px; padding: 20px; text-align: left; border: 1px dashed var(--md-sys-color-outline); border-radius: var(--radius-md); background: var(--md-sys-color-surface-container-low); }
+.library-collection .dropzone:hover, .library-collection .dropzone:focus-visible, .library-collection .dropzone.dragover { border-color: var(--accent); background: var(--accent-tint); }
+.library-collection .dropzone > svg { grid-row: 1 / 3; align-self: center; color: var(--accent); }
 .library-collection .dropzone-title, .library-collection .dropzone-hint { margin: 0; }
-.library-collection .dropzone-title { color: var(--accent); font-size: 14px; }
-.library-collection .dropzone-hint { font-size: 12px; }
-.library-upload + .library-items { margin-top: 16px; }
-.library-empty { margin: 0; padding: 12px 0; color: var(--muted); font-size: 13px; }
-/* Give content the full row width; controls have their own stable, visible lane. */
-.library-collection .list-row { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; margin-inline: 0; padding: 16px; }
-.library-collection .list-row-title { white-space: normal; overflow-wrap: anywhere; }
-.library-collection .list-row-meta { flex-wrap: wrap; gap: 4px 10px; }
+.library-collection .dropzone-title { color: var(--accent); font-size: 1rem; font-weight: 600; }
+.library-collection .dropzone-hint { font-size: .85rem; line-height: 1.5; }
+.library-upload + .library-items { margin-top: 20px; }
+.library-empty { margin: 0; padding: 28px 20px; border: 1px solid var(--border); border-radius: var(--radius-md); color: var(--muted); font-size: .95rem; line-height: 1.6; }
+
+/* Long legal names get the full row. A stable second lane makes all actions
+   discoverable with a mouse, keyboard or touch, without obscuring metadata. */
+.library-collection .list-row { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; margin-inline: 0; padding: 20px 12px; border-radius: var(--radius-md); }
+.library-collection .list-row:hover, .library-collection .list-row:focus-within { background: var(--md-sys-color-surface-container-low); }
+.library-collection .list-row-main { gap: 8px; }
+.library-collection .list-row-title { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 8px; white-space: normal; overflow-wrap: anywhere; font-size: 1.05rem; line-height: 1.45; }
+.library-collection .list-row-title .badge { margin-left: 0; }
+.library-item-title, .library-collection button.template-desc { display: inline; width: fit-content; max-width: 100%; min-height: 0; padding: 0; border: 0; border-radius: var(--radius-sm); background: transparent; color: inherit; box-shadow: none; font: inherit; text-align: left; white-space: normal; overflow-wrap: anywhere; transform: none; }
+.library-item-title { font-weight: 650; }
+.library-item-title:hover, .library-collection button.template-desc:hover { border: 0; background: transparent; color: var(--accent); box-shadow: none; text-decoration: underline; text-underline-offset: 3px; transform: none; }
+.library-collection .list-row-meta { flex-wrap: wrap; align-items: baseline; gap: 4px 12px; font-size: .85rem; line-height: 1.6; }
 .library-collection .list-row-desc { flex-basis: 100%; white-space: normal; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.library-collection button.template-desc { font-size: .85rem; cursor: pointer; }
 .library-collection .list-row-date { white-space: normal; }
 .library-collection .list-row-desc + .list-row-date::before { content: none; }
 .library-collection .list-row-actions { justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-left: 0; }
-.library-collection .list-row-actions .icon-btn { min-height: 34px; padding: 6px 12px; opacity: 1; }
-.library-collection .list-row-actions .icon-btn:not(.is-primary):not(.danger) { opacity: 1; }
+.library-collection .list-row-actions .icon-btn { min-height: 36px; padding: 6px 12px; opacity: 1; font-size: .85rem; }
+.library-collection .list-row-actions .icon-btn:not(.is-primary):not(.danger) { opacity: 1; color: var(--text-secondary); }
+.library-collection .list-row-actions .icon-btn.is-primary { border-color: transparent; background: var(--md-sys-color-primary-container); color: var(--md-sys-color-on-primary-container); }
+.library-collection .list-row-actions .icon-btn.is-primary:hover { background: var(--accent-soft-hover); }
 .library-collection .list-row-actions .switch { margin-right: auto; }
-@media (hover: none), (pointer: coarse) {
-  .library-collection .list-row-actions .icon-btn { min-height: 40px; }
-}
-.library-builder { padding-left: 32px; border-left: 1px solid var(--border-soft); }
-.library-builder .design-conversation.chat-card { margin: 0; padding: 0; }
-.library-builder .design-conversation .chat-heading { padding-bottom: 12px; }
-.library-builder .design-conversation .chat-heading h2 { font-size: 18px; }
+
+.library-builder { padding: 24px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--md-sys-color-surface-container-low); }
+.library-builder .design-conversation.chat-card { margin: 0; padding: 0; background: transparent; }
+.library-builder .design-conversation .chat-heading { padding-bottom: 16px; }
+.library-builder .design-conversation .chat-heading h2 { font-size: 1.15rem; font-weight: 650; }
 .library-builder .design-conversation .chat-log { height: auto; padding: 0 0 16px; }
 .library-builder .design-conversation:has(.chat-empty) .chat-log { height: auto; }
 .library-builder .design-conversation .chat-empty { max-width: none; width: 100%; padding: 0; margin: 0; }
-.library-builder .design-conversation .chat-empty-intro { font-size: 14px; line-height: 1.5; letter-spacing: 0; margin-bottom: 12px; }
-.library-builder .design-conversation .chat-empty .starters { flex-direction: column; align-items: stretch; }
-.library-builder .design-conversation .starter { min-height: 38px; padding: 9px 0; text-align: left; }
+.library-builder .design-conversation .chat-empty-intro { font-size: .95rem; line-height: 1.6; letter-spacing: 0; margin-bottom: 20px; }
+.library-builder .design-conversation .chat-empty .starters { flex-direction: column; align-items: stretch; gap: 8px; }
+.library-builder .design-conversation .starter { min-height: 44px; padding: 12px; text-align: left; }
+.library-builder .design-conversation .composer { --composer-fill: var(--panel); }
 .library-builder .design-conversation .composer textarea { min-height: 72px; }
 
-/* The first message starts the full-height layout immediately. A new session
-   reaches the URL only after its first turn settles, so .is-active alone is late.
-   Keep the composer and pending questions outside the scrolling transcript. */
-.content:has(.library-layout.is-active, .library-layout .msg) { display: flex; flex-direction: column; height: 100dvh; }
+/* A first message enters the fixed desktop workspace immediately, before the
+   new session reaches the URL. Transcript, collection and composer keep their
+   existing independent scrolling behavior. */
+.content:has(.library-layout.is-active, .library-layout .msg) { display: flex; flex-direction: column; height: var(--viewport-block); }
 .container:has(> .library-layout.is-active, > .library-layout .msg) { display: flex; flex-direction: column; flex: 1; min-height: 0; width: 100%; }
 .container:has(> .library-layout.is-active, > .library-layout .msg) > .library-head { flex: none; }
 .library-layout:is(.is-active, :has(.msg)) { flex: 1; min-height: 0; grid-template-rows: minmax(0, 1fr); align-items: stretch; }
-.library-layout:is(.is-active, :has(.msg)) .library-collection { min-height: 0; overflow-y: auto; }
+.library-layout:is(.is-active, :has(.msg)) .library-collection { min-height: 0; overflow-y: auto; padding-right: 8px; scrollbar-width: thin; }
 .library-layout:is(.is-active, :has(.msg)) .library-builder { display: flex; min-height: 0; }
 .library-layout:is(.is-active, :has(.msg)) .chat-card { flex: 1; min-height: 0; }
 .library-layout:is(.is-active, :has(.msg)) .chat-card > * { flex-shrink: 0; }
 .library-layout:is(.is-active, :has(.msg)) .chat-log-wrap { display: flex; flex-direction: column; flex: 1 1 0; min-height: 96px; }
 .library-layout:is(.is-active, :has(.msg)) .design-conversation .chat-log { flex: 1 1 0; height: auto; }
 
+/* A missing link still belongs to the same calm professional workspace. */
+.not-found { max-width: 560px; margin: clamp(32px, 10vh, 120px) auto; text-align: center; }
+.not-found-symbol { display: grid; place-items: center; width: 64px; height: 64px; margin: 0 auto 24px; border-radius: var(--radius-lg); background: var(--accent-soft); color: var(--accent); }
+.not-found h1 { font-family: var(--font-display); font-size: clamp(1.75rem, 4vw, 2.5rem); letter-spacing: -.04em; font-weight: 600; }
+.not-found p { color: var(--muted); font-size: 1rem; line-height: 1.7; }
+.not-found .primary { margin-top: 12px; }
+
 @media (max-width: 1100px) {
   .library-layout { gap: 24px; }
-  .library-builder { padding-left: 24px; }
+  .library-builder { padding: 20px; }
 }
 @media (max-width: 760px) {
+  .page-head.library-head { margin-bottom: 24px; }
   .library-layout { grid-template-columns: minmax(0, 1fr); }
-  .library-builder { padding: 24px 0 0; border-left: 0; border-top: 1px solid var(--border-soft); }
-  /* The active conversation fills the first screen; the library follows in
-     normal page scrolling, without competing for the transcript's height. */
+  .library-builder { padding: 20px; }
+  .library-collection .list-row { padding-inline: 8px; }
+  /* The active conversation fills the first screen; the collection follows in
+     normal page scrolling instead of competing for transcript height. */
   .library-layout:is(.is-active, :has(.msg)) { grid-template-rows: 100% max-content; }
-  .library-layout:is(.is-active, :has(.msg)) .library-builder { grid-row: 1; padding-top: 0; border-top: 0; }
-  .library-layout:is(.is-active, :has(.msg)) .library-collection { overflow: visible; border-top: 1px solid var(--border-soft); padding-block: 24px; }
+  .library-layout:is(.is-active, :has(.msg)) .library-builder { grid-row: 1; }
+  .library-layout:is(.is-active, :has(.msg)) .library-collection { overflow: visible; padding: 24px 0; }
+}
+@media (hover: none), (pointer: coarse) {
+  .library-collection .list-row-actions .icon-btn { min-height: 44px; }
+  .library-item-title, .library-collection button.template-desc { min-height: 44px; }
 }

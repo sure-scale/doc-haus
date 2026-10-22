@@ -21,6 +21,11 @@ export default function AppearanceTab() {
           { value: "large", label: "Large" },
         ]}
       />
+      <div className="settings-type-preview">
+        <span>Text preview</span>
+        <h4>A comfortable place to work</h4>
+        <p>Read documents, follow the conversation and review the details at a size that works for you.</p>
+      </div>
     </section>
   )
 }

@@ -92,7 +92,7 @@ export default function Agents() {
               agent={AGENT_BUILDER.name}
               available={new Set([AGENT_BUILDER.name])}
               pinned={AGENT_BUILDER}
-              title="Create or edit a agent"
+              title="Create or edit an agent"
               emptyHint="Describe a specialist reviewer, or ask about your agents."
               starters={[
                 "What agents do we have?",
@@ -130,7 +130,7 @@ export default function Agents() {
               >
                 <div className="list-row-main">
                   <span className="list-row-title">
-                    {a.label}
+                    <button type="button" className="library-item-title" onClick={(e) => { e.stopPropagation(); setViewing(a) }}>{a.label}</button>
                     {a.builtin && <span className="badge badge-quiet">Built-in</span>}
                   </span>
                   <span className="list-row-meta">
