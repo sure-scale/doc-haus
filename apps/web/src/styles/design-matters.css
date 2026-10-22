@@ -16,7 +16,7 @@
 .matter-form-field small { color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
 .matter-form-field small.field-error, .matter-edit-field small.field-error { color: var(--danger); font-size: 12px; line-height: 1.5; }
 .matter-form-field input, .matter-form-field select, .matter-form-field .jx-select, .matter-form-field .jx-trigger { width: 100%; min-width: 0; }
-.matter-create-row input, .matter-create-row select, .matter-create-row .jx-trigger { min-height: var(--ctl-h); height: auto; padding: 10px var(--space-3); font-size: 14px; line-height: 20px; border-radius: var(--radius-sm); background-color: var(--panel); }
+.matter-create-row input, .matter-create-row select, .matter-create-row .jx-trigger { min-height: var(--ctl-h); height: auto; padding: 10px var(--space-3); font-size: 14px; line-height: 20px; border-radius: var(--radius-md); background-color: var(--panel); }
 .matter-create-row select { padding-right: var(--space-7); }
 .matter-create-row .jx-trigger { justify-content: space-between; font-weight: 400; }
 .matter-create-row .jx-trigger.is-empty { color: var(--text-secondary); }
@@ -32,7 +32,7 @@
 .matters-list-toolbar .page-filter { width: 100%; min-width: 0; padding-left: var(--space-8); border-radius: var(--radius-pill); }
 .matter-sort-label { margin-left: auto; color: var(--muted); font-size: 12px; }
 .matters-index-list { border-top: 1px solid var(--border); }
-.matters-layout .matters-index-list > .list-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-4); margin: 0; padding: var(--space-5) var(--space-3); border-radius: var(--radius-sm); border-bottom: 1px solid var(--border-soft); }
+.matters-layout .matters-index-list > .list-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-4); margin: 0; padding: var(--space-5) var(--space-3); border-radius: var(--radius-md); border-bottom: 1px solid transparent; }
 .matters-index-list .list-row-main { gap: var(--space-2); align-self: stretch; justify-content: center; min-height: 44px; }
 .matters-index-list .list-row-main:focus-visible { outline: 2px solid var(--accent); outline-offset: 5px; border-radius: 2px; }
 .matters-index-list .list-row-title { font-size: 16px; line-height: 1.4; font-weight: 600; letter-spacing: -.15px; white-space: normal; overflow-wrap: anywhere; }
@@ -51,7 +51,7 @@
 .matters-layout .empty-state p { max-width: 400px; margin-inline: auto; }
 
 /* Native dialog owns trapping, Escape and top-layer popover containment. */
-dialog.matter-edit { width: min(480px, calc(var(--viewport-inline) - 32px)); max-width: none; max-height: calc(var(--viewport-block) - 32px); margin: auto; padding: 0; overflow: auto; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--panel); color: var(--text); box-shadow: var(--shadow-lg); }
+dialog.matter-edit { width: min(480px, calc(var(--viewport-inline) - 32px)); max-width: none; max-height: calc(var(--viewport-block) - 32px); margin: auto; padding: 0; overflow: auto; border: 1px solid var(--border); border-radius: var(--md-sys-shape-corner-extra-large); background: var(--panel); color: var(--text); box-shadow: var(--shadow-lg); }
 dialog.matter-edit:not([open]) { display: none; }
 dialog.matter-edit::backdrop { background: rgb(22 35 29 / .36); }
 .matter-edit > .viewer-bar { position: sticky; top: 0; z-index: 1; padding: var(--space-4) var(--space-5); background: var(--panel); }

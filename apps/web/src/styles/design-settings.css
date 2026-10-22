@@ -40,7 +40,7 @@
   overflow: auto;
   border-right: 1px solid var(--border);
   background: var(--md-sys-color-surface-container-low);
-  border-bottom-left-radius: var(--radius-lg);
+  border-bottom-left-radius: var(--md-sys-shape-corner-extra-large);
   padding: var(--space-5) var(--space-3);
   display: flex;
   flex-direction: column;
@@ -54,7 +54,8 @@
   padding: 10px var(--space-4);
   border: none;
   background: none;
-  border-radius: var(--radius-pill);
+  /* Concentric with the panel corner: outer 28px minus the rail's 12px inset. */
+  border-radius: calc(var(--md-sys-shape-corner-extra-large) - var(--space-3));
   font-size: .93rem;
   font-weight: 500;
   color: var(--muted);
@@ -197,7 +198,15 @@
   font-size: .93rem;
   color: var(--muted);
   font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
 }
+
+/* M3 segmented buttons mark the selected segment with a leading check, so
+   selection is not carried by colour alone. */
+.settings-seg-check { flex: none; }
 
 .settings-seg button:hover:not(:disabled) {
   background: var(--md-sys-color-surface-container);
@@ -439,6 +448,25 @@
 .settings-section:first-of-type {
   border-top: none;
   padding-top: 0;
+}
+
+/* In Settings each group is a low-tone card: the heading stays, the divider goes. */
+.settings-content .settings-section {
+  padding: var(--space-5);
+  border: 0;
+  border-radius: var(--radius-lg);
+  background: var(--md-sys-color-surface-container-low);
+}
+
+@container settings (max-width: 520px) {
+  .settings-content .settings-section { padding: var(--space-4); }
+}
+
+/* A section nested in a card (the sign-in disclosure body) is not a second card. */
+.settings-content .settings-section .settings-section {
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
 }
 
 /* A disclosure's summary is a pointer target; keep it at least 24px tall. */

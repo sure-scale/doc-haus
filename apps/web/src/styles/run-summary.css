@@ -5,9 +5,8 @@
   margin: var(--space-3) 0 var(--space-1);
   padding: var(--space-3) 14px;
   border: 1px solid var(--accent-border);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   background: var(--panel);
-  box-shadow: var(--shadow-xs);
   animation: narration-in var(--duration-slow) var(--ease-out) both;
 }
 

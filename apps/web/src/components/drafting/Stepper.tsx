@@ -65,13 +65,13 @@ export default function Stepper({ status, now }: { status: LeanDraftingStatus; n
 function StepGlyph({ state }: { state: Step["row"]["status"] }) {
   if (state === "done")
     return (
-      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round">
+      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
         <polyline points="20 6 9 17 4 12" pathLength={1} />
       </svg>
     )
   if (state === "failed" || state === "blocked")
     return (
-      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round">
+      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round">
         <line x1="10" y1="7" x2="10" y2="17" />
         <line x1="15" y1="7" x2="15" y2="17" />
       </svg>

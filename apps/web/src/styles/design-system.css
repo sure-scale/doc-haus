@@ -15,21 +15,12 @@
   --md-sys-color-on-primary: #ffffff;
   --md-sys-color-primary-container: #edf4ee;
   --md-sys-color-on-primary-container: #154c3b;
-  --md-sys-color-secondary: #4b635a;
-  --md-sys-color-on-secondary: #ffffff;
-  --md-sys-color-secondary-container: #e6efe9;
-  --md-sys-color-on-secondary-container: #344c43;
-  --md-sys-color-tertiary: #406376;
-  --md-sys-color-on-tertiary: #ffffff;
-  --md-sys-color-tertiary-container: #edf5fa;
-  --md-sys-color-on-tertiary-container: #274b5d;
   --md-sys-color-surface: #ffffff;
   --md-sys-color-surface-container-lowest: #ffffff;
   --md-sys-color-surface-container-low: #f8faf7;
   --md-sys-color-surface-container: #f2f5f1;
   --md-sys-color-surface-container-high: #edf1ec;
   --md-sys-color-surface-container-highest: #e3e9e3;
-  --md-sys-color-surface-variant: #edf1ec;
   --md-sys-color-on-surface: #242c28;
   --md-sys-color-on-surface-variant: #526057;
   --md-sys-color-outline: #707974;
@@ -40,10 +31,7 @@
   --md-sys-color-on-error-container: #7b2421;
   --md-sys-color-inverse-surface: #2c352f;
   --md-sys-color-inverse-on-surface: #f5f8f3;
-  --md-sys-color-inverse-primary: #88d6bb;
   --md-sys-color-scrim: rgb(24 35 28 / 36%);
-  --md-sys-color-success: #17634f;
-  --md-sys-color-success-container: #edf4ee;
   --md-sys-color-warning: #805311;
   --md-sys-color-warning-container: #fff5e3;
   --md-sys-color-info: #315e77;
@@ -84,6 +72,11 @@
   --space-7: 32px;
   --space-8: 40px;
   --content-max: 1100px; /* page and conversation column cap on wide screens */
+  --icon-stroke: 1.75; /* UI icon line weight; selected nav uses the emphasis weight */
+  --icon-stroke-emphasis: 2;
+  --icon-sm: 16px;
+  --icon-md: 20px;
+  --icon-lg: 24px;
   --md-sys-motion-duration-short: 120ms;
   --md-sys-motion-duration-medium: 200ms;
   --md-sys-motion-duration-long: 320ms;
@@ -172,6 +165,13 @@
   :root { --spring-spatial-fast: var(--md-sys-motion-easing-standard); --spring-spatial-default: var(--md-sys-motion-easing-standard); --spring-spatial-slow: var(--md-sys-motion-easing-standard); --spring-effects-fast: var(--md-sys-motion-easing-standard); --spring-effects-default: var(--md-sys-motion-easing-standard); --spring-effects-slow: var(--md-sys-motion-easing-standard); }
 }
 body { background: var(--panel); }
+/* One line weight for UI icons. CSS beats the SVG presentation attribute, so an
+   inline icon takes the token unless it opts out with its own stroke-width
+   attribute: small status marks (check, pause, help glyphs in badges and chips)
+   and the 16-unit timeline marks keep a heavier or finer stroke on purpose.
+   Brand marks, the telemetry donut (stroke on its circles) and the check-draw
+   animation (stroke-dash only) never match: they carry no root stroke. */
+:where(svg[stroke="currentColor"]:not([stroke-width])) { stroke-width: var(--icon-stroke); }
 .container { --container-pad: clamp(24px, 4vw, 64px); max-width: calc(var(--content-max) + 2 * var(--container-pad)); padding: var(--space-8) var(--container-pad); }
 .page-head { margin-bottom: var(--space-7); }
 .page-head h1 { margin: 0; font: var(--md-sys-typescale-headline-large); letter-spacing: var(--tracking-display); }

@@ -357,7 +357,6 @@ a {
   border-radius: var(--radius-lg);
   padding: 18px var(--space-6);
   margin-bottom: var(--space-4);
-  box-shadow: var(--shadow-xs);
 }
 
 .card h2 {
@@ -403,12 +402,27 @@ li.list-row {
   margin: 0 -14px;
   padding: 13px 14px;
   border-radius: var(--radius-md);
-  border-bottom: 1px solid var(--border-soft);
+  /* Transparent border keeps the row height; the straight divider is drawn below so it does not follow the rounded corners. */
+  border-bottom: 1px solid transparent;
   transition: background var(--duration-fast) var(--ease-out);
+}
+
+.list-row { position: relative; }
+.list-row::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 0;
+  height: 1px;
+  background: var(--border-soft);
+  pointer-events: none;
 }
 
 .list-row:last-child {
   border-bottom: none;
+}
+
+.list-row:last-child::after {
+  content: none;
 }
 
 /* Whole row opens the template viewer; inner buttons stop propagation. */
@@ -490,7 +504,7 @@ li.list-row {
   font-variant-numeric: tabular-nums;
   color: var(--accent);
   background: var(--accent-soft);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   padding: 1px 6px;
   margin-right: var(--space-2);
 }
@@ -528,7 +542,7 @@ li.list-row {
   font-size: 13px;
   color: var(--accent);
   background: var(--accent-soft);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   padding: var(--space-1) 6px;
   word-break: break-word;
 }
@@ -539,7 +553,7 @@ li.list-row {
   color: var(--muted);
   background: none;
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-pill);
   padding: 3px var(--space-2);
   cursor: pointer;
   transition:
@@ -716,7 +730,7 @@ li.list-row {
 .picker-panel {
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
+  border-radius: var(--md-sys-shape-corner-extra-large);
   width: 100%;
   max-width: 460px;
   max-height: calc(var(--viewport-block) - 64px);
@@ -726,9 +740,9 @@ li.list-row {
 }
 
 .picker-panel .viewer-bar-actions > .modal-close {
-  width: 36px;
-  height: 36px;
-  flex: 0 0 36px;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 40px;
   padding: var(--space-2);
 }
 .picker-panel .modal-close svg { flex-shrink: 0; }
@@ -809,11 +823,13 @@ li.list-row {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
-  padding: 0;
+  flex: none;
+  align-self: center;
+  width: 40px;
+  height: 40px;
+  padding: var(--space-2);
   border: none;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-pill);
   background: transparent;
   color: var(--muted);
 }
@@ -857,7 +873,7 @@ li.list-row {
   max-height: calc(var(--viewport-block) - 16px);
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
   box-shadow: var(--shadow-lg);
   display: flex;
   flex-direction: column;
@@ -1049,7 +1065,7 @@ li.list-row {
   font-variant-numeric: tabular-nums;
   color: var(--accent);
   background: var(--accent-soft);
-  border-radius: 10px;
+  border-radius: var(--radius-pill);
   padding: 1px 7px;
 }
 
@@ -1191,7 +1207,6 @@ li.list-row {
 .rail-strip-btn.is-active {
   color: var(--accent);
   border-color: var(--accent-border);
-  box-shadow: var(--shadow-sm);
 }
 
 .rail-strip-cost {
@@ -1250,8 +1265,8 @@ li.list-row {
 }
 
 .telemetry-drawer .viewer-bar-actions > .modal-close {
-  width: 36px;
-  height: 36px;
+  width: 40px;
+  height: 40px;
   padding: var(--space-2);
 }
 .telemetry-drawer .modal-close svg { flex-shrink: 0; }
@@ -1689,7 +1704,7 @@ li.list-row {
   font-size: 12px;
   color: var(--accent);
   background: var(--accent-soft);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   padding: 2px var(--space-2);
 }
 
@@ -1736,7 +1751,7 @@ li.list-row {
   color: var(--text);
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   padding: 2px 6px;
 }
 
@@ -1761,7 +1776,7 @@ li.list-row {
   color: var(--accent);
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: var(--radius-md);
   padding: 2px var(--space-2);
 }
 
@@ -1961,7 +1976,7 @@ li.list-row {
   color: var(--text);
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   padding: var(--space-2);
 }
 
@@ -2416,7 +2431,6 @@ li.list-row {
   padding: 10px var(--space-3);
   margin-top: var(--space-2);
   border-radius: var(--radius-sm);
-  box-shadow: var(--shadow-xs);
 }
 
 .citation .ref {
@@ -2461,10 +2475,9 @@ li.list-row {
 .redline-card {
   border: 1px solid var(--border);
   border-left: 3px solid var(--danger);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   background: var(--panel);
   padding: var(--space-3) 14px;
-  box-shadow: var(--shadow-xs);
 }
 
 .redline-doc {
@@ -2528,13 +2541,12 @@ li.list-row {
 .draft-card {
   border: 1px solid var(--border);
   border-left: 3px solid var(--accent);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   background: var(--panel);
   padding: var(--space-3) 14px;
   display: flex;
   align-items: center;
   gap: 10px;
-  box-shadow: var(--shadow-xs);
 }
 
 .draft-icon {
@@ -2591,7 +2603,6 @@ li.list-row {
   border-left: 3px solid var(--accent);
   border-radius: var(--radius-sm);
   background: var(--panel);
-  box-shadow: var(--shadow-xs);
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -2724,7 +2735,6 @@ li.list-row {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  box-shadow: var(--shadow-md);
 }
 
 /* Dog-eared corner so the loader reads as a sheet of paper. */
@@ -2920,7 +2930,6 @@ li.list-row {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-xs);
   transition:
     border-color 0.15s var(--ease-out),
     box-shadow 0.15s var(--ease-out);
@@ -3147,7 +3156,7 @@ button.linklike:hover:not(:disabled) {
 .viewer-panel {
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
+  border-radius: var(--md-sys-shape-corner-extra-large);
   width: 100%;
   max-width: 1240px;
   max-height: calc(var(--viewport-block) - 64px);
@@ -3191,7 +3200,7 @@ button.linklike:hover:not(:disabled) {
   color: var(--accent);
   background: var(--accent-soft);
   border: 1px solid var(--accent-border);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   padding: 2px 6px;
 }
 
@@ -3279,11 +3288,10 @@ button.linklike:hover:not(:disabled) {
    green, mirroring the in-document redline, with per-change accept/reject. */
 .change-card {
   border: 1px solid var(--border);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   background: var(--panel);
   padding: var(--space-3);
   margin-bottom: 10px;
-  box-shadow: var(--shadow-xs);
   transition:
     border-color var(--duration-fast) var(--ease-out),
     box-shadow var(--duration-fast) var(--ease-out);
@@ -3395,7 +3403,7 @@ button.linklike:hover:not(:disabled) {
   min-width: 18px;
   height: 18px;
   padding: 0 5px;
-  border-radius: 9px;
+  border-radius: var(--radius-pill);
   background: var(--accent);
   color: var(--text-on-accent);
   font-size: 11px;
@@ -3413,13 +3421,9 @@ button.linklike:hover:not(:disabled) {
   max-width: 760px;
   margin: 0 auto;
   background: #fffdf9;
-  border: 1px solid rgba(26, 30, 28, 0.07);
+  border: 1px solid var(--border-soft);
   border-radius: 2px;
   padding: clamp(44px, 7vw, 88px) clamp(40px, 8vw, 96px);
-  box-shadow:
-    0 1px 2px rgba(26, 30, 28, 0.06),
-    0 8px 24px -8px rgba(26, 30, 28, 0.18),
-    0 28px 56px -28px rgba(45, 74, 62, 0.14);
   text-rendering: optimizeLegibility;
   font-kerning: normal;
 }
@@ -3835,11 +3839,10 @@ button.linklike:hover:not(:disabled) {
 .permission-card {
   border: 1px solid var(--border);
   border-left: 3px solid var(--accent);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   background: var(--panel);
   padding: var(--space-3) 14px;
   margin-bottom: 10px;
-  box-shadow: var(--shadow-md);
 }
 
 .permission-title {
@@ -3990,7 +3993,7 @@ button.linklike:hover:not(:disabled) {
 .provider-connection-banner {
   display: flex; align-items: center; justify-content: space-between; gap: var(--space-4);
   margin: var(--space-3) var(--space-5); padding: 14px 18px; border: 1px solid var(--warn-border);
-  border-radius: 10px; background: var(--warn-soft);
+  border-radius: var(--radius-lg); background: var(--warn-soft);
 }
 .provider-connection-banner p { margin: var(--space-1) 0 0; line-height: 1.5; }
 .provider-connection-actions { display: flex; gap: var(--space-2); flex-shrink: 0; }

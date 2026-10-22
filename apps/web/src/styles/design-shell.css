@@ -16,7 +16,7 @@
 .sidebar-brand .wordmark { font-family: var(--font-display); font-size: 21px; letter-spacing: -.8px; }
 .sidebar-icon-button { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 32px; height: 32px; padding: 0; border: 0; border-radius: var(--radius-pill); background: transparent; color: var(--text-secondary); cursor: pointer; }
 .sidebar-icon-button:hover { background: var(--accent-soft); color: var(--accent); }
-.sidebar-icon-button > svg { flex-shrink: 0; stroke-width: 1.75; }
+.sidebar-icon-button > svg { flex-shrink: 0; }
 .sidebar-mobile-toggle { display: none; }
 .sidebar-global-navigation { display: contents; }
 .sidebar-icon-button:focus-visible,
@@ -38,11 +38,11 @@
 .sidebar-primary { flex-shrink: 0; padding-bottom: var(--space-4); border-bottom: 1px solid var(--border-soft); }
 .sidebar-library-label { margin: var(--space-3) var(--space-3) var(--space-2); color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
 .sidebar .nav-item { min-height: 44px; gap: var(--space-3); padding: 10px var(--space-3); border-radius: var(--radius-pill); color: var(--text-secondary); font-size: 13px; font-weight: 500; line-height: 20px; }
-.sidebar .nav-item > svg { width: 20px; height: 20px; flex-shrink: 0; stroke-width: 1.75; }
+.sidebar .nav-item > svg { width: var(--icon-md); height: var(--icon-md); flex-shrink: 0; }
 .sidebar .nav-item:hover { background: var(--accent-soft); color: var(--text); }
 .sidebar .nav-item.active { background: var(--accent-soft); color: var(--accent); font-weight: 650; }
 .sidebar .nav-item.active::before { display: none; }
-.sidebar .nav-item.active > svg { stroke-width: 2; }
+.sidebar .nav-item.active > svg { stroke-width: var(--icon-stroke-emphasis); }
 .sidebar-footer { display: flex; flex-direction: column; flex-shrink: 0; gap: var(--space-2); margin-top: auto; padding-top: var(--space-3); border-top: 1px solid var(--border-soft); }
 .sidebar-update { color: var(--accent); }
 .sidebar-update > svg { flex-shrink: 0; pointer-events: none; }
@@ -53,7 +53,7 @@
 .sidebar-in-matter .sidebar-brand { margin-bottom: var(--space-2); padding-bottom: var(--space-2); }
 .sidebar-back { margin: 0 0 var(--space-1); padding: 0; border: 0; }
 .sidebar-back .nav-item { width: auto; align-self: flex-start; min-height: 36px; padding: 6px var(--space-3) 6px 6px; gap: var(--space-1); color: var(--text-secondary); font-size: 12px; }
-.sidebar-back .nav-item > svg { width: 16px; height: 16px; }
+.sidebar-back .nav-item > svg { width: var(--icon-sm); height: var(--icon-sm); }
 .sidebar-matter-card { flex-shrink: 0; min-width: 0; margin: var(--space-3) 0 var(--space-4); padding: 0 var(--space-3); }
 .sidebar-matter { display: block; width: 100%; min-width: 0; margin: 0; padding: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-size: 13px; font-weight: 600; letter-spacing: 0; line-height: 1.5; text-transform: none; }
 .sidebar-in-matter .sidebar-surfaces { flex-shrink: 0; gap: var(--space-1); margin: 0 0 var(--space-4); padding: 0 0 var(--space-4); border-top: 0; border-bottom: 1px solid var(--border-soft); }
@@ -69,7 +69,8 @@
 .sidebar-conversations > .sidebar-section-head { display: flex; align-items: center; flex-shrink: 0; gap: var(--space-2); min-height: 36px; margin: 0 0 var(--space-2); padding: 0 2px 0 var(--space-1); border: 0; background: transparent; text-transform: none; letter-spacing: 0; color: var(--text); }
 .sidebar-section-head h2 { margin: 0; font-family: var(--font-sans); font-size: 12px; font-weight: 600; }
 .sidebar-section-link { display: inline-flex; align-items: center; gap: var(--space-2); min-height: 32px; color: var(--text); font-size: 12px; font-weight: 600; }
-.sidebar-section-link > svg { flex-shrink: 0; width: 18px; height: 18px; color: var(--accent); stroke-width: 1.75; }
+.sidebar-section-link > svg { flex-shrink: 0; width: var(--icon-md); height: var(--icon-md); color: var(--accent); }
+.sidebar-section-link.active > svg { stroke-width: var(--icon-stroke-emphasis); }
 .sidebar-section-link:hover,
 .sidebar-section-link.active { color: var(--accent); }
 .sidebar-conversations .sidebar-new { width: 32px; height: 32px; margin-left: auto; padding: 0; border: 1px solid var(--accent-border); background: var(--panel); color: var(--accent); }

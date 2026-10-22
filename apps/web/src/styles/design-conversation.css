@@ -328,6 +328,25 @@
   .design-conversation .send-btn { margin-left: auto; }
 }
 
+/* Tools alone need ~460px. Below that Workflows, Playbook and Documents become
+   icon-only (label kept for assistive tech, title for hover); Auto and the
+   document count stay. */
+@container (max-width: 480px) {
+  .design-conversation .composer-tools .workflow-btn > span:not(.docs-btn-count) {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0;
+  }
+  .design-conversation .composer-tools .workflow-btn { min-width: 36px; justify-content: center; }
+  /* Bound playbook: with the label hidden, a tonal fill and a check badge carry the binding. */
+  .design-conversation .composer-tools .workflow-btn.is-bound { position: relative; background: var(--accent-soft); color: var(--accent); }
+  .design-conversation .composer-tools .workflow-btn.is-bound .bound-mark {
+    display: block; position: absolute; top: 3px; right: 3px; box-sizing: content-box; width: 8px; height: 8px; padding: 1px;
+    border-radius: 50%; background: var(--accent); color: var(--text-on-accent);
+  }
+  @media (pointer: coarse) {
+    .design-conversation .composer-tools .workflow-btn { min-width: max(44px, calc(44px / var(--ui-scale))); }
+  }
+}
+
 /* Supporting activity is quiet until opened; approvals keep their own clear
    heading and actions rather than appearing as another assistant message. */
 .design-conversation .steps > summary {
@@ -373,7 +392,7 @@
   padding: var(--space-4);
   border: 1px solid var(--md-sys-color-outline);
   border-left: 4px solid var(--accent);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   background: var(--md-sys-color-surface);
   box-shadow: none;
 }
@@ -408,7 +427,7 @@
 }
 
 .design-conversation .question-dialog {
-  border-radius: var(--radius-lg);
+  border-radius: var(--md-sys-shape-corner-extra-large);
 }
 
 .design-conversation .question-dialog::backdrop {
@@ -607,7 +626,6 @@
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 2px;
-  box-shadow: var(--shadow-sm);
   user-select: none;
 }
 
@@ -1088,6 +1106,7 @@
    files anywhere over the composer adds them to the matter. */
 .design-conversation .composer-dock { position: relative; flex: none; }
 .design-conversation .docs-btn { gap: 6px; }
+.design-conversation .composer-tools .workflow-btn .bound-mark { display: none; }
 .design-conversation .composer-tools .docs-btn.is-open { color: var(--accent); border-color: transparent; background: var(--accent-soft); }
 .design-conversation .docs-btn-count {
   min-width: 0;

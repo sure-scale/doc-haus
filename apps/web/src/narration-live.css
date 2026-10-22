@@ -17,7 +17,6 @@
   border-radius: var(--radius-pill);
   background: var(--accent-tint);
   border: 1px solid var(--accent-border);
-  box-shadow: var(--shadow-xs);
   font-size: 13px;
 }
 

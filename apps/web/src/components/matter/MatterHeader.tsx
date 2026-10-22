@@ -132,7 +132,7 @@ export default function MatterHeader({
           <ol>
             <li><Link to="/">Matters</Link></li>
             <li className="matter-breadcrumb-current" aria-current="page">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
                 <path d="m9 5 7 7-7 7" />
               </svg>
               <h1>
@@ -161,7 +161,7 @@ export default function MatterHeader({
                     }}
                   >
                     {matter.title}
-                    <svg className="matter-title-pencil" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                    <svg className="matter-title-pencil" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
                       <path d="M12 20h9" />
                       <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z" />
                     </svg>

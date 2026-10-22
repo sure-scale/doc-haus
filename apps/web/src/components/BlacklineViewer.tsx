@@ -127,7 +127,7 @@ export default function BlacklineViewer({ matterId, params, focus, onClose }: { 
           <ViewerTitle name={name} kind={`Blackline: ${params.left} → ${params.right}`} />
           <div className="viewer-bar-actions">
             <button onClick={() => blackline && saveDocx(blackline, name)} disabled={!blackline} title="Download the blackline as a Word file with tracked changes">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <path d="M12 4v11" />
                 <path d="m7 10 5 5 5-5" />
                 <path d="M5 20h14" />

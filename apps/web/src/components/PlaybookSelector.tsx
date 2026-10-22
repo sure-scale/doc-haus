@@ -25,15 +25,20 @@ export default function PlaybookSelector({
   return (
     <>
       <button
-        className="workflow-btn"
+        className={`workflow-btn${boundLabel ? " is-bound" : ""}`}
         onClick={() => setOpen(true)}
         title="Firm playbook for this matter — review checks clauses against its positions"
       >
-        <svg className="workflow-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <svg className="workflow-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
           <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
         </svg>
         <span>{boundLabel ? `Playbook: ${boundLabel}` : "Playbook"}</span>
+        {boundLabel && (
+          <svg className="bound-mark" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M20 6 9 17l-5-5" />
+          </svg>
+        )}
       </button>
       <Exit when={open}>{(_, closing) => (
         <div className={`viewer-overlay${closing ? " is-closing" : ""}`} inert={closing} {...backdropClose(() => setOpen(false))}>
@@ -41,7 +46,7 @@ export default function PlaybookSelector({
             <div className="viewer-bar">
               <span className="viewer-title">Playbook</span>
               <button className="modal-close" aria-label="Close" onClick={() => setOpen(false)}>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" /></svg>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" /></svg>
               </button>
             </div>
             <div className="picker-body">

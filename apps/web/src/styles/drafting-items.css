@@ -6,7 +6,7 @@
   margin: 0 0 var(--space-2);
   padding: 2px 10px;
   border: 1px solid var(--border-soft);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
 }
 
 .open-items-list {
@@ -161,7 +161,7 @@ button.question-dock-cta:focus-visible {
   padding: 0;
   overflow: auto;
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
+  border-radius: var(--md-sys-shape-corner-extra-large);
   background: var(--panel);
   color: var(--text);
   box-shadow: var(--shadow-xl);

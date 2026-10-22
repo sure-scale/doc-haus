@@ -140,7 +140,7 @@ export default function Sidebar({
           aria-expanded={!collapsed}
           aria-controls="application-navigation"
         >
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M4 6h16M4 12h10M4 18h10" /><path className="sidebar-mobile-chevron" d="m17 15 3 3 3-3" /></svg>
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M4 6h16M4 12h10M4 18h10" /><path className="sidebar-mobile-chevron" d="m17 15 3 3 3-3" /></svg>
         </button>
       )}
 
@@ -182,9 +182,7 @@ export default function Sidebar({
               title="Playbooks"
               aria-label="Playbooks"
             >
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
-                <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
-              </svg>
+              <IconPlaybooks />
               <span>Playbooks</span>
             </NavLink>
             <NavLink
@@ -347,7 +345,7 @@ function draftingRun(metadata: unknown) {
 
 function IconPlus() {
   return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" aria-hidden>
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" aria-hidden>
       <path d="M12 5v14M5 12h14" />
     </svg>
   )
@@ -355,7 +353,7 @@ function IconPlus() {
 
 function IconChat() {
   return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor">
       <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
     </svg>
   )
@@ -363,7 +361,7 @@ function IconChat() {
 
 function IconReview() {
   return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor">
       <rect x="3" y="3" width="18" height="18" rx="2" />
       <path d="M3 9h18M3 15h18M9 3v18" />
     </svg>
@@ -372,7 +370,7 @@ function IconReview() {
 
 function IconDocsNav() {
   return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor">
       <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
       <polyline points="14 2 14 8 20 8" />
     </svg>
@@ -381,7 +379,7 @@ function IconDocsNav() {
 
 function IconMatters() {
   return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor">
       <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
     </svg>
   )
@@ -389,7 +387,7 @@ function IconMatters() {
 
 function IconTemplates() {
   return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor">
       <rect x="4" y="3" width="16" height="18" rx="2" />
       <path d="M8 7h8M8 11h8M8 15h5" />
     </svg>
@@ -398,7 +396,7 @@ function IconTemplates() {
 
 function IconWorkflows() {
   return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor">
       <circle cx="5" cy="12" r="2" />
       <circle cx="19" cy="5" r="2" />
       <circle cx="19" cy="19" r="2" />
@@ -408,18 +406,28 @@ function IconWorkflows() {
   )
 }
 
-function IconSkills() {
+function IconPlaybooks() {
   return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
       <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
       <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
     </svg>
   )
 }
 
+function IconSkills() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M21.42 10.922a1 1 0 0 0-.019-1.838L12.83 5.18a2 2 0 0 0-1.66 0L2.6 9.08a1 1 0 0 0 0 1.832l8.57 3.908a2 2 0 0 0 1.66 0z" />
+      <path d="M22 10v6" />
+      <path d="M6 12.5V16a6 3 0 0 0 12 0v-3.5" />
+    </svg>
+  )
+}
+
 function IconAgents() {
   return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor">
       <rect x="5" y="8" width="14" height="11" rx="2" />
       <path d="M12 8V5" />
       <circle cx="12" cy="4" r="1" />
@@ -431,7 +439,7 @@ function IconAgents() {
 
 function IconSettings() {
   return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor">
       <circle cx="12" cy="12" r="3" />
       <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
     </svg>
@@ -440,7 +448,7 @@ function IconSettings() {
 
 function IconTrash() {
   return (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor">
       <polyline points="3 6 5 6 21 6" />
       <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
     </svg>
@@ -449,7 +457,7 @@ function IconTrash() {
 
 function IconChevron({ right }: { right: boolean }) {
   return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor">
       <polyline points={right ? "9 18 15 12 9 6" : "15 18 9 12 15 6"} />
     </svg>
   )

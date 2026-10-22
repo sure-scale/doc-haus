@@ -282,7 +282,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
                 ))}
                 <th className="review-add-col" scope="col">
                   <button className="review-add-button" type="button" onClick={addColumn} aria-label="Add column" title="Add column">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" aria-hidden="true">
                       <path d="M12 5v14M5 12h14" />
                     </svg>
                   </button>
@@ -339,7 +339,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
                                     d="M3 2.5h10A1.5 1.5 0 0 1 14.5 4v6a1.5 1.5 0 0 1-1.5 1.5H8.5L5 14.5v-3H3A1.5 1.5 0 0 1 1.5 10V4A1.5 1.5 0 0 1 3 2.5Z"
                                     fill="none"
                                     stroke="currentColor"
-                                    strokeWidth="1.4"
+                                    strokeWidth="1.5"
                                     strokeLinejoin="round"
                                   />
                                 </svg>

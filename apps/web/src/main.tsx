@@ -26,6 +26,7 @@ import "./styles/design-review.css"
 import "./styles/design-settings.css"
 import "./styles/design-matters.css"
 import "./styles/launch-notice.css"
+import "./styles/contrast.css"
 
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

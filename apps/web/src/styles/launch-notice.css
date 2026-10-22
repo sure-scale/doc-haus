@@ -18,7 +18,7 @@
 .launch-notice p.launch-notice-acknowledgement { margin: 0; font-size: 12px; color: var(--muted); }
 .launch-notice-actions { position: sticky; bottom: 0; display: flex; justify-content: flex-end; gap: 10px; padding: 18px var(--space-7); border-top: 1px solid var(--border-soft); background: var(--panel); }
 .launch-notice-actions button { min-height: 40px; padding-inline: 18px; }
-.update-release { margin: var(--space-6) 0; padding: var(--space-4); border: 1px solid var(--border-soft); border-radius: 8px; }
+.update-release { margin: var(--space-6) 0; padding: var(--space-4); border: 1px solid var(--border-soft); border-radius: var(--radius-lg); }
 .update-release p { margin-bottom: 0; }
 .launch-notice .update-error { color: var(--danger, #b42318); }
 @media (max-width: 480px) {

@@ -77,7 +77,6 @@
   background: var(--panel);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
-  box-shadow: var(--shadow-sm);
   font-family: Georgia, "Times New Roman", serif;
   color: var(--text);
 }

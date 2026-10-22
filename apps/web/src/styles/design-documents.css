@@ -34,7 +34,7 @@
 .matter-files-collection .dropzone.is-compact .dropzone-title { font-size: 0.75rem; font-weight: 500; }
 
 /* Existing document rendering and tracked-change actions stay intact. */
-.viewer-panel.document-reader { max-width: min(1480px, calc(var(--viewport-inline) - 48px)); max-height: calc(var(--viewport-block) - 48px); border-radius: var(--radius-lg); }
+.viewer-panel.document-reader { max-width: min(1480px, calc(var(--viewport-inline) - 48px)); max-height: calc(var(--viewport-block) - 48px); border-radius: var(--md-sys-shape-corner-extra-large); }
 .document-reader .viewer-bar { padding: 14px var(--space-5) 14px var(--space-6); }
 .document-reader .viewer-title { display: flex; gap: var(--space-3); min-width: 0; }
 .viewer-file-icon { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: var(--radius-md); background: var(--accent-soft); color: var(--accent); }
@@ -53,7 +53,7 @@
 .document-reader .modal-close svg { flex-shrink: 0; }
 .viewer-bar-divider { width: 1px; height: 22px; margin: 0 var(--space-1); background: var(--border); }
 .document-reader .viewer-doc { padding: 36px var(--space-8) 64px; background: var(--md-sys-color-surface-container-low); }
-.document-reader .docx-render { background: var(--md-sys-color-surface); line-height: 1.85; border-color: var(--md-sys-color-outline-variant); box-shadow: var(--shadow-sm); }
+.document-reader .docx-render { background: var(--md-sys-color-surface); line-height: 1.85; border-color: var(--md-sys-color-outline-variant); }
 .document-reader .changes-panel { background: var(--panel); padding: 0 var(--space-5) var(--space-5); }
 .document-reader .changes-head { background: var(--panel); }
 .document-reader .change-card { border: 0; border-bottom: 1px solid var(--border); border-radius: 0; padding: var(--space-5) 0; box-shadow: none; }
@@ -69,8 +69,8 @@
 .viewer-more-actions > summary:hover,
 .viewer-more-actions[open] > summary { background: var(--panel-hover); border-color: var(--border-strong); color: var(--text); }
 .viewer-more-actions > summary:focus-visible { outline: 2px solid var(--md-sys-state-focus); outline-offset: 2px; border-color: var(--accent); }
-.viewer-more-menu { position: absolute; right: 0; top: calc(100% + 6px); width: max-content; min-width: min(240px, calc(var(--viewport-inline) - 48px)); max-width: calc(var(--viewport-inline) - 48px); z-index: var(--z-popover); padding: 6px; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow-md); animation: panel-in 140ms var(--ease-out); }
-.viewer-more-menu button { display: flex; align-items: flex-start; gap: 10px; width: 100%; min-height: 40px; padding: 10px var(--space-3); text-align: left; font-size: 0.8125rem; border-color: transparent; border-radius: var(--radius-md); }
+.viewer-more-menu { position: absolute; right: 0; top: calc(100% + 6px); width: max-content; min-width: min(240px, calc(var(--viewport-inline) - 48px)); max-width: calc(var(--viewport-inline) - 48px); z-index: var(--z-popover); padding: 6px; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-md); box-shadow: var(--shadow-md); animation: panel-in 140ms var(--ease-out); }
+.viewer-more-menu button { display: flex; align-items: flex-start; gap: 10px; width: 100%; min-height: 40px; padding: 10px var(--space-3); text-align: left; font-size: 0.8125rem; border-color: transparent; border-radius: calc(var(--radius-md) - 6px); }
 .viewer-more-menu button svg { flex: none; margin-top: 1px; color: var(--muted); }
 .viewer-more-menu button:hover:not(:disabled) { background: var(--bg-sunken); border-color: transparent; }
 .viewer-more-menu button small { display: block; margin-top: 2px; font-size: 0.75rem; font-weight: 400; color: var(--muted); }
@@ -338,7 +338,7 @@
 .document-reader :is(.compare-untracked, .compare-proposals) .change-card:last-child { padding-bottom: 0; border-bottom: 0; }
 .compare-hunk-meta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin-bottom: var(--space-1); }
 .compare-untracked-tag,
-.compare-outcome-tag { padding: 0 6px; border: 1px solid var(--warn-border); border-radius: 4px; background: var(--warn-soft); color: var(--warn); font-size: 0.6875rem; font-weight: 500; letter-spacing: 0; line-height: 16px; text-transform: none; }
+.compare-outcome-tag { padding: 0 6px; border: 1px solid var(--warn-border); border-radius: var(--radius-sm); background: var(--warn-soft); color: var(--warn); font-size: 0.6875rem; font-weight: 500; letter-spacing: 0; line-height: 16px; text-transform: none; }
 /* Outcome tags read neutral; a rejected proposal and a link to an untracked edit warn. */
 .compare-outcome-tag:not(.is-warn) { border-color: var(--border); background: var(--panel); color: var(--text-secondary); }
 .compare-outcome-tag .compare-ref { font: inherit; color: inherit; text-decoration: underline; text-underline-offset: 2px; }

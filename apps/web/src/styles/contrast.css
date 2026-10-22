@@ -1,0 +1,75 @@
+/* ---------- High-contrast modes ----------
+   Loaded last. Selected states otherwise rest on a tonal fill (1.12:1 against
+   white) that forced colours erase and users who ask for more contrast cannot
+   see. Existing tokens and system colours only. */
+
+/* Forced colours: the UA replaces fills, so a selected control needs a system
+   colour fill or a CanvasText edge. The 2px focus outline (primitives.css)
+   already survives forced colours and is left alone. */
+@media (forced-colors: active) {
+  /* Chromium paints a Canvas backplate behind text in forced colours, so a
+     system-colour label on Highlight renders white on white. forced-color-adjust:
+     none on the item (and its descendants) removes the backplate; every colour
+     inside is then set here. */
+  :is(.sidebar .nav-item.active, .sidebar-history-body .convo-item.active, .settings-nav button.active, .settings-seg button.active, .assistant-option.selected, .jx-option.selected, .rail-strip-btn.is-active),
+  :is(.sidebar .nav-item.active, .sidebar-history-body .convo-item.active, .settings-nav button.active, .settings-seg button.active, .assistant-option.selected, .jx-option.selected, .rail-strip-btn.is-active):is(:hover, :active):not(:disabled) {
+    forced-color-adjust: none;
+    background-color: Highlight;
+    background-image: none;
+    color: HighlightText;
+  }
+  :is(.sidebar .nav-item.active, .sidebar-history-body .convo-item.active, .settings-nav button.active, .settings-seg button.active, .assistant-option.selected, .jx-option.selected, .rail-strip-btn.is-active) :is(*, ::before, ::after) {
+    forced-color-adjust: none;
+    color: HighlightText;
+    background-color: transparent;
+    border-color: HighlightText;
+  }
+  .assistant-option.selected::after { background-color: HighlightText; }
+  .jx-option.selected input { background-color: Canvas; border-color: CanvasText; color: CanvasText; accent-color: CanvasText; }
+  .sidebar-section-link.active { color: Highlight; text-decoration: underline; text-underline-offset: 4px; }
+
+  .switch::before { background: Canvas; border: 1px solid ButtonText; }
+  .switch::after { background: ButtonText; box-shadow: none; }
+  .switch.on::before,
+  .switch.on:hover:not(:disabled)::before { background: Highlight; border-color: Highlight; }
+  .switch.on::after { background: HighlightText; }
+
+  button.primary { border: 2px solid Highlight; }
+  .split-button > button { border: 1px solid ButtonBorder; }
+  .split-button-menu { border: 1px solid CanvasText; }
+
+  :root .dropzone.dragover { outline: 2px solid Highlight; outline-offset: -3px; border-color: Highlight; background: Canvas; color: CanvasText; }
+
+  button:disabled,
+  .switch:disabled { color: GrayText; opacity: 1; }
+  .switch:disabled::before { border-color: GrayText; }
+  .switch:disabled::after { background: GrayText; }
+}
+
+/* More contrast: raise soft boundaries and secondary text to the stronger
+   existing tokens, and give selected controls a 3:1 accent ring. */
+@media (prefers-contrast: more) {
+  :root {
+    --border-soft: var(--border-strong);
+    --border: var(--border-strong);
+    --muted: var(--text);
+    --text-secondary: var(--text);
+    --placeholder: var(--md-sys-color-on-surface-variant);
+  }
+
+  .sidebar .nav-item.active,
+  .sidebar-history-body .convo-item.active,
+  .settings-nav button.active,
+  .settings-seg button.active,
+  .settings-seg button.active:hover:not(:disabled),
+  .settings-nav button.active:hover:not(:disabled),
+  .assistant-option.selected,
+  .jx-option.selected,
+  .rail-strip-btn.is-active {
+    box-shadow: inset 0 0 0 2px var(--accent);
+  }
+  .sidebar-section-link.active { text-decoration: underline; text-decoration-color: var(--accent); text-decoration-thickness: 2px; text-underline-offset: 4px; }
+
+  .switch.on::before { border-color: var(--text); }
+  :root .dropzone.dragover { outline: 2px solid var(--accent); outline-offset: -3px; }
+}

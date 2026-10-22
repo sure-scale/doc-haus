@@ -1,6 +1,6 @@
 /* One neutral reading surface, with independently scrolling columns. Review
    states have visible text and controls as well as semantic color. */
-.review-modal { position: fixed; inset: 0; display: flex; flex-direction: column; width: calc(var(--viewport-inline) - 64px); max-width: 1440px; height: calc(var(--viewport-block) - 64px); max-height: calc(var(--viewport-block) - 64px); margin: var(--space-7) auto; padding: 0; border-radius: var(--radius-lg); }
+.review-modal { position: fixed; inset: 0; display: flex; flex-direction: column; width: calc(var(--viewport-inline) - 64px); max-width: 1440px; height: calc(var(--viewport-block) - 64px); max-height: calc(var(--viewport-block) - 64px); margin: var(--space-7) auto; padding: 0; border-radius: var(--md-sys-shape-corner-extra-large); }
 .review-modal:not([open]) { display: none; }
 .review-modal::backdrop { background: var(--overlay-scrim); }
 .review-modal > .viewer-bar { flex-shrink: 0; }

@@ -91,7 +91,7 @@ export function SplitButton({ label, icon, onClick, title, items, toggleLabel, d
         disabled={disabled}
         onClick={() => setOpen((value) => !value)}
       >
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <path d="m6 9 6 6 6-6" />
         </svg>
       </button>
