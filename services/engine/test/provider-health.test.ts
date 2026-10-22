@@ -1,10 +1,13 @@
 import { expect, test } from "bun:test"
-import { AIError, AuthenticationError, LanguageModel, QuotaExceededError, TransportError } from "@opencode/ai"
+import { AIError, AuthenticationError, LanguageModel, LLMClient, QuotaExceededError, TransportError } from "@opencode/ai"
 import { OpenAIChat } from "@opencode/ai/protocols"
+import { OpenAICompatible } from "@opencode/ai/providers/openai-compatible"
+import { RequestExecutor } from "@opencode/ai/route"
 import { TestLLM } from "@opencode/ai/testing"
 import { Model } from "@opencode/core/model"
 import { ModelResolver } from "@opencode/core/model-resolver"
 import { Cause, Effect, Layer } from "effect"
+import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
 import { probeProvider, providerTestCache, providerTestFailure, providerTestInput } from "../src/provider-health"
 
 test("native stateless probe preserves provider output limits and sends only its fixed prompt", async () => {
@@ -44,6 +47,54 @@ test("provider failures distinguish expired authentication from account allowanc
   expect(providerTestFailure(Cause.fail(network))).toMatchObject({ kind: "unavailable" })
   expect(providerTestFailure(Cause.interrupt())).toMatchObject({ kind: "unavailable" })
   expect(providerTestFailure(Cause.fail({ _tag: "Generate.ModelSelectionError" }))).toMatchObject({ kind: "model" })
+})
+
+test("native HTTP access restrictions are model failures, while identical 401 and generic 403 remain authentication failures", async () => {
+  const ref = Model.Ref.parse("synthetic/note")
+  const selected = Model.Info.default(ref.providerID, ref.id)
+  const runtime = OpenAICompatible.configure({ provider: "synthetic", baseURL: "https://provider.invalid/v1", apiKey: "synthetic-test-key" }).model("note")
+  const calls: string[] = []
+  async function probe(status: number, body: string) {
+    const http = Layer.succeed(HttpClient.HttpClient, HttpClient.make(request => Effect.gen(function* () {
+      const web = yield* HttpClientRequest.toWeb(request).pipe(Effect.orDie)
+      calls.push(web.url)
+      expect(web.method).toBe("POST")
+      expect(web.headers.get("x-opencode-session")).toMatch(/^ses_/)
+      const input = JSON.parse(yield* Effect.promise(() => web.text()))
+      expect(input.messages).toEqual([{ role: "user", content: "Reply with OK." }])
+      return HttpClientResponse.fromWeb(request, new Response(body, { status, headers: { "content-type": status === 200 ? "text/event-stream" : "application/json" } }))
+    })))
+    const executor = RequestExecutor.layer.pipe(Layer.provide(http))
+    return Effect.runPromise(probeProvider(ref).pipe(Effect.provide(Layer.mergeAll(
+      Layer.mock(Model.Service, { get: () => Effect.succeed(selected) }),
+      Layer.mock(ModelResolver.Service, { resolve: () => Effect.succeed({ model: runtime, ref, capabilities: selected.capabilities, cost: selected.cost, limit: selected.limit }) }),
+      LLMClient.layer.pipe(Layer.provide(executor)),
+    ))))
+  }
+  // Establish a passing native route before changing only the HTTP response.
+  const success = `data: ${JSON.stringify({ id: "synthetic", object: "chat.completion.chunk", created: 1, model: "note", choices: [{ index: 0, delta: { role: "assistant", content: "OK" }, finish_reason: null }] })}\n\ndata: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`
+  expect(await probe(200, success)).toEqual({ ok: true })
+  for (const [type, restriction] of [["FreeTierError", "free-tier"], ["RegionError", "region"]] as const) {
+    const body = JSON.stringify({ error: { type, message: "synthetic-private-diagnostic" } })
+    const failure = await probe(403, body)
+    expect(failure).toMatchObject({ ok: false, kind: "model", restriction })
+    expect(JSON.stringify(failure)).not.toContain("synthetic-private-diagnostic")
+    expect(await probe(401, body)).toMatchObject({ ok: false, kind: "auth" })
+  }
+  expect(await probe(403, JSON.stringify({ error: { type: "InvalidApiKeyError", message: "Invalid key" } }))).toMatchObject({ kind: "auth" })
+  expect(calls).toHaveLength(6)
+  expect(calls.every(url => url === "https://provider.invalid/v1/chat/completions")).toBe(true)
+})
+
+test("access classification accepts only bounded JSON codes at HTTP 403, never message hints", () => {
+  const failure = (status: number, body: string, message = "Provider rejected request") => providerTestFailure(Cause.fail(new AIError({
+    reason: new AuthenticationError({ message, body, http: { url: "https://provider.invalid", status, headers: {} } }),
+  })))
+  for (const body of ["FreeTierError", "{", JSON.stringify({ error: { message: "FreeTierError" } }), JSON.stringify({ error: { type: "OtherError" } }), JSON.stringify({ error: { type: "FreeTierError" }, padding: "x".repeat(8192) })]) {
+    expect(failure(403, body, "FreeTierError: API key expired")).toMatchObject({ kind: "auth", expired: true })
+    expect(failure(403, body)).not.toHaveProperty("restriction")
+  }
+  expect(failure(401, JSON.stringify({ error: { type: "FreeTierError" } }))).toMatchObject({ kind: "auth" })
 })
 
 test("startup probes share pending and recent results, while retry and changed connection keys recheck", async () => {

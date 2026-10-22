@@ -51,7 +51,7 @@ export default function ProvidersTab({
   return (
     <>
       <section className="settings-section">
-        <h3>Saved connections</h3>
+        <h3>Provider connections</h3>
         <p className="settings-hint muted">
           Saved credentials do not guarantee access. Your selected models are checked when doc.haus opens and after you reconnect.
         </p>
@@ -164,6 +164,7 @@ export default function ProvidersTab({
 // providers (Vertex, Bedrock) expose no auth method — their key is read from the
 // host sign-in rather than typed here.
 function statusLabel(provider: Provider, methods: Methods) {
+  if (provider.publicModels) return "Public free models · no saved sign-in"
   const m = methods[provider.id] ?? []
   if (m.some((x) => x.type === "api")) return "API key"
   if (m.some((x) => x.type === "oauth")) return "Signed in"

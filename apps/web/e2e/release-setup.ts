@@ -41,11 +41,11 @@ async function open(state: ReturnType<typeof fixture>) {
     const api = pathname.startsWith("/api/") || ["/auth/reuse", "/setup", "/engine/config", "/preferences", "/matters", "/jurisdictions", "/updates", "/host/gcp-projects", "/host/aws-profiles", "/host/probe-vertex"].includes(pathname) || pathname.startsWith("/matters/") || pathname.startsWith("/research/")
     if (!api && url.origin === appOrigin) return route.continue()
     if (!api) { state.unexpected.push(request.url()); return route.abort() }
-    if (request.method() === "OPTIONS") return route.fulfill({ status: 204, headers: { "access-control-allow-origin": "*", "access-control-allow-headers": "*", "access-control-allow-methods": "*" } })
+    if (request.method() === "OPTIONS") return route.fulfill({ status: 204, headers: { "access-control-allow-origin": appOrigin, "access-control-allow-credentials": "true", "access-control-allow-headers": "*", "access-control-allow-methods": "*" } })
     const method = request.method()
     const body = request.postData() ? JSON.parse(request.postData()!) : {}
     state.requests.push({ method, path: pathname, query: Object.fromEntries(url.searchParams), body })
-    const reply = (json: unknown, status = 200) => route.fulfill({ status, contentType: "application/json", headers: { "access-control-allow-origin": "*" }, body: JSON.stringify(json) })
+    const reply = (json: unknown, status = 200) => route.fulfill({ status, contentType: "application/json", headers: { "access-control-allow-origin": appOrigin, "access-control-allow-credentials": "true" }, body: JSON.stringify(json) })
     const progress = () => ({ version: 1, ready: state.ready, completed: state.completed, skipped: state.skipped, next: steps.find(step => !state.completed.includes(step) && !state.skipped.includes(step)) ?? "done" })
     const provider = { id: "test-models", integrationID: "test-login", name: "Fixture Models", activation: "enabled", package: "@opencode/ai/providers/openai-compatible" }
     const vertex = { id: "google-vertex", integrationID: "google-vertex", name: "Google Vertex AI", activation: state.hostConfigured ? "enabled" : "auto", host: { type: "google-adc", options: state.hostDetected ? { project: "fixture-project", location: "us-central1" } : {}, sources: ["Google ADC file"] } }
@@ -629,6 +629,36 @@ try {
       await screenshot(page, "07-host-provider-discovery")
     } finally { await context.close() }
   })
+  await scenario("normal Settings tests Vertex through the native engine and preserves failed model access", async () => {
+    const state = fixture(); state.connected = true; state.ready = true; state.hostCatalog = true; state.hostConfigured = true
+    state.config = { model: "test-models/primary", small_model: "test-models/fast" }; state.completed = ["models"]; state.skipped = ["research", "details"]
+    const { page, context, errors } = await open(state)
+    try {
+      await page.getByRole("button", { name: "I accept", exact: true }).click()
+      await page.getByRole("button", { name: "Settings", exact: true }).click()
+      await page.getByRole("tab", { name: "Providers", exact: true }).click()
+      const card = page.locator(".settings-needs").filter({ hasText: "Google Vertex AI" })
+      await card.getByLabel("GCP project id", { exact: true }).fill("chosen-fixture-project")
+      await card.getByLabel("Location", { exact: true }).selectOption("us-central1")
+      await card.getByLabel("Model to test").selectOption("gemini-fixture")
+      const nativeTests = () => state.requests.filter(request => request.path === "/api/dochaus/provider-test" && request.body.providerID === "google-vertex")
+      expect(nativeTests()).toHaveLength(0)
+      state.probeFailures = 1
+      await card.getByRole("button", { name: "Test and enable", exact: true }).click()
+      await expect(card.getByText("Fixture model access unavailable.", { exact: true })).toBeVisible()
+      expect(nativeTests().map(request => request.body)).toEqual([{ providerID: "google-vertex", modelID: "gemini-fixture" }])
+      expect(state.requests.filter(request => request.path === "/host/probe-vertex")).toHaveLength(0)
+      expect(state.requests.find(request => request.path === "/engine/config" && request.method === "PATCH" && request.body.provider && "google-vertex" in (request.body.provider as object))?.body)
+        .toMatchObject({ provider: { "google-vertex": { options: { project: "chosen-fixture-project", location: "us-central1" } } } })
+      await card.getByRole("button", { name: "Test and enable", exact: true }).click()
+      await expect(card).toHaveCount(0)
+      expect(nativeTests()).toHaveLength(2)
+      expect(state.requests.filter(request => request.path === "/host/probe-vertex")).toHaveLength(0)
+      expect(state.unexpected).toEqual([]); expect(errors).toEqual([])
+      await writeFile(path.join(evidence!, "settings-native-vertex-requests.json"), JSON.stringify(state.requests, null, 2))
+      await screenshot(page, "26-settings-native-vertex")
+    } finally { await context.close() }
+  })
   await scenario("native key connection is explicit and advances to the selected provider models", async () => {
     const state = fixture(); const { page, context, errors } = await open(state)
     try {
@@ -809,7 +839,7 @@ try {
       await expect(page.getByRole("button", { name: "Advanced settings", exact: true })).toHaveCount(0)
       await page.getByRole("button", { name: "Set up later", exact: true }).click()
       await page.getByRole("button", { name: "Settings", exact: true }).click()
-      await expect(page.getByRole("button", { name: "Providers", exact: true })).toBeVisible()
+      await expect(page.getByRole("tab", { name: "Providers", exact: true })).toBeVisible()
       await page.getByRole("button", { name: "Close", exact: true }).click()
       await page.getByRole("button", { name: "Resume setup", exact: true }).click()
       await expect(page.getByPlaceholder("Jane Doe")).toHaveValue("Saved Lawyer")

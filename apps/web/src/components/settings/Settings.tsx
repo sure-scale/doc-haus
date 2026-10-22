@@ -2,9 +2,8 @@ import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type Keyb
 import { createPortal } from "react-dom"
 import { getConfig, setDisabledProviders, setProviderOptions } from "../../api/opencode/config"
 import { listAuthMethods, listProviders, probeProvider } from "../../api/opencode/providers"
-import { boundedRequest, settingsClient, type Client } from "../../api/opencode/client"
+import { settingsClient, type Client } from "../../api/opencode/client"
 import { defaultProvider, pickForProvider, probeModel, providerOf } from "../../models"
-import { probeVertexHost } from "../../api/ingest/host"
 import { isGated, loadVerified, saveVerified } from "../../providers"
 import { useToast } from "../Toast"
 import type { Methods, Provider, Tab } from "./types"
@@ -196,19 +195,9 @@ export default function Settings({ onClose, firstRun = false, initialTab, reconn
         const selected = [model, smallModel].find(value => providerOf(value) === p.id && Object.keys(p.models).some(id => value === `${p.id}/${id}`))
         const modelID = testModelID || (selected ? selected.slice(p.id.length + 1) : probeModel(p.id, Object.keys(p.models)))
         if (!modelID) return { p, ok: false as const, error: "Provider has no models to test." }
-        // Vertex verifies via the ingest host probe — one direct REST call with
-        // the host's ADC — because prompting through the engine's header-less
-        // settings client cold-boots a second instance and times out.
-        const vertex = p.id === "google-vertex" || p.id === "google-vertex-anthropic"
-        const result =
-          vertex && options?.project
-            ? await boundedRequest(probeVertexHost({
-                project: options.project,
-                location: options.location || "global",
-                publisher: p.id === "google-vertex" ? "google" : "anthropic",
-                model: modelID,
-              }), 35000, "Provider test")
-            : await probeProvider(client, p.id, modelID)
+        // All providers use the engine's native model resolution, credentials
+        // and bounded, stateless provider check against the saved settings.
+        const result = await probeProvider(client, p.id, modelID)
         if (!result.ok) return { p, ok: false as const, error: result.error || "Verification failed." }
         return { p, ok: true as const, error: "" }
       }),

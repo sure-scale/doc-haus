@@ -6,8 +6,9 @@ export type ModelConnection = {
   modelID: string
   status: "checking" | "ready" | "auth" | "model" | "unavailable"
   expired?: boolean
+  restriction?: "free-tier" | "region"
 }
-type ProbeResult = { ok: true } | { ok: false; kind: "auth" | "model" | "unavailable"; expired?: boolean }
+type ProbeResult = { ok: true } | { ok: false; kind: "auth" | "model" | "unavailable"; expired?: boolean; restriction?: "free-tier" | "region" }
 
 export async function testModelConnection(providerID: string, modelID: string, force: boolean): Promise<ProbeResult> {
   try {
@@ -19,7 +20,8 @@ export async function testModelConnection(providerID: string, modelID: string, f
     if (response.ok && result.ok === true) return { ok: true }
     // HTTP authentication can belong to the local engine, not the model provider.
     // Only the managed endpoint's typed result can invalidate a saved sign-in.
-    if (result.kind === "auth" || result.kind === "model") return { ok: false, kind: result.kind, expired: result.expired === true }
+    if (result.kind === "auth" || result.kind === "model") return { ok: false, kind: result.kind, expired: result.expired === true,
+      ...(result.kind === "model" && (result.restriction === "free-tier" || result.restriction === "region") ? { restriction: result.restriction } : {}) }
   } catch { /* A timeout or offline endpoint does not prove expired credentials. */ }
   return { ok: false, kind: "unavailable" }
 }
@@ -58,7 +60,8 @@ export function createProviderHealthMonitor(
           if (version !== current) return
           if (result.ok) rejectedModels.delete(`${model.providerID}/${model.modelID}`)
           publish(snapshot.map(item => item.providerID === model.providerID && item.modelID === model.modelID
-            ? { ...model, status: result.ok ? "ready" : result.kind, ...(!result.ok && result.expired ? { expired: true } : {}) } : item))
+            ? { ...model, status: result.ok ? "ready" : result.kind, ...(!result.ok && result.expired ? { expired: true } : {}),
+              ...(!result.ok && result.kind === "model" && result.restriction ? { restriction: result.restriction } : {}) } : item))
         }))
       } catch {
         if (version === current) publish([{ providerID: "", modelID: "", status: "unavailable" }])
@@ -75,8 +78,13 @@ export function createProviderHealthMonitor(
     // Called only for a typed native failure and the failing session's model.
     // A late failure from an old request cannot undo a new connection check.
     version: () => version,
-    rejected(model: { providerID: string; id: string }, error: { type: string; message: string }, observedVersion = version) {
+    rejected(model: { providerID: string; id: string }, error: { type: string; message: string; status?: number }, observedVersion = version) {
       if (version !== observedVersion || !["provider.auth", "provider.no-route"].includes(error.type)) return
+      // Session summaries omit the native error body. Keep a verified typed 403
+      // access result instead of replacing it with their lossy auth label. No
+      // extra model request is needed; explicit rechecks can refresh the result.
+      const known = snapshot.find(item => item.providerID === model.providerID && item.modelID === model.id)
+      if (error.type === "provider.auth" && error.status === 403 && known?.status === "model" && known.restriction) return
       ++version
       rejectedModels.add(`${model.providerID}/${model.id}`)
       const failure: ModelConnection = { providerID: model.providerID, modelID: model.id,
@@ -97,10 +105,14 @@ export function connectionMessage(connection: ModelConnection) {
   if (connection.status === "auth") return connection.expired
     ? "The saved API key has expired. Create a new key in your provider’s console and replace it in Settings. Signing in again will not renew this key."
     : "The provider rejected the saved sign-in. Check or reconnect your account in Settings."
-  if (connection.status === "model") return "The selected model is unavailable. Check model access and your model choices in Settings."
+  if (connection.status === "model") {
+    if (connection.restriction === "free-tier") return "The provider is restricting access to this free model. Check the provider’s free-model availability or choose another model in Settings."
+    if (connection.restriction === "region") return "The provider does not offer this model in your region. Choose another available model or provider in Settings."
+    return "The selected model is unavailable. Check model access and your model choices in Settings."
+  }
   if (connection.status === "unavailable") return "The model connection could not be verified. Check your network and provider availability, then try again."
   return connection.status === "checking" ? "Checking model connection…" : "Connection verified"
 }
 export function providerName(id: string) {
-  return ({ "opencode-go": "OpenCode Go", opencode: "OpenCode Zen", openai: "OpenAI", google: "Google AI", "google-vertex": "Google Vertex", "amazon-bedrock": "Amazon Bedrock" } as Record<string, string>)[id] ?? id
+  return ({ "opencode-go": "OpenCode Go", opencode: "OpenCode", openai: "OpenAI", google: "Google AI", "google-vertex": "Google Vertex", "amazon-bedrock": "Amazon Bedrock" } as Record<string, string>)[id] ?? id
 }

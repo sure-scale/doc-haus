@@ -8,6 +8,7 @@ export type ProviderTestResult = { ok: true } | {
   ok: false
   kind: "auth" | "model" | "unavailable"
   expired?: boolean
+  restriction?: "free-tier" | "region"
   error: string
 }
 
@@ -49,21 +50,39 @@ export function probeProvider(ref: Model.Ref) {
 // Inspect only bounded error structure. In particular, quota/transport failures
 // must never make a saved account appear disconnected. Raw provider text stays
 // inside the engine and is never returned to the browser.
+function accessRestriction(item: Record<string, unknown>): "free-tier" | "region" | undefined {
+  if (!item.http || typeof item.http !== "object" || (item.http as Record<string, unknown>).status !== 403 ||
+    typeof item.body !== "string" || item.body.length > 8192) return
+  try {
+    const body: unknown = JSON.parse(item.body)
+    if (!body || typeof body !== "object" || !("error" in body) || !body.error || typeof body.error !== "object" || !("type" in body.error)) return
+    if (body.error.type === "FreeTierError") return "free-tier"
+    if (body.error.type === "RegionError") return "region"
+  } catch { /* Unknown or malformed provider bodies retain native classification. */ }
+}
+
 export function providerTestFailure(error: unknown): ProviderTestResult {
   const queue: unknown[] = [error]
   const visited = new Set<unknown>()
   let auth = false
   let expired = false
   let model = false
+  let restriction: "free-tier" | "region" | undefined
   for (let index = 0; index < queue.length && index < 32; index++) {
     const value = queue[index]
     if (!value || typeof value !== "object" || visited.has(value)) continue
     visited.add(value)
     const item = value as Record<string, unknown>
     if (item._tag === "Authentication" || item._tag === "Integration.Authorization") {
-      auth = true
-      expired ||= [item.message, item.body].some(text => typeof text === "string" &&
-        /\bkey\b[\s\S]{0,80}\bexpir(?:ed|y|ation)\b|\bexpir(?:ed|y|ation)\b[\s\S]{0,80}\bkey\b/i.test(text.slice(0, 8192)))
+      // Native HTTP classifies every 403 as Authentication. Recognized access
+      // codes describe model policy instead; an actual 401 must still be auth.
+      const access = accessRestriction(item)
+      if (access) restriction ??= access
+      else {
+        auth = true
+        expired ||= [item.message, item.body].some(text => typeof text === "string" &&
+          /\bkey\b[\s\S]{0,80}\bexpir(?:ed|y|ation)\b|\bexpir(?:ed|y|ation)\b[\s\S]{0,80}\bkey\b/i.test(text.slice(0, 8192)))
+      }
     }
     if (item._tag === "Generate.ModelSelectionError" || typeof item._tag === "string" && item._tag.startsWith("SessionRunnerModel.")) model = true
     for (const key of ["reason", "cause", "error", "defect"]) if (item[key] !== undefined) queue.push(item[key])
@@ -72,6 +91,9 @@ export function providerTestFailure(error: unknown): ProviderTestResult {
   if (auth) return { ok: false, kind: "auth", ...(expired ? { expired: true } : {}),
     error: expired ? "The provider API key has expired. Replace it in Settings; signing in again will not renew an expired key."
       : "The provider rejected the saved connection. Check or reconnect the provider in Settings." }
+  if (restriction) return { ok: false, kind: "model", restriction,
+    error: restriction === "free-tier" ? "The provider is restricting access to this free model. Check the provider’s free-model availability or choose another model in Settings."
+      : "The provider does not offer this model in your region. Choose another available model or provider in Settings." }
   if (model) return unavailableModel
   return { ok: false, kind: "unavailable", error: "The provider could not be checked. Check the connection, model access or account allowance, then retry." }
 }
