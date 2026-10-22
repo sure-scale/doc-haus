@@ -32,7 +32,7 @@ export default function SessionQuestions({
   pendingRef: MutableRefObject<number>
   refreshRef: MutableRefObject<() => void>
   directory: string
-  matterId: string
+  matterId?: string
   // A route form (the quick-draft offer) carries a request, not a question for
   // a model. The engine only records its answer; the chat dispatches it here,
   // once the reply has settled, and takes the request back on Cancel.

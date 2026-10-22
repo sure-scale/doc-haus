@@ -27,6 +27,7 @@ const MUTATING_TOOLS = new Set([
   "copy-document",
   "create-template",
   "update-template",
+  "prepare-template",
   "delete-template",
   "create-playbook",
   "update-playbook",

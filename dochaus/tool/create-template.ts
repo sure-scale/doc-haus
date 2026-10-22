@@ -4,6 +4,7 @@ import path from "node:path"
 import { docxodus } from "../lib/docxodus"
 import { withParagraphPointers } from "../lib/drafting-amendment"
 import { lintTemplateBody, splitBlocks } from "../lib/markdown"
+import { isTemplateDraftDirectory, TEMPLATE_DRAFT_REVIEW_MESSAGE } from "../lib/template-draft-client"
 
 // doc.haus create-template tool. Adds a new reusable drafting template to the
 // firm's global library. A template carries NO real client data: every variable
@@ -29,6 +30,7 @@ export default tool({
       .describe('A one-line summary of what this template is for, e.g. "Mutual NDA for vendor evaluations". Helps future template selection.'),
   },
   async execute(args, ctx) {
+    if (isTemplateDraftDirectory(ctx.directory)) return TEMPLATE_DRAFT_REVIEW_MESSAGE
     const name = path.basename(args.name.endsWith(".docx") ? args.name : `${args.name}.docx`)
 
     // Deterministic gate: defects that multiply into every future draft are

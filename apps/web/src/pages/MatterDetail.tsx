@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react"
-import { useParams, useSearchParams } from "react-router-dom"
+import { useNavigate, useParams, useSearchParams } from "react-router-dom"
 import type { CompareParams } from "../api/ingest/compare"
 import { humanizeError } from "../api/ingest/errors"
 import { getMatter, listJurisdictions, listPlaybooks, MatterNotFound, renameMatter, type Jurisdiction, type MatterDetail as Detail, type Playbook } from "../api/ingest/matters"
 import { listWorkflows, type CustomWorkflow } from "../api/ingest/library"
+import { createTemplateDraft } from "../api/ingest/template-drafts"
 import { disposeInstance, listAgents } from "../api/opencode/sessions"
 import { matterClient } from "../api/opencode/client"
 import { AUTO, WORKFLOWS } from "../agents"
@@ -30,6 +31,7 @@ type Agent = { name: string; description?: string; mode?: string; hidden?: boole
 export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged: () => void }) {
   const { id } = useParams<{ id: string }>()
   const [params, setParams] = useSearchParams()
+  const navigate = useNavigate()
   // Documents is a drawer beside the rail, not a surface; the old
   // `view=documents` links open it over the chat.
   const view = params.get("view") === "review" ? "review" : "chat"
@@ -63,6 +65,8 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
   const [agents, setAgents] = useState<Agent[]>()
   const [agent, setAgent] = useState(AUTO)
   const [viewing, setViewing] = useState<string>()
+  const [creatingTemplate, setCreatingTemplate] = useState(false)
+  const creatingTemplateRef = useRef(false)
   // The redline proposal to scroll to when the viewer opens, set when the user
   // follows a chat redline preview's "View in document" link (undefined otherwise).
   const [focusRedline, setFocusRedline] = useState<number>()
@@ -167,8 +171,8 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
           // A new chat opens on Auto (a pseudo-assistant always offered, so no
           // availability check); an existing session restores the agent it last
           // used (see ChatPanel's load effect), so don't force Auto here. When a
-          // surface deep-links in with an `agent` param (e.g. "Save as template"
-          // pinning draft mode), honour it if it is a real assistant — this must
+          // surface deep-links in with an `agent` param (e.g. a library
+          // template's Use action), honour it if it is a real assistant — this must
           // live in this effect or the unconditional setAgent(AUTO) clobbers it.
           if (!session) {
             const pinned = params.get("agent")
@@ -183,7 +187,7 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
     return () => {
       cancelled = true
     }
-    // Re-run when the deep-linked agent param changes (e.g. "Save as template"
+    // Re-run when the deep-linked agent param changes (e.g. using a template
     // pins draft mode while already in the matter) so the pin is honoured even
     // though `matter` is unchanged.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -374,17 +378,23 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
           }
           onSaveTemplate={
             viewing.toLowerCase().endsWith(".docx")
-              ? () => {
-                  const doc = viewing
-                  setViewing(undefined)
-                  setParams({
-                    view: "chat",
-                    agent: "draft",
-                    prompt: `Save "${doc}" as a reusable template. Read the document and replace every person or entity name, date, amount, address, and other matter-specific detail with a unique [insert ...] placeholder, then save it to the template library.`,
-                  })
+              ? async () => {
+                  if (creatingTemplateRef.current) return
+                  creatingTemplateRef.current = true
+                  setCreatingTemplate(true)
+                  try {
+                    const draft = await createTemplateDraft(matter.id, viewing)
+                    navigate(`/templates?draft=${encodeURIComponent(draft.id)}`)
+                  } catch (error) {
+                    toast("error", humanizeError(error, "Could not start Template Builder."))
+                  } finally {
+                    creatingTemplateRef.current = false
+                    setCreatingTemplate(false)
+                  }
                 }
               : undefined
           }
+          creatingTemplate={creatingTemplate}
         />
       )}</Exit>
 

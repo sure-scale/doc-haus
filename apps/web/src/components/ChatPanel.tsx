@@ -89,9 +89,8 @@ export default function ChatPanel({
   // under the new id (see onSessionCreated). The user was typing here a beat ago,
   // so seat the cursor like a fresh chat rather than treating it as a reopen.
   created?: boolean
-  // A prompt to seat the composer with on a fresh chat (no session yet) — e.g.
-  // "Save as template" deep-links into chat with draft mode pinned and this
-  // prefilled. Prefilled, not auto-sent: the lawyer reviews and sends it.
+  // A prompt to seat the composer with on a fresh chat (no session yet).
+  // Prefilled, not auto-sent: the lawyer reviews and sends it.
   initialPrompt?: string
   agent: string
   available: Set<string>
@@ -242,7 +241,7 @@ export default function ChatPanel({
   // A conversation reopened from the rail skips this; it focuses once a turn
   // settles (see below).
   useEffect(() => {
-    // A fresh chat deep-linked with a prompt (e.g. "Save as template") seats it in
+    // A fresh chat deep-linked with a prompt seats it in
     // the composer for the lawyer to review and send — prefill, never auto-send.
     if (initialPrompt && !sessionID) setInput(initialPrompt)
     if (!sessionID || created) inputRef.current?.focus({ preventScroll: true })
@@ -604,7 +603,7 @@ export default function ChatPanel({
           onDecide={(question) => actions.decide(question.id)}
         />
       )}
-      {matterId && <SessionQuestions
+      <SessionQuestions
         matterId={matterId}
         client={client}
         sessionRef={sessionRef}
@@ -614,7 +613,7 @@ export default function ChatPanel({
         onRoute={(request, choice) => void chooseDraft(request, choice)}
         onRouteDismissed={dismissDraftOffer}
         onRoutePending={setPendingRoute}
-      />}
+      />
       {quickLimit && (
         <div className="question-card route-offer" role="status">
           <p className="question-text">

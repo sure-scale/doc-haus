@@ -19,6 +19,13 @@ also contain documents, legal.db databases, workflow state and working files.
 Some UI preferences remain in browser storage; server backup does not capture
 browser-only choices.
 
+Reusable templates live in workspace/.templates. A source-template conversation
+keeps its captured Word source, proposed copy and review metadata in its own
+workspace/.template-drafts directory; its native conversation uses runtime
+storage. Unsent answers to questions in library conversations are browser-only.
+Include both workspace and runtime in a backup to retain the source copy and
+the conversation that prepared it.
+
 Custom agent/workflow definitions currently use ignored files under the source
 checkout: dochaus/agents.json, dochaus/workflows.json and generated Markdown under
 dochaus/agent/. Builder conversations remain in workspace/.agents and .workflows.

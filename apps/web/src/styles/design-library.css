@@ -62,6 +62,42 @@
 .library-builder .design-conversation .composer { --composer-fill: var(--panel); }
 .library-builder .design-conversation .composer textarea { min-height: 72px; }
 
+/* A captured document and its review stay alongside one template conversation. */
+.template-draft-builder { display: flex; flex-direction: column; gap: var(--space-4); width: 100%; min-width: 0; min-height: 0; }
+.template-source { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-3); padding: var(--space-4); border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--panel); }
+.template-source > div { flex: 1 1 180px; min-width: 0; }
+.template-source strong { overflow-wrap: anywhere; }
+.template-source p, .template-review-status p { margin: var(--space-2) 0 0; color: var(--text-secondary); font-size: .85rem; line-height: 1.55; }
+.template-review-status { flex-shrink: 0; }
+.template-review-status > button { margin-top: var(--space-3); }
+.template-draft-builder > .chat-card { flex: 1; min-height: 0; }
+.template-source { flex-shrink: 0; }
+.template-reader .changes-panel { width: min(400px, 35vw); }
+.template-draft-review { display: flex; flex-direction: column; gap: var(--space-3); overflow-wrap: anywhere; }
+.template-draft-review .changes-head { margin-bottom: 0; }
+.template-draft-review h3 { margin: 0; font-size: .95rem; }
+.template-draft-review p, .template-review-notes { margin: 0; font-size: .85rem; line-height: 1.6; }
+.template-review-notes { padding-left: var(--space-5); }
+.template-draft-changes { display: grid; gap: var(--space-4); margin: 0; padding: 0; list-style: none; font-size: .85rem; }
+.template-draft-changes li { display: grid; gap: var(--space-2); padding-bottom: var(--space-3); border-bottom: 1px solid var(--border-soft); }
+.template-draft-changes details { color: var(--text-secondary); }
+.template-draft-changes summary { cursor: pointer; }
+.template-draft-changes details p { margin-top: var(--space-2); }
+.template-draft-review label { display: grid; gap: var(--space-2); font-size: .85rem; font-weight: 600; }
+.template-draft-review input, .template-draft-review textarea { width: 100%; min-width: 0; }
+.template-review-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-2); padding-bottom: var(--space-3); }
+.template-conversations { margin-top: var(--space-6); padding-top: var(--space-5); border-top: 1px solid var(--border); }
+.template-conversations h2 { margin: 0 0 var(--space-3); font-size: 1rem; }
+.template-conversations ul { list-style: none; padding: 0; margin: 0; }
+.template-conversations a { display: grid; gap: var(--space-1); min-height: 44px; padding: var(--space-3); border-radius: var(--radius-md); overflow-wrap: anywhere; }
+.template-conversations a:hover, .template-conversations a[aria-current] { background: var(--accent-tint); }
+.template-conversations span { color: var(--text-secondary); font-size: .8rem; }
+@media (max-width: 760px) {
+  .template-reader .viewer-body { flex-direction: column; overflow-y: auto; }
+  .template-reader .viewer-doc { flex: none; overflow: visible; padding: var(--space-4); }
+  .template-reader .changes-panel { flex: none; width: 100%; overflow: visible; border-left: 0; border-top: 1px solid var(--border); }
+}
+
 /* A first message enters the fixed desktop workspace immediately, before the
    new session reaches the URL. Transcript, collection and composer keep their
    existing independent scrolling behavior. */

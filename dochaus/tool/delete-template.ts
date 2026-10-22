@@ -1,5 +1,6 @@
 import { tool } from "./legacy-definition"
 import path from "node:path"
+import { isTemplateDraftDirectory, TEMPLATE_DRAFT_REVIEW_MESSAGE } from "../lib/template-draft-client"
 
 // doc.haus delete-template tool. Removes a template from the firm's global
 // library (WORKSPACE_ROOT/.templates, owned by the ingest service). Documents
@@ -15,6 +16,7 @@ export default tool({
     name: tool.schema.string().describe('Exact file name of the template to delete, e.g. "consulting-agreement.docx"'),
   },
   async execute(args, ctx) {
+    if (isTemplateDraftDirectory(ctx.directory)) return TEMPLATE_DRAFT_REVIEW_MESSAGE
     const name = path.basename(args.name.endsWith(".docx") ? args.name : `${args.name}.docx`)
 
     const { templates } = (await (await fetch(`${ingestUrl}/templates`)).json()) as { templates: { name: string }[] }
