@@ -19,6 +19,7 @@ import { humanizeError } from "../api/ingest/errors"
 import { POSTURES, type Posture } from "../api/ingest/preferences"
 import { formatDate } from "../lib/format"
 import { loadPrefs } from "../prefs"
+import PageBar from "../components/PageBar"
 
 export default function Matters() {
   const [matters, setMatters] = useState<Matter[]>([])
@@ -183,13 +184,7 @@ export default function Matters() {
 
   return (
     <>
-      <header className="page-head library-head matters-head">
-        <div>
-          <span className="page-eyebrow">Your workspace</span>
-          <h1>Matters</h1>
-          <p className="page-sub">A clear home for every engagement, document, and conversation.</p>
-        </div>
-      </header>
+      <PageBar title="Matters" description="A clear home for every engagement, document, and conversation." />
 
       <div className="library-layout matters-layout">
         <section className="library-builder matter-create-panel" aria-labelledby="new-matter-heading">

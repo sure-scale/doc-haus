@@ -1,7 +1,13 @@
 /* Firm libraries share a collection / assistant composition. Collection rows
    stay on white; only the supporting workspace uses a quiet tonal container. */
-.page-head.library-head { border-bottom: 0; padding-bottom: 0; margin-bottom: 28px; }
-.library-eyebrow { margin: 0 0 8px; color: var(--accent); font-size: .78rem; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; }
+/* Index-page bar: same shape as the matter head, full pane width. The page
+   container drops its cap and padding; its content keeps the 1100px column. */
+.container:has(> .page-bar) { --bar-pad: clamp(24px, 3.2vw, 56px); max-width: none; padding: 0 0 var(--space-8); }
+.container:has(> .page-bar) > :not(.page-bar) { width: min(100% - 2 * var(--bar-pad), var(--content-max)); margin-inline: auto; }
+.container:has(> .page-bar) > .page-bar + * { margin-top: var(--space-6); }
+.page-head.page-bar { min-height: 88px; margin: 0; padding: 16px max(var(--bar-pad), calc((100% - var(--content-max)) / 2)); border-bottom: 1px solid var(--border-soft); display: flex; flex-direction: column; justify-content: center; align-items: stretch; gap: 0; }
+.page-head.page-bar h1 { font-family: var(--font-display); font-size: 20px; line-height: 1.4; letter-spacing: -.45px; }
+.page-bar-sub { margin: 2px 0 0; color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
 .library-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); gap: 32px; align-items: start; }
 .library-layout.library-layout-single { grid-template-columns: minmax(0, 1fr); }
 .library-collection, .library-builder { min-width: 0; }
@@ -61,7 +67,7 @@
    existing independent scrolling behavior. */
 .content:has(.library-layout.is-active, .library-layout .msg) { display: flex; flex-direction: column; height: var(--viewport-block); }
 .container:has(> .library-layout.is-active, > .library-layout .msg) { display: flex; flex-direction: column; flex: 1; min-height: 0; width: 100%; }
-.container:has(> .library-layout.is-active, > .library-layout .msg) > .library-head { flex: none; }
+.container:has(> .library-layout.is-active, > .library-layout .msg) > .page-bar { flex: none; }
 .library-layout:is(.is-active, :has(.msg)) { flex: 1; min-height: 0; grid-template-rows: minmax(0, 1fr); align-items: stretch; }
 .library-layout:is(.is-active, :has(.msg)) .library-collection { min-height: 0; overflow-y: auto; padding-right: 8px; scrollbar-width: thin; }
 .library-layout:is(.is-active, :has(.msg)) .library-builder { display: flex; min-height: 0; }
@@ -82,7 +88,6 @@
   .library-builder { padding: 20px; }
 }
 @media (max-width: 760px) {
-  .page-head.library-head { margin-bottom: 24px; }
   .library-layout { grid-template-columns: minmax(0, 1fr); }
   .library-builder { padding: 20px; }
   .library-collection .list-row { padding-inline: 8px; }
@@ -95,4 +100,9 @@
 @media (hover: none), (pointer: coarse) {
   .library-collection .list-row-actions .icon-btn { min-height: max(44px, calc(44px / var(--ui-scale))); }
   .library-item-title, .library-collection button.template-desc { min-height: max(44px, calc(44px / var(--ui-scale))); }
+}
+@media (max-width: 700px) {
+  .container:has(> .page-bar) { --bar-pad: 20px; }
+  .page-head.page-bar { min-height: 78px; }
+  .page-head.page-bar h1 { font-size: 18px; }
 }
