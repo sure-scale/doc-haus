@@ -9,7 +9,7 @@ export function boundLargeToolOutput(
   // These readers bound their canonical data and return an exact cursor.
   // Reclipping would discard text while advertising a later continuation, and
   // could remove the untrusted-data notice or an injection warning.
-  if (["read-document", "read-record", "compare-versions"].includes(input.tool)) return
+  if (["read-document", "read-record", "read-template-source", "compare-versions"].includes(input.tool)) return
   const max = toolOutputDisplayChars()
   if (output.output.length <= max) return
   const preview = output.output.slice(0, max)

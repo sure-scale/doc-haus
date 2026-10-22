@@ -1,9 +1,11 @@
-import { useContext, useEffect, useState } from "react"
+import { useContext, useEffect, useRef, useState, type ReactNode } from "react"
 import { Closing } from "./useExit"
-import { useDocxodus } from "docxodus/react"
+import { createPortal } from "react-dom"
+import { createViewer, type DocxViewer } from "docxodus/embed"
 import { fetchTemplateBytes, type TemplatePlaceholder } from "../api/ingest/library"
 import { ModalClose } from "./ModalHeader"
 import backdropClose from "./backdropClose"
+import useModalFocus from "./useModalFocus"
 
 // In-browser template viewer. Renders a library template's .docx to HTML with the
 // WASM runtime and lists the placeholders a draft would fill, so the lawyer reads
@@ -14,39 +16,65 @@ export default function TemplateViewer({
   name,
   placeholders,
   onClose,
+  loadBytes,
+  sidebar,
+  footer,
+  onRendered,
 }: {
   name: string
   placeholders: TemplatePlaceholder[]
   onClose: () => void
+  // Draft previews use immutable snapshot/proposal bytes; library templates
+  // keep the normal name-based reader.
+  loadBytes?: () => Promise<Uint8Array>
+  sidebar?: ReactNode
+  footer?: ReactNode
+  onRendered?: () => void
 }) {
   const closing = useContext(Closing)
-  const { isReady, error: wasmError, convertToHtml } = useDocxodus("/wasm/")
-  const [html, setHtml] = useState<string>()
+  const panel = useRef<HTMLDivElement>(null)
+  useModalFocus(panel)
+  const documentHost = useRef<HTMLDivElement>(null)
+  const [ready, setReady] = useState(false)
   const [error, setError] = useState<string>()
+  const rendered = useRef(onRendered)
+  rendered.current = onRendered
   // Optional-clause markers are keep-or-omit decisions, not fills — list them
   // separately under their short names.
   const fills = placeholders.filter((p) => !p.text.startsWith("[optional:"))
   const optional = placeholders.filter((p) => p.text.startsWith("[optional:"))
 
   useEffect(() => {
-    if (!isReady) return
     let cancelled = false
-    setHtml(undefined)
+    let viewer: DocxViewer | undefined
+    // Render offscreen first. The embed scopes Word's body/span CSS before it
+    // enters the page; raw converter HTML would restyle the surrounding app.
+    const mount = document.createElement("div")
+    setReady(false)
     setError(undefined)
-    fetchTemplateBytes(name)
-      .then(async (bytes) => {
-        const out = await convertToHtml(bytes, { renderHeadersAndFooters: true })
-        if (!cancelled) setHtml(out)
+    documentHost.current?.replaceChildren()
+    ;(loadBytes ? loadBytes() : fetchTemplateBytes(name))
+      .then((bytes) => createViewer(mount, bytes, { wasmBasePath: "/wasm/", renderHeadersAndFooters: true }))
+      .then((result) => {
+        if (cancelled) { result.destroy(); return }
+        viewer = result
+        documentHost.current?.replaceChildren(mount)
+        setReady(true)
+        rendered.current?.()
       })
       .catch((e) => !cancelled && setError(e instanceof Error ? e.message : String(e)))
     return () => {
       cancelled = true
+      viewer?.destroy()
     }
-  }, [isReady, name])
+  }, [name, loadBytes])
 
-  return (
-    <div className={`viewer-overlay${closing ? " is-closing" : ""}`} inert={closing} {...backdropClose(() => onClose())}>
-      <div className="viewer-panel" onClick={(e) => e.stopPropagation()}>
+  // Keep viewport overlays outside the page's width/spacing rules.
+  return createPortal(
+    <div className={`viewer-overlay template-viewer-overlay${closing ? " is-closing" : ""}`} inert={closing} {...backdropClose(() => onClose())}>
+      <div ref={panel} className={`viewer-panel template-reader${footer ? " has-footer" : ""}`} role="dialog" aria-modal="true" aria-label={name} onClick={(e) => e.stopPropagation()} onKeyDown={(event) => {
+        if (event.key === "Escape" && !event.defaultPrevented) { event.stopPropagation(); onClose() }
+      }}>
         <div className="viewer-bar">
           <span className="viewer-title">
             <span className="viewer-doctype">DOCX</span>
@@ -58,16 +86,16 @@ export default function TemplateViewer({
         </div>
         <div className="viewer-body">
           <div className="viewer-doc">
-            {wasmError && <p className="muted">Viewer failed to load: {wasmError.message}</p>}
             {error && <p className="muted">{error}</p>}
-            {!wasmError && !error && !html && (
+            {!error && !ready && (
               <div className="docx-render docx-skeleton" aria-label="Rendering document">
                 {Array.from({ length: 14 }, (_, i) => <div key={i} className="sk-line" />)}
               </div>
             )}
-            {html && <div className="docx-render" dangerouslySetInnerHTML={{ __html: html }} />}
+            <div ref={documentHost} className="docx-render" hidden={!ready} />
           </div>
           <aside className="changes-panel">
+            {sidebar ?? <>
             <div className="changes-head">
               <span>
                 {fills.length} placeholder{fills.length === 1 ? "" : "s"}
@@ -96,9 +124,12 @@ export default function TemplateViewer({
                 </ul>
               </>
             )}
+            </>}
           </aside>
         </div>
+        {footer && <div className="template-reader-footer">{footer}</div>}
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }

@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react"
-import { useNavigate, useSearchParams } from "react-router-dom"
+import { useCallback, useEffect, useRef, useState } from "react"
+import { Link, useNavigate, useSearchParams } from "react-router-dom"
 import {
   deleteTemplate,
   listTemplates,
@@ -8,6 +8,7 @@ import {
   type Template,
 } from "../api/ingest/library"
 import type { Matter } from "../api/ingest/matters"
+import { deleteTemplateDraft, listTemplateDrafts, type TemplateDraft } from "../api/ingest/template-drafts"
 import { useToast } from "../components/Toast"
 import Dropzone from "../components/Dropzone"
 import { humanizeError } from "../api/ingest/errors"
@@ -16,6 +17,7 @@ import MatterPicker from "../components/MatterPicker"
 import { Exit } from "../components/useExit"
 import ChatPanel from "../components/ChatPanel"
 import LibraryLayout from "../components/LibraryLayout"
+import TemplateDraftBuilder from "../components/TemplateDraftBuilder"
 import { TEMPLATE_BUILDER } from "../agents"
 
 // The firm's global template library: the drafting bases shared across every
@@ -29,11 +31,15 @@ import { TEMPLATE_BUILDER } from "../agents"
 export default function Templates() {
   const [params, setParams] = useSearchParams()
   const session = params.get("session") ?? undefined
+  const draft = params.get("draft") ?? undefined
   const [dir, setDir] = useState<string>()
   const [templates, setTemplates] = useState<Template[]>([])
+  const [drafts, setDrafts] = useState<TemplateDraft[]>([])
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [confirmName, setConfirmName] = useState<string | null>(null)
+  const [confirmDraft, setConfirmDraft] = useState<string>()
+  const [deletingDraft, setDeletingDraft] = useState<string>()
   const [editing, setEditing] = useState<string | null>(null)
   const [viewing, setViewing] = useState<Template>()
   // "Use" flow: the template being assembled into a matter the lawyer picks.
@@ -42,13 +48,22 @@ export default function Templates() {
   // The session id the composer just minted, so the remount that follows the first
   // send keeps the cursor seated (same pattern as MatterDetail).
   const createdRef = useRef<string | undefined>(undefined)
+  const deletedDrafts = useRef(new Set<string>())
+  const deletionPending = useRef(false)
   const toast = useToast()
+  const onDraftChanged = useCallback((next: TemplateDraft) => {
+    if (deletedDrafts.current.has(next.id)) return
+    setDrafts((previous) => [next, ...previous.filter((item) => item.id !== next.id)].sort((a, b) => b.createdAt - a.createdAt))
+  }, [])
 
   function refresh() {
-    return listTemplates().then((res) => {
-      setDir(res.dir)
-      setTemplates(res.templates)
-    })
+    return Promise.all([
+      listTemplates().then((res) => {
+        setDir(res.dir)
+        setTemplates(res.templates)
+      }),
+      listTemplateDrafts().then((next) => setDrafts(next.filter((item) => !deletedDrafts.current.has(item.id)))),
+    ])
   }
 
   useEffect(() => {
@@ -59,11 +74,11 @@ export default function Templates() {
   }, [])
 
   useEffect(() => {
-    if (!confirmName) return
-    const dismiss = () => setConfirmName(null)
+    if (!confirmName && !confirmDraft) return
+    const dismiss = () => { setConfirmName(null); setConfirmDraft(undefined) }
     window.addEventListener("click", dismiss)
     return () => window.removeEventListener("click", dismiss)
-  }, [confirmName])
+  }, [confirmName, confirmDraft])
 
   async function onFiles(files: File[]) {
     const docx = files.filter((f) => f.name.toLowerCase().endsWith(".docx"))
@@ -92,6 +107,29 @@ export default function Templates() {
       toast("success", `Deleted template "${t.name}".`)
     } catch (e) {
       toast("error", humanizeError(e, `Could not delete "${t.name}".`))
+    }
+  }
+
+  async function onDeleteDraft(item: TemplateDraft) {
+    if (deletionPending.current) return
+    deletionPending.current = true
+    setDeletingDraft(item.id)
+    try {
+      await deleteTemplateDraft(item.id)
+      deletedDrafts.current.add(item.id)
+      setDrafts((previous) => previous.filter((row) => row.id !== item.id))
+      setConfirmDraft(undefined)
+      const current = new URL(window.location.href)
+      if (current.pathname === "/templates" && current.searchParams.get("draft") === item.id) {
+        createdRef.current = undefined
+        navigate("/templates", { replace: true })
+      }
+      toast("success", "Deleted template conversation.")
+    } catch (error) {
+      toast("error", humanizeError(error, "Could not delete this template conversation."))
+    } finally {
+      deletionPending.current = false
+      setDeletingDraft(undefined)
     }
   }
 
@@ -124,7 +162,7 @@ export default function Templates() {
         description="Drafting bases shared across every matter."
         libraryTitle="Saved templates"
         count={loading ? undefined : templates.length}
-        active={Boolean(session)}
+        active={Boolean(session || draft)}
         upload={
           <Dropzone
             accept=".docx"
@@ -135,7 +173,7 @@ export default function Templates() {
           />
         }
         assistant={
-          dir && (
+          draft ? <TemplateDraftBuilder key={draft} id={draft} onSaved={refresh} onDraftChanged={onDraftChanged} /> : dir && (
             <ChatPanel
               key={session ?? "new"}
               directory={dir}
@@ -258,6 +296,7 @@ export default function Templates() {
                         title="Delete template"
                         onClick={(e) => {
                           e.stopPropagation()
+                          setConfirmDraft(undefined)
                           setConfirmName(t.name)
                         }}
                       >
@@ -270,6 +309,19 @@ export default function Templates() {
             })}
           </ul>
         )}
+        {drafts.length > 0 && <section className="template-conversations" aria-label="Template conversations">
+          <h2>Template conversations</h2>
+          <ul>{drafts.map((item) => <li key={item.id}>
+            <div className="template-conversation-row">
+              <Link to={`/templates?draft=${encodeURIComponent(item.id)}`} aria-current={draft === item.id ? "page" : undefined}>
+                <strong>{item.source.name}</strong>
+                <span>{item.status === "published" ? `Saved as ${item.publishedName ?? item.name}` : item.revision > 0 ? "Ready for review" : "In progress"}</span>
+              </Link>
+              {confirmDraft === item.id ? <button type="button" className="icon-btn danger" title="Confirm delete" aria-label={`Confirm delete conversation for ${item.source.name}`} disabled={Boolean(deletingDraft)} onClick={(event) => { event.stopPropagation(); void onDeleteDraft(item) }}>{deletingDraft === item.id ? "Deleting…" : "Confirm"}</button>
+                : <button type="button" className="icon-btn" aria-label={`Delete conversation for ${item.source.name}`} disabled={Boolean(deletingDraft)} onClick={(event) => { event.stopPropagation(); setConfirmName(null); setConfirmDraft(item.id) }}>Delete</button>}
+            </div>
+          </li>)}</ul>
+        </section>}
       </LibraryLayout>
 
       <Exit when={viewing}>{(viewing) => (

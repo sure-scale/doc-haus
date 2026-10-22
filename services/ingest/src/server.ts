@@ -2,6 +2,7 @@ import { playbookLibraryRoutes } from "./playbook-library"
 import { updateRoutes, managedUpdateOwner } from "./updater"
 import { RepoUpdater } from "../../../scripts/updater"
 import { documentCopyRoutes } from "./document-copy"
+import { templateDraftRoutes } from "./template-drafts"
 import { registeredCombinedParts } from "./combined-output"
 import { documentLabelRoutes } from "./document-labels"
 import { answerDraftRoutes } from "./answer-drafts"
@@ -614,6 +615,7 @@ app.post("/matters/:id/deliverables", async (c) => {
 })
 
 app.route("/", documentCopyRoutes(matterDir))
+app.route("/", templateDraftRoutes(matterDir))
 
 // Persist an edit to an already registered document while preserving its role.
 // Editing a generated deliverable must never promote it into source retrieval.

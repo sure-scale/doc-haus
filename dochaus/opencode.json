@@ -43,6 +43,8 @@
     "case-law": "allow",
     "list-templates": "allow",
     "get-template": "allow",
+    "read-template-source": "allow",
+    "prepare-template": "allow",
     "update-template": "ask",
     "delete-template": "ask",
     "list-playbooks": "allow",

@@ -60,6 +60,7 @@ function WordDocumentViewer({
   onChanged,
   onConverted,
   onSaveTemplate,
+  creatingTemplate = false,
   onCompare,
 }: {
   matterId: string
@@ -75,10 +76,11 @@ function WordDocumentViewer({
   // Called with the new .docx name after a PDF is converted, so the parent can
   // swap the viewer onto the freshly indexed editable document.
   onConverted?: (name: string) => void
-  // Hand this document to draft mode to turn into a reusable template (a chat
-  // with the prompt prefilled). DOCX only — the redline pipeline and templates
+  // Capture this document for a fresh Template Builder conversation, with its
+  // prompt prefilled. DOCX only — the redline pipeline and templates
   // are DOCX-only. Omitted on surfaces that do not offer the action.
   onSaveTemplate?: () => void
+  creatingTemplate?: boolean
   // Compare this Word file with another version of it. DOCX only.
   onCompare?: () => void
 }) {
@@ -306,14 +308,14 @@ function WordDocumentViewer({
                     </button>
                   )}
                   {onSaveTemplate && (
-                    <button onClick={onSaveTemplate}>
+                    <button onClick={onSaveTemplate} disabled={creatingTemplate}>
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                         <rect x="8" y="8" width="13" height="13" rx="2" />
                         <path d="M4 16V5a2 2 0 0 1 2-2h11" />
                       </svg>
                       <span>
-                        Save as template
-                        <small>Reusable copy with client details removed</small>
+                        {creatingTemplate ? "Attaching document…" : "Create reusable template"}
+                        <small>Review a reusable copy in Template Builder</small>
                       </span>
                     </button>
                   )}

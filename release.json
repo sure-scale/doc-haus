@@ -1,5 +1,5 @@
 {
-  "version": 6,
-  "name": "2.0.4",
-  "notes": "Quick drafts in chat: ask for a short email or letter and get a draft back in the chat, then run the full drafting cycle with one click if it needs more. In Settings, choose whether Auto asks first or starts a quick draft on its own. Stop a chat answer partway and keep what it has written so far. Answer a drafting question with \"use your judgement\" and the decision is made for you, then listed in the drafting notes to confirm. Also: export the review table to CSV or Word, redaction that also clears names from links and other hidden parts of a Word file, cleaner headings in drafts, a check for broken cross-references and defined terms, and setup asks for your firm's date format."
+  "version": 7,
+  "name": "2.0.5",
+  "notes": "Turn an existing document into a reusable template. Prepare it in a separate template conversation, review the proposed Word document and save it to your library, while keeping the original intact. A cleaner, calmer workspace. Buttons, cards, menus and icons now share one consistent look. The app also reads better on small screens and in high-contrast mode. Stronger security. We updated the components doc.haus is built on, including the ones that handle the documents you upload, to close known security issues."
 }

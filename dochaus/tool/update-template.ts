@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url"
 import path from "node:path"
 import { docxodus } from "../lib/docxodus"
 import { withParagraphPointers } from "../lib/drafting-amendment"
+import { isTemplateDraftDirectory, TEMPLATE_DRAFT_REVIEW_MESSAGE } from "../lib/template-draft-client"
 
 // doc.haus update-template tool. Revises an existing template in the firm's
 // global library: a new body (recomposed onto the styled blank seed exactly like
@@ -31,6 +32,7 @@ export default tool({
       .describe("Revised one-line summary of what this template is for. Omit to keep the current description."),
   },
   async execute(args, ctx) {
+    if (isTemplateDraftDirectory(ctx.directory)) return TEMPLATE_DRAFT_REVIEW_MESSAGE
     const name = path.basename(args.name.endsWith(".docx") ? args.name : `${args.name}.docx`)
     if (args.content === undefined && args.description === undefined)
       return 'Nothing to update — supply "content", "description", or both.'

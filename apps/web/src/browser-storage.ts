@@ -1,5 +1,5 @@
-// Only browser presentation, personal approval choices, and migration reads
-// belong here. Matter work is persisted through the ingest service.
+// Browser presentation, personal approval choices, unsent library-form answers,
+// and migration reads belong here. Matter work uses the ingest service.
 function storage(session: boolean) {
   return session ? window.sessionStorage : window.localStorage
 }
