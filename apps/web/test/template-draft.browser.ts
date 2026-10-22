@@ -132,6 +132,7 @@ const server = Bun.serve({
       if (libraryRefreshFailure) { libraryRefreshFailure = false; return Response.json({ error: "Library temporarily unavailable" }, { status: 503 }) }
       return json({ dir: "/templates", templates: publications.map((saved) => ({ name: saved.name, description: saved.description, placeholders: [{ text: "[insert customer]", kind: "fill" }] })) })
     }
+    if (route === "GET /ingest/templates/content") return new Response(docx(replacement, (revisedNotice + " ").repeat(80)))
     if (route === "GET /ingest/template-drafts") return json({ drafts: [...drafts.values()].reverse() })
     if (route === "GET /ingest/matters/matter/telemetry") return json({ current_activity: null, today: { cost_usd: 0, turns: 0 }, matter_total: { cost_usd: 0, turns: 0, sessions: 1, since_ts: 1 }, current_session: null, rate_card_as_of: null, unknown_models: [] })
     if (route === "GET /ingest/matters/matter/drafting-status") return json(null)
@@ -375,6 +376,60 @@ try {
   await page.waitForURL(`**draft=draft_1&session=${firstSession}`)
   await page.getByRole("region", { name: "Template review" }).getByText("Standard services.docx", { exact: true }).waitFor()
   console.log("PASS revised proposal, name conflict, explicit save, source preservation and published reload")
+
+  // The saved-library viewer is mounted beside the capped page content. Its
+  // backdrop must cover the viewport without moving or restyling that content.
+  const backgroundGeometry = () => page.locator(".library-layout").evaluate((node) => {
+    const bounds = node.getBoundingClientRect()
+    const style = getComputedStyle(node)
+    return { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height, font: style.fontFamily, size: style.fontSize }
+  })
+  const beforeViewer = await backgroundGeometry()
+  const viewSaved = page.getByRole("button", { name: "View", exact: true })
+  await viewSaved.click()
+  const savedViewer = page.getByRole("dialog", { name: "Standard services.docx", exact: true })
+  await savedViewer.locator(".docx-render").getByText(replacement, { exact: true }).waitFor()
+  const overlayGeometry = await page.locator(".viewer-overlay").boundingBox()
+  const afterViewer = await backgroundGeometry()
+  if (shots) await page.screenshot({ path: path.join(shots, "9-saved-template-viewer.png") })
+  assert.deepEqual(overlayGeometry, { x: 0, y: 0, width: 1280, height: 950 }, "saved template backdrop covers the entire viewport")
+  assert.deepEqual(afterViewer, beforeViewer, "rendering a template leaves background geometry and typography unchanged")
+  await page.keyboard.press("Escape")
+  await savedViewer.waitFor({ state: "hidden" })
+  assert.equal(await viewSaved.evaluate((node) => node === document.activeElement), true, "closing returns focus to View without scrolling")
+  const backgroundScroll = () => page.evaluate(() => [scrollX, scrollY, ...[...document.querySelectorAll(".library-collection, .chat-log")].map((node) => node.scrollTop)])
+  for (const [width, height, textSize] of [[390, 844, "default"], [1280, 950, "large"]] as const) {
+    await page.setViewportSize({ width, height })
+    await page.evaluate((value) => document.documentElement.dataset.text = value, textSize)
+    await viewSaved.scrollIntoViewIfNeeded()
+    const before = await backgroundGeometry()
+    const scrollBefore = await backgroundScroll()
+    await viewSaved.click()
+    await savedViewer.locator(".docx-render").getByText(replacement, { exact: true }).waitFor()
+    const backdrop = await page.locator(".template-viewer-overlay").boundingBox()
+    assert.ok(backdrop && Math.abs(backdrop.x) < 1 && Math.abs(backdrop.y) < 1 && Math.abs(backdrop.width - width) < 1 && Math.abs(backdrop.height - height) < 1, "backdrop covers mobile and enlarged-text viewports")
+    assert.deepEqual(await backgroundGeometry(), before, "mobile and enlarged-text opening preserves the page layout")
+    const scrollPane = savedViewer.locator(width < 760 ? ".viewer-body" : ".viewer-doc")
+    assert.equal(await scrollPane.evaluate((node) => node.scrollHeight > node.clientHeight), true, "long saved documents scroll inside the viewer")
+    await scrollPane.evaluate((node) => node.scrollTop = node.scrollHeight)
+    await scrollPane.hover()
+    await page.mouse.wheel(0, 600)
+    await page.waitForTimeout(150) // Allow compositor-driven wheel scrolling to settle.
+    await page.mouse.move(4, 4)
+    await page.mouse.wheel(0, 600)
+    await page.waitForTimeout(150)
+    assert.deepEqual(await backgroundScroll(), scrollBefore, "scrolling past document edges or over the backdrop never scrolls the page behind it")
+    const bounds = await savedViewer.boundingBox()
+    assert.ok(bounds && bounds.x >= 0 && bounds.y >= 0 && bounds.x + bounds.width <= width + 1 && bounds.y + bounds.height <= height + 1, "saved viewer remains within the viewport")
+    if (shots && width < 760) await page.screenshot({ path: path.join(shots, "10-mobile-saved-viewer.png") })
+    await page.mouse.click(4, 4)
+    await savedViewer.waitFor({ state: "hidden" })
+    assert.equal(await viewSaved.evaluate((node) => node === document.activeElement), true)
+    assert.deepEqual(await backgroundScroll(), scrollBefore, "backdrop close restores focus without changing page scroll")
+  }
+  await page.evaluate(() => delete document.documentElement.dataset.text)
+  await page.setViewportSize({ width: 1280, height: 950 })
+  console.log("PASS saved template viewer covers desktop/mobile/large-text viewports without restyling or scrolling the background")
 
   await page.getByRole("button", { name: "Use", exact: true }).click()
   await page.getByRole("button", { name: /Services matter/ }).click()

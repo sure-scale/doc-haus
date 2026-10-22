@@ -72,6 +72,10 @@
 .template-review-status > button { margin-top: var(--space-3); }
 .template-draft-builder > .chat-card { flex: 1; min-height: 0; }
 .template-source { flex-shrink: 0; }
+/* The overlay and scrollable panes contain wheel/touch scrolling at their
+   edges, including over the backdrop, so the page underneath stays in place. */
+.template-viewer-overlay { overflow: auto; overscroll-behavior: contain; }
+.template-reader :is(.viewer-body, .viewer-doc, .changes-panel), .template-reader-footer { overscroll-behavior: contain; }
 .template-reader .changes-panel { width: min(400px, 35vw); }
 .template-reader.has-footer { height: calc(var(--viewport-block) - 64px); }
 .template-reader.has-footer > .viewer-bar { flex-shrink: 0; }
