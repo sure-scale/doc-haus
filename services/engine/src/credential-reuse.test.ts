@@ -244,3 +244,17 @@ test("read-only discovery sees committed WAL credentials without changing source
     files.forEach((file, index) => { if (!file.endsWith("-shm")) expect(readFileSync(path.join(f.directory, file))).toEqual(before[index]) })
   } finally { writer.close() }
 })
+
+test("candidate staging resolves only the selected secret without invoking the installation writer", async () => {
+  const f = fixture()
+  const before = readFileSync(f.file)
+  const source = f.service.list().sources[0]
+  const selected = source.connections.find(connection => connection.integrationID === "openai")!
+  const staged: unknown[] = []
+  const result = await f.service.importSelected({ sourceId: source.id, connectionId: selected.id }, async input => { staged.push(input); return { id: "transient-candidate" } })
+  expect(staged).toEqual([{ integrationID: "openai", label: "Test OAuth", value: f.oauth }])
+  expect(f.imported).toEqual([])
+  expect(result.connection.id).toBe("transient-candidate")
+  expect(JSON.stringify(result)).not.toContain(f.oauth.access)
+  expect(readFileSync(f.file)).toEqual(before)
+})

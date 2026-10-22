@@ -75,6 +75,20 @@ export function createProviderHealthMonitor(
   }
   return {
     check,
+    // Setup has already tested these exact models and saved the combined
+    // connection/model choices. Reuse that result without another paid probe.
+    confirmed(models: readonly { providerID: string; modelID: string }[]) {
+      ++version
+      pending = undefined
+      const unique = new Map(models.map(model => {
+        const selected = { ...model, modelID: model.modelID.split("#")[0]! }
+        return [`${selected.providerID}/${selected.modelID}`, selected]
+      }))
+      publish([...unique].map(([ref, model]) => {
+        rejectedModels.delete(ref)
+        return { ...model, status: "ready" as const }
+      }))
+    },
     getSnapshot: () => snapshot,
     subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener) } },
     // Called only for a typed native failure and the failing session's model.

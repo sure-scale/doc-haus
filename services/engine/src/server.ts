@@ -33,7 +33,7 @@ import { Session as SessionSchema } from "@opencode/schema/session"
 import { makeLocationNode } from "@opencode/util/effect/app-node"
 import { FSUtil } from "@opencode/util/fs-util"
 import { Global } from "@opencode/util/global"
-import { Context, Deferred, Effect, Layer, Logger, Option, References, Schema, Tracer } from "effect"
+import { Context, Deferred, Effect, Layer, Logger, Option, References, Schema, Scope, Tracer } from "effect"
 import { HttpClient, HttpEffect, HttpMiddleware, HttpRouter, HttpServer, HttpServerRequest } from "effect/unstable/http"
 import path from "node:path"
 import { existsSync, mkdirSync, openSync, closeSync, readFileSync, unlinkSync, writeFileSync, realpathSync } from "node:fs"
@@ -43,6 +43,7 @@ import { generationAdmissionError } from "./generation-admission"
 import { readEffectiveSettings } from "./effective-settings"
 import { createReusedCredential, credentialReuse, credentialReuseHandler, nativeCredentialDirectory } from "./credential-reuse"
 import { researchConsentStatus } from "../../../dochaus/lib/research-consent-status"
+import { providerCandidates, ProviderCandidateError } from "./provider-candidate"
 import { providerCatalog } from "./provider-catalog"
 import { modelHttp } from "./model-http"
 import { probeProvider, providerTestCache, providerTestFailure, providerTestInput, unavailableModel } from "./provider-health"
@@ -219,10 +220,15 @@ await runEngine(
         }
         process.on("SIGUSR2", releaseRestart)
       }
-      const reuseCredentials = credentialReuseHandler(credentialReuse({
+      const reusableConnections = credentialReuse({
         directory: nativeCredentialDirectory(), targetDirectory: path.dirname(databasePath),
         create: input => runEngine(createReusedCredential(Context.get(context, Credential.Service), input)),
-      }), password)
+      })
+      const reuseCredentials = credentialReuseHandler(reusableConnections, password)
+      const candidateScope = yield* Scope.Scope
+      const candidates = providerCandidates({ legal, credentials, reuse: reusableConnections, client: probeClient, scope: candidateScope,
+        inspect: effect => runEngine(effect.pipe(Effect.provide(locations.get(Location.Ref.make({ directory: AbsolutePath.make(workspace) }))))),
+      })
       const server = Bun.serve({
         // SSE heartbeats and native session waits can exceed Bun's idle default.
         idleTimeout: 0,
@@ -230,6 +236,7 @@ await runEngine(
         port,
         fetch: (request) => {
           const pathname = new URL(request.url).pathname
+          if (pathname.startsWith("/api/dochaus/provider-candidate/")) return handleProviderCandidate(request, locations, candidates)
           if (pathname === "/api/dochaus/credential-reuse") return reuseCredentials(request)
           if (pathname === "/api/dochaus/ready" && request.method === "GET")
             return managedReadinessResponse(request, locations)
@@ -435,4 +442,47 @@ async function generateText(request: Request, locations: Context.Service.Shape<t
     console.warn("[matter-generation] configured generation failed",diagnosticErrorMetadata(error))
     return Response.json({ error: "The configured legal generation could not complete. No alternative model was used." }, { status: 503 })
   }
+}
+
+async function handleProviderCandidate(request: Request, locations: Context.Service.Shape<typeof LocationServiceMap.Service>, candidates: ReturnType<typeof providerCandidates>) {
+  if (request.method === "OPTIONS") {
+    const origin = request.headers.get("origin")
+    if (!origin || !/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) return new Response(null, { status: 403 })
+    return new Response(null, { status: 204, headers: { "Access-Control-Allow-Origin": origin, "Access-Control-Allow-Credentials": "true", "Access-Control-Allow-Methods": "POST, DELETE, OPTIONS", "Access-Control-Allow-Headers": "authorization, content-type, x-opencode-directory", Vary: "Origin" } })
+  }
+  const ready = await managedReadinessResponse(request, locations)
+  if (!ready.ok) return ready
+  if (request.headers.get("origin") && !/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(request.headers.get("origin")!)) return managedJson(request, { error: "Origin is not allowed." }, 403)
+  const url = new URL(request.url)
+  const action = url.pathname.slice("/api/dochaus/provider-candidate/".length)
+  if (action === "session" && request.method === "DELETE") {
+    await candidates.close(url.searchParams.get("sessionID") ?? "")
+    return managedJson(request, { ok: true }, 200)
+  }
+  if (request.method !== "POST") return managedJson(request, { error: "Method not allowed." }, 405)
+  try {
+    if (request.headers.get("content-type")?.split(";")[0].trim().toLowerCase() !== "application/json") return managedJson(request, { error: "Send provider setup as JSON." }, 415)
+    const text = await readCandidateBody(request)
+    const result = await candidates.handle(action, JSON.parse(text))
+    const response = managedJson(request, result, "ok" in result && result.ok === false && "kind" in result ? result.kind === "model" ? 400 : 503 : 200)
+    response.headers.set("Cache-Control", "no-store")
+    return response
+  } catch (error) { return managedJson(request, { error: error instanceof ProviderCandidateError ? error.message : "Provider setup could not complete. Check the selected connection and fields, then retry." }, 400) }
+}
+
+async function readCandidateBody(request: Request) {
+  const reader = request.body?.getReader()
+  if (!reader) throw new ProviderCandidateError("Send provider setup as JSON.")
+  const timer = setTimeout(() => { void reader.cancel().catch(() => {}) }, 5000)
+  const chunks: Uint8Array[] = []
+  let size = 0
+  try {
+    while (true) {
+      const next = await reader.read()
+      if (next.done) return new TextDecoder().decode(Buffer.concat(chunks))
+      size += next.value.length
+      if (size > 32_768) { await reader.cancel(); throw new ProviderCandidateError("Setup request is too large.") }
+      chunks.push(next.value)
+    }
+  } finally { clearTimeout(timer); reader.releaseLock() }
 }

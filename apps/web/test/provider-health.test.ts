@@ -14,6 +14,98 @@ test("startup verifies the saved model once when primary and fast are identical"
   expect(monitor.getSnapshot()).toEqual([{ providerID: "fixture", modelID: "primary", status: "ready" }])
 })
 
+test("explicit setup confirmation publishes each exact model pair once without another request", () => {
+  let requests = 0
+  let updates = 0
+  const monitor = createProviderHealthMonitor(async () => { requests++; return {} }, async () => { requests++; return { ok: true } })
+  monitor.subscribe(() => { updates++ })
+  monitor.confirmed([
+    { providerID: "fixture", modelID: "primary" },
+    { providerID: "fixture", modelID: "primary" },
+    { providerID: "other-fixture", modelID: "primary" },
+    { providerID: "fixture", modelID: "fast" },
+  ])
+  expect(monitor.getSnapshot()).toEqual([
+    { providerID: "fixture", modelID: "primary", status: "ready" },
+    { providerID: "other-fixture", modelID: "primary", status: "ready" },
+    { providerID: "fixture", modelID: "fast", status: "ready" },
+  ])
+  expect(requests).toBe(0)
+  expect(updates).toBe(1)
+})
+
+test("confirmed native variants clear the underlying failed model without another probe", async () => {
+  let calls = 0
+  const monitor = createProviderHealthMonitor(config, async () => { calls++; return { ok: true } })
+  monitor.rejected({ providerID: "fixture", id: "primary" }, { type: "provider.auth", message: "Expired key" })
+  monitor.confirmed([{ providerID: "fixture", modelID: "primary#high" }, { providerID: "fixture", modelID: "primary#low" }])
+  expect(monitor.getSnapshot()).toEqual([{ providerID: "fixture", modelID: "primary", status: "ready" }])
+  expect(calls).toBe(0)
+  await monitor.check()
+  expect(calls).toBe(1)
+})
+
+test("an older pending model check and session failure cannot overwrite explicit confirmation", async () => {
+  let finish: ((value: { ok: false; kind: "auth" }) => void) | undefined
+  const monitor = createProviderHealthMonitor(config, () => new Promise(resolve => { finish = resolve }))
+  const checking = monitor.check()
+  await Promise.resolve()
+  const oldVersion = monitor.version()
+  monitor.confirmed([{ providerID: "fixture", modelID: "primary" }])
+  finish!({ ok: false, kind: "auth" })
+  await checking
+  monitor.rejected(model, { type: "provider.auth", message: "Old request rejected" }, oldVersion)
+  expect(monitor.getSnapshot()).toEqual([{ providerID: "fixture", modelID: "primary", status: "ready" }])
+})
+
+test("an older pending config read cannot start a probe after explicit confirmation", async () => {
+  let finish: ((value: { model: string }) => void) | undefined
+  let requests = 0
+  const monitor = createProviderHealthMonitor(() => new Promise(resolve => { finish = resolve }), async () => { requests++; return { ok: true } })
+  const checking = monitor.check()
+  monitor.confirmed([{ providerID: "fixture", modelID: "new-model" }])
+  finish!({ model: "fixture/old-model" })
+  await checking
+  expect(requests).toBe(0)
+  expect(monitor.getSnapshot()).toEqual([{ providerID: "fixture", modelID: "new-model", status: "ready" }])
+})
+
+test("a new health check after confirmation does not join the obsolete pending check", async () => {
+  let finish: ((value: { ok: false; kind: "auth" }) => void) | undefined
+  let requests = 0
+  const monitor = createProviderHealthMonitor(config, () => {
+    requests++
+    return requests === 1 ? new Promise(resolve => { finish = resolve }) : Promise.resolve({ ok: true })
+  })
+  const obsolete = monitor.check()
+  await Promise.resolve()
+  monitor.confirmed([{ providerID: "fixture", modelID: "primary" }])
+  const fresh = monitor.check()
+  expect(fresh).not.toBe(obsolete)
+  await fresh
+  finish!({ ok: false, kind: "auth" })
+  await obsolete
+  expect(requests).toBe(2)
+  expect(monitor.getSnapshot()).toEqual([{ providerID: "fixture", modelID: "primary", status: "ready" }])
+})
+
+test("confirmation clears matching remembered failures and retains unrelated session-model failures", async () => {
+  const calls: string[] = []
+  let saved = "fixture/primary"
+  const monitor = createProviderHealthMonitor(async () => ({ model: saved }), async (_provider, id) => {
+    calls.push(id)
+    return id === "old-session-model" ? { ok: false, kind: "auth" } : { ok: true }
+  })
+  monitor.rejected(model, { type: "provider.auth", message: "Invalid key" })
+  monitor.rejected({ providerID: "fixture", id: "old-session-model" }, { type: "provider.auth", message: "Invalid key" })
+  monitor.confirmed([{ providerID: "fixture", modelID: "primary" }])
+  expect(monitor.getSnapshot()).toEqual([{ providerID: "fixture", modelID: "primary", status: "ready" }])
+  saved = "fixture/new-default"
+  await monitor.check()
+  expect(calls).toEqual(["old-session-model", "new-default"])
+  expect(providerConnection(monitor.getSnapshot(), "fixture")?.status).toBe("auth")
+})
+
 test("an expired saved key is rejected and checking after replacement clears it", async () => {
   let expired = true
   const forces: boolean[] = []

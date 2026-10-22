@@ -5,9 +5,12 @@ import { DEFAULT_DRAFTING } from "../../../dochaus/lib/drafting-preferences"
 import type { DraftingPreferences } from "../src/api/ingest/preferences"
 import { defaultProvider, pickForProvider } from "../src/models"
 import DraftingDetailsStep, { detailsPreferences } from "../src/components/onboarding/DraftingDetailsStep"
-import { visibleFields } from "../src/components/settings/NativeProviderConnect"
-import ModelsTab from "../src/components/settings/ModelsTab"
-import ModelPickerStep from "../src/components/onboarding/ModelPickerStep"
+import { visibleFields } from "../src/components/ai-setup/connection-fields"
+import ModelFields from "../src/components/ai-setup/ModelFields"
+import ProviderPicker from "../src/components/ai-setup/ProviderPicker"
+import { connectionChoices, methodDefaults } from "../src/components/ai-setup/ConnectionEditor"
+import type { Provider } from "../src/components/settings/types"
+import type { IntegrationInfo } from "@opencode/client"
 
 type DateFormat = DraftingPreferences["dateFormat"]
 const noop = () => {}
@@ -31,22 +34,23 @@ test("model selection asks when several providers or models are available", () =
   expect(pickForProvider([a, b], "two")).toEqual({ primary: "two/b", fast: "two/b" })
   expect(pickForProvider([a, { ...a, value: "one/c", modelId: "c" }], "one")).toEqual({ primary: "", fast: "" })
 })
-test("removed saved models are guidance rather than inaccessible model options in Settings and setup", () => {
-  const model = "opencode/retired"
-  const settings = renderToStaticMarkup(createElement(ModelsTab, {
-    models: [], switchTab: noop, provider: "", changeProvider: noop, readyProviders: [], model, setModel: noop,
-    providerModels: [], smallModel: model, setSmallModelValue: noop, toast: noop, firstRun: false, onClose: noop,
-  }))
-  const setup = renderToStaticMarkup(createElement(ModelPickerStep, {
-    connectedProviders: [], provider: "", changeProvider: noop, primary: model, setPrimary: noop, providerModels: [],
-    fast: model, setFast: noop, setForceConnect: noop, setNotice: noop, onSaved: done,
-  }))
-  expect(settings).toContain("Choose another provider")
-  for (const html of [settings, setup]) {
-    expect(html).not.toContain('value="opencode/retired"')
-    expect(html).not.toContain("opencode/retired · unavailable")
-    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Save(?: and continue)?/)
-  }
+test("shared model fields retain unavailable choices and default fast to the primary model", () => {
+  const html = renderToStaticMarkup(createElement(ModelFields, { models: [], primary: "provider/retired", fast: "", onPrimaryChange: noop, onFastChange: noop }))
+  expect(html).toContain("provider/retired · unavailable")
+  expect(html).toContain('<option value="" selected="">Same as primary</option>')
+})
+test("reusable sign-ins promote a provider into detected choices without selecting it", () => {
+  const provider = (id: string): Provider => ({ id, name: id, activation: "auto", models: {}, nativeAvailable: false, credentialSources: [] })
+  const html = renderToStaticMarkup(createElement(ProviderPicker, { providers: [provider("other"), { ...provider("alias"), integrationID: "sign-in" }], provider: "", onChange: noop, reusableProviderIDs: ["sign-in"] }))
+  expect(html).toContain('<optgroup label="Detected"><option value="alias">alias</option></optgroup>')
+  expect(html).toContain('<option value="" selected="">Select a provider</option>')
+})
+test("connection choices preserve native methods and hide conflicting host credentials", () => {
+  const provider: Provider = { id: "google-vertex", name: "Vertex", activation: "auto", models: {}, nativeAvailable: false, credentialSources: [], host: { type: "google-adc", sources: ["ADC"], options: {} } }
+  const integration: IntegrationInfo = { id: "google-vertex", name: "Vertex", methods: [{ type: "key", label: "New API key", form: [{ type: "string", key: "account", default: "personal" }] }], connections: [{ type: "credential", id: "saved", label: "Saved account", method: "key" }] }
+  const choices = connectionChoices(provider, integration, [])
+  expect(choices.map(choice => choice.value)).toEqual(["credential:saved", "method:0"])
+  expect(methodDefaults(choices[1]?.method)).toEqual({ account: "personal" })
 })
 test("native auth fields retain conditional visibility", () => {
   const fields = [{ key: "kind", type: "string" as const }, { key: "account", type: "string" as const, when: [{ key: "kind", op: "eq" as const, value: "team" }] }, { key: "hidden", type: "string" as const, hidden: true }]

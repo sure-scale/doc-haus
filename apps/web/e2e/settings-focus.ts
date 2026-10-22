@@ -17,6 +17,9 @@ const unexpected: string[] = []
 const requests: { method: string; path: string }[] = []
 const results: { name: string; status: string; error?: string }[] = []
 let config = { model: "fixture/primary", small_model: "fixture/fast" }
+let nextSession = 0
+const candidates = new Map<string, Set<string>>()
+const models = ["primary", "fast"].map(id => ({ providerID: "fixture", id, name: id, enabled: true, capabilities: { tools: true, input: ["text"], output: ["text"] } }))
 page.on("pageerror", (error: Error) => errors.push(error.message))
 await context.addInitScript(() => sessionStorage.setItem("dh.launch-notice.v1", "accepted"))
 await context.route("**/*", async route => {
@@ -31,9 +34,30 @@ await context.route("**/*", async route => {
   requests.push({ method: request.method(), path: pathname })
   const reply = (body: unknown) => route.fulfill({ status: 200, headers, contentType: "application/json", body: JSON.stringify(body) })
   if (request.method() === "POST" && pathname === "/api/dochaus/provider-test") return reply({ ok: true })
-  if (request.method() === "PATCH" && pathname === "/engine/config") {
-    config = { ...config, ...request.postDataJSON() as typeof config }
-    return reply(config)
+  if (request.method() === "POST" && pathname === "/api/dochaus/provider-candidate/session") {
+    expect(request.postDataJSON()).toMatchObject({ providerID: "fixture", connection: { type: "credential", id: "fixture-account" } })
+    const sessionID = `fixture-session-${++nextSession}`
+    candidates.set(sessionID, new Set())
+    return reply({ sessionID })
+  }
+  if (request.method() === "POST" && pathname === "/api/dochaus/provider-candidate/models") return reply({ data: models, customModels: false })
+  if (request.method() === "POST" && pathname === "/api/dochaus/provider-candidate/test") {
+    const { sessionID, modelID } = request.postDataJSON()
+    expect(candidates.has(sessionID)).toBe(true)
+    candidates.get(sessionID)!.add(modelID)
+    return reply({ ok: true })
+  }
+  if (request.method() === "DELETE" && pathname === "/api/dochaus/provider-candidate/session") {
+    candidates.delete(url.searchParams.get("sessionID") ?? "")
+    return reply({ ok: true })
+  }
+  if (request.method() === "POST" && pathname === "/engine/provider-setup") {
+    const { sessionID, primary, fast } = request.postDataJSON()
+    expect(candidates.get(sessionID)?.has(primary)).toBe(true)
+    expect(candidates.get(sessionID)?.has(fast)).toBe(true)
+    config = { model: `fixture/${primary}`, small_model: `fixture/${fast}` }
+    candidates.delete(sessionID)
+    return reply({ ok: true })
   }
   if (request.method() !== "GET") { unexpected.push(`${request.method()} ${pathname}`); return route.abort() }
   if (pathname === "/api/dochaus/ready") return reply({ ready: true, consentState: "active" })
@@ -42,8 +66,10 @@ await context.route("**/*", async route => {
   if (pathname === "/jurisdictions") return reply([{ code: "england-wales", name: "England and Wales" }, { code: "scotland", name: "Scotland" }])
   if (pathname === "/updates") return reply({ current: { version: 1, name: "Fixture", notes: "" }, available: false })
   if (pathname === "/engine/config") return reply(config)
+  if (pathname === "/auth/reuse") return reply({ sources: [] })
+  if (pathname === "/preferences") return reply({ attorney: "", firm: "", posture: "balanced", formality: "formal", detail: "concise", strategyApproval: "off", dateFormat: "day-month-year", numberStyle: "numerals", houseStyle: "", webResearch: "official", searchApiKey: "", caseLawApiKey: "", courtlistenerMcpEnabled: false, approvedSources: [], telemetry: { retention_days: 30, rate_overrides: {} }, pageNumbers: "plain", pageNumberPosition: "center", numberFirstPage: true, draftLine: true, draftLineFirm: false, agreementLegend: "", adviceLegend: "", notesMarking: false, quickDraftOffer: "ask" })
   if (pathname === "/api/dochaus/provider-catalog" || pathname === "/api/provider") return reply({ location: { directory: "/fixture" }, data: [{ id: "fixture", name: "Fixture Models", integrationID: "fixture", activation: "enabled", package: "@opencode/ai/providers/openai-compatible" }] })
-  if (pathname === "/api/model") return reply({ location: { directory: "/fixture" }, data: ["primary", "fast"].map(id => ({ providerID: "fixture", id, name: id, enabled: true })) })
+  if (pathname === "/api/model") return reply({ location: { directory: "/fixture" }, data: models })
   if (pathname === "/api/integration") return reply({ location: { directory: "/fixture" }, data: [{ id: "fixture", name: "Fixture", methods: [], connections: [{ type: "credential", id: "fixture-account", label: "Fixture", method: "key" }] }] })
   unexpected.push(`${request.method()} ${pathname}`)
   return route.abort()
@@ -91,19 +117,19 @@ try {
     await open()
     const tabs = modal.getByRole("tablist", { name: "Settings categories" })
     await expect(tabs).toHaveAttribute("aria-orientation", "vertical")
-    await modal.getByRole("tab", { name: "Models", exact: true }).focus()
-    await page.keyboard.press("ArrowDown"); await selected("Providers")
-    await page.keyboard.press("ArrowUp"); await selected("Models")
+    await modal.getByRole("tab", { name: "AI setup", exact: true }).focus()
+    await page.keyboard.press("ArrowDown"); await selected("Drafting")
+    await page.keyboard.press("ArrowUp"); await selected("AI setup")
     await page.keyboard.press("End"); await selected("Appearance")
-    await page.keyboard.press("ArrowDown"); await selected("Models")
+    await page.keyboard.press("ArrowDown"); await selected("AI setup")
     await page.keyboard.press("ArrowUp"); await selected("Appearance")
-    await page.keyboard.press("Home"); await selected("Models")
+    await page.keyboard.press("Home"); await selected("AI setup")
     await page.setViewportSize({ width: 375, height: 812 })
     await expect(tabs).toHaveAttribute("aria-orientation", "horizontal")
     await page.keyboard.press("End"); await selected("Appearance")
     await page.keyboard.press("ArrowLeft"); await selected("Approvals")
     await page.keyboard.press("ArrowRight"); await selected("Appearance")
-    await page.keyboard.press("Home"); await selected("Models")
+    await page.keyboard.press("Home"); await selected("AI setup")
     await page.keyboard.press("Escape")
     await expect(modal).toHaveCount(0)
     await expect(opener).toBeFocused()
@@ -128,9 +154,9 @@ try {
     await expect(search).toHaveCount(0)
     await expect(jurisdiction).toBeFocused()
     await expect(modal).toBeVisible()
-    await modal.getByRole("tab", { name: "Models", exact: true }).click()
+    await modal.getByRole("tab", { name: "AI setup", exact: true }).click()
     await expect(modal.getByLabel("Primary model", { exact: true })).toHaveValue("fixture/fast")
-    expect(requests.filter(request => request.method !== "GET" && request.path !== "/api/dochaus/provider-test")).toEqual([])
+    expect(requests.filter(request => request.path === "/engine/provider-setup" || request.path === "/api/dochaus/provider-candidate/test" || request.method === "PATCH")).toEqual([])
     await modal.getByRole("button", { name: "Close", exact: true }).focus()
     await page.keyboard.press("Enter")
     await expect(opener).toBeFocused()
@@ -140,8 +166,11 @@ try {
     await expect(modal.getByLabel("Primary model", { exact: true })).toHaveValue("fixture/primary")
     await modal.getByLabel("Primary model", { exact: true }).selectOption("fixture/fast")
     const save = modal.getByRole("button", { name: "Save", exact: true })
+    await expect(save).toBeDisabled()
+    await modal.getByRole("button", { name: "Test connection", exact: true }).click()
+    await expect(save).toBeEnabled()
     await save.focus(); await page.keyboard.press("Enter")
-    await expect(page.getByRole("status")).toContainText("Models saved.")
+    await expect(page.getByRole("status").filter({ hasText: "AI setup saved." }).first()).toBeVisible()
     await expect(modal).toBeVisible()
     expect(config).toEqual({ model: "fixture/fast", small_model: "fixture/fast" })
     await expectContained()

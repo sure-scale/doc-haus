@@ -1,0 +1,84 @@
+.ai-setup-provider,
+.ai-setup-models,
+.ai-setup-test-results {
+  --settings-label-width: 152px;
+  min-width: 0;
+}
+
+.ai-setup-source,
+.ai-setup-connection-status,
+.ai-setup-result .settings-hint {
+  overflow-wrap: anywhere;
+}
+
+.ai-setup-provider select,
+.ai-setup-models select {
+  min-height: 44px;
+  max-width: 100%;
+}
+
+.ai-setup-result-list {
+  display: grid;
+  gap: var(--space-3);
+  list-style: none;
+  margin: var(--space-3) 0 0;
+  padding: 0;
+}
+
+.ai-setup-result {
+  min-width: 0;
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--md-sys-color-surface-container-low);
+}
+
+.ai-setup-result-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
+}
+
+.ai-setup-result-heading strong {
+  font-size: .93rem;
+  font-weight: 600;
+}
+
+.ai-setup-result-status {
+  font-size: .85rem;
+  font-weight: 600;
+}
+
+.ai-setup-result-model {
+  font-family: var(--font-mono);
+  font-size: .85rem;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.ai-setup-result--ready .ai-setup-result-status {
+  color: var(--accent);
+}
+
+.ai-setup-result--auth .ai-setup-result-status,
+.ai-setup-result--model .ai-setup-result-status,
+.ai-setup-result--unavailable .ai-setup-result-status {
+  color: var(--danger);
+}
+
+@media (max-width: 600px) {
+  .ai-setup-provider .settings-form-row,
+  .ai-setup-models .settings-form-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-2);
+  }
+
+  .ai-setup-provider .settings-field-copy,
+  .ai-setup-models .settings-field-copy {
+    padding-top: 0;
+  }
+}

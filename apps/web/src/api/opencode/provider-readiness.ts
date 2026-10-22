@@ -1,6 +1,7 @@
 import type { IntegrationInfo, ProviderInfo } from "@opencode/client"
 
-// These host sign-ins are verified separately through the existing live probe.
+// These providers use server credential chains. Availability supplies a catalog;
+// shared AI setup tests access to the exact selected models before Save.
 export const GATED_PROVIDERS = new Set(["google-vertex", "google-vertex-anthropic", "amazon-bedrock"])
 export const isRemovedProvider = (id: string | undefined) => id === "opencode"
 export const isRemovedModel = (reference: string | undefined) => reference?.startsWith("opencode/") ?? false

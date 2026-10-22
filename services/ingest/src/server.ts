@@ -9,6 +9,7 @@ import { answerDraftRoutes } from "./answer-drafts"
 import { readEngineSettings, patchEngineConfig, engineConfigFile } from "./engine-config"
 import { setupRoutes } from "./setup"
 import { authReuseRoutes } from "./auth-reuse"
+import { providerSetupRoutes } from "./provider-setup"
 import { Hono } from "hono"
 import { attachmentDocumentDisposition, inlineDocumentDisposition } from "./content-disposition"
 import { createHash } from "node:crypto"
@@ -138,6 +139,7 @@ app.route("/", documentLabelRoutes(matterDir))
 app.route("/", answerDraftRoutes(matterDir))
 
 app.route("/", authReuseRoutes())
+app.route("/", providerSetupRoutes())
 
 app.route("/", setupRoutes({ directory: path.dirname(engineConfigFile()) }))
 

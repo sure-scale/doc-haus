@@ -8,7 +8,7 @@ import { Effect, Logger, Schema } from "effect"
 import { isRemovedProvider } from "./effective-settings"
 
 export type ReusableConnection = { id: string; integrationID: string; label: string; authType: "key" | "oauth" }
-type Stored = { integrationID: Integration.ID; label: string; value: Credential.Value }
+export type Stored = { integrationID: Integration.ID; label: string; value: Credential.Value }
 type Row = { id: string; integration_id: string; label: string; authType: string }
 const decode = Schema.decodeUnknownSync(Credential.Value)
 const integration = (value: unknown): value is string => typeof value === "string" && /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(value)
@@ -85,7 +85,7 @@ export function credentialReuse(options: {
         }) }
       } catch { throw new Error("Could not read existing OpenCode sign-ins. The original store has not been changed.") }
     },
-    async importSelected(input: unknown) {
+    async importSelected(input: unknown, create = options.create) {
       if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).sort().join(",") !== "connectionId,sourceId" ||
           !("connectionId" in input) || !("sourceId" in input) || typeof input.connectionId !== "string" || typeof input.sourceId !== "string")
         throw new Error("Select one existing OpenCode connection to reuse.")
@@ -108,7 +108,7 @@ export function credentialReuse(options: {
         // Revalidate the current source row as well as the discovery handle:
         // another process may have changed its integration since listing.
         if (isRemovedProvider(stored.integrationID)) throw new Error("Provider unavailable")
-        const result = await options.create(stored)
+        const result = await create(stored)
         return { connection: { id: result.id, integrationID: stored.integrationID, label: stored.label, authType: stored.value.type } }
       } catch { throw new Error("Could not reuse the selected sign-in. The original store has not been changed; connect again or refresh the list.") }
     },
