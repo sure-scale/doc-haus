@@ -74,11 +74,11 @@ export default function Templates() {
   }, [])
 
   useEffect(() => {
-    if (!confirmName) return
-    const dismiss = () => setConfirmName(null)
+    if (!confirmName && !confirmDraft) return
+    const dismiss = () => { setConfirmName(null); setConfirmDraft(undefined) }
     window.addEventListener("click", dismiss)
     return () => window.removeEventListener("click", dismiss)
-  }, [confirmName])
+  }, [confirmName, confirmDraft])
 
   async function onFiles(files: File[]) {
     const docx = files.filter((f) => f.name.toLowerCase().endsWith(".docx"))
@@ -296,6 +296,7 @@ export default function Templates() {
                         title="Delete template"
                         onClick={(e) => {
                           e.stopPropagation()
+                          setConfirmDraft(undefined)
                           setConfirmName(t.name)
                         }}
                       >
@@ -316,15 +317,9 @@ export default function Templates() {
                 <strong>{item.source.name}</strong>
                 <span>{item.status === "published" ? `Saved as ${item.publishedName ?? item.name}` : item.revision > 0 ? "Ready for review" : "In progress"}</span>
               </Link>
-              {confirmDraft !== item.id && <button type="button" className="icon-btn" aria-label={`Delete conversation for ${item.source.name}`} disabled={Boolean(deletingDraft)} onClick={() => setConfirmDraft(item.id)}>Delete</button>}
+              {confirmDraft === item.id ? <button type="button" className="icon-btn danger" title="Confirm delete" aria-label={`Confirm delete conversation for ${item.source.name}`} disabled={Boolean(deletingDraft)} onClick={(event) => { event.stopPropagation(); void onDeleteDraft(item) }}>{deletingDraft === item.id ? "Deleting…" : "Confirm"}</button>
+                : <button type="button" className="icon-btn" aria-label={`Delete conversation for ${item.source.name}`} disabled={Boolean(deletingDraft)} onClick={(event) => { event.stopPropagation(); setConfirmName(null); setConfirmDraft(item.id) }}>Delete</button>}
             </div>
-            {confirmDraft === item.id && <div className="template-conversation-confirm" role="group" aria-label="Delete template conversation">
-              <p>Delete this conversation and its unsaved proposal? Saved templates will stay in your library.</p>
-              <div>
-                <button type="button" disabled={Boolean(deletingDraft)} onClick={() => setConfirmDraft(undefined)}>Cancel</button>
-                <button type="button" className="danger" disabled={Boolean(deletingDraft)} onClick={() => void onDeleteDraft(item)}>{deletingDraft === item.id ? "Deleting…" : "Delete conversation"}</button>
-              </div>
-            </div>}
           </li>)}</ul>
         </section>}
       </LibraryLayout>

@@ -121,6 +121,7 @@ export default function TemplateDraftBuilder({ id, onSaved, onDraftChanged }: { 
         }
       }
       setDraft(saved)
+      setPreview(undefined)
       toast("success", `Saved template "${saved.publishedName ?? saved.name}".`)
       await onSaved().catch(() => toast("error", "Saved, but the library could not refresh. Reload to see the saved template."))
     } finally {
