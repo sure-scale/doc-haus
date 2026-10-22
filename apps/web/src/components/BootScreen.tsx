@@ -45,7 +45,7 @@ export default function BootScreen({ engineReady, ingestReady, error, onRetry }:
           {BOOT_PHRASES[phrase]}
         </p>
       </div>
-      {error && <div role="alert"><p>{error}</p><button onClick={onRetry}>Retry connection</button></div>}
+      {error && <div role="alert" className="boot-error"><p>{error}</p><button onClick={onRetry}>Retry connection</button></div>}
       <ul className="boot-steps">
         {steps.map((s) => (
           <li key={s.label} className={s.ready ? "boot-step done" : "boot-step"}>

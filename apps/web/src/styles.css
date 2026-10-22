@@ -2862,6 +2862,22 @@ li.list-row {
   min-height: var(--viewport-block);
 }
 
+/* Failure message and Retry, centred under the phrase and set off from the steps. */
+.boot-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+  max-width: min(32rem, 100%);
+  padding-inline: var(--space-4);
+  margin-bottom: var(--space-4);
+  text-align: center;
+}
+
+.boot-error p {
+  margin: 0;
+}
+
 .boot-steps {
   list-style: none;
   margin: 0;
