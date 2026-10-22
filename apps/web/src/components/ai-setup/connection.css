@@ -1,0 +1,23 @@
+.ai-setup-connection { min-width: 0; }
+.ai-setup-connection .settings-form-row { min-width: 0; }
+.ai-setup-connection input:not([type="checkbox"]),
+.ai-setup-connection select { width: 100%; min-width: 0; max-width: 100%; min-height: 44px; }
+.ai-setup-connection code, .ai-setup-auth p { overflow-wrap: anywhere; }
+.ai-setup-auth { display: grid; gap: var(--space-3); margin-block: var(--space-4); }
+.ai-setup-auth label { display: grid; gap: var(--space-2); }
+.ai-setup-auth .settings-auth-instructions { white-space: pre-wrap; }
+.ai-setup-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); margin-top: var(--space-4); }
+.ai-setup-actions button { min-height: 44px; }
+.ai-setup-actions .primary:last-child { margin-inline-start: auto; }
+.ai-setup-section-title { display: flex; align-items: center; gap: var(--space-3); }
+.ai-setup-section-title span { color: var(--muted); font-weight: 400; }
+.ai-setup-summary { display: grid; gap: var(--space-2); margin-block-end: var(--space-5); }
+.ai-setup-summary p { margin: 0; overflow-wrap: anywhere; }
+.ai-setup-manage > summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; }
+.ai-setup-manage .settings-conn { gap: var(--space-3); flex-wrap: wrap; }
+@media (max-width: 600px) {
+  .ai-setup-actions > button { flex: 1 1 auto; }
+  .ai-setup-actions .primary:last-child { margin-inline-start: 0; }
+}
+
+.ai-setup-selected-models { overflow-wrap: anywhere; }

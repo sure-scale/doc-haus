@@ -28,6 +28,9 @@ async function fixture(name: string, options: { accepted?: boolean; width?: numb
   const go = { id: "opencode-go", name: "OpenCode Go", integrationID: "opencode-go", activation: "enabled" }
   const providers = options.publicModels ? [provider, go] : [provider]
   const state: State = { outcome: options.outcome ?? { ok: true }, setup: options.setup ?? "done", config: { model: `${providerID}/primary`, small_model: `${providerID}/${options.distinct ? "fast" : "primary"}` }, events: [] }
+  let nextSession = 0
+  const candidates = new Map<string, { providerID: string; tested: Set<string>; replacement: boolean }>()
+  const models = (id: string) => ["primary", "fast"].map(modelID => ({ providerID: id, id: modelID, name: modelID, enabled: true, capabilities: { tools: true, input: ["text"], output: ["text"] } }))
   await context.route("**/*", async route => {
     const request = route.request()
     const url = new URL(request.url())
@@ -39,17 +42,42 @@ async function fixture(name: string, options: { accepted?: boolean; width?: numb
     if (request.method() === "OPTIONS") return route.fulfill({ status: 204, headers })
     requests.push({ scenario: name, method: request.method(), path: pathname, ...(request.postData() ? { body: request.postDataJSON() } : {}) })
     const reply = (body: unknown) => route.fulfill({ status: 200, headers, contentType: "application/json", body: JSON.stringify(body) })
-    if (request.method() === "PATCH" && pathname === "/engine/config") {
-      const pair = request.postDataJSON()
-      expect(pair).toEqual({ model: "opencode-go/primary", small_model: "opencode-go/fast" })
-      state.config = pair
-      return reply(state.config)
-    }
     if (request.method() === "POST" && pathname === "/api/dochaus/provider-test") return reply(state.outcome)
-    if (request.method() === "POST" && pathname === "/api/integration/opencode-go/connect/key") {
-      expect(request.postDataJSON()).toEqual({ key: "synthetic-replacement-key", answer: {} })
+    if (request.method() === "POST" && pathname === "/api/dochaus/provider-candidate/session") {
+      const input = request.postDataJSON()
+      expect(input.providerID).toBe("opencode-go")
+      if (input.connection.type === "key") expect(input.connection).toEqual({ type: "key", key: "synthetic-replacement-key", answer: {} })
+      else expect(input.connection).toEqual({ type: "credential", id: "synthetic-account" })
+      const sessionID = `synthetic-session-${++nextSession}`
+      candidates.set(sessionID, { providerID: input.providerID, tested: new Set(), replacement: input.connection.type === "key" })
+      return reply({ sessionID })
+    }
+    if (request.method() === "POST" && pathname === "/api/dochaus/provider-candidate/models") {
+      const { sessionID } = request.postDataJSON()
+      expect(candidates.has(sessionID)).toBe(true)
+      return reply({ data: models(candidates.get(sessionID)!.providerID), customModels: false })
+    }
+    if (request.method() === "POST" && pathname === "/api/dochaus/provider-candidate/test") {
+      const { sessionID, modelID } = request.postDataJSON()
+      const candidate = candidates.get(sessionID)
+      expect(candidate).toBeDefined()
+      const outcome = candidate!.replacement ? { ok: true } : state.outcome
+      if (outcome.ok) candidate!.tested.add(modelID)
+      return reply(outcome)
+    }
+    if (request.method() === "DELETE" && pathname === "/api/dochaus/provider-candidate/session") {
+      candidates.delete(url.searchParams.get("sessionID") ?? "")
+      return reply({ ok: true })
+    }
+    if (request.method() === "POST" && pathname === "/engine/provider-setup") {
+      const { sessionID, primary, fast } = request.postDataJSON()
+      const candidate = candidates.get(sessionID)
+      expect(candidate?.tested.has(primary)).toBe(true)
+      expect(candidate?.tested.has(fast)).toBe(true)
+      state.config = { model: `${candidate!.providerID}/${primary}`, small_model: `${candidate!.providerID}/${fast}` }
       state.outcome = { ok: true }
-      return route.fulfill({ status: 204, headers })
+      candidates.delete(sessionID)
+      return reply({ ok: true })
     }
     if (request.method() !== "GET") { unexpected.push(`${name}: ${request.method()} ${pathname}`); return route.abort() }
     if (pathname === "/api/dochaus/ready") return reply({ ready: true, consentState: "active" })
@@ -59,9 +87,10 @@ async function fixture(name: string, options: { accepted?: boolean; width?: numb
     if (pathname === "/preferences") return reply({})
     if (pathname === "/updates") return reply({ current: { version: 1, name: "Fixture", notes: "" }, available: false })
     if (pathname === "/engine/config") return reply(state.config)
+    if (pathname === "/auth/reuse") return reply({ sources: [] })
     if (pathname === "/api/dochaus/provider-catalog" || pathname === "/api/provider") return reply({ location: { directory: "/synthetic" }, data: providers })
-    if (pathname === "/api/model") return reply({ location: { directory: "/synthetic" }, data: providers.flatMap(provider => ["primary", "fast"].map(id => ({ providerID: provider.id, id, name: id, enabled: true }))) })
-    if (pathname === "/api/integration") return reply({ location: { directory: "/synthetic" }, data: providers.map(provider => ({ id: provider.id, name: provider.name, methods: [{ type: "key", label: "API key" }], connections: provider.id === "opencode" ? [] : [{ type: "credential", id: "synthetic-account", label: "Synthetic", method: "key" }] })) })
+    if (pathname === "/api/model") return reply({ location: { directory: "/synthetic" }, data: providers.flatMap(provider => models(provider.id)) })
+    if (pathname === "/api/integration") return reply({ location: { directory: "/synthetic" }, data: providers.map(provider => ({ id: provider.id, name: provider.name, methods: [{ id: "key", type: "key", label: "API key" }], connections: provider.id === "opencode" ? [] : [{ type: "credential", id: "synthetic-account", label: "Synthetic", method: "key" }] })) })
     if (pathname === "/api/event") return route.fulfill({ status: 200, headers, contentType: "text/event-stream", body: state.events.map(event => `data: ${JSON.stringify(event)}\n\n`).join("") })
     if (pathname === "/api/session/owned-session") return reply({ data: { id: "owned-session", model: { providerID: "opencode-go", id: "primary" } } })
     if (pathname === "/api/session/owned-session/message") return reply({ data: [] })
@@ -69,7 +98,7 @@ async function fixture(name: string, options: { accepted?: boolean; width?: numb
     return route.abort()
   })
   await page.goto(baseURL!)
-  return { page, context, state, probes: () => requests.filter(request => request.scenario === name && request.path === "/api/dochaus/provider-test") }
+  return { page, context, state, probes: () => requests.filter(request => request.scenario === name && request.path === "/api/dochaus/provider-test"), candidateTests: () => requests.filter(request => request.scenario === name && request.path === "/api/dochaus/provider-candidate/test") }
 }
 
 async function scenario(name: string, run: () => Promise<void>) {
@@ -107,7 +136,7 @@ try {
   await scenario("Incomplete setup does not run a provider probe", async () => {
     const f = await fixture("setup-gate", { setup: "models" })
     try {
-      await expect(f.page.getByRole("heading", { name: "Choose your models", exact: true })).toBeVisible()
+      await expect(f.page.getByRole("heading", { name: "Choose your model provider", exact: true })).toBeVisible()
       await f.page.waitForTimeout(250)
       expect(f.probes()).toEqual([])
     } finally { await f.context.close() }
@@ -118,8 +147,16 @@ try {
       await expect.poll(() => f.probes().length).toBe(2)
       await f.page.getByRole("button", { name: "Settings", exact: true }).click()
       const modal = f.page.getByRole("dialog", { name: "Settings", exact: true })
-      await modal.getByRole("tab", { name: "Providers", exact: true }).click()
-      await expect(modal.locator(".settings-provider-health")).toHaveText("Connection verified")
+      await expect(modal.getByRole("tab", { name: "AI setup", exact: true })).toHaveAttribute("aria-selected", "true")
+      await expect(modal.getByLabel("Primary model", { exact: true })).toBeEnabled()
+      expect(f.candidateTests()).toEqual([])
+      await modal.getByRole("button", { name: "Test connection", exact: true }).click()
+      await expect(modal.getByText("Connection verified for both selected model roles.", { exact: true })).toBeVisible()
+      expect(f.candidateTests().map(request => (request.body as { modelID: string }).modelID)).toEqual(["primary", "fast"])
+      await modal.getByRole("button", { name: "Save", exact: true }).click()
+      await expect(f.page.getByRole("status").filter({ hasText: "AI setup saved." }).first()).toBeVisible()
+      expect(f.state.config).toEqual({ model: "opencode-go/primary", small_model: "opencode-go/fast" })
+      expect(f.probes()).toHaveLength(2)
       await expect(f.page.locator(".provider-connection-banner")).toHaveCount(0)
       await f.page.screenshot({ path: path.join(evidence, "healthy-settings.png") })
     } finally { await f.context.close() }
@@ -139,20 +176,27 @@ try {
       await f.page.screenshot({ path: path.join(evidence, `expired-${width}.png`) })
       await reconnect.click()
       const modal = f.page.getByRole("dialog", { name: "Settings", exact: true })
-      await expect(modal.getByRole("heading", { name: "Connect a provider", exact: true })).toBeVisible()
+      await expect(modal.getByRole("heading", { name: "AI setup", exact: true })).toBeVisible()
       await expect(modal.getByRole("combobox", { name: /^Provider/ })).toHaveValue("opencode-go")
-      await expect(modal.locator(".settings-provider-health")).toContainText("API key has expired")
-      await modal.getByLabel(/^Sign-in method/).selectOption("0")
+      await expect(modal.getByLabel("Primary model", { exact: true })).toBeEnabled()
+      expect(f.candidateTests()).toEqual([])
+      await modal.getByLabel("Connection method", { exact: true }).selectOption("method:0")
       await modal.getByLabel("API key", { exact: true }).fill("synthetic-replacement-key")
-      const connect = modal.getByRole("button", { name: "Connect", exact: true })
+      const connect = modal.getByRole("button", { name: "Load models", exact: true })
       await hitTarget(connect, 24)
       await noOverflow(f.page)
       await f.page.screenshot({ path: path.join(evidence, `reconnect-${width}.png`) })
       await connect.click()
-      await expect(modal.locator(".settings-provider-health")).toHaveText("Connection verified")
+      await modal.getByRole("button", { name: "Test connection", exact: true }).click()
+      await expect(modal.getByText("Connection verified for both selected model roles.", { exact: true })).toBeVisible()
+      await expect(banner).toBeVisible()
+      await modal.getByRole("button", { name: "Save", exact: true }).click()
+      await expect(f.page.getByRole("status").filter({ hasText: "AI setup saved." }).first()).toBeVisible()
       await expect(banner).toHaveCount(0)
-      expect(f.probes().length).toBe(2)
-      expect(f.probes()[1].body).toEqual({ providerID: "opencode-go", modelID: "primary", force: true })
+      expect(f.probes()).toHaveLength(1)
+      expect(f.candidateTests()).toHaveLength(1)
+      expect(f.candidateTests()[0].body).toMatchObject({ modelID: "primary" })
+      expect(f.state.config).toEqual({ model: "opencode-go/primary", small_model: "opencode-go/primary" })
       await modal.getByRole("button", { name: "Close", exact: true }).click()
       await noOverflow(f.page)
     } finally { await f.context.close() }
@@ -190,10 +234,9 @@ try {
       await noOverflow(f.page)
       await banner.getByRole("button", { name: "Open provider settings", exact: true }).click()
       const modal = f.page.getByRole("dialog", { name: "Settings", exact: true })
-      await expect(modal.getByRole("heading", { name: "Provider connections", exact: true })).toBeVisible()
+      await expect(modal.getByRole("heading", { name: "AI setup", exact: true })).toBeVisible()
       await expect(modal.locator('option[value="opencode"]')).toHaveCount(0)
       await expect(modal.locator('option[value="opencode-go"]')).toHaveCount(1)
-      await modal.getByRole("tab", { name: "Models", exact: true }).click()
       await expect(modal.getByLabel("Provider", { exact: true })).toHaveValue("")
       await expect(modal.locator('option[value^="opencode/"]')).toHaveCount(0)
       await expect(modal.getByRole("button", { name: "Save", exact: true })).toBeDisabled()
@@ -203,12 +246,17 @@ try {
       await f.page.screenshot({ path: path.join(evidence, `removed-provider-settings-${width}.png`) })
       if (width === 1440) {
         await modal.getByLabel("Provider", { exact: true }).selectOption("opencode-go")
+        await modal.getByRole("button", { name: "Load models", exact: true }).click()
         await modal.getByLabel("Primary model", { exact: true }).selectOption("opencode-go/primary")
         await modal.getByLabel("Fast model", { exact: true }).selectOption("opencode-go/fast")
+        await expect(modal.getByRole("button", { name: "Save", exact: true })).toBeDisabled()
+        await modal.getByRole("button", { name: "Test connection", exact: true }).click()
         await modal.getByRole("button", { name: "Save", exact: true }).click()
+        await expect(f.page.getByRole("status").filter({ hasText: "AI setup saved." }).first()).toBeVisible()
         await expect(banner).toHaveCount(0)
-        await expect.poll(() => f.probes().length).toBe(2)
-        expect(f.probes().every(probe => (probe.body as { providerID: string }).providerID === "opencode-go")).toBe(true)
+        expect(f.probes()).toEqual([])
+        expect(f.candidateTests().map(probe => (probe.body as { modelID: string }).modelID)).toEqual(["primary", "fast"])
+        expect(f.state.config).toEqual({ model: "opencode-go/primary", small_model: "opencode-go/fast" })
       }
     } finally { await f.context.close() }
   })

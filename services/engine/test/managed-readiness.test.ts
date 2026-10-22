@@ -81,7 +81,7 @@ async function fixture(research: "active" | "missing" | "failed") {
       await Bun.sleep(50)
     }
   }
-  return { request, readiness, close, workspace, matter, runtime, override, calls, log, base }
+  return { request, readiness, close, workspace, matter, runtime, override, calls, log, base, providerBaseURL: `http://127.0.0.1:${provider.port}/v1` }
 }
 
 test("empty first-run is ready after actual legal and research activation; generation requires setup while fixed provider test works", async () => {
@@ -154,4 +154,38 @@ for (const research of ["missing", "failed"] as const) test(`${research} researc
     expect((await (await f.request("/api/session/ses_rejected/inbox")).json()).data).toEqual([])
     expect(f.calls).toHaveLength(0)
   } finally { await f.close() }
+}, 60_000)
+
+test("candidate setup uses authenticated managed routes and discards an exact draft without changing saved settings", async () => {
+  const f = await fixture("active")
+  let sessionID = ""
+  try {
+    expect((await f.readiness()).response.status).toBe(200)
+    const route = "/api/dochaus/provider-candidate/session"
+    const input = { providerID: "candidate-fixture", connection: { type: "key", key: "synthetic-candidate-only" }, local: { name: "Candidate fixture", baseURL: f.providerBaseURL, modelIDs: ["candidate-model"] } }
+    expect((await f.request(route, input, f.matter, false)).status).toBe(401)
+    expect((await f.request(route, input, path.dirname(f.workspace))).status).toBe(403)
+    const preflight = await fetch(f.base + route, { method: "OPTIONS", headers: { Origin: "http://localhost:5173", "Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "content-type" } })
+    expect(preflight.status).toBe(204)
+    expect(preflight.headers.get("access-control-allow-credentials")).toBe("true")
+    const before = existsSync(f.override) ? await readFile(f.override, "utf8") : undefined
+    const started = await f.request(route, input)
+    expect(started.status).toBe(200)
+    sessionID = (await started.json()).sessionID
+    const models = await (await f.request("/api/dochaus/provider-candidate/models", { sessionID })).json()
+    expect(models.data.map((model: { id: string }) => model.id)).toEqual(["candidate-model"])
+    const tested = await f.request("/api/dochaus/provider-candidate/test", { sessionID, modelID: "candidate-model" })
+    expect(tested.status).toBe(200)
+    expect(await tested.json()).toEqual({ ok: true })
+    const prepared = await (await f.request("/api/dochaus/provider-candidate/prepare", { sessionID, primary: "candidate-model", fast: "candidate-model" })).json()
+    expect(prepared.patch.model).toBe("candidate-fixture/candidate-model")
+    expect(JSON.stringify(prepared)).not.toContain("synthetic-candidate-only")
+    expect(existsSync(f.override) ? await readFile(f.override, "utf8") : undefined).toBe(before)
+    expect(f.calls).toHaveLength(1)
+    expect(JSON.stringify(f.calls[0].messages)).toContain("Reply with OK.")
+    expect(await readFile(f.log, "utf8")).not.toContain("synthetic-candidate-only")
+  } finally {
+    if (sessionID) await fetch(f.base + "/api/dochaus/provider-candidate/session?sessionID=" + sessionID, { method: "DELETE", headers: { authorization: `Basic ${btoa("opencode:synthetic-password")}`, "x-opencode-directory": f.matter } })
+    await f.close()
+  }
 }, 60_000)

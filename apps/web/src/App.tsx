@@ -116,7 +116,7 @@ export default function App() {
         {settingsShown && (
           <Settings
             closing={settingsClosing}
-            initialTab={reconnectProvider !== undefined ? "providers" : undefined}
+            initialTab={reconnectProvider !== undefined ? "ai" : undefined}
             reconnectProvider={reconnectProvider}
             onClose={() => {
               // A second close during the exit animation changes nothing.

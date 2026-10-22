@@ -122,6 +122,9 @@ jobs:
         run: |
           bun test src/preferences.test.ts --timeout 30000
           bun test src/engine-config.test.ts src/setup.test.ts src/research-connections.test.ts src/auth-reuse.test.ts src/identifiers.test.ts src/source-artifacts.test.ts src/playbook-library.test.ts src/matter.test.ts src/matter-http.test.ts --timeout 30000
+      - name: Test combined provider setup save and rollback
+        working-directory: services/ingest
+        run: bun test src/provider-setup.test.ts --timeout 30000
       - name: Test Word proposals through a LibreOffice save
         working-directory: services/ingest
         # Committed LibreOffice-saved fixtures and a scripted engine; no model.
@@ -130,6 +133,12 @@ jobs:
       - name: Test native discovery and selected sign-in reuse
         working-directory: services/engine
         run: bun test src/credential-reuse.test.ts test/provider-catalog.test.ts --timeout 30000
+      - name: Test staged provider connections and native authentication
+        working-directory: services/engine
+        run: |
+          bun test src/provider-candidate.test.ts --timeout 30000
+          bun test src/provider-setup-session.test.ts --timeout 30000
+          bun test test/managed-readiness.test.ts --timeout 30000
       - name: Test public regression support
         working-directory: dochaus
         run: bun test templates/optional.test.ts test/product-boundary-guard.test.ts test/product-boundary.test.ts test/native-trace.test.ts test/lean-observation.test.ts test/prompt-assets.test.ts test/research-source-snippets.test.ts test/legal-tool-approval.test.ts plugin/legal/provider-capture.test.ts
