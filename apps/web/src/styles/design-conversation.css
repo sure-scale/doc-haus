@@ -9,6 +9,20 @@
   padding: 24px clamp(20px, 2.5vw, 40px) 16px;
 }
 
+/* On very wide screens the thread and everything beside it share one centred
+   column. The scroller stays full width so its scrollbar sits at the edge; it
+   insets its own content instead. */
+.design-conversation.chat-card > :not(.chat-log-wrap) {
+  width: 100%;
+  max-width: var(--content-max);
+  margin-inline: auto;
+}
+
+.design-conversation .chat-log {
+  padding-left: max(0px, calc((100% - var(--content-max)) / 2));
+  padding-right: max(10px, calc((100% - var(--content-max)) / 2));
+}
+
 .design-conversation .chat-heading {
   flex: none;
   padding-bottom: 20px;
@@ -191,7 +205,7 @@
 
 .design-conversation .composer:focus-within {
   border-color: var(--accent);
-  box-shadow: var(--focus-ring);
+  box-shadow: none;
 }
 
 .design-conversation .composer textarea {
@@ -254,8 +268,9 @@
   display: inline-flex;
   align-items: center;
   justify-content: flex-end;
-  flex-wrap: wrap;
-  gap: 4px 6px;
+  flex: none;
+  gap: 6px;
+  white-space: nowrap;
   color: var(--muted);
   font-size: 0.6875rem;
   line-height: 1.5;
@@ -280,12 +295,16 @@
   gap: 6px;
   width: auto;
   min-width: 84px;
-  height: 40px;
-  padding-inline: 15px 13px;
+  height: 48px;
+  padding-inline: 24px;
   border-radius: var(--radius-pill);
-  font-size: 0.8125rem;
+  font-size: 1rem;
   font-weight: 600;
   transform: none;
+  transition:
+    background var(--duration-fast) var(--ease-out),
+    transform var(--duration-fast) var(--ease-out),
+    border-radius var(--spring-spatial-fast-ms, var(--duration-fast)) var(--spring-spatial-fast, var(--ease-out));
 }
 
 .design-conversation .send-btn:hover:not(:disabled) { transform: none; }
@@ -295,12 +314,15 @@
   color: var(--muted);
 }
 
-/* A narrow card keeps its controls and Send; the keyboard hint goes first. */
-@container (max-width: 720px) {
+/* A narrow card keeps its controls and Send; the keyboard hint goes first.
+   Tools (~440px) + Send (~110px) + hint (~190px) + padding need ~780px. */
+@container (max-width: 780px) {
   .design-conversation .composer-hint { display: none; }
 }
 
-@container (max-width: 480px) {
+/* Below ~580px the tools and Send no longer share a row: Send drops under them
+   rather than the tools wrapping. */
+@container (max-width: 580px) {
   .design-conversation .composer-footer { flex-wrap: wrap; }
   .design-conversation .composer-tools { flex-basis: 100%; }
   .design-conversation .send-btn { margin-left: auto; }
@@ -895,10 +917,10 @@
   .design-conversation .run-head.is-done .run-head-toggle,
   .design-conversation .result-row .result-review,
   .design-conversation .result-files > summary {
-    min-height: 44px;
+    min-height: max(44px, calc(44px / var(--ui-scale)));
   }
   .design-conversation .msg-actions .icon-btn,
-  .design-conversation .question-nav-btn { min-width: 44px; }
+  .design-conversation .question-nav-btn { min-width: max(44px, calc(44px / var(--ui-scale))); }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1047,7 +1069,7 @@
 .design-conversation .narration-completed-activity summary:hover span { color: var(--accent); }
 .design-conversation .narration-completed-activity details > ol { padding: 6px 0 10px; }
 @media (pointer: coarse) {
-  .design-conversation .narration-completed-activity summary { min-height: 44px; }
+  .design-conversation .narration-completed-activity summary { min-height: max(44px, calc(44px / var(--ui-scale))); }
   .design-conversation .narration-completed-activity::before { top: 14px; }
 }
 @media (prefers-reduced-motion: reduce) {

@@ -357,7 +357,7 @@ try {
     expect(await current()).toBe(hashes.seeded)
     expect(working()).toBeUndefined()
     // The tracked-changes export carries every proposal over the intact structure.
-    const [download] = await Promise.all([page.waitForEvent("download"), dialog.getByRole("button", { name: "Download redline", exact: true }).click()])
+    const [download] = await Promise.all([page.waitForEvent("download"), (async () => { await dialog.getByRole("button", { name: "More download options", exact: true }).click(); await dialog.getByRole("button", { name: "Download redline", exact: true }).click() })()])
     expect(download.suggestedFilename()).toBe("synthetic-services-agreement (tracked changes).docx")
     await download.saveAs(path.join(evidence, "03-tracked-changes.docx"))
     const redline = inspect(await Bun.file(path.join(evidence, "03-tracked-changes.docx")).bytes())

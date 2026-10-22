@@ -26,7 +26,7 @@
 /* The circle's centre remains on the rail border. Only its arrow moves: the
    entire visible circle, including the rim, stays clickable while pressed. */
 .sidebar-collapse { position: absolute; top: 19px; right: -1px; transform: translateX(50%); z-index: 2; border: 1px solid var(--border); border-radius: 50%; background: var(--panel); transition: background-color var(--duration-fast) var(--ease-out); }
-.sidebar-collapse > svg { pointer-events: none; transition: transform 320ms cubic-bezier(.34, 1.35, .64, 1); }
+.sidebar-collapse > svg { pointer-events: none; transition: transform var(--spring-spatial-default-ms) var(--spring-spatial-default); }
 .sidebar.collapsed .sidebar-collapse > svg { transform: rotate(180deg); }
 .sidebar-collapse:active:not(:disabled) { transform: translateX(50%); }
 .sidebar-collapse:hover > svg { transform: translateX(-1px); }
@@ -80,7 +80,7 @@
 .sidebar-documents-body:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .sidebar-history-body .convo-item { position: relative; min-height: 40px; padding: 10px 40px 10px 26px; border-radius: var(--radius-md); color: var(--text-secondary); font-size: 12px; line-height: 20px; font-weight: 500; }
 .sidebar-history-body .convo-item::before { content: ""; position: absolute; left: 11px; top: 50%; width: 5px; height: 5px; border-radius: 50%; background: var(--accent-border); transform: translateY(-50%); }
-.sidebar-in-matter .convo-row:hover .convo-item { background: var(--accent-soft); color: var(--text); }
+.sidebar-in-matter .convo-row:hover .convo-item:not(.active) { background: var(--accent-soft); color: var(--text); }
 .sidebar-history-body .convo-item.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 .sidebar-history-body .convo-item.active::before { background: var(--accent); }
 .sidebar-in-matter .convo-del,
@@ -106,7 +106,7 @@
 
 /* Keep the matter identity clear without taking space from drafting/review. */
 .matter-container { max-width: none; padding: 0; background: var(--panel); }
-.matter-page-head { min-height: 88px; margin: 0; padding: 16px clamp(24px, 3.2vw, 56px); align-items: center; border-color: var(--border-soft); }
+.matter-page-head { min-height: 88px; margin: 0; padding: 16px max(clamp(24px, 3.2vw, 56px), calc((100% - var(--content-max)) / 2)); align-items: center; border-color: var(--border-soft); }
 .matter-page-head .matter-head { gap: 4px; }
 .matter-breadcrumb { min-width: 0; }
 .matter-breadcrumb ol { display: flex; align-items: baseline; gap: 12px; margin: 0; padding: 0; list-style: none; }
@@ -129,7 +129,7 @@
 .matter-container > .matter-body { grid-template-columns: minmax(0, 1fr); gap: 0; }
 .matter-container > .matter-body > .workspace { min-width: 0; }
 .matter-container > .matter-body > .workspace > .chat-card { border: 0; border-radius: 0; box-shadow: none; }
-.matter-statusbar { position: relative; display: flex; align-items: center; justify-content: space-between; flex: 0 0 auto; gap: 12px; min-height: 38px; padding: 5px clamp(24px, 3.2vw, 56px); border-top: 1px solid var(--border-soft); background: var(--panel); color: var(--muted); font-size: 11px; }
+.matter-statusbar { position: relative; display: flex; align-items: center; justify-content: space-between; flex: 0 0 auto; gap: 12px; min-height: 38px; padding: 5px max(clamp(24px, 3.2vw, 56px), calc((100% - var(--content-max)) / 2)); border-top: 1px solid var(--border-soft); background: var(--panel); color: var(--muted); font-size: 11px; }
 .matter-statusbar-label { display: inline-flex; align-items: center; gap: 7px; min-width: 0; }
 .matter-status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); flex-shrink: 0; }
 .matter-statusbar-label.is-running .matter-status-dot { background: var(--accent); }
@@ -219,10 +219,17 @@
   .shell-matter .sidebar-surfaces .nav-item svg { width: 16px; height: 16px; }
 }
 @media (hover: none), (pointer: coarse) {
-  .sidebar .sidebar-new { width: 44px; height: 44px; }
-  .sidebar .convo-del { width: 40px; min-height: 40px; opacity: 1; }
-  .sidebar .convo-confirm { min-height: 40px; }
-  .sidebar-history-body .convo-item { min-height: 44px; padding-right: 48px; }
+  .sidebar .sidebar-new { width: max(44px, calc(44px / var(--ui-scale))); height: max(44px, calc(44px / var(--ui-scale))); }
+  .sidebar .convo-del { width: max(44px, calc(44px / var(--ui-scale))); min-height: max(44px, calc(44px / var(--ui-scale))); opacity: 1; }
+  .sidebar .convo-confirm { min-height: max(44px, calc(44px / var(--ui-scale))); }
+  .sidebar-history-body .convo-item { min-height: max(44px, calc(44px / var(--ui-scale))); padding-right: calc(max(44px, calc(44px / var(--ui-scale))) + 8px); }
+  /* Rows and header links keep a 44px rendered floor under the compact scale. */
+  .sidebar .nav-item, .sidebar .sidebar-back .nav-item, .shell-matter .sidebar-surfaces .nav-item { min-height: max(44px, calc(44px / var(--ui-scale))); }
+  .sidebar-section-link, .sidebar-brand a, .matter-breadcrumb a { min-height: max(44px, calc(44px / var(--ui-scale))); }
+  .matter-breadcrumb a { min-width: max(44px, calc(44px / var(--ui-scale))); }
+  .sidebar:not(.sidebar-in-matter) .sidebar-footer .nav-item,
+  .sidebar:not(.sidebar-in-matter) .sidebar-mobile-toggle,
+  .shell-matter .sidebar .sidebar-settings { width: max(44px, calc(44px / var(--ui-scale))); height: max(44px, calc(44px / var(--ui-scale))); }
 }
 @media (prefers-reduced-motion: reduce) {
   .sidebar, .sidebar-collapse, .sidebar-collapse > svg, .sidebar-mobile-chevron { transition: none; }

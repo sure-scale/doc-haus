@@ -1,10 +1,7 @@
 /* Matters is a working index with a supporting form, rather than two equal
    library panes. The page container responds to the space left by navigation. */
 .container:has(> .matters-layout) { container: matters-page / inline-size; }
-.matters-head .page-eyebrow { display: block; margin-bottom: var(--space-2); color: var(--accent); font-size: 12px; font-weight: 600; letter-spacing: .04em; }
-.matters-head h1 { font-family: var(--font-display); }
-.matters-head .page-sub { max-width: 560px; }
-.matters-layout.library-layout { grid-template-columns: minmax(0, 1fr) minmax(280px, 340px); gap: var(--space-8); padding-top: var(--space-6); }
+.matters-layout.library-layout { grid-template-columns: minmax(0, 1fr) minmax(280px, 340px); gap: var(--space-8); }
 .matters-layout > .matter-create-panel { grid-column: 2; grid-row: 1; padding: var(--space-6); border: 1px solid var(--border-soft); border-radius: var(--radius-lg); background: var(--md-sys-color-surface-container-low); }
 .matters-layout > .library-collection { grid-column: 1; grid-row: 1; }
 .matters-layout .library-heading { margin-bottom: var(--space-4); }
@@ -17,6 +14,7 @@
 .matter-form-field > span, .matter-form-field > label { display: flex; align-items: baseline; flex-wrap: wrap; gap: var(--space-2); color: var(--text); font-size: 13px; font-weight: 550; }
 .matter-form-field .field-optional, .matter-form-field .field-required { color: var(--muted); font-size: 11px; font-weight: 400; }
 .matter-form-field small { color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
+.matter-form-field small.field-error, .matter-edit-field small.field-error { color: var(--danger); font-size: 12px; line-height: 1.5; }
 .matter-form-field input, .matter-form-field select, .matter-form-field .jx-select, .matter-form-field .jx-trigger { width: 100%; min-width: 0; }
 .matter-create-row input, .matter-create-row select, .matter-create-row .jx-trigger { min-height: var(--ctl-h); height: auto; padding: 10px 12px; font-size: 14px; line-height: 20px; border-radius: var(--radius-sm); background-color: var(--panel); }
 .matter-create-row select { padding-right: 32px; }
@@ -78,7 +76,7 @@ dialog.matter-edit::backdrop { background: rgb(22 35 29 / .36); }
 }
 
 @media (hover: none), (pointer: coarse) {
-  .matters-layout .matters-index-list .list-row-actions .icon-btn { min-height: 44px; min-width: 54px; }
+  .matters-layout .matters-index-list .list-row-actions .icon-btn { min-height: max(44px, calc(44px / var(--ui-scale))); min-width: 54px; }
 }
 
 @media (max-width: 480px) {

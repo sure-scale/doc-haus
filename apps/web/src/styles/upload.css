@@ -8,9 +8,9 @@
 }
 
 .dropzone:focus-visible {
-  outline: none;
+  outline: 2px solid var(--md-sys-state-focus);
+  outline-offset: 2px;
   border-color: var(--accent);
-  box-shadow: var(--focus-ring);
 }
 
 .dropzone.is-busy {

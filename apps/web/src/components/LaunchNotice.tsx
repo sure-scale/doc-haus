@@ -1,6 +1,7 @@
 import { readBrowserValue, writeBrowserValue } from "../browser-storage"
 import { useLayoutEffect, useRef, useState } from "react"
 import logo from "../assets/dochaus-logo.svg"
+import { useClosed } from "./useExit"
 
 // This is a per-tab acknowledgement, not an account-level consent record.
 // Change the version when the notice changes so it is shown again.
@@ -12,6 +13,7 @@ export function hasAcceptedLaunchNotice() {
 
 export default function LaunchNotice({ onAccept }: { onAccept: () => void }) {
   const [open, setOpen] = useState(true)
+  const closed = useClosed(open)
   const dialog = useRef<HTMLDialogElement>(null)
   const heading = useRef<HTMLHeadingElement>(null)
 
@@ -40,7 +42,9 @@ export default function LaunchNotice({ onAccept }: { onAccept: () => void }) {
       )}
       <dialog
         ref={dialog}
-        className="launch-notice"
+        // Stays mounted: "Not now" closes it at once and `is-closing` plays the exit.
+        className={`launch-notice${closed ? " is-closing" : ""}`}
+        inert={closed}
         aria-labelledby="launch-notice-title"
         aria-describedby="launch-notice-intro"
         onCancel={(event) => { event.preventDefault(); setOpen(false) }}

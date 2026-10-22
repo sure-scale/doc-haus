@@ -1,4 +1,5 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
+import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
+import { SplitButton } from "./SplitButton"
 import { createPortal } from "react-dom"
 import { computeCell, describeRecheck, needsFill } from "../api/review-recheck"
 import { cellKey, getGrid, hashQuestion, isStale, recheckPassages, saveGrid, type Grid, type GridCellData } from "../api/ingest/grid"
@@ -9,6 +10,8 @@ import { matterClient, type Client } from "../api/opencode/client"
 import ModalHeader from "./ModalHeader"
 import { reviewCsv, reviewDocx, reviewExport, reviewXlsx } from "./review-export"
 import { formatDateTime } from "../lib/format"
+import backdropClose from "./backdropClose"
+import useExit, { Closing } from "./useExit"
 
 // Tabular review: rows are the matter's documents, columns are natural-language
 // questions, each cell is an extracted answer with a source citation. The grid is
@@ -21,6 +24,7 @@ import { formatDateTime } from "../lib/format"
 const POOL = 5 // concurrent cell extractions; the engine handles one prompt each
 
 export default function ReviewGrid({ matterId, title, directory, documents, onClose }: { matterId: string; title: string; directory: string; documents: Document[]; onClose: () => void }) {
+  const closing = useContext(Closing)
   const dialog = useRef<HTMLDialogElement>(null)
   const detailDialog = useRef<HTMLDialogElement>(null)
   const client = useMemo<Client>(() => matterClient(directory), [directory])
@@ -32,9 +36,12 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
   // so the comment thread updates in place as comments are added or removed.
   const [detail, setDetail] = useState<{ docName: string; columnId: string; question: string }>()
   const [draft, setDraft] = useState("") // comment being composed in the overlay
-  const detailCell = detail ? grid.cells[cellKey(detail.docName, detail.columnId)] : undefined
+  // Each dialog closes, and returns focus, as its exit starts.
+  const [detailShown, detailClosing] = useExit(detail)
+  const detailCell = detailShown ? grid.cells[cellKey(detailShown.docName, detailShown.columnId)] : undefined
 
   useLayoutEffect(() => {
+    if (closing) return
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
     const modal = dialog.current
     modal?.showModal()
@@ -42,7 +49,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
       modal?.close()
       if (opener?.isConnected) opener.focus({ preventScroll: true })
     }
-  }, [])
+  }, [closing])
 
   useLayoutEffect(() => {
     if (!detail) return
@@ -216,14 +223,14 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
   return createPortal(
     <dialog
       ref={dialog}
-      className="viewer-panel review-modal"
+      className={`viewer-panel review-modal${closing ? " is-closing" : ""}`}
+      inert={closing}
       aria-label={`Review table — ${title}`}
       onCancel={(event) => { event.preventDefault(); detail ? setDetail(undefined) : onClose() }}
-      onClick={(event) => {
-        if (event.target !== event.currentTarget) return
+      {...backdropClose((event) => {
         const bounds = event.currentTarget.getBoundingClientRect()
         if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) onClose()
-      }}
+      })}
     >
       <ModalHeader title={`Review table — ${title}`} onClose={() => detail ? setDetail(undefined) : onClose()} />
       <div className="card review">
@@ -238,15 +245,16 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
             <button className="primary" onClick={fillEmpty} disabled={documents.length === 0 || grid.columns.length === 0 || running > 0}>
               Fill empty
             </button>
-            <button onClick={() => exportAs("xlsx")} disabled={documents.length === 0 || grid.columns.length === 0}>
-              Export Excel
-            </button>
-            <button onClick={() => exportAs("csv")} disabled={documents.length === 0 || grid.columns.length === 0}>
-              Export CSV
-            </button>
-            <button onClick={() => exportAs("docx")} disabled={documents.length === 0 || grid.columns.length === 0}>
-              Export Word
-            </button>
+            <SplitButton
+              label="Export Excel"
+              onClick={() => exportAs("xlsx")}
+              toggleLabel="More export formats"
+              disabled={documents.length === 0 || grid.columns.length === 0}
+              items={[
+                { label: "Export CSV", onSelect: () => exportAs("csv") },
+                { label: "Export Word", onSelect: () => exportAs("docx") },
+              ]}
+            />
           </div>
         </div>
 
@@ -364,13 +372,14 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
           </table>
         </div>
 
-        {detail && detailCell && (
+        {detailShown && detailCell && (
           <dialog
             ref={detailDialog}
-            className="viewer-overlay review-detail-modal"
-            aria-label={`Answer and comments: ${detail.question}`}
+            className={`viewer-overlay review-detail-modal${detailClosing ? " is-closing" : ""}`}
+            inert={detailClosing}
+            aria-label={`Answer and comments: ${detailShown.question}`}
             onCancel={(event) => { event.preventDefault(); event.stopPropagation(); setDetail(undefined) }}
-            onClick={(event) => { if (event.target === event.currentTarget) setDetail(undefined) }}
+            {...backdropClose(() => setDetail(undefined))}
             onKeyDown={(event) => {
               if (event.key !== "Tab") return
               const first = event.currentTarget.querySelector<HTMLButtonElement>(".modal-close")
@@ -380,7 +389,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
             }}
           >
             <div className="picker-panel" onClick={(e) => e.stopPropagation()}>
-              <ModalHeader title={detail.question} onClose={() => setDetail(undefined)} />
+              <ModalHeader title={detailShown.question} onClose={() => setDetail(undefined)} />
               <div className="picker-body">
                 <p className="review-detail-answer">{detailCell.answer}</p>
                 {detailCell.recheck && <p className="review-recheck-detail">{describeRecheck(detailCell.recheck)}</p>}

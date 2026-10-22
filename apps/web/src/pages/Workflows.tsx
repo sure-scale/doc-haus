@@ -10,6 +10,8 @@ import MatterPicker from "../components/MatterPicker"
 import { DocMarkdown } from "../components/markdown/Markdown"
 import { WORKFLOW_BUILDER, WORKFLOWS, type WorkflowMeta } from "../agents"
 import ModalHeader from "../components/ModalHeader"
+import backdropClose from "../components/backdropClose"
+import { Exit } from "../components/useExit"
 
 // The firm's workflow library: built-in multi-agent review routines plus custom
 // workflows created conversationally by the workflow-builder agent. Built-ins are
@@ -224,16 +226,16 @@ export default function Workflows() {
         )}
       </LibraryLayout>
 
-      {using && (
+      <Exit when={using}>{(using) => (
         <MatterPicker
           title={`Use "${using.label}" in a matter`}
           onPick={(m) => useWorkflow(using, m)}
           onClose={() => setUsing(undefined)}
         />
-      )}
+      )}</Exit>
 
-      {viewing && (
-        <div className="viewer-overlay" onClick={() => setViewing(undefined)}>
+      <Exit when={viewing}>{(viewing, closing) => (
+        <div className={`viewer-overlay${closing ? " is-closing" : ""}`} inert={closing} {...backdropClose(() => setViewing(undefined))}>
           <div className="picker-panel doc-panel" onClick={(e) => e.stopPropagation()}>
             <ModalHeader
               title={`${viewing.label}${"created_at" in viewing ? "" : " (built-in)"}`}
@@ -260,7 +262,7 @@ export default function Workflows() {
             </div>
           </div>
         </div>
-      )}
+      )}</Exit>
     </>
   )
 }

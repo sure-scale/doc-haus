@@ -1,4 +1,6 @@
 import { type ReactNode, useEffect, useId, useLayoutEffect, useRef, useState } from "react"
+import backdropClose from "../backdropClose"
+import useExit, { useClosed } from "../useExit"
 
 export default function QuestionDockShell({
   count,
@@ -13,6 +15,10 @@ export default function QuestionDockShell({
   renderQuestions: (titleId: string, onClose: () => void) => ReactNode
 }) {
   const [open, setOpen] = useState(false)
+  // The dialog stays mounted and closes at once; `is-closing` plays the exit
+  // while its questions stay for it.
+  const [shown] = useExit(open)
+  const closed = useClosed(open)
   const dialog = useRef<HTMLDialogElement>(null)
   const titleId = useId()
 
@@ -60,12 +66,13 @@ export default function QuestionDockShell({
       </div>
       <dialog
         ref={dialog}
-        className="question-dialog"
+        className={`question-dialog${closed ? " is-closing" : ""}`}
+        inert={closed}
         aria-labelledby={titleId}
         onClose={() => setOpen(false)}
-        onClick={(e) => e.target === e.currentTarget && setOpen(false)}
+        {...backdropClose(() => setOpen(false))}
       >
-        {open && renderQuestions(titleId, () => setOpen(false))}
+        {shown && renderQuestions(titleId, () => setOpen(false))}
       </dialog>
     </>
   )

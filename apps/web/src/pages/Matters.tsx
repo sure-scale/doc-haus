@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react"
+import { flushSync } from "react-dom"
 import { Link, useNavigate } from "react-router-dom"
 import {
   createMatter,
@@ -12,10 +13,13 @@ import {
 import JurisdictionSelect from "../components/JurisdictionSelect"
 import { useToast } from "../components/Toast"
 import ModalHeader from "../components/ModalHeader"
+import backdropClose from "../components/backdropClose"
+import useExit from "../components/useExit"
 import { humanizeError } from "../api/ingest/errors"
 import { POSTURES, type Posture } from "../api/ingest/preferences"
 import { formatDate } from "../lib/format"
 import { loadPrefs } from "../prefs"
+import PageBar from "../components/PageBar"
 
 export default function Matters() {
   const [matters, setMatters] = useState<Matter[]>([])
@@ -38,11 +42,19 @@ export default function Matters() {
   const [confirmId, setConfirmId] = useState<string | null>(null)
   // The matter being edited in the modal, plus its draft fields. null when closed.
   const [editing, setEditing] = useState<Matter | null>(null)
+  // The dialog closes, and returns focus, as its exit starts.
+  const [editShown, editClosing] = useExit(editing)
   const [draftTitle, setDraftTitle] = useState("")
   const [draftReference, setDraftReference] = useState("")
   const [draftClient, setDraftClient] = useState("")
   const [draftPosture, setDraftPosture] = useState<Posture | "">("")
   const [draftJurisdictions, setDraftJurisdictions] = useState<string[]>([])
+  // Empty-name submits are caught here instead of by a disabled button, so the
+  // primary action stays focusable and says what is missing.
+  const [titleMissing, setTitleMissing] = useState(false)
+  const [draftTitleMissing, setDraftTitleMissing] = useState(false)
+  const titleInput = useRef<HTMLInputElement>(null)
+  const draftTitleInput = useRef<HTMLInputElement>(null)
   const editDialog = useRef<HTMLDialogElement>(null)
   const toast = useToast()
   const navigate = useNavigate()
@@ -82,7 +94,12 @@ export default function Matters() {
   }, [editing])
 
   async function onCreate() {
-    if (!title.trim()) return
+    if (!title.trim()) {
+      // Commit the error before focus lands so the field is announced with it.
+      flushSync(() => setTitleMissing(true))
+      titleInput.current?.focus()
+      return
+    }
     setBusy(true)
     try {
       const matter = await createMatter(
@@ -114,8 +131,16 @@ export default function Matters() {
     }
   }
 
+  // On narrow screens the create form is collapsed; open it before focusing.
+  function focusCreateTitle() {
+    flushSync(() => setCreating(true))
+    titleInput.current?.focus()
+    titleInput.current?.scrollIntoView({ block: "center" })
+  }
+
   function openEdit(m: Matter) {
     setEditing(m)
+    setDraftTitleMissing(false)
     setDraftTitle(m.title)
     setDraftReference(m.reference ?? "")
     setDraftClient(m.client ?? "")
@@ -124,7 +149,12 @@ export default function Matters() {
   }
 
   async function onSaveEdit() {
-    if (!editing || !draftTitle.trim()) return
+    if (!editing) return
+    if (!draftTitle.trim()) {
+      flushSync(() => setDraftTitleMissing(true))
+      draftTitleInput.current?.focus()
+      return
+    }
     setBusy(true)
     try {
       const updated = await renameMatter(
@@ -154,13 +184,7 @@ export default function Matters() {
 
   return (
     <>
-      <header className="page-head library-head matters-head">
-        <div>
-          <span className="page-eyebrow">Your workspace</span>
-          <h1>Matters</h1>
-          <p className="page-sub">A clear home for every engagement, document, and conversation.</p>
-        </div>
-      </header>
+      <PageBar title="Matters" description="A clear home for every engagement, document, and conversation." />
 
       <div className="library-layout matters-layout">
         <section className="library-builder matter-create-panel" aria-labelledby="new-matter-heading">
@@ -187,16 +211,21 @@ export default function Matters() {
             onSubmit={(event) => { event.preventDefault(); onCreate() }}
           >
             <p className="matter-create-intro">Add the essentials now. You can update the details later.</p>
-            <label className="matter-form-field matter-create-title">
-              <span>Matter title <span className="field-required">Required</span></span>
+            <div className="matter-form-field matter-create-title">
+              <label htmlFor="new-matter-title">Matter title <span className="field-required">Required</span></label>
               <input
+                id="new-matter-title"
                 placeholder="e.g. Acme MSA review"
                 aria-label="Matter title"
-                required
+                aria-required="true"
+                aria-invalid={titleMissing || undefined}
+                aria-describedby={titleMissing ? "new-matter-title-error" : undefined}
+                ref={titleInput}
                 value={title}
-                onChange={(e) => setTitle(e.target.value)}
+                onChange={(e) => { setTitle(e.target.value); setTitleMissing(false) }}
               />
-            </label>
+              {titleMissing && <small id="new-matter-title-error" className="field-error" role="alert">Name the matter to create it.</small>}
+            </div>
             <label className="matter-form-field matter-create-client">
               <span>Client <span className="field-optional">Optional</span></span>
               <input
@@ -244,7 +273,7 @@ export default function Matters() {
                 />
               </div>
             </fieldset>
-            <button type="submit" className={`primary matter-create-submit${busy ? " btn-loading" : ""}`} disabled={busy || !title.trim()} aria-busy={busy}>
+            <button type="submit" className={`primary btn-lg matter-create-submit${busy ? " btn-loading" : ""}`} disabled={busy} aria-busy={busy}>
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
               Create matter
             </button>
@@ -292,6 +321,7 @@ export default function Matters() {
               </svg>
               <h3>No matters yet</h3>
               <p>A matter holds an engagement&apos;s documents, reviews, and conversations. Create a new matter to get started.</p>
+              <button type="button" onClick={focusCreateTitle}>Create a matter</button>
             </div>
           ) : visible.length === 0 ? (
             <p className="muted">No matters match "{filter}".</p>
@@ -351,25 +381,32 @@ export default function Matters() {
         </section>
       </div>
 
-      {editing && (
+      {editShown && (
         <dialog
           ref={editDialog}
-          className="picker-panel matter-edit"
+          className={`picker-panel matter-edit${editClosing ? " is-closing" : ""}`}
+          inert={editClosing}
           aria-labelledby="edit-matter-heading"
           onCancel={(event) => { event.preventDefault(); setEditing(null) }}
-          onClick={(event) => { if (event.target === event.currentTarget) setEditing(null) }}
+          {...backdropClose(() => setEditing(null))}
         >
             <ModalHeader title={<span id="edit-matter-heading">Edit matter</span>} onClose={() => setEditing(null)} />
             <div className="matter-edit-body">
-              <label className="matter-edit-field">
-                <span>Title</span>
+              <div className="matter-edit-field">
+                <label htmlFor="edit-matter-title">Title</label>
                 <input
+                  id="edit-matter-title"
                   autoFocus
+                  ref={draftTitleInput}
+                  aria-required="true"
+                  aria-invalid={draftTitleMissing || undefined}
+                  aria-describedby={draftTitleMissing ? "edit-matter-title-error" : undefined}
                   value={draftTitle}
-                  onChange={(e) => setDraftTitle(e.target.value)}
+                  onChange={(e) => { setDraftTitle(e.target.value); setDraftTitleMissing(false) }}
                   onKeyDown={(e) => e.key === "Enter" && onSaveEdit()}
                 />
-              </label>
+                {draftTitleMissing && <small id="edit-matter-title-error" className="field-error" role="alert">Name the matter to save it.</small>}
+              </div>
               <label className="matter-edit-field">
                 <span>Matter number</span>
                 <input
@@ -411,7 +448,7 @@ export default function Matters() {
             </div>
             <div className="viewer-bar matter-edit-foot">
               <button onClick={() => setEditing(null)}>Cancel</button>
-              <button className={`primary${busy ? " btn-loading" : ""}`} onClick={onSaveEdit} disabled={busy || !draftTitle.trim()}>
+              <button className={`primary${busy ? " btn-loading" : ""}`} onClick={onSaveEdit} disabled={busy}>
                 Save changes
               </button>
             </div>

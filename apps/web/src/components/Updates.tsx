@@ -1,4 +1,5 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react"
+import { useContext, useEffect, useLayoutEffect, useRef, useState } from "react"
+import { Closing } from "./useExit"
 import { INGEST_URL } from "../config"
 import { readBrowserValue, writeBrowserValue } from "../browser-storage"
 
@@ -128,13 +129,17 @@ export function UpdateButton({ updates }: { updates: ReturnType<typeof useUpdate
 export function UpdateModal({ updates }: { updates: ReturnType<typeof useUpdates> }) {
   const dialog = useRef<HTMLDialogElement>(null)
   const heading = useRef<HTMLHeadingElement>(null)
+  // Closes as the exit starts; only the picture lingers.
+  const closing = useContext(Closing)
   useLayoutEffect(() => {
-    dialog.current?.showModal()
+    if (closing) return
+    const modal = dialog.current
+    modal?.showModal()
     heading.current?.focus()
-    return () => dialog.current?.close()
-  }, [])
+    return () => modal?.close()
+  }, [closing])
   const available = updates.canApply && !updates.error
-  return <dialog ref={dialog} className="launch-notice update-modal" aria-labelledby="update-title" aria-describedby="update-intro" onCancel={event => { event.preventDefault(); if (!updates.updating) updates.close() }}>
+  return <dialog ref={dialog} className={`launch-notice update-modal${closing ? " is-closing" : ""}`} inert={closing} aria-labelledby="update-title" aria-describedby="update-intro" onCancel={event => { event.preventDefault(); if (!updates.updating) updates.close() }}>
     <div className="launch-notice-body">
       <span className="launch-notice-eyebrow">Doc.Haus updates</span>
       <h1 ref={heading} tabIndex={-1} id="update-title">{updates.updating ? "Updating Doc.Haus" : available ? "Update available" : "Update status"}</h1>

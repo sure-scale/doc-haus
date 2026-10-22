@@ -16,6 +16,7 @@ import ConnectionBanner from "./components/ConnectionBanner"
 import ProviderConnectionBanner from "./components/ProviderConnectionBanner"
 import LaunchNotice, { hasAcceptedLaunchNotice } from "./components/LaunchNotice"
 import { ToastProvider } from "./components/Toast"
+import useExit, { Exit } from "./components/useExit"
 import { getSetup, type SetupProgress } from "./api/ingest/setup"
 import { OPENCODE_URL } from "./config"
 import { applyAppearance } from "./prefs"
@@ -24,6 +25,7 @@ import { useUpdates, UpdateButton, UpdateModal } from "./components/Updates"
 export default function App() {
   const [acknowledged, setAcknowledged] = useState(hasAcceptedLaunchNotice)
   const [settings, setSettings] = useState(false)
+  const [settingsShown, settingsClosing] = useExit(settings)
   const [reconnectProvider, setReconnectProvider] = useState<string | undefined>()
   // Text size lands as a data attribute on <html> the stylesheet keys off.
   useEffect(() => {
@@ -105,17 +107,20 @@ export default function App() {
             </Routes>
           </div>
         </main>
-        {updates.open && setup?.next === "done" && !onboarding && !settings && <UpdateModal updates={updates} />}
-        {onboarding && (
+        <Exit when={updates.open && setup?.next === "done" && !onboarding && !settingsShown}>{() => <UpdateModal updates={updates} />}</Exit>
+        <Exit when={onboarding}>{() => (
           <Onboarding
             onClose={() => { setOnboarding(false); void refreshSetup() }}
           />
-        )}
-        {settings && (
+        )}</Exit>
+        {settingsShown && (
           <Settings
+            closing={settingsClosing}
             initialTab={reconnectProvider !== undefined ? "providers" : undefined}
             reconnectProvider={reconnectProvider}
             onClose={() => {
+              // A second close during the exit animation changes nothing.
+              if (!settings) return
               setSettings(false)
               void refreshSetup()
             }}

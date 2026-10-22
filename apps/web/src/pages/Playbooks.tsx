@@ -12,6 +12,8 @@ import MatterPicker from "../components/MatterPicker"
 import ModalHeader from "../components/ModalHeader"
 import { DocMarkdown } from "../components/markdown/Markdown"
 import "../styles/playbooks.css"
+import backdropClose from "../components/backdropClose"
+import { Exit } from "../components/useExit"
 
 export default function Playbooks() {
   const [params, setParams] = useSearchParams()
@@ -264,8 +266,8 @@ export default function Playbooks() {
           onFiles(files, reimporting)
         }}
       />
-      {viewing && (
-        <div className="viewer-overlay" onClick={() => setViewing(undefined)}>
+      <Exit when={viewing}>{(viewing, closing) => (
+        <div className={`viewer-overlay${closing ? " is-closing" : ""}`} inert={closing} {...backdropClose(() => setViewing(undefined))}>
           <div
             className="picker-panel doc-panel"
             role="dialog"
@@ -281,13 +283,14 @@ export default function Playbooks() {
             </div>
           </div>
         </div>
-      )}
-      {editing && (
+      )}</Exit>
+      <Exit when={editing}>{(editing, closing) => (
         <div
-          className="viewer-overlay"
-          onClick={() => {
+          className={`viewer-overlay${closing ? " is-closing" : ""}`}
+          inert={closing}
+          {...backdropClose(() => {
             if (!working) setEditing(undefined)
-          }}
+          })}
         >
           <div
             className="picker-panel doc-panel"
@@ -352,8 +355,8 @@ export default function Playbooks() {
             </form>
           </div>
         </div>
-      )}
-      {using && (
+      )}</Exit>
+      <Exit when={using}>{(using) => (
         <MatterPicker
           title={`Use "${using.name}" in a matter`}
           onPick={(m) => usePlaybook(using, m)}
@@ -361,7 +364,7 @@ export default function Playbooks() {
             if (!working) setUsing(undefined)
           }}
         />
-      )}
+      )}</Exit>
     </>
   )
 }

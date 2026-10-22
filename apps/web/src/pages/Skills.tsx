@@ -9,6 +9,8 @@ import LibraryLayout from "../components/LibraryLayout"
 import { DocMarkdown } from "../components/markdown/Markdown"
 import { SKILL_BUILDER } from "../agents"
 import ModalHeader from "../components/ModalHeader"
+import backdropClose from "../components/backdropClose"
+import { Exit } from "../components/useExit"
 
 // The firm's skill library: reference knowledge (clause standards, checklists,
 // drafting guidance) the specialist agents load on demand. Repo-shipped skills
@@ -220,8 +222,8 @@ export default function Skills() {
         )}
       </LibraryLayout>
 
-      {viewing && (
-        <div className="viewer-overlay" onClick={() => setViewing(undefined)}>
+      <Exit when={viewing}>{(viewing, closing) => (
+        <div className={`viewer-overlay${closing ? " is-closing" : ""}`} inert={closing} {...backdropClose(() => setViewing(undefined))}>
           <div className="picker-panel doc-panel" onClick={(e) => e.stopPropagation()}>
             <ModalHeader
               title={`${viewing.name}${viewing.builtin ? " (built-in)" : ""}`}
@@ -233,7 +235,7 @@ export default function Skills() {
             </div>
           </div>
         </div>
-      )}
+      )}</Exit>
     </>
   )
 }

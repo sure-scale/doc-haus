@@ -83,11 +83,25 @@
   --space-6: 24px;
   --space-7: 32px;
   --space-8: 40px;
+  --content-max: 1100px; /* page and conversation column cap on wide screens */
   --md-sys-motion-duration-short: 120ms;
   --md-sys-motion-duration-medium: 200ms;
   --md-sys-motion-duration-long: 320ms;
   --md-sys-motion-easing-standard: cubic-bezier(.2, 0, 0, 1);
   --md-sys-motion-easing-emphasized: cubic-bezier(.05, .7, .1, 1);
+  /* M3 standard springs (unit mass, from rest to 1; ms = settled within 0.1%, rounded up to 10ms; stops within 0.5%): spatial damping .9 stiffness 1400/700/300, effects damping 1 stiffness 3800/1600/800. */
+  --spring-spatial-fast: linear(0, 0.008 1.6%, 0.035 3.3%, 0.084 5.5%, 0.169 8.3%, 0.461 17.2%, 0.577 21.1%, 0.671 24.9%, 0.75 28.6%, 0.817 32.6%, 0.872 36.9%, 0.918 41.6%, 0.953 47.2%, 0.979 54.1%, 0.995 63.6%, 1.001 81.1%, 1);
+  --spring-spatial-fast-ms: 230ms;
+  --spring-spatial-default: linear(0, 0.008 1.6%, 0.035 3.4%, 0.085 5.6%, 0.17 8.6%, 0.46 17.4%, 0.577 21.5%, 0.671 25.3%, 0.75 29.1%, 0.817 33.1%, 0.873 37.5%, 0.918 42.4%, 0.953 48%, 0.979 55%, 0.995 64.7%, 1.001 82.5%, 1);
+  --spring-spatial-default-ms: 320ms;
+  --spring-spatial-slow: linear(0, 0.008 1.6%, 0.035 3.4%, 0.084 5.5%, 0.169 8.5%, 0.461 17.4%, 0.578 21.4%, 0.672 25.2%, 0.751 29%, 0.817 33.1%, 0.873 37.4%, 0.918 42.3%, 0.953 47.9%, 0.979 54.9%, 0.995 64.6%, 1.001 82.4%, 1);
+  --spring-spatial-slow-ms: 490ms;
+  --spring-effects-fast: linear(0, 0.008 1.5%, 0.035 3.1%, 0.086 5.3%, 0.179 8.3%, 0.423 15.6%, 0.538 19.5%, 0.632 23.2%, 0.712 27%, 0.78 31%, 0.838 35.4%, 0.887 40.4%, 0.927 46.2%, 0.957 53.4%, 0.98 62.9%, 0.994 77.8%, 1);
+  --spring-effects-fast-ms: 150ms;
+  --spring-effects-default: linear(0, 0.008 1.4%, 0.035 3%, 0.086 5.1%, 0.18 8%, 0.423 15%, 0.538 18.8%, 0.632 22.4%, 0.712 26%, 0.78 29.9%, 0.838 34.1%, 0.887 38.9%, 0.927 44.5%, 0.958 51.5%, 0.98 60.7%, 0.994 75%, 1);
+  --spring-effects-default-ms: 240ms;
+  --spring-effects-slow: linear(0, 0.008 1.5%, 0.036 3.1%, 0.087 5.3%, 0.181 8.3%, 0.423 15.4%, 0.538 19.3%, 0.632 23%, 0.712 26.8%, 0.78 30.7%, 0.838 35.1%, 0.887 40%, 0.926 45.8%, 0.957 52.9%, 0.98 62.3%, 0.994 77%, 1);
+  --spring-effects-slow-ms: 330ms;
   --md-sys-elevation-level-0: none;
   --md-sys-elevation-level-1: 0 1px 3px rgb(24 35 28 / 7%);
   --md-sys-elevation-level-2: 0 4px 16px rgb(24 35 28 / 10%);
@@ -152,8 +166,13 @@
 }
 :root[data-text="compact"] { --ui-scale: .92; }
 :root[data-text="large"] { --ui-scale: 1.08; }
+/* Without linear() (before Chrome 113, Safari 17.2, Firefox 112) a spring would
+   void the whole transition or animation; fall back to the standard curve. */
+@supports not (transition-timing-function: linear(0, 1)) {
+  :root { --spring-spatial-fast: var(--md-sys-motion-easing-standard); --spring-spatial-default: var(--md-sys-motion-easing-standard); --spring-spatial-slow: var(--md-sys-motion-easing-standard); --spring-effects-fast: var(--md-sys-motion-easing-standard); --spring-effects-default: var(--md-sys-motion-easing-standard); --spring-effects-slow: var(--md-sys-motion-easing-standard); }
+}
 body { background: var(--panel); }
-.container { max-width: none; padding: var(--space-8) clamp(24px, 4vw, 64px); }
+.container { --container-pad: clamp(24px, 4vw, 64px); max-width: calc(var(--content-max) + 2 * var(--container-pad)); padding: var(--space-8) var(--container-pad); }
 .page-head { margin-bottom: var(--space-7); }
 .page-head h1 { margin: 0; font: var(--md-sys-typescale-headline-large); letter-spacing: var(--tracking-display); }
 .page-sub { max-width: 640px; margin-top: var(--space-2); color: var(--text-secondary); line-height: 1.6; }
@@ -190,7 +209,8 @@ body { background: var(--panel); }
   .list-row-actions { margin-left: auto; }
 }
 @media (pointer: coarse) {
-  button:not(.switch):not(.sidebar-collapse), .icon-btn, select { min-height: 44px; }
-  input:not([type="checkbox"]):not([type="radio"]):not([type="file"]), select { min-height: 44px; height: 44px; }
-  .toast-close { min-width: 44px; }
+  button:not(.switch):not(.sidebar-collapse), .icon-btn, select { min-height: max(44px, calc(44px / var(--ui-scale))); }
+  input:not([type="checkbox"]):not([type="radio"]):not([type="file"]), select { min-height: max(44px, calc(44px / var(--ui-scale))); height: max(44px, calc(44px / var(--ui-scale))); }
+  .toast-close { min-width: max(44px, calc(44px / var(--ui-scale))); }
+  .skip-link { display: flex; align-items: center; min-height: max(44px, calc(44px / var(--ui-scale))); }
 }

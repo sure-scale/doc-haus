@@ -1,7 +1,13 @@
 /* Firm libraries share a collection / assistant composition. Collection rows
    stay on white; only the supporting workspace uses a quiet tonal container. */
-.page-head.library-head { border-bottom: 0; padding-bottom: 0; margin-bottom: 28px; }
-.library-eyebrow { margin: 0 0 8px; color: var(--accent); font-size: .78rem; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; }
+/* Index-page bar: same shape as the matter head, full pane width. The page
+   container drops its cap and padding; its content keeps the 1100px column. */
+.container:has(> .page-bar) { --bar-pad: clamp(24px, 3.2vw, 56px); max-width: none; padding: 0 0 var(--space-8); }
+.container:has(> .page-bar) > :not(.page-bar) { width: min(100% - 2 * var(--bar-pad), var(--content-max)); margin-inline: auto; }
+.container:has(> .page-bar) > .page-bar + * { margin-top: var(--space-6); }
+.page-head.page-bar { min-height: 88px; margin: 0; padding: 16px max(var(--bar-pad), calc((100% - var(--content-max)) / 2)); border-bottom: 1px solid var(--border-soft); display: flex; flex-direction: column; justify-content: center; align-items: stretch; gap: 0; }
+.page-head.page-bar h1 { font-family: var(--font-display); font-size: 20px; line-height: 1.4; letter-spacing: -.45px; }
+.page-bar-sub { margin: 2px 0 0; color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
 .library-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); gap: 32px; align-items: start; }
 .library-layout.library-layout-single { grid-template-columns: minmax(0, 1fr); }
 .library-collection, .library-builder { min-width: 0; }
@@ -25,7 +31,7 @@
 .library-collection .list-row-main { gap: 8px; }
 .library-collection .list-row-title { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 8px; white-space: normal; overflow-wrap: anywhere; font-size: 1.05rem; line-height: 1.45; }
 .library-collection .list-row-title .badge { margin-left: 0; }
-.library-item-title, .library-collection button.template-desc { display: inline; width: fit-content; max-width: 100%; min-height: 0; padding: 0; border: 0; border-radius: var(--radius-sm); background: transparent; color: inherit; box-shadow: none; font: inherit; text-align: left; white-space: normal; overflow-wrap: anywhere; transform: none; }
+.library-item-title, .library-collection button.template-desc { display: inline; width: fit-content; max-width: 100%; min-height: 24px; padding: 0; border: 0; border-radius: var(--radius-sm); background: transparent; color: inherit; box-shadow: none; font: inherit; text-align: left; white-space: normal; overflow-wrap: anywhere; transform: none; }
 .library-item-title { font-weight: 650; }
 .library-item-title:hover, .library-collection button.template-desc:hover { border: 0; background: transparent; color: var(--accent); box-shadow: none; text-decoration: underline; text-underline-offset: 3px; transform: none; }
 .library-collection .list-row-meta { flex-wrap: wrap; align-items: baseline; gap: 4px 12px; font-size: .85rem; line-height: 1.6; }
@@ -50,6 +56,9 @@
 .library-builder .design-conversation .chat-empty-intro { font-size: .95rem; line-height: 1.6; letter-spacing: 0; margin-bottom: 20px; }
 .library-builder .design-conversation .chat-empty .starters { flex-direction: column; align-items: stretch; gap: 8px; }
 .library-builder .design-conversation .starter { min-height: 44px; padding: 12px; text-align: left; }
+@media (pointer: coarse) {
+  .library-builder .design-conversation .starter { min-height: max(44px, calc(44px / var(--ui-scale))); }
+}
 .library-builder .design-conversation .composer { --composer-fill: var(--panel); }
 .library-builder .design-conversation .composer textarea { min-height: 72px; }
 
@@ -58,7 +67,7 @@
    existing independent scrolling behavior. */
 .content:has(.library-layout.is-active, .library-layout .msg) { display: flex; flex-direction: column; height: var(--viewport-block); }
 .container:has(> .library-layout.is-active, > .library-layout .msg) { display: flex; flex-direction: column; flex: 1; min-height: 0; width: 100%; }
-.container:has(> .library-layout.is-active, > .library-layout .msg) > .library-head { flex: none; }
+.container:has(> .library-layout.is-active, > .library-layout .msg) > .page-bar { flex: none; }
 .library-layout:is(.is-active, :has(.msg)) { flex: 1; min-height: 0; grid-template-rows: minmax(0, 1fr); align-items: stretch; }
 .library-layout:is(.is-active, :has(.msg)) .library-collection { min-height: 0; overflow-y: auto; padding-right: 8px; scrollbar-width: thin; }
 .library-layout:is(.is-active, :has(.msg)) .library-builder { display: flex; min-height: 0; }
@@ -79,7 +88,6 @@
   .library-builder { padding: 20px; }
 }
 @media (max-width: 760px) {
-  .page-head.library-head { margin-bottom: 24px; }
   .library-layout { grid-template-columns: minmax(0, 1fr); }
   .library-builder { padding: 20px; }
   .library-collection .list-row { padding-inline: 8px; }
@@ -90,6 +98,11 @@
   .library-layout:is(.is-active, :has(.msg)) .library-collection { overflow: visible; padding: 24px 0; }
 }
 @media (hover: none), (pointer: coarse) {
-  .library-collection .list-row-actions .icon-btn { min-height: 44px; }
-  .library-item-title, .library-collection button.template-desc { min-height: 44px; }
+  .library-collection .list-row-actions .icon-btn { min-height: max(44px, calc(44px / var(--ui-scale))); }
+  .library-item-title, .library-collection button.template-desc { min-height: max(44px, calc(44px / var(--ui-scale))); }
+}
+@media (max-width: 700px) {
+  .container:has(> .page-bar) { --bar-pad: 20px; }
+  .page-head.page-bar { min-height: 78px; }
+  .page-head.page-bar h1 { font-size: 18px; }
 }

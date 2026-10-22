@@ -17,6 +17,7 @@ import StatisticsTab from "./StatisticsTab"
 import MatterDefaultsTab from "./MatterDefaultsTab"
 import ApprovalsTab from "./ApprovalsTab"
 import AppearanceTab from "./AppearanceTab"
+import backdropClose from "../backdropClose"
 
 // The settings modal: a left rail of tabs over one shared shell. Models and
 // Providers act on the engine's global config + auth store (so they share the
@@ -34,12 +35,14 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "appearance", label: "Appearance" },
 ]
 
-export default function Settings({ onClose, firstRun = false, initialTab, reconnectProvider }: { onClose: () => void; firstRun?: boolean; initialTab?: Tab; reconnectProvider?: string }) {
+export default function Settings({ onClose, closing = false, firstRun = false, initialTab, reconnectProvider }: { onClose: () => void; closing?: boolean; firstRun?: boolean; initialTab?: Tab; reconnectProvider?: string }) {
   const dialog = useRef<HTMLDialogElement>(null)
   const titleId = useId()
   const tabsId = useId()
   const [narrow, setNarrow] = useState(() => window.matchMedia("(max-width: 700px)").matches)
+  // Closes, and returns focus, as the exit starts; only the picture lingers.
   useLayoutEffect(() => {
+    if (closing) return
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
     const modal = dialog.current
     modal?.showModal()
@@ -48,7 +51,7 @@ export default function Settings({ onClose, firstRun = false, initialTab, reconn
       modal?.close()
       if (opener?.isConnected) opener.focus({ preventScroll: true })
     }
-  }, [])
+  }, [closing])
 
   // First run is about getting a provider connected, so land there; otherwise
   // open on the models people come back to tweak.
@@ -269,10 +272,11 @@ export default function Settings({ onClose, firstRun = false, initialTab, reconn
   return createPortal(
     <dialog
       ref={dialog}
-      className="viewer-overlay settings-overlay"
+      className={`viewer-overlay settings-overlay${closing ? " is-closing" : ""}`}
+      inert={closing}
       aria-labelledby={titleId}
       onCancel={(event) => { event.preventDefault(); onClose() }}
-      onClick={(event) => { if (event.target === event.currentTarget) onClose() }}
+      {...backdropClose(() => onClose())}
     >
       <div className="picker-panel settings-panel" onClick={(e) => e.stopPropagation()}>
         <div className="viewer-bar">

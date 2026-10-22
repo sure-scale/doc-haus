@@ -135,7 +135,7 @@ export default function Composer({
         {onStop ? (
           <button
             type="button"
-            className="send-btn stop-btn"
+            className="send-btn stop-btn btn-lg"
             onClick={onStop}
             disabled={stopping}
             aria-label={stopping ? "Stopping answer" : "Stop answer"}
@@ -148,7 +148,7 @@ export default function Composer({
         ) : (
           <button
             type="button"
-            className="send-btn"
+            className="send-btn btn-lg"
             onClick={onSend}
             disabled={busy || !input.trim()}
             aria-label={

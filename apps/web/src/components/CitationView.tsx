@@ -4,6 +4,7 @@ import { useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import DocumentViewer from "./DocumentViewer"
 import { citationDocument } from "./citation-target"
+import { Exit } from "./useExit"
 
 export default function CitationView({ citations, matterId, documents }: { citations: Citation[]; matterId?: string; documents?: Document[] }) {
   const [viewing, setViewing] = useState<Citation>()
@@ -16,7 +17,6 @@ export default function CitationView({ citations, matterId, documents }: { citat
   const best = new Map<string, Citation>()
   for (const c of [...citations].sort((a, b) => a.score - b.score)) best.set(`${c.docPath}§${c.section}`, c)
   const unique = [...best.values()].sort((a, b) => b.score - a.score)
-  const document = viewing && citationDocument(viewing, documents)
   return (
     <>
     <details className="sources">
@@ -35,16 +35,19 @@ export default function CitationView({ citations, matterId, documents }: { citat
         </div>
       ))}
     </details>
-    {viewing && document && matterId && typeof window !== "undefined" && createPortal(<DocumentViewer
-      key={document.name}
-      matterId={matterId}
-      name={document.name}
-      citation={viewing}
-      onClose={() => {
-        setViewing(undefined)
-        trigger.current?.focus()
-      }}
-    />, window.document.body)}
+    <Exit when={viewing}>{(viewing) => {
+      const document = citationDocument(viewing, documents)
+      return document && matterId && typeof window !== "undefined" && createPortal(<DocumentViewer
+        key={document.name}
+        matterId={matterId}
+        name={document.name}
+        citation={viewing}
+        onClose={() => {
+          setViewing(undefined)
+          trigger.current?.focus()
+        }}
+      />, window.document.body)
+    }}</Exit>
     </>
   )
 }

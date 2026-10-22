@@ -31,7 +31,7 @@
 .review-table tbody tr:hover td, .review-table tbody tr:hover th { background: var(--md-sys-color-surface-container-low); }
 .review-col-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
 .review-col-q, .review-answer { display: block; max-width: 100%; min-height: 0; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--text); box-shadow: none; font: inherit; text-align: left; white-space: normal; overflow-wrap: anywhere; transform: none; }
-.review-col-q { font-weight: 650; }
+.review-col-q { min-height: 24px; font-weight: 650; }
 .review-col-q:hover, .review-answer:hover { border: 0; background: transparent; color: var(--accent); box-shadow: none; transform: none; }
 .review-col-x { flex-shrink: 0; }
 .review-cell.reviewed { background: var(--accent-tint); box-shadow: inset 3px 0 0 var(--accent); }
@@ -44,6 +44,8 @@
 .review-cell-actions .icon-btn { min-height: 28px; padding: 4px 8px; border-color: transparent; opacity: 1; font-size: .78rem; }
 .review-cell-actions .icon-btn:hover { background: var(--accent-soft); }
 .review-cell-actions .review-lock.locked { background: var(--md-sys-color-primary-container); color: var(--md-sys-color-on-primary-container); font-weight: 600; }
+.review-cell-actions .review-lock.locked:hover:not(:disabled) { border-color: transparent; background: linear-gradient(var(--md-sys-state-hover), var(--md-sys-state-hover)), var(--md-sys-color-primary-container); }
+.review-cell-actions .review-lock.locked:active:not(:disabled) { background: linear-gradient(var(--md-sys-state-pressed), var(--md-sys-state-pressed)), var(--md-sys-color-primary-container); }
 .review-note { display: inline-flex; align-items: center; gap: 4px; }
 .review-note.has-comments { color: var(--accent); }
 .review-stale { padding: 2px 8px; border: 1px solid var(--warn-border); border-radius: var(--radius-pill); background: var(--warn-soft); color: var(--warn); font-size: .75rem; font-weight: 600; }
@@ -101,10 +103,10 @@
   .review-detail-modal { padding: 12px; }
 }
 @media (pointer: coarse) {
-  .review-cell-actions .icon-btn, .review-col-x, .review-add-button, .issues > summary { min-height: 44px; }
-  .review-col-x, .review-add-button { min-width: 44px; }
+  .review-cell-actions .icon-btn, .review-col-x, .review-add-button, .issues > summary { min-height: max(44px, calc(44px / var(--ui-scale))); }
+  .review-cell-actions .icon-btn, .review-col-x, .review-add-button { min-width: max(44px, calc(44px / var(--ui-scale))); }
   .review-table .review-add-col { width: 68px; min-width: 68px; }
-  .review-col-q { min-height: 44px; }
+  .review-col-q { min-height: max(44px, calc(44px / var(--ui-scale))); }
 }
 @media (prefers-reduced-motion: reduce) {
   .review-running::before { animation: none; }

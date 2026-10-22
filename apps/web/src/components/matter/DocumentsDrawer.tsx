@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import type { Document } from "../../api/ingest/documents"
 import type { LeanDraftingStatus } from "../../api/ingest/lean"
@@ -19,6 +19,8 @@ export default function DocumentsDrawer({
   onUploaded,
   onView,
   onCompare,
+  closing = false,
+  restored = false,
 }: {
   matterId: string
   documents: Document[]
@@ -30,13 +32,36 @@ export default function DocumentsDrawer({
   onUploaded: () => void
   onView: (name: string) => void
   onCompare?: (name: string) => void
+  // Set while the drawer plays its exit (see useExit).
+  closing?: boolean
+  // Open since the matter loaded: shown in place, without the slide-in.
+  restored?: boolean
 }) {
   const [slot, setSlot] = useState<HTMLElement | null>(null)
   const panel = useRef<HTMLElement>(null)
   const [compact, setCompact] = useState(() => window.matchMedia("(max-width: 700px)").matches)
   // The full-screen phone drawer is a modal. Wider drawers intentionally keep
   // the matter rail available, so focus remains free to move between panels.
-  useModalFocus(panel, Boolean(slot) && compact)
+  // It lets go as the exit starts.
+  useModalFocus(panel, Boolean(slot) && compact && !closing)
+  // Wider drawers are not modal, but closing one with focus inside (or lost to
+  // the page) still hands focus back as the exit starts: to what opened it,
+  // else to a Documents toggle.
+  const opener = useRef<Element | null>(null)
+  useLayoutEffect(() => {
+    const drawer = panel.current
+    if (!closing) {
+      if (!drawer?.contains(document.activeElement)) opener.current = document.activeElement
+      return
+    }
+    if (compact || !drawer) return
+    const active = document.activeElement
+    if (active && active !== document.body && !drawer.contains(active)) return
+    const target = [opener.current, ...document.querySelectorAll('[aria-controls="documents-drawer"]')].find(
+      (el): el is HTMLElement => el instanceof HTMLElement && el !== document.body && el.isConnected && !drawer.contains(el) && el.getClientRects().length > 0,
+    )
+    target?.focus()
+  }, [closing, compact])
 
   useEffect(() => {
     const query = window.matchMedia("(max-width: 700px)")
@@ -51,13 +76,15 @@ export default function DocumentsDrawer({
 
   if (!slot) return null
   const close = () => setDocumentsDrawer(false)
+  const motion = closing ? " is-closing" : restored ? " is-restored" : ""
   return createPortal(
     <>
-      <div className="docs-drawer-scrim" onClick={close} aria-hidden />
+      <div className={`docs-drawer-scrim${motion}`} onClick={close} aria-hidden />
       <aside
         ref={panel}
         id="documents-drawer"
-        className="docs-drawer"
+        className={`docs-drawer${motion}`}
+        inert={closing}
         role={compact ? "dialog" : undefined}
         aria-modal={compact || undefined}
         aria-label="Documents"

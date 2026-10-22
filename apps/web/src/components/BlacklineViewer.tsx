@@ -1,4 +1,5 @@
-import { Fragment, useEffect, useMemo, useRef, useState, type MouseEvent } from "react"
+import { Fragment, useContext, useEffect, useMemo, useRef, useState, type MouseEvent } from "react"
+import { Closing } from "./useExit"
 import { RevisionPresentation } from "docxodus"
 import { useDocxodus } from "docxodus/react"
 import {
@@ -17,6 +18,7 @@ import { fileStem } from "./CompareDialog"
 import { DOCX_RENDER_OPTIONS, ViewerTitle } from "./DocumentViewer"
 import { ModalClose } from "./ModalHeader"
 import useModalFocus from "./useModalFocus"
+import backdropClose from "./backdropClose"
 
 // The blackline of two Word versions beside a list of the edits the later
 // version made without tracked changes, what became of the earlier version's
@@ -35,6 +37,7 @@ export default function BlacklineViewer({ matterId, params, focus, onClose }: { 
   const { isReady, error: wasmError, convertToHtml } = useDocxodus("/wasm/")
   const panel = useRef<HTMLDivElement>(null)
   useModalFocus(panel)
+  const closing = useContext(Closing)
   const page = useRef<HTMLDivElement>(null)
   // The fetched blackline, painted on screen and saved by Download.
   const [blackline, setBlackline] = useState<Uint8Array>()
@@ -118,7 +121,7 @@ export default function BlacklineViewer({ matterId, params, focus, onClose }: { 
 
   const failed = renderError ?? (wasmError && `Viewer failed to load: ${wasmError.message}`)
   return (
-    <div className="viewer-overlay" onClick={onClose}>
+    <div className={`viewer-overlay${closing ? " is-closing" : ""}`} inert={closing} {...backdropClose(() => onClose())}>
       <div ref={panel} className="viewer-panel document-reader blackline-reader" role="dialog" aria-modal="true" aria-label={name} onClick={(e) => e.stopPropagation()}>
         <div className="viewer-bar">
           <ViewerTitle name={name} kind={`Blackline: ${params.left} → ${params.right}`} />

@@ -154,7 +154,7 @@
 }
 
 @media (pointer: coarse) {
-  .page-layout-choice, .page-layout-check { min-height: 44px; }
+  .page-layout-choice, .page-layout-check { min-height: max(44px, calc(44px / var(--ui-scale))); }
   .page-layout-choice { align-items: center; }
   .page-layout-choices .page-layout-choice > input[type="radio"] { margin-top: 0; }
 }

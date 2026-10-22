@@ -1,4 +1,5 @@
 import { useId, type ReactNode } from "react"
+import PageBar from "./PageBar"
 
 // Shared presentation for the firm libraries. Each page owns its data and actions.
 export default function LibraryLayout({
@@ -23,13 +24,7 @@ export default function LibraryLayout({
   const heading = useId()
   return (
     <>
-      <header className="page-head library-head">
-        <div>
-          <p className="library-eyebrow">Firm library</p>
-          <h1>{title}</h1>
-          <p className="page-sub">{description}</p>
-        </div>
-      </header>
+      <PageBar title={title} description={description} />
       <div className={`library-layout${active ? " is-active" : ""}${assistant ? "" : " library-layout-single"}`}>
         <section className="library-collection" aria-labelledby={heading}>
           <div className="library-heading">
