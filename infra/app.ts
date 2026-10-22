@@ -50,14 +50,4 @@ export const api = new sst.cloudflare.Worker("Api", {
   },
 })
 
-new sst.cloudflare.x.Astro("Web", {
-  domain: "docs." + domain,
-  path: "packages/web",
-  environment: {
-    // For astro config
-    SST_STAGE: $app.stage,
-    VITE_API_URL: api.url.apply((url) => url!),
-  },
-})
-
 createWebApp("app." + domain)
