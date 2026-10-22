@@ -31,12 +31,14 @@ export default function BootScreen({ engineReady, ingestReady, error, onRetry }:
 
   return (
     <div className="boot-screen">
-      <div className="onboard-loading">
-        <div className="onboard-doc">
-          <span className="sk-line" />
-          <span className="sk-line" />
-          <span className="sk-line" />
-          <span className="sk-line" />
+      <div className="boot-loader">
+        <div className="boot-house" aria-hidden="true">
+          <span className="boot-house-line is-base-left" />
+          <span className="boot-house-line is-wall-left" />
+          <span className="boot-house-line is-roof-left" />
+          <span className="boot-house-line is-roof-right" />
+          <span className="boot-house-line is-wall-right" />
+          <span className="boot-house-line is-base-right" />
         </div>
         {/* Keyed on the index so each phrase replays the fade-in. */}
         <p key={phrase} className="onboard-phrase">
