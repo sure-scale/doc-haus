@@ -2714,59 +2714,14 @@ li.list-row {
   }
 }
 
-/* First-run onboarding loader: a tiny document drafting itself — shimmer lines
-   of uneven width, staggered so they don't pulse in lockstep — with a rotating
-   legalese quip underneath while the provider/model catalog loads. */
-.onboard-loading {
+/* Boot loader: a house outline drawing itself in brand green, then retracting,
+   with a rotating legalese quip underneath while the backends come up. */
+.boot-loader {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 18px;
-  padding: 48px 0 36px;
-}
-
-.onboard-doc {
-  position: relative;
-  width: 84px;
-  padding: 14px 11px;
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-}
-
-/* Dog-eared corner so the loader reads as a sheet of paper. */
-.onboard-doc::after {
-  content: "";
-  position: absolute;
-  top: -1px;
-  right: -1px;
-  width: 16px;
-  height: 16px;
-  background: linear-gradient(225deg, var(--bg) 0%, var(--bg) 50%, var(--border) 50%, var(--accent-soft) 100%);
-  border-bottom-left-radius: 6px;
-  border-top-right-radius: var(--radius-md);
-}
-
-.onboard-doc .sk-line {
-  height: 6px;
-}
-
-.onboard-doc .sk-line:nth-child(2) {
-  width: 85%;
-  animation-delay: 150ms;
-}
-
-.onboard-doc .sk-line:nth-child(3) {
-  width: 92%;
-  animation-delay: 300ms;
-}
-
-.onboard-doc .sk-line:nth-child(4) {
-  width: 60%;
-  animation-delay: 450ms;
+  gap: 22px;
+  padding-bottom: 18px;
 }
 
 .onboard-phrase {
@@ -2787,6 +2742,114 @@ li.list-row {
   }
 }
 
+/* ---------- Boot house ---------- */
+/* Six pill bars trace the outline in a 2.5s loop: base left, wall left, roof
+   left, roof right, wall right, base right; then they retract in the same
+   order. Geometry is the owner's 300x300 drawing at half scale, cropped to the
+   y 144-208 band it occupies. The base rules are the finished house, so the
+   reduced-motion state (animation off) shows the whole outline. */
+.boot-house {
+  position: relative;
+  width: 150px;
+  height: 32px;
+}
+
+.boot-house-line {
+  position: absolute;
+  background: var(--accent);
+  border-radius: var(--radius-pill);
+  animation: 2.5s linear infinite;
+}
+
+.boot-house-line.is-base-left,
+.boot-house-line.is-base-right {
+  top: 28px;
+  width: 62px;
+  height: 4px;
+}
+
+.boot-house-line.is-base-left {
+  left: 0;
+  animation-name: boot-house-base-left;
+}
+
+.boot-house-line.is-base-right {
+  right: 0;
+  animation-name: boot-house-base-right;
+}
+
+.boot-house-line.is-wall-left,
+.boot-house-line.is-wall-right {
+  top: 17px;
+  width: 4px;
+  height: 15px;
+}
+
+.boot-house-line.is-wall-left {
+  left: 58px;
+  animation-name: boot-house-wall-left;
+}
+
+.boot-house-line.is-wall-right {
+  right: 58px;
+  animation-name: boot-house-wall-right;
+}
+
+.boot-house-line.is-roof-left,
+.boot-house-line.is-roof-right {
+  top: 0;
+  width: 4px;
+  height: 24px;
+}
+
+.boot-house-line.is-roof-left {
+  left: 65.5px;
+  transform: rotate(-132deg);
+  animation-name: boot-house-roof-left;
+}
+
+.boot-house-line.is-roof-right {
+  left: 80.5px;
+  transform: rotate(132deg);
+  animation-name: boot-house-roof-right;
+}
+
+@keyframes boot-house-base-left {
+  0% { left: 0; width: 0; }
+  12.5%, 50% { left: 0; width: 62px; }
+  62.5%, 100% { left: 62px; width: 0; }
+}
+
+@keyframes boot-house-wall-left {
+  0%, 12.5%, 100% { top: 32px; height: 0; }
+  17%, 62.5% { top: 17px; height: 15px; }
+  67% { top: 17px; height: 0; }
+}
+
+@keyframes boot-house-roof-left {
+  0%, 17% { top: 19px; left: 58px; height: 0; }
+  25%, 67% { top: 0; left: 65.5px; height: 24px; }
+  75%, 100% { top: 4.5px; left: 73.5px; height: 0; }
+}
+
+@keyframes boot-house-roof-right {
+  0%, 25% { top: 4px; left: 72px; height: 0; }
+  33%, 75% { top: 0; left: 80.5px; height: 24px; }
+  83%, 100% { top: 19px; left: 88px; height: 0; }
+}
+
+@keyframes boot-house-wall-right {
+  0%, 33% { top: 17px; height: 0; }
+  37.5%, 83% { top: 17px; height: 15px; }
+  87.5%, 100% { top: 32px; height: 0; }
+}
+
+@keyframes boot-house-base-right {
+  0%, 37.5% { right: 62px; width: 0; }
+  50%, 87.5% { right: 0; width: 62px; }
+  100% { right: 0; width: 0; }
+}
+
 /* ---------- Boot screen ---------- */
 /* Full-viewport hold while the engine and document service come up, so the list
    pages never mount against a dead backend and show a false empty state. */
@@ -2797,6 +2860,22 @@ li.list-row {
   justify-content: center;
   gap: var(--space-1);
   min-height: var(--viewport-block);
+}
+
+/* Failure message and Retry, centred under the phrase and set off from the steps. */
+.boot-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+  max-width: min(32rem, 100%);
+  padding-inline: var(--space-4);
+  margin-bottom: var(--space-4);
+  text-align: center;
+}
+
+.boot-error p {
+  margin: 0;
 }
 
 .boot-steps {
@@ -3962,6 +4041,7 @@ button.linklike:hover:not(:disabled) {
     animation: none;
   }
 
+  .boot-house-line,
   .onboard-phrase,
   .viewer-overlay,
   .viewer-panel,
