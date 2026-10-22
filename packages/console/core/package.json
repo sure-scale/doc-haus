@@ -6,7 +6,7 @@
   "type": "module",
   "license": "MIT",
   "dependencies": {
-    "@aws-sdk/client-sts": "3.782.0",
+    "@aws-sdk/client-sts": "3.1057.0",
     "@jsx-email/render": "1.1.1",
     "@opencode/console-mail": "workspace:*",
     "@opencode/console-resource": "workspace:*",
@@ -45,7 +45,7 @@
     "@types/bun": "catalog:",
     "@types/node": "catalog:",
     "drizzle-kit": "catalog:",
-    "mysql2": "3.14.4",
+    "mysql2": "3.23.1",
     "typescript": "catalog:",
     "@typescript/native-preview": "catalog:"
   }
