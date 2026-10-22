@@ -1,11 +1,16 @@
 # Updates and legacy migration
 
-The in-app updater follows this clone's configured tracking branch and offers a
-release only when release.json increases. It requires a managed launcher, no
-active work, a clean source tree and fast-forward ancestry. It installs frozen
+The in-app updater checks the public `origin` remote's `dochaus` branch and offers
+a release only when release.json increases, including from worktrees and detached
+checkouts. Feature-branch tracking settings never choose the update source.
+Installing revalidates the exact offered release; a newer offer requires another
+check rather than silently changing the install target. It requires a managed
+launcher, no active work, a clean source tree and fast-forward ancestry. It installs frozen
 dependencies and restores the previous source revision after installation
 failure. Runtime settings, credentials, sessions and documents remain outside
 source and survive successful updates and rollback. Keep backups independently.
+The checked-out branch is not switched; local changes and separate code history
+remain protected from updates.
 
 ## Existing installations with tracked settings
 

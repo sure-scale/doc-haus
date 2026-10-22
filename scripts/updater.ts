@@ -46,26 +46,25 @@ export class RepoUpdater {
     }
   }
 
-  async check(force = false): Promise<UpdateStatus> {
+  private async checkRelease(force = false): Promise<UpdateStatus> {
     if (!this.checking && (force || !this.status.checkedAt || Date.now() - this.status.checkedAt >= 60 * 60_000))
       this.checking = this.inspect().finally(() => { this.checking = undefined })
-    const status = this.checking ? await this.checking : this.status
+    return this.checking ? await this.checking : this.status
+  }
+
+  async check(force = false): Promise<UpdateStatus> {
+    const status = await this.checkRelease(force)
     const operation = await Bun.file(path.join(this.runtime, "update-result.json")).json().catch(() => undefined)
     return operation?.phase === "failed" ? { ...status, phase: "failed", error: operation.error } : status
   }
 
   private async inspect(): Promise<UpdateStatus> {
     try {
-      const branch = await this.git("symbolic-ref", "--short", "HEAD").catch(() => {
-        throw new Error("This installation is not on an update branch. Ask your administrator to configure it, then check again.")
-      })
-      const tracking = () => new Error("This installation has no update branch configured. Ask your administrator to configure it, then check again.")
-      const remote = await this.git("config", "--get", `branch.${branch}.remote`).catch(() => { throw tracking() })
-      const ref = await this.git("config", "--get", `branch.${branch}.merge`).catch(() => { throw tracking() })
-      if (remote === "." || !ref.startsWith("refs/heads/")) throw new Error("Set this installation's update branch before checking for updates.")
-      // Follow this clone's configured branch, never OpenCode's upstream branch.
-      await this.git("fetch", "--no-tags", "--", remote, ref)
-      const fetched = await this.git("rev-parse", "FETCH_HEAD")
+      // Releases always come from the public channel. A task branch's upstream
+      // (or detached HEAD) must never choose the code offered to this install.
+      await this.git("fetch", "--no-tags", "--", "origin", "refs/heads/dochaus:refs/remotes/origin/dochaus")
+      // FETCH_HEAD can be replaced by an unrelated concurrent feature fetch.
+      const fetched = await this.git("rev-parse", "refs/remotes/origin/dochaus")
       const target = await this.git("log", "-1", "--format=%H", fetched, "--", "release.json")
       const latest = release(await this.git("show", `${target}:release.json`))
       this.status = { current: this.current, latest, target, available: latest.version > this.current.version, checkedAt: Date.now() }
@@ -81,6 +80,12 @@ export class RepoUpdater {
     const changes = await this.git("status", "--porcelain", "--untracked-files=normal")
     if (changes)
       throw new Error("This installation has local changes. Ask your administrator to save them before updating.")
+    // Revalidate the offered SHA against the release channel for every apply,
+    // including CLI requests. Never replace a stale offer with a newer target.
+    const canonical = await this.checkRelease(true)
+    if (canonical.error) throw new Error(canonical.error)
+    if (!canonical.available || target !== canonical.target)
+      throw new Error("The available update changed. Check for updates again.")
     const latest = release(await this.git("show", `${target}:release.json`))
     if (latest.version <= this.current.version) throw new Error("This update is no longer available. Check for updates again.")
     await this.git("merge-base", "--is-ancestor", "HEAD", target).catch(() => {

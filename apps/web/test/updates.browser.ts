@@ -35,7 +35,7 @@ const css = await Bun.file(path.resolve(import.meta.dir, "../src/styles/launch-n
 const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: request => new URL(request.url).pathname === "/harness.js"
   ? new Response(script, { headers: { "content-type": "text/javascript" } })
   : new Response(`<html><style>:root { --panel:white; --text:#13271c; --text-secondary:#4e6156; --accent:#26734d; --border:#aaa; --border-soft:#ddd } body { font-family:sans-serif } ${css}</style><div id="root"></div><script type="module" src="/harness.js"></script></html>`, { headers: { "content-type": "text/html" } }) })
-const browser = await chromium.launch({ headless: true })
+const browser = await chromium.launch({ headless: true, executablePath: process.env.PLAYWRIGHT_CHROMIUM_PATH })
 const current = { version: 1, name: "Current", notes: "Current notes" }
 const latest = { version: 2, name: "Next", notes: "Next notes" }
 const offer = { current, latest, target: "a".repeat(40), available: true }
@@ -72,14 +72,14 @@ async function visible(page: Page, name: string) {
 
 try {
   await scenario("HTTP 200 error is visible, non-blocking, retryable, and never prompts repeatedly", async (page, calls, respond) => {
-    respond({ current, available: false, error: "This installation has no update branch configured." })
+    respond({ current, available: false, error: "Git could not complete the update. Check your repository access and connection." })
     await page.goto(server.url.href)
     await visible(page, "Update check failed")
     assert.equal(await page.getByRole("dialog").count(), 0)
     await page.getByRole("textbox", { name: "Draft" }).fill("Drafting remains available")
     await page.getByRole("button", { name: "Update check failed", exact: true }).click()
     await visible(page, "Check again")
-    assert.match(await page.getByRole("alert").innerText(), /no update branch/)
+    assert.match(await page.getByRole("alert").innerText(), /repository access and connection/)
     assert.equal(await page.getByRole("button", { name: "Update now", exact: true }).count(), 0)
     await page.evaluate(() => window.updateHarness.apply())
     assert.equal(calls.filter(call => call.method === "POST").length, 0)
@@ -146,8 +146,14 @@ try {
     accept(response)
     await page.goto(server.url.href)
     await visible(page, "Update now")
+    // The heading also appears while the POST is still requesting. Keep the
+    // fixture online until acceptance (or a lost response) has established the
+    // pending marker and the updating effect has completed its first check.
+    const reconnectCheck = page.waitForResponse(result => result.request().method() === "GET" && result.url() === "http://updates.invalid/updates")
     await page.getByRole("button", { name: "Update now", exact: true }).click()
     await page.getByRole("heading", { name: "Updating Doc.Haus" }).waitFor()
+    await reconnectCheck
+    await page.waitForFunction(() => sessionStorage.getItem("dh.update-pending") === "2" && !window.updateHarness.checking)
     respond("offline")
     const checks = calls.length
     await page.evaluate(() => window.dispatchEvent(new Event("focus")))
