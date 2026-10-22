@@ -436,6 +436,76 @@
   -webkit-backdrop-filter: none;
 }
 
+/* A prepared template is a result of the conversation and opens the same
+   document review as the page-level action. */
+.design-conversation .template-proposal-card {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 16px;
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--md-sys-color-surface-container-low);
+}
+
+.design-conversation .template-proposal-icon {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.design-conversation .template-proposal-copy {
+  min-width: 0;
+}
+
+.design-conversation .template-proposal-copy .template-proposal-eyebrow {
+  margin: 0 0 5px;
+  color: var(--accent);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.design-conversation .template-proposal-copy h3 {
+  margin: 0;
+  color: var(--text);
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.design-conversation .template-proposal-copy p {
+  margin: 8px 0 16px;
+  color: var(--text-secondary);
+  font-size: 0.8125rem;
+  line-height: 1.6;
+}
+
+.design-conversation .template-proposal-copy button {
+  min-height: 44px;
+  max-width: 100%;
+  white-space: normal;
+  text-align: left;
+}
+
+@media (max-width: 560px) {
+  .design-conversation .template-proposal-card {
+    grid-template-columns: 32px minmax(0, 1fr);
+    gap: 12px;
+    padding: 16px;
+  }
+
+  .design-conversation .template-proposal-icon {
+    width: 32px;
+    height: 36px;
+    border-radius: 9px;
+  }
+}
+
 /* Native chat questions use the model's supplied choices. Recommendation and
    selection have distinct treatments so advice never looks like an answer. */
 .design-conversation .question-dialog:has(.native-session-questions) {

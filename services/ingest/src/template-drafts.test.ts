@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
@@ -8,12 +8,13 @@ import { Document, ExternalHyperlink, Footer, Header, HeadingLevel, ImageRun, Pa
 import { createDocxRevision, type DocxParagraphEdit, type DocxRevisionPacket } from "../../../dochaus/lib/docx-amendments"
 import { openDb, upsertDeliverable } from "./db"
 import { templateDraftRoutes, type TemplateDraft } from "./template-drafts"
+import type { EngineRequestOptions } from "./matter-session"
 
-function fixture() {
+function fixture(engine: EngineRequestOptions = {}) {
   const temporary = mkdtempSync(path.join(tmpdir(), "dochaus-template-drafts-"))
   const workspace = path.join(temporary, "workspace")
   mkdirSync(workspace)
-  const app = templateDraftRoutes(id => path.join(workspace, id), () => workspace)
+  const app = templateDraftRoutes(id => path.join(workspace, id), () => workspace, engine)
   const request = (route: string, method = "GET", body?: unknown) => app.request(`http://localhost${route}`, {
     method, ...(body === undefined ? {} : { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
   })
@@ -297,3 +298,187 @@ test("a placeholder edit removes shared text and image links while retaining ima
     expect(readFileSync(matter.file)).toEqual(Buffer.from(original))
   } finally { f.close() }
 }, 60000)
+
+type NativeTestSession = { id: string; location: { directory: string }; parentID?: string }
+function nativeConversations() {
+  const sessions = new Map<string, NativeTestSession>()
+  const deleted: string[] = []
+  const calls: Array<{ path: string; method: string; directory: string | null }> = []
+  const active = new Set<string>()
+  const queued = new Set<string>()
+  const waiting = new Set<string>()
+  let failure: "list" | "state" | "delete" | undefined
+  let owner: NativeTestSession | undefined
+  let beforeList: (() => Promise<void>) | undefined
+  const transport = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(input instanceof Request ? input.url : String(input))
+    const method = init?.method ?? "GET"
+    calls.push({ path: url.pathname, method, directory: new Headers(init?.headers).get("x-opencode-directory") })
+    if (url.pathname === "/api/session") {
+      if (beforeList) await beforeList()
+      if (failure === "list") return new Response(null, { status: 500 })
+      const all = [...sessions.values()].filter(session =>
+        (!url.searchParams.has("directory") || session.location.directory === url.searchParams.get("directory")) &&
+        (!url.searchParams.has("parentID") || session.parentID === url.searchParams.get("parentID")))
+      const offset = Number(url.searchParams.get("cursor") ?? 0)
+      // Deliberately paginate both directory-scoped and unfiltered child lists.
+      return Response.json({ data: all.slice(offset, offset + 1), cursor: { next: offset + 1 < all.length ? String(offset + 1) : undefined } })
+    }
+    if (url.pathname === "/api/session/active") {
+      if (failure === "state") return new Response(null, { status: 500 })
+      return Response.json({ data: Object.fromEntries([...active].map(id => [id, { type: "running" }])) })
+    }
+    if (url.pathname === "/api/permission/request") return Response.json({ data: [...waiting].map(sessionID => ({ sessionID })) })
+    const match = /^\/api\/session\/([^/]+)(\/inbox|\/message)?$/.exec(url.pathname)
+    if (!match || !sessions.has(match[1])) return new Response(null, { status: 404 })
+    const id = match[1]
+    if (match[2] === "/inbox") return Response.json({ data: queued.has(id) ? [{ id: "msg_queued", sessionID: id }] : [] })
+    if (match[2] === "/message") return Response.json({ data: [] })
+    if (method === "GET") return Response.json({ data: owner ?? sessions.get(id) })
+    if (method === "DELETE") {
+      if (failure === "delete") return new Response(null, { status: 500 })
+      deleted.push(id)
+      const remove = (target: string) => {
+        for (const child of [...sessions.values()].filter(session => session.parentID === target)) remove(child.id)
+        sessions.delete(target)
+      }
+      remove(id)
+      return new Response(null, { status: 204 })
+    }
+    return new Response(null, { status: 405 })
+  }
+  return {
+    sessions, deleted, calls, active, queued, waiting,
+    options: { engineURL: "http://native.test", fetch: transport as typeof fetch },
+    fail: (value?: typeof failure) => { failure = value },
+    overrideOwner: (value?: NativeTestSession) => { owner = value },
+    pauseList: (run?: () => Promise<void>) => { beforeList = run },
+    add: (id: string, directory: string, parentID?: string) => {
+      const session = { id, location: { directory }, ...(parentID ? { parentID } : {}) }
+      sessions.set(id, session)
+      return session
+    },
+  }
+}
+
+test("deletes only the chosen template draft and its native conversation tree, preserving source and saved library", async () => {
+  const engine = nativeConversations()
+  const f = fixture(engine.options)
+  try {
+    const original = await sourceDocument()
+    const matter = f.register("matter-a", original)
+    const draft = await capture(f)
+    const other = await capture(f)
+    await f.request(`/template-drafts/${draft.id}/edits`, "POST", { revision: 0, edits: [], name: "Saved.docx", description: "Reusable terms" })
+    expect((await f.request(`/template-drafts/${draft.id}/publish`, "POST", { revision: 1, name: "Saved.docx", description: "Reusable terms" })).status).toBe(200)
+    const saved = readFileSync(path.join(f.workspace, ".templates", "Saved.docx"))
+    const manifest = readFileSync(path.join(f.workspace, ".templates", "manifest.json"))
+    const otherMetadata = readFileSync(path.join(other.dir, "draft.json"))
+    engine.add("ses_one", draft.dir)
+    engine.add("ses_child", draft.dir, "ses_one")
+    engine.add("ses_child_two", draft.dir, "ses_one")
+    engine.add("ses_two", draft.dir)
+    engine.add("ses_matter", matter.dir)
+    engine.add("ses_other", other.dir)
+    symlinkSync(matter.dir, path.join(draft.dir, "linked-source"), "dir")
+    const response = await f.request(`/template-drafts/${draft.id}`, "DELETE")
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ ok: true })
+    expect(existsSync(draft.dir)).toBe(false)
+    expect((await f.request(`/template-drafts/${draft.id}`)).status).toBe(404)
+    expect((await (await f.request("/template-drafts")).json()).drafts.map((row: TemplateDraft) => row.id)).toEqual([other.id])
+    expect(engine.deleted).toEqual(["ses_one", "ses_two"])
+    expect([...engine.sessions.keys()]).toEqual(["ses_matter", "ses_other"])
+    expect(engine.calls.every(call => call.directory === draft.dir)).toBe(true)
+    expect(readFileSync(matter.file)).toEqual(Buffer.from(original))
+    expect(readFileSync(path.join(other.dir, "draft.json"))).toEqual(otherMetadata)
+    expect(readFileSync(path.join(f.workspace, ".templates", "Saved.docx"))).toEqual(saved)
+    expect(readFileSync(path.join(f.workspace, ".templates", "manifest.json"))).toEqual(manifest)
+  } finally { f.close() }
+})
+
+test("running, queued or permission-waiting native work refuses deletion; engine failures preserve the draft for retry", async () => {
+  const engine = nativeConversations()
+  const f = fixture(engine.options)
+  try {
+    const original = await sourceDocument()
+    const matter = f.register("matter-a", original)
+    const draft = await capture(f)
+    engine.add("ses_owner", draft.dir)
+    engine.add("ses_child", draft.dir, "ses_owner")
+    const metadata = readFileSync(path.join(draft.dir, "draft.json"))
+    const proposal = await candidate(f, draft)
+    for (const pending of [engine.active, engine.queued, engine.waiting]) {
+      pending.add("ses_child")
+      const response = await f.request(`/template-drafts/${draft.id}`, "DELETE")
+      expect(response.status).toBe(409)
+      expect((await response.json()).error).toContain("Stop this template conversation")
+      pending.clear()
+    }
+    for (const failure of ["list", "state", "delete"] as const) {
+      engine.fail(failure)
+      const response = await f.request(`/template-drafts/${draft.id}`, "DELETE")
+      expect(response.status).toBe(503)
+      expect((await response.json()).error).toContain("draft has been kept")
+      expect(readFileSync(path.join(draft.dir, "draft.json"))).toEqual(metadata)
+      expect(await candidate(f, draft)).toEqual(proposal)
+      expect(readFileSync(matter.file)).toEqual(Buffer.from(original))
+      expect([...engine.sessions.keys()]).toEqual(["ses_owner", "ses_child"])
+      expect(engine.deleted).toEqual([])
+    }
+    engine.fail()
+    expect((await f.request(`/template-drafts/${draft.id}`, "DELETE")).status).toBe(200)
+  } finally { f.close() }
+})
+
+test("draft deletion rejects path aliases, mismatched session identities and descendants moved outside the draft", async () => {
+  const engine = nativeConversations()
+  const f = fixture(engine.options)
+  try {
+    f.register("matter-a", await sourceDocument())
+    const draft = await capture(f)
+    const other = await capture(f)
+    const alias = "11111111-1111-4111-8111-111111111111"
+    symlinkSync(draft.dir, path.join(f.workspace, ".template-drafts", alias), "dir")
+    expect((await f.request(`/template-drafts/${alias}`, "DELETE")).status).toBe(400)
+    expect((await f.request("/template-drafts/not-a-draft", "DELETE")).status).toBe(404)
+    expect(engine.calls).toEqual([])
+    engine.add("ses_owner", draft.dir)
+    engine.overrideOwner({ id: "ses_wrong", location: { directory: draft.dir } })
+    expect((await f.request(`/template-drafts/${draft.id}`, "DELETE")).status).toBe(409)
+    engine.overrideOwner({ id: "ses_owner", location: { directory: `${draft.dir}/../${draft.id}` } })
+    expect((await f.request(`/template-drafts/${draft.id}`, "DELETE")).status).toBe(503)
+    engine.overrideOwner()
+    engine.add("ses_moved", other.dir, "ses_owner")
+    expect((await f.request(`/template-drafts/${draft.id}`, "DELETE")).status).toBe(409)
+    expect(engine.deleted).toEqual([])
+    expect(existsSync(draft.dir)).toBe(true)
+    expect(existsSync(other.dir)).toBe(true)
+    expect([...engine.sessions.keys()]).toEqual(["ses_owner", "ses_moved"])
+  } finally { f.close() }
+})
+
+test("deletion serializes with edits and publication without recreating a deleted draft", async () => {
+  const engine = nativeConversations()
+  const f = fixture(engine.options)
+  let release!: () => void
+  try {
+    f.register("matter-a", await sourceDocument())
+    const draft = await capture(f)
+    await f.request(`/template-drafts/${draft.id}/edits`, "POST", { revision: 0, edits: [], name: "Waiting.docx", description: "Reusable terms" })
+    let entered!: () => void
+    const started = new Promise<void>(resolve => { entered = resolve })
+    const gate = new Promise<void>(resolve => { release = resolve })
+    engine.pauseList(async () => { entered(); await gate })
+    const deletion = f.request(`/template-drafts/${draft.id}`, "DELETE")
+    await started
+    const edits = f.request(`/template-drafts/${draft.id}/edits`, "POST", { revision: 1, edits: [], name: "Later.docx" })
+    const publish = f.request(`/template-drafts/${draft.id}/publish`, "POST", { revision: 1, name: "Waiting.docx", description: "Reusable terms" })
+    release()
+    expect((await deletion).status).toBe(200)
+    expect((await edits).status).toBe(404)
+    expect((await publish).status).toBe(404)
+    expect(existsSync(draft.dir)).toBe(false)
+    expect(existsSync(path.join(f.workspace, ".templates", "Waiting.docx"))).toBe(false)
+  } finally { release?.(); f.close() }
+})

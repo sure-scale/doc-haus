@@ -21,6 +21,8 @@ export default function TemplateDraftBuilder({ id, onSaved, onDraftChanged }: { 
   const [checkedSession, setCheckedSession] = useState<string>()
   const [resumeDirectory, setResumeDirectory] = useState<string>()
   const [busy, setBusy] = useState(false)
+  const [checkingDraft, setCheckingDraft] = useState(false)
+  const draftChecks = useRef(0)
   const [saving, setSaving] = useState(false)
   const savingRef = useRef(false)
   const [saveError, setSaveError] = useState("")
@@ -34,6 +36,8 @@ export default function TemplateDraftBuilder({ id, onSaved, onDraftChanged }: { 
   const toast = useToast()
 
   const refresh = useCallback(async () => {
+    draftChecks.current += 1
+    setCheckingDraft(true)
     try {
       const next = await getTemplateDraft(id)
       setDraft((current) => current && (current.revision > next.revision || current.status === "published" && next.status !== "published") ? current : next)
@@ -44,6 +48,9 @@ export default function TemplateDraftBuilder({ id, onSaved, onDraftChanged }: { 
       return next
     } catch (error) {
       setError(humanizeError(error, "Could not load this template conversation."))
+    } finally {
+      draftChecks.current -= 1
+      setCheckingDraft(draftChecks.current > 0)
     }
   }, [id, onDraftChanged])
 
@@ -129,6 +136,8 @@ export default function TemplateDraftBuilder({ id, onSaved, onDraftChanged }: { 
 
   const published = draft.status === "published"
   const ready = draft.revision > 0
+  const reviewReady = ready && !busy && !checkingDraft && !error
+  const openProposal = () => { setSaveError(""); setPreview("proposal") }
   const canOpenSession = session ? createdRef.current === session || checkedSession === session : resumeDirectory === draft.dir
   return <div className="template-draft-builder">
     <section className="template-source" aria-label="Attached source document">
@@ -145,7 +154,7 @@ export default function TemplateDraftBuilder({ id, onSaved, onDraftChanged }: { 
         <Link to="/templates">Back to saved templates</Link>
       </> : <>
         <p>{ready ? "Your proposed template is ready to review. Check the document and changes before saving it to the library." : "Describe the intended use and position. Template Builder will prepare a reusable copy for your review."}</p>
-        <button type="button" className="primary" disabled={!ready || busy} onClick={() => { setSaveError(""); setPreview("proposal") }}>Review proposed template</button>
+        <button type="button" className="primary" disabled={!reviewReady} onClick={openProposal}>Review proposed template</button>
       </>}
     </section>
     {sessionError ? <p className="msg-error" role="alert">{sessionError} <button type="button" onClick={() => {
@@ -181,6 +190,20 @@ export default function TemplateDraftBuilder({ id, onSaved, onDraftChanged }: { 
         onViewDocument={() => setPreview("proposal")}
         onDocumentsChanged={refresh}
         onBusyChange={onBusyChange}
+        transcriptFooter={reviewReady && !published ? <section className="template-proposal-card" aria-label="Proposed template ready">
+          <div className="template-proposal-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+              <path d="M14 2v6h6M8 13h8M8 17h5" />
+            </svg>
+          </div>
+          <div className="template-proposal-copy">
+            <p className="template-proposal-eyebrow">Ready for your review</p>
+            <h3>{draft.name || "Proposed reusable template"}</h3>
+            <p>Review the document and prepared changes before saving it to your library.</p>
+            <button type="button" className="primary" disabled={!reviewReady} onClick={openProposal}>Review proposed template</button>
+          </div>
+        </section> : undefined}
       /> : <p role="status">Opening template conversation…</p>}
 
     <Exit when={preview}>{(view) => <TemplateViewer

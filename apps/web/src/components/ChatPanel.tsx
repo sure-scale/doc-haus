@@ -77,6 +77,7 @@ export default function ChatPanel({
   onOpenBlackline,
   onDocumentsChanged,
   onBusyChange,
+  transcriptFooter,
   feed,
 }: {
   directory: string
@@ -152,6 +153,9 @@ export default function ChatPanel({
   // Whether a turn is working, and what it is doing now when that has a plain
   // name; the matter page shows it in its status bar.
   onBusyChange?: (busy: boolean, activity?: string) => void
+  // A surface-owned result belongs in the scrolling conversation after its
+  // settled turns. Keep it hidden while native history or a turn is in flight.
+  transcriptFooter?: ReactNode
   // The matter page's poll of its drafting run, shared with the documents rail;
   // the run header's actions write their result back to it.
   feed?: DraftingFeed
@@ -563,6 +567,7 @@ export default function ChatPanel({
               <CompareView compares={live.compares} onOpen={onOpenBlackline} />
             </div>
           )}
+          {!loading && !loadError && !busy && transcriptFooter}
         </div>
         {scroll.away && (
           <button type="button" className="chat-jump" onClick={scroll.jump}>

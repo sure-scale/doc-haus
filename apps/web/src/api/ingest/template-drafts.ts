@@ -44,6 +44,11 @@ export async function getTemplateDraft(id: string): Promise<TemplateDraft> {
   return response.json()
 }
 
+export async function deleteTemplateDraft(id: string): Promise<void> {
+  const response = await fetch(`${INGEST_URL}/template-drafts/${encodeURIComponent(id)}`, { method: "DELETE" })
+  if (!response.ok) throw new Error(await ingestError(response, "Could not delete this template conversation"))
+}
+
 export async function fetchTemplateDraftBytes(id: string, view: "source" | "proposal"): Promise<Uint8Array> {
   const response = await fetch(`${INGEST_URL}/template-drafts/${encodeURIComponent(id)}/content?view=${view}`, { cache: "no-store" })
   if (!response.ok) throw new Error(await ingestError(response, "Could not load this document preview"))

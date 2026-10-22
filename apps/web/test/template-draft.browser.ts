@@ -28,9 +28,12 @@ const unknown: string[] = []
 const sourceWrites: string[] = []
 const prompts: { id: string; directory: string; text: string; agent: string }[] = []
 const formReplies: unknown[] = []
-const publications: unknown[] = []
+const publications: { revision: number; name: string; description: string }[] = []
 let snapshotAttempts = 0
 let publishAttempts = 0
+let deleteAttempts = 0
+let holdDeletion = false
+let releaseDeletion: (() => void) | undefined
 let metadataFailure = false
 let libraryRefreshFailure = false
 let eventID = 0
@@ -127,7 +130,7 @@ const server = Bun.serve({
     if (route === "GET /ingest/workflows") return json({ dir: "/workflows", workflows: [] })
     if (route === "GET /ingest/templates") {
       if (libraryRefreshFailure) { libraryRefreshFailure = false; return Response.json({ error: "Library temporarily unavailable" }, { status: 503 }) }
-      return json({ dir: "/templates", templates: [...drafts.values()].filter((draft) => draft.status === "published").map((draft) => ({ name: draft.publishedName, description: draft.description, placeholders: [{ text: "[insert customer]", kind: "fill" }] })) })
+      return json({ dir: "/templates", templates: publications.map((saved) => ({ name: saved.name, description: saved.description, placeholders: [{ text: "[insert customer]", kind: "fill" }] })) })
     }
     if (route === "GET /ingest/template-drafts") return json({ drafts: [...drafts.values()].reverse() })
     if (route === "GET /ingest/matters/matter/telemetry") return json({ current_activity: null, today: { cost_usd: 0, turns: 0 }, matter_total: { cost_usd: 0, turns: 0, sessions: 1, since_ts: 1 }, current_session: null, rate_card_as_of: null, unknown_models: [] })
@@ -150,7 +153,17 @@ const server = Bun.serve({
     }
     const draftRoute = url.pathname.match(/^\/ingest\/template-drafts\/(draft_\d+)(?:\/(content|publish))?$/)
     if (draftRoute) {
-      const draft = drafts.get(draftRoute[1])!
+      const draft = drafts.get(draftRoute[1])
+      if (!draft) return Response.json({ error: "Template draft not found." }, { status: 404 })
+      if (request.method === "DELETE" && !draftRoute[2]) {
+        deleteAttempts += 1
+        if (deleteAttempts === 1) return Response.json({ error: "The conversation service is unavailable." }, { status: 503 })
+        if ([...sessions.values()].some((session) => session.dir === draft.dir && session.running)) return Response.json({ error: "Stop this conversation before deleting it." }, { status: 409 })
+        if (holdDeletion) await new Promise<void>((resolve) => { releaseDeletion = resolve })
+        for (const [id, session] of sessions) if (session.dir === draft.dir) sessions.delete(id)
+        drafts.delete(draft.id)
+        return new Response(null, { status: 204 })
+      }
       if (!draftRoute[2]) return metadataFailure ? Response.json({ error: "Template draft temporarily unavailable" }, { status: 503 }) : json(draft)
       if (draftRoute[2] === "content") return new Response(url.searchParams.get("view") === "source" ? original : docx(replacement, draft.revision > 1 ? revisedNotice : notice))
       const input = await request.json() as { revision: number; name: string; description: string }
@@ -248,7 +261,10 @@ try {
   await page.getByText("Document is busy. Try again.", { exact: true }).waitFor({ state: "detached" })
   await page.getByRole("region", { name: "Attached source document" }).getByText("Services.docx", { exact: true }).waitFor()
   assert.equal(prompts.length, 0, "handoff never auto-sends the instruction")
-  assert.equal(await page.getByRole("button", { name: "Review proposed template" }).isDisabled(), true)
+  const topReview = page.getByRole("region", { name: "Template review", exact: true })
+  const inlineReview = page.getByRole("region", { name: "Proposed template ready", exact: true })
+  assert.equal(await topReview.getByRole("button", { name: "Review proposed template", exact: true }).isDisabled(), true)
+  assert.equal(await inlineReview.count(), 0, "chat offers no proposal before a concrete revision exists")
   const initial = await page.getByRole("textbox").inputValue()
   assert.ok(initial.includes("Services.docx") && !initial.includes("Unrelated matter"))
   if (shots) await page.screenshot({ path: path.join(shots, "1-source-attached.png") })
@@ -285,9 +301,14 @@ try {
   await page.getByRole("button", { name: "Answer", exact: true }).click()
   assert.equal(await customAnswer.inputValue(), answer, "unsent library answers survive reload")
   await page.getByRole("button", { name: "Send answers", exact: true }).click()
-  await page.getByRole("button", { name: "Review proposed template" }).waitFor({ state: "visible" })
+  await inlineReview.waitFor({ state: "visible" })
   await until(() => drafts.get("draft_1")!.revision === 1, "intake prepares the first candidate")
-  await page.getByRole("button", { name: "Review proposed template" }).click()
+  assert.equal(await page.locator(".chat-log").getByRole("region", { name: "Proposed template ready", exact: true }).count(), 1, "ready proposal appears inside the chat transcript")
+  await inlineReview.scrollIntoViewIfNeeded()
+  if (shots) await page.screenshot({ path: path.join(shots, "7-inline-proposal.png") })
+  await page.reload()
+  await inlineReview.waitFor({ state: "visible" })
+  await inlineReview.getByRole("button", { name: "Review proposed template", exact: true }).click()
   const proposal = page.getByRole("dialog", { name: "Proposed reusable template", exact: true })
   await proposal.locator(".docx-render").getByText(replacement, { exact: true }).waitFor()
   assert.equal(await proposal.locator(".docx-render table").count(), 1, "Word table renders in the proposal")
@@ -300,7 +321,7 @@ try {
   await page.getByRole("textbox").fill("Also generalise the notice period.")
   await page.getByRole("button", { name: "Send message", exact: true }).click()
   await until(() => drafts.get("draft_1")!.revision === 2, "a follow-up prepares a revised proposal")
-  await page.getByRole("button", { name: "Review proposed template" }).click()
+  await inlineReview.getByRole("button", { name: "Review proposed template", exact: true }).click()
   await proposal.locator(".docx-render").getByText(revisedNotice, { exact: true }).waitFor()
   await page.setViewportSize({ width: 1280, height: 700 })
   for (const summary of await proposal.locator(".template-draft-changes summary").all()) await summary.click()
@@ -338,6 +359,7 @@ try {
   await proposal.getByRole("textbox", { name: "Template name", exact: true }).fill("Standard services.docx")
   await proposal.getByRole("button", { name: "Save to library", exact: true }).click()
   await proposal.getByText("Saved to your library.", { exact: true }).waitFor()
+  assert.equal(await inlineReview.count(), 0, "saved proposal no longer offers an unsaved review card")
   await page.getByText("Saved, but the library could not refresh. Reload to see the saved template.", { exact: true }).waitFor()
   assert.equal(publications.length, 1)
   assert.deepEqual(publications[0], { revision: 2, name: "Standard services.docx", description: "Services agreement for repeat engagements" })
@@ -391,9 +413,65 @@ try {
   metadataFailure = false
   await page.getByRole("button", { name: "Retry", exact: true }).click()
   await page.getByRole("region", { name: "Attached source document" }).waitFor()
-  assert.deepEqual(unknown, [])
   console.log("PASS handoff reload errors are actionable and retry restores the captured source")
+
+  await page.goto(`${server.url}templates?draft=draft_1`)
+  await topReview.getByText("Standard services.docx", { exact: true }).waitFor()
+  const conversations = page.getByRole("region", { name: "Template conversations", exact: true })
+  const savedConversation = conversations.getByRole("listitem").filter({ hasText: "Saved as Standard services.docx" })
+  await savedConversation.getByRole("button", { name: "Delete conversation for Services.docx", exact: true }).click()
+  const confirmation = savedConversation.getByRole("group", { name: "Delete template conversation", exact: true })
+  await confirmation.getByRole("button", { name: "Cancel", exact: true }).click()
+  assert.equal(deleteAttempts, 0, "opening or cancelling confirmation never deletes a conversation")
+  await savedConversation.getByRole("button", { name: "Delete conversation for Services.docx", exact: true }).click()
+  await page.setViewportSize({ width: 390, height: 844 })
+  await confirmation.scrollIntoViewIfNeeded()
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "conversation deletion confirmation fits mobile width")
+  if (shots) await page.screenshot({ path: path.join(shots, "8-delete-conversation.png") })
+  await page.setViewportSize({ width: 1280, height: 950 })
+  await confirmation.getByRole("button", { name: "Delete conversation", exact: true }).click()
+  await page.getByText("The conversation service is unavailable.", { exact: true }).waitFor()
+  assert.equal(await savedConversation.count(), 1, "failed deletion keeps the conversation visible")
+  assert.equal(new URL(page.url()).searchParams.get("draft"), "draft_1", "failed deletion keeps the active conversation selected")
+  holdDeletion = true
+  await confirmation.getByRole("button", { name: "Delete conversation", exact: true }).click()
+  await until(() => Boolean(releaseDeletion), "successful deletion can be pending during navigation")
+  await conversations.getByRole("link", { name: "Services.docx In progress", exact: true }).click()
+  await page.waitForURL("**draft=draft_2**")
+  releaseDeletion!()
+  holdDeletion = false
+  await until(() => !drafts.has("draft_1"), "the selected old conversation is deleted")
+  await savedConversation.waitFor({ state: "detached" })
+  assert.equal(new URL(page.url()).searchParams.get("draft"), "draft_2", "deletion never clears a different conversation selected while the request was pending")
+  assert.equal(await savedConversation.count(), 0, "successful deletion removes the selected conversation")
+  assert.equal(drafts.has("draft_1"), false)
+  assert.equal(sessions.has(firstSession), false)
+  assert.equal(drafts.has("draft_2"), true, "other template conversations remain")
+  assert.equal(sessions.has("ses_matter"), true, "matter conversation remains")
+  assert.equal(publications.length, 1, "deleting a conversation preserves its saved template")
+  assert.deepEqual(sourceWrites, [], "conversation deletion does not modify the source matter")
+  await page.reload()
+  await conversations.getByRole("listitem").waitFor({ state: "visible" })
+  assert.equal(await conversations.getByRole("listitem").count(), 1, "deleted conversation stays absent after reload")
+  await page.getByRole("button", { name: "Use", exact: true }).waitFor()
+  const remaining = conversations.getByRole("listitem")
+  await remaining.getByRole("button", { name: "Delete conversation for Services.docx", exact: true }).click()
+  await remaining.getByRole("button", { name: "Delete conversation", exact: true }).click()
+  await page.getByText("Stop this conversation before deleting it.", { exact: true }).waitFor()
+  assert.equal(drafts.has("draft_2"), true, "running conversation refusal retains the draft")
+  for (const session of sessions.values()) if (session.dir === drafts.get("draft_2")!.dir) {
+    session.running = false
+    session.forms = []
+    session.release?.()
+  }
+  await remaining.getByRole("button", { name: "Delete conversation", exact: true }).click()
+  await page.waitForURL(`${server.url}templates`)
+  assert.equal(await conversations.count(), 0, "deleting the active conversation clears its selection and list row")
+  await page.getByRole("button", { name: "Use", exact: true }).waitFor()
+  assert.deepEqual(unknown, [])
+  console.log("PASS conversation deletion confirms explicitly, retains failures and preserves saved templates and other conversations")
 } finally {
+  releaseDeletion?.()
   await browser.close()
   server.stop(true)
   await rm(directory, { recursive: true, force: true })

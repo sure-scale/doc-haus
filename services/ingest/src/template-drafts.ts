@@ -11,6 +11,8 @@ import { inlineDocumentDisposition } from "./content-disposition"
 import { getDocumentRole, openDb } from "./db"
 import { resolveMatterDocumentTarget, MatterDocumentIdentityError } from "./document-identity"
 import { matterDir, workspaceRoot } from "./matter"
+import { deleteTemplateDraftSessions, TemplateDraftSessionDeletionError } from "./template-draft-sessions"
+import type { EngineRequestOptions } from "./matter-session"
 
 export type TemplateDraftChange = {
   before_quote: string
@@ -47,10 +49,11 @@ const METADATA = "draft.json"
 // A source-bearing conversation has its own directory beside the library. A
 // shared library chat can never discover another conversation's client copy by
 // listing its own directory. Only the reviewed proposal enters .templates.
-export function templateDraftRoutes(resolveMatter = matterDir, root = workspaceRoot) {
+export function templateDraftRoutes(resolveMatter = matterDir, root = workspaceRoot, engine: EngineRequestOptions = {}) {
   const app = new Hono()
   app.onError((error, c) => {
     if (error instanceof TemplateDraftError) return c.json({ error: error.message }, error.status)
+    if (error instanceof TemplateDraftSessionDeletionError) return c.json({ error: error.message }, error.status)
     if (error instanceof MatterDocumentIdentityError)
       return c.json({ error: "Choose an original Word document in this matter, rather than a linked file." }, 400)
     if (error instanceof DocxTrackedRevisionsError)
@@ -130,7 +133,7 @@ export function templateDraftRoutes(resolveMatter = matterDir, root = workspaceR
   app.get("/template-drafts/:id", (c) => c.json(readDraft(draftDir(c.req.param("id")))))
   app.get("/template-drafts/:id/text", async (c) => {
     const dir = draftDir(c.req.param("id"))
-    return withArtifactMutationLocksAsync(dir, [METADATA, PROPOSAL], async () => {
+    return withDraftMutationLock(dir, async () => {
       readDraft(dir)
       return c.json(await project(readProposal(dir)))
     })
@@ -139,7 +142,7 @@ export function templateDraftRoutes(resolveMatter = matterDir, root = workspaceR
     const dir = draftDir(c.req.param("id"))
     const view = c.req.query("view") ?? "proposal"
     if (view !== "source" && view !== "proposal") throw new TemplateDraftError("Choose the source or proposed template.", 400)
-    return withArtifactMutationLocksAsync(dir, [METADATA, PROPOSAL], async () => {
+    return withDraftMutationLock(dir, async () => {
       const metadata = readDraft(dir)
       const file = path.join(dir, view === "source" ? "source.docx" : PROPOSAL)
       requirePlainPath(file)
@@ -160,7 +163,7 @@ export function templateDraftRoutes(resolveMatter = matterDir, root = workspaceR
     if (body.name !== undefined && !name) throw new TemplateDraftError("Use a Word template filename without a folder path.", 400)
     const edits = body.edits as DocxParagraphEdit[]
     const dir = draftDir(c.req.param("id"))
-    return withArtifactMutationLocksAsync(dir, [METADATA, PROPOSAL], async () => {
+    return withDraftMutationLock(dir, async () => {
       const prior = readDraft(dir)
       requireCurrent(prior, body.revision)
       const bytes = readProposal(dir)
@@ -184,7 +187,7 @@ export function templateDraftRoutes(resolveMatter = matterDir, root = workspaceR
     if (!body || !validRevision(body.revision) || !name || !description)
       throw new TemplateDraftError("Supply the reviewed revision, a Word filename and a short template description.", 400)
     const dir = draftDir(c.req.param("id"))
-    return withArtifactMutationLocksAsync(dir, [METADATA, PROPOSAL], async () => {
+    return withDraftMutationLock(dir, async () => {
       const prior = readDraft(dir)
       requireCurrent(prior, body.revision)
       if (prior.revision === 0) throw new TemplateDraftError("Prepare the reusable template in the conversation before saving it to the library.", 409)
@@ -213,7 +216,27 @@ export function templateDraftRoutes(resolveMatter = matterDir, root = workspaceR
       })
     })
   })
+  app.delete("/template-drafts/:id", async (c) => {
+    const id = c.req.param("id")
+    const dir = draftDir(id)
+    return withDraftMutationLock(dir, async () => {
+      readDraft(draftDir(id))
+      await deleteTemplateDraftSessions(dir, engine)
+      // Keep all draft bytes if the engine is unavailable or refuses deletion.
+      // Revalidate after the native calls before removing this exact directory.
+      readDraft(draftDir(id))
+      rmSync(dir, { recursive: true })
+      return c.json({ ok: true })
+    })
+  })
   return app
+}
+
+function withDraftMutationLock<T>(dir: string, run: () => Promise<T>) {
+  // These are the same proposal/metadata artifact identities, with locks kept
+  // in the surviving parent so a waiting edit cannot recreate a deleted draft.
+  const id = path.basename(dir)
+  return withArtifactMutationLocksAsync(path.dirname(dir), [path.join(id, METADATA), path.join(id, PROPOSAL)], run)
 }
 
 function wordName(value: unknown) {
