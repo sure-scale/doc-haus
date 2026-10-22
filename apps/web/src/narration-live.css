@@ -9,11 +9,11 @@
   z-index: 1;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   width: fit-content;
   max-width: 100%;
-  margin: 10px 0 4px;
-  padding: 6px 14px 6px 12px;
+  margin: 10px 0 var(--space-1);
+  padding: 6px 14px 6px var(--space-3);
   border-radius: var(--radius-pill);
   background: var(--accent-tint);
   border: 1px solid var(--accent-border);

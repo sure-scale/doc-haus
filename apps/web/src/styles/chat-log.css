@@ -42,7 +42,7 @@ button.chat-jump {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 5px 12px;
+  padding: 5px var(--space-3);
   border: 1px solid var(--accent-border);
   border-radius: var(--radius-pill);
   background: var(--panel);

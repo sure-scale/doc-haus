@@ -2,8 +2,8 @@
    "Ready for review", the checks behind it as chips, and the drafted files. */
 
 .narration-result {
-  margin: 12px 0 4px;
-  padding: 12px 14px;
+  margin: var(--space-3) 0 var(--space-1);
+  padding: var(--space-3) 14px;
   border: 1px solid var(--accent-border);
   border-radius: var(--radius-md);
   background: var(--panel);
@@ -14,8 +14,8 @@
 .narration-result-title {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin: 0 0 8px;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-2);
   font-size: 14px;
   font-weight: 600;
   color: var(--text);
@@ -43,7 +43,7 @@
 .result-chip {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   padding: 2px 9px;
   border-radius: var(--radius-pill);
   font-size: 11.5px;

@@ -4,8 +4,8 @@
 
 /* The run's header at the top of its conversation. */
 .run-head {
-  margin: 0 0 12px;
-  padding: 12px 14px 10px;
+  margin: 0 0 var(--space-3);
+  padding: var(--space-3) 14px 10px;
   border: 1px solid var(--accent-border);
   border-radius: var(--radius-md);
   background: var(--accent-tint);
@@ -23,11 +23,11 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 10px 12px;
+  gap: 10px var(--space-3);
 }
 
 .run-head.is-compact {
-  padding: 8px 12px;
+  padding: var(--space-2) var(--space-3);
 }
 
 .run-head-icon {
@@ -126,7 +126,7 @@
 .run-head-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--space-2);
   margin-left: auto;
 }
 
@@ -140,7 +140,7 @@
 
 /* "Open run" is a link that reads as a secondary button. */
 a.run-head-cta {
-  padding: 5px 12px;
+  padding: 5px var(--space-3);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   background: var(--panel);
@@ -163,7 +163,7 @@ a.run-head-cta:hover {
 .run-head-progress {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-3);
   margin-top: 10px;
 }
 
@@ -207,7 +207,7 @@ button.run-head-toggle {
   align-items: center;
   gap: 6px;
   flex: 0 0 auto;
-  padding: 2px 4px;
+  padding: 2px var(--space-1);
   border: 0;
   background: none;
   color: var(--muted);
@@ -264,7 +264,7 @@ button.run-head-toggle[aria-expanded="true"]::after {
 }
 
 .run-note {
-  margin: 0 0 8px;
+  margin: 0 0 var(--space-2);
   color: var(--muted);
   font-size: 12px;
   line-height: 1.4;
@@ -285,8 +285,8 @@ button.run-head-toggle[aria-expanded="true"]::after {
   z-index: 1;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 4px 0;
+  gap: var(--space-2);
+  padding: var(--space-1) 0;
   background: var(--accent-tint);
   color: var(--muted);
   font-size: 12px;
@@ -335,7 +335,7 @@ button.run-head-toggle[aria-expanded="true"]::after {
 }
 
 .stepper-group-title {
-  margin: 4px 0 6px;
+  margin: var(--space-1) 0 6px;
   color: var(--text-secondary);
   font-size: 12px;
   font-weight: 600;
@@ -424,7 +424,7 @@ button.run-head-toggle[aria-expanded="true"]::after {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: 2px 8px;
+  gap: 2px var(--space-2);
   min-width: 0;
   font-size: 12.5px;
   line-height: 1.4;
@@ -466,8 +466,8 @@ button.run-head-toggle[aria-expanded="true"]::after {
 }
 
 .run-checklist-refinement {
-  margin-top: 12px;
-  padding-top: 12px;
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
   border-top: 1px solid var(--warn-border);
 }
 
@@ -505,8 +505,8 @@ button.run-head-toggle[aria-expanded="true"]::after {
 .run-checklist-choice {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
-  padding: 8px 4px;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-1);
   cursor: pointer;
 }
 
@@ -532,9 +532,9 @@ button.run-head-toggle[aria-expanded="true"]::after {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px 12px;
+  gap: var(--space-2) var(--space-3);
   margin: 10px 0 0;
-  padding: 10px 12px;
+  padding: 10px var(--space-3);
   border: 1px solid var(--warn-border);
   border-radius: var(--radius-md);
   background: var(--panel);
@@ -551,6 +551,6 @@ button.run-head-toggle[aria-expanded="true"]::after {
 .run-head-confirm-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--space-2);
   margin-left: auto;
 }
