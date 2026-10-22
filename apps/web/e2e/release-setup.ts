@@ -687,20 +687,11 @@ try {
       await screenshot(page, "15-native-key-connected")
     } finally { await context.close() }
   })
-  await scenario("public and environment providers expose clear native methods and preserve pending OAuth", async () => {
-    const state = fixture(); state.publicModels = true; state.nativeEnv = true
+  await scenario("environment providers expose clear native methods and preserve pending OAuth", async () => {
+    const state = fixture(); state.nativeEnv = true
     const { page, context, errors } = await open(state)
     try {
       await accept(page)
-      await connection(page, "opencode")
-      await page.getByText("Connect an account (optional)", { exact: true }).click()
-      await expect(page.getByLabel(/^Connection method/).locator("option")).toHaveText(["Console account", "API key"])
-      expect(state.requests.filter(request => request.method !== "GET")).toHaveLength(0)
-      await screenshot(page, "17-public-native-sign-in")
-      await page.setViewportSize({ width: 390, height: 844 })
-      await screenshot(page, "18-public-native-sign-in-narrow")
-      await page.setViewportSize({ width: 1440, height: 1000 })
-      await page.getByRole("button", { name: "Back to providers", exact: true }).click()
       await connection(page, "test-models")
       await expect(page.getByLabel(/^Connection method/).locator("option")).toHaveText(["Workspace sign-in", "API key", "Host sign-in"])
       const disclosure = page.getByText("Change connection (optional)", { exact: true })

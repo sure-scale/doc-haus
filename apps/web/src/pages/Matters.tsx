@@ -149,7 +149,7 @@ export default function Matters() {
   }
 
   async function onSaveEdit() {
-    if (!editing) return
+    if (!editing || busy) return
     if (!draftTitle.trim()) {
       flushSync(() => setDraftTitleMissing(true))
       draftTitleInput.current?.focus()
