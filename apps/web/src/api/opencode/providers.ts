@@ -1,6 +1,6 @@
 import type { ModelInfo } from "@opencode/client"
 import { location, type Client } from "./client"
-import { connectedProviderIDs } from "./provider-readiness"
+import { connectedProviderIDs, isRemovedProvider } from "./provider-readiness"
 import { OPENCODE_URL } from "../../config"
 
 export type ProviderMetadata = {
@@ -17,7 +17,7 @@ async function listProviderCatalog(client: Client): Promise<ProviderMetadata[]> 
   if (!response.ok) throw new Error("Could not discover provider setup. Check the engine and retry.")
   const result = await response.json() as { data: ProviderMetadata[] }
   if (!Array.isArray(result.data)) throw new Error("The engine returned an invalid provider catalog.")
-  return result.data
+  return result.data.filter(provider => !isRemovedProvider(provider.id))
 }
 
 // Setup metadata includes unavailable providers. Only native availability and
@@ -34,7 +34,6 @@ export async function listProviders(client: Client) {
   const all = catalog.map(provider => ({
     ...provider,
     nativeAvailable: available.has(provider.id),
-    publicModels: provider.id === "opencode" && available.get(provider.id)?.settings?.apiKey === "public",
     // Native integration discovery includes ambient environment connections.
     // Only their names are presentation data; values remain in the engine.
     credentialSources: [...new Set((accounts.get(provider.integrationID ?? provider.id)?.connections ?? [])
@@ -50,6 +49,7 @@ export async function listProviders(client: Client) {
 // from the environment (Vertex ADC, Bedrock/Azure SDK creds), not a key field.
 export async function listIntegrations(client: Client) {
   return (await client.integration.list({ location: location(client) }, { signal: AbortSignal.timeout(10000) })).data
+    .filter(integration => !isRemovedProvider(integration.id))
 }
 export async function listAuthMethods(client: Client) {
   const integrations = await listIntegrations(client)
@@ -59,6 +59,7 @@ export async function listAuthMethods(client: Client) {
 
 // Resolve aliases through their native integration rather than assuming IDs match.
 export async function setProviderKey(client: Client, id: string, key: string) {
+  if (isRemovedProvider(id)) throw new Error("This provider has been removed. Choose another provider.")
   const [providers, integrations] = await Promise.all([listProviderCatalog(client), listIntegrations(client)])
   const integrationID = providers.find(provider => provider.id === id)?.integrationID ?? id
   if (!integrations.some(integration => integration.id === integrationID && integration.methods.some(method => method.type === "key"))) throw new Error("This provider does not offer API key sign-in. Use its available sign-in method.")
@@ -77,6 +78,7 @@ export async function probeProvider(
   providerID: string,
   modelID: string,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (isRemovedProvider(providerID)) return { ok: false, error: "This provider has been removed. Choose another provider." }
   try {
     const directory = location(client)?.directory
     const response = await fetch(`${OPENCODE_URL}/api/dochaus/provider-test`, {

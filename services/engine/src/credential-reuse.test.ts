@@ -17,7 +17,7 @@ function fixture(filename = "opencode-local.db") {
   const key = { type: "key", key: "synthetic-reuse-key", metadata: { region: "synthetic" }, configuration: { tenant: "test" } }
   const oauth = { type: "oauth", methodID: "device", refresh: "synthetic-refresh", access: "synthetic-access", expires: 4102444800000, metadata: { accountID: "synthetic-account", nested: { enabled: true } } }
   db.query("INSERT INTO credential (id, integration_id, label, value) VALUES (?, ?, ?, ?)").run("source-key", "opencode-go", "Test key", JSON.stringify(key))
-  db.query("INSERT INTO credential (id, integration_id, label, value) VALUES (?, ?, ?, ?)").run("source-oauth", "opencode", "Test OAuth", JSON.stringify(oauth))
+  db.query("INSERT INTO credential (id, integration_id, label, value) VALUES (?, ?, ?, ?)").run("source-oauth", "openai", "Test OAuth", JSON.stringify(oauth))
   db.close()
   const imported: unknown[] = []
   const create = async (input: unknown) => { imported.push(input); return { id: "new-native-credential" } }
@@ -73,10 +73,10 @@ test("selection imports only one connection, preserving OAuth and API-key metada
   const f = fixture()
   const before = readFileSync(f.file)
   const source = f.service.list().sources[0]
-  const oauth = source.connections.find(connection => connection.integrationID === "opencode")!
+  const oauth = source.connections.find(connection => connection.integrationID === "openai")!
   const result = await f.service.importSelected({ sourceId: source.id, connectionId: oauth.id })
-  expect(f.imported).toEqual([{ integrationID: "opencode", label: "Test OAuth", value: f.oauth }])
-  expect(result.connection).toEqual({ id: "new-native-credential", integrationID: Integration.ID.make("opencode"), label: "Test OAuth", authType: "oauth" })
+  expect(f.imported).toEqual([{ integrationID: "openai", label: "Test OAuth", value: f.oauth }])
+  expect(result.connection).toEqual({ id: "new-native-credential", integrationID: Integration.ID.make("openai"), label: "Test OAuth", authType: "oauth" })
   expect(JSON.stringify(result)).not.toContain(f.oauth.access)
   const key = source.connections.find(connection => connection.integrationID === "opencode-go")!
   await f.service.importSelected({ sourceId: source.id, connectionId: key.id })
@@ -101,6 +101,33 @@ test("legacy OAuth uses native migration semantics and never imports well-known 
     metadata: { accountID: "synthetic-account", enterpriseUrl: "https://synthetic.invalid" },
   } }])
   expect(readFileSync(path.join(f.directory, "auth.json"))).toEqual(before)
+})
+
+test("removed provider sign-ins are never offered or imported, while Go and other providers remain intact", async () => {
+  const f = fixture()
+  const db = new Database(f.file)
+  db.query("INSERT INTO credential VALUES (?, ?, ?, ?)").run("retired-key", "opencode", "Removed", JSON.stringify(f.key))
+  db.close()
+  const legacyFile = path.join(f.directory, "auth.json")
+  writeFileSync(legacyFile, JSON.stringify({ opencode: { type: "api", key: "synthetic-removed" }, "opencode/": { type: "api", key: "synthetic-removed-alias" }, "opencode-go": { type: "api", key: "synthetic-go" } }))
+  const before = [readFileSync(f.file), readFileSync(legacyFile)]
+  const listing = f.service.list()
+  expect(listing.sources.flatMap(source => source.connections).map(connection => connection.integrationID).sort()).toEqual(["openai", "opencode-go", "opencode-go"])
+  expect(listing.sources.every(source => source.unavailableCount === 0)).toBe(true)
+  expect(f.imported).toEqual([])
+  expect(readFileSync(f.file)).toEqual(before[0])
+  expect(readFileSync(legacyFile)).toEqual(before[1])
+
+  // Establish a valid opaque selection, then change only its source identity.
+  const source = listing.sources.find(source => source.label === "OpenCode local connections")!
+  const selected = source.connections.find(connection => connection.integrationID === "opencode-go")!
+  const writer = new Database(f.file)
+  writer.query("UPDATE credential SET integration_id = ? WHERE id = ?").run("opencode", "source-key")
+  writer.close()
+  const changed = readFileSync(f.file)
+  await expect(f.service.importSelected({ sourceId: source.id, connectionId: selected.id })).rejects.toThrow("Could not reuse")
+  expect(f.imported).toEqual([])
+  expect(readFileSync(f.file)).toEqual(changed)
 })
 
 test("unavailable source does not hide usable sign-ins from another source", () => {

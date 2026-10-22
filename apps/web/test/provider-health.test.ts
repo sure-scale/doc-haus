@@ -111,7 +111,7 @@ test("managed native restriction payload reaches actionable access guidance with
       expect(monitor.getSnapshot()[0]).toMatchObject({ status: "auth" })
     }
     expect(calls).toEqual([{ providerID: "fixture", modelID: "primary" }, { providerID: "fixture", modelID: "primary" }])
-    expect(providerName("opencode")).toBe("OpenCode")
+    expect(providerName("opencode-go")).toBe("OpenCode Go")
   } finally { globalThis.fetch = saved }
 })
 
@@ -150,4 +150,33 @@ test("rechecking also verifies a failed session model after the saved default ch
   oldModelWorks = true
   await monitor.check(true)
   expect(monitor.getSnapshot().every(item => item.status === "ready")).toBe(true)
+})
+
+test("removed saved provider requires a deliberate replacement and never sends a model check", async () => {
+  const calls: string[] = []
+  const selected = { model: "opencode/retired#high", small_model: "opencode/retired" }
+  const monitor = createProviderHealthMonitor(async () => selected, async (provider, model) => {
+    calls.push(`${provider}/${model}`); return { ok: true }
+  })
+  await monitor.check()
+  await monitor.check(true)
+  expect(calls).toEqual([])
+  expect(monitor.getSnapshot()).toEqual([{ providerID: "opencode", modelID: "retired", status: "model" }])
+  expect(connectionMessage(monitor.getSnapshot()[0]!)).toContain("Choose another provider")
+  monitor.rejected({ providerID: "opencode", id: "retired" }, { type: "provider.auth", message: "Free model restricted", status: 403 })
+  expect(monitor.getSnapshot()[0]).toEqual({ providerID: "opencode", modelID: "retired", status: "model" })
+  selected.model = "opencode-go/retained"; selected.small_model = "opencode-go/retained"
+  await monitor.check(true)
+  expect(calls).toEqual(["opencode-go/retained"])
+  expect(monitor.getSnapshot()).toEqual([{ providerID: "opencode-go", modelID: "retained", status: "ready" }])
+})
+
+test("a direct removed-provider test is rejected locally before network access", async () => {
+  const previous = globalThis.fetch
+  let requests = 0
+  globalThis.fetch = (async () => { requests++; throw new Error("Unexpected inference request") }) as unknown as typeof fetch
+  try {
+    expect(await testModelConnection("opencode", "retired", true)).toEqual({ ok: false, kind: "model" })
+    expect(requests).toBe(0)
+  } finally { globalThis.fetch = previous }
 })

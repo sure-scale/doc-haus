@@ -439,7 +439,7 @@ try {
       await screenshot(page, "22-stepper-model-roundtrip")
     } finally { await context.close() }
   })
-  await scenario("native environment and public models stay available without automatic sign-in or cloud probes", async () => {
+  await scenario("removed hosted provider is absent while native environment and cloud providers stay available", async () => {
     const state = fixture(); state.publicModels = true; state.nativeEnv = true; state.nativeBedrock = true; state.hostCatalog = true
     const { page, context, errors } = await open(state)
     try {
@@ -448,7 +448,7 @@ try {
       await expect(chooser).toHaveValue("")
       await expect(chooser.locator("optgroup").first()).toHaveAttribute("label", "Detected")
       await expect(chooser.locator('optgroup[label="Detected"] option[value="test-models"]')).toContainText("Fixture Models")
-      await expect(chooser.locator('optgroup[label="Detected"] option[value="opencode"]')).toContainText("Public models")
+      await expect(chooser.locator('option[value="opencode"]')).toHaveCount(0)
       await expect(page.getByText("Reuse a saved OpenCode sign-in (optional)", { exact: true })).toHaveCount(0)
       await page.setViewportSize({ width: 390, height: 844 })
       const providerBounds = await chooser.boundingBox()
@@ -465,13 +465,6 @@ try {
       await expect(page.getByLabel("GCP project id", { exact: true })).toHaveValue("")
       await expect(page.getByRole("button", { name: "Continue to models", exact: true })).toBeDisabled()
       await page.getByRole("button", { name: "Back to providers", exact: true }).click()
-      await connection(page, "opencode")
-      await page.getByText("Connect an account (optional)", { exact: true }).click()
-      await expect(page.getByLabel("Connection method").locator("option")).toHaveText(["Console account", "API key"])
-      await page.getByRole("button", { name: "Continue to models", exact: true }).click()
-      await expect(page.getByLabel("Primary model", { exact: true }).locator('option[value="opencode/free-fixture"]')).toHaveCount(1)
-      await page.getByRole("button", { name: "Back to connection", exact: true }).click()
-      await page.getByRole("button", { name: "Back to providers", exact: true }).click()
       await connection(page, "test-models")
       await page.getByText("Change connection (optional)", { exact: true }).click()
       await expect(page.getByLabel("Connection method").locator("option")).toHaveText(["Workspace sign-in", "API key", "Host sign-in"])
@@ -482,6 +475,7 @@ try {
       expect(state.requests.filter(request => request.path.includes("probe") || request.path.includes("provider-test"))).toHaveLength(0)
       await page.getByRole("button", { name: "Continue to models", exact: true }).click()
       await expect(page.getByLabel("Primary model", { exact: true }).locator('option[value="test-models/primary"]')).toHaveCount(1)
+      await expect(page.locator('option[value^="opencode/"]')).toHaveCount(0)
       expect(state.unexpected).toEqual([]); expect(errors).toEqual([])
       await writeFile(path.join(evidence!, "native-discovery-readonly-requests.json"), JSON.stringify(state.requests, null, 2))
       await screenshot(page, "10-native-discovery-models")

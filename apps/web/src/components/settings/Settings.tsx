@@ -4,6 +4,7 @@ import { getConfig, setDisabledProviders, setProviderOptions } from "../../api/o
 import { listAuthMethods, listProviders, probeProvider } from "../../api/opencode/providers"
 import { settingsClient, type Client } from "../../api/opencode/client"
 import { defaultProvider, pickForProvider, probeModel, providerOf } from "../../models"
+import { isRemovedModel, isRemovedProvider } from "../../api/opencode/provider-readiness"
 import { isGated, loadVerified, saveVerified } from "../../providers"
 import { useToast } from "../Toast"
 import type { Methods, Provider, Tab } from "./types"
@@ -90,7 +91,7 @@ export default function Settings({ onClose, firstRun = false, initialTab, reconn
     setMethods(auth)
     setModel(cfg.model ?? "")
     setSmallModelValue(cfg.small_model ?? "")
-    setDisabled(cfg.disabled_providers ?? [])
+    setDisabled((cfg.disabled_providers ?? []).filter(id => !isRemovedProvider(id)))
   }
 
   // Enable/disable a provider by editing config.disabled_providers. A disabled
@@ -231,7 +232,7 @@ export default function Settings({ onClose, firstRun = false, initialTab, reconn
 
   // Providers re-enabled this session won't be back in `all` until the engine
   // refreshes its catalog, so render them from the connected set directly.
-  const extraReady = [...connected].filter((id) => !all.some((p) => p.id === id))
+  const extraReady = [...connected].filter((id) => !isRemovedProvider(id) && !all.some((p) => p.id === id))
 
   // Every model across connected providers, as the "providerID/modelID" strings
   // the engine expects, for the model pickers.
@@ -246,11 +247,11 @@ export default function Settings({ onClose, firstRun = false, initialTab, reconn
     )
     .sort((a, b) => a.label.localeCompare(b.label))
 
-  // Seed the provider from the saved default's provider, else the priority
-  // default, once models load. Keep any value already chosen this session.
+  // A removed saved choice requires an explicit replacement, even when only
+  // one remaining provider is connected. Keep choices made in this session.
   useEffect(() => {
     if (!models.length) return
-    setProvider((v) => v || providerOf(model) || defaultProvider(models))
+    setProvider((v) => v || (isRemovedModel(model) || isRemovedModel(smallModel) ? "" : providerOf(model) || defaultProvider(models)))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [models.length])
 

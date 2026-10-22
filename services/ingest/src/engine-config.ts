@@ -1,7 +1,7 @@
 import { chmodSync, closeSync, fsyncSync, mkdirSync, openSync, renameSync, unlinkSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import { randomUUID } from "node:crypto"
-import { isSettingsObject, mergeSettings, readEffectiveSettings, readSettingsFile, settingsPaths, type EngineSettings } from "../../engine/src/effective-settings"
+import { isRemovedProvider, isSettingsObject, mergeSettings, readEffectiveSettings, readSettingsFile, settingsPaths, type EngineSettings } from "../../engine/src/effective-settings"
 
 export function readEngineConfig(): EngineSettings { return readEffectiveSettings() }
 export const engineConfigFile = () => settingsPaths().overrides
@@ -43,6 +43,7 @@ function model(value: unknown) {
   if (value === null) return
   text(value)
   if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*\/[^\s]+$/.test(value as string)) throw new Error("Select a provider and model.")
+  if (isRemovedProvider((value as string).split("/")[0])) throw new Error("This provider is no longer available. Select another provider and model.")
 }
 function endpoint(value: unknown) {
   text(value)
@@ -83,6 +84,7 @@ export function validateSettingsPatch(patch: unknown): Record<string, unknown> {
   if ("provider" in value) for (const [id, raw] of Object.entries(object(value.provider))) {
     identifier(id)
     if (raw === null) continue
+    if (isRemovedProvider(id)) throw new Error("This provider is no longer available. Select another provider.")
     const provider = object(raw); keys(provider, ["name", "npm", "options", "models"])
     if ("name" in provider && provider.name !== null) text(provider.name)
     if ("npm" in provider && provider.npm !== null && provider.npm !== "@ai-sdk/openai-compatible") throw new Error("Only the bundled OpenAI-compatible provider is supported.")

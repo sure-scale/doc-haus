@@ -25,6 +25,8 @@ async function fixture(name: string, options: { accepted?: boolean; width?: numb
   if (options.accepted !== false) await context.addInitScript(() => sessionStorage.setItem("dh.launch-notice.v1", "accepted"))
   const providerID = options.publicModels ? "opencode" : "opencode-go"
   const provider = { id: providerID, name: options.publicModels ? "OpenCode" : "OpenCode Go", integrationID: providerID, activation: "enabled", ...(options.publicModels ? { settings: { apiKey: "public" } } : {}) }
+  const go = { id: "opencode-go", name: "OpenCode Go", integrationID: "opencode-go", activation: "enabled" }
+  const providers = options.publicModels ? [provider, go] : [provider]
   const state: State = { outcome: options.outcome ?? { ok: true }, setup: options.setup ?? "done", config: { model: `${providerID}/primary`, small_model: `${providerID}/${options.distinct ? "fast" : "primary"}` }, events: [] }
   await context.route("**/*", async route => {
     const request = route.request()
@@ -37,6 +39,12 @@ async function fixture(name: string, options: { accepted?: boolean; width?: numb
     if (request.method() === "OPTIONS") return route.fulfill({ status: 204, headers })
     requests.push({ scenario: name, method: request.method(), path: pathname, ...(request.postData() ? { body: request.postDataJSON() } : {}) })
     const reply = (body: unknown) => route.fulfill({ status: 200, headers, contentType: "application/json", body: JSON.stringify(body) })
+    if (request.method() === "PATCH" && pathname === "/engine/config") {
+      const pair = request.postDataJSON()
+      expect(pair).toEqual({ model: "opencode-go/primary", small_model: "opencode-go/fast" })
+      state.config = pair
+      return reply(state.config)
+    }
     if (request.method() === "POST" && pathname === "/api/dochaus/provider-test") return reply(state.outcome)
     if (request.method() === "POST" && pathname === "/api/integration/opencode-go/connect/key") {
       expect(request.postDataJSON()).toEqual({ key: "synthetic-replacement-key", answer: {} })
@@ -51,9 +59,9 @@ async function fixture(name: string, options: { accepted?: boolean; width?: numb
     if (pathname === "/preferences") return reply({})
     if (pathname === "/updates") return reply({ current: { version: 1, name: "Fixture", notes: "" }, available: false })
     if (pathname === "/engine/config") return reply(state.config)
-    if (pathname === "/api/dochaus/provider-catalog" || pathname === "/api/provider") return reply({ location: { directory: "/synthetic" }, data: [provider] })
-    if (pathname === "/api/model") return reply({ location: { directory: "/synthetic" }, data: ["primary", "fast"].map(id => ({ providerID, id, name: id, enabled: true })) })
-    if (pathname === "/api/integration") return reply({ location: { directory: "/synthetic" }, data: [{ id: providerID, name: provider.name, methods: [{ type: "key", label: "API key" }], connections: options.publicModels ? [] : [{ type: "credential", id: "synthetic-account", label: "Synthetic", method: "key" }] }] })
+    if (pathname === "/api/dochaus/provider-catalog" || pathname === "/api/provider") return reply({ location: { directory: "/synthetic" }, data: providers })
+    if (pathname === "/api/model") return reply({ location: { directory: "/synthetic" }, data: providers.flatMap(provider => ["primary", "fast"].map(id => ({ providerID: provider.id, id, name: id, enabled: true }))) })
+    if (pathname === "/api/integration") return reply({ location: { directory: "/synthetic" }, data: providers.map(provider => ({ id: provider.id, name: provider.name, methods: [{ type: "key", label: "API key" }], connections: provider.id === "opencode" ? [] : [{ type: "credential", id: "synthetic-account", label: "Synthetic", method: "key" }] })) })
     if (pathname === "/api/event") return route.fulfill({ status: 200, headers, contentType: "text/event-stream", body: state.events.map(event => `data: ${JSON.stringify(event)}\n\n`).join("") })
     if (pathname === "/api/session/owned-session") return reply({ data: { id: "owned-session", model: { providerID: "opencode-go", id: "primary" } } })
     if (pathname === "/api/session/owned-session/message") return reply({ data: [] })
@@ -170,23 +178,38 @@ try {
       await expect(banner.getByRole("button", { name: "Open provider settings", exact: true })).toBeVisible()
     } finally { await f.context.close() }
   })
-  for (const width of [1440, 375]) await scenario(`Public free-model restriction is distinct from a rejected sign-in at ${width}px`, async () => {
-    const f = await fixture(`free-tier-${width}`, { width, publicModels: true, outcome: { ok: false, kind: "model", restriction: "free-tier" } })
+  for (const width of [1440, 375]) await scenario(`Removed provider cannot be selected or checked; replacement stays deliberate at ${width}px`, async () => {
+    const f = await fixture(`removed-provider-${width}`, { width, publicModels: true })
     try {
       const banner = f.page.locator(".provider-connection-banner")
-      await expect(banner).toContainText("OpenCode needs attention")
-      await expect(banner).toContainText(/free.model/i)
+      await expect(banner).toContainText("Removed provider needs attention")
+      await expect(banner).toContainText(/no longer available|not available|another provider/i)
       await expect(banner).not.toContainText(/rejected.*sign-in|expired/i)
       await expect(banner.getByRole("button", { name: "Reconnect provider", exact: true })).toHaveCount(0)
+      expect(f.probes()).toEqual([])
       await noOverflow(f.page)
       await banner.getByRole("button", { name: "Open provider settings", exact: true }).click()
       const modal = f.page.getByRole("dialog", { name: "Settings", exact: true })
       await expect(modal.getByRole("heading", { name: "Provider connections", exact: true })).toBeVisible()
-      await expect(modal.locator(".settings-conn-meta")).toContainText("Public free models · no saved sign-in")
-      await expect(modal.locator(".settings-provider-health")).toContainText(/free.model/i)
-      expect(f.probes().map(probe => probe.body)).toEqual([{ providerID: "opencode", modelID: "primary" }])
+      await expect(modal.locator('option[value="opencode"]')).toHaveCount(0)
+      await expect(modal.locator('option[value="opencode-go"]')).toHaveCount(1)
+      await modal.getByRole("tab", { name: "Models", exact: true }).click()
+      await expect(modal.getByLabel("Provider", { exact: true })).toHaveValue("")
+      await expect(modal.locator('option[value^="opencode/"]')).toHaveCount(0)
+      await expect(modal.getByRole("button", { name: "Save", exact: true })).toBeDisabled()
+      expect(f.state.config).toEqual({ model: "opencode/primary", small_model: "opencode/primary" })
+      expect(f.probes()).toEqual([])
       await noOverflow(f.page)
-      await f.page.screenshot({ path: path.join(evidence, `free-tier-settings-${width}.png`) })
+      await f.page.screenshot({ path: path.join(evidence, `removed-provider-settings-${width}.png`) })
+      if (width === 1440) {
+        await modal.getByLabel("Provider", { exact: true }).selectOption("opencode-go")
+        await modal.getByLabel("Primary model", { exact: true }).selectOption("opencode-go/primary")
+        await modal.getByLabel("Fast model", { exact: true }).selectOption("opencode-go/fast")
+        await modal.getByRole("button", { name: "Save", exact: true }).click()
+        await expect(banner).toHaveCount(0)
+        await expect.poll(() => f.probes().length).toBe(2)
+        expect(f.probes().every(probe => (probe.body as { providerID: string }).providerID === "opencode-go")).toBe(true)
+      }
     } finally { await f.context.close() }
   })
   await scenario("Native event authentication rejection affects only the owned session and directory", async () => {

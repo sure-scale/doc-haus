@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test"
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { engineConfigFile, patchEngineConfig, readEngineConfig, readEngineSettings, setAgentDisabled, setSkillDisabled } from "./engine-config"
+import { engineConfigFile, patchEngineConfig, readEngineConfig, readEngineSettings, setAgentDisabled, setSkillDisabled, writeEngineOverrides } from "./engine-config"
 const previous = { ...process.env }
 const directories: string[] = []
 afterEach(() => {
@@ -40,6 +40,40 @@ test("credentials, code, discovery and malformed provider input never reach disk
   expect(readFileSync(engineConfigFile(), "utf8")).toBe(before)
 })
 test("fresh install has no implicit generation model", () => { fixture(); expect(readEngineConfig().model).toBeUndefined(); expect(readEngineConfig().small_model).toBeUndefined() })
+
+test("removed provider cannot be newly selected or configured; Go and unrelated settings remain editable", () => {
+  fixture(); patchEngineConfig({ model: "test/primary", small_model: "test/fast" })
+  const before = readFileSync(engineConfigFile(), "utf8")
+  for (const patch of [
+    { model: "opencode/primary" }, { small_model: "opencode/fast" },
+    { agent: { draft: { model: "opencode/agent" } } },
+    { provider: { opencode: {} } }, { provider: { opencode: { models: { custom: { name: "Custom" } } } } },
+  ]) {
+    expect(() => patchEngineConfig(patch)).toThrow("no longer available")
+    expect(readFileSync(engineConfigFile(), "utf8")).toBe(before)
+  }
+  patchEngineConfig({ model: "opencode-go/primary", small_model: "opencode-go/fast", agent: { draft: { model: "opencode-go/agent" } }, provider: { "opencode-go": { name: "OpenCode Go" } } })
+  expect(readEngineSettings().model).toBe("opencode-go/primary")
+  expect(readEngineSettings().provider?.["opencode-go"].name).toBe("OpenCode Go")
+})
+
+test("effective removal survives runtime overrides without rewriting existing choices or credentials", () => {
+  const shipped = fixture()
+  const saved = { model: "opencode/primary", small_model: "opencode/fast", disabled_providers: [], provider: { opencode: { options: { apiKey: "synthetic-existing-secret" } } } }
+  writeEngineOverrides(saved)
+  const before = readFileSync(engineConfigFile(), "utf8"), shippedBefore = readFileSync(shipped, "utf8")
+  expect(readEngineConfig().disabled_providers).toEqual(["opencode"])
+  expect(readEngineSettings().model).toBe("opencode/primary")
+  expect(readFileSync(engineConfigFile(), "utf8")).toBe(before)
+  expect(readFileSync(shipped, "utf8")).toBe(shippedBefore)
+  expect(JSON.stringify(readEngineSettings())).not.toContain("synthetic-existing-secret")
+  patchEngineConfig({ disabled_providers: ["other"], agent: { custom: { disable: true } } })
+  expect(readEngineConfig().disabled_providers).toEqual(["other", "opencode"])
+  expect(readEngineConfig().model).toBe("opencode/primary")
+  expect(readEngineConfig().provider?.opencode.options).toEqual({ apiKey: "synthetic-existing-secret" })
+  patchEngineConfig({ disabled_providers: null })
+  expect(readEngineConfig().disabled_providers).toEqual(["opencode"])
+})
 
 test("browser projection omits shipped policy and credentials", () => {
   const file = fixture()

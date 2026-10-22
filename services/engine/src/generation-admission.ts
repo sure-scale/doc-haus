@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs"
 import path from "node:path"
-import { isSettingsObject, readEffectiveSettings, settingsPaths } from "./effective-settings"
+import { isRemovedProvider, isSettingsObject, readEffectiveSettings, settingsPaths } from "./effective-settings"
 
 // Read installation policy synchronously at admission. A cached Location model
 // catalog must never substitute a model after the user removes that selection.
@@ -9,6 +9,8 @@ export function generationAdmissionError(paths = settingsPaths()): string | unde
     const settings = readEffectiveSettings(paths)
     const primary = typeof settings.model === "string" ? settings.model.split("/")[0] : undefined
     const fast = typeof settings.small_model === "string" ? settings.small_model.split("/")[0] : undefined
+    if (isRemovedProvider(primary) || isRemovedProvider(fast))
+      return "The selected provider is no longer available. Select primary and fast models from another provider in Settings before generating."
     if (!primary || !fast || primary !== fast)
       return "Select primary and fast models from the same provider in Settings before generating."
     if (Array.isArray(settings.disabled_providers) && settings.disabled_providers.includes(primary) ||

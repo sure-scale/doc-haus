@@ -164,7 +164,6 @@ export default function ProvidersTab({
 // providers (Vertex, Bedrock) expose no auth method — their key is read from the
 // host sign-in rather than typed here.
 function statusLabel(provider: Provider, methods: Methods) {
-  if (provider.publicModels) return "Public free models · no saved sign-in"
   const m = methods[provider.id] ?? []
   if (m.some((x) => x.type === "api")) return "API key"
   if (m.some((x) => x.type === "oauth")) return "Signed in"
