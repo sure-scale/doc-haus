@@ -1,10 +1,10 @@
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react"
 import { createPortal } from "react-dom"
 import { getConfig, setDisabledProviders, setProviderOptions } from "../../api/opencode/config"
 import { listAuthMethods, listProviders, probeProvider } from "../../api/opencode/providers"
-import { boundedRequest, settingsClient, type Client } from "../../api/opencode/client"
+import { settingsClient, type Client } from "../../api/opencode/client"
 import { defaultProvider, pickForProvider, probeModel, providerOf } from "../../models"
-import { probeVertexHost } from "../../api/ingest/host"
+import { isRemovedModel, isRemovedProvider } from "../../api/opencode/provider-readiness"
 import { isGated, loadVerified, saveVerified } from "../../providers"
 import { useToast } from "../Toast"
 import type { Methods, Provider, Tab } from "./types"
@@ -37,6 +37,8 @@ const TABS: { id: Tab; label: string }[] = [
 export default function Settings({ onClose, firstRun = false, initialTab, reconnectProvider }: { onClose: () => void; firstRun?: boolean; initialTab?: Tab; reconnectProvider?: string }) {
   const dialog = useRef<HTMLDialogElement>(null)
   const titleId = useId()
+  const tabsId = useId()
+  const [narrow, setNarrow] = useState(() => window.matchMedia("(max-width: 700px)").matches)
   useLayoutEffect(() => {
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
     const modal = dialog.current
@@ -51,6 +53,12 @@ export default function Settings({ onClose, firstRun = false, initialTab, reconn
   // First run is about getting a provider connected, so land there; otherwise
   // open on the models people come back to tweak.
   const [tab, setTab] = useState<Tab>(initialTab ?? (firstRun ? "providers" : "models"))
+  useEffect(() => {
+    const query = window.matchMedia("(max-width: 700px)")
+    const update = () => setNarrow(query.matches)
+    query.addEventListener("change", update)
+    return () => query.removeEventListener("change", update)
+  }, [])
   const toast = useToast()
   const client = useMemo<Client>(() => settingsClient(), [])
   const [all, setAll] = useState<Provider[]>([])
@@ -83,7 +91,7 @@ export default function Settings({ onClose, firstRun = false, initialTab, reconn
     setMethods(auth)
     setModel(cfg.model ?? "")
     setSmallModelValue(cfg.small_model ?? "")
-    setDisabled(cfg.disabled_providers ?? [])
+    setDisabled((cfg.disabled_providers ?? []).filter(id => !isRemovedProvider(id)))
   }
 
   // Enable/disable a provider by editing config.disabled_providers. A disabled
@@ -113,6 +121,24 @@ export default function Settings({ onClose, firstRun = false, initialTab, reconn
 
   function switchTab(next: Tab) {
     setTab(next)
+  }
+
+  function navigateTabs(event: KeyboardEvent<HTMLDivElement>) {
+    const index = TABS.findIndex(item => item.id === tab)
+    const previous = narrow ? "ArrowLeft" : "ArrowUp"
+    const next = narrow ? "ArrowRight" : "ArrowDown"
+    let target = index
+    if (event.key === previous) target = (index + TABS.length - 1) % TABS.length
+    else if (event.key === next) target = (index + 1) % TABS.length
+    else if (event.key === "Home") target = 0
+    else if (event.key === "End") target = TABS.length - 1
+    else return
+    event.preventDefault()
+    const item = TABS[target]
+    setTab(item.id)
+    const control = document.getElementById(`${tabsId}-${item.id}`)
+    control?.focus({ preventScroll: true })
+    control?.scrollIntoView({ block: "nearest", inline: "nearest" })
   }
 
   const connectedProviders = all.filter((p) => connected.has(p.id))
@@ -170,19 +196,9 @@ export default function Settings({ onClose, firstRun = false, initialTab, reconn
         const selected = [model, smallModel].find(value => providerOf(value) === p.id && Object.keys(p.models).some(id => value === `${p.id}/${id}`))
         const modelID = testModelID || (selected ? selected.slice(p.id.length + 1) : probeModel(p.id, Object.keys(p.models)))
         if (!modelID) return { p, ok: false as const, error: "Provider has no models to test." }
-        // Vertex verifies via the ingest host probe — one direct REST call with
-        // the host's ADC — because prompting through the engine's header-less
-        // settings client cold-boots a second instance and times out.
-        const vertex = p.id === "google-vertex" || p.id === "google-vertex-anthropic"
-        const result =
-          vertex && options?.project
-            ? await boundedRequest(probeVertexHost({
-                project: options.project,
-                location: options.location || "global",
-                publisher: p.id === "google-vertex" ? "google" : "anthropic",
-                model: modelID,
-              }), 35000, "Provider test")
-            : await probeProvider(client, p.id, modelID)
+        // All providers use the engine's native model resolution, credentials
+        // and bounded, stateless provider check against the saved settings.
+        const result = await probeProvider(client, p.id, modelID)
         if (!result.ok) return { p, ok: false as const, error: result.error || "Verification failed." }
         return { p, ok: true as const, error: "" }
       }),
@@ -216,7 +232,7 @@ export default function Settings({ onClose, firstRun = false, initialTab, reconn
 
   // Providers re-enabled this session won't be back in `all` until the engine
   // refreshes its catalog, so render them from the connected set directly.
-  const extraReady = [...connected].filter((id) => !all.some((p) => p.id === id))
+  const extraReady = [...connected].filter((id) => !isRemovedProvider(id) && !all.some((p) => p.id === id))
 
   // Every model across connected providers, as the "providerID/modelID" strings
   // the engine expects, for the model pickers.
@@ -231,11 +247,11 @@ export default function Settings({ onClose, firstRun = false, initialTab, reconn
     )
     .sort((a, b) => a.label.localeCompare(b.label))
 
-  // Seed the provider from the saved default's provider, else the priority
-  // default, once models load. Keep any value already chosen this session.
+  // A removed saved choice requires an explicit replacement, even when only
+  // one remaining provider is connected. Keep choices made in this session.
   useEffect(() => {
     if (!models.length) return
-    setProvider((v) => v || providerOf(model) || defaultProvider(models))
+    setProvider((v) => v || (isRemovedModel(model) || isRemovedModel(smallModel) ? "" : providerOf(model) || defaultProvider(models)))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [models.length])
 
@@ -266,14 +282,15 @@ export default function Settings({ onClose, firstRun = false, initialTab, reconn
           </button>
         </div>
         <div className="settings-body">
-          <nav className="settings-nav">
+          <div className="settings-nav" role="tablist" aria-label="Settings categories" aria-orientation={narrow ? "horizontal" : "vertical"} onKeyDown={navigateTabs}>
+            <p className="settings-nav-caption" aria-hidden="true">Your workspace</p>
             {TABS.map((t) => (
-              <button key={t.id} className={tab === t.id ? "active" : ""} onClick={() => switchTab(t.id)}>
+              <button type="button" key={t.id} id={`${tabsId}-${t.id}`} role="tab" aria-selected={tab === t.id} aria-controls={`${tabsId}-panel`} tabIndex={tab === t.id ? 0 : -1} className={tab === t.id ? "active" : ""} onClick={() => switchTab(t.id)}>
                 {t.label}
               </button>
             ))}
-          </nav>
-          <div className="settings-content">
+          </div>
+          <div className="settings-content" id={`${tabsId}-panel`} role="tabpanel" aria-labelledby={`${tabsId}-${tab}`} tabIndex={0}>
             {firstRun && tab === "providers" && (
               <p className="settings-notice">
                 Welcome to doc.haus. Connect a model provider — from a host sign-in (gcloud/AWS), an API key, or a

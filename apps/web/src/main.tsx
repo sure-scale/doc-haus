@@ -23,6 +23,8 @@ import "./styles/design-documents.css"
 import "./styles/design-conversation.css"
 import "./styles/design-library.css"
 import "./styles/design-review.css"
+import "./styles/design-settings.css"
+import "./styles/design-matters.css"
 import "./styles/launch-notice.css"
 
 createRoot(document.getElementById("root")!).render(

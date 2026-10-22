@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import type { Client } from "../src/api/opencode/client"
-import { listProviders, setProviderKey } from "../src/api/opencode/providers"
+import { listAuthMethods, listIntegrations, listProviders, probeProvider, setProviderKey } from "../src/api/opencode/providers"
 import { setProviderOptions } from "../src/api/opencode/config"
 
 test("inactive setup metadata neither connects a provider nor creates model choices; sign-in uses its native integration", async () => {
@@ -56,16 +56,43 @@ test("native environment discovery supplies usable models without importing anot
   }) as typeof fetch
   try {
     const result = await listProviders(client)
-    expect(result.connected).toEqual([hosted.id, bedrock.id, publicProvider.id])
+    expect(result.connected).toEqual([hosted.id, bedrock.id])
     expect(result.all.find(provider => provider.id === hosted.id)).toMatchObject({
-      nativeAvailable: true, credentialSources: ["HOSTED_API_KEY"], publicModels: false,
+      nativeAvailable: true, credentialSources: ["HOSTED_API_KEY"],
       models: { "only-model": { id: "only-model", name: "Only model" } },
     })
     expect(result.all.find(provider => provider.id === bedrock.id)?.nativeAvailable).toBe(true)
-    expect(result.all.find(provider => provider.id === publicProvider.id)?.publicModels).toBe(true)
+    expect(result.all.some(provider => provider.id === publicProvider.id)).toBe(false)
     expect(result.all.find(provider => provider.id === vertex.id)).toMatchObject({ nativeAvailable: false, credentialSources: [], models: {} })
     expect(requests).toHaveLength(1)
     expect(requests[0]).toEndWith("/api/dochaus/provider-catalog")
+  } finally { globalThis.fetch = previous }
+})
+
+test("raw native removed provider, models and sign-in never enter web choices; Go and other aliases remain", async () => {
+  const previous = globalThis.fetch
+  const ids = ["opencode", "opencode-go", "other-provider"]
+  const providers = ids.map(id => ({ id, integrationID: id === "other-provider" ? "other-account" : id, name: id, activation: "enabled", package: "native-provider" }))
+  const integrations = ["opencode", "opencode-go", "other-account"].map(id => ({ id, name: id, methods: [{ type: "key" }], connections: [{ type: "credential", id: `${id}-key`, label: "Saved", method: "key" }] }))
+  let requests = 0
+  let writes = 0
+  const client = {
+    provider: { list: async () => ({ data: providers }) },
+    model: { list: async () => ({ data: ids.map(providerID => ({ providerID, id: "model", name: "Model", enabled: true })) }) },
+    integration: { list: async () => ({ data: integrations }), connect: { key: async () => { writes++ } } },
+  } as unknown as Client
+  globalThis.fetch = (async () => { requests++; return Response.json({ data: providers }) }) as unknown as typeof fetch
+  try {
+    const catalog = await listProviders(client)
+    expect(catalog.all.map(provider => provider.id)).toEqual(["opencode-go", "other-provider"])
+    expect(catalog.connected).toEqual(["opencode-go", "other-provider"])
+    expect(catalog.all.map(provider => Object.keys(provider.models))).toEqual([["model"], ["model"]])
+    expect((await listIntegrations(client)).map(integration => integration.id)).toEqual(["opencode-go", "other-account"])
+    expect(Object.keys(await listAuthMethods(client))).toEqual(["opencode-go", "other-account"])
+    await expect(setProviderKey(client, "opencode", "unused")).rejects.toThrow("removed")
+    expect(await probeProvider(client, "opencode", "model")).toMatchObject({ ok: false, error: expect.stringContaining("another provider") })
+    expect(requests).toBe(1)
+    expect(writes).toBe(0)
   } finally { globalThis.fetch = previous }
 })
 

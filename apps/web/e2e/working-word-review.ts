@@ -267,6 +267,10 @@ try {
     const pathname = url.pathname.slice("/engine".length)
     engineRequests.push({ method: request.method(), path: pathname })
     if (request.method() === "GET" && pathname === "/api/dochaus/ready") return reply({ ready: true, consentState: "active" })
+    // Startup connection checks are unrelated to Word review and must never
+    // contact a provider. Mirror the explicit synthetic health result used by
+    // the other web browser runners.
+    if (request.method() === "POST" && pathname === "/api/dochaus/provider-test") return reply({ ok: true })
     if (request.method() === "GET" && pathname === "/api/session") return reply({ data: [], cursor: { next: null, previous: null } })
     if (request.method() === "GET" && pathname === "/api/agent") return reply({ location: { directory: file.dir }, data: [] })
     // An idle event stream: left open, as the engine would hold it between events.
@@ -296,7 +300,7 @@ try {
   async function openDocument(navigate = true) {
     if (navigate) await page.goto(`${baseURL!.replace(/\/$/, "")}/matter/${file.matter}`)
     // The drawer's open state persists per browser; open it only when closed.
-    const documents = page.getByRole("button", { name: "Documents", exact: true })
+    const documents = page.locator(".sidebar").getByRole("button", { name: /^Documents(?: \d+)?$/ })
     await expect(documents).toBeVisible()
     if (await documents.getAttribute("aria-expanded") !== "true") await documents.click()
     await page.getByRole("button", { name: NAME, exact: true }).click()
@@ -514,7 +518,9 @@ try {
 
   await step("9 switching documents shows only each document's own open items; switching back restores them", async () => {
     await expect(open).toHaveText(openItems[THIRD])
-    // The viewer traps no focus, so the Documents drawer behind it is reachable from the keyboard.
+    // Close the modal before switching files; focus cannot reach the drawer
+    // behind an open document. The same keyboard path works on every viewport.
+    await dialog.getByRole("button", { name: "Close", exact: true }).press("Enter")
     await page.getByRole("button", { name: OTHER, exact: true }).press("Enter")
     const other = page.getByRole("dialog", { name: OTHER, exact: true })
     await expect(other.locator(".docx-render:not(.docx-skeleton)")).toBeVisible({ timeout: 30_000 })
@@ -523,6 +529,7 @@ try {
     await expect(other.getByRole("button", { name: "Request edits", exact: true })).toHaveAttribute("aria-expanded", "false")
     await expect(other.locator("#document-edit-request")).toHaveCount(0)
     await shot("09-switched-document")
+    await other.getByRole("button", { name: "Close", exact: true }).press("Enter")
     await page.getByRole("button", { name: NAME, exact: true }).press("Enter")
     await expect(dialog.locator(".docx-render:not(.docx-skeleton)")).toBeVisible({ timeout: 30_000 })
     await expect(open).toHaveText(openItems[THIRD])

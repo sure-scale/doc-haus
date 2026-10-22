@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react"
 import type { FormAnswer, FormField, IntegrationInfo, IntegrationMethod } from "@opencode/client"
 import { location, type Client } from "../../api/opencode/client"
 import { listIntegrations } from "../../api/opencode/providers"
+import { isRemovedProvider } from "../../api/opencode/provider-readiness"
 import { OPENCODE_URL } from "../../config"
 import { ExistingSignInDisclosure } from "./ExistingSignIn"
 
@@ -10,7 +11,7 @@ const attemptKey = `dochaus.auth-attempt:${OPENCODE_URL}`
 function savedAttempt(): Attempt | null {
   try {
     const value = JSON.parse(sessionStorage.getItem(attemptKey) ?? "null")
-    return value && typeof value.integrationID === "string" && typeof value.attemptID === "string" && ["oauth", "command"].includes(value.type) ? value : null
+    return value && typeof value.integrationID === "string" && !isRemovedProvider(value.integrationID) && typeof value.attemptID === "string" && ["oauth", "command"].includes(value.type) ? value : null
   } catch { return null }
 }
 export function visibleFields(fields: readonly FormField[], answer: FormAnswer, includeHidden = false) {
@@ -27,7 +28,7 @@ function initialAnswer(method?: IntegrationMethod): FormAnswer {
 
 export default function NativeProviderConnect({ client, onConnected, showExistingSignIn = true, integrationID, onboarding = false, savedSignIn, discoveryNotice, initialProviderID }: { initialProviderID?: string; client: Client; onConnected: (integrationID: string) => Promise<void>; showExistingSignIn?: boolean; integrationID?: string; onboarding?: boolean; savedSignIn?: ReactNode; discoveryNotice?: ReactNode }) {
   const [integrations, setIntegrations] = useState<IntegrationInfo[]>([])
-  const [pick, setPick] = useState(initialProviderID ?? "")
+  const [pick, setPick] = useState(isRemovedProvider(initialProviderID) ? "" : initialProviderID ?? "")
   const section = useRef<HTMLElement>(null)
   const [methodIndex, setMethodIndex] = useState("")
   const [key, setKey] = useState("")
@@ -54,7 +55,7 @@ export default function NativeProviderConnect({ client, onConnected, showExistin
   }
   useEffect(() => { void refresh() }, [client])
   useEffect(() => {
-    if (!initialProviderID || loading) return
+    if (!initialProviderID || isRemovedProvider(initialProviderID) || loading) return
     setPick(initialProviderID)
     setMethodIndex("")
     section.current?.scrollIntoView({ block: "nearest" })

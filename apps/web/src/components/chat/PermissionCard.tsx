@@ -1,3 +1,4 @@
+import { useId } from "react"
 import type { PermissionReply, PermissionRequest } from "../../api/opencode/permissions"
 import { humanizeTool, basename } from "./step-labels"
 
@@ -22,6 +23,7 @@ export default function PermissionCard({
   request: PermissionRequest
   onReply: (id: string, reply: PermissionReply) => void
 }) {
+  const titleId = useId()
   const meta = request.metadata
   const document = typeof meta.document === "string" ? meta.document : request.patterns[0] && basename(request.patterns[0])
   const oldText = (meta.find ?? meta.clause ?? meta.text) as string | undefined
@@ -38,8 +40,9 @@ export default function PermissionCard({
       ? `Removes ${meta.occurrences ?? "all"} occurrence(s) and any metadata mentions — this cannot be undone. Reason: ${meta.reason}`
       : undefined
   return (
-    <div className="permission-card">
-      <div className="permission-title">
+    <section className="permission-card" aria-labelledby={titleId}>
+      <p className="permission-eyebrow">Your approval is needed</p>
+      <div id={titleId} className="permission-title">
         The assistant wants to {verb} {document ?? "a document"}
       </div>
       {(oldText || newText) && (
@@ -53,20 +56,20 @@ export default function PermissionCard({
         <div className="permission-title">A saved allowance for this action covers: {request.always.join(", ")}</div>
       )}
       <div className="permission-actions">
-        <button className="primary" onClick={() => onReply(request.id, "once")}>
+        <button type="button" className="primary" onClick={() => onReply(request.id, "once")}>
           Allow once
         </button>
         {request.always.length > 0 && (
-          <button onClick={() => onReply(request.id, "always")}>
+          <button type="button" onClick={() => onReply(request.id, "always")}>
             {documentAllowance
               ? "Always allow this action for this document"
               : `Always allow this action for ${request.always.length === 1 ? "this item" : "these items"}`}
           </button>
         )}
-        <button className="permission-reject" onClick={() => onReply(request.id, "reject")}>
+        <button type="button" className="permission-reject" onClick={() => onReply(request.id, "reject")}>
           Reject
         </button>
       </div>
-    </div>
+    </section>
   )
 }

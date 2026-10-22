@@ -121,3 +121,27 @@ jurisdictions only mark suggested legends, that nothing is chosen for the
 lawyer, that the preview follows the firm name and legend, and that Save sends
 the two legends as flat keys, empty when left alone. The clock is fixed so the
 draft line's date is stable. Saves reach only the in-memory fixture.
+
+Run the product design regression with the same preview environment:
+
+```sh
+PLAYWRIGHT_BASE_URL=http://127.0.0.1:5189 \
+DOCHAUS_EVIDENCE_DIR=/tmp/doc-haus-design-evidence \
+bun apps/web/e2e/material-expressive.ts
+```
+
+It captures Matters, creation/editing, all five libraries, saved conversation,
+document drawer/reader, review, Settings/Appearance and onboarding at
+375×812, 768×1024 and 1440×1000; covers empty/error/loading states, short
+desktop workspaces, compact/large preferences, reduced motion, collapse hit
+areas and unchanged matter request bodies. The 720×500 layout checks reflow
+at the CSS viewport equivalent of a 1440×1000 window at 200% browser zoom.
+All provider and generation traffic is intercepted or refused.
+
+Set `AXE_SCRIPT` to a local axe-core browser bundle to assert zero automated
+WCAG 2.2 AA-tag violations in each capture. There is no shipped axe dependency.
+Set `DOCHAUS_BASELINE=1` to capture an older preview with new-design assertions
+skipped. Screenshots/results remain outside public source. Run focused native
+control regressions with `bun test/material-primitives.browser.ts` and
+`bun test/jurisdiction-select.browser.ts`; use `PLAYWRIGHT_CHROMIUM_PATH` if the
+installed Chromium differs from the package's default.

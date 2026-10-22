@@ -6,6 +6,8 @@ import type { DraftingPreferences } from "../src/api/ingest/preferences"
 import { defaultProvider, pickForProvider } from "../src/models"
 import DraftingDetailsStep, { detailsPreferences } from "../src/components/onboarding/DraftingDetailsStep"
 import { visibleFields } from "../src/components/settings/NativeProviderConnect"
+import ModelsTab from "../src/components/settings/ModelsTab"
+import ModelPickerStep from "../src/components/onboarding/ModelPickerStep"
 
 type DateFormat = DraftingPreferences["dateFormat"]
 const noop = () => {}
@@ -28,6 +30,23 @@ test("model selection asks when several providers or models are available", () =
   expect(defaultProvider([b])).toBe("two")
   expect(pickForProvider([a, b], "two")).toEqual({ primary: "two/b", fast: "two/b" })
   expect(pickForProvider([a, { ...a, value: "one/c", modelId: "c" }], "one")).toEqual({ primary: "", fast: "" })
+})
+test("removed saved models are guidance rather than inaccessible model options in Settings and setup", () => {
+  const model = "opencode/retired"
+  const settings = renderToStaticMarkup(createElement(ModelsTab, {
+    models: [], switchTab: noop, provider: "", changeProvider: noop, readyProviders: [], model, setModel: noop,
+    providerModels: [], smallModel: model, setSmallModelValue: noop, toast: noop, firstRun: false, onClose: noop,
+  }))
+  const setup = renderToStaticMarkup(createElement(ModelPickerStep, {
+    connectedProviders: [], provider: "", changeProvider: noop, primary: model, setPrimary: noop, providerModels: [],
+    fast: model, setFast: noop, setForceConnect: noop, setNotice: noop, onSaved: done,
+  }))
+  expect(settings).toContain("Choose another provider")
+  for (const html of [settings, setup]) {
+    expect(html).not.toContain('value="opencode/retired"')
+    expect(html).not.toContain("opencode/retired · unavailable")
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Save(?: and continue)?/)
+  }
 })
 test("native auth fields retain conditional visibility", () => {
   const fields = [{ key: "kind", type: "string" as const }, { key: "account", type: "string" as const, when: [{ key: "kind", op: "eq" as const, value: "team" }] }, { key: "hidden", type: "string" as const, hidden: true }]

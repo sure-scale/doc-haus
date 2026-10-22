@@ -15,15 +15,9 @@ async function fixture() {
   await Bun.write(path.join(root, "release.json"), JSON.stringify(current))
   class MockUpdater extends RepoUpdater {
     calls: string[][] = []
-    configured = true
     connected = true
     override async git(...args: string[]) {
       this.calls.push(args)
-      if (args[0] === "symbolic-ref") return "local-branch"
-      if (args[0] === "config") {
-        if (!this.configured) throw new Error("Git could not complete the update.")
-        return args[2].endsWith(".remote") ? "private" : "refs/heads/dochaus"
-      }
       if (!this.connected) throw new Error("Git could not complete the update. Check your repository access and connection.")
       if (args[0] === "fetch") return ""
       if (["rev-parse", "log"].includes(args[0])) return "a".repeat(40)
@@ -36,17 +30,19 @@ async function fixture() {
   return { updater, app }
 }
 
-test("HTTP 200 check error identifies missing tracking configuration without fetching; explicit retry refreshes cache", async () => {
+test("checks fetch the canonical public release branch without requiring checkout tracking; retry refreshes errors", async () => {
   const { updater, app } = await fixture()
   expect(await (await app.request("/updates")).json()).toMatchObject({ available: false })
-  expect(updater.calls.some(call => call[0] === "fetch")).toBe(true)
+  expect(updater.calls.find(call => call[0] === "fetch")).toEqual(["fetch", "--no-tags", "--", "origin", "refs/heads/dochaus:refs/remotes/origin/dochaus"])
+  expect(updater.calls.find(call => call[0] === "rev-parse")).toEqual(["rev-parse", "refs/remotes/origin/dochaus"])
+  expect(updater.calls.some(call => ["symbolic-ref", "config"].includes(call[0]))).toBe(false)
   updater.calls = []
-  updater.configured = false
+  updater.connected = false
   const failed = await app.request("/updates?refresh=1")
   expect(failed.status).toBe(200)
-  expect(await failed.json()).toMatchObject({ available: false, error: expect.stringContaining("no update branch configured") })
-  expect(updater.calls.some(call => call[0] === "fetch")).toBe(false)
-  updater.configured = true
+  expect(await failed.json()).toMatchObject({ available: false, error: expect.stringContaining("connection") })
+  expect(updater.calls.find(call => call[0] === "fetch")).toEqual(["fetch", "--no-tags", "--", "origin", "refs/heads/dochaus:refs/remotes/origin/dochaus"])
+  updater.connected = true
   expect(await (await app.request("/updates")).json()).toHaveProperty("error")
   expect(await (await app.request("/updates?refresh=1")).json()).not.toHaveProperty("error")
 })

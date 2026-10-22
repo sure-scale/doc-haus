@@ -16,6 +16,7 @@ import { Session } from "@opencode/core/session"
 import { SessionRestart } from "@opencode/core/session/execution/restart"
 import { Location } from "@opencode/core/location"
 import { LocationServiceMap } from "@opencode/core/location-service-map"
+import { ManagedPolicy } from "@opencode/core/managed-policy"
 import { WellKnown } from "@opencode/core/wellknown"
 import { Watcher } from "@opencode/core/filesystem/watcher"
 import { nativeFailureEvidenceLogger } from "./native-failure-evidence"
@@ -37,7 +38,7 @@ import { HttpClient, HttpEffect, HttpMiddleware, HttpRouter, HttpServer, HttpSer
 import path from "node:path"
 import { existsSync, mkdirSync, openSync, closeSync, readFileSync, unlinkSync, writeFileSync, realpathSync } from "node:fs"
 import { dataPaths } from "./data-paths"
-import { legalConfigLayer } from "./config-layer"
+import { legalConfigLayer, legalManagedPolicy } from "./config-layer"
 import { generationAdmissionError } from "./generation-admission"
 import { readEffectiveSettings } from "./effective-settings"
 import { createReusedCredential, credentialReuse, credentialReuseHandler, nativeCredentialDirectory } from "./credential-reuse"
@@ -165,6 +166,7 @@ await runEngine(
               resolve: () => Effect.succeed([]),
             })),
             Config.node.replace(legalConfig),
+            ManagedPolicy.node.replace(legalManagedPolicy),
             InstructionDiscovery.node.replace(InstructionDiscovery.configured({ global: false, project: false })),
         ]).pipe(Layer.provide(HttpServer.layerServices)),
       )

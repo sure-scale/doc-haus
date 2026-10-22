@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import type { Document } from "../../api/ingest/documents"
 import type { LeanDraftingStatus } from "../../api/ingest/lean"
 import DocumentUpload from "../DocumentUpload"
 import { setDocumentsDrawer } from "./documents-drawer"
+import useModalFocus from "../useModalFocus"
 
 // The matter's documents as a panel that slides out beside the rail. It is
 // portaled into the shell's slot so it sits between the rail and the canvas:
@@ -31,6 +32,18 @@ export default function DocumentsDrawer({
   onCompare?: (name: string) => void
 }) {
   const [slot, setSlot] = useState<HTMLElement | null>(null)
+  const panel = useRef<HTMLElement>(null)
+  const [compact, setCompact] = useState(() => window.matchMedia("(max-width: 700px)").matches)
+  // The full-screen phone drawer is a modal. Wider drawers intentionally keep
+  // the matter rail available, so focus remains free to move between panels.
+  useModalFocus(panel, Boolean(slot) && compact)
+
+  useEffect(() => {
+    const query = window.matchMedia("(max-width: 700px)")
+    const update = () => setCompact(query.matches)
+    query.addEventListener("change", update)
+    return () => query.removeEventListener("change", update)
+  }, [])
 
   useEffect(() => {
     setSlot(document.getElementById("matter-drawer-slot"))
@@ -42,9 +55,13 @@ export default function DocumentsDrawer({
     <>
       <div className="docs-drawer-scrim" onClick={close} aria-hidden />
       <aside
+        ref={panel}
         id="documents-drawer"
         className="docs-drawer"
+        role={compact ? "dialog" : undefined}
+        aria-modal={compact || undefined}
         aria-label="Documents"
+        tabIndex={compact ? -1 : undefined}
         onKeyDown={(e) => {
           if (e.key !== "Escape" || e.defaultPrevented) return
           e.preventDefault()

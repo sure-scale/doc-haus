@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import { Link, useNavigate } from "react-router-dom"
 import {
   createMatter,
@@ -43,6 +43,7 @@ export default function Matters() {
   const [draftClient, setDraftClient] = useState("")
   const [draftPosture, setDraftPosture] = useState<Posture | "">("")
   const [draftJurisdictions, setDraftJurisdictions] = useState<string[]>([])
+  const editDialog = useRef<HTMLDialogElement>(null)
   const toast = useToast()
   const navigate = useNavigate()
 
@@ -68,6 +69,17 @@ export default function Matters() {
     window.addEventListener("click", dismiss)
     return () => window.removeEventListener("click", dismiss)
   }, [confirmId])
+
+  useLayoutEffect(() => {
+    if (!editing) return
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    const dialog = editDialog.current
+    dialog?.showModal()
+    return () => {
+      dialog?.close()
+      if (opener?.isConnected) opener.focus({ preventScroll: true })
+    }
+  }, [editing])
 
   async function onCreate() {
     if (!title.trim()) return
@@ -142,10 +154,11 @@ export default function Matters() {
 
   return (
     <>
-      <header className="page-head library-head">
+      <header className="page-head library-head matters-head">
         <div>
+          <span className="page-eyebrow">Your workspace</span>
           <h1>Matters</h1>
-          <p className="page-sub">Every engagement, its documents, and its conversations.</p>
+          <p className="page-sub">A clear home for every engagement, document, and conversation.</p>
         </div>
       </header>
 
@@ -153,7 +166,7 @@ export default function Matters() {
         <section className="library-builder matter-create-panel" aria-labelledby="new-matter-heading">
           <div className="library-heading matter-create-heading">
             <h2 id="new-matter-heading">
-              <span className="matter-create-label">New matter</span>
+              <span className="matter-create-label">Start a new matter</span>
               <button
                 type="button"
                 className="matter-create-toggle"
@@ -168,71 +181,94 @@ export default function Matters() {
               </button>
             </h2>
           </div>
-          <div id="new-matter-fields" className={`matter-create-row${creating ? " is-open" : ""}`}>
-            <input
-              placeholder="Matter title, e.g. Acme MSA review"
-              aria-label="Matter title"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && onCreate()}
-              className="matter-create-title"
-            />
-            <input
-              placeholder="Matter no. (optional)"
-              aria-label="Matter number (optional)"
-              value={reference}
-              onChange={(e) => setReference(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && onCreate()}
-              className="matter-create-reference"
-            />
-            <input
-              placeholder="Client you act for (optional)"
-              aria-label="Client you act for (optional)"
-              maxLength={200}
-              value={client}
-              onChange={(e) => setClient(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && onCreate()}
-              className="matter-create-client"
-            />
-            <select
-              aria-label="Posture for this matter"
-              title="How hard drafts lean toward your client on this matter"
-              value={posture}
-              onChange={(e) => setPosture(e.target.value as Posture | "")}
-              className="matter-create-posture"
-            >
-              <option value="">Posture: firm default</option>
-              {POSTURES.map((row) => (
-                <option key={row.value} value={row.value}>
-                  Posture: {row.label}
-                </option>
-              ))}
-            </select>
-            <JurisdictionSelect
-              jurisdictions={jurisdictions}
-              selected={newJurisdictions}
-              onChange={setNewJurisdictions}
-              align="right"
-            />
-            <button className={`primary${busy ? " btn-loading" : ""}`} onClick={onCreate} disabled={busy || !title.trim()}>
+          <form
+            id="new-matter-fields"
+            className={`matter-create-row${creating ? " is-open" : ""}`}
+            onSubmit={(event) => { event.preventDefault(); onCreate() }}
+          >
+            <p className="matter-create-intro">Add the essentials now. You can update the details later.</p>
+            <label className="matter-form-field matter-create-title">
+              <span>Matter title <span className="field-required">Required</span></span>
+              <input
+                placeholder="e.g. Acme MSA review"
+                aria-label="Matter title"
+                required
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+              />
+            </label>
+            <label className="matter-form-field matter-create-client">
+              <span>Client <span className="field-optional">Optional</span></span>
+              <input
+                placeholder="Whom you act for"
+                aria-label="Client you act for (optional)"
+                maxLength={200}
+                value={client}
+                onChange={(e) => setClient(e.target.value)}
+              />
+            </label>
+            <label className="matter-form-field matter-create-reference">
+              <span>Matter number <span className="field-optional">Optional</span></span>
+              <input
+                placeholder="Your reference"
+                aria-label="Matter number (optional)"
+                value={reference}
+                onChange={(e) => setReference(e.target.value)}
+              />
+            </label>
+            <fieldset className="matter-create-preferences">
+              <legend>Drafting preferences</legend>
+              <label className="matter-form-field">
+                <span>Posture</span>
+                <select
+                  aria-label="Posture for this matter"
+                  aria-describedby="new-matter-posture-help"
+                  value={posture}
+                  onChange={(e) => setPosture(e.target.value as Posture | "")}
+                >
+                  <option value="">Firm default</option>
+                  {POSTURES.map((row) => (
+                    <option key={row.value} value={row.value}>{row.label}</option>
+                  ))}
+                </select>
+                <small id="new-matter-posture-help">How firmly drafts favour your client.</small>
+              </label>
+              <div className="matter-form-field">
+                <label htmlFor="new-matter-jurisdictions">Jurisdictions</label>
+                <JurisdictionSelect
+                  id="new-matter-jurisdictions"
+                  jurisdictions={jurisdictions}
+                  selected={newJurisdictions}
+                  onChange={setNewJurisdictions}
+                  align="right"
+                />
+              </div>
+            </fieldset>
+            <button type="submit" className={`primary matter-create-submit${busy ? " btn-loading" : ""}`} disabled={busy || !title.trim()} aria-busy={busy}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
               Create matter
             </button>
-          </div>
+          </form>
         </section>
         <section className="library-collection" aria-labelledby="your-matters-heading">
           <div className="library-heading">
             <h2 id="your-matters-heading">Your matters</h2>
-            {!loading && !loadError && <span className="muted">{matters.length}</span>}
+            {!loading && !loadError && <span className="matter-count">{matters.length}</span>}
           </div>
           {matters.length > 0 && (
             <div className="matters-list-toolbar">
-              <input
-                className="page-filter"
-                placeholder="Search by title or number"
-                aria-label="Filter matters"
-                value={filter}
-                onChange={(e) => setFilter(e.target.value)}
-              />
+              <label className="matter-search">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 4.5 4.5" /></svg>
+                <input
+                  type="search"
+                  className="page-filter"
+                  placeholder="Search by title or number"
+                  aria-label="Filter matters"
+                  value={filter}
+                  onChange={(e) => setFilter(e.target.value)}
+                />
+              </label>
+              <span className="matter-sort-label">Newest first</span>
             </div>
           )}
           {loading ? (
@@ -251,7 +287,7 @@ export default function Matters() {
             </div>
           ) : matters.length === 0 ? (
             <div className="empty-state">
-              <svg className="empty-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <svg className="empty-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
                 <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
               </svg>
               <h3>No matters yet</h3>
@@ -265,10 +301,11 @@ export default function Matters() {
                 <li key={m.id} className="list-row">
                   <Link to={`/matter/${m.id}`} className="list-row-main">
                     <span className="list-row-title">
-                      {m.reference && <span className="matter-ref">{m.reference}</span>}
                       {m.title}
                     </span>
                     <span className="list-row-meta">
+                      {m.client && <span className="matter-client">{m.client}</span>}
+                      {m.reference && <span className="matter-reference">{m.reference}</span>}
                       <span className="list-row-date">Opened {formatDate(m.created_at)}</span>
                       {m.jurisdictions?.map((code) => (
                         <span key={code} className="matter-jurisdiction">
@@ -278,13 +315,14 @@ export default function Matters() {
                     </span>
                   </Link>
                   <div className="list-row-actions">
-                    <button className="icon-btn" title={`Edit ${m.title}`} onClick={() => openEdit(m)}>
+                    <button className="icon-btn" title={`Edit ${m.title}`} aria-label={`Edit ${m.title}`} onClick={() => openEdit(m)}>
                       Edit
                     </button>
                     {confirmId === m.id ? (
                       <button
                         className="icon-btn danger"
                         title="Confirm delete"
+                        aria-label={`Confirm delete ${m.title}`}
                         onClick={(e) => {
                           e.stopPropagation()
                           onDelete(m)
@@ -296,6 +334,7 @@ export default function Matters() {
                       <button
                         className="icon-btn"
                         title={`Delete ${m.title}`}
+                        aria-label={`Delete ${m.title}`}
                         onClick={(e) => {
                           e.stopPropagation()
                           setConfirmId(m.id)
@@ -313,9 +352,14 @@ export default function Matters() {
       </div>
 
       {editing && (
-        <div className="viewer-overlay" onClick={() => setEditing(null)}>
-          <div className="picker-panel matter-edit" onClick={(e) => e.stopPropagation()}>
-            <ModalHeader title="Edit matter" onClose={() => setEditing(null)} />
+        <dialog
+          ref={editDialog}
+          className="picker-panel matter-edit"
+          aria-labelledby="edit-matter-heading"
+          onCancel={(event) => { event.preventDefault(); setEditing(null) }}
+          onClick={(event) => { if (event.target === event.currentTarget) setEditing(null) }}
+        >
+            <ModalHeader title={<span id="edit-matter-heading">Edit matter</span>} onClose={() => setEditing(null)} />
             <div className="matter-edit-body">
               <label className="matter-edit-field">
                 <span>Title</span>
@@ -356,8 +400,9 @@ export default function Matters() {
                 </select>
               </label>
               <div className="matter-edit-field">
-                <span>Jurisdictions</span>
+                <label htmlFor="edit-matter-jurisdictions">Jurisdictions</label>
                 <JurisdictionSelect
+                  id="edit-matter-jurisdictions"
                   jurisdictions={jurisdictions}
                   selected={draftJurisdictions}
                   onChange={setDraftJurisdictions}
@@ -367,11 +412,10 @@ export default function Matters() {
             <div className="viewer-bar matter-edit-foot">
               <button onClick={() => setEditing(null)}>Cancel</button>
               <button className={`primary${busy ? " btn-loading" : ""}`} onClick={onSaveEdit} disabled={busy || !draftTitle.trim()}>
-                Save
+                Save changes
               </button>
             </div>
-          </div>
-        </div>
+        </dialog>
       )}
     </>
   )

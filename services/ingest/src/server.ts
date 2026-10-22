@@ -48,7 +48,7 @@ import { listWorkflows, createWorkflow, updateWorkflow, deleteWorkflow, NAME_RE,
 import { listSkills, createSkill, updateSkill, deleteSkill, importSkill, setSkillEnabled, SKILLS_DIR } from "./skill"
 import { listAgents, createAgent, updateAgent, deleteAgent, setAgentEnabled, AGENTS_DIR } from "./agent"
 import { docxodus } from "./docxodus"
-import { listGcpProjects, listAwsProfiles, probeVertex } from "./host"
+import { listGcpProjects, listAwsProfiles, vertexProbeRoutes } from "./host"
 import { parserCapabilitiesRoutes } from "./parser-capabilities-route"
 import { readGrid, recheckPassages, recheckRequest, writeGrid, type Grid } from "./grid"
 import { PreferencesUnavailableError, PreferencesValidationError, readDraftingPreferences, readDraftingTelemetryRetentionPreference, writeDraftingPreferences } from "./preferences"
@@ -158,17 +158,7 @@ app.get("/host/aws-profiles", async (c) => c.json({ profiles: await listAwsProfi
 
 app.route("/host", parserCapabilitiesRoutes())
 
-// Verify a Vertex project/location with one real publisher-model call using the
-// host's ADC. The web's provider gate calls this instead of prompting through
-// the engine, whose first-touch cold boot can outlast any probe timeout.
-app.post("/host/probe-vertex", async (c) =>
-  c.json(
-    await probeVertex(await c.req.json()).catch((e) => ({
-      ok: false,
-      error: e instanceof Error ? e.message : String(e),
-    })),
-  ),
-)
+app.route("/host", vertexProbeRoutes())
 
 app.get("/matters", (c) => c.json(listMatters()))
 

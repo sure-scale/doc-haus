@@ -51,7 +51,7 @@ export default function ProvidersTab({
   return (
     <>
       <section className="settings-section">
-        <h3>Saved connections</h3>
+        <h3>Provider connections</h3>
         <p className="settings-hint muted">
           Saved credentials do not guarantee access. Your selected models are checked when doc.haus opens and after you reconnect.
         </p>

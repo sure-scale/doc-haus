@@ -113,9 +113,9 @@ export default function Sidebar({
   }
 
   return (
-    <aside className={`sidebar${collapsed ? " collapsed" : ""}${matterId ? " sidebar-in-matter" : ""}`}>
+    <aside className={`sidebar${collapsed ? " collapsed" : ""}${matterId ? " sidebar-in-matter" : ""}`} aria-label={matterId ? "Matter navigation" : "Application navigation"}>
       <div className="sidebar-brand">
-        <Link to="/" title="doc.haus">
+        <Link to="/" title="doc.haus" aria-label="Doc Haus — all matters">
           <img src={logo} className="app-logo" alt="" />
           <span className="wordmark">Doc.Haus</span>
         </Link>
@@ -130,6 +130,20 @@ export default function Sidebar({
         <IconChevron right={false} />
       </button>
 
+      {!matterId && (
+        <button
+          type="button"
+          className="sidebar-icon-button sidebar-mobile-toggle"
+          onClick={() => setCollapsed((current) => !current)}
+          title={collapsed ? "Show navigation" : "Hide navigation"}
+          aria-label={collapsed ? "Show navigation" : "Hide navigation"}
+          aria-expanded={!collapsed}
+          aria-controls="application-navigation"
+        >
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M4 6h16M4 12h10M4 18h10" /><path className="sidebar-mobile-chevron" d="m17 15 3 3 3-3" /></svg>
+        </button>
+      )}
+
       {matterId ? (
         <nav className="sidebar-nav sidebar-primary sidebar-back" aria-label="Main navigation">
           <Link to="/" className="nav-item" title="All matters" aria-label="All matters">
@@ -138,7 +152,7 @@ export default function Sidebar({
           </Link>
         </nav>
       ) : (
-        <>
+        <div id="application-navigation" className="sidebar-global-navigation">
           <nav className="sidebar-nav sidebar-primary" aria-label="Main navigation">
             <NavLink
               to="/"
@@ -201,7 +215,7 @@ export default function Sidebar({
               <span>Agents</span>
             </NavLink>
           </nav>
-        </>
+        </div>
       )}
 
       {matterId && matterTitle && (
@@ -217,12 +231,12 @@ export default function Sidebar({
             className={`nav-item${drawer.open ? " active" : ""}`}
             onClick={toggleDocumentsDrawer}
             title="Documents"
-            aria-label="Documents"
+            aria-label={drawer.count !== undefined ? `Documents ${drawer.count}` : "Documents"}
             aria-expanded={drawer.open}
             aria-controls="documents-drawer"
           >
             <IconDocsNav />
-            <span>Documents</span>
+            <span>Documents</span>{" "}
             {drawer.count !== undefined && <span className="sidebar-nav-count">{drawer.count}</span>}
           </button>
           <Link
@@ -269,6 +283,7 @@ export default function Sidebar({
                         <Link
                           to={`/matter/${matterId}?session=${c.id}`}
                           className={`convo-item${c.id === activeSession ? " active" : ""}`}
+                          aria-current={view === "chat" && c.id === activeSession ? "page" : undefined}
                         >
                           {c.title}
                         </Link>
@@ -277,6 +292,7 @@ export default function Sidebar({
                         <button
                           className="convo-confirm"
                           title="Confirm delete"
+                          aria-label={`Confirm delete conversation ${c.title}`}
                           onClick={(e) => {
                             e.stopPropagation()
                             removeConvo(c)
@@ -288,6 +304,7 @@ export default function Sidebar({
                         <button
                           className="convo-del"
                           title="Delete conversation"
+                          aria-label={`Delete conversation ${c.title}`}
                           onClick={(e) => {
                             e.stopPropagation()
                             setConfirmId(c.id)

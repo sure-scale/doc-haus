@@ -6,6 +6,7 @@ import { getPreferences, type DraftingPreferences } from "../../api/ingest/prefe
 import { listJurisdictions, type Jurisdiction } from "../../api/ingest/matters"
 import { getSetup, saveSetup, type SetupProgress } from "../../api/ingest/setup"
 import { pickForProvider, providerOf } from "../../models"
+import { isRemovedModel } from "../../api/opencode/provider-readiness"
 import { loadPrefs } from "../../prefs"
 import { isGated, loadVerified } from "../../providers"
 import type { Provider } from "./types"
@@ -33,6 +34,7 @@ export default function Onboarding({ onClose }: { onClose: () => void }) {
   const [provider, setProvider] = useState("")
   const [primary, setPrimary] = useState("")
   const [fast, setFast] = useState("")
+  const [removedSelection, setRemovedSelection] = useState(false)
   const [notice, setNotice] = useState("")
   // A failed step save clears on the next save attempt; other notices stay.
   const [saveNotice, setSaveNotice] = useState("")
@@ -88,6 +90,8 @@ export default function Onboarding({ onClose }: { onClose: () => void }) {
       const [providers, cfg, progress] = await Promise.all([listProviders(client), getConfig(), getSetup()])
       setAll(providers.all); setConnected(new Set(providers.connected)); setVerified(loadVerified()); setLoaded(true)
       setProgress(progress)
+      const removed = isRemovedModel(cfg.model) || isRemovedModel(cfg.small_model)
+      setRemovedSelection(removed)
       setPrimary(cfg.model ?? ""); setFast(cfg.small_model ?? "")
       const ready = providers.all.filter(item => providers.connected.includes(item.id) && (!isGated(item.id) || loadVerified().has(item.id)))
       const choices = ready.flatMap(item => Object.values(item.models).map(model => ({ value: `${item.id}/${model.id}`, label: model.name, providerId: item.id, modelId: model.id })))
@@ -95,8 +99,9 @@ export default function Onboarding({ onClose }: { onClose: () => void }) {
       const selected = newly.length === 1 ? newly[0]!.id : provider === "__local_endpoint__" || providers.all.some(item => item.id === provider && item.activation !== "disabled") ? provider : providers.all.some(item => item.id === providerOf(cfg.model ?? "")) ? providerOf(cfg.model ?? "") : ""
       setProvider(selected)
       if (selected && selected !== providerOf(cfg.model ?? "")) { const defaults = pickForProvider(choices, selected); setPrimary(defaults.primary); setFast(defaults.fast) }
-      if (resume && cfg.model && selected) setPhase("models")
-      if (resume) setStep(progress.next === "details" || progress.next === "research" ? progress.next : "setup")
+      if (resume && removed) setPhase("provider")
+      else if (resume && cfg.model && selected) setPhase("models")
+      if (resume) setStep(!removed && (progress.next === "details" || progress.next === "research") ? progress.next : "setup")
     } catch (error) { setFailed(true); setNotice(error instanceof Error ? error.message : "Could not load setup. Retry.") }
     finally { setLoading(false) }
   }
@@ -110,7 +115,7 @@ export default function Onboarding({ onClose }: { onClose: () => void }) {
   const active = all.filter(item => item.activation !== "disabled").sort((a, b) => a.name.localeCompare(b.name))
   const detected = (item: Provider) => item.nativeAvailable || item.credentialSources.length > 0 || !!item.host?.sources.length
   const selectable = models.some(model => model.providerId === provider)
-  const modelsSaved = progress?.ready === true && progress.completed.includes("models")
+  const modelsSaved = !removedSelection && progress?.ready === true && progress.completed.includes("models")
   function unavailable(id: string) {
     if (loading || !loaded) return "Wait for your saved setup to load."
     if (failed) return "Retry setup before changing steps."
@@ -172,6 +177,7 @@ export default function Onboarding({ onClose }: { onClose: () => void }) {
       <div ref={body} className="onboarding-body" aria-busy={loading}>
         <div className="onboarding-stage-heading"><h2 ref={heading} tabIndex={-1}>{step === "setup" && phase === "connection" ? `Connect ${selected?.name ?? "a local endpoint"}` : stage.title}</h2><p id="onboarding-description">{stage.description}</p></div>
         {notice && <p role="alert" className="settings-notice">{notice}</p>}
+        {removedSelection && <p role="alert" className="settings-warning">The previously selected provider has been removed. Choose another provider and save both model choices to continue.</p>}
         {saveNotice && <p role="alert" className="settings-notice">{saveNotice}</p>}
         {loading && loaded && <p className="settings-notice" role="status">Refreshing providers and your saved choices…</p>}
         {failed && loaded && <div className="onboarding-status"><p>Could not refresh setup. Retry to update the provider catalog.</p><button onClick={() => void load()}>Retry setup</button></div>}
@@ -182,7 +188,7 @@ export default function Onboarding({ onClose }: { onClose: () => void }) {
             <section className="settings-section onboarding-provider-card">
             <label className="onboarding-field">Model provider<select disabled={loading} value={provider} onChange={event => changeProvider(event.target.value)}>
               <option value="">Choose a provider</option>
-              <optgroup label="Detected">{active.filter(detected).map(item => <option key={item.id} value={item.id}>{item.name}{item.publicModels ? " · Public models" : item.host?.type === "google-adc" && !item.host.options.project ? " · Project required" : item.host && !verified.has(item.id) ? " · Setup / verification required" : " · Detected"}</option>)}</optgroup>
+              <optgroup label="Detected">{active.filter(detected).map(item => <option key={item.id} value={item.id}>{item.name}{item.host?.type === "google-adc" && !item.host.options.project ? " · Project required" : item.host && !verified.has(item.id) ? " · Setup / verification required" : " · Detected"}</option>)}</optgroup>
               <optgroup label="Other providers">{active.filter(item => !detected(item)).map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</optgroup>
               <option value="__local_endpoint__">Local / OpenAI-compatible endpoint</option>
             </select></label>
@@ -201,7 +207,7 @@ export default function Onboarding({ onClose }: { onClose: () => void }) {
           </div>}
           {currentStage === "models" && <>
             <div className="onboarding-provider-summary"><span className="onboarding-provider-icon" aria-hidden="true">✓</span><div><span className="onboarding-eyebrow">Model provider</span><strong>{selected?.name ?? provider}</strong></div><span className="onboarding-provider-ready">Connected</span></div>
-            <ModelPickerStep hideProviderSelector connectedProviders={ready.filter(item => item.id === provider)} provider={provider} changeProvider={changeProvider} primary={primary} setPrimary={setPrimary} providerModels={models.filter(model => model.providerId === provider)} fast={fast} setFast={setFast} setForceConnect={() => setPhase("connection")} setNotice={setNotice} onSaved={async () => { const next = await saveSetup("models", "completed"); setProgress(next); if (next.next === "done") onClose(); else setStep(next.next === "models" ? "setup" : next.next) }} />
+            <ModelPickerStep hideProviderSelector connectedProviders={ready.filter(item => item.id === provider)} provider={provider} changeProvider={changeProvider} primary={primary} setPrimary={setPrimary} providerModels={models.filter(model => model.providerId === provider)} fast={fast} setFast={setFast} setForceConnect={() => setPhase("connection")} setNotice={setNotice} onSaved={async () => { const next = await saveSetup("models", "completed"); setProgress(next); setRemovedSelection(false); if (next.next === "done") onClose(); else setStep(next.next === "models" ? "setup" : next.next) }} />
           </>}
           {currentStage === "details" && <DraftingDetailsStep drafting={drafting} setDrafting={setDrafting} jurisdictions={jurisdictions} selectedJx={selectedJx} setSelectedJx={setSelectedJx} dateFormatChoice={dateFormatChoice} setDateFormatChoice={setDateFormatChoice} setStep={setStep} onClose={() => advance("details", "completed")} />}
           {(mounted.research || currentStage === "research") && <div className="onboarding-stage-content onboarding-research" hidden={currentStage !== "research"} inert={currentStage !== "research"}>

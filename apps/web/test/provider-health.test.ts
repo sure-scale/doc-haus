@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { connectionMessage, createProviderHealthMonitor, providerConnection, testModelConnection } from "../src/api/opencode/provider-health"
+import { connectionMessage, createProviderHealthMonitor, providerConnection, providerName, testModelConnection } from "../src/api/opencode/provider-health"
 
 const model = { providerID: "fixture", id: "primary" }
 const config = async () => ({ model: "fixture/primary", small_model: "fixture/primary" })
@@ -86,6 +86,45 @@ test("managed probe distinguishes typed provider rejection from local engine aut
   } finally { globalThis.fetch = saved }
 })
 
+test("managed native restriction payload reaches actionable access guidance without disclosing provider diagnostics", async () => {
+  const saved = globalThis.fetch
+  try {
+    const calls: unknown[] = []
+    for (const restriction of ["free-tier", "region"] as const) {
+      globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+        calls.push(JSON.parse(String(init?.body)))
+        return Response.json({ ok: false, kind: "model", restriction, error: "synthetic-private-diagnostic" }, { status: 400 })
+      }) as unknown as typeof fetch
+      const monitor = createProviderHealthMonitor(config)
+      await monitor.check()
+      expect(monitor.getSnapshot()).toEqual([{ providerID: "fixture", modelID: "primary", status: "model", restriction }])
+      const message = connectionMessage(monitor.getSnapshot()[0]!)
+      expect(message).toContain(restriction === "free-tier" ? "free model" : "region")
+      expect(message).not.toMatch(/sign-in|reconnect|synthetic-private-diagnostic/)
+      // Native session summaries retain status but omit the structured body.
+      // They must not overwrite a more specific, verified access restriction.
+      monitor.rejected(model, { type: "provider.auth", status: 403, message: "Provider rejected request" })
+      expect(monitor.getSnapshot()[0]).toMatchObject({ status: "model", restriction })
+      expect(calls).toHaveLength(restriction === "free-tier" ? 1 : 2)
+      // A real credential rejection still replaces the access result.
+      monitor.rejected(model, { type: "provider.auth", status: 401, message: "Invalid key" })
+      expect(monitor.getSnapshot()[0]).toMatchObject({ status: "auth" })
+    }
+    expect(calls).toEqual([{ providerID: "fixture", modelID: "primary" }, { providerID: "fixture", modelID: "primary" }])
+    expect(providerName("opencode-go")).toBe("OpenCode Go")
+  } finally { globalThis.fetch = saved }
+})
+
+test("unknown or auth-only restriction fields cannot change the model-access guidance", async () => {
+  const saved = globalThis.fetch
+  try {
+    globalThis.fetch = (async () => Response.json({ ok: false, kind: "model", restriction: "unknown" }, { status: 400 })) as unknown as typeof fetch
+    expect(await testModelConnection("fixture", "primary", false)).not.toHaveProperty("restriction")
+    globalThis.fetch = (async () => Response.json({ ok: false, kind: "auth", restriction: "free-tier" }, { status: 503 })) as unknown as typeof fetch
+    expect(await testModelConnection("fixture", "primary", false)).toEqual({ ok: false, kind: "auth", expired: false })
+  } finally { globalThis.fetch = saved }
+})
+
 
 test("connection checks use the underlying catalog model once across generation variants", async () => {
   const calls: string[] = []
@@ -111,4 +150,33 @@ test("rechecking also verifies a failed session model after the saved default ch
   oldModelWorks = true
   await monitor.check(true)
   expect(monitor.getSnapshot().every(item => item.status === "ready")).toBe(true)
+})
+
+test("removed saved provider requires a deliberate replacement and never sends a model check", async () => {
+  const calls: string[] = []
+  const selected = { model: "opencode/retired#high", small_model: "opencode/retired" }
+  const monitor = createProviderHealthMonitor(async () => selected, async (provider, model) => {
+    calls.push(`${provider}/${model}`); return { ok: true }
+  })
+  await monitor.check()
+  await monitor.check(true)
+  expect(calls).toEqual([])
+  expect(monitor.getSnapshot()).toEqual([{ providerID: "opencode", modelID: "retired", status: "model" }])
+  expect(connectionMessage(monitor.getSnapshot()[0]!)).toContain("Choose another provider")
+  monitor.rejected({ providerID: "opencode", id: "retired" }, { type: "provider.auth", message: "Free model restricted", status: 403 })
+  expect(monitor.getSnapshot()[0]).toEqual({ providerID: "opencode", modelID: "retired", status: "model" })
+  selected.model = "opencode-go/retained"; selected.small_model = "opencode-go/retained"
+  await monitor.check(true)
+  expect(calls).toEqual(["opencode-go/retained"])
+  expect(monitor.getSnapshot()).toEqual([{ providerID: "opencode-go", modelID: "retained", status: "ready" }])
+})
+
+test("a direct removed-provider test is rejected locally before network access", async () => {
+  const previous = globalThis.fetch
+  let requests = 0
+  globalThis.fetch = (async () => { requests++; throw new Error("Unexpected inference request") }) as unknown as typeof fetch
+  try {
+    expect(await testModelConnection("opencode", "retired", true)).toEqual({ ok: false, kind: "model" })
+    expect(requests).toBe(0)
+  } finally { globalThis.fetch = previous }
 })

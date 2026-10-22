@@ -64,6 +64,7 @@ export default function MatterHeader({
       type="button"
       className={matter.reference ? "matter-ref matter-field" : "matter-meta-add"}
       title={matter.reference ? "Edit matter number" : "Add a matter number"}
+      aria-label={matter.reference ? `Edit matter number: ${matter.reference}` : "Add a matter number"}
       onClick={() => {
         setDraftRef(matter.reference ?? "")
         setEditingRef(true)
@@ -93,6 +94,7 @@ export default function MatterHeader({
       type="button"
       className={matter.client ? "matter-ref matter-field" : "matter-meta-add"}
       title={matter.client ? "Edit the client you act for" : "Add the client you act for"}
+      aria-label={matter.client ? `Edit client: ${matter.client}` : "Add the client you act for"}
       onClick={() => {
         setDraftClient(matter.client ?? "")
         setEditingClient(true)
@@ -152,6 +154,7 @@ export default function MatterHeader({
                     type="button"
                     className="matter-title"
                     title="Rename matter"
+                    aria-label={`Rename matter: ${matter.title}`}
                     onClick={() => {
                       setDraftTitle(matter.title)
                       setRenaming(true)

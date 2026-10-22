@@ -439,6 +439,7 @@ export default function ChatPanel({
                       <div className="msg-edit">
                         <textarea
                           autoFocus
+                          aria-label="Edit your message"
                           value={editing.draft}
                           onChange={(e) => setEditing({ index: i, draft: e.target.value })}
                           onKeyDown={(e) => {
@@ -464,11 +465,12 @@ export default function ChatPanel({
                       <button
                         className="icon-btn"
                         title="Edit message"
+                        aria-label="Edit message"
                         onClick={() => setEditing({ index: i, draft: t.text })}
                       >
                         <IconPencil />
                       </button>
-                      <button className="icon-btn" title="Retry" onClick={() => resendFrom(t, i, t.text)}>
+                      <button className="icon-btn" title="Retry" aria-label="Retry message" onClick={() => resendFrom(t, i, t.text)}>
                         <IconRetry />
                       </button>
                     </div>

@@ -22,6 +22,7 @@ const POOL = 5 // concurrent cell extractions; the engine handles one prompt eac
 
 export default function ReviewGrid({ matterId, title, directory, documents, onClose }: { matterId: string; title: string; directory: string; documents: Document[]; onClose: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null)
+  const detailDialog = useRef<HTMLDialogElement>(null)
   const client = useMemo<Client>(() => matterClient(directory), [directory])
   const [grid, setGrid] = useState<Grid>({ columns: [], cells: {} })
   const gridRef = useRef<Grid>(grid)
@@ -34,10 +35,26 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
   const detailCell = detail ? grid.cells[cellKey(detail.docName, detail.columnId)] : undefined
 
   useLayoutEffect(() => {
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
     const modal = dialog.current
     modal?.showModal()
-    return () => modal?.close()
+    return () => {
+      modal?.close()
+      if (opener?.isConnected) opener.focus({ preventScroll: true })
+    }
   }, [])
+
+  useLayoutEffect(() => {
+    if (!detail) return
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    const modal = detailDialog.current
+    modal?.showModal()
+    modal?.querySelector<HTMLTextAreaElement>("textarea")?.focus({ preventScroll: true })
+    return () => {
+      modal?.close()
+      if (opener?.isConnected) opener.focus({ preventScroll: true })
+    }
+  }, [detail])
 
   // Escape closes only the open cell detail. Consumed here, on document (before
   // ModalHeader's window listeners) and wherever focus is, so neither those
@@ -113,6 +130,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
     const key = cellKey(detail.docName, detail.columnId)
     const cell = gridRef.current.cells[key]
     commitCell(key, { ...cell, comments: (cell.comments ?? []).filter((c) => c.id !== id) })
+    detailDialog.current?.querySelector<HTMLTextAreaElement>("textarea")?.focus({ preventScroll: true })
   }
 
   // One extract turn in a scoped, throwaway session titled so it stays out of
@@ -216,8 +234,8 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
             </span>
           </div>
           <div className="row" style={{ gap: 8 }}>
-            {running > 0 && <span className="review-running">Extracting {running}</span>}
-            <button onClick={fillEmpty} disabled={documents.length === 0 || grid.columns.length === 0 || running > 0}>
+            {running > 0 && <span className="review-running" role="status">Extracting {running}</span>}
+            <button className="primary" onClick={fillEmpty} disabled={documents.length === 0 || grid.columns.length === 0 || running > 0}>
               Fill empty
             </button>
             <button onClick={() => exportAs("xlsx")} disabled={documents.length === 0 || grid.columns.length === 0}>
@@ -238,17 +256,17 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
           <p className="review-hint">Use + to add a question for every document.</p>
         )}
         <div className="review-scroll" role="region" aria-label="Review table" tabIndex={0}>
-          <table className={`review-table${grid.columns.length === 0 ? " is-empty" : ""}`} aria-label="Document review">
+          <table className={`review-table${grid.columns.length === 0 ? " is-empty" : ""}`} style={grid.columns.length ? { minWidth: 304 + grid.columns.length * 280 } : undefined} aria-label="Document review">
             <thead>
               <tr>
                 <th className="review-doc-col" scope="col">Document</th>
                 {grid.columns.map((col) => (
                   <th key={col.id} scope="col">
                     <div className="review-col-head">
-                      <button className="review-col-q" onClick={() => renameColumn(col.id)} title="Edit question">
+                      <button className="review-col-q" onClick={() => renameColumn(col.id)} aria-label={`Edit question: ${col.question}`} title="Edit question">
                         {col.question}
                       </button>
-                      <button className="icon-btn review-col-x" onClick={() => deleteColumn(col.id)} title="Delete column">
+                      <button className="icon-btn review-col-x" onClick={() => deleteColumn(col.id)} aria-label={`Delete column: ${col.question}`} title="Delete column">
                         ×
                       </button>
                     </div>
@@ -301,6 +319,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
                             <div className="review-cell-actions">
                               <button
                                 className={`icon-btn review-note${cell.comments?.length ? " has-comments" : ""}`}
+                                aria-label={`${cell.comments?.length ?? 0} comments on ${doc.name}: ${col.question}`}
                                 title={cell.comments?.map((c) => c.text).join("\n") || "Add a comment"}
                                 onClick={() => {
                                   setDraft("")
@@ -319,7 +338,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
                                 {cell.comments?.length ?? 0}
                               </button>
                               {stale && <span className="review-stale" title="Question changed since this answer">stale</span>}
-                              <button className={`icon-btn review-lock${cell.status === "reviewed" ? " locked" : ""}`} title={cell.status === "reviewed" ? "Unlock" : "Mark reviewed"} onClick={() => toggleReviewed(key)}>
+                              <button className={`icon-btn review-lock${cell.status === "reviewed" ? " locked" : ""}`} aria-pressed={cell.status === "reviewed"} title={cell.status === "reviewed" ? "Unlock" : "Mark reviewed"} onClick={() => toggleReviewed(key)}>
                                 {cell.status === "reviewed" ? "Locked" : "Lock"}
                               </button>
                               {cell.status !== "reviewed" && (
@@ -346,7 +365,20 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
         </div>
 
         {detail && detailCell && (
-          <div className="viewer-overlay" onClick={() => setDetail(undefined)}>
+          <dialog
+            ref={detailDialog}
+            className="viewer-overlay review-detail-modal"
+            aria-label={`Answer and comments: ${detail.question}`}
+            onCancel={(event) => { event.preventDefault(); event.stopPropagation(); setDetail(undefined) }}
+            onClick={(event) => { if (event.target === event.currentTarget) setDetail(undefined) }}
+            onKeyDown={(event) => {
+              if (event.key !== "Tab") return
+              const first = event.currentTarget.querySelector<HTMLButtonElement>(".modal-close")
+              const last = event.currentTarget.querySelector<HTMLButtonElement>(".review-comment-compose > button:not(:disabled)") ?? event.currentTarget.querySelector<HTMLTextAreaElement>("textarea")
+              if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus() }
+              else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus() }
+            }}
+          >
             <div className="picker-panel" onClick={(e) => e.stopPropagation()}>
               <ModalHeader title={detail.question} onClose={() => setDetail(undefined)} />
               <div className="picker-body">
@@ -363,7 +395,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
                     <div key={c.id} className="review-comment">
                       <div className="review-comment-meta">
                         <span className="muted">{formatDateTime(c.at)}</span>
-                        <button className="icon-btn" title="Delete comment" onClick={() => deleteComment(c.id)}>
+                        <button className="icon-btn" aria-label="Delete comment" title="Delete comment" onClick={() => deleteComment(c.id)}>
                           ×
                         </button>
                       </div>
@@ -373,6 +405,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
                   <div className="review-comment-compose">
                     <textarea
                       value={draft}
+                      aria-label="Add a comment"
                       placeholder="Add a comment..."
                       onChange={(e) => setDraft(e.target.value)}
                       onKeyDown={(e) => {
@@ -382,14 +415,14 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
                         }
                       }}
                     />
-                    <button onClick={addComment} disabled={!draft.trim()}>
-                      Send
+                    <button className="primary" onClick={addComment} disabled={!draft.trim()}>
+                      Add comment
                     </button>
                   </div>
                 </div>
               </div>
             </div>
-          </div>
+          </dialog>
         )}
       </div>
     </dialog>,

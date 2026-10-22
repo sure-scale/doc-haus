@@ -191,7 +191,7 @@ export default function Playbooks() {
               <li key={p.name} className="list-row">
                 <div className="list-row-main">
                   <span className="list-row-title">
-                    {p.name.replace(/^playbook-/, "").replace(/-/g, " ")}
+                    <button type="button" className="library-item-title" onClick={() => setViewing(p)}>{p.name.replace(/^playbook-/, "").replace(/-/g, " ")}</button>
                     {p.builtin && <span className="badge badge-quiet">Built-in · read-only</span>}
                   </span>
                   <span className="list-row-meta">

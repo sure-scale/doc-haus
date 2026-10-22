@@ -5,11 +5,16 @@ import { dataPaths } from "./data-paths"
 export type EngineSettings = {
   model?: string
   small_model?: string
+  disabled_providers?: string[]
   agent?: Record<string, Record<string, unknown>>
   permission?: Record<string, unknown>
   provider?: Record<string, Record<string, unknown>>
   [key: string]: unknown
 }
+
+// This product restriction is independent of saved model choices and credentials.
+// The distinct opencode-go provider and the native OpenCode engine remain supported.
+export function isRemovedProvider(id: string | undefined): boolean { return id === "opencode" }
 
 export const settingsRepository = path.resolve(import.meta.dir, "../../..")
 export function settingsPaths(repository = settingsRepository, environment = process.env) {
@@ -48,5 +53,6 @@ export function readSettingsFile(file: string): EngineSettings {
 export function readEffectiveSettings(paths = settingsPaths()): EngineSettings {
   const effective = mergeSettings(readSettingsFile(paths.shipped), readSettingsFile(paths.overrides))
   for (const key of ["model", "small_model"]) if (effective[key] !== undefined && (typeof effective[key] !== "string" || !/^[^\s/]+\/[^\s]+$/.test(effective[key] as string))) throw new Error("Saved model settings are invalid. Select a provider and model in Settings.")
+  effective.disabled_providers = [...new Set([...(Array.isArray(effective.disabled_providers) ? effective.disabled_providers : []), "opencode"])]
   return effective
 }

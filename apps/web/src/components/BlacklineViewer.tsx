@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react"
+import { Fragment, useEffect, useMemo, useRef, useState, type MouseEvent } from "react"
 import { RevisionPresentation } from "docxodus"
 import { useDocxodus } from "docxodus/react"
 import {
@@ -16,6 +16,7 @@ import { humanizeError } from "../api/ingest/errors"
 import { fileStem } from "./CompareDialog"
 import { DOCX_RENDER_OPTIONS, ViewerTitle } from "./DocumentViewer"
 import { ModalClose } from "./ModalHeader"
+import useModalFocus from "./useModalFocus"
 
 // The blackline of two Word versions beside a list of the edits the later
 // version made without tracked changes, what became of the earlier version's
@@ -33,6 +34,7 @@ export const BLACKLINE_RENDER_OPTIONS = { ...DOCX_RENDER_OPTIONS, revisionPresen
 export default function BlacklineViewer({ matterId, params, focus, onClose }: { matterId: string; params: CompareParams; focus?: string; onClose: () => void }) {
   const { isReady, error: wasmError, convertToHtml } = useDocxodus("/wasm/")
   const panel = useRef<HTMLDivElement>(null)
+  useModalFocus(panel)
   const page = useRef<HTMLDivElement>(null)
   // The fetched blackline, painted on screen and saved by Download.
   const [blackline, setBlackline] = useState<Uint8Array>()
@@ -58,15 +60,6 @@ export default function BlacklineViewer({ matterId, params, focus, onClose }: { 
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key])
-
-  // Move focus into the dialog and hand it back to whatever opened it.
-  useLayoutEffect(() => {
-    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
-    panel.current?.querySelector<HTMLButtonElement>(".modal-close")?.focus({ preventScroll: true })
-    return () => {
-      if (opener?.isConnected) opener.focus({ preventScroll: true })
-    }
-  }, [])
 
   // Fetched apart from the viewer runtime, so the blackline can be downloaded
   // even when it cannot be painted.

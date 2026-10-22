@@ -122,3 +122,13 @@
     transition: none !important;
   }
 }
+
+/* Comprehensive opt-out includes animation defined in scoped component sheets. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0s !important;
+    scroll-behavior: auto !important;
+  }
+}

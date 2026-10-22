@@ -125,7 +125,7 @@ export default function Workflows() {
               >
                 <div className="list-row-main">
                   <span className="list-row-title">
-                    {wf.label}
+                    <button type="button" className="library-item-title" onClick={(e) => { e.stopPropagation(); setViewing(wf) }}>{wf.label}</button>
                     <span className="badge badge-quiet">Built-in</span>
                   </span>
                   <span className="list-row-meta">
@@ -166,7 +166,7 @@ export default function Workflows() {
                   onClick={() => setViewing(wf)}
                 >
                   <div className="list-row-main">
-                    <span className="list-row-title">{wf.label}</span>
+                    <span className="list-row-title"><button type="button" className="library-item-title" onClick={(e) => { e.stopPropagation(); setViewing(wf) }}>{wf.label}</button></span>
                     <span className="list-row-meta">
                       <span className="list-row-desc">{wf.description}</span>
                       {stepSummary && <span className="list-row-date">{stepSummary}</span>}

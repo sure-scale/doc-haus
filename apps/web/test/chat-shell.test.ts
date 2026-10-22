@@ -14,7 +14,7 @@ function empty(documentCount?: number) {
 
 test("a matter with no documents leads with adding them instead of document starters", () => {
   const html = empty(0)
-  expect(html).toContain("Start by adding this matter&#x27;s documents")
+  expect(html).toContain("Start with the source documents")
   expect(html).toContain("Add documents")
   expect(html).toContain("Drop Word, PDF, email or Excel files onto the message box below")
   expect(html).not.toContain(starters[0])

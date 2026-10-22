@@ -81,8 +81,8 @@
   .content:has(> .container > .matter-body) {
     display: flex;
     flex-direction: column;
-    height: 100vh;
-    height: 100dvh;
+    height: var(--viewport-block);
+    height: var(--viewport-block);
   }
 
   .content > .container:has(> .matter-body) {

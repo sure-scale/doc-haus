@@ -5,6 +5,7 @@ import path from "node:path"
 import { Credential } from "@opencode/core/credential"
 import { Integration } from "@opencode/schema/integration"
 import { Effect, Logger, Schema } from "effect"
+import { isRemovedProvider } from "./effective-settings"
 
 export type ReusableConnection = { id: string; integrationID: string; label: string; authType: "key" | "oauth" }
 type Stored = { integrationID: Integration.ID; label: string; value: Credential.Value }
@@ -66,6 +67,7 @@ export function credentialReuse(options: {
               if (!["id", "integration_id", "label", "value"].every(column => columns.includes(column))) throw new Error("Unsupported source schema")
               const rows = db.query<Row, []>("SELECT id, integration_id, label, json_extract(value, '$.type') AS authType FROM credential").all()
               for (const row of rows) {
+                if (isRemovedProvider(row.integration_id)) continue
                 if (!integration(row.integration_id) || !["key", "oauth"].includes(row.authType)) { unavailableCount++; continue }
                 connections.push(handle(source.id, row.id, { integrationID: row.integration_id, label: row.label, authType: row.authType as "key" | "oauth" }))
               }
@@ -73,6 +75,7 @@ export function credentialReuse(options: {
           } else {
             for (const [id, raw] of Object.entries(legacy(source.file))) {
               const integrationID = id.replace(/\/+$/, "")
+              if (isRemovedProvider(integrationID)) continue
               if (!integration(integrationID) || !raw || typeof raw !== "object" || !("type" in raw) || raw.type !== "api" && raw.type !== "oauth") { unavailableCount++; continue }
               connections.push(handle(source.id, id, { integrationID, label: raw.type === "oauth" ? "OAuth" : "API key", authType: raw.type === "oauth" ? "oauth" : "key" }))
             }
@@ -102,6 +105,9 @@ export function credentialReuse(options: {
         } else {
           stored = legacyCredential(selected.connection.integrationID, legacy(source.file)[selected.record])
         }
+        // Revalidate the current source row as well as the discovery handle:
+        // another process may have changed its integration since listing.
+        if (isRemovedProvider(stored.integrationID)) throw new Error("Provider unavailable")
         const result = await options.create(stored)
         return { connection: { id: result.id, integrationID: stored.integrationID, label: stored.label, authType: stored.value.type } }
       } catch { throw new Error("Could not reuse the selected sign-in. The original store has not been changed; connect again or refresh the list.") }

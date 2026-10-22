@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
+import { isRemovedProvider } from "./effective-settings"
 
 type ProviderMetadata = { id: string; name: string; activation: "auto" | "enabled" | "disabled"; integrationID?: string; settings?: Readonly<Record<string, unknown>> }
 
@@ -9,7 +10,7 @@ type ProviderMetadata = { id: string; name: string; activation: "auto" | "enable
 // leave the engine; provider settings can otherwise contain credentials.
 export function providerCatalog(providers: readonly ProviderMetadata[], environment: Record<string, string | undefined> = process.env,
   home = os.homedir(), exists: (file: string) => boolean = existsSync) {
-  return providers.map(provider => {
+  return providers.filter(provider => !isRemovedProvider(provider.id)).map(provider => {
     const google = provider.id === "google-vertex" || provider.id === "google-vertex-anthropic"
     const aws = provider.id === "amazon-bedrock"
     const options: Record<string, string> = {}

@@ -19,6 +19,7 @@ import { ModalClose } from "./ModalHeader"
 import { CompareIcon } from "./CompareDialog"
 import { citationPassage, focusCitationPassage, type CitationFocus } from "./citation-target"
 import { useToast } from "./Toast"
+import useModalFocus from "./useModalFocus"
 
 // How a Word file with tracked changes is painted: insertions green, deletions
 // struck red, moves, headers and footers, comments in the margin. Shared with
@@ -97,6 +98,8 @@ function WordDocumentViewer({
   // document re-renders and the change list shrinks without duplicating fetch logic.
   const [reload, setReload] = useState(0)
   const focusRef = useRef<HTMLDivElement>(null)
+  const modalRef = useRef<HTMLDivElement>(null)
+  useModalFocus(modalRef)
   const documentRef = useRef<HTMLDivElement>(null)
   const [passage, setPassage] = useState<"matched" | "ambiguous" | "unavailable">()
   const moreRef = useRef<HTMLDetailsElement>(null)
@@ -228,7 +231,9 @@ function WordDocumentViewer({
   if (isPdf)
     return (
       <div className="viewer-overlay" onClick={onClose}>
-        <div className="viewer-panel document-reader" role="dialog" aria-modal="true" aria-label={name} onClick={(e) => e.stopPropagation()}>
+        <div ref={modalRef} className="viewer-panel document-reader" role="dialog" aria-modal="true" aria-label={name} tabIndex={-1} onClick={(e) => e.stopPropagation()} onKeyDown={(e) => {
+          if (e.key === "Escape" && !e.defaultPrevented) { e.stopPropagation(); onClose() }
+        }}>
           <div className="viewer-bar">
             <ViewerTitle name={name} kind="PDF document" />
             <div className="viewer-bar-actions">
@@ -257,7 +262,9 @@ function WordDocumentViewer({
 
   return (
     <div className="viewer-overlay" onClick={onClose}>
-      <div className="viewer-panel document-reader" role="dialog" aria-modal="true" aria-label={name} onClick={(e) => e.stopPropagation()}>
+      <div ref={modalRef} className="viewer-panel document-reader" role="dialog" aria-modal="true" aria-label={name} tabIndex={-1} onClick={(e) => e.stopPropagation()} onKeyDown={(e) => {
+        if (e.key === "Escape" && !e.defaultPrevented) { e.stopPropagation(); onClose() }
+      }}>
         <div className="viewer-bar">
           <ViewerTitle name={name} kind="Word document" pending={redlines.length} />
           <div className="viewer-bar-actions">
@@ -421,6 +428,8 @@ function DocumentTextViewer({ matterId, name, kind, citation, onClose }: {
   const [text, setText] = useState<string>()
   const [error, setError] = useState<string>()
   const markRef = useRef<HTMLElement>(null)
+  const modalRef = useRef<HTMLDivElement>(null)
+  useModalFocus(modalRef)
   const match = useMemo(() => (text !== undefined && citation ? citationPassage(text, citation.excerpt) : undefined), [text, citation])
 
   useEffect(() => {
@@ -441,7 +450,9 @@ function DocumentTextViewer({ matterId, name, kind, citation, onClose }: {
 
   return (
     <div className="viewer-overlay" onClick={onClose}>
-      <div className="viewer-panel document-reader" role="dialog" aria-modal="true" aria-label={name} onClick={(e) => e.stopPropagation()}>
+      <div ref={modalRef} className="viewer-panel document-reader" role="dialog" aria-modal="true" aria-label={name} tabIndex={-1} onClick={(e) => e.stopPropagation()} onKeyDown={(e) => {
+        if (e.key === "Escape" && !e.defaultPrevented) { e.stopPropagation(); onClose() }
+      }}>
         <div className="viewer-bar">
           <ViewerTitle name={name} kind={`${kind === "eml" ? "Email" : "Excel spreadsheet"} · extracted text, read-only`} />
           <div className="viewer-bar-actions">

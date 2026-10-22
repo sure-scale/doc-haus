@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { listReusableSignIns, reuseSignIn, type ReusableSource } from "../../api/ingest/credential-reuse"
+import { isRemovedProvider } from "../../api/opencode/provider-readiness"
 
 export type MatchingSignInCandidate = {
   sourceId: string
@@ -16,6 +17,10 @@ export function useMatchingSignIns(integrationID: string) {
   const retry = useCallback(async () => {
     const current = ++request.current
     setResult({ integrationID, candidates: [], loading: true, error: "" })
+    if (isRemovedProvider(integrationID)) {
+      setResult({ integrationID, candidates: [], loading: false, error: "" })
+      return
+    }
     try {
       const sources = await listReusableSignIns(integrationID)
       const candidates = sources.filter(source => source.status === "ready").flatMap(source => source.connections
@@ -88,7 +93,9 @@ export default function ExistingSignIn({ onReused }: { onReused: (integrationID:
     finally { setLoading(false) }
   }
   useEffect(() => { void discover() }, [])
-  const candidates = sources.filter(source => source.status === "ready").flatMap(source => source.connections.map(connection => ({ source, connection, value: JSON.stringify([source.id, connection.id]) })))
+  const candidates = sources.filter(source => source.status === "ready").flatMap(source => source.connections
+    .filter(connection => !isRemovedProvider(connection.integrationID))
+    .map(connection => ({ source, connection, value: JSON.stringify([source.id, connection.id]) })))
   const unavailable = sources.some(source => source.status === "unavailable")
   const skipped = sources.reduce((count, source) => count + source.unavailableCount, 0)
   const selected = candidates.find(candidate => candidate.value === choice)
@@ -125,5 +132,5 @@ export default function ExistingSignIn({ onReused }: { onReused: (integrationID:
 }
 
 function providerName(id: string) {
-  return ({ "opencode-go": "OpenCode Go", opencode: "OpenCode Zen", "zai-coding-plan": "Z.AI Coding Plan", zai: "Z.AI", openrouter: "OpenRouter", openai: "OpenAI", google: "Google AI", azure: "Azure" } as Record<string, string>)[id] ?? id
+  return ({ "opencode-go": "OpenCode Go", "zai-coding-plan": "Z.AI Coding Plan", zai: "Z.AI", openrouter: "OpenRouter", openai: "OpenAI", google: "Google AI", azure: "Azure" } as Record<string, string>)[id] ?? id
 }

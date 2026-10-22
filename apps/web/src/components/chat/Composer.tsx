@@ -1,4 +1,4 @@
-import type { ReactNode } from "react"
+import { useId, type ReactNode } from "react"
 import { isAuto, type AssistantMeta, type WorkflowMeta } from "../../agents"
 import ModelSelector from "../ModelSelector"
 import PlaybookSelector from "../PlaybookSelector"
@@ -57,6 +57,7 @@ export default function Composer({
   // The matter's Documents control (see DocumentChips), seated after the playbook.
   documentsControl?: ReactNode
 }) {
+  const hintId = useId()
   // A pinned surface (the template library) owns its one assistant — no
   // picker, no workflow launcher, nothing to choose. Drop the whole tools row so
   // the composer reads clean. Otherwise the tools sit in the composer's footer,
@@ -97,6 +98,7 @@ export default function Composer({
         ref={inputRef}
         rows={1}
         aria-label="Message"
+        aria-describedby={hintId}
         placeholder={composerPlaceholder}
         value={input}
         onChange={(e) => {
@@ -106,6 +108,7 @@ export default function Composer({
           el.style.height = Math.min(el.scrollHeight, 200) + "px"
         }}
         onKeyDown={(e) => {
+          if (e.nativeEvent.isComposing || e.keyCode === 229) return
           if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
             e.preventDefault()
             onSend()
@@ -119,6 +122,7 @@ export default function Composer({
       />
       <div className="composer-footer">
         {tools}
+        <span id={hintId} className="sr-only">Enter to send. Shift and Enter for a new line.</span>
         <span className="composer-hint" aria-hidden>
           <span>
             <kbd>Enter</kbd> send

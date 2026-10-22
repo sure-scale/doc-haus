@@ -6,8 +6,8 @@ export default function HostSignInStatus({ providers, verified }: { providers: P
     <h3>Connection status</h3>
     {detected.map(provider => <div key={provider.id}>
       <h4>{provider.id === "amazon-bedrock" ? "Amazon Bedrock" : provider.id === "google-vertex" ? "Google Vertex AI" : provider.name}</h4>
-      <p>{provider.publicModels ? "Public models · no sign-in required." : provider.credentialSources.length ? `Detected credentials: ${provider.credentialSources.join(", ")}.` : provider.nativeAvailable ? "Available models; model access has not been tested here." : provider.host?.sources.length ? "Cloud sign-in source detected; provider setup is incomplete." : "No existing connection detected. Sign in below."}</p>
-      {!provider.publicModels && <p className="settings-hint muted">Detection does not run a model test.</p>}
+      <p>{provider.credentialSources.length ? `Detected credentials: ${provider.credentialSources.join(", ")}.` : provider.nativeAvailable ? "Available models; model access has not been tested here." : provider.host?.sources.length ? "Cloud sign-in source detected; provider setup is incomplete." : "No existing connection detected. Sign in below."}</p>
+      <p className="settings-hint muted">Detection does not run a model test.</p>
       {!!provider.host?.sources.length && <p>Detected on server: {provider.host.sources.join(", ")}.</p>}
       {provider.host?.type === "aws-chain" ? <p className="settings-hint muted">
         {provider.host.options.profile && <>AWS profile: {provider.host.options.profile}. </>}

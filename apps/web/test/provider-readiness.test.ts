@@ -28,10 +28,11 @@ test("disabled providers remain unavailable even with credentials", () => {
   expect(connectedProviderIDs([{ ...provider, activation: "disabled" }], [integration])).toEqual([])
 })
 
-test("native credential-free local discovery and the restricted public catalog remain usable", () => {
+test("native credential-free local discovery remains usable while the removed public provider stays unavailable", () => {
   expect(connectedProviderIDs([{ ...provider, id: "ollama", integrationID: undefined }], [])).toEqual(["ollama"])
   const publicProvider = { ...provider, id: "opencode", integrationID: "opencode", settings: { apiKey: "public" } }
-  expect(connectedProviderIDs([publicProvider], [{ ...integration, id: "opencode", connections: [] }])).toEqual(["opencode"])
+  expect(connectedProviderIDs([publicProvider], [{ ...integration, id: "opencode", connections: [] }])).toEqual([])
+  expect(connectedProviderIDs([publicProvider, provider], [{ ...integration, id: "opencode" }, integration])).toEqual(["opencode-go"])
 })
 
 test("host credentials still reach the existing live-probe gate", () => {

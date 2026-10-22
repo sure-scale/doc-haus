@@ -55,28 +55,41 @@ try {
   const table = page.getByRole("dialog", { name: "Review table — Supplier review" })
   const answer = page.getByRole("button", { name: /^The law of England and Wales\./ })
   const detail = page.locator(".picker-panel").filter({ hasText: "What is the governing law?" })
+  const detailModal = page.getByRole("dialog", { name: /^Answer and comments:/ })
   const closes = () => page.evaluate(() => (window as unknown as { gridCloses?: number }).gridCloses ?? 0)
-  const focused = () => page.evaluate(() => document.activeElement?.tagName)
+  const focusInDetail = () => detailModal.evaluate(element => element.contains(document.activeElement))
 
-  // Focus stays on the cell that opened the detail, moves to the dialog when the
-  // detail's text is clicked, and falls to the page when a comment is deleted.
-  // Repeating the press also covers Chrome refusing to let a later cancel be prevented.
-  for (const focus of ["cell", "detail text", "page"] as const) {
+  // The native detail owns focus after opening an answer, after clicking its
+  // reading surface and after removing a focused comment control. Repeating the
+  // press also covers Chrome refusing to prevent a later native cancel.
+  for (const focus of ["opening answer", "detail text", "deleted comment"] as const) {
     await answer.click()
     await detail.waitFor()
+    assert.equal(await detailModal.evaluate(element => (element as HTMLDialogElement).open), true)
+    await detail.getByRole("textbox", { name: "Add a comment", exact: true }).waitFor()
+    assert.equal(await detail.getByRole("textbox", { name: "Add a comment", exact: true }).evaluate(element => element === document.activeElement), true, "opening an answer should focus its comment field")
     if (focus === "detail text") await detail.locator(".review-detail-answer").click()
-    if (focus === "page") {
+    if (focus === "deleted comment") {
       await detail.locator("textarea").fill("Confirm the governing law with the client.")
-      await detail.getByRole("button", { name: "Send", exact: true }).click()
+      await detail.getByRole("button", { name: "Add comment", exact: true }).click()
       await detail.getByTitle("Delete comment").click()
       await detail.getByText("Confirm the governing law with the client.").waitFor({ state: "detached" })
-      assert.equal(await focused(), "BODY")
     }
+    assert.equal(await focusInDetail(), true, `focus escaped the active detail after ${focus}`)
+    // With an empty composer, Add comment is disabled. The native sequence is
+    // Close → textarea → Close, in both directions, without entering the table.
+    await detail.locator("textarea").focus()
+    await page.keyboard.press("Tab")
+    assert.equal(await detail.getByRole("button", { name: "Close", exact: true }).evaluate(element => element === document.activeElement), true, "Tab should wrap to the detail's close button")
+    await page.keyboard.press("Shift+Tab")
+    assert.equal(await detail.locator("textarea").evaluate(element => element === document.activeElement), true, "Shift+Tab should wrap to the detail's comment field")
+    assert.equal(await focusInDetail(), true)
     await page.keyboard.press("Escape")
     await detail.waitFor({ state: "detached" })
     assert.equal(await table.isVisible(), true, `one Escape (focus on ${focus}) closed the review table, not just the cell detail`)
     assert.equal(await closes(), 0)
-    console.log(`PASS Escape with focus on the ${focus} closes the cell detail and keeps the review table open`)
+    assert.equal(await answer.evaluate(element => element === document.activeElement), true, "closing a detail should restore its answer button")
+    console.log(`PASS native focus containment, Tab loop, restoration and Escape after ${focus}`)
   }
 
   await page.keyboard.press("Escape")

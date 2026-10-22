@@ -2,6 +2,7 @@ import { useState } from "react"
 import { setModelPair } from "../../api/opencode/config"
 import type { ModelOption } from "../../models"
 import type { Provider } from "./types"
+import { isRemovedModel } from "../../api/opencode/provider-readiness"
 
 export default function ModelPickerStep({
   connectedProviders,
@@ -60,9 +61,9 @@ export default function ModelPickerStep({
           <h3><label htmlFor="onboarding-primary-model">Primary model</label><span className="onboarding-field-tag">Drafting &amp; analysis</span></h3>
           <p id="onboarding-primary-hint" className="settings-hint muted">Handles every matter unless an assistant uses its own model.</p>
           <div className="row settings-row">
-            <select id="onboarding-primary-model" aria-describedby="onboarding-primary-hint" disabled={busy || !provider} value={primary} onChange={(e) => setPrimary(e.target.value)}>
+            <select id="onboarding-primary-model" aria-describedby="onboarding-primary-hint" disabled={busy || !provider} value={isRemovedModel(primary) ? "" : primary} onChange={(e) => setPrimary(e.target.value)}>
               <option value="">Select a model</option>
-              {primary && !providerModels.some(model => model.value === primary) && <option value={primary}>{primary} · unavailable</option>}
+              {primary && !isRemovedModel(primary) && !providerModels.some(model => model.value === primary) && <option value={primary}>{primary} · unavailable</option>}
               {providerModels.map((m) => (
                 <option key={m.value} value={m.value}>
                   {m.label}
@@ -78,9 +79,9 @@ export default function ModelPickerStep({
             A smaller model for quick tasks, including conversation titles and choosing an assistant.
           </p>
           <div className="row settings-row">
-            <select id="onboarding-fast-model" aria-describedby="onboarding-fast-hint" disabled={busy || !provider} value={fast} onChange={(e) => setFast(e.target.value)}>
+            <select id="onboarding-fast-model" aria-describedby="onboarding-fast-hint" disabled={busy || !provider} value={isRemovedModel(fast) ? "" : fast} onChange={(e) => setFast(e.target.value)}>
               <option value="">Same as primary</option>
-              {fast && !providerModels.some(model => model.value === fast) && <option value={fast}>{fast} · unavailable</option>}
+              {fast && !isRemovedModel(fast) && !providerModels.some(model => model.value === fast) && <option value={fast}>{fast} · unavailable</option>}
               {providerModels.map((m) => (
                 <option key={m.value} value={m.value}>
                   {m.label}

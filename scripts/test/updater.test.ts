@@ -62,11 +62,93 @@ test("polling only offers bumped releases and leaves HEAD unchanged", async () =
   expect(await f.git(f.clone, "rev-parse", "HEAD")).toBe(f.original)
 })
 
+test("canonical releases ignore feature upstreams and concurrent feature fetches, including detached checkouts", async () => {
+  const f = await fixture()
+  const target = await f.publish(2)
+  await f.git(f.source, "checkout", "-b", "feature/newer")
+  const feature = await f.publish(99)
+  await f.git(f.clone, "fetch", "origin", "refs/heads/feature/newer:refs/remotes/origin/feature/newer")
+  await f.git(f.clone, "checkout", "-b", "feature/local", f.original)
+  await f.git(f.clone, "branch", "--set-upstream-to=origin/feature/newer")
+  expect(await f.updater.check(true)).toMatchObject({ target, latest: { version: 2 }, available: true })
+  await f.git(f.clone, "checkout", "-b", "feature/untracked", f.original)
+  expect(await f.updater.check(true)).toMatchObject({ target, latest: { version: 2 }, available: true })
+  await f.git(f.clone, "checkout", "--detach", f.original)
+  expect(await f.updater.check(true)).toMatchObject({ target, latest: { version: 2 }, available: true })
+
+  class ConcurrentFetchUpdater extends RepoUpdater {
+    override async git(...args: string[]) {
+      const output = await super.git(...args)
+      // Another repository user fetches a feature after the channel fetch and
+      // before release inspection, replacing FETCH_HEAD with a newer marker.
+      if (args[0] === "fetch") await super.git("fetch", "--no-tags", "--", "origin", "refs/heads/feature/newer")
+      return output
+    }
+  }
+  expect(await new ConcurrentFetchUpdater(f.clone, f.runtime).check()).toMatchObject({ target, latest: { version: 2 }, available: true })
+
+  let installs = 0
+  await expect(f.updater.apply(feature, async () => { installs++; return 0 })).rejects.toThrow("available update changed")
+  expect(installs).toBe(0)
+  expect(await f.git(f.clone, "rev-parse", "HEAD")).toBe(f.original)
+  expect(await f.git(f.clone, "branch", "--show-current")).toBe("")
+  expect(await Bun.file(path.join(f.runtime, "update-result.json")).exists()).toBe(false)
+})
+
+test("clean branch and detached worktrees can fast-forward to the canonical release without switching branches", async () => {
+  const f = await fixture()
+  const target = await f.publish(2)
+  for (const detached of [false, true]) {
+    const worktree = path.join(path.dirname(f.clone), detached ? "detached-worktree" : "branch-worktree")
+    await f.git(f.clone, "worktree", "add", ...(detached ? ["--detach"] : ["-b", "task/local"]), worktree, f.original)
+    const updater = new RepoUpdater(worktree, path.join(f.runtime, detached ? "detached" : "branch"))
+    expect(await updater.check()).toMatchObject({ target, available: true })
+    const installed: string[] = []
+    await updater.apply(target, async directory => { installed.push(directory); return 0 })
+    expect(installed).toEqual([worktree, path.join(worktree, "services/ingest")])
+    expect(await f.git(worktree, "rev-parse", "HEAD")).toBe(target)
+    expect(await f.git(worktree, "branch", "--show-current")).toBe(detached ? "" : "task/local")
+    expect(await f.git(f.clone, "rev-parse", "HEAD")).toBe(f.original)
+  }
+})
+
+test("local work ahead of a prior release cannot be overwritten by the next canonical release", async () => {
+  const f = await fixture()
+  const prior = await f.publish(2)
+  await f.git(f.clone, "fetch", "origin", "dochaus")
+  const worktree = path.join(path.dirname(f.clone), "ahead-worktree")
+  await f.git(f.clone, "worktree", "add", "-b", "task/ahead", worktree, prior)
+  await Bun.write(path.join(worktree, "local.txt"), "Preserve local work")
+  await f.git(worktree, "add", "local.txt")
+  await f.git(worktree, "commit", "-m", "Local work after release")
+  const local = await f.git(worktree, "rev-parse", "HEAD")
+  const target = await f.publish(3)
+  const updater = new RepoUpdater(worktree, f.runtime)
+  expect(await updater.check()).toMatchObject({ target, available: true })
+  let installs = 0
+  await expect(updater.apply(target, async () => { installs++; return 0 })).rejects.toThrow("separate code changes")
+  expect(installs).toBe(0)
+  expect(await f.git(worktree, "rev-parse", "HEAD")).toBe(local)
+  expect(await Bun.file(path.join(worktree, "local.txt")).text()).toBe("Preserve local work")
+  expect(await f.git(worktree, "branch", "--show-current")).toBe("task/ahead")
+})
+
+test("a newer canonical release invalidates a prior offer instead of silently changing its install target", async () => {
+  const f = await fixture()
+  const target = await f.publish(2)
+  expect((await f.updater.check()).target).toBe(target)
+  const newer = await f.publish(3)
+  let installs = 0
+  await expect(f.updater.apply(target, async () => { installs++; return 0 })).rejects.toThrow("available update changed")
+  expect(installs).toBe(0)
+  expect(await f.git(f.clone, "rev-parse", "HEAD")).toBe(f.original)
+  expect((await f.updater.check()).target).toBe(newer)
+})
+
 test("fast-forward applies the exact offered version and installs both packages", async () => {
   const f = await fixture()
   const target = await f.publish(2)
   await f.updater.check(true)
-  await f.publish(3)
   const installed: string[] = []
   await f.updater.apply(target, async directory => { installed.push(directory); return 0 })
   expect(installed).toEqual([f.clone, path.join(f.clone, "services/ingest")])
@@ -127,10 +209,12 @@ test("runtime overrides and data survive updates and rollback; tracked config ed
   expect(await Bun.file(path.join(f.clone, "dochaus/opencode.json")).text()).toBe(settings)
 })
 
-test("disconnected and unconfigured repos return a non-blocking check error", async () => {
+test("checkout tracking is optional but a missing canonical release remote returns a non-blocking error", async () => {
   const f = await fixture()
   await f.git(f.clone, "config", "--unset", "branch.dochaus.remote")
-  const result = await f.updater.check()
+  expect((await f.updater.check()).error).toBeUndefined()
+  await f.git(f.clone, "remote", "remove", "origin")
+  const result = await f.updater.check(true)
   expect(result.available).toBe(false)
   expect(result.error).toBeTruthy()
 })
