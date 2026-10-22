@@ -1,5 +1,6 @@
 import { useState } from "react"
 import { Link } from "react-router-dom"
+import backdropClose from "./backdropClose"
 
 // "Playbook" control by the composer. Binds one firm playbook to this matter:
 // the review checks documents against its positions and approved clause text.
@@ -34,7 +35,7 @@ export default function PlaybookSelector({
         <span>{boundLabel ? `Playbook: ${boundLabel}` : "Playbook"}</span>
       </button>
       {open && (
-        <div className="viewer-overlay" onClick={() => setOpen(false)}>
+        <div className="viewer-overlay" {...backdropClose(() => setOpen(false))}>
           <div className="picker-panel picker-wide" onClick={(e) => e.stopPropagation()}>
             <div className="viewer-bar">
               <span className="viewer-title">Playbook</span>

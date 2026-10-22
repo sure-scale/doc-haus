@@ -10,6 +10,7 @@ import MatterPicker from "../components/MatterPicker"
 import { DocMarkdown } from "../components/markdown/Markdown"
 import { WORKFLOW_BUILDER, WORKFLOWS, type WorkflowMeta } from "../agents"
 import ModalHeader from "../components/ModalHeader"
+import backdropClose from "../components/backdropClose"
 
 // The firm's workflow library: built-in multi-agent review routines plus custom
 // workflows created conversationally by the workflow-builder agent. Built-ins are
@@ -233,7 +234,7 @@ export default function Workflows() {
       )}
 
       {viewing && (
-        <div className="viewer-overlay" onClick={() => setViewing(undefined)}>
+        <div className="viewer-overlay" {...backdropClose(() => setViewing(undefined))}>
           <div className="picker-panel doc-panel" onClick={(e) => e.stopPropagation()}>
             <ModalHeader
               title={`${viewing.label}${"created_at" in viewing ? "" : " (built-in)"}`}

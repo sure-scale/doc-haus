@@ -2,6 +2,7 @@ import { useEffect, useState } from "react"
 import { listJurisdictions, listMatters, type Jurisdiction, type Matter } from "../api/ingest/matters"
 import ModalHeader from "./ModalHeader"
 import { formatDate } from "../lib/format"
+import backdropClose from "./backdropClose"
 
 // The "Use in a matter" picker shared by the Templates and Workflows libraries:
 // pick a matter to drop a template draft or workflow run into. Loads its own
@@ -28,7 +29,7 @@ export default function MatterPicker({
   const sorted = matters && [...matters].sort((a, b) => b.created_at - a.created_at)
 
   return (
-    <div className="viewer-overlay" onClick={onClose}>
+    <div className="viewer-overlay" {...backdropClose(() => onClose())}>
       <div className="picker-panel" onClick={(e) => e.stopPropagation()}>
         <ModalHeader title={title} onClose={onClose} />
         <div className="picker-body">

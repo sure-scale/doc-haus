@@ -20,6 +20,7 @@ import { CompareIcon } from "./CompareDialog"
 import { citationPassage, focusCitationPassage, type CitationFocus } from "./citation-target"
 import { useToast } from "./Toast"
 import useModalFocus from "./useModalFocus"
+import backdropClose from "./backdropClose"
 
 // How a Word file with tracked changes is painted: insertions green, deletions
 // struck red, moves, headers and footers, comments in the margin. Shared with
@@ -230,7 +231,7 @@ function WordDocumentViewer({
 
   if (isPdf)
     return (
-      <div className="viewer-overlay" onClick={onClose}>
+      <div className="viewer-overlay" {...backdropClose(() => onClose())}>
         <div ref={modalRef} className="viewer-panel document-reader" role="dialog" aria-modal="true" aria-label={name} tabIndex={-1} onClick={(e) => e.stopPropagation()} onKeyDown={(e) => {
           if (e.key === "Escape" && !e.defaultPrevented) { e.stopPropagation(); onClose() }
         }}>
@@ -261,7 +262,7 @@ function WordDocumentViewer({
     )
 
   return (
-    <div className="viewer-overlay" onClick={onClose}>
+    <div className="viewer-overlay" {...backdropClose(() => onClose())}>
       <div ref={modalRef} className="viewer-panel document-reader" role="dialog" aria-modal="true" aria-label={name} tabIndex={-1} onClick={(e) => e.stopPropagation()} onKeyDown={(e) => {
         if (e.key === "Escape" && !e.defaultPrevented) { e.stopPropagation(); onClose() }
       }}>
@@ -449,7 +450,7 @@ function DocumentTextViewer({ matterId, name, kind, citation, onClose }: {
   }, [match])
 
   return (
-    <div className="viewer-overlay" onClick={onClose}>
+    <div className="viewer-overlay" {...backdropClose(() => onClose())}>
       <div ref={modalRef} className="viewer-panel document-reader" role="dialog" aria-modal="true" aria-label={name} tabIndex={-1} onClick={(e) => e.stopPropagation()} onKeyDown={(e) => {
         if (e.key === "Escape" && !e.defaultPrevented) { e.stopPropagation(); onClose() }
       }}>

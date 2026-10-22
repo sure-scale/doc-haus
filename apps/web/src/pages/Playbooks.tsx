@@ -12,6 +12,7 @@ import MatterPicker from "../components/MatterPicker"
 import ModalHeader from "../components/ModalHeader"
 import { DocMarkdown } from "../components/markdown/Markdown"
 import "../styles/playbooks.css"
+import backdropClose from "../components/backdropClose"
 
 export default function Playbooks() {
   const [params, setParams] = useSearchParams()
@@ -265,7 +266,7 @@ export default function Playbooks() {
         }}
       />
       {viewing && (
-        <div className="viewer-overlay" onClick={() => setViewing(undefined)}>
+        <div className="viewer-overlay" {...backdropClose(() => setViewing(undefined))}>
           <div
             className="picker-panel doc-panel"
             role="dialog"
@@ -285,9 +286,9 @@ export default function Playbooks() {
       {editing && (
         <div
           className="viewer-overlay"
-          onClick={() => {
+          {...backdropClose(() => {
             if (!working) setEditing(undefined)
-          }}
+          })}
         >
           <div
             className="picker-panel doc-panel"

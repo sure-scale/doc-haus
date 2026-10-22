@@ -14,8 +14,8 @@
 
 .research-source-list > summary:focus-visible {
   border-radius: var(--radius-sm);
-  outline: none;
-  box-shadow: var(--focus-ring);
+  outline: 2px solid var(--md-sys-state-focus);
+  outline-offset: 2px;
 }
 
 .research-source-list > .settings-hint {

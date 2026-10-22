@@ -121,7 +121,8 @@
 
 .onboarding-progress .onboarding-step-button:focus-visible {
   background: var(--accent-tint);
-  box-shadow: var(--focus-ring);
+  outline: 2px solid var(--md-sys-state-focus);
+  outline-offset: 2px;
 }
 
 .onboarding-progress .onboarding-step-button:disabled {
@@ -583,6 +584,12 @@
 
 .onboarding-panel button:not(.linklike, .ghost, .settings-seg button, .jx-trigger, .onboarding-step-button) {
   min-height: 40px;
+}
+
+@media (pointer: coarse) {
+  .onboarding-panel button:not(.linklike, .ghost, .settings-seg button, .jx-trigger, .onboarding-step-button) {
+    min-height: max(44px, calc(44px / var(--ui-scale)));
+  }
 }
 
 .onboarding-action-hint {

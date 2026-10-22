@@ -190,7 +190,8 @@ body { background: var(--panel); }
   .list-row-actions { margin-left: auto; }
 }
 @media (pointer: coarse) {
-  button:not(.switch):not(.sidebar-collapse), .icon-btn, select { min-height: 44px; }
-  input:not([type="checkbox"]):not([type="radio"]):not([type="file"]), select { min-height: 44px; height: 44px; }
-  .toast-close { min-width: 44px; }
+  button:not(.switch):not(.sidebar-collapse), .icon-btn, select { min-height: max(44px, calc(44px / var(--ui-scale))); }
+  input:not([type="checkbox"]):not([type="radio"]):not([type="file"]), select { min-height: max(44px, calc(44px / var(--ui-scale))); height: max(44px, calc(44px / var(--ui-scale))); }
+  .toast-close { min-width: max(44px, calc(44px / var(--ui-scale))); }
+  .skip-link { display: flex; align-items: center; min-height: max(44px, calc(44px / var(--ui-scale))); }
 }

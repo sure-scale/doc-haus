@@ -191,7 +191,7 @@
 
 .design-conversation .composer:focus-within {
   border-color: var(--accent);
-  box-shadow: var(--focus-ring);
+  box-shadow: none;
 }
 
 .design-conversation .composer textarea {
@@ -895,10 +895,10 @@
   .design-conversation .run-head.is-done .run-head-toggle,
   .design-conversation .result-row .result-review,
   .design-conversation .result-files > summary {
-    min-height: 44px;
+    min-height: max(44px, calc(44px / var(--ui-scale)));
   }
   .design-conversation .msg-actions .icon-btn,
-  .design-conversation .question-nav-btn { min-width: 44px; }
+  .design-conversation .question-nav-btn { min-width: max(44px, calc(44px / var(--ui-scale))); }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1047,7 +1047,7 @@
 .design-conversation .narration-completed-activity summary:hover span { color: var(--accent); }
 .design-conversation .narration-completed-activity details > ol { padding: 6px 0 10px; }
 @media (pointer: coarse) {
-  .design-conversation .narration-completed-activity summary { min-height: 44px; }
+  .design-conversation .narration-completed-activity summary { min-height: max(44px, calc(44px / var(--ui-scale))); }
   .design-conversation .narration-completed-activity::before { top: 14px; }
 }
 @media (prefers-reduced-motion: reduce) {

@@ -324,9 +324,9 @@ button.run-head-toggle[aria-expanded="true"]::after {
 }
 
 .open-items > summary:focus-visible {
-  outline: none;
+  outline: 2px solid var(--md-sys-state-focus);
+  outline-offset: 2px;
   border-radius: var(--radius-sm);
-  box-shadow: var(--focus-ring);
 }
 
 /* Vertical stepper, one group per document. */

@@ -8,6 +8,7 @@ import LibraryLayout from "../components/LibraryLayout"
 import { DocMarkdown } from "../components/markdown/Markdown"
 import { AGENT_BUILDER } from "../agents"
 import ModalHeader from "../components/ModalHeader"
+import backdropClose from "../components/backdropClose"
 
 // The firm's specialist subagents: the repo-shipped reviewers (read-only) plus
 // the custom ones composed conversationally by the agent-builder. A custom
@@ -191,7 +192,7 @@ export default function Agents() {
       </LibraryLayout>
 
       {viewing && (
-        <div className="viewer-overlay" onClick={() => setViewing(undefined)}>
+        <div className="viewer-overlay" {...backdropClose(() => setViewing(undefined))}>
           <div className="picker-panel doc-panel" onClick={(e) => e.stopPropagation()}>
             <ModalHeader
               title={`${viewing.label}${viewing.builtin ? " (built-in)" : ""}`}

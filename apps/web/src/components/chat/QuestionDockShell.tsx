@@ -1,4 +1,5 @@
 import { type ReactNode, useEffect, useId, useLayoutEffect, useRef, useState } from "react"
+import backdropClose from "../backdropClose"
 
 export default function QuestionDockShell({
   count,
@@ -63,7 +64,7 @@ export default function QuestionDockShell({
         className="question-dialog"
         aria-labelledby={titleId}
         onClose={() => setOpen(false)}
-        onClick={(e) => e.target === e.currentTarget && setOpen(false)}
+        {...backdropClose(() => setOpen(false))}
       >
         {open && renderQuestions(titleId, () => setOpen(false))}
       </dialog>

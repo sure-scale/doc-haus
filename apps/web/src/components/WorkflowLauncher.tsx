@@ -1,6 +1,7 @@
 import { useState } from "react"
 import type { WorkflowMeta } from "../agents"
 import ModalHeader from "./ModalHeader"
+import backdropClose from "./backdropClose"
 
 // "Workflows" control by the composer. Opens a modal of the multi-step routines
 // available for this matter; picking one launches it into the artifact panel.
@@ -29,7 +30,7 @@ export default function WorkflowLauncher({
         <span>Workflows</span>
       </button>
       {open && (
-        <div className="viewer-overlay" onClick={() => setOpen(false)}>
+        <div className="viewer-overlay" {...backdropClose(() => setOpen(false))}>
           <div className="picker-panel" onClick={(e) => e.stopPropagation()}>
             <ModalHeader title="Workflows" onClose={() => setOpen(false)} />
             <div className="picker-body">

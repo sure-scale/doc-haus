@@ -3,6 +3,7 @@ import { createPortal } from "react-dom"
 import { getTelemetry, getTelemetryDetail, type TelemetryDetail, type TelemetryLean } from "../api/ingest/telemetry"
 import { formatCost } from "../lib/format"
 import ModalHeader from "./ModalHeader"
+import backdropClose from "./backdropClose"
 
 type Props = { matterId: string; sessionID?: string }
 
@@ -115,9 +116,7 @@ export default function TelemetryPanel({ matterId, sessionID }: Props) {
             event.preventDefault()
             close()
           }}
-          onClick={(event) => {
-            if (event.target === event.currentTarget) close()
-          }}
+          {...backdropClose(() => close())}
         >
           <div className="telemetry-drawer" onTransitionEnd={(event) => {
             if (closing && event.target === event.currentTarget && event.propertyName === "transform") setOpen(false)

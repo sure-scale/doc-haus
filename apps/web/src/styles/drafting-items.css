@@ -150,8 +150,8 @@ button.question-dock-cta:hover:not(:disabled) {
 }
 
 button.question-dock-cta:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 1px var(--warn), 0 0 0 4px rgba(138, 90, 26, 0.2);
+  outline: 2px solid var(--warn);
+  outline-offset: 2px;
 }
 
 /* Questions use the shared modal scrim so legal context stays legible. */
@@ -298,9 +298,9 @@ button.question-dock-cta:focus-visible {
 }
 
 .question-answer:focus-visible {
-  outline: none;
+  outline: 2px solid var(--md-sys-state-focus);
+  outline-offset: 2px;
   border-color: var(--accent);
-  box-shadow: var(--focus-ring);
 }
 
 /* A question's options, one full-width choice per line in the run's order: a

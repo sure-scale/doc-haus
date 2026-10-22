@@ -17,6 +17,7 @@ import { fileStem } from "./CompareDialog"
 import { DOCX_RENDER_OPTIONS, ViewerTitle } from "./DocumentViewer"
 import { ModalClose } from "./ModalHeader"
 import useModalFocus from "./useModalFocus"
+import backdropClose from "./backdropClose"
 
 // The blackline of two Word versions beside a list of the edits the later
 // version made without tracked changes, what became of the earlier version's
@@ -118,7 +119,7 @@ export default function BlacklineViewer({ matterId, params, focus, onClose }: { 
 
   const failed = renderError ?? (wasmError && `Viewer failed to load: ${wasmError.message}`)
   return (
-    <div className="viewer-overlay" onClick={onClose}>
+    <div className="viewer-overlay" {...backdropClose(() => onClose())}>
       <div ref={panel} className="viewer-panel document-reader blackline-reader" role="dialog" aria-modal="true" aria-label={name} onClick={(e) => e.stopPropagation()}>
         <div className="viewer-bar">
           <ViewerTitle name={name} kind={`Blackline: ${params.left} → ${params.right}`} />

@@ -17,6 +17,7 @@ import StatisticsTab from "./StatisticsTab"
 import MatterDefaultsTab from "./MatterDefaultsTab"
 import ApprovalsTab from "./ApprovalsTab"
 import AppearanceTab from "./AppearanceTab"
+import backdropClose from "../backdropClose"
 
 // The settings modal: a left rail of tabs over one shared shell. Models and
 // Providers act on the engine's global config + auth store (so they share the
@@ -272,7 +273,7 @@ export default function Settings({ onClose, firstRun = false, initialTab, reconn
       className="viewer-overlay settings-overlay"
       aria-labelledby={titleId}
       onCancel={(event) => { event.preventDefault(); onClose() }}
-      onClick={(event) => { if (event.target === event.currentTarget) onClose() }}
+      {...backdropClose(() => onClose())}
     >
       <div className="picker-panel settings-panel" onClick={(e) => e.stopPropagation()}>
         <div className="viewer-bar">

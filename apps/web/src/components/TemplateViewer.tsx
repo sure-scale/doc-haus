@@ -2,6 +2,7 @@ import { useEffect, useState } from "react"
 import { useDocxodus } from "docxodus/react"
 import { fetchTemplateBytes, type TemplatePlaceholder } from "../api/ingest/library"
 import { ModalClose } from "./ModalHeader"
+import backdropClose from "./backdropClose"
 
 // In-browser template viewer. Renders a library template's .docx to HTML with the
 // WASM runtime and lists the placeholders a draft would fill, so the lawyer reads
@@ -42,7 +43,7 @@ export default function TemplateViewer({
   }, [isReady, name])
 
   return (
-    <div className="viewer-overlay" onClick={onClose}>
+    <div className="viewer-overlay" {...backdropClose(() => onClose())}>
       <div className="viewer-panel" onClick={(e) => e.stopPropagation()}>
         <div className="viewer-bar">
           <span className="viewer-title">

@@ -4,6 +4,7 @@ import { uploadDocument, type Document } from "../api/ingest/documents"
 import { humanizeError } from "../api/ingest/errors"
 import ModalHeader from "./ModalHeader"
 import { useToast } from "./Toast"
+import backdropClose from "./backdropClose"
 
 const DOCX = /\.docx$/i
 
@@ -142,7 +143,7 @@ export default function CompareDialog({
   const [left, right] = thisSide === "left" ? [mine, theirs] : [theirs, mine]
 
   return (
-    <div className="viewer-overlay" onClick={close}>
+    <div className="viewer-overlay" {...backdropClose(() => close())}>
       <div className="picker-panel compare-dialog" role="dialog" aria-modal="true" aria-labelledby="compare-dialog-title" onClick={(e) => e.stopPropagation()}>
         <ModalHeader title={<span id="compare-dialog-title">Compare versions</span>} onClose={close} />
         <form

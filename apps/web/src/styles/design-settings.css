@@ -72,6 +72,17 @@
   font-weight: 650;
 }
 
+/* A selected tab keeps its container and text; hover and press layer a translucent state on top. */
+.settings-nav button.active:hover:not(:disabled) {
+  background: linear-gradient(var(--md-sys-state-hover), var(--md-sys-state-hover)), var(--md-sys-color-primary-container);
+  border: none;
+  color: var(--md-sys-color-on-primary-container);
+}
+
+.settings-nav button.active:active:not(:disabled) {
+  background: linear-gradient(var(--md-sys-state-pressed), var(--md-sys-state-pressed)), var(--md-sys-color-primary-container);
+}
+
 .settings-content {
   --settings-label-width: 152px;
   container: settings / inline-size;
@@ -430,6 +441,16 @@
   padding-top: 0;
 }
 
+/* A disclosure's summary is a pointer target; keep it at least 24px tall. */
+details.settings-section > summary {
+  min-height: 24px;
+  cursor: pointer;
+}
+
+@media (pointer: coarse) {
+  details.settings-section > summary { min-height: max(44px, calc(44px / var(--ui-scale))); padding-block: 10px; box-sizing: border-box; }
+}
+
 .settings-section h3 {
   margin: 0;
   font-size: 1.2rem;
@@ -514,7 +535,14 @@
 .settings-nav button:focus-visible { outline-offset: -3px; }
 .settings-provider-copy, .settings-conn-name { overflow-wrap: anywhere; }
 .settings-seg button:disabled { opacity: .55; }
-.settings-seg button.active:hover:not(:disabled) { background: var(--md-sys-color-primary-container); }
+.settings-seg button.active:hover:not(:disabled) {
+  background: linear-gradient(var(--md-sys-state-hover), var(--md-sys-state-hover)), var(--md-sys-color-primary-container);
+  border: none;
+  color: var(--md-sys-color-on-primary-container);
+}
+.settings-seg button.active:active:not(:disabled) {
+  background: linear-gradient(var(--md-sys-state-pressed), var(--md-sys-state-pressed)), var(--md-sys-color-primary-container);
+}
 
 .settings-type-preview {
   margin-top: 12px;

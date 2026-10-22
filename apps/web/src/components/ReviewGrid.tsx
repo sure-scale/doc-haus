@@ -9,6 +9,7 @@ import { matterClient, type Client } from "../api/opencode/client"
 import ModalHeader from "./ModalHeader"
 import { reviewCsv, reviewDocx, reviewExport, reviewXlsx } from "./review-export"
 import { formatDateTime } from "../lib/format"
+import backdropClose from "./backdropClose"
 
 // Tabular review: rows are the matter's documents, columns are natural-language
 // questions, each cell is an extracted answer with a source citation. The grid is
@@ -219,11 +220,10 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
       className="viewer-panel review-modal"
       aria-label={`Review table — ${title}`}
       onCancel={(event) => { event.preventDefault(); detail ? setDetail(undefined) : onClose() }}
-      onClick={(event) => {
-        if (event.target !== event.currentTarget) return
+      {...backdropClose((event) => {
         const bounds = event.currentTarget.getBoundingClientRect()
         if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) onClose()
-      }}
+      })}
     >
       <ModalHeader title={`Review table — ${title}`} onClose={() => detail ? setDetail(undefined) : onClose()} />
       <div className="card review">
@@ -370,7 +370,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
             className="viewer-overlay review-detail-modal"
             aria-label={`Answer and comments: ${detail.question}`}
             onCancel={(event) => { event.preventDefault(); event.stopPropagation(); setDetail(undefined) }}
-            onClick={(event) => { if (event.target === event.currentTarget) setDetail(undefined) }}
+            {...backdropClose(() => setDetail(undefined))}
             onKeyDown={(event) => {
               if (event.key !== "Tab") return
               const first = event.currentTarget.querySelector<HTMLButtonElement>(".modal-close")

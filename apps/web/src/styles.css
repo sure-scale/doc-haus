@@ -27,9 +27,8 @@ a {
 }
 
 :focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--md-sys-state-focus);
   outline-offset: 2px;
-  border-radius: var(--radius-sm);
 }
 
 /* App shell: a collapsible left rail beside the scrolling content column. */
@@ -276,7 +275,6 @@ a {
 
 .convo-confirm:focus-visible {
   outline-color: var(--danger);
-  box-shadow: var(--focus-ring-danger);
 }
 
 @keyframes convo-confirm-in {
@@ -821,6 +819,11 @@ li.list-row {
   color: var(--muted);
 }
 
+/* Every modal-close variant (headers set 36-40px) keeps a 44px rendered floor on touch. */
+@media (pointer: coarse) {
+  .modal-close { min-width: max(44px, calc(44px / var(--ui-scale))); min-height: max(44px, calc(44px / var(--ui-scale))); }
+}
+
 .modal-close:hover:not(:disabled) {
   background: var(--bg);
   border-color: transparent;
@@ -876,7 +879,7 @@ li.list-row {
 }
 
 .jx-search:focus {
-  box-shadow: none;
+  outline-offset: -2px;
   border-color: var(--border);
   border-bottom-color: var(--accent);
 }
@@ -1633,6 +1636,9 @@ li.list-row {
    while it follows the firm default. */
 .matter-posture {
   height: auto;
+  /* Reads as an inline fact but keeps a WCAG 2.5.8 24px hit area; the header
+     row centres it, so surrounding text does not move. */
+  min-height: 24px;
   padding: 0 14px 0 0;
   border: none;
   background-color: transparent;
@@ -1641,6 +1647,10 @@ li.list-row {
   font: inherit;
   color: var(--text-secondary);
   cursor: pointer;
+}
+
+@media (pointer: coarse) {
+  .matter-posture { min-height: max(44px, calc(44px / var(--ui-scale))); }
 }
 
 .matter-posture.is-default {
@@ -1712,8 +1722,8 @@ li.list-row {
 }
 
 .matter-title:focus-visible {
-  outline: none;
-  box-shadow: var(--focus-ring);
+  outline: 2px solid var(--md-sys-state-focus);
+  outline-offset: 2px;
 }
 
 .matter-title-input {
@@ -2916,7 +2926,8 @@ li.list-row {
 
 .composer:focus-within {
   border-color: var(--accent);
-  box-shadow: var(--focus-ring), var(--shadow-xs);
+  outline: 2px solid var(--md-sys-state-focus);
+  outline-offset: 2px;
 }
 
 .composer textarea {
@@ -2932,6 +2943,7 @@ li.list-row {
 }
 
 .composer textarea:focus {
+  outline: none;
   box-shadow: none;
   border-color: transparent;
 }
