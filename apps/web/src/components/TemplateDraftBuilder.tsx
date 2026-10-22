@@ -207,17 +207,21 @@ export default function TemplateDraftBuilder({ id, onSaved, onDraftChanged }: { 
           </details>}
         </li>)}</ol>
         {!draft.changes.length && <p>No text changes have been prepared.</p>}
-        <label>Template name<input value={name} disabled={saving || published} onChange={(event) => { editedName.current = true; setName(event.target.value) }} /></label>
-        <label>Description<textarea value={description} disabled={saving || published} rows={2} onChange={(event) => { editedDescription.current = true; setDescription(event.target.value) }} /></label>
+      </div>}
+      footer={view === "proposal" ? <section className="template-save-bar" aria-label="Template details and saving">
+        <div className="template-save-fields">
+          <label>Template name<input value={name} disabled={saving || published} onChange={(event) => { editedName.current = true; setName(event.target.value) }} /></label>
+          <label>Description<textarea value={description} disabled={saving || published} rows={2} onChange={(event) => { editedDescription.current = true; setDescription(event.target.value) }} /></label>
+        </div>
         {saveError && <p className="msg-error" role="alert">{saveError}</p>}
-        {published ? <p role="status">Saved to your library.</p> : <>
+        {published ? <p role="status">Saved to your library.</p> : <div className="template-save-confirmation">
           <p>Check the document for any remaining client details and confirm that the wording suits its intended use.</p>
           <div className="template-review-actions">
             <button type="button" disabled={saving} onClick={() => setPreview(undefined)}>Keep editing</button>
             <button type="button" className="primary" disabled={saving || busy || !ready || reviewedRevision !== draft.revision || !name.trim() || !description.trim()} onClick={() => void save()}>{saving ? "Saving…" : "Save to library"}</button>
           </div>
-        </>}
-      </div>}
+        </div>}
+      </section> : undefined}
     />}</Exit>
   </div>
 }

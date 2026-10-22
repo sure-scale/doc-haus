@@ -436,6 +436,223 @@
   -webkit-backdrop-filter: none;
 }
 
+/* Native chat questions use the model's supplied choices. Recommendation and
+   selection have distinct treatments so advice never looks like an answer. */
+.design-conversation .question-dialog:has(.native-session-questions) {
+  width: min(680px, calc(100vw - 32px));
+}
+
+.design-conversation .native-session-questions {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  padding: 24px;
+  background: var(--md-sys-color-surface);
+}
+
+.design-conversation .native-session-questions .question-head {
+  align-items: center;
+  gap: 16px;
+  margin: 0;
+}
+
+.design-conversation .native-session-questions .question-head h2 {
+  color: var(--text);
+  font-size: 1.125rem;
+  font-weight: 650;
+  line-height: 1.4;
+}
+
+.design-conversation .native-question-field {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.design-conversation .native-question-field + .native-question-field {
+  padding-top: 24px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.design-conversation .native-question-title {
+  padding: 0;
+  color: var(--text);
+  font-size: 0.875rem;
+  font-weight: 650;
+  line-height: 1.5;
+}
+
+.design-conversation .native-question-prompt {
+  margin: 6px 0 16px;
+  color: var(--text);
+  font-size: 1rem;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.design-conversation .native-question-options {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.design-conversation .native-question-option {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: start;
+  gap: 12px;
+  min-height: 48px;
+  margin: 0;
+  padding: 15px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--md-sys-color-surface);
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.design-conversation .native-question-option:hover {
+  border-color: var(--text-secondary);
+  background: var(--md-sys-color-surface-container-low);
+}
+
+.design-conversation .native-question-option.is-recommended {
+  background: var(--md-sys-color-surface-container-low);
+}
+
+.design-conversation .native-question-option.is-selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.design-conversation .native-question-option:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.design-conversation .native-question-option:has(input:disabled) {
+  cursor: default;
+  opacity: 0.65;
+}
+
+.design-conversation .native-question-option input {
+  width: 18px;
+  height: 18px;
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+}
+
+.design-conversation .native-question-option-copy {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.design-conversation .native-question-option-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  color: var(--text);
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.design-conversation .native-question-recommendation {
+  padding: 2px 8px;
+  border-radius: 99px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 0.6875rem;
+  font-weight: 650;
+  line-height: 1.6;
+}
+
+.design-conversation .native-question-option-description {
+  color: var(--text-secondary);
+  font-size: 0.8125rem;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.design-conversation .native-question-custom:not(.is-selected) {
+  border-style: dashed;
+}
+
+.design-conversation .native-question-custom-input {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.design-conversation .native-question-input-label {
+  color: var(--text-secondary);
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+
+.design-conversation .native-session-questions .question-answer {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 104px;
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--md-sys-color-surface);
+  color: var(--text);
+  font-size: 0.875rem;
+  line-height: 1.6;
+  resize: vertical;
+}
+
+.design-conversation .native-session-questions .question-actions {
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 4px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.design-conversation .native-session-questions .question-actions button {
+  min-height: 44px;
+}
+
+@media (max-width: 560px) {
+  .design-conversation .question-dialog:has(.native-session-questions) {
+    width: calc(100vw - 20px);
+    max-width: none;
+    max-height: calc(100dvh - 32px);
+    border-radius: 20px;
+  }
+
+  .design-conversation .native-session-questions {
+    padding: 20px 16px;
+  }
+
+  .design-conversation .native-question-option {
+    padding: 14px 12px;
+  }
+
+  .design-conversation .native-session-questions .question-actions {
+    flex-wrap: wrap;
+  }
+
+  .design-conversation .native-session-questions .question-actions button {
+    flex: 1 1 auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .design-conversation .native-question-option {
+    transition: none;
+  }
+}
+
 /* Completed work has its main action in the result itself. Keep the run's
    existing controls and reconnect/question metadata in a quiet compact header. */
 .design-conversation .run-head.is-done:not(.is-compact) {

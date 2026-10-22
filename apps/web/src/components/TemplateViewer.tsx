@@ -17,6 +17,7 @@ export default function TemplateViewer({
   onClose,
   loadBytes,
   sidebar,
+  footer,
   onRendered,
 }: {
   name: string
@@ -26,6 +27,7 @@ export default function TemplateViewer({
   // keep the normal name-based reader.
   loadBytes?: () => Promise<Uint8Array>
   sidebar?: ReactNode
+  footer?: ReactNode
   onRendered?: () => void
 }) {
   const closing = useContext(Closing)
@@ -62,7 +64,7 @@ export default function TemplateViewer({
 
   return (
     <div className={`viewer-overlay${closing ? " is-closing" : ""}`} inert={closing} {...backdropClose(() => onClose())}>
-      <div ref={panel} className="viewer-panel template-reader" role="dialog" aria-modal="true" aria-label={name} onClick={(e) => e.stopPropagation()} onKeyDown={(event) => {
+      <div ref={panel} className={`viewer-panel template-reader${footer ? " has-footer" : ""}`} role="dialog" aria-modal="true" aria-label={name} onClick={(e) => e.stopPropagation()} onKeyDown={(event) => {
         if (event.key === "Escape" && !event.defaultPrevented) { event.stopPropagation(); onClose() }
       }}>
         <div className="viewer-bar">
@@ -118,6 +120,7 @@ export default function TemplateViewer({
             </>}
           </aside>
         </div>
+        {footer && <div className="template-reader-footer">{footer}</div>}
       </div>
     </div>
   )

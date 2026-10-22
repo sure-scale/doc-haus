@@ -211,7 +211,7 @@ const server = Bun.serve({
         session.transcript.push({ type: "user", id: messageID, text, time: { created: Date.now() } })
         session.running = true
         if (session.transcript.length === 1) {
-          session.forms = [{ id: "form-intake", sessionID: id, title: "Template purpose", metadata: { kind: "question" }, fields: [{ key: "purpose", type: "string", title: "Intended use and position", description: "How will this template be used?", custom: true }] }]
+          session.forms = [{ id: "form-intake", sessionID: id, title: "Template purpose", metadata: { kind: "question" }, fields: [{ key: "purpose", type: "string", title: "Intended use and position", description: "How will this template be used?", custom: true, options: [{ value: "neutral", label: "Neutral terms (Recommended)", description: "Reusable for either side of a services engagement." }, { value: "supplier", label: "Supplier terms", description: "Protect the supplier’s position." }] }] }]
           setTimeout(() => { emit(id, "session.step.started", { assistantMessageID: "msg_intake", agent: "template-builder", model, started: Date.now() }); emit(id, "form.created", { formID: "form-intake" }) }, 100)
         } else setTimeout(() => prepare(id), 100)
         return json({ data: { id: messageID, sessionID: id, type: "user", payload: { text }, delivery: "queue", time: { created: Date.now() } } })
@@ -262,11 +262,28 @@ try {
   const firstSession = prompts[0].id
   await page.waitForURL(`**draft=draft_1&session=${firstSession}`)
   await page.getByRole("button", { name: "Answer", exact: true }).click()
+  const question = page.getByRole("group", { name: "Intended use and position", exact: true })
+  const recommended = question.getByRole("radio", { name: "Neutral terms (Recommended)", exact: true })
+  const custom = question.getByRole("radio", { name: "Type your own", exact: true })
+  const customAnswer = question.getByRole("textbox", { name: "Intended use and position — your own answer", exact: true })
+  assert.equal(await recommended.isChecked(), false, "recommendation never auto-answers the question")
+  assert.equal(await customAnswer.count(), 0, "custom textarea stays collapsed until selected")
+  await recommended.check()
+  if (shots) await page.screenshot({ path: path.join(shots, "5-question-options.png") })
+  await custom.check()
   const answer = "Neutral supplier/customer terms for repeat services engagements."
-  await page.getByRole("textbox", { name: "Intended use and position — other answer" }).fill(answer)
+  await customAnswer.fill(answer)
+  await recommended.check()
+  assert.equal(await customAnswer.count(), 0, "choosing a preset collapses the custom textarea")
+  await custom.check()
+  assert.equal(await customAnswer.inputValue(), answer, "switching choices retains the unsent custom text")
+  await page.setViewportSize({ width: 390, height: 844 })
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "question cards fit mobile width")
+  if (shots) await page.screenshot({ path: path.join(shots, "6-mobile-question.png") })
+  await page.setViewportSize({ width: 1280, height: 950 })
   await page.reload()
   await page.getByRole("button", { name: "Answer", exact: true }).click()
-  assert.equal(await page.getByRole("textbox", { name: "Intended use and position — other answer" }).inputValue(), answer, "unsent library answers survive reload")
+  assert.equal(await customAnswer.inputValue(), answer, "unsent library answers survive reload")
   await page.getByRole("button", { name: "Send answers", exact: true }).click()
   await page.getByRole("button", { name: "Review proposed template" }).waitFor({ state: "visible" })
   await until(() => drafts.get("draft_1")!.revision === 1, "intake prepares the first candidate")
@@ -285,9 +302,31 @@ try {
   await until(() => drafts.get("draft_1")!.revision === 2, "a follow-up prepares a revised proposal")
   await page.getByRole("button", { name: "Review proposed template" }).click()
   await proposal.locator(".docx-render").getByText(revisedNotice, { exact: true }).waitFor()
+  await page.setViewportSize({ width: 1280, height: 700 })
+  for (const summary of await proposal.locator(".template-draft-changes summary").all()) await summary.click()
+  const saveBar = proposal.getByRole("region", { name: "Template details and saving" })
+  const beforeScroll = await saveBar.boundingBox()
+  assert.ok(beforeScroll)
+  const scrolled = await proposal.locator(".changes-panel").evaluate((panel) => {
+    panel.scrollTop = panel.scrollHeight
+    return panel.scrollTop
+  })
+  assert.ok(scrolled > 0, "long review context actually scrolls independently")
+  const afterScroll = await saveBar.boundingBox()
+  assert.ok(afterScroll && Math.abs(afterScroll.y - beforeScroll.y) < 1, "template fields and saving stay pinned while reviewing changes")
+  const saveBounds = await saveBar.getByRole("button", { name: "Save to library", exact: true }).boundingBox()
+  assert.ok(saveBounds && saveBounds.y + saveBounds.height <= 700, "save remains inside the desktop viewport")
   if (shots) await page.screenshot({ path: path.join(shots, "2-proposal-review.png") })
   await page.setViewportSize({ width: 390, height: 844 })
   await proposal.locator(".docx-render").scrollIntoViewIfNeeded()
+  const mobileFooter = await saveBar.boundingBox()
+  await proposal.locator(".viewer-body").evaluate((body) => { body.scrollTop = body.scrollHeight })
+  const mobileAfterScroll = await saveBar.boundingBox()
+  assert.ok(mobileFooter && mobileAfterScroll && Math.abs(mobileFooter.y - mobileAfterScroll.y) < 1, "mobile document and changes scroll above the pinned footer")
+  for (const control of [saveBar.getByRole("textbox", { name: "Template name", exact: true }), saveBar.getByRole("textbox", { name: "Description", exact: true }), saveBar.getByRole("button", { name: "Save to library", exact: true })]) {
+    const bounds = await control.boundingBox()
+    assert.ok(bounds && bounds.y >= 0 && bounds.y + bounds.height <= 844, "mobile details and save are visible without scrolling the footer")
+  }
   if (shots) await page.screenshot({ path: path.join(shots, "4-mobile-document.png") })
   await proposal.getByRole("button", { name: "Save to library", exact: true }).scrollIntoViewIfNeeded()
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, "mobile review does not overflow horizontally")
