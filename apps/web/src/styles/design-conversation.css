@@ -6,7 +6,7 @@
   box-shadow: none;
   background: var(--panel);
   min-width: 0;
-  padding: 24px clamp(20px, 2.5vw, 40px) 16px;
+  padding: var(--space-6) clamp(20px, 2.5vw, 40px) var(--space-4);
 }
 
 /* On very wide screens the thread and everything beside it share one centred
@@ -25,7 +25,7 @@
 
 .design-conversation .chat-heading {
   flex: none;
-  padding-bottom: 20px;
+  padding-bottom: var(--space-5);
 }
 
 .design-conversation .chat-heading h2 {
@@ -37,9 +37,9 @@
 }
 
 .design-conversation .chat-log {
-  gap: 20px;
-  padding-top: 12px;
-  padding-bottom: 24px;
+  gap: var(--space-5);
+  padding-top: var(--space-3);
+  padding-bottom: var(--space-6);
   scroll-padding-block: 24px;
 }
 
@@ -55,7 +55,7 @@
 .design-conversation .msg.user {
   background: var(--accent-soft);
   border-radius: var(--radius-lg) var(--radius-lg) var(--radius-sm) var(--radius-lg);
-  padding: 12px 16px;
+  padding: var(--space-3) var(--space-4);
 }
 
 /* Answers carry a small house mark beside the assistant's name, so each turn
@@ -63,7 +63,7 @@
 .design-conversation .msg-agent {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   margin: 6px 0 10px;
   color: var(--text);
   font-size: 0.8125rem;
@@ -88,8 +88,8 @@
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  gap: 4px;
-  margin-top: 16px;
+  gap: var(--space-1);
+  margin-top: var(--space-4);
 }
 
 .design-conversation .run-updates .msg.user {
@@ -104,12 +104,12 @@
 .design-conversation .chat-empty {
   width: 100%;
   max-width: 640px;
-  padding: clamp(20px, 4vh, 40px) 4px;
+  padding: clamp(20px, 4vh, 40px) var(--space-1);
   text-align: left;
 }
 
 .design-conversation .chat-empty-intro {
-  margin: 0 0 24px;
+  margin: 0 0 var(--space-6);
   font-size: 0.9375rem;
   line-height: 1.5;
   letter-spacing: 0;
@@ -119,7 +119,7 @@
 
 .design-conversation .chat-empty-eyebrow,
 .design-conversation .permission-eyebrow {
-  margin: 0 0 8px;
+  margin: 0 0 var(--space-2);
   color: var(--accent);
   font-size: 0.75rem;
   font-weight: 600;
@@ -128,12 +128,12 @@
 }
 
 .design-conversation .chat-empty .starters {
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .design-conversation .starter {
   min-height: 48px;
-  padding: 12px 16px;
+  padding: var(--space-3) var(--space-4);
   border: 1px solid var(--md-sys-color-outline-variant);
   border-radius: var(--radius-md);
   background: var(--md-sys-color-surface);
@@ -169,14 +169,14 @@
 .design-conversation .chat-empty-icon {
   width: 48px;
   height: 48px;
-  margin-bottom: 8px;
-  padding: 12px;
+  margin-bottom: var(--space-2);
+  padding: var(--space-3);
   border-radius: var(--radius-lg);
   background: var(--accent-soft);
 }
 
 .design-conversation .chat-empty-title {
-  margin: 0 0 12px;
+  margin: 0 0 var(--space-3);
   font-family: var(--font-display);
   font-size: clamp(1.5rem, 2.2vw, 1.875rem);
   line-height: 1.2;
@@ -195,7 +195,7 @@
 .design-conversation .composer {
   --composer-fill: var(--md-sys-color-surface-container-low);
   flex: none;
-  margin-top: 16px;
+  margin-top: var(--space-4);
   border: 1px solid var(--md-sys-color-outline);
   border-radius: var(--radius-lg);
   background: var(--composer-fill);
@@ -211,7 +211,7 @@
 .design-conversation .composer textarea {
   width: 100%;
   min-height: 56px;
-  padding: 16px 16px 8px;
+  padding: var(--space-4) var(--space-4) var(--space-2);
   border-radius: var(--radius-lg) var(--radius-lg) 0 0;
   font-size: 0.875rem;
 }
@@ -219,8 +219,8 @@
 .design-conversation .composer-footer {
   justify-content: flex-end;
   align-items: flex-end;
-  gap: 8px;
-  padding: 4px 8px 8px;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2) var(--space-2);
 }
 
 .design-conversation .composer-tools {
@@ -228,7 +228,7 @@
   min-width: 0;
   min-height: 0;
   margin: 0;
-  gap: 4px;
+  gap: var(--space-1);
 }
 
 /* Assistant choices remain quiet, but keep comfortable targets and a clear
@@ -296,7 +296,7 @@
   width: auto;
   min-width: 84px;
   height: 48px;
-  padding-inline: 24px;
+  padding-inline: var(--space-6);
   border-radius: var(--radius-pill);
   font-size: 1rem;
   font-weight: 600;
@@ -328,6 +328,25 @@
   .design-conversation .send-btn { margin-left: auto; }
 }
 
+/* Tools alone need ~460px. Below that Workflows, Playbook and Documents become
+   icon-only (label kept for assistive tech, title for hover); Auto and the
+   document count stay. */
+@container (max-width: 480px) {
+  .design-conversation .composer-tools .workflow-btn > span:not(.docs-btn-count) {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0;
+  }
+  .design-conversation .composer-tools .workflow-btn { min-width: 36px; justify-content: center; }
+  /* Bound playbook: with the label hidden, a tonal fill and a check badge carry the binding. */
+  .design-conversation .composer-tools .workflow-btn.is-bound { position: relative; background: var(--accent-soft); color: var(--accent); }
+  .design-conversation .composer-tools .workflow-btn.is-bound .bound-mark {
+    display: block; position: absolute; top: 3px; right: 3px; box-sizing: content-box; width: 8px; height: 8px; padding: 1px;
+    border-radius: 50%; background: var(--accent); color: var(--text-on-accent);
+  }
+  @media (pointer: coarse) {
+    .design-conversation .composer-tools .workflow-btn { min-width: max(44px, calc(44px / var(--ui-scale))); }
+  }
+}
+
 /* Supporting activity is quiet until opened; approvals keep their own clear
    heading and actions rather than appearing as another assistant message. */
 .design-conversation .steps > summary {
@@ -345,8 +364,8 @@
 .design-conversation .msg-working {
   width: fit-content;
   min-height: 32px;
-  margin-top: 12px;
-  padding: 4px 0;
+  margin-top: var(--space-3);
+  padding: var(--space-1) 0;
   color: var(--text-secondary);
 }
 
@@ -369,11 +388,11 @@
 
 .design-conversation .permission-card {
   flex: none;
-  margin: 12px 0 0;
-  padding: 16px;
+  margin: var(--space-3) 0 0;
+  padding: var(--space-4);
   border: 1px solid var(--md-sys-color-outline);
   border-left: 4px solid var(--accent);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   background: var(--md-sys-color-surface);
   box-shadow: none;
 }
@@ -386,16 +405,16 @@
 .design-conversation .permission-preview {
   max-height: min(28dvh, 240px);
   overflow: auto;
-  margin-block: 12px;
+  margin-block: var(--space-3);
   scrollbar-width: thin;
 }
 
-.design-conversation .permission-actions { gap: 8px; }
+.design-conversation .permission-actions { gap: var(--space-2); }
 
 .design-conversation .question-dock {
   flex: none;
-  margin-top: 12px;
-  padding: 12px;
+  margin-top: var(--space-3);
+  padding: var(--space-3);
   border-radius: var(--radius-md);
   box-shadow: none;
   animation: none;
@@ -408,7 +427,7 @@
 }
 
 .design-conversation .question-dialog {
-  border-radius: var(--radius-lg);
+  border-radius: var(--md-sys-shape-corner-extra-large);
 }
 
 .design-conversation .question-dialog::backdrop {
@@ -423,9 +442,9 @@
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 0 20px;
+  gap: 0 var(--space-5);
   flex: none;
-  margin-bottom: 8px;
+  margin-bottom: var(--space-2);
   padding: 0 0 14px;
   border: 0;
   border-bottom: 1px solid var(--border-soft);
@@ -436,7 +455,7 @@
 
 .design-conversation .run-head.is-done .run-head-main {
   align-items: center;
-  gap: 8px 12px;
+  gap: var(--space-2) var(--space-3);
 }
 
 .design-conversation .run-head.is-done .run-head-icon {
@@ -537,7 +556,7 @@
 }
 
 .design-conversation .run-head.is-done > .run-head-details.is-open {
-  margin-top: 4px;
+  margin-top: var(--space-1);
 }
 
 .design-conversation .run-head.is-done .open-items > summary {
@@ -552,7 +571,7 @@
 /* A file representation, not a fabricated preview: the only text on this
    decorative paper is the real output filename and its existing draft role. */
 .design-conversation .narration-result {
-  margin: 22px 0 8px;
+  margin: 22px 0 var(--space-2);
   padding: 0;
   border: 0;
   border-radius: 0;
@@ -574,13 +593,13 @@
 }
 
 .design-conversation .result-chips {
-  gap: 7px 12px;
-  margin-bottom: 12px;
+  gap: 7px var(--space-3);
+  margin-bottom: var(--space-3);
 }
 
 .design-conversation .result-chip {
   border-radius: var(--radius-sm);
-  padding: 3px 8px;
+  padding: 3px var(--space-2);
   font-weight: 400;
 }
 
@@ -607,7 +626,6 @@
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 2px;
-  box-shadow: var(--shadow-sm);
   user-select: none;
 }
 
@@ -639,7 +657,7 @@
 }
 
 .design-conversation .result-document-kind {
-  margin: 0 0 8px;
+  margin: 0 0 var(--space-2);
   font-size: 0.6875rem;
   color: var(--muted);
 }
@@ -657,7 +675,7 @@
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 12px 20px;
+  gap: var(--space-3) var(--space-5);
   margin-top: 22px;
 }
 
@@ -705,7 +723,7 @@
   flex-direction: column;
   gap: 7px;
   height: 56px;
-  padding: 8px 7px;
+  padding: var(--space-2) 7px;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 2px;
@@ -748,7 +766,7 @@
 
 .design-conversation .result-row .result-document-actions {
   flex-wrap: nowrap;
-  gap: 8px 16px;
+  gap: var(--space-2) var(--space-4);
   margin-top: 0;
 }
 
@@ -767,9 +785,9 @@
 .design-conversation .result-files > summary {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   width: fit-content;
-  padding: 12px 0;
+  padding: var(--space-3) 0;
   color: var(--text-secondary);
   font-size: 0.8125rem;
   font-weight: 500;
@@ -813,13 +831,13 @@
 }
 
 .design-conversation .result-files .drafted-list {
-  margin: 4px 0 10px;
+  margin: var(--space-1) 0 10px;
 }
 
 @media (max-width: 700px) {
   .design-conversation .run-head.is-done:not(.is-compact) {
     grid-template-columns: minmax(0, 1fr);
-    gap: 4px;
+    gap: var(--space-1);
   }
 
   .design-conversation .run-head.is-done .run-head-progress {
@@ -831,16 +849,16 @@
   }
 
   .design-conversation.chat-card {
-    padding: 20px 20px 14px;
+    padding: var(--space-5) var(--space-5) 14px;
   }
 
   .design-conversation .chat-heading {
-    padding-bottom: 12px;
+    padding-bottom: var(--space-3);
   }
 
   .design-conversation .result-document {
     grid-template-columns: 96px minmax(0, 1fr);
-    gap: 20px;
+    gap: var(--space-5);
   }
 
   .design-conversation .result-paper {
@@ -855,7 +873,7 @@
 
   .design-conversation .result-document-actions {
     gap: 10px 14px;
-    margin-top: 16px;
+    margin-top: var(--space-4);
   }
 
   .design-conversation .result-row {
@@ -885,12 +903,12 @@
 
 @media (max-width: 420px) {
   .design-conversation.chat-card {
-    padding-inline: 16px;
+    padding-inline: var(--space-4);
   }
 
   .design-conversation .result-document {
     grid-template-columns: minmax(0, 1fr);
-    padding-top: 16px;
+    padding-top: var(--space-4);
   }
 
   .design-conversation .result-paper {
@@ -971,14 +989,14 @@
 
 .design-conversation .narration-timeline > .narration-note {
   margin: 0;
-  padding: 8px 0 14px 24px;
+  padding: var(--space-2) 0 14px var(--space-6);
   border-left: 0;
   color: var(--text);
 }
 
 .design-conversation .narration-timeline > .narration-heading {
   margin: 0;
-  padding: 14px 0 4px 24px;
+  padding: 14px 0 var(--space-1) var(--space-6);
 }
 
 .design-conversation .narration-timeline > .narration-heading:first-child {
@@ -987,15 +1005,15 @@
 
 .design-conversation .narration-timeline > .narration-steps {
   margin: 0;
-  padding: 2px 0 2px 24px;
+  padding: 2px 0 2px var(--space-6);
   border-left: 0;
 }
 
 .design-conversation button.narration-more {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  margin-top: 4px;
+  gap: var(--space-1);
+  margin-top: var(--space-1);
   font-size: 0.78125rem;
   font-weight: 500;
 }
@@ -1018,7 +1036,7 @@
 /* Successful mechanical chronology is optional reading once the run settles.
    Notes and any flagged/error stages remain in the surrounding timeline. The
    fold sits on the rail as one settled step. */
-.design-conversation .narration-completed-activity { padding: 2px 0 6px 24px; }
+.design-conversation .narration-completed-activity { padding: 2px 0 6px var(--space-6); }
 .design-conversation .narration-completed-activity::before {
   content: "";
   position: absolute;
@@ -1036,7 +1054,7 @@
 .design-conversation .narration-completed-activity summary {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   width: fit-content;
   min-height: 32px;
   padding: 5px 0;
@@ -1077,10 +1095,10 @@
 }
 
 /* Template tool results use prose and a disclosed field list, not a code dump. */
-.step-template-result { margin-top: 8px; padding: 0 0 4px 12px; border-left: 2px solid var(--border-soft); font-size: 0.8125rem; line-height: 1.6; color: var(--text-secondary); overflow-wrap: anywhere; }
-.step-template-result > p { margin: 0 0 8px; }
+.step-template-result { margin-top: var(--space-2); padding: 0 0 var(--space-1) var(--space-3); border-left: 2px solid var(--border-soft); font-size: 0.8125rem; line-height: 1.6; color: var(--text-secondary); overflow-wrap: anywhere; }
+.step-template-result > p { margin: 0 0 var(--space-2); }
 .step-template-fields > summary { width: fit-content; color: var(--accent); cursor: pointer; }
-.step-template-fields > ul { margin: 10px 0 0; padding-left: 20px; }
+.step-template-fields > ul { margin: 10px 0 0; padding-left: var(--space-5); }
 .step-template-fields li { padding: 3px 0; }
 
 /* ---------- Documents at the composer ---------- */
@@ -1088,6 +1106,7 @@
    files anywhere over the composer adds them to the matter. */
 .design-conversation .composer-dock { position: relative; flex: none; }
 .design-conversation .docs-btn { gap: 6px; }
+.design-conversation .composer-tools .workflow-btn .bound-mark { display: none; }
 .design-conversation .composer-tools .docs-btn.is-open { color: var(--accent); border-color: transparent; background: var(--accent-soft); }
 .design-conversation .docs-btn-count {
   min-width: 0;

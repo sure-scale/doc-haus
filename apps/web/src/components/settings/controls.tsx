@@ -115,6 +115,11 @@ export function SegRow({
         <div className="settings-seg" role="group" aria-labelledby={`${id}-label`} aria-describedby={hint ? `${id}-hint` : undefined}>
           {options.map((o) => (
             <button type="button" key={o.value} disabled={disabled} aria-pressed={value === o.value} className={value === o.value ? "active" : ""} onClick={() => onChange(o.value)}>
+              {value === o.value && (
+                <svg className="settings-seg-check" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <polyline points="20 6 9 17 4 12" />
+                </svg>
+              )}
               {o.label}
             </button>
           ))}

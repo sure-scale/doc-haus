@@ -35,9 +35,9 @@ export default function ResultCard({
         <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden>
           <circle cx="8" cy="8" r="7" fill="currentColor" />
           {findings === undefined ? (
-            <path d="m5 8.2 2 2 4-4.2" fill="none" stroke="var(--text-on-accent)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+            <path d="m5 8.2 2 2 4-4.2" fill="none" stroke="var(--text-on-accent)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
           ) : (
-            <path d="M8 4.5v4.2M8 11.4h.01" fill="none" stroke="var(--text-on-accent)" strokeWidth="1.6" strokeLinecap="round" />
+            <path d="M8 4.5v4.2M8 11.4h.01" fill="none" stroke="var(--text-on-accent)" strokeWidth="1.5" strokeLinecap="round" />
           )}
         </svg>
         {findings === undefined ? "Ready for review" : findingsTitle(findings)}
@@ -47,12 +47,12 @@ export default function ResultCard({
           {checks.map((check) => (
             <li key={check.text} className={`result-chip is-${check.tone}`}>
               {check.tone === "pass" && (
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
                   <path d="M20 6 9 17l-5-5" />
                 </svg>
               )}
               {check.tone === "warn" && (
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden>
                   <path d="M12 7v6M12 17h.01" />
                 </svg>
               )}

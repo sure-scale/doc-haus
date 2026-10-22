@@ -274,7 +274,7 @@ function WordDocumentViewer({
           <div className="viewer-bar-actions">
             <DownloadActions redlines={redlines} preview={Boolean(html)} onDownload={download} />
             <button className="primary" onClick={() => setEditing((value) => !value)} disabled={busy !== undefined} aria-expanded={editing} aria-controls="document-edit-request">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <path d="M12 20h9" />
                 <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z" />
               </svg>
@@ -307,7 +307,7 @@ function WordDocumentViewer({
                   )}
                   {onSaveTemplate && (
                     <button onClick={onSaveTemplate}>
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                         <rect x="8" y="8" width="13" height="13" rx="2" />
                         <path d="M4 16V5a2 2 0 0 1 2-2h11" />
                       </svg>
@@ -509,7 +509,7 @@ export function DownloadActions({ redlines, preview, onDownload }: {
   // Labels are visually hidden on narrow screens, so the two downloads need
   // distinct glyphs: a plain arrow, and a document with a pen for tracked changes.
   const download = (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M12 4v11" />
       <path d="m7 10 5 5 5-5" />
       <path d="M5 20h14" />
@@ -537,7 +537,7 @@ export function DownloadActions({ redlines, preview, onDownload }: {
         disabled: !preview,
         onSelect: () => onDownload(true),
         icon: (
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M13 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h4" />
             <path d="M13 3v5h5v3" />
             <path d="M8 13h5M8 17h2" />
@@ -625,7 +625,7 @@ export function ViewerTitle({ name, kind, pending = 0 }: { name: string; kind: s
   return (
     <div className="viewer-title">
       <span className="viewer-file-icon" aria-hidden="true">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round">
           <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
           <path d="M14 2v6h6M8 13h8M8 17h5" />
         </svg>

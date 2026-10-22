@@ -3,14 +3,14 @@
 
 /* Open items: one expander, grouped by kind, capped with "Show all". */
 .open-items {
-  margin: 0 0 8px;
+  margin: 0 0 var(--space-2);
   padding: 2px 10px;
   border: 1px solid var(--border-soft);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
 }
 
 .open-items-list {
-  padding: 2px 0 8px;
+  padding: 2px 0 var(--space-2);
   animation: row-in var(--duration-base) var(--ease-out);
 }
 
@@ -18,7 +18,7 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  margin: 8px 0 4px;
+  margin: var(--space-2) 0 var(--space-1);
   color: var(--text-secondary);
   font-size: 12px;
   font-weight: 600;
@@ -78,7 +78,7 @@
 }
 
 .open-items-more {
-  margin-top: 8px;
+  margin-top: var(--space-2);
   font-size: 12px;
 }
 
@@ -89,9 +89,9 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px 10px;
-  margin: 0 0 8px;
-  padding: 8px 8px 8px 10px;
+  gap: var(--space-2) 10px;
+  margin: 0 0 var(--space-2);
+  padding: var(--space-2) var(--space-2) var(--space-2) 10px;
   border: 1px solid var(--warn-border);
   border-radius: var(--radius-lg);
   background: var(--warn-soft);
@@ -136,7 +136,7 @@
 button.question-dock-cta {
   flex: none;
   margin-left: auto;
-  padding: 6px 16px;
+  padding: 6px var(--space-4);
   border-color: var(--warn);
   background: var(--warn);
   color: var(--text-on-accent);
@@ -161,7 +161,7 @@ button.question-dock-cta:focus-visible {
   padding: 0;
   overflow: auto;
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
+  border-radius: var(--md-sys-shape-corner-extra-large);
   background: var(--panel);
   color: var(--text);
   box-shadow: var(--shadow-xl);
@@ -173,13 +173,13 @@ button.question-dock-cta:focus-visible {
 
 /* One question at a time, with its own labelled answer field. */
 .question-card {
-  padding: 18px 20px 16px;
+  padding: 18px var(--space-5) var(--space-4);
 }
 
 .question-head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .question-head h2 {
@@ -195,12 +195,12 @@ button.question-dock-cta:focus-visible {
 
 .question-nav {
   display: inline-flex;
-  gap: 4px;
+  gap: var(--space-1);
   margin-left: auto;
 }
 
 .question-nav + .modal-close {
-  margin-left: 4px;
+  margin-left: var(--space-1);
 }
 
 /* 32px targets with a border that holds 3:1 against the card. */
@@ -225,7 +225,7 @@ button.question-dock-cta:focus-visible {
 .question-progress {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   margin-top: 6px;
   color: var(--muted);
   font-size: 12px;
@@ -235,7 +235,7 @@ button.question-dock-cta:focus-visible {
 .question-dots {
   display: inline-flex;
   flex-wrap: wrap;
-  gap: 4px;
+  gap: var(--space-1);
 }
 
 .question-dot {
@@ -263,7 +263,7 @@ button.question-dock-cta:focus-visible {
 }
 
 .question-text {
-  margin: 12px 0 0;
+  margin: var(--space-3) 0 0;
   color: var(--text);
   font-size: 15px;
   line-height: 1.5;
@@ -273,7 +273,7 @@ button.question-dock-cta:focus-visible {
 
 .question-label {
   display: block;
-  margin: 16px 0 4px;
+  margin: var(--space-4) 0 var(--space-1);
   color: var(--text-secondary);
   font-size: 12px;
   font-weight: 500;
@@ -311,7 +311,7 @@ button.question-dock-cta:focus-visible {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-3);
   padding: 9px 13px;
   font-size: 14px;
   line-height: 1.4;
@@ -362,7 +362,7 @@ button.question-dock-cta:focus-visible {
 
 .question-advice-basis cite {
   display: block;
-  padding-left: 12px;
+  padding-left: var(--space-3);
   color: var(--muted);
   font-size: 12px;
   font-style: normal;
@@ -372,15 +372,15 @@ button.question-dock-cta:focus-visible {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 12px;
-  margin-top: 12px;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
 }
 
 /* Decide for me and Send stay together on one line. */
 .question-send {
   display: flex;
   flex: none;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .question-send button {
@@ -436,11 +436,11 @@ button.question-dock-cta:focus-visible {
 }
 
 .drafted-list {
-  margin-bottom: 8px;
+  margin-bottom: var(--space-2);
 }
 
 .drafted-group {
-  padding: 8px 10px;
+  padding: var(--space-2) 10px;
   border: 1px solid var(--border-soft);
   border-radius: var(--radius-md);
   background: var(--panel);
@@ -448,15 +448,15 @@ button.question-dock-cta:focus-visible {
 
 .drafted-extras {
   margin-top: 6px;
-  margin-left: 4px;
-  padding-left: 12px;
+  margin-left: var(--space-1);
+  padding-left: var(--space-3);
   border-left: 1px solid var(--border);
 }
 
 .drafted-row {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
+  gap: var(--space-2);
   font-size: 12.5px;
   line-height: 1.4;
 }
@@ -491,7 +491,7 @@ button.question-dock-cta:focus-visible {
   box-sizing: border-box;
   width: 56px;
   margin-top: 1px;
-  padding: 0 4px;
+  padding: 0 var(--space-1);
   text-align: center;
   border-radius: var(--radius-pill);
   font-size: 10.5px;
@@ -532,15 +532,15 @@ a.drafted-download {
 
 /* Documents: drafted outputs apart from the lawyer's own documents. */
 .docs-add {
-  margin-top: 12px;
+  margin-top: var(--space-3);
 }
 
 /* Once there are documents, adding more is a one-line secondary action. */
 .dropzone.is-compact {
   flex-direction: row;
   justify-content: center;
-  gap: 8px;
-  padding: 8px 12px;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
 }
 
 .dropzone.is-compact svg {

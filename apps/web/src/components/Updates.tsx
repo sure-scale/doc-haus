@@ -121,7 +121,7 @@ export function UpdateButton({ updates }: { updates: ReturnType<typeof useUpdate
   if (!updates.canApply && !updates.updating && !updates.error) return null
   const label = updates.updating ? "Updating…" : updates.canApply && !updates.error ? "Update available" : updates.checkFailed ? "Update check failed" : "Update status"
   return <button type="button" className="nav-item sidebar-update" onClick={updates.show} title={label} aria-label={label}>
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 16V4m-4 4 4-4 4 4M5 15v5h14v-5" /></svg>
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 16V4m-4 4 4-4 4 4M5 15v5h14v-5" /></svg>
     <span>{label}</span>
   </button>
 }

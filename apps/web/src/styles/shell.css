@@ -7,7 +7,7 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 9px 24px;
+  padding: 9px var(--space-6);
   font-size: 13px;
   color: var(--warn);
   background: var(--warn-soft);
@@ -37,13 +37,13 @@
 }
 
 .not-found h1 {
-  margin: 0 0 8px;
+  margin: 0 0 var(--space-2);
   font-family: var(--font-display);
   font-size: 22px;
 }
 
 .not-found p {
-  margin: 0 0 20px;
+  margin: 0 0 var(--space-5);
   color: var(--text-secondary);
 }
 
@@ -62,7 +62,7 @@
 }
 
 .chat-card:not(.workspace *) .chat-empty {
-  padding: 8px 0;
+  padding: var(--space-2) 0;
 }
 
 .chat-card:not(.workspace *) .chat-empty .starters {
@@ -184,7 +184,7 @@
 
 .chat-empty-icon {
   color: var(--accent-muted);
-  margin-bottom: 4px;
+  margin-bottom: var(--space-1);
 }
 
 .chat-empty-title {
@@ -200,7 +200,7 @@
 }
 
 .chat-empty-action {
-  margin-top: 12px;
+  margin-top: var(--space-3);
   height: var(--ctl-h);
 }
 

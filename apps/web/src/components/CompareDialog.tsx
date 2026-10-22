@@ -163,7 +163,7 @@ export default function CompareDialog({
             onClick={() => setThisSide((side) => (side === "left" ? "right" : "left"))}
             title="Swap the earlier and later versions"
           >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <path d="m7 4-4 4 4 4M3 8h14M17 20l4-4-4-4M21 16H7" />
             </svg>
             Swap
@@ -226,7 +226,7 @@ function CompareSide({ id, role, file, label, setLabel, placeholder, disabled }:
 // Two arrows passing each other: compare one version with another.
 export function CompareIcon({ size = 15 }: { size?: number }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="m16 3 4 4-4 4" />
       <path d="M20 7H4" />
       <path d="m8 21-4-4 4-4" />

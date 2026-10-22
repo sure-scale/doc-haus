@@ -199,7 +199,7 @@ export default function Matters() {
                 onClick={() => setCreating((open) => !open)}
               >
                 New matter
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
                   <path d={creating ? "m6 15 6-6 6 6" : "m6 9 6 6 6-6"} />
                 </svg>
               </button>
@@ -274,7 +274,7 @@ export default function Matters() {
               </div>
             </fieldset>
             <button type="submit" className={`primary btn-lg matter-create-submit${busy ? " btn-loading" : ""}`} disabled={busy} aria-busy={busy}>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
               Create matter
             </button>
           </form>
@@ -287,7 +287,7 @@ export default function Matters() {
           {matters.length > 0 && (
             <div className="matters-list-toolbar">
               <label className="matter-search">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 4.5 4.5" /></svg>
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 4.5 4.5" /></svg>
                 <input
                   type="search"
                   className="page-filter"
@@ -316,7 +316,7 @@ export default function Matters() {
             </div>
           ) : matters.length === 0 ? (
             <div className="empty-state">
-              <svg className="empty-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+              <svg className="empty-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
                 <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
               </svg>
               <h3>No matters yet</h3>

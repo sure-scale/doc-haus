@@ -18,7 +18,7 @@ function datesShown(selectedJx: string[], saved: DateFormat = "month-day-year", 
     drafting: { ...DEFAULT_DRAFTING, dateFormat: saved }, setDrafting: noop, jurisdictions: [], selectedJx, setSelectedJx: noop,
     dateFormatChoice, setDateFormatChoice: noop, setStep: noop, onClose: done,
   }))
-  return html.match(/<button[^>]*aria-pressed="true"[^>]*>(June 11, 2026|11 June 2026|2026-06-11)</)?.[1]
+  return html.match(/<button[^>]*aria-pressed="true"[^>]*>(?:<svg.*?<\/svg>)?(June 11, 2026|11 June 2026|2026-06-11)</)?.[1]
 }
 const saved = (selectedJx: string[], dateFormat: DateFormat = "month-day-year", choice: DateFormat | null = null) =>
   detailsPreferences({ ...DEFAULT_DRAFTING, dateFormat }, selectedJx, choice).dateFormat

@@ -61,8 +61,8 @@ a {
 }
 
 .sidebar-brand {
-  padding-bottom: 8px;
-  margin-bottom: 4px;
+  padding-bottom: var(--space-2);
+  margin-bottom: var(--space-1);
   border-bottom: 1px solid var(--border-soft);
 }
 
@@ -70,7 +70,7 @@ a {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 4px 6px 8px;
+  padding: var(--space-1) 6px var(--space-2);
 }
 
 /* Primary nav + Settings/collapse share one row style; active gets the soft
@@ -81,7 +81,7 @@ a {
   align-items: center;
   gap: 10px;
   width: 100%;
-  padding: 8px 10px;
+  padding: var(--space-2) 10px;
   border: none;
   background: none;
   border-radius: var(--radius-md);
@@ -154,7 +154,7 @@ a {
 
 .sidebar-empty {
   font-size: 12px;
-  padding: 4px 6px;
+  padding: var(--space-1) 6px;
 }
 
 .sidebar-skeleton {
@@ -165,14 +165,14 @@ a {
 .sidebar-new {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   font-size: 11px;
   font-weight: 600;
   color: var(--accent);
   border: 1px solid var(--accent-border);
   background: none;
   border-radius: var(--radius-sm);
-  padding: 2px 8px;
+  padding: 2px var(--space-2);
 }
 
 .sidebar-new:hover:not(:disabled) {
@@ -223,11 +223,11 @@ a {
    the title with a soft fade so long titles slide under it. */
 .convo-del {
   position: absolute;
-  right: 4px;
+  right: var(--space-1);
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 4px;
+  padding: var(--space-1);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--panel);
@@ -252,8 +252,8 @@ a {
    icon sat. One click confirms; a click anywhere else disarms it. */
 .convo-confirm {
   position: absolute;
-  right: 4px;
-  padding: 4px 10px;
+  right: var(--space-1);
+  padding: var(--space-1) 10px;
   border: 1px solid var(--danger);
   border-radius: var(--radius-sm);
   background: var(--danger);
@@ -290,7 +290,7 @@ a {
 
 .sidebar-foot {
   margin-top: auto;
-  padding-top: 8px;
+  padding-top: var(--space-2);
   border-top: 1px solid var(--border-soft);
   display: flex;
   flex-direction: column;
@@ -314,7 +314,7 @@ a {
 .container {
   max-width: var(--content-max);
   margin: 0 auto;
-  padding: 24px;
+  padding: var(--space-6);
 }
 
 /* ---------- Page header: title, subtitle, primary action ---------- */
@@ -323,9 +323,9 @@ a {
   display: flex;
   align-items: flex-end;
   justify-content: space-between;
-  gap: 16px;
-  margin: 4px 0 20px;
-  padding-bottom: 16px;
+  gap: var(--space-4);
+  margin: var(--space-1) 0 var(--space-5);
+  padding-bottom: var(--space-4);
   border-bottom: 1px solid var(--border);
 }
 
@@ -347,7 +347,7 @@ a {
 .page-head-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   flex-shrink: 0;
 }
 
@@ -355,9 +355,8 @@ a {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  padding: 18px 24px;
-  margin-bottom: 16px;
-  box-shadow: var(--shadow-xs);
+  padding: 18px var(--space-6);
+  margin-bottom: var(--space-4);
 }
 
 .card h2 {
@@ -365,12 +364,12 @@ a {
   text-transform: uppercase;
   letter-spacing: var(--tracking-caps);
   color: var(--muted);
-  margin: 0 0 12px;
+  margin: 0 0 var(--space-3);
 }
 
 .row {
   display: flex;
-  gap: 8px;
+  gap: var(--space-2);
   align-items: center;
 }
 
@@ -383,7 +382,7 @@ a {
 .matter-list li {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-3);
   padding: 10px 0;
   border-bottom: 1px solid var(--border-soft);
 }
@@ -399,16 +398,31 @@ a {
 li.list-row {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-3);
   margin: 0 -14px;
   padding: 13px 14px;
   border-radius: var(--radius-md);
-  border-bottom: 1px solid var(--border-soft);
+  /* Transparent border keeps the row height; the straight divider is drawn below so it does not follow the rounded corners. */
+  border-bottom: 1px solid transparent;
   transition: background var(--duration-fast) var(--ease-out);
+}
+
+.list-row { position: relative; }
+.list-row::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 0;
+  height: 1px;
+  background: var(--border-soft);
+  pointer-events: none;
 }
 
 .list-row:last-child {
   border-bottom: none;
+}
+
+.list-row:last-child::after {
+  content: none;
 }
 
 /* Whole row opens the template viewer; inner buttons stop propagation. */
@@ -442,14 +456,14 @@ li.list-row {
 }
 
 .list-row-title .badge {
-  margin-left: 8px;
+  margin-left: var(--space-2);
   vertical-align: middle;
 }
 
 .list-row-meta {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   font-size: 12px;
   color: var(--muted);
 }
@@ -465,7 +479,7 @@ li.list-row {
 /* A count or step summary following the description reads as a separate fact. */
 .list-row-desc + .list-row-date::before {
   content: "·";
-  margin-right: 8px;
+  margin-right: var(--space-2);
 }
 
 .list-row-meta .template-desc-input {
@@ -490,9 +504,9 @@ li.list-row {
   font-variant-numeric: tabular-nums;
   color: var(--accent);
   background: var(--accent-soft);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   padding: 1px 6px;
-  margin-right: 8px;
+  margin-right: var(--space-2);
 }
 
 /* Jurisdiction — plain text fact, darker than the muted date beside it. */
@@ -528,8 +542,8 @@ li.list-row {
   font-size: 13px;
   color: var(--accent);
   background: var(--accent-soft);
-  border-radius: 4px;
-  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) 6px;
   word-break: break-word;
 }
 
@@ -539,8 +553,8 @@ li.list-row {
   color: var(--muted);
   background: none;
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 3px 8px;
+  border-radius: var(--radius-pill);
+  padding: 3px var(--space-2);
   cursor: pointer;
   transition:
     color var(--duration-fast) var(--ease-out),
@@ -580,8 +594,8 @@ li.list-row {
   flex-direction: column;
   align-items: center;
   text-align: center;
-  gap: 4px;
-  padding: 44px 24px;
+  gap: var(--space-1);
+  padding: 44px var(--space-6);
 }
 
 .empty-glyph {
@@ -589,7 +603,7 @@ li.list-row {
   height: 36px;
   color: var(--accent);
   opacity: 0.45;
-  margin-bottom: 8px;
+  margin-bottom: var(--space-2);
 }
 
 .empty-state h3 {
@@ -615,7 +629,7 @@ li.list-row {
   border: 1px dashed var(--border);
   border-radius: var(--radius-md);
   background: var(--accent-tint);
-  padding: 24px 20px;
+  padding: var(--space-6) var(--space-5);
   text-align: center;
   color: var(--muted);
   font-size: 13px;
@@ -655,7 +669,7 @@ li.list-row {
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.03em;
-  padding: 1px 8px;
+  padding: 1px var(--space-2);
   border-radius: var(--radius-pill);
   background: var(--accent-soft);
   border: 1px solid var(--accent-border);
@@ -716,7 +730,7 @@ li.list-row {
 .picker-panel {
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
+  border-radius: var(--md-sys-shape-corner-extra-large);
   width: 100%;
   max-width: 460px;
   max-height: calc(var(--viewport-block) - 64px);
@@ -726,19 +740,19 @@ li.list-row {
 }
 
 .picker-panel .viewer-bar-actions > .modal-close {
-  width: 36px;
-  height: 36px;
-  flex: 0 0 36px;
-  padding: 8px;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 40px;
+  padding: var(--space-2);
 }
 .picker-panel .modal-close svg { flex-shrink: 0; }
 
 .picker-body {
   overflow: auto;
-  padding: 12px;
+  padding: var(--space-3);
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
   scrollbar-width: thin;
   scrollbar-color: var(--border-strong) transparent;
 }
@@ -752,7 +766,7 @@ li.list-row {
 .picker-wide .assistant-option {
   display: grid;
   grid-template-columns: 180px 1fr;
-  column-gap: 20px;
+  column-gap: var(--space-5);
   align-items: baseline;
 }
 
@@ -760,9 +774,9 @@ li.list-row {
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
   text-align: left;
-  padding: 12px 38px 12px 14px;
+  padding: var(--space-3) 38px var(--space-3) 14px;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   background: var(--panel);
@@ -809,11 +823,13 @@ li.list-row {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
-  padding: 0;
+  flex: none;
+  align-self: center;
+  width: 40px;
+  height: 40px;
+  padding: var(--space-2);
   border: none;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-pill);
   background: transparent;
   color: var(--muted);
 }
@@ -857,7 +873,7 @@ li.list-row {
   max-height: calc(var(--viewport-block) - 16px);
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
   box-shadow: var(--shadow-lg);
   display: flex;
   flex-direction: column;
@@ -874,7 +890,7 @@ li.list-row {
   border-bottom: 1px solid var(--border);
   border-radius: 0;
   height: 38px;
-  padding: 0 12px;
+  padding: 0 var(--space-3);
 }
 
 .jx-search:focus {
@@ -888,7 +904,7 @@ li.list-row {
   overflow: auto;
   overscroll-behavior: contain;
   max-height: 320px;
-  padding: 6px 8px 8px;
+  padding: 6px var(--space-2) var(--space-2);
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -899,8 +915,8 @@ li.list-row {
 .jx-option {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 8px;
+  gap: var(--space-2);
+  padding: 6px var(--space-2);
   border-radius: var(--radius-sm);
   cursor: pointer;
   transition: background var(--duration-fast) var(--ease-out);
@@ -936,7 +952,7 @@ li.list-row {
 }
 
 .jx-empty {
-  padding: 6px 8px;
+  padding: 6px var(--space-2);
   font-size: 13px;
 }
 
@@ -948,7 +964,7 @@ li.list-row {
 }
 
 .matter-edit-body {
-  padding: 16px;
+  padding: var(--space-4);
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -969,7 +985,7 @@ li.list-row {
 
 .matter-edit-foot {
   justify-content: flex-end;
-  gap: 8px;
+  gap: var(--space-2);
   border-bottom: none;
   border-top: 1px solid var(--border);
 }
@@ -983,7 +999,7 @@ li.list-row {
 .workspace {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 16px;
+  gap: var(--space-4);
   align-items: start;
 }
 
@@ -991,7 +1007,7 @@ li.list-row {
 .matter-body {
   display: grid;
   grid-template-columns: minmax(0, 1fr) clamp(260px, 22vw, 320px);
-  gap: 16px;
+  gap: var(--space-4);
   align-items: start;
 }
 
@@ -1005,7 +1021,7 @@ li.list-row {
 .rail-section-head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   width: 100%;
   padding: 10px 14px;
   background: var(--panel);
@@ -1049,7 +1065,7 @@ li.list-row {
   font-variant-numeric: tabular-nums;
   color: var(--accent);
   background: var(--accent-soft);
-  border-radius: 10px;
+  border-radius: var(--radius-pill);
   padding: 1px 7px;
 }
 
@@ -1075,7 +1091,7 @@ li.list-row {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   padding: 18px 10px;
   text-align: center;
   color: var(--muted);
@@ -1085,7 +1101,7 @@ li.list-row {
   width: 22px;
   height: 22px;
   opacity: 0.6;
-  margin-bottom: 4px;
+  margin-bottom: var(--space-1);
 }
 
 .rail-empty strong {
@@ -1191,7 +1207,6 @@ li.list-row {
 .rail-strip-btn.is-active {
   color: var(--accent);
   border-color: var(--accent-border);
-  box-shadow: var(--shadow-sm);
 }
 
 .rail-strip-cost {
@@ -1246,22 +1261,22 @@ li.list-row {
 
 .telemetry-drawer > .viewer-bar {
   flex-shrink: 0;
-  padding: 18px 24px;
+  padding: 18px var(--space-6);
 }
 
 .telemetry-drawer .viewer-bar-actions > .modal-close {
-  width: 36px;
-  height: 36px;
-  padding: 8px;
+  width: 40px;
+  height: 40px;
+  padding: var(--space-2);
 }
 .telemetry-drawer .modal-close svg { flex-shrink: 0; }
 
 .telemetry-drawer-body {
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  gap: var(--space-6);
   min-height: 0;
-  padding: 24px;
+  padding: var(--space-6);
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-width: thin;
@@ -1269,7 +1284,7 @@ li.list-row {
 }
 
 .telemetry-drawer-body > .telemetry-section + .telemetry-section {
-  padding-top: 20px;
+  padding-top: var(--space-5);
   border-top: 1px solid var(--border-soft);
 }
 
@@ -1279,7 +1294,7 @@ li.list-row {
   overflow-wrap: anywhere;
 }
 
-.telemetry-drawer .telemetry-donut { gap: 16px; }
+.telemetry-drawer .telemetry-donut { gap: var(--space-4); }
 .telemetry-drawer .telemetry-donut-svg { width: 120px; height: 120px; }
 .telemetry-drawer .telemetry-donut-legend { min-width: min(220px, 100%); }
 .telemetry-drawer .telemetry-foot { color: var(--muted); overflow-wrap: anywhere; }
@@ -1292,8 +1307,8 @@ li.list-row {
   list-style: none;
 }
 .telemetry-recent li + li {
-  margin-top: 12px;
-  padding-top: 12px;
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
   border-top: 1px solid var(--border-soft);
 }
 
@@ -1307,8 +1322,8 @@ li.list-row {
 }
 
 @media (max-width: 480px) {
-  .telemetry-drawer > .viewer-bar { padding: 16px; }
-  .telemetry-drawer-body { padding: 20px 16px; }
+  .telemetry-drawer > .viewer-bar { padding: var(--space-4); }
+  .telemetry-drawer-body { padding: var(--space-5) var(--space-4); }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1327,7 +1342,7 @@ li.list-row {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-3);
   padding: 7px 0;
   border-bottom: 1px solid var(--border-soft);
 }
@@ -1352,7 +1367,7 @@ li.list-row {
   margin: 0;
   display: flex;
   align-items: baseline;
-  gap: 8px;
+  gap: var(--space-2);
   min-width: 0;
   text-align: right;
 }
@@ -1373,13 +1388,13 @@ li.list-row {
 .telemetry-foot {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
   margin-top: 10px;
   font-size: 11.5px;
 }
 
 .telemetry-section h3 {
-  margin: 0 0 8px;
+  margin: 0 0 var(--space-2);
   color: var(--muted);
   font-size: 11px;
   font-weight: 700;
@@ -1421,7 +1436,7 @@ li.list-row {
 .telemetry-bar-head {
   display: flex;
   justify-content: space-between;
-  gap: 8px;
+  gap: var(--space-2);
   margin-bottom: 3px;
 }
 
@@ -1461,7 +1476,7 @@ li.list-row {
 .telemetry-donut {
   display: flex;
   align-items: center;
-  gap: 24px;
+  gap: var(--space-6);
   flex-wrap: wrap;
 }
 
@@ -1501,7 +1516,7 @@ li.list-row {
 .telemetry-donut-legend li {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .telemetry-donut-swatch {
@@ -1534,7 +1549,7 @@ li.list-row {
    stays readable next to the conversation. */
 .artifact {
   position: sticky;
-  top: 24px;
+  top: var(--space-6);
   max-height: calc(var(--viewport-block) - 48px);
   overflow: auto;
   border-left: 3px solid var(--accent);
@@ -1546,8 +1561,8 @@ li.list-row {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  margin-top: 8px;
-  padding-top: 8px;
+  margin-top: var(--space-2);
+  padding-top: var(--space-2);
   border-top: 1px solid var(--border-soft);
 }
 
@@ -1558,7 +1573,7 @@ li.list-row {
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
   line-clamp: 2;
-  padding: 4px 10px 6px;
+  padding: var(--space-1) 10px 6px;
   font-size: 12px;
   font-weight: 600;
   line-height: 1.35;
@@ -1609,7 +1624,7 @@ li.list-row {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 4px 8px;
+  gap: var(--space-1) var(--space-2);
   font-size: 13px;
   color: var(--muted);
 }
@@ -1668,7 +1683,7 @@ li.list-row {
 .jx-trigger-bare {
   border: none;
   background: none;
-  padding: 4px;
+  padding: var(--space-1);
   margin: -4px;
   cursor: pointer;
   border-radius: var(--radius-sm);
@@ -1689,8 +1704,8 @@ li.list-row {
   font-size: 12px;
   color: var(--accent);
   background: var(--accent-soft);
-  border-radius: 4px;
-  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  padding: 2px var(--space-2);
 }
 
 /* Click-to-rename title: reads as the heading, with a pencil that fades in on
@@ -1698,7 +1713,7 @@ li.list-row {
 .matter-title {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   padding: 0;
   border: none;
   border-radius: var(--radius-sm);
@@ -1736,7 +1751,7 @@ li.list-row {
   color: var(--text);
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   padding: 2px 6px;
 }
 
@@ -1761,8 +1776,8 @@ li.list-row {
   color: var(--accent);
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 2px 8px;
+  border-radius: var(--radius-md);
+  padding: 2px var(--space-2);
 }
 
 /* Tool strip above the composer holding the Workflows launcher. */
@@ -1770,9 +1785,9 @@ li.list-row {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--space-2);
   min-height: 32px;
-  margin-top: 12px;
+  margin-top: var(--space-3);
 }
 
 .workflow-btn {
@@ -1817,7 +1832,7 @@ li.list-row {
   flex: none;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
   height: clamp(320px, calc(var(--viewport-block) - 330px), 900px);
   height: clamp(320px, calc(var(--viewport-block) - 330px), 900px);
   min-height: 0;
@@ -1825,7 +1840,7 @@ li.list-row {
   overflow-anchor: auto;
   overscroll-behavior: contain;
   padding-right: 10px;
-  padding-bottom: 8px;
+  padding-bottom: var(--space-2);
   scrollbar-gutter: stable;
   scrollbar-width: thin;
   scrollbar-color: var(--border-strong) transparent;
@@ -1884,7 +1899,7 @@ li.list-row {
   letter-spacing: var(--tracking-caps);
   text-transform: uppercase;
   color: var(--accent-muted);
-  margin: 4px 0 8px;
+  margin: var(--space-1) 0 var(--space-2);
 }
 
 /* A failed turn's provider error, shown in the assistant bubble so a bad project,
@@ -1894,7 +1909,7 @@ li.list-row {
   background: var(--danger-soft);
   color: var(--danger);
   border-radius: var(--radius-md);
-  padding: 8px 10px;
+  padding: var(--space-2) 10px;
   font-size: 13px;
   white-space: pre-wrap;
 }
@@ -1908,7 +1923,7 @@ li.list-row {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  margin-top: 16px;
+  margin-top: var(--space-4);
 }
 
 .msg-user-wrap:first-child {
@@ -1919,9 +1934,9 @@ li.list-row {
    the conversation stays clean, revealed as a small row below the bubble. */
 .msg-actions {
   display: flex;
-  gap: 4px;
+  gap: var(--space-1);
   justify-content: flex-end;
-  margin-top: 4px;
+  margin-top: var(--space-1);
   opacity: 0;
   transition: opacity var(--duration-fast) var(--ease-out);
 }
@@ -1950,7 +1965,7 @@ li.list-row {
 .msg-edit {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .msg-edit textarea {
@@ -1961,8 +1976,8 @@ li.list-row {
   color: var(--text);
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 8px;
+  border-radius: var(--radius-md);
+  padding: var(--space-2);
 }
 
 .msg-edit-actions {
@@ -1995,7 +2010,7 @@ li.list-row {
 .msg-working {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   margin: 2px 0 0;
   color: var(--muted);
   font-size: 13px;
@@ -2036,7 +2051,7 @@ li.list-row {
 
 .working {
   display: inline-flex;
-  gap: 4px;
+  gap: var(--space-1);
   padding: 6px 0;
 }
 
@@ -2088,7 +2103,7 @@ li.list-row {
   font-size: 12.5px;
   font-weight: 500;
   list-style: none;
-  padding: 4px 10px;
+  padding: var(--space-1) 10px;
   border: 1px solid var(--border);
   border-radius: var(--radius-pill);
   background: var(--panel);
@@ -2124,7 +2139,7 @@ li.list-row {
 
 .step-list {
   list-style: none;
-  margin: 12px 0 4px 5px;
+  margin: var(--space-3) 0 var(--space-1) 5px;
   padding: 0;
   display: flex;
   flex-direction: column;
@@ -2146,7 +2161,7 @@ li.list-row {
 .step::before {
   content: "";
   position: absolute;
-  left: 4px;
+  left: var(--space-1);
   top: 17px;
   bottom: -3px;
   width: 1px;
@@ -2164,7 +2179,7 @@ li.list-row {
 
 .step .step {
   font-size: 12.5px;
-  padding-bottom: 12px;
+  padding-bottom: var(--space-3);
 }
 
 .step .step .step-label,
@@ -2237,7 +2252,7 @@ li.list-row {
 }
 
 .thinking[open] > summary {
-  margin-bottom: 4px;
+  margin-bottom: var(--space-1);
 }
 
 /* Expandable step: a chevron marks a tool step or thought block you can open to
@@ -2286,7 +2301,7 @@ li.list-row {
 
 .step-output {
   margin: 6px 0 0;
-  padding: 8px 10px;
+  padding: var(--space-2) 10px;
   max-height: 220px;
   overflow: auto;
   background: var(--accent-soft);
@@ -2303,14 +2318,14 @@ li.list-row {
 .tool-output-structured {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
   white-space: normal;
 }
 
 .tool-output-field {
   display: grid;
   grid-template-columns: 96px minmax(0, 1fr);
-  gap: 8px;
+  gap: var(--space-2);
   align-items: start;
 }
 
@@ -2371,7 +2386,7 @@ li.list-row {
 }
 
 .step-output-report .structured-report {
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 /* Sources: deduplicated citations behind a collapsed disclosure, so the answer
@@ -2389,7 +2404,7 @@ li.list-row {
   font-size: 12.5px;
   font-weight: 500;
   list-style: none;
-  padding: 4px 10px;
+  padding: var(--space-1) 10px;
   border: 1px solid var(--border);
   border-radius: var(--radius-pill);
   background: var(--panel);
@@ -2413,10 +2428,9 @@ li.list-row {
   border: 1px solid var(--border);
   border-left: 3px solid var(--accent);
   background: var(--panel);
-  padding: 10px 12px;
-  margin-top: 8px;
+  padding: 10px var(--space-3);
+  margin-top: var(--space-2);
   border-radius: var(--radius-sm);
-  box-shadow: var(--shadow-xs);
 }
 
 .citation .ref {
@@ -2445,7 +2459,7 @@ li.list-row {
 .citation .excerpt {
   color: var(--muted);
   font-size: 13px;
-  margin-top: 4px;
+  margin-top: var(--space-1);
 }
 
 /* In-chat redline preview: a compact card per proposed change, the prior wording
@@ -2455,16 +2469,15 @@ li.list-row {
   margin-top: 10px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .redline-card {
   border: 1px solid var(--border);
   border-left: 3px solid var(--danger);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   background: var(--panel);
-  padding: 12px 14px;
-  box-shadow: var(--shadow-xs);
+  padding: var(--space-3) 14px;
 }
 
 .redline-doc {
@@ -2481,13 +2494,13 @@ li.list-row {
   line-height: 1.45;
   white-space: pre-wrap;
   border-radius: 4px;
-  padding: 4px 6px;
+  padding: var(--space-1) 6px;
 }
 
 .redline-old {
   color: var(--danger);
   text-decoration: line-through;
-  margin-bottom: 4px;
+  margin-bottom: var(--space-1);
 }
 
 .redline-new {
@@ -2497,7 +2510,7 @@ li.list-row {
 
 .redline-comment,
 .change-comment {
-  margin-top: 8px;
+  margin-top: var(--space-2);
   color: var(--text-secondary);
   font-size: 12.5px;
   line-height: 1.45;
@@ -2512,7 +2525,7 @@ li.list-row {
 }
 
 .redline-view {
-  margin-top: 8px;
+  margin-top: var(--space-2);
   font-size: 13px;
 }
 
@@ -2522,19 +2535,18 @@ li.list-row {
   margin-top: 10px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .draft-card {
   border: 1px solid var(--border);
   border-left: 3px solid var(--accent);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   background: var(--panel);
-  padding: 12px 14px;
+  padding: var(--space-3) 14px;
   display: flex;
   align-items: center;
   gap: 10px;
-  box-shadow: var(--shadow-xs);
 }
 
 .draft-icon {
@@ -2565,7 +2577,7 @@ li.list-row {
   font-size: 12.5px;
   font-weight: 500;
   list-style: none;
-  padding: 4px 10px;
+  padding: var(--space-1) 10px;
   border: 1px solid var(--border);
   border-radius: var(--radius-pill);
   background: var(--panel);
@@ -2585,13 +2597,12 @@ li.list-row {
 
 .todo-list {
   list-style: none;
-  margin: 8px 0 0;
-  padding: 10px 12px;
+  margin: var(--space-2) 0 0;
+  padding: 10px var(--space-3);
   border: 1px solid var(--border);
   border-left: 3px solid var(--accent);
   border-radius: var(--radius-sm);
   background: var(--panel);
-  box-shadow: var(--shadow-xs);
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -2600,7 +2611,7 @@ li.list-row {
 .todo {
   display: flex;
   align-items: baseline;
-  gap: 8px;
+  gap: var(--space-2);
   font-size: 13px;
   line-height: 1.45;
 }
@@ -2640,7 +2651,7 @@ li.list-row {
 /* Empty chat: a centered intro plus clickable starter questions. */
 .chat-empty {
   margin: auto 0;
-  padding: 24px 8px;
+  padding: var(--space-6) var(--space-2);
   max-width: 560px;
   align-self: center;
   width: 100%;
@@ -2653,21 +2664,21 @@ li.list-row {
 .chat-skeleton {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-3);
 }
 
 .sk-turn {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .sk-bubble {
   border-radius: var(--radius-lg);
-  padding: 10px 12px;
+  padding: 10px var(--space-3);
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .sk-bubble.sk-user {
@@ -2724,7 +2735,6 @@ li.list-row {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  box-shadow: var(--shadow-md);
 }
 
 /* Dog-eared corner so the loader reads as a sheet of paper. */
@@ -2785,7 +2795,7 @@ li.list-row {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 4px;
+  gap: var(--space-1);
   min-height: var(--viewport-block);
 }
 
@@ -2831,7 +2841,7 @@ li.list-row {
 /* Onboarding modal chrome: serif hero title, step dots, ghost skip. */
 .onboard-bar {
   border-bottom: none;
-  padding: 18px 20px 6px;
+  padding: 18px var(--space-5) 6px;
 }
 
 .onboard-bar .viewer-title {
@@ -2845,7 +2855,7 @@ li.list-row {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  margin-right: 12px;
+  margin-right: var(--space-3);
 }
 
 .onboard-steps i {
@@ -2866,7 +2876,7 @@ li.list-row {
 .chat-empty .starters {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
   margin-top: 18px;
 }
 
@@ -2874,12 +2884,12 @@ li.list-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-3);
   text-align: left;
   background: var(--panel);
   border: 1px solid var(--border);
   color: var(--text);
-  padding: 12px 14px;
+  padding: var(--space-3) 14px;
   border-radius: var(--radius-md);
   font-size: 13.5px;
   transition:
@@ -2914,13 +2924,12 @@ li.list-row {
    keyboard hint and a round send button — the field is the form. */
 .composer {
   position: relative;
-  margin-top: 12px;
+  margin-top: var(--space-3);
   display: flex;
   flex-direction: column;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-xs);
   transition:
     border-color 0.15s var(--ease-out),
     box-shadow 0.15s var(--ease-out);
@@ -2937,7 +2946,7 @@ li.list-row {
   outline: none;
   background: transparent;
   resize: none;
-  padding: 12px 14px 2px;
+  padding: var(--space-3) 14px 2px;
   min-height: 24px;
   max-height: 200px;
   line-height: 1.5;
@@ -2954,8 +2963,8 @@ li.list-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 4px 8px 8px 14px;
+  gap: var(--space-3);
+  padding: var(--space-1) var(--space-2) var(--space-2) 14px;
 }
 
 .composer-hint {
@@ -3013,7 +3022,7 @@ li.list-row {
 .dropzone {
   border: 1.5px dashed var(--border-strong);
   border-radius: var(--radius-md);
-  padding: 22px 16px;
+  padding: 22px var(--space-4);
   text-align: center;
   color: var(--muted);
   font-size: 13px;
@@ -3057,8 +3066,8 @@ button.linklike:hover:not(:disabled) {
 .matter-list li.doc-row {
   flex-direction: column;
   align-items: stretch;
-  gap: 4px;
-  padding: 10px 12px;
+  gap: var(--space-1);
+  padding: 10px var(--space-3);
   margin: 0 -12px;
   border-radius: var(--radius-sm);
   transition: background var(--duration-fast) var(--ease-out);
@@ -3071,7 +3080,7 @@ button.linklike:hover:not(:disabled) {
 .doc-row-main {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 /* Name reads as content, not a link; green arrives on hover. */
@@ -3106,7 +3115,7 @@ button.linklike:hover:not(:disabled) {
   display: inline-flex;
   border: none;
   background: none;
-  padding: 4px;
+  padding: var(--space-1);
   color: var(--muted);
   cursor: pointer;
   opacity: 1;
@@ -3133,7 +3142,7 @@ button.linklike:hover:not(:disabled) {
   display: flex;
   justify-content: center;
   align-items: flex-start;
-  padding: 32px;
+  padding: var(--space-7);
   z-index: var(--z-overlay);
 }
 
@@ -3147,7 +3156,7 @@ button.linklike:hover:not(:disabled) {
 .viewer-panel {
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
+  border-radius: var(--md-sys-shape-corner-extra-large);
   width: 100%;
   max-width: 1240px;
   max-height: calc(var(--viewport-block) - 64px);
@@ -3161,8 +3170,8 @@ button.linklike:hover:not(:disabled) {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 16px;
-  padding: 12px 20px;
+  gap: var(--space-4);
+  padding: var(--space-3) var(--space-5);
   border-bottom: 1px solid var(--border);
 }
 
@@ -3191,20 +3200,20 @@ button.linklike:hover:not(:disabled) {
   color: var(--accent);
   background: var(--accent-soft);
   border: 1px solid var(--accent-border);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   padding: 2px 6px;
 }
 
 .viewer-bar-actions {
   display: flex;
-  gap: 8px;
+  gap: var(--space-2);
   align-items: center;
   flex-shrink: 0;
 }
 
 .viewer-bar-actions button {
   font-size: 13px;
-  padding: 5px 12px;
+  padding: 5px var(--space-3);
 }
 
 .viewer-body {
@@ -3218,7 +3227,7 @@ button.linklike:hover:not(:disabled) {
 .viewer-doc {
   flex: 1;
   overflow: auto;
-  padding: 40px 48px 72px;
+  padding: var(--space-8) 48px 72px;
   min-width: 0;
   background: linear-gradient(180deg, rgba(26, 30, 28, 0.04), transparent 16px), var(--bg-sunken);
   scrollbar-width: thin;
@@ -3237,7 +3246,7 @@ button.linklike:hover:not(:disabled) {
   overflow: auto;
   border-left: 1px solid var(--border);
   background: var(--bg);
-  padding: 0 16px 16px;
+  padding: 0 var(--space-4) var(--space-4);
   scrollbar-width: thin;
   scrollbar-color: var(--border-strong) transparent;
 }
@@ -3251,7 +3260,7 @@ button.linklike:hover:not(:disabled) {
   flex-direction: column;
   gap: 10px;
   margin: 0 -16px 14px;
-  padding: 14px 16px 12px;
+  padding: 14px var(--space-4) var(--space-3);
   background: var(--bg);
   border-bottom: 1px solid var(--border);
   font-size: 13px;
@@ -3268,7 +3277,7 @@ button.linklike:hover:not(:disabled) {
 
 .changes-actions {
   display: flex;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .changes-actions button {
@@ -3279,11 +3288,10 @@ button.linklike:hover:not(:disabled) {
    green, mirroring the in-document redline, with per-change accept/reject. */
 .change-card {
   border: 1px solid var(--border);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   background: var(--panel);
-  padding: 12px;
+  padding: var(--space-3);
   margin-bottom: 10px;
-  box-shadow: var(--shadow-xs);
   transition:
     border-color var(--duration-fast) var(--ease-out),
     box-shadow var(--duration-fast) var(--ease-out);
@@ -3318,7 +3326,7 @@ button.linklike:hover:not(:disabled) {
   text-transform: uppercase;
   letter-spacing: var(--tracking-caps);
   color: var(--muted);
-  margin-bottom: 8px;
+  margin-bottom: var(--space-2);
 }
 
 /* Old/new share the citation grammar: a left rule keying the color. */
@@ -3327,7 +3335,7 @@ button.linklike:hover:not(:disabled) {
   font-size: 13px;
   line-height: 1.45;
   white-space: pre-wrap;
-  padding: 6px 8px;
+  padding: 6px var(--space-2);
   border-radius: 0 4px 4px 0;
 }
 
@@ -3336,7 +3344,7 @@ button.linklike:hover:not(:disabled) {
   text-decoration: line-through;
   border-left: 2px solid var(--danger-border);
   background: var(--danger-soft);
-  margin-bottom: 4px;
+  margin-bottom: var(--space-1);
 }
 
 .change-new {
@@ -3395,7 +3403,7 @@ button.linklike:hover:not(:disabled) {
   min-width: 18px;
   height: 18px;
   padding: 0 5px;
-  border-radius: 9px;
+  border-radius: var(--radius-pill);
   background: var(--accent);
   color: var(--text-on-accent);
   font-size: 11px;
@@ -3413,13 +3421,9 @@ button.linklike:hover:not(:disabled) {
   max-width: 760px;
   margin: 0 auto;
   background: #fffdf9;
-  border: 1px solid rgba(26, 30, 28, 0.07);
+  border: 1px solid var(--border-soft);
   border-radius: 2px;
   padding: clamp(44px, 7vw, 88px) clamp(40px, 8vw, 96px);
-  box-shadow:
-    0 1px 2px rgba(26, 30, 28, 0.06),
-    0 8px 24px -8px rgba(26, 30, 28, 0.18),
-    0 28px 56px -28px rgba(45, 74, 62, 0.14);
   text-rendering: optimizeLegibility;
   font-kerning: normal;
 }
@@ -3482,7 +3486,7 @@ button.linklike:hover:not(:disabled) {
 .docx-skeleton .sk-line {
   height: 12px;
   border-radius: 3px;
-  margin-bottom: 16px;
+  margin-bottom: var(--space-4);
   background: linear-gradient(90deg, var(--bg-sunken) 25%, var(--panel) 45%, var(--bg-sunken) 65%);
   background-size: 200% 100%;
   animation: sk-shimmer 1.4s ease-in-out infinite;
@@ -3491,7 +3495,7 @@ button.linklike:hover:not(:disabled) {
 .docx-skeleton .sk-line:nth-child(1) {
   width: 55%;
   height: 18px;
-  margin: 0 auto 32px;
+  margin: 0 auto var(--space-7);
 }
 
 .docx-skeleton .sk-line:nth-child(3n) {
@@ -3526,7 +3530,7 @@ button.linklike:hover:not(:disabled) {
 .markdown h2,
 .markdown h3,
 .markdown h4 {
-  margin: 16px 0 6px;
+  margin: var(--space-4) 0 6px;
   line-height: 1.3;
   color: var(--text);
 }
@@ -3556,7 +3560,7 @@ button.linklike:hover:not(:disabled) {
 .markdown ul,
 .markdown ol {
   margin: 6px 0;
-  padding-left: 20px;
+  padding-left: var(--space-5);
 }
 
 .markdown li {
@@ -3566,8 +3570,8 @@ button.linklike:hover:not(:disabled) {
 .markdown blockquote {
   border-left: 3px solid var(--accent);
   background: var(--accent-soft);
-  margin: 8px 0;
-  padding: 6px 12px;
+  margin: var(--space-2) 0;
+  padding: 6px var(--space-3);
   border-radius: 0 4px 4px 0;
   color: var(--muted);
 }
@@ -3586,7 +3590,7 @@ button.linklike:hover:not(:disabled) {
 .markdown hr {
   border: none;
   border-top: 1px solid var(--border);
-  margin: 16px 0;
+  margin: var(--space-4) 0;
 }
 
 .markdown strong {
@@ -3595,7 +3599,7 @@ button.linklike:hover:not(:disabled) {
 
 .markdown-table-scroll {
   max-width: 100%;
-  margin: 8px 0;
+  margin: var(--space-2) 0;
   overflow-x: auto;
   scrollbar-width: thin;
   scrollbar-color: var(--border-strong) transparent;
@@ -3611,7 +3615,7 @@ button.linklike:hover:not(:disabled) {
 
 .markdown-table th,
 .markdown-table td {
-  padding: 6px 8px;
+  padding: 6px var(--space-2);
   border: 1px solid var(--border);
   vertical-align: top;
   text-align: left;
@@ -3644,7 +3648,7 @@ button.linklike:hover:not(:disabled) {
 }
 
 .report-section {
-  padding: 2px 0 2px 12px;
+  padding: 2px 0 2px var(--space-3);
   border-left: 2px solid var(--border);
 }
 
@@ -3668,7 +3672,7 @@ button.linklike:hover:not(:disabled) {
 .report-narration,
 .report-section-collapsed {
   margin: 0;
-  padding-left: 12px;
+  padding-left: var(--space-3);
   border-left: 2px solid var(--border);
   color: var(--muted);
 }
@@ -3726,7 +3730,7 @@ button.linklike:hover:not(:disabled) {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   width: min(360px, calc(var(--viewport-inline) - 32px));
   pointer-events: none;
 }
@@ -3739,7 +3743,7 @@ button.linklike:hover:not(:disabled) {
   border: 1px solid var(--border);
   border-left: 3px solid var(--muted);
   border-radius: var(--radius-md);
-  padding: 12px 14px;
+  padding: var(--space-3) 14px;
   box-shadow: var(--shadow-lg);
   font-size: 13px;
   line-height: 1.4;
@@ -3835,11 +3839,10 @@ button.linklike:hover:not(:disabled) {
 .permission-card {
   border: 1px solid var(--border);
   border-left: 3px solid var(--accent);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   background: var(--panel);
-  padding: 12px 14px;
+  padding: var(--space-3) 14px;
   margin-bottom: 10px;
-  box-shadow: var(--shadow-md);
 }
 
 .permission-title {
@@ -3849,12 +3852,12 @@ button.linklike:hover:not(:disabled) {
 }
 
 .permission-preview {
-  margin-bottom: 8px;
+  margin-bottom: var(--space-2);
 }
 
 .permission-actions {
   display: flex;
-  gap: 8px;
+  gap: var(--space-2);
   flex-wrap: wrap;
 }
 
@@ -3880,8 +3883,8 @@ button.linklike:hover:not(:disabled) {
 }
 
 .doc-panel .picker-body {
-  gap: 4px;
-  padding: 16px 20px 20px;
+  gap: var(--space-1);
+  padding: var(--space-4) var(--space-5) var(--space-5);
 }
 
 .doc-panel .markdown p,
@@ -3918,7 +3921,7 @@ button.linklike:hover:not(:disabled) {
   }
 
   .container {
-    padding: 16px;
+    padding: var(--space-4);
   }
 
   .matter-body {
@@ -3931,7 +3934,7 @@ button.linklike:hover:not(:disabled) {
 
   .picker-wide .assistant-option {
     grid-template-columns: 1fr;
-    row-gap: 4px;
+    row-gap: var(--space-1);
   }
 
   .page-head {
@@ -3941,7 +3944,7 @@ button.linklike:hover:not(:disabled) {
   }
 
   .viewer-overlay {
-    padding: 12px;
+    padding: var(--space-3);
   }
 
   .changes-panel {
@@ -3988,20 +3991,20 @@ button.linklike:hover:not(:disabled) {
 
 /* A failed provider sign-in stays visible while the lawyer fixes it. */
 .provider-connection-banner {
-  display: flex; align-items: center; justify-content: space-between; gap: 16px;
-  margin: 12px 20px; padding: 14px 18px; border: 1px solid var(--warn-border);
-  border-radius: 10px; background: var(--warn-soft);
+  display: flex; align-items: center; justify-content: space-between; gap: var(--space-4);
+  margin: var(--space-3) var(--space-5); padding: 14px 18px; border: 1px solid var(--warn-border);
+  border-radius: var(--radius-lg); background: var(--warn-soft);
 }
-.provider-connection-banner p { margin: 4px 0 0; line-height: 1.5; }
-.provider-connection-actions { display: flex; gap: 8px; flex-shrink: 0; }
+.provider-connection-banner p { margin: var(--space-1) 0 0; line-height: 1.5; }
+.provider-connection-actions { display: flex; gap: var(--space-2); flex-shrink: 0; }
 .provider-connection-actions button { min-height: 44px; }
-.settings-provider-health { display: block; margin-top: 4px; max-width: 46em; white-space: normal; }
+.settings-provider-health { display: block; margin-top: var(--space-1); max-width: 46em; white-space: normal; }
 @media (max-width: 700px) {
   .provider-connection-banner { align-items: stretch; flex-direction: column; margin: 10px; }
   .provider-connection-actions { flex-wrap: wrap; }
 }
 
-.settings-native-connect form { display: grid; gap: 12px; }
+.settings-native-connect form { display: grid; gap: var(--space-3); }
 .settings-native-connect form > label { display: grid; gap: 6px; }
 .settings-native-connect form > label > :is(input:not([type="checkbox"]), select) { width: 100%; min-width: 0; }
 .settings-native-connect form > button { justify-self: start; min-height: 44px; }

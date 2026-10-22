@@ -38,8 +38,6 @@ curated lighter than the generated scheme to preserve a predominantly white UI.
 | --- | --- | --- |
 | primary / on-primary | #17634F / white; primary actions | --accent / --text-on-accent |
 | primary-container / on-primary-container | #EDF4EE / #154C3B; selected controls | --accent-soft |
-| secondary / secondary-container | #4B635A / #E6EFE9; supporting controls | tonal button |
-| tertiary / tertiary-container | #406376 / #EDF5FA; sparing information accents | information roles |
 | surface / on-surface | white / #242C28; work surfaces and ink | --panel / --text |
 | surface-container-low | #F8FAF7; navigation/supporting areas | --bg / --panel-hover |
 | surface-container / high / highest | #F2F5F1 / #EDF1EC / #E3E9E3 | --bg-sunken |
@@ -75,6 +73,19 @@ to 4/8/12/20/28/999px. Actions and selected navigation are rounded; fields and
 rows use small/medium; standalone panels and dialogs use large/extra-large.
 Tables stay precise. `--radius-*` aliases preserve existing consumers.
 
+Corners: one radius per role.
+
+- Overlays (dialogs, sheets, picker panels, document reader, review modal,
+  matter edit, settings panel): `--md-sys-shape-corner-extra-large` (28px).
+- Cards, section containers and card-style notices: `--radius-lg` (20px).
+- Inputs, selects, textareas, list rows, menus, popovers, toasts:
+  `--radius-md` (12px).
+- Chips, tooltips and settings segments: `--radius-sm` (8px; segments press to 4px).
+- Text buttons are pills; icon and close buttons are circular.
+- The composer card keeps its own radius; the review table and document page stay square.
+- Nested corners are concentric: inner = max(4px, outer - inset), written with
+  `calc()` and the tokens (settings tabs: 28px - `--space-3`; menu items: 12px - 6px).
+
 `--space-1` through `--space-8` are 4, 8, 12, 16, 20, 24, 32 and 40px.
 Use 24–40px between page sections and 8–16px inside controls. Supporting
 containers have restrained tone/outline, not stacked elevation. The elevation
@@ -82,7 +93,7 @@ containers have restrained tone/outline, not stacked elevation. The elevation
 
 ## Native component contracts
 
-- Buttons: `.primary`, `.tonal`, `.outlined`, `.ghost`, `.danger`; `.btn-sm`
+- Buttons: `.primary`, `.ghost`, `.danger`; `.btn-sm`
   and `.icon-btn` are compact variants. Keep a textual accessible name and use
   `disabled` / `aria-busy` for unavailable or pending work. Only one primary
   action should dominate each task area.

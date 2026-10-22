@@ -40,21 +40,22 @@
   overflow: auto;
   border-right: 1px solid var(--border);
   background: var(--md-sys-color-surface-container-low);
-  border-bottom-left-radius: var(--radius-lg);
-  padding: 20px 12px;
+  border-bottom-left-radius: var(--md-sys-shape-corner-extra-large);
+  padding: var(--space-5) var(--space-3);
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
 }
 
 .settings-nav button {
   position: relative;
   text-align: left;
   min-height: 44px;
-  padding: 10px 16px;
+  padding: 10px var(--space-4);
   border: none;
   background: none;
-  border-radius: var(--radius-pill);
+  /* Concentric with the panel corner: outer 28px minus the rail's 12px inset. */
+  border-radius: calc(var(--md-sys-shape-corner-extra-large) - var(--space-3));
   font-size: .93rem;
   font-weight: 500;
   color: var(--muted);
@@ -89,10 +90,10 @@
   flex: 1;
   min-width: 0;
   overflow: auto;
-  padding: 24px 32px 32px;
+  padding: var(--space-6) var(--space-7) var(--space-7);
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: var(--space-4);
   scrollbar-width: thin;
   scrollbar-color: var(--border-strong) transparent;
 }
@@ -102,9 +103,9 @@
 .settings-summary-row {
   display: grid;
   grid-template-columns: var(--settings-label-width) minmax(0, 1fr);
-  gap: 24px;
+  gap: var(--space-6);
   align-items: start;
-  padding: 12px 0;
+  padding: var(--space-3) 0;
 }
 
 .settings-field-copy {
@@ -112,7 +113,7 @@
   padding-top: 10px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
 }
 
 .settings-field-copy .settings-label {
@@ -125,7 +126,7 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .settings-field-control > input,
@@ -151,9 +152,9 @@
 .settings-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--space-2);
   margin-left: calc(var(--settings-label-width) + 24px);
-  padding-top: 16px;
+  padding-top: var(--space-4);
 }
 
 .settings-summary {
@@ -180,8 +181,8 @@
 .settings-seg {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
-  padding: 4px;
+  gap: var(--space-1);
+  padding: var(--space-1);
   background: var(--md-sys-color-surface-container-low);
   border: 1px solid var(--md-sys-color-outline);
   border-radius: var(--radius-md);
@@ -193,11 +194,19 @@
   border: none;
   border-radius: var(--radius-sm);
   background: transparent;
-  padding: 6px 12px;
+  padding: 6px var(--space-3);
   font-size: .93rem;
   color: var(--muted);
   font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
 }
+
+/* M3 segmented buttons mark the selected segment with a leading check, so
+   selection is not carried by colour alone. */
+.settings-seg-check { flex: none; }
 
 .settings-seg button:hover:not(:disabled) {
   background: var(--md-sys-color-surface-container);
@@ -262,8 +271,8 @@
 .settings-connected {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  margin-bottom: 4px;
+  gap: var(--space-2);
+  margin-bottom: var(--space-1);
 }
 
 /* Provider / toggle cards: paper card + status dot instead of a green slab. */
@@ -271,8 +280,8 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 12px;
-  padding: 16px;
+  gap: var(--space-3);
+  padding: var(--space-4);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   background: var(--panel);
@@ -295,7 +304,7 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
   overflow-wrap: anywhere;
 }
 
@@ -304,7 +313,7 @@
 }
 
 .settings-needs > .settings-provider-copy {
-  margin-bottom: 8px;
+  margin-bottom: var(--space-2);
 }
 
 .settings-needs .settings-conn-meta {
@@ -315,7 +324,7 @@
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
-  gap: 8px;
+  gap: var(--space-2);
   align-items: center;
 }
 
@@ -325,11 +334,11 @@
   margin: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .settings-component {
-  padding: 16px;
+  padding: var(--space-4);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   font-size: .93rem;
@@ -350,7 +359,7 @@
 .settings-connected .settings-conn-name {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .settings-connected .settings-conn-name::before {
@@ -377,17 +386,17 @@
 }
 
 .settings-needs {
-  padding: 20px;
+  padding: var(--space-5);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   background: var(--panel);
-  margin-bottom: 12px;
+  margin-bottom: var(--space-3);
 }
 
 /* Field rows inside a needs-setup card: fixed-width labels so the inputs line
    up, modest top gap so the rows read as one form under the provider name. */
 .settings-field {
-  margin-top: 8px;
+  margin-top: var(--space-2);
 }
 
 .settings-field-label {
@@ -403,7 +412,7 @@
 
 .settings-error {
   display: block;
-  margin-top: 8px;
+  margin-top: var(--space-2);
   padding: 7px 10px;
   font-size: 12px;
   color: var(--danger);
@@ -425,20 +434,39 @@
    add button sits flush right on its own row. */
 .settings-add {
   align-self: flex-start;
-  margin-top: 4px;
+  margin-top: var(--space-1);
 }
 
 .settings-section {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 24px 0;
+  gap: var(--space-3);
+  padding: var(--space-6) 0;
   border-top: 1px solid var(--border);
 }
 
 .settings-section:first-of-type {
   border-top: none;
   padding-top: 0;
+}
+
+/* In Settings each group is a low-tone card: the heading stays, the divider goes. */
+.settings-content .settings-section {
+  padding: var(--space-5);
+  border: 0;
+  border-radius: var(--radius-lg);
+  background: var(--md-sys-color-surface-container-low);
+}
+
+@container settings (max-width: 520px) {
+  .settings-content .settings-section { padding: var(--space-4); }
+}
+
+/* A section nested in a card (the sign-in disclosure body) is not a second card. */
+.settings-content .settings-section .settings-section {
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
 }
 
 /* A disclosure's summary is a pointer target; keep it at least 24px tall. */
@@ -468,7 +496,7 @@ details.settings-section > summary {
 
 /* Callout variant for a hint the firm should act on (e.g. missing search key). */
 .settings-warning {
-  padding: 8px 10px;
+  padding: var(--space-2) 10px;
   border: 1px solid var(--danger-border);
   border-radius: var(--radius-sm);
   background: var(--danger-soft);
@@ -478,7 +506,7 @@ details.settings-section > summary {
 /* Masked API-key input + its show/hide toggle, sat on one row. */
 .settings-password {
   display: flex;
-  gap: 8px;
+  gap: var(--space-2);
   align-items: center;
   min-width: 0;
 }
@@ -493,7 +521,7 @@ details.settings-section > summary {
 }
 
 .settings-row {
-  gap: 8px;
+  gap: var(--space-2);
   align-items: center;
 }
 
@@ -508,12 +536,12 @@ details.settings-section > summary {
 .settings-grid {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .settings-notice {
   margin: 0;
-  padding: 12px 16px;
+  padding: var(--space-3) var(--space-4);
   border-radius: var(--radius-md);
   background: var(--accent-soft);
   border: 1px solid var(--accent-border);
@@ -523,7 +551,7 @@ details.settings-section > summary {
 }
 
 .settings-nav-caption {
-  margin: 0 16px 12px;
+  margin: 0 var(--space-4) var(--space-3);
   color: var(--muted);
   font-size: .78rem;
   font-weight: 600;
@@ -548,23 +576,23 @@ details.settings-section > summary {
 }
 
 .settings-type-preview {
-  margin-top: 12px;
-  padding: 24px;
+  margin-top: var(--space-3);
+  padding: var(--space-6);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: var(--md-sys-color-surface-container-low);
 }
 .settings-type-preview > span { color: var(--accent); font-size: .85rem; font-weight: 600; }
-.settings-type-preview h4 { margin: 12px 0 8px; font-family: var(--font-display); font-size: 1.35rem; font-weight: 600; }
+.settings-type-preview h4 { margin: var(--space-3) 0 var(--space-2); font-family: var(--font-display); font-size: 1.35rem; font-weight: 600; }
 .settings-type-preview p { max-width: 48ch; margin: 0; color: var(--muted); font-size: 1rem; line-height: 1.7; }
 
 @container settings (max-width: 520px) {
-  .settings-form-row, .settings-summary-row { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .settings-form-row, .settings-summary-row { grid-template-columns: minmax(0, 1fr); gap: var(--space-2); }
   .settings-field-copy { padding-top: 0; }
   .settings-actions { margin-left: 0; }
   .settings-conn:not(.settings-toggle-row) { flex-wrap: wrap; }
   .settings-provider-actions { flex-basis: 100%; }
-  .settings-toggle-row { grid-template-columns: minmax(0, 1fr) 44px; gap: 8px 12px; }
+  .settings-toggle-row { grid-template-columns: minmax(0, 1fr) 44px; gap: var(--space-2) var(--space-3); }
   .settings-toggle-row .settings-toggle-text { grid-row: span 2; }
   .settings-toggle-row .switch-state { grid-column: 2; justify-self: center; align-self: start; font-size: .78rem; }
   .settings-toggle-row .switch { grid-column: 2; grid-row: 1; align-self: end; }
@@ -573,9 +601,9 @@ details.settings-section > summary {
 @media (max-width: 700px) {
   .settings-panel { height: calc(var(--viewport-block) - 24px); max-height: calc(var(--viewport-block) - 24px); }
   .settings-body { flex-direction: column; }
-  .settings-nav { width: 100%; flex-direction: row; overflow-x: auto; padding: 8px; border-right: none; border-bottom: 1px solid var(--border); border-radius: 0; gap: 4px; }
+  .settings-nav { width: 100%; flex-direction: row; overflow-x: auto; padding: var(--space-2); border-right: none; border-bottom: 1px solid var(--border); border-radius: 0; gap: var(--space-1); }
   .settings-nav-caption { display: none; }
   .settings-nav button { flex: 0 0 auto; white-space: nowrap; }
-  .settings-content { padding: 24px 20px; }
-  .settings-type-preview { padding: 20px; }
+  .settings-content { padding: var(--space-6) var(--space-5); }
+  .settings-type-preview { padding: var(--space-5); }
 }

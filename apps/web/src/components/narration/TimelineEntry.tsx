@@ -64,7 +64,7 @@ function StateIcon({ state }: { state: ActivityLine["state"] }) {
       {state === "done" && (
         <>
           <circle cx="8" cy="8" r="7" fill="currentColor" />
-          <path d="m5 8.2 2 2 4-4.2" fill="none" stroke="var(--text-on-accent)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+          <path d="m5 8.2 2 2 4-4.2" fill="none" stroke="var(--text-on-accent)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
         </>
       )}
       {state === "paused" && (

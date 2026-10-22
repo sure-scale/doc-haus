@@ -8,7 +8,7 @@ button {
   background: var(--panel);
   color: var(--text);
   min-height: var(--ctl-h);
-  padding: 8px 16px;
+  padding: var(--space-2) var(--space-4);
   /* A pill, as a finite radius (half of 44px) rather than 999px: a radius
      transition from 999px would sit clamped and snap at the very end. */
   border-radius: 22px;
@@ -84,7 +84,7 @@ button.ghost:hover:not(:disabled) {
 
 button.btn-sm {
   min-height: 32px;
-  padding: 4px 12px;
+  padding: var(--space-1) var(--space-3);
   font-size: .8125rem;
   border-radius: var(--radius-sm);
 }
@@ -94,7 +94,7 @@ button.btn-sm {
    specificity over context rules such as .onboarding-panel button:not(...). */
 button.btn-lg:not(.linklike):not(.ghost) {
   min-height: 48px;
-  padding-inline: 24px;
+  padding-inline: var(--space-6);
   font-size: 1rem;
   border-radius: 24px;
 }
@@ -172,7 +172,7 @@ select {
 }
 
 textarea {
-  padding: 8px 10px;
+  padding: var(--space-2) 10px;
 }
 
 input::placeholder,
@@ -204,7 +204,7 @@ select:disabled {
 select {
   appearance: none;
   -webkit-appearance: none;
-  padding-right: 32px;
+  padding-right: var(--space-7);
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b6b66' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 10px center;
@@ -260,7 +260,7 @@ input[type="checkbox"]:checked::before {
    outline so the eye finds it first. */
 .icon-btn {
   min-height: 28px;
-  padding: 4px 11px;
+  padding: var(--space-1) 11px;
   font-size: 12.5px;
   font-weight: 500;
   color: var(--text-secondary);
@@ -299,7 +299,7 @@ input[type="checkbox"]:checked::before {
   align-items: center;
   text-align: center;
   gap: 6px;
-  padding: 36px 24px;
+  padding: 36px var(--space-6);
 }
 
 .load-error h3 {
@@ -309,7 +309,7 @@ input[type="checkbox"]:checked::before {
 }
 
 .load-error p {
-  margin: 0 0 8px;
+  margin: 0 0 var(--space-2);
   max-width: 420px;
   font-size: 13px;
   color: var(--text-secondary);
@@ -320,10 +320,6 @@ input[type="checkbox"]:checked::before {
   margin-left: auto;
 }
 
-/* Tonal and outlined variants use the same native button contract. */
-button.tonal { color: var(--md-sys-color-on-secondary-container); background: var(--md-sys-color-secondary-container); border-color: transparent; }
-button.tonal:hover:not(:disabled) { background: var(--accent-soft-hover); border-color: transparent; }
-button.outlined { color: var(--accent); background: var(--panel); border-color: var(--md-sys-color-outline); }
 button.primary:disabled { color: var(--md-sys-state-on-disabled); background: var(--md-sys-state-disabled); border-color: transparent; box-shadow: none; opacity: 1; }
 button[aria-busy="true"] { cursor: progress; }
 input[aria-invalid="true"], textarea[aria-invalid="true"], select[aria-invalid="true"] { border-color: var(--danger); }
