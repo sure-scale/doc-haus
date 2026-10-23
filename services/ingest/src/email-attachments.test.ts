@@ -1,12 +1,13 @@
-import { afterAll, expect, test } from "bun:test"
+import { afterAll, expect, spyOn, test } from "bun:test"
 import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { Document, Packer, Paragraph } from "docx"
 import { findQuote, liveText } from "../../../dochaus/lib/extract"
 import { verifyQuote } from "../../../dochaus/lib/quote-verify"
-import { emlToText } from "../../../dochaus/lib/email"
+import { emlToText, safeAttachmentName } from "../../../dochaus/lib/email"
 import { openDb } from "./db"
+import * as documentDelete from "./document-delete"
 import { ingestEmailDocument, MAX_EMAIL_DEPTH, reingestLegacyEmails, removeMatterDocument, withEmailLinks } from "./email-attachments"
 import { ingestDocument } from "./ingest"
 import { sourceArtifactsMatchRegistry } from "./source-artifacts"
@@ -315,7 +316,7 @@ test("removing an email removes its attachments unless kept, and never one anoth
   ])
   await ingestEmailDocument(directory, "Remove.eml", message)
   const removed = await removeMatterDocument(directory, "Remove.eml", false)
-  expect(removed.attachments).toEqual({ removed: ["One.docx", "Two.pdf"], kept: [] })
+  expect(removed.attachments).toEqual({ removed: ["One.docx", "Two.pdf"], kept: [], failed: [] })
   expect(registry(directory)).toEqual([])
   const db = openDb(directory)
   expect((db.query("SELECT COUNT(*) AS n FROM chunks").get() as { n: number }).n).toBe(0)
@@ -324,7 +325,7 @@ test("removing an email removes its attachments unless kept, and never one anoth
   // Email only keeps both children, shown as from a removed email.
   await ingestEmailDocument(directory, "Remove.eml", message)
   const only = await removeMatterDocument(directory, "Remove.eml", true)
-  expect(only.attachments).toEqual({ removed: [], kept: [] })
+  expect(only.attachments).toEqual({ removed: [], kept: [], failed: [] })
   expect(listed(directory).map((row) => [row.name, "attachment_of" in row ? row.attachment_of : undefined])).toEqual([
     ["One.docx", { name: "Remove.eml", removed: true }],
     ["Two.pdf", { name: "Remove.eml", removed: true }],
@@ -372,4 +373,126 @@ test("an email ingested before attachments were read is re-ingested once, bringi
   expect(registry(directory).map((row) => row.name).toSorted()).toEqual(["Legacy.docx", "Legacy.eml"])
   await expectCitable(directory, "Legacy.eml")
   expect(await reingestLegacyEmails(directory)).toBe(0)
+}, 120_000)
+
+test("a document sent as a referenced part of the HTML body is listed and ingested; only inline images are counted", async () => {
+  const directory = matter()
+  const related = [
+    'Content-Type: multipart/related; boundary="R"',
+    "",
+    "--R",
+    "Content-Type: text/html",
+    "",
+    '<p>See <a href="cid:terms@example.test">terms</a></p><img src="cid:logo@example.test">',
+    "--R",
+    "Content-Type: application/pdf; name=\"Terms.pdf\"",
+    "Content-ID: <terms@example.test>",
+    "Content-Transfer-Encoding: base64",
+    "",
+    pdf("Synthetic referenced terms marker").toString("base64"),
+    "--R",
+    "Content-Type: image/png",
+    "Content-ID: <logo@example.test>",
+    "Content-Transfer-Encoding: base64",
+    "",
+    Buffer.from("png").toString("base64"),
+    "--R--",
+  ].join("\r\n")
+  const result = await ingestEmailDocument(directory, "Referenced.eml", email("Synthetic referenced part", "Body.", [related]))
+  expect(result.attachments).toMatchObject([{ name: "Terms.pdf", status: "indexed", document: "Terms.pdf" }])
+  expect(listed(directory).find((row) => row.name === "Referenced.eml")).toMatchObject({ embedded_images: 1 })
+}, 120_000)
+
+test("derived attachment names drop bidi overrides and zero-width characters", () => {
+  expect(safeAttachmentName("in\u202Evoice\u200B.pdf", "application/pdf", 1)).toBe("invoice.pdf")
+  expect(safeAttachmentName("\u200B\u2066", "application/pdf", 2)).toBe("attachment-2.pdf")
+})
+
+test("an attachment a sibling email that is also removed links to is removed with the email", async () => {
+  const directory = matter()
+  const shared = await docx("Synthetic sibling shared marker")
+  // The forwarded message carries the same file, so its record links to the
+  // outer email's copy; removing the outer email removes both.
+  const forwarded = email("Synthetic forwarded sibling", "Forwarded.", [part("Shared.docx", DOCX, shared)])
+  await ingestEmailDocument(directory, "Outer.eml", email("Synthetic outer sibling", "Both.", [
+    part("Shared.docx", DOCX, shared),
+    part("Forwarded.eml", "message/rfc822", forwarded),
+  ]))
+  const plan = listed(directory).find((row) => row.name === "Outer.eml")
+  expect(plan && "removal" in plan ? plan.removal : undefined).toEqual({ attachments: ["Shared.docx", "Forwarded.eml"], kept: [] })
+  expect((await removeMatterDocument(directory, "Outer.eml", false)).attachments.removed).toEqual(["Shared.docx", "Forwarded.eml"])
+  expect(registry(directory)).toEqual([])
+}, 120_000)
+
+test("uploading an email again reuses an attachment the lawyer changed, leaving their version", async () => {
+  const directory = matter()
+  const message = email("Synthetic changed", "Draft.", [part("Draft.docx", DOCX, await docx("Synthetic original draft marker"))])
+  await ingestEmailDocument(directory, "Changed.eml", message)
+  const edited = await docx("Synthetic lawyer edit marker")
+  await ingestDocument(directory, "Draft.docx", edited, { existing: "replace", requireExistingSource: true })
+  for (const existing of ["replace", "keep-both"] as const) {
+    const again = await ingestEmailDocument(directory, "Changed.eml", message, { existing })
+    expect(again.attachments).toMatchObject([{ document: "Draft.docx" }])
+  }
+  expect(readFileSync(path.join(directory, "Draft.docx"))).toEqual(edited)
+  expect(registry(directory).map((row) => row.name).toSorted()).toEqual(["Changed (2).eml", "Changed.eml", "Draft.docx"])
+  const plan = listed(directory).find((row) => row.name === "Changed.eml")
+  expect(plan && "removal" in plan ? plan.removal : undefined).toEqual({ attachments: [], kept: [{ name: "Draft.docx", reason: "changed" }] })
+}, 120_000)
+
+test("uploading an email again adds no second copy of an attachment with no readable text", async () => {
+  const directory = matter()
+  const message = email("Synthetic scan", "Signed copy.", [part("Signed.pdf", "application/pdf", pdf(""))])
+  const first = await ingestEmailDocument(directory, "Thread.eml", message)
+  expect(first.attachments).toMatchObject([{ document: "Signed.pdf", status: "no_readable_text" }])
+  for (const existing of ["replace", "keep-both"] as const) {
+    const again = await ingestEmailDocument(directory, "Thread.eml", message, { existing })
+    expect(again.attachments).toMatchObject([{ document: "Signed.pdf", status: "no_readable_text" }])
+  }
+  expect(registry(directory).map((row) => row.name).toSorted()).toEqual(["Signed.pdf", "Thread (2).eml", "Thread.eml"])
+}, 120_000)
+
+test("an email left with pending attachments is finished at the next start without copies", async () => {
+  const directory = matter()
+  const message = email("Synthetic pending", "Files.", [part("Pending.docx", DOCX, await docx("Synthetic pending marker"))])
+  await ingestEmailDocument(directory, "Pending.eml", message)
+  // As if the upload stopped before recording the outcomes.
+  const db = openDb(directory)
+  const stored = JSON.parse((db.query("SELECT attachments FROM documents WHERE name = 'Pending.eml'").get() as { attachments: string }).attachments)
+  stored.attachments[0] = { name: "Pending.docx", type: DOCX, size: stored.attachments[0].size, outcome: "pending" }
+  db.run("UPDATE documents SET attachments = ? WHERE name = 'Pending.eml'", [JSON.stringify(stored)])
+  db.close()
+  expect(await reingestLegacyEmails(directory)).toBe(1)
+  expect(registry(directory).map((row) => row.name).toSorted()).toEqual(["Pending.docx", "Pending.eml"])
+  expect(listed(directory).find((row) => row.name === "Pending.eml")).toMatchObject({
+    attachments: [{ status: "indexed", document: "Pending.docx" }],
+    removal: { attachments: ["Pending.docx"], kept: [] },
+  })
+  expect(await reingestLegacyEmails(directory)).toBe(0)
+}, 120_000)
+
+test("an attachment that cannot be removed is named in the result instead of failing the removal", async () => {
+  const directory = matter()
+  await ingestEmailDocument(directory, "Busy.eml", email("Synthetic busy", "Two.", [
+    part("Free.docx", DOCX, await docx("Synthetic free marker")),
+    part("Busy.pdf", "application/pdf", pdf("Synthetic busy marker")),
+  ]))
+  const original = documentDelete.deleteMatterDocument
+  const remove = spyOn(documentDelete, "deleteMatterDocument").mockImplementation(async (dir, name) => {
+    if (name === "Busy.pdf") throw new documentDelete.DocumentMutationConflictError("Busy.pdf is being changed. Try again.")
+    return original(dir, name)
+  })
+  try {
+    const result = await removeMatterDocument(directory, "Busy.eml", false)
+    expect(result.attachments).toEqual({
+      removed: ["Free.docx"],
+      kept: [],
+      failed: [{ name: "Busy.pdf", reason: "Busy.pdf is being changed. Try again." }],
+    })
+  } finally {
+    remove.mockRestore()
+  }
+  expect(listed(directory).map((row) => [row.name, "attachment_of" in row ? row.attachment_of : undefined])).toEqual([
+    ["Busy.pdf", { name: "Busy.eml", removed: true }],
+  ])
 }, 120_000)

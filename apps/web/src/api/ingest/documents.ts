@@ -159,7 +159,9 @@ export async function deleteDocument(
   id: string,
   name: string,
   options: { keepAttachments?: boolean } = {},
-): Promise<{ attachments?: { removed: string[]; kept: EmailRemoval["kept"] } }> {
+): Promise<{
+  attachments?: { removed: string[]; kept: EmailRemoval["kept"]; failed?: { name: string; reason: string }[] }
+}> {
   const keep = options.keepAttachments ? "&attachments=keep" : ""
   const res = await fetch(`${INGEST_URL}/matters/${id}/documents?name=${encodeURIComponent(name)}${keep}`, { method: "DELETE" })
   if (!res.ok) throw new Error(await ingestError(res, `Could not delete ${name}`))

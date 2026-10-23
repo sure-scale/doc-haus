@@ -53,7 +53,9 @@ export type ParsedEmail = {
 
 export async function parseEmail(buffer: Buffer | Uint8Array): Promise<ParsedEmail> {
   const email = await PostalMime.parse(buffer, { forceRfc822Attachments: true })
-  const parts = email.attachments.filter((part) => !(part.related && part.contentId))
+  // Only images the HTML body shows inline are left out; any other part,
+  // even one the body references by Content-ID, is listed.
+  const parts = email.attachments.filter((part) => !(part.related && part.contentId && part.mimeType?.toLowerCase().startsWith("image/")))
   const attachments = parts.map((part, index) => emailAttachment(part, index + 1))
   const header = [
     email.subject && `Subject: ${email.subject}`,
@@ -102,13 +104,13 @@ function emailAttachment(part: Attachment, position: number): EmailAttachment {
   }
 }
 
-// The stated name is the sender's: take its last path segment, drop control
-// characters and leading dots, keep its extension, add one from the type when it
+// The stated name is the sender's: take its last path segment, drop control and
+// format characters (bidi overrides, zero-width marks) and leading dots, keep its extension, add one from the type when it
 // has none, and fall back to a name from the type and position when nothing is
 // left. Never refused, so no attachment is lost to its name.
 export function safeAttachmentName(filename: string | null | undefined, mimeType: string, position: number) {
   const base = (filename ?? "").split(/[\\/]/).pop() ?? ""
-  const clean = oneLine(base.replace(/[\u0000-\u001f\u007f-\u009f]/g, " "))
+  const clean = oneLine(base.replace(/\p{Cf}/gu, "").replace(/[\u0000-\u001f\u007f-\u009f]/g, " "))
     .replace(/^[.\s]+/, "")
     .replace(/[.\s]+$/, "")
   const typed = TYPE_EXTENSION[mimeType] ?? ""

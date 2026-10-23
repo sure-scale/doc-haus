@@ -4,7 +4,7 @@ import { parseEmail, type EmailAttachment } from "../../../dochaus/lib/email"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
 import { draftingTraceReference } from "../../../dochaus/lib/drafting-trace-identity"
 import { openDb } from "./db"
-import { deleteMatterDocument, RegisteredDocumentNotFoundError } from "./document-delete"
+import { deleteMatterDocument, DocumentMutationConflictError, RegisteredDocumentNotFoundError } from "./document-delete"
 import { documentRegistryIdentity } from "./document-identity"
 import { readExtractionQuality } from "./extraction-quality"
 import { extractSourceText, ingestDocument, sourceTextRevision, type ExistingSourceChoice, type ExtractedSourceText } from "./ingest"
@@ -75,6 +75,9 @@ export async function ingestEmailDocument(
   const parsed = await parseEmail(buffer)
   const extraction = await extractSourceText(fileName, buffer)
   const extracted = { ...extraction, findings: [...extraction.findings, ...(options.findings ?? [])] }
+  // Read before this email's own record is replaced, so an upload of the same
+  // email again finds the documents its attachments went into.
+  const earlier = earlierAttachments(matterDir, fileName, sourceTextRevision(extraction.text))
   const entries = parsed.attachments.map((attachment) => initialEntry(attachment, depth))
   const record = () => JSON.stringify({ attachments: entries, embedded: parsed.embedded } satisfies EmailAttachmentsRecord)
   const email = await ingestDocument(matterDir, fileName, buffer, {
@@ -85,7 +88,7 @@ export async function ingestEmailDocument(
   if (!entries.some((entry) => entry.outcome === "pending")) return { ...email, attachments: emailAttachmentsView(matterDir, email.name, entries) }
   for (const [index, attachment] of parsed.attachments.entries()) {
     const entry = entries[index]!
-    if (entry.outcome === "pending") Object.assign(entry, await ingestAttachment(matterDir, email.name, attachment, depth))
+    if (entry.outcome === "pending") Object.assign(entry, await ingestAttachment(matterDir, email.name, attachment, depth, earlier))
   }
   // Record the outcomes on the email: one more commit of the email itself, which
   // keeps the registry and source-index.json in step through the usual path.
@@ -125,6 +128,7 @@ async function ingestAttachment(
   emailName: string,
   attachment: EmailAttachment,
   depth: number,
+  earlier: AttachmentEntry[],
 ): Promise<Partial<AttachmentEntry>> {
   // A suspicious stated name flags the document it becomes, like suspicious
   // text; the finding has no span because the name is not in the document.
@@ -133,6 +137,8 @@ async function ingestAttachment(
     detail: `Attachment name: ${finding.detail}`,
   }))
   const bytes = Buffer.from(attachment.content)
+  const before = takeEarlier(earlier, attachment)
+  if (before) return before
   try {
     // An attachment passes the same extraction quality gate as an upload: one
     // with no readable text is kept as a document, with nothing indexed.
@@ -159,8 +165,8 @@ async function ingestAttachment(
   }
 }
 
-// A source already in the matter with this text, by documents.rev. Text that is
-// empty or unreadable says nothing about identity, so it never matches.
+// A source already in the matter with this text, by documents.rev. Text that
+// is empty or unreadable says nothing about identity, so it never matches.
 function sameSourceByText(matterDir: string, { text, quality }: ExtractedSourceText) {
   if (!text.trim() || quality.status === "no_readable_text") return
   const rev = sourceTextRevision(text)
@@ -169,10 +175,39 @@ function sameSourceByText(matterDir: string, { text, quality }: ExtractedSourceT
     const row = db
       .query("SELECT name FROM documents WHERE role = 'source' AND rev = ? ORDER BY created_at, id LIMIT 1")
       .get(rev) as { name: string } | null
-    return row ? { document: row.name, rev } : undefined
+    if (row) return { document: row.name, rev }
   } finally {
     db.close()
   }
+}
+
+// The attachments already recorded for this email, under its name or as an
+// earlier upload of the same message, whose documents are still in the matter.
+// Uploading the email again reuses them, matched by stated name, type and size,
+// whatever their text: one the lawyer changed keeps their version, and one with
+// no readable text gains no copy. The entry keeps its extraction-time rev, so
+// a change still shows.
+function earlierAttachments(matterDir: string, fileName: string, emailRev: string) {
+  const db = openDb(matterDir)
+  try {
+    const rows = linkRows(db)
+    const sources = new Set(rows.filter((row) => row.role === "source").map((row) => row.name))
+    return rows
+      .filter((row) => row.role === "source" && (row.name === fileName || row.rev === emailRev))
+      .flatMap((row) => readRecord(row.attachments)?.attachments ?? [])
+      .filter((entry) => (entry.outcome === "indexed" || entry.outcome === "no_readable_text") && entry.document && sources.has(entry.document))
+  } finally {
+    db.close()
+  }
+}
+
+function takeEarlier(earlier: AttachmentEntry[], attachment: EmailAttachment): Partial<AttachmentEntry> | undefined {
+  const index = earlier.findIndex(
+    (entry) => entry.name === attachment.filename && entry.type === attachment.mimeType && entry.size === attachment.size,
+  )
+  if (index < 0) return
+  const [{ outcome, document, rev }] = earlier.splice(index, 1) as [AttachmentEntry]
+  return { outcome, document, ...(rev ? { rev } : {}) }
 }
 
 type LinkRow = {
@@ -231,30 +266,44 @@ export function emailRemovalPlan(db: Database, emailName: string, suppliedRows?:
     ),
   )
   const byName = new Map(rows.map((row) => [row.name, row]))
-  const removing = new Set([emailName])
-  const plan: EmailRemovalPlan = { attachments: [], kept: [] }
-  const queue = [emailName]
-  for (let email = queue.shift(); email !== undefined; email = queue.shift()) {
-    const record = readRecord(byName.get(email)?.attachments ?? null)
-    for (const child of rows.filter((row) => row.parent_name === email && row.role === "source")) {
-      const entry = record?.attachments.find((item) => item.document === child.name)
-      const linked = rows.some(
-        (row) =>
-          !removing.has(row.name) &&
-          row.name !== child.name &&
-          readRecord(row.attachments)?.attachments.some((item) => item.document === child.name),
-      )
-      if (linked) plan.kept.push({ name: child.name, reason: "linked" })
-      else if (!entry?.rev || entry.rev !== child.rev || redlined.has(documentRegistryIdentity(child.doc_path)))
-        plan.kept.push({ name: child.name, reason: "changed" })
-      else {
-        plan.attachments.push(child.name)
-        removing.add(child.name)
-        if (child.name.toLowerCase().endsWith(".eml")) queue.push(child.name)
+  const linksTo = (row: LinkRow, name: string) =>
+    readRecord(row.attachments)?.attachments.some((item) => item.document === name) ?? false
+  // The documents removing the email would remove, skipping those another
+  // email keeps (`linked`, grown below) and those the lawyer changed.
+  const closure = (linked: ReadonlySet<string>) => {
+    const plan: EmailRemovalPlan = { attachments: [], kept: [] }
+    const visited = new Set([emailName])
+    const queue = [emailName]
+    for (let email = queue.shift(); email !== undefined; email = queue.shift()) {
+      const record = readRecord(byName.get(email)?.attachments ?? null)
+      for (const child of rows.filter((row) => row.parent_name === email && row.role === "source")) {
+        if (visited.has(child.name)) continue
+        visited.add(child.name)
+        const entry = record?.attachments.find((item) => item.document === child.name)
+        if (linked.has(child.name)) plan.kept.push({ name: child.name, reason: "linked" })
+        else if (!entry?.rev || entry.rev !== child.rev || redlined.has(documentRegistryIdentity(child.doc_path)))
+          plan.kept.push({ name: child.name, reason: "changed" })
+        else {
+          plan.attachments.push(child.name)
+          if (child.name.toLowerCase().endsWith(".eml")) queue.push(child.name)
+        }
       }
     }
+    return plan
   }
-  return plan
+  // Links are judged against the whole set being removed, so a sibling that
+  // goes too never keeps a document. Keeping one can keep a linker, so repeat
+  // until nothing more is kept.
+  const linked = new Set<string>()
+  for (;;) {
+    const plan = closure(linked)
+    const removing = new Set([emailName, ...plan.attachments])
+    const kept = plan.attachments.filter((name) =>
+      rows.some((row) => !removing.has(row.name) && row.name !== name && linksTo(row, name)),
+    )
+    if (!kept.length) return plan
+    kept.forEach((name) => linked.add(name))
+  }
 }
 
 // The document list's view of email links: on an attachment, the email it came
@@ -297,36 +346,46 @@ export async function removeMatterDocument(matterDir: string, name: string, keep
   })() : undefined
   const result = await deleteMatterDocument(matterDir, name)
   const removed: string[] = []
+  // The email is already gone, so an attachment that cannot be removed now is
+  // named with the reason, not turned into a failed request; it stays in the
+  // matter shown as from a removed email, and can be removed on its own.
+  const failed: { name: string; reason: string }[] = []
   for (const attachment of plan?.attachments ?? []) {
     try {
       await deleteMatterDocument(matterDir, attachment)
       removed.push(attachment)
     } catch (error) {
       // Already removed meanwhile.
-      if (!(error instanceof RegisteredDocumentNotFoundError)) throw error
+      if (error instanceof RegisteredDocumentNotFoundError) continue
+      console.warn("email attachment not removed", { matter_ref: draftingTraceReference(matterDir), ...diagnosticErrorMetadata(error) })
+      failed.push({ name: attachment, reason: error instanceof DocumentMutationConflictError ? error.message : "It could not be removed. Try removing it on its own." })
     }
   }
-  return { ...result, attachments: { removed, kept: plan?.kept ?? [] } }
+  return { ...result, attachments: { removed, kept: plan?.kept ?? [], failed } }
 }
 
 // Emails ingested before attachments were read have no attachments record, and
 // their stored offsets index the old text (no attachments line, forwarded
 // messages flattened into the body). Each is re-ingested once, which also
-// brings in its attachments. Runs in the background after startup; one that
-// fails is logged and retried at the next start.
+// brings in its attachments. So is an email whose record still has pending
+// entries (an upload stopped before it recorded them); its attachments already
+// in the matter are reused, not copied. Runs in the background after startup;
+// one that fails is logged and retried at the next start.
 export async function reingestLegacyEmails(matterDir: string) {
   const db = openDb(matterDir)
   const legacy = (() => {
     try {
       return db
-        .query("SELECT name, doc_path FROM documents WHERE role = 'source' AND attachments IS NULL AND lower(name) LIKE '%.eml'")
-        .all() as { name: string; doc_path: string }[]
+        .query("SELECT name, doc_path, attachments FROM documents WHERE role = 'source' AND lower(name) LIKE '%.eml'")
+        .all() as { name: string; doc_path: string; attachments: string | null }[]
     } finally {
       db.close()
     }
   })()
   let count = 0
   for (const email of legacy) {
+    const record = readRecord(email.attachments)
+    if (record && !record.attachments.some((entry) => entry.outcome === "pending")) continue
     if (!existsSync(email.doc_path)) continue
     try {
       await ingestEmailDocument(matterDir, email.name, readFileSync(email.doc_path), { existing: "replace" })

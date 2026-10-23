@@ -132,11 +132,12 @@ export default function DocumentUpload({
       onUploaded()
       const removed = result.attachments?.removed.length ?? 0
       const kept = result.attachments?.kept ?? []
+      const failed = result.attachments?.failed ?? []
       toast(
-        "success",
+        failed.length ? "error" : "success",
         `Removed ${name}${removed ? ` and ${removed} attachment${removed === 1 ? "" : "s"}` : ""}.${
           kept.length ? ` Kept ${kept.map((k) => k.name).join(", ")}.` : ""
-        }`,
+        }${failed.map((f) => ` ${f.name}: ${f.reason}`).join("")}`,
       )
     } catch (e) {
       toast("error", humanizeError(e, `Could not remove ${name}.`))
