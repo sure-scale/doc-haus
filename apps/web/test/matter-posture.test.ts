@@ -17,7 +17,7 @@ const header = (fields: Partial<MatterDetail>) =>
       editingRef: false, setEditingRef: noop, draftRef: "", setDraftRef: noop, commitRef: done,
       editingClient: false, setEditingClient: noop, draftClient: "", setDraftClient: noop, commitClient: done,
       renaming: false, setRenaming: noop, draftTitle: "", setDraftTitle: noop, commitRename: done,
-      patch: done,
+      patch: done, onEditConflicts: noop,
     })),
   )
 

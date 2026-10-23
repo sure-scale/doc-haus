@@ -1,0 +1,49 @@
+import { expect, test } from "bun:test"
+import type { Matter } from "../src/api/ingest/matters"
+import { clientKey, groupClients, suggestClients } from "../src/lib/clients"
+
+const matter = (id: string, client: string | undefined, created_at: number): Matter => ({ id, title: id, client, dir: `/tmp/${id}`, created_at })
+
+test("spellings that differ only in case or spacing are one client under the most common spelling", () => {
+  const groups = groupClients([
+    matter("a", "northwind traders", 1),
+    matter("b", "Northwind  Traders", 2),
+    matter("c", " Northwind Traders ", 3),
+    matter("d", "Contoso", 4),
+    matter("e", undefined, 5),
+    matter("f", "", 6),
+  ])
+  expect(groups.map((group) => [group.name, group.matters.map((m) => m.id)])).toEqual([
+    ["Contoso", ["d"]],
+    ["Northwind Traders", ["c", "b", "a"]],
+  ])
+})
+
+test("suggestions put prefix matches before contains matches and leave out an exact match", () => {
+  const names = ["Bank of Acme", "Acme Holdings", "Contoso", "acme", "Acme Ltd"]
+  expect(suggestClients(names, "ac")).toEqual(["Acme Holdings", "acme", "Acme Ltd", "Bank of Acme"])
+  expect(suggestClients(names, "ACME")).toEqual(["Acme Holdings", "Acme Ltd", "Bank of Acme"])
+  expect(suggestClients(names, "zzz")).toEqual([])
+  expect(suggestClients(names, "", 2)).toEqual(["Bank of Acme", "Acme Holdings"])
+})
+
+test("composed and decomposed accents, and trailing punctuation, group as one client", () => {
+  const composed = "Caf\u00e9 Holdings"
+  const decomposed = "Cafe\u0301 Holdings"
+  const groups = groupClients([
+    matter("a", decomposed, 1),
+    matter("b", composed, 2),
+    matter("c", composed, 3),
+    matter("d", "Acme Ltd.", 4),
+    matter("e", "Acme Ltd", 5),
+    matter("f", "Acme Ltd", 6),
+    matter("g", "A.C.M.E. Ltd", 7),
+  ])
+  expect(groups.map((group) => [group.name, group.matters.length])).toEqual([
+    ["A.C.M.E. Ltd", 1],
+    ["Acme Ltd", 3],
+    [composed, 3],
+  ])
+  expect(clientKey(decomposed)).toBe(clientKey(composed))
+  expect(clientKey("Acme Ltd.;")).toBe("acme ltd")
+})

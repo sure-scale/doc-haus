@@ -67,6 +67,8 @@ describe("pageFurniture", () => {
     const root = path.join(import.meta.dir, "..")
     const prompts = ["agent/*.md", "skill/*/SKILL.md"].flatMap((pattern) => [...new Bun.Glob(pattern).scanSync(root)])
     expect(prompts.length).toBeGreaterThan(10)
+    // The chat agents whose answers the lawyer copies out are covered by name.
+    expect(prompts).toEqual(expect.arrayContaining([path.join("agent", "quick-draft.md"), path.join("agent", "client-summary.md")]))
     const legend = /privileged\s*&\s*confidential|attorney[- ]client communication|attorney work product|subject to contract|for discussion purposes only/i
     expect(prompts.filter((file) => legend.test(readFileSync(path.join(root, file), "utf8")))).toEqual([])
   })

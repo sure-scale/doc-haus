@@ -56,6 +56,26 @@ test("narrator agent loads as a hidden primary agent with every tool denied", ()
     .toEqual([])
 })
 
+// Client summary explains matter material to a non-lawyer client: it reads and
+// cites exactly as Q&A does and holds nothing that writes, edits or reaches the web.
+test("client summary loads as a hidden primary agent whose own rules allow exactly Q&A's read and cite tools", () => {
+  const grants = (id: string) => {
+    const agent = loadAgent(id)
+    return [...TOOLS, "read", "python_run_python_code"].filter(action => Permission.evaluate(action, "*", agent.permissions ?? []).effect === "allow").toSorted()
+  }
+  const agent = loadAgent("client-summary")
+  expect(agent.mode).toBe("primary")
+  expect(agent.hidden).toBe(true)
+  expect(agent.system?.trim()).toStartWith("You ")
+  expect(grants("client-summary")).toEqual(grants("qa"))
+  expect(grants("client-summary")).toContain("cite")
+  for (const action of ["edit", "write", "patch", "bash", "task", "webfetch", "web-search", "write-matter-file", "draft-document", "redline", "read-document"])
+    expect(grants("client-summary")).not.toContain(action)
+  // The same skill boundary as Q&A: no editing skills for an agent that cannot edit.
+  for (const skill of ["redline-conventions", "playbook-firm"])
+    expect(Permission.evaluate("skill", skill, agent.permissions ?? []).effect).toBe("deny")
+})
+
 // The research agent loads through the same path; its grant set includes direct
 // official-source retrieval, which the research settings describe as available.
 test("research agent's own rules allow exactly its matter, case-law and official-source tools", () => {

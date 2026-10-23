@@ -1,7 +1,10 @@
 import { Link } from "react-router-dom"
 import JurisdictionSelect from "../JurisdictionSelect"
 import type { Jurisdiction, MatterDetail as Detail } from "../../api/ingest/matters"
+import { conflictsChip } from "../../api/ingest/conflicts"
 import { POSTURES, type Posture } from "../../api/ingest/preferences"
+import ClientCombobox from "../ClientCombobox"
+import { useClientNames } from "../../lib/clients"
 
 /** The title-area fields one save changes; "" clears the matter's Posture. */
 export type MatterFields = Partial<Pick<Detail, "title" | "reference" | "jurisdictions" | "playbook" | "client">> & { posture?: Posture | "" }
@@ -25,6 +28,7 @@ export default function MatterHeader({
   setDraftTitle,
   commitRename,
   patch,
+  onEditConflicts,
 }: {
   matter: Detail
   jurisdictions: Jurisdiction[]
@@ -44,7 +48,10 @@ export default function MatterHeader({
   setDraftTitle: (draft: string) => void
   commitRename: () => Promise<void>
   patch: (fields: MatterFields) => Promise<void>
+  onEditConflicts: () => void
 }) {
+  const chip = conflictsChip(matter.conflicts)
+  const clientNames = useClientNames(editingClient)
   const refField = editingRef ? (
     <input
       className="matter-ref-input"
@@ -75,14 +82,15 @@ export default function MatterHeader({
   )
 
   const clientField = editingClient ? (
-    <input
+    <ClientCombobox
       className="matter-ref-input"
       autoFocus
       placeholder="Whom you act for"
       aria-label="Client you act for"
       maxLength={200}
+      clients={clientNames}
       value={draftClient}
-      onChange={(e) => setDraftClient(e.target.value)}
+      onChange={setDraftClient}
       onBlur={commitClient}
       onKeyDown={(e) => {
         if (e.key === "Enter") commitClient()
@@ -182,6 +190,21 @@ export default function MatterHeader({
             ·
           </span>
           {postureField}
+          <span className="matter-meta-sep" aria-hidden>
+            ·
+          </span>
+          <span className="matter-meta-sep" aria-hidden>
+            ·
+          </span>
+          <button
+            type="button"
+            className={`matter-conflicts is-${chip.tone}`}
+            title="Record the conflicts check"
+            aria-label={`${chip.text}. Record the conflicts check`}
+            onClick={onEditConflicts}
+          >
+            {chip.text}
+          </button>
           <span className="matter-meta-sep" aria-hidden>
             ·
           </span>

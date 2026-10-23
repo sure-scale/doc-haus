@@ -2,7 +2,7 @@ import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } fro
 import { SplitButton } from "./SplitButton"
 import { createPortal } from "react-dom"
 import { computeCell, describeRecheck, needsFill } from "../api/review-recheck"
-import { cellKey, getGrid, hashQuestion, isStale, recheckPassages, saveGrid, type Grid, type GridCellData } from "../api/ingest/grid"
+import { cellKey, checkCellSources, getGrid, hashQuestion, isStale, recheckPassages, saveGrid, type Grid, type GridCellData, type SourceCheck } from "../api/ingest/grid"
 import { humanizeError } from "../api/ingest/errors"
 import type { Document } from "../api/ingest/documents"
 import { createSession, getMessages, sendPrompt } from "../api/opencode/sessions"
@@ -12,7 +12,9 @@ import { reviewCsv, reviewDocx, reviewExport, reviewXlsx } from "./review-export
 import { formatDateTime } from "../lib/format"
 import backdropClose from "./backdropClose"
 import { QualityNote } from "./DocumentUpload"
-import useExit, { Closing } from "./useExit"
+import useExit, { Closing, Exit } from "./useExit"
+import DocumentViewer from "./DocumentViewer"
+import { citationDocument } from "./citation-target"
 
 // Tabular review: rows are the matter's documents, columns are natural-language
 // questions, each cell is an extracted answer with a source citation. The grid is
@@ -24,7 +26,37 @@ import useExit, { Closing } from "./useExit"
 
 const POOL = 5 // concurrent cell extractions; the engine handles one prompt each
 
-export default function ReviewGrid({ matterId, title, directory, documents, onClose }: { matterId: string; title: string; directory: string; documents: Document[]; onClose: () => void }) {
+// A source check answers for the citation it was asked about, so a cell whose
+// citation has since been recomputed shows no verdict until it is checked.
+type Citation = NonNullable<GridCellData["citation"]>
+const sourceSignature = (c: Citation) => JSON.stringify([c.documentName, c.excerpt, c.charStart, c.charEnd])
+const DEGRADED: SourceCheck[] = ["not_found", "missing"]
+const SOURCE_BADGE: Record<SourceCheck, string> = { verified: "Verified", reanchored: "Re-anchored", not_found: "Not found", missing: "Source missing" }
+const SOURCE_DETAIL: Record<SourceCheck, string> = {
+  verified: "The excerpt matches the document at the recorded position.",
+  reanchored: "The excerpt is still in the document, but at a different position from the one recorded. The document may have changed since this answer.",
+  not_found: "The document no longer contains this excerpt. It has changed since this answer; check the answer against the current text.",
+  missing: "This document is no longer in the matter, so the excerpt cannot be checked.",
+}
+
+// The chat question for one cell: its question, answer and recorded citation,
+// prefilled for the lawyer to edit and send. It carries what the run recorded;
+// the assistant does not re-derive the answer from scratch.
+function cellQuestion(docName: string, question: string, cell: GridCellData, check?: SourceCheck) {
+  const c = cell.citation
+  return [
+    `About this review table answer for ${docName}:`,
+    `Question: ${question}`,
+    `Answer: ${cell.answer}`,
+    c ? `Cited source: ${c.documentName} § ${c.section}${c.structuralPath ? ` (${c.structuralPath})` : ""}` : "Cited source: none recorded",
+    ...(c ? [`Excerpt: "${c.excerpt}"`] : []),
+    ...(c && check ? [`Source check: ${SOURCE_BADGE[check]}. ${SOURCE_DETAIL[check]}`] : []),
+    "",
+    c ? "Explain how the cited source supports this answer, and anything it leaves open." : "Explain why no source supports this answer, and where the document might address the question.",
+  ].join("\n")
+}
+
+export default function ReviewGrid({ matterId, title, directory, documents, onClose, onAsk }: { matterId: string; title: string; directory: string; documents: Document[]; onClose: () => void; onAsk?: (prompt: string) => void }) {
   const closing = useContext(Closing)
   const dialog = useRef<HTMLDialogElement>(null)
   const detailDialog = useRef<HTMLDialogElement>(null)
@@ -46,7 +78,25 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
   const [draft, setDraft] = useState("") // comment being composed in the overlay
   // Each dialog closes, and returns focus, as its exit starts.
   const [detailShown, detailClosing] = useExit(detail)
-  const detailCell = detailShown ? grid.cells[cellKey(detailShown.docName, detailShown.columnId)] : undefined
+  const detailKey = detailShown ? cellKey(detailShown.docName, detailShown.columnId) : undefined
+  const detailCell = detailKey ? grid.cells[detailKey] : undefined
+  // The cell whose cited document is open over its detail. Closing the viewer
+  // returns to that detail, with focus back on the citation that opened it.
+  const [viewing, setViewing] = useState<string>()
+  const viewerOpen = !!detail && viewing === cellKey(detail.docName, detail.columnId)
+  const sourceLink = useRef<HTMLButtonElement>(null)
+  // Source checks of every cited cell, keyed by cell, each with the citation
+  // it was made for; a checked cell without a verdict could not be checked.
+  // `sourceRound` re-checks after the document viewer changes a document (an
+  // accepted or rejected redline).
+  const [sourceChecks, setSourceChecks] = useState<Record<string, { signature: string; check?: SourceCheck }>>({})
+  const [sourceCheckFailed, setSourceCheckFailed] = useState(false)
+  const [sourceRound, setSourceRound] = useState(0)
+  const sourceEntry = (key: string, cell: GridCellData | undefined) => {
+    const entry = sourceChecks[key]
+    return cell?.citation && entry?.signature === sourceSignature(cell.citation) ? entry : undefined
+  }
+  const sourceCheck = (key: string, cell: GridCellData | undefined) => sourceEntry(key, cell)?.check
 
   useLayoutEffect(() => {
     if (closing) return
@@ -89,6 +139,24 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
     getGrid(matterId).then((g) => commit(g)).catch((e) => setError(humanizeError(e)))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [matterId])
+
+  // Check each cited cell's excerpt against its document's current text
+  // whenever the set of citations changes. Read-only: a verdict never edits a cell.
+  const sources = useMemo(() => Object.entries(grid.cells).flatMap(([key, cell]) => cell.citation
+    ? [{ key, signature: sourceSignature(cell.citation), documentName: cell.citation.documentName, excerpt: cell.citation.excerpt, charStart: cell.citation.charStart, charEnd: cell.citation.charEnd }]
+    : []), [grid.cells])
+  const sourcesKey = JSON.stringify(sources)
+  useEffect(() => {
+    if (!sources.length) return
+    let cancelled = false
+    checkCellSources(matterId, sources.map(({ signature: _, ...cell }) => cell)).then((checks) => {
+      if (cancelled) return
+      setSourceCheckFailed(false)
+      setSourceChecks(Object.fromEntries(sources.map(({ key, signature }) => [key, { signature, check: checks[key] }])))
+    }, () => !cancelled && setSourceCheckFailed(true))
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [matterId, sourcesKey, sourceRound])
 
   // One writer for both state and the server, so concurrent cell completions
   // merge against the latest grid (each call reads+writes gridRef synchronously).
@@ -305,8 +373,10 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
                     const key = cellKey(doc.name, col.id)
                     const cell = grid.cells[key]
                     const stale = isStale(cell, col.question)
+                    const check = sourceCheck(key, cell)
+                    const degraded = !!check && DEGRADED.includes(check)
                     return (
-                      <td key={col.id} className={`review-cell${cell?.status === "reviewed" ? " reviewed" : ""}`}>
+                      <td key={col.id} className={`review-cell${cell?.status === "reviewed" ? " reviewed" : ""}${degraded ? " degraded" : ""}`}>
                         {!cell ? (
                           <button
                             className="review-cell-fill"
@@ -321,6 +391,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
                               className="review-answer"
                               onClick={() => {
                                 setDraft("")
+                                setViewing(undefined)
                                 setDetail({ docName: doc.name, columnId: col.id, question: col.question })
                               }}
                             >
@@ -328,6 +399,11 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
                               {cell.citation && <span className="review-cite"> [{cell.citation.documentName} § {cell.citation.section}]</span>}
                               {cell.citation && degradedCitation(cell.citation.documentName)}
                             </button>
+                            {degraded && (
+                              <span className="review-degraded" title={SOURCE_DETAIL[check]}>
+                                {check === "missing" ? "Source missing" : "Source changed"}
+                              </span>
+                            )}
                             {cell.recheck && (
                               <span className="review-recheck" title={describeRecheck(cell.recheck)}>
                                 {cell.recheck.outcome === "found" ? "Found on re-check" : "Not found after re-check"}
@@ -340,6 +416,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
                                 title={cell.comments?.map((c) => c.text).join("\n") || "Add a comment"}
                                 onClick={() => {
                                   setDraft("")
+                                  setViewing(undefined)
                                   setDetail({ docName: doc.name, columnId: col.id, question: col.question })
                                 }}
                               >
@@ -387,10 +464,11 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
             className={`viewer-overlay review-detail-modal${detailClosing ? " is-closing" : ""}`}
             inert={detailClosing}
             aria-label={`Answer and comments: ${detailShown.question}`}
-            onCancel={(event) => { event.preventDefault(); event.stopPropagation(); setDetail(undefined) }}
+            onCancel={(event) => { event.preventDefault(); event.stopPropagation(); if (viewerOpen) setViewing(undefined); else setDetail(undefined) }}
             {...backdropClose(() => setDetail(undefined))}
             onKeyDown={(event) => {
-              if (event.key !== "Tab") return
+              // The open document viewer keeps its own focus loop.
+              if (event.key !== "Tab" || viewerOpen) return
               const first = event.currentTarget.querySelector<HTMLButtonElement>(".modal-close")
               const last = event.currentTarget.querySelector<HTMLButtonElement>(".review-comment-compose > button:not(:disabled)") ?? event.currentTarget.querySelector<HTMLTextAreaElement>("textarea")
               if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus() }
@@ -402,11 +480,34 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
               <div className="picker-body">
                 <p className="review-detail-answer">{detailCell.answer}</p>
                 {detailCell.recheck && <p className="review-recheck-detail">{describeRecheck(detailCell.recheck)}</p>}
-                {detailCell.citation && (
-                  <div className="citation">
-                    <div className="ref">[{detailCell.citation.documentName} § {detailCell.citation.section}]</div>
-                    {degradedCitation(detailCell.citation.documentName)}
-                    <div className="excerpt">{detailCell.citation.excerpt}</div>
+                {detailCell.citation && detailKey && (() => {
+                  const citation = detailCell.citation
+                  const entry = sourceEntry(detailKey, detailCell)
+                  const check = entry?.check
+                  const label = `[${citation.documentName} § ${citation.section}]`
+                  return (
+                    <div className={`citation review-source${check && DEGRADED.includes(check) ? " degraded" : ""}`}>
+                      {citationDocument(citation, documents) ? (
+                        <button ref={sourceLink} type="button" className="ref" aria-label={`Open ${citation.documentName} at section ${citation.section}`} onClick={() => setViewing(detailKey)}>
+                          {label}
+                        </button>
+                      ) : <div className="ref">{label}<span className="muted"> — Source unavailable in this matter</span></div>}
+                      {degradedCitation(citation.documentName)}
+                      {citation.structuralPath && <div className="review-source-path">{citation.structuralPath}</div>}
+                      <div className="excerpt">{citation.excerpt}</div>
+                      <p className="review-source-check">
+                        {check
+                          ? <><span className={`review-source-badge is-${check}`}>{SOURCE_BADGE[check]}</span> {SOURCE_DETAIL[check]}</>
+                          : sourceCheckFailed || entry ? "The excerpt could not be checked against the document." : "Checking the excerpt against the document…"}
+                      </p>
+                    </div>
+                  )
+                })()}
+                {onAsk && (
+                  <div className="review-ask">
+                    <button type="button" onClick={() => onAsk(cellQuestion(detailShown.docName, detailShown.question, detailCell, detailKey ? sourceCheck(detailKey, detailCell) : undefined))}>
+                      Ask about this answer in chat
+                    </button>
                   </div>
                 )}
                 <div className="review-comments">
@@ -441,6 +542,23 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
                 </div>
               </div>
             </div>
+            {/* Inside the native detail so it stacks above it in the top layer. */}
+            <Exit when={viewerOpen ? detailCell.citation : undefined}>{(citation) => {
+              const source = citationDocument(citation, documents)
+              return source && (
+                <DocumentViewer
+                  key={source.name}
+                  matterId={matterId}
+                  name={source.name}
+                  citation={citation}
+                  onChanged={() => setSourceRound((n) => n + 1)}
+                  onClose={() => {
+                    setViewing(undefined)
+                    sourceLink.current?.focus({ preventScroll: true })
+                  }}
+                />
+              )
+            }}</Exit>
           </dialog>
         )}
       </div>

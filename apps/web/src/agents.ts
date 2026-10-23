@@ -57,6 +57,12 @@ export const CHAT_ASSISTANTS: AssistantMeta[] = [
       "Writes one short document here in chat from a few of this matter's documents. Quotes are verified; full drafting checks are not run.",
   },
   {
+    name: "client-summary",
+    label: "Client summary",
+    description:
+      "Explains a document, review or draft in plain English for your client: what it says, the risks and what they need to decide. Read-only, with citations.",
+  },
+  {
     name: "compare",
     label: "Compare",
     description:
@@ -80,9 +86,17 @@ export const CHAT_ASSISTANTS: AssistantMeta[] = [
 // quick draft, so Auto never routes to it: Auto offers it only by asking.
 export const QUICK_DRAFT = "quick-draft"
 
-// The assistants Auto may route a message to: every chat assistant except Quick
-// draft, which only the lawyer chooses.
-export const AUTO_CANDIDATES = CHAT_ASSISTANTS.filter((a) => a.name !== QUICK_DRAFT)
+// The plain-language client summary (#26). The lawyer asks for it by name, so
+// Auto never routes to it.
+export const CLIENT_SUMMARY = "client-summary"
+
+// Assistants only the lawyer chooses, never Auto. Their answers are written to
+// be copied out, so they carry the firm's legend from settings and no narration.
+export const EXPLICIT_ONLY = new Set([QUICK_DRAFT, CLIENT_SUMMARY])
+
+// The assistants Auto may route a message to: every chat assistant except those
+// only the lawyer chooses.
+export const AUTO_CANDIDATES = CHAT_ASSISTANTS.filter((a) => !EXPLICIT_ONLY.has(a.name))
 
 export const PLAYBOOK_BUILDER: AssistantMeta = {
   name: "playbook-importer",

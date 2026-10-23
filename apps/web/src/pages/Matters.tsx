@@ -20,6 +20,8 @@ import { POSTURES, type Posture } from "../api/ingest/preferences"
 import { formatDate } from "../lib/format"
 import { loadPrefs } from "../prefs"
 import PageBar from "../components/PageBar"
+import ClientCombobox from "../components/ClientCombobox"
+import { groupClients } from "../lib/clients"
 
 export default function Matters() {
   const [matters, setMatters] = useState<Matter[]>([])
@@ -177,6 +179,7 @@ export default function Matters() {
     }
   }
 
+  const clientNames = groupClients(matters).map((group) => group.name)
   const term = filter.trim().toLowerCase()
   const visible = [...matters]
     .sort((a, b) => b.created_at - a.created_at)
@@ -228,12 +231,13 @@ export default function Matters() {
             </div>
             <label className="matter-form-field matter-create-client">
               <span>Client <span className="field-optional">Optional</span></span>
-              <input
+              <ClientCombobox
                 placeholder="Whom you act for"
                 aria-label="Client you act for (optional)"
                 maxLength={200}
+                clients={clientNames}
                 value={client}
-                onChange={(e) => setClient(e.target.value)}
+                onChange={setClient}
               />
             </label>
             <label className="matter-form-field matter-create-reference">
@@ -417,11 +421,12 @@ export default function Matters() {
               </label>
               <label className="matter-edit-field">
                 <span>Client</span>
-                <input
+                <ClientCombobox
                   placeholder="Whom you act for (optional)"
                   maxLength={200}
+                  clients={clientNames}
                   value={draftClient}
-                  onChange={(e) => setDraftClient(e.target.value)}
+                  onChange={setDraftClient}
                   onKeyDown={(e) => e.key === "Enter" && onSaveEdit()}
                 />
               </label>

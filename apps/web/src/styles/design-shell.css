@@ -235,3 +235,19 @@
 @media (prefers-reduced-motion: reduce) {
   .sidebar, .sidebar-collapse, .sidebar-collapse > svg, .sidebar-mobile-chevron { transition: none; }
 }
+
+/* Conflicts-check chip in the matter header: quiet once recorded, gentle attention when not. */
+.matter-page-head .matter-conflicts { margin: 0; padding: 0 var(--space-2); border: 1px solid transparent; border-radius: var(--radius-pill); background: transparent; color: var(--text-secondary); font: inherit; line-height: 20px; cursor: pointer; }
+.matter-page-head .matter-conflicts:hover { color: var(--accent); }
+.matter-page-head .matter-conflicts.is-none,
+.matter-page-head .matter-conflicts.is-pending,
+.matter-page-head .matter-conflicts.is-bypassed { border-color: var(--warn-border); background: var(--warn-soft); color: var(--warn); }
+.matter-page-head .matter-conflicts.is-ok { color: var(--text-secondary); }
+
+/* Conflicts dialog: three states, only the fields the chosen one needs. */
+.conflicts-states { display: flex; flex-wrap: wrap; gap: var(--space-4); margin: 0; padding: 0; border: 0; }
+.conflicts-states legend { margin-bottom: var(--space-2); padding: 0; font-size: 0.75rem; font-weight: 600; color: var(--text-secondary); }
+.conflicts-states label { display: flex; align-items: center; gap: var(--space-2); font-size: 0.8125rem; cursor: pointer; }
+.conflicts-field { display: flex; flex-direction: column; gap: 6px; font-size: 0.75rem; color: var(--muted); }
+.conflicts-field input { width: 100%; }
+.conflicts-warning { margin: 0; padding: var(--space-2) var(--space-3); border: 1px solid var(--warn-border); border-radius: var(--radius-md); background: var(--warn-soft); color: var(--warn); font-size: 0.8125rem; line-height: 1.5; }

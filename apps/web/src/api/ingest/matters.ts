@@ -2,6 +2,7 @@ import { INGEST_URL } from "../../config"
 import { ingestError } from "./errors"
 import type { Document } from "./documents"
 import type { Posture } from "./preferences"
+import type { Conflicts } from "./conflicts"
 
 // Matters and documents live in the ingest service: it owns matter directories
 // under WORKSPACE_ROOT and turns uploaded DOCX into the per-matter embedding DB.
@@ -18,6 +19,8 @@ export type Matter = {
   client?: string
   // How hard drafts lean toward that client on this matter; absent means the firm's.
   posture?: Posture
+  // The conflicts-check record, once the lawyer has recorded one.
+  conflicts?: Conflicts
   dir: string
   created_at: number
 }

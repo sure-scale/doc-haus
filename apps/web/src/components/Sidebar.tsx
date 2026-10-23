@@ -164,6 +164,15 @@ export default function Sidebar({
               <IconMatters />
               <span>Matters</span>
             </NavLink>
+            <NavLink
+              to="/clients"
+              className={({ isActive }) => `nav-item${isActive ? " active" : ""}`}
+              title="Clients"
+              aria-label="Clients"
+            >
+              <IconClients />
+              <span>Clients</span>
+            </NavLink>
           </nav>
           <nav className="sidebar-nav sidebar-library" aria-label="Library">
             <div className="sidebar-library-label">Library</div>
@@ -381,6 +390,15 @@ function IconMatters() {
   return (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor">
       <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+    </svg>
+  )
+}
+
+function IconClients() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+      <circle cx="12" cy="8" r="4" />
+      <path d="M4 20a8 8 0 0 1 16 0" />
     </svg>
   )
 }

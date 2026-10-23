@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite"
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import path from "node:path"
+import { verifyCitation } from "../../../dochaus/plugin/legal/citations"
 import { degradedExtractions, formatCitations } from "../../../dochaus/lib/citations"
 import { indexIsContained, lexicalChannel, phraseChannel, type ChunkRow } from "../../../dochaus/lib/search/channels"
 
@@ -20,6 +21,8 @@ export type GridCell = {
     documentName: string
     docPath: string
     section: string
+    // The clause hierarchy the search hit carried, when the index had one.
+    structuralPath?: string
     excerpt: string
     charStart: number
     charEnd: number
@@ -60,6 +63,52 @@ export function readGrid(matterDir: string): Grid {
 export function writeGrid(matterDir: string, grid: Grid) {
   mkdirSync(path.join(matterDir, ".dochaus"), { recursive: true })
   writeFileSync(gridFile(matterDir), JSON.stringify(grid, null, 2))
+}
+
+// --- Source check of cited cells -------------------------------------------
+//
+// Whether each cell's recorded excerpt is still the document's text at its
+// offsets, through the same exact -> re-anchor -> reject ladder that verifies
+// search citations (dochaus/plugin/legal/citations.ts). Read-only: it reports
+// what the run recorded against the current file and never rewrites a cell.
+
+export type SourceCheckRequest = { cells: Array<{ key: string; documentName: string; excerpt: string; charStart: number; charEnd: number }> }
+// verified: the excerpt is at its offsets. reanchored: found elsewhere in the
+// document. not_found: the document no longer contains it. missing: the
+// document is no longer in the matter.
+export type SourceCheck = "verified" | "reanchored" | "not_found" | "missing"
+
+// Each well-formed cell is checked; a malformed one (an older grid's offsets,
+// say) is skipped and reads as unchecked, never failing the others.
+export function sourceCheckRequest(value: unknown): SourceCheckRequest | undefined {
+  const cells = (value as { cells?: unknown } | undefined)?.cells
+  if (!Array.isArray(cells)) return
+  return {
+    cells: cells.flatMap((cell) => {
+      const { key, documentName, excerpt, charStart, charEnd } = (cell ?? {}) as Record<string, unknown>
+      return typeof key === "string" && typeof documentName === "string" && typeof excerpt === "string" && Number.isInteger(charStart) && Number.isInteger(charEnd)
+        ? [{ key, documentName, excerpt, charStart: charStart as number, charEnd: charEnd as number }]
+        : []
+    }),
+  }
+}
+
+// `resolve` maps a document name to the matter's registered source file; the
+// request's own paths are never read. A cell whose document cannot be read is
+// left out and reads as unchecked.
+export async function checkCellSources(request: SourceCheckRequest, resolve: (name: string) => { name: string; docPath: string } | undefined) {
+  const checks: Record<string, SourceCheck> = {}
+  for (const cell of request.cells) {
+    const target = resolve(cell.documentName)
+    if (!target || !existsSync(target.docPath)) {
+      checks[cell.key] = "missing"
+      continue
+    }
+    const verified = await verifyCitation({ ...cell, documentName: target.name, docPath: target.docPath, section: "" }).catch(() => null)
+    if (verified === null) continue
+    checks[cell.key] = !verified ? "not_found" : verified.reanchored ? "reanchored" : "verified"
+  }
+  return checks
 }
 
 // --- Re-check of a negative cell -------------------------------------------

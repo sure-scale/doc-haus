@@ -54,7 +54,7 @@ import { listAgents, createAgent, updateAgent, deleteAgent, setAgentEnabled, AGE
 import { docxodus } from "./docxodus"
 import { listGcpProjects, listAwsProfiles, vertexProbeRoutes } from "./host"
 import { parserCapabilitiesRoutes } from "./parser-capabilities-route"
-import { readGrid, recheckPassages, recheckRequest, writeGrid, type Grid } from "./grid"
+import { checkCellSources, readGrid, recheckPassages, recheckRequest, sourceCheckRequest, writeGrid, type Grid } from "./grid"
 import { PreferencesUnavailableError, PreferencesValidationError, readDraftingPreferences, readDraftingTelemetryRetentionPreference, writeDraftingPreferences } from "./preferences"
 import { researchConnectionRoutes } from "./research-connections"
 import { readLeanPayload, readDetailPayload, readStoragePayload } from "./telemetry"
@@ -743,6 +743,37 @@ app.post("/matters/:id/grid/recheck", async (c) => {
   const request = recheckRequest(await c.req.json().catch(() => undefined))
   if (!request) return c.json({ error: "A re-check needs one document name, the question and the passages already read." }, 400)
   return c.json(recheckPassages(matterDir(c.req.param("id")), request))
+})
+
+// Whether each cited cell's excerpt is still the document's text at its
+// offsets (see checkCellSources). Grid citations come from the matter's indexed
+// sources, so only a file registered as a source resolves; a deliverable is
+// never indexed or cited, and an unregistered file reads as missing.
+app.post("/matters/:id/grid/sources", async (c) => {
+  const request = sourceCheckRequest(await c.req.json().catch(() => undefined))
+  if (!request) return c.json({ error: "A source check needs a list of cited cells." }, 400)
+  const dir = matterDir(c.req.param("id"))
+  const db = existsSync(path.join(dir, ".dochaus", "legal.db")) ? openDb(dir) : undefined
+  const targets = (() => {
+    try {
+      return new Map(request.cells.map((cell) => {
+        const name = matterDocumentName(cell.documentName)
+        const target = name ? readDocumentTarget(dir, name) : undefined
+        const source = (() => {
+          try {
+            return !!db && !!target && existsSync(target.docPath) && getDocumentRole(db, target.docPath) === "source"
+          } catch {
+            return false
+          }
+        })()
+        return [cell.documentName, source ? target : undefined] as const
+      }))
+    } finally {
+      db?.close()
+    }
+  })()
+  const names = [...new Set([...targets.values()].flatMap((target) => (target ? [target.name] : [])))]
+  return withArtifactMutationLocksAsync(dir, names, async () => c.json(await checkCellSources(request, (name) => targets.get(name))))
 })
 
 // Serve a matter's .docx bytes so the web app can render the redline in-browser

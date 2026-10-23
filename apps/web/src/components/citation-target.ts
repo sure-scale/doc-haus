@@ -3,7 +3,7 @@ import { matterDocumentKind, type Document } from "../api/ingest/documents"
 
 // Resolve against this matter's registry, never turn tool metadata into a URL or
 // an arbitrary filesystem request. The viewer receives only a registered name.
-export function citationDocument(citation: Citation, documents: Document[] = []) {
+export function citationDocument(citation: Pick<Citation, "documentName" | "docPath">, documents: Document[] = []) {
   const matches = documents.filter((document) =>
     document.name === citation.documentName &&
     !/[\\/\u0000]/.test(document.name) &&

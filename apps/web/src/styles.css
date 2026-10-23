@@ -2032,6 +2032,14 @@ li.list-row {
   font-size: 13px;
 }
 
+/* Said in the legend's place when the firm's settings could not be read. */
+.quick-draft-legend-missing {
+  margin: 0 0 6px;
+  text-align: right;
+  color: var(--muted);
+  font-size: 13px;
+}
+
 /* Placeholders code found in a quick draft, listed as its open items. */
 .quick-draft-open {
   margin: 6px 0 0;

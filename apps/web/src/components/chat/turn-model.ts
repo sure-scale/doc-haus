@@ -6,7 +6,7 @@ import { partActivity, TOOL_GROUPS } from "../narration/activity"
 import { basename, stepLabel } from "./step-labels"
 import { isDraftingRecoveryMessage } from "./drafting-recovery"
 import { templateResult, type TemplateResult } from "./template-result"
-import { QUICK_DRAFT } from "../../agents"
+import { EXPLICIT_ONLY } from "../../agents"
 
 // One row in the assistant's reasoning timeline: a thinking block or a tool call.
 export type Step =
@@ -266,14 +266,15 @@ export const isEmptyAnswer = (text?: string) => !text || !/[\p{L}\p{N}]/u.test(t
 // gates only the answer text, so the user's own prompt part is never echoed
 // back into the assistant bubble. Gating steps on the role would strand them as
 // "Thinking..." whenever a part.updated outraces its message.updated.
-export function readTurn(parts: Map<string, Part>, roles: Map<string, string>, matter: string, sessionID: string) {
+export function readTurn(parts: Map<string, Part>, roles: Map<string, string>, matter: string, sessionID: string, agent?: string) {
   const all = [...parts.values()]
   // The answer and the top-level timeline belong to the workflow's own session;
   // subagent-session parts are pooled only to nest under their task step.
   const own = all.filter((p) => p.sessionID === sessionID)
-  const text = own
+  const assistant = own.filter((p) => p.type !== "text" || roles.get(p.messageID) === "assistant")
+  // A live quick draft or client summary drops narration as its settled turn does.
+  const text = (agent && EXPLICIT_ONLY.has(agent) ? withoutNarration(assistant) : assistant)
     .filter((p): p is Extract<Part, { type: "text" }> => p.type === "text")
-    .filter((p) => roles.get(p.messageID) === "assistant")
     .map((p) => p.text)
     .join("\n\n")
   const work = own.filter((p) => p.type === "reasoning" || p.type === "tool")
@@ -379,7 +380,7 @@ export function toTurns(
         error: g.error,
         superseded: g.superseded,
         stopped: g.stopped,
-        ...contentOf(g.role === "assistant" && g.agent === QUICK_DRAFT ? withoutNarration(g.parts) : g.parts),
+        ...contentOf(g.role === "assistant" && g.agent && EXPLICIT_ONLY.has(g.agent) ? withoutNarration(g.parts) : g.parts),
         todos,
         steps: g.role === "assistant" ? partsToSteps(g.parts, matter, pool) : [],
       }
@@ -387,10 +388,11 @@ export function toTurns(
     .filter((t) => t.text || t.citations.length || t.steps.length || t.error || t.stopped)
 }
 
-// A quick draft's answer is its closing step. Text in a step that also calls a
-// tool is narration ("I'll pull the terms", "now I'll verify"), never the draft:
-// it is left out of the quick text and of the working draft an upgrade carries.
-// A turn whose only text sits in such steps (stopped mid-way) keeps it.
+// A quick draft's or client summary's answer is its closing step. Text in a
+// step that also calls a tool is narration ("I'll pull the terms", "now I'll
+// verify"), never the answer: it is left out of the text the lawyer copies and
+// of the working draft an upgrade carries. A turn whose only text sits in such
+// steps (stopped mid-way) keeps it.
 function withoutNarration(parts: Part[]) {
   const working = new Set(parts.filter((p) => p.type === "tool").map((p) => p.messageID))
   const kept = parts.filter((p) => p.type !== "text" || !working.has(p.messageID))

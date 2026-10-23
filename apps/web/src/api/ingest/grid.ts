@@ -11,6 +11,8 @@ export type GridCellData = {
     documentName: string
     docPath: string
     section: string
+    // The clause hierarchy the search hit carried, when the index had one.
+    structuralPath?: string
     excerpt: string
     charStart: number
     charEnd: number
@@ -76,5 +78,21 @@ export async function recheckPassages(
     body: JSON.stringify(request),
   })
   if (!res.ok) throw new Error(await ingestError(res, "Could not re-check the review cell"))
+  return res.json()
+}
+
+// Whether each cited cell's excerpt is still the document's text at its offsets
+// (mirrors services/ingest/src/grid.ts SourceCheck). A cell left out of the
+// result could not be read and shows no verdict.
+export type SourceCheck = "verified" | "reanchored" | "not_found" | "missing"
+export type SourceCheckCell = { key: string; documentName: string; excerpt: string; charStart: number; charEnd: number }
+
+export async function checkCellSources(id: string, cells: SourceCheckCell[]): Promise<Record<string, SourceCheck>> {
+  const res = await fetch(`${INGEST_URL}/matters/${id}/grid/sources`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ cells }),
+  })
+  if (!res.ok) throw new Error(await ingestError(res, "Could not check the review sources"))
   return res.json()
 }

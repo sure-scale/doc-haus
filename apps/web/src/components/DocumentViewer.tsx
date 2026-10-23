@@ -238,7 +238,7 @@ function WordDocumentViewer({
     return (
       <div className={`viewer-overlay${closing ? " is-closing" : ""}`} inert={closing} {...backdropClose(() => onClose())}>
         <div ref={modalRef} className="viewer-panel document-reader" role="dialog" aria-modal="true" aria-label={name} tabIndex={-1} onClick={(e) => e.stopPropagation()} onKeyDown={(e) => {
-          if (e.key === "Escape" && !e.defaultPrevented) { e.stopPropagation(); onClose() }
+          if (e.key === "Escape" && !e.defaultPrevented) { e.preventDefault(); e.stopPropagation(); onClose() }
         }}>
           <div className="viewer-bar">
             <ViewerTitle name={name} kind="PDF document" />
@@ -266,10 +266,12 @@ function WordDocumentViewer({
       </div>
     )
 
+  // Escape closes only this viewer: consuming the key also stops a native
+  // dialog it opened over (a review-grid cell detail) from cancelling too.
   return (
     <div className={`viewer-overlay${closing ? " is-closing" : ""}`} inert={closing} {...backdropClose(() => onClose())}>
       <div ref={modalRef} className="viewer-panel document-reader" role="dialog" aria-modal="true" aria-label={name} tabIndex={-1} onClick={(e) => e.stopPropagation()} onKeyDown={(e) => {
-        if (e.key === "Escape" && !e.defaultPrevented) { e.stopPropagation(); onClose() }
+        if (e.key === "Escape" && !e.defaultPrevented) { e.preventDefault(); e.stopPropagation(); onClose() }
       }}>
         <div className="viewer-bar">
           <ViewerTitle name={name} kind="Word document" pending={redlines.length} />
@@ -458,7 +460,7 @@ function DocumentTextViewer({ matterId, name, kind, citation, onClose }: {
   return (
     <div className={`viewer-overlay${closing ? " is-closing" : ""}`} inert={closing} {...backdropClose(() => onClose())}>
       <div ref={modalRef} className="viewer-panel document-reader" role="dialog" aria-modal="true" aria-label={name} tabIndex={-1} onClick={(e) => e.stopPropagation()} onKeyDown={(e) => {
-        if (e.key === "Escape" && !e.defaultPrevented) { e.stopPropagation(); onClose() }
+        if (e.key === "Escape" && !e.defaultPrevented) { e.preventDefault(); e.stopPropagation(); onClose() }
       }}>
         <div className="viewer-bar">
           <ViewerTitle name={name} kind={`${kind === "eml" ? "Email" : "Excel spreadsheet"} · extracted text, read-only`} />
