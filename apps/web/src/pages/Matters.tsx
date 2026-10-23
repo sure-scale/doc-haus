@@ -256,7 +256,6 @@ export default function Matters({ refresh = 0 }: { refresh?: number }) {
               <button
                 type="button"
                 className="matter-create-toggle"
-                data-dismiss
                 aria-expanded={creating}
                 aria-controls="new-matter-fields"
                 onClick={() => setCreating((open) => !open)}
@@ -534,7 +533,7 @@ export default function Matters({ refresh = 0 }: { refresh?: number }) {
               {editing?.conflicts && <small className="matter-edit-note">A changed check replaces the recorded one.</small>}
             </div>
             <div className="viewer-bar matter-edit-foot">
-              <button data-dismiss onClick={() => setEditing(null)}>Cancel</button>
+              <button onClick={() => setEditing(null)}>Cancel</button>
               <button className={`primary${busy ? " btn-loading" : ""}`} onClick={onSaveEdit} disabled={busy}>
                 Save changes
               </button>
