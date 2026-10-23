@@ -112,6 +112,8 @@ export default function Matters({ refresh = 0 }: { refresh?: number }) {
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
     const dialog = editDialog.current
     dialog?.showModal()
+    // React's autoFocus runs before showModal, so the dialog would start on ×.
+    draftTitleInput.current?.focus()
     return () => {
       dialog?.close()
       if (opener?.isConnected) opener.focus({ preventScroll: true })
@@ -469,7 +471,6 @@ export default function Matters({ refresh = 0 }: { refresh?: number }) {
                 <label htmlFor="edit-matter-title">Title</label>
                 <input
                   id="edit-matter-title"
-                  autoFocus
                   ref={draftTitleInput}
                   aria-required="true"
                   aria-invalid={draftTitleMissing || undefined}

@@ -36,6 +36,7 @@ export default function Clients() {
   const [draftReference, setDraftReference] = useState("")
   const [draftNameMissing, setDraftNameMissing] = useState(false)
   const nameInput = useRef<HTMLInputElement>(null)
+  const draftNameInput = useRef<HTMLInputElement>(null)
   const editDialog = useRef<HTMLDialogElement>(null)
   const [params] = useSearchParams()
   const toast = useToast()
@@ -69,6 +70,8 @@ export default function Clients() {
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
     const dialog = editDialog.current
     dialog?.showModal()
+    // React's autoFocus runs before showModal, so the dialog would start on ×.
+    draftNameInput.current?.focus()
     return () => {
       dialog?.close()
       if (opener?.isConnected) opener.focus({ preventScroll: true })
@@ -368,7 +371,7 @@ export default function Clients() {
               <label htmlFor="edit-client-name">Client name</label>
               <input
                 id="edit-client-name"
-                autoFocus
+                ref={draftNameInput}
                 maxLength={200}
                 aria-required="true"
                 aria-invalid={draftNameMissing || undefined}
