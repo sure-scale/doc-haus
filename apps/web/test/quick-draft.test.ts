@@ -252,10 +252,11 @@ describe("quick answer", () => {
     expect(quickDraftAnswer("Dear client,\n\nText.")).toEqual({ form: undefined, text: "Dear client,\n\nText.", placeholders: [], listed: false })
   })
 
-  test("bracketed placeholders left in the draft are its open items; citations, links and the lists after it are not", () => {
+  test("bracketed placeholders left in the draft are its open items; citations, links, email addresses and the lists after it are not", () => {
     const answer = [
       "Form: letter",
       "",
+      "To: Elena Marsh [elena.marsh@client.example]",
       "Dear [Client contact],",
       "",
       "The cap is 150% of the fees [Cedar Vale proposal.docx § 5]. See [the portal](https://example.test). We meet on [open item: meeting date].",
