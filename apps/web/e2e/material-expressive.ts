@@ -297,7 +297,7 @@ try {
       expect(state.writes[0]).toMatchObject({ method: "PATCH", path: `/matters/${matter.id}`, body: { title: "Alder House · Updated agreement review", reference: matter.reference, jurisdictions: matter.jurisdictions } })
       expect(Object.hasOwn(state.writes[0]!.body as object, "client")).toBe(false)
       await page.getByRole("textbox", { name: "Matter title", exact: true }).fill("New synthetic engagement")
-      await page.getByRole("textbox", { name: "Client you act for (optional)", exact: true }).fill("Example Client")
+      await page.getByRole("combobox", { name: "Client you act for (optional)", exact: true }).fill("Example Client")
       await page.getByRole("textbox", { name: "Matter number (optional)", exact: true }).fill("EX-001")
       await page.getByRole("button", { name: "Create matter", exact: true }).click()
       await expect(page).toHaveURL(/\/matter\/fixture-created$/)
