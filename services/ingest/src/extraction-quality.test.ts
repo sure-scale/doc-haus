@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "nod
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { Document, Packer, Paragraph } from "docx"
+import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { utils, write, type WorkSheet } from "xlsx"
 import { openDb } from "./db"
 import { ingestEmailDocument, withEmailLinks } from "./email-attachments"
@@ -134,6 +135,32 @@ test("partly garbled text and partly computed workbooks are indexed and marked d
     signals: [{ code: "formulas_without_values", detail: "2 of 4 filled cells are formulas saved without a calculated value" }],
   })
   expect(workbook.chunks).toBeGreaterThan(0)
+})
+
+// A formula sheet as a writer such as openpyxl saves it: each formula cell
+// carries an explicit value element, empty when nothing was calculated.
+function writerFormulas(sheet: WorkSheet, cached: string) {
+  const files = unzipSync(xlsx(sheet))
+  const xml = strFromU8(files["xl/worksheets/sheet1.xml"]!)
+  files["xl/worksheets/sheet1.xml"] = strToU8(xml.replace(/<c r="(\w+)" t="e"><f>(.*?)<\/f><\/c>/g, `<c r="$1"><f>$2</f><v>${cached}</v></c>`))
+  return Buffer.from(zipSync(files))
+}
+
+test("formulas saved with an empty value element are counted as formulas without values", async () => {
+  const directory = matter()
+  // Two columns of formulas only: the sheet still prints as separator rows.
+  const only: WorkSheet = { "!ref": "A1:B2", A1: { t: "n", f: "SUM(C1:C9)" }, B1: { t: "n", f: "A1*2" }, A2: { t: "n", f: "B1+1" }, B2: { t: "n", f: "A2" } }
+  const formulas = await ingestDocument(directory, "Writer formulas.xlsx", writerFormulas(only, ""))
+  expect(formulas.quality).toEqual({ status: "no_readable_text", signals: [expect.objectContaining({ code: "formulas_without_values" })] })
+  expect(formulas.chunks).toBe(0)
+  const partly = await ingestDocument(directory, "Writer partly computed.xlsx", writerFormulas(formulaSheet(true), ""))
+  expect(partly.quality).toEqual({
+    status: "degraded",
+    signals: [{ code: "formulas_without_values", detail: "2 of 4 filled cells are formulas saved without a calculated value" }],
+  })
+  // With calculated values saved, the same workbooks are ok.
+  expect((await ingestDocument(directory, "Writer computed.xlsx", writerFormulas(only, "3"))).quality).toEqual({ status: "ok" })
+  expect((await ingestDocument(directory, "Writer partly cached.xlsx", writerFormulas(formulaSheet(true), "3"))).quality).toEqual({ status: "ok" })
 })
 
 // Bun.which reads the PATH the process started with, so the ingest runs in a

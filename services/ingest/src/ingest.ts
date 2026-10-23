@@ -408,9 +408,11 @@ async function extractRawText(fileName: string, buffer: Buffer): Promise<{ text:
 // text the same normalize/index path can chunk and the agents can read. A
 // formula saved without a calculated value (a workbook written by a program and
 // never opened in a spreadsheet) reads as its formula, so those are counted for
-// the quality gate.
+// the quality gate. One saved with an empty value element (as openpyxl writes
+// it) is dropped by the reader unless stub cells are kept; it then reads as a
+// stub ("z") holding the formula, and is counted the same way.
 function xlsxToText(buffer: Buffer): { text: string; facts: ExtractionFacts } {
-  const workbook = read(buffer, { type: "buffer" })
+  const workbook = read(buffer, { type: "buffer", sheetStubs: true })
   let cells = 0
   let formulasWithoutValue = 0
   const text = workbook.SheetNames.map((name) => {
@@ -418,10 +420,11 @@ function xlsxToText(buffer: Buffer): { text: string; facts: ExtractionFacts } {
     if (!sheet) return ""
     for (const [address, cell] of Object.entries(sheet)) {
       if (address.startsWith("!")) continue
-      const { v, f } = cell as { v?: unknown; f?: string }
-      if (v === undefined && !f) continue
+      const { t, v, f } = cell as { t?: string; v?: unknown; f?: string }
+      const noValue = v === undefined || t === "z"
+      if (noValue && !f) continue
       cells++
-      if (v === undefined) formulasWithoutValue++
+      if (noValue) formulasWithoutValue++
     }
     const csv = utils.sheet_to_csv(sheet).trim()
     return csv ? `## ${name}\n${csv}` : ""
