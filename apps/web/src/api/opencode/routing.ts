@@ -26,6 +26,8 @@ export async function routeAgent(input: {
   candidates: { name: string; description: string }[]
   history: string[]
   text: string
+  // One router attempt's deadline; tests shorten it.
+  attemptMs?: number
 }): Promise<Route> {
   const names = input.candidates.map((c) => c.name)
   if (!names.length) throw new Error("No assistants are available.")
@@ -38,22 +40,43 @@ export async function routeAgent(input: {
   // router reply failed (an expired API key, an exhausted quota), report the
   // provider's own error, as an ordinary chat turn does, so the lawyer sees what
   // to fix rather than a retry hint that cannot help.
-  const small = await routeOnce(input.client, input.smallModel, prompt, names)
+  const attemptMs = input.attemptMs ?? ROUTE_ATTEMPT_MS
+  const small = await routeModel(input.client, input.smallModel, prompt, names, attemptMs)
   if (small.route) return small.route
   let error = small.error
   if (input.primaryModel && input.primaryModel !== input.smallModel) {
-    const primary = await routeOnce(input.client, input.primaryModel, prompt, names)
+    const primary = await routeModel(input.client, input.primaryModel, prompt, names, attemptMs)
     if (primary.route) return primary.route
     error = primary.error ?? error
   }
   throw new Error(error ?? "Auto could not choose an assistant. Try again or select an assistant manually.")
 }
 
+// One router attempt's deadline. Measured on OpenCode Go Spark 1.3 routing 27
+// real drafting requests at its lowest reasoning effort (dochaus model policy):
+// median 6.5 s, p90 8.7 s, max 18.7 s, so 30 s is over three times the p90 and
+// clears the slowest by more than 10 s; at default effort the median was 18 s
+// and a fifth of routes passed 30 s. A route that misses the deadline is a slow
+// provider turn, not a wrong answer: it is asked once more before Auto reports
+// that it could not choose.
+const ROUTE_ATTEMPT_MS = 30_000
+
+async function routeModel(client: Client, spec: string, prompt: string, names: string[], attemptMs: number) {
+  const first = await routeOnce(client, spec, prompt, names, attemptMs)
+  return first.timedOut ? routeOnce(client, spec, prompt, names, attemptMs) : first
+}
+
 // One routing attempt on a "provider/model" spec: spin up the throwaway router
 // session, prompt it, and return the validated route — or none on a bad spec,
 // timeout, or invalid reply so the caller can escalate or report failure, with
 // the reply's error text when the router turn itself failed.
-async function routeOnce(client: Client, spec: string, prompt: string, names: string[]): Promise<{ route?: Route; error?: string }> {
+async function routeOnce(
+  client: Client,
+  spec: string,
+  prompt: string,
+  names: string[],
+  attemptMs: number,
+): Promise<{ route?: Route; error?: string; timedOut?: true }> {
   const slash = spec.indexOf("/")
   if (slash < 1) return {}
   const model = { providerID: spec.slice(0, slash), modelID: spec.slice(slash + 1) }
@@ -72,10 +95,11 @@ async function routeOnce(client: Client, spec: string, prompt: string, names: st
       await client.session.wait({ sessionID: id })
       return getMessages(client, id)
     })().catch(() => null)
-    // Local and open-weight models can need materially longer than a small
-    // hosted model to produce their first token. Give them enough time to route
-    // without silently degrading the user's request to an unrelated assistant.
-    const res = await Promise.race([turn, new Promise<null>((resolve) => setTimeout(() => resolve(null), 30000))])
+    const timeout = Symbol("timeout")
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const res = await Promise.race([turn, new Promise<typeof timeout>((resolve) => (timer = setTimeout(() => resolve(timeout), attemptMs)))])
+    clearTimeout(timer)
+    if (res === timeout) return { timedOut: true }
     if (!res) return {}
     const replies = res.filter((message) => message.info.role === "assistant")
     const reply = replies.flatMap((message) => message.parts)

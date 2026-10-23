@@ -511,8 +511,10 @@ describe("provider errors", () => {
 
   // A throwaway router session whose every turn ends the way the engine records
   // it: the reply carries `reply` (an error or text) and the idle marker follows.
-  function routerClient(reply: { error?: Record<string, unknown>; text?: string }) {
+  // The first `late` turns finish only after `lateMs`, past a short deadline.
+  function routerClient(reply: { error?: Record<string, unknown>; text?: string }, late = 0, lateMs = 200) {
     const prompts: string[] = []
+    const removed: string[] = []
     const client = {
       session: {
         create: async () => ({ id: `ses_router_${prompts.length}` }),
@@ -522,9 +524,14 @@ describe("provider errors", () => {
           return {}
         },
         prompt: async () => ({}),
-        wait: async () => undefined,
+        wait: async () => {
+          if (prompts.length <= late) await Bun.sleep(lateMs)
+        },
         interrupt: async () => ({}),
-        remove: async () => ({}),
+        remove: async (input: { sessionID: string }) => {
+          removed.push(input.sessionID)
+          return {}
+        },
       },
       message: {
         list: async () => ({
@@ -544,11 +551,12 @@ describe("provider errors", () => {
         }),
       },
     } as unknown as Client
-    return { client, prompts }
+    return { client, prompts, removed }
   }
 
-  const route = (client: Client) =>
+  const route = (client: Client, attemptMs?: number) =>
     routeAgent({
+      attemptMs,
       client,
       smallModel: "opencode-go/small",
       primaryModel: "opencode-go/primary",
@@ -580,6 +588,22 @@ describe("provider errors", () => {
     const { client, prompts } = routerClient({ text: "The best candidate is draft." })
     await expect(route(client)).rejects.toThrow("Auto could not choose an assistant.")
     expect(prompts).toEqual(["opencode-go/small", "opencode-go/primary"])
+  })
+
+  test("Auto asks the router once more when its reply misses the deadline", async () => {
+    const scope = { documents: "one", legal_effect: "no", outside_law: "no", firm_material: "no", sources: "few" } as const
+    const { client, prompts, removed } = routerClient({ text: JSON.stringify({ route: "draft", ...scope }) }, 1)
+    expect(await route(client, 50)).toEqual({ name: "draft", scope })
+    // The late first turn is dropped and its session removed; the retry stays on the small model.
+    expect(prompts).toEqual(["opencode-go/small", "opencode-go/small"])
+    expect(removed).toEqual(["ses_router_0", "ses_router_1"])
+  })
+
+  test("Auto reports that it could not choose when every attempt misses the deadline", async () => {
+    const { client, prompts } = routerClient({ text: JSON.stringify({ route: "qa" }) }, 4)
+    await expect(route(client, 50)).rejects.toThrow("Auto could not choose an assistant.")
+    // One retry per model, then the existing escalation; never more.
+    expect(prompts).toEqual(["opencode-go/small", "opencode-go/small", "opencode-go/primary", "opencode-go/primary"])
   })
 
   test("Auto keeps the could-not-choose message for an empty router reply", async () => {

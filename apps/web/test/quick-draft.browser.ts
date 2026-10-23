@@ -473,6 +473,22 @@ try {
     await context.close()
   }
   {
+    // Auto cannot choose (the router never gives a valid route): the lawyer is
+    // told, nothing runs, and the request is back in the composer to resend.
+    const before = counts()
+    config.router = "I would pick the drafting assistant."
+    const request = "Draft a short note to the client about the invoices."
+    const { context, page, send } = await open()
+    await send(request)
+    await page.getByText("Auto could not choose an assistant.", { exact: false }).waitFor()
+    assert.equal(await page.getByRole("textbox").inputValue(), request)
+    await settle()
+    assert.deepEqual(counts(), before, "nothing runs when Auto cannot choose")
+    config.router = scope()
+    console.log("PASS when Auto cannot choose, the lawyer is told, nothing runs and the request returns to the composer")
+    await context.close()
+  }
+  {
     // An explicit pick outside Quick's scope explains the limit and offers Full.
     const before = counts()
     config.router = scope({ outside_law: "yes" })
