@@ -112,6 +112,8 @@ export default function Matters({ refresh = 0 }: { refresh?: number }) {
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
     const dialog = editDialog.current
     dialog?.showModal()
+    // React's autoFocus runs before showModal, so the dialog would start on ×.
+    draftTitleInput.current?.focus()
     return () => {
       dialog?.close()
       if (opener?.isConnected) opener.focus({ preventScroll: true })
@@ -254,6 +256,7 @@ export default function Matters({ refresh = 0 }: { refresh?: number }) {
               <button
                 type="button"
                 className="matter-create-toggle"
+                data-dismiss
                 aria-expanded={creating}
                 aria-controls="new-matter-fields"
                 onClick={() => setCreating((open) => !open)}
@@ -469,7 +472,6 @@ export default function Matters({ refresh = 0 }: { refresh?: number }) {
                 <label htmlFor="edit-matter-title">Title</label>
                 <input
                   id="edit-matter-title"
-                  autoFocus
                   ref={draftTitleInput}
                   aria-required="true"
                   aria-invalid={draftTitleMissing || undefined}
@@ -532,7 +534,7 @@ export default function Matters({ refresh = 0 }: { refresh?: number }) {
               {editing?.conflicts && <small className="matter-edit-note">A changed check replaces the recorded one.</small>}
             </div>
             <div className="viewer-bar matter-edit-foot">
-              <button onClick={() => setEditing(null)}>Cancel</button>
+              <button data-dismiss onClick={() => setEditing(null)}>Cancel</button>
               <button className={`primary${busy ? " btn-loading" : ""}`} onClick={onSaveEdit} disabled={busy}>
                 Save changes
               </button>

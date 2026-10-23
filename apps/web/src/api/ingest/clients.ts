@@ -26,3 +26,18 @@ export async function deleteClient(id: number): Promise<void> {
   const res = await fetch(`${INGEST_URL}/clients/${id}`, { method: "DELETE" })
   if (!res.ok) throw new Error(await ingestError(res, "Could not delete the client"))
 }
+
+export type EditedClient = { client: StoredClient; matters: number; merged: boolean }
+
+// Renames a client (and every matter naming it) and sets its number. A stored
+// client is edited by id; a client named only on matters by its current name,
+// which stores it. A name that is already a client merges into that client.
+export async function editClient(source: { id: number } | { from: string }, name: string, reference: string): Promise<EditedClient> {
+  const res = await fetch("id" in source ? `${INGEST_URL}/clients/${source.id}` : `${INGEST_URL}/clients/rename`, {
+    method: "id" in source ? "PATCH" : "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...("from" in source ? { from: source.from } : {}), name, reference }),
+  })
+  if (!res.ok) throw new Error(await ingestError(res, "Could not save the client"))
+  return res.json()
+}

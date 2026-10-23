@@ -1,8 +1,8 @@
 import { Database } from "bun:sqlite"
 import { mkdirSync } from "node:fs"
 import path from "node:path"
-import { Hono } from "hono"
-import { workspaceRoot } from "./matter"
+import { Hono, type Context } from "hono"
+import { listMatters, setMatterClient, workspaceRoot } from "./matter"
 
 // Clients the firm added on their own, before or without a matter. The web
 // Clients list joins these with the Client named on each matter, so a matter's
@@ -35,7 +35,7 @@ function open() {
 }
 
 type Row = { id: number; name: string; reference: string | null; created_at: number }
-const toClient = ({ reference, ...row }: Row): Client => ({ ...row, ...(reference ? { reference } : {}) })
+const toClient = ({ id, name, reference, created_at }: Row): Client => ({ id, name, ...(reference ? { reference } : {}), created_at })
 
 export function listClients(): Client[] {
   const db = open()
@@ -46,13 +46,18 @@ export function listClients(): Client[] {
   }
 }
 
-// Adding a name that is already a client returns that client unchanged.
-export function addClient(input: { name?: unknown; reference?: unknown }): { client: Client; created: boolean } {
-  if (typeof input.name !== "string" || !line(input.name)) throw new ClientValidationError("Name the client to add it.")
-  if (input.reference !== undefined && typeof input.reference !== "string") throw new ClientValidationError("The client number must be text.")
-  const name = line(input.name)
+function validName(value: unknown, missing: string) {
+  if (typeof value !== "string" || !line(value)) throw new ClientValidationError(missing)
+  const name = line(value)
   if (name.length > NAME_MAX_LENGTH)
     throw new ClientValidationError(`A client name can be at most ${NAME_MAX_LENGTH} characters.`)
+  return name
+}
+
+// Adding a name that is already a client returns that client unchanged.
+export function addClient(input: { name?: unknown; reference?: unknown }): { client: Client; created: boolean } {
+  const name = validName(input.name, "Name the client to add it.")
+  if (input.reference !== undefined && typeof input.reference !== "string") throw new ClientValidationError("The client number must be text.")
   const key = clientKey(name)
   const db = open()
   try {
@@ -64,6 +69,62 @@ export function addClient(input: { name?: unknown; reference?: unknown }): { cli
   } finally {
     db.close()
   }
+}
+
+export class ClientNotFoundError extends Error {}
+
+
+// Edits a client's name and number. The source is a stored client (id) or a
+// client named only on matters (from), which gains a stored record here. Every
+// matter whose Client is the old client (same key) is renamed with it, so the
+// client never splits in two. A name that is already another client merges into
+// that client: its stored name and number are kept (a blank number takes the
+// edited one) and the old record goes.
+export function editClient(
+  source: { id: number } | { from: unknown },
+  input: { name?: unknown; reference?: unknown },
+): { client: Client; matters: number; merged: boolean } {
+  const name = validName(input.name, "Name the client to save it.")
+  if (input.reference !== undefined && typeof input.reference !== "string") throw new ClientValidationError("The client number must be text.")
+  const key = clientKey(name)
+  const fromKey = "from" in source ? clientKey(validName(source.from, "Name the client to edit.")) : undefined
+  const db = open()
+  let oldKey: string
+  let result: { client: Client; merged: boolean }
+  try {
+    const select = "SELECT id, key, name, reference, created_at FROM clients WHERE"
+    const byKey = db.query<Row & { key: string }, [string]>(`${select} key = ?`)
+    const current = "id" in source ? db.query<Row & { key: string }, [number]>(`${select} id = ?`).get(source.id) : byKey.get(fromKey!)
+    if (!current && "id" in source) throw new ClientNotFoundError("That client no longer exists.")
+    oldKey = current?.key ?? fromKey!
+    const reference = input.reference === undefined ? current?.reference ?? null : line(input.reference) || null
+    const target = key === oldKey ? null : byKey.get(key)
+    result = db.transaction(() => {
+      if (target) {
+        if (current) db.query("DELETE FROM clients WHERE id = ?").run(current.id)
+        if (!target.reference && reference) db.query("UPDATE clients SET reference = ? WHERE id = ?").run(reference, target.id)
+        return { client: toClient({ ...target, reference: target.reference || reference }), merged: true }
+      }
+      if (current) {
+        db.query("UPDATE clients SET key = ?, name = ?, reference = ? WHERE id = ?").run(key, name, reference, current.id)
+        return { client: toClient({ ...current, name, reference }), merged: false }
+      }
+      const created_at = Date.now()
+      const { lastInsertRowid } = db.query("INSERT INTO clients (key, name, reference, created_at) VALUES (?, ?, ?, ?)").run(key, name, reference, created_at)
+      return { client: toClient({ id: Number(lastInsertRowid), name, reference, created_at }), merged: false }
+    })()
+  } finally {
+    db.close()
+  }
+  // Matters are renamed after the record: if one fails, editing the old name
+  // again (now a client only on its remaining matters) finishes the move.
+  let matters = 0
+  for (const matter of listMatters()) {
+    if (!matter.client || clientKey(matter.client) !== oldKey) continue
+    if (matter.client !== result.client.name) setMatterClient(matter.id, result.client.name)
+    matters++
+  }
+  return { ...result, matters }
 }
 
 export function removeClient(id: number) {
@@ -89,6 +150,25 @@ export function clientRoutes() {
       throw error
     }
   })
+  // Edit a stored client by id, or one named only on matters by its current
+  // name (rename, body.from); both return { client, matters, merged }.
+  async function edit(c: Context, source: (body: Record<string, unknown>) => { id: number } | { from: unknown }) {
+    const parsed = await c.req.json().catch(() => undefined)
+    const body: Record<string, unknown> = parsed && typeof parsed === "object" ? parsed : {}
+    try {
+      return c.json(editClient(source(body), body))
+    } catch (error) {
+      if (error instanceof ClientValidationError) return c.json({ error: error.message }, 400)
+      if (error instanceof ClientNotFoundError) return c.json({ error: error.message }, 404)
+      throw error
+    }
+  }
+  app.patch("/clients/:id", (c) => {
+    const id = Number(c.req.param("id"))
+    if (!Number.isInteger(id)) return c.json({ error: "invalid client id" }, 400)
+    return edit(c, () => ({ id }))
+  })
+  app.post("/clients/rename", (c) => edit(c, (body) => ({ from: body.from })))
   app.delete("/clients/:id", (c) => {
     const id = Number(c.req.param("id"))
     if (!Number.isInteger(id)) return c.json({ error: "invalid client id" }, 400)

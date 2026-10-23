@@ -176,6 +176,12 @@ export function renameMatter(id: string, title: string, reference?: string, juri
   return mutateMatter(id, "rename", (matter) => ({ ...matter, title, reference, jurisdictions, playbook, ...party, ...stance }))
 }
 
+// Changes only the Client, for a client renamed on the Clients page (clients.ts).
+export function setMatterClient(id: string, client: string): Matter {
+  const party = normalizeClient(client)
+  return mutateMatter(id, "rename", (matter) => ({ ...matter, client: party }))
+}
+
 // Records a conflicts-check outcome on the matter. Each exit carries the fields
 // that make the record auditable: cleared names who ran the check, pending names
 // who owns finishing it, bypassed names who decided and why. Anything else is

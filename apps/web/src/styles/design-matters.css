@@ -103,5 +103,7 @@ dialog.matter-edit::backdrop { background: rgb(22 35 29 / .36); }
 .clients-index-list .client-matters { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-3); margin: 0; padding: 0; list-style: none; font-size: 13px; }
 .clients-index-list .client-matters li { display: inline; padding: 0; border: 0; }
 .clients-index-list .client-matters a { color: var(--accent); }
+/* Delete shows only for an added client with no matters; keep Edit in one column. */
+.clients-layout .clients-index-list .list-row-actions { justify-content: flex-start; min-width: 8.5em; }
 .clients-filter-back { display: inline-flex; margin-bottom: var(--space-4); font-size: 13px; }
 @media (forced-colors: active) { .client-suggestion.is-active { outline: 2px solid Highlight; outline-offset: -2px; } }

@@ -1,19 +1,22 @@
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import { flushSync } from "react-dom"
 import { Link, useSearchParams } from "react-router-dom"
 import { listMatters, type Matter } from "../api/ingest/matters"
-import { createClient, deleteClient, listClients, type StoredClient } from "../api/ingest/clients"
+import { createClient, deleteClient, editClient, listClients, type StoredClient } from "../api/ingest/clients"
 import { humanizeError } from "../api/ingest/errors"
 import { clientKey, groupClients, type ClientGroup } from "../lib/clients"
 import { formatDate } from "../lib/format"
 import { useToast } from "../components/Toast"
 import PageBar from "../components/PageBar"
+import ModalHeader from "../components/ModalHeader"
+import backdropClose from "../components/backdropClose"
+import useExit from "../components/useExit"
 
 // Every client: those added here (or from a matter's Client field) and every
 // client named on a matter, with its matters. Laid out like Matters, with the
-// add form on the right. A client named on matters is renamed or removed by
-// editing the Client on those matters; an added client with no matters can be
-// deleted here. ?client=<name> narrows the page to that client's matters.
+// add form on the right. Edit renames a client on every matter that names it
+// (or merges it into a client of the new name); an added client with no
+// matters can be deleted here. ?client=<name> narrows the page to that client's matters.
 export default function Clients() {
   const [matters, setMatters] = useState<Matter[]>([])
   const [stored, setStored] = useState<StoredClient[]>([])
@@ -26,7 +29,15 @@ export default function Clients() {
   const [busy, setBusy] = useState(false)
   const [creating, setCreating] = useState(false)
   const [confirmId, setConfirmId] = useState<number | null>(null)
+  // The client being edited in the dialog, as on Matters. null when closed.
+  const [editing, setEditing] = useState<ClientGroup | null>(null)
+  const [editShown, editClosing] = useExit(editing)
+  const [draftName, setDraftName] = useState("")
+  const [draftReference, setDraftReference] = useState("")
+  const [draftNameMissing, setDraftNameMissing] = useState(false)
   const nameInput = useRef<HTMLInputElement>(null)
+  const draftNameInput = useRef<HTMLInputElement>(null)
+  const editDialog = useRef<HTMLDialogElement>(null)
   const [params] = useSearchParams()
   const toast = useToast()
 
@@ -43,6 +54,29 @@ export default function Clients() {
   }
 
   useEffect(load, [])
+
+  // After an edit, matters and clients both change; reload them without the skeleton.
+  function reload() {
+    Promise.all([listMatters(), listClients()])
+      .then(([rows, clients]) => {
+        setMatters(rows)
+        setStored(clients)
+      })
+      .catch((e) => setLoadError(humanizeError(e)))
+  }
+
+  useLayoutEffect(() => {
+    if (!editing) return
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    const dialog = editDialog.current
+    dialog?.showModal()
+    // React's autoFocus runs before showModal, so the dialog would start on ×.
+    draftNameInput.current?.focus()
+    return () => {
+      dialog?.close()
+      if (opener?.isConnected) opener.focus({ preventScroll: true })
+    }
+  }, [editing])
 
   useEffect(() => {
     if (confirmId === null) return
@@ -83,6 +117,36 @@ export default function Clients() {
     }
   }
 
+  function openEdit(group: ClientGroup) {
+    setEditing(group)
+    setDraftNameMissing(false)
+    setDraftName(group.name)
+    setDraftReference(group.stored?.reference ?? "")
+  }
+
+  async function onSaveEdit() {
+    if (!editing || busy) return
+    if (!draftName.trim()) {
+      flushSync(() => setDraftNameMissing(true))
+      editDialog.current?.querySelector<HTMLElement>("[aria-invalid]")?.focus()
+      return
+    }
+    // A name that is already another client saves under that client's name.
+    const name = mergeTarget?.name ?? draftName.trim()
+    if (name === editing.name && draftReference.trim() === (editing.stored?.reference ?? "")) return setEditing(null)
+    setBusy(true)
+    try {
+      const { client, merged } = await editClient(editing.stored ? { id: editing.stored.id } : { from: editing.name }, name, draftReference.trim())
+      setEditing(null)
+      reload()
+      toast("success", merged ? `Merged "${editing.name}" into "${client.name}".` : `Updated client "${client.name}".`)
+    } catch (e) {
+      toast("error", humanizeError(e, "Could not save the client."))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   // On narrow screens the add form is collapsed; open it before focusing.
   function focusCreateName() {
     flushSync(() => setCreating(true))
@@ -97,6 +161,9 @@ export default function Clients() {
   const term = clientKey(filter)
   const visible = clients.filter((group) => !term || group.key.includes(term) || (group.stored?.reference ?? "").toLowerCase().includes(term))
   const matterCount = (count: number) => count === 0 ? "No matters yet" : `${count} ${count === 1 ? "matter" : "matters"}`
+  // The other client an edited name already belongs to, if any.
+  const draftKey = clientKey(draftName)
+  const mergeTarget = editing && draftKey !== editing.key ? clients.find((group) => group.key === draftKey) : undefined
 
   const row = (group: ClientGroup) => {
     // Only an added client with no matters can go: matters keep their own Client.
@@ -119,9 +186,11 @@ export default function Clients() {
             </ul>
           )}
         </div>
-        {deletable && (
-          <div className="list-row-actions">
-            {confirmId === deletable.id ? (
+        <div className="list-row-actions">
+          <button className="icon-btn" title={`Edit ${group.name}`} aria-label={`Edit ${group.name}`} onClick={() => openEdit(group)}>
+            Edit
+          </button>
+          {deletable && (confirmId === deletable.id ? (
               <button
                 className="icon-btn danger"
                 title="Confirm delete"
@@ -145,9 +214,8 @@ export default function Clients() {
               >
                 Delete
               </button>
-            )}
-          </div>
-        )}
+            ))}
+        </div>
       </li>
     )
   }
@@ -287,6 +355,58 @@ export default function Clients() {
           )}
         </section>
       </div>
+
+      {editShown && (
+        <dialog
+          ref={editDialog}
+          className={`picker-panel matter-edit${editClosing ? " is-closing" : ""}`}
+          inert={editClosing}
+          aria-labelledby="edit-client-heading"
+          onCancel={(event) => { event.preventDefault(); setEditing(null) }}
+          {...backdropClose(() => setEditing(null))}
+        >
+          <ModalHeader title={<span id="edit-client-heading">Edit client</span>} onClose={() => setEditing(null)} />
+          <div className="matter-edit-body">
+            <div className="matter-edit-field">
+              <label htmlFor="edit-client-name">Client name</label>
+              <input
+                id="edit-client-name"
+                ref={draftNameInput}
+                maxLength={200}
+                aria-required="true"
+                aria-invalid={draftNameMissing || undefined}
+                aria-describedby={draftNameMissing ? "edit-client-name-error" : mergeTarget ? "edit-client-merge" : undefined}
+                value={draftName}
+                onChange={(e) => { setDraftName(e.target.value); setDraftNameMissing(false) }}
+                onKeyDown={(e) => e.key === "Enter" && onSaveEdit()}
+              />
+              {draftNameMissing && <small id="edit-client-name-error" className="field-error" role="alert">Name the client to save it.</small>}
+            </div>
+            {mergeTarget && editShown && (
+              <small id="edit-client-merge" className="matter-edit-note" role="status">
+                {mergeTarget.name} already exists; {editShown.matters.length > 0 ? `${editShown.name}’s ${matterCount(editShown.matters.length)} will move to it` : `saving merges ${editShown.name} into it`}.
+              </small>
+            )}
+            <label className="matter-edit-field">
+              <span>Client number</span>
+              <input
+                value={draftReference}
+                onChange={(e) => setDraftReference(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && onSaveEdit()}
+              />
+            </label>
+            {!mergeTarget && editShown && editShown.matters.length > 0 && (
+              <small className="matter-edit-note">A new name also changes the Client on {editShown.matters.length === 1 ? "its matter" : `its ${editShown.matters.length} matters`}.</small>
+            )}
+          </div>
+          <div className="viewer-bar matter-edit-foot">
+            <button onClick={() => setEditing(null)}>Cancel</button>
+            <button className={`primary${busy ? " btn-loading" : ""}`} onClick={onSaveEdit} disabled={busy}>
+              Save changes
+            </button>
+          </div>
+        </dialog>
+      )}
     </>
   )
 }
