@@ -1,5 +1,5 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type InputHTMLAttributes, type KeyboardEvent } from "react"
-import { createPortal } from "react-dom"
+import { createPortal, flushSync } from "react-dom"
 import { createClient, listClients, type StoredClient } from "../api/ingest/clients"
 import { humanizeError } from "../api/ingest/errors"
 import { clientKey, suggestClients, withStoredClients } from "../lib/clients"
@@ -12,8 +12,12 @@ type InputProps = Omit<InputHTMLAttributes<HTMLInputElement>, "value" | "onChang
 // so Enter on free text still means that text; ArrowDown then Enter, or a click,
 // picks a suggestion. Text that is no client yet gets a last option, Add "X" as
 // a client, which saves the client and keeps its name in the field. Added
-// clients are suggested alongside the caller's names. The caller's own keys
-// (Enter to save, Escape to cancel) apply whenever the list is closed.
+// clients are suggested alongside the caller's names. Text left in the field
+// without a pick (Tab or click away, or Enter to save) settles as a client: a
+// spelling of a known client becomes that client's name, before the caller's
+// own blur or Enter handler sees it, and a new name is added as a client. The
+// caller's own keys (Enter to save, Escape to cancel) apply whenever the list
+// is closed; Escape never adds.
 export default function ClientCombobox({
   value,
   onChange,
@@ -27,6 +31,12 @@ export default function ClientCombobox({
   const [stored, setStored] = useState<StoredClient[]>([])
   const [adding, setAdding] = useState(false)
   const field = useRef<HTMLInputElement>(null)
+  const composing = useRef(false)
+  // The key a settle is adding, so a second blur does not add it again.
+  const settling = useRef<string | undefined>(undefined)
+  // The caller's handlers from the latest render, so they run after a snap.
+  const latest = useRef({ onBlur: input.onBlur, onKeyDown })
+  latest.current = { onBlur: input.onBlur, onKeyDown }
   const listId = useId()
   const toast = useToast()
   const names = withStoredClients(clients, stored)
@@ -88,6 +98,24 @@ export default function ClientCombobox({
     }
   }
 
+  function settle() {
+    const key = clientKey(typed)
+    if (!key || composing.current) return
+    const known = names.find((name) => clientKey(name) === key)
+    if (known) {
+      if (known !== value) flushSync(() => onChange(known))
+      return
+    }
+    if (adding || settling.current === key) return
+    settling.current = key
+    createClient(typed)
+      .then(({ client }) => setStored((rows) => [...rows.filter((row) => row.id !== client.id), client]))
+      .catch((error) => toast("error", humanizeError(error, "Could not add the client.")))
+      .finally(() => {
+        if (settling.current === key) settling.current = undefined
+      })
+  }
+
   function choose(index: number) {
     if (index < options.length) pick(options[index]!)
     else void add()
@@ -96,7 +124,7 @@ export default function ClientCombobox({
   function keyDown(event: KeyboardEvent<HTMLInputElement>) {
     // Keys that confirm an IME composition are not list navigation; the
     // caller's own keys behave as before.
-    if (event.nativeEvent.isComposing) return onKeyDown?.(event)
+    if (event.nativeEvent.isComposing) return latest.current.onKeyDown?.(event)
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault()
       const total = shown ? count : candidates.length + (canAdd ? 1 : 0)
@@ -119,7 +147,8 @@ export default function ClientCombobox({
       return
     }
     if (event.key === "Tab") setOpen(false)
-    onKeyDown?.(event)
+    if (event.key === "Enter") settle()
+    latest.current.onKeyDown?.(event)
   }
 
   const activeId = shown && active >= 0 ? `${listId}-${active}` : undefined
@@ -140,9 +169,12 @@ export default function ClientCombobox({
           setOpen(true)
           setActive(-1)
         }}
+        onCompositionStart={() => { composing.current = true }}
+        onCompositionEnd={() => { composing.current = false }}
         onBlur={(event) => {
           setOpen(false)
-          input.onBlur?.(event)
+          settle()
+          latest.current.onBlur?.(event)
         }}
         onKeyDown={keyDown}
       />

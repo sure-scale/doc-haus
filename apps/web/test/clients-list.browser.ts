@@ -281,7 +281,8 @@ try {
     await page.keyboard.press("Enter")
     await expect(page.getByRole("button", { name: "Edit client: Fabrikam" })).toBeVisible()
     assert.deepEqual(writes.map((w) => [w.method, w.id, w.body.client]), [["PATCH", "d", "Fabrikam"]])
-    assert.deepEqual(clientWrites, [])
+    // Saving a name that is no client yet adds it as one, once.
+    await expect.poll(() => clientWrites).toEqual([{ method: "POST", body: { name: "Fabrikam" } }])
     await page.getByRole("link", { name: "All matters", exact: true }).click()
     await page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: "Clients" }).click()
     const rows = page.getByRole("list", { name: "Clients", exact: true }).locator(":scope > li")
@@ -445,6 +446,70 @@ try {
     await expect(dialog).toHaveCount(0)
     assert.equal(clientWrites.length, 1)
   }, "/clients", [{ id: 1, name: "Contoso", reference: "C-1", created_at: 1 }, { id: 2, name: "Fabrikam", created_at: 1 }, { id: 3, name: "Northwind Traders", created_at: 1 }])
+
+  await scenario("tabbing off the Client field adds a new name once and snaps a known spelling to its client", seed, async (page) => {
+    await page.getByRole("textbox", { name: "Matter title" }).fill("Option deed")
+    const field = page.getByRole("combobox", { name: "Client you act for (optional)" })
+    await field.pressSequentially("Litware")
+    await expect(page.getByRole("listbox", { name: "Existing clients" }).getByRole("option").last()).toHaveText("Add “Litware” as a client")
+    await page.keyboard.press("Tab")
+    await expect.poll(() => clientWrites).toEqual([{ method: "POST", body: { name: "Litware" } }])
+    await expect(field).toHaveValue("Litware")
+    // Back in and out again: it is a client now, so nothing more is added.
+    await field.focus()
+    await page.keyboard.press("Tab")
+    // A spelling of a stored client becomes the stored name, with no add.
+    await field.fill("northwind traders.")
+    await page.keyboard.press("Tab")
+    await expect(field).toHaveValue("NORTHWIND TRADERS")
+    // And of a client named only on matters, its name there.
+    await field.fill("CONTOSO ")
+    await page.getByRole("textbox", { name: "Matter title" }).click()
+    await expect(field).toHaveValue("Contoso")
+    assert.equal(clientWrites.length, 1)
+    assert.equal(writes.length, 0)
+  }, "/", [{ id: 1, name: "NORTHWIND TRADERS", created_at: 1 }])
+
+  await scenario("submitting the matter form with Enter in the Client field adds the typed client and saves it", seed, async (page) => {
+    await page.getByRole("textbox", { name: "Matter title" }).fill("Option deed")
+    await page.getByRole("combobox", { name: "Client you act for (optional)" }).pressSequentially("Tailspin Toys")
+    await page.keyboard.press("Enter")
+    await expect.poll(() => writes.length).toBe(1)
+    assert.equal(writes[0]!.body.client, "Tailspin Toys")
+    await expect.poll(() => clientWrites).toEqual([{ method: "POST", body: { name: "Tailspin Toys" } }])
+  })
+
+  await scenario("submitting with a known client's spelling saves that client's name and adds nothing", seed, async (page) => {
+    await page.getByRole("textbox", { name: "Matter title" }).fill("Option deed")
+    await page.getByRole("combobox", { name: "Client you act for (optional)" }).fill("contoso.")
+    await page.getByRole("button", { name: "Create matter" }).click()
+    await expect.poll(() => writes.length).toBe(1)
+    assert.equal(writes[0]!.body.client, "Contoso")
+    assert.deepEqual(clientWrites, [])
+  })
+
+  await scenario("Escape closes the list and cancels the edit without adding the typed client", seed, async (page) => {
+    // With motion the closing dialog stays mounted, and its close moves focus off the field.
+    await page.emulateMedia({ reducedMotion: "no-preference" })
+    await page.getByRole("button", { name: "Edit Board minutes" }).click()
+    const dialog = page.getByRole("dialog", { name: "Edit matter" })
+    await dialog.getByRole("combobox", { name: "Client" }).pressSequentially("Zeta Corp")
+    await expect(page.getByRole("listbox", { name: "Existing clients" })).toBeVisible()
+    await page.keyboard.press("Escape")
+    await expect(page.getByRole("listbox", { name: "Existing clients" })).toHaveCount(0)
+    await expect(dialog).toBeVisible()
+    await page.keyboard.press("Escape")
+    await expect(dialog).toHaveCount(0)
+    await page.getByRole("link", { name: /^Board minutes/ }).click()
+    await page.getByRole("button", { name: "Add the client you act for" }).click()
+    await page.getByRole("combobox", { name: "Client you act for" }).pressSequentially("Zeta Corp")
+    await page.keyboard.press("Escape")
+    await page.keyboard.press("Escape")
+    await expect(page.getByRole("button", { name: "Add the client you act for" })).toBeVisible()
+    await page.waitForTimeout(200)
+    assert.deepEqual(clientWrites, [])
+    assert.deepEqual(writes, [])
+  })
 
   await scenario("the Matters and Clients edit dialogs match side by side", seed, async (page) => {
     await page.getByRole("button", { name: "Edit Supply note" }).click()
