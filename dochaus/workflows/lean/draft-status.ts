@@ -19,47 +19,49 @@ import { sourceText } from "./template-structure"
 // cycle), in a proposed amendment (retry feedback) and in the final body (an
 // open item the drafting notes disclose).
 //
-// Found: a sentence that calls this text a draft, says it is not approved or
-// not for signature, says it is circulated for discussion or negotiation only,
-// or describes its own placeholders or bracketed wording. Some of these words
-// also name other documents in operative wording ("the Consultant shall
-// circulate a draft for discussion"), so those count only in a sentence that
-// opens with them, as a marking line does, or that is about this text ("this
-// document", "It is ..."). Not found: what a clause does to the parties' rights,
-// including whether the agreement binds ("subject to contract", "not legally
-// binding"), which is a term the parties may agree or a firm legend; quoted
-// words; bracketed markers. Kept: the firm's legend for the document's form and
-// a legend the request asks for (applied by code as page furniture), and, in a
-// revision, the wording of the lawyer's own original, so a marking the lawyer
-// wrote is never taken out of their document.
+// Found only in a sentence about this text itself: a marking line (a short
+// sentence that opens with the status wording: "Consultation draft — not for
+// signature") or a sentence that names this text as a draft, document or
+// version ("This draft is circulated for discussion only", "This is a working
+// draft"). In such a sentence the status wording is: calling the text a draft
+// for discussion or negotiation, not approved, ready or final for signature,
+// not for signature, for discussion or negotiation only, or describing its own
+// placeholders or bracketed wording. The same words in any other sentence are
+// operative wording or name another document ("The Guarantee is not ready for
+// signing until ...", "a Draft Status Report", "Clause 9 is a placeholder
+// pending ...") and are never found: a missed status line costs the lawyer a
+// deletion, a removed condition is a legal error. Not found either: whether the
+// agreement binds ("subject to contract"), which is a term the parties may
+// agree or a firm legend; quoted words; bracketed markers. Kept: a sentence
+// taken from the firm's legend for the document's form, from a legend the
+// request asks for (both applied by code as page furniture) or, in a
+// revision, from one paragraph of the lawyer's own original, so a marking the
+// lawyer wrote is never taken out of their document.
 
 const S = String.raw`\s+`
 const HYPHEN = "[-‐‑–]"
+const STATE = "(?:negotiation|discussion|working|consultation|revised|first|initial|clean|further|current)"
 
-/** Status wording that is about the text it stands in wherever it stands. */
-const ALWAYS = new RegExp([
+/** Status wording, counted only in a sentence about this text. */
+const STATUS = new RegExp([
   String.raw`\bnot${S}(?:(?:yet|been|to${S}be|being|currently)${S})*(?:approved|cleared|authori[sz]ed|released|ready|final(?:i[sz]ed)?)${S}for${S}(?:signature|signing|execution|completion|implementation|issue|release|circulation)\b`,
   String.raw`\bnot${S}for${S}(?:signature|signing|execution)\b`,
   String.raw`\bnegotiation${HYPHEN}only\b`,
   String.raw`\bfor${S}(?:discussion|negotiation)(?:${S}(?:and|or)${S}(?:discussion|negotiation))?${S}(?:purposes${S})?only\b`,
-  String.raw`\bdraft${S}status\b`,
-  String.raw`\b(?:this|the${S}present)${S}(?:(?:negotiation|discussion|working|consultation|revised|first|initial|clean|further|current)(?:${HYPHEN}only)?${S})*draft\b`,
-  String.raw`\bbracketed${S}(?:wording|text|drafting|language|provisions?)\b`,
-  String.raw`\b(?:explicit|bracketed)${S}placeholders?\b`,
-  String.raw`\bplaceholders?${S}(?:pending|until|awaiting)\b`,
-].join("|"), "giu")
-
-/** Status wording that also names other documents: only in a sentence that
- * opens with it or that is about this text. */
-const IN_CONTEXT = new RegExp([
-  String.raw`\b(?:negotiation|discussion|working|consultation)${S}draft\b`,
+  String.raw`\b${STATE}(?:${HYPHEN}only)?${S}draft\b`,
   String.raw`\bdraft${S}(?:(?:issued|prepared|circulated|provided)${S})?for${S}(?:discussion|negotiation)\b`,
   String.raw`\b(?:issued|circulated|provided|prepared|sent|supplied|produced)${S}(?:(?:only|solely|purely)${S})?for${S}(?:the${S}purposes?${S}of${S})?(?:discussion|negotiation)\b`,
-  String.raw`^draft\b(?=\s*(?:$|[-–—:|(]))`,
+  String.raw`\bbracketed${S}(?:wording|text|drafting|language|provisions?)\b`,
+  String.raw`\bplaceholders?\b`,
 ].join("|"), "giu")
 
-/** A sentence about this text itself. */
-const ABOUT_THIS_TEXT = /\b(?:this|the\s+present)\s+(?:[\p{L}-]+\s+){0,3}?(?:draft|document|version)\b|^(?:it|this)\s+(?:is|was|has|remains|does)\b/iu
+/** A marking line's own opening: status wording, a bare "Draft" set off by a
+ * dash, colon, bar or bracket, or a "Draft status" heading. */
+const MARKING = new RegExp(String.raw`^(?:(?:${STATUS.source})|draft(?=\s*$|\s+[-–—|]\s|\s*[:(])|draft${S}status$)`, "iu")
+const MARKING_WORDS = 14
+
+/** A sentence that names this text itself as a draft, document or version. */
+const ABOUT_THIS_TEXT = new RegExp(String.raw`\b(?:this|the${S}present)${S}(?:${STATE}(?:${HYPHEN}only)?${S})*(?:draft|document|version)\b|^(?:it|this)${S}(?:is|remains)${S}(?:(?:a|an|the|only)${S})*(?:[\p{L}-]+${S}){0,3}?(?:draft|version)\b`, "iu")
 
 /** Markers, citations and quoted words carry no statement of the text's own. */
 const NOT_STATEMENT = /\[[^\]\n]*\]|\(open item:[^)\n]*\)|"[^"\n]*"|“[^”\n]*”/giu
@@ -67,28 +69,34 @@ const NOT_STATEMENT = /\[[^\]\n]*\]|\(open item:[^)\n]*\)|"[^"\n]*"|“[^”\n]*
 /** Leading numbering, bullets and emphasis before a sentence's first word. */
 const LEAD = /^[\s#>*_\-•–—]*(?:\(?(?:\d+(?:\.\d+)*|[a-z]|[ivxlc]+)[.)]\s*)?[\s*_]*/iu
 
+/** Share of a sentence's words one kept paragraph must hold for the sentence
+ * to be taken from it. */
+const TAKEN_FROM = 0.6
+
 export type DraftStatusStatement = { statement: string; sentence: string }
 
 /** The statements of its own draft status or approval state in one paragraph
- * of an agreement, leaving out any whose words `kept` (firm legends, the
- * lawyer's original) already holds. */
+ * of an agreement, leaving out a sentence taken from one paragraph of `kept`
+ * (a firm legend, the lawyer's original, the paragraph an amendment replaces)
+ * that holds the same status wording. */
 export function draftStatusStatements(text: string, kept: string[] = []): DraftStatusStatement[] {
-  const keep = kept.map(flat)
+  const keep = kept.flatMap(block => block.split(/\n+/)).map(flat).filter(words => words.trim())
   const found = text.replace(NOT_STATEMENT, " ").split(/\n+|(?<=[.;!?])\s+/).flatMap(raw => {
     const sentence = raw.replace(LEAD, "").trim()
-    if (!sentence) return []
-    const context = ABOUT_THIS_TEXT.test(sentence)
-    const spans = [
-      ...[...sentence.matchAll(ALWAYS)],
-      ...[...sentence.matchAll(IN_CONTEXT)].filter(match => context || match.index === 0),
-    ].map(match => ({ start: match.index, end: match.index + match[0].length, statement: match[0] }))
-    // One statement per stretch of words: the widest match.
-    const widest = spans.filter(span => !spans.some(other => other !== span && other.start <= span.start && other.end >= span.end
-      && other.end - other.start > span.end - span.start))
-    return widest.filter(span => !keep.some(words => words.includes(flat(span.statement))))
-      .map(span => ({ statement: span.statement.replace(/\s+/g, " "), sentence }))
+    const marking = MARKING.test(sentence) && wordsOf(sentence).length <= MARKING_WORDS
+    if (!sentence || !(marking || ABOUT_THIS_TEXT.test(sentence))) return []
+    const spans = [...sentence.matchAll(STATUS)].map(match => ({ start: match.index, end: match.index + match[0].length, statement: match[0] }))
+    if (marking && !spans.length) spans.push({ start: 0, end: sentence.length, statement: sentence })
+    const words = wordsOf(sentence)
+    const taken = (statement: string) => keep.some(paragraph => paragraph.includes(flat(statement))
+      && words.filter(word => paragraph.includes(` ${word} `)).length >= TAKEN_FROM * words.length)
+    return spans.filter(span => !taken(span.statement)).map(span => ({ statement: span.statement.replace(/\s+/g, " "), sentence }))
   })
   return [...new Map(found.map(row => [flat(row.statement), row])).values()]
+}
+
+function wordsOf(text: string) {
+  return flat(text).trim().split(" ").filter(Boolean)
 }
 
 /** Lowercased words between single spaces, so a phrase matches whole words. */

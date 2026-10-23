@@ -27,7 +27,8 @@ const STATUS = [
   "CONSULTATION DRAFT — NOT FOR SIGNATURE",
   "This draft is circulated for discussion only and has not been approved for execution by either party, and is not ready for signing.",
   "(D) Clause 6 and Schedule 3 are explicit placeholders pending the valuation, as set out in this draft.",
-  "It is not approved for signature, completion or implementation. [open item: confirm the start date]",
+  "It is a working draft and is not approved for signature, completion or implementation. [open item: confirm the start date]",
+  "Draft — 1 March 2026",
 ]
 
 const OPERATIVE = [
@@ -37,6 +38,13 @@ const OPERATIVE = [
   "The Consultant shall circulate a draft for discussion at least five Business Days before each Steering Meeting.",
   "\"Working Draft\" means the version of the Annual Plan most recently circulated under clause 7.2.",
   "The Provider shall submit the draft Specification to the Customer for approval [open item: confirm the review period].",
+  // Operative conditions, defined terms and mechanisms that share status words.
+  "The Guarantee is not ready for signing until the Bank's credit approval is received.",
+  "The Supplier shall deliver a Draft Status Report to the Client monthly.",
+  "Clause 9 is a placeholder pending the Parties' agreement of the Service Credit regime.",
+  "Draft-form Schedules listed in Schedule 2 are incorporated.",
+  "This is a mutual NDA covering information the Discloser provided for discussion of a possible acquisition.",
+  "The Parties shall settle the bracketed provisions in Schedule 4 in good faith before signature.",
 ]
 
 function agreement(directory: string, extra: Partial<Omit<PlannedDocument, "id">> = {}) {
@@ -75,6 +83,13 @@ describe("draft-status statements in an agreement", () => {
     expect(draftStatusItems(directory, "d1", body, "apply").map(item => item.ref.pid)).toEqual([body[1]!.pid])
   })
 
+  test("in a revision only a sentence taken from one paragraph of the original is kept, not the same words written elsewhere", () => {
+    const original = "Draft for discussion | 1 March 2026\n\nThe Provider shall deliver the Services.\n\nIt is a working draft subject to the points in the review note."
+    expect(draftStatusStatements("DRAFT FOR DISCUSSION — 1 March 2026", [original])).toEqual([])
+    expect(draftStatusStatements("It is a working draft subject to the points in the review note.", [original])).toEqual([])
+    expect(draftStatusStatements("(B) The Supplier will supply the Goods, and this document remains a working draft.", [original]).length).toBeGreaterThan(0)
+  })
+
   test("a letter may refer to a draft for discussion; only an agreement's own text is checked", () => {
     const directory = matter()
     writeLeanPlan(directory, [{ title: "Cover letter", purpose: "Send the draft", parts: [{ heading: "Letter", scope: "Letter" }], form: "letter" }])
@@ -101,7 +116,9 @@ describe("draft-status statements in an agreement", () => {
     expect(checkChanges(directory, amend(status), draft, { document: "d1" }).issues.join(" ")).toContain("draft status")
     const last = checkChanges(directory, amend(status), draft, { document: "d1", withholdUnverified: true })
     expect(last.changes?.amendments).toEqual([])
-    expect(last.openItems).toContainEqual(expect.objectContaining({ kind: "unapplied_amendment", ref: expect.objectContaining({ pid: draft[0]!.pid }) }))
+    // Withheld, it is disclosed through the drafting notes with its reason.
+    expect(last.openItems).toContainEqual(expect.objectContaining({ kind: "unapplied_amendment", ref: expect.objectContaining({ pid: draft[0]!.pid }),
+      detail: expect.stringContaining("states the agreement's own draft status or approval state") }))
     expect(checkChanges(directory, amend(`${OPERATIVE[0]} The Provider shall report monthly. [open item: confirm the reporting cycle]`), draft, { document: "d1" }).issues).toEqual([])
   })
 
