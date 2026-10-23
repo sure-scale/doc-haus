@@ -2,7 +2,7 @@ import { useContext, useEffect, useRef, useState, type ReactNode, type RefObject
 import { Closing } from "./useExit"
 import { createPortal } from "react-dom"
 import { createViewer, type DocxViewer } from "docxodus/embed"
-import { fetchTemplateBytes } from "../api/ingest/library"
+import { fetchTemplateBytes, type TemplatePlaceholder } from "../api/ingest/library"
 import { ModalClose } from "./ModalHeader"
 import { decorateMarkers, markerEntries, type MarkerEntry } from "./document-markers"
 import backdropClose from "./backdropClose"
@@ -14,9 +14,11 @@ import useModalFocus from "./useModalFocus"
 // carries — a template is a clean drafting base, never redlined. Bytes convert
 // client-side, so the file never leaves the browser for a third-party service.
 // The side panel lists exactly the chips decorateMarkers put in the document,
-// so its counts and the document always agree.
+// so its counts and the document always agree. A library template's chips are
+// the placeholders the server's scan listed, the set drafting fills.
 export default function TemplateViewer({
   name,
+  placeholders,
   onClose,
   loadBytes,
   sidebar,
@@ -24,6 +26,9 @@ export default function TemplateViewer({
   onRendered,
 }: {
   name: string
+  // The server's placeholder scan of a library template; without it the
+  // viewer marks what the shared marker patterns find.
+  placeholders?: TemplatePlaceholder[]
   onClose: () => void
   // Draft previews use immutable snapshot/proposal bytes; library templates
   // keep the normal name-based reader.
@@ -40,6 +45,8 @@ export default function TemplateViewer({
   const [error, setError] = useState<string>()
   const rendered = useRef(onRendered)
   rendered.current = onRendered
+  const fields = useRef(placeholders)
+  fields.current = placeholders
   const [markers, setMarkers] = useState<MarkerEntry[]>([])
   // Optional-clause markers are keep-or-omit decisions, not fills — list them
   // separately under their short names.
@@ -64,7 +71,7 @@ export default function TemplateViewer({
         if (cancelled) { result.destroy(); return }
         viewer = result
         documentHost.current?.replaceChildren(mount)
-        decorateMarkers(mount)
+        decorateMarkers(mount, fields.current?.map((p) => p.text))
         setMarkers(markerEntries(mount))
         setReady(true)
         rendered.current?.()
@@ -128,6 +135,10 @@ function MarkerPanel({ document: host, groups }: { document: RefObject<HTMLDivEl
   const [linked, setLinked] = useState<MarkerEntry>()
   const [shown, setShown] = useState(new Map<MarkerEntry, number>())
   const flash = useRef<number>(undefined)
+  // Whether the highlight came from a chip: leaving the document clears only
+  // that one, never an entry the panel just took over or holds by focus.
+  const fromDocument = useRef(false)
+  const link = (entry: MarkerEntry | undefined) => { fromDocument.current = false; setLinked(entry) }
   const all = useRef<MarkerEntry[]>([])
   all.current = groups.flatMap((group) => group.entries)
   const chips = (entry: MarkerEntry, id?: string) =>
@@ -148,8 +159,15 @@ function MarkerPanel({ document: host, groups }: { document: RefObject<HTMLDivEl
       const id = (target as Element | null)?.closest?.<HTMLElement>("span.doc-marker[data-marker-id]")?.dataset.markerId
       return id ? all.current.find((entry) => entry.ids.includes(id)) : undefined
     }
-    const over = (event: MouseEvent) => setLinked(entryFor(event.target))
-    const leave = () => setLinked(undefined)
+    const over = (event: MouseEvent) => {
+      const entry = entryFor(event.target)
+      if (!entry && !fromDocument.current) return
+      fromDocument.current = Boolean(entry)
+      setLinked(entry)
+    }
+    const leave = () => {
+      if (fromDocument.current) link(undefined)
+    }
     root.addEventListener("mouseover", over)
     root.addEventListener("mouseleave", leave)
     return () => {
@@ -188,10 +206,10 @@ function MarkerPanel({ document: host, groups }: { document: RefObject<HTMLDivEl
                 className={`marker-entry doc-marker-${entry.kind}${linked === entry ? ` ${LINKED}` : ""}`}
                 aria-label={`${entry.text}, ${noun}${many ? `, ${entry.ids.length} occurrences` : ""}. Show in document`}
                 title={many ? "Show the next occurrence in the document" : "Show in the document"}
-                onMouseEnter={() => setLinked(entry)}
-                onMouseLeave={() => setLinked(undefined)}
-                onFocus={() => setLinked(entry)}
-                onBlur={() => setLinked(undefined)}
+                onMouseEnter={() => link(entry)}
+                onMouseLeave={() => link(undefined)}
+                onFocus={() => link(entry)}
+                onBlur={() => link(undefined)}
                 onClick={() => reveal(entry)}
               >
                 <span className="marker-entry-text">{label ? label(entry.text) : entry.text}</span>

@@ -213,9 +213,9 @@ export default function Templates() {
         ) : (
           <ul className="matter-list">
             {visible.map((t) => {
-              // Count by the viewer's marker patterns: other bracketed text,
-              // such as a [REDACTED] mark, is not a placeholder to fill.
-              const markers = t.placeholders.filter((p) => markerKind(p.text) === "placeholder")
+              // As the viewer's side panel counts them: a [REDACTED] mark is a
+              // redaction, not a placeholder to fill.
+              const markers = t.placeholders.filter((p) => markerKind(p.text) !== "redaction")
               const optional = markers.filter((p) => /^\[optional:/i.test(p.text)).length
               const fills = markers.length - optional
               return (
@@ -329,7 +329,7 @@ export default function Templates() {
       </LibraryLayout>
 
       <Exit when={viewing}>{(viewing) => (
-        <TemplateViewer name={viewing.name} onClose={() => setViewing(undefined)} />
+        <TemplateViewer name={viewing.name} placeholders={viewing.placeholders} onClose={() => setViewing(undefined)} />
       )}</Exit>
 
       <Exit when={using}>{(using) => (
