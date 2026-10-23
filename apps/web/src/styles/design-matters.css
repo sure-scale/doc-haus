@@ -90,9 +90,10 @@ dialog.matter-edit::backdrop { background: rgb(22 35 29 / .36); }
 .client-suggestion { min-height: 40px; display: flex; align-items: center; padding: 10px var(--space-3); cursor: pointer; overflow-wrap: anywhere; }
 .client-suggestion:hover { background: var(--md-sys-state-hover); }
 .client-suggestion.is-active { background: var(--md-sys-state-selected); color: var(--md-sys-color-on-primary-container); }
+.client-suggestion-add { color: var(--accent); font-weight: 550; }
+.client-suggestion + .client-suggestion-add { border-top: 1px solid var(--border-soft); }
 
-/* Clients reuse the Matters index list in one column. */
-.clients-layout.library-layout { grid-template-columns: minmax(0, 1fr); }
+/* Clients reuse the Matters layout: the index list, with the add form on the right. */
 .clients-index-list .client-matters { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-3); margin: 0; padding: 0; list-style: none; font-size: 13px; }
 .clients-index-list .client-matters li { display: inline; padding: 0; border: 0; }
 .clients-index-list .client-matters a { color: var(--accent); }
