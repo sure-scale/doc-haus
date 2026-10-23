@@ -393,6 +393,9 @@ try {
     const rows = list.locator(":scope > li")
     await expect(rows.nth(0).getByRole("button")).toHaveText(["Edit"])
     await expect(rows.nth(1).getByRole("button")).toHaveText(["Edit"])
+    // Edit sits in one column whether or not the row also has Delete.
+    const editX = await Promise.all([0, 1, 2].map(async (i) => (await rows.nth(i).getByRole("button", { name: /^Edit / }).boundingBox())!.x))
+    assert.equal(new Set(editX).size, 1, `Edit columns: ${editX}`)
     await rows.nth(1).getByRole("button", { name: "Edit Northwind Traders" }).click()
     const dialog = page.getByRole("dialog", { name: "Edit client" })
     const name = dialog.getByRole("textbox", { name: "Client name" })
@@ -420,7 +423,7 @@ try {
     await expect(page.locator(".matter-client")).toHaveText(["Contoso", "Northwind Traders Ltd", "Northwind Traders Ltd"])
     await page.getByRole("link", { name: /^Supply note/ }).click()
     await expect(page.getByRole("button", { name: "Edit client: Northwind Traders Ltd" })).toBeVisible()
-  }, "/clients")
+  }, "/clients", [{ id: 5, name: "Wide World Importers", created_at: 1 }])
 
   await scenario("renaming a client to another client's name says it will merge, then moves its matters there", seed, async (page) => {
     const rows = page.getByRole("list", { name: "Clients", exact: true }).locator(":scope > li")
