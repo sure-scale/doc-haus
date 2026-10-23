@@ -295,7 +295,8 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
       <div className="matter-body">
         <div className="workspace">
           <ChatPanel
-            key={session ?? "new"}
+            // A ?prompt= deep link (a workflow, template or review cell) prefills a fresh chat.
+            key={session ?? params.get("prompt") ?? "new"}
             directory={matter.dir}
             matterId={matter.id}
             sessionID={session}
@@ -344,7 +345,7 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
           const next = new URLSearchParams(params)
           next.delete("view")
           setParams(next, { replace: true })
-        }} />
+        }} onAsk={(prompt) => setParams({ view: "chat", prompt })} />
       )}</Exit>
 
       {drawerShown && (

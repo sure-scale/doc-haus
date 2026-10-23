@@ -56,6 +56,7 @@ function Harness() {
     matterId: "matter-grid", title: "Supplier review", directory: "/matters/supplier-review",
     documents: [{ id: 1, name: "Supply terms.docx", doc_path: "Supply terms.docx", created_at: 0 }, { id: 2, name: "Side letter.docx", doc_path: "Side letter.docx", created_at: 0 }],
     onClose: () => { window.gridCloses = (window.gridCloses ?? 0) + 1; setOpen(false) },
+    onAsk: (prompt) => { window.asked = prompt },
   }) : null
 }
 createRoot(document.getElementById("root")).render(createElement(Harness))
@@ -169,6 +170,13 @@ try {
   assert.equal(await table.isVisible(), true)
   assert.equal(await closes(), 0)
   console.log("PASS the citation opens its document at the highlighted excerpt and Escape returns to the same cell")
+
+  // Asking hands chat the cell's question, answer and recorded citation.
+  await detail.getByRole("button", { name: "Ask about this answer in chat", exact: true }).click()
+  const asked = await page.evaluate(() => (window as unknown as { asked?: string }).asked ?? "")
+  for (const part of ["Question: What is the governing law?", "Answer: The law of England and Wales.", "Cited source: Supply terms.docx § 12 (Supply terms › §12 Governing law)", `Excerpt: "${excerpt}"`, "Source check: Verified."])
+    assert.ok(asked.includes(part), `the chat question should carry "${part}"`)
+  console.log("PASS asking about a cell hands chat its question, answer and citation")
 
   await page.keyboard.press("Escape")
   await detail.waitFor({ state: "detached" })

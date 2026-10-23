@@ -38,7 +38,24 @@ const SOURCE_DETAIL: Record<SourceCheck, string> = {
   missing: "This document is no longer in the matter, so the excerpt cannot be checked.",
 }
 
-export default function ReviewGrid({ matterId, title, directory, documents, onClose }: { matterId: string; title: string; directory: string; documents: Document[]; onClose: () => void }) {
+// The chat question for one cell: its question, answer and recorded citation,
+// prefilled for the lawyer to edit and send. It carries what the run recorded;
+// the assistant does not re-derive the answer from scratch.
+function cellQuestion(docName: string, question: string, cell: GridCellData, check?: SourceCheck) {
+  const c = cell.citation
+  return [
+    `About this review table answer for ${docName}:`,
+    `Question: ${question}`,
+    `Answer: ${cell.answer}`,
+    c ? `Cited source: ${c.documentName} § ${c.section}${c.structuralPath ? ` (${c.structuralPath})` : ""}` : "Cited source: none recorded",
+    ...(c ? [`Excerpt: "${c.excerpt}"`] : []),
+    ...(c && check ? [`Source check: ${SOURCE_BADGE[check]}. ${SOURCE_DETAIL[check]}`] : []),
+    "",
+    c ? "Explain how the cited source supports this answer, and anything it leaves open." : "Explain why no source supports this answer, and where the document might address the question.",
+  ].join("\n")
+}
+
+export default function ReviewGrid({ matterId, title, directory, documents, onClose, onAsk }: { matterId: string; title: string; directory: string; documents: Document[]; onClose: () => void; onAsk?: (prompt: string) => void }) {
   const closing = useContext(Closing)
   const dialog = useRef<HTMLDialogElement>(null)
   const detailDialog = useRef<HTMLDialogElement>(null)
@@ -473,6 +490,13 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
                     </div>
                   )
                 })()}
+                {onAsk && (
+                  <div className="review-ask">
+                    <button type="button" onClick={() => onAsk(cellQuestion(detailShown.docName, detailShown.question, detailCell, detailKey ? sourceCheck(detailKey, detailCell) : undefined))}>
+                      Ask about this answer in chat
+                    </button>
+                  </div>
+                )}
                 <div className="review-comments">
                   {(detailCell.comments ?? []).map((c) => (
                     <div key={c.id} className="review-comment">

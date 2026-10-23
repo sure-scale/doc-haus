@@ -75,6 +75,7 @@
 .review-detail-modal::backdrop { background: transparent; }
 .review-detail-modal .picker-panel { width: min(680px, 100%); }
 .review-detail-answer { margin: 0 0 var(--space-4); font-size: 1rem; line-height: 1.7; }
+.review-ask { display: flex; justify-content: flex-start; margin-top: var(--space-4); }
 .review-comments { display: flex; flex-direction: column; gap: var(--space-3); margin-top: var(--space-6); padding-top: var(--space-5); border-top: 1px solid var(--border); }
 .review-comment { padding: var(--space-3) var(--space-4); border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--md-sys-color-surface-container-low); }
 .review-comment-meta { display: flex; justify-content: space-between; align-items: center; gap: var(--space-2); font-size: .8rem; font-variant-numeric: tabular-nums; }
