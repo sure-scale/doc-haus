@@ -14,9 +14,12 @@ export default function CitationView({ citations, matterId, documents }: { citat
   // each distinct source once, not the raw retrieval dump. Keep the best-scoring
   // hit per document+section and tuck them behind a collapsed "Sources" line so
   // the answer stays the focus — the compact source list Harvey and Legora show.
+  // A quotation cite verified has no score and outranks any search hit: it is
+  // the exact passage the answer quotes.
+  const rank = (c: Citation) => c.score ?? Number.POSITIVE_INFINITY
   const best = new Map<string, Citation>()
-  for (const c of [...citations].sort((a, b) => a.score - b.score)) best.set(`${c.docPath}§${c.section}`, c)
-  const unique = [...best.values()].sort((a, b) => b.score - a.score)
+  for (const c of [...citations].sort((a, b) => rank(a) - rank(b) || 0)) best.set(`${c.docPath}§${c.section}`, c)
+  const unique = [...best.values()].sort((a, b) => rank(b) - rank(a) || 0)
   return (
     <>
     <details className="sources">

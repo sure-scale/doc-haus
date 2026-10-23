@@ -7,5 +7,6 @@ export type Citation = {
   excerpt: string
   charStart: number
   charEnd: number
-  score: number
+  // search-document's relevance score; a quotation cite verified has none.
+  score?: number
 }
