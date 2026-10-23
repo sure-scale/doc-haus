@@ -249,7 +249,7 @@ describe("quick answer", () => {
     // Legends are off by default: no firm legend, no legend.
     expect(furnitureLegend("advice letter", { agreementLegend: "", adviceLegend: "" })).toBe("")
     // No form line: no form, so no legend, and the text stands as written.
-    expect(quickDraftAnswer("Dear client,\n\nText.")).toEqual({ form: undefined, text: "Dear client,\n\nText.", placeholders: [] })
+    expect(quickDraftAnswer("Dear client,\n\nText.")).toEqual({ form: undefined, text: "Dear client,\n\nText.", placeholders: [], listed: false })
   })
 
   test("bracketed placeholders left in the draft are its open items; citations, links and the lists after it are not", () => {

@@ -365,7 +365,7 @@ export default function ChatPanel({
         {legend && <p className="quick-draft-legend">{legend}</p>}
         {quick.form && legendMissing}
         {answer(stripIssues(quick.text))}
-        {settled && quick.placeholders.length > 0 && (
+        {settled && !quick.listed && quick.placeholders.length > 0 && (
           <p className="quick-draft-open" role="note">
             Open items in the draft: {quick.placeholders.join(", ")}
           </p>

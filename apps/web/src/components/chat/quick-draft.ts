@@ -118,7 +118,10 @@ export function quickDraftAnswer(answer: string) {
         .map((bracket) => bracket[0]),
     ),
   ]
-  return { form: match?.[1]?.toLowerCase(), text: withOpenItems(text, sources ?? 0, placeholders), placeholders }
+  // Whether the answer has its own "Open items" list, which then carries the
+  // placeholders itself and the chat need not list them again.
+  const listed = [...text.slice(sources ?? 0).matchAll(OPEN_ITEMS_LINE)].length > 0
+  return { form: match?.[1]?.toLowerCase(), text: withOpenItems(text, sources ?? 0, placeholders), placeholders, listed }
 }
 
 // The "Open items" heading (after the sources, when the answer has them) and
