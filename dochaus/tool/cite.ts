@@ -67,7 +67,10 @@ export default tool({
     const citation: DocumentCitation = {
       documentName: args.documentName,
       docPath,
-      section: "cited passage",
+      // The indexed section holding the passage, so the citation reads and
+      // groups like a search hit; "cited passage" when the matter has no index
+      // entry for it.
+      section: indexedSection(ctx.directory, docPath, match.start) ?? "cited passage",
       // Store the raw matched span, not the model's input, so the plugin's exact
       // slice check against the live document passes on the way out.
       excerpt: match.excerpt,
@@ -89,6 +92,23 @@ export default tool({
     }
   },
 })
+
+// The section label of the indexed chunk that holds `offset` in the document's
+// text. Ingest's chunk offsets and the live text the quote was found in share
+// one projection (lib/extract liveText). Undefined without an index or chunk.
+function indexedSection(directory: string, docPath: string, offset: number) {
+  const dbPath = path.join(directory, ".dochaus", "legal.db")
+  if (!existsSync(dbPath)) return
+  const db = new Database(dbPath, { readonly: true })
+  try {
+    const row = db
+      .query("SELECT section FROM chunks WHERE doc_path = ? AND char_start <= ? AND char_end > ? ORDER BY char_start DESC LIMIT 1")
+      .get(docPath, offset, offset) as { section: string } | null
+    return row?.section || undefined
+  } finally {
+    db.close()
+  }
+}
 
 // The document's stored extraction quality, read from the matter's index
 // without writing to it. Undefined when the matter has no index, the document

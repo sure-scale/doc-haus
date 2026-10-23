@@ -65,7 +65,18 @@ export type Turn = {
   ack?: string
 }
 
-// Reduce a turn's parts to its visible text, search-document citations, and
+// The passages a turn's answer rests on: search-document's retrieved passages
+// and the quotations cite verified. An agent that finds its passages with exact
+// lookups (get-section, define) anchors them only through cite, so reading
+// search-document alone left its answer with no Sources list.
+function citationsOf(parts: Part[]) {
+  return parts
+    .filter((p): p is Extract<Part, { type: "tool" }> => p.type === "tool")
+    .filter((p) => (p.tool === "search-document" || p.tool === "cite") && p.state.status === "completed")
+    .flatMap((p) => ((p.state as { metadata?: { citations?: Citation[] } }).metadata?.citations ?? []))
+}
+
+// Reduce a turn's parts to its visible text, cited passages, and
 // any redline proposals. Each text part (one per step) stays its own block, as
 // in the live view (readTurn).
 function contentOf(parts: Part[]) {
@@ -74,11 +85,7 @@ function contentOf(parts: Part[]) {
     .filter((p) => !p.synthetic)
     .map((p) => p.text)
     .join("\n\n")
-  const citations = parts
-    .filter((p): p is Extract<Part, { type: "tool" }> => p.type === "tool")
-    .filter((p) => p.tool === "search-document" && p.state.status === "completed")
-    .flatMap((p) => ((p.state as { metadata?: { citations?: Citation[] } }).metadata?.citations ?? []))
-  return { text, citations, redlines: redlinesOf(parts), drafts: draftsOf(parts), compares: comparesOf(parts), todos: todosOf(parts) }
+  return { text, citations: citationsOf(parts), redlines: redlinesOf(parts), drafts: draftsOf(parts), compares: comparesOf(parts), todos: todosOf(parts) }
 }
 
 // The upstream todowrite tool emits the WHOLE checklist on every call (it is a
@@ -281,10 +288,7 @@ export function readTurn(parts: Map<string, Part>, roles: Map<string, string>, m
     .map((p) => p.text)
     .join("\n\n")
   const work = own.filter((p) => p.type === "reasoning" || p.type === "tool")
-  const citations = work
-    .filter((p): p is Extract<Part, { type: "tool" }> => p.type === "tool")
-    .filter((p) => p.tool === "search-document" && p.state.status === "completed")
-    .flatMap((p) => ((p.state as { metadata?: { citations?: Citation[] } }).metadata?.citations ?? []))
+  const citations = citationsOf(work)
   // The reviewer subagent runs its present/absent/deviating audit in its own
   // child session, so pool every session's todowrite parts (in arrival order)
   // for the audit — the latest snapshot across the turn and its subagents is the

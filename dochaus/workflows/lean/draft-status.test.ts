@@ -29,6 +29,10 @@ const STATUS = [
   "(D) Clause 6 and Schedule 3 are explicit placeholders pending the valuation, as set out in this draft.",
   "It is a working draft and is not approved for signature, completion or implementation. [open item: confirm the start date]",
   "Draft — 1 March 2026",
+  // Status wording inside an open-item marker: the marker says what is missing.
+  "Signed by the Supplier's authorised signatory. [open item: confirm the signatory's authority before execution — draft not ready]",
+  "The Price is set out in Schedule 1 (open item: confirm the Price. This version is not approved for signature).",
+  "The Term is two years. [open item: first draft; confirm the Term with the client]",
 ]
 
 const OPERATIVE = [
@@ -45,6 +49,10 @@ const OPERATIVE = [
   "Draft-form Schedules listed in Schedule 2 are incorporated.",
   "This is a mutual NDA covering information the Discloser provided for discussion of a possible acquisition.",
   "The Parties shall settle the bracketed provisions in Schedule 4 in good faith before signature.",
+  // Markers that say what is missing, including a marker describing itself.
+  "The Supplier shall notify the Customer of any defect. [open item: confirm whether the draft Specification is approved before delivery]",
+  "Notices go to the address in Schedule 2. [open item: placeholder — insert the Supplier's notice address]",
+  "The Customer shall pay within 30 days. [open item: confirm what happens if the draft budget is not approved by the Board]",
 ]
 
 function agreement(directory: string, extra: Partial<Omit<PlannedDocument, "id">> = {}) {
@@ -94,6 +102,16 @@ describe("draft-status statements in an agreement", () => {
     const directory = matter()
     writeLeanPlan(directory, [{ title: "Cover letter", purpose: "Send the draft", parts: [{ heading: "Letter", scope: "Letter" }], form: "letter" }])
     expect(draftStatusItems(directory, "d1", rows(["We enclose a draft for discussion. It is not approved for signature."]), "draft")).toEqual([])
+  })
+
+  test("status wording inside a marker reaches the change cycle; the marker's open point does not", () => {
+    const directory = matter()
+    agreement(directory)
+    const draft = rows([STATUS[5]!, OPERATIVE[0]!])
+    const items = draftStatusItems(directory, "d1", draft, "draft")
+    expect(items).toEqual([expect.objectContaining({ kind: "draft_status", ref: expect.objectContaining({ pid: draft[0]!.pid, statement: "draft not ready" }) })])
+    expect(items[0]!.detail).toContain("never the draft's status")
+    expect(draftStatusItems(directory, "d1", rows([STATUS[5]!.replace(" — draft not ready", "")]), "draft")).toEqual([])
   })
 
   test("a draft's status wording reaches the change cycle as a required repair", () => {
