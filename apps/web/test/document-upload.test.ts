@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test"
 import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
-import { DocumentExistsError, MATTER_DOCUMENT_EXTENSIONS, matterDocumentKind, type Document, type IngestResult } from "../src/api/ingest/documents"
-import DocumentUpload, { attachmentsSummary, EmailAttachments, failedUpload, newUpload, uploadedToast, UploadRow } from "../src/components/DocumentUpload"
+import { DocumentExistsError, MATTER_DOCUMENT_EXTENSIONS, matterDocumentKind, type AttachmentStatus, type Document, type IngestResult } from "../src/api/ingest/documents"
+import DocumentUpload, { attachmentsSummary, documentTree, failedUpload, newUpload, uploadedToast, UploadRow } from "../src/components/DocumentUpload"
 
 const file = new File(["theirs"], "Agreement.docx")
 const row = (upload: Parameters<typeof UploadRow>[0]["upload"]) => {
@@ -143,8 +143,34 @@ test("an email lists an attachment with no readable text, and one whose text is 
     { name: "Scan.pdf", type: "application/pdf", size: 1, status: "no_readable_text" as const, document: "Scan.pdf" },
     { name: "Notes.docx", type: "application/pdf", size: 1, status: "indexed" as const, document: "Notes.docx", degraded: true as const },
   ]
-  const html = renderToStaticMarkup(createElement(EmailAttachments, { attachments, embedded: 0, onView: () => {} }))
-  expect(html).toContain(">Not indexed: no readable text</button>")
-  expect(html).toContain(">Added</button> · text may be incomplete or garbled")
   expect(attachmentsSummary({ attachments })).toBe(" 1 attachment added. Added but not indexed, no readable text: Scan.pdf.")
+})
+
+// Each extracted document is listed once, under the document it came from, by
+// the parent link whatever the parent's type; attachments that did not become
+// one of the parent's documents stay in its list.
+test("the documents list nests each extracted document once under its parent, at any depth", () => {
+  const doc = (id: number, name: string, extra: Partial<Document> = {}): Document => ({ id, name, doc_path: `/m/${name}`, created_at: id, role: "source", ...extra })
+  const entry = (name: string, status: AttachmentStatus, document?: string) =>
+    ({ name, type: "", size: 1, status, ...(document ? { document } : {}) })
+  const of = (name: string, removed = false) => ({ attachment_of: { name, removed } })
+  const tree = documentTree([
+    doc(1, "Thread.eml", { attachments: [entry("Bundle.zip", "indexed", "Bundle.zip"), entry("Logo.exe", "unsupported"), entry("Shared.pdf", "same", "Shared.pdf"), entry("Old.docx", "removed", "Old.docx")] }),
+    doc(2, "Bundle.zip", of("Thread.eml")),
+    // No attachment record on the archive: its files nest by the link alone.
+    doc(3, "Inner.docx", of("Bundle.zip")),
+    doc(4, "Shared.pdf"),
+    doc(5, "Orphan.docx", of("Gone.eml", true)),
+    // A link loop is still listed rather than lost.
+    doc(6, "A.eml", of("B.eml")),
+    doc(7, "B.eml", of("A.eml")),
+  ])
+  const shape = (node: (typeof tree)[number] | { attachment: { name: string; status: string } }): unknown =>
+    "document" in node ? [node.document.name, ...node.children.map(shape)] : `${node.attachment.name}:${node.attachment.status}`
+  expect(tree.map(shape)).toEqual([
+    ["Thread.eml", ["Bundle.zip", ["Inner.docx"]], "Logo.exe:unsupported", "Shared.pdf:same", "Old.docx:removed"],
+    ["Shared.pdf"],
+    ["Orphan.docx"],
+    ["A.eml", ["B.eml"]],
+  ])
 })
