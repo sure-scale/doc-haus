@@ -25,12 +25,14 @@ export type ExtractionQuality =
 // What the extractor knows beyond the text itself.
 // pdf: its page count. email: the message body (normalised like the text) and
 // how many attachments it lists. workbook: how many cells hold anything, and how
-// many of those are formulas saved without a calculated value.
+// many of those are formulas saved without a calculated value. archive: a zip
+// file, whose text only lists the files inside.
 export type ExtractionFacts =
   | { format: "docx" }
   | { format: "pdf"; pages: number }
   | { format: "email"; body: string; attachments: number }
   | { format: "workbook"; cells: number; formulasWithoutValue: number }
+  | { format: "archive" }
 
 // The thresholds, all in one place. Each follows from what the signal means,
 // the same for every document, never tuned to a document type, jurisdiction or
@@ -98,6 +100,10 @@ function signalsOf(quality: ExtractionQuality) {
 
 // The quality of a source's normalised text.
 export function assessExtraction(text: string, facts: ExtractionFacts): ExtractionQuality {
+  // A zip file is a container: its content is in the documents made from the
+  // files inside, each with its own result. Its listing is never a reading
+  // failure, even when the archive is empty.
+  if (facts.format === "archive") return { status: "ok" }
   // An email's headers are readable metadata; its content is the body. A body
   // that is missing or unreadable leaves the email indexed by its headers and
   // marked degraded, unless the email only carries attachments.

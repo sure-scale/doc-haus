@@ -14,13 +14,16 @@ import PostalMime, { type Attachment } from "postal-mime"
 // reads one level of nesting only.
 
 // The formats a matter document can take (ingest's MATTER_DOCUMENT_EXTENSIONS).
-export const EMAIL_ATTACHMENT_EXTENSIONS = [".docx", ".pdf", ".xlsx", ".eml"] as const
+// An email or a zip file is a container: its parts become documents of their own.
+export const EMAIL_ATTACHMENT_EXTENSIONS = [".docx", ".pdf", ".xlsx", ".eml", ".zip"] as const
 
 const TYPE_EXTENSION: Record<string, string> = {
   "application/pdf": ".pdf",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
   "message/rfc822": ".eml",
+  "application/zip": ".zip",
+  "application/x-zip-compressed": ".zip",
 }
 
 // Leaves room under the usual 255-byte file-name limit for a keep-both suffix.
@@ -121,7 +124,7 @@ export function safeAttachmentName(filename: string | null | undefined, mimeType
   return `${truncateBytes(stem || "attachment", MAX_NAME_BYTES - Buffer.byteLength(ext))}${ext}`
 }
 
-function extension(name: string) {
+export function extension(name: string) {
   const dot = name.lastIndexOf(".")
   return dot > 0 ? name.slice(dot).toLowerCase() : ""
 }
@@ -135,11 +138,11 @@ function truncateBytes(text: string, limit: number) {
   return out.trimEnd()
 }
 
-function oneLine(text: string) {
+export function oneLine(text: string) {
   return text.replace(/[\u0000-\u001f\u007f-\u009f\s]+/g, " ").trim()
 }
 
-function formatSize(bytes: number) {
+export function formatSize(bytes: number) {
   if (bytes < 1024) return `${bytes} bytes`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`

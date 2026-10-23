@@ -204,7 +204,7 @@ test("unsupported, unnamed and unsafe-named attachments are listed or ingested u
   ].join("\r\n")
   const message = email("Synthetic mixed attachments", "Mixed set.", [
     related,
-    part("bundle.zip", "application/zip", Buffer.from("PK synthetic")),
+    part("bundle.rar", "application/vnd.rar", Buffer.from("Rar synthetic")),
     part("photo.png", "image/png", Buffer.from("synthetic png")),
     part("winmail.dat", "application/ms-tnef", Buffer.from("synthetic tnef")),
     part("../../x.pdf", "application/pdf", pdf("Synthetic traversal marker")),
@@ -214,7 +214,7 @@ test("unsupported, unnamed and unsafe-named attachments are listed or ingested u
   const result = await ingestEmailDocument(directory, "Mixed.eml", message)
 
   expect(result.attachments.map((entry) => [entry.name, entry.status, entry.document, entry.note])).toEqual([
-    ["bundle.zip", "unsupported", undefined, undefined],
+    ["bundle.rar", "unsupported", undefined, undefined],
     ["photo.png", "unsupported", undefined, undefined],
     ["winmail.dat", "unsupported", undefined, "may-contain-attachments"],
     ["../../x.pdf", "indexed", "x.pdf", undefined],
@@ -229,7 +229,7 @@ test("unsupported, unnamed and unsafe-named attachments are listed or ingested u
     sources: { document: string; attachments?: { attachments: { name: string; outcome: string }[] } }[]
   }
   expect(index.sources.find((source) => source.document === "Mixed.eml")?.attachments?.attachments.slice(0, 2)).toMatchObject([
-    { name: "bundle.zip", outcome: "unsupported" },
+    { name: "bundle.rar", outcome: "unsupported" },
     { name: "photo.png", outcome: "unsupported" },
   ])
 }, 120_000)

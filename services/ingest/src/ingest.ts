@@ -15,6 +15,7 @@ import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadat
 import { markTrackedChanges } from "../../../dochaus/lib/docx-tracked-text"
 import { draftingTraceReference } from "../../../dochaus/lib/drafting-trace-identity"
 import { parseEmail } from "../../../dochaus/lib/email"
+import { zipToText } from "../../../dochaus/lib/zip"
 import { commitDocumentWriteAsync } from "./atomic-document-write"
 import { MatterDocumentIdentityError, resolveMatterDocumentTarget } from "./document-identity"
 import {
@@ -28,7 +29,7 @@ import {
   type ActiveDocumentMutation,
 } from "./document-mutation"
 
-const MATTER_DOCUMENT_EXTENSIONS = new Set([".docx", ".pdf", ".xlsx", ".eml"])
+const MATTER_DOCUMENT_EXTENSIONS = new Set([".docx", ".pdf", ".xlsx", ".eml", ".zip"])
 
 export class SourceDocumentConflictError extends Error {}
 
@@ -397,6 +398,7 @@ async function extractRawText(fileName: string, buffer: Buffer): Promise<{ text:
     return { text: email.text, facts: { format: "email", body: email.body, attachments: email.attachments.length } }
   }
   if (lower.endsWith(".xlsx")) return xlsxToText(buffer)
+  if (lower.endsWith(".zip")) return { text: zipToText(buffer), facts: { format: "archive" } }
   return { text: (await mammoth.extractRawText({ buffer: markTrackedChanges(buffer) })).value, facts: { format: "docx" } }
 }
 
