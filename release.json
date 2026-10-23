@@ -1,5 +1,5 @@
 {
-  "version": 7,
-  "name": "2.0.5",
-  "notes": "Turn an existing document into a reusable template. Prepare it in a separate template conversation, review the proposed Word document and save it to your library, while keeping the original intact. A cleaner, calmer workspace. Buttons, cards, menus and icons now share one consistent look. The app also reads better on small screens and in high-contrast mode. Stronger security. We updated the components doc.haus is built on, including the ones that handle the documents you upload, to close known security issues."
+  "version": 8,
+  "name": "2.0.6",
+  "notes": "Clients in one place. A new Clients page lists every client you act for. Add or edit one there, or type a new name when you open a matter; it is added once the matter is saved. Zip files and email attachments. Add an email or a zip file and everything inside is read and searchable, listed under the email or archive it came from. Client summaries. The new Client summary assistant writes in plain English for your client, with each source listed for you to check. Record conflicts checks when you create or edit a matter, and fill templates faster with placeholders colour-matched between the document and the list beside it."
 }
