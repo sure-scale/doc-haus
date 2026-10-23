@@ -71,7 +71,7 @@ let documents: Document[] = [
     id: 7, name: "Exhibits.zip", doc_path: "/m/Exhibits.zip", created_at: 4, role: "source", attachment_of: { name: "Thread.eml", removed: false },
     // A zip's own outcomes, including one this build has no words for.
     attachments: [
-      { name: "Exhibit A.pdf", type: "application/pdf", size: 900, status: "indexed", document: "Exhibit A.pdf" },
+      { name: "scans/Exhibit A.pdf", type: "application/pdf", size: 900, status: "indexed", document: "Exhibit A.pdf" },
       { name: "Locked.docx", type: DOCX, size: 900, status: "encrypted" as unknown as "failed" },
       { name: "Later.bin", type: "", size: 1, status: "from_a_newer_ingest" as unknown as "failed" },
     ],
@@ -149,6 +149,8 @@ try {
   await expect(page.getByText(/Attachment of/)).toHaveCount(0)
   const archive = page.getByRole("list", { name: "Files in Exhibits.zip" })
   await expect(archive.getByRole("button", { name: "Exhibit A.pdf", exact: true })).toBeVisible()
+  // A file stored under a folder in the zip names where it sat, in zip words.
+  await expect(archive).toContainText("In the zip as scans/Exhibit A.pdf")
   await expect(archive.locator(".doc-row.is-entry .doc-child-status")).toHaveText(["Password-protected", "Not added"])
   // A zip opens in the text viewer as its file list, so its name is a link.
   await expect(page.getByRole("button", { name: "Exhibits.zip", exact: true })).toHaveCount(1)
