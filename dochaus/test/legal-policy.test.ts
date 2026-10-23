@@ -326,6 +326,29 @@ describe("router model policy", () => {
     })
   })
 
+  test("routes a reasoning model on its lowest reasoning variant and keeps its response allowance", () => {
+    // Variants as the engine lists them for an OpenAI Responses model (Spark on OpenCode Go).
+    const variants = ["minimal", "low", "medium", "high", "xhigh"].map((id) => ({
+      id,
+      settings: { reasoningEffort: id, reasoningSummary: "auto", include: ["reasoning.encrypted_content"] },
+    }))
+    const output = { temperature: undefined, maxOutputTokens: 32_000 as number | undefined, options: {} as Record<string, unknown> }
+    optimizeRouterParams("router", "muse-spark-1.3-contributor", output, true, variants)
+    expect(output).toEqual({
+      temperature: 0,
+      maxOutputTokens: 32_000,
+      options: { reasoningEffort: "minimal", reasoningSummary: "auto", include: ["reasoning.encrypted_content"] },
+    })
+
+    // "none" is lower than "minimal" where a model offers it; other agents keep the session's variant.
+    const none = { temperature: undefined, maxOutputTokens: undefined, options: {} as Record<string, unknown> }
+    optimizeRouterParams("router", "gpt-5.2", none, true, [...variants, { id: "none", settings: { reasoningEffort: "none" } }])
+    expect(none.options).toEqual({ reasoningEffort: "none" })
+    const draft = { temperature: 0.2, maxOutputTokens: 4096, options: {} }
+    optimizeRouterParams("draft", "muse-spark-1.3-contributor", draft, true, variants)
+    expect(draft.options).toEqual({})
+  })
+
   test("does not change substantive agents", () => {
     const output = { temperature: 0.2, maxOutputTokens: 4096, options: {} }
     optimizeRouterParams("draft", "gemma-4-26b-a4b-it-maas", output, false)

@@ -44,7 +44,7 @@ export const LegalPlugin: LegalPolicy = async (input) => {
       capLowThroughputModelOutput(input.model.providerID, output)
       adaptAzureChatCompletionGpt5Params(input.model.providerID, activeModel, output)
       applyAgentThinkingBudget(input.agent, activeModel, output)
-      optimizeRouterParams(input.agent, activeModel, output, input.model.capabilities?.reasoning ?? true)
+      optimizeRouterParams(input.agent, activeModel, output, input.model.capabilities?.reasoning ?? true, (input.model as { variants?: unknown }).variants)
       adaptOpenAIPlanParams(input.model.providerID, output)
       await paceLowThroughputModel(input.model.providerID, activeModel)
     },
