@@ -165,7 +165,9 @@ export function useChatActions({
   async function resolveAgent(text: string, prior: Turn[], turn: { stopped: boolean }): Promise<Route> {
     if (!isAuto(agent)) return { name: agent }
     const route = await routeMessage(text, prior, AUTO_CANDIDATES, (ack) => acknowledge(turn, text, ack))
-    setResolvedAgent(route.name)
+    // A route that resolves after Stop is abandoned: the caller cancels the
+    // turn, so it must not reach the chip.
+    if (!turn.stopped) setResolvedAgent(route.name)
     return route
   }
 

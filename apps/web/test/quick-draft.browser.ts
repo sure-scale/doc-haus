@@ -396,6 +396,23 @@ try {
     assert.equal(await page.locator(".msg-error").count(), 0)
     config.router = scope()
     console.log("PASS Stop while Auto chooses removes the request and its acknowledgement and sends nothing")
+
+    // The abandoned router call resolves after Stop: its route must not
+    // reach the chip, which keeps what the last answered request routed to.
+    const chipOf = async () => (await page.getByRole("button", { name: /^Auto/ }).first().innerText()).trim()
+    const chipBefore = await chipOf()
+    config.hold = new Promise<void>((resolve) => (release = resolve))
+    config.router = scope()
+    await send("Draft a short letter to the tenant.")
+    await page.getByRole("button", { name: "Stop answer", exact: true }).click()
+    release()
+    config.hold = undefined
+    await page.locator(".msg.user", { hasText: "Draft a short letter" }).waitFor({ state: "detached" })
+    await settle()
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    assert.equal(await chipOf(), chipBefore, "a route that resolves after Stop never changes the chip")
+    assert.equal(counts().prompts, before.prompts + 1, "the stopped draft request is never sent")
+    console.log("PASS a router call that resolves after Stop leaves the Auto chip unchanged")
     await context.close()
   }
   {

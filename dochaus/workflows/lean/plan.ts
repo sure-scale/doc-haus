@@ -395,9 +395,13 @@ function titleIssues(title: string) {
   return []
 }
 
-/** The title as plain text: Markdown code marks are not part of it. */
+/** The title as plain text: Markdown code marks are not part of it, nor is a
+ * leading "Subject:" / "Re:" label a letter or email's heading line carries
+ * (the label is not the document's name, and the file name drops its colon). A
+ * label is only a label with its colon: "Subject Access Request" stays. */
 function plainTitle(title: string) {
-  return title.replaceAll("`", "").replace(/\s+/g, " ").trim()
+  const plain = title.replaceAll("`", "").replace(/\s+/g, " ").trim()
+  return plain.replace(/^(?:(?:subject|re)\s*:\s*)+/i, "").trim() || plain
 }
 
 /** A "File:" line's name, kept only when it is a plain file name the request gives. */
