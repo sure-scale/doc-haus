@@ -606,6 +606,78 @@ describe("provider errors", () => {
     expect(prompts).toEqual(["opencode-go/small", "opencode-go/small", "opencode-go/primary", "opencode-go/primary"])
   })
 
+  // The router session's reply streamed as the engine publishes it: text
+  // deltas on the shared event stream while the turn is still running.
+  function streamingClient(deltas: string[], reply: string) {
+    const { client } = routerClient({ text: reply })
+    const order: string[] = []
+    // The turn completes just after its last delta.
+    Object.assign(client.session, {
+      wait: async () => {
+        await Bun.sleep(deltas.length * 5 + 30)
+        order.push("reply done")
+      },
+    })
+    Object.assign(client, {
+      event: {
+        subscribe: ({ signal }: { signal: AbortSignal }) => ({
+          async *[Symbol.asyncIterator]() {
+            yield { type: "server.connected", data: {} }
+            for (const delta of deltas) {
+              await Bun.sleep(5)
+              yield { type: "session.text.delta", data: { sessionID: "ses_other", delta: "Not this session.\n" } }
+              yield { type: "session.text.delta", data: { sessionID: "ses_router_0", delta } }
+            }
+            await new Promise((resolve) => signal.addEventListener("abort", resolve))
+          },
+        }),
+      },
+    })
+    return { client, order }
+  }
+
+  test("Auto shows the router's acknowledgement as soon as its line streams, before the route", async () => {
+    const ack = "On it — I'll check the lease for the break clause."
+    const json = JSON.stringify({ route: "qa" })
+    const { client, order } = streamingClient(["On it — I'll check", " the lease for the break clause.\n{\"route\"", ':"qa"}'], `${ack}\n${json}`)
+    const acks: string[] = []
+    const routed = await routeAgent({
+      client,
+      smallModel: "opencode-go/small",
+      candidates: CHAT_ASSISTANTS.map((a) => ({ name: a.name, description: a.description })),
+      history: [],
+      text: "Does the lease have a break clause?",
+      onAck: (line) => {
+        acks.push(line)
+        order.push("ack")
+      },
+    })
+    expect(routed).toEqual({ name: "qa", ack })
+    expect(acks).toEqual([ack])
+    expect(order).toEqual(["ack", "reply done"])
+  })
+
+  test("Auto routes as before when the acknowledgement is missing or malformed", async () => {
+    const json = JSON.stringify({ route: "redliner" })
+    for (const reply of [json, `Routing you now.\n${json}`, `On it.\nAnd more.\n${json}`]) {
+      const { client } = streamingClient([reply], reply)
+      const acks: string[] = []
+      const routed = await routeAgent({
+        client,
+        smallModel: "opencode-go/small",
+        candidates: CHAT_ASSISTANTS.map((a) => ({ name: a.name, description: a.description })),
+        history: [],
+        text: "Change the governing law.",
+        onAck: (line) => acks.push(line),
+      })
+      expect(routed).toEqual({ name: "redliner" })
+      expect(acks).toEqual([])
+    }
+    // No event stream at all (the default fake): routing is unaffected.
+    const { client } = routerClient({ text: json })
+    expect(await routeAgent({ client, smallModel: "opencode-go/small", candidates: CHAT_ASSISTANTS, history: [], text: "x", onAck: () => {} })).toEqual({ name: "redliner" })
+  })
+
   test("Auto keeps the could-not-choose message for an empty router reply", async () => {
     const { client } = routerClient({ text: "" })
     await expect(route(client)).rejects.toThrow(

@@ -317,8 +317,8 @@ describe("router model policy", () => {
     optimizeRouterParams("router", "gemma-4-26b-a4b-it-maas", output, false)
     expect(output).toEqual({
       temperature: 0,
-      // Room for the JSON route and its five scope fields.
-      maxOutputTokens: 96,
+      // Room for the acknowledgement line, the JSON route and its five scope fields.
+      maxOutputTokens: 128,
       options: {
         chat_template_kwargs: { enable_thinking: false, other: "kept" },
         thinkingConfig: { includeThoughts: false, thinkingLevel: "minimal" },

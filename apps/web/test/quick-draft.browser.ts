@@ -37,7 +37,7 @@ const scope = (change: Record<string, string> = {}) =>
   JSON.stringify({ route: "draft", documents: "one", legal_effect: "no", outside_law: "no", firm_material: "no", sources: "few", ...change })
 
 // What the mocked services answer, set per scenario.
-const config = { router: scope(), offer: "ask", settled: false, legend: "", preferencesDown: false }
+const config = { router: scope(), offer: "ask", settled: false, legend: "", preferencesDown: false, hold: undefined as Promise<void> | undefined }
 // What reached them.
 const routerPrompts: string[] = []
 const prompts: { session: string; agent: string; text: string }[] = []
@@ -116,7 +116,11 @@ const server = Bun.serve({
       return json({ profile: "lean", mode: "started", ownerSessionID: "ses_owner", status: null })
     }
     if (route === "GET /api/event")
-      return new Response(new ReadableStream<Uint8Array>({ start(controller) { streams.add(controller) } }), { headers: { "content-type": "text/event-stream" } })
+      // The engine opens every stream with server.connected.
+      return new Response(new ReadableStream<Uint8Array>({ start(controller) {
+        streams.add(controller)
+        controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ id: "evt_connected", created: Date.now(), type: "server.connected", data: {} })}\n\n`))
+      } }), { headers: { "content-type": "text/event-stream" } })
     if (route === "GET /api/session/active") return json({ data: {} })
     if (route === "GET /api/permission/request") return json({ location: { directory: "/matter" }, data: [] })
     if (route === "POST /api/session") {
@@ -130,8 +134,18 @@ const server = Bun.serve({
         return json({ data: [{ type: "assistant", id: `msg_route_${router[1]}`, agent: "router", model, finish: "stop", time: { created: 1, completed: 2 }, content: [{ type: "text", text: config.router }] }], cursor: {} })
       if (router[2] === "/prompt") {
         routerPrompts.push(((await request.json()) as { text: string }).text)
+        // The reply streams as text deltas while the router turn runs: its
+        // acknowledgement line first, then the JSON in a later batch.
+        const line = config.router.indexOf("\n")
+        const delta = (text: string) => publish("session.text.delta", { sessionID: router[1], assistantMessageID: `msg_route_${router[1]}`, ordinal: 0, delta: text })
+        if (line > 0) {
+          delta(config.router.slice(0, line + 1))
+          setTimeout(() => delta(config.router.slice(line + 1)), 30)
+        }
         return json({ data: { id: "msg_route_prompt", sessionID: router[1], time: { created: 1 }, type: "user", payload: { text: "" }, delivery: "queue" } })
       }
+      // A held router turn has not finished: Auto has no route yet.
+      if (router[2] === "/wait") await config.hold
       return router[2] === "/interrupt" ? json({}) : new Response(null, { status: 204 })
     }
     const form = url.pathname.match(/^\/api\/session\/(ses_\w+)\/form(?:\/(frm_\d+))?(\/reply)?$/)
@@ -267,6 +281,8 @@ try {
     assert.equal(await card.getByLabel(/Quick draft here in chat/).isChecked(), true)
     assert.equal(await card.getByLabel(/Full drafting run/).isChecked(), false)
     await page.locator(".msg.user", { hasText: request }).waitFor()
+    // A router reply with no acknowledgement line gets the chat's own.
+    await page.locator(".msg-ack", { hasText: "Happy to draft that." }).waitFor()
     await settle()
     assert.equal(prompts.length + starts.length, 0, "nothing runs before consent")
     if (shots) await page.screenshot({ path: path.join(shots, "1-offer.png") })
@@ -308,6 +324,78 @@ try {
     await until(() => starts.length === 1, "the upgrade starts the full run")
     assert.deepEqual(starts[0], { request, agent: "draft", model: { providerID: "test", modelID: "model" }, workingDraft: QUICK_TEXT })
     console.log("PASS Run full drafting cycle starts the full run with the request and the quick text as its working draft")
+    await context.close()
+  }
+  {
+    // Auto's acknowledgement: the router's own line shows while it is still
+    // choosing, stays above the offer and the quick draft, and is never sent,
+    // quick text or the upgrade's working draft.
+    const ACK = "On it — I'll draft that covering email."
+    const request = "Draft a short covering email to the client on the two unpaid invoices."
+    const before = { ...counts(), routes: routerPrompts.length }
+    let release = () => {}
+    config.hold = new Promise<void>((resolve) => (release = resolve))
+    config.router = `${ACK}\n${scope()}`
+    const { context, page, send, card } = await open()
+    await send(request)
+    const ack = page.locator(".msg-ack", { hasText: ACK })
+    await ack.waitFor()
+    assert.equal(forms.length, before.forms, "the acknowledgement shows before Auto has chosen")
+    assert.equal(await page.locator(".msg.assistant .msg-agent", { hasText: "Draft" }).count(), 0)
+    if (shots) await page.screenshot({ path: path.join(shots, "ack-1-routing.png") })
+    release()
+    config.hold = undefined
+    await card.waitFor()
+    assert.equal(await page.locator(".msg-ack").count(), 1, "one acknowledgement: the router's line stays")
+    await card.getByRole("button", { name: "Start", exact: true }).click()
+    await until(() => prompts.length === before.prompts + 1, "Start sends the request to Quick draft")
+    assert.equal(prompts.at(-1)!.text, request, "the assistant is sent the request alone")
+    const quick = page.locator(".msg.assistant", { hasText: "both invoices remain unpaid" })
+    await quick.waitFor()
+    await ack.waitFor()
+    assert.equal(await quick.getByText(ACK).count(), 0, "the acknowledgement is not quick text")
+    // Above the answer, under the request, in reading order.
+    const order = await page.evaluate(() => [...document.querySelectorAll(".chat-log .msg.user, .chat-log .msg-ack, .chat-log .msg.assistant")].map((el) => el.className))
+    assert.deepEqual(order, ["msg user", "msg-ack", "msg assistant"])
+    if (shots) await page.screenshot({ path: path.join(shots, "ack-2-quick-draft.png") })
+    await page.getByRole("button", { name: "Run full drafting cycle", exact: true }).click()
+    await until(() => starts.length === before.starts + 1, "the upgrade starts the full run")
+    assert.deepEqual(starts.at(-1), { request, agent: "draft", model: { providerID: "test", modelID: "model" }, workingDraft: QUICK_TEXT })
+    assert.ok(routerPrompts.slice(before.routes).every((prompt) => !prompt.includes(ACK)), "routing history carries no acknowledgement")
+    console.log("PASS Auto shows the router's acknowledgement while choosing; it stays above the offer and quick draft and is never sent, quick text or working draft")
+    await context.close()
+  }
+  {
+    // An answer: the acknowledgement stays above it once the turn settles and
+    // the new conversation reloads; Stop while Auto is still choosing removes
+    // the request, its acknowledgement and sends nothing.
+    const ACK = "Got it — checking which invoices are unpaid."
+    config.router = `${ACK}\n${JSON.stringify({ route: "qa" })}`
+    const before = counts()
+    const { context, page, send } = await open()
+    await send("Which invoices are unpaid?")
+    await page.locator(".msg.assistant", { hasText: "Answered." }).waitFor()
+    await page.getByRole("button", { name: "Edit message" }).waitFor()
+    await page.locator(".msg-ack", { hasText: ACK }).waitFor()
+    assert.deepEqual(prompts.at(-1), { session: prompts.at(-1)!.session, agent: "qa", text: "Which invoices are unpaid?" })
+    console.log("PASS an answered request keeps its acknowledgement above the answer after it settles")
+
+    let release = () => {}
+    config.hold = new Promise<void>((resolve) => (release = resolve))
+    config.router = `Got it — looking at the payment dates.\n${JSON.stringify({ route: "qa" })}`
+    await send("When were they due?")
+    await page.locator(".msg-ack", { hasText: "looking at the payment dates" }).waitFor()
+    await page.getByRole("button", { name: "Stop answer", exact: true }).click()
+    release()
+    config.hold = undefined
+    await page.locator(".msg.user", { hasText: "When were they due?" }).waitFor({ state: "detached" })
+    assert.equal(await page.getByRole("textbox").inputValue(), "When were they due?")
+    assert.equal(await page.locator(".msg-ack", { hasText: "looking at the payment dates" }).count(), 0)
+    await settle()
+    assert.equal(counts().prompts, before.prompts + 1, "a request stopped while Auto chose is never sent")
+    assert.equal(await page.locator(".msg-error").count(), 0)
+    config.router = scope()
+    console.log("PASS Stop while Auto chooses removes the request and its acknowledgement and sends nothing")
     await context.close()
   }
   {
@@ -476,12 +564,19 @@ try {
     // Auto cannot choose (the router never gives a valid route): the lawyer is
     // told, nothing runs, and the request is back in the composer to resend.
     const before = counts()
-    config.router = "I would pick the drafting assistant."
+    // Its acknowledgement streams, but the route is off the list.
+    config.router = `On it — I'll draft that note.\n${JSON.stringify({ route: "drafting" })}`
+    let release = () => {}
+    config.hold = new Promise<void>((resolve) => (release = resolve))
     const request = "Draft a short note to the client about the invoices."
     const { context, page, send } = await open()
     await send(request)
+    await page.locator(".msg-ack", { hasText: "I'll draft that note." }).waitFor()
+    release()
+    config.hold = undefined
     await page.getByText("Auto could not choose an assistant.", { exact: false }).waitFor()
     assert.equal(await page.getByRole("textbox").inputValue(), request)
+    assert.equal(await page.locator(".msg-ack").count(), 0, "nothing was handed over, so no acknowledgement stays")
     await settle()
     assert.deepEqual(counts(), before, "nothing runs when Auto cannot choose")
     config.router = scope()
@@ -501,6 +596,7 @@ try {
     assert.equal(await page.getByRole("textbox").inputValue(), request)
     await settle()
     assert.deepEqual(counts(), before, "nothing runs for a request outside Quick's scope")
+    assert.equal(await page.locator(".msg-ack").count(), 0, "an explicit pick shows no acknowledgement")
     if (shots) await page.screenshot({ path: path.join(shots, "4-quick-limit.png") })
     await notice.getByRole("button", { name: "Run full drafting cycle", exact: true }).click()
     await until(() => starts.length === before.starts + 1, "Full starts from the notice")
@@ -531,6 +627,7 @@ try {
     await answer.waitFor()
     await settle()
     assert.equal(routerPrompts.length, before.routes, "an explicit pick is not routed")
+    assert.equal(await page.locator(".msg-ack").count(), 0, "an explicit pick shows no acknowledgement")
     assert.equal(starts.length, before.starts)
     assert.equal(forms.length, before.forms)
     assert.equal(await answer.locator(".quick-draft-legend").innerText(), LEGEND)

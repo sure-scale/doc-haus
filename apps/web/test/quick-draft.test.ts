@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { parseRoute, quickDraftEligible, type DraftScope } from "../src/api/opencode/routing"
+import { ackLine, parseRoute, quickDraftEligible, type DraftScope } from "../src/api/opencode/routing"
 import { AUTO_CANDIDATES, CHAT_ASSISTANTS, CLIENT_SUMMARY, QUICK_DRAFT } from "../src/agents"
 import { furnitureLegend } from "../../../dochaus/lib/furniture-legend"
 import {
@@ -60,6 +60,34 @@ describe("router reply", () => {
       "null",
     ])
       expect(parseRoute(text, NAMES)).toBeUndefined()
+  })
+
+  test("the acknowledgement line is read apart from the strictly parsed JSON route", () => {
+    const ack = "On it — I'll draft that cover letter."
+    expect(parseRoute(`${ack}\n${reply(ELIGIBLE)}`, NAMES)).toEqual({ name: "draft", scope: ELIGIBLE, ack })
+    expect(parseRoute(`${ack}\n\n\`\`\`json\n${reply(ELIGIBLE)}\n\`\`\``, NAMES)).toEqual({ name: "draft", scope: ELIGIBLE, ack })
+    expect(parseRoute(`Looking into that now.\n${JSON.stringify({ route: "qa" })}`, NAMES)).toEqual({ name: "qa", ack: "Looking into that now." })
+    expect(parseRoute("On it.\nredliner", NAMES)).toEqual({ name: "redliner", ack: "On it." })
+    // JSON only: the route, and no acknowledgement for the chat to show.
+    expect(parseRoute(JSON.stringify({ route: "qa" }), NAMES)).toEqual({ name: "qa" })
+    expect(parseRoute(JSON.stringify({ route: "qa" }), NAMES)).not.toHaveProperty("ack")
+  })
+
+  test("a missing, long, multi-line or internal acknowledgement is dropped; the route stands", () => {
+    const route = JSON.stringify({ route: "qa" })
+    for (const head of [
+      "On it — I'll check the lease for the break clause and then go through every other clause too, one by one, carefully.",
+      "On it.\nI'll check the lease.",
+      "Routing this to the Q&A assistant.",
+      "On it: {route} next",
+      "...",
+    ])
+      expect(parseRoute(`${head}\n${route}`, NAMES)).toEqual({ name: "qa" })
+    // A bad acknowledgement never spoils the draft route or its scope.
+    expect(parseRoute(`Sure!\nAnd more.\n${reply(ELIGIBLE)}`, NAMES)).toEqual({ name: "draft", scope: ELIGIBLE })
+    // Wrapping quotes go; the line itself is kept as written.
+    expect(ackLine(`"Got it — comparing the two drafts."`)).toBe("Got it — comparing the two drafts.")
+    expect(ackLine("   ")).toBeUndefined()
   })
 
   test("only one/no/no/no/few is eligible; each other value, and no scope, is not", () => {

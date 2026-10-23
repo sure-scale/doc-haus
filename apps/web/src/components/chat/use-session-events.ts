@@ -7,6 +7,7 @@ import { subscribeEvents } from "../../api/opencode/events"
 import { isAuto } from "../../agents"
 import { autoApproved } from "../../prefs"
 import { toTurns, errorOf, type MessageError } from "./turn-model"
+import { withAcks } from "./acknowledgement"
 import { loadConversation, bounded } from "./conversation"
 import {
   shouldAbortStalledTurn,
@@ -126,7 +127,7 @@ export function useSessionEvents({
           const settledMessages = active
             ? msgs.filter((message) => message.info.role !== "assistant" || Boolean(message.info.time.completed))
             : msgs
-          setTurns(toTurns(settledMessages, matterName, pool))
+          setTurns(withAcks(toTurns(settledMessages, matterName, pool)))
           for (const m of msgs) if (m.info.role === "user" || m.info.time.completed) seenRef.current.add(m.info.id)
           for (const message of msgs.filter(
             (candidate) => candidate.info.role === "assistant" && !candidate.info.time.completed,

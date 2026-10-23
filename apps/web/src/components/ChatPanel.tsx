@@ -559,6 +559,12 @@ export default function ChatPanel({
                   <CompareView compares={t.compares} onOpen={onOpenBlackline} />
                 </div>
               )}
+              {/* Auto's acknowledgement opens the reply to this message: display only. */}
+              {t.role === "user" && t.ack && (
+                <p className="msg-ack">
+                  {t.ack}
+                </p>
+              )}
               {anchor === i && narrationView}
             </Fragment>
           ))}

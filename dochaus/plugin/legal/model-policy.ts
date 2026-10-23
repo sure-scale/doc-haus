@@ -64,13 +64,18 @@ export function applyAgentThinkingBudget(agent: string, model: string, output: {
   }
 }
 
-// Room for the router's JSON reply: a route and five closed scope fields.
-const ROUTER_OUTPUT_TOKENS = 96
+// Room for the router's reply: an acknowledgement line, then a JSON route and
+// five closed scope fields. On OpenCode Go Spark 1.3 the longest such reply
+// (a draft route) measured 51 visible tokens, the JSON alone 39; the web
+// accepts an acknowledgement of up to 140 characters (~35 tokens), so a
+// draft reply stays under ~80 tokens, with headroom for other tokenizers.
+const ROUTER_OUTPUT_TOKENS = 128
 
 // Auto routing is a classification turn whose entire useful response is one
-// short JSON object: an assistant id and, for drafting, five closed scope
-// fields. Keep the user's selected model, but do not pay that model's normal
-// deliberation and output budgets before the substantive legal turn begins.
+// short line for the lawyer and one short JSON object: an assistant id and,
+// for drafting, five closed scope fields. Keep the user's selected model, but
+// do not pay that model's normal deliberation and output budgets before the
+// substantive legal turn begins.
 // Provider-specific no-thinking controls are applied only where their request
 // dialect is known. Only non-reasoning models get a visible-output cap;
 // reasoning models retain the engine-resolved total response allowance.

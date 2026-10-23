@@ -1422,3 +1422,15 @@
   font-weight: 600;
   pointer-events: none;
 }
+
+/* Auto's acknowledgement under the lawyer's message: on the assistant's side,
+   lighter than the answer that follows it. */
+.design-conversation .msg-ack {
+  align-self: flex-start;
+  max-width: 76%;
+  margin: calc(var(--space-2) - var(--space-5)) 0 0;
+  color: var(--text-secondary);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}

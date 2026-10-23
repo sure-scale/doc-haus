@@ -2,6 +2,7 @@ import type { Client } from "../../api/opencode/client"
 import { sendMalformedToolRecovery } from "../../api/opencode/recovery"
 import { getSessionStatus } from "../../api/opencode/sessions"
 import { toTurns } from "./turn-model"
+import { carryAcks } from "./acknowledgement"
 import { loadConversation, bounded } from "./conversation"
 import { malformedToolRecoveryCount, malformedToolRecoveryDue } from "./turn-recovery"
 import { draftingTurnRecoveryMode } from "./drafting-recovery"
@@ -96,7 +97,8 @@ export function useTurnSettlement({
         !sessionErrorRef.current &&
         permissionsRef.current.length === 0 &&
         draftingTurnRecoveryMode(malformedProgressToken) === "malformed-tool"
-      if (msgs.length) setTurns(settled)
+      // Stored history has no acknowledgements; the shown ones carry over.
+      if (msgs.length) setTurns((shown) => carryAcks(shown, settled))
       for (const m of msgs) seenRef.current.add(m.info.id)
       persistFreshSessionRoute()
       if (permissionsRef.current.length && !stopped) return
@@ -122,8 +124,8 @@ export function useTurnSettlement({
         return
       }
       if (pendingSessionError) {
-        setTurns([
-          ...settled,
+        setTurns((shown) => [
+          ...carryAcks(shown, settled),
           {
             role: "assistant",
             text: "",
