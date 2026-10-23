@@ -42,6 +42,10 @@ export type EmailAttachment = {
 
 export type ParsedEmail = {
   text: string
+  // The message body alone, the end of `text` below its headers; "" when the
+  // email has none (or its MIME structure hid it). The extraction quality gate
+  // reads it apart from the headers.
+  body: string
   attachments: EmailAttachment[]
   // Images embedded in the HTML body (logos, signatures): counted, not listed.
   embedded: number
@@ -68,6 +72,7 @@ export async function parseEmail(buffer: Buffer | Uint8Array): Promise<ParsedEma
   const body = email.text ?? (email.html ? email.html.replace(/<[^>]+>/g, " ") : "")
   return {
     text: header ? `${header}\n\n${body}` : body,
+    body,
     attachments,
     embedded: email.attachments.length - parts.length,
   }

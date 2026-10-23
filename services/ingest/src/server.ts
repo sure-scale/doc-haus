@@ -22,10 +22,12 @@ import {
   getRedline,
   setRedlineStatus,
   pendingRedlineCounts,
+  getExtractionQuality,
   getInjectionReport,
   getDocumentRole,
   type RedlineRow,
 } from "./db"
+import { readExtractionQuality } from "./extraction-quality"
 import {
   ingestDocument,
   extractDocumentText,
@@ -432,7 +434,13 @@ app.get("/matters/:id", async (c) => {
       const counts = pendingRedlineCounts(db)
       // Surface the pending-redline count per document so the docs rail can badge the
       // documents that have unreviewed changes waiting.
-      const documents = withEmailLinks(db, (listDocuments(db) as { doc_path: string; name: string }[]).map((d) => ({ ...d, pending: counts[documentRegistryIdentity(d.doc_path)] ?? 0 })))
+      // Each source's extraction quality (#239) goes out as `quality`; one
+      // ingested before the gate has none.
+      const documents = withEmailLinks(db, (listDocuments(db) as { doc_path: string; name: string; extraction_quality: string | null }[]).map(({ extraction_quality, ...d }) => ({
+        ...d,
+        ...(extraction_quality ? { quality: readExtractionQuality(extraction_quality) } : {}),
+        pending: counts[documentRegistryIdentity(d.doc_path)] ?? 0,
+      })))
       return c.json({ ...matter, documents })
     } finally {
       db.close()
@@ -762,8 +770,9 @@ app.get("/matters/:id/documents/content", async (c) => {
 // The plain text of a matter document, mammoth-extracted (the same text indexing
 // uses). The drafter's read-document tool reads it to convert an existing document
 // into a template by replacing every client-specific detail with a placeholder.
-// Ships the document's ingest-time injection report (null when clean) so the tool
-// can hand the model the text and the warning together.
+// Ships the document's ingest-time injection report (null when clean) and its
+// extraction quality so the tool can hand the model the text and the warnings
+// together.
 app.get("/matters/:id/documents/text", async (c) => {
   const dir = matterDir(c.req.param("id"))
   const name = registeredDocumentName(c.req.query("name") ?? "")
@@ -772,10 +781,10 @@ app.get("/matters/:id/documents/text", async (c) => {
     const target = readDocumentTarget(dir, name)
     if (!target || !existsSync(target.docPath)) return c.notFound()
     const db = existsSync(path.join(dir, ".dochaus", "legal.db")) ? openDb(dir) : undefined
-    const injection = (() => {
-      if (!db) return null
+    const { injection, quality } = (() => {
+      if (!db) return { injection: null, quality: undefined }
       try {
-        return getInjectionReport(db, target.docPath)
+        return { injection: getInjectionReport(db, target.docPath), quality: getExtractionQuality(db, target.docPath) }
       } finally {
         db.close()
       }
@@ -783,6 +792,9 @@ app.get("/matters/:id/documents/text", async (c) => {
     return c.json({
       text: await extractDocumentText(target.name, Buffer.from(await Bun.file(target.docPath).bytes())),
       injection,
+      // The extraction quality gate's result (#239); absent for a document
+      // ingested before it.
+      ...(quality ? { quality } : {}),
     })
   })
 })

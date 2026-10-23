@@ -136,7 +136,9 @@ test("an email's .docx and .pdf attachments become matter documents that name it
   expect(result.name).toBe("Thread.eml")
   expect(result.attachments).toEqual([
     { name: "Schedule.docx", type: DOCX, size: schedule.length, document: "Schedule.docx", status: "indexed" },
-    { name: "Signed.pdf", type: "application/pdf", size: signed.length, document: "Signed.pdf", status: "indexed" },
+    // One short line on a page is under the scan line, so the extraction
+    // quality gate marks its text as possibly incomplete (#239).
+    { name: "Signed.pdf", type: "application/pdf", size: signed.length, document: "Signed.pdf", status: "indexed", degraded: true },
   ])
   const rows = registry(directory)
   // The email is committed again last, with its attachments' outcomes.

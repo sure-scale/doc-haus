@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite"
 import { mkdirSync } from "node:fs"
 import path from "node:path"
 import { documentRegistryIdentity } from "./document-identity"
+import { readExtractionQuality } from "./extraction-quality"
 
 // Per-matter document registry and retrieval index. Lives inside the matter
 // directory so it is scoped to that matter. Source rows own searchable chunks;
@@ -107,6 +108,11 @@ export function openDb(matterDir: string, options: { startup?: boolean; commit?:
   // (email-attachments.ts); NULL elsewhere and on emails ingested before it.
   if (!hasColumn(db, "documents", "parent_name")) db.run("ALTER TABLE documents ADD COLUMN parent_name TEXT")
   if (!hasColumn(db, "documents", "attachments")) db.run("ALTER TABLE documents ADD COLUMN attachments TEXT")
+  // Extraction quality (#239): on a source, the JSON result of the quality gate
+  // (extraction-quality.ts): ok, degraded with its signals, or no_readable_text.
+  // Its own column, never part of injection_report. NULL on documents ingested
+  // before the gate, which show no result, and on deliverables.
+  if (!hasColumn(db, "documents", "extraction_quality")) db.run("ALTER TABLE documents ADD COLUMN extraction_quality TEXT")
   if (!hasColumn(db, "chunks", "flagged")) db.run("ALTER TABLE chunks ADD COLUMN flagged INTEGER NOT NULL DEFAULT 0")
   // Structure-aware chunking (issue R2): older databases carry chunks without a
   // structural path or party line. The columns are added empty; the rows fill in
@@ -456,7 +462,7 @@ export function pendingRedlineCounts(db: Database): Record<string, number> {
 }
 
 export function listDocuments(db: Database) {
-  return db.query("SELECT id, doc_path, name, created_at, role, label, parent_name, attachments FROM documents ORDER BY created_at").all()
+  return db.query("SELECT id, doc_path, name, created_at, role, label, parent_name, attachments, extraction_quality FROM documents ORDER BY created_at").all()
 }
 
 export function listSourceDocuments(db: Database) {
@@ -512,6 +518,7 @@ export function upsertDocument(
   createdAt: number,
   injectionReport: string | null,
   links: DocumentLinks = {},
+  extractionQuality: string | null = null,
 ): number {
   if (getDocumentRole(db, docPath) === "deliverable")
     throw new Error(`Cannot replace generated deliverable ${name} with a source document.`)
@@ -523,7 +530,7 @@ export function upsertDocument(
     db.run("UPDATE redlines SET doc_path = ?, doc_name = ? WHERE doc_path = ?", [docPath, name, row.doc_path])
     db.run("DELETE FROM documents WHERE id = ?", [row.id])
   })
-  const result = db.run("INSERT INTO documents (doc_path, name, created_at, injection_report, role, label, parent_name, attachments) VALUES (?, ?, ?, ?, 'source', ?, ?, ?)", [
+  const result = db.run("INSERT INTO documents (doc_path, name, created_at, injection_report, role, label, parent_name, attachments, extraction_quality) VALUES (?, ?, ?, ?, 'source', ?, ?, ?, ?)", [
     docPath,
     name,
     createdAt,
@@ -531,6 +538,7 @@ export function upsertDocument(
     label,
     kept.parent_name,
     kept.attachments,
+    extractionQuality,
   ])
   return Number(result.lastInsertRowid)
 }
@@ -579,18 +587,26 @@ export function getInjectionReport(db: Database, docPath: string) {
   return row?.injection_report ? (JSON.parse(row.injection_report) as { findings: unknown[] }) : null
 }
 
+// The stored extraction quality of one document, for the document text route
+// (so read-document can say the text may be incomplete). Undefined when the
+// document predates the quality gate.
+export function getExtractionQuality(db: Database, docPath: string) {
+  return readExtractionQuality(matchingDocumentRows(db, docPath)[0]?.extraction_quality)
+}
+
 type DocumentRegistryRow = {
   id: number
   doc_path: string
   name: string
   role: "source" | "deliverable"
   injection_report: string | null
+  extraction_quality: string | null
 }
 
 function matchingDocumentRows(db: Database, docPath: string) {
   const identity = documentRegistryIdentity(docPath)
   return (db
-    .query("SELECT id, doc_path, name, role, injection_report FROM documents")
+    .query("SELECT id, doc_path, name, role, injection_report, extraction_quality FROM documents")
     .all() as DocumentRegistryRow[]).filter((row) => documentRegistryIdentity(row.doc_path) === identity)
 }
 

@@ -5,7 +5,8 @@ import { read, utils } from "xlsx"
 import { effectiveDocumentLinks, getDocumentRole, insertChunk, listDocuments, listSourceDocuments, openDb, upsertDocument, type DocumentLinks } from "./db"
 import { embedChunk, migrateEmbeddings } from "./embed"
 import { extractStructure, extractParties, migrateSections, migrateStructure, buildSectionPaths, chunkSection, recordSections, revision, sectionize } from "./structure"
-import { pdfToText } from "./pdf"
+import { readPdf } from "./pdf"
+import { assessExtraction, type ExtractionFacts, type ExtractionQuality } from "./extraction-quality"
 import { detectInjection, normalizeExtractedText, scanDocxHiddenContent, type InjectionFinding } from "./sanitize"
 import { stageSourceChange, writeSourceArtifacts } from "./source-artifacts"
 import { canonicalArtifactIdentity, withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
@@ -13,7 +14,7 @@ import { chunkText } from "../../../dochaus/lib/chunk-text"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
 import { markTrackedChanges } from "../../../dochaus/lib/docx-tracked-text"
 import { draftingTraceReference } from "../../../dochaus/lib/drafting-trace-identity"
-import { emlToText } from "../../../dochaus/lib/email"
+import { parseEmail } from "../../../dochaus/lib/email"
 import { commitDocumentWriteAsync } from "./atomic-document-write"
 import { MatterDocumentIdentityError, resolveMatterDocumentTarget } from "./document-identity"
 import {
@@ -141,12 +142,15 @@ async function ingestDocumentLocked(
   // stored on the document and flag overlapping chunks — the text itself is never
   // rewritten, so the lawyer always reviews exactly what the counterparty wrote.
   const extraction = options.extracted ?? await extractSourceText(fileName, buffer)
-  const text = extraction.text
   const findings = [
     ...extraction.findings,
-    ...detectInjection(text),
+    ...detectInjection(extraction.text),
     ...(fileName.toLowerCase().endsWith(".docx") ? scanDocxHiddenContent(buffer) : []),
   ]
+  // Extraction quality gate (#239): a file with no readable text is kept and
+  // registered, with nothing indexed, so search and review never rest on it.
+  const { quality } = extraction
+  const text = quality.status === "no_readable_text" ? "" : extraction.text
   const sections = sectionize(text)
 
   const db = openDb(matterDir, { commit: true })
@@ -210,6 +214,7 @@ async function ingestDocumentLocked(
       correlation,
       mutation,
       injectionReport: findings.length ? JSON.stringify({ findings }) : null,
+      extractionQuality: JSON.stringify(quality),
       chunks: preparedChunks,
       updateRegistry: options.updateRegistry,
       links: options.links ?? {},
@@ -232,6 +237,7 @@ async function ingestDocumentLocked(
     injection: findings.length
       ? { findings, flaggedChunks: preparedChunks.filter((chunk) => chunk.flagged).length }
       : null,
+    quality,
   }
 }
 
@@ -256,6 +262,7 @@ async function commitIngestedDocument(
     correlation: string
     mutation: ActiveDocumentMutation
     injectionReport: string | null
+    extractionQuality: string
     chunks: Array<{
       section: string
       structuralPath: string
@@ -290,6 +297,7 @@ async function commitIngestedDocument(
         Date.now(),
         input.injectionReport,
         { parentName: links.parent_name, attachments: links.attachments },
+        input.extractionQuality,
       )
       input.chunks.forEach((chunk, chunkIndex) =>
         insertChunk(db, {
@@ -355,12 +363,17 @@ export function sourceTextRevision(text: string) {
   return revision(canonicalText(sectionize(text).flatMap((section) => chunkSection(section))))
 }
 
-export type ExtractedSourceText = { text: string; findings: InjectionFinding[] }
+// `quality` is the extraction quality gate's result for the text
+// (extraction-quality.ts).
+export type ExtractedSourceText = { text: string; findings: InjectionFinding[]; quality: ExtractionQuality }
 
-// A source document's normalized text and the findings normalization made, as
-// ingest indexes it.
+// A source document's normalized text, the findings normalization made and the
+// text's quality, as ingest indexes it.
 export async function extractSourceText(fileName: string, buffer: Buffer): Promise<ExtractedSourceText> {
-  return normalizeExtractedText(await extractRawText(fileName, buffer))
+  const raw = await extractRawText(fileName, buffer)
+  const { text, findings } = normalizeExtractedText(raw.text)
+  const facts = raw.facts.format === "email" ? { ...raw.facts, body: normalizeExtractedText(raw.facts.body).text } : raw.facts
+  return { text, findings, quality: assessExtraction(text, facts) }
 }
 
 // Pull plain text from a source document. DOCX goes through mammoth, with pending
@@ -370,14 +383,21 @@ export async function extractSourceText(fileName: string, buffer: Buffer): Promi
 // text routes, and through them the agents' read-document tool — sees the same
 // instruction-stripped text that chunk offsets were computed over.
 export async function extractDocumentText(fileName: string, buffer: Buffer) {
-  return normalizeExtractedText(await extractRawText(fileName, buffer)).text
+  return normalizeExtractedText((await extractRawText(fileName, buffer)).text).text
 }
 
-async function extractRawText(fileName: string, buffer: Buffer) {
-  if (fileName.toLowerCase().endsWith(".pdf")) return pdfToText(buffer)
-  if (fileName.toLowerCase().endsWith(".eml")) return emlToText(buffer)
-  if (fileName.toLowerCase().endsWith(".xlsx")) return xlsxToText(buffer)
-  return (await mammoth.extractRawText({ buffer: markTrackedChanges(buffer) })).value
+async function extractRawText(fileName: string, buffer: Buffer): Promise<{ text: string; facts: ExtractionFacts }> {
+  const lower = fileName.toLowerCase()
+  if (lower.endsWith(".pdf")) {
+    const { text, pages } = await readPdf(buffer)
+    return { text, facts: { format: "pdf", pages } }
+  }
+  if (lower.endsWith(".eml")) {
+    const email = await parseEmail(buffer)
+    return { text: email.text, facts: { format: "email", body: email.body, attachments: email.attachments.length } }
+  }
+  if (lower.endsWith(".xlsx")) return xlsxToText(buffer)
+  return { text: (await mammoth.extractRawText({ buffer: markTrackedChanges(buffer) })).value, facts: { format: "docx" } }
 }
 
 // Spreadsheet sources (cap tables, waterfalls, payout models) are zip-based but
@@ -385,15 +405,28 @@ async function extractRawText(fileName: string, buffer: Buffer) {
 // Real-world spreadsheets come from many exporters whose XML is not always
 // pristine, so we use a tolerant reader. Each sheet becomes a labeled CSV block
 // so the tabular relationships (holder, security, shares, percentage) survive as
-// text the same normalize/index path can chunk and the agents can read.
-function xlsxToText(buffer: Buffer) {
+// text the same normalize/index path can chunk and the agents can read. A
+// formula saved without a calculated value (a workbook written by a program and
+// never opened in a spreadsheet) reads as its formula, so those are counted for
+// the quality gate.
+function xlsxToText(buffer: Buffer): { text: string; facts: ExtractionFacts } {
   const workbook = read(buffer, { type: "buffer" })
-  return workbook.SheetNames.map((name) => {
+  let cells = 0
+  let formulasWithoutValue = 0
+  const text = workbook.SheetNames.map((name) => {
     const sheet = workbook.Sheets[name]
     if (!sheet) return ""
+    for (const [address, cell] of Object.entries(sheet)) {
+      if (address.startsWith("!")) continue
+      const { v, f } = cell as { v?: unknown; f?: string }
+      if (v === undefined && !f) continue
+      cells++
+      if (v === undefined) formulasWithoutValue++
+    }
     const csv = utils.sheet_to_csv(sheet).trim()
     return csv ? `## ${name}\n${csv}` : ""
   })
     .filter(Boolean)
     .join("\n\n")
+  return { text, facts: { format: "workbook", cells, formulasWithoutValue } }
 }

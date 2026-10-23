@@ -3,7 +3,7 @@ import { tool } from "./legacy-definition"
 import { Database } from "bun:sqlite"
 import { existsSync } from "node:fs"
 import path from "node:path"
-import { formatCitations } from "../lib/citations"
+import { degradedExtractions, formatCitations } from "../lib/citations"
 import { buildChains, operativePassage, supersededSections, type IndexedText } from "../lib/amendment-chain"
 import { pendingRedlinesForDoc } from "../lib/redlines"
 import { draftingTraceReference } from "../lib/drafting-trace-identity"
@@ -148,6 +148,7 @@ export default tool({
           : [],
       ),
     )
+    const degraded = degradedExtractions(db)
     const definitionsNote = attachDefinitions(db, ranked, args)
     const crossRefsNote = attachCrossRefs(db, ranked, args)
     db.close()
@@ -189,6 +190,9 @@ export default tool({
       // Carried through to formatCitations, which warns the model before the
       // excerpt that ingest flagged this passage as instruction-like (issue #17).
       flagged: row.flagged === 1,
+      // Ingest's extraction quality gate found the document's text may be
+      // incomplete or garbled (#239); formatCitations says so before the excerpt.
+      degradedExtraction: degraded.get(row.doc_path),
       superseded_by: supersededBy
         ? {
             amenderName: supersededBy.amender,

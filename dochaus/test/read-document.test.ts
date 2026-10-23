@@ -174,3 +174,25 @@ test("a hostile uploaded file name cannot close the untrusted-document attribute
   expect(read.body).toBe(text)
   expect(read.metadata.document).toBe(name)
 })
+
+// The extraction quality gate's result (#239) follows the text on every page,
+// as an extraction warning, never as an injection warning.
+test("a degraded or unreadable source's extraction quality is stated with its text", async () => {
+  const cases = [
+    [{ status: "degraded", signals: [{ code: "replacement_characters", detail: "40 of 900 characters are replacement or control characters" }] }, "may be incomplete or garbled (40 of 900 characters are replacement or control characters)"],
+    [{ status: "no_readable_text", signals: [{ code: "empty", detail: "No text could be extracted" }] }, "Not indexed: no readable text (No text could be extracted)"],
+  ] as const
+  for (const [quality, expected] of cases) {
+    const source = fixture("Synthetic recorder handling notes.")
+    globalThis.fetch = (async () => Response.json({ text: "Synthetic recorder handling notes.", injection: null, quality })) as unknown as typeof fetch
+    const read = await page(source)
+    expect(read.output).toContain(`[extraction warning] ${quality.status === "degraded" ? "Ingest found this document's extracted text " : ""}${expected}`)
+    expect(read.output).not.toContain("[injection warning]")
+  }
+  // An ok result, or none for a document ingested before the gate, adds nothing.
+  for (const quality of [{ status: "ok" }, undefined]) {
+    const source = fixture("Synthetic recorder handling notes.")
+    globalThis.fetch = (async () => Response.json({ text: "Synthetic recorder handling notes.", injection: null, ...(quality ? { quality } : {}) })) as unknown as typeof fetch
+    expect((await page(source)).output).not.toContain("[extraction warning]")
+  }
+})

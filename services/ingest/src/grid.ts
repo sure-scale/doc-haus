@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite"
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import path from "node:path"
-import { formatCitations } from "../../../dochaus/lib/citations"
+import { degradedExtractions, formatCitations } from "../../../dochaus/lib/citations"
 import { indexIsContained, lexicalChannel, phraseChannel, type ChunkRow } from "../../../dochaus/lib/search/channels"
 
 // The tabular-review grid for a matter. Persisted as a single JSON file next to
@@ -91,6 +91,8 @@ export type RecheckCitation = {
   charEnd: number
   score: number
   flagged: boolean
+  // The document's degraded-extraction signals (#239), when it has them.
+  degradedExtraction?: string[]
 }
 
 // Candidates shown to the one re-check call: a small, focused set.
@@ -197,6 +199,7 @@ export function recheckPassages(matterDir: string, request: RecheckRequest) {
       : []
     const further = [...fused.values()].filter(({ row }) => !seen.has(span(row))).sort((a, b) => b.score - a.score).map(({ row }) => row)
     const picked = [...reread, ...further].slice(0, RECHECK_PASSAGES)
+    const degraded = degradedExtractions(db)
     const citations = picked
       .map((row): RecheckCitation => ({
         documentName: row.doc_name,
@@ -209,6 +212,7 @@ export function recheckPassages(matterDir: string, request: RecheckRequest) {
         charEnd: row.char_end,
         score: score(row),
         flagged: row.flagged === 1,
+        degradedExtraction: degraded.get(row.doc_path),
       }))
     return {
       citations,

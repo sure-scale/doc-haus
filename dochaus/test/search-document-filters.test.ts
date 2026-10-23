@@ -64,10 +64,10 @@ function matter() {
   const directory = mkdtempSync(path.join(tmpdir(), "search-filters-"))
   const db = openDb(directory)
   setMeta(db, "embedding_model", "onnx-community/granite-embedding-small-english-r2-ONNX")
-  const addDocument = (name: string) => {
+  const addDocument = (name: string, extractionQuality: string | null = null) => {
     const document = path.join(directory, name)
     writeFileSync(document, "synthetic source")
-    return { id: upsertDocument(db, document, name, 1, null), path: document, name }
+    return { id: upsertDocument(db, document, name, 1, null, {}, extractionQuality), path: document, name }
   }
   const addChunk = (
     document: ReturnType<typeof addDocument>,
@@ -502,6 +502,33 @@ test("passages are qualified when an amendment's stated base matched no indexed 
     const notes = (result.result!.metadata as { notes?: string }).notes
     expect(notes).toContain('Note: amended base(s) not matched to an indexed document: "Lease"')
     expect(output.endsWith(notes!)).toBe(true)
+  } finally {
+    rmSync(fixture.directory, { recursive: true, force: true })
+  }
+})
+
+// A passage from a source ingest's extraction quality gate marked degraded
+// (#239) says so before its excerpt; one from an ok source does not.
+test("search hits from a degraded source carry its extraction warning", async () => {
+  const fixture = matter()
+  const degraded = fixture.addDocument("garbled.docx", JSON.stringify({
+    status: "degraded",
+    signals: [{ code: "replacement_characters", detail: "40 of 900 characters are replacement or control characters" }],
+  }))
+  const clean = fixture.addDocument("clean.docx", JSON.stringify({ status: "ok" }))
+  fixture.addChunk(degraded, "Doc(garbled.docx) › §1", "needle in the garbled source", 0.9)
+  fixture.addChunk(clean, "Doc(clean.docx) › §1", "needle in the clean source", 0.8)
+  fixture.db.close()
+  try {
+    const [{ result }] = await search(fixture.directory, [{ query: "needle", k: 5 }])
+    const byName = new Map(result!.metadata.citations.map((citation) => [citation.documentName, citation]))
+    expect(byName.get("garbled.docx")?.degradedExtraction).toEqual(["40 of 900 characters are replacement or control characters"])
+    expect(byName.get("clean.docx")?.degradedExtraction).toBeUndefined()
+    const passages = result!.output.split(/\n\n(?=\d+\. \[)/)
+    const garbled = passages.find((passage) => passage.includes("Doc(garbled.docx)"))
+    const other = passages.find((passage) => passage.includes("Doc(clean.docx)"))
+    expect(garbled).toContain("[⚠ DEGRADED EXTRACTION] Ingest found this document's extracted text may be incomplete or garbled (40 of 900 characters are replacement or control characters)")
+    expect(other).not.toContain("DEGRADED EXTRACTION")
   } finally {
     rmSync(fixture.directory, { recursive: true, force: true })
   }

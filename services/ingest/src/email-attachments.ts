@@ -6,7 +6,8 @@ import { draftingTraceReference } from "../../../dochaus/lib/drafting-trace-iden
 import { openDb } from "./db"
 import { deleteMatterDocument, RegisteredDocumentNotFoundError } from "./document-delete"
 import { documentRegistryIdentity } from "./document-identity"
-import { extractSourceText, ingestDocument, sourceTextRevision, type ExistingSourceChoice } from "./ingest"
+import { readExtractionQuality } from "./extraction-quality"
+import { extractSourceText, ingestDocument, sourceTextRevision, type ExistingSourceChoice, type ExtractedSourceText } from "./ingest"
 import { detectInjection } from "./sanitize"
 
 // Email attachments (#238). Every attachment of an uploaded email is either
@@ -31,8 +32,10 @@ export const MAX_EMAIL_DEPTH = 5
 // text already in the matter); unsupported: not a format a matter document can
 // take; failed: could not be read or indexed; nested: an email past
 // MAX_EMAIL_DEPTH; pending: the email was stored but its attachments were not
-// yet processed (an interrupted upload; uploading the email again finishes it).
-export type AttachmentOutcome = "indexed" | "unsupported" | "failed" | "nested" | "pending"
+// yet processed (an interrupted upload; uploading the email again finishes it);
+// no_readable_text: kept as matter document `document` with nothing indexed,
+// because the extraction quality gate found no readable text in it.
+export type AttachmentOutcome = "indexed" | "unsupported" | "failed" | "nested" | "pending" | "no_readable_text"
 
 export type AttachmentEntry = {
   // The name, type and size as the email states them; name "" when it has none.
@@ -55,8 +58,10 @@ export type EmailAttachmentsRecord = { attachments: AttachmentEntry[]; embedded:
 // status of a linked document is read from the registry, never stored:
 // indexed: extracted from this email; same: the same text was already in the
 // matter as `document`; removed: its document has since been removed.
+// `degraded` is set on an attachment whose document's extracted text may be
+// incomplete or garbled (extraction-quality.ts).
 export type AttachmentStatus = "indexed" | "same" | "removed" | Exclude<AttachmentOutcome, "indexed">
-export type AttachmentView = Omit<AttachmentEntry, "outcome" | "rev"> & { status: AttachmentStatus }
+export type AttachmentView = Omit<AttachmentEntry, "outcome" | "rev"> & { status: AttachmentStatus; degraded?: true }
 
 // Ingest an uploaded email and then its attachments. `parentName` and `depth`
 // are set when the email is itself an attachment.
@@ -69,7 +74,7 @@ export async function ingestEmailDocument(
   const depth = options.depth ?? 0
   const parsed = await parseEmail(buffer)
   const extraction = await extractSourceText(fileName, buffer)
-  const extracted = { text: extraction.text, findings: [...extraction.findings, ...(options.findings ?? [])] }
+  const extracted = { ...extraction, findings: [...extraction.findings, ...(options.findings ?? [])] }
   const entries = parsed.attachments.map((attachment) => initialEntry(attachment, depth))
   const record = () => JSON.stringify({ attachments: entries, embedded: parsed.embedded } satisfies EmailAttachmentsRecord)
   const email = await ingestDocument(matterDir, fileName, buffer, {
@@ -129,26 +134,24 @@ async function ingestAttachment(
   }))
   const bytes = Buffer.from(attachment.content)
   try {
-    if (attachment.name.toLowerCase().endsWith(".eml")) {
-      const same = await sameSource(matterDir, attachment.name, bytes)
-      if (same) return { outcome: "indexed", ...same }
-      const child = await ingestEmailDocument(matterDir, attachment.name, bytes, {
-        existing: "keep-both",
-        parentName: emailName,
-        depth: depth + 1,
-        findings: nameFindings,
-      })
-      return { outcome: "indexed", document: child.name, rev: child.rev }
-    }
+    // An attachment passes the same extraction quality gate as an upload: one
+    // with no readable text is kept as a document, with nothing indexed.
     const extraction = await extractSourceText(attachment.name, bytes)
-    const same = sameSourceByText(matterDir, extraction.text)
+    const same = sameSourceByText(matterDir, extraction)
     if (same) return { outcome: "indexed", ...same }
-    const child = await ingestDocument(matterDir, attachment.name, bytes, {
-      existing: "keep-both",
-      extracted: { text: extraction.text, findings: [...extraction.findings, ...nameFindings] },
-      links: { parentName: emailName },
-    })
-    return { outcome: "indexed", document: child.name, rev: child.rev }
+    const child = attachment.name.toLowerCase().endsWith(".eml")
+      ? await ingestEmailDocument(matterDir, attachment.name, bytes, {
+          existing: "keep-both",
+          parentName: emailName,
+          depth: depth + 1,
+          findings: nameFindings,
+        })
+      : await ingestDocument(matterDir, attachment.name, bytes, {
+          existing: "keep-both",
+          extracted: { ...extraction, findings: [...extraction.findings, ...nameFindings] },
+          links: { parentName: emailName },
+        })
+    return { outcome: child.quality.status === "no_readable_text" ? "no_readable_text" : "indexed", document: child.name, rev: child.rev }
   } catch (error) {
     // Stated names are client data: log the failure without them.
     console.warn("email attachment not indexed", { matter_ref: draftingTraceReference(matterDir), ...diagnosticErrorMetadata(error) })
@@ -156,14 +159,10 @@ async function ingestAttachment(
   }
 }
 
-async function sameSource(matterDir: string, name: string, bytes: Buffer) {
-  return sameSourceByText(matterDir, (await extractSourceText(name, bytes)).text)
-}
-
 // A source already in the matter with this text, by documents.rev. Text that is
-// empty says nothing about identity, so it never matches.
-function sameSourceByText(matterDir: string, text: string) {
-  if (!text.trim()) return
+// empty or unreadable says nothing about identity, so it never matches.
+function sameSourceByText(matterDir: string, { text, quality }: ExtractedSourceText) {
+  if (!text.trim() || quality.status === "no_readable_text") return
   const rev = sourceTextRevision(text)
   const db = openDb(matterDir)
   try {
@@ -183,6 +182,7 @@ type LinkRow = {
   rev: string | null
   parent_name: string | null
   attachments: string | null
+  extraction_quality: string | null
 }
 
 function readRecord(value: string | null): EmailAttachmentsRecord | undefined {
@@ -191,14 +191,17 @@ function readRecord(value: string | null): EmailAttachmentsRecord | undefined {
 }
 
 function linkRows(db: Database) {
-  return db.query("SELECT name, doc_path, role, rev, parent_name, attachments FROM documents").all() as LinkRow[]
+  return db.query("SELECT name, doc_path, role, rev, parent_name, attachments, extraction_quality FROM documents").all() as LinkRow[]
 }
 
 function attachmentView(entry: AttachmentEntry, emailName: string, rows: ReadonlyMap<string, LinkRow>): AttachmentView {
   const { outcome, rev: _rev, ...rest } = entry
-  if (outcome !== "indexed") return { ...rest, status: outcome }
+  if (outcome !== "indexed" && outcome !== "no_readable_text") return { ...rest, status: outcome }
   const document = entry.document ? rows.get(entry.document) : undefined
-  return { ...rest, status: !document ? "removed" : document.parent_name === emailName ? "indexed" : "same" }
+  if (!document) return { ...rest, status: "removed" }
+  if (outcome === "no_readable_text") return { ...rest, status: outcome }
+  const degraded = readExtractionQuality(document.extraction_quality)?.status === "degraded"
+  return { ...rest, status: document.parent_name === emailName ? "indexed" : "same", ...(degraded ? { degraded: true as const } : {}) }
 }
 
 function emailAttachmentsView(matterDir: string, emailName: string, entries: AttachmentEntry[]) {
