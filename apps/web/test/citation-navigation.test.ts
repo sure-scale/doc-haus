@@ -102,6 +102,17 @@ describe("cited sources of an answer", () => {
       expect(html).toContain(quote.excerpt)
     }
   })
+
+  test("two different quotations from one section both stay listed", () => {
+    const hit = { ...citation, section: "Preamble", excerpt: "Whole preamble as retrieved.", score: 0.9 }
+    const first = quoted("Preamble", "Gate 3 opens at 06:15 on weekdays.")
+    const second = quoted("Preamble", "Synthetic test memo.")
+    const html = renderToStaticMarkup(createElement(CitationView, { citations: [hit, first, second, second], matterId: "current", documents: [document] }))
+    expect(html).toContain("Sources (2)")
+    expect(html).toContain(first.excerpt)
+    expect(html).toContain(second.excerpt)
+    expect(html).not.toContain(hit.excerpt)
+  })
 })
 
 describe("citation passage matching", () => {
