@@ -330,7 +330,7 @@ export default function DocumentUpload({
           onFiles={onFiles}
           title={working > 0 ? `Uploading ${working} document${working === 1 ? "" : "s"}…` : "Upload documents"}
         />
-        <p>Drop Word, PDF, email or Excel files here, or click to browse.</p>
+        <p>Drop Word, PDF, email, Excel or zip files here, or click to browse.</p>
       </footer>
     </section>
   )
@@ -364,6 +364,8 @@ export function uploadedToast(result: IngestResult): { kind: "success" | "warnin
         injection && degraded ? `${injection} Its ${degraded}` : injection || `its ${degraded}`
       }${attachments}`,
     }
+  // A zip file's own text only lists its files, so its sections say nothing.
+  if (result.name.toLowerCase().endsWith(".zip")) return { kind: "success", message: `${result.name} is ready.${attachments}` }
   return { kind: "success", message: `${result.name} is ready (${result.sections} section${result.sections === 1 ? "" : "s"}).${attachments}` }
 }
 
@@ -384,16 +386,18 @@ export function QualityNote({ quality }: { quality?: ExtractionQuality }) {
   )
 }
 
-// What became of an uploaded email's attachments, for the ready toast.
-export function attachmentsSummary(result: Pick<IngestResult, "attachments">) {
+// What became of an uploaded email's attachments, or a zip file's files, for
+// the ready toast.
+export function attachmentsSummary(result: Pick<IngestResult, "attachments"> & { name?: string }) {
   const attachments = result.attachments ?? []
   if (!attachments.length) return ""
+  const noun = result.name?.toLowerCase().endsWith(".zip") ? "file" : "attachment"
   const added = attachments.filter((a) => a.status === "indexed").length
   const same = attachments.filter((a) => a.status === "same").length
   const unreadable = attachments.filter((a) => a.status === "no_readable_text")
   const missing = attachments.filter((a) => a.status !== "indexed" && a.status !== "same" && a.status !== "no_readable_text")
   return [
-    added && ` ${added} attachment${added === 1 ? "" : "s"} added.`,
+    added && ` ${added} ${noun}${added === 1 ? "" : "s"} added.`,
     same && ` ${same} already in the matter.`,
     unreadable.length && ` Added but not indexed, no readable text: ${unreadable.map(attachmentName).join(", ")}.`,
     missing.length && ` Not added: ${missing.map((a) => `${attachmentName(a)} (${ATTACHMENT_STATUS[a.status].toLowerCase()})`).join(", ")}.`,
@@ -411,6 +415,9 @@ const ATTACHMENT_STATUS: Record<EmailAttachment["status"], string> = {
   nested: "Nested too deep to add",
   pending: "Not added yet. Upload the email again",
   no_readable_text: "Not indexed: no readable text",
+  encrypted: "Password-protected",
+  unsafe_path: "Unsafe path in the zip",
+  too_large: "Too large to unpack",
 }
 
 function attachmentName(attachment: EmailAttachment) {
@@ -502,7 +509,7 @@ export function EmailRemoveConfirm({ name, removal, onRemove, onCancel }: {
 // format ingest cannot read is refused here, with the formats it can.
 export function newUpload(key: number, file: File): Upload {
   if (matterDocumentKind(file.name)) return { key, file, status: "queued" }
-  return { key, file, status: "failed", error: "Only Word (.docx), PDF, email (.eml) and Excel (.xlsx) files can be added." }
+  return { key, file, status: "failed", error: "Only Word (.docx), PDF, email (.eml), Excel (.xlsx) and zip (.zip) files can be added." }
 }
 
 // A same-name clash asks the lawyer what to do with the existing document; any
@@ -604,6 +611,7 @@ const DOCUMENT_TYPE_LABEL: Record<MatterDocumentKind, string> = {
   pdf: "PDF document",
   eml: "Email",
   xlsx: "Excel spreadsheet",
+  zip: "Zip file",
 }
 
 function DocumentType({ kind }: { kind: MatterDocumentKind }) {

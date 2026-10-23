@@ -36,12 +36,13 @@ export const DOCX_RENDER_OPTIONS: ConversionOptions = {
   commentRenderMode: CommentRenderMode.Margin,
 }
 
-// A matter document's viewer. Emails and spreadsheets have no Word package to
-// render or redline, so they open as the text ingest extracted from them; Word
+// A matter document's viewer. Emails, spreadsheets and zip files have no Word
+// package to render or redline, so they open as the text ingest extracted from
+// them (for a zip, the list of its files); Word
 // files and PDFs open in the redline viewer.
 export default function DocumentViewer(props: Parameters<typeof WordDocumentViewer>[0]) {
   const kind = matterDocumentKind(props.name)
-  if (kind === "eml" || kind === "xlsx")
+  if (kind === "eml" || kind === "xlsx" || kind === "zip")
     return <DocumentTextViewer matterId={props.matterId} name={props.name} kind={kind} citation={props.citation} onClose={props.onClose} />
   return <WordDocumentViewer {...props} />
 }
@@ -437,7 +438,7 @@ export function citationStatus(section: string, passage?: "matched" | "ambiguous
 function DocumentTextViewer({ matterId, name, kind, citation, onClose }: {
   matterId: string
   name: string
-  kind: "eml" | "xlsx"
+  kind: "eml" | "xlsx" | "zip"
   citation?: CitationFocus
   onClose: () => void
 }) {
@@ -471,7 +472,7 @@ function DocumentTextViewer({ matterId, name, kind, citation, onClose }: {
         if (e.key === "Escape" && !e.defaultPrevented) { e.preventDefault(); e.stopPropagation(); onClose() }
       }}>
         <div className="viewer-bar">
-          <ViewerTitle name={name} kind={`${kind === "eml" ? "Email" : "Excel spreadsheet"} · extracted text, read-only`} />
+          <ViewerTitle name={name} kind={kind === "zip" ? "Zip file · list of files, read-only" : `${kind === "eml" ? "Email" : "Excel spreadsheet"} · extracted text, read-only`} />
           <div className="viewer-bar-actions">
             <ModalClose onClose={onClose} />
           </div>
@@ -495,7 +496,7 @@ function DocumentTextViewer({ matterId, name, kind, citation, onClose }: {
 
 // The extracted text on the viewer's sheet, the matched excerpt marked in place.
 export function ExtractedText({ kind, text, match, markRef }: {
-  kind: "eml" | "xlsx"
+  kind: "eml" | "xlsx" | "zip"
   text: string
   match?: ReturnType<typeof citationPassage>
   markRef?: Ref<HTMLElement>
