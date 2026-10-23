@@ -27,6 +27,7 @@ type Piece = { node: Text; start: number; end: number }
 export function decorateMarkers(root: HTMLElement): MarkerCounts {
   for (const span of root.querySelectorAll("span.doc-marker")) span.replaceWith(...span.childNodes)
   root.normalize()
+  let sequence = 0
   const counts: MarkerCounts = { redaction: 0, placeholder: 0 }
   const groups = new Map<Element, Piece[]>()
   const walker = root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT)
@@ -52,6 +53,8 @@ export function decorateMarkers(root: HTMLElement): MarkerCounts {
     // Last match first: splitting a text node leaves earlier offsets valid.
     for (const { kind, start, end } of kept.reverse()) {
       counts[kind]++
+      const id = String(++sequence)
+      const wrapped: HTMLSpanElement[] = []
       for (const piece of pieces) {
         if (piece.start >= end || piece.end <= start) continue
         const range = root.ownerDocument.createRange()
@@ -59,11 +62,20 @@ export function decorateMarkers(root: HTMLElement): MarkerCounts {
         range.setEnd(piece.node, Math.min(piece.end, end) - piece.start)
         const span = root.ownerDocument.createElement("span")
         span.className = `doc-marker doc-marker-${kind}`
+        range.surroundContents(span)
+        wrapped.push(span)
+      }
+      // One marker across several runs is one chip: shared id, rounded outer
+      // ends only, and one accessible name on the first piece.
+      wrapped.forEach((span, index) => {
+        span.dataset.markerId = id
+        span.dataset.markerPart = wrapped.length === 1 ? "only" : index === 0 ? "first" : index === wrapped.length - 1 ? "last" : "middle"
+        if (index > 0) return span.setAttribute("aria-hidden", "true")
         span.title = LABELS[kind]
         span.setAttribute("role", "mark")
         span.setAttribute("aria-roledescription", LABELS[kind])
-        range.surroundContents(span)
-      }
+        if (wrapped.length > 1) span.setAttribute("aria-label", text.slice(start, end).replace(/\u00a0/g, " "))
+      })
     }
   }
   return counts

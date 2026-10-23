@@ -410,3 +410,7 @@ button:is(.change-id, .change-ref):hover { text-decoration: underline; }
   .docx-render .doc-marker-redaction { border: 1px solid CanvasText; }
   .docx-render .doc-marker-placeholder { border: 1px dashed CanvasText; }
 }
+.docx-render .doc-marker[data-marker-part="first"], .docx-render .doc-marker[data-marker-part="middle"] { border-top-right-radius: 0; border-bottom-right-radius: 0; border-right: 0; padding-right: 0; }
+.docx-render .doc-marker[data-marker-part="last"], .docx-render .doc-marker[data-marker-part="middle"] { border-top-left-radius: 0; border-bottom-left-radius: 0; border-left: 0; padding-left: 0; }
+.docx-render .doc-marker[data-marker-part="only"], .docx-render .doc-marker[data-marker-part="first"] { margin-left: 1px; }
+.docx-render .doc-marker[data-marker-part="only"], .docx-render .doc-marker[data-marker-part="last"] { margin-right: 1px; }
