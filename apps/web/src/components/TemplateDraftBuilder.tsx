@@ -210,7 +210,6 @@ export default function TemplateDraftBuilder({ id, onSaved, onDraftChanged }: { 
     <Exit when={preview}>{(view) => <TemplateViewer
       key={`${view}:${draft.revision}`}
       name={view === "source" ? draft.source.name : "Proposed reusable template"}
-      placeholders={[]}
       loadBytes={view === "source" ? sourceBytes : proposalBytes}
       onRendered={view === "proposal" ? () => setReviewedRevision(draft.revision) : undefined}
       onClose={() => { if (!saving) setPreview(undefined) }}

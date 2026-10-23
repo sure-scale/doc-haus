@@ -81,6 +81,28 @@ export function decorateMarkers(root: HTMLElement): MarkerCounts {
   return counts
 }
 
+/** The kind of a whole marker text (a server-listed template placeholder), by
+ * the same patterns the viewer colours; undefined for other bracketed text. */
+export function markerKind(text: string): MarkerKind | undefined {
+  return CLASSES.find(({ patterns }) => patterns.some((pattern) => text.match(pattern)?.[0] === text))?.kind
+}
+
+/** One distinct marker text in a decorated document, with the ids of its
+ * occurrences in document order. */
+export type MarkerEntry = { kind: MarkerKind; text: string; ids: string[] }
+
+export function markerEntries(root: HTMLElement): MarkerEntry[] {
+  const entries = new Map<string, MarkerEntry>()
+  for (const span of root.querySelectorAll<HTMLElement>('span.doc-marker:is([data-marker-part="only"], [data-marker-part="first"])')) {
+    const kind: MarkerKind = span.classList.contains("doc-marker-redaction") ? "redaction" : "placeholder"
+    const text = (span.getAttribute("aria-label") ?? span.textContent ?? "").replace(/\s+/g, " ").trim()
+    const entry = entries.get(`${kind}:${text}`) ?? { kind, text, ids: [] }
+    entry.ids.push(span.dataset.markerId!)
+    entries.set(`${kind}:${text}`, entry)
+  }
+  return [...entries.values()]
+}
+
 export function markerSummary({ placeholder, redaction }: MarkerCounts) {
   return [
     placeholder && `${placeholder} placeholder${placeholder === 1 ? "" : "s"}`,

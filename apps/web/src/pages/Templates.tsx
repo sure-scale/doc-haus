@@ -13,6 +13,7 @@ import { useToast } from "../components/Toast"
 import Dropzone from "../components/Dropzone"
 import { humanizeError } from "../api/ingest/errors"
 import TemplateViewer from "../components/TemplateViewer"
+import { markerKind } from "../components/document-markers"
 import MatterPicker from "../components/MatterPicker"
 import { Exit } from "../components/useExit"
 import ChatPanel from "../components/ChatPanel"
@@ -212,8 +213,11 @@ export default function Templates() {
         ) : (
           <ul className="matter-list">
             {visible.map((t) => {
-              const optional = t.placeholders.filter((p) => p.text.startsWith("[optional:")).length
-              const fills = t.placeholders.length - optional
+              // Count by the viewer's marker patterns: other bracketed text,
+              // such as a [REDACTED] mark, is not a placeholder to fill.
+              const markers = t.placeholders.filter((p) => markerKind(p.text) === "placeholder")
+              const optional = markers.filter((p) => /^\[optional:/i.test(p.text)).length
+              const fills = markers.length - optional
               return (
                 <li
                   key={t.name}
@@ -325,7 +329,7 @@ export default function Templates() {
       </LibraryLayout>
 
       <Exit when={viewing}>{(viewing) => (
-        <TemplateViewer name={viewing.name} placeholders={viewing.placeholders} onClose={() => setViewing(undefined)} />
+        <TemplateViewer name={viewing.name} onClose={() => setViewing(undefined)} />
       )}</Exit>
 
       <Exit when={using}>{(using) => (
