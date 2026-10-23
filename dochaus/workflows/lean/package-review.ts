@@ -8,6 +8,7 @@ import { combinedDelivery, deliveryArtifactEvidence, plannedRegistration, reques
 import { finalBodyParagraphs } from "./checks"
 import { readLeanPlan, type DocID } from "./plan"
 import { excerpt, matterSourceIDs, openItem } from "./quotes"
+import { nameWithProvenance, sourceProvenance } from "../../lib/source-provenance"
 import { researchHandoff } from "./research"
 import { reviewText } from "./review-findings"
 import { requestedFilesItemNamed } from "./requested-files"
@@ -52,6 +53,7 @@ const WITHHELD_REASON: Record<WithheldCause, string> = {
 export function packageReviewPrompt(directory: string) {
   const documents = readLeanPlan(directory)?.documents ?? []
   const combined = combinedDelivery(directory)
+  const provenance = sourceProvenance(directory)
   return [
     "Review this final drafting package after revisions and native comparison export, before deliverable registration. Determine whether the documents perform the requested functions, agree with the settled instructions and evidence, and agree with their accompanying drafting notes. Inspect the actual final wording, not proposed changes or previous approval. Use search-document, read-document and verify-quote to inspect supporting sources on demand; the inventory is not a fixed evidence packet. read-document returns exact pages; follow next_offset until EOF when inspecting a complete source.",
     boundPlaybookContext(directory),
@@ -60,7 +62,7 @@ export function packageReviewPrompt(directory: string) {
     `<drafting_spine>\n${readLeanText(directory, "spine.json") ?? ""}\n</drafting_spine>`,
     `<discrepancies>\n${readLeanText(directory, "discrepancy.json") ?? ""}\n</discrepancies>`,
     `<answers>\n${answeredQuestionsText(directory)}\n</answers>`,
-    `<sources>\n${matterSourceIDs(directory).join("\n")}\n</sources>`,
+    `<sources>\n${matterSourceIDs(directory).map(name => nameWithProvenance(name, provenance)).join("\n")}\n</sources>`,
     `<delivery_artifacts>\n${JSON.stringify(deliveryArtifactEvidence(directory), null, 2)}\n</delivery_artifacts>`,
     `<legal_research>\n${researchHandoff(directory)}\n</legal_research>`,
     ...documents.map(row => `<final_document id="${row.id}" title="${row.title.replaceAll('"', "'")}">\nPurpose: ${row.purpose ?? "See request"}\n${comparisonDescription(directory, row.id)}\n${finalBodyParagraphs(directory, row.id).map(paragraph => `[${paragraph.pid}] ${paragraph.text}`).join("\n\n")}\n</final_document>`),
