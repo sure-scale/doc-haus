@@ -1,14 +1,19 @@
-import { useId, useLayoutEffect, useRef, useState, type CSSProperties, type InputHTMLAttributes, type KeyboardEvent } from "react"
+import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type InputHTMLAttributes, type KeyboardEvent } from "react"
 import { createPortal } from "react-dom"
-import { suggestClients } from "../lib/clients"
+import { createClient, listClients, type StoredClient } from "../api/ingest/clients"
+import { humanizeError } from "../api/ingest/errors"
+import { clientKey, suggestClients, withStoredClients } from "../lib/clients"
+import { useToast } from "./Toast"
 
 type InputProps = Omit<InputHTMLAttributes<HTMLInputElement>, "value" | "onChange" | "role" | "list">
 
 // The matter Client text field, offering clients already used on other matters
 // as you type (an ARIA 1.2 list-autocomplete combobox). Nothing is preselected,
 // so Enter on free text still means that text; ArrowDown then Enter, or a click,
-// picks a suggestion. The caller's own keys (Enter to save, Escape to cancel)
-// apply whenever the list is closed.
+// picks a suggestion. Text that is no client yet gets a last option, Add "X" as
+// a client, which saves the client and keeps its name in the field. Added
+// clients are suggested alongside the caller's names. The caller's own keys
+// (Enter to save, Escape to cancel) apply whenever the list is closed.
 export default function ClientCombobox({
   value,
   onChange,
@@ -19,10 +24,30 @@ export default function ClientCombobox({
   const [open, setOpen] = useState(false)
   const [active, setActive] = useState(-1)
   const [pos, setPos] = useState<CSSProperties>()
+  const [stored, setStored] = useState<StoredClient[]>([])
+  const [adding, setAdding] = useState(false)
   const field = useRef<HTMLInputElement>(null)
   const listId = useId()
-  const options = open ? suggestClients(clients, value) : []
-  const shown = options.length > 0
+  const toast = useToast()
+  const names = withStoredClients(clients, stored)
+  const typed = value.replace(/\s+/g, " ").trim()
+  const candidates = suggestClients(names, value)
+  const canAdd = clientKey(typed) !== "" && !names.some((name) => clientKey(name) === clientKey(typed))
+  const options = open ? candidates : []
+  const addable = open && canAdd
+  const count = options.length + (addable ? 1 : 0)
+  const shown = count > 0
+
+  useEffect(() => {
+    let live = true
+    listClients()
+      .then((rows) => live && setStored(rows))
+      // Suggestions are a convenience; typing still works without them.
+      .catch(() => undefined)
+    return () => {
+      live = false
+    }
+  }, [])
 
   // A fixed list in the input's dialog (or the body) so a scrolling dialog or
   // header cannot clip it; offsets convert out of the appearance body zoom.
@@ -48,22 +73,42 @@ export default function ClientCombobox({
     setActive(-1)
   }
 
+  // An existing client under another spelling comes back as that client.
+  async function add() {
+    if (adding) return
+    setAdding(true)
+    try {
+      const { client } = await createClient(typed)
+      setStored((rows) => [...rows.filter((row) => row.id !== client.id), client])
+      pick(client.name)
+    } catch (error) {
+      toast("error", humanizeError(error, "Could not add the client."))
+    } finally {
+      setAdding(false)
+    }
+  }
+
+  function choose(index: number) {
+    if (index < options.length) pick(options[index]!)
+    else void add()
+  }
+
   function keyDown(event: KeyboardEvent<HTMLInputElement>) {
     // Keys that confirm an IME composition are not list navigation; the
     // caller's own keys behave as before.
     if (event.nativeEvent.isComposing) return onKeyDown?.(event)
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault()
-      const list = shown ? options : suggestClients(clients, value)
-      if (list.length === 0) return
+      const total = shown ? count : candidates.length + (canAdd ? 1 : 0)
+      if (total === 0) return
       setOpen(true)
       if (!shown || event.altKey) return setActive(-1)
-      setActive((index) => event.key === "ArrowDown" ? (index + 1) % list.length : index <= 0 ? list.length - 1 : index - 1)
+      setActive((index) => event.key === "ArrowDown" ? (index + 1) % total : index <= 0 ? total - 1 : index - 1)
       return
     }
     if (shown && event.key === "Enter" && active >= 0) {
       event.preventDefault()
-      return pick(options[active]!)
+      return choose(active)
     }
     if (shown && event.key === "Escape") {
       // Closing the list must not also cancel the edit or close the dialog.
@@ -125,6 +170,18 @@ export default function ClientCombobox({
                 {name}
               </li>
             ))}
+            {addable && (
+              <li
+                id={`${listId}-${options.length}`}
+                role="option"
+                aria-selected={active === options.length}
+                aria-disabled={adding || undefined}
+                className={`client-suggestion client-suggestion-add${active === options.length ? " is-active" : ""}`}
+                onClick={() => void add()}
+              >
+                Add &ldquo;{typed}&rdquo; as a client
+              </li>
+            )}
           </ul>,
           field.current?.closest("dialog") ?? document.body,
         )}

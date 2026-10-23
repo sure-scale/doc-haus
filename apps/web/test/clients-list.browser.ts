@@ -1,7 +1,7 @@
 // Run from apps/web: bun test/clients-list.browser.ts (optionally PLAYWRIGHT_MODULE / PLAYWRIGHT_CHROMIUM_PATH).
 // The Clients list and the type-to-suggest matter Client field through the
 // real sidebar, Matters and Clients pages and matter header; only ingest's
-// matter HTTP is mocked, by a small in-memory store. Set
+// matter and client HTTP is mocked, by a small in-memory store. Set
 // CLIENTS_SCREENSHOTS=<directory> to save views.
 import assert from "node:assert/strict"
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises"
@@ -9,6 +9,7 @@ import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import type { Page } from "@playwright/test"
+import { clientKey } from "../src/lib/clients"
 
 const { chromium, expect } = (await import(process.env.PLAYWRIGHT_MODULE ?? "@playwright/test")) as typeof import("@playwright/test")
 const directory = await mkdtemp(path.join(os.tmpdir(), "dochaus-clients-"))
@@ -18,8 +19,11 @@ const file = (name: string) => JSON.stringify(path.join(source, name))
 const dependency = (name: string) => JSON.stringify(fileURLToPath(import.meta.resolve(name)))
 
 type Row = { id: string; title: string; client?: string; reference?: string; dir: string; created_at: number }
+type Client = { id: number; name: string; reference?: string; created_at: number }
 let matters: Row[] = []
+let clients: Client[] = []
 const writes: { method: string; id?: string; body: Record<string, unknown> }[] = []
+const clientWrites: { method: string; body?: Record<string, unknown>; id?: string }[] = []
 
 const entry = path.join(directory, "harness.tsx")
 // The matter route stands in for MatterDetail with the same header wiring: an
@@ -85,6 +89,23 @@ const server = Bun.serve({
     if (route === "GET /") return new Response(`<!doctype html><html><meta charset="utf-8"><style>${css}</style><div id="root"></div><script type="module" src="/harness.js"></script></html>`, { headers: { "content-type": "text/html" } })
     if (route === "GET /ingest/matters") return Response.json(matters)
     if (route === "GET /ingest/jurisdictions") return Response.json([])
+    if (route === "GET /ingest/clients") return Response.json(clients)
+    // Like ingest: a name that is already a client returns it with 200.
+    if (route === "POST /ingest/clients") {
+      const body = (await request.json()) as { name: string; reference?: string }
+      clientWrites.push({ method: "POST", body })
+      const existing = clients.find((c) => clientKey(c.name) === clientKey(body.name))
+      if (existing) return Response.json(existing)
+      const client: Client = { id: clients.length + 1, name: body.name.trim(), ...(body.reference ? { reference: body.reference } : {}), created_at: 1 }
+      clients.push(client)
+      return Response.json(client, { status: 201 })
+    }
+    const clientRoute = url.pathname.match(/^\/ingest\/clients\/(\d+)$/)
+    if (clientRoute && request.method === "DELETE") {
+      clientWrites.push({ method: "DELETE", id: clientRoute[1] })
+      clients = clients.filter((c) => String(c.id) !== clientRoute[1])
+      return Response.json({ ok: true })
+    }
     if (route === "POST /ingest/matters") {
       const body = (await request.json()) as Record<string, string | undefined>
       writes.push({ method: "POST", body })
@@ -112,9 +133,11 @@ const browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIG
 if (shots) await mkdir(shots, { recursive: true })
 const passed: string[] = []
 
-async function scenario(name: string, seed: Row[], run: (page: Page) => Promise<void>, start = "/") {
+async function scenario(name: string, seed: Row[], run: (page: Page) => Promise<void>, start = "/", storedSeed: Client[] = []) {
   matters = seed.map((row) => ({ ...row }))
+  clients = storedSeed.map((row) => ({ ...row }))
   writes.length = 0
+  clientWrites.length = 0
   const page = await browser.newPage({ viewport: { width: 1280, height: 860 }, reducedMotion: "reduce" })
   page.setDefaultTimeout(5000)
   const errors: string[] = []
@@ -142,7 +165,7 @@ try {
   await scenario("with no client on any matter, Clients shows the empty state", [{ ...seed[3]! }], async (page) => {
     await page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: "Clients" }).click()
     await expect(page.getByRole("heading", { name: "No clients yet" })).toBeVisible()
-    await expect(page.getByText("Add a client on a matter.")).toBeVisible()
+    await expect(page.getByText("Add the people and companies you act for here, or name a client on a matter.")).toBeVisible()
     await shot(page, "clients-empty")
   })
 
@@ -175,7 +198,7 @@ try {
     const field = page.getByRole("combobox", { name: "Client you act for (optional)" })
     await field.pressSequentially("nor")
     const listbox = page.getByRole("listbox", { name: "Existing clients" })
-    await expect(listbox.getByRole("option")).toHaveText(["Northwind Traders"])
+    await expect(listbox.getByRole("option")).toHaveText(["Northwind Traders", "Add “nor” as a client"])
     await expect(field).toHaveAttribute("aria-expanded", "true")
     // Nothing is preselected, so Enter on free text would keep that text.
     assert.equal(await field.getAttribute("aria-activedescendant"), null)
@@ -199,13 +222,13 @@ try {
     const field = dialog.getByRole("combobox", { name: "Client" })
     await field.pressSequentially("tos")
     const listbox = page.getByRole("listbox", { name: "Existing clients" })
-    await expect(listbox.getByRole("option")).toHaveText(["Contoso"])
+    await expect(listbox.getByRole("option")).toHaveText(["Contoso", "Add “tos” as a client"])
     await page.keyboard.press("Escape")
     await expect(listbox).toHaveCount(0)
     await expect(dialog).toBeVisible()
     // ArrowDown reopens a closed list without choosing anything.
     await page.keyboard.press("ArrowDown")
-    await expect(listbox.getByRole("option")).toHaveText(["Contoso"])
+    await expect(listbox.getByRole("option")).toHaveText(["Contoso", "Add “tos” as a client"])
     assert.equal(await field.getAttribute("aria-activedescendant"), null)
     // A cleared field lists every client.
     await field.fill("")
@@ -228,13 +251,15 @@ try {
     await page.getByRole("listbox", { name: "Existing clients" }).getByRole("option", { name: "Contoso" }).click()
     await expect(field).toHaveValue("Contoso")
     await expect(field).toBeFocused()
-    // Typing past a suggestion keeps the typed text: Enter saves it, not the suggestion.
+    // Typing past a suggestion keeps the typed text: Enter saves it, not the
+    // suggestion, and not the offer to add it as a client.
     await field.pressSequentially(" Group")
-    await expect(page.getByRole("listbox", { name: "Existing clients" })).toHaveCount(0)
+    await expect(page.getByRole("listbox", { name: "Existing clients" }).getByRole("option")).toHaveText(["Add “Contoso Group” as a client"])
     await field.fill("Fabrikam")
     await page.keyboard.press("Enter")
     await expect(page.getByRole("button", { name: "Edit client: Fabrikam" })).toBeVisible()
     assert.deepEqual(writes.map((w) => [w.method, w.id, w.body.client]), [["PATCH", "d", "Fabrikam"]])
+    assert.deepEqual(clientWrites, [])
     await page.getByRole("link", { name: "All matters", exact: true }).click()
     await page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: "Clients" }).click()
     const rows = page.getByRole("list", { name: "Clients", exact: true }).locator(":scope > li")
@@ -242,6 +267,103 @@ try {
     await expect(rows.nth(1)).toContainText("Fabrikam")
     await expect(page.getByRole("list", { name: "Matters for Fabrikam" }).getByRole("link")).toHaveText(["Board minutes"])
   }, "/matter/d")
+
+  await scenario("a new client typed in the Client field is added by keyboard, selected, and suggested from then on", seed, async (page) => {
+    await page.getByRole("textbox", { name: "Matter title" }).fill("Option deed")
+    const field = page.getByRole("combobox", { name: "Client you act for (optional)" })
+    await field.pressSequentially("Fabrikam  Inc")
+    const listbox = page.getByRole("listbox", { name: "Existing clients" })
+    await expect(listbox.getByRole("option")).toHaveText(["Add “Fabrikam Inc” as a client"])
+    // Still nothing preselected: Enter here would keep the typed text.
+    assert.equal(await field.getAttribute("aria-activedescendant"), null)
+    await page.keyboard.press("ArrowDown")
+    const add = listbox.getByRole("option", { name: "Add “Fabrikam Inc” as a client" })
+    await expect(add).toHaveAttribute("aria-selected", "true")
+    await shot(page, "client-add-from-field")
+    await page.keyboard.press("Enter")
+    await expect(field).toHaveValue("Fabrikam Inc")
+    await expect(field).toHaveAttribute("aria-expanded", "false")
+    assert.deepEqual(clientWrites, [{ method: "POST", body: { name: "Fabrikam Inc" } }])
+    assert.equal(writes.length, 0, "adding a client must not submit the matter form")
+    // The added client is now a suggestion, with no offer to add it again.
+    await field.fill("fab")
+    await expect(listbox.getByRole("option")).toHaveText(["Fabrikam Inc", "Add “fab” as a client"])
+    await field.fill("fabrikam inc.")
+    await expect(listbox).toHaveCount(0)
+    await field.fill("Fabrikam Inc")
+    await page.keyboard.press("Enter")
+    await expect.poll(() => writes.length).toBe(1)
+    assert.equal(writes[0]!.body.client, "Fabrikam Inc")
+  })
+
+  await scenario("adding a client someone else already added selects the existing client", seed, async (page) => {
+    const field = page.getByRole("combobox", { name: "Client you act for (optional)" })
+    await expect(page.getByRole("heading", { name: "Your matters" })).toBeVisible()
+    // Added after this page loaded its clients, under another spelling.
+    clients.push({ id: 9, name: "Tailspin Toys Ltd", created_at: 1 })
+    await field.pressSequentially("tailspin toys ltd.")
+    await page.getByRole("listbox", { name: "Existing clients" }).getByRole("option", { name: "Add “tailspin toys ltd.” as a client" }).click()
+    await expect(field).toHaveValue("Tailspin Toys Ltd")
+    await expect(field).toBeFocused()
+    assert.equal(clients.length, 1)
+  })
+
+  await scenario("the Clients page adds a client from the form on the right, refuses a blank name and folds a duplicate", seed, async (page) => {
+    const panel = page.getByRole("region", { name: "Add a new client" })
+    const list = page.getByRole("list", { name: "Clients", exact: true })
+    await expect(list.locator(":scope > li")).toHaveCount(2)
+    const [form, collection] = await Promise.all([panel.boundingBox(), page.getByRole("region", { name: "Your clients" }).boundingBox()])
+    assert.ok(form && collection && form.x > collection.x + collection.width - 1, "the add form sits to the right of the list")
+    await panel.getByRole("button", { name: "Add client" }).click()
+    await expect(panel.getByRole("alert")).toHaveText("Name the client to add it.")
+    await expect(panel.getByRole("textbox", { name: "Client name" })).toBeFocused()
+    await panel.getByRole("textbox", { name: "Client name" }).fill("Wide World Importers")
+    await panel.getByRole("textbox", { name: "Client number (optional)" }).fill("C-0007")
+    await page.keyboard.press("Enter")
+    const rows = list.locator(":scope > li")
+    await expect(rows).toHaveCount(3)
+    await expect(rows.nth(2)).toContainText("Wide World Importers")
+    await expect(rows.nth(2)).toContainText("C-0007")
+    await expect(rows.nth(2)).toContainText("No matters yet")
+    await expect(panel.getByRole("textbox", { name: "Client name" })).toHaveValue("")
+    await shot(page, "clients-page")
+    // The same client again is no second row and no error.
+    await panel.getByRole("textbox", { name: "Client name" }).fill("wide world importers.")
+    await panel.getByRole("button", { name: "Add client" }).click()
+    await expect(page.getByText("\"Wide World Importers\" is already a client.")).toBeVisible()
+    await expect(rows).toHaveCount(3)
+    // An added client with no matters can be deleted; clients with matters cannot.
+    await expect(rows.nth(0).getByRole("button")).toHaveCount(0)
+    await rows.nth(2).getByRole("button", { name: "Delete Wide World Importers" }).click()
+    await rows.nth(2).getByRole("button", { name: "Confirm delete Wide World Importers" }).click()
+    await expect(rows).toHaveCount(2)
+    assert.deepEqual(clientWrites.map((w) => w.method), ["POST", "POST", "DELETE"])
+  }, "/clients")
+
+  await scenario("an added client joins the matter client of the same name and a client with no matters says so", seed, async (page) => {
+    const rows = page.getByRole("list", { name: "Clients", exact: true }).locator(":scope > li")
+    await expect(rows).toHaveCount(3)
+    await expect(rows.nth(1)).toContainText("Fabrikam")
+    await expect(rows.nth(1)).toContainText("No matters yet")
+    // Stored "NORTHWIND TRADERS" is the name shown for the matters' client.
+    await expect(rows.nth(2)).toContainText("NORTHWIND TRADERS")
+    await expect(rows.nth(2)).toContainText("2 matters")
+    await rows.nth(1).getByRole("link", { name: "Fabrikam" }).click()
+    await expect(page.getByText("No matters for Fabrikam yet.")).toBeVisible()
+  }, "/clients", [{ id: 1, name: "Fabrikam", created_at: 1 }, { id: 2, name: "NORTHWIND TRADERS", created_at: 1 }])
+
+  await scenario("Matters and Clients share one layout for side-by-side review", seed, async (page) => {
+    await expect(page.getByRole("heading", { name: "Your matters" })).toBeVisible()
+    await shot(page, "matters-page")
+    await page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: "Clients" }).click()
+    await expect(page.getByRole("list", { name: "Clients", exact: true }).locator(":scope > li")).toHaveCount(3)
+    await shot(page, "clients-page-with-added")
+    // Narrow, the add form folds behind a New client toggle, as on Matters.
+    await page.setViewportSize({ width: 420, height: 860 })
+    await page.getByRole("button", { name: "New client" }).click()
+    await expect(page.getByRole("textbox", { name: "Client name" })).toBeVisible()
+    await shot(page, "clients-page-narrow")
+  }, "/", [{ id: 1, name: "Fabrikam", reference: "C-0101", created_at: 1 }])
 
   console.log(`PASS ${passed.length} clients list cases with no browser errors`)
 } finally {
