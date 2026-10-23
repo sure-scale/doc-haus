@@ -71,6 +71,8 @@ export default function App() {
   // Bumped when a matter mints a new conversation, so the sidebar re-lists its
   // chats the instant one starts rather than waiting for the turn to settle.
   const [sessionsVersion, setSessionsVersion] = useState(0)
+  // Bumped when the sample matter is added, so the matters list re-loads.
+  const [mattersVersion, setMattersVersion] = useState(0)
   const location = useLocation()
   if (!acknowledged) return <LaunchNotice onAccept={() => setAcknowledged(true)} />
   if (!booted)
@@ -93,7 +95,7 @@ export default function App() {
           {/* Keyed on the path so each page settles in with a short fade. */}
           <div className={`container route-fade${location.pathname.startsWith("/matter/") ? " matter-container" : ""}`} key={location.pathname}>
             <Routes>
-              <Route path="/" element={<Matters />} />
+              <Route path="/" element={<Matters refresh={mattersVersion} />} />
               <Route path="/templates" element={<Templates />} />
               <Route path="/playbooks" element={<Playbooks />} />
               <Route path="/workflows" element={<Workflows />} />
@@ -111,6 +113,7 @@ export default function App() {
         <Exit when={onboarding}>{() => (
           <Onboarding
             onClose={() => { setOnboarding(false); void refreshSetup() }}
+            onSampleAdded={() => setMattersVersion((v) => v + 1)}
           />
         )}</Exit>
         {settingsShown && (
@@ -118,6 +121,7 @@ export default function App() {
             closing={settingsClosing}
             initialTab={reconnectProvider !== undefined ? "ai" : undefined}
             reconnectProvider={reconnectProvider}
+            onSampleAdded={() => setMattersVersion((v) => v + 1)}
             onClose={() => {
               // A second close during the exit animation changes nothing.
               if (!settings) return

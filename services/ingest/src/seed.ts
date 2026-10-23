@@ -16,7 +16,9 @@ import {
 } from "docx"
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, copyFileSync } from "node:fs"
 import path from "node:path"
-import { createMatter, listMatters, PLAYBOOK_DIR } from "./matter"
+import { Hono } from "hono"
+import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
+import { createMatter, deleteMatter, listMatters, PLAYBOOK_DIR, type Matter } from "./matter"
 import { ingestDocument } from "./ingest"
 import { seedTemplates } from "./template"
 
@@ -26,15 +28,16 @@ import { seedTemplates } from "./template"
 //   firm's WORKSPACE_ROOT/.playbooks on every ingest server boot (server.ts calls
 //   it on startup). Not demo content: every install gets the starter set.
 //
-//   seedDemo() — the demo matter: a wholly fictional letter of engagement,
-//   ingested through the real pipeline so a first-time user lands on a matter
-//   that already answers cited questions and runs a legal review — no upload, no
-//   data of their own required. Demo-gated: it only runs via this script
-//   (`start.sh --demo` / `cd services/ingest && bun run seed`).
+//   seedSampleMatter() — the sample matter: a wholly fictional letter of
+//   engagement, ingested through the real pipeline so a first-time user lands on
+//   a matter that already answers cited questions and runs a legal review — no
+//   upload, no data of their own required. It runs only when asked: the lawyer
+//   chooses it in setup or Settings, or a script calls POST /sample-matter.
 //
-// seedDemo also writes the generated .docx to repo `demo/` so the same file can
-// be dropped into a new matter through the web UI. Everything in it is invented;
-// names and scenarios are fictional examples, not representations about real firms.
+// Run directly (`cd services/ingest && bun run sample-letter`), this file only
+// writes the generated .docx to repo `demo/` so the same file can be dropped
+// into a new matter through the web UI. Everything in it is invented; names and
+// scenarios are fictional examples, not representations about real firms.
 
 // dochaus/playbooks/ holds the repo-shipped starter playbooks — kept out of
 // dochaus/skill/ so the engine and listPlaybooks() never auto-discover them from
@@ -67,12 +70,12 @@ export function seedPlaybooks() {
 }
 
 const DOC_NAME = "Letter of Engagement — Aldgate Mills.docx"
-const MATTER_TITLE = "Aldgate Mills — Engagement (Demo)"
+const MATTER_TITLE = "Aldgate Mills — Engagement"
 
-// The demo letter is an E&W law-firm engagement letter, so the matter binds the
+// The sample letter is an E&W law-firm engagement letter, so the matter binds the
 // matching starter playbook — the full review pipeline (reviewer, playbook,
-// challenger, summarizer) then demos end-to-end on first run.
-const DEMO_PLAYBOOK = "playbook-engagement-letter"
+// challenger, summarizer) then runs end-to-end on the sample.
+const SAMPLE_PLAYBOOK = "playbook-engagement-letter"
 
 // Each clause is a bold "N. Title" heading paragraph followed by its body. The
 // ingest sectionizer keys sections off the leading clause number, so a citation
@@ -201,7 +204,7 @@ const NO_BORDERS = {
   insideVertical: { style: BorderStyle.NONE, size: 0, color: "auto" },
 }
 
-export async function seedDemo() {
+async function sampleLetter() {
   // The firm's emblem — a serif "A&C" monogram in a gold-ruled navy square. A
   // committed static asset, read at run time so the .docx carries a real
   // embedded image with no image-processing dependency.
@@ -309,39 +312,55 @@ export async function seedDemo() {
     ],
   })
 
-  const buffer = Buffer.from(withParagraphPointers(await Packer.toBuffer(doc)))
-
-  // Keep a copy in repo demo/ so the same .docx can be uploaded through the UI.
-  const demoDir = path.join(import.meta.dir, "..", "..", "..", "demo")
-  mkdirSync(demoDir, { recursive: true })
-  writeFileSync(path.join(demoDir, "Letter-of-Engagement-Aldgate-Mills.docx"), buffer)
-
-  // Seed the firm's template library from repo demo/templates. Demo-only: a non-demo
-  // boot ships an empty template library so first-run users start with nothing seeded.
-  seedTemplates()
-
-  // Idempotent: `start.sh --demo` runs this on every boot, so skip ingestion if the
-  // demo matter is already present rather than piling up duplicates. The .docx above
-  // is still rewritten so demo/ stays in sync with the seed script. The playbook is
-  // bound only at creation — an existing matter's binding (including a deliberate
-  // unbinding) is left alone.
-  const existing = listMatters().find((m) => m.title === MATTER_TITLE)
-  if (existing) {
-    console.log(`Demo matter "${MATTER_TITLE}" already present (${existing.id}); skipping ingest.`)
-    return
-  }
-
-  // The demo letter is an England & Wales engagement (SRA-regulated firm, UK GDPR,
-  // E&W governing-law clause), so seed it with the EW jurisdiction pack — the first
-  // run then shows jurisdiction-aware reasoning without any setup.
-  const matter = createMatter(MATTER_TITLE, "A&C/2026-0042", ["EW"], DEMO_PLAYBOOK)
-  const result = await ingestDocument(matter.dir, DOC_NAME, Buffer.from(buffer))
-  console.log(`Seeded matter "${matter.title}" (${matter.id}), bound to ${DEMO_PLAYBOOK}`)
-  console.log(`Ingested ${DOC_NAME}: ${result.sections} sections, ${result.chunks} chunks`)
-  console.log(`Open the web app and select "${MATTER_TITLE}" to try cited Q&A and a legal review.`)
+  return Buffer.from(withParagraphPointers(await Packer.toBuffer(doc)))
 }
 
+// Idempotent: an existing sample matter is returned untouched, so repeated
+// requests never pile up copies. matter.json's `sample` flag marks it and
+// survives a rename; once the lawyer deletes it, a later request adds it again.
+// The playbook is bound only at creation — an existing matter's binding
+// (including a deliberate unbinding) is left alone.
+export async function seedSampleMatter(): Promise<{ matter: Matter; created: boolean }> {
+  // Seed the firm's template library from repo demo/templates, if present. Only
+  // here: an install without the sample starts with an empty template library.
+  seedTemplates()
+  const existing = listMatters().find((m) => m.sample)
+  if (existing) return { matter: existing, created: false }
+  const letter = await sampleLetter()
+  // The letter is an England & Wales engagement (SRA-regulated firm, UK GDPR,
+  // E&W governing-law clause), so the matter carries the EW jurisdiction pack —
+  // the sample then shows jurisdiction-aware reasoning without any setup.
+  const matter = createMatter(MATTER_TITLE, "A&C/2026-0042", ["EW"], SAMPLE_PLAYBOOK, undefined, undefined, true)
+  try {
+    await ingestDocument(matter.dir, DOC_NAME, letter)
+  } catch (error) {
+    // A half-made sample would satisfy the idempotence check above and block a retry.
+    deleteMatter(matter.id)
+    throw error
+  }
+  return { matter, created: true }
+}
+
+// One seed at a time: a double click, or setup and Settings together, share the
+// running seed instead of each creating a sample.
+let seeding: Promise<{ matter: Matter; created: boolean }> | undefined
+
+export const sampleMatterRoutes = new Hono().post("/sample-matter", async (c) => {
+  seeding ??= seedSampleMatter().finally(() => {
+    seeding = undefined
+  })
+  try {
+    const result = await seeding
+    return c.json(result, result.created ? 201 : 200)
+  } catch (error) {
+    console.error("sample matter could not be added", diagnosticErrorMetadata(error))
+    return c.json({ error: "Could not add the sample matter." }, 500)
+  }
+})
+
 if (import.meta.main) {
-  seedPlaybooks()
-  await seedDemo()
+  const demoDir = path.join(import.meta.dir, "..", "..", "..", "demo")
+  mkdirSync(demoDir, { recursive: true })
+  writeFileSync(path.join(demoDir, "Letter-of-Engagement-Aldgate-Mills.docx"), await sampleLetter())
+  console.log("Wrote demo/Letter-of-Engagement-Aldgate-Mills.docx. Add the sample matter in setup or Settings, or POST /sample-matter.")
 }

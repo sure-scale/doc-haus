@@ -237,6 +237,8 @@ try {
         await preview(page).footer.scrollIntoViewIfNeeded()
         await shot(page, `onboarding-preview-${width}x${height}`)
 
+        // The sample matter is covered by e2e/sample-matter.ts.
+        await dialog.getByRole("checkbox", { name: "Add a sample matter to explore", exact: true }).uncheck()
         await dialog.getByRole("button", { name: "Save and finish", exact: true }).click()
         await expect(dialog).toHaveCount(0)
         expect(state.puts).toEqual([{ attorney: "Fixture Lawyer", firm: "Fixture Partners LLP", agreementLegend: "Subject to contract", adviceLegend: "", dateFormat: "day-month-year" }])
@@ -254,6 +256,7 @@ try {
       await page.getByRole("checkbox", { name: "New York US-NY" }).check()
       await page.keyboard.press("Escape")
       await expect(dialog.getByText("Suggested", { exact: true })).toHaveCount(2)
+      await dialog.getByRole("checkbox", { name: "Add a sample matter to explore", exact: true }).uncheck()
       await dialog.getByRole("button", { name: "Save and finish", exact: true }).click()
       await expect(dialog).toHaveCount(0)
       expect(state.puts).toEqual([{ attorney: "Fixture Lawyer", firm: "", agreementLegend: "", adviceLegend: "", dateFormat: "month-day-year" }])

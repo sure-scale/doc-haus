@@ -47,9 +47,9 @@ services/ingest/workspace/
 /.claude
 .dochaus/
 
-# Generated demo letter: services/ingest seed.ts rebuilds it on every run and
-# the docx library stamps core.xml with the current time, so a tracked copy
-# only churns. Regenerate with `cd services/ingest && bun run seed`.
+# Generated sample letter: the docx library stamps core.xml with the current
+# time, so a tracked copy only churns. Regenerate with
+# `cd services/ingest && bun run sample-letter`.
 demo/Letter-of-Engagement-Aldgate-Mills.docx
 
 # Installation secrets and durable/generated state at any depth.

@@ -25,6 +25,14 @@ First-run setup assumes this is your first installation:
 3. Confirm a primary and fast model from that provider; the same model is allowed.
    Research and firm details are optional and can be skipped.
 
+The last setup step offers a sample matter to explore: a fictional engagement
+letter, ready for cited questions and a legal review. It is pre-selected only
+when the workspace has no matters and is added when you finish setup. Add it
+later from Settings → Matter defaults; the sample is labelled in the matters list
+and is deleted like any matter. Scripts and test harnesses can add it with
+`POST /sample-matter` on the ingest service (default port 4501). The request is
+idempotent: it returns the existing sample rather than adding a second one.
+
 Detection uses OpenCode's native provider/integration/model services and works
 without another OpenCode installation. The launcher inherits provider environment
 variables. Native local Ollama/LM Studio discovery is reused; a custom

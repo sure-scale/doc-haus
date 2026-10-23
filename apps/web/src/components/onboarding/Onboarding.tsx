@@ -1,9 +1,11 @@
 import { useContext, useEffect, useRef, useState } from "react"
 import { getPreferences, type DraftingPreferences } from "../../api/ingest/preferences"
-import { listJurisdictions, type Jurisdiction } from "../../api/ingest/matters"
+import { addSampleMatter, listJurisdictions, listMatters, type Jurisdiction } from "../../api/ingest/matters"
+import { humanizeError } from "../../api/ingest/errors"
 import { getSetup, saveSetup, type SetupProgress } from "../../api/ingest/setup"
 import { loadPrefs } from "../../prefs"
 import { Closing } from "../useExit"
+import { useToast } from "../Toast"
 import DraftingDetailsStep from "./DraftingDetailsStep"
 import ResearchTab from "../settings/ResearchTab"
 import AISetup, { type AISetupProgress, type SetupPhase } from "../ai-setup/AISetup"
@@ -18,7 +20,7 @@ const stages = [
   { id: "details", label: "Details", title: "Make doc.haus yours", description: "Add the details you use in your drafts." },
 ]
 
-export default function Onboarding({ onClose }: { onClose: () => void }) {
+export default function Onboarding({ onClose, onSampleAdded }: { onClose: () => void; onSampleAdded?: () => void }) {
   // The trap lets go, and focus returns, as the exit starts.
   const closing = useContext(Closing)
   const [notice, setNotice] = useState("")
@@ -38,6 +40,15 @@ export default function Onboarding({ onClose }: { onClose: () => void }) {
   const [progress, setProgress] = useState<SetupProgress | null>(null)
   const [researchMounted, setResearchMounted] = useState(false)
   const [aiMounted, setAIMounted] = useState(false)
+  // The sample matter choice on the last step: pre-selected only for an empty
+  // workspace, and offered only while no sample exists. Kept across steps.
+  const [addSample, setAddSample] = useState<boolean | null>(null)
+  const [sampleExists, setSampleExists] = useState(false)
+  const [sampleState, setSampleState] = useState<"idle" | "adding" | "failed">("idle")
+  const [sampleError, setSampleError] = useState("")
+  // Where setup goes once the sample is in, so a failed seed can still move on.
+  const [sampleNext, setSampleNext] = useState<SetupProgress["next"]>("done")
+  const toast = useToast()
   const panel = useRef<HTMLDivElement>(null)
   const body = useRef<HTMLDivElement>(null)
   const heading = useRef<HTMLHeadingElement>(null)
@@ -73,8 +84,9 @@ export default function Onboarding({ onClose }: { onClose: () => void }) {
   async function load() {
     setLoading(true); setFailed(false); setNotice("")
     try {
-      const [next, preferences, list] = await Promise.all([getSetup(), getPreferences(), listJurisdictions()])
+      const [next, preferences, list, matters] = await Promise.all([getSetup(), getPreferences(), listJurisdictions(), listMatters().catch(() => null)])
       setProgress(next); setDrafting(preferences); setJurisdictions(list)
+      if (matters) { setSampleExists(matters.some(matter => matter.sample)); setAddSample(choice => choice ?? matters.length === 0) }
       if (next.ready && (next.next === "details" || next.next === "research")) setStep(next.next)
     } catch (error) { setFailed(true); setNotice(error instanceof Error ? error.message : "Could not load setup. Retry.") }
     finally { setLoading(false) }
@@ -108,6 +120,51 @@ export default function Onboarding({ onClose }: { onClose: () => void }) {
     if (next.next === "done") onClose()
     else setStep(next.next === "models" ? "setup" : next.next)
   }
+  function leave(next: SetupProgress["next"]) {
+    if (next === "done") onClose()
+    else setStep(next === "models" ? "setup" : next)
+  }
+  // Setup progress is saved before seeding, so a failed seed never undoes it.
+  async function seedSample(next: SetupProgress["next"]) {
+    setSampleState("adding"); setSampleError(""); setSampleNext(next)
+    try {
+      await addSampleMatter()
+      setSampleExists(true); setSampleState("idle")
+      onSampleAdded?.()
+      toast("success", "Sample matter added to your matters.")
+      leave(next)
+    } catch (error) {
+      setSampleState("failed"); setSampleError(humanizeError(error, "Could not add the sample matter."))
+    }
+  }
+  async function finishDetails() {
+    if (advancing) return
+    setAdvancing(true); setSaveNotice("")
+    try {
+      const next = await saveSetup("details", "completed")
+      setProgress(next)
+      if (addSample && !sampleExists) await seedSample(next.next)
+      else leave(next.next)
+    } finally { setAdvancing(false) }
+  }
+  async function retrySample() {
+    if (advancing) return
+    setAdvancing(true)
+    try { await seedSample(sampleNext) } finally { setAdvancing(false) }
+  }
+  const sampleChoice = !sampleExists && addSample !== null && <section className="settings-section onboarding-sample">
+    <h3>Sample matter</h3>
+    <label className="page-layout-check" htmlFor="onboarding-sample">
+      <input id="onboarding-sample" type="checkbox" checked={addSample} disabled={advancing} aria-describedby="onboarding-sample-hint" onChange={event => setAddSample(event.target.checked)} />
+      <span>Add a sample matter to explore</span>
+    </label>
+    <p id="onboarding-sample-hint" className="settings-hint muted">A fictional engagement letter, ready for cited questions and a legal review. Delete it like any matter when you are done.</p>
+    {sampleState === "adding" && <p role="status" className="settings-hint">Adding the sample matter…</p>}
+    {sampleState === "failed" && <div role="alert" className="settings-warning onboarding-sample-error">
+      <p>{sampleError} Your setup is saved.</p>
+      <div className="onboarding-sample-actions"><button disabled={advancing} onClick={() => void retrySample()}>Retry</button><button disabled={advancing} onClick={() => { setSampleState("idle"); leave(sampleNext) }}>Continue without it</button></div>
+    </div>}
+  </section>
   async function advance(which: "details" | "research", status: "completed" | "skipped") {
     if (advancing) return
     setAdvancing(true); setSaveNotice("")
@@ -150,7 +207,7 @@ export default function Onboarding({ onClose }: { onClose: () => void }) {
           {(aiMounted || step === "setup") && <div className="onboarding-stage-content" hidden={step !== "setup"} inert={step !== "setup"}>
             <AISetup mode="onboarding" phase={phase} onPhaseChange={setPhase} onProgress={setAI} onSaved={modelsComplete} />
           </div>}
-          {currentStage === "details" && <DraftingDetailsStep drafting={drafting} setDrafting={setDrafting} jurisdictions={jurisdictions} selectedJx={selectedJx} setSelectedJx={setSelectedJx} dateFormatChoice={dateFormatChoice} setDateFormatChoice={setDateFormatChoice} setStep={setStep} onClose={() => advance("details", "completed")} />}
+          {currentStage === "details" && <DraftingDetailsStep drafting={drafting} setDrafting={setDrafting} jurisdictions={jurisdictions} selectedJx={selectedJx} setSelectedJx={setSelectedJx} dateFormatChoice={dateFormatChoice} setDateFormatChoice={setDateFormatChoice} setStep={setStep} onClose={finishDetails} extra={sampleChoice} busyLabel={sampleState === "adding" ? "Adding sample matter…" : undefined} />}
           {(researchMounted || currentStage === "research") && <div className="onboarding-stage-content onboarding-research" hidden={currentStage !== "research"} inert={currentStage !== "research"}>
             <ResearchTab heading="Sources and connections" actionLabel="Save and continue" secondaryActions={busy => <button disabled={busy || advancing} onClick={() => { setPhase("provider"); setStep("setup") }}>Back to AI setup</button>} onComplete={() => { void advance("research", "completed").catch(error => setSaveNotice(error instanceof Error ? error.message : "Could not save setup progress. Retry.")) }} />
           </div>}

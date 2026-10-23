@@ -1510,12 +1510,14 @@ function readDocumentTarget(directory: string, name: string) {
   }
 }
 
-// Every install gets the repo-shipped starter playbooks, so seed them on boot —
-// demo content (the Aldgate Mills matter) stays gated behind `start.sh --demo`,
-// which runs seed.ts directly. Dynamic import keeps seed.ts's heavy docx
-// dependency out of the request path's module graph.
-const { seedPlaybooks } = await import("./seed")
+// Every install gets the repo-shipped starter playbooks, so seed them on boot.
+// The sample matter (the fictional Aldgate Mills letter) is added only on
+// request: POST /sample-matter, called when the lawyer chooses it in setup or
+// Settings. Dynamic import keeps seed.ts's heavy docx dependency out of the
+// request path's module graph.
+const { seedPlaybooks, sampleMatterRoutes } = await import("./seed")
 seedPlaybooks()
+app.route("/", sampleMatterRoutes)
 
 // Run database compatibility migrations at startup: build/backfill the lexical
 // index and refresh vectors, structure and sections when their versions change.

@@ -21,7 +21,9 @@ import { formatDate } from "../lib/format"
 import { loadPrefs } from "../prefs"
 import PageBar from "../components/PageBar"
 
-export default function Matters() {
+// refresh changes when a matter is added from elsewhere (the sample matter from
+// setup or Settings), so the list re-loads.
+export default function Matters({ refresh = 0 }: { refresh?: number }) {
   const [matters, setMatters] = useState<Matter[]>([])
   const [jurisdictions, setJurisdictions] = useState<Jurisdiction[]>([])
   const [loading, setLoading] = useState(true)
@@ -70,6 +72,9 @@ export default function Matters() {
 
   useEffect(() => {
     load()
+  }, [refresh])
+
+  useEffect(() => {
     listJurisdictions()
       .then(setJurisdictions)
       .catch(() => undefined)
@@ -332,6 +337,7 @@ export default function Matters() {
                   <Link to={`/matter/${m.id}`} className="list-row-main">
                     <span className="list-row-title">
                       {m.title}
+                      {m.sample && <span className="badge badge-quiet">Sample</span>}
                     </span>
                     <span className="list-row-meta">
                       {m.client && <span className="matter-client">{m.client}</span>}

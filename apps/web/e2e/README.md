@@ -104,6 +104,21 @@ top edge, be the element under its own centre and have an opaque background in
 the run header's colour. A real pointer click just past the summary must fold
 the list. It sends no writes.
 
+Run the sample matter regression with the same environment:
+
+```sh
+PLAYWRIGHT_BASE_URL=http://127.0.0.1:5189 \
+DOCHAUS_EVIDENCE_DIR=/tmp/doc-haus-sample-matter-evidence \
+bun apps/web/e2e/sample-matter.ts
+```
+
+It checks that setup's last step pre-selects the sample matter only for an
+empty workspace, that finishing adds it once (and adds nothing when unchecked),
+that a failed add keeps setup saved and offers a retry, and that Settings →
+Matter defaults adds it later and is then disabled. The matters list must label
+it. The sample request is answered by the fixture; the real seed is covered by
+`services/ingest/src/sample-matter.test.ts`.
+
 Run the page layout regression with the same environment:
 
 ```sh
