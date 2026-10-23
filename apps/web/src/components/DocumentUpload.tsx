@@ -71,6 +71,8 @@ export default function DocumentUpload({
   const [uploads, setUploads] = useState<Upload[]>([])
   const [removing, setRemoving] = useState<string>()
   const [confirmId, setConfirmId] = useState<number | null>(null)
+  // A long attachment list the lawyer opened or closed, by parent name.
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const nextKey = useRef(0)
   const watched = useRef(false)
   // Uploads run one at a time so a batch does not swamp the reader.
@@ -135,7 +137,7 @@ export default function DocumentUpload({
       const failed = result.attachments?.failed ?? []
       toast(
         failed.length ? "error" : "success",
-        `Removed ${name}${removed ? ` and ${removed} attachment${removed === 1 ? "" : "s"}` : ""}.${
+        `Removed ${name}${removed ? ` and ${parentWords(name).count(removed)}` : ""}.${
           kept.length ? ` Kept ${kept.map((k) => k.name).join(", ")}.` : ""
         }${failed.map((f) => ` ${f.name}: ${f.reason}`).join("")}`,
       )
@@ -157,6 +159,128 @@ export default function DocumentUpload({
   const draftedPending = new Map(generated.filter((d) => d.pending).map((d) => [d.name, d.pending!]))
   const working = uploads.filter((u) => u.status === "queued" || u.status === "uploading" || u.status === "reading").length
 
+  // A source row, then the documents that came out of it (an email's
+  // attachments, an archive's files) indented under it, each listed once.
+  function renderSource(node: SourceNode, depth: number) {
+    const d = node.document
+    const child = depth > 0
+    const parent = d.attachment_of
+    const viewable = matterDocumentKind(d.name) !== undefined
+    const renamed = node.attachment?.name && node.attachment.name !== d.name ? node.attachment.name : undefined
+    const notes = [
+      renamed && `Attached as ${renamed}`,
+      node.attachment?.note === "may-contain-attachments" && "May contain further attachments",
+      node.attachment?.flagged && "Suspicious name",
+    ].filter(Boolean)
+    const actions = <>
+      {onCompare && /\.docx$/i.test(d.name) && (
+        <button className="doc-compare" onClick={() => onCompare(d.name)} title="Compare with another version" aria-label={`Compare ${d.name} with another version`}>
+          <CompareIcon />
+        </button>
+      )}
+      {confirmId === d.id && d.removal ? null : confirmId === d.id ? (
+        <button
+          className="icon-btn danger"
+          title={`Remove ${d.name} — indexed text is deleted and answers can no longer cite it`}
+          onClick={(e) => {
+            e.stopPropagation()
+            onRemove(d.name)
+          }}
+        >
+          Confirm
+        </button>
+      ) : (
+        <button
+          className="doc-remove"
+          onClick={(e) => {
+            e.stopPropagation()
+            setConfirmId(d.id)
+          }}
+          title={`Remove ${d.name}`}
+          aria-label={`Remove ${d.name}`}
+          disabled={removing === d.name}
+        >
+          <IconTrash />
+        </button>
+      )}
+    </>
+    return (
+      <>
+        <div className={`doc-row is-uploaded${child ? " is-child" : ""}`}>
+          <div className="doc-row-main">
+            <DocumentType name={d.name} />
+            {viewable ? (
+              <button className="linklike" onClick={() => onView(d.name)}>
+                {d.name}
+              </button>
+            ) : (
+              <span className="doc-row-name">{d.name}</span>
+            )}
+            {d.pending ? (
+              <span className="redline-badge" title={`${d.pending} pending change${d.pending === 1 ? "" : "s"} to review`}>
+                {d.pending}
+              </span>
+            ) : null}
+            {child && <span className="doc-row-actions">{actions}</span>}
+          </div>
+          <QualityNote quality={d.quality} />
+          {notes.length > 0 && <span className="doc-child-status">{notes.join(" · ")}</span>}
+          {!child && (
+            <div className="doc-row-meta">
+              <span className="document-origin" title={parent ? `Extracted from the ${parentWords(parent.name).parent} ${parent.name}` : undefined}>
+                {parent ? `From removed ${parentWords(parent.name).parent} ${parent.name}` : "Uploaded"}
+              </span>
+              <time className="document-time" dateTime={new Date(d.created_at).toISOString()} title={`Added to matter: ${formatDateTime(d.created_at)}`}>
+                {formatTime(d.created_at)}
+              </time>
+              {actions}
+            </div>
+          )}
+          {confirmId === d.id && d.removal && (
+            <EmailRemoveConfirm name={d.name} removal={d.removal} onRemove={(keep) => onRemove(d.name, keep)} onCancel={() => setConfirmId(null)} />
+          )}
+        </div>
+        {renderChildren(node, depth)}
+      </>
+    )
+  }
+
+  function renderChildren(node: SourceNode, depth: number) {
+    const d = node.document
+    const count = node.children.length
+    const embedded = d.embedded_images ?? 0
+    if (!count && !embedded) return null
+    const long = count > EXPANDED_CHILDREN
+    const open = expanded[d.name] ?? !long
+    const id = `doc-children-${d.id}`
+    const words = parentWords(d.name)
+    return (
+      <div className="doc-children-group">
+        {long && (
+          <button type="button" className="doc-children-toggle" aria-expanded={open} aria-controls={id}
+            onClick={() => setExpanded((prev) => ({ ...prev, [d.name]: !open }))}>
+            <IconChevron />
+            {open ? `Hide ${words.count(count)}` : words.count(count)}
+          </button>
+        )}
+        {open && (
+          <ul id={id} className="doc-children" aria-label={`${words.list} ${d.name}`}>
+            {node.children.map((item, index) => (
+              <li key={"document" in item ? `doc:${item.document.id}` : `entry:${index}`}>
+                {"document" in item ? renderSource(item, depth + 1) : <AttachmentEntryRow attachment={item.attachment} documents={sources} onView={onView} />}
+              </li>
+            ))}
+            {embedded > 0 && (
+              <li className="doc-children-note">
+                {embedded} embedded image{embedded === 1 ? "" : "s"} in the message body
+              </li>
+            )}
+          </ul>
+        )}
+      </div>
+    )
+  }
+
   const timeline = [
     ...drafted.flatMap((group): DraftedOutput[] => [group.main, ...group.extras, ...(group.combined ? [{ name: group.combined, role: "combined" as const }] : [])]).map((output) => {
       const document = generated.find((document) => document.name === output.name)!
@@ -173,73 +297,10 @@ export default function DocumentUpload({
           </>} />,
       }
     }),
-    ...sources.map((d) => ({
-      key: `source:${d.id}`,
-      createdAt: d.created_at,
-      content: (
-      <div className="doc-row is-uploaded">
-        <div className="doc-row-main">
-          <DocumentType kind={matterDocumentKind(d.name) ?? "docx"} />
-          <button className="linklike" onClick={() => onView(d.name)}>
-            {d.name}
-          </button>
-          {d.pending ? (
-            <span className="redline-badge" title={`${d.pending} pending change${d.pending === 1 ? "" : "s"} to review`}>
-              {d.pending}
-            </span>
-          ) : null}
-        </div>
-        {d.attachments && d.attachments.length > 0 && (
-          <EmailAttachments attachments={d.attachments} embedded={d.embedded_images ?? 0} onView={onView} />
-        )}
-        <QualityNote quality={d.quality} />
-        <div className="doc-row-meta">
-          <span className="document-origin" title={d.attachment_of ? `Extracted from the email ${d.attachment_of.name}` : undefined}>
-            {d.attachment_of
-              ? d.attachment_of.removed
-                ? `From removed email ${d.attachment_of.name}`
-                : `Attachment of ${d.attachment_of.name}`
-              : "Uploaded"}
-          </span>
-          <time className="document-time" dateTime={new Date(d.created_at).toISOString()} title={`Added to matter: ${formatDateTime(d.created_at)}`}>
-            {formatTime(d.created_at)}
-          </time>
-          {onCompare && /\.docx$/i.test(d.name) && (
-            <button className="doc-compare" onClick={() => onCompare(d.name)} title="Compare with another version" aria-label={`Compare ${d.name} with another version`}>
-              <CompareIcon />
-            </button>
-          )}
-          {confirmId === d.id && d.removal ? null : confirmId === d.id ? (
-            <button
-              className="icon-btn danger"
-              title={`Remove ${d.name} — indexed text is deleted and answers can no longer cite it`}
-              onClick={(e) => {
-                e.stopPropagation()
-                onRemove(d.name)
-              }}
-            >
-              Confirm
-            </button>
-          ) : (
-            <button
-              className="doc-remove"
-              onClick={(e) => {
-                e.stopPropagation()
-                setConfirmId(d.id)
-              }}
-              title={`Remove ${d.name}`}
-              aria-label={`Remove ${d.name}`}
-              disabled={removing === d.name}
-            >
-              <IconTrash />
-            </button>
-          )}
-        </div>
-        {confirmId === d.id && d.removal && (
-          <EmailRemoveConfirm name={d.name} removal={d.removal} onRemove={(keep) => onRemove(d.name, keep)} onCancel={() => setConfirmId(null)} />
-        )}
-      </div>
-      ),
+    ...documentTree(sources).map((node) => ({
+      key: `source:${node.document.id}`,
+      createdAt: node.document.created_at,
+      content: renderSource(node, 0),
     })),
   ].sort((a, b) => b.createdAt - a.createdAt || a.key.localeCompare(b.key))
 
@@ -400,13 +461,15 @@ export function attachmentsSummary(result: Pick<IngestResult, "attachments"> & {
     added && ` ${added} ${noun}${added === 1 ? "" : "s"} added.`,
     same && ` ${same} already in the matter.`,
     unreadable.length && ` Added but not indexed, no readable text: ${unreadable.map(attachmentName).join(", ")}.`,
-    missing.length && ` Not added: ${missing.map((a) => `${attachmentName(a)} (${ATTACHMENT_STATUS[a.status].toLowerCase()})`).join(", ")}.`,
+    missing.length && ` Not added: ${missing.map((a) => `${attachmentName(a)} (${attachmentStatus(a.status).toLowerCase()})`).join(", ")}.`,
   ]
     .filter(Boolean)
     .join("")
 }
 
-const ATTACHMENT_STATUS: Record<EmailAttachment["status"], string> = {
+// What became of an attachment, in words. A status this build does not know
+// (a newer ingest's) still reads as not added rather than as nothing.
+const ATTACHMENT_STATUS: Record<string, string> = {
   indexed: "Added",
   same: "Already in the matter",
   removed: "Removed from the matter",
@@ -418,56 +481,106 @@ const ATTACHMENT_STATUS: Record<EmailAttachment["status"], string> = {
   encrypted: "Password-protected",
   unsafe_path: "Unsafe path in the zip",
   too_large: "Too large to unpack",
+} satisfies Record<EmailAttachment["status"], string> & Record<string, string>
+
+function attachmentStatus(status: string) {
+  return Object.hasOwn(ATTACHMENT_STATUS, status) ? ATTACHMENT_STATUS[status]! : "Not added"
 }
 
 function attachmentName(attachment: EmailAttachment) {
   return attachment.name || attachment.document || "Unnamed attachment"
 }
 
-// An email's attachments under its row: each one's stated name and what became
-// of it, with a link to the matter document that holds it.
-export function EmailAttachments({ attachments, embedded, onView }: {
-  attachments: EmailAttachment[]
-  embedded: number
+// The documents list as a tree. A document extracted from another (an email's
+// attachment, a file from an archive) sits under that parent, keyed on the
+// parent link rather than the file type, and is listed only there. Each parent
+// also lists, in the order it states them, the attachments that did not become
+// one of its documents: not added, removed since, or the same as a document
+// already elsewhere in the matter, so nothing silently disappears. A document
+// whose parent was removed, or whose links loop, is listed at the top level.
+export type SourceNode = { document: Document; attachment?: EmailAttachment; children: (SourceNode | { attachment: EmailAttachment })[] }
+
+export function documentTree(sources: Document[]): SourceNode[] {
+  const byName = new Map(sources.map((d) => [d.name, d]))
+  const parentOf = (d: Document) =>
+    d.attachment_of && !d.attachment_of.removed && d.attachment_of.name !== d.name ? byName.get(d.attachment_of.name) : undefined
+  const children = new Map<string, Document[]>()
+  for (const d of sources) {
+    const parent = parentOf(d)
+    if (parent) children.set(parent.name, [...(children.get(parent.name) ?? []), d])
+  }
+  const placed = new Set<string>()
+  const node = (document: Document, attachment?: EmailAttachment): SourceNode => {
+    placed.add(document.name)
+    const own = children.get(document.name) ?? []
+    const items: SourceNode["children"] = []
+    for (const entry of document.attachments ?? []) {
+      const child = own.find((d) => d.name === entry.document && !placed.has(d.name))
+      items.push(child ? node(child, entry) : { attachment: entry })
+    }
+    for (const child of own) if (!placed.has(child.name)) items.push(node(child))
+    return { document, attachment, children: items }
+  }
+  const roots = sources.filter((d) => !parentOf(d)).map((d) => node(d))
+  for (const d of sources) if (!placed.has(d.name)) roots.push(node(d))
+  return roots
+}
+
+// Up to this many children show under their parent; a longer list starts
+// closed behind a count.
+const EXPANDED_CHILDREN = 5
+
+// How a parent and what came out of it are named: an email's attachments, a
+// zip's files, or any other parent's files.
+function parentWords(name: string) {
+  const parent = /\.eml$/i.test(name) ? "email" : /\.zip$/i.test(name) ? "zip" : "file"
+  const child = parent === "email" ? "attachment" : "file"
+  return {
+    parent,
+    children: `${child}s`,
+    count: (n: number) => `${n} ${child}${n === 1 ? "" : "s"}`,
+    list: parent === "email" ? "Attachments of" : "Files in",
+    came: parent === "email" ? "came with" : "contains",
+  }
+}
+
+// An attachment that is not one of its parent's documents: its stated name and
+// what became of it. One kept as, or the same as, a document elsewhere in the
+// matter links to that document; the rest cannot be opened.
+export function AttachmentEntryRow({ attachment, documents, onView }: {
+  attachment: EmailAttachment
+  documents: Document[]
   onView: (name: string) => void
 }) {
+  const linked = attachment.document && attachment.status !== "removed" && documents.some((d) => d.name === attachment.document)
+    ? attachment.document
+    : undefined
+  const status = attachment.status === "same" && attachment.document ? `Same as ${attachment.document}` : attachmentStatus(attachment.status)
   return (
-    <ul className="email-attachments" aria-label="Attachments">
-      {attachments.map((attachment, index) => {
-        const linked = attachment.document && (attachment.status === "indexed" || attachment.status === "same" || attachment.status === "no_readable_text")
-        const renamed = attachment.document && attachment.document !== attachment.name
-        return (
-          <li key={index} className={`email-attachment is-${attachment.status}`}>
-            <span className="email-attachment-name">{attachmentName(attachment)}</span>
-            <span className="email-attachment-status">
-              {linked ? (
-                <button type="button" className="linklike" onClick={() => onView(attachment.document!)}>
-                  {attachment.status === "no_readable_text"
-                    ? `${ATTACHMENT_STATUS.no_readable_text}${renamed ? ` (${attachment.document})` : ""}`
-                    : attachment.status === "same" ? `Same as ${attachment.document}` : renamed ? `Added as ${attachment.document}` : "Added"}
-                </button>
-              ) : (
-                ATTACHMENT_STATUS[attachment.status]
-              )}
-              {attachment.note === "may-contain-attachments" && " · may contain further attachments"}
-              {attachment.flagged && " · suspicious name"}
-              {attachment.degraded && " · text may be incomplete or garbled"}
-            </span>
-          </li>
-        )
-      })}
-      {embedded > 0 && (
-        <li className="email-attachment is-embedded">
-          {embedded} embedded image{embedded === 1 ? "" : "s"} in the message body
-        </li>
-      )}
-    </ul>
+    <div className={`doc-row is-child is-entry is-${attachment.status}`}>
+      <div className="doc-row-main">
+        <DocumentType name={attachmentName(attachment)} />
+        <span className="doc-row-name">{attachmentName(attachment)}</span>
+      </div>
+      <span className="doc-child-status">
+        {linked ? (
+          <button type="button" className="linklike" onClick={() => onView(linked)}>
+            {status}
+          </button>
+        ) : (
+          status
+        )}
+        {attachment.note === "may-contain-attachments" && " · may contain further attachments"}
+        {attachment.flagged && " · suspicious name"}
+      </span>
+    </div>
   )
 }
 
-// Removing an email names the attachments that came with it and offers to
-// remove them too (the default) or the email only. An attachment another email
-// still links to, or that the lawyer changed, is always kept and named.
+// Removing an email (or a zip) names the documents that came out of it and
+// offers to remove them too (the default) or the parent only. A document
+// another parent still links to, or that the lawyer changed, is always kept and
+// named.
 export function EmailRemoveConfirm({ name, removal, onRemove, onCancel }: {
   name: string
   removal: EmailRemoval
@@ -475,26 +588,27 @@ export function EmailRemoveConfirm({ name, removal, onRemove, onCancel }: {
   onCancel: () => void
 }) {
   const count = removal.attachments.length
+  const words = parentWords(name)
   return (
     <div className="email-remove-confirm" role="group" aria-label={`Remove ${name}`} onClick={(e) => e.stopPropagation()}>
       <p>
         {count
-          ? `${name} came with ${removal.attachments.join(", ")}.`
-          : `${name} came with attachments that stay in the matter.`}
+          ? `${name} ${words.came} ${removal.attachments.join(", ")}.`
+          : `${name} ${words.came} ${words.children} that stay in the matter.`}
         {removal.kept.map((kept) => (
           <span key={kept.name} className="email-remove-kept">
             {" "}
-            {kept.name} is kept: {kept.reason === "linked" ? "another email also has it" : "it has changed since it was added"}.
+            {kept.name} is kept: {kept.reason === "linked" ? "another email or zip also has it" : "it has changed since it was added"}.
           </span>
         ))}
       </p>
       <span className="upload-actions">
         <button type="button" className="icon-btn danger" autoFocus onClick={() => onRemove(false)}>
-          {count ? `Remove email and ${count} attachment${count === 1 ? "" : "s"}` : "Remove email"}
+          {count ? `Remove ${words.parent} and ${words.count(count)}` : `Remove ${words.parent}`}
         </button>
         {count > 0 && (
           <button type="button" className="icon-btn" onClick={() => onRemove(true)}>
-            Remove email only
+            Remove {words.parent} only
           </button>
         )}
         <button type="button" className="icon-btn" onClick={onCancel}>
@@ -604,21 +718,41 @@ function IconFile() {
   )
 }
 
-// The file-type glyph beside a document name: emails and spreadsheets get their
-// own, so they read apart from the Word and PDF files beside them.
-const DOCUMENT_TYPE_LABEL: Record<MatterDocumentKind, string> = {
+// The file-type glyph beside a document name: emails, spreadsheets and archives
+// get their own, so they read apart from the Word and PDF files beside them.
+type DocumentGlyph = MatterDocumentKind | "zip" | "file"
+const DOCUMENT_TYPE_LABEL: Record<DocumentGlyph, string> = {
   docx: "Word document",
   pdf: "PDF document",
   eml: "Email",
   xlsx: "Excel spreadsheet",
   zip: "Zip file",
+  file: "File",
 }
 
-function DocumentType({ kind }: { kind: MatterDocumentKind }) {
+function DocumentType({ name }: { name: string }) {
+  const kind: DocumentGlyph = matterDocumentKind(name) ?? (/\.zip$/i.test(name.trim()) ? "zip" : "file")
   return (
     <span className={`doc-type is-${kind}`} title={DOCUMENT_TYPE_LABEL[kind]} aria-hidden>
-      {kind === "eml" ? <IconEmail /> : kind === "xlsx" ? <IconSheet /> : <IconFile />}
+      {kind === "eml" ? <IconEmail /> : kind === "xlsx" ? <IconSheet /> : kind === "zip" ? <IconArchive /> : <IconFile />}
     </span>
+  )
+}
+
+function IconArchive() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="4" width="18" height="5" rx="1" />
+      <path d="M5 9v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9M10 13h4" />
+    </svg>
+  )
+}
+
+function IconChevron() {
+  return (
+    <svg className="doc-children-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <polyline points="9 5 16 12 9 19" />
+    </svg>
   )
 }
 

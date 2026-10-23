@@ -399,15 +399,35 @@ button:is(.change-id, .change-ref):hover { text-decoration: underline; }
   .docx-render .compare-focus { animation: none; }
 }
 
-/* An email's attachments under its row, and the two-choice remove confirmation. */
-.email-attachments { list-style: none; margin: 4px 0 0 38px; padding: 0 0 0 var(--space-3); border-left: 1px solid var(--border-soft); display: grid; gap: 2px; }
-.email-attachment { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px var(--space-2); font-size: 0.75rem; line-height: 1.5; }
-.email-attachment-name { color: var(--text); overflow-wrap: anywhere; }
-.email-attachment-status { color: var(--muted); font-size: 0.6875rem; }
-.email-attachment-status .linklike { font-size: inherit; color: var(--accent); }
-.email-attachment:is(.is-failed, .is-pending) .email-attachment-status { color: var(--danger); }
-.email-attachment.is-embedded { color: var(--muted); font-size: 0.6875rem; }
-.email-attachment.is-no_readable_text .email-attachment-status .linklike { color: var(--warn); }
+/* The documents tree: a document extracted from another (an email's attachment,
+   an archive's file) sits once under its parent, behind a rule aligned with the
+   parent's type chip, as a lighter single-line row; deeper levels indent again. */
+.doc-children-group { margin: 0 0 var(--space-1) 21px; padding-left: var(--space-2); border-left: 1px solid var(--border); }
+.doc-children { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
+.doc-children-toggle { display: inline-flex; align-items: center; gap: var(--space-1); min-height: 32px; padding: 0 var(--space-2); border: 0; border-radius: var(--radius-sm); background: none; color: var(--accent); font: inherit; font-size: 0.75rem; font-weight: 500; cursor: pointer; }
+.doc-children-toggle:hover { background: var(--md-sys-color-surface-container-low); }
+.doc-children-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.doc-children-chevron { flex: none; transition: transform var(--duration-fast) var(--ease-out); }
+.doc-children-toggle[aria-expanded="true"] .doc-children-chevron { transform: rotate(90deg); }
+@media (prefers-reduced-motion: reduce) { .doc-children-chevron { transition: none; } }
+.doc-children-note { padding: var(--space-1) var(--space-2); color: var(--muted); font-size: 0.6875rem; line-height: 1.5; }
+.docs-drawer .matter-files-collection .doc-row.is-child { padding: 6px var(--space-2); }
+.docs-drawer .matter-files-collection .doc-row.is-child .doc-row-main { gap: var(--space-2); min-height: 32px; }
+.docs-drawer .matter-files-collection .doc-row.is-child .doc-type { width: 22px; height: 22px; }
+.docs-drawer .matter-files-collection .doc-row.is-child .doc-type svg { width: 13px; height: 13px; }
+.docs-drawer .matter-files-collection .doc-row.is-child .doc-row-main .linklike,
+.doc-row-name { min-width: 0; overflow-wrap: anywhere; font-size: 0.75rem; line-height: 1.4; }
+.docs-drawer .matter-files-collection .doc-row.is-child .doc-row-main .linklike { font-weight: 400; text-align: left; }
+.doc-row-name { color: var(--text); }
+.doc-row-actions { flex: none; display: inline-flex; align-items: center; margin-left: auto; }
+.doc-row-actions > * { margin-left: 0; }
+.docs-drawer .matter-files-collection .doc-row.is-child .document-quality,
+.doc-child-status { display: block; margin: 0 0 0 30px; font-size: 0.6875rem; line-height: 1.5; }
+.doc-child-status { color: var(--muted); }
+.doc-child-status .linklike { font-size: inherit; color: var(--accent); }
+.doc-row.is-entry .doc-row-name { color: var(--text-secondary); }
+.doc-row.is-entry:is(.is-failed, .is-pending) .doc-child-status { color: var(--danger); }
+.docs-drawer .matter-files-collection .doc-row.is-child .email-remove-confirm { margin-left: 30px; }
 /* Extraction quality (#239): a degraded or unreadable source says so under its name. */
 .document-quality { display: block; margin: 2px 0 0 38px; color: var(--warn); font-size: 0.6875rem; line-height: 1.5; }
 .email-remove-confirm { margin: var(--space-2) 0 0 38px; display: grid; gap: var(--space-2); font-size: 0.75rem; line-height: 1.5; }
