@@ -71,6 +71,10 @@ describe("requested output file names", () => {
     expect(title("RE:  Re: Supply note")).toBe("Supply note")
     expect(title("Subject Access Request")).toBe("Subject Access Request")
     expect(title("Subject:")).toBe("Subject:")
+    expect(title("Fwd: RE: Completion statement")).toBe("Completion statement")
+    expect(title("Subject — Licence to assign")).toBe("Licence to assign")
+    expect(title("Subject to contract heads of terms")).toBe("Subject to contract heads of terms")
+    expect(title("Re Hallett's Estate — advice")).toBe("Re Hallett's Estate — advice")
   })
 
   test("a title the outline keeps with Markdown code marks after the last retry is delivered without them", async () => {
