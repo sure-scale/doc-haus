@@ -1,4 +1,5 @@
 import { playbookLibraryRoutes } from "./playbook-library"
+import { clientRoutes } from "./clients"
 import { updateRoutes, managedUpdateOwner } from "./updater"
 import { RepoUpdater } from "../../../scripts/updater"
 import { documentCopyRoutes } from "./document-copy"
@@ -166,6 +167,9 @@ app.route("/host", parserCapabilitiesRoutes())
 app.route("/host", vertexProbeRoutes())
 
 app.get("/matters", (c) => c.json(listMatters()))
+
+// Clients added without a matter; the web joins them with each matter's Client.
+app.route("/", clientRoutes())
 
 // Firm-wide drafting preferences (Settings → Drafting). Saving re-renders the
 // standing-instructions markdown the engine reads on every turn (see
