@@ -24,7 +24,15 @@ const BLOCKS = "p,li,td,th,h1,h2,h3,h4,h5,h6"
 
 type Piece = { node: Text; start: number; end: number }
 
-export function decorateMarkers(root: HTMLElement): MarkerCounts {
+/** Chips every marker the shared patterns find. A library template passes the
+ * placeholder texts the server's scan listed for it instead: firm templates use
+ * plain fields such as "[Client Name]", and drafting fills exactly that list, so
+ * the template view marks exactly those (a [REDACTED] mark stays a redaction). */
+export function decorateMarkers(root: HTMLElement, placeholders?: string[]): MarkerCounts {
+  const fields = [...new Set(placeholders?.filter((text) => text.trim() && markerKind(text) !== "redaction"))]
+    .sort((a, b) => b.length - a.length)
+    .map((text) => text.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "[\\s\\u00a0]+"))
+  const classes = placeholders ? [CLASSES[0], { kind: "placeholder" as const, patterns: fields.length ? [new RegExp(fields.join("|"), "g")] : [] }] : CLASSES
   for (const span of root.querySelectorAll("span.doc-marker")) span.replaceWith(...span.childNodes)
   root.normalize()
   let sequence = 0
@@ -42,7 +50,7 @@ export function decorateMarkers(root: HTMLElement): MarkerCounts {
   for (const pieces of groups.values()) {
     const text = pieces.map((piece) => piece.node.data).join("")
     const found: { kind: MarkerKind; start: number; end: number }[] = []
-    for (const { kind, patterns } of CLASSES)
+    for (const { kind, patterns } of classes)
       for (const pattern of patterns)
         for (const match of text.matchAll(pattern))
           found.push({ kind, start: match.index, end: match.index + match[0].length })
@@ -79,6 +87,28 @@ export function decorateMarkers(root: HTMLElement): MarkerCounts {
     }
   }
   return counts
+}
+
+/** The kind of a whole marker text (a server-listed template placeholder), by
+ * the same patterns the viewer colours; undefined for other bracketed text. */
+export function markerKind(text: string): MarkerKind | undefined {
+  return CLASSES.find(({ patterns }) => patterns.some((pattern) => text.match(pattern)?.[0] === text))?.kind
+}
+
+/** One distinct marker text in a decorated document, with the ids of its
+ * occurrences in document order. */
+export type MarkerEntry = { kind: MarkerKind; text: string; ids: string[] }
+
+export function markerEntries(root: HTMLElement): MarkerEntry[] {
+  const entries = new Map<string, MarkerEntry>()
+  for (const span of root.querySelectorAll<HTMLElement>('span.doc-marker:is([data-marker-part="only"], [data-marker-part="first"])')) {
+    const kind: MarkerKind = span.classList.contains("doc-marker-redaction") ? "redaction" : "placeholder"
+    const text = (span.getAttribute("aria-label") ?? span.textContent ?? "").replace(/\s+/g, " ").trim()
+    const entry = entries.get(`${kind}:${text}`) ?? { kind, text, ids: [] }
+    entry.ids.push(span.dataset.markerId!)
+    entries.set(`${kind}:${text}`, entry)
+  }
+  return [...entries.values()]
 }
 
 export function markerSummary({ placeholder, redaction }: MarkerCounts) {

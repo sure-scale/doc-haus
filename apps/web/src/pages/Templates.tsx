@@ -13,6 +13,7 @@ import { useToast } from "../components/Toast"
 import Dropzone from "../components/Dropzone"
 import { humanizeError } from "../api/ingest/errors"
 import TemplateViewer from "../components/TemplateViewer"
+import { markerKind } from "../components/document-markers"
 import MatterPicker from "../components/MatterPicker"
 import { Exit } from "../components/useExit"
 import ChatPanel from "../components/ChatPanel"
@@ -212,8 +213,11 @@ export default function Templates() {
         ) : (
           <ul className="matter-list">
             {visible.map((t) => {
-              const optional = t.placeholders.filter((p) => p.text.startsWith("[optional:")).length
-              const fills = t.placeholders.length - optional
+              // As the viewer's side panel counts them: a [REDACTED] mark is a
+              // redaction, not a placeholder to fill.
+              const markers = t.placeholders.filter((p) => markerKind(p.text) !== "redaction")
+              const optional = markers.filter((p) => /^\[optional:/i.test(p.text)).length
+              const fills = markers.length - optional
               return (
                 <li
                   key={t.name}
