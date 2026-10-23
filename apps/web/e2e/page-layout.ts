@@ -49,6 +49,8 @@ async function open(state: ReturnType<typeof fixture>, width: number, height: nu
     const reply = (body: unknown) => route.fulfill({ status: 200, headers, contentType: "application/json", body: JSON.stringify(body) })
     const method = request.method()
     if (method === "POST" && pathname === "/api/dochaus/provider-test") return reply({ ok: true })
+    // Settings opens on AI setup, which e2e/ai-setup.ts covers; refuse its traffic.
+    if (pathname === "/auth/reuse" || pathname.startsWith("/api/dochaus/provider-candidate")) return route.abort()
     if (pathname === "/preferences" && method === "PUT") {
       const body = request.postDataJSON() as Record<string, unknown>
       state.puts.push(body)
@@ -235,6 +237,8 @@ try {
         await preview(page).footer.scrollIntoViewIfNeeded()
         await shot(page, `onboarding-preview-${width}x${height}`)
 
+        // The sample matter is covered by e2e/sample-matter.ts.
+        await dialog.getByRole("checkbox", { name: "Add a sample matter to explore", exact: true }).uncheck()
         await dialog.getByRole("button", { name: "Save and finish", exact: true }).click()
         await expect(dialog).toHaveCount(0)
         expect(state.puts).toEqual([{ attorney: "Fixture Lawyer", firm: "Fixture Partners LLP", agreementLegend: "Subject to contract", adviceLegend: "", dateFormat: "day-month-year" }])
@@ -252,6 +256,7 @@ try {
       await page.getByRole("checkbox", { name: "New York US-NY" }).check()
       await page.keyboard.press("Escape")
       await expect(dialog.getByText("Suggested", { exact: true })).toHaveCount(2)
+      await dialog.getByRole("checkbox", { name: "Add a sample matter to explore", exact: true }).uncheck()
       await dialog.getByRole("button", { name: "Save and finish", exact: true }).click()
       await expect(dialog).toHaveCount(0)
       expect(state.puts).toEqual([{ attorney: "Fixture Lawyer", firm: "", agreementLegend: "", adviceLegend: "", dateFormat: "month-day-year" }])

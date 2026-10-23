@@ -301,6 +301,8 @@ try {
       await dialog.getByLabel("Firm", { exact: true }).fill("Fixture Practice")
       await noOverflow(f.page)
       await f.page.screenshot({ path: path.join(evidence, `onboarding-details-${width}.png`) })
+      // The sample matter is covered by e2e/sample-matter.ts.
+      await dialog.getByRole("checkbox", { name: "Add a sample matter to explore", exact: true }).uncheck()
       await dialog.getByRole("button", { name: /^Save and finish/ }).click()
       await expect(dialog).toHaveCount(0)
       expect(f.state.completed).toEqual(["models", "research", "details"])

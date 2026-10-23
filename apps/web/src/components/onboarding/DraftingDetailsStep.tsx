@@ -1,4 +1,4 @@
-import { useState, type Dispatch, type SetStateAction } from "react"
+import { useState, type Dispatch, type ReactNode, type SetStateAction } from "react"
 import { savePreferences, type DraftingPreferences } from "../../api/ingest/preferences"
 import type { Jurisdiction } from "../../api/ingest/matters"
 import { savePrefs } from "../../prefs"
@@ -31,6 +31,8 @@ export default function DraftingDetailsStep({
   setDateFormatChoice,
   setStep,
   onClose,
+  extra,
+  busyLabel,
 }: {
   drafting: DraftingPreferences | null
   setDrafting: Dispatch<SetStateAction<DraftingPreferences | null>>
@@ -41,6 +43,10 @@ export default function DraftingDetailsStep({
   setDateFormatChoice: (dateFormat: DateFormat) => void
   setStep: (step: "setup" | "details" | "research") => void
   onClose: () => Promise<void>
+  /** Shown after the drafting details, before the actions. */
+  extra?: ReactNode
+  /** Replaces "Saving…" while finishing does more than save. */
+  busyLabel?: string
 }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState("")
@@ -130,6 +136,8 @@ export default function DraftingDetailsStep({
         <p className="settings-hint muted">Page numbers and the draft line can be changed in Settings → Drafting.</p>
       </section>
 
+      {extra}
+
       <div className="onboarding-actions">
         <button disabled={busy} onClick={() => setStep("research")}>Back to research</button>
         <button
@@ -146,7 +154,7 @@ export default function DraftingDetailsStep({
             finally { setBusy(false) }
           }}
         >
-          {busy ? "Saving…" : "Save and finish"}{!busy && <span aria-hidden="true"> ✓</span>}
+          {busy ? busyLabel ?? "Saving…" : "Save and finish"}{!busy && <span aria-hidden="true"> ✓</span>}
         </button>
       </div>
     </>

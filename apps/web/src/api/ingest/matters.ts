@@ -21,6 +21,8 @@ export type Matter = {
   posture?: Posture
   // The conflicts-check record, once the lawyer has recorded one.
   conflicts?: Conflicts
+  // The fictional sample matter, labelled as a sample in the matters list.
+  sample?: boolean
   dir: string
   created_at: number
 }
@@ -94,6 +96,14 @@ export async function renameMatter(
   })
   if (!res.ok) throw new Error(await ingestError(res, "Could not save the matter"))
   return res.json()
+}
+
+// Adds the fictional sample matter (an engagement letter with cited Q&A and a
+// legal review to explore). Idempotent: an existing sample is returned as is.
+export async function addSampleMatter(): Promise<Matter> {
+  const res = await fetch(`${INGEST_URL}/sample-matter`, { method: "POST" })
+  if (!res.ok) throw new Error(await ingestError(res, "Could not add the sample matter"))
+  return ((await res.json()) as { matter: Matter }).matter
 }
 
 export async function deleteMatter(id: string): Promise<void> {

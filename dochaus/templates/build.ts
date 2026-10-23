@@ -10,9 +10,9 @@
 // parts zipped with the system `zip` (Docxodus can edit a .docx but not create
 // one from nothing). `demo/templates/nda.docx` is then drafted from that seed
 // through the same Docxodus insert pipeline the draft-document tool uses. It is
-// demo content only: the ingest seed script copies it into the firm library
-// (WORKSPACE_ROOT/.templates) when start.sh runs with --demo; a non-demo install
-// starts with no templates.
+// demo content only: the ingest sample seed copies it into the firm library
+// (WORKSPACE_ROOT/.templates) when the lawyer adds the sample matter; otherwise an
+// install starts with no templates.
 //
 // Template placeholder convention: every placeholder is a UNIQUE descriptive
 // instruction, `[insert effective date]` — never a bare `[___]`. draft-document

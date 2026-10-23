@@ -26,9 +26,9 @@ export function templatePath(name: string) {
   return path.join(TEMPLATES_DIR, path.basename(name))
 }
 
-// Seed the library from repo demo/templates on first demo run. Demo-gated: only
-// the seed script (`start.sh --demo`) calls this — a non-demo install starts with
-// an empty library. The directory's own existence is the first-run marker:
+// Seed the library from repo demo/templates when the sample matter is added. Only
+// seedSampleMatter (seed.ts) calls this — an install without the sample starts
+// with an empty library. The directory's own existence is the first-run marker:
 // idempotent across restarts, and it never resurrects a template the user has
 // deleted (a present dir means we already seeded). _base.docx stays repo-internal
 // under dochaus/templates — it is the from-scratch drafting seed, never a
