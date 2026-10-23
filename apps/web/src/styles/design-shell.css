@@ -244,10 +244,14 @@
 .matter-page-head .matter-conflicts.is-bypassed { border-color: var(--warn-border); background: var(--warn-soft); color: var(--warn); }
 .matter-page-head .matter-conflicts.is-ok { color: var(--text-secondary); }
 
-/* Conflicts dialog: three states, only the fields the chosen one needs. */
-.conflicts-states { display: flex; flex-wrap: wrap; gap: var(--space-4); margin: 0; padding: 0; border: 0; }
-.conflicts-states legend { margin-bottom: var(--space-2); padding: 0; font-size: 0.75rem; font-weight: 600; color: var(--text-secondary); }
+/* Conflicts fields (header dialog and matter forms): the state, then only the names it needs.
+   Hosts restyle the legend and fields to match their form; these are the dialog's. */
+.conflicts-fields { display: grid; min-width: 0; gap: var(--space-3); margin: 0; padding: 0; border: 0; }
+:where(.conflicts-fields) > legend { float: left; width: 100%; margin: 0 0 var(--space-2); padding: 0; font-size: 0.75rem; font-weight: 600; color: var(--text-secondary); }
+.conflicts-states { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-4); }
 .conflicts-states label { display: flex; align-items: center; gap: var(--space-2); font-size: 0.8125rem; cursor: pointer; }
 .conflicts-field { display: flex; flex-direction: column; gap: 6px; font-size: 0.75rem; color: var(--muted); }
 .conflicts-field input { width: 100%; }
+.conflicts-field small.field-error { color: var(--danger); font-size: 12px; line-height: 1.5; }
+.conflicts-note { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
 .conflicts-warning { margin: 0; padding: var(--space-2) var(--space-3); border: 1px solid var(--warn-border); border-radius: var(--radius-md); background: var(--warn-soft); color: var(--warn); font-size: 0.8125rem; line-height: 1.5; }
