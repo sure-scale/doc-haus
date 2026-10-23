@@ -68,6 +68,7 @@ import { compareVersions } from "../../../dochaus/lib/version-compare"
 import { pendingRedlinesForDoc } from "../../../dochaus/lib/redlines"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
 import { ingestEmailDocument, reingestLegacyEmails, removeMatterDocument, withEmailLinks } from "./email-attachments"
+import { ingestZipDocument, ZipFormatError, ZipTooLargeError } from "./zip-archive"
 import { draftingTraceReference } from "../../../dochaus/lib/drafting-trace-identity"
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import path from "node:path"
@@ -578,11 +579,16 @@ app.post("/matters/:id/documents", async (c) => {
     return c.json({ error: "Choose replace or keep-both for an existing document." }, 400)
   const buffer = Buffer.from(await file.arrayBuffer())
   try {
-    // An email brings its attachments in after it (email-attachments.ts). A
-    // lawyer's upload is never an attachment, even under an attachment's name.
+    // An email brings its attachments in after it (email-attachments.ts), and a
+    // zip file the files inside it (zip-archive.ts). A lawyer's upload is never
+    // an attachment, even under an attachment's name.
     if (name.toLowerCase().endsWith(".eml")) return c.json(await ingestEmailDocument(dir, name, buffer, { existing }))
+    if (name.toLowerCase().endsWith(".zip")) return c.json(await ingestZipDocument(dir, name, buffer, { existing }))
     return c.json(await ingestDocument(dir, name, buffer, { existing, links: { parentName: null } }))
   } catch (error) {
+    // Refused before anything of the zip was added.
+    if (error instanceof ZipTooLargeError) return c.json({ error: error.message, code: "zip_too_large" }, 413)
+    if (error instanceof ZipFormatError) return c.json({ error: `${name} could not be read as a zip file.` }, 400)
     if (error instanceof SourceDocumentExistsError)
       return c.json({ error: error.message, code: "source_exists", name: error.existing }, 409)
     if (error instanceof DeliverableDocumentExistsError)

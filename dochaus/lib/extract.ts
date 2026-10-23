@@ -81,6 +81,11 @@ async function extract(docPath: string, buffer: Buffer) {
     return emlToText(buffer)
   }
   if (name.endsWith(".xlsx")) return xlsxToText(buffer)
+  if (name.endsWith(".zip")) {
+    // The one zip reader ingest also uses (zip.ts): the listing of its files.
+    const { zipToText } = await import("./zip")
+    return zipToText(buffer)
+  }
   const { default: mammoth } = await import("mammoth")
   return (await mammoth.extractRawText({ buffer: markTrackedChanges(buffer) })).value
 }

@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite"
 import { existsSync, readFileSync } from "node:fs"
-import { parseEmail, type EmailAttachment } from "../../../dochaus/lib/email"
+import { EMAIL_ATTACHMENT_EXTENSIONS, extension, parseEmail, safeAttachmentName } from "../../../dochaus/lib/email"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
 import { draftingTraceReference } from "../../../dochaus/lib/drafting-trace-identity"
 import { openDb } from "./db"
@@ -9,6 +9,7 @@ import { documentRegistryIdentity } from "./document-identity"
 import { readExtractionQuality } from "./extraction-quality"
 import { extractSourceText, ingestDocument, sourceTextRevision, type ExistingSourceChoice, type ExtractedSourceText } from "./ingest"
 import { detectInjection } from "./sanitize"
+import { archiveBudget, ingestZipDocument, ZipTooLargeError, type ArchiveBudget } from "./zip-archive"
 
 // Email attachments (#238). Every attachment of an uploaded email is either
 // indexed as its own matter document that names the email (documents.parent_name)
@@ -22,10 +23,34 @@ import { detectInjection } from "./sanitize"
 // instead of adding a copy. A forwarded message becomes a child email and its
 // own attachments follow, down to MAX_EMAIL_DEPTH. Expansion lives here, not in
 // ingestDocument, so a revision or a re-ingest of the email never repeats it.
+//
+// A zip file is the same kind of container (zip-archive.ts): its files become
+// documents that name it, through the same flow and record. Emails and zips nest
+// in each other under one depth limit.
 
-// How many levels of attached emails are ingested below the uploaded one. A
-// message nested deeper is listed on its parent, not ingested.
+// How many levels of attached emails and zip files are ingested below the
+// uploaded document. A container nested deeper is listed on its parent, not
+// ingested.
 export const MAX_EMAIL_DEPTH = 5
+
+// An email or a zip file: a document whose parts become documents of their own.
+export function isContainerName(name: string) {
+  return /\.(eml|zip)$/i.test(name)
+}
+
+// One part of a container as this flow takes it: an email's attachment or a zip
+// file's entry. `refused`: a part that is listed but never read (a
+// password-protected zip entry, or one whose path climbs out of the archive).
+export type ContainerPart = {
+  filename: string
+  name: string
+  mimeType: string
+  size: number
+  supported: boolean
+  tnef?: boolean
+  refused?: "encrypted" | "unsafe_path"
+  content: () => Uint8Array
+}
 
 // What became of one attachment, as stored on the email:
 // indexed: held by matter document `document` (indexed from it, or the same
@@ -34,8 +59,20 @@ export const MAX_EMAIL_DEPTH = 5
 // MAX_EMAIL_DEPTH; pending: the email was stored but its attachments were not
 // yet processed (an interrupted upload; uploading the email again finishes it);
 // no_readable_text: kept as matter document `document` with nothing indexed,
-// because the extraction quality gate found no readable text in it.
-export type AttachmentOutcome = "indexed" | "unsupported" | "failed" | "nested" | "pending" | "no_readable_text"
+// because the extraction quality gate found no readable text in it. For zip
+// entries also: encrypted: password-protected, not added; unsafe_path: its path
+// is absolute or climbs out of the archive, not added; too_large: a zip that
+// would take the upload past the zip limits (zip-archive.ts), not added.
+export type AttachmentOutcome =
+  | "indexed"
+  | "unsupported"
+  | "failed"
+  | "nested"
+  | "pending"
+  | "no_readable_text"
+  | "encrypted"
+  | "unsafe_path"
+  | "too_large"
 
 export type AttachmentEntry = {
   // The name, type and size as the email states them; name "" when it has none.
@@ -63,32 +100,53 @@ export type EmailAttachmentsRecord = { attachments: AttachmentEntry[]; embedded:
 export type AttachmentStatus = "indexed" | "same" | "removed" | Exclude<AttachmentOutcome, "indexed">
 export type AttachmentView = Omit<AttachmentEntry, "outcome" | "rev"> & { status: AttachmentStatus; degraded?: true }
 
-// Ingest an uploaded email and then its attachments. `parentName` and `depth`
-// are set when the email is itself an attachment.
-export async function ingestEmailDocument(
+// `parentName` and `depth` are set when the container is itself an attachment
+// or a zip entry.
+export type ContainerOptions = {
+  existing?: ExistingSourceChoice
+  parentName?: string | null
+  depth?: number
+  findings?: ReturnType<typeof detectInjection>
+  // What zip files may still expand to in this upload, shared by every zip in
+  // it (zip-archive.ts).
+  budget?: ArchiveBudget
+}
+
+// Ingest an uploaded email and then its attachments.
+export async function ingestEmailDocument(matterDir: string, fileName: string, buffer: Buffer, options: ContainerOptions = {}) {
+  const parsed = await parseEmail(buffer)
+  const parts = parsed.attachments.map(({ content, ...attachment }): ContainerPart => ({ ...attachment, content: () => content }))
+  return ingestContainerDocument(matterDir, fileName, buffer, parts, parsed.embedded, options)
+}
+
+// Ingest a container, then each of its parts that a matter document can take.
+export async function ingestContainerDocument(
   matterDir: string,
   fileName: string,
   buffer: Buffer,
-  options: { existing?: ExistingSourceChoice; parentName?: string | null; depth?: number; findings?: ReturnType<typeof detectInjection> } = {},
+  parts: ContainerPart[],
+  embedded: number,
+  options: ContainerOptions,
 ) {
   const depth = options.depth ?? 0
-  const parsed = await parseEmail(buffer)
+  // One budget for every zip in this upload, however deep.
+  const budget = options.budget ?? archiveBudget()
   const extraction = await extractSourceText(fileName, buffer)
   const extracted = { ...extraction, findings: [...extraction.findings, ...(options.findings ?? [])] }
   // Read before this email's own record is replaced, so an upload of the same
   // email again finds the documents its attachments went into.
   const earlier = earlierAttachments(matterDir, fileName, sourceTextRevision(extraction.text))
-  const entries = parsed.attachments.map((attachment) => initialEntry(attachment, depth))
-  const record = () => JSON.stringify({ attachments: entries, embedded: parsed.embedded } satisfies EmailAttachmentsRecord)
+  const entries = parts.map((part) => initialEntry(part, depth))
+  const record = () => JSON.stringify({ attachments: entries, embedded } satisfies EmailAttachmentsRecord)
   const email = await ingestDocument(matterDir, fileName, buffer, {
     existing: options.existing,
     extracted,
     links: { parentName: options.parentName ?? null, attachments: record() },
   })
   if (!entries.some((entry) => entry.outcome === "pending")) return { ...email, attachments: emailAttachmentsView(matterDir, email.name, entries) }
-  for (const [index, attachment] of parsed.attachments.entries()) {
+  for (const [index, part] of parts.entries()) {
     const entry = entries[index]!
-    if (entry.outcome === "pending") Object.assign(entry, await ingestAttachment(matterDir, email.name, attachment, depth, earlier))
+    if (entry.outcome === "pending") Object.assign(entry, await ingestAttachment(matterDir, email.name, part, depth, earlier, budget))
   }
   // Record the outcomes on the email: one more commit of the email itself, which
   // keeps the registry and source-index.json in step through the usual path.
@@ -107,16 +165,17 @@ export async function ingestEmailDocument(
   return { ...email, attachments: emailAttachmentsView(matterDir, email.name, entries) }
 }
 
-function initialEntry(attachment: EmailAttachment, depth: number): AttachmentEntry {
+function initialEntry(attachment: ContainerPart, depth: number): AttachmentEntry {
   const entry: AttachmentEntry = {
     name: attachment.filename,
     type: attachment.mimeType,
     size: attachment.size,
-    outcome: !attachment.supported
-      ? "unsupported"
-      : attachment.name.toLowerCase().endsWith(".eml") && depth + 1 > MAX_EMAIL_DEPTH
-        ? "nested"
-        : "pending",
+    outcome: attachment.refused
+      ?? (!attachment.supported
+        ? "unsupported"
+        : isContainerName(attachment.name) && depth + 1 > MAX_EMAIL_DEPTH
+          ? "nested"
+          : "pending"),
   }
   if (attachment.tnef) entry.note = "may-contain-attachments"
   if (detectInjection(attachment.filename).length) entry.flagged = true
@@ -126,9 +185,10 @@ function initialEntry(attachment: EmailAttachment, depth: number): AttachmentEnt
 async function ingestAttachment(
   matterDir: string,
   emailName: string,
-  attachment: EmailAttachment,
+  attachment: ContainerPart,
   depth: number,
   earlier: AttachmentEntry[],
+  budget: ArchiveBudget,
 ): Promise<Partial<AttachmentEntry>> {
   // A suspicious stated name flags the document it becomes, like suspicious
   // text; the finding has no span because the name is not in the document.
@@ -136,29 +196,29 @@ async function ingestAttachment(
     ...finding,
     detail: `Attachment name: ${finding.detail}`,
   }))
-  const bytes = Buffer.from(attachment.content)
   const before = takeEarlier(earlier, attachment)
   if (before) return before
   try {
+    const bytes = Buffer.from(attachment.content())
     // An attachment passes the same extraction quality gate as an upload: one
     // with no readable text is kept as a document, with nothing indexed.
     const extraction = await extractSourceText(attachment.name, bytes)
     const same = sameSourceByText(matterDir, extraction)
     if (same) return { outcome: "indexed", ...same }
-    const child = attachment.name.toLowerCase().endsWith(".eml")
-      ? await ingestEmailDocument(matterDir, attachment.name, bytes, {
-          existing: "keep-both",
-          parentName: emailName,
-          depth: depth + 1,
-          findings: nameFindings,
-        })
-      : await ingestDocument(matterDir, attachment.name, bytes, {
+    const container: ContainerOptions = { existing: "keep-both", parentName: emailName, depth: depth + 1, findings: nameFindings, budget }
+    const lower = attachment.name.toLowerCase()
+    const child = lower.endsWith(".eml")
+      ? await ingestEmailDocument(matterDir, attachment.name, bytes, container)
+      : lower.endsWith(".zip")
+        ? await ingestZipDocument(matterDir, attachment.name, bytes, container)
+        : await ingestDocument(matterDir, attachment.name, bytes, {
           existing: "keep-both",
           extracted: { ...extraction, findings: [...extraction.findings, ...nameFindings] },
           links: { parentName: emailName },
         })
     return { outcome: child.quality.status === "no_readable_text" ? "no_readable_text" : "indexed", document: child.name, rev: child.rev }
   } catch (error) {
+    if (error instanceof ZipTooLargeError) return { outcome: "too_large" }
     // Stated names are client data: log the failure without them.
     console.warn("email attachment not indexed", { matter_ref: draftingTraceReference(matterDir), ...diagnosticErrorMetadata(error) })
     return { outcome: "failed" }
@@ -201,7 +261,7 @@ function earlierAttachments(matterDir: string, fileName: string, emailRev: strin
   }
 }
 
-function takeEarlier(earlier: AttachmentEntry[], attachment: EmailAttachment): Partial<AttachmentEntry> | undefined {
+function takeEarlier(earlier: AttachmentEntry[], attachment: ContainerPart): Partial<AttachmentEntry> | undefined {
   const index = earlier.findIndex(
     (entry) => entry.name === attachment.filename && entry.type === attachment.mimeType && entry.size === attachment.size,
   )
@@ -285,7 +345,7 @@ export function emailRemovalPlan(db: Database, emailName: string, suppliedRows?:
           plan.kept.push({ name: child.name, reason: "changed" })
         else {
           plan.attachments.push(child.name)
-          if (child.name.toLowerCase().endsWith(".eml")) queue.push(child.name)
+          if (isContainerName(child.name)) queue.push(child.name)
         }
       }
     }
@@ -336,7 +396,7 @@ export function withEmailLinks<T extends { name: string }>(db: Database, documen
 // attachments its removal plan lists, each through the usual delete. The
 // email goes first: it is what the lawyer asked to remove.
 export async function removeMatterDocument(matterDir: string, name: string, keepAttachments: boolean) {
-  const plan = !keepAttachments && name.toLowerCase().endsWith(".eml") ? (() => {
+  const plan = !keepAttachments && isContainerName(name) ? (() => {
     const db = openDb(matterDir)
     try {
       return emailRemovalPlan(db, name)
@@ -369,26 +429,34 @@ export async function removeMatterDocument(matterDir: string, name: string, keep
 // messages flattened into the body). Each is re-ingested once, which also
 // brings in its attachments. So is an email whose record still has pending
 // entries (an upload stopped before it recorded them); its attachments already
-// in the matter are reused, not copied. Runs in the background after startup;
-// one that fails is logged and retried at the next start.
+// in the matter are reused, not copied. So is an email with an attachment once
+// listed as not supported that a matter document can now take (a zip file). A
+// zip file left with pending entries is finished the same way. Runs in the
+// background after startup; one that fails is logged and retried at the next
+// start.
 export async function reingestLegacyEmails(matterDir: string) {
   const db = openDb(matterDir)
   const legacy = (() => {
     try {
       return db
-        .query("SELECT name, doc_path, attachments FROM documents WHERE role = 'source' AND lower(name) LIKE '%.eml'")
+        .query("SELECT name, doc_path, attachments FROM documents WHERE role = 'source' AND (lower(name) LIKE '%.eml' OR lower(name) LIKE '%.zip')")
         .all() as { name: string; doc_path: string; attachments: string | null }[]
     } finally {
       db.close()
     }
   })()
+  const nowSupported = (entry: AttachmentEntry, index: number) =>
+    entry.outcome === "unsupported" &&
+    (EMAIL_ATTACHMENT_EXTENSIONS as readonly string[]).includes(extension(safeAttachmentName(entry.name, entry.type, index + 1)))
   let count = 0
   for (const email of legacy) {
     const record = readRecord(email.attachments)
-    if (record && !record.attachments.some((entry) => entry.outcome === "pending")) continue
+    const zip = email.name.toLowerCase().endsWith(".zip")
+    if (record && !record.attachments.some((entry, index) => entry.outcome === "pending" || (!zip && nowSupported(entry, index)))) continue
     if (!existsSync(email.doc_path)) continue
     try {
-      await ingestEmailDocument(matterDir, email.name, readFileSync(email.doc_path), { existing: "replace" })
+      const ingest = zip ? ingestZipDocument : ingestEmailDocument
+      await ingest(matterDir, email.name, readFileSync(email.doc_path), { existing: "replace" })
       count++
     } catch (error) {
       console.error("email re-ingest failed", { matter_ref: draftingTraceReference(matterDir), ...diagnosticErrorMetadata(error) })

@@ -50,8 +50,8 @@ test("any other failed upload stays retryable and offers no replace choice", () 
 
 test("every format ingest reads can be added; any other file is refused before upload", () => {
   // Mirrors MATTER_DOCUMENT_EXTENSIONS in services/ingest/src/ingest.ts.
-  expect([...MATTER_DOCUMENT_EXTENSIONS]).toEqual([".docx", ".pdf", ".eml", ".xlsx"])
-  for (const [name, kind] of [["Agreement.docx", "docx"], ["Scan.PDF", "pdf"], ["Client instructions.eml", "eml"], ["Cap table.XLSX", "xlsx"]] as const) {
+  expect([...MATTER_DOCUMENT_EXTENSIONS]).toEqual([".docx", ".pdf", ".eml", ".xlsx", ".zip"])
+  for (const [name, kind] of [["Agreement.docx", "docx"], ["Scan.PDF", "pdf"], ["Client instructions.eml", "eml"], ["Cap table.XLSX", "xlsx"], ["Artwork files.ZIP", "zip"]] as const) {
     expect(matterDocumentKind(name)).toBe(kind)
     expect(newUpload(1, new File(["synthetic"], name))).toMatchObject({ key: 1, status: "queued" })
   }
@@ -61,7 +61,7 @@ test("every format ingest reads can be added; any other file is refused before u
     expect(matterDocumentKind(name)).toBeUndefined()
     expect(newUpload(2, new File(["synthetic"], name))).toMatchObject({
       status: "failed",
-      error: "Only Word (.docx), PDF, email (.eml) and Excel (.xlsx) files can be added.",
+      error: "Only Word (.docx), PDF, email (.eml), Excel (.xlsx) and zip (.zip) files can be added.",
     })
     expect(newUpload(2, new File(["synthetic"], name)).retryable).toBeUndefined()
   }
@@ -72,8 +72,8 @@ test("the picker offers every format and the list marks emails and spreadsheets 
     id: index + 1, name, doc_path: `/matters/m/${name}`, created_at: index + 1, role: "source",
   }))
   const html = renderToStaticMarkup(createElement(DocumentUpload, { matterId: "m", documents, onUploaded: () => {}, onView: () => {} }))
-  expect(html).toContain('accept=".docx,.pdf,.eml,.xlsx"')
-  expect(html).toContain("Drop Word, PDF, email or Excel files here, or click to browse.")
+  expect(html).toContain('accept=".docx,.pdf,.eml,.xlsx,.zip"')
+  expect(html).toContain("Drop Word, PDF, email, Excel or zip files here, or click to browse.")
   const glyphs = [...html.matchAll(/<span class="doc-type is-(\w+)" title="([^"]+)"[^>]*>([\s\S]*?)<\/span>/g)].map(([, kind, title, svg]) => ({ kind, title, svg }))
   expect(glyphs.map(({ kind, title }) => [kind, title])).toEqual([
     ["xlsx", "Excel spreadsheet"], ["eml", "Email"], ["pdf", "PDF document"], ["docx", "Word document"],
@@ -90,6 +90,22 @@ test("an uploaded email's ready message says which attachments were added and wh
     { name: "bundle.zip", type: "application/zip", size: 1, status: "unsupported" },
     { name: "", type: "application/pdf", size: 1, status: "failed" },
   ] })).toBe(" 1 attachment added. 1 already in the matter. Not added: bundle.zip (not supported), Unnamed attachment (could not be read).")
+})
+
+test("an uploaded zip's ready message counts files the same way", () => {
+  const result: IngestResult = {
+    name: "Artwork files.zip", docPath: "/m/Artwork files.zip", sections: 1, chunks: 1, injection: null, quality: { status: "ok" },
+    attachments: [
+      { name: "Artwork/Brief.docx", type: "application/pdf", size: 1, status: "indexed", document: "Brief.docx" },
+      { name: "Artwork/Proof.pdf", type: "application/pdf", size: 1, status: "indexed", document: "Proof.pdf" },
+      { name: "Artwork/logo.png", type: "application/octet-stream", size: 1, status: "unsupported" },
+      { name: "Locked.docx", type: "application/pdf", size: 1, status: "encrypted" },
+    ],
+  }
+  expect(uploadedToast(result)).toEqual({
+    kind: "success",
+    message: "Artwork files.zip is ready. 2 files added. Not added: Artwork/logo.png (not supported), Locked.docx (password-protected).",
+  })
 })
 
 // The extraction quality gate (#239): a file with no readable text is added but

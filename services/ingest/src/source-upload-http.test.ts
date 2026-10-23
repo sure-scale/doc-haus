@@ -3,7 +3,9 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { Document, Packer, Paragraph } from "docx"
+import { strToU8, zipSync } from "fflate"
 import { getDocumentRole, listSourceDocuments, openDb } from "./db"
+import { MAX_ZIP_FILES } from "./zip-archive"
 
 // A same-name upload never replaces an uploaded source silently: the lawyer's
 // own Agreement.docx survives the counterparty's returned Agreement.docx unless
@@ -180,6 +182,33 @@ test("an upload's extraction quality is in the response, the document list and t
     })
     const text = await (await request(`/matters/${matter.id}/documents/text?name=Blank.docx`)).json()
     expect(text).toMatchObject({ text: "", injection: null, quality: { status: "no_readable_text" } })
+  })
+}, 120_000)
+
+// A zip upload brings in the files inside it; one past the zip limits is
+// refused with a message the upload row can show, and nothing of it is added.
+test("a zip upload adds its files, and one over the limits is refused whole", async () => {
+  await withMatter("Zip uploads", async ({ matter, request, upload }) => {
+    const added = await upload("Bundle.zip", zipSync({ "Bundle/Agreement.docx": await docx("Zipped marker"), "Bundle/photo.png": strToU8("png") }))
+    expect(added.status).toBe(200)
+    expect(await added.json()).toMatchObject({
+      name: "Bundle.zip",
+      quality: { status: "ok" },
+      attachments: [
+        { name: "Bundle/Agreement.docx", document: "Agreement.docx", status: "indexed" },
+        { name: "Bundle/photo.png", status: "unsupported" },
+      ],
+    })
+
+    const many = zipSync(Object.fromEntries(Array.from({ length: MAX_ZIP_FILES + 1 }, (_, index) => [`f${index}.txt`, strToU8("x")])))
+    const refused = await upload("Many.zip", many)
+    expect(refused.status).toBe(413)
+    expect(await refused.json()).toEqual({ error: expect.stringContaining("Many.zip was not added"), code: "zip_too_large" })
+    const listed = await (await request(`/matters/${matter.id}`)).json() as { documents: { name: string; attachment_of?: { name: string } }[] }
+    expect(listed.documents.map((document) => [document.name, document.attachment_of?.name]).toSorted()).toEqual([
+      ["Agreement.docx", "Bundle.zip"],
+      ["Bundle.zip", undefined],
+    ])
   })
 }, 120_000)
 

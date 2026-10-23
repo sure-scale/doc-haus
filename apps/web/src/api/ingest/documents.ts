@@ -46,8 +46,21 @@ export type ExtractionQuality =
 // not a format a matter document can take; failed: could not be read; nested:
 // an email nested too deep to add; pending: not processed yet;
 // no_readable_text: kept as `document` but not indexed, as no readable text
-// could be extracted.
-export type AttachmentStatus = "indexed" | "same" | "removed" | "unsupported" | "failed" | "nested" | "pending" | "no_readable_text"
+// could be extracted. A zip file's entries can also be: encrypted:
+// password-protected, not added; unsafe_path: a path outside the zip, not
+// added; too_large: a zip past the upload's zip limits, not added.
+export type AttachmentStatus =
+  | "indexed"
+  | "same"
+  | "removed"
+  | "unsupported"
+  | "failed"
+  | "nested"
+  | "pending"
+  | "no_readable_text"
+  | "encrypted"
+  | "unsafe_path"
+  | "too_large"
 export type EmailAttachment = {
   // The name, type and size as the email states them; name "" when it has none.
   name: string
@@ -68,8 +81,8 @@ export type EmailRemoval = {
 // The source formats ingest reads (MATTER_DOCUMENT_EXTENSIONS in
 // services/ingest/src/ingest.ts). The upload picker, every drop target and the
 // citation link take this one list.
-export const MATTER_DOCUMENT_EXTENSIONS = [".docx", ".pdf", ".eml", ".xlsx"] as const
-export type MatterDocumentKind = "docx" | "pdf" | "eml" | "xlsx"
+export const MATTER_DOCUMENT_EXTENSIONS = [".docx", ".pdf", ".eml", ".xlsx", ".zip"] as const
+export type MatterDocumentKind = "docx" | "pdf" | "eml" | "xlsx" | "zip"
 
 // Read the extension as ingest does (path.extname of the trimmed name): from the
 // base name's last dot, and none when that dot leads the name (".pdf").
@@ -91,7 +104,7 @@ export type IngestResult = {
   chunks: number
   // null when the document came up clean.
   injection: { findings: InjectionFinding[]; flaggedChunks: number } | null
-  // An uploaded email's attachments and what became of each.
+  // An uploaded email's attachments, or a zip file's files, and what became of each.
   attachments?: EmailAttachment[]
   // The extraction quality gate's result for the uploaded file.
   quality?: ExtractionQuality

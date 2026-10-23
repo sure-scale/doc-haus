@@ -55,7 +55,7 @@ const normalizeTitle = (value: string) => value.toLowerCase().replace(/[\s_-]+/g
 // Document types ingest accepts (MATTER_DOCUMENT_EXTENSIONS in
 // services/ingest/src/ingest.ts). Only one of these is ever treated as a file
 // name's extension, so a dotted word in a name ("Lease.final", "v1.2") stays.
-const DOCUMENT_EXTENSIONS = new Set([".docx", ".pdf", ".xlsx", ".eml"])
+const DOCUMENT_EXTENSIONS = new Set([".docx", ".pdf", ".xlsx", ".eml", ".zip"])
 const documentExtension = (name: string) => {
   const ext = path.extname(name).toLowerCase()
   return DOCUMENT_EXTENSIONS.has(ext) ? ext : ""
