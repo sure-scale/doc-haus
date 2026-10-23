@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import type { Matter } from "../src/api/ingest/matters"
-import { groupClients, suggestClients } from "../src/lib/clients"
+import { clientKey, groupClients, suggestClients } from "../src/lib/clients"
 
 const matter = (id: string, client: string | undefined, created_at: number): Matter => ({ id, title: id, client, dir: `/tmp/${id}`, created_at })
 
@@ -25,4 +25,25 @@ test("suggestions put prefix matches before contains matches and leave out an ex
   expect(suggestClients(names, "ACME")).toEqual(["Acme Holdings", "Acme Ltd", "Bank of Acme"])
   expect(suggestClients(names, "zzz")).toEqual([])
   expect(suggestClients(names, "", 2)).toEqual(["Bank of Acme", "Acme Holdings"])
+})
+
+test("composed and decomposed accents, and trailing punctuation, group as one client", () => {
+  const composed = "Caf\u00e9 Holdings"
+  const decomposed = "Cafe\u0301 Holdings"
+  const groups = groupClients([
+    matter("a", decomposed, 1),
+    matter("b", composed, 2),
+    matter("c", composed, 3),
+    matter("d", "Acme Ltd.", 4),
+    matter("e", "Acme Ltd", 5),
+    matter("f", "Acme Ltd", 6),
+    matter("g", "A.C.M.E. Ltd", 7),
+  ])
+  expect(groups.map((group) => [group.name, group.matters.length])).toEqual([
+    ["A.C.M.E. Ltd", 1],
+    ["Acme Ltd", 3],
+    [composed, 3],
+  ])
+  expect(clientKey(decomposed)).toBe(clientKey(composed))
+  expect(clientKey("Acme Ltd.;")).toBe("acme ltd")
 })

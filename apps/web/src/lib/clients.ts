@@ -2,21 +2,26 @@ import { useEffect, useState } from "react"
 import { listMatters, type Matter } from "../api/ingest/matters"
 
 // Clients have no store of their own: a client is the Client value typed on
-// one or more matters. Spellings that differ only in case or spacing are one
+// one or more matters. Spellings that differ only in case, spacing, Unicode
+// composition or trailing punctuation ("Acme Ltd." / "Acme Ltd") are one
 // client, shown under its most common spelling.
 
 export type ClientGroup = { key: string; name: string; matters: Matter[] }
 
+function tidy(name: string) {
+  return name.normalize("NFC").replace(/\s+/g, " ").trim()
+}
+
 export function clientKey(name: string) {
-  return name.replace(/\s+/g, " ").trim().toLowerCase()
+  return tidy(name).replace(/[.,;:]+$/, "").trimEnd().toLowerCase()
 }
 
 export function groupClients(matters: Matter[]): ClientGroup[] {
   const groups = new Map<string, { matters: Matter[]; spellings: Map<string, number> }>()
   for (const matter of matters) {
-    const spelling = matter.client?.replace(/\s+/g, " ").trim()
-    if (!spelling) continue
-    const key = spelling.toLowerCase()
+    const spelling = tidy(matter.client ?? "")
+    const key = clientKey(spelling)
+    if (!key) continue
     const group = groups.get(key) ?? { matters: [] as Matter[], spellings: new Map<string, number>() }
     group.matters.push(matter)
     group.spellings.set(spelling, (group.spellings.get(spelling) ?? 0) + 1)

@@ -27,7 +27,8 @@ export default function Clients() {
   useEffect(load, [])
 
   const clients = groupClients(matters)
-  const chosen = params.get("client")
+  // An empty or blank ?client= is no filter.
+  const chosen = params.get("client")?.trim() || null
   const selected = chosen === null ? undefined : clients.find((group) => group.key === clientKey(chosen))
   const matterCount = (count: number) => `${count} ${count === 1 ? "matter" : "matters"}`
 

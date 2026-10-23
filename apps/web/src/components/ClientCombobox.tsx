@@ -49,6 +49,9 @@ export default function ClientCombobox({
   }
 
   function keyDown(event: KeyboardEvent<HTMLInputElement>) {
+    // Keys that confirm an IME composition are not list navigation; the
+    // caller's own keys behave as before.
+    if (event.nativeEvent.isComposing) return onKeyDown?.(event)
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault()
       const list = shown ? options : suggestClients(clients, value)
