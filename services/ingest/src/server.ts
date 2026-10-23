@@ -52,7 +52,7 @@ import { listAgents, createAgent, updateAgent, deleteAgent, setAgentEnabled, AGE
 import { docxodus } from "./docxodus"
 import { listGcpProjects, listAwsProfiles, vertexProbeRoutes } from "./host"
 import { parserCapabilitiesRoutes } from "./parser-capabilities-route"
-import { readGrid, recheckPassages, recheckRequest, writeGrid, type Grid } from "./grid"
+import { checkCellSources, readGrid, recheckPassages, recheckRequest, sourceCheckRequest, writeGrid, type Grid } from "./grid"
 import { PreferencesUnavailableError, PreferencesValidationError, readDraftingPreferences, readDraftingTelemetryRetentionPreference, writeDraftingPreferences } from "./preferences"
 import { researchConnectionRoutes } from "./research-connections"
 import { readLeanPayload, readDetailPayload, readStoragePayload } from "./telemetry"
@@ -731,6 +731,20 @@ app.post("/matters/:id/grid/recheck", async (c) => {
   const request = recheckRequest(await c.req.json().catch(() => undefined))
   if (!request) return c.json({ error: "A re-check needs one document name, the question and the passages already read." }, 400)
   return c.json(recheckPassages(matterDir(c.req.param("id")), request))
+})
+
+// Whether each cited cell's excerpt is still the document's text at its
+// offsets (see checkCellSources). Documents resolve by registered name only.
+app.post("/matters/:id/grid/sources", async (c) => {
+  const request = sourceCheckRequest(await c.req.json().catch(() => undefined))
+  if (!request) return c.json({ error: "A source check needs each cell's key, document name, excerpt and offsets." }, 400)
+  const dir = matterDir(c.req.param("id"))
+  const targets = new Map(request.cells.map((cell) => {
+    const name = registeredDocumentName(cell.documentName)
+    return [cell.documentName, name ? readDocumentTarget(dir, name) : undefined] as const
+  }))
+  const names = [...new Set([...targets.values()].flatMap((target) => (target ? [target.name] : [])))]
+  return withArtifactMutationLocksAsync(dir, names, async () => c.json(await checkCellSources(request, (name) => targets.get(name))))
 })
 
 // Serve a matter's .docx bytes so the web app can render the redline in-browser

@@ -1,26 +1,49 @@
 // Run from apps/web: PLAYWRIGHT_MODULE=<installed playwright module> bun test/review-grid.browser.ts
-// Mounts the real ReviewGrid as MatterDetail mounts it; only ingest HTTP is mocked. No extraction runs.
-// Escape closes the innermost layer: a cell's detail first, the review table on the next press.
+// Mounts the real ReviewGrid as MatterDetail mounts it, and the real DocumentViewer on the Docxodus WASM
+// runtime; only ingest HTTP is mocked. No extraction runs.
+// Escape closes the innermost layer: the cited document, then a cell's detail, then the review table.
+// A cell's citation opens its document at the cited excerpt; a cell whose excerpt is gone reads degraded.
 // Set PLAYWRIGHT_CHROMIUM_PATH=<chromium> when Playwright's own browser is missing.
 import assert from "node:assert/strict"
+import { existsSync, statSync } from "node:fs"
 import { mkdtemp, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
 const { chromium } = (await import(process.env.PLAYWRIGHT_MODULE ?? "@playwright/test")) as typeof import("@playwright/test")
+const { zipSync, strToU8 } = (await import(Bun.resolveSync("fflate", path.resolve(import.meta.dir, "../../../dochaus")))) as {
+  zipSync: (files: Record<string, Uint8Array>) => Uint8Array; strToU8: (text: string) => Uint8Array
+}
+const wasmDir = path.resolve(process.env.DOCXODUS_WASM_DIR ?? path.join(path.dirname(fileURLToPath(import.meta.resolve("docxodus"))), "wasm"))
 const directory = await mkdtemp(path.join(os.tmpdir(), "dochaus-review-grid-"))
+const excerpt = "This agreement is governed by the law of England and Wales."
+// Synthetic supply terms; the cited sentence is split across runs, as Word stores it.
+const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+const supplyTerms = zipSync(Object.fromEntries(Object.entries({
+  "[Content_Types].xml": `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>`,
+  "_rels/.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`,
+  "word/document.xml": `<w:document xmlns:w="${W}"><w:body><w:p><w:r><w:t>1. Supply. The Supplier shall supply the Goods.</w:t></w:r></w:p><w:p><w:r><w:t xml:space="preserve">12. This agreement is governed by </w:t></w:r><w:r><w:rPr><w:b/></w:rPr><w:t>the law of England and Wales.</w:t></w:r></w:p><w:p><w:r><w:t>13. Notices must be in writing.</w:t></w:r></w:p></w:body></w:document>`,
+}).map(([name, xml]) => [name, strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>${xml}`)])))
 const grid = {
   columns: [{ id: "c1", question: "What is the governing law?" }],
   cells: {
     "Supply terms.docx::c1": {
       answer: "The law of England and Wales.",
-      citation: { documentName: "Supply terms.docx", docPath: "Supply terms.docx", section: "12", excerpt: "This agreement is governed by the law of England and Wales.", charStart: 0, charEnd: 58 },
+      citation: { documentName: "Supply terms.docx", docPath: "Supply terms.docx", section: "12", structuralPath: "Supply terms › §12 Governing law", excerpt, charStart: 48, charEnd: 106 },
+      status: "filled",
+      questionHash: "unused",
+    },
+    // The side letter was amended after this answer: its excerpt no longer matches.
+    "Side letter.docx::c1": {
+      answer: "The law of Scotland.",
+      citation: { documentName: "Side letter.docx", docPath: "Side letter.docx", section: "4", excerpt: "This letter is governed by the law of Scotland.", charStart: 0, charEnd: 47 },
       status: "filled",
       questionHash: "unused",
     },
   },
 }
+const sourceChecks: Record<string, string> = { "Supply terms.docx::c1": "verified", "Side letter.docx::c1": "not_found" }
 const entry = path.join(directory, "harness.tsx")
 await Bun.write(entry, `
 import { createElement, useState } from ${JSON.stringify(fileURLToPath(import.meta.resolve("react")))}
@@ -31,7 +54,7 @@ function Harness() {
   const [open, setOpen] = useState(true)
   return open ? createElement(ReviewGrid, {
     matterId: "matter-grid", title: "Supplier review", directory: "/matters/supplier-review",
-    documents: [{ id: 1, name: "Supply terms.docx", doc_path: "Supply terms.docx", created_at: 0 }],
+    documents: [{ id: 1, name: "Supply terms.docx", doc_path: "Supply terms.docx", created_at: 0 }, { id: 2, name: "Side letter.docx", doc_path: "Side letter.docx", created_at: 0 }],
     onClose: () => { window.gridCloses = (window.gridCloses ?? 0) + 1; setOpen(false) },
   }) : null
 }
@@ -40,21 +63,41 @@ createRoot(document.getElementById("root")).render(createElement(Harness))
 const build = await Bun.build({ entrypoints: [entry], target: "browser", define: { "import.meta.env": JSON.stringify({ VITE_INGEST_URL: "http://grid.invalid", VITE_OPENCODE_URL: "http://engine.invalid" }) } })
 assert.equal(build.success, true, build.logs.join("\n"))
 const script = await build.outputs.find(output => output.kind === "entry-point")!.text()
-const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: request => new URL(request.url).pathname === "/harness.js"
-  ? new Response(script, { headers: { "content-type": "text/javascript" } })
-  : new Response(`<html><meta charset="utf-8"><div id="root"></div><script type="module" src="/harness.js"></script></html>`, { headers: { "content-type": "text/html" } }) })
+const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: request => {
+  const { pathname } = new URL(request.url)
+  if (pathname === "/harness.js") return new Response(script, { headers: { "content-type": "text/javascript" } })
+  if (pathname.startsWith("/wasm/")) {
+    const file = path.join(wasmDir, decodeURIComponent(pathname.slice("/wasm/".length)))
+    return file.startsWith(wasmDir + path.sep) && existsSync(file) && statSync(file).isFile() ? new Response(Bun.file(file)) : new Response("Not found", { status: 404 })
+  }
+  return new Response(`<html><meta charset="utf-8"><div id="root"></div><script type="module" src="/harness.js"></script></html>`, { headers: { "content-type": "text/html" } })
+} })
 const browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHROMIUM_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_PATH } : {}) })
 try {
   const page = await browser.newPage()
   page.setDefaultTimeout(5000)
-  await page.route("http://grid.invalid/**", route => route.request().method() === "GET"
-    ? route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(grid) })
-    : route.fulfill({ status: 204 }))
+  const checked: string[][] = []
+  await page.route("http://grid.invalid/**", route => {
+    const request = route.request()
+    const url = new URL(request.url())
+    const json = (body: unknown) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) })
+    if (url.pathname === "/matters/matter-grid/grid") return request.method() === "GET" ? json(grid) : route.fulfill({ status: 204 })
+    if (url.pathname === "/matters/matter-grid/grid/sources") {
+      const cells = (request.postDataJSON() as { cells: { key: string }[] }).cells
+      checked.push(cells.map(cell => cell.key))
+      return json(Object.fromEntries(cells.map(cell => [cell.key, sourceChecks[cell.key]])))
+    }
+    if (url.searchParams.get("name") === "Supply terms.docx" && /^\/matters\/matter-grid\/documents\/(redlined|content)$/.test(url.pathname))
+      return route.fulfill({ status: 200, contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", body: Buffer.from(supplyTerms) })
+    if (url.pathname === "/matters/matter-grid/redlines") return json([])
+    if (url.pathname === "/matters/matter-grid/documents/amendments") return json(null)
+    return route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: `Unexpected ${url.pathname}` }) })
+  })
   await page.route("http://engine.invalid/**", route => route.fulfill({ status: 404 }))
   await page.goto(server.url.href)
   const table = page.getByRole("dialog", { name: "Review table — Supplier review" })
   const answer = page.getByRole("button", { name: /^The law of England and Wales\./ })
-  const detail = page.locator(".picker-panel").filter({ hasText: "What is the governing law?" })
+  const detail = page.locator(".picker-panel").filter({ hasText: "The law of England and Wales." })
   const detailModal = page.getByRole("dialog", { name: /^Answer and comments:/ })
   const closes = () => page.evaluate(() => (window as unknown as { gridCloses?: number }).gridCloses ?? 0)
   const focusInDetail = () => detailModal.evaluate(element => element.contains(document.activeElement))
@@ -92,6 +135,44 @@ try {
     console.log(`PASS native focus containment, Tab loop, restoration and Escape after ${focus}`)
   }
 
+  // The amended side letter reads degraded in the grid itself, and its detail says why.
+  const sideLetterRow = page.getByRole("row", { name: /^Side letter\.docx/ })
+  await sideLetterRow.getByText("Source changed", { exact: true }).waitFor()
+  assert.equal(await page.getByRole("row", { name: /^Supply terms\.docx/ }).getByText("Source changed").count(), 0, "a verified cell should not read degraded")
+  assert.deepEqual(checked.at(-1)?.sort(), ["Side letter.docx::c1", "Supply terms.docx::c1"])
+  await page.getByRole("button", { name: /^The law of Scotland\./ }).click()
+  const sideDetail = page.locator(".picker-panel").filter({ hasText: "The law of Scotland." })
+  await sideDetail.getByText("Not found", { exact: true }).waitFor()
+  assert.match((await sideDetail.locator(".review-source-check").textContent())!, /no longer contains this excerpt\. It has changed since this answer/)
+  await page.keyboard.press("Escape")
+  await sideDetail.waitFor({ state: "detached" })
+  console.log("PASS a cell whose excerpt is no longer in its document reads degraded in the grid and its detail")
+
+  // The citation opens the document over the detail with the cited excerpt
+  // highlighted; Escape returns to the same cell's detail, focus on the citation.
+  await answer.click()
+  await detail.getByText("Verified", { exact: true }).waitFor()
+  await detail.getByText("Supply terms › §12 Governing law", { exact: true }).waitFor()
+  const source = detail.getByRole("button", { name: "Open Supply terms.docx at section 12", exact: true })
+  await source.click()
+  const viewer = page.getByRole("dialog", { name: "Supply terms.docx", exact: true })
+  const highlight = viewer.locator(".docx-render mark.citation-passage")
+  await highlight.first().waitFor({ timeout: 60_000 })
+  const highlighted = (await highlight.allTextContents()).join("").replace(/\s+/g, " ").trim()
+  assert.equal(highlighted, excerpt, "the viewer should highlight exactly the cited excerpt")
+  assert.equal(await highlight.first().evaluate(element => element === document.activeElement), true, "the highlighted excerpt should take focus")
+  await viewer.getByText("The cited excerpt is highlighted.", { exact: false }).waitFor()
+  await page.keyboard.press("Escape")
+  await viewer.waitFor({ state: "detached" })
+  assert.equal(await detail.isVisible(), true, "Escape in the document should return to the cell's detail")
+  assert.equal(await source.evaluate(element => element === document.activeElement), true, "closing the document should restore its citation link")
+  assert.equal(await table.isVisible(), true)
+  assert.equal(await closes(), 0)
+  console.log("PASS the citation opens its document at the highlighted excerpt and Escape returns to the same cell")
+
+  await page.keyboard.press("Escape")
+  await detail.waitFor({ state: "detached" })
+  assert.equal(await table.isVisible(), true)
   await page.keyboard.press("Escape")
   await table.waitFor({ state: "detached" })
   assert.equal(await closes(), 1)
