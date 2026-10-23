@@ -4,6 +4,8 @@ import { renderToStaticMarkup } from "react-dom/server"
 import CitationView from "../src/components/CitationView"
 import { citationDocument, citationPassage } from "../src/components/citation-target"
 import type { Citation } from "../src/api/opencode/parts"
+import { CLIENT_SUMMARY } from "../src/agents"
+import { readTurn, toTurns } from "../src/components/chat/turn-model"
 
 const document = { id: 1, name: "terms.docx", doc_path: "/matters/current/terms.docx", created_at: 1 }
 const citation: Citation = {
@@ -59,6 +61,57 @@ describe("rendered citation controls", () => {
     expect(html).toContain("Sources (2)")
     expect(html.match(/<button/g)?.length).toBe(1)
     expect(html).toContain("Source unavailable in this matter")
+  })
+})
+
+describe("cited sources of an answer", () => {
+  // An answer that found its passages with exact lookups and anchored them with
+  // cite, as a client summary does: no search-document call at all.
+  const quoted = (section: string, excerpt: string): Citation => ({ documentName: document.name, docPath: document.doc_path, section, excerpt, charStart: 0, charEnd: excerpt.length })
+  const tool = (id: string, name: string, citations: Citation[] = []) => ({
+    type: "tool" as const, id, sessionID: "ses_1", messageID: "msg_a", tool: name,
+    state: { status: "completed" as const, input: {}, output: "", title: name, metadata: { citations } },
+  })
+  const parts = [
+    tool("t1", "get-section"),
+    tool("t2", "cite", [quoted("4.2", "The Customer may reject defective cartons within 5 days.")]),
+    tool("t3", "cite", [quoted("7", "Either party may end this agreement on 30 days' notice.")]),
+    { type: "text" as const, id: "t4", sessionID: "ses_1", messageID: "msg_a", text: "What this is [terms.docx § 4.2] [terms.docx § 7]" },
+  ]
+
+  test("quotations cite verified are the answer's Sources, settled and live", () => {
+    const settled = toTurns([
+      { info: { id: "msg_u", role: "user", agent: CLIENT_SUMMARY }, parts: [{ type: "text", id: "u", sessionID: "ses_1", messageID: "msg_u", text: "Explain terms.docx for the client." }] },
+      { info: { id: "msg_a", role: "assistant" }, parts },
+    ] as never, "")[1]!
+    expect(settled.citations.map((c) => c.section)).toEqual(["4.2", "7"])
+    const live = readTurn(new Map(parts.map((p) => [p.id, p])) as never, new Map([["msg_a", "assistant"]]), "", "ses_1", CLIENT_SUMMARY)
+    expect(live.citations.map((c) => c.section)).toEqual(["4.2", "7"])
+    const html = renderToStaticMarkup(createElement(CitationView, { citations: settled.citations, matterId: "current", documents: [document] }))
+    expect(html).toContain("Sources (2)")
+    expect(html).toContain('aria-label="Open terms.docx, section 4.2"')
+    expect(html).toContain('aria-label="Open terms.docx, section 7"')
+  })
+
+  test("for one section, the verified quotation is shown over a search hit", () => {
+    const hit = { ...citation, section: "4.2", excerpt: "4.2 Rejection. The whole clause as retrieved.", score: 0.9 }
+    const quote = quoted("4.2", "The Customer may reject defective cartons within 5 days.")
+    for (const order of [[hit, quote], [quote, hit]]) {
+      const html = renderToStaticMarkup(createElement(CitationView, { citations: order, matterId: "current", documents: [document] }))
+      expect(html).toContain("Sources (1)")
+      expect(html).toContain(quote.excerpt)
+    }
+  })
+
+  test("two different quotations from one section both stay listed", () => {
+    const hit = { ...citation, section: "Preamble", excerpt: "Whole preamble as retrieved.", score: 0.9 }
+    const first = quoted("Preamble", "Gate 3 opens at 06:15 on weekdays.")
+    const second = quoted("Preamble", "Synthetic test memo.")
+    const html = renderToStaticMarkup(createElement(CitationView, { citations: [hit, first, second, second], matterId: "current", documents: [document] }))
+    expect(html).toContain("Sources (2)")
+    expect(html).toContain(first.excerpt)
+    expect(html).toContain(second.excerpt)
+    expect(html).not.toContain(hit.excerpt)
   })
 })
 

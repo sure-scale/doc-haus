@@ -22,7 +22,7 @@ export default function ChatEmpty({
         <p className="chat-empty-eyebrow">Your matter workspace</p>
         <h2 className="chat-empty-title">Start with the source documents</h2>
         <p className="muted">
-          Drop Word, PDF, email or Excel files onto the message box below, or add them in Documents. Once they are read
+          Drop Word, PDF, email, Excel or zip files onto the message box below, or add them in Documents. Once they are read
           you can ask about them here, and every answer cites the source section.
         </p>
         {onAddDocuments && (

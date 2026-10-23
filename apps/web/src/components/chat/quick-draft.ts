@@ -98,8 +98,10 @@ export function withMatterSources(scope: DraftScope | undefined, sources: number
 const FORM_LINE = /^[ \t]*[*_]*form[ \t]*:[ \t]*[*_]*[ \t]*(advice letter|advice|letter|agreement|other)[ \t]*[*_]*[ \t]*\.?[ \t]*$/im
 const SOURCES_LINE = /^[ \t]*(?:#{1,6}[ \t]+)?[*_]*sources[*_]*[ \t]*(?::|$)/im
 // Square brackets in a draft mark something still to fill or confirm; a
-// citation ("[<Document> § <section>]") and a Markdown link are not.
+// citation ("[<Document> § <section>]"), a Markdown link and an email address
+// ("Name [name@firm.example]") are not.
 const BRACKETED = /\[([^[\]\n]+)\](?![([:])/g
+const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
 /** A quick answer read by its contract: its form (which sets the firm's
  * legend, applied by code), its text without the form line, and the bracketed
@@ -109,11 +111,44 @@ export function quickDraftAnswer(answer: string) {
   const text = match
     ? `${answer.slice(0, match.index)}${answer.slice(match.index + match[0].length).replace(/^\s*\n/, "")}`.trim()
     : answer.trim()
-  const draft = text.slice(0, SOURCES_LINE.exec(text)?.index ?? text.length)
-  const placeholders = [...draft.matchAll(BRACKETED)]
-    .filter((bracket) => /[\p{L}_●•]/u.test(bracket[1]!) && !bracket[1]!.includes("§"))
-    .map((bracket) => bracket[0])
-  return { form: match?.[1]?.toLowerCase(), text, placeholders: [...new Set(placeholders)] }
+  const sources = SOURCES_LINE.exec(text)?.index
+  const draft = text.slice(0, sources ?? text.length)
+  const placeholders = [
+    ...new Set(
+      [...draft.matchAll(BRACKETED)]
+        .filter((bracket) => /[\p{L}_●•]/u.test(bracket[1]!) && !bracket[1]!.includes("§") && !EMAIL.test(bracket[1]!.trim()))
+        .map((bracket) => bracket[0]),
+    ),
+  ]
+  // Whether the answer has its own "Open items" list, which then carries the
+  // placeholders itself and the chat need not list them again.
+  const listed = [...text.slice(sources ?? 0).matchAll(OPEN_ITEMS_LINE)].length > 0
+  return { form: match?.[1]?.toLowerCase(), text: withOpenItems(text, sources ?? 0, placeholders), placeholders, listed }
+}
+
+// The "Open items" heading (after the sources, when the answer has them) and
+// any text on its own line.
+const OPEN_ITEMS_LINE = /^[ \t]*(?:#{1,6}[ \t]+)?[*_]*open items[*_]*[ \t]*:?[*_]*[ \t]*/gim
+const NONE = /^[\s*_-]*(?:none|nil|n\/a|no open items)\b/i
+
+// The answer's own "Open items" list must agree with the draft: every
+// placeholder left in the draft is listed, and a list that says there are none
+// while placeholders remain is replaced. Code makes the list consistent rather
+// than trusting the model's. An answer with no placeholders, or no list yet (it
+// may still be streaming), is left as written; the chat lists the draft's
+// placeholders itself once the answer settles.
+function withOpenItems(text: string, from: number, placeholders: string[]) {
+  if (!placeholders.length) return text
+  const heading = [...text.slice(from).matchAll(OPEN_ITEMS_LINE)].at(-1)
+  if (!heading) return text
+  const at = from + heading.index + heading[0].length
+  const listed = text.slice(at)
+  const none = NONE.test(listed)
+  const missing = none ? placeholders : placeholders.filter((item) => !listed.toLowerCase().includes(item.toLowerCase()))
+  if (!missing.length) return text
+  const items = missing.map((item) => `- ${item}`).join("\n")
+  const kept = none ? "" : listed.trim()
+  return `${text.slice(0, at).trimEnd()}\n${kept ? `${kept}\n` : ""}${items}`
 }
 
 /** What a full run started from the quick draft at `index` carries: the request

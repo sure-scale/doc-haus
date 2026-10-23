@@ -27,7 +27,9 @@ export type RepairRound = { round: number; requested_at: string; items: OpenItem
 // A template part the rendered draft falls short on, or carries without its
 // heading, is an omission (draftTemplateItems): the draft is not rewritten for
 // it, so the change cycle repairs it.
-const REPAIRABLE_DRAFT_KINDS = new Set<OpenItem["kind"]>(["quote_miss", "citation_unsupported", "omission"])
+// Draft-status wording in an agreement (draft-status.ts) is taken out by the
+// same cycle.
+const REPAIRABLE_DRAFT_KINDS = new Set<OpenItem["kind"]>(["quote_miss", "citation_unsupported", "omission", "draft_status"])
 
 export function readRepairRound(directory: string): RepairRound | undefined {
   const value = readLeanJson(directory, "repairs.json")

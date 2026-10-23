@@ -1,4 +1,5 @@
 import { playbookLibraryRoutes } from "./playbook-library"
+import { clientRoutes } from "./clients"
 import { updateRoutes, managedUpdateOwner } from "./updater"
 import { RepoUpdater } from "../../../scripts/updater"
 import { documentCopyRoutes } from "./document-copy"
@@ -22,10 +23,12 @@ import {
   getRedline,
   setRedlineStatus,
   pendingRedlineCounts,
+  getExtractionQuality,
   getInjectionReport,
   getDocumentRole,
   type RedlineRow,
 } from "./db"
+import { readExtractionQuality } from "./extraction-quality"
 import {
   ingestDocument,
   extractDocumentText,
@@ -52,7 +55,7 @@ import { listAgents, createAgent, updateAgent, deleteAgent, setAgentEnabled, AGE
 import { docxodus } from "./docxodus"
 import { listGcpProjects, listAwsProfiles, vertexProbeRoutes } from "./host"
 import { parserCapabilitiesRoutes } from "./parser-capabilities-route"
-import { readGrid, recheckPassages, recheckRequest, writeGrid, type Grid } from "./grid"
+import { checkCellSources, readGrid, recheckPassages, recheckRequest, sourceCheckRequest, writeGrid, type Grid } from "./grid"
 import { PreferencesUnavailableError, PreferencesValidationError, readDraftingPreferences, readDraftingTelemetryRetentionPreference, writeDraftingPreferences } from "./preferences"
 import { researchConnectionRoutes } from "./research-connections"
 import { readLeanPayload, readDetailPayload, readStoragePayload } from "./telemetry"
@@ -64,6 +67,8 @@ import { DocxTrackedRevisionsError } from "../../../dochaus/lib/docx-amendments"
 import { compareVersions } from "../../../dochaus/lib/version-compare"
 import { pendingRedlinesForDoc } from "../../../dochaus/lib/redlines"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
+import { ingestEmailDocument, reingestLegacyEmails, removeMatterDocument, withEmailLinks } from "./email-attachments"
+import { ingestZipDocument, ZipFormatError, ZipTooLargeError } from "./zip-archive"
 import { draftingTraceReference } from "../../../dochaus/lib/drafting-trace-identity"
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import path from "node:path"
@@ -73,7 +78,6 @@ import { ChatContinuationConflictError, dispatchChatContinuation, malformedToolC
 import { withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
 import { draftingStartProfile, leanDraftingRoutes, leanDraftingStatus, LeanDraftingConflictError, startLeanDraftingRun } from "./lean-drafting"
 import {
-  deleteMatterDocument,
   DocumentMutationConflictError,
   RegisteredDocumentNotFoundError,
 } from "./document-delete"
@@ -164,6 +168,9 @@ app.route("/host", parserCapabilitiesRoutes())
 app.route("/host", vertexProbeRoutes())
 
 app.get("/matters", (c) => c.json(listMatters()))
+
+// Clients added without a matter; the web joins them with each matter's Client.
+app.route("/", clientRoutes())
 
 // Firm-wide drafting preferences (Settings → Drafting). Saving re-renders the
 // standing-instructions markdown the engine reads on every turn (see
@@ -432,7 +439,13 @@ app.get("/matters/:id", async (c) => {
       const counts = pendingRedlineCounts(db)
       // Surface the pending-redline count per document so the docs rail can badge the
       // documents that have unreviewed changes waiting.
-      const documents = (listDocuments(db) as { doc_path: string }[]).map((d) => ({ ...d, pending: counts[documentRegistryIdentity(d.doc_path)] ?? 0 }))
+      // Each source's extraction quality (#239) goes out as `quality`; one
+      // ingested before the gate has none.
+      const documents = withEmailLinks(db, (listDocuments(db) as { doc_path: string; name: string; extraction_quality: string | null }[]).map(({ extraction_quality, ...d }) => ({
+        ...d,
+        ...(extraction_quality ? { quality: readExtractionQuality(extraction_quality) } : {}),
+        pending: counts[documentRegistryIdentity(d.doc_path)] ?? 0,
+      })))
       return c.json({ ...matter, documents })
     } finally {
       db.close()
@@ -566,8 +579,16 @@ app.post("/matters/:id/documents", async (c) => {
     return c.json({ error: "Choose replace or keep-both for an existing document." }, 400)
   const buffer = Buffer.from(await file.arrayBuffer())
   try {
-    return c.json(await ingestDocument(dir, name, buffer, { existing }))
+    // An email brings its attachments in after it (email-attachments.ts), and a
+    // zip file the files inside it (zip-archive.ts). A lawyer's upload is never
+    // an attachment, even under an attachment's name.
+    if (name.toLowerCase().endsWith(".eml")) return c.json(await ingestEmailDocument(dir, name, buffer, { existing }))
+    if (name.toLowerCase().endsWith(".zip")) return c.json(await ingestZipDocument(dir, name, buffer, { existing }))
+    return c.json(await ingestDocument(dir, name, buffer, { existing, links: { parentName: null } }))
   } catch (error) {
+    // Refused before anything of the zip was added.
+    if (error instanceof ZipTooLargeError) return c.json({ error: error.message, code: "zip_too_large" }, 413)
+    if (error instanceof ZipFormatError) return c.json({ error: `${name} could not be read as a zip file.` }, 400)
     if (error instanceof SourceDocumentExistsError)
       return c.json({ error: error.message, code: "source_exists", name: error.existing }, 409)
     if (error instanceof DeliverableDocumentExistsError)
@@ -708,7 +729,8 @@ app.delete("/matters/:id/documents", async (c) => {
   if (!matterDocumentName(requested) && !deliverableDocumentName(requested))
     return c.json({ error: "The document filename or extension is not supported." }, 400)
   try {
-    return c.json(await deleteMatterDocument(matterDir(c.req.param("id")), requested))
+    // Removing an email also removes its attachments unless attachments=keep.
+    return c.json(await removeMatterDocument(matterDir(c.req.param("id")), requested, c.req.query("attachments") === "keep"))
   } catch (error) {
     if (error instanceof RegisteredDocumentNotFoundError) return c.json({ error: error.message }, 404)
     if (error instanceof DocumentMutationConflictError) return c.json({ error: error.message }, 409)
@@ -731,6 +753,37 @@ app.post("/matters/:id/grid/recheck", async (c) => {
   const request = recheckRequest(await c.req.json().catch(() => undefined))
   if (!request) return c.json({ error: "A re-check needs one document name, the question and the passages already read." }, 400)
   return c.json(recheckPassages(matterDir(c.req.param("id")), request))
+})
+
+// Whether each cited cell's excerpt is still the document's text at its
+// offsets (see checkCellSources). Grid citations come from the matter's indexed
+// sources, so only a file registered as a source resolves; a deliverable is
+// never indexed or cited, and an unregistered file reads as missing.
+app.post("/matters/:id/grid/sources", async (c) => {
+  const request = sourceCheckRequest(await c.req.json().catch(() => undefined))
+  if (!request) return c.json({ error: "A source check needs a list of cited cells." }, 400)
+  const dir = matterDir(c.req.param("id"))
+  const db = existsSync(path.join(dir, ".dochaus", "legal.db")) ? openDb(dir) : undefined
+  const targets = (() => {
+    try {
+      return new Map(request.cells.map((cell) => {
+        const name = matterDocumentName(cell.documentName)
+        const target = name ? readDocumentTarget(dir, name) : undefined
+        const source = (() => {
+          try {
+            return !!db && !!target && existsSync(target.docPath) && getDocumentRole(db, target.docPath) === "source"
+          } catch {
+            return false
+          }
+        })()
+        return [cell.documentName, source ? target : undefined] as const
+      }))
+    } finally {
+      db?.close()
+    }
+  })()
+  const names = [...new Set([...targets.values()].flatMap((target) => (target ? [target.name] : [])))]
+  return withArtifactMutationLocksAsync(dir, names, async () => c.json(await checkCellSources(request, (name) => targets.get(name))))
 })
 
 // Serve a matter's .docx bytes so the web app can render the redline in-browser
@@ -758,8 +811,9 @@ app.get("/matters/:id/documents/content", async (c) => {
 // The plain text of a matter document, mammoth-extracted (the same text indexing
 // uses). The drafter's read-document tool reads it to convert an existing document
 // into a template by replacing every client-specific detail with a placeholder.
-// Ships the document's ingest-time injection report (null when clean) so the tool
-// can hand the model the text and the warning together.
+// Ships the document's ingest-time injection report (null when clean) and its
+// extraction quality so the tool can hand the model the text and the warnings
+// together.
 app.get("/matters/:id/documents/text", async (c) => {
   const dir = matterDir(c.req.param("id"))
   const name = registeredDocumentName(c.req.query("name") ?? "")
@@ -768,10 +822,10 @@ app.get("/matters/:id/documents/text", async (c) => {
     const target = readDocumentTarget(dir, name)
     if (!target || !existsSync(target.docPath)) return c.notFound()
     const db = existsSync(path.join(dir, ".dochaus", "legal.db")) ? openDb(dir) : undefined
-    const injection = (() => {
-      if (!db) return null
+    const { injection, quality } = (() => {
+      if (!db) return { injection: null, quality: undefined }
       try {
-        return getInjectionReport(db, target.docPath)
+        return { injection: getInjectionReport(db, target.docPath), quality: getExtractionQuality(db, target.docPath) }
       } finally {
         db.close()
       }
@@ -779,6 +833,9 @@ app.get("/matters/:id/documents/text", async (c) => {
     return c.json({
       text: await extractDocumentText(target.name, Buffer.from(await Bun.file(target.docPath).bytes())),
       injection,
+      // The extraction quality gate's result (#239); absent for a document
+      // ingested before it.
+      ...(quality ? { quality } : {}),
     })
   })
 })
@@ -1510,12 +1567,14 @@ function readDocumentTarget(directory: string, name: string) {
   }
 }
 
-// Every install gets the repo-shipped starter playbooks, so seed them on boot —
-// demo content (the Aldgate Mills matter) stays gated behind `start.sh --demo`,
-// which runs seed.ts directly. Dynamic import keeps seed.ts's heavy docx
-// dependency out of the request path's module graph.
-const { seedPlaybooks } = await import("./seed")
+// Every install gets the repo-shipped starter playbooks, so seed them on boot.
+// The sample matter (the fictional Aldgate Mills letter) is added only on
+// request: POST /sample-matter, called when the lawyer chooses it in setup or
+// Settings. Dynamic import keeps seed.ts's heavy docx dependency out of the
+// request path's module graph.
+const { seedPlaybooks, sampleMatterRoutes } = await import("./seed")
 seedPlaybooks()
+app.route("/", sampleMatterRoutes)
 
 // Run database compatibility migrations at startup: build/backfill the lexical
 // index and refresh vectors, structure and sections when their versions change.
@@ -1559,6 +1618,18 @@ for (const matter of listMatters()) {
     console.error("source artifact heal failed", { matter_ref: matterRef, ...diagnosticErrorMetadata(e) })
   }
 }
+
+// Emails ingested before their attachments were read are re-ingested once,
+// after the service is listening, through the usual locked ingest.
+setTimeout(async () => {
+  for (const matter of listMatters()) {
+    if (!existsSync(path.join(matter.dir, ".dochaus", "legal.db"))) continue
+    const count = await reingestLegacyEmails(matter.dir).catch((e) => {
+      console.error("email re-ingest failed", { matter_ref: draftingTraceReference(matter.dir), ...diagnosticErrorMetadata(e) })
+    })
+    if (count) console.log("emails re-ingested", { count, matter_ref: draftingTraceReference(matter.dir) })
+  }
+}, 0)
 
 const preferenceTelemetryRetention = readDraftingTelemetryRetentionPreference()
 const envTelemetryRetention = Number(process.env.DOCHAUS_TELEMETRY_RETENTION_DAYS)

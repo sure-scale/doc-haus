@@ -9,6 +9,7 @@ import { researchHandoff } from "./research"
 import { finalBodyParagraphs, readChangeList, readParagraphs, type ApplyResult } from "./checks"
 import { reviewStages, FIRST_DOCUMENT, earlierDocuments, planActingFor, operativeDocument, plannedDocument, readLeanPlan, runPosture, stepDocument, stepStage, type DocID, type StepID } from "./plan"
 import { REQUEST_SOURCE, matterSourceIDs } from "./quotes"
+import { nameWithProvenance, sourceProvenance } from "../../lib/source-provenance"
 import { readRepairRound, changesRepairSections } from "./repairs"
 import { MEMO_TARGET, REVIEW_FINDINGS_CONTRACT, findingsText, forwardedFindings, reviewText } from "./review-findings"
 import { disclosableItems } from "./stages"
@@ -32,7 +33,7 @@ const REVIEW_FOCUS = {
 const SOURCE_RULES = [
   "- Read the sources you rely on with search-document or read-document. State only what the request or the sources support: do not invent facts, figures or dates about the parties or the matter, commercial or strategic decisions, or authorities.",
   "- Quote a source only word for word, written as \"exact words\" [source: document name or approved source URL].",
-  "- A source recommendation is a proposed negotiating position, not an agreed term. When the request calls for proposals, draft the source-supported recommendation as proposed and explain its consequence; absence of client approval alone does not require withholding it. Preserve any genuinely unresolved commercial choice visibly. Never describe a proposal as agreed or externally verified.",
+  "- A source recommendation is a proposed negotiating position, not an agreed term. When the request calls for proposals, draft the source-supported recommendation, mark it in its paragraph with a visible [open item: confirm proposed ...] marker and explain its consequence; absence of client approval alone does not require withholding it. Preserve any genuinely unresolved commercial choice visibly. Never describe a proposal as agreed or externally verified.",
   "- For each gap, ask whether the lawyer would fill it with information or with a preference.",
   "- Information is a fact, a commercial or strategic decision for the lawyer or the party the lawyer acts for, or authority. Where it is missing or uncertain, write a visible [open item: what is needed] marker instead of guessing.",
   "- A preference is a drafting choice needed to fulfil the requested purpose, within the requested scope. For a new substantive choice not settled by instructions or answers, draft balanced wording and add a visible [open item: confirm ...] marker in the same paragraph saying what was chosen. Do not add confirmation markers to settled decisions or ordinary wording that creates no new substantive choice. A drafted choice is not an invented fact; the marker goes with the drafted wording, never in its place.",
@@ -63,9 +64,10 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
   const spine = readLeanText(directory, "spine.json")
   const spineBlock = spine ? tagged("drafting_spine", "Source-linked drafting decisions and unresolved points. Retrieve the underlying evidence as needed; this handoff does not replace it.\n" + spine) : ""
   const answerBlock = answers ? tagged("answers", `The lawyer answered these decisions; their answers remain controlling and must not be re-asked under narrower or different wording:\n${answers}`) : ""
+  const provenance = sourceProvenance(directory)
   const sources = tagged("sources", [
     "Matter documents (use these exact names with search-document and read-document, and as source names):",
-    ...matterSourceIDs(directory).map(name => `- ${name}`),
+    ...matterSourceIDs(directory).map(name => `- ${nameWithProvenance(name, provenance)}`),
     `To quote the request or the lawyer's answers, use the source name "${REQUEST_SOURCE}".`,
   ].join("\n"))
   if (step === "finalize") return draftingNotesSections(directory, request).filter(Boolean).join("\n\n")
@@ -91,7 +93,7 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
       request, working, spineBlock, answerBlock, sources,
       tagged("output_contract", [
         ...SOURCE_RULES,
-        "- Delivery capabilities: for every planned body the workflow renders the final Word document and generates its tracked redline; one final drafting-notes memo accompanies the package. A request for a redline/comparison or ordinary drafting notes is fulfilled by those generated artifacts, not by another planned body. Set Compare against on the revised body to select a supplied original for comparison. Plan a separate substantive memo only when the request requires its own distinct audience, purpose or analysis beyond the accompanying drafting notes; a different delivery format does not create another substantive document. Do not draft simulated tracked text as a separate comparison document.",
+        "- Delivery capabilities: for every planned body the workflow renders the final Word document, with the firm's draft line and legend on every page from its settings, and generates its tracked redline; one final drafting-notes memo, listing the open points, accompanies the package. A request for a redline/comparison or ordinary drafting notes is fulfilled by those generated artifacts, not by another planned body. Set Compare against on the revised body to select a supplied original for comparison. Plan a separate substantive memo only when the request requires its own distinct audience, purpose or analysis beyond the accompanying drafting notes; a different delivery format does not create another substantive document. Do not draft simulated tracked text as a separate comparison document.",
         "- Write one line \"Memo: <its name in the request's own words>\" before the first \"# \" title only when the request asks for a memo or note to accompany the documents; otherwise leave it out. Do not also plan the memo it names as a \"# \" document.",
         "- These rules apply to every part you draft later.",
         "- Begin the outline with one line \"Acting for: <party>\" when the request says which party the lawyer acts for, naming that party; " +
@@ -295,13 +297,14 @@ function draftingNotesSections(directory: string, request: string) {
   // The notes never name a question by its id, so their prompt shows none: an
   // open question is disclosed by its open item's id.
   const answers = answeredQuestions(directory).filter(question => !delegatedIDs.has(question.id)).map(question => `- Q: ${question.question}\n  A: ${question.answer}`).join("\n")
+  const provenance = sourceProvenance(directory)
   return [
     memo
       ? `This is a lean drafting run. The request asks for a memo to accompany the drafted documents, "${memo.name}". Write the drafting notes as that memo.`
       : "This is a lean drafting run. Write the drafting notes that go to the lawyer with the drafted documents.",
     tagged("required_repairs", (readRepairRound(directory)?.items ?? []).filter(item => item.stage === "package-review" || item.ref.repair_target === "memo").map(item => `- ${item.detail}`).join("\n") || "None."),
     request, actingForBlock(directory), answers ? tagged("answers", answers) : "",
-    tagged("sources", matterSourceIDs(directory).join("\n")),
+    tagged("sources", matterSourceIDs(directory).map(name => nameWithProvenance(name, provenance)).join("\n")),
     tagged("delivery_artifacts", JSON.stringify(deliveryArtifactEvidence(directory), null, 2)),
     tagged("drafting_spine", readLeanText(directory, "spine.json") ?? "None."),
     tagged("discrepancies", readLeanText(directory, "discrepancy.json") ?? "None."),

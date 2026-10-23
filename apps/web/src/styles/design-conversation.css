@@ -1422,3 +1422,15 @@
   font-weight: 600;
   pointer-events: none;
 }
+
+/* Auto's acknowledgement under the lawyer's message: on the assistant's side,
+   set like the answer text so it reads as the reply's opening line. */
+.design-conversation .msg-ack {
+  align-self: flex-start;
+  max-width: 76%;
+  margin: calc(var(--space-2) - var(--space-5)) 0 0;
+  color: var(--text);
+  font-size: 0.875rem;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}

@@ -1,7 +1,9 @@
 // Run from apps/web: PLAYWRIGHT_MODULE=<installed playwright module> bun test/quick-draft.browser.ts
-// The quick-draft path (#282) through the real matter page, chat panel, native
+// The quick-draft path (#282), and the client summary (#26) that shares its
+// explicit-pick contract, through the real matter page, chat panel, native
 // session form card and chat actions; only the engine's and ingest's HTTP and
 // event stream are mocked. Set QUICK_DRAFT_SCREENSHOTS=<directory> to save views.
+// Also: asking about a review-table answer (#95) never overwrites unsent text.
 import assert from "node:assert/strict"
 import { mkdtemp, rm } from "node:fs/promises"
 import os from "node:os"
@@ -21,12 +23,24 @@ const NARRATION = "Quick draft on your invoices — I'll pull the payment terms.
 const LATER_NARRATION = "I've got the figures — now I'll verify them."
 const QUICK_TEXT = "Dear [Client contact], both invoices remain unpaid [Letter.docx § 1].\n\nSources:\n- unpaid invoices [Letter.docx § 1]\n\nOpen items:\nNone."
 const QUICK_ANSWER = `Form: advice letter\n\n${QUICK_TEXT}`
+// The quick text as shown and carried on: code lists the draft's placeholder
+// in place of the answer's "None.".
+const QUICK_SHOWN = QUICK_TEXT.replace("Open items:\nNone.", "Open items:\n- [Client contact]")
 const LEGEND = "Privileged & confidential"
+// A client summary as the engine stores it: narration in a step that calls a
+// tool, then the summary.
+const SUMMARY_NARRATION = "Let me find the invoice terms first."
+const SUMMARY = "What this is\n\nA letter about two unpaid invoices [Letter.docx § 1]."
+// One review-table answer to ask about.
+const GRID = {
+  columns: [{ id: "c1", question: "Which invoices are unpaid?" }],
+  cells: { "Letter.docx::c1": { answer: "Both invoices.", citation: { documentName: "Letter.docx", docPath: "/matter/Letter.docx", section: "1", excerpt: "Both invoices remain unpaid.", charStart: 0, charEnd: 28 }, status: "filled", questionHash: "unused" } },
+}
 const scope = (change: Record<string, string> = {}) =>
   JSON.stringify({ route: "draft", documents: "one", legal_effect: "no", outside_law: "no", firm_material: "no", sources: "few", ...change })
 
 // What the mocked services answer, set per scenario.
-const config = { router: scope(), offer: "ask", settled: false, legend: "" }
+const config = { router: scope(), offer: "ask", settled: false, legend: "", preferencesDown: false, hold: undefined as Promise<void> | undefined }
 // What reached them.
 const routerPrompts: string[] = []
 const prompts: { session: string; agent: string; text: string }[] = []
@@ -59,11 +73,13 @@ const source = (file: string) => JSON.stringify(path.resolve(import.meta.dir, ".
 await Bun.write(entry, `
 import { createElement } from ${JSON.stringify(fileURLToPath(import.meta.resolve("react")))}
 import { createRoot } from ${JSON.stringify(fileURLToPath(import.meta.resolve("react-dom/client")))}
-import { MemoryRouter, Route, Routes } from ${JSON.stringify(fileURLToPath(import.meta.resolve("react-router-dom")))}
+import { Link, MemoryRouter, Route, Routes } from ${JSON.stringify(fileURLToPath(import.meta.resolve("react-router-dom")))}
 import MatterDetail from ${source("pages/MatterDetail.tsx")}
 import { ToastProvider } from ${source("components/Toast.tsx")}
 createRoot(document.getElementById("root")).render(createElement(ToastProvider, null,
   createElement(MemoryRouter, { initialEntries: ["/matter/matter" + location.search] },
+    // Stands in for the sidebar's review-table link, which keeps the current query.
+    createElement(Link, { to: { search: "?view=review" } }, "Open review table"),
     createElement(Routes, null, createElement(Route, { path: "/matter/:id", element: createElement(MatterDetail, { onSessionsChanged: () => {} }) })))))
 `)
 const build = await Bun.build({ entrypoints: [entry], target: "browser", define: { "import.meta.env": JSON.stringify({ VITE_OPENCODE_URL: "/", VITE_INGEST_URL: "/ingest" }) } })
@@ -86,12 +102,16 @@ const server = Bun.serve({
       return json({ id: "matter", title: "Unpaid invoices", dir: "/matter", created_at: 1, documents: [{ id: 1, name: "Letter.docx", doc_path: "/matter/Letter.docx", created_at: 1, role: "source" }] })
     if (route === "GET /ingest/jurisdictions" || route === "GET /ingest/playbooks") return json([])
     if (route === "GET /ingest/workflows") return json({ dir: "/workflows", workflows: [] })
+    if (route === "GET /ingest/preferences" && config.preferencesDown) return json({ error: "Settings unavailable" }, 500)
     if (route === "GET /ingest/preferences") return json({ quickDraftOffer: config.offer, agreementLegend: "", adviceLegend: config.legend })
     if (route === "GET /api/agent")
-      return json({ data: ["qa", "draft", "quick-draft"].map((id) => ({ id, description: id, mode: "primary", hidden: id === "quick-draft" })) })
+      return json({ data: ["qa", "draft", "quick-draft", "client-summary"].map((id) => ({ id, description: id, mode: "primary", hidden: id !== "qa" && id !== "draft" })) })
     if (route === "GET /ingest/matters/matter/telemetry")
       return json({ current_activity: null, today: { cost_usd: 0, turns: 0 }, matter_total: { cost_usd: 0, turns: 0, sessions: 1, since_ts: 1 }, current_session: null, rate_card_as_of: null, unknown_models: [] })
     if (route === "GET /ingest/matters/matter/drafting-status") return json(null)
+    if (route === "GET /ingest/matters/matter/grid") return json(GRID)
+    if (route === "PUT /ingest/matters/matter/grid") return new Response(null, { status: 204 })
+    if (route === "POST /ingest/matters/matter/grid/sources") return json({ "Letter.docx::c1": "verified" })
     if (url.pathname.startsWith("/ingest/matters/matter/answer-drafts/")) return json({ answers: {}, revision: 0 })
     if (route === "GET /ingest/engine/config") return json({ model: "test/model", small_model: "test/model" })
     if (route === "POST /ingest/matters/matter/drafting-runs/start") {
@@ -99,7 +119,11 @@ const server = Bun.serve({
       return json({ profile: "lean", mode: "started", ownerSessionID: "ses_owner", status: null })
     }
     if (route === "GET /api/event")
-      return new Response(new ReadableStream<Uint8Array>({ start(controller) { streams.add(controller) } }), { headers: { "content-type": "text/event-stream" } })
+      // The engine opens every stream with server.connected.
+      return new Response(new ReadableStream<Uint8Array>({ start(controller) {
+        streams.add(controller)
+        controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ id: "evt_connected", created: Date.now(), type: "server.connected", data: {} })}\n\n`))
+      } }), { headers: { "content-type": "text/event-stream" } })
     if (route === "GET /api/session/active") return json({ data: {} })
     if (route === "GET /api/permission/request") return json({ location: { directory: "/matter" }, data: [] })
     if (route === "POST /api/session") {
@@ -113,8 +137,18 @@ const server = Bun.serve({
         return json({ data: [{ type: "assistant", id: `msg_route_${router[1]}`, agent: "router", model, finish: "stop", time: { created: 1, completed: 2 }, content: [{ type: "text", text: config.router }] }], cursor: {} })
       if (router[2] === "/prompt") {
         routerPrompts.push(((await request.json()) as { text: string }).text)
+        // The reply streams as text deltas while the router turn runs: its
+        // acknowledgement line first, then the JSON in a later batch.
+        const line = config.router.indexOf("\n")
+        const delta = (text: string) => publish("session.text.delta", { sessionID: router[1], assistantMessageID: `msg_route_${router[1]}`, ordinal: 0, delta: text })
+        if (line > 0) {
+          delta(config.router.slice(0, line + 1))
+          setTimeout(() => delta(config.router.slice(line + 1)), 30)
+        }
         return json({ data: { id: "msg_route_prompt", sessionID: router[1], time: { created: 1 }, type: "user", payload: { text: "" }, delivery: "queue" } })
       }
+      // A held router turn has not finished: Auto has no route yet.
+      if (router[2] === "/wait") await config.hold
       return router[2] === "/interrupt" ? json({}) : new Response(null, { status: 204 })
     }
     const form = url.pathname.match(/^\/api\/session\/(ses_\w+)\/form(?:\/(frm_\d+))?(\/reply)?$/)
@@ -184,7 +218,15 @@ const server = Bun.serve({
                 ] },
                 { type: "assistant", id: `msg_b${n}`, agent, model, finish: "stop", time, content: [{ type: "text", text: QUICK_ANSWER }] },
               ]
-            : [{ type: "assistant", id: `msg_a${n}`, agent, model, finish: "stop", time, content: [{ type: "text", text: "Answered." }] }]
+            : agent === "client-summary"
+              ? [
+                  { type: "assistant", id: `msg_a${n}`, agent, model, finish: "tool-calls", time, content: [
+                    { type: "text", text: SUMMARY_NARRATION },
+                    { type: "tool", id: `call_${n}`, name: "search-document", time, state: { status: "completed", input: { query: "invoices" }, content: [{ type: "text", text: "Both invoices remain unpaid." }], metadata: { citations: [] } } },
+                  ] },
+                  { type: "assistant", id: `msg_b${n}`, agent, model, finish: "stop", time, content: [{ type: "text", text: SUMMARY }] },
+                ]
+              : [{ type: "assistant", id: `msg_a${n}`, agent, model, finish: "stop", time, content: [{ type: "text", text: "Answered." }] }]
         transcripts.set(id!, [
           ...transcript,
           { type: "user", id: `msg_u${n}`, text, time: { created: Date.now() } },
@@ -242,6 +284,8 @@ try {
     assert.equal(await card.getByLabel(/Quick draft here in chat/).isChecked(), true)
     assert.equal(await card.getByLabel(/Full drafting run/).isChecked(), false)
     await page.locator(".msg.user", { hasText: request }).waitFor()
+    // A router reply with no acknowledgement line gets the chat's own.
+    await page.locator(".msg-ack", { hasText: "Happy to draft that." }).waitFor()
     await settle()
     assert.equal(prompts.length + starts.length, 0, "nothing runs before consent")
     if (shots) await page.screenshot({ path: path.join(shots, "1-offer.png") })
@@ -274,15 +318,107 @@ try {
     assert.equal(await quick.getByText(LATER_NARRATION).count(), 0, "narration in a later working step is not quick text")
     assert.equal(await quick.getByText("Form: advice letter").count(), 0, "the form line is not shown")
     assert.equal(await quick.locator(".quick-draft-legend").count(), 0, "no legend while the firm's advice legend is none")
-    // Code lists the placeholder the answer's own open items missed.
-    await quick.getByRole("note").filter({ hasText: "Open items in the draft: [Client contact]" }).waitFor()
+    // Code puts the placeholder the answer's own open items missed into that
+    // list (its "None." replaced), and the chat does not list it again below.
+    await quick.getByRole("listitem").filter({ hasText: "[Client contact]" }).waitFor()
+    assert.equal(await quick.getByText("None.", { exact: true }).count(), 0, "the answer's 'None.' is replaced by its placeholder")
+    assert.equal(await quick.locator(".quick-draft-open").count(), 0, "open items are listed once, not again in a note")
     if (shots) await page.screenshot({ path: path.join(shots, "3-quick-draft.png") })
     console.log("PASS Start dispatches the settled choice once: the quick draft answers in chat under the banner, its placeholder listed as an open item")
 
     await page.getByRole("button", { name: "Run full drafting cycle", exact: true }).click()
     await until(() => starts.length === 1, "the upgrade starts the full run")
-    assert.deepEqual(starts[0], { request, agent: "draft", model: { providerID: "test", modelID: "model" }, workingDraft: QUICK_TEXT })
+    assert.deepEqual(starts[0], { request, agent: "draft", model: { providerID: "test", modelID: "model" }, workingDraft: QUICK_SHOWN })
     console.log("PASS Run full drafting cycle starts the full run with the request and the quick text as its working draft")
+    await context.close()
+  }
+  {
+    // Auto's acknowledgement: the router's own line shows while it is still
+    // choosing, stays above the offer and the quick draft, and is never sent,
+    // quick text or the upgrade's working draft.
+    const ACK = "On it — I'll draft that covering email."
+    const request = "Draft a short covering email to the client on the two unpaid invoices."
+    const before = { ...counts(), routes: routerPrompts.length }
+    let release = () => {}
+    config.hold = new Promise<void>((resolve) => (release = resolve))
+    config.router = `${ACK}\n${scope()}`
+    const { context, page, send, card } = await open()
+    await send(request)
+    const ack = page.locator(".msg-ack", { hasText: ACK })
+    await ack.waitFor()
+    assert.equal(forms.length, before.forms, "the acknowledgement shows before Auto has chosen")
+    assert.equal(await page.locator(".msg.assistant .msg-agent", { hasText: "Draft" }).count(), 0)
+    if (shots) await page.screenshot({ path: path.join(shots, "ack-1-routing.png") })
+    release()
+    config.hold = undefined
+    await card.waitFor()
+    assert.equal(await page.locator(".msg-ack").count(), 1, "one acknowledgement: the router's line stays")
+    await card.getByRole("button", { name: "Start", exact: true }).click()
+    await until(() => prompts.length === before.prompts + 1, "Start sends the request to Quick draft")
+    assert.equal(prompts.at(-1)!.text, request, "the assistant is sent the request alone")
+    const quick = page.locator(".msg.assistant", { hasText: "both invoices remain unpaid" })
+    await quick.waitFor()
+    await ack.waitFor()
+    assert.equal(await quick.getByText(ACK).count(), 0, "the acknowledgement is not quick text")
+    // Above the answer, under the request, in reading order.
+    const order = await page.evaluate(() => [...document.querySelectorAll(".chat-log .msg.user, .chat-log .msg-ack, .chat-log .msg.assistant")].map((el) => el.className))
+    assert.deepEqual(order, ["msg user", "msg-ack", "msg assistant"])
+    if (shots) await page.screenshot({ path: path.join(shots, "ack-2-quick-draft.png") })
+    await page.getByRole("button", { name: "Run full drafting cycle", exact: true }).click()
+    await until(() => starts.length === before.starts + 1, "the upgrade starts the full run")
+    assert.deepEqual(starts.at(-1), { request, agent: "draft", model: { providerID: "test", modelID: "model" }, workingDraft: QUICK_SHOWN })
+    assert.ok(routerPrompts.slice(before.routes).every((prompt) => !prompt.includes(ACK)), "routing history carries no acknowledgement")
+    console.log("PASS Auto shows the router's acknowledgement while choosing; it stays above the offer and quick draft and is never sent, quick text or working draft")
+    await context.close()
+  }
+  {
+    // An answer: the acknowledgement stays above it once the turn settles and
+    // the new conversation reloads; Stop while Auto is still choosing removes
+    // the request, its acknowledgement and sends nothing.
+    const ACK = "Got it — checking which invoices are unpaid."
+    config.router = `${ACK}\n${JSON.stringify({ route: "qa" })}`
+    const before = counts()
+    const { context, page, send } = await open()
+    await send("Which invoices are unpaid?")
+    await page.locator(".msg.assistant", { hasText: "Answered." }).waitFor()
+    await page.getByRole("button", { name: "Edit message" }).waitFor()
+    await page.locator(".msg-ack", { hasText: ACK }).waitFor()
+    assert.deepEqual(prompts.at(-1), { session: prompts.at(-1)!.session, agent: "qa", text: "Which invoices are unpaid?" })
+    console.log("PASS an answered request keeps its acknowledgement above the answer after it settles")
+
+    let release = () => {}
+    config.hold = new Promise<void>((resolve) => (release = resolve))
+    config.router = `Got it — looking at the payment dates.\n${JSON.stringify({ route: "qa" })}`
+    await send("When were they due?")
+    await page.locator(".msg-ack", { hasText: "looking at the payment dates" }).waitFor()
+    await page.getByRole("button", { name: "Stop answer", exact: true }).click()
+    release()
+    config.hold = undefined
+    await page.locator(".msg.user", { hasText: "When were they due?" }).waitFor({ state: "detached" })
+    assert.equal(await page.getByRole("textbox").inputValue(), "When were they due?")
+    assert.equal(await page.locator(".msg-ack", { hasText: "looking at the payment dates" }).count(), 0)
+    await settle()
+    assert.equal(counts().prompts, before.prompts + 1, "a request stopped while Auto chose is never sent")
+    assert.equal(await page.locator(".msg-error").count(), 0)
+    config.router = scope()
+    console.log("PASS Stop while Auto chooses removes the request and its acknowledgement and sends nothing")
+
+    // The abandoned router call resolves after Stop: its route must not
+    // reach the chip, which keeps what the last answered request routed to.
+    const chipOf = async () => (await page.getByRole("button", { name: /^Auto/ }).first().innerText()).trim()
+    const chipBefore = await chipOf()
+    config.hold = new Promise<void>((resolve) => (release = resolve))
+    config.router = scope()
+    await send("Draft a short letter to the tenant.")
+    await page.getByRole("button", { name: "Stop answer", exact: true }).click()
+    release()
+    config.hold = undefined
+    await page.locator(".msg.user", { hasText: "Draft a short letter" }).waitFor({ state: "detached" })
+    await settle()
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    assert.equal(await chipOf(), chipBefore, "a route that resolves after Stop never changes the chip")
+    assert.equal(counts().prompts, before.prompts + 1, "the stopped draft request is never sent")
+    console.log("PASS a router call that resolves after Stop leaves the Auto chip unchanged")
     await context.close()
   }
   {
@@ -448,6 +584,29 @@ try {
     await context.close()
   }
   {
+    // Auto cannot choose (the router never gives a valid route): the lawyer is
+    // told, nothing runs, and the request is back in the composer to resend.
+    const before = counts()
+    // Its acknowledgement streams, but the route is off the list.
+    config.router = `On it — I'll draft that note.\n${JSON.stringify({ route: "drafting" })}`
+    let release = () => {}
+    config.hold = new Promise<void>((resolve) => (release = resolve))
+    const request = "Draft a short note to the client about the invoices."
+    const { context, page, send } = await open()
+    await send(request)
+    await page.locator(".msg-ack", { hasText: "I'll draft that note." }).waitFor()
+    release()
+    config.hold = undefined
+    await page.getByText("Auto could not choose an assistant.", { exact: false }).waitFor()
+    assert.equal(await page.getByRole("textbox").inputValue(), request)
+    assert.equal(await page.locator(".msg-ack").count(), 0, "nothing was handed over, so no acknowledgement stays")
+    await settle()
+    assert.deepEqual(counts(), before, "nothing runs when Auto cannot choose")
+    config.router = scope()
+    console.log("PASS when Auto cannot choose, the lawyer is told, nothing runs and the request returns to the composer")
+    await context.close()
+  }
+  {
     // An explicit pick outside Quick's scope explains the limit and offers Full.
     const before = counts()
     config.router = scope({ outside_law: "yes" })
@@ -460,6 +619,7 @@ try {
     assert.equal(await page.getByRole("textbox").inputValue(), request)
     await settle()
     assert.deepEqual(counts(), before, "nothing runs for a request outside Quick's scope")
+    assert.equal(await page.locator(".msg-ack").count(), 0, "an explicit pick shows no acknowledgement")
     if (shots) await page.screenshot({ path: path.join(shots, "4-quick-limit.png") })
     await notice.getByRole("button", { name: "Run full drafting cycle", exact: true }).click()
     await until(() => starts.length === before.starts + 1, "Full starts from the notice")
@@ -467,6 +627,77 @@ try {
     assert.equal(starts.at(-1)!.workingDraft, undefined)
     config.router = scope()
     console.log("PASS an explicit pick outside Quick's scope explains the limit, runs nothing, and offers Full")
+    await context.close()
+  }
+  {
+    // Client summary: an explicit pick sent straight to its agent, never routed,
+    // carrying the firm's advice legend and none of its narration.
+    assert.ok(routerPrompts.length > 0 && routerPrompts.every((prompt) => !prompt.includes("client-summary")), "Auto never offers Client summary as a candidate")
+    const before = { ...counts(), routes: routerPrompts.length }
+    config.legend = LEGEND
+    const request = "Explain the letter for the client in plain English."
+    const { context, page, send } = await open()
+    await page.getByTitle("Choose assistant or workflow").click()
+    const option = page.locator(".assistant-option", { hasText: "Client summary" })
+    await option.waitFor()
+    assert.match(await option.innerText(), /plain English for your client/)
+    await option.click()
+    await send(request)
+    await until(() => prompts.length === before.prompts + 1, "the request is sent")
+    assert.equal(prompts.at(-1)!.agent, "client-summary")
+    assert.equal(prompts.at(-1)!.text, request)
+    const answer = page.locator(".msg.assistant", { hasText: "A letter about two unpaid invoices" })
+    await answer.waitFor()
+    await settle()
+    assert.equal(routerPrompts.length, before.routes, "an explicit pick is not routed")
+    assert.equal(await page.locator(".msg-ack").count(), 0, "an explicit pick shows no acknowledgement")
+    assert.equal(starts.length, before.starts)
+    assert.equal(forms.length, before.forms)
+    assert.equal(await answer.locator(".quick-draft-legend").innerText(), LEGEND)
+    assert.ok(!(await answer.innerText()).includes(SUMMARY_NARRATION), "narration is not part of the summary")
+    config.legend = ""
+    console.log("PASS Client summary is a picker entry sent to its own agent, never routed, with the firm's legend and no narration")
+    await context.close()
+  }
+  {
+    // Settings that cannot be read leave the summary without its legend, and say so.
+    config.preferencesDown = true
+    const { context, page, send, pick } = await open()
+    await pick("Client summary")
+    await send("Explain the letter for the client in plain English.")
+    const answer = page.locator(".msg.assistant", { hasText: "A letter about two unpaid invoices" })
+    await answer.waitFor()
+    await answer.getByRole("note").filter({ hasText: "Firm legend could not be loaded." }).waitFor()
+    assert.equal(await answer.locator(".quick-draft-legend").count(), 0)
+    config.preferencesDown = false
+    console.log("PASS a client summary whose firm legend could not be loaded says so")
+    await context.close()
+  }
+  {
+    // Asking about a review answer seats the question in an empty composer of
+    // the open chat, and keeps text the lawyer had not sent.
+    const before = { ...counts(), routes: routerPrompts.length }
+    const { context, page } = await open()
+    const composer = page.getByRole("textbox")
+    const ask = async () => {
+      await page.getByRole("link", { name: "Open review table" }).click()
+      const table = page.getByRole("dialog", { name: /^Review table/ })
+      await table.getByRole("button", { name: /^Both invoices\./ }).click()
+      await page.getByRole("button", { name: "Ask about this answer in chat", exact: true }).click()
+      await table.waitFor({ state: "detached" })
+    }
+    const unsent = "Check whether the second invoice was disputed."
+    await composer.fill(unsent)
+    await ask()
+    await page.getByText("Your unsent message was kept", { exact: false }).waitFor()
+    assert.equal(await composer.inputValue(), unsent, "unsent composer text survives Ask about this answer")
+    await composer.fill("")
+    await ask()
+    await page.waitForFunction(() => (document.querySelector("textarea") as HTMLTextAreaElement | null)?.value.includes("Question: Which invoices are unpaid?"))
+    assert.match(await composer.inputValue(), /Answer: Both invoices\.\n.*Cited source: Letter\.docx § 1/s)
+    await settle()
+    assert.deepEqual({ ...counts(), routes: routerPrompts.length }, before, "the question is prefilled, never sent")
+    console.log("PASS asking about a review answer keeps unsent composer text, and seats the question in an empty composer without sending")
     await context.close()
   }
 } finally {

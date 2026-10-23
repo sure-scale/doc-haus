@@ -3,6 +3,7 @@ import { Database } from "bun:sqlite"
 import { existsSync } from "node:fs"
 import path from "node:path"
 import { chunkText } from "../lib/chunk-text"
+import { provenanceFooter, sourceProvenance } from "../lib/source-provenance"
 
 // doc.haus exact-text search. Greps the per-matter legal.db that
 // `services/ingest` populates: every occurrence of a literal string or JS
@@ -94,6 +95,7 @@ export default tool({
     }
 
     const lines: string[] = []
+    const matchedDocuments: string[] = []
     let scanned = 0
     let capped = false
     for (const document of documents) {
@@ -112,6 +114,7 @@ export default tool({
           break
         }
         while (document.chunks[chunk + 1] && document.chunks[chunk + 1]!.char_start <= match.index) chunk++
+        matchedDocuments.push(document.name)
         lines.push(`${document.name} [${document.chunks[chunk]!.section}] @ ${match.index}: ${lineAt(text, match.index)}`)
       }
       if (capped) break
@@ -125,9 +128,13 @@ export default tool({
 
     // Offsets are character positions into the document's extracted text, the
     // same coordinate space as the structure tables and chunk offsets.
+    // Container chains of matched email attachments and zip entries, once per
+    // document after the matches so each line keeps the plain document name.
+    const provenance = sourceProvenance(ctx.directory)
+    const provenanceNote = provenanceFooter(matchedDocuments, provenance)
     const capNote = capped
       ? `\n\nStopped at the ${MATCH_CAP}-match cap with ${documents.length - scanned} of ${documents.length} document(s) not fully scanned — more matches may exist. Narrow the search with the document argument or a more specific pattern.`
       : ""
-    return `${lines.length} match(es) for ${shown}${where}:\n${lines.join("\n")}${capNote}`
+    return `${lines.length} match(es) for ${shown}${where}:\n${lines.join("\n")}${provenanceNote}${capNote}`
   },
 })

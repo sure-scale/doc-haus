@@ -64,25 +64,39 @@ export function applyAgentThinkingBudget(agent: string, model: string, output: {
   }
 }
 
-// Room for the router's JSON reply: a route and five closed scope fields.
-const ROUTER_OUTPUT_TOKENS = 96
+// Room for the router's reply: an acknowledgement line, then a JSON route and
+// five closed scope fields. On OpenCode Go Spark 1.3 the longest such reply
+// (a draft route) measured 51 visible tokens, the JSON alone 39; the web
+// accepts an acknowledgement of up to 140 characters (~35 tokens), so a
+// draft reply stays under ~80 tokens, with headroom for other tokenizers.
+const ROUTER_OUTPUT_TOKENS = 128
 
 // Auto routing is a classification turn whose entire useful response is one
-// short JSON object: an assistant id and, for drafting, five closed scope
-// fields. Keep the user's selected model, but do not pay that model's normal
-// deliberation and output budgets before the substantive legal turn begins.
+// short line for the lawyer and one short JSON object: an assistant id and,
+// for drafting, five closed scope fields. Keep the user's selected model, but
+// do not pay that model's normal deliberation and output budgets before the
+// substantive legal turn begins.
 // Provider-specific no-thinking controls are applied only where their request
 // dialect is known. Only non-reasoning models get a visible-output cap;
 // reasoning models retain the engine-resolved total response allowance.
+// Any other reasoning model takes its own lowest reasoning variant, chosen as
+// OpenCode chooses one for session titles (none, then minimal, then low). On
+// OpenCode Go Spark 1.3 the default effort spent a median ~2,000 reasoning
+// tokens (18 s) on this reply and a fifth of routes passed the web's 30 s cap;
+// minimal effort routed the same requests with the same decisions in a median
+// 6.5 s (max 18.7 s).
 export function optimizeRouterParams(
   agent: string,
   model: string,
   output: { temperature: number | undefined; maxOutputTokens: number | undefined; options: Record<string, any> },
   reasoning: boolean,
+  variants: unknown = [],
 ) {
   if (agent !== "router") return
   output.temperature = 0
   if (!reasoning) output.maxOutputTokens = Math.min(output.maxOutputTokens ?? ROUTER_OUTPUT_TOKENS, ROUTER_OUTPUT_TOKENS)
+  const lowest = lowestReasoningVariant(variants)
+  if (lowest?.settings) Object.assign(output.options, lowest.settings)
   if (supportsBooleanThinking(model)) {
     output.options.chat_template_kwargs = { ...(output.options.chat_template_kwargs ?? {}), enable_thinking: false }
     output.options.thinkingConfig = { includeThoughts: false, thinkingLevel: "minimal" }
@@ -92,6 +106,16 @@ export function optimizeRouterParams(
   output.options.thinkingConfig = model.toLowerCase().includes("gemini-3")
     ? { includeThoughts: false, thinkingLevel: compatibleGeminiThinkingLevel(model, "minimal") }
     : { includeThoughts: false, thinkingBudget: 0 }
+}
+
+// The model's variants as the engine lists them (Model.Info.variants).
+function lowestReasoningVariant(variants: unknown) {
+  if (!Array.isArray(variants)) return
+  const listed = variants as { id?: unknown; settings?: Record<string, unknown> }[]
+  for (const id of ["none", "minimal", "low"]) {
+    const found = listed.find((variant) => variant?.id === id)
+    if (found) return found
+  }
 }
 
 function lowThroughputProviders() {

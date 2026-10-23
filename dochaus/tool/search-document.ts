@@ -3,13 +3,14 @@ import { tool } from "./legacy-definition"
 import { Database } from "bun:sqlite"
 import { existsSync } from "node:fs"
 import path from "node:path"
-import { formatCitations } from "../lib/citations"
+import { degradedExtractions, formatCitations } from "../lib/citations"
 import { buildChains, operativePassage, supersededSections, type IndexedText } from "../lib/amendment-chain"
 import { pendingRedlinesForDoc } from "../lib/redlines"
 import { draftingTraceReference } from "../lib/drafting-trace-identity"
 import { indexIsContained, lexicalChannel, phraseChannel, vectorChannel, type ChunkRow } from "../lib/search/channels"
 import { attachCrossRefs, attachDefinitions } from "../lib/search/excerpt-context"
 import { embed, MODEL } from "../lib/search/query-embedding"
+import { sourceProvenance } from "../lib/source-provenance"
 
 // doc.haus retrieval tool. Reads the per-matter legal.db that
 // `services/ingest` populates and runs the query through two channels — the
@@ -148,6 +149,7 @@ export default tool({
           : [],
       ),
     )
+    const degraded = degradedExtractions(db)
     const definitionsNote = attachDefinitions(db, ranked, args)
     const crossRefsNote = attachCrossRefs(db, ranked, args)
     db.close()
@@ -174,6 +176,7 @@ export default tool({
     }
     if (signature) recentBySession.set(ctx.sessionID, [signature, ...recent].slice(0, RECENT_LIMIT))
 
+    const provenance = sourceProvenance(ctx.directory)
     const citations = ranked.map(({ row, score, supersededBy }) => ({
       documentName: row.doc_name,
       docPath: row.doc_path,
@@ -182,6 +185,8 @@ export default tool({
       // falls back to "doc § section" when the path is absent.
       structuralPath: row.structural_path || undefined,
       party: row.party || undefined,
+      // Display-only container chain of an email attachment or zip entry.
+      provenance: provenance.get(row.doc_name),
       excerpt: row.text,
       charStart: row.char_start,
       charEnd: row.char_end,
@@ -189,6 +194,9 @@ export default tool({
       // Carried through to formatCitations, which warns the model before the
       // excerpt that ingest flagged this passage as instruction-like (issue #17).
       flagged: row.flagged === 1,
+      // Ingest's extraction quality gate found the document's text may be
+      // incomplete or garbled (#239); formatCitations says so before the excerpt.
+      degradedExtraction: degraded.get(row.doc_path),
       superseded_by: supersededBy
         ? {
             amenderName: supersededBy.amender,

@@ -4,10 +4,36 @@
 // formatter keeps every output identical — including the untrusted-data framing,
 // so no path can hand the model a document excerpt without it.
 
+import type { Database } from "bun:sqlite"
 import { FLAGGED_PASSAGE_NOTE, UNTRUSTED_EXCERPT_NOTICE } from "./untrusted"
 
 const SUPERSEDED_PASSAGE_NOTE =
   "[⚠ SUPERSEDED] A later amendment restates, amends, or deletes this passage's section, so it may not be the current text."
+
+// Ingest's extraction quality gate (services/ingest/src/extraction-quality.ts)
+// marked the cited document degraded: its text was indexed but may be
+// incomplete or garbled.
+const DEGRADED_EXTRACTION_NOTE =
+  "[⚠ DEGRADED EXTRACTION] Ingest found this document's extracted text may be incomplete or garbled"
+
+// Each degraded source's tripped signal details, by doc_path, from the
+// documents.extraction_quality column ingest writes. Sources that are ok, have
+// no readable text (and so no passages) or predate the gate are absent. A
+// matter database ingest has not opened since the gate (its startup migration
+// failed) lacks the column and has no degraded sources yet.
+export function degradedExtractions(db: Database): Map<string, string[]> {
+  const columns = db.query("SELECT name FROM pragma_table_info('documents')").all() as { name: string }[]
+  if (!columns.some((column) => column.name === "extraction_quality")) return new Map()
+  const rows = db
+    .query("SELECT doc_path, extraction_quality FROM documents WHERE extraction_quality IS NOT NULL")
+    .all() as { doc_path: string; extraction_quality: string }[]
+  return new Map(
+    rows.flatMap((row) => {
+      const quality = JSON.parse(row.extraction_quality) as { status: string; signals?: { detail: string }[] }
+      return quality.status === "degraded" ? [[row.doc_path, (quality.signals ?? []).map((signal) => signal.detail)] as const] : []
+    }),
+  )
+}
 
 const DEFAULT_EXCERPT_DISPLAY_CHARS = 1000
 
@@ -21,6 +47,10 @@ export type DocumentCitation = {
   // tool) simply omit the line.
   structuralPath?: string
   party?: string
+  // The container chain of a source ingest extracted from an email or zip
+  // ("in Exhibits.zip, attachment of Thread.eml"; lib/source-provenance).
+  // Shown on its own line, never in the heading, so citations keep the plain name.
+  provenance?: string
   excerpt: string
   charStart: number
   charEnd: number
@@ -36,6 +66,9 @@ export type DocumentCitation = {
   // (see services/ingest/src/sanitize.ts), so the rendering can warn the model
   // before it reads the excerpt.
   flagged?: boolean
+  // The signals ingest's extraction quality gate tripped when the cited
+  // document's text is degraded; absent when it is ok or was never assessed.
+  degradedExtraction?: string[]
   // Set when this chunk belongs to a section of an amended base that a later
   // amender restates, amends, or deletes (issue #69). The renderer warns the
   // model above the excerpt; retrieval also down-ranks the chunk so the
@@ -56,10 +89,15 @@ export type DocumentCitation = {
 // (the review grid's re-check sees only the passages it is given).
 export function formatCitations(citations: DocumentCitation[], options: { full?: boolean } = {}) {
   if (!citations.length) return ""
+  // Provenance once per document per result, on its first passage.
+  const provenanceShown = new Set<string>()
   const body = citations
     .map((c, i) => {
       const score = c.score === undefined ? "" : ` (score ${c.score.toFixed(3)})`
       const flag = c.flagged ? `\n${FLAGGED_PASSAGE_NOTE}` : ""
+      const degraded = c.degradedExtraction
+        ? `\n${DEGRADED_EXTRACTION_NOTE} (${c.degradedExtraction.join("; ")}). Check it against the original before relying on it, and do not treat a term missing from it as absent from the document.`
+        : ""
       const superseded = c.superseded_by
         ? `\n${SUPERSEDED_PASSAGE_NOTE}\n   superseded by: ${c.superseded_by.amenderName} (${c.superseded_by.operation}, chars ${c.superseded_by.charStart}..${c.superseded_by.charEnd})` +
           (c.superseded_by.read ? `\n   ${supersededReadHint(c.superseded_by.read)}` : "")
@@ -72,7 +110,9 @@ export function formatCitations(citations: DocumentCitation[], options: { full?:
       // supplied one; append the parties so the passage carries its matter context.
       const heading = c.structuralPath || `${c.documentName} § ${c.section}`
       const party = c.party ? `\n   parties: ${c.party}` : ""
-      return `${i + 1}. [${heading}]${score}${flag}${superseded}${party}\n${options.full ? c.excerpt : displayExcerpt(c.excerpt)}${reason}`
+      const provenance = c.provenance && !provenanceShown.has(c.documentName) ? `\n   provenance: ${c.provenance}` : ""
+      if (c.provenance) provenanceShown.add(c.documentName)
+      return `${i + 1}. [${heading}]${score}${flag}${degraded}${superseded}${party}${provenance}\n${options.full ? c.excerpt : displayExcerpt(c.excerpt)}${reason}`
     })
     .join("\n\n")
   return `${UNTRUSTED_EXCERPT_NOTICE}\n\n${body}`

@@ -71,6 +71,11 @@
   color: var(--danger);
 }
 
+.upload-row.is-not_indexed .upload-icon,
+.upload-row.is-not_indexed .upload-status {
+  color: var(--warn);
+}
+
 .upload-row.is-failed .doc-row-meta,
 .upload-row.is-exists .doc-row-meta {
   align-items: flex-start;

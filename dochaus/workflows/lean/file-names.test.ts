@@ -65,6 +65,18 @@ describe("requested output file names", () => {
       .toContain("given to more than one document")
   })
 
+  test("a leading Subject: or Re: label is not part of the planned title", () => {
+    const title = (heading: string) => parsePlan(`Acting for: not stated\n# ${heading}\n## Delivery`, REQUEST).value?.documents[0]?.title
+    expect(title("Subject: 27 Cairn High Street — tenant break position")).toBe("27 Cairn High Street — tenant break position")
+    expect(title("RE:  Re: Supply note")).toBe("Supply note")
+    expect(title("Subject Access Request")).toBe("Subject Access Request")
+    expect(title("Subject:")).toBe("Subject:")
+    expect(title("Fwd: RE: Completion statement")).toBe("Completion statement")
+    expect(title("Subject — Licence to assign")).toBe("Licence to assign")
+    expect(title("Subject to contract heads of terms")).toBe("Subject to contract heads of terms")
+    expect(title("Re Hallett's Estate — advice")).toBe("Re Hallett's Estate — advice")
+  })
+
   test("a title the outline keeps with Markdown code marks after the last retry is delivered without them", async () => {
     const directory = matter()
     const deliverables = registering()

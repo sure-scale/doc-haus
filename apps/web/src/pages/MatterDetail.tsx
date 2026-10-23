@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { useNavigate, useParams, useSearchParams } from "react-router-dom"
 import type { CompareParams } from "../api/ingest/compare"
 import { humanizeError } from "../api/ingest/errors"
+import { getPreferences } from "../api/ingest/preferences"
 import { getMatter, listJurisdictions, listPlaybooks, MatterNotFound, renameMatter, type Jurisdiction, type MatterDetail as Detail, type Playbook } from "../api/ingest/matters"
 import { listWorkflows, type CustomWorkflow } from "../api/ingest/library"
 import { createTemplateDraft } from "../api/ingest/template-drafts"
@@ -11,6 +12,7 @@ import { AUTO, WORKFLOWS } from "../agents"
 import DocumentsDrawer from "../components/matter/DocumentsDrawer"
 import { setDocumentsCount, setDocumentsDrawer, useDocumentsDrawer } from "../components/matter/documents-drawer"
 import DocumentViewer from "../components/DocumentViewer"
+import ConflictsDialog from "../components/matter/ConflictsDialog"
 import CompareDialog from "../components/CompareDialog"
 import BlacklineViewer from "../components/BlacklineViewer"
 import ChatPanel from "../components/ChatPanel"
@@ -73,6 +75,8 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
   // The Word file being compared with another version (the dialog), and the
   // comparison whose blackline is open. A compare started from the viewer
   // returns to it when the dialog is cancelled.
+  const [recordingConflicts, setRecordingConflicts] = useState(false)
+  const [attorney, setAttorney] = useState<string>()
   const [comparing, setComparing] = useState<{ name: string; fromViewer?: boolean }>()
   const [blackline, setBlackline] = useState<CompareParams>()
   // The change to show when the blackline opens, set when the user follows a
@@ -282,6 +286,10 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
         setDraftTitle={setDraftTitle}
         commitRename={commitRename}
         patch={patch}
+        onEditConflicts={() => {
+          // The attorney name pre-fills "by"; the dialog opens without it if preferences cannot load.
+          getPreferences().then((p) => setAttorney(p.attorney.trim() || undefined), () => {}).finally(() => setRecordingConflicts(true))
+        }}
       />
 
       <div className="matter-body">
@@ -293,6 +301,11 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
             sessionID={session}
             created={createdRef.current === session}
             initialPrompt={params.get("prompt") ?? undefined}
+            onPromptSeated={() => setParams((current) => {
+              const next = new URLSearchParams(current)
+              next.delete("prompt")
+              return next
+            }, { replace: true })}
             agent={agent}
             available={available}
             workflows={workflows}
@@ -336,6 +349,13 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
           const next = new URLSearchParams(params)
           next.delete("view")
           setParams(next, { replace: true })
+        }} onAsk={(prompt) => {
+          // Back to the open chat, keeping its conversation; the chat seats the
+          // question in an empty composer (see ChatPanel onPromptSeated).
+          const next = new URLSearchParams(params)
+          next.delete("view")
+          next.set("prompt", prompt)
+          setParams(next)
         }} />
       )}</Exit>
 
@@ -395,6 +415,16 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
               : undefined
           }
           creatingTemplate={creatingTemplate}
+        />
+      )}</Exit>
+
+      <Exit when={recordingConflicts}>{() => (
+        <ConflictsDialog
+          matterId={matter.id}
+          current={matter.conflicts}
+          attorney={attorney}
+          onSaved={(saved) => setMatter((m) => m && { ...m, conflicts: saved.conflicts })}
+          onClose={() => setRecordingConflicts(false)}
         />
       )}</Exit>
 

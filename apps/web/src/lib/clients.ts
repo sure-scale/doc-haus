@@ -1,0 +1,92 @@
+import { useEffect, useState } from "react"
+import { listMatters, type Matter } from "../api/ingest/matters"
+import type { StoredClient } from "../api/ingest/clients"
+
+// A client is either added on its own (Clients page, or "Add as a client" in
+// the Client field) or is the Client value typed on one or more matters.
+// Spellings that differ only in case, spacing, Unicode composition or trailing
+// punctuation ("Acme Ltd." / "Acme Ltd") are one client, shown under its added
+// name, else its most common spelling on matters.
+
+export type ClientGroup = { key: string; name: string; matters: Matter[]; stored?: StoredClient }
+
+function tidy(name: string) {
+  return name.normalize("NFC").replace(/\s+/g, " ").trim()
+}
+
+export function clientKey(name: string) {
+  return tidy(name).replace(/[.,;:]+$/, "").trimEnd().toLowerCase()
+}
+
+export function groupClients(matters: Matter[], stored: StoredClient[] = []): ClientGroup[] {
+  const groups = new Map<string, { matters: Matter[]; spellings: Map<string, number>; stored?: StoredClient }>()
+  const group = (key: string) => {
+    const found = groups.get(key) ?? { matters: [] as Matter[], spellings: new Map<string, number>() }
+    groups.set(key, found)
+    return found
+  }
+  for (const client of stored) {
+    const key = clientKey(client.name)
+    if (key) group(key).stored = client
+  }
+  for (const matter of matters) {
+    const spelling = tidy(matter.client ?? "")
+    const key = clientKey(spelling)
+    if (!key) continue
+    const found = group(key)
+    found.matters.push(matter)
+    found.spellings.set(spelling, (found.spellings.get(spelling) ?? 0) + 1)
+  }
+  return [...groups].map(([key, found]) => {
+    // Ties go to the spelling seen first, so the name does not flip between loads.
+    let name = found.stored ? tidy(found.stored.name) : ""
+    let best = 0
+    if (!name) for (const [spelling, count] of found.spellings) if (count > best) [name, best] = [spelling, count]
+    return { key, name, matters: found.matters.sort((a, b) => b.created_at - a.created_at), ...(found.stored ? { stored: found.stored } : {}) }
+  }).sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }))
+}
+
+// The names to suggest: those used on matters plus every added client, one per
+// client under its added name.
+export function withStoredClients(names: string[], stored: StoredClient[]) {
+  const byKey = new Map<string, string>()
+  for (const name of [...stored.map((client) => client.name), ...names]) {
+    const key = clientKey(name)
+    if (key && !byKey.has(key)) byKey.set(key, tidy(name))
+  }
+  return [...byKey.values()].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }))
+}
+
+// Names that start with what was typed come first, then names that contain it.
+// An exact match is left out: picking it would change nothing.
+export function suggestClients(names: string[], typed: string, limit = 8) {
+  const term = clientKey(typed)
+  if (!term) return names.slice(0, limit)
+  const starts: string[] = []
+  const contains: string[] = []
+  for (const name of names) {
+    const key = clientKey(name)
+    if (key === term) continue
+    if (key.startsWith(term)) starts.push(name)
+    else if (key.includes(term)) contains.push(name)
+  }
+  return [...starts, ...contains].slice(0, limit)
+}
+
+// The client names already used on matters, loaded when `active` turns on (an
+// edit opening) so suggestions include clients added since the page loaded.
+export function useClientNames(active: boolean) {
+  const [names, setNames] = useState<string[]>([])
+  useEffect(() => {
+    if (!active) return
+    let live = true
+    listMatters()
+      .then((matters) => live && setNames(groupClients(matters).map((group) => group.name)))
+      // Suggestions are a convenience; typing still works without them.
+      .catch(() => undefined)
+    return () => {
+      live = false
+    }
+  }, [active])
+  return names
+}

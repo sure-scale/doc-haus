@@ -398,3 +398,70 @@ button:is(.change-id, .change-ref):hover { text-decoration: underline; }
 @media (prefers-reduced-motion: reduce) {
   .docx-render .compare-focus { animation: none; }
 }
+
+/* The documents tree: a document extracted from another (an email's attachment,
+   an archive's file) sits once under its parent, behind a rule aligned with the
+   parent's type chip, as a lighter single-line row; deeper levels indent again. */
+.doc-children-group { margin: 0 0 var(--space-1) 21px; padding-left: var(--space-2); border-left: 1px solid var(--border); }
+.doc-children { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
+.doc-children-toggle { display: inline-flex; align-items: center; gap: var(--space-1); min-height: 32px; padding: 0 var(--space-2); border: 0; border-radius: var(--radius-sm); background: none; color: var(--accent); font: inherit; font-size: 0.75rem; font-weight: 500; cursor: pointer; }
+.doc-children-toggle:hover { background: var(--md-sys-color-surface-container-low); }
+.doc-children-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.doc-children-chevron { flex: none; transition: transform var(--duration-fast) var(--ease-out); }
+.doc-children-toggle[aria-expanded="true"] .doc-children-chevron { transform: rotate(90deg); }
+@media (prefers-reduced-motion: reduce) { .doc-children-chevron { transition: none; } }
+.doc-children-note { padding: var(--space-1) var(--space-2); color: var(--muted); font-size: 0.6875rem; line-height: 1.5; }
+.docs-drawer .matter-files-collection .doc-row.is-child { padding: 6px var(--space-2); }
+.docs-drawer .matter-files-collection .doc-row.is-child .doc-row-main { gap: var(--space-2); min-height: 32px; }
+.docs-drawer .matter-files-collection .doc-row.is-child .doc-type { width: 22px; height: 22px; }
+.docs-drawer .matter-files-collection .doc-row.is-child .doc-type svg { width: 13px; height: 13px; }
+.docs-drawer .matter-files-collection .doc-row.is-child .doc-row-main .linklike,
+.doc-row-name { min-width: 0; overflow-wrap: anywhere; font-size: 0.75rem; line-height: 1.4; }
+.docs-drawer .matter-files-collection .doc-row.is-child .doc-row-main .linklike { font-weight: 400; text-align: left; }
+.doc-row-name { color: var(--text); }
+.doc-row-actions { flex: none; display: inline-flex; align-items: center; margin-left: auto; }
+.doc-row-actions > * { margin-left: 0; }
+.docs-drawer .matter-files-collection .doc-row.is-child .document-quality,
+.doc-child-status { display: block; margin: 0 0 0 30px; font-size: 0.6875rem; line-height: 1.5; }
+.doc-child-status { color: var(--muted); }
+.doc-child-status .linklike { font-size: inherit; color: var(--accent); }
+.doc-row.is-entry .doc-row-name { color: var(--text-secondary); }
+.doc-row.is-entry:is(.is-failed, .is-pending) .doc-child-status { color: var(--danger); }
+.docs-drawer .matter-files-collection .doc-row.is-child .email-remove-confirm { margin-left: 30px; }
+/* Extraction quality (#239): a degraded or unreadable source says so under its name. */
+.document-quality { display: block; margin: 2px 0 0 38px; color: var(--warn); font-size: 0.6875rem; line-height: 1.5; }
+.email-remove-confirm { margin: var(--space-2) 0 0 38px; display: grid; gap: var(--space-2); font-size: 0.75rem; line-height: 1.5; }
+.email-remove-confirm p { margin: 0; overflow-wrap: anywhere; }
+.email-remove-confirm .upload-actions { flex-wrap: wrap; margin-left: 0; }
+/* Marker chips in a rendered document (document-markers.ts): display-only spans
+   around redaction marks and placeholders. Never colour alone: a solid border for
+   redactions, a dashed one for placeholders, and a tooltip on each. */
+.docx-render .doc-marker { padding: 0 2px; border-radius: var(--radius-sm); border: 1px solid transparent; font-weight: 500; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
+/* The template viewer's marker list (TemplateViewer.tsx) uses the same chips. */
+:is(.docx-render .doc-marker, .marker-entry).doc-marker-redaction { background: var(--md-sys-color-inverse-surface); color: var(--md-sys-color-inverse-on-surface); border-color: var(--md-sys-color-inverse-surface); }
+:is(.docx-render .doc-marker, .marker-entry).doc-marker-placeholder { background: var(--md-sys-color-warning-container); color: var(--md-sys-color-warning); border: 1px dashed var(--md-sys-color-warning); }
+.viewer-title-markers { color: var(--md-sys-color-warning); font-weight: 500; }
+.marker-entry { display: flex; align-items: center; gap: var(--space-2); width: 100%; min-width: 0; padding: var(--space-1) var(--space-2); border-radius: var(--radius-sm); border: 1px solid transparent; font: inherit; font-size: 0.8125rem; font-weight: 500; line-height: 1.45; text-align: left; cursor: pointer; }
+.marker-entry-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.marker-entry-count { flex: none; font-size: 0.6875rem; font-variant-numeric: tabular-nums; opacity: 0.85; }
+/* Linked: the hovered or focused entry and its chips; flash: the occurrence a
+   click scrolled to. A ring, clipped at the inner ends of a split chip so its
+   pieces read as one; forced colours drop shadows, so it becomes an outline. */
+.marker-entry.is-linked, .marker-entry:focus-visible { outline: 2px solid var(--md-sys-color-primary); outline-offset: 1px; }
+.docx-render .doc-marker:is(.is-linked, .is-flash) { box-shadow: 0 0 0 2px var(--md-sys-color-primary); }
+.docx-render .doc-marker:is(.is-linked, .is-flash)[data-marker-part="first"] { clip-path: inset(-8px 0 -8px -8px); }
+.docx-render .doc-marker:is(.is-linked, .is-flash)[data-marker-part="middle"] { clip-path: inset(-8px 0); }
+.docx-render .doc-marker:is(.is-linked, .is-flash)[data-marker-part="last"] { clip-path: inset(-8px -8px -8px 0); }
+.docx-render .doc-marker.is-flash { animation: marker-flash 1.6s var(--ease-out); }
+@keyframes marker-flash { 0%, 50% { box-shadow: 0 0 0 2px var(--md-sys-color-primary), 0 0 0 6px color-mix(in srgb, var(--md-sys-color-primary) 25%, transparent); } }
+@media (prefers-reduced-motion: reduce) { .docx-render .doc-marker.is-flash { animation: none; } }
+@media (forced-colors: active) {
+  :is(.docx-render .doc-marker, .marker-entry).doc-marker-redaction { border: 1px solid CanvasText; }
+  :is(.docx-render .doc-marker, .marker-entry).doc-marker-placeholder { border: 1px dashed CanvasText; }
+  .docx-render .doc-marker:is(.is-linked, .is-flash) { outline: 2px solid Highlight; clip-path: none; }
+  .marker-entry.is-linked, .marker-entry:focus-visible { outline-color: Highlight; }
+}
+.docx-render .doc-marker[data-marker-part="first"], .docx-render .doc-marker[data-marker-part="middle"] { border-top-right-radius: 0; border-bottom-right-radius: 0; border-right: 0; padding-right: 0; }
+.docx-render .doc-marker[data-marker-part="last"], .docx-render .doc-marker[data-marker-part="middle"] { border-top-left-radius: 0; border-bottom-left-radius: 0; border-left: 0; padding-left: 0; }
+.docx-render .doc-marker[data-marker-part="only"], .docx-render .doc-marker[data-marker-part="first"] { margin-left: 1px; }
+.docx-render .doc-marker[data-marker-part="only"], .docx-render .doc-marker[data-marker-part="last"] { margin-right: 1px; }

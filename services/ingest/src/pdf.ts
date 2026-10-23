@@ -5,18 +5,29 @@ import path from "node:path"
 // Below this many text-layer characters per page the PDF is treated as a flat
 // scan (image-only pages with at most stray stamps or bates numbers) and routed
 // through OCR.
-const SCANNED_CHARS_PER_PAGE = 100
+export const SCANNED_CHARS_PER_PAGE = 100
 
 // PDF -> text for indexing. LiteParse is the primary born-digital extractor
 // because it emits structured Markdown without Python startup overhead; markitdown
 // remains the compatible fallback, and unpdf is the no-Python floor. Flat scans
 // yield a near-empty text layer either way, so those fall through to OCR.
 export async function pdfToText(pdfBytes: Buffer): Promise<string> {
+  return (await readPdf(pdfBytes)).text
+}
+
+// The text and the page count, which the extraction quality gate weighs the
+// text against (extraction-quality.ts). Without OCR on PATH a flat scan keeps
+// its near-empty text layer, and the gate reports it.
+export async function readPdf(pdfBytes: Buffer): Promise<{ text: string; pages: number }> {
   const { extractText, getDocumentProxy } = await import("unpdf")
   const pdf = await getDocumentProxy(new Uint8Array(pdfBytes))
-  const text = (await liteparseText(pdfBytes)) ?? (await markitdownText(pdfBytes)) ?? (await extractText(pdf, { mergePages: true })).text
-  if (!looksScanned(text, pdf.numPages)) return text
-  return (await ocrPdfText(pdfBytes)) ?? text
+  const pages = pdf.numPages
+  const extracted = (await liteparseText(pdfBytes)) ?? (await markitdownText(pdfBytes)) ?? (await extractText(pdf, { mergePages: true })).text
+  // LiteParse renders pages with no text layer as empty code fences
+  // ("```text\n\n```"). When that markup is all there is, the PDF has no text.
+  const text = extracted.replace(/```[^\n]*\n\s*```/g, "").trim() ? extracted : ""
+  if (!looksScanned(text, pages)) return { text, pages }
+  return { text: (await ocrPdfText(pdfBytes)) ?? text, pages }
 }
 
 export function looksScanned(text: string, pageCount: number) {

@@ -55,7 +55,7 @@ const normalizeTitle = (value: string) => value.toLowerCase().replace(/[\s_-]+/g
 // Document types ingest accepts (MATTER_DOCUMENT_EXTENSIONS in
 // services/ingest/src/ingest.ts). Only one of these is ever treated as a file
 // name's extension, so a dotted word in a name ("Lease.final", "v1.2") stays.
-const DOCUMENT_EXTENSIONS = new Set([".docx", ".pdf", ".xlsx", ".eml"])
+const DOCUMENT_EXTENSIONS = new Set([".docx", ".pdf", ".xlsx", ".eml", ".zip"])
 const documentExtension = (name: string) => {
   const ext = path.extname(name).toLowerCase()
   return DOCUMENT_EXTENSIONS.has(ext) ? ext : ""
@@ -300,4 +300,15 @@ export function resolveCurrentSection(
     return { operation: op.operation, amender: entry, op, ...operativePassage(db, op, entry.ops) }
   }
   return null
+}
+
+// Every indexed document a rendered chain names, for its provenance footer.
+export function chainNames(chain: Chain) {
+  return [
+    ...(chain.base.kind === "resolved" ? [chain.base.doc.name] : []),
+    ...chain.entries.flatMap((entry) => [
+      entry.rel.doc_name,
+      ...(entry.resolution.kind === "resolved" ? [entry.resolution.doc.name] : entry.resolution.kind === "ambiguous" ? entry.resolution.names : []),
+    ]),
+  ]
 }

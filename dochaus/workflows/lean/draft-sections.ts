@@ -32,6 +32,7 @@ import {
 import { answeredQuestionsText, leanFile, readLeanText, readQuestions, writeLeanText, type LeanStageState, type LeanState, type OpenItem, type Question } from "./state"
 import { stageInputSha } from "./runner"
 import { outlineCoverageIssues, partCarries, plannedContract } from "./template-contract"
+import { draftStatusItems } from "./draft-status"
 import { draftTemplateItems } from "./template-coverage"
 
 // Sectioned draft step. A long document can need more tokens than one model
@@ -307,7 +308,7 @@ export async function runDraftStage(
   // recheck can leave the record without them.
   if (!outlined && draftOutputValid(directory, step) && state.stages[step]?.input_sha === stageInputSha(directory, step)) {
     await planned()
-    return { status: "done", outputs: stepOutputs(step), openItems: [...checkDraft(directory, readLeanText(directory, `${document}/draft.md`) ?? "").openItems, ...draftTemplateItems(directory, document, readParagraphs(directory, document))] }
+    return { status: "done", outputs: stepOutputs(step), openItems: [...checkDraft(directory, readLeanText(directory, `${document}/draft.md`) ?? "").openItems, ...draftTemplateItems(directory, document, readParagraphs(directory, document)), ...draftStatusItems(directory, document, readParagraphs(directory, document), "draft")] }
   }
   const plan = plannedDocument(directory, document)
   if (!plan) return { status: "failed", reason: `${step}: the run's plan has no document ${document}.` }
@@ -346,7 +347,7 @@ export async function runDraftStage(
     `The Word body could not place the part "${row.heading}": its label stays as rendered, and its paragraphs count with the part before it when the draft is checked against a template.`) })
   // Recorded with the body, so a pause or restart before the step settles keeps it.
   progress({ input_sha: key })
-  return { status: "done", outputs: accepted.outputs, openItems: [...accepted.openItems, ...draftTemplateItems(directory, document, readParagraphs(directory, document))], questions: accepted.questions }
+  return { status: "done", outputs: accepted.outputs, openItems: [...accepted.openItems, ...draftTemplateItems(directory, document, readParagraphs(directory, document)), ...draftStatusItems(directory, document, readParagraphs(directory, document), "draft")], questions: accepted.questions }
 }
 
 export function sectionPrompt(outline: DraftOutline, index: number, template?: { source: string; parts: string[]; left?: string[] }) {

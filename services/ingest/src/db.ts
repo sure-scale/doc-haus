@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite"
 import { mkdirSync } from "node:fs"
 import path from "node:path"
 import { documentRegistryIdentity } from "./document-identity"
+import { readExtractionQuality } from "./extraction-quality"
 
 // Per-matter document registry and retrieval index. Lives inside the matter
 // directory so it is scoped to that matter. Source rows own searchable chunks;
@@ -101,6 +102,17 @@ export function openDb(matterDir: string, options: { startup?: boolean; commit?:
   if (!hasColumn(db, "documents", "role"))
     db.run("ALTER TABLE documents ADD COLUMN role TEXT NOT NULL DEFAULT 'source'")
   if (!hasColumn(db, "documents", "label")) db.run("ALTER TABLE documents ADD COLUMN label TEXT")
+  // Email attachments (#238). parent_name: on a document extracted from an
+  // email's attachment, the name of that email; NULL on everything a lawyer
+  // uploaded. attachments: on an email, the JSON record of its attachments
+  // (email-attachments.ts); NULL elsewhere and on emails ingested before it.
+  if (!hasColumn(db, "documents", "parent_name")) db.run("ALTER TABLE documents ADD COLUMN parent_name TEXT")
+  if (!hasColumn(db, "documents", "attachments")) db.run("ALTER TABLE documents ADD COLUMN attachments TEXT")
+  // Extraction quality (#239): on a source, the JSON result of the quality gate
+  // (extraction-quality.ts): ok, degraded with its signals, or no_readable_text.
+  // Its own column, never part of injection_report. NULL on documents ingested
+  // before the gate, which show no result, and on deliverables.
+  if (!hasColumn(db, "documents", "extraction_quality")) db.run("ALTER TABLE documents ADD COLUMN extraction_quality TEXT")
   if (!hasColumn(db, "chunks", "flagged")) db.run("ALTER TABLE chunks ADD COLUMN flagged INTEGER NOT NULL DEFAULT 0")
   // Structure-aware chunking (issue R2): older databases carry chunks without a
   // structural path or party line. The columns are added empty; the rows fill in
@@ -450,12 +462,12 @@ export function pendingRedlineCounts(db: Database): Record<string, number> {
 }
 
 export function listDocuments(db: Database) {
-  return db.query("SELECT id, doc_path, name, created_at, role, label FROM documents ORDER BY created_at").all()
+  return db.query("SELECT id, doc_path, name, created_at, role, label, parent_name, attachments, extraction_quality FROM documents ORDER BY created_at").all()
 }
 
 export function listSourceDocuments(db: Database) {
   return db
-    .query("SELECT id, doc_path, name, created_at, role FROM documents WHERE role = 'source' ORDER BY created_at")
+    .query("SELECT id, doc_path, name, created_at, role, parent_name, attachments FROM documents WHERE role = 'source' ORDER BY created_at")
     .all()
 }
 
@@ -483,6 +495,21 @@ function deleteDocumentIndexData(db: Database, docPath: string) {
     db.run(`DELETE FROM ${table} WHERE doc_path = ?`, [docPath])
 }
 
+// A source's email links (see the parent_name and attachments columns). A field
+// left undefined keeps what the document had, so an edit keeps its links.
+export type DocumentLinks = { parentName?: string | null; attachments?: string | null }
+
+// The links upsertDocument will store for `name`.
+export function effectiveDocumentLinks(db: Database, name: string, links: DocumentLinks) {
+  const kept = db.query("SELECT parent_name, attachments FROM documents WHERE name = ?").get(name) as
+    | { parent_name: string | null; attachments: string | null }
+    | null
+  return {
+    parent_name: links.parentName === undefined ? kept?.parent_name ?? null : links.parentName,
+    attachments: links.attachments === undefined ? kept?.attachments ?? null : links.attachments,
+  }
+}
+
 // Re-ingesting a document replaces its rows so the index never holds stale chunks.
 export function upsertDocument(
   db: Database,
@@ -490,22 +517,28 @@ export function upsertDocument(
   name: string,
   createdAt: number,
   injectionReport: string | null,
+  links: DocumentLinks = {},
+  extractionQuality: string | null = null,
 ): number {
   if (getDocumentRole(db, docPath) === "deliverable")
     throw new Error(`Cannot replace generated deliverable ${name} with a source document.`)
   const previous = matchingDocumentRows(db, docPath)
   const label = (db.query("SELECT label FROM documents WHERE name = ?").get(name) as { label: string | null } | null)?.label ?? null
+  const kept = effectiveDocumentLinks(db, name, links)
   previous.forEach((row) => {
     deleteDocumentIndexData(db, row.doc_path)
     db.run("UPDATE redlines SET doc_path = ?, doc_name = ? WHERE doc_path = ?", [docPath, name, row.doc_path])
     db.run("DELETE FROM documents WHERE id = ?", [row.id])
   })
-  const result = db.run("INSERT INTO documents (doc_path, name, created_at, injection_report, role, label) VALUES (?, ?, ?, ?, 'source', ?)", [
+  const result = db.run("INSERT INTO documents (doc_path, name, created_at, injection_report, role, label, parent_name, attachments, extraction_quality) VALUES (?, ?, ?, ?, 'source', ?, ?, ?, ?)", [
     docPath,
     name,
     createdAt,
     injectionReport,
     label,
+    kept.parent_name,
+    kept.attachments,
+    extractionQuality,
   ])
   return Number(result.lastInsertRowid)
 }
@@ -554,18 +587,26 @@ export function getInjectionReport(db: Database, docPath: string) {
   return row?.injection_report ? (JSON.parse(row.injection_report) as { findings: unknown[] }) : null
 }
 
+// The stored extraction quality of one document, for the document text route
+// (so read-document can say the text may be incomplete). Undefined when the
+// document predates the quality gate.
+export function getExtractionQuality(db: Database, docPath: string) {
+  return readExtractionQuality(matchingDocumentRows(db, docPath)[0]?.extraction_quality)
+}
+
 type DocumentRegistryRow = {
   id: number
   doc_path: string
   name: string
   role: "source" | "deliverable"
   injection_report: string | null
+  extraction_quality: string | null
 }
 
 function matchingDocumentRows(db: Database, docPath: string) {
   const identity = documentRegistryIdentity(docPath)
   return (db
-    .query("SELECT id, doc_path, name, role, injection_report FROM documents")
+    .query("SELECT id, doc_path, name, role, injection_report, extraction_quality FROM documents")
     .all() as DocumentRegistryRow[]).filter((row) => documentRegistryIdentity(row.doc_path) === identity)
 }
 

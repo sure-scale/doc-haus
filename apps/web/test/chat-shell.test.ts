@@ -16,7 +16,7 @@ test("a matter with no documents leads with adding them instead of document star
   const html = empty(0)
   expect(html).toContain("Start with the source documents")
   expect(html).toContain("Add documents")
-  expect(html).toContain("Drop Word, PDF, email or Excel files onto the message box below")
+  expect(html).toContain("Drop Word, PDF, email, Excel or zip files onto the message box below")
   expect(html).not.toContain(starters[0])
 })
 

@@ -7,6 +7,7 @@ import { appendLeanEvent, leanElapsedMs } from "./events"
 import { FIRST_DOCUMENT, planActingFor, stepDocument, stepStage, type StepID } from "./plan"
 import { retryPrompt, tagged } from "./prompts"
 import { REQUEST_SOURCE, matterSourceIDs, quoteFound, quoteMissIssue } from "./quotes"
+import { nameWithProvenance, provenanceMapLine, sourceProvenance } from "../../lib/source-provenance"
 import { approvedResearch, researchHandoff } from "./research"
 import { LEAN_CHILD_PERMISSIONS, LEAN_MAX_RETRIES, LEAN_STAGE_AGENTS, stepSessionTitle, type LeanDeps } from "./stages"
 import { answeredQuestionsText, readLeanText, readQuestions, type LeanState, type Question, type QuestionAdvice, type QuestionOption } from "./state"
@@ -66,6 +67,7 @@ export function advisePrompt(directory: string, question: Question) {
   const paragraph = question.pid ? readParagraphs(directory, question.document ?? FIRST_DOCUMENT).find(row => row.pid === question.pid)?.text : undefined
   const updates = readLeanText(directory, "updated-notes.md")
   const acting = planActingFor(directory)
+  const provenanceLine = provenanceMapLine(matterSourceIDs(directory), sourceProvenance(directory))
   const basis = '"basis":[{"source_id":"request (the request, a later instruction or the lawyer\'s answers), an exact matter source name or an approved research URL","quote":"words copied exactly from that source"}]'
   return [
     "Advise the lawyer on ONE open question raised while drafting. You do not answer it; the lawyer decides. Set out the options the lawyer could realistically choose and recommend one only where the request, the lawyer's answers, the matter sources or approved research support it, quoting each supporting passage exactly. Use targeted search-document or read-document lookups for the evidence the question needs; do not read the whole matter.",
@@ -79,6 +81,7 @@ export function advisePrompt(directory: string, question: Question) {
     tagged("acting_for", acting.stated ? `The lawyer acts for: ${acting.party}.` : "The request does not say whom the lawyer acts for; recommend what is even-handed between the parties."),
     tagged("legal_research", researchHandoff(directory)),
     `Matter source names (use these exact names with search-document and read-document): ${JSON.stringify(matterSourceIDs(directory))}`,
+    ...(provenanceLine ? [provenanceLine] : []),
     question.options
       ? `Reply with one JSON object only: {"recommendation":{"option":0,"rationale":"why this option",${basis}}}, where "option" is the index of one of the options above; or, when no option is supported, {"unavailable":{"reason":"why no option can be recommended"}}. Do not return options of your own.`
       : `Reply with one JSON object only: {"options":[{"text":"one option the lawyer could choose"}],"recommendation":{"option":0,"rationale":"why this option",${basis}}}, with 2 to 4 distinct options and "option" the 0-based index of the one recommended; or, when no option is supported, {"options":[],"unavailable":{"reason":"why no option can be recommended"}}, with no options or 2 to 4.`,

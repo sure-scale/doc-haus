@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { parseRoute, quickDraftEligible, type DraftScope } from "../src/api/opencode/routing"
-import { AUTO_CANDIDATES, CHAT_ASSISTANTS, QUICK_DRAFT } from "../src/agents"
+import { ackLine, parseRoute, quickDraftEligible, type DraftScope } from "../src/api/opencode/routing"
+import { AUTO_CANDIDATES, CHAT_ASSISTANTS, CLIENT_SUMMARY, QUICK_DRAFT } from "../src/agents"
 import { furnitureLegend } from "../../../dochaus/lib/furniture-legend"
 import {
   QUICK_BANNER,
@@ -62,6 +62,34 @@ describe("router reply", () => {
       expect(parseRoute(text, NAMES)).toBeUndefined()
   })
 
+  test("the acknowledgement line is read apart from the strictly parsed JSON route", () => {
+    const ack = "On it — I'll draft that cover letter."
+    expect(parseRoute(`${ack}\n${reply(ELIGIBLE)}`, NAMES)).toEqual({ name: "draft", scope: ELIGIBLE, ack })
+    expect(parseRoute(`${ack}\n\n\`\`\`json\n${reply(ELIGIBLE)}\n\`\`\``, NAMES)).toEqual({ name: "draft", scope: ELIGIBLE, ack })
+    expect(parseRoute(`Looking into that now.\n${JSON.stringify({ route: "qa" })}`, NAMES)).toEqual({ name: "qa", ack: "Looking into that now." })
+    expect(parseRoute("On it.\nredliner", NAMES)).toEqual({ name: "redliner", ack: "On it." })
+    // JSON only: the route, and no acknowledgement for the chat to show.
+    expect(parseRoute(JSON.stringify({ route: "qa" }), NAMES)).toEqual({ name: "qa" })
+    expect(parseRoute(JSON.stringify({ route: "qa" }), NAMES)).not.toHaveProperty("ack")
+  })
+
+  test("a missing, long, multi-line or internal acknowledgement is dropped; the route stands", () => {
+    const route = JSON.stringify({ route: "qa" })
+    for (const head of [
+      "On it — I'll check the lease for the break clause and then go through every other clause too, one by one, carefully.",
+      "On it.\nI'll check the lease.",
+      "Routing this to the Q&A assistant.",
+      "On it: {route} next",
+      "...",
+    ])
+      expect(parseRoute(`${head}\n${route}`, NAMES)).toEqual({ name: "qa" })
+    // A bad acknowledgement never spoils the draft route or its scope.
+    expect(parseRoute(`Sure!\nAnd more.\n${reply(ELIGIBLE)}`, NAMES)).toEqual({ name: "draft", scope: ELIGIBLE })
+    // Wrapping quotes go; the line itself is kept as written.
+    expect(ackLine(`"Got it — comparing the two drafts."`)).toBe("Got it — comparing the two drafts.")
+    expect(ackLine("   ")).toBeUndefined()
+  })
+
   test("only one/no/no/no/few is eligible; each other value, and no scope, is not", () => {
     expect(quickDraftEligible(ELIGIBLE)).toBe(true)
     expect(quickDraftEligible(undefined)).toBe(false)
@@ -100,7 +128,12 @@ describe("candidates", () => {
     expect(CHAT_ASSISTANTS.some((a) => a.name === QUICK_DRAFT)).toBe(true)
     expect(NAMES).not.toContain(QUICK_DRAFT)
     expect(NAMES).toContain("draft")
-    expect(NAMES.length).toBe(CHAT_ASSISTANTS.length - 1)
+    expect(NAMES.length).toBe(CHAT_ASSISTANTS.length - 2)
+  })
+
+  test("Client summary is a picker entry Auto never routes to", () => {
+    expect(CHAT_ASSISTANTS.find((a) => a.name === CLIENT_SUMMARY)?.label).toBe("Client summary")
+    expect(NAMES).not.toContain(CLIENT_SUMMARY)
   })
 })
 
@@ -216,13 +249,14 @@ describe("quick answer", () => {
     // Legends are off by default: no firm legend, no legend.
     expect(furnitureLegend("advice letter", { agreementLegend: "", adviceLegend: "" })).toBe("")
     // No form line: no form, so no legend, and the text stands as written.
-    expect(quickDraftAnswer("Dear client,\n\nText.")).toEqual({ form: undefined, text: "Dear client,\n\nText.", placeholders: [] })
+    expect(quickDraftAnswer("Dear client,\n\nText.")).toEqual({ form: undefined, text: "Dear client,\n\nText.", placeholders: [], listed: false })
   })
 
-  test("bracketed placeholders left in the draft are its open items; citations, links and the lists after it are not", () => {
+  test("bracketed placeholders left in the draft are its open items; citations, links, email addresses and the lists after it are not", () => {
     const answer = [
       "Form: letter",
       "",
+      "To: Elena Marsh [elena.marsh@client.example]",
       "Dear [Client contact],",
       "",
       "The cap is 150% of the fees [Cedar Vale proposal.docx § 5]. See [the portal](https://example.test). We meet on [open item: meeting date].",
@@ -237,6 +271,24 @@ describe("quick answer", () => {
     ].join("\n")
     expect(quickDraftAnswer(answer).placeholders).toEqual(["[Client contact]", "[open item: meeting date]"])
     expect(quickDraftAnswer("Dear client,\n\nSee [Letter.docx § 1].\n\nSources:\n- [Letter.docx § 1]").placeholders).toEqual([])
+  })
+
+  test("the answer's Open items list never says none, or leaves one out, while the draft has placeholders", () => {
+    const draft = "Dear Ms Reed,\n\nPayment is due within 30 days [Supply terms.docx § 7]. Deliveries go to [open item: delivery address] by [open item: first delivery date].\n\nSources:\n- payment [Supply terms.docx § 7]"
+    // Said none: replaced by the draft's placeholders.
+    expect(quickDraftAnswer(`${draft}\n\nOpen items: None.`).text).toBe(
+      `${draft}\n\nOpen items:\n- [open item: delivery address]\n- [open item: first delivery date]`,
+    )
+    // Listed only some: the missing one is added after the model's own list.
+    expect(quickDraftAnswer(`${draft}\n\n**Open items:**\n- [open item: delivery address] (ask the client)`).text).toBe(
+      `${draft}\n\n**Open items:**\n- [open item: delivery address] (ask the client)\n- [open item: first delivery date]`,
+    )
+    // A complete list, an answer without placeholders, and one with no list yet stand as written.
+    const complete = `${draft}\n\nOpen items:\n- [open item: delivery address]\n- [open item: first delivery date]`
+    expect(quickDraftAnswer(complete).text).toBe(complete)
+    const plain = "Dear Ms Reed,\n\nPayment is due within 30 days [Supply terms.docx § 7].\n\nSources:\n- payment [Supply terms.docx § 7]\n\nOpen items: None."
+    expect(quickDraftAnswer(plain).text).toBe(plain)
+    expect(quickDraftAnswer(draft).text).toBe(draft)
   })
 })
 
@@ -266,6 +318,8 @@ describe("quick text", () => {
     expect(turns[1]!.text).toBe(DRAFT)
     expect(turns[1]!.steps.length).toBeGreaterThan(0)
     expect(upgradeInput(turns, 1)?.workingDraft).toBe(DRAFT)
+    // A client summary is copied out too, so it drops narration the same way.
+    expect(conversation(CLIENT_SUMMARY, steps)[1]!.text).toBe(DRAFT)
     // Other assistants keep each step's text, as before.
     expect(conversation("qa", steps)[1]!.text).toBe(`${NARRATION}\n\n${LATER_NARRATION}\n\n${DRAFT}`)
   })

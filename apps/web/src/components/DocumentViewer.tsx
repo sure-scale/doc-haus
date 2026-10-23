@@ -20,6 +20,7 @@ import { convertPdfToDocx, documentContentUrl, fetchDocumentText, matterDocument
 import { ModalClose } from "./ModalHeader"
 import { CompareIcon } from "./CompareDialog"
 import { citationPassage, focusCitationPassage, type CitationFocus } from "./citation-target"
+import { decorateMarkers, markerSummary, type MarkerCounts } from "./document-markers"
 import { useToast } from "./Toast"
 import useModalFocus from "./useModalFocus"
 import backdropClose from "./backdropClose"
@@ -35,12 +36,13 @@ export const DOCX_RENDER_OPTIONS: ConversionOptions = {
   commentRenderMode: CommentRenderMode.Margin,
 }
 
-// A matter document's viewer. Emails and spreadsheets have no Word package to
-// render or redline, so they open as the text ingest extracted from them; Word
+// A matter document's viewer. Emails, spreadsheets and zip files have no Word
+// package to render or redline, so they open as the text ingest extracted from
+// them (for a zip, the list of its files); Word
 // files and PDFs open in the redline viewer.
 export default function DocumentViewer(props: Parameters<typeof WordDocumentViewer>[0]) {
   const kind = matterDocumentKind(props.name)
-  if (kind === "eml" || kind === "xlsx")
+  if (kind === "eml" || kind === "xlsx" || kind === "zip")
     return <DocumentTextViewer matterId={props.matterId} name={props.name} kind={kind} citation={props.citation} onClose={props.onClose} />
   return <WordDocumentViewer {...props} />
 }
@@ -109,6 +111,7 @@ function WordDocumentViewer({
   const documentRef = useRef<HTMLDivElement>(null)
   const [passage, setPassage] = useState<"matched" | "ambiguous" | "unavailable">()
   const moreRef = useRef<HTMLDetailsElement>(null)
+  const [markers, setMarkers] = useState<MarkerCounts>()
   const toast = useToast()
   // Keep React from resetting the HTML when passage status or viewer controls
   // re-render. The citation effect owns only its temporary text highlights.
@@ -144,6 +147,12 @@ function WordDocumentViewer({
   useEffect(() => {
     if (focusId !== undefined) focusRef.current?.scrollIntoView({ block: "center" })
   }, [focusId, redlines])
+
+  // Colour-code redaction marks and placeholders in place. Declared before the
+  // citation effect so its text walk sees the same text with the spans around it.
+  useEffect(() => {
+    setMarkers(html && documentRef.current ? decorateMarkers(documentRef.current) : undefined)
+  }, [html])
 
   useEffect(() => {
     setPassage(undefined)
@@ -238,7 +247,7 @@ function WordDocumentViewer({
     return (
       <div className={`viewer-overlay${closing ? " is-closing" : ""}`} inert={closing} {...backdropClose(() => onClose())}>
         <div ref={modalRef} className="viewer-panel document-reader" role="dialog" aria-modal="true" aria-label={name} tabIndex={-1} onClick={(e) => e.stopPropagation()} onKeyDown={(e) => {
-          if (e.key === "Escape" && !e.defaultPrevented) { e.stopPropagation(); onClose() }
+          if (e.key === "Escape" && !e.defaultPrevented) { e.preventDefault(); e.stopPropagation(); onClose() }
         }}>
           <div className="viewer-bar">
             <ViewerTitle name={name} kind="PDF document" />
@@ -266,13 +275,15 @@ function WordDocumentViewer({
       </div>
     )
 
+  // Escape closes only this viewer: consuming the key also stops a native
+  // dialog it opened over (a review-grid cell detail) from cancelling too.
   return (
     <div className={`viewer-overlay${closing ? " is-closing" : ""}`} inert={closing} {...backdropClose(() => onClose())}>
       <div ref={modalRef} className="viewer-panel document-reader" role="dialog" aria-modal="true" aria-label={name} tabIndex={-1} onClick={(e) => e.stopPropagation()} onKeyDown={(e) => {
-        if (e.key === "Escape" && !e.defaultPrevented) { e.stopPropagation(); onClose() }
+        if (e.key === "Escape" && !e.defaultPrevented) { e.preventDefault(); e.stopPropagation(); onClose() }
       }}>
         <div className="viewer-bar">
-          <ViewerTitle name={name} kind="Word document" pending={redlines.length} />
+          <ViewerTitle name={name} kind="Word document" pending={redlines.length} markers={markers && markerSummary(markers)} />
           <div className="viewer-bar-actions">
             <DownloadActions redlines={redlines} preview={Boolean(html)} onDownload={download} />
             <button className="primary" onClick={() => setEditing((value) => !value)} disabled={busy !== undefined} aria-expanded={editing} aria-controls="document-edit-request">
@@ -427,7 +438,7 @@ export function citationStatus(section: string, passage?: "matched" | "ambiguous
 function DocumentTextViewer({ matterId, name, kind, citation, onClose }: {
   matterId: string
   name: string
-  kind: "eml" | "xlsx"
+  kind: "eml" | "xlsx" | "zip"
   citation?: CitationFocus
   onClose: () => void
 }) {
@@ -458,10 +469,10 @@ function DocumentTextViewer({ matterId, name, kind, citation, onClose }: {
   return (
     <div className={`viewer-overlay${closing ? " is-closing" : ""}`} inert={closing} {...backdropClose(() => onClose())}>
       <div ref={modalRef} className="viewer-panel document-reader" role="dialog" aria-modal="true" aria-label={name} tabIndex={-1} onClick={(e) => e.stopPropagation()} onKeyDown={(e) => {
-        if (e.key === "Escape" && !e.defaultPrevented) { e.stopPropagation(); onClose() }
+        if (e.key === "Escape" && !e.defaultPrevented) { e.preventDefault(); e.stopPropagation(); onClose() }
       }}>
         <div className="viewer-bar">
-          <ViewerTitle name={name} kind={`${kind === "eml" ? "Email" : "Excel spreadsheet"} · extracted text, read-only`} />
+          <ViewerTitle name={name} kind={kind === "zip" ? "Zip file · list of files, read-only" : `${kind === "eml" ? "Email" : "Excel spreadsheet"} · extracted text, read-only`} />
           <div className="viewer-bar-actions">
             <ModalClose onClose={onClose} />
           </div>
@@ -485,7 +496,7 @@ function DocumentTextViewer({ matterId, name, kind, citation, onClose }: {
 
 // The extracted text on the viewer's sheet, the matched excerpt marked in place.
 export function ExtractedText({ kind, text, match, markRef }: {
-  kind: "eml" | "xlsx"
+  kind: "eml" | "xlsx" | "zip"
   text: string
   match?: ReturnType<typeof citationPassage>
   markRef?: Ref<HTMLElement>
@@ -623,7 +634,7 @@ export function combinedNotUpdatedNotice(result: AcceptResult | void) {
 
 // File glyph, name and a quiet status line. The pending count stays visible on
 // narrow screens, where the change list sits below the document.
-export function ViewerTitle({ name, kind, pending = 0 }: { name: string; kind: string; pending?: number }) {
+export function ViewerTitle({ name, kind, pending = 0, markers }: { name: string; kind: string; pending?: number; markers?: string }) {
   return (
     <div className="viewer-title">
       <span className="viewer-file-icon" aria-hidden="true">
@@ -637,6 +648,7 @@ export function ViewerTitle({ name, kind, pending = 0 }: { name: string; kind: s
         <span className="viewer-title-meta">
           {kind}
           {pending > 0 && <span className="viewer-title-pending">{pending} pending change{pending === 1 ? "" : "s"}</span>}
+          {markers && <span className="viewer-title-markers">{markers}</span>}
         </span>
       </span>
     </div>

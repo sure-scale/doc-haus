@@ -61,6 +61,12 @@ dialog.matter-edit::backdrop { background: rgb(22 35 29 / .36); }
 .matter-edit-field input, .matter-edit-field select, .matter-edit-field .jx-trigger { width: 100%; min-width: 0; min-height: var(--ctl-h); }
 .matter-edit > .matter-edit-foot { top: auto; bottom: 0; gap: var(--space-2); }
 .matter-edit-foot button { min-height: 40px; border-radius: var(--radius-pill); }
+/* The conflicts check on the new and edit matter forms: a section like Drafting preferences. */
+.matter-create-row .conflicts-states input[type="radio"] { min-height: 0; margin: 0; padding: 0; }
+.matter-create-row .conflicts-states label, .matter-edit-conflicts .conflicts-states label { color: var(--text); font-size: 13px; }
+.matter-edit-conflicts { gap: var(--space-4); margin-top: var(--space-1); padding-top: var(--space-4); border-top: 1px solid var(--border); }
+.matter-edit-conflicts > legend { margin-bottom: 0; color: var(--text); font-size: 13px; font-weight: 600; }
+.matter-edit-note { margin-top: calc(-1 * var(--space-2)); color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
 
 @container matters-page (max-width: 760px) {
   .matters-layout.library-layout { grid-template-columns: minmax(0, 1fr); gap: var(--space-6); }
@@ -83,3 +89,21 @@ dialog.matter-edit::backdrop { background: rgb(22 35 29 / .36); }
   .matter-sort-label { width: 100%; margin-left: 0; }
   .matter-search { max-width: none; }
 }
+
+/* Client suggestions under the matter Client field: a Material 3 menu surface
+   fixed to the field (set inline) so dialogs and headers cannot clip it. */
+.client-suggestions { position: fixed; z-index: var(--z-popover); max-height: min(288px, calc(var(--viewport-block) - 32px)); margin: 0; padding: var(--space-1) 0; overflow: auto; overscroll-behavior: contain; list-style: none; background: var(--md-sys-color-surface-container); border: 1px solid var(--border-soft); border-radius: var(--md-sys-shape-corner-extra-small); box-shadow: var(--md-sys-elevation-level-2); color: var(--md-sys-color-on-surface); font-size: 14px; line-height: 20px; text-align: left; }
+.client-suggestion { min-height: 40px; display: flex; align-items: center; padding: 10px var(--space-3); cursor: pointer; overflow-wrap: anywhere; }
+.client-suggestion:hover { background: var(--md-sys-state-hover); }
+.client-suggestion.is-active { background: var(--md-sys-state-selected); color: var(--md-sys-color-on-primary-container); }
+.client-suggestion-add { color: var(--accent); font-weight: 550; }
+.client-suggestion + .client-suggestion-add { border-top: 1px solid var(--border-soft); }
+
+/* Clients reuse the Matters layout: the index list, with the add form on the right. */
+.clients-index-list .client-matters { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-3); margin: 0; padding: 0; list-style: none; font-size: 13px; }
+.clients-index-list .client-matters li { display: inline; padding: 0; border: 0; }
+.clients-index-list .client-matters a { color: var(--accent); }
+/* Delete shows only for an added client with no matters; keep Edit in one column. */
+.clients-layout .clients-index-list .list-row-actions { justify-content: flex-start; min-width: 8.5em; }
+.clients-filter-back { display: inline-flex; margin-bottom: var(--space-4); font-size: 13px; }
+@media (forced-colors: active) { .client-suggestion.is-active { outline: 2px solid Highlight; outline-offset: -2px; } }

@@ -24,7 +24,8 @@ local ports.
 A new installation needs no credentials to boot. Accept the launch notice,
 choose a provider (detected options appear first), connect with its offered sign-in
 method and detected defaults, then confirm primary/fast models in setup. Research and firm
-or jurisdiction details are optional. Opening setup does not make a paid model
+or jurisdiction details are optional. The last step can add a fictional sample
+matter to explore. Opening setup does not make a paid model
 request; connection tests run only when requested. Provider access and quota
 remain subject to the provider's account and organization policies.
 

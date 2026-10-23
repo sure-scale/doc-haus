@@ -49,6 +49,16 @@
 .review-note { display: inline-flex; align-items: center; gap: var(--space-1); }
 .review-note.has-comments { color: var(--accent); }
 .review-stale { padding: 2px var(--space-2); border: 1px solid var(--warn-border); border-radius: var(--radius-pill); background: var(--warn-soft); color: var(--warn); font-size: .75rem; font-weight: 600; }
+/* Source check: a cell whose excerpt is no longer in its document reads as
+   degraded in the grid itself, in words as well as tone. */
+.review-cell.degraded { box-shadow: inset 3px 0 0 var(--danger); }
+.review-degraded { align-self: flex-start; padding: 2px var(--space-2); border: 1px solid var(--danger-border); border-radius: var(--radius-pill); background: var(--danger-soft); color: var(--danger); font-size: .75rem; font-weight: 600; }
+.review-source.degraded { border-left-color: var(--danger); }
+.review-source-path { margin-top: var(--space-1); color: var(--text-secondary); font-size: 12px; overflow-wrap: anywhere; }
+.review-source-check { margin: var(--space-2) 0 0; color: var(--text-secondary); font-size: .85rem; line-height: 1.5; }
+.review-source-badge { display: inline-block; margin-right: var(--space-1); padding: 0 var(--space-2); border: 1px solid var(--accent-border); border-radius: var(--radius-pill); background: var(--accent-soft); color: var(--accent); font-size: .75rem; font-weight: 600; }
+.review-source-badge.is-reanchored { border-color: var(--warn-border); background: var(--warn-soft); color: var(--warn); }
+.review-source-badge:is(.is-not_found, .is-missing) { border-color: var(--danger-border); background: var(--danger-soft); color: var(--danger); }
 .review-cell-fill { width: 100%; min-height: 40px; padding: var(--space-2); border: 1px dashed var(--md-sys-color-outline); border-radius: var(--radius-sm); background: transparent; color: var(--text-secondary); font-size: .85rem; }
 .review-cell-fill:hover:not(:disabled) { border-color: var(--accent); background: var(--accent-tint); color: var(--accent); }
 .review-table .review-add-col { width: 64px; min-width: 64px; padding: var(--space-3); text-align: center; }
@@ -65,6 +75,7 @@
 .review-detail-modal::backdrop { background: transparent; }
 .review-detail-modal .picker-panel { width: min(680px, 100%); }
 .review-detail-answer { margin: 0 0 var(--space-4); font-size: 1rem; line-height: 1.7; }
+.review-ask { display: flex; justify-content: flex-start; margin-top: var(--space-4); }
 .review-comments { display: flex; flex-direction: column; gap: var(--space-3); margin-top: var(--space-6); padding-top: var(--space-5); border-top: 1px solid var(--border); }
 .review-comment { padding: var(--space-3) var(--space-4); border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--md-sys-color-surface-container-low); }
 .review-comment-meta { display: flex; justify-content: space-between; align-items: center; gap: var(--space-2); font-size: .8rem; font-variant-numeric: tabular-nums; }
@@ -111,3 +122,7 @@
 @media (prefers-reduced-motion: reduce) {
   .review-running::before { animation: none; }
 }
+
+/* Extraction quality (#239) in the review grid. */
+.review-doc-col .document-quality { margin: 2px 0 0; font-weight: 400; }
+.review-cite-quality { color: var(--warn); font-size: .75rem; }

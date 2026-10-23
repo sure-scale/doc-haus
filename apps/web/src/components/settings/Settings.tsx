@@ -22,7 +22,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "appearance", label: "Appearance" },
 ]
 
-export default function Settings({ onClose, closing = false, firstRun = false, initialTab, reconnectProvider }: { onClose: () => void; closing?: boolean; firstRun?: boolean; initialTab?: Tab; reconnectProvider?: string }) {
+export default function Settings({ onClose, closing = false, firstRun = false, initialTab, reconnectProvider, onSampleAdded }: { onClose: () => void; closing?: boolean; firstRun?: boolean; initialTab?: Tab; reconnectProvider?: string; onSampleAdded?: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null)
   const titleId = useId()
   const tabsId = useId()
@@ -102,7 +102,7 @@ export default function Settings({ onClose, closing = false, firstRun = false, i
             {tab === "drafting" && <DraftingTab onSaved={(m) => toast("success", m)} />}
             {tab === "research" && <ResearchTab onSaved={(m) => toast("success", m)} />}
             {tab === "data" && <StatisticsTab onSaved={(m) => toast("success", m)} onError={(m) => toast("error", m)} />}
-            {tab === "matters" && <MatterDefaultsTab />}
+            {tab === "matters" && <MatterDefaultsTab onSampleAdded={() => { toast("success", "Sample matter added to your matters."); onSampleAdded?.() }} onError={(m) => toast("error", m)} />}
             {tab === "approvals" && <ApprovalsTab />}
             {tab === "appearance" && <AppearanceTab />}
           </div>

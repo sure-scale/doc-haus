@@ -27,7 +27,13 @@ type SourceRecord = {
   // source-map.json's start_char/end_char and sha256 index and hash it (UTF-16),
   // unlike chunk offsets, section spans and documents.rev, which use it untrimmed.
   text: string
+  // The registry's email links (db.ts parent_name and attachments), listed in
+  // source-index.json so a reader sees which email a document came from and
+  // what became of each attachment.
+  links: SourceLinks
 }
+
+type SourceLinks = { parent_name: string | null; attachments: string | null }
 
 type SourceChunk = {
   id: string
@@ -55,7 +61,7 @@ const SOURCE_ARTIFACT_PATHS = [
 ] as const
 
 // A source document as the registry lists it, with its rev (see db.ts).
-type SourceRevision = { doc_path: string; name: string; rev: string | null }
+type SourceRevision = { doc_path: string; name: string; rev: string | null } & SourceLinks
 
 // A snapshot staged in `transaction` before the commit that installs it, and
 // the registry sources (listSourceDocuments order) it was staged from. `files`:
@@ -88,8 +94,8 @@ export async function writeSourceArtifacts(
   const db = options.db ?? openDb(matterDir)
   const staged = options.staged
   const current = staged && sameSources(sourceRevisions(db), staged.sources) ? staged : undefined
-  const sources = current ? [] : (listSourceDocuments(db) as { doc_path: string; name: string }[])
-    .map((doc) => sourceRecord(doc.doc_path, doc.name, reconstructText(db, doc.doc_path)))
+  const sources = current ? [] : (listSourceDocuments(db) as ({ doc_path: string; name: string } & SourceLinks)[])
+    .map((doc) => sourceRecord(doc.doc_path, doc.name, reconstructText(db, doc.doc_path), doc))
   if (!options.db) db.close()
 
   const transaction = staged?.transaction ?? path.join(
@@ -133,7 +139,7 @@ export async function stageSourceChange(
   db: Database,
   transaction: string,
   docPath: string,
-  uploaded?: { name: string; text: string },
+  uploaded?: { name: string; text: string } & SourceLinks,
 ): Promise<StagedSourceArtifacts> {
   // upsertDocument and deleteDocument both remove every row of the document's
   // identity; an upload's new row is listed last (it is created now).
@@ -141,17 +147,23 @@ export async function stageSourceChange(
   const rows = [
     ...sourceRevisions(db)
       .filter((row) => documentRegistryIdentity(row.doc_path) !== identity)
-      .map((row) => ({ doc_path: row.doc_path, name: row.name, text: reconstructText(db, row.doc_path) })),
+      .map((row) => ({ ...row, text: reconstructText(db, row.doc_path) })),
     ...(uploaded ? [{ doc_path: docPath, ...uploaded }] : []),
   ]
   const { chunks, files } = await stageSourceArtifacts(
     matterDir,
     transaction,
-    rows.map((row) => sourceRecord(row.doc_path, row.name, row.text)),
+    rows.map((row) => sourceRecord(row.doc_path, row.name, row.text, row)),
   )
   return {
     transaction,
-    sources: rows.map((row) => ({ doc_path: row.doc_path, name: row.name, rev: revision(row.text) })),
+    sources: rows.map((row) => ({
+      doc_path: row.doc_path,
+      name: row.name,
+      rev: revision(row.text),
+      parent_name: row.parent_name,
+      attachments: row.attachments,
+    })),
     chunks,
     files,
   }
@@ -159,19 +171,20 @@ export async function stageSourceChange(
 
 function sourceRevisions(db: Database) {
   return db
-    .query("SELECT doc_path, name, rev FROM documents WHERE role = 'source' ORDER BY created_at")
+    .query("SELECT doc_path, name, rev, parent_name, attachments FROM documents WHERE role = 'source' ORDER BY created_at")
     .all() as SourceRevision[]
 }
 
 function sameSources(left: SourceRevision[], right: SourceRevision[]) {
   return left.length === right.length && left.every((source, index) => {
     const other = right[index]!
-    return source.doc_path === other.doc_path && source.name === other.name && source.rev === other.rev
+    return source.doc_path === other.doc_path && source.name === other.name && source.rev === other.rev &&
+      source.parent_name === other.parent_name && source.attachments === other.attachments
   })
 }
 
 // `text`: the document's untrimmed canonical text (see SourceRecord).
-function sourceRecord(docPath: string, name: string, text: string): SourceRecord {
+function sourceRecord(docPath: string, name: string, text: string, links: SourceLinks): SourceRecord {
   const trimmed = text.trim()
   return {
     document: name,
@@ -179,6 +192,20 @@ function sourceRecord(docPath: string, name: string, text: string): SourceRecord
     extracted_text: `sources/${sourceSlug(name)}.txt`,
     text: trimmed,
     characters: trimmed.length,
+    links: { parent_name: links.parent_name ?? null, attachments: links.attachments ?? null },
+  }
+}
+
+// One source's entry in source-index.json. The email fields appear only on a
+// document that has them, so a matter without emails keeps its index as it was.
+function sourceIndexEntry(source: SourceRecord) {
+  return {
+    document: source.document,
+    doc_path: source.doc_path,
+    extracted_text: source.extracted_text,
+    characters: source.characters,
+    ...(source.links.parent_name ? { attachment_of: source.links.parent_name } : {}),
+    ...(source.links.attachments ? { attachments: JSON.parse(source.links.attachments) as unknown } : {}),
   }
 }
 
@@ -218,12 +245,7 @@ async function stageSourceArtifacts(matterDir: string, transaction: string, sour
         source_map: "source-map.json",
         source_map_markdown: "source-map.md",
         source_chunk_directory: "source-chunks",
-        sources: sources.map((source) => ({
-          document: source.document,
-          doc_path: source.doc_path,
-          extracted_text: source.extracted_text,
-          characters: source.characters,
-        })),
+        sources: sources.map(sourceIndexEntry),
       },
       null,
       2,
@@ -246,8 +268,8 @@ export function sourceArtifactsMatchRegistry(matterDir: string, suppliedDb?: Dat
   const db = suppliedDb ?? openDb(matterDir)
   let sources: SourceRecord[]
   try {
-    sources = (listSourceDocuments(db) as { doc_path: string; name: string }[])
-      .map((document) => sourceRecord(document.doc_path, document.name, reconstructText(db, document.doc_path)))
+    sources = (listSourceDocuments(db) as ({ doc_path: string; name: string } & SourceLinks)[])
+      .map((document) => sourceRecord(document.doc_path, document.name, reconstructText(db, document.doc_path), document))
   } finally {
     if (!suppliedDb) db.close()
   }
@@ -260,12 +282,7 @@ export function sourceArtifactsMatchRegistry(matterDir: string, suppliedDb?: Dat
       source_map: "source-map.json",
       source_map_markdown: "source-map.md",
       source_chunk_directory: "source-chunks",
-      sources: sources.map((source) => ({
-        document: source.document,
-        doc_path: source.doc_path,
-        extracted_text: source.extracted_text,
-        characters: source.characters,
-      })),
+      sources: sources.map(sourceIndexEntry),
     }
     if (JSON.stringify(JSON.parse(readFileSync(path.join(matterDir, "source-index.json"), "utf8"))) !== JSON.stringify(expectedIndex)) return false
     if (JSON.stringify(JSON.parse(readFileSync(path.join(matterDir, "source-map.json"), "utf8"))) !== JSON.stringify(expectedMap)) return false

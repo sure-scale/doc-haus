@@ -283,6 +283,22 @@ test("large multi-source matter exposes all exact source identities with bounded
   } finally { rmSync(directory, { recursive: true, force: true }) }
 })
 
+test("the original-source inventory carries a child's provenance as its own field", async () => {
+  const directory = matter()
+  try {
+    const documents = ["Plain.docx", "Schedule.docx"].map(document => ({ document, characters: 10, chunks: [{ heading_path: ["Part 1"] }] }))
+    writeFileSync(path.join(directory, "source-map.json"), JSON.stringify({ documents }))
+    writeFileSync(path.join(directory, "source-index.json"), JSON.stringify({ sources: [{ document: "Thread.eml" }, { document: "Plain.docx" }, { document: "Schedule.docx", attachment_of: "Thread.eml" }] }))
+    await save(directory, "d1/body.docx", "# Record\n\nThe violet inventory receipt is pending confirmation.")
+    const result = buildChecklistDocumentContext(directory, { item_id: "original-discovery", item: item() })
+    const marker = "Original source inventory (bounded navigation metadata, no source text): "
+    const inventory = JSON.parse(result.input.retrieval.split(marker)[1]!.split("\n\n")[0]!)
+    const row = (name: string) => inventory.find((entry: { document: string }) => entry.document === name)
+    expect(row("Schedule.docx").provenance).toBe("attachment of Thread.eml")
+    expect("provenance" in row("Plain.docx")).toBe(false)
+  } finally { rmSync(directory, { recursive: true, force: true }) }
+})
+
 test("annotation properties give exact accepted-body text measures for clean and redline artifacts, never a page count", async () => {
   const directory = matter()
   try {

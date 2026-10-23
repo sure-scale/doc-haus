@@ -39,6 +39,8 @@ export type Matter = {
   client?: string
   posture?: Posture
   conflicts?: Conflicts
+  // The fictional sample matter (seed.ts), labelled as such in the matters list.
+  sample?: boolean
   dir: string
   created_at: number
 }
@@ -153,14 +155,14 @@ function normalizePosture(value: string) {
   return value
 }
 
-export function createMatter(title: string, reference?: string, jurisdictions?: string[], playbook?: string, client?: string, posture?: string): Matter {
+export function createMatter(title: string, reference?: string, jurisdictions?: string[], playbook?: string, client?: string, posture?: string, sample?: boolean): Matter {
   const party = client === undefined ? undefined : normalizeClient(client)
   const stance = posture === undefined ? undefined : normalizePosture(posture)
   const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")
   const id = `${slug}-${crypto.randomUUID().slice(0, 6)}`
   const dir = matterDir(id)
   mkdirSync(dir, { recursive: true })
-  const matter: Matter = { id, title, reference, jurisdictions, playbook, client: party, posture: stance, dir, created_at: Date.now() }
+  const matter: Matter = { id, title, reference, jurisdictions, playbook, client: party, posture: stance, ...(sample ? { sample } : {}), dir, created_at: Date.now() }
   return withMatterMutationLocks(dir, () => persistMatterLocked(matter, "create"))
 }
 
@@ -172,6 +174,12 @@ export function renameMatter(id: string, title: string, reference?: string, juri
   const party = client === undefined ? {} : { client: normalizeClient(client) }
   const stance = posture === undefined ? {} : { posture: normalizePosture(posture) }
   return mutateMatter(id, "rename", (matter) => ({ ...matter, title, reference, jurisdictions, playbook, ...party, ...stance }))
+}
+
+// Changes only the Client, for a client renamed on the Clients page (clients.ts).
+export function setMatterClient(id: string, client: string): Matter {
+  const party = normalizeClient(client)
+  return mutateMatter(id, "rename", (matter) => ({ ...matter, client: party }))
 }
 
 // Records a conflicts-check outcome on the matter. Each exit carries the fields

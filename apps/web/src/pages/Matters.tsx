@@ -20,8 +20,15 @@ import { POSTURES, type Posture } from "../api/ingest/preferences"
 import { formatDate } from "../lib/format"
 import { loadPrefs } from "../prefs"
 import PageBar from "../components/PageBar"
+import ClientCombobox from "../components/ClientCombobox"
+import { groupClients } from "../lib/clients"
+import { conflictsChanged, recordConflicts } from "../api/ingest/conflicts"
+import { getPreferences } from "../api/ingest/preferences"
+import ConflictsFields, { conflictsDraft, draftInput, draftProblems, type ConflictsDraft } from "../components/matter/ConflictsFields"
 
-export default function Matters() {
+// refresh changes when a matter is added from elsewhere (the sample matter from
+// setup or Settings), so the list re-loads.
+export default function Matters({ refresh = 0 }: { refresh?: number }) {
   const [matters, setMatters] = useState<Matter[]>([])
   const [jurisdictions, setJurisdictions] = useState<Jurisdiction[]>([])
   const [loading, setLoading] = useState(true)
@@ -53,6 +60,15 @@ export default function Matters() {
   // primary action stays focusable and says what is missing.
   const [titleMissing, setTitleMissing] = useState(false)
   const [draftTitleMissing, setDraftTitleMissing] = useState(false)
+  // The conflicts check, optional on both forms: a new matter starts "Not
+  // recorded"; missing names show once a save has been tried.
+  const [newConflicts, setNewConflicts] = useState<ConflictsDraft>(() => conflictsDraft(undefined, "none"))
+  const [newConflictsTried, setNewConflictsTried] = useState(false)
+  const [draftConflicts, setDraftConflicts] = useState<ConflictsDraft>(() => conflictsDraft(undefined, "none"))
+  const [draftConflictsTried, setDraftConflictsTried] = useState(false)
+  // The firm's attorney name, filled into a blank conflicts name.
+  const [attorney, setAttorney] = useState<string>()
+  const createForm = useRef<HTMLFormElement>(null)
   const titleInput = useRef<HTMLInputElement>(null)
   const draftTitleInput = useRef<HTMLInputElement>(null)
   const editDialog = useRef<HTMLDialogElement>(null)
@@ -70,8 +86,17 @@ export default function Matters() {
 
   useEffect(() => {
     load()
+  }, [refresh])
+
+  useEffect(() => {
     listJurisdictions()
       .then(setJurisdictions)
+      .catch(() => undefined)
+  }, [])
+
+  useEffect(() => {
+    getPreferences()
+      .then((prefs) => setAttorney(prefs.attorney.trim() || undefined))
       .catch(() => undefined)
   }, [])
 
@@ -87,6 +112,8 @@ export default function Matters() {
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
     const dialog = editDialog.current
     dialog?.showModal()
+    // React's autoFocus runs before showModal, so the dialog would start on ×.
+    draftTitleInput.current?.focus()
     return () => {
       dialog?.close()
       if (opener?.isConnected) opener.focus({ preventScroll: true })
@@ -94,10 +121,14 @@ export default function Matters() {
   }, [editing])
 
   async function onCreate() {
-    if (!title.trim()) {
-      // Commit the error before focus lands so the field is announced with it.
-      flushSync(() => setTitleMissing(true))
-      titleInput.current?.focus()
+    const conflicts = draftInput(newConflicts)
+    if (!title.trim() || Object.keys(draftProblems(newConflicts)).length) {
+      // Commit the errors before focus lands so the field is announced with its own.
+      flushSync(() => {
+        setTitleMissing(!title.trim())
+        setNewConflictsTried(true)
+      })
+      createForm.current?.querySelector<HTMLElement>("[aria-invalid]")?.focus()
       return
     }
     setBusy(true)
@@ -110,6 +141,17 @@ export default function Matters() {
         client.trim() || undefined,
         posture || undefined,
       )
+      // The check is recorded once the matter exists. If that fails the matter
+      // still opens, and its header chip shows the check as not recorded.
+      if (conflicts) {
+        try {
+          await recordConflicts(matter.id, conflicts)
+        } catch (e) {
+          toast("error", `Created matter "${matter.title}", but its conflicts check was not recorded (${humanizeError(e)}). Record it from the Conflicts chip on the matter.`)
+          navigate(`/matter/${matter.id}`)
+          return
+        }
+      }
       toast("success", `Created matter "${matter.title}".`)
       // A new matter is opened straight away: the next step is always adding its
       // documents or asking a question, and both happen inside it.
@@ -146,18 +188,24 @@ export default function Matters() {
     setDraftClient(m.client ?? "")
     setDraftPosture(m.posture ?? "")
     setDraftJurisdictions(m.jurisdictions ?? [])
+    setDraftConflicts(conflictsDraft(m.conflicts, "none", attorney))
+    setDraftConflictsTried(false)
   }
 
   async function onSaveEdit() {
     if (!editing || busy) return
-    if (!draftTitle.trim()) {
-      flushSync(() => setDraftTitleMissing(true))
-      draftTitleInput.current?.focus()
+    const conflicts = draftInput(draftConflicts)
+    if (!draftTitle.trim() || Object.keys(draftProblems(draftConflicts)).length) {
+      flushSync(() => {
+        setDraftTitleMissing(!draftTitle.trim())
+        setDraftConflictsTried(true)
+      })
+      editDialog.current?.querySelector<HTMLElement>("[aria-invalid]")?.focus()
       return
     }
     setBusy(true)
     try {
-      const updated = await renameMatter(
+      let updated = await renameMatter(
         editing.id,
         draftTitle.trim(),
         draftReference.trim() || undefined,
@@ -167,7 +215,20 @@ export default function Matters() {
         draftClient.trim() === (editing.client ?? "") ? undefined : draftClient.trim(),
         draftPosture === (editing.posture ?? "") ? undefined : draftPosture,
       )
-      setMatters((prev) => prev.map((m) => (m.id === updated.id ? updated : m)))
+      // A changed check is recorded through the conflicts endpoint after the
+      // details save; if it fails the dialog stays open with the details kept.
+      if (conflicts && conflictsChanged(conflicts, editing.conflicts)) {
+        try {
+          updated = await recordConflicts(editing.id, conflicts)
+        } catch (e) {
+          const saved = updated
+          setMatters((prev) => prev.map((m) => (m.id === saved.id ? saved : m)))
+          toast("error", `Saved the matter details, but the conflicts check was not recorded (${humanizeError(e)}).`)
+          return
+        }
+      }
+      const saved = updated
+      setMatters((prev) => prev.map((m) => (m.id === saved.id ? saved : m)))
       setEditing(null)
       toast("success", `Updated matter "${updated.title}".`)
     } catch (e) {
@@ -177,6 +238,7 @@ export default function Matters() {
     }
   }
 
+  const clientNames = groupClients(matters).map((group) => group.name)
   const term = filter.trim().toLowerCase()
   const visible = [...matters]
     .sort((a, b) => b.created_at - a.created_at)
@@ -207,6 +269,7 @@ export default function Matters() {
           </div>
           <form
             id="new-matter-fields"
+            ref={createForm}
             className={`matter-create-row${creating ? " is-open" : ""}`}
             onSubmit={(event) => { event.preventDefault(); onCreate() }}
           >
@@ -228,12 +291,13 @@ export default function Matters() {
             </div>
             <label className="matter-form-field matter-create-client">
               <span>Client <span className="field-optional">Optional</span></span>
-              <input
+              <ClientCombobox
                 placeholder="Whom you act for"
                 aria-label="Client you act for (optional)"
                 maxLength={200}
+                clients={clientNames}
                 value={client}
-                onChange={(e) => setClient(e.target.value)}
+                onChange={setClient}
               />
             </label>
             <label className="matter-form-field matter-create-reference">
@@ -273,6 +337,16 @@ export default function Matters() {
                 />
               </div>
             </fieldset>
+            <ConflictsFields
+              className="matter-create-preferences matter-create-conflicts"
+              legend="Conflicts check"
+              fieldClassName="matter-form-field"
+              allowNone
+              attorney={attorney}
+              draft={newConflicts}
+              onChange={setNewConflicts}
+              problems={newConflictsTried ? draftProblems(newConflicts) : {}}
+            />
             <button type="submit" className={`primary btn-lg matter-create-submit${busy ? " btn-loading" : ""}`} disabled={busy} aria-busy={busy}>
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
               Create matter
@@ -332,6 +406,7 @@ export default function Matters() {
                   <Link to={`/matter/${m.id}`} className="list-row-main">
                     <span className="list-row-title">
                       {m.title}
+                      {m.sample && <span className="badge badge-quiet">Sample</span>}
                     </span>
                     <span className="list-row-meta">
                       {m.client && <span className="matter-client">{m.client}</span>}
@@ -396,7 +471,6 @@ export default function Matters() {
                 <label htmlFor="edit-matter-title">Title</label>
                 <input
                   id="edit-matter-title"
-                  autoFocus
                   ref={draftTitleInput}
                   aria-required="true"
                   aria-invalid={draftTitleMissing || undefined}
@@ -417,11 +491,12 @@ export default function Matters() {
               </label>
               <label className="matter-edit-field">
                 <span>Client</span>
-                <input
+                <ClientCombobox
                   placeholder="Whom you act for (optional)"
                   maxLength={200}
+                  clients={clientNames}
                   value={draftClient}
-                  onChange={(e) => setDraftClient(e.target.value)}
+                  onChange={setDraftClient}
                   onKeyDown={(e) => e.key === "Enter" && onSaveEdit()}
                 />
               </label>
@@ -445,6 +520,17 @@ export default function Matters() {
                   onChange={setDraftJurisdictions}
                 />
               </div>
+              <ConflictsFields
+                className="matter-edit-conflicts"
+                legend="Conflicts check"
+                fieldClassName="matter-edit-field"
+                allowNone={!editing?.conflicts}
+                attorney={attorney}
+                draft={draftConflicts}
+                onChange={setDraftConflicts}
+                problems={draftConflictsTried ? draftProblems(draftConflicts) : {}}
+              />
+              {editing?.conflicts && <small className="matter-edit-note">A changed check replaces the recorded one.</small>}
             </div>
             <div className="viewer-bar matter-edit-foot">
               <button onClick={() => setEditing(null)}>Cancel</button>

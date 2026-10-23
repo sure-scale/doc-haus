@@ -3,6 +3,7 @@ import { realpathSync } from "node:fs"
 import path from "node:path"
 import { z } from "zod"
 import { readRegularFile } from "../../lib/regular-file"
+import { sourceProvenance } from "../../lib/source-provenance"
 import { checklistProducerInputSchema, type ChecklistProducerInput, type ChecklistSourceReference } from "./checklist-contract"
 import { readLeanPlan } from "./plan"
 import { leanUserUpdates } from "./requests"
@@ -35,6 +36,7 @@ export function checklistProducerInputs(directory: string): { key: string; input
   ]
   const indexBytes = readRegularFile(path.join(directory, "source-index.json"))
   const sources = indexBytes ? sourceIndexSchema.parse(JSON.parse(indexBytes.toString("utf8"))).sources : []
+  const provenance = sourceProvenance(directory)
   const jobs = sources.map(source => {
     const file = realpathSync(path.resolve(directory, source.extracted_text))
     const relative = path.relative(realpathSync(directory), file)
@@ -46,7 +48,7 @@ export function checklistProducerInputs(directory: string): { key: string; input
     return {
       key: `source:${source.document}`,
       input: checklistProducerInputSchema.parse({
-        source: { document: source.document, role: "Original matter source; determine directives, proposals and observations from its actual wording." },
+        source: { document: source.document, role: `Original matter source${provenance.has(source.document) ? ` (provenance: ${provenance.get(source.document)})` : ""}; determine directives, proposals and observations from its actual wording.` },
         passages: [{ document: source.document, locator: `${source.extracted_text} lines 1-${quote.split("\n").length}`, quote }],
         instructions,
         targets,

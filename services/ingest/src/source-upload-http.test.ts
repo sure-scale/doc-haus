@@ -3,7 +3,9 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { Document, Packer, Paragraph } from "docx"
+import { strToU8, zipSync } from "fflate"
 import { getDocumentRole, listSourceDocuments, openDb } from "./db"
+import { MAX_ZIP_FILES } from "./zip-archive"
 
 // A same-name upload never replaces an uploaded source silently: the lawyer's
 // own Agreement.docx survives the counterparty's returned Agreement.docx unless
@@ -157,6 +159,56 @@ test("a PDF conversion keeps both when its .docx name is already taken", async (
     expect(await convert("Memo.pdf")).toBe("Memo (2).docx")
     expect(await stored("Memo.docx")).toEqual(delivered)
     expect(role("Memo.docx")).toBe("deliverable")
+  })
+}, 120_000)
+
+// The extraction quality gate's result (#239) goes out in the upload response,
+// the document list and the document text route; a blank file is kept and
+// listed, not indexed.
+test("an upload's extraction quality is in the response, the document list and the text route", async () => {
+  await withMatter("Extraction quality", async ({ matter, request, upload, stored }) => {
+    const blank = new Uint8Array(await Packer.toBuffer(new Document({ sections: [{ children: [] }] })))
+    const empty = await upload("Blank.docx", blank)
+    expect(empty.status).toBe(200)
+    expect(await empty.json()).toMatchObject({ name: "Blank.docx", chunks: 0, injection: null, quality: { status: "no_readable_text" } })
+    expect(await stored("Blank.docx")).toEqual(blank)
+    const normal = await upload("Agreement.docx", await docx("Our marker"))
+    expect(await normal.json()).toMatchObject({ quality: { status: "ok" } })
+
+    const listed = await (await request(`/matters/${matter.id}`)).json() as { documents: { name: string; quality?: { status: string } }[] }
+    expect(Object.fromEntries(listed.documents.map((document) => [document.name, document.quality?.status]))).toEqual({
+      "Blank.docx": "no_readable_text",
+      "Agreement.docx": "ok",
+    })
+    const text = await (await request(`/matters/${matter.id}/documents/text?name=Blank.docx`)).json()
+    expect(text).toMatchObject({ text: "", injection: null, quality: { status: "no_readable_text" } })
+  })
+}, 120_000)
+
+// A zip upload brings in the files inside it; one past the zip limits is
+// refused with a message the upload row can show, and nothing of it is added.
+test("a zip upload adds its files, and one over the limits is refused whole", async () => {
+  await withMatter("Zip uploads", async ({ matter, request, upload }) => {
+    const added = await upload("Bundle.zip", zipSync({ "Bundle/Agreement.docx": await docx("Zipped marker"), "Bundle/photo.png": strToU8("png") }))
+    expect(added.status).toBe(200)
+    expect(await added.json()).toMatchObject({
+      name: "Bundle.zip",
+      quality: { status: "ok" },
+      attachments: [
+        { name: "Bundle/Agreement.docx", document: "Agreement.docx", status: "indexed" },
+        { name: "Bundle/photo.png", status: "unsupported" },
+      ],
+    })
+
+    const many = zipSync(Object.fromEntries(Array.from({ length: MAX_ZIP_FILES + 1 }, (_, index) => [`f${index}.txt`, strToU8("x")])))
+    const refused = await upload("Many.zip", many)
+    expect(refused.status).toBe(413)
+    expect(await refused.json()).toEqual({ error: expect.stringContaining("Many.zip was not added"), code: "zip_too_large" })
+    const listed = await (await request(`/matters/${matter.id}`)).json() as { documents: { name: string; attachment_of?: { name: string } }[] }
+    expect(listed.documents.map((document) => [document.name, document.attachment_of?.name]).toSorted()).toEqual([
+      ["Agreement.docx", "Bundle.zip"],
+      ["Bundle.zip", undefined],
+    ])
   })
 }, 120_000)
 

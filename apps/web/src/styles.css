@@ -531,20 +531,16 @@ li.list-row {
 /* Template viewer's placeholder list in the side panel. */
 .template-placeholders {
   list-style: none;
-  margin: 0;
-  padding: 0;
+  margin: 0 -3px;
+  padding: 3px;
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
 
 .template-placeholders li {
-  font-size: 13px;
-  color: var(--accent);
-  background: var(--accent-soft);
-  border-radius: var(--radius-sm);
-  padding: var(--space-1) 6px;
-  word-break: break-word;
+  display: flex;
+  min-width: 0;
 }
 
 .icon-btn {
@@ -2029,6 +2025,14 @@ li.list-row {
 .quick-draft-legend {
   margin: 0 0 6px;
   text-align: right;
+  font-size: 13px;
+}
+
+/* Said in the legend's place when the firm's settings could not be read. */
+.quick-draft-legend-missing {
+  margin: 0 0 6px;
+  text-align: right;
+  color: var(--muted);
   font-size: 13px;
 }
 

@@ -90,6 +90,6 @@ export function describeRecheck(recheck: GridRecheck) {
 }
 
 function stored(citation: Citation): NonNullable<GridCellData["citation"]> {
-  const { documentName, docPath, section, excerpt, charStart, charEnd } = citation
-  return { documentName, docPath, section, excerpt, charStart, charEnd }
+  const { documentName, docPath, section, structuralPath, excerpt, charStart, charEnd } = citation
+  return { documentName, docPath, section, ...(structuralPath ? { structuralPath } : {}), excerpt, charStart, charEnd }
 }

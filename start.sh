@@ -26,12 +26,10 @@ if [ -f dochaus/.env.local ]; then
   set +a
 fi
 
-# --demo seeds the fictional Aldgate Mills letter of engagement before launch, so a
-# first run lands on a matter with cited Q&A and a legal review without uploading
-# anything. The seed is idempotent — pass it on every boot, it only ingests once.
-DEMO=
+# The sample matter is the lawyer's choice in setup or Settings, or an explicit
+# POST /sample-matter to ingest; the launcher never seeds it.
 for arg in "$@"; do
-  [ "$arg" = "--demo" ] && DEMO=1
+  [ "$arg" = "--demo" ] && echo "doc.haus: --demo was removed: choose 'Add a sample matter' during setup, or POST /sample-matter to the ingest service" >&2
 done
 
 # WORKSPACE_ROOT is where matters live. Defaults to ./workspace at the repo root
@@ -170,14 +168,6 @@ EOF
   sleep $((model_attempt * 5))
   model_attempt=$((model_attempt + 1))
 done
-
-# Seed the demo matter before the stack comes up so it is already selectable on the
-# first page load. Runs inline (not backgrounded) via the ingest pipeline's own
-# imports — no server needed — and inherits the WORKSPACE_ROOT exported above.
-if [ -n "$DEMO" ]; then
-  echo "doc.haus: seeding demo matter"
-  (cd services/ingest && "$BUN_BIN" run src/seed.ts)
-fi
 
 WEB_URL="http://localhost:${WEB_PORT}"
 echo "doc.haus: starting engine, ingest, web (workspace: $WORKSPACE_ROOT)"
