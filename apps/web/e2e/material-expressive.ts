@@ -35,6 +35,7 @@ const transcript = [
   { id: "msg_answer", type: "assistant", agent: "legal-review", finish: "stop", time: { created: timestamp + 1000, completed: timestamp + 2000 }, content: [{ type: "text", text: "## Points to review\n\nThe agreement covers the proposed services, delivery dates and the invoicing process. The following points need your attention:\n\n- **Payment timing:** confirm that the payment period matches the agreed commercial position.\n- **Scope changes:** record how additional work is approved before it begins.\n- **Termination:** review the notice period against the expected project timetable.\n\nThese are review points for your consideration. Confirm the instructions before making changes to the document." }] },
   { id: "msg_idle", type: "idle", outcome: "succeeded", time: { created: timestamp + 2000 } },
 ]
+const setupModels = ["primary", "fast"].map(id => ({ providerID: "fixture", id, name: id, enabled: true, capabilities: { tools: true, input: ["text"], output: ["text"] } }))
 const column = { id: "payment", question: "When is payment due?" }
 function hashQuestion(question: string) { let hash = 5381; for (let i = 0; i < question.length; i++) hash = (hash * 33) ^ question.charCodeAt(i); return (hash >>> 0).toString(36) }
 const grid = { columns: [column, { id: "notice", question: "What notice is required to terminate?" }], cells: {
@@ -65,6 +66,10 @@ async function open(state: ReturnType<typeof fixture>, width: number, height: nu
     state.requests.push({ method, path: pathname })
     const reply = (body: unknown, status = 200) => route.fulfill({ status, headers, contentType: "application/json", body: JSON.stringify(body) })
     if (method === "POST" && pathname === "/api/dochaus/provider-test") return reply({ ok: true })
+    // AI setup requests: a candidate session per opened Settings, no credentials involved.
+    if (method === "POST" && pathname === "/api/dochaus/provider-candidate/session") return reply({ sessionID: `fixture-session-${state.requests.length}` })
+    if (method === "POST" && pathname === "/api/dochaus/provider-candidate/models") return reply({ data: setupModels, customModels: false })
+    if (method === "DELETE" && pathname === "/api/dochaus/provider-candidate/session") return route.fulfill({ status: 204, headers })
     if (method === "POST" && pathname === "/matters") {
       const body = request.postDataJSON() as typeof matter
       state.writes.push({ method, path: pathname, body })
@@ -79,6 +84,7 @@ async function open(state: ReturnType<typeof fixture>, width: number, height: nu
     }
     if (method === "PUT" && pathname === `/matters/${matter.id}/grid`) { state.writes.push({ method, path: pathname, body: request.postDataJSON() }); return reply({ ok: true }) }
     if (method !== "GET") { state.unexpected.push(`${method} ${pathname}`); return route.abort() }
+    if (pathname === "/auth/reuse") return reply({ sources: [] })
     if (pathname === "/api/dochaus/ready") return reply({ ready: true, consentState: "active" })
     if (pathname === "/setup") return reply({ version: 1, ready: true, completed: state.setup === "done" ? ["models", "research", "details"] : ["models", "research"], skipped: [], next: state.setup === "done" ? "done" : "details" })
     if (pathname === "/preferences") return reply({ ...DEFAULT_DRAFTING, attorney: "Alex Example", firm: "Example Partners LLP" })
@@ -98,6 +104,7 @@ async function open(state: ReturnType<typeof fixture>, width: number, height: nu
     if (pathname === "/playbooks") return reply(playbooks)
     if (pathname === "/playbooks/library") return reply({ dir: "/fixture/playbooks", playbooks })
     if (pathname === "/templates") return reply({ dir: "/fixture/templates", templates: [{ name: "Consulting agreement.docx", description: "A starting point for professional services engagements.", placeholders: [{ text: "Client name", kind: "text" }, { text: "Commencement date", kind: "date" }] }, { name: "Mutual confidentiality agreement.docx", description: "Two-way confidentiality terms for early discussions.", placeholders: [] }] })
+    if (pathname === "/template-drafts") return reply({ drafts: [] })
     if (pathname === "/workflows") return reply({ dir: "/fixture/workflows", workflows })
     if (pathname === "/skills") return reply({ dir: "/fixture/skills", skills: [{ name: "commercial-terms", description: "Guidance for clear commercial drafting.", content: "# Commercial terms\n\nGround every point in the supplied documents.", builtin: false, enabled: true }, { name: "reference-reading", description: "Read source material before making a recommendation.", content: "# Source reading", builtin: true, enabled: true }] })
     if (pathname === "/agents") return reply({ dir: "/fixture/agents", agents: [{ name: "legal-review", label: "Legal reviewer", description: "A specialist for focused agreement review.", instructions: "Review only the supplied document evidence.", builtin: true, enabled: true, created_at: timestamp }] })
