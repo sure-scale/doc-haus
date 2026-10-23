@@ -512,7 +512,8 @@ describe("provider errors", () => {
   // A throwaway router session whose every turn ends the way the engine records
   // it: the reply carries `reply` (an error or text) and the idle marker follows.
   // The first `late` turns finish only after `lateMs`, past a short deadline.
-  function routerClient(reply: { error?: Record<string, unknown>; text?: string }, late = 0, lateMs = 200) {
+  // `replies` instead gives each attempt its own reply, in order.
+  function routerClient(reply: { error?: Record<string, unknown>; text?: string }, late = 0, lateMs = 200, replies?: { error?: Record<string, unknown>; text?: string }[]) {
     const prompts: string[] = []
     const removed: string[] = []
     const client = {
@@ -535,7 +536,7 @@ describe("provider errors", () => {
       },
       message: {
         list: async () => ({
-          data: [
+          data: ((reply) => [
             { type: "user", id: "msg_user", text: "Route this.", time: { created: 1 } },
             {
               type: "assistant",
@@ -546,7 +547,7 @@ describe("provider errors", () => {
               time: { created: 2, completed: 3 },
             },
             { type: "idle", id: "msg_idle", outcome: reply.error ? "failed" : "succeeded", ...(reply.error ? { error: reply.error } : {}), time: { created: 4 } },
-          ],
+          ])(replies?.[prompts.length - 1] ?? reply),
           cursor: {},
         }),
       },
@@ -587,7 +588,18 @@ describe("provider errors", () => {
   test("Auto no longer reads a candidate name out of prose: both models miss and the lawyer is told", async () => {
     const { client, prompts } = routerClient({ text: "The best candidate is draft." })
     await expect(route(client)).rejects.toThrow("Auto could not choose an assistant.")
-    expect(prompts).toEqual(["opencode-go/small", "opencode-go/primary"])
+    // A reply with no route is asked once more on each model, then the lawyer is told.
+    expect(prompts).toEqual(["opencode-go/small", "opencode-go/small", "opencode-go/primary", "opencode-go/primary"])
+  })
+
+  test("Auto asks the router once more when its reply stops after the acknowledgement", async () => {
+    const scope = { documents: "one", legal_effect: "no", outside_law: "no", firm_material: "no", sources: "few" } as const
+    const { client, prompts } = routerClient({}, 0, 0, [
+      { text: "On it — I'll review the lease." },
+      { text: `On it — I'll review the lease.\n${JSON.stringify({ route: "draft", ...scope })}` },
+    ])
+    expect(await route(client)).toEqual({ name: "draft", scope, ack: "On it — I'll review the lease." })
+    expect(prompts).toEqual(["opencode-go/small", "opencode-go/small"])
   })
 
   test("Auto asks the router once more when its reply misses the deadline", async () => {

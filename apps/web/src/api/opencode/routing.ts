@@ -73,9 +73,11 @@ const ROUTE_ATTEMPT_MS = 30_000
 // before prompting, so the acknowledgement's first text is not missed.
 const STREAM_READY_MS = 1_000
 
+// A reply that ends after the acknowledgement with no route and no provider
+// error (about 1 in 80 on Spark 1.3) is asked once more, like a timeout.
 async function routeModel(client: Client, spec: string, prompt: string, names: string[], attemptMs: number, onAck?: (ack: string) => void) {
   const first = await routeOnce(client, spec, prompt, names, attemptMs, onAck)
-  return first.timedOut ? routeOnce(client, spec, prompt, names, attemptMs, onAck) : first
+  return first.timedOut || (!first.route && !first.error) ? routeOnce(client, spec, prompt, names, attemptMs, onAck) : first
 }
 
 // One routing attempt on a "provider/model" spec: spin up the throwaway router
