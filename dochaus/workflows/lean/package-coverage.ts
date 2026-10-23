@@ -3,6 +3,7 @@ import { TOOL_SYNTAX_ISSUE, printedToolCall, record } from "./checks"
 import { FIRST_DOCUMENT, nameKey, namedIn, readLeanPlan, type ActingFor, type DocID, type PlannedDocument } from "./plan"
 import { tagged } from "./prompts"
 import { EXCERPT, REQUEST_SOURCE, excerpt, lawyerWords, matterSourceIDs, openItem, quoteFound, quoteMissIssue } from "./quotes"
+import { nameWithProvenance, sourceProvenance } from "../../lib/source-provenance"
 import { answeredScopeQuestion, scopeAnswers, scopeField, scopeQuestionShows, type ScopeParties } from "./package-scope"
 import { answeredQuestionsText, hashStageInputs, readLeanJson, readLeanText, readQuestions, type OpenItem, type Question } from "./state"
 import { sourceText } from "./template-structure"
@@ -54,6 +55,7 @@ const COVERAGE_SHAPE = 'Reply with the JSON object only: {"acts":[{"act":"...","
 export function coveragePrompt(directory: string, documents: PlannedDocument[]) {
   const updates = readLeanText(directory, "updated-notes.md")?.trim()
   const answers = answeredQuestionsText(directory)
+  const provenance = sourceProvenance(directory)
   return [
     "This is a lean drafting run. Check the planned package against the lawyer's instructions: which legal acts they direct, who must take each and which planned document carries it.",
     tagged("request", readLeanText(directory, "request.md") ?? ""),
@@ -61,7 +63,7 @@ export function coveragePrompt(directory: string, documents: PlannedDocument[]) 
     answers ? tagged("answers", `The lawyer's answers; they remain controlling:\n${answers}`) : "",
     tagged("sources", [
       "Matter documents (use these exact names with search-document and read-document, and as source names):",
-      ...matterSourceIDs(directory).map(name => `- ${name}`),
+      ...matterSourceIDs(directory).map(name => `- ${nameWithProvenance(name, provenance)}`),
       `To quote the request, the lawyer's updates or answers, use the source name "${REQUEST_SOURCE}".`,
     ].join("\n")),
     tagged("planned_documents", "The plan under check, by id. Its purposes and parts are the plan's own choices, not instructions. executed_by lists the parties who execute a document; [] says it takes no legal act, and null that the plan does not say.\n" +

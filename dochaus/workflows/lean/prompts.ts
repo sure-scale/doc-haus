@@ -9,6 +9,7 @@ import { researchHandoff } from "./research"
 import { finalBodyParagraphs, readChangeList, readParagraphs, type ApplyResult } from "./checks"
 import { reviewStages, FIRST_DOCUMENT, earlierDocuments, planActingFor, operativeDocument, plannedDocument, readLeanPlan, runPosture, stepDocument, stepStage, type DocID, type StepID } from "./plan"
 import { REQUEST_SOURCE, matterSourceIDs } from "./quotes"
+import { nameWithProvenance, sourceProvenance } from "../../lib/source-provenance"
 import { readRepairRound, changesRepairSections } from "./repairs"
 import { MEMO_TARGET, REVIEW_FINDINGS_CONTRACT, findingsText, forwardedFindings, reviewText } from "./review-findings"
 import { disclosableItems } from "./stages"
@@ -63,9 +64,10 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
   const spine = readLeanText(directory, "spine.json")
   const spineBlock = spine ? tagged("drafting_spine", "Source-linked drafting decisions and unresolved points. Retrieve the underlying evidence as needed; this handoff does not replace it.\n" + spine) : ""
   const answerBlock = answers ? tagged("answers", `The lawyer answered these decisions; their answers remain controlling and must not be re-asked under narrower or different wording:\n${answers}`) : ""
+  const provenance = sourceProvenance(directory)
   const sources = tagged("sources", [
     "Matter documents (use these exact names with search-document and read-document, and as source names):",
-    ...matterSourceIDs(directory).map(name => `- ${name}`),
+    ...matterSourceIDs(directory).map(name => `- ${nameWithProvenance(name, provenance)}`),
     `To quote the request or the lawyer's answers, use the source name "${REQUEST_SOURCE}".`,
   ].join("\n"))
   if (step === "finalize") return draftingNotesSections(directory, request).filter(Boolean).join("\n\n")
@@ -295,13 +297,14 @@ function draftingNotesSections(directory: string, request: string) {
   // The notes never name a question by its id, so their prompt shows none: an
   // open question is disclosed by its open item's id.
   const answers = answeredQuestions(directory).filter(question => !delegatedIDs.has(question.id)).map(question => `- Q: ${question.question}\n  A: ${question.answer}`).join("\n")
+  const provenance = sourceProvenance(directory)
   return [
     memo
       ? `This is a lean drafting run. The request asks for a memo to accompany the drafted documents, "${memo.name}". Write the drafting notes as that memo.`
       : "This is a lean drafting run. Write the drafting notes that go to the lawyer with the drafted documents.",
     tagged("required_repairs", (readRepairRound(directory)?.items ?? []).filter(item => item.stage === "package-review" || item.ref.repair_target === "memo").map(item => `- ${item.detail}`).join("\n") || "None."),
     request, actingForBlock(directory), answers ? tagged("answers", answers) : "",
-    tagged("sources", matterSourceIDs(directory).join("\n")),
+    tagged("sources", matterSourceIDs(directory).map(name => nameWithProvenance(name, provenance)).join("\n")),
     tagged("delivery_artifacts", JSON.stringify(deliveryArtifactEvidence(directory), null, 2)),
     tagged("drafting_spine", readLeanText(directory, "spine.json") ?? "None."),
     tagged("discrepancies", readLeanText(directory, "discrepancy.json") ?? "None."),

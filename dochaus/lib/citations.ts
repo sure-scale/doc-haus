@@ -47,6 +47,10 @@ export type DocumentCitation = {
   // tool) simply omit the line.
   structuralPath?: string
   party?: string
+  // The container chain of a source ingest extracted from an email or zip
+  // ("in Exhibits.zip, attachment of Thread.eml"; lib/source-provenance).
+  // Shown on its own line, never in the heading, so citations keep the plain name.
+  provenance?: string
   excerpt: string
   charStart: number
   charEnd: number
@@ -85,6 +89,8 @@ export type DocumentCitation = {
 // (the review grid's re-check sees only the passages it is given).
 export function formatCitations(citations: DocumentCitation[], options: { full?: boolean } = {}) {
   if (!citations.length) return ""
+  // Provenance once per document per result, on its first passage.
+  const provenanceShown = new Set<string>()
   const body = citations
     .map((c, i) => {
       const score = c.score === undefined ? "" : ` (score ${c.score.toFixed(3)})`
@@ -104,7 +110,9 @@ export function formatCitations(citations: DocumentCitation[], options: { full?:
       // supplied one; append the parties so the passage carries its matter context.
       const heading = c.structuralPath || `${c.documentName} § ${c.section}`
       const party = c.party ? `\n   parties: ${c.party}` : ""
-      return `${i + 1}. [${heading}]${score}${flag}${degraded}${superseded}${party}\n${options.full ? c.excerpt : displayExcerpt(c.excerpt)}${reason}`
+      const provenance = c.provenance && !provenanceShown.has(c.documentName) ? `\n   provenance: ${c.provenance}` : ""
+      if (c.provenance) provenanceShown.add(c.documentName)
+      return `${i + 1}. [${heading}]${score}${flag}${degraded}${superseded}${party}${provenance}\n${options.full ? c.excerpt : displayExcerpt(c.excerpt)}${reason}`
     })
     .join("\n\n")
   return `${UNTRUSTED_EXCERPT_NOTICE}\n\n${body}`

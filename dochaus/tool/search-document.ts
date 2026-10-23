@@ -10,6 +10,7 @@ import { draftingTraceReference } from "../lib/drafting-trace-identity"
 import { indexIsContained, lexicalChannel, phraseChannel, vectorChannel, type ChunkRow } from "../lib/search/channels"
 import { attachCrossRefs, attachDefinitions } from "../lib/search/excerpt-context"
 import { embed, MODEL } from "../lib/search/query-embedding"
+import { sourceProvenance } from "../lib/source-provenance"
 
 // doc.haus retrieval tool. Reads the per-matter legal.db that
 // `services/ingest` populates and runs the query through two channels — the
@@ -175,6 +176,7 @@ export default tool({
     }
     if (signature) recentBySession.set(ctx.sessionID, [signature, ...recent].slice(0, RECENT_LIMIT))
 
+    const provenance = sourceProvenance(ctx.directory)
     const citations = ranked.map(({ row, score, supersededBy }) => ({
       documentName: row.doc_name,
       docPath: row.doc_path,
@@ -183,6 +185,8 @@ export default tool({
       // falls back to "doc § section" when the path is absent.
       structuralPath: row.structural_path || undefined,
       party: row.party || undefined,
+      // Display-only container chain of an email attachment or zip entry.
+      provenance: provenance.get(row.doc_name),
       excerpt: row.text,
       charStart: row.char_start,
       charEnd: row.char_end,

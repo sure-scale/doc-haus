@@ -3,6 +3,7 @@ import { Database } from "bun:sqlite"
 import { existsSync } from "node:fs"
 import path from "node:path"
 import { sectionPassages } from "../lib/chunk-text"
+import { nameWithProvenance, sourceProvenance } from "../lib/source-provenance"
 
 // doc.haus deterministic section lookup. Reads the per-matter legal.db that
 // `services/ingest` populates and returns a section's text verbatim by
@@ -50,7 +51,7 @@ export default tool({
     const db = new Database(dbPath, { readonly: true })
 
     if (!args.section) {
-      const outline = renderOutline(db, args.document)
+      const outline = renderOutline(db, sourceProvenance(ctx.directory), args.document)
       db.close()
       return outline
     }
@@ -72,7 +73,7 @@ export default tool({
       : (db.query(scopedSql("section LIKE ? || '%' ESCAPE '\\'")).all(...prefixParams) as Chunk[])
 
     if (!chunks.length) {
-      const miss = renderMiss(db, args.section, args.document)
+      const miss = renderMiss(db, sourceProvenance(ctx.directory), args.section, args.document)
       db.close()
       return miss
     }
@@ -99,7 +100,7 @@ export default tool({
   },
 })
 
-function renderOutline(db: Database, document?: string) {
+function renderOutline(db: Database, provenance: ReadonlyMap<string, string>, document?: string) {
   const sql =
     "SELECT doc_name, section, MIN(char_start) AS at FROM chunks" +
     (document ? " WHERE doc_name = ?" : "") +
@@ -111,17 +112,17 @@ function renderOutline(db: Database, document?: string) {
   }>
   if (!rows.length && document) {
     const names = db.query("SELECT name FROM documents ORDER BY name").all() as Array<{ name: string }>
-    return `No document named "${document}" is indexed in this matter. Indexed documents:\n${names.map((row) => `- ${row.name}`).join("\n")}`
+    return `No document named "${document}" is indexed in this matter. Indexed documents:\n${names.map((row) => `- ${nameWithProvenance(row.name, provenance)}`).join("\n")}`
   }
   if (!rows.length) return "No documents have been indexed for this matter yet."
   const byDoc = new Map<string, Array<{ section: string; at: number }>>()
   for (const row of rows) byDoc.set(row.doc_name, [...(byDoc.get(row.doc_name) ?? []), row])
   return [...byDoc.entries()]
-    .map(([doc, sections]) => `${doc}\n${sections.map((s) => `  § ${s.section} (char ${s.at})`).join("\n")}`)
+    .map(([doc, sections]) => `${nameWithProvenance(doc, provenance)}\n${sections.map((s) => `  § ${s.section} (char ${s.at})`).join("\n")}`)
     .join("\n\n")
 }
 
-function renderMiss(db: Database, section: string, document?: string) {
+function renderMiss(db: Database, provenance: ReadonlyMap<string, string>, section: string, document?: string) {
   // Nearby = labels sharing the stem before the first dot ("7.9" → labels
   // starting with "7"), in document order; fall back to the first labels of the
   // scope when the stem matches nothing either.
@@ -144,7 +145,7 @@ function renderMiss(db: Database, section: string, document?: string) {
   // report that (with the indexed names) instead of a bare section miss.
   if (document && !labels.length) {
     const names = db.query("SELECT name FROM documents ORDER BY name").all() as Array<{ name: string }>
-    return `No document named "${document}" is indexed in this matter. Indexed documents:\n${names.map((row) => `- ${row.name}`).join("\n")}`
+    return `No document named "${document}" is indexed in this matter. Indexed documents:\n${names.map((row) => `- ${nameWithProvenance(row.name, provenance)}`).join("\n")}`
   }
   const scope = document ? `in "${document}"` : "in this matter"
   const nearby = labels.length ? ` Nearby labels: ${labels.map((row) => row.section).join(", ")}.` : ""
