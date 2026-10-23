@@ -6,7 +6,10 @@ import {
   matterDocumentKind,
   uploadDocument,
   type Document,
+  type EmailAttachment,
+  type EmailRemoval,
   type ExistingSourceChoice,
+  type IngestResult,
   type MatterDocumentKind,
 } from "../api/ingest/documents"
 import { humanizeError } from "../api/ingest/errors"
@@ -113,11 +116,11 @@ export default function DocumentUpload({
           "warning",
           `${result.name} is ready, with a warning — possible prompt injection: ${[
             ...new Set(result.injection.findings.map((f) => f.detail)),
-          ].join("; ")}. The assistant will treat this content as untrusted.`,
+          ].join("; ")}. The assistant will treat this content as untrusted.${attachmentsSummary(result)}`,
         )
         return
       }
-      toast("success", `${result.name} is ready (${result.sections} section${result.sections === 1 ? "" : "s"}).`)
+      toast("success", `${result.name} is ready (${result.sections} section${result.sections === 1 ? "" : "s"}).${attachmentsSummary(result)}`)
     } catch (e) {
       update(upload.key, failedUpload(e, upload.file))
     }
@@ -129,13 +132,20 @@ export default function DocumentUpload({
     added.filter((u) => u.status === "queued").forEach(enqueue)
   }
 
-  async function onRemove(name: string) {
+  async function onRemove(name: string, keepAttachments = false) {
     setConfirmId(null)
     setRemoving(name)
     try {
-      await deleteDocument(matterId, name)
+      const result = await deleteDocument(matterId, name, { keepAttachments })
       onUploaded()
-      toast("success", `Removed ${name}.`)
+      const removed = result.attachments?.removed.length ?? 0
+      const kept = result.attachments?.kept ?? []
+      toast(
+        "success",
+        `Removed ${name}${removed ? ` and ${removed} attachment${removed === 1 ? "" : "s"}` : ""}.${
+          kept.length ? ` Kept ${kept.map((k) => k.name).join(", ")}.` : ""
+        }`,
+      )
     } catch (e) {
       toast("error", humanizeError(e, `Could not remove ${name}.`))
     } finally {
@@ -186,8 +196,17 @@ export default function DocumentUpload({
             </span>
           ) : null}
         </div>
+        {d.attachments && d.attachments.length > 0 && (
+          <EmailAttachments attachments={d.attachments} embedded={d.embedded_images ?? 0} onView={onView} />
+        )}
         <div className="doc-row-meta">
-          <span className="document-origin">Uploaded</span>
+          <span className="document-origin" title={d.attachment_of ? `Extracted from the email ${d.attachment_of.name}` : undefined}>
+            {d.attachment_of
+              ? d.attachment_of.removed
+                ? `From removed email ${d.attachment_of.name}`
+                : `Attachment of ${d.attachment_of.name}`
+              : "Uploaded"}
+          </span>
           <time className="document-time" dateTime={new Date(d.created_at).toISOString()} title={`Added to matter: ${formatDateTime(d.created_at)}`}>
             {formatTime(d.created_at)}
           </time>
@@ -196,7 +215,7 @@ export default function DocumentUpload({
               <CompareIcon />
             </button>
           )}
-          {confirmId === d.id ? (
+          {confirmId === d.id && d.removal ? null : confirmId === d.id ? (
             <button
               className="icon-btn danger"
               title={`Remove ${d.name} — indexed text is deleted and answers can no longer cite it`}
@@ -222,6 +241,9 @@ export default function DocumentUpload({
             </button>
           )}
         </div>
+        {confirmId === d.id && d.removal && (
+          <EmailRemoveConfirm name={d.name} removal={d.removal} onRemove={(keep) => onRemove(d.name, keep)} onCancel={() => setConfirmId(null)} />
+        )}
       </div>
       ),
     })),
@@ -317,6 +339,114 @@ export default function DocumentUpload({
         <p>Drop Word, PDF, email or Excel files here, or click to browse.</p>
       </footer>
     </section>
+  )
+}
+
+// What became of an uploaded email's attachments, for the ready toast.
+export function attachmentsSummary(result: Pick<IngestResult, "attachments">) {
+  const attachments = result.attachments ?? []
+  if (!attachments.length) return ""
+  const added = attachments.filter((a) => a.status === "indexed").length
+  const same = attachments.filter((a) => a.status === "same").length
+  const missing = attachments.filter((a) => a.status !== "indexed" && a.status !== "same")
+  return [
+    added && ` ${added} attachment${added === 1 ? "" : "s"} added.`,
+    same && ` ${same} already in the matter.`,
+    missing.length && ` Not added: ${missing.map((a) => `${attachmentName(a)} (${ATTACHMENT_STATUS[a.status].toLowerCase()})`).join(", ")}.`,
+  ]
+    .filter(Boolean)
+    .join("")
+}
+
+const ATTACHMENT_STATUS: Record<EmailAttachment["status"], string> = {
+  indexed: "Added",
+  same: "Already in the matter",
+  removed: "Removed from the matter",
+  unsupported: "Not supported",
+  failed: "Could not be read",
+  nested: "Nested too deep to add",
+  pending: "Not added yet. Upload the email again",
+}
+
+function attachmentName(attachment: EmailAttachment) {
+  return attachment.name || attachment.document || "Unnamed attachment"
+}
+
+// An email's attachments under its row: each one's stated name and what became
+// of it, with a link to the matter document that holds it.
+export function EmailAttachments({ attachments, embedded, onView }: {
+  attachments: EmailAttachment[]
+  embedded: number
+  onView: (name: string) => void
+}) {
+  return (
+    <ul className="email-attachments" aria-label="Attachments">
+      {attachments.map((attachment, index) => {
+        const linked = attachment.document && (attachment.status === "indexed" || attachment.status === "same")
+        const renamed = attachment.document && attachment.document !== attachment.name
+        return (
+          <li key={index} className={`email-attachment is-${attachment.status}`}>
+            <span className="email-attachment-name">{attachmentName(attachment)}</span>
+            <span className="email-attachment-status">
+              {linked ? (
+                <button type="button" className="linklike" onClick={() => onView(attachment.document!)}>
+                  {attachment.status === "same" ? `Same as ${attachment.document}` : renamed ? `Added as ${attachment.document}` : "Added"}
+                </button>
+              ) : (
+                ATTACHMENT_STATUS[attachment.status]
+              )}
+              {attachment.note === "may-contain-attachments" && " · may contain further attachments"}
+              {attachment.flagged && " · suspicious name"}
+            </span>
+          </li>
+        )
+      })}
+      {embedded > 0 && (
+        <li className="email-attachment is-embedded">
+          {embedded} embedded image{embedded === 1 ? "" : "s"} in the message body
+        </li>
+      )}
+    </ul>
+  )
+}
+
+// Removing an email names the attachments that came with it and offers to
+// remove them too (the default) or the email only. An attachment another email
+// still links to, or that the lawyer changed, is always kept and named.
+export function EmailRemoveConfirm({ name, removal, onRemove, onCancel }: {
+  name: string
+  removal: EmailRemoval
+  onRemove: (keepAttachments: boolean) => void
+  onCancel: () => void
+}) {
+  const count = removal.attachments.length
+  return (
+    <div className="email-remove-confirm" role="group" aria-label={`Remove ${name}`} onClick={(e) => e.stopPropagation()}>
+      <p>
+        {count
+          ? `${name} came with ${removal.attachments.join(", ")}.`
+          : `${name} came with attachments that stay in the matter.`}
+        {removal.kept.map((kept) => (
+          <span key={kept.name} className="email-remove-kept">
+            {" "}
+            {kept.name} is kept: {kept.reason === "linked" ? "another email also has it" : "it has changed since it was added"}.
+          </span>
+        ))}
+      </p>
+      <span className="upload-actions">
+        <button type="button" className="icon-btn danger" autoFocus onClick={() => onRemove(false)}>
+          {count ? `Remove email and ${count} attachment${count === 1 ? "" : "s"}` : "Remove email"}
+        </button>
+        {count > 0 && (
+          <button type="button" className="icon-btn" onClick={() => onRemove(true)}>
+            Remove email only
+          </button>
+        )}
+        <button type="button" className="icon-btn" onClick={onCancel}>
+          Cancel
+        </button>
+      </span>
+    </div>
   )
 }
 

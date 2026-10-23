@@ -398,3 +398,15 @@ button:is(.change-id, .change-ref):hover { text-decoration: underline; }
 @media (prefers-reduced-motion: reduce) {
   .docx-render .compare-focus { animation: none; }
 }
+
+/* An email's attachments under its row, and the two-choice remove confirmation. */
+.email-attachments { list-style: none; margin: 4px 0 0 38px; padding: 0 0 0 var(--space-3); border-left: 1px solid var(--border-soft); display: grid; gap: 2px; }
+.email-attachment { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px var(--space-2); font-size: 0.75rem; line-height: 1.5; }
+.email-attachment-name { color: var(--text); overflow-wrap: anywhere; }
+.email-attachment-status { color: var(--muted); font-size: 0.6875rem; }
+.email-attachment-status .linklike { font-size: inherit; color: var(--accent); }
+.email-attachment:is(.is-failed, .is-pending) .email-attachment-status { color: var(--danger); }
+.email-attachment.is-embedded { color: var(--muted); font-size: 0.6875rem; }
+.email-remove-confirm { margin: var(--space-2) 0 0 38px; display: grid; gap: var(--space-2); font-size: 0.75rem; line-height: 1.5; }
+.email-remove-confirm p { margin: 0; overflow-wrap: anywhere; }
+.email-remove-confirm .upload-actions { flex-wrap: wrap; margin-left: 0; }

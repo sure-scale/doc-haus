@@ -17,6 +17,37 @@ export type Document = {
   role?: "source" | "deliverable"
   pending?: number
   label?: DocumentLabel | null
+  // On a document extracted from an email's attachment: that email, and whether
+  // it has since been removed from the matter.
+  attachment_of?: { name: string; removed: boolean }
+  // On an email: every attachment it carried and what became of it, plus the
+  // images embedded in its body, which are counted rather than listed.
+  attachments?: EmailAttachment[]
+  embedded_images?: number
+  // On an email with extracted attachments: what removing it with its
+  // attachments removes, and what it keeps and why.
+  removal?: EmailRemoval
+}
+
+// What became of one email attachment (services/ingest/src/email-attachments.ts):
+// indexed: extracted as `document`; same: the same text was already in the
+// matter as `document`; removed: `document` has since been removed; unsupported:
+// not a format a matter document can take; failed: could not be read; nested:
+// an email nested too deep to add; pending: not processed yet.
+export type AttachmentStatus = "indexed" | "same" | "removed" | "unsupported" | "failed" | "nested" | "pending"
+export type EmailAttachment = {
+  // The name, type and size as the email states them; name "" when it has none.
+  name: string
+  type: string
+  size: number
+  status: AttachmentStatus
+  document?: string
+  note?: "may-contain-attachments"
+  flagged?: true
+}
+export type EmailRemoval = {
+  attachments: string[]
+  kept: { name: string; reason: "linked" | "changed" }[]
 }
 
 // The source formats ingest reads (MATTER_DOCUMENT_EXTENSIONS in
@@ -45,6 +76,8 @@ export type IngestResult = {
   chunks: number
   // null when the document came up clean.
   injection: { findings: InjectionFinding[]; flaggedChunks: number } | null
+  // An uploaded email's attachments and what became of each.
+  attachments?: EmailAttachment[]
 }
 
 // What an upload does when a source of the same name is already in the matter:
@@ -103,9 +136,17 @@ function documentExists(status: number, text: string) {
   }
 }
 
-export async function deleteDocument(id: string, name: string): Promise<void> {
-  const res = await fetch(`${INGEST_URL}/matters/${id}/documents?name=${encodeURIComponent(name)}`, { method: "DELETE" })
+// Removing an email also removes the attachments extracted from it (see
+// Document.removal) unless `keepAttachments`.
+export async function deleteDocument(
+  id: string,
+  name: string,
+  options: { keepAttachments?: boolean } = {},
+): Promise<{ attachments?: { removed: string[]; kept: EmailRemoval["kept"] } }> {
+  const keep = options.keepAttachments ? "&attachments=keep" : ""
+  const res = await fetch(`${INGEST_URL}/matters/${id}/documents?name=${encodeURIComponent(name)}${keep}`, { method: "DELETE" })
   if (!res.ok) throw new Error(await ingestError(res, `Could not delete ${name}`))
+  return res.json()
 }
 
 // Convert a matter's uploaded .pdf into an editable .docx sibling and index it, so

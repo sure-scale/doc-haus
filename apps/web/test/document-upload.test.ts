@@ -2,7 +2,7 @@ import { expect, test } from "bun:test"
 import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
 import { DocumentExistsError, MATTER_DOCUMENT_EXTENSIONS, matterDocumentKind, type Document } from "../src/api/ingest/documents"
-import DocumentUpload, { failedUpload, newUpload, UploadRow } from "../src/components/DocumentUpload"
+import DocumentUpload, { attachmentsSummary, failedUpload, newUpload, UploadRow } from "../src/components/DocumentUpload"
 
 const file = new File(["theirs"], "Agreement.docx")
 const row = (upload: Parameters<typeof UploadRow>[0]["upload"]) => {
@@ -80,4 +80,14 @@ test("the picker offers every format and the list marks emails and spreadsheets 
   ])
   // Email and spreadsheet glyphs differ from the document glyph Word and PDF share.
   expect(new Set(glyphs.map(({ svg }) => svg)).size).toBe(3)
+})
+
+test("an uploaded email's ready message says which attachments were added and which were not", () => {
+  expect(attachmentsSummary({})).toBe("")
+  expect(attachmentsSummary({ attachments: [
+    { name: "Schedule.docx", type: "application/pdf", size: 1, status: "indexed", document: "Schedule.docx" },
+    { name: "Draft.docx", type: "application/pdf", size: 1, status: "same", document: "Draft.docx" },
+    { name: "bundle.zip", type: "application/zip", size: 1, status: "unsupported" },
+    { name: "", type: "application/pdf", size: 1, status: "failed" },
+  ] })).toBe(" 1 attachment added. 1 already in the matter. Not added: bundle.zip (not supported), Unnamed attachment (could not be read).")
 })
