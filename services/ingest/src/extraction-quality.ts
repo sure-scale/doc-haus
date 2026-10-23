@@ -1,4 +1,4 @@
-import { SCANNED_CHARS_PER_PAGE } from "./pdf"
+import { looksScanned, SCANNED_CHARS_PER_PAGE } from "./pdf"
 
 // Extraction quality gate (#239). After a source's text is extracted and
 // normalised, a deterministic check says whether it is usable: ok, degraded
@@ -42,21 +42,26 @@ export const QUALITY_THRESHOLDS = {
   // at half, residue outnumbers text and nothing usable is left.
   degradedResidueShare: 0.01,
   unreadableResidueShare: 0.5,
-  // Of the visible characters other than ASCII punctuation and symbols (so table
-  // rules, CSV commas and markup do not count), real text is mostly letters and
-  // digits. Below half, the rest is symbol or glyph noise.
+  // Of the visible characters other than punctuation and symbols in any script
+  // (so table rules, CSV commas, dashes, leaders and check marks do not count),
+  // real text is mostly letters (with their combining marks) and digits. Below
+  // half, the rest is noise such as private-use glyphs or control residue.
   degradedLetterShare: 0.5,
-  // A PDF page with less text than this is the line at which ingest already
-  // treats it as a scan (pdf.ts), so text this thin after OCR (or without it)
-  // has missed what the pages show.
+  // A PDF of two or more pages with less text than this per page is what ingest
+  // already treats as a scan (looksScanned in pdf.ts), so text this thin after
+  // OCR (or without it) has missed what the pages show. A one-page PDF with any
+  // readable text is ok: a single short page (a signature page, a cover note) is
+  // normal.
   minPdfCharactersPerPage: SCANNED_CHARS_PER_PAGE,
 }
 
-const READABLE = /[\p{L}\p{N}]/gu
+// Letters with their combining marks (Devanagari vowel signs, Hebrew points)
+// and digits.
+const READABLE = /[\p{L}\p{M}\p{N}]/gu
 // Replacement characters, control characters left after normalisation,
 // unassigned code points and lone surrogates.
 const RESIDUE = /[\uFFFD\p{Cc}\p{Cn}\p{Cs}]/gu
-const ASCII_PUNCTUATION = /[!-/:-@[-`{-~]/gu
+const PUNCTUATION_OR_SYMBOL = /[\p{P}\p{S}]/gu
 
 const count = (text: string, pattern: RegExp) => text.match(pattern)?.length ?? 0
 
@@ -76,7 +81,7 @@ function textQuality(text: string): ExtractionQuality {
     return { status: "no_readable_text", signals: [{ code: "no_letters_or_digits", detail: "The extracted text has no letters or digits" }] }
   const signals: QualitySignal[] = []
   if (residue / visible >= QUALITY_THRESHOLDS.degradedResidueShare) signals.push(residueSignal)
-  const considered = visible - count(text, ASCII_PUNCTUATION)
+  const considered = visible - count(compact, PUNCTUATION_OR_SYMBOL)
   if (considered > 0 && readable / considered < QUALITY_THRESHOLDS.degradedLetterShare)
     signals.push({ code: "few_letters_or_digits", detail: `Only ${readable} of ${considered} text characters are letters or digits` })
   return signals.length ? { status: "degraded", signals } : { status: "ok" }
@@ -114,14 +119,11 @@ export function assessExtraction(text: string, facts: ExtractionFacts): Extracti
   const base = textQuality(text)
   if (base.status === "no_readable_text") return base
   const signals = signalsOf(base)
-  if (facts.format === "pdf" && facts.pages > 0) {
-    const visible = Array.from(text.replace(/\s+/gu, "")).length
-    if (visible / facts.pages < QUALITY_THRESHOLDS.minPdfCharactersPerPage)
-      signals.push({
-        code: "little_text_per_page",
-        detail: `${visible} characters over ${facts.pages} page${facts.pages === 1 ? "" : "s"}; pages may be images whose text was not read`,
-      })
-  }
+  if (facts.format === "pdf" && facts.pages >= 2 && looksScanned(text, facts.pages))
+    signals.push({
+      code: "little_text_per_page",
+      detail: `${text.trim().length} characters over ${facts.pages} pages; pages may be images whose text was not read`,
+    })
   if (facts.format === "workbook" && facts.formulasWithoutValue > 0) {
     const all = facts.formulasWithoutValue === facts.cells
     signals.push({
@@ -130,7 +132,9 @@ export function assessExtraction(text: string, facts: ExtractionFacts): Extracti
         ? "Every filled cell is a formula saved without a calculated value"
         : `${facts.formulasWithoutValue} of ${facts.cells} filled cells are formulas saved without a calculated value`,
     })
-    // With no value anywhere, the formulas' own text is all that is left.
+    // With no value anywhere, the text is only the formulas themselves (SheetJS
+    // prints "=SUM(B1:B2)" for a formula with no cached value), so nothing
+    // readable is left to index.
     return result(signals, all)
   }
   return result(signals, false)

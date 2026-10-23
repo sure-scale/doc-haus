@@ -1,6 +1,8 @@
 import { tool } from "./legacy-definition"
+import { Database } from "bun:sqlite"
 import { existsSync } from "node:fs"
 import path from "node:path"
+import { getExtractionQuality } from "../../services/ingest/src/db"
 import { formatCitations, type DocumentCitation } from "../lib/citations"
 import { findQuote, liveText } from "../lib/extract"
 
@@ -49,6 +51,14 @@ export default tool({
       return `${args.documentName} is not in this matter (no file at ${docPath}). Do not use this quotation. Confirm the document with search-document or read-document before quoting it.`
     }
 
+    // Ingest's extraction quality gate: a document with no readable text was
+    // never indexed and nothing in it can be verified; a degraded one is
+    // verified with its warning.
+    const quality = storedQuality(ctx.directory, docPath)
+    if (quality?.status === "no_readable_text") {
+      return `${args.documentName} has no readable text: ingest could not extract any, so it is not indexed and no quotation from it can be verified. Do not use this quotation; tell the user the document could not be read.`
+    }
+
     const match = findQuote(await liveText(docPath), args.quote)
     if (!match) {
       return `The quoted text does not appear in ${args.documentName}. Do not use this quotation — re-read the document with read-document or search-document and quote only text it returns verbatim.`
@@ -67,12 +77,31 @@ export default tool({
       confidence: args.confidence,
       context: args.context,
       verified: true,
+      ...(quality?.status === "degraded" ? { degradedExtraction: quality.signals.map((signal) => signal.detail) } : {}),
     }
 
     return {
       title: `Verified quote in ${args.documentName}`,
-      output: `${formatCitations([citation])}\n\nVerified verbatim against the live document — safe to quote.`,
+      output: `${formatCitations([citation])}\n\n` + (citation.degradedExtraction
+        ? "Verified verbatim against the live document, but ingest found this document's extracted text may be incomplete or garbled. Check the original before relying on the quotation, and say so when you present it."
+        : "Verified verbatim against the live document — safe to quote."),
       metadata: { citations: [citation] },
     }
   },
 })
+
+// The document's stored extraction quality, read from the matter's index
+// without writing to it. Undefined when the matter has no index, the document
+// predates the gate, or ingest has not yet added the column.
+function storedQuality(directory: string, docPath: string) {
+  const dbPath = path.join(directory, ".dochaus", "legal.db")
+  if (!existsSync(dbPath)) return
+  const db = new Database(dbPath, { readonly: true })
+  try {
+    const columns = db.query("SELECT name FROM pragma_table_info('documents')").all() as { name: string }[]
+    if (!columns.some((column) => column.name === "extraction_quality")) return
+    return getExtractionQuality(db, docPath)
+  } finally {
+    db.close()
+  }
+}

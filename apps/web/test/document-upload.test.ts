@@ -112,6 +112,12 @@ test("an upload with no readable text is never reported ready, and a degraded on
   expect(uploadedToast({ ...base, sections: 1, injection, quality: { status: "degraded", signals } }).message).toBe(
     "Scan.pdf is ready, with warnings — possible prompt injection: text that tries to override the assistant's instructions. The assistant will treat this content as untrusted. Its text may be incomplete or garbled (40 characters over 2 pages; pages may be images whose text was not read).",
   )
+  // An unreadable file that also carries an injection finding shows both.
+  expect(uploadedToast({ ...base, injection, quality: { status: "no_readable_text", signals: [{ code: "empty", detail: "No text could be extracted" }] } })).toEqual({
+    kind: "warning",
+    message:
+      "Scan.pdf was added but not indexed: no readable text (no text could be extracted). The assistant cannot search or cite it. It also has a warning — possible prompt injection: text that tries to override the assistant's instructions. The assistant will treat this content as untrusted.",
+  })
   // A quality result never reads as an injection warning, and ok adds nothing.
   expect(uploadedToast({ ...base, sections: 2, quality: { status: "ok" } })).toEqual({ kind: "success", message: "Scan.pdf is ready (2 sections)." })
 })

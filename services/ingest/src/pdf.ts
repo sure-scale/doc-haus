@@ -22,7 +22,10 @@ export async function readPdf(pdfBytes: Buffer): Promise<{ text: string; pages: 
   const { extractText, getDocumentProxy } = await import("unpdf")
   const pdf = await getDocumentProxy(new Uint8Array(pdfBytes))
   const pages = pdf.numPages
-  const text = (await liteparseText(pdfBytes)) ?? (await markitdownText(pdfBytes)) ?? (await extractText(pdf, { mergePages: true })).text
+  const extracted = (await liteparseText(pdfBytes)) ?? (await markitdownText(pdfBytes)) ?? (await extractText(pdf, { mergePages: true })).text
+  // LiteParse renders pages with no text layer as empty code fences
+  // ("```text\n\n```"). When that markup is all there is, the PDF has no text.
+  const text = extracted.replace(/```[^\n]*\n\s*```/g, "").trim() ? extracted : ""
   if (!looksScanned(text, pages)) return { text, pages }
   return { text: (await ocrPdfText(pdfBytes)) ?? text, pages }
 }

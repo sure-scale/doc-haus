@@ -152,7 +152,9 @@ test("a scanned PDF with no OCR on PATH is not indexed as a normal source", asyn
   const output = await new Response(child.stdout).text()
   expect(await child.exited).toBe(0)
   const quality = JSON.parse(output.trim().split("\n").at(-1)!)
-  expect(["no_readable_text", "degraded"]).toContain(quality.status)
+  // One image-only page: its text layer is empty (LiteParse emits only an empty
+  // code fence), so nothing is indexed.
+  expect(quality.status).toBe("no_readable_text")
   expect(stored(directory, "Scan.pdf").quality).toEqual(quality)
 }, 120_000)
 
@@ -234,3 +236,47 @@ test("an email that only carries attachments is ok", async () => {
   ])
   expect((await ingestEmailDocument(directory, "Cover.eml", message)).quality).toEqual({ status: "ok" })
 })
+
+// Typographic punctuation, symbols and combining marks are ordinary text: a
+// register with em-dash placeholders, signature leaders, check marks, and
+// Devanagari or pointed Hebrew with their vowel marks read as ok.
+test("punctuation, symbols and combining marks in real text do not mark it degraded", async () => {
+  const directory = matter()
+  const files = [
+    ["Placeholders.xlsx", xlsx(utils.aoa_to_sheet([["Holder", "Q1", "Q2", "Q3", "Q4", "Q5", "Q6", "Q7", "Q8"], ...["A", "B", "C", "D", "E", "F"].map((holder) => [holder, ...Array<string>(7).fill("—"), holder === "F" ? "✓" : "—"])]))],
+    ["Signatures.docx", await docx(["Signed by:", "……………………………………", "Name:", "……………………………………", "Date:", "……………………………………"])],
+    ["Devanagari.docx", await docx(["शर्तें निर्धारित हैं।", "संविदा की शर्तें दी जाएँगी।"])],
+    ["Hebrew.docx", await docx(["הַהִתְחַיְּבֻיּוֹת יְשֻׁלְּמוּ בְּשִׁשִּׁים יָמִים."])],
+  ] as const
+  for (const [name, bytes] of files) expect({ name, quality: (await ingestDocument(directory, name, bytes)).quality }).toEqual({ name, quality: { status: "ok" } })
+})
+
+// little_text_per_page weighs PDFs of two or more pages, by the measure OCR
+// routing uses (looksScanned); a one-page PDF with any readable text is ok.
+test("a one-page PDF with a short line is ok; thin text over several pages is degraded", async () => {
+  const directory = matter()
+  const page = (wording: string) => `BT /F1 12 Tf 40 700 Td (${wording}) Tj ET`
+  const pdf = (pages: string[]) => {
+    const objects = [
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      `<< /Type /Pages /Kids [${pages.map((_, index) => `${4 + index * 2} 0 R`).join(" ")}] /Count ${pages.length} >>`,
+      "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+      ...pages.flatMap((wording, index) => [
+        `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents ${5 + index * 2} 0 R >>`,
+        `<< /Length ${page(wording).length} >>\nstream\n${page(wording)}\nendstream`,
+      ]),
+    ]
+    let text = "%PDF-1.4\n"
+    const offsets = objects.map((object, index) => {
+      const offset = text.length
+      text += `${index + 1} 0 obj\n${object}\nendobj\n`
+      return offset
+    })
+    const xref = text.length
+    text += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets.map((offset) => `${String(offset).padStart(10, "0")} 00000 n \n`).join("")}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`
+    return Buffer.from(text)
+  }
+  expect((await ingestDocument(directory, "Signed.pdf", pdf(["Synthetic signed page marker"]))).quality).toEqual({ status: "ok" })
+  const thin = await ingestDocument(directory, "Thin.pdf", pdf(["Synthetic page one", "Synthetic page two", "Synthetic page three"]))
+  expect(thin.quality).toEqual({ status: "degraded", signals: [expect.objectContaining({ code: "little_text_per_page" })] })
+}, 120_000)

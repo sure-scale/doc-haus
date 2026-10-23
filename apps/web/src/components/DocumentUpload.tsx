@@ -344,14 +344,18 @@ export default function DocumentUpload({
 export function uploadedToast(result: IngestResult): { kind: "success" | "warning"; message: string } {
   const attachments = attachmentsSummary(result)
   const quality = result.quality
-  if (quality?.status === "no_readable_text")
-    return {
-      kind: "warning",
-      message: `${result.name} was added but not indexed: no readable text (${qualityDetails(quality)}). The assistant cannot search or cite it.${attachments}`,
-    }
   const injection = result.injection
     ? `possible prompt injection: ${[...new Set(result.injection.findings.map((f) => f.detail))].join("; ")}. The assistant will treat this content as untrusted.`
     : ""
+  // An unreadable file can still carry an injection finding (hidden DOCX
+  // content, invisible characters); both are shown.
+  if (quality?.status === "no_readable_text")
+    return {
+      kind: "warning",
+      message: `${result.name} was added but not indexed: no readable text (${qualityDetails(quality)}). The assistant cannot search or cite it.${
+        injection ? ` It also has a warning — ${injection}` : ""
+      }${attachments}`,
+    }
   const degraded = quality?.status === "degraded" ? `text may be incomplete or garbled (${qualityDetails(quality)}).` : ""
   if (injection || degraded)
     return {
