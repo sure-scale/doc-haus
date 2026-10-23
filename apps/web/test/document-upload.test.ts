@@ -144,6 +144,9 @@ test("an email lists an attachment with no readable text, and one whose text is 
     { name: "Notes.docx", type: "application/pdf", size: 1, status: "indexed" as const, document: "Notes.docx", degraded: true as const },
   ]
   expect(attachmentsSummary({ attachments })).toBe(" 1 attachment added. Added but not indexed, no readable text: Scan.pdf.")
+  // A status from a newer ingest still reads as not added.
+  expect(attachmentsSummary({ attachments: [{ name: "Later.bin", type: "", size: 1, status: "from_a_newer_ingest" as unknown as "failed" }] }))
+    .toBe(" Not added: Later.bin (not added).")
 })
 
 // Each extracted document is listed once, under the document it came from, by

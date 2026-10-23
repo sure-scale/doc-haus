@@ -137,7 +137,7 @@ export default function DocumentUpload({
       const failed = result.attachments?.failed ?? []
       toast(
         failed.length ? "error" : "success",
-        `Removed ${name}${removed ? ` and ${removed} attachment${removed === 1 ? "" : "s"}` : ""}.${
+        `Removed ${name}${removed ? ` and ${parentWords(name).count(removed)}` : ""}.${
           kept.length ? ` Kept ${kept.map((k) => k.name).join(", ")}.` : ""
         }${failed.map((f) => ` ${f.name}: ${f.reason}`).join("")}`,
       )
@@ -227,8 +227,8 @@ export default function DocumentUpload({
           {notes.length > 0 && <span className="doc-child-status">{notes.join(" · ")}</span>}
           {!child && (
             <div className="doc-row-meta">
-              <span className="document-origin" title={parent ? `Extracted from ${parentLabel(parent.name)} ${parent.name}` : undefined}>
-                {parent ? `From removed ${parentLabel(parent.name)} ${parent.name}` : "Uploaded"}
+              <span className="document-origin" title={parent ? `Extracted from the ${parentWords(parent.name).parent} ${parent.name}` : undefined}>
+                {parent ? `From removed ${parentWords(parent.name).parent} ${parent.name}` : "Uploaded"}
               </span>
               <time className="document-time" dateTime={new Date(d.created_at).toISOString()} title={`Added to matter: ${formatDateTime(d.created_at)}`}>
                 {formatTime(d.created_at)}
@@ -253,18 +253,18 @@ export default function DocumentUpload({
     const long = count > EXPANDED_CHILDREN
     const open = expanded[d.name] ?? !long
     const id = `doc-children-${d.id}`
-    const noun = `${parentLabel(d.name) === "email" ? "attachment" : "file"}${count === 1 ? "" : "s"}`
+    const words = parentWords(d.name)
     return (
       <div className="doc-children-group">
         {long && (
           <button type="button" className="doc-children-toggle" aria-expanded={open} aria-controls={id}
             onClick={() => setExpanded((prev) => ({ ...prev, [d.name]: !open }))}>
             <IconChevron />
-            {open ? `Hide ${count} ${noun}` : `${count} ${noun}`}
+            {open ? `Hide ${words.count(count)}` : words.count(count)}
           </button>
         )}
         {open && (
-          <ul id={id} className="doc-children" aria-label={`Attachments of ${d.name}`}>
+          <ul id={id} className="doc-children" aria-label={`${words.list} ${d.name}`}>
             {node.children.map((item, index) => (
               <li key={"document" in item ? `doc:${item.document.id}` : `entry:${index}`}>
                 {"document" in item ? renderSource(item, depth + 1) : <AttachmentEntryRow attachment={item.attachment} documents={sources} onView={onView} />}
@@ -457,13 +457,15 @@ export function attachmentsSummary(result: Pick<IngestResult, "attachments">) {
     added && ` ${added} attachment${added === 1 ? "" : "s"} added.`,
     same && ` ${same} already in the matter.`,
     unreadable.length && ` Added but not indexed, no readable text: ${unreadable.map(attachmentName).join(", ")}.`,
-    missing.length && ` Not added: ${missing.map((a) => `${attachmentName(a)} (${ATTACHMENT_STATUS[a.status].toLowerCase()})`).join(", ")}.`,
+    missing.length && ` Not added: ${missing.map((a) => `${attachmentName(a)} (${attachmentStatus(a.status).toLowerCase()})`).join(", ")}.`,
   ]
     .filter(Boolean)
     .join("")
 }
 
-const ATTACHMENT_STATUS: Record<EmailAttachment["status"], string> = {
+// What became of an attachment, in words. A status this build does not know
+// (a newer ingest's) still reads as not added rather than as nothing.
+const ATTACHMENT_STATUS: Record<string, string> = {
   indexed: "Added",
   same: "Already in the matter",
   removed: "Removed from the matter",
@@ -472,6 +474,13 @@ const ATTACHMENT_STATUS: Record<EmailAttachment["status"], string> = {
   nested: "Nested too deep to add",
   pending: "Not added yet. Upload the email again",
   no_readable_text: "Not indexed: no readable text",
+  encrypted: "Password-protected",
+  unsafe_path: "Unsafe path in the zip",
+  too_large: "Too large to unpack",
+} satisfies Record<EmailAttachment["status"], string> & Record<string, string>
+
+function attachmentStatus(status: string) {
+  return Object.hasOwn(ATTACHMENT_STATUS, status) ? ATTACHMENT_STATUS[status]! : "Not added"
 }
 
 function attachmentName(attachment: EmailAttachment) {
@@ -517,9 +526,18 @@ export function documentTree(sources: Document[]): SourceNode[] {
 // closed behind a count.
 const EXPANDED_CHILDREN = 5
 
-// What a removed or listing parent is called: an email, or any other file.
-function parentLabel(name: string) {
-  return /\.eml$/i.test(name) ? "email" : "file"
+// How a parent and what came out of it are named: an email's attachments, a
+// zip's files, or any other parent's files.
+function parentWords(name: string) {
+  const parent = /\.eml$/i.test(name) ? "email" : /\.zip$/i.test(name) ? "zip" : "file"
+  const child = parent === "email" ? "attachment" : "file"
+  return {
+    parent,
+    children: `${child}s`,
+    count: (n: number) => `${n} ${child}${n === 1 ? "" : "s"}`,
+    list: parent === "email" ? "Attachments of" : "Files in",
+    came: parent === "email" ? "came with" : "contains",
+  }
 }
 
 // An attachment that is not one of its parent's documents: its stated name and
@@ -533,7 +551,7 @@ export function AttachmentEntryRow({ attachment, documents, onView }: {
   const linked = attachment.document && attachment.status !== "removed" && documents.some((d) => d.name === attachment.document)
     ? attachment.document
     : undefined
-  const status = attachment.status === "same" && attachment.document ? `Same as ${attachment.document}` : ATTACHMENT_STATUS[attachment.status]
+  const status = attachment.status === "same" && attachment.document ? `Same as ${attachment.document}` : attachmentStatus(attachment.status)
   return (
     <div className={`doc-row is-child is-entry is-${attachment.status}`}>
       <div className="doc-row-main">
@@ -555,9 +573,10 @@ export function AttachmentEntryRow({ attachment, documents, onView }: {
   )
 }
 
-// Removing an email names the attachments that came with it and offers to
-// remove them too (the default) or the email only. An attachment another email
-// still links to, or that the lawyer changed, is always kept and named.
+// Removing an email (or a zip) names the documents that came out of it and
+// offers to remove them too (the default) or the parent only. A document
+// another parent still links to, or that the lawyer changed, is always kept and
+// named.
 export function EmailRemoveConfirm({ name, removal, onRemove, onCancel }: {
   name: string
   removal: EmailRemoval
@@ -565,26 +584,27 @@ export function EmailRemoveConfirm({ name, removal, onRemove, onCancel }: {
   onCancel: () => void
 }) {
   const count = removal.attachments.length
+  const words = parentWords(name)
   return (
     <div className="email-remove-confirm" role="group" aria-label={`Remove ${name}`} onClick={(e) => e.stopPropagation()}>
       <p>
         {count
-          ? `${name} came with ${removal.attachments.join(", ")}.`
-          : `${name} came with attachments that stay in the matter.`}
+          ? `${name} ${words.came} ${removal.attachments.join(", ")}.`
+          : `${name} ${words.came} ${words.children} that stay in the matter.`}
         {removal.kept.map((kept) => (
           <span key={kept.name} className="email-remove-kept">
             {" "}
-            {kept.name} is kept: {kept.reason === "linked" ? "another email also has it" : "it has changed since it was added"}.
+            {kept.name} is kept: {kept.reason === "linked" ? "another email or zip also has it" : "it has changed since it was added"}.
           </span>
         ))}
       </p>
       <span className="upload-actions">
         <button type="button" className="icon-btn danger" autoFocus onClick={() => onRemove(false)}>
-          {count ? `Remove email and ${count} attachment${count === 1 ? "" : "s"}` : "Remove email"}
+          {count ? `Remove ${words.parent} and ${words.count(count)}` : `Remove ${words.parent}`}
         </button>
         {count > 0 && (
           <button type="button" className="icon-btn" onClick={() => onRemove(true)}>
-            Remove email only
+            Remove {words.parent} only
           </button>
         )}
         <button type="button" className="icon-btn" onClick={onCancel}>

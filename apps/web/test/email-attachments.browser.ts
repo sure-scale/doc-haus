@@ -16,6 +16,8 @@ const shots = process.env.EMAIL_ATTACHMENTS_SCREENSHOTS
 async function shot(page: Page, name: string) {
   if (!shots) return
   await page.setViewportSize({ width: 375, height: 1500 })
+  // Let entry animations (the confirm's fade-in) finish.
+  await page.waitForTimeout(500)
   await page.screenshot({ path: path.join(shots, `${name}.png`) })
   await page.setViewportSize({ width: 375, height: 812 })
 }
@@ -65,7 +67,16 @@ let documents: Document[] = [
     id: 2, name: "Schedule.docx", doc_path: "/m/Schedule.docx", created_at: 3, role: "source", attachment_of: { name: "Thread.eml", removed: false },
     quality: { status: "degraded", signals: [{ code: "replacement_characters", detail: "40 of 900 characters are replacement or control characters" }] },
   },
-  { id: 7, name: "Exhibits.zip", doc_path: "/m/Exhibits.zip", created_at: 4, role: "source", attachment_of: { name: "Thread.eml", removed: false } },
+  {
+    id: 7, name: "Exhibits.zip", doc_path: "/m/Exhibits.zip", created_at: 4, role: "source", attachment_of: { name: "Thread.eml", removed: false },
+    // A zip's own outcomes, including one this build has no words for.
+    attachments: [
+      { name: "Exhibit A.pdf", type: "application/pdf", size: 900, status: "indexed", document: "Exhibit A.pdf" },
+      { name: "Locked.docx", type: DOCX, size: 900, status: "encrypted" as unknown as "failed" },
+      { name: "Later.bin", type: "", size: 1, status: "from_a_newer_ingest" as unknown as "failed" },
+    ],
+    removal: { attachments: ["Exhibit A.pdf"], kept: [] },
+  },
   { id: 8, name: "Exhibit A.pdf", doc_path: "/m/Exhibit A.pdf", created_at: 4, role: "source", attachment_of: { name: "Exhibits.zip", removed: false } },
   {
     id: 5, name: "Scan.pdf", doc_path: "/m/Scan.pdf", created_at: 1, role: "source", attachment_of: { name: "Other.eml", removed: false },
@@ -108,8 +119,10 @@ const server = Bun.serve({
       const keep = url.searchParams.get("attachments") === "keep"
       const removal = documents.find(d => d.name === name)?.removal
       const removed = keep ? [] : removal?.attachments ?? []
+      const gone = [name, ...removed]
       documents = documents
-        .filter(d => d.name !== name && !removed.includes(d.name))
+        .filter(d => !gone.includes(d.name))
+        .map(d => d.attachments ? { ...d, attachments: d.attachments.map(a => a.document && gone.includes(a.document) ? { ...a, status: "removed" as const } : a) } : d)
         .map(d => d.attachment_of?.name === name ? { ...d, attachment_of: { name, removed: true } } : d)
       return Response.json({ ok: true, name, role: "source", attachments: { removed, kept: keep ? [] : removal?.kept ?? [] } })
     }
@@ -130,12 +143,13 @@ try {
   await expect(thread.locator(":scope > li > .doc-row")).toHaveCount(3)
   await expect(page.getByRole("button", { name: "Schedule.docx", exact: true })).toHaveCount(1)
   await expect(thread.getByRole("button", { name: "Schedule.docx", exact: true })).toBeVisible()
-  await expect(thread.locator(".doc-row.is-entry")).toContainText(["bundle.zip"])
-  await expect(thread.locator(".doc-row.is-entry .doc-child-status")).toHaveText(["Not supported"])
+  await expect(thread.locator(":scope > li > .doc-row.is-entry")).toContainText(["bundle.zip"])
+  await expect(thread.locator(":scope > li > .doc-row.is-entry .doc-child-status")).toHaveText(["Not supported"])
   await expect(thread).toContainText("1 embedded image in the message body")
   await expect(page.getByText(/Attachment of/)).toHaveCount(0)
-  const archive = page.getByRole("list", { name: "Attachments of Exhibits.zip" })
+  const archive = page.getByRole("list", { name: "Files in Exhibits.zip" })
   await expect(archive.getByRole("button", { name: "Exhibit A.pdf", exact: true })).toBeVisible()
+  await expect(archive.locator(".doc-row.is-entry .doc-child-status")).toHaveText(["Password-protected", "Not added"])
   // An archive is not a viewable document: its name is not a link.
   await expect(page.getByRole("button", { name: "Exhibits.zip", exact: true })).toHaveCount(0)
   const left = async (name: string) => (await page.locator(".doc-row", { has: page.getByText(name, { exact: true }) }).first().locator(".doc-type").boundingBox())!.x
@@ -181,7 +195,7 @@ try {
   await page.getByRole("button", { name: "Remove Thread.eml" }).click()
   const confirm = page.getByRole("group", { name: "Remove Thread.eml" })
   await expect(confirm).toContainText("Thread.eml came with Schedule.docx, Exhibits.zip.")
-  await expect(confirm).toContainText("Shared.pdf is kept: another email also has it.")
+  await expect(confirm).toContainText("Shared.pdf is kept: another email or zip also has it.")
   await expect(confirm.getByRole("button")).toHaveText(["Remove email and 2 attachments", "Remove email only", "Cancel"])
   await expect(confirm.getByRole("button", { name: "Remove email and 2 attachments" })).toBeFocused()
   await shot(page, "3-remove-email-confirm")
@@ -191,19 +205,28 @@ try {
   await expect(confirm).toHaveCount(0)
   assert.deepEqual(requests, [], "cancel removes nothing")
 
+  // A zip's confirmation names its files, not attachments.
+  await page.getByRole("button", { name: "Remove Exhibits.zip" }).click()
+  const zipConfirm = page.getByRole("group", { name: "Remove Exhibits.zip" })
+  await expect(zipConfirm).toContainText("Exhibits.zip contains Exhibit A.pdf.")
+  await expect(zipConfirm.getByRole("button")).toHaveText(["Remove zip and 1 file", "Remove zip only", "Cancel"])
+  await shot(page, "4-remove-zip-confirm")
+  await zipConfirm.getByRole("button", { name: "Cancel" }).click()
+
   await page.getByRole("button", { name: "Remove Thread.eml" }).click()
   await confirm.getByRole("button", { name: "Remove email only" }).click()
   await expect(page.getByText("From removed email Thread.eml")).toHaveCount(2)
   await expect(page.locator(".docs-timeline-files > li > .doc-row", { has: page.getByRole("button", { name: "Schedule.docx", exact: true }) })).toBeVisible()
   // The archive's file stays under the archive, which is still here.
-  await expect(page.getByRole("list", { name: "Attachments of Exhibits.zip" }).getByRole("button", { name: "Exhibit A.pdf", exact: true })).toBeVisible()
+  await expect(page.getByRole("list", { name: "Files in Exhibits.zip" }).getByRole("button", { name: "Exhibit A.pdf", exact: true })).toBeVisible()
   console.log("PASS Remove email only keeps the attachments at the top level, shown as from a removed email.")
 
   // A child is removed on its own with the single confirm, not the email choice.
   await page.getByRole("button", { name: "Remove Exhibit A.pdf" }).click()
   await page.locator(".doc-row", { has: page.getByRole("button", { name: "Exhibit A.pdf", exact: true }) }).getByRole("button", { name: "Confirm" }).click()
   await expect(page.getByRole("button", { name: "Exhibit A.pdf", exact: true })).toHaveCount(0)
-  await expect(page.getByRole("list", { name: "Attachments of Exhibits.zip" })).toHaveCount(0)
+  // Its entry stays in the zip's list, as removed.
+  await expect(page.getByRole("list", { name: "Files in Exhibits.zip" }).locator(".doc-row.is-entry", { hasText: "Exhibit A.pdf" })).toContainText("Removed from the matter")
   console.log("PASS An attachment row removes only itself.")
 
   await page.getByRole("button", { name: "Remove Other.eml" }).click()
