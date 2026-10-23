@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react"
 import { Route, Routes, useLocation } from "react-router-dom"
 import Matters from "./pages/Matters"
+import Clients from "./pages/Clients"
 import Templates from "./pages/Templates"
 import Playbooks from "./pages/Playbooks"
 import Workflows from "./pages/Workflows"
@@ -94,6 +95,7 @@ export default function App() {
           <div className={`container route-fade${location.pathname.startsWith("/matter/") ? " matter-container" : ""}`} key={location.pathname}>
             <Routes>
               <Route path="/" element={<Matters />} />
+              <Route path="/clients" element={<Clients />} />
               <Route path="/templates" element={<Templates />} />
               <Route path="/playbooks" element={<Playbooks />} />
               <Route path="/workflows" element={<Workflows />} />

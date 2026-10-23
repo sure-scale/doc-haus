@@ -83,3 +83,18 @@ dialog.matter-edit::backdrop { background: rgb(22 35 29 / .36); }
   .matter-sort-label { width: 100%; margin-left: 0; }
   .matter-search { max-width: none; }
 }
+
+/* Client suggestions under the matter Client field: a Material 3 menu surface
+   fixed to the field (set inline) so dialogs and headers cannot clip it. */
+.client-suggestions { position: fixed; z-index: var(--z-popover); max-height: min(288px, calc(var(--viewport-block) - 32px)); margin: 0; padding: var(--space-1) 0; overflow: auto; overscroll-behavior: contain; list-style: none; background: var(--md-sys-color-surface-container); border: 1px solid var(--border-soft); border-radius: var(--md-sys-shape-corner-extra-small); box-shadow: var(--md-sys-elevation-level-2); color: var(--md-sys-color-on-surface); font-size: 14px; line-height: 20px; text-align: left; }
+.client-suggestion { min-height: 40px; display: flex; align-items: center; padding: 10px var(--space-3); cursor: pointer; overflow-wrap: anywhere; }
+.client-suggestion:hover { background: var(--md-sys-state-hover); }
+.client-suggestion.is-active { background: var(--md-sys-state-selected); color: var(--md-sys-color-on-primary-container); }
+
+/* Clients reuse the Matters index list in one column. */
+.clients-layout.library-layout { grid-template-columns: minmax(0, 1fr); }
+.clients-index-list .client-matters { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-3); margin: 0; padding: 0; list-style: none; font-size: 13px; }
+.clients-index-list .client-matters li { display: inline; padding: 0; border: 0; }
+.clients-index-list .client-matters a { color: var(--accent); }
+.clients-filter-back { display: inline-flex; margin-bottom: var(--space-4); font-size: 13px; }
+@media (forced-colors: active) { .client-suggestion.is-active { outline: 2px solid Highlight; outline-offset: -2px; } }
