@@ -150,8 +150,8 @@ try {
   const archive = page.getByRole("list", { name: "Files in Exhibits.zip" })
   await expect(archive.getByRole("button", { name: "Exhibit A.pdf", exact: true })).toBeVisible()
   await expect(archive.locator(".doc-row.is-entry .doc-child-status")).toHaveText(["Password-protected", "Not added"])
-  // An archive is not a viewable document: its name is not a link.
-  await expect(page.getByRole("button", { name: "Exhibits.zip", exact: true })).toHaveCount(0)
+  // A zip opens in the text viewer as its file list, so its name is a link.
+  await expect(page.getByRole("button", { name: "Exhibits.zip", exact: true })).toHaveCount(1)
   const left = async (name: string) => (await page.locator(".doc-row", { has: page.getByText(name, { exact: true }) }).first().locator(".doc-type").boundingBox())!.x
   const [rootX, childX, grandchildX] = [await left("Thread.eml"), await left("Exhibits.zip"), await left("Exhibit A.pdf")]
   assert.ok(rootX < childX && childX < grandchildX, `each level indents further: ${rootX} < ${childX} < ${grandchildX}`)
