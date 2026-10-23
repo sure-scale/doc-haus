@@ -65,7 +65,7 @@ dialog.matter-edit::backdrop { background: rgb(22 35 29 / .36); }
 .matter-create-row .conflicts-states input[type="radio"] { min-height: 0; margin: 0; padding: 0; }
 .matter-create-row .conflicts-states label, .matter-edit-conflicts .conflicts-states label { color: var(--text); font-size: 13px; }
 .matter-edit-conflicts { gap: var(--space-4); margin-top: var(--space-1); padding-top: var(--space-4); border-top: 1px solid var(--border); }
-.matter-edit-conflicts > legend { margin-bottom: var(--space-4); color: var(--text); font-size: 13px; font-weight: 600; }
+.matter-edit-conflicts > legend { margin-bottom: 0; color: var(--text); font-size: 13px; font-weight: 600; }
 .matter-edit-note { margin-top: calc(-1 * var(--space-2)); color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
 
 @container matters-page (max-width: 760px) {
