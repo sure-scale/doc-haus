@@ -64,7 +64,7 @@ import { DocxTrackedRevisionsError } from "../../../dochaus/lib/docx-amendments"
 import { compareVersions } from "../../../dochaus/lib/version-compare"
 import { pendingRedlinesForDoc } from "../../../dochaus/lib/redlines"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
-import { ingestEmailDocument, removeMatterDocument, withEmailLinks } from "./email-attachments"
+import { ingestEmailDocument, reingestLegacyEmails, removeMatterDocument, withEmailLinks } from "./email-attachments"
 import { draftingTraceReference } from "../../../dochaus/lib/drafting-trace-identity"
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import path from "node:path"
@@ -1563,6 +1563,18 @@ for (const matter of listMatters()) {
     console.error("source artifact heal failed", { matter_ref: matterRef, ...diagnosticErrorMetadata(e) })
   }
 }
+
+// Emails ingested before their attachments were read are re-ingested once,
+// after the service is listening, through the usual locked ingest.
+setTimeout(async () => {
+  for (const matter of listMatters()) {
+    if (!existsSync(path.join(matter.dir, ".dochaus", "legal.db"))) continue
+    const count = await reingestLegacyEmails(matter.dir).catch((e) => {
+      console.error("email re-ingest failed", { matter_ref: draftingTraceReference(matter.dir), ...diagnosticErrorMetadata(e) })
+    })
+    if (count) console.log("emails re-ingested", { count, matter_ref: draftingTraceReference(matter.dir) })
+  }
+}, 0)
 
 const preferenceTelemetryRetention = readDraftingTelemetryRetentionPreference()
 const envTelemetryRetention = Number(process.env.DOCHAUS_TELEMETRY_RETENTION_DAYS)

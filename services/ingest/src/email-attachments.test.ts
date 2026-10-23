@@ -7,7 +7,7 @@ import { findQuote, liveText } from "../../../dochaus/lib/extract"
 import { verifyQuote } from "../../../dochaus/lib/quote-verify"
 import { emlToText } from "../../../dochaus/lib/email"
 import { openDb } from "./db"
-import { ingestEmailDocument, MAX_EMAIL_DEPTH, removeMatterDocument, withEmailLinks } from "./email-attachments"
+import { ingestEmailDocument, MAX_EMAIL_DEPTH, reingestLegacyEmails, removeMatterDocument, withEmailLinks } from "./email-attachments"
 import { ingestDocument } from "./ingest"
 import { sourceArtifactsMatchRegistry } from "./source-artifacts"
 
@@ -358,3 +358,16 @@ test("removing an email removes its attachments unless kept, and never one anoth
   expect(listed(directory).find((row) => row.name === "Other.eml")).toMatchObject({ attachments: [{ status: "removed" }] })
   expect(sourceArtifactsMatchRegistry(directory)).toBe(true)
 }, 240_000)
+
+test("an email ingested before attachments were read is re-ingested once, bringing them in", async () => {
+  const directory = matter()
+  // Stored as before: the email alone, with no attachments record.
+  await ingestDocument(directory, "Legacy.eml", email("Synthetic legacy", "Old upload.", [
+    part("Legacy.docx", DOCX, await docx("Synthetic legacy attachment marker")),
+  ]))
+  expect(registry(directory).map((row) => [row.name, row.attachments])).toEqual([["Legacy.eml", null]])
+  expect(await reingestLegacyEmails(directory)).toBe(1)
+  expect(registry(directory).map((row) => row.name).toSorted()).toEqual(["Legacy.docx", "Legacy.eml"])
+  await expectCitable(directory, "Legacy.eml")
+  expect(await reingestLegacyEmails(directory)).toBe(0)
+}, 120_000)

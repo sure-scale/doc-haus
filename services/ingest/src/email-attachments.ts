@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite"
+import { existsSync, readFileSync } from "node:fs"
 import { parseEmail, type EmailAttachment } from "../../../dochaus/lib/email"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
 import { draftingTraceReference } from "../../../dochaus/lib/drafting-trace-identity"
@@ -303,4 +304,33 @@ export async function removeMatterDocument(matterDir: string, name: string, keep
     }
   }
   return { ...result, attachments: { removed, kept: plan?.kept ?? [] } }
+}
+
+// Emails ingested before attachments were read have no attachments record, and
+// their stored offsets index the old text (no attachments line, forwarded
+// messages flattened into the body). Each is re-ingested once, which also
+// brings in its attachments. Runs in the background after startup; one that
+// fails is logged and retried at the next start.
+export async function reingestLegacyEmails(matterDir: string) {
+  const db = openDb(matterDir)
+  const legacy = (() => {
+    try {
+      return db
+        .query("SELECT name, doc_path FROM documents WHERE role = 'source' AND attachments IS NULL AND lower(name) LIKE '%.eml'")
+        .all() as { name: string; doc_path: string }[]
+    } finally {
+      db.close()
+    }
+  })()
+  let count = 0
+  for (const email of legacy) {
+    if (!existsSync(email.doc_path)) continue
+    try {
+      await ingestEmailDocument(matterDir, email.name, readFileSync(email.doc_path), { existing: "replace" })
+      count++
+    } catch (error) {
+      console.error("email re-ingest failed", { matter_ref: draftingTraceReference(matterDir), ...diagnosticErrorMetadata(error) })
+    }
+  }
+  return count
 }
