@@ -271,6 +271,24 @@ describe("quick answer", () => {
     expect(quickDraftAnswer(answer).placeholders).toEqual(["[Client contact]", "[open item: meeting date]"])
     expect(quickDraftAnswer("Dear client,\n\nSee [Letter.docx § 1].\n\nSources:\n- [Letter.docx § 1]").placeholders).toEqual([])
   })
+
+  test("the answer's Open items list never says none, or leaves one out, while the draft has placeholders", () => {
+    const draft = "Dear Ms Reed,\n\nPayment is due within 30 days [Supply terms.docx § 7]. Deliveries go to [open item: delivery address] by [open item: first delivery date].\n\nSources:\n- payment [Supply terms.docx § 7]"
+    // Said none: replaced by the draft's placeholders.
+    expect(quickDraftAnswer(`${draft}\n\nOpen items: None.`).text).toBe(
+      `${draft}\n\nOpen items:\n- [open item: delivery address]\n- [open item: first delivery date]`,
+    )
+    // Listed only some: the missing one is added after the model's own list.
+    expect(quickDraftAnswer(`${draft}\n\n**Open items:**\n- [open item: delivery address] (ask the client)`).text).toBe(
+      `${draft}\n\n**Open items:**\n- [open item: delivery address] (ask the client)\n- [open item: first delivery date]`,
+    )
+    // A complete list, an answer without placeholders, and one with no list yet stand as written.
+    const complete = `${draft}\n\nOpen items:\n- [open item: delivery address]\n- [open item: first delivery date]`
+    expect(quickDraftAnswer(complete).text).toBe(complete)
+    const plain = "Dear Ms Reed,\n\nPayment is due within 30 days [Supply terms.docx § 7].\n\nSources:\n- payment [Supply terms.docx § 7]\n\nOpen items: None."
+    expect(quickDraftAnswer(plain).text).toBe(plain)
+    expect(quickDraftAnswer(draft).text).toBe(draft)
+  })
 })
 
 describe("quick text", () => {
