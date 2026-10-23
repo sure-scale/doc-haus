@@ -31,7 +31,9 @@ function Harness() {
   const [open, setOpen] = useState(true)
   return open ? createElement(ReviewGrid, {
     matterId: "matter-grid", title: "Supplier review", directory: "/matters/supplier-review",
-    documents: [{ id: 1, name: "Supply terms.docx", doc_path: "Supply terms.docx", created_at: 0 }],
+    // Its extracted text is degraded (#239): the row and the citing cell say so.
+    documents: [{ id: 1, name: "Supply terms.docx", doc_path: "Supply terms.docx", created_at: 0,
+      quality: { status: "degraded", signals: [{ code: "replacement_characters", detail: "40 of 900 characters are replacement or control characters" }] } }],
     onClose: () => { window.gridCloses = (window.gridCloses ?? 0) + 1; setOpen(false) },
   }) : null
 }
@@ -58,6 +60,10 @@ try {
   const detailModal = page.getByRole("dialog", { name: /^Answer and comments:/ })
   const closes = () => page.evaluate(() => (window as unknown as { gridCloses?: number }).gridCloses ?? 0)
   const focusInDetail = () => detailModal.evaluate(element => element.contains(document.activeElement))
+
+  await table.getByRole("rowheader", { name: /Supply terms\.docx/ }).getByText("Text may be incomplete or garbled").waitFor()
+  assert.match(await answer.innerText(), /cited text may be incomplete or garbled/)
+  console.log("PASS a degraded source and the cells citing it say its text may be incomplete")
 
   // The native detail owns focus after opening an answer, after clicking its
   // reading surface and after removing a focused comment control. Repeating the

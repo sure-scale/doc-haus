@@ -11,6 +11,7 @@ import ModalHeader from "./ModalHeader"
 import { reviewCsv, reviewDocx, reviewExport, reviewXlsx } from "./review-export"
 import { formatDateTime } from "../lib/format"
 import backdropClose from "./backdropClose"
+import { QualityNote } from "./DocumentUpload"
 import useExit, { Closing } from "./useExit"
 
 // Tabular review: rows are the matter's documents, columns are natural-language
@@ -28,6 +29,13 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
   const dialog = useRef<HTMLDialogElement>(null)
   const detailDialog = useRef<HTMLDialogElement>(null)
   const client = useMemo<Client>(() => matterClient(directory), [directory])
+  // A cell that cites a source whose extracted text is degraded says so (#239).
+  const degradedCitation = (name: string) => {
+    const quality = documents.find((doc) => doc.name === name)?.quality
+    return quality?.status === "degraded" ? (
+      <span className="review-cite-quality" title={quality.signals.map((signal) => signal.detail).join("; ")}> · cited text may be incomplete or garbled</span>
+    ) : null
+  }
   const [grid, setGrid] = useState<Grid>({ columns: [], cells: {} })
   const gridRef = useRef<Grid>(grid)
   const [error, setError] = useState<string>()
@@ -292,7 +300,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
             <tbody>
               {documents.map((doc) => (
                 <tr key={doc.id}>
-                  <th className="review-doc-col" scope="row">{doc.name}</th>
+                  <th className="review-doc-col" scope="row">{doc.name}<QualityNote quality={doc.quality} /></th>
                   {grid.columns.map((col) => {
                     const key = cellKey(doc.name, col.id)
                     const cell = grid.cells[key]
@@ -318,6 +326,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
                             >
                               {cell.answer}
                               {cell.citation && <span className="review-cite"> [{cell.citation.documentName} § {cell.citation.section}]</span>}
+                              {cell.citation && degradedCitation(cell.citation.documentName)}
                             </button>
                             {cell.recheck && (
                               <span className="review-recheck" title={describeRecheck(cell.recheck)}>
@@ -396,6 +405,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
                 {detailCell.citation && (
                   <div className="citation">
                     <div className="ref">[{detailCell.citation.documentName} § {detailCell.citation.section}]</div>
+                    {degradedCitation(detailCell.citation.documentName)}
                     <div className="excerpt">{detailCell.citation.excerpt}</div>
                   </div>
                 )}

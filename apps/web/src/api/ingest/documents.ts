@@ -27,14 +27,27 @@ export type Document = {
   // On an email with extracted attachments: what removing it with its
   // attachments removes, and what it keeps and why.
   removal?: EmailRemoval
+  // On a source: ingest's extraction quality result. Absent on a document
+  // ingested before the quality gate, which shows nothing.
+  quality?: ExtractionQuality
 }
+
+// The extraction quality gate's result for a source
+// (services/ingest/src/extraction-quality.ts): ok; degraded, indexed but its
+// text may be incomplete or garbled; or no_readable_text, kept in the matter
+// with nothing indexed. Each signal says what tripped.
+export type ExtractionQuality =
+  | { status: "ok" }
+  | { status: "degraded" | "no_readable_text"; signals: { code: string; detail: string }[] }
 
 // What became of one email attachment (services/ingest/src/email-attachments.ts):
 // indexed: extracted as `document`; same: the same text was already in the
 // matter as `document`; removed: `document` has since been removed; unsupported:
 // not a format a matter document can take; failed: could not be read; nested:
-// an email nested too deep to add; pending: not processed yet.
-export type AttachmentStatus = "indexed" | "same" | "removed" | "unsupported" | "failed" | "nested" | "pending"
+// an email nested too deep to add; pending: not processed yet;
+// no_readable_text: kept as `document` but not indexed, as no readable text
+// could be extracted.
+export type AttachmentStatus = "indexed" | "same" | "removed" | "unsupported" | "failed" | "nested" | "pending" | "no_readable_text"
 export type EmailAttachment = {
   // The name, type and size as the email states them; name "" when it has none.
   name: string
@@ -44,6 +57,8 @@ export type EmailAttachment = {
   document?: string
   note?: "may-contain-attachments"
   flagged?: true
+  // Its document's extracted text may be incomplete or garbled.
+  degraded?: true
 }
 export type EmailRemoval = {
   attachments: string[]
@@ -78,6 +93,8 @@ export type IngestResult = {
   injection: { findings: InjectionFinding[]; flaggedChunks: number } | null
   // An uploaded email's attachments and what became of each.
   attachments?: EmailAttachment[]
+  // The extraction quality gate's result for the uploaded file.
+  quality?: ExtractionQuality
 }
 
 // What an upload does when a source of the same name is already in the matter:

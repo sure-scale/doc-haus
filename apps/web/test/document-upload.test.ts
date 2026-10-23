@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test"
 import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
-import { DocumentExistsError, MATTER_DOCUMENT_EXTENSIONS, matterDocumentKind, type Document } from "../src/api/ingest/documents"
-import DocumentUpload, { attachmentsSummary, failedUpload, newUpload, UploadRow } from "../src/components/DocumentUpload"
+import { DocumentExistsError, MATTER_DOCUMENT_EXTENSIONS, matterDocumentKind, type Document, type IngestResult } from "../src/api/ingest/documents"
+import DocumentUpload, { attachmentsSummary, EmailAttachments, failedUpload, newUpload, uploadedToast, UploadRow } from "../src/components/DocumentUpload"
 
 const file = new File(["theirs"], "Agreement.docx")
 const row = (upload: Parameters<typeof UploadRow>[0]["upload"]) => {
@@ -90,4 +90,55 @@ test("an uploaded email's ready message says which attachments were added and wh
     { name: "bundle.zip", type: "application/zip", size: 1, status: "unsupported" },
     { name: "", type: "application/pdf", size: 1, status: "failed" },
   ] })).toBe(" 1 attachment added. 1 already in the matter. Not added: bundle.zip (not supported), Unnamed attachment (could not be read).")
+})
+
+// The extraction quality gate (#239): a file with no readable text is added but
+// never reported as ready; a degraded one is ready with a warning.
+test("an upload with no readable text is never reported ready, and a degraded one warns", () => {
+  const base: IngestResult = { name: "Scan.pdf", docPath: "/m/Scan.pdf", sections: 0, chunks: 0, injection: null }
+  const unreadable = uploadedToast({ ...base, quality: { status: "no_readable_text", signals: [{ code: "empty", detail: "No text could be extracted" }] } })
+  expect(unreadable).toEqual({
+    kind: "warning",
+    message: "Scan.pdf was added but not indexed: no readable text (no text could be extracted). The assistant cannot search or cite it.",
+  })
+  expect(row({ key: 4, file, status: "not_indexed" }).status).toBe("Added, not indexed: no readable text")
+
+  const signals = [{ code: "little_text_per_page", detail: "40 characters over 2 pages; pages may be images whose text was not read" }]
+  expect(uploadedToast({ ...base, sections: 1, chunks: 1, quality: { status: "degraded", signals } })).toEqual({
+    kind: "warning",
+    message: "Scan.pdf is ready, with a warning — its text may be incomplete or garbled (40 characters over 2 pages; pages may be images whose text was not read).",
+  })
+  const injection = { findings: [{ rule: "instruction-override", detail: "text that tries to override the assistant's instructions" }], flaggedChunks: 1 }
+  expect(uploadedToast({ ...base, sections: 1, injection, quality: { status: "degraded", signals } }).message).toBe(
+    "Scan.pdf is ready, with warnings — possible prompt injection: text that tries to override the assistant's instructions. The assistant will treat this content as untrusted. Its text may be incomplete or garbled (40 characters over 2 pages; pages may be images whose text was not read).",
+  )
+  // A quality result never reads as an injection warning, and ok adds nothing.
+  expect(uploadedToast({ ...base, sections: 2, quality: { status: "ok" } })).toEqual({ kind: "success", message: "Scan.pdf is ready (2 sections)." })
+})
+
+test("the list says which sources have no readable text or degraded text, and nothing for the rest", () => {
+  const documents: Document[] = [
+    { id: 1, name: "Blank.docx", doc_path: "/m/Blank.docx", created_at: 4, role: "source", quality: { status: "no_readable_text", signals: [{ code: "empty", detail: "No text could be extracted" }] } },
+    { id: 2, name: "Garbled.docx", doc_path: "/m/Garbled.docx", created_at: 3, role: "source", quality: { status: "degraded", signals: [{ code: "replacement_characters", detail: "40 of 900 characters are replacement or control characters" }] } },
+    { id: 3, name: "Agreement.docx", doc_path: "/m/Agreement.docx", created_at: 2, role: "source", quality: { status: "ok" } },
+    // Ingested before the gate: no result, nothing shown.
+    { id: 4, name: "Older.docx", doc_path: "/m/Older.docx", created_at: 1, role: "source" },
+  ]
+  const html = renderToStaticMarkup(createElement(DocumentUpload, { matterId: "m", documents, onUploaded: () => {}, onView: () => {} }))
+  const notes = [...html.matchAll(/<span class="document-quality is-(\w+)" title="([^"]*)">([^<]*)<\/span>/g)].map(([, status, title, label]) => ({ status, title, label }))
+  expect(notes).toEqual([
+    { status: "no_readable_text", title: "No text could be extracted", label: "Not indexed: no readable text" },
+    { status: "degraded", title: "40 of 900 characters are replacement or control characters", label: "Text may be incomplete or garbled" },
+  ])
+})
+
+test("an email lists an attachment with no readable text, and one whose text is degraded", () => {
+  const attachments = [
+    { name: "Scan.pdf", type: "application/pdf", size: 1, status: "no_readable_text" as const, document: "Scan.pdf" },
+    { name: "Notes.docx", type: "application/pdf", size: 1, status: "indexed" as const, document: "Notes.docx", degraded: true as const },
+  ]
+  const html = renderToStaticMarkup(createElement(EmailAttachments, { attachments, embedded: 0, onView: () => {} }))
+  expect(html).toContain(">Not indexed: no readable text</button>")
+  expect(html).toContain(">Added</button> · text may be incomplete or garbled")
+  expect(attachmentsSummary({ attachments })).toBe(" 1 attachment added. Added but not indexed, no readable text: Scan.pdf.")
 })

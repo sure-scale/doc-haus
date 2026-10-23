@@ -407,6 +407,9 @@ button:is(.change-id, .change-ref):hover { text-decoration: underline; }
 .email-attachment-status .linklike { font-size: inherit; color: var(--accent); }
 .email-attachment:is(.is-failed, .is-pending) .email-attachment-status { color: var(--danger); }
 .email-attachment.is-embedded { color: var(--muted); font-size: 0.6875rem; }
+.email-attachment.is-no_readable_text .email-attachment-status .linklike { color: var(--warn); }
+/* Extraction quality (#239): a degraded or unreadable source says so under its name. */
+.document-quality { display: block; margin: 2px 0 0 38px; color: var(--warn); font-size: 0.6875rem; line-height: 1.5; }
 .email-remove-confirm { margin: var(--space-2) 0 0 38px; display: grid; gap: var(--space-2); font-size: 0.75rem; line-height: 1.5; }
 .email-remove-confirm p { margin: 0; overflow-wrap: anywhere; }
 .email-remove-confirm .upload-actions { flex-wrap: wrap; margin-left: 0; }

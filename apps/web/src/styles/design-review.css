@@ -111,3 +111,7 @@
 @media (prefers-reduced-motion: reduce) {
   .review-running::before { animation: none; }
 }
+
+/* Extraction quality (#239) in the review grid. */
+.review-doc-col .document-quality { margin: 2px 0 0; font-weight: 400; }
+.review-cite-quality { color: var(--warn); font-size: .75rem; }

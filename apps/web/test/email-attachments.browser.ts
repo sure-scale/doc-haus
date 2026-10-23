@@ -47,10 +47,20 @@ let documents: Document[] = [
     embedded_images: 1,
     removal: { attachments: ["Schedule.docx"], kept: [{ name: "Shared.pdf", reason: "linked" }] },
   },
-  { id: 2, name: "Schedule.docx", doc_path: "/m/Schedule.docx", created_at: 3, role: "source", attachment_of: { name: "Thread.eml", removed: false } },
+  {
+    id: 2, name: "Schedule.docx", doc_path: "/m/Schedule.docx", created_at: 3, role: "source", attachment_of: { name: "Thread.eml", removed: false },
+    quality: { status: "degraded", signals: [{ code: "replacement_characters", detail: "40 of 900 characters are replacement or control characters" }] },
+  },
+  {
+    id: 5, name: "Scan.pdf", doc_path: "/m/Scan.pdf", created_at: 1, role: "source", attachment_of: { name: "Other.eml", removed: false },
+    quality: { status: "no_readable_text", signals: [{ code: "empty", detail: "No text could be extracted" }] },
+  },
   {
     id: 3, name: "Other.eml", doc_path: "/m/Other.eml", created_at: 2, role: "source",
-    attachments: [{ name: "Note.pdf", type: "application/pdf", size: 900, status: "indexed", document: "Note.pdf" }],
+    attachments: [
+      { name: "Note.pdf", type: "application/pdf", size: 900, status: "indexed", document: "Note.pdf" },
+      { name: "Scan.pdf", type: "application/pdf", size: 4000, status: "no_readable_text", document: "Scan.pdf" },
+    ],
     removal: { attachments: ["Note.pdf"], kept: [] },
   },
   { id: 4, name: "Note.pdf", doc_path: "/m/Note.pdf", created_at: 1, role: "source", attachment_of: { name: "Other.eml", removed: false } },
@@ -65,6 +75,12 @@ const server = Bun.serve({
       body { margin: 0; padding: 16px; }
     </style><div id="root" class="docs-drawer"></div><script type="module" src="/harness.js"></script></html>`, { headers: { "content-type": "text/html" } })
     if (request.method === "GET" && url.pathname === "/ingest/matters/m") return Response.json({ id: "m", documents })
+    // An upload with no readable text: kept and listed, nothing indexed.
+    if (request.method === "POST" && url.pathname === "/ingest/matters/m/documents") {
+      const quality = { status: "no_readable_text" as const, signals: [{ code: "empty", detail: "No text could be extracted" }] }
+      documents = [...documents, { id: 6, name: "Blank.docx", doc_path: "/m/Blank.docx", created_at: 9, role: "source", quality }]
+      return Response.json({ name: "Blank.docx", docPath: "/m/Blank.docx", sections: 0, chunks: 0, injection: null, quality })
+    }
     requests.push(`${request.method} ${url.pathname}${url.search}`)
     if (request.method === "DELETE" && url.pathname === "/ingest/matters/m/documents") {
       const name = url.searchParams.get("name")!
@@ -95,6 +111,25 @@ try {
   await expect(attachments).toContainText("1 embedded image in the message body")
   await expect(page.getByText("Attachment of Thread.eml")).toBeVisible()
   console.log("PASS An email lists its attachments with their status; an extracted attachment names its email.")
+
+  // Extraction quality (#239): an attachment with no readable text is listed as
+  // not indexed and links to its document; degraded and unreadable documents
+  // say so under their names.
+  await expect(page.getByRole("list", { name: "Attachments" }).nth(1).getByRole("button", { name: "Not indexed: no readable text" })).toBeVisible()
+  await expect(page.locator(".doc-row", { has: page.getByRole("button", { name: "Schedule.docx", exact: true }) }).locator(".document-quality"))
+    .toHaveText("Text may be incomplete or garbled")
+  const scanNote = page.locator(".doc-row", { has: page.getByRole("button", { name: "Scan.pdf", exact: true }) }).locator(".document-quality")
+  await expect(scanNote).toHaveText("Not indexed: no readable text")
+  await expect(scanNote).toHaveAttribute("title", "No text could be extracted")
+  const noteBounds = await scanNote.boundingBox()
+  assert.ok(noteBounds && noteBounds.x + noteBounds.width <= 375, `quality note fits a 375px drawer: ${JSON.stringify(noteBounds)}`)
+  await page.locator('input[type="file"]').setInputFiles({ name: "Blank.docx", mimeType: "application/octet-stream", buffer: Buffer.from("synthetic") })
+  await expect(page.locator(".upload-row.is-not_indexed .upload-status")).toHaveText("Added, not indexed: no readable text")
+  await expect(page.getByText("Blank.docx was added but not indexed: no readable text (no text could be extracted).", { exact: false })).toBeVisible()
+  await expect(page.getByText("is ready")).toHaveCount(0)
+  await expect(page.locator(".doc-row", { has: page.getByRole("button", { name: "Blank.docx", exact: true }) }).locator(".document-quality"))
+    .toHaveText("Not indexed: no readable text")
+  console.log("PASS Unreadable and degraded documents say so in the list, the attachment list, the upload row and the toast.")
 
   // Removing an email offers both choices, naming what goes and what stays.
   await page.getByRole("button", { name: "Remove Thread.eml" }).click()

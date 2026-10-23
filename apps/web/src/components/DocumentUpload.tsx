@@ -9,6 +9,7 @@ import {
   type EmailAttachment,
   type EmailRemoval,
   type ExistingSourceChoice,
+  type ExtractionQuality,
   type IngestResult,
   type MatterDocumentKind,
 } from "../api/ingest/documents"
@@ -27,7 +28,9 @@ import { useToast } from "./Toast"
 type Upload = {
   key: number
   file: File
-  status: "queued" | "uploading" | "reading" | "ready" | "failed" | "exists"
+  // not_indexed: added, but no readable text could be extracted, so nothing
+  // was indexed (the extraction quality gate). Never shown as ready.
+  status: "queued" | "uploading" | "reading" | "ready" | "not_indexed" | "failed" | "exists"
   error?: string
   // A wrong file type cannot succeed on retry, so the row offers Remove only.
   retryable?: boolean
@@ -105,22 +108,11 @@ export default function DocumentUpload({
         onSent: () => update(upload.key, { status: "reading" }),
         existing: upload.choice,
       })
-      update(upload.key, { status: "ready" })
+      update(upload.key, { status: result.quality?.status === "no_readable_text" ? "not_indexed" : "ready" })
       setTimeout(() => setUploads((prev) => prev.filter((u) => u.key !== upload.key)), READY_LINGER_MS)
       onUploaded()
-      // A flagged upload is a finding the lawyer needs to see, not a failure: the
-      // document is indexed, the assistant treats the flagged text as untrusted,
-      // and the warning says what ingest found.
-      if (result.injection) {
-        toast(
-          "warning",
-          `${result.name} is ready, with a warning — possible prompt injection: ${[
-            ...new Set(result.injection.findings.map((f) => f.detail)),
-          ].join("; ")}. The assistant will treat this content as untrusted.${attachmentsSummary(result)}`,
-        )
-        return
-      }
-      toast("success", `${result.name} is ready (${result.sections} section${result.sections === 1 ? "" : "s"}).${attachmentsSummary(result)}`)
+      const { kind, message } = uploadedToast(result)
+      toast(kind, message)
     } catch (e) {
       update(upload.key, failedUpload(e, upload.file))
     }
@@ -199,6 +191,7 @@ export default function DocumentUpload({
         {d.attachments && d.attachments.length > 0 && (
           <EmailAttachments attachments={d.attachments} embedded={d.embedded_images ?? 0} onView={onView} />
         )}
+        <QualityNote quality={d.quality} />
         <div className="doc-row-meta">
           <span className="document-origin" title={d.attachment_of ? `Extracted from the email ${d.attachment_of.name}` : undefined}>
             {d.attachment_of
@@ -342,16 +335,62 @@ export default function DocumentUpload({
   )
 }
 
+// The toast after an upload. A file with no readable text is added but not
+// indexed, and never reported as ready. A flagged or degraded upload is a
+// finding the lawyer needs to see, not a failure: the document is indexed, the
+// assistant treats flagged text as untrusted and is told the text may be
+// incomplete, and the warning says what ingest found.
+export function uploadedToast(result: IngestResult): { kind: "success" | "warning"; message: string } {
+  const attachments = attachmentsSummary(result)
+  const quality = result.quality
+  if (quality?.status === "no_readable_text")
+    return {
+      kind: "warning",
+      message: `${result.name} was added but not indexed: no readable text (${qualityDetails(quality)}). The assistant cannot search or cite it.${attachments}`,
+    }
+  const injection = result.injection
+    ? `possible prompt injection: ${[...new Set(result.injection.findings.map((f) => f.detail))].join("; ")}. The assistant will treat this content as untrusted.`
+    : ""
+  const degraded = quality?.status === "degraded" ? `text may be incomplete or garbled (${qualityDetails(quality)}).` : ""
+  if (injection || degraded)
+    return {
+      kind: "warning",
+      message: `${result.name} is ready, with ${injection && degraded ? "warnings" : "a warning"} — ${
+        injection && degraded ? `${injection} Its ${degraded}` : injection || `its ${degraded}`
+      }${attachments}`,
+    }
+  return { kind: "success", message: `${result.name} is ready (${result.sections} section${result.sections === 1 ? "" : "s"}).${attachments}` }
+}
+
+function qualityDetails(quality: Exclude<ExtractionQuality, { status: "ok" }>) {
+  return quality.signals.map((signal) => signal.detail.charAt(0).toLowerCase() + signal.detail.slice(1)).join("; ")
+}
+
+// A source's extraction quality under its name: nothing when it is ok or was
+// never assessed; otherwise what the lawyer and the assistant can rely on, with
+// what ingest found on hover.
+export function QualityNote({ quality }: { quality?: ExtractionQuality }) {
+  if (!quality || quality.status === "ok") return null
+  const details = quality.signals.map((signal) => signal.detail).join("; ")
+  return (
+    <span className={`document-quality is-${quality.status}`} title={details}>
+      {quality.status === "no_readable_text" ? "Not indexed: no readable text" : "Text may be incomplete or garbled"}
+    </span>
+  )
+}
+
 // What became of an uploaded email's attachments, for the ready toast.
 export function attachmentsSummary(result: Pick<IngestResult, "attachments">) {
   const attachments = result.attachments ?? []
   if (!attachments.length) return ""
   const added = attachments.filter((a) => a.status === "indexed").length
   const same = attachments.filter((a) => a.status === "same").length
-  const missing = attachments.filter((a) => a.status !== "indexed" && a.status !== "same")
+  const unreadable = attachments.filter((a) => a.status === "no_readable_text")
+  const missing = attachments.filter((a) => a.status !== "indexed" && a.status !== "same" && a.status !== "no_readable_text")
   return [
     added && ` ${added} attachment${added === 1 ? "" : "s"} added.`,
     same && ` ${same} already in the matter.`,
+    unreadable.length && ` Added but not indexed, no readable text: ${unreadable.map(attachmentName).join(", ")}.`,
     missing.length && ` Not added: ${missing.map((a) => `${attachmentName(a)} (${ATTACHMENT_STATUS[a.status].toLowerCase()})`).join(", ")}.`,
   ]
     .filter(Boolean)
@@ -366,6 +405,7 @@ const ATTACHMENT_STATUS: Record<EmailAttachment["status"], string> = {
   failed: "Could not be read",
   nested: "Nested too deep to add",
   pending: "Not added yet. Upload the email again",
+  no_readable_text: "Not indexed: no readable text",
 }
 
 function attachmentName(attachment: EmailAttachment) {
@@ -382,7 +422,7 @@ export function EmailAttachments({ attachments, embedded, onView }: {
   return (
     <ul className="email-attachments" aria-label="Attachments">
       {attachments.map((attachment, index) => {
-        const linked = attachment.document && (attachment.status === "indexed" || attachment.status === "same")
+        const linked = attachment.document && (attachment.status === "indexed" || attachment.status === "same" || attachment.status === "no_readable_text")
         const renamed = attachment.document && attachment.document !== attachment.name
         return (
           <li key={index} className={`email-attachment is-${attachment.status}`}>
@@ -390,13 +430,16 @@ export function EmailAttachments({ attachments, embedded, onView }: {
             <span className="email-attachment-status">
               {linked ? (
                 <button type="button" className="linklike" onClick={() => onView(attachment.document!)}>
-                  {attachment.status === "same" ? `Same as ${attachment.document}` : renamed ? `Added as ${attachment.document}` : "Added"}
+                  {attachment.status === "no_readable_text"
+                    ? `${ATTACHMENT_STATUS.no_readable_text}${renamed ? ` (${attachment.document})` : ""}`
+                    : attachment.status === "same" ? `Same as ${attachment.document}` : renamed ? `Added as ${attachment.document}` : "Added"}
                 </button>
               ) : (
                 ATTACHMENT_STATUS[attachment.status]
               )}
               {attachment.note === "may-contain-attachments" && " · may contain further attachments"}
               {attachment.flagged && " · suspicious name"}
+              {attachment.degraded && " · text may be incomplete or garbled"}
             </span>
           </li>
         )
@@ -469,6 +512,7 @@ const UPLOAD_LABEL: Record<Upload["status"], string> = {
   uploading: "Uploading…",
   reading: "Reading the document…",
   ready: "Ready",
+  not_indexed: "Added, not indexed: no readable text",
   failed: "Not added",
   exists: "Already in this matter. Keep both or replace it?",
 }
@@ -484,7 +528,7 @@ export function UploadRow({ upload, onRetry, onChoose, onDismiss }: {
     <li className={`doc-row upload-row is-${upload.status}`} aria-live="polite">
       <div className="doc-row-main">
         <span className="upload-icon" aria-hidden>
-          {upload.status === "failed" || upload.status === "exists" ? <IconAlert /> : upload.status === "ready" ? <IconCheck /> : <span className="upload-spinner" />}
+          {upload.status === "failed" || upload.status === "exists" || upload.status === "not_indexed" ? <IconAlert /> : upload.status === "ready" ? <IconCheck /> : <span className="upload-spinner" />}
         </span>
         <span className="upload-name">{upload.file.name}</span>
       </div>
