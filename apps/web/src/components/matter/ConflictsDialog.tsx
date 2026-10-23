@@ -1,16 +1,12 @@
-import { useContext, useState } from "react"
+import { useContext, useRef, useState } from "react"
+import { flushSync } from "react-dom"
 import { Closing } from "../useExit"
 import { conflictsChip, recordConflicts, type Conflicts } from "../../api/ingest/conflicts"
 import { humanizeError } from "../../api/ingest/errors"
 import type { Matter } from "../../api/ingest/matters"
 import ModalHeader from "../ModalHeader"
 import backdropClose from "../backdropClose"
-
-const STATES: { value: Conflicts["status"]; label: string }[] = [
-  { value: "cleared", label: "Cleared" },
-  { value: "pending", label: "Pending" },
-  { value: "bypassed", label: "Bypassed" },
-]
+import ConflictsFields, { conflictsDraft, draftInput, draftProblems, type ConflictsDraft } from "./ConflictsFields"
 
 // Record how the matter's conflicts check stands. A new record replaces the one
 // shown (the matter keeps only the latest), a bypass included.
@@ -29,19 +25,26 @@ export default function ConflictsDialog({
   onClose: () => void
 }) {
   const closing = useContext(Closing)
-  const [status, setStatus] = useState<Conflicts["status"]>(current?.status ?? "cleared")
-  const [by, setBy] = useState(current?.by ?? attorney ?? "")
-  const [owner, setOwner] = useState(current?.owner ?? attorney ?? "")
-  const [due, setDue] = useState(current?.due ?? "")
-  const [reason, setReason] = useState(current?.reason ?? "")
+  const [draft, setDraft] = useState<ConflictsDraft>(() => conflictsDraft(current, "cleared", attorney))
+  // Missing names are shown once Record has been tried, and clear as they are typed.
+  const [tried, setTried] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string>()
+  const form = useRef<HTMLFormElement>(null)
+  const problems = tried ? draftProblems(draft) : {}
 
   async function save() {
+    const input = draftInput(draft)
+    if (!input) return
+    if (Object.keys(draftProblems(draft)).length) {
+      flushSync(() => setTried(true))
+      form.current?.querySelector<HTMLElement>("[aria-invalid]")?.focus()
+      return
+    }
     setSaving(true)
     setError(undefined)
     try {
-      onSaved(await recordConflicts(matterId, { status, by, owner, due, reason }))
+      onSaved(await recordConflicts(matterId, input))
       onClose()
     } catch (cause) {
       setError(humanizeError(cause, "Could not record the conflicts check."))
@@ -55,57 +58,25 @@ export default function ConflictsDialog({
         {/* Closing mid-save would hide a failed save; Close and Escape wait for it, as the backdrop does. */}
         <ModalHeader title={<span id="conflicts-dialog-title">Conflicts check</span>} onClose={() => !saving && onClose()} />
         <form
+          ref={form}
           className="picker-body compare-form"
+          noValidate
           onSubmit={(event) => {
             event.preventDefault()
             if (!saving) void save()
           }}
         >
           {current && <p className="compare-hint">Now: {conflictsChip(current).text.replace(/^Conflicts: /, "")}. Saving replaces it.</p>}
-          <fieldset className="conflicts-states">
-            <legend>Where the check stands</legend>
-            {STATES.map((row) => (
-              <label key={row.value}>
-                <input type="radio" name="conflicts-status" value={row.value} checked={status === row.value} onChange={() => setStatus(row.value)} />
-                {row.label}
-              </label>
-            ))}
-          </fieldset>
-          {status === "cleared" && (
-            <label className="conflicts-field">
-              Checked by
-              <input autoFocus value={by} onChange={(e) => setBy(e.target.value)} placeholder="Name" />
-            </label>
-          )}
-          {status === "pending" && (
-            <>
-              <label className="conflicts-field">
-                Owner
-                <input autoFocus value={owner} onChange={(e) => setOwner(e.target.value)} placeholder="Who will complete the check" />
-              </label>
-              <label className="conflicts-field">
-                Due (optional)
-                <input type="date" value={due} onChange={(e) => setDue(e.target.value)} />
-              </label>
-              <p className="conflicts-warning" role="note">
-                Pending blocks redlines and drafting tools on this matter until it is cleared or bypassed.
-              </p>
-            </>
-          )}
-          {status === "bypassed" && (
-            <>
-              <label className="conflicts-field">
-                Bypassed by
-                <input autoFocus value={by} onChange={(e) => setBy(e.target.value)} placeholder="Name" />
-              </label>
-              <label className="conflicts-field">
-                Reason
-                <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Why the check is bypassed" />
-              </label>
-              <p className="compare-hint">Reviews will state who bypassed the check and why.</p>
-            </>
-          )}
-          <p className="compare-hint">This records that a check happened. doc.haus does not check for conflicts. It applies from the next message you send the assistant.</p>
+          <ConflictsFields
+            draft={draft}
+            onChange={setDraft}
+            problems={problems}
+            legend="Where the check stands"
+            fieldClassName="conflicts-field"
+            attorney={attorney}
+            autoFocus
+          />
+          <p className="compare-hint">It applies from the next message you send the assistant.</p>
           {error && (
             <p className="compare-error" role="alert">
               {error}

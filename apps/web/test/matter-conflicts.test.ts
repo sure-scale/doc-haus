@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test"
 import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
 import { MemoryRouter } from "react-router-dom"
-import { conflictsChip, recordConflicts } from "../src/api/ingest/conflicts"
+import { conflictsChanged, conflictsChip, conflictsProblems, recordConflicts } from "../src/api/ingest/conflicts"
 import type { MatterDetail } from "../src/api/ingest/matters"
 import MatterHeader from "../src/components/matter/MatterHeader"
 
@@ -34,6 +34,20 @@ test("each state sends only the fields it needs", async () => {
 test("the endpoint's validation message is surfaced as returned", async () => {
   mockFetch(400, { error: 'conflicts "bypassed" requires "by" and "reason" — a documented bypass names who decided and why' })
   await expect(recordConflicts("m", { status: "bypassed", by: "C" })).rejects.toThrow('requires "by" and "reason"')
+})
+
+test("a blank required name is a field message, before any request", () => {
+  expect(conflictsProblems({ status: "pending", owner: "  ", by: "stale" })).toEqual({ owner: "Name who will complete the check." })
+  expect(conflictsProblems({ status: "bypassed", by: "C" })).toEqual({ reason: "Give the reason for the bypass." })
+  expect(conflictsProblems({ status: "cleared", by: "A" })).toEqual({})
+})
+
+test("an edit records the check only when it changes", () => {
+  const current = { status: "pending" as const, owner: "B", due: "2026-11-02", recorded_at: 1 }
+  expect(conflictsChanged({ status: "pending", owner: " B ", due: "2026-11-02", by: "ignored" }, current)).toBe(false)
+  expect(conflictsChanged({ status: "pending", owner: "B", due: "" }, current)).toBe(true)
+  expect(conflictsChanged({ status: "cleared", by: "B" }, current)).toBe(true)
+  expect(conflictsChanged({ status: "cleared", by: "B" }, undefined)).toBe(true)
 })
 
 test("the chip words follow the saved record", () => {

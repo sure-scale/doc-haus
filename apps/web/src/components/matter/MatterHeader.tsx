@@ -193,9 +193,6 @@ export default function MatterHeader({
           <span className="matter-meta-sep" aria-hidden>
             ·
           </span>
-          <span className="matter-meta-sep" aria-hidden>
-            ·
-          </span>
           <button
             type="button"
             className={`matter-conflicts is-${chip.tone}`}

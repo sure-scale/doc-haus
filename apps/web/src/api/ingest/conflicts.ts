@@ -24,7 +24,29 @@ export function conflictsBody(input: ConflictsInput): ConflictsInput {
   return { status: "bypassed", by: clean(input.by), reason: clean(input.reason) }
 }
 
-// The endpoint validates; its message is shown as returned.
+// The names a state needs and lacks, worded for the field that is blank. The
+// endpoint applies the same rules; checking first gives an inline message.
+export type ConflictsProblems = Partial<Record<"by" | "owner" | "reason", string>>
+export function conflictsProblems(input: ConflictsInput): ConflictsProblems {
+  const body = conflictsBody(input)
+  if (body.status === "cleared") return body.by ? {} : { by: "Name who ran the check." }
+  if (body.status === "pending") return body.owner ? {} : { owner: "Name who will complete the check." }
+  return {
+    ...(body.by ? {} : { by: "Name who bypassed the check." }),
+    ...(body.reason ? {} : { reason: "Give the reason for the bypass." }),
+  }
+}
+
+// Whether saving the input would change the recorded check. Recording stamps a
+// new date, so an edit form records only a real change.
+export function conflictsChanged(input: ConflictsInput, current: Conflicts | undefined): boolean {
+  if (!current) return true
+  const next = conflictsBody(input)
+  const now = conflictsBody(current)
+  return (["status", "by", "owner", "due", "reason"] as const).some((key) => next[key] !== now[key])
+}
+
+// The endpoint validates too; its message is shown as returned.
 export async function recordConflicts(id: string, input: ConflictsInput): Promise<Matter> {
   const res = await fetch(`${INGEST_URL}/matters/${encodeURIComponent(id)}/conflicts`, {
     method: "POST",
