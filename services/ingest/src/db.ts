@@ -101,6 +101,12 @@ export function openDb(matterDir: string, options: { startup?: boolean; commit?:
   if (!hasColumn(db, "documents", "role"))
     db.run("ALTER TABLE documents ADD COLUMN role TEXT NOT NULL DEFAULT 'source'")
   if (!hasColumn(db, "documents", "label")) db.run("ALTER TABLE documents ADD COLUMN label TEXT")
+  // Email attachments (#238). parent_name: on a document extracted from an
+  // email's attachment, the name of that email; NULL on everything a lawyer
+  // uploaded. attachments: on an email, the JSON record of its attachments
+  // (email-attachments.ts); NULL elsewhere and on emails ingested before it.
+  if (!hasColumn(db, "documents", "parent_name")) db.run("ALTER TABLE documents ADD COLUMN parent_name TEXT")
+  if (!hasColumn(db, "documents", "attachments")) db.run("ALTER TABLE documents ADD COLUMN attachments TEXT")
   if (!hasColumn(db, "chunks", "flagged")) db.run("ALTER TABLE chunks ADD COLUMN flagged INTEGER NOT NULL DEFAULT 0")
   // Structure-aware chunking (issue R2): older databases carry chunks without a
   // structural path or party line. The columns are added empty; the rows fill in
@@ -450,12 +456,12 @@ export function pendingRedlineCounts(db: Database): Record<string, number> {
 }
 
 export function listDocuments(db: Database) {
-  return db.query("SELECT id, doc_path, name, created_at, role, label FROM documents ORDER BY created_at").all()
+  return db.query("SELECT id, doc_path, name, created_at, role, label, parent_name, attachments FROM documents ORDER BY created_at").all()
 }
 
 export function listSourceDocuments(db: Database) {
   return db
-    .query("SELECT id, doc_path, name, created_at, role FROM documents WHERE role = 'source' ORDER BY created_at")
+    .query("SELECT id, doc_path, name, created_at, role, parent_name, attachments FROM documents WHERE role = 'source' ORDER BY created_at")
     .all()
 }
 
@@ -483,6 +489,21 @@ function deleteDocumentIndexData(db: Database, docPath: string) {
     db.run(`DELETE FROM ${table} WHERE doc_path = ?`, [docPath])
 }
 
+// A source's email links (see the parent_name and attachments columns). A field
+// left undefined keeps what the document had, so an edit keeps its links.
+export type DocumentLinks = { parentName?: string | null; attachments?: string | null }
+
+// The links upsertDocument will store for `name`.
+export function effectiveDocumentLinks(db: Database, name: string, links: DocumentLinks) {
+  const kept = db.query("SELECT parent_name, attachments FROM documents WHERE name = ?").get(name) as
+    | { parent_name: string | null; attachments: string | null }
+    | null
+  return {
+    parent_name: links.parentName === undefined ? kept?.parent_name ?? null : links.parentName,
+    attachments: links.attachments === undefined ? kept?.attachments ?? null : links.attachments,
+  }
+}
+
 // Re-ingesting a document replaces its rows so the index never holds stale chunks.
 export function upsertDocument(
   db: Database,
@@ -490,22 +511,26 @@ export function upsertDocument(
   name: string,
   createdAt: number,
   injectionReport: string | null,
+  links: DocumentLinks = {},
 ): number {
   if (getDocumentRole(db, docPath) === "deliverable")
     throw new Error(`Cannot replace generated deliverable ${name} with a source document.`)
   const previous = matchingDocumentRows(db, docPath)
   const label = (db.query("SELECT label FROM documents WHERE name = ?").get(name) as { label: string | null } | null)?.label ?? null
+  const kept = effectiveDocumentLinks(db, name, links)
   previous.forEach((row) => {
     deleteDocumentIndexData(db, row.doc_path)
     db.run("UPDATE redlines SET doc_path = ?, doc_name = ? WHERE doc_path = ?", [docPath, name, row.doc_path])
     db.run("DELETE FROM documents WHERE id = ?", [row.id])
   })
-  const result = db.run("INSERT INTO documents (doc_path, name, created_at, injection_report, role, label) VALUES (?, ?, ?, ?, 'source', ?)", [
+  const result = db.run("INSERT INTO documents (doc_path, name, created_at, injection_report, role, label, parent_name, attachments) VALUES (?, ?, ?, ?, 'source', ?, ?, ?)", [
     docPath,
     name,
     createdAt,
     injectionReport,
     label,
+    kept.parent_name,
+    kept.attachments,
   ])
   return Number(result.lastInsertRowid)
 }

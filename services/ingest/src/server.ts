@@ -64,6 +64,7 @@ import { DocxTrackedRevisionsError } from "../../../dochaus/lib/docx-amendments"
 import { compareVersions } from "../../../dochaus/lib/version-compare"
 import { pendingRedlinesForDoc } from "../../../dochaus/lib/redlines"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
+import { ingestEmailDocument, removeMatterDocument, withEmailLinks } from "./email-attachments"
 import { draftingTraceReference } from "../../../dochaus/lib/drafting-trace-identity"
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import path from "node:path"
@@ -73,7 +74,6 @@ import { ChatContinuationConflictError, dispatchChatContinuation, malformedToolC
 import { withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
 import { draftingStartProfile, leanDraftingRoutes, leanDraftingStatus, LeanDraftingConflictError, startLeanDraftingRun } from "./lean-drafting"
 import {
-  deleteMatterDocument,
   DocumentMutationConflictError,
   RegisteredDocumentNotFoundError,
 } from "./document-delete"
@@ -432,7 +432,7 @@ app.get("/matters/:id", async (c) => {
       const counts = pendingRedlineCounts(db)
       // Surface the pending-redline count per document so the docs rail can badge the
       // documents that have unreviewed changes waiting.
-      const documents = (listDocuments(db) as { doc_path: string }[]).map((d) => ({ ...d, pending: counts[documentRegistryIdentity(d.doc_path)] ?? 0 }))
+      const documents = withEmailLinks(db, (listDocuments(db) as { doc_path: string; name: string }[]).map((d) => ({ ...d, pending: counts[documentRegistryIdentity(d.doc_path)] ?? 0 })))
       return c.json({ ...matter, documents })
     } finally {
       db.close()
@@ -566,7 +566,10 @@ app.post("/matters/:id/documents", async (c) => {
     return c.json({ error: "Choose replace or keep-both for an existing document." }, 400)
   const buffer = Buffer.from(await file.arrayBuffer())
   try {
-    return c.json(await ingestDocument(dir, name, buffer, { existing }))
+    // An email brings its attachments in after it (email-attachments.ts). A
+    // lawyer's upload is never an attachment, even under an attachment's name.
+    if (name.toLowerCase().endsWith(".eml")) return c.json(await ingestEmailDocument(dir, name, buffer, { existing }))
+    return c.json(await ingestDocument(dir, name, buffer, { existing, links: { parentName: null } }))
   } catch (error) {
     if (error instanceof SourceDocumentExistsError)
       return c.json({ error: error.message, code: "source_exists", name: error.existing }, 409)
@@ -708,7 +711,8 @@ app.delete("/matters/:id/documents", async (c) => {
   if (!matterDocumentName(requested) && !deliverableDocumentName(requested))
     return c.json({ error: "The document filename or extension is not supported." }, 400)
   try {
-    return c.json(await deleteMatterDocument(matterDir(c.req.param("id")), requested))
+    // Removing an email also removes its attachments unless attachments=keep.
+    return c.json(await removeMatterDocument(matterDir(c.req.param("id")), requested, c.req.query("attachments") === "keep"))
   } catch (error) {
     if (error instanceof RegisteredDocumentNotFoundError) return c.json({ error: error.message }, 404)
     if (error instanceof DocumentMutationConflictError) return c.json({ error: error.message }, 409)

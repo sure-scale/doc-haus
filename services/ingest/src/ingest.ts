@@ -1,19 +1,19 @@
 import { existsSync, readdirSync } from "node:fs"
 import path from "node:path"
 import mammoth from "mammoth"
-import PostalMime from "postal-mime"
 import { read, utils } from "xlsx"
-import { getDocumentRole, insertChunk, listDocuments, listSourceDocuments, openDb, upsertDocument } from "./db"
+import { effectiveDocumentLinks, getDocumentRole, insertChunk, listDocuments, listSourceDocuments, openDb, upsertDocument, type DocumentLinks } from "./db"
 import { embedChunk, migrateEmbeddings } from "./embed"
-import { extractStructure, extractParties, migrateSections, migrateStructure, buildSectionPaths, chunkSection, recordSections, sectionize } from "./structure"
+import { extractStructure, extractParties, migrateSections, migrateStructure, buildSectionPaths, chunkSection, recordSections, revision, sectionize } from "./structure"
 import { pdfToText } from "./pdf"
-import { detectInjection, normalizeExtractedText, scanDocxHiddenContent } from "./sanitize"
+import { detectInjection, normalizeExtractedText, scanDocxHiddenContent, type InjectionFinding } from "./sanitize"
 import { stageSourceChange, writeSourceArtifacts } from "./source-artifacts"
 import { canonicalArtifactIdentity, withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
 import { chunkText } from "../../../dochaus/lib/chunk-text"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
 import { markTrackedChanges } from "../../../dochaus/lib/docx-tracked-text"
 import { draftingTraceReference } from "../../../dochaus/lib/drafting-trace-identity"
+import { emlToText } from "../../../dochaus/lib/email"
 import { commitDocumentWriteAsync } from "./atomic-document-write"
 import { MatterDocumentIdentityError, resolveMatterDocumentTarget } from "./document-identity"
 import {
@@ -67,6 +67,11 @@ export async function ingestDocument(
     existing?: ExistingSourceChoice
     requireExistingSource?: boolean
     updateRegistry?: (db: ReturnType<typeof openDb>) => void
+    // Text the caller already extracted with extractSourceText, with any extra
+    // findings it adds, so a document is not read twice.
+    extracted?: ExtractedSourceText
+    // The document's email links; a field left out keeps what it had.
+    links?: DocumentLinks
   } = {},
 ) {
   const requested = matterDocumentName(fileName)
@@ -113,6 +118,8 @@ async function ingestDocumentLocked(
     existing: "refuse" | "replace"
     requireExistingSource?: boolean
     updateRegistry?: (db: ReturnType<typeof openDb>) => void
+    extracted?: ExtractedSourceText
+    links?: DocumentLinks
   },
 ) {
   const recovery = await recoverDocumentMutations(matterDir)
@@ -133,7 +140,7 @@ async function ingestDocumentLocked(
   // scan the visible text and the raw DOCX for injected instructions. Findings are
   // stored on the document and flag overlapping chunks — the text itself is never
   // rewritten, so the lawyer always reviews exactly what the counterparty wrote.
-  const extraction = normalizeExtractedText(await extractRawText(fileName, buffer))
+  const extraction = options.extracted ?? await extractSourceText(fileName, buffer)
   const text = extraction.text
   const findings = [
     ...extraction.findings,
@@ -205,6 +212,7 @@ async function ingestDocumentLocked(
       injectionReport: findings.length ? JSON.stringify({ findings }) : null,
       chunks: preparedChunks,
       updateRegistry: options.updateRegistry,
+      links: options.links ?? {},
     })
     finalizeDocumentMutationLineage(db, mutation, artifacts.files)
     completeDocumentMutation(db, mutation)
@@ -217,6 +225,8 @@ async function ingestDocumentLocked(
   return {
     name: fileName,
     docPath,
+    // documents.rev as recorded for this ingest.
+    rev: revision(canonicalText(preparedChunks)),
     sections: sections.length,
     chunks: preparedChunks.length,
     injection: findings.length
@@ -256,19 +266,18 @@ async function commitIngestedDocument(
       flagged: boolean
     }>
     updateRegistry?: (db: ReturnType<typeof openDb>) => void
+    links: DocumentLinks
   },
 ) {
+  const links = effectiveDocumentLinks(db, input.fileName, input.links)
   // The source snapshot is staged before legal.db's write lock is taken (see
   // stageSourceChange); the transaction then holds the lock for the registry
   // writes and the snapshot's installation only. The uploaded document's text
   // is rebuilt from its chunks as reconstructText rebuilds it once stored.
   const staged = await stageSourceChange(input.matterDir, db, input.mutation.projectionDirectory, input.docPath, {
     name: input.fileName,
-    text: chunkText(
-      input.chunks
-        .map((chunk) => ({ text: chunk.text, char_start: chunk.charStart }))
-        .toSorted((left, right) => left.char_start - right.char_start),
-    ).text,
+    text: canonicalText(input.chunks),
+    ...links,
   })
   return commitDocumentWriteAsync(input.docPath, input.buffer, async () => {
     db.run("BEGIN IMMEDIATE")
@@ -280,6 +289,7 @@ async function commitIngestedDocument(
         input.fileName,
         Date.now(),
         input.injectionReport,
+        { parentName: links.parent_name, attachments: links.attachments },
       )
       input.chunks.forEach((chunk, chunkIndex) =>
         insertChunk(db, {
@@ -329,6 +339,30 @@ async function commitIngestedDocument(
   }, { backupPath: input.mutation.documentBackup })
 }
 
+// A document's canonical text as rebuilt from its chunks (reconstructText): the
+// text chunk offsets, section spans and documents.rev index.
+function canonicalText(chunks: ReadonlyArray<{ text: string; charStart: number }>) {
+  return chunkText(
+    chunks
+      .map((chunk) => ({ text: chunk.text, char_start: chunk.charStart }))
+      .toSorted((left, right) => left.char_start - right.char_start),
+  ).text
+}
+
+// The documents.rev an ingest of this extracted text records, without indexing
+// it: the same sections and chunks ingest cuts, rebuilt the same way.
+export function sourceTextRevision(text: string) {
+  return revision(canonicalText(sectionize(text).flatMap((section) => chunkSection(section))))
+}
+
+export type ExtractedSourceText = { text: string; findings: InjectionFinding[] }
+
+// A source document's normalized text and the findings normalization made, as
+// ingest indexes it.
+export async function extractSourceText(fileName: string, buffer: Buffer): Promise<ExtractedSourceText> {
+  return normalizeExtractedText(await extractRawText(fileName, buffer))
+}
+
 // Pull plain text from a source document. DOCX goes through mammoth, with pending
 // tracked changes labelled first (see dochaus/lib/docx-tracked-text.ts); PDF through
 // LiteParse/markitdown/unpdf with an OCR fallback for flat scans (see pdf.ts). Always
@@ -362,28 +396,4 @@ function xlsxToText(buffer: Buffer) {
   })
     .filter(Boolean)
     .join("\n\n")
-}
-
-// Email sources (.eml) are MIME documents, not zip-based Office files, so they go
-// through a real RFC822 parser rather than mammoth. The headers that carry legal
-// meaning in a chain — who wrote, to whom, when, about what — sit above the body
-// so the same normalize/index path treats them as part of the source text.
-async function emlToText(buffer: Buffer) {
-  const email = await PostalMime.parse(buffer)
-  const header = [
-    email.subject && `Subject: ${email.subject}`,
-    email.from && `From: ${formatAddress(email.from)}`,
-    email.to?.length && `To: ${email.to.map(formatAddress).join(", ")}`,
-    email.cc?.length && `Cc: ${email.cc.map(formatAddress).join(", ")}`,
-    email.date && `Date: ${email.date}`,
-  ]
-    .filter(Boolean)
-    .join("\n")
-  const body = email.text ?? (email.html ? email.html.replace(/<[^>]+>/g, " ") : "")
-  return header ? `${header}\n\n${body}` : body
-}
-
-function formatAddress(addr: { name?: string; address?: string }) {
-  if (addr.name && addr.address) return `${addr.name} <${addr.address}>`
-  return addr.address ?? addr.name ?? ""
 }

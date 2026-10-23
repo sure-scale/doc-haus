@@ -75,35 +75,14 @@ async function extract(docPath: string, buffer: Buffer) {
     const { pdfToText } = await import("../../services/ingest/src/pdf")
     return pdfToText(buffer)
   }
-  if (name.endsWith(".eml")) return emlToText(buffer)
+  if (name.endsWith(".eml")) {
+    // The one email extractor ingest also uses (email.ts).
+    const { emlToText } = await import("./email")
+    return emlToText(buffer)
+  }
   if (name.endsWith(".xlsx")) return xlsxToText(buffer)
   const { default: mammoth } = await import("mammoth")
   return (await mammoth.extractRawText({ buffer: markTrackedChanges(buffer) })).value
-}
-
-// Email sources (.eml) are MIME documents, not zip-based Office files. Mirrors
-// emlToText in services/ingest/src/ingest.ts — headers carry legal meaning in a
-// chain (who/when/about what) and sit above the body so the same chunker that
-// indexed the document at ingest time produces matching offsets here.
-async function emlToText(buffer: Buffer) {
-  const { default: PostalMime } = await import("postal-mime")
-  const email = await PostalMime.parse(buffer)
-  const header = [
-    email.subject && `Subject: ${email.subject}`,
-    email.from && `From: ${formatAddress(email.from)}`,
-    email.to?.length && `To: ${email.to.map(formatAddress).join(", ")}`,
-    email.cc?.length && `Cc: ${email.cc.map(formatAddress).join(", ")}`,
-    email.date && `Date: ${email.date}`,
-  ]
-    .filter(Boolean)
-    .join("\n")
-  const body = email.text ?? (email.html ? email.html.replace(/<[^>]+>/g, " ") : "")
-  return header ? `${header}\n\n${body}` : body
-}
-
-function formatAddress(addr: { name?: string; address?: string }) {
-  if (addr.name && addr.address) return `${addr.name} <${addr.address}>`
-  return addr.address ?? addr.name ?? ""
 }
 
 // Spreadsheet sources (.xlsx) — same tolerant reader as ingest, one labeled CSV
