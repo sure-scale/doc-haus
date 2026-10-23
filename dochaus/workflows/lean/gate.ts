@@ -795,12 +795,14 @@ function settle(item: OpenItem, context: SettleContext): OpenItem {
       ? "unanswered; needs a visible open-item marker in the affected paragraph and the drafting notes naming it, or an answer"
       : "unanswered and tied to no paragraph; needs an answer, or a marker in the paragraph it affects")
   }
-  const text = item.ref.placeholder ?? item.ref.citation ?? item.ref.quote
+  const text = item.ref.placeholder ?? item.ref.citation ?? item.ref.quote ?? item.ref.statement
   if (!inBody(final, text, item.ref.pid)) return resolved("no longer in the final body")
   if (item.kind === "quote_miss" && item.ref.quote && proseQuoteFound(context.directory, { quote: item.ref.quote, source_id: item.ref.source_id ?? "" }))
     return resolved("re-verified against the source")
   if (item.kind === "placeholder")
     return named ? disclosed("placeholder in the body; named in the drafting notes") : open("the drafting notes do not name this placeholder")
+  if (item.kind === "draft_status")
+    return named ? disclosed("draft-status wording left in the agreement; named in the drafting notes") : open("the drafting notes do not name this draft-status wording")
   if (named && item.ref.pid && marked(final, item.ref.pid))
     return disclosed("marked in the body and named in the drafting notes")
   return open(named

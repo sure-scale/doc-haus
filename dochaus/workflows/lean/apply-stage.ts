@@ -6,6 +6,7 @@ import { finalBodyItems, readChangeList, readParagraphs, settleApply, type Apply
 import type { DocID } from "./plan"
 import { paragraphRows, stepOutputs } from "./stages"
 import { leanFile, matterRelative, readLeanJson, writeLeanBytes, writeLeanText, type LeanState, type OpenItem } from "./state"
+import { draftStatusItems } from "./draft-status"
 import { templateItems } from "./template-coverage"
 import { consistencyItems } from "./consistency"
 import { exportAppliedChangeComments } from "./review-evidence"
@@ -54,7 +55,7 @@ export async function runApply(directory: string, state: LeanState, document: Do
   return {
     status: "done", outputs: stepOutputs(step),
     openItems: [
-      ...settled.openItems, ...annotated.openItems, ...finalBodyItems(directory, rows),
+      ...settled.openItems, ...annotated.openItems, ...finalBodyItems(directory, rows), ...draftStatusItems(directory, document, rows, "apply"),
       ...templateItems(directory, document, readParagraphs(directory, document), rows, changes.amendments, new Set(settled.result.applied.map(row => row.id))),
       ...consistencyItems(directory, document, readParagraphs(directory, document), rows),
     ],

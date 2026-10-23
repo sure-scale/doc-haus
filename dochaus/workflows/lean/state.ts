@@ -61,7 +61,7 @@ export type LeanState = {
   stages: Partial<Record<StepID, LeanStageState>>
 }
 
-export type OpenItemKind = "research_gap" | "quote_miss" | "citation_unsupported" | "placeholder" | "unapplied_amendment" | "question" | "omission" | "template_removal" | "consistency" | "checklist_open" | "checklist_unresolved"
+export type OpenItemKind = "research_gap" | "quote_miss" | "citation_unsupported" | "placeholder" | "unapplied_amendment" | "question" | "omission" | "template_removal" | "consistency" | "checklist_open" | "checklist_unresolved" | "draft_status"
 
 export type OpenItem = {
   id: string
@@ -75,6 +75,8 @@ export type OpenItem = {
     quote?: string
     placeholder?: string
     citation?: string
+    /** The words of a draft_status item that state the agreement's own status (draft-status.ts). */
+    statement?: string
     repair_target?: "body" | "memo" | "research"
     question_id?: string
     /** The template part an omission or removal item is about, as its heading reads in the template. */

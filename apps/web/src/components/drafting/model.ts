@@ -201,6 +201,7 @@ const KIND_LABELS: Record<string, string> = {
   consistency: "Cross-references and defined terms to check",
   checklist_open: "Requirements left open by the checklist check",
   checklist_unresolved: "Unresolved checklist findings",
+  draft_status: "Draft-status wording in the agreement",
 }
 
 /** Where a disclosed item is recorded for the lawyer. An open checklist finding

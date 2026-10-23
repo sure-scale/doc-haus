@@ -1,11 +1,12 @@
 import { amendmentSchema, amendmentParagraphs, amendmentText, normalizeParagraphText, type Amendment } from "../../lib/drafting-amendment"
 import { normalize } from "../../lib/quote-verify"
 import { markerIssues } from "./change-markers"
+import { draftStatusAmendmentIssues } from "./draft-status"
 import { record, type ChangeList, type ParagraphRow, type StageCheck } from "./checks"
 import { paragraphShowsOpenItem } from "./gate"
 import { approvedResearch } from "./research"
 import { REQUEST_SOURCE, excerpt, matterSourceIDs, openItem, proseQuoteFound, quoteFound, quoteMissIssue, sourceQuotes } from "./quotes"
-import type { DocID } from "./plan"
+import { FIRST_DOCUMENT, type DocID } from "./plan"
 import { questionKindIssues, readQuestions, shortHash, type Question, type QuestionKind } from "./state"
 
 // Admission of the changes step's reply: the change list is parsed, checked
@@ -17,7 +18,8 @@ import { questionKindIssues, readQuestions, shortHash, type Question, type Quest
 /** Parses and validates the model's change list. Values code can derive (the
  * amendment id and the paragraph's current hash) are filled in here; the model
  * never restates them. A quotation that the named source does not contain, or
- * markers that do not show the lawyer the change (`markerIssues`), are retry
+ * markers that do not show the lawyer the change (`markerIssues`), or wording
+ * that states an agreement's own draft status (draft-status.ts), are retry
  * feedback; on the last allowed attempt (`withholdUnverified`) that amendment is
  * withheld instead, unapplied and recorded as an open item. An
  * unanswered question that names no paragraph, or whose paragraph will not show
@@ -62,9 +64,11 @@ export function checkChanges(directory: string, content: string, paragraphs: Par
   const contract = amendmentSchema.array().safeParse(filled)
   if (!contract.success)
     return { issues: contract.error.issues.slice(0, 10).map(issue => `amendments.${issue.path.join(".")}: ${issue.message}`), openItems: [] }
+  const statusIssues = draftStatusAmendmentIssues(directory, options.document ?? FIRST_DOCUMENT)
   const unverified = filled.map((amendment, index) => ({
     amendment,
-    issues: [...markerIssues(amendment, index, rows.get(amendment.pid)!.text, questionPids), ...amendmentQuoteIssues(directory, amendment, index)],
+    issues: [...markerIssues(amendment, index, rows.get(amendment.pid)!.text, questionPids), ...amendmentQuoteIssues(directory, amendment, index),
+      ...statusIssues(amendment, index, rows.get(amendment.pid)!.text)],
   })).filter(row => row.issues.length)
   const proposed = askedQuestions(questions.filter(record), asked, options.document)
   const unmarked = proposed.flatMap((question, index) => question ? questionMarkerIssues(question, index, filled, rows) : [])
