@@ -301,3 +301,14 @@ export function resolveCurrentSection(
   }
   return null
 }
+
+// Every indexed document a rendered chain names, for its provenance footer.
+export function chainNames(chain: Chain) {
+  return [
+    ...(chain.base.kind === "resolved" ? [chain.base.doc.name] : []),
+    ...chain.entries.flatMap((entry) => [
+      entry.rel.doc_name,
+      ...(entry.resolution.kind === "resolved" ? [entry.resolution.doc.name] : entry.resolution.kind === "ambiguous" ? entry.resolution.names : []),
+    ]),
+  ]
+}

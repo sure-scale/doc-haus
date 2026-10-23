@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { sourceProvenance } from "../../lib/source-provenance"
 import { checklistTargetAssignments } from "./checklist-target-context"
 import { checklistItemSchema, type ChecklistSourceReference } from "./checklist-contract"
 import { checklistProducerInputs } from "./checklist-source-context"
@@ -71,10 +72,11 @@ export function buildChecklistRefinementContext(directory: string, options: { pa
     for (const range of source.ranges) if (spans.some(span => span.start < range.end && span.end > range.start)) selected.set(range.id, { source, range })
   }
   if (!selected.size) throw Error("Refinement scope has no available original source units.")
+  const provenance = sourceProvenance(directory)
   const units: ChecklistRefinementUnit[] = [...selected.values()].map(({ source, range }) => ({
     id: range.id,
     passages: [{ document: source.document, locator: `canonical UTF-16 chars ${range.start}-${range.end}${range.headings.length ? `; headings: ${range.headings.join(" > ")}` : ""}`, quote: source.text.slice(range.start, range.end) }, ...boundaries(source, range)],
-    role: `Assigned original source unit from ${JSON.stringify(source.document)}${range.headings.length ? ` at headings ${JSON.stringify(range.headings)}` : ""}. The first passage is the assigned unit; adjacent-boundary passages preserve context and exceptions, not independent additional assignments. Source wording determines authority; headings alone do not establish precedence.`,
+    role: `Assigned original source unit from ${JSON.stringify(source.document)}${provenance.has(source.document) ? ` (provenance: ${provenance.get(source.document)})` : ""}${range.headings.length ? ` at headings ${JSON.stringify(range.headings)}` : ""}. The first passage is the assigned unit; adjacent-boundary passages preserve context and exceptions, not independent additional assignments. Source wording determines authority; headings alone do not establish precedence.`,
   }))
   return { parent_id: options.parent_id, scope: options.scope, units, instructions, targets: request.targets, retrieval: "This job refines only its assigned original source unit under the preserved parent and qualifications. Original request and actual included human instructions/answers are separate authority, not inferred approvals. Use targeted search-document/read-document view=source with the exact source name to resolve a definition, exception or cross-reference outside the supplied boundaries. Do not inspect generated documents, prior findings or evaluator material. Source-unit coverage is finite but does not itself establish current compliance." }
 }

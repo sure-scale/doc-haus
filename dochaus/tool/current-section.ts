@@ -2,8 +2,9 @@ import { tool } from "./legacy-definition"
 import { Database } from "bun:sqlite"
 import { existsSync } from "node:fs"
 import path from "node:path"
-import { buildChains, resolveCurrentSection, verbatimSpan, type Chain, type SectionOpRow } from "../lib/amendment-chain"
+import { buildChains, chainNames, resolveCurrentSection, verbatimSpan, type Chain, type SectionOpRow } from "../lib/amendment-chain"
 import { sectionPassages } from "../lib/chunk-text"
+import { provenanceFooter, sourceProvenance } from "../lib/source-provenance"
 
 // doc.haus current-section resolver. For a section label, walks the matter's
 // amendment chains newest-first and returns the verbatim operative wording of
@@ -105,13 +106,17 @@ export default tool({
     const dbPath = path.join(ctx.directory, ".dochaus", "legal.db")
     if (!existsSync(dbPath)) return "No documents have been indexed for this matter yet."
     const db = new Database(dbPath, { readonly: true })
+    // Child documents (attachment / zip entry) named in the answer get their
+    // provenance chain once, after it, so every line keeps the plain name.
+    const provenance = sourceProvenance(ctx.directory)
+    const withProvenance = (text: string, names: Iterable<string>) => text + provenanceFooter(names, provenance)
 
     const chains = buildChains(db)
     if (chains.length === 0) {
       const rows = fallbackSectionText(db, args.section, args.document)
       db.close()
       if (!rows.length) return missingNote(args.section, args.document, "no amendment chain in this matter")
-      return `${renderChunks(rows)}\n\nNote: no amendment chain in this matter.`
+      return withProvenance(`${renderChunks(rows)}\n\nNote: no amendment chain in this matter.`, rows.map((row) => row.doc_name))
     }
 
     // A base is named by its document, or by its stated name when the base
@@ -133,15 +138,16 @@ export default tool({
       const rows = fallbackSectionText(db, args.section, args.document)
       db.close()
       if (!rows.length) return missingNote(args.section, args.document, reason ?? "no amendment chain involves this document")
-      return `${renderChunks(rows)}\n\nNote: ${reason ?? `no amendment chain involves "${args.document}"`}.`
+      return withProvenance(`${renderChunks(rows)}\n\nNote: ${reason ?? `no amendment chain involves "${args.document}"`}.`, rows.map((row) => row.doc_name))
     }
 
     if (candidates.length > 1) {
       const bases = candidates.map(baseLabel).join(", ")
       db.close()
-      return (
+      return withProvenance(
         `Multiple amendment chains could contain §${args.section}. ` +
-        `Disambiguate by passing the document argument. Candidate base documents: ${bases}.`
+          `Disambiguate by passing the document argument. Candidate base documents: ${bases}.`,
+        candidates.flatMap((c) => (c.base.kind === "resolved" ? [c.base.doc.name] : [])),
       )
     }
 
@@ -155,7 +161,7 @@ export default tool({
         const rows = fallbackSectionText(db, args.section, chain.base.doc.name)
         db.close()
         if (!rows.length) return missingNote(args.section, args.document, `no amendment modifies §${args.section}`)
-        return `${renderChunks(rows)}\n\nNote: no amendment modifies §${args.section}. Text below is from the base document.`
+        return withProvenance(`${renderChunks(rows)}\n\nNote: no amendment modifies §${args.section}. Text below is from the base document.`, rows.map((row) => row.doc_name))
       }
       // The stated base matched no indexed document. Never offer an amending
       // document's own clause as the base text; list the other documents'
@@ -166,18 +172,20 @@ export default tool({
       const unmatched = `the base document "${chain.base.targetName}" was not matched to an indexed document`
       // The lookup spans the matter; a stated name is not a document to scope by.
       if (!rows.length) return missingNote(args.section, undefined, `no amendment modifies §${args.section}, and ${unmatched}`)
-      return (
+      return withProvenance(
         `Note: no amendment modifies §${args.section}, but ${unmatched}. ` +
-        `Sections labelled §${args.section} in the matter's non-amending documents (none is confirmed as the base):\n\n${renderChunks(rows)}`
+          `Sections labelled §${args.section} in the matter's non-amending documents (none is confirmed as the base):\n\n${renderChunks(rows)}`,
+        rows.map((row) => row.doc_name),
       )
     }
 
     if (resolved.operation === "delete") {
       const lineage = renderLineage(db, chain, args.section)
       db.close()
-      return (
+      return withProvenance(
         `=== Current state of §${args.section} (chain root: ${baseName}) ===\n` +
-        `Deleted by ${resolved.amender.rel.doc_name} — no current text.\n\n${lineage}`
+          `Deleted by ${resolved.amender.rel.doc_name} — no current text.\n\n${lineage}`,
+        chainNames(chain),
       )
     }
 
@@ -200,22 +208,24 @@ export default tool({
       `=== Current state of §${args.section} (chain root: ${baseName}) ===\n` +
       `Latest operative source: ${amender} — ${conjugate(resolved.operation)} §${args.section}.\n\n`
     if (!operativeText) {
-      return (
+      return withProvenance(
         header +
-        `Note: the current text of §${args.section} is not resolved — the amendment's operative wording at ${span} is not recoverable from the index.\n` +
-        `Next step: read ${amender} ${position ? `${position} to see the amendment's text at that position.` : unavailable}\n\n${lineage}`
+          `Note: the current text of §${args.section} is not resolved — the amendment's operative wording at ${span} is not recoverable from the index.\n` +
+          `Next step: read ${amender} ${position ? `${position} to see the amendment's text at that position.` : unavailable}\n\n${lineage}`,
+        chainNames(chain),
       )
     }
     const following = followingText
       ? `Text following the amendment's statement in ${amender} (verbatim; may contain the restated wording; not verified as the resulting text of §${args.section}):\n${followingText}\n\n`
       : ""
-    return (
+    return withProvenance(
       header +
       `Operative wording of ${amender} (verbatim, ${span}). This is the amendment's statement, not the resulting text of §${args.section}:\n` +
       `${quote(operativeText)}\n\n` +
       following +
       `Note: the current text of §${args.section} is not resolved — the index records where the amendment operates, not the resulting section text.\n` +
-      `Next step: read ${amender} ${position ? `${position} — the statement and the text after it — and confirm the resulting wording of §${args.section} there before quoting it as current.` : unavailable}\n\n${lineage}`
+      `Next step: read ${amender} ${position ? `${position} — the statement and the text after it — and confirm the resulting wording of §${args.section} there before quoting it as current.` : unavailable}\n\n${lineage}`,
+      chainNames(chain),
     )
   },
 })

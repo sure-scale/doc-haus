@@ -1,6 +1,7 @@
 import { tool } from "./legacy-definition"
 import path from "node:path"
 import { listKeyDates } from "../lib/key-dates"
+import { provenanceFooter, sourceProvenance } from "../lib/source-provenance"
 
 // doc.haus key-dates tool. Reads the matter's key-dates register — the rows the
 // record-key-date tool writes during reviews (renewals, termination-notice
@@ -31,7 +32,7 @@ export default tool({
             .join("\n")
     return {
       title: `${rows.length} key date(s)${args.document ? ` in ${path.basename(args.document)}` : ""}`,
-      output: lines,
+      output: lines + provenanceFooter(rows.map((r) => r.doc_name), sourceProvenance(ctx.directory)),
       metadata: { keyDates: rows.map((r) => r.id) },
     }
   },

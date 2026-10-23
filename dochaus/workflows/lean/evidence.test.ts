@@ -1,6 +1,9 @@
 import { afterEach, expect, test } from "bun:test"
 import { Database } from "bun:sqlite"
+import { writeFileSync } from "node:fs"
 import path from "node:path"
+import { researchBasis } from "./stages"
+import { researchPrompt } from "./research"
 import { acceptEvidenceReply, checkEvidence, evidencePrompt } from "./evidence"
 import { enqueueLeanRequest, drainLeanRequests } from "./requests"
 import { leanSteps } from "./plan"
@@ -77,4 +80,17 @@ test("a rejected quotation identifies the exact evidence to correct without acce
   expect(issues[0]).toContain(JSON.stringify(rejected))
   expect(issues[0]).toContain('in "request"')
   expect(issues[0]).toContain("not found in that canonical source")
+})
+
+test("a child source's provenance is a separate labelled line; plain matters' prompts are unchanged", () => {
+  const directory = matter()
+  const plain = { evidence: evidencePrompt(directory, "spine"), research: researchPrompt(directory, "intake", researchBasis(directory)) }
+  expect(plain.evidence).not.toContain("Source provenance")
+  expect(plain.research).not.toContain("provenance:")
+  writeFileSync(path.join(directory, "source-index.json"), JSON.stringify({ sources: [{ document: "Thread.eml" }, { document: SOURCE, attachment_of: "Thread.eml" }] }))
+  const evidence = evidencePrompt(directory, "spine")
+  // The allowed source_id array is unchanged; provenance is its own line.
+  expect(evidence).toContain(`Evidence source_id values: ${JSON.stringify(["request", SOURCE])}`)
+  expect(evidence).toContain(`Source provenance (where each attachment or archive entry came from; display only, not part of the source names or citations): ${JSON.stringify({ [SOURCE]: "attachment of Thread.eml" })}`)
+  expect(researchPrompt(directory, "intake", researchBasis(directory))).toContain(`- ${SOURCE} (provenance: attachment of Thread.eml)`)
 })

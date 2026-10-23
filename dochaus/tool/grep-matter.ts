@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite"
 import { existsSync } from "node:fs"
 import path from "node:path"
 import { chunkText } from "../lib/chunk-text"
-import { sourceProvenance } from "../lib/source-provenance"
+import { provenanceFooter, sourceProvenance } from "../lib/source-provenance"
 
 // doc.haus exact-text search. Greps the per-matter legal.db that
 // `services/ingest` populates: every occurrence of a literal string or JS
@@ -131,11 +131,7 @@ export default tool({
     // Container chains of matched email attachments and zip entries, once per
     // document after the matches so each line keeps the plain document name.
     const provenance = sourceProvenance(ctx.directory)
-    const matched = [...new Set(matchedDocuments)].flatMap((name) => {
-      const chain = provenance.get(name)
-      return chain ? [`${name}: ${chain}`] : []
-    })
-    const provenanceNote = matched.length ? `\n\nProvenance:\n${matched.join("\n")}` : ""
+    const provenanceNote = provenanceFooter(matchedDocuments, provenance)
     const capNote = capped
       ? `\n\nStopped at the ${MATCH_CAP}-match cap with ${documents.length - scanned} of ${documents.length} document(s) not fully scanned — more matches may exist. Narrow the search with the document argument or a more specific pattern.`
       : ""

@@ -2,7 +2,8 @@ import { tool } from "./legacy-definition"
 import { Database } from "bun:sqlite"
 import { existsSync } from "node:fs"
 import path from "node:path"
-import { buildChains, type Chain } from "../lib/amendment-chain"
+import { buildChains, chainNames, type Chain } from "../lib/amendment-chain"
+import { provenanceFooter, sourceProvenance } from "../lib/source-provenance"
 
 // doc.haus amendment-chain lookup. Reads doc_relations and section_ops rows
 // (both written by services/ingest/src/structure.ts) and reports which matter
@@ -56,7 +57,8 @@ export default tool({
       return (
         `No extracted amendment relationship names "${args.document}", but the stated base of these chains was not matched to any indexed document, ` +
         `so "${args.document}" may be one of them. Compare the recitals below with it before relying on it as unamended.\n\n` +
-        unmatched.map(renderChain).join("\n\n")
+        unmatched.map(renderChain).join("\n\n") +
+        provenanceFooter(unmatched.flatMap(chainNames), sourceProvenance(ctx.directory))
       )
     }
     if (selected.length === 0) {
@@ -72,7 +74,7 @@ export default tool({
 
     const blocks = selected.map(renderChain)
     db.close()
-    return blocks.join("\n\n")
+    return blocks.join("\n\n") + provenanceFooter(selected.flatMap(chainNames), sourceProvenance(ctx.directory))
   },
 })
 
