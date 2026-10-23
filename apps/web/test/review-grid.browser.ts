@@ -41,6 +41,13 @@ const grid = {
       status: "filled",
       questionHash: "unused",
     },
+    // Left out of the source check's reply, as ingest leaves out a cell it could not check.
+    "Old note.docx::c1": {
+      answer: "English law.",
+      citation: { documentName: "Old note.docx", docPath: "Old note.docx", section: "1", excerpt: "English law applies.", charStart: 0, charEnd: 20 },
+      status: "filled",
+      questionHash: "unused",
+    },
   },
 }
 const sourceChecks: Record<string, string> = { "Supply terms.docx::c1": "verified", "Side letter.docx::c1": "not_found" }
@@ -54,7 +61,7 @@ function Harness() {
   const [open, setOpen] = useState(true)
   return open ? createElement(ReviewGrid, {
     matterId: "matter-grid", title: "Supplier review", directory: "/matters/supplier-review",
-    documents: [{ id: 1, name: "Supply terms.docx", doc_path: "Supply terms.docx", created_at: 0 }, { id: 2, name: "Side letter.docx", doc_path: "Side letter.docx", created_at: 0 }],
+    documents: [{ id: 1, name: "Supply terms.docx", doc_path: "Supply terms.docx", created_at: 0 }, { id: 2, name: "Side letter.docx", doc_path: "Side letter.docx", created_at: 0 }, { id: 3, name: "Old note.docx", doc_path: "Old note.docx", created_at: 0 }],
     onClose: () => { window.gridCloses = (window.gridCloses ?? 0) + 1; setOpen(false) },
     onAsk: (prompt) => { window.asked = prompt },
   }) : null
@@ -140,7 +147,7 @@ try {
   const sideLetterRow = page.getByRole("row", { name: /^Side letter\.docx/ })
   await sideLetterRow.getByText("Source changed", { exact: true }).waitFor()
   assert.equal(await page.getByRole("row", { name: /^Supply terms\.docx/ }).getByText("Source changed").count(), 0, "a verified cell should not read degraded")
-  assert.deepEqual(checked.at(-1)?.sort(), ["Side letter.docx::c1", "Supply terms.docx::c1"])
+  assert.deepEqual(checked.at(-1)?.sort(), ["Old note.docx::c1", "Side letter.docx::c1", "Supply terms.docx::c1"])
   await page.getByRole("button", { name: /^The law of Scotland\./ }).click()
   const sideDetail = page.locator(".picker-panel").filter({ hasText: "The law of Scotland." })
   await sideDetail.getByText("Not found", { exact: true }).waitFor()
@@ -148,6 +155,14 @@ try {
   await page.keyboard.press("Escape")
   await sideDetail.waitFor({ state: "detached" })
   console.log("PASS a cell whose excerpt is no longer in its document reads degraded in the grid and its detail")
+
+  // A cell the check left out says so instead of waiting forever.
+  await page.getByRole("button", { name: /^English law\./ }).click()
+  const oldDetail = page.locator(".picker-panel").filter({ hasText: "English law." })
+  await oldDetail.getByText("The excerpt could not be checked against the document.", { exact: true }).waitFor()
+  await page.keyboard.press("Escape")
+  await oldDetail.waitFor({ state: "detached" })
+  console.log("PASS a cell the source check could not check reads as unchecked")
 
   // The citation opens the document over the detail with the cited excerpt
   // highlighted; Escape returns to the same cell's detail, focus on the citation.

@@ -266,14 +266,15 @@ export const isEmptyAnswer = (text?: string) => !text || !/[\p{L}\p{N}]/u.test(t
 // gates only the answer text, so the user's own prompt part is never echoed
 // back into the assistant bubble. Gating steps on the role would strand them as
 // "Thinking..." whenever a part.updated outraces its message.updated.
-export function readTurn(parts: Map<string, Part>, roles: Map<string, string>, matter: string, sessionID: string) {
+export function readTurn(parts: Map<string, Part>, roles: Map<string, string>, matter: string, sessionID: string, agent?: string) {
   const all = [...parts.values()]
   // The answer and the top-level timeline belong to the workflow's own session;
   // subagent-session parts are pooled only to nest under their task step.
   const own = all.filter((p) => p.sessionID === sessionID)
-  const text = own
+  const assistant = own.filter((p) => p.type !== "text" || roles.get(p.messageID) === "assistant")
+  // A live quick draft or client summary drops narration as its settled turn does.
+  const text = (agent && EXPLICIT_ONLY.has(agent) ? withoutNarration(assistant) : assistant)
     .filter((p): p is Extract<Part, { type: "text" }> => p.type === "text")
-    .filter((p) => roles.get(p.messageID) === "assistant")
     .map((p) => p.text)
     .join("\n\n")
   const work = own.filter((p) => p.type === "reasoning" || p.type === "tool")

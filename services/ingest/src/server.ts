@@ -734,15 +734,32 @@ app.post("/matters/:id/grid/recheck", async (c) => {
 })
 
 // Whether each cited cell's excerpt is still the document's text at its
-// offsets (see checkCellSources). Documents resolve by registered name only.
+// offsets (see checkCellSources). Grid citations come from the matter's indexed
+// sources, so only a file registered as a source resolves; a deliverable is
+// never indexed or cited, and an unregistered file reads as missing.
 app.post("/matters/:id/grid/sources", async (c) => {
   const request = sourceCheckRequest(await c.req.json().catch(() => undefined))
-  if (!request) return c.json({ error: "A source check needs each cell's key, document name, excerpt and offsets." }, 400)
+  if (!request) return c.json({ error: "A source check needs a list of cited cells." }, 400)
   const dir = matterDir(c.req.param("id"))
-  const targets = new Map(request.cells.map((cell) => {
-    const name = registeredDocumentName(cell.documentName)
-    return [cell.documentName, name ? readDocumentTarget(dir, name) : undefined] as const
-  }))
+  const db = existsSync(path.join(dir, ".dochaus", "legal.db")) ? openDb(dir) : undefined
+  const targets = (() => {
+    try {
+      return new Map(request.cells.map((cell) => {
+        const name = matterDocumentName(cell.documentName)
+        const target = name ? readDocumentTarget(dir, name) : undefined
+        const source = (() => {
+          try {
+            return !!db && !!target && existsSync(target.docPath) && getDocumentRole(db, target.docPath) === "source"
+          } catch {
+            return false
+          }
+        })()
+        return [cell.documentName, source ? target : undefined] as const
+      }))
+    } finally {
+      db?.close()
+    }
+  })()
   const names = [...new Set([...targets.values()].flatMap((target) => (target ? [target.name] : [])))]
   return withArtifactMutationLocksAsync(dir, names, async () => c.json(await checkCellSources(request, (name) => targets.get(name))))
 })

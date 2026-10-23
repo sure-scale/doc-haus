@@ -35,3 +35,8 @@ test("a cited cell reads verified, re-anchored, not found or missing as its docu
   expect(await check()).toBe("not_found")
   expect((await checkCellSources(request, () => undefined))["Supply terms.docx::c1"]).toBe("missing")
 }, 60_000)
+
+test("one malformed cell, such as an older grid's offsets, does not stop the others being checked", () => {
+  const good = { key: "a::c1", documentName: "a.docx", excerpt: "Payment is due on delivery.", charStart: 0, charEnd: 27 }
+  expect(sourceCheckRequest({ cells: [good, { ...good, key: "b::c1", charStart: 1.5 }] })).toEqual({ cells: [good] })
+})

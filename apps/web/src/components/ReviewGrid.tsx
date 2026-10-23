@@ -78,15 +78,17 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
   const viewerOpen = !!detail && viewing === cellKey(detail.docName, detail.columnId)
   const sourceLink = useRef<HTMLButtonElement>(null)
   // Source checks of every cited cell, keyed by cell, each with the citation
-  // it was made for. `sourceRound` re-checks after the document viewer changes
-  // a document (an accepted or rejected redline).
-  const [sourceChecks, setSourceChecks] = useState<Record<string, { signature: string; check: SourceCheck }>>({})
+  // it was made for; a checked cell without a verdict could not be checked.
+  // `sourceRound` re-checks after the document viewer changes a document (an
+  // accepted or rejected redline).
+  const [sourceChecks, setSourceChecks] = useState<Record<string, { signature: string; check?: SourceCheck }>>({})
   const [sourceCheckFailed, setSourceCheckFailed] = useState(false)
   const [sourceRound, setSourceRound] = useState(0)
-  const sourceCheck = (key: string, cell: GridCellData | undefined) => {
+  const sourceEntry = (key: string, cell: GridCellData | undefined) => {
     const entry = sourceChecks[key]
-    return cell?.citation && entry?.signature === sourceSignature(cell.citation) ? entry.check : undefined
+    return cell?.citation && entry?.signature === sourceSignature(cell.citation) ? entry : undefined
   }
+  const sourceCheck = (key: string, cell: GridCellData | undefined) => sourceEntry(key, cell)?.check
 
   useLayoutEffect(() => {
     if (closing) return
@@ -142,7 +144,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
     checkCellSources(matterId, sources.map(({ signature: _, ...cell }) => cell)).then((checks) => {
       if (cancelled) return
       setSourceCheckFailed(false)
-      setSourceChecks(Object.fromEntries(sources.flatMap(({ key, signature }) => checks[key] ? [[key, { signature, check: checks[key] }]] : [])))
+      setSourceChecks(Object.fromEntries(sources.map(({ key, signature }) => [key, { signature, check: checks[key] }])))
     }, () => !cancelled && setSourceCheckFailed(true))
     return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -471,7 +473,8 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
                 {detailCell.recheck && <p className="review-recheck-detail">{describeRecheck(detailCell.recheck)}</p>}
                 {detailCell.citation && detailKey && (() => {
                   const citation = detailCell.citation
-                  const check = sourceCheck(detailKey, detailCell)
+                  const entry = sourceEntry(detailKey, detailCell)
+                  const check = entry?.check
                   const label = `[${citation.documentName} § ${citation.section}]`
                   return (
                     <div className={`citation review-source${check && DEGRADED.includes(check) ? " degraded" : ""}`}>
@@ -485,7 +488,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
                       <p className="review-source-check">
                         {check
                           ? <><span className={`review-source-badge is-${check}`}>{SOURCE_BADGE[check]}</span> {SOURCE_DETAIL[check]}</>
-                          : sourceCheckFailed ? "The excerpt could not be checked against the document." : "Checking the excerpt against the document…"}
+                          : sourceCheckFailed || entry ? "The excerpt could not be checked against the document." : "Checking the excerpt against the document…"}
                       </p>
                     </div>
                   )

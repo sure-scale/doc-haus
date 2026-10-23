@@ -3,6 +3,7 @@
 // explicit-pick contract, through the real matter page, chat panel, native
 // session form card and chat actions; only the engine's and ingest's HTTP and
 // event stream are mocked. Set QUICK_DRAFT_SCREENSHOTS=<directory> to save views.
+// Also: asking about a review-table answer (#95) never overwrites unsent text.
 import assert from "node:assert/strict"
 import { mkdtemp, rm } from "node:fs/promises"
 import os from "node:os"
@@ -27,11 +28,16 @@ const LEGEND = "Privileged & confidential"
 // tool, then the summary.
 const SUMMARY_NARRATION = "Let me find the invoice terms first."
 const SUMMARY = "What this is\n\nA letter about two unpaid invoices [Letter.docx § 1]."
+// One review-table answer to ask about.
+const GRID = {
+  columns: [{ id: "c1", question: "Which invoices are unpaid?" }],
+  cells: { "Letter.docx::c1": { answer: "Both invoices.", citation: { documentName: "Letter.docx", docPath: "/matter/Letter.docx", section: "1", excerpt: "Both invoices remain unpaid.", charStart: 0, charEnd: 28 }, status: "filled", questionHash: "unused" } },
+}
 const scope = (change: Record<string, string> = {}) =>
   JSON.stringify({ route: "draft", documents: "one", legal_effect: "no", outside_law: "no", firm_material: "no", sources: "few", ...change })
 
 // What the mocked services answer, set per scenario.
-const config = { router: scope(), offer: "ask", settled: false, legend: "" }
+const config = { router: scope(), offer: "ask", settled: false, legend: "", preferencesDown: false }
 // What reached them.
 const routerPrompts: string[] = []
 const prompts: { session: string; agent: string; text: string }[] = []
@@ -64,11 +70,13 @@ const source = (file: string) => JSON.stringify(path.resolve(import.meta.dir, ".
 await Bun.write(entry, `
 import { createElement } from ${JSON.stringify(fileURLToPath(import.meta.resolve("react")))}
 import { createRoot } from ${JSON.stringify(fileURLToPath(import.meta.resolve("react-dom/client")))}
-import { MemoryRouter, Route, Routes } from ${JSON.stringify(fileURLToPath(import.meta.resolve("react-router-dom")))}
+import { Link, MemoryRouter, Route, Routes } from ${JSON.stringify(fileURLToPath(import.meta.resolve("react-router-dom")))}
 import MatterDetail from ${source("pages/MatterDetail.tsx")}
 import { ToastProvider } from ${source("components/Toast.tsx")}
 createRoot(document.getElementById("root")).render(createElement(ToastProvider, null,
   createElement(MemoryRouter, { initialEntries: ["/matter/matter" + location.search] },
+    // Stands in for the sidebar's review-table link, which keeps the current query.
+    createElement(Link, { to: { search: "?view=review" } }, "Open review table"),
     createElement(Routes, null, createElement(Route, { path: "/matter/:id", element: createElement(MatterDetail, { onSessionsChanged: () => {} }) })))))
 `)
 const build = await Bun.build({ entrypoints: [entry], target: "browser", define: { "import.meta.env": JSON.stringify({ VITE_OPENCODE_URL: "/", VITE_INGEST_URL: "/ingest" }) } })
@@ -91,12 +99,16 @@ const server = Bun.serve({
       return json({ id: "matter", title: "Unpaid invoices", dir: "/matter", created_at: 1, documents: [{ id: 1, name: "Letter.docx", doc_path: "/matter/Letter.docx", created_at: 1, role: "source" }] })
     if (route === "GET /ingest/jurisdictions" || route === "GET /ingest/playbooks") return json([])
     if (route === "GET /ingest/workflows") return json({ dir: "/workflows", workflows: [] })
+    if (route === "GET /ingest/preferences" && config.preferencesDown) return json({ error: "Settings unavailable" }, 500)
     if (route === "GET /ingest/preferences") return json({ quickDraftOffer: config.offer, agreementLegend: "", adviceLegend: config.legend })
     if (route === "GET /api/agent")
       return json({ data: ["qa", "draft", "quick-draft", "client-summary"].map((id) => ({ id, description: id, mode: "primary", hidden: id !== "qa" && id !== "draft" })) })
     if (route === "GET /ingest/matters/matter/telemetry")
       return json({ current_activity: null, today: { cost_usd: 0, turns: 0 }, matter_total: { cost_usd: 0, turns: 0, sessions: 1, since_ts: 1 }, current_session: null, rate_card_as_of: null, unknown_models: [] })
     if (route === "GET /ingest/matters/matter/drafting-status") return json(null)
+    if (route === "GET /ingest/matters/matter/grid") return json(GRID)
+    if (route === "PUT /ingest/matters/matter/grid") return new Response(null, { status: 204 })
+    if (route === "POST /ingest/matters/matter/grid/sources") return json({ "Letter.docx::c1": "verified" })
     if (url.pathname.startsWith("/ingest/matters/matter/answer-drafts/")) return json({ answers: {}, revision: 0 })
     if (route === "GET /ingest/engine/config") return json({ model: "test/model", small_model: "test/model" })
     if (route === "POST /ingest/matters/matter/drafting-runs/start") {
@@ -509,6 +521,47 @@ try {
     assert.ok(!(await answer.innerText()).includes(SUMMARY_NARRATION), "narration is not part of the summary")
     config.legend = ""
     console.log("PASS Client summary is a picker entry sent to its own agent, never routed, with the firm's legend and no narration")
+    await context.close()
+  }
+  {
+    // Settings that cannot be read leave the summary without its legend, and say so.
+    config.preferencesDown = true
+    const { context, page, send, pick } = await open()
+    await pick("Client summary")
+    await send("Explain the letter for the client in plain English.")
+    const answer = page.locator(".msg.assistant", { hasText: "A letter about two unpaid invoices" })
+    await answer.waitFor()
+    await answer.getByRole("note").filter({ hasText: "Firm legend could not be loaded." }).waitFor()
+    assert.equal(await answer.locator(".quick-draft-legend").count(), 0)
+    config.preferencesDown = false
+    console.log("PASS a client summary whose firm legend could not be loaded says so")
+    await context.close()
+  }
+  {
+    // Asking about a review answer seats the question in an empty composer of
+    // the open chat, and keeps text the lawyer had not sent.
+    const before = { ...counts(), routes: routerPrompts.length }
+    const { context, page } = await open()
+    const composer = page.getByRole("textbox")
+    const ask = async () => {
+      await page.getByRole("link", { name: "Open review table" }).click()
+      const table = page.getByRole("dialog", { name: /^Review table/ })
+      await table.getByRole("button", { name: /^Both invoices\./ }).click()
+      await page.getByRole("button", { name: "Ask about this answer in chat", exact: true }).click()
+      await table.waitFor({ state: "detached" })
+    }
+    const unsent = "Check whether the second invoice was disputed."
+    await composer.fill(unsent)
+    await ask()
+    await page.getByText("Your unsent message was kept", { exact: false }).waitFor()
+    assert.equal(await composer.inputValue(), unsent, "unsent composer text survives Ask about this answer")
+    await composer.fill("")
+    await ask()
+    await page.waitForFunction(() => (document.querySelector("textarea") as HTMLTextAreaElement | null)?.value.includes("Question: Which invoices are unpaid?"))
+    assert.match(await composer.inputValue(), /Answer: Both invoices\.\n.*Cited source: Letter\.docx § 1/s)
+    await settle()
+    assert.deepEqual({ ...counts(), routes: routerPrompts.length }, before, "the question is prefilled, never sent")
+    console.log("PASS asking about a review answer keeps unsent composer text, and seats the question in an empty composer without sending")
     await context.close()
   }
 } finally {

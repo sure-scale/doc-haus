@@ -295,13 +295,17 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
       <div className="matter-body">
         <div className="workspace">
           <ChatPanel
-            // A ?prompt= deep link (a workflow, template or review cell) prefills a fresh chat.
-            key={session ?? params.get("prompt") ?? "new"}
+            key={session ?? "new"}
             directory={matter.dir}
             matterId={matter.id}
             sessionID={session}
             created={createdRef.current === session}
             initialPrompt={params.get("prompt") ?? undefined}
+            onPromptSeated={() => setParams((current) => {
+              const next = new URLSearchParams(current)
+              next.delete("prompt")
+              return next
+            }, { replace: true })}
             agent={agent}
             available={available}
             workflows={workflows}
@@ -345,7 +349,14 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
           const next = new URLSearchParams(params)
           next.delete("view")
           setParams(next, { replace: true })
-        }} onAsk={(prompt) => setParams({ view: "chat", prompt })} />
+        }} onAsk={(prompt) => {
+          // Back to the open chat, keeping its conversation; the chat seats the
+          // question in an empty composer (see ChatPanel onPromptSeated).
+          const next = new URLSearchParams(params)
+          next.delete("view")
+          next.set("prompt", prompt)
+          setParams(next)
+        }} />
       )}</Exit>
 
       {drawerShown && (
