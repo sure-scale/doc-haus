@@ -23,6 +23,9 @@ const NARRATION = "Quick draft on your invoices — I'll pull the payment terms.
 const LATER_NARRATION = "I've got the figures — now I'll verify them."
 const QUICK_TEXT = "Dear [Client contact], both invoices remain unpaid [Letter.docx § 1].\n\nSources:\n- unpaid invoices [Letter.docx § 1]\n\nOpen items:\nNone."
 const QUICK_ANSWER = `Form: advice letter\n\n${QUICK_TEXT}`
+// The quick text as shown and carried on: code lists the draft's placeholder
+// in place of the answer's "None.".
+const QUICK_SHOWN = QUICK_TEXT.replace("Open items:\nNone.", "Open items:\n- [Client contact]")
 const LEGEND = "Privileged & confidential"
 // A client summary as the engine stores it: narration in a step that calls a
 // tool, then the summary.
@@ -315,14 +318,17 @@ try {
     assert.equal(await quick.getByText(LATER_NARRATION).count(), 0, "narration in a later working step is not quick text")
     assert.equal(await quick.getByText("Form: advice letter").count(), 0, "the form line is not shown")
     assert.equal(await quick.locator(".quick-draft-legend").count(), 0, "no legend while the firm's advice legend is none")
-    // Code lists the placeholder the answer's own open items missed.
-    await quick.getByRole("note").filter({ hasText: "Open items in the draft: [Client contact]" }).waitFor()
+    // Code puts the placeholder the answer's own open items missed into that
+    // list (its "None." replaced), and the chat does not list it again below.
+    await quick.getByRole("listitem").filter({ hasText: "[Client contact]" }).waitFor()
+    assert.equal(await quick.getByText("None.", { exact: true }).count(), 0, "the answer's 'None.' is replaced by its placeholder")
+    assert.equal(await quick.locator(".quick-draft-open").count(), 0, "open items are listed once, not again in a note")
     if (shots) await page.screenshot({ path: path.join(shots, "3-quick-draft.png") })
     console.log("PASS Start dispatches the settled choice once: the quick draft answers in chat under the banner, its placeholder listed as an open item")
 
     await page.getByRole("button", { name: "Run full drafting cycle", exact: true }).click()
     await until(() => starts.length === 1, "the upgrade starts the full run")
-    assert.deepEqual(starts[0], { request, agent: "draft", model: { providerID: "test", modelID: "model" }, workingDraft: QUICK_TEXT })
+    assert.deepEqual(starts[0], { request, agent: "draft", model: { providerID: "test", modelID: "model" }, workingDraft: QUICK_SHOWN })
     console.log("PASS Run full drafting cycle starts the full run with the request and the quick text as its working draft")
     await context.close()
   }
@@ -360,7 +366,7 @@ try {
     if (shots) await page.screenshot({ path: path.join(shots, "ack-2-quick-draft.png") })
     await page.getByRole("button", { name: "Run full drafting cycle", exact: true }).click()
     await until(() => starts.length === before.starts + 1, "the upgrade starts the full run")
-    assert.deepEqual(starts.at(-1), { request, agent: "draft", model: { providerID: "test", modelID: "model" }, workingDraft: QUICK_TEXT })
+    assert.deepEqual(starts.at(-1), { request, agent: "draft", model: { providerID: "test", modelID: "model" }, workingDraft: QUICK_SHOWN })
     assert.ok(routerPrompts.slice(before.routes).every((prompt) => !prompt.includes(ACK)), "routing history carries no acknowledgement")
     console.log("PASS Auto shows the router's acknowledgement while choosing; it stays above the offer and quick draft and is never sent, quick text or working draft")
     await context.close()

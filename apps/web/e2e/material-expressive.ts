@@ -94,6 +94,7 @@ async function open(state: ReturnType<typeof fixture>, width: number, height: nu
     if (/^\/matters\/[^/]+\/answer-drafts\//.test(pathname)) return reply({ answers: {}, revision: 0 })
     if (pathname === `/matters/${matter.id}/documents/text`) return reply({ text: "From: Alex Example <alex@example.test>\nSubject: Services agreement instructions\n\nPlease use monthly invoicing and confirm the delivery timetable before sending the agreement. We would like to keep a clear approval process for any additional services." })
     if (pathname === "/jurisdictions") return reply(jurisdictions)
+    if (pathname === "/clients") return reply([])
     if (pathname === "/playbooks") return reply(playbooks)
     if (pathname === "/playbooks/library") return reply({ dir: "/fixture/playbooks", playbooks })
     if (pathname === "/templates") return reply({ dir: "/fixture/templates", templates: [{ name: "Consulting agreement.docx", description: "A starting point for professional services engagements.", placeholders: [{ text: "Client name", kind: "text" }, { text: "Commencement date", kind: "date" }] }, { name: "Mutual confidentiality agreement.docx", description: "Two-way confidentiality terms for early discussions.", placeholders: [] }] })

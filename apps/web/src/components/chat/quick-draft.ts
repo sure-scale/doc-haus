@@ -98,8 +98,10 @@ export function withMatterSources(scope: DraftScope | undefined, sources: number
 const FORM_LINE = /^[ \t]*[*_]*form[ \t]*:[ \t]*[*_]*[ \t]*(advice letter|advice|letter|agreement|other)[ \t]*[*_]*[ \t]*\.?[ \t]*$/im
 const SOURCES_LINE = /^[ \t]*(?:#{1,6}[ \t]+)?[*_]*sources[*_]*[ \t]*(?::|$)/im
 // Square brackets in a draft mark something still to fill or confirm; a
-// citation ("[<Document> § <section>]") and a Markdown link are not.
+// citation ("[<Document> § <section>]"), a Markdown link and an email address
+// ("Name [name@firm.example]") are not.
 const BRACKETED = /\[([^[\]\n]+)\](?![([:])/g
+const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
 /** A quick answer read by its contract: its form (which sets the firm's
  * legend, applied by code), its text without the form line, and the bracketed
@@ -114,7 +116,7 @@ export function quickDraftAnswer(answer: string) {
   const placeholders = [
     ...new Set(
       [...draft.matchAll(BRACKETED)]
-        .filter((bracket) => /[\p{L}_●•]/u.test(bracket[1]!) && !bracket[1]!.includes("§"))
+        .filter((bracket) => /[\p{L}_●•]/u.test(bracket[1]!) && !bracket[1]!.includes("§") && !EMAIL.test(bracket[1]!.trim()))
         .map((bracket) => bracket[0]),
     ),
   ]

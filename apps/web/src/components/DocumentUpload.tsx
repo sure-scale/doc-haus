@@ -168,7 +168,7 @@ export default function DocumentUpload({
     const viewable = matterDocumentKind(d.name) !== undefined
     const renamed = node.attachment?.name && node.attachment.name !== d.name ? node.attachment.name : undefined
     const notes = [
-      renamed && `Attached as ${renamed}`,
+      renamed && (parent && parentWords(parent.name).parent === "zip" ? `In the zip as ${renamed}` : `Attached as ${renamed}`),
       node.attachment?.note === "may-contain-attachments" && "May contain further attachments",
       node.attachment?.flagged && "Suspicious name",
     ].filter(Boolean)
