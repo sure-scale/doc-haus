@@ -101,6 +101,28 @@ const server = Bun.serve({
       return Response.json(client, { status: 201 })
     }
     const clientRoute = url.pathname.match(/^\/ingest\/clients\/(\d+)$/)
+    // Like ingest: an edit renames every matter of the old client, and a name
+    // that is already another client merges into it.
+    if ((clientRoute && request.method === "PATCH") || route === "POST /ingest/clients/rename") {
+      const body = (await request.json()) as { from?: string; name: string; reference: string }
+      clientWrites.push({ method: request.method, id: clientRoute?.[1], body })
+      const current = clientRoute ? clients.find((c) => String(c.id) === clientRoute[1]) : clients.find((c) => clientKey(c.name) === clientKey(body.from!))
+      const oldKey = clientKey(current?.name ?? body.from!)
+      const target = clientKey(body.name) === oldKey ? undefined : clients.find((c) => clientKey(c.name) === clientKey(body.name))
+      let client: Client
+      if (target) {
+        clients = clients.filter((c) => c !== current)
+        client = target
+      } else if (current) {
+        client = Object.assign(current, { name: body.name, reference: body.reference || undefined })
+      } else {
+        client = { id: clients.length + 10, name: body.name, ...(body.reference ? { reference: body.reference } : {}), created_at: 1 }
+        clients.push(client)
+      }
+      const moved = matters.filter((m) => m.client && clientKey(m.client) === oldKey)
+      for (const m of moved) m.client = client.name
+      return Response.json({ client, matters: moved.length, merged: Boolean(target) })
+    }
     if (clientRoute && request.method === "DELETE") {
       clientWrites.push({ method: "DELETE", id: clientRoute[1] })
       clients = clients.filter((c) => String(c.id) !== clientRoute[1])
@@ -333,7 +355,7 @@ try {
     await expect(page.getByText("\"Wide World Importers\" is already a client.")).toBeVisible()
     await expect(rows).toHaveCount(3)
     // An added client with no matters can be deleted; clients with matters cannot.
-    await expect(rows.nth(0).getByRole("button")).toHaveCount(0)
+    await expect(rows.nth(0).getByRole("button")).toHaveText(["Edit"])
     await rows.nth(2).getByRole("button", { name: "Delete Wide World Importers" }).click()
     await rows.nth(2).getByRole("button", { name: "Confirm delete Wide World Importers" }).click()
     await expect(rows).toHaveCount(2)
@@ -363,6 +385,91 @@ try {
     await page.getByRole("button", { name: "New client" }).click()
     await expect(page.getByRole("textbox", { name: "Client name" })).toBeVisible()
     await shot(page, "clients-page-narrow")
+  }, "/", [{ id: 1, name: "Fabrikam", reference: "C-0101", created_at: 1 }])
+
+  await scenario("every client row has Edit; editing a matter-only client renames it on its matters and stores its number", seed, async (page) => {
+    const list = page.getByRole("list", { name: "Clients", exact: true })
+    const rows = list.locator(":scope > li")
+    await expect(rows.nth(0).getByRole("button")).toHaveText(["Edit"])
+    await expect(rows.nth(1).getByRole("button")).toHaveText(["Edit"])
+    await rows.nth(1).getByRole("button", { name: "Edit Northwind Traders" }).click()
+    const dialog = page.getByRole("dialog", { name: "Edit client" })
+    const name = dialog.getByRole("textbox", { name: "Client name" })
+    await expect(name).toHaveValue("Northwind Traders")
+    await expect(name).toBeFocused()
+    await expect(dialog.getByText("A new name also changes the Client on its 2 matters.")).toBeVisible()
+    // A blank name is refused in place, as on the matter dialog.
+    await name.fill(" ")
+    await dialog.getByRole("button", { name: "Save changes" }).click()
+    await expect(dialog.getByRole("alert")).toHaveText("Name the client to save it.")
+    await expect(name).toBeFocused()
+    await name.fill("Northwind Traders Ltd")
+    await dialog.getByRole("textbox", { name: "Client number" }).fill("C-0042")
+    await shot(page, "clients-edit-dialog")
+    await page.keyboard.press("Enter")
+    await expect(dialog).toHaveCount(0)
+    await expect(page.getByText("Updated client \"Northwind Traders Ltd\".")).toBeVisible()
+    assert.deepEqual(clientWrites, [{ method: "POST", id: undefined, body: { from: "Northwind Traders", name: "Northwind Traders Ltd", reference: "C-0042" } }])
+    await expect(rows.nth(1)).toContainText("Northwind Traders Ltd")
+    await expect(rows.nth(1)).toContainText("C-0042")
+    await expect(rows.nth(1)).toContainText("2 matters")
+    await expect(page.getByRole("list", { name: "Matters for Northwind Traders Ltd" }).getByRole("link")).toHaveText(["Supply note", "Lease review"])
+    // The Matters page and the matter header show the new name.
+    await page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: "Matters" }).click()
+    await expect(page.locator(".matter-client")).toHaveText(["Contoso", "Northwind Traders Ltd", "Northwind Traders Ltd"])
+    await page.getByRole("link", { name: /^Supply note/ }).click()
+    await expect(page.getByRole("button", { name: "Edit client: Northwind Traders Ltd" })).toBeVisible()
+  }, "/clients")
+
+  await scenario("renaming a client to another client's name says it will merge, then moves its matters there", seed, async (page) => {
+    const rows = page.getByRole("list", { name: "Clients", exact: true }).locator(":scope > li")
+    await expect(rows).toHaveCount(3)
+    await rows.nth(0).getByRole("button", { name: "Edit Contoso" }).click()
+    const dialog = page.getByRole("dialog", { name: "Edit client" })
+    await dialog.getByRole("textbox", { name: "Client name" }).fill("northwind traders.")
+    await expect(dialog.getByRole("status")).toHaveText("Northwind Traders already exists; Contoso’s 1 matter will move to it.")
+    await shot(page, "clients-edit-merge")
+    await dialog.getByRole("button", { name: "Save changes" }).click()
+    await expect(dialog).toHaveCount(0)
+    await expect(page.getByText("Merged \"Contoso\" into \"Northwind Traders\".")).toBeVisible()
+    assert.deepEqual(clientWrites, [{ method: "PATCH", id: "1", body: { name: "Northwind Traders", reference: "C-1" } }])
+    await expect(rows).toHaveCount(2)
+    await expect(rows.nth(1)).toContainText("Northwind Traders")
+    await expect(rows.nth(1)).toContainText("3 matters")
+    // Cancel and Escape leave a client unchanged.
+    await rows.nth(1).getByRole("button", { name: "Edit Northwind Traders" }).click()
+    await dialog.getByRole("textbox", { name: "Client name" }).fill("Someone else")
+    await dialog.getByRole("button", { name: "Cancel" }).click()
+    await rows.nth(0).getByRole("button", { name: "Edit Fabrikam" }).click()
+    await page.keyboard.press("Escape")
+    await expect(dialog).toHaveCount(0)
+    assert.equal(clientWrites.length, 1)
+  }, "/clients", [{ id: 1, name: "Contoso", reference: "C-1", created_at: 1 }, { id: 2, name: "Fabrikam", created_at: 1 }, { id: 3, name: "Northwind Traders", created_at: 1 }])
+
+  await scenario("the Matters and Clients edit dialogs match side by side", seed, async (page) => {
+    await page.getByRole("button", { name: "Edit Supply note" }).click()
+    const matterDialog = page.getByRole("dialog", { name: "Edit matter" })
+    await expect(matterDialog).toBeVisible()
+    const matterBox = await matterDialog.boundingBox()
+    await expect(matterDialog.getByRole("textbox", { name: "Title" })).toBeFocused()
+    await shot(page, "matters-edit-dialog")
+    await page.keyboard.press("Escape")
+    await page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: "Clients" }).click()
+    await page.getByRole("button", { name: "Edit Northwind Traders" }).click()
+    const clientDialog = page.getByRole("dialog", { name: "Edit client" })
+    await expect(clientDialog).toBeVisible()
+    await expect(clientDialog.getByRole("textbox", { name: "Client name" })).toBeFocused()
+    const clientBox = await clientDialog.boundingBox()
+    assert.equal(clientBox?.width, matterBox?.width, "both dialogs share the 480px width")
+    await shot(page, "clients-edit-dialog-side-by-side")
+    // Narrow, the dialog keeps its gutter as on Matters.
+    await page.setViewportSize({ width: 420, height: 860 })
+    const narrow = await clientDialog.boundingBox()
+    assert.ok(narrow && narrow.x >= 15 && narrow.x + narrow.width <= 405, "the dialog fits a narrow screen")
+    await shot(page, "clients-edit-dialog-narrow")
+    await page.keyboard.press("Escape")
+    await expect(page.getByRole("button", { name: "Edit Northwind Traders" })).toBeVisible()
+    await shot(page, "clients-page-narrow-rows")
   }, "/", [{ id: 1, name: "Fabrikam", reference: "C-0101", created_at: 1 }])
 
   console.log(`PASS ${passed.length} clients list cases with no browser errors`)
