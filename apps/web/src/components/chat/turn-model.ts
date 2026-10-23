@@ -6,7 +6,7 @@ import { partActivity, TOOL_GROUPS } from "../narration/activity"
 import { basename, stepLabel } from "./step-labels"
 import { isDraftingRecoveryMessage } from "./drafting-recovery"
 import { templateResult, type TemplateResult } from "./template-result"
-import { QUICK_DRAFT } from "../../agents"
+import { EXPLICIT_ONLY } from "../../agents"
 
 // One row in the assistant's reasoning timeline: a thinking block or a tool call.
 export type Step =
@@ -379,7 +379,7 @@ export function toTurns(
         error: g.error,
         superseded: g.superseded,
         stopped: g.stopped,
-        ...contentOf(g.role === "assistant" && g.agent === QUICK_DRAFT ? withoutNarration(g.parts) : g.parts),
+        ...contentOf(g.role === "assistant" && g.agent && EXPLICIT_ONLY.has(g.agent) ? withoutNarration(g.parts) : g.parts),
         todos,
         steps: g.role === "assistant" ? partsToSteps(g.parts, matter, pool) : [],
       }
@@ -387,10 +387,11 @@ export function toTurns(
     .filter((t) => t.text || t.citations.length || t.steps.length || t.error || t.stopped)
 }
 
-// A quick draft's answer is its closing step. Text in a step that also calls a
-// tool is narration ("I'll pull the terms", "now I'll verify"), never the draft:
-// it is left out of the quick text and of the working draft an upgrade carries.
-// A turn whose only text sits in such steps (stopped mid-way) keeps it.
+// A quick draft's or client summary's answer is its closing step. Text in a
+// step that also calls a tool is narration ("I'll pull the terms", "now I'll
+// verify"), never the answer: it is left out of the text the lawyer copies and
+// of the working draft an upgrade carries. A turn whose only text sits in such
+// steps (stopped mid-way) keeps it.
 function withoutNarration(parts: Part[]) {
   const working = new Set(parts.filter((p) => p.type === "tool").map((p) => p.messageID))
   const kept = parts.filter((p) => p.type !== "text" || !working.has(p.messageID))

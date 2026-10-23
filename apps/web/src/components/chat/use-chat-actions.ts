@@ -4,7 +4,7 @@ import { getConfig, modelSpec } from "../../api/opencode/config"
 import { replyPermission, type PermissionReply } from "../../api/opencode/permissions"
 import { boundedRequest, type Client } from "../../api/opencode/client"
 import { quickDraftEligible, routeAgent, type Route } from "../../api/opencode/routing"
-import { AUTO_CANDIDATES, CHAT_ASSISTANTS, QUICK_DRAFT, isAuto, type AssistantMeta, type WorkflowMeta } from "../../agents"
+import { AUTO_CANDIDATES, CHAT_ASSISTANTS, EXPLICIT_ONLY, QUICK_DRAFT, isAuto, type AssistantMeta, type WorkflowMeta } from "../../agents"
 import { startDraftingRun } from "../../api/ingest/drafting-run"
 import { getPreferences } from "../../api/ingest/preferences"
 import type { Turn } from "./turn-model"
@@ -477,9 +477,11 @@ export function useChatActions({
     ])
     let sent = false
     try {
-      // Retrying a quick draft keeps the lawyer's choice for that request.
-      const quick = turns[index + 1]?.agent === QUICK_DRAFT && text === turn.text
-      const resolved = quick ? QUICK_DRAFT : (await resolveAgent(text, turns.slice(0, index))).name
+      // Retrying a quick draft or client summary keeps the lawyer's choice for
+      // that request.
+      const chosen = turns[index + 1]?.agent
+      const keep = chosen && EXPLICIT_ONLY.has(chosen) && text === turn.text ? chosen : undefined
+      const resolved = keep ?? (await resolveAgent(text, turns.slice(0, index))).name
       if (run.stopped) return cancelUnsent(text)
       await revertMessage(client, sessionRef.current, turn.id)
       if (run.stopped) return cancelUnsent(text)

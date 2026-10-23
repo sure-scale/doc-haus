@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { parseRoute, quickDraftEligible, type DraftScope } from "../src/api/opencode/routing"
-import { AUTO_CANDIDATES, CHAT_ASSISTANTS, QUICK_DRAFT } from "../src/agents"
+import { AUTO_CANDIDATES, CHAT_ASSISTANTS, CLIENT_SUMMARY, QUICK_DRAFT } from "../src/agents"
 import { furnitureLegend } from "../../../dochaus/lib/furniture-legend"
 import {
   QUICK_BANNER,
@@ -100,7 +100,12 @@ describe("candidates", () => {
     expect(CHAT_ASSISTANTS.some((a) => a.name === QUICK_DRAFT)).toBe(true)
     expect(NAMES).not.toContain(QUICK_DRAFT)
     expect(NAMES).toContain("draft")
-    expect(NAMES.length).toBe(CHAT_ASSISTANTS.length - 1)
+    expect(NAMES.length).toBe(CHAT_ASSISTANTS.length - 2)
+  })
+
+  test("Client summary is a picker entry Auto never routes to", () => {
+    expect(CHAT_ASSISTANTS.find((a) => a.name === CLIENT_SUMMARY)?.label).toBe("Client summary")
+    expect(NAMES).not.toContain(CLIENT_SUMMARY)
   })
 })
 
@@ -266,6 +271,8 @@ describe("quick text", () => {
     expect(turns[1]!.text).toBe(DRAFT)
     expect(turns[1]!.steps.length).toBeGreaterThan(0)
     expect(upgradeInput(turns, 1)?.workingDraft).toBe(DRAFT)
+    // A client summary is copied out too, so it drops narration the same way.
+    expect(conversation(CLIENT_SUMMARY, steps)[1]!.text).toBe(DRAFT)
     // Other assistants keep each step's text, as before.
     expect(conversation("qa", steps)[1]!.text).toBe(`${NARRATION}\n\n${LATER_NARRATION}\n\n${DRAFT}`)
   })

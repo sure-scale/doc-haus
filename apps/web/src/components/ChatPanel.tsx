@@ -5,7 +5,7 @@ import type { CompareParams } from "../api/ingest/compare"
 import type { Document } from "../api/ingest/documents"
 import type { LeanDraftingStatus } from "../api/ingest/lean"
 import { matterClient, type Client } from "../api/opencode/client"
-import { QUICK_DRAFT, isAuto, type AssistantMeta, type WorkflowMeta } from "../agents"
+import { CLIENT_SUMMARY, EXPLICIT_ONLY, QUICK_DRAFT, isAuto, type AssistantMeta, type WorkflowMeta } from "../agents"
 import { QUICK_BANNER, quickDraftAnswer } from "./chat/quick-draft"
 import { getPreferences } from "../api/ingest/preferences"
 import CitationView from "./CitationView"
@@ -266,13 +266,13 @@ export default function ChatPanel({
   const live = readTurn(partsRef.current, rolesRef.current, matterName, sessionRef.current)
   const liveAgent = isAuto(agent) && resolvedAgent ? resolvedAgent : agent
   const activity = busy ? live.activity : undefined
-  // The firm's legends, read once a quick draft shows, as a rendered document
-  // reads them: a quick draft carries its form's legend from the firm's
-  // settings, never one the model wrote.
+  // The firm's legends, read once a quick draft or client summary shows, as a
+  // rendered document reads them: each carries its form's legend from the
+  // firm's settings, never one the model wrote.
   const [legends, setLegends] = useState<{ agreementLegend: string; adviceLegend: string }>()
-  const showsQuick = turns.some((t) => t.agent === QUICK_DRAFT) || (busy && liveAgent === QUICK_DRAFT)
+  const showsLegend = turns.some((t) => t.agent && EXPLICIT_ONLY.has(t.agent)) || (busy && EXPLICIT_ONLY.has(liveAgent))
   useEffect(() => {
-    if (!showsQuick || legends) return
+    if (!showsLegend || legends) return
     let current = true
     getPreferences()
       .then((prefs) => current && setLegends({ agreementLegend: prefs.agreementLegend ?? "", adviceLegend: prefs.adviceLegend ?? "" }))
@@ -280,7 +280,7 @@ export default function ChatPanel({
     return () => {
       current = false
     }
-  }, [showsQuick, legends])
+  }, [showsLegend, legends])
   const stopping = busy && turnRef.current.stopped
   useEffect(() => {
     onBusyChange?.(busy, activity)
@@ -350,6 +350,20 @@ export default function ChatPanel({
       </>
     )
   }
+
+  // A client summary is advice to the client, so it carries the firm's advice
+  // legend; the model writes none.
+  const clientAnswer = (text: string) => {
+    const legend = legends ? furnitureLegend("advice", legends).trim() : ""
+    return (
+      <>
+        {legend && <p className="quick-draft-legend">{legend}</p>}
+        {answer(stripIssues(text))}
+      </>
+    )
+  }
+  const agentAnswer = (agentName: string | undefined, text: string, settled: boolean, compares?: VersionCompare[]) =>
+    agentName === QUICK_DRAFT ? quickAnswer(text, settled) : agentName === CLIENT_SUMMARY ? clientAnswer(text) : answer(stripIssues(text), compares)
 
   const narrationView = own && matterId && (
     <DraftingNarration
@@ -486,7 +500,7 @@ export default function ChatPanel({
                   <StepsPanel steps={t.steps} busy={false} answered={!isEmptyAnswer(t.text)} />
                   {t.text &&
                     !isEmptyAnswer(t.text) &&
-                    (t.agent === QUICK_DRAFT ? quickAnswer(t.text, true) : answer(stripIssues(t.text), t.compares))}
+                    agentAnswer(t.agent, t.text, true, t.compares)}
                   <IssuesView issues={parseIssues(t.text)} />
                   {t.error && <div className="msg-error">{t.error}</div>}
                   {t.stopped && !t.superseded && (
@@ -549,7 +563,7 @@ export default function ChatPanel({
               <div className="msg-agent">{agentLabel(liveAgent)}</div>
               {liveAgent === QUICK_DRAFT && quickBanner()}
               <StepsPanel steps={live.steps} busy answered={Boolean(live.text)} />
-              {live.text && (liveAgent === QUICK_DRAFT ? quickAnswer(live.text, false) : answer(stripIssues(live.text), live.compares))}
+              {live.text && agentAnswer(liveAgent, live.text, false, live.compares)}
               {/* The answer is still coming: before its first step, during each step and between them. */}
               <p className="msg-working" role="status">
                 <span className="working" aria-hidden>
