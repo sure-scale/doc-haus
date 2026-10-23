@@ -49,6 +49,8 @@ async function open(state: ReturnType<typeof fixture>, width: number, height: nu
     const reply = (body: unknown) => route.fulfill({ status: 200, headers, contentType: "application/json", body: JSON.stringify(body) })
     const method = request.method()
     if (method === "POST" && pathname === "/api/dochaus/provider-test") return reply({ ok: true })
+    // Settings opens on AI setup, which e2e/ai-setup.ts covers; refuse its traffic.
+    if (pathname === "/auth/reuse" || pathname.startsWith("/api/dochaus/provider-candidate")) return route.abort()
     if (pathname === "/preferences" && method === "PUT") {
       const body = request.postDataJSON() as Record<string, unknown>
       state.puts.push(body)
