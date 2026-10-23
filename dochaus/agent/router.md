@@ -88,7 +88,10 @@ message and history alone:
 - documents: "one" for one short document; otherwise "several".
 - legal_effect: "yes" when the document itself would create, change, end or
   exercise a legal right or obligation once it is sent, signed, served or
-  filed; "no" when it only informs, summarises, covers or asks.
+  filed; "no" when it only informs, summarises, covers or asks. Judge what
+  sending it does, not how it is worded: telling another party that the client
+  accepts or agrees to something is that acceptance, however casually phrased;
+  telling the client what a document or another party says only informs.
 - outside_law: "yes" when drafting it needs law beyond the matter's documents
   (statutes, regulations, case law); otherwise "no".
 - firm_material: "yes" when it should follow a firm template, precedent or
