@@ -413,3 +413,18 @@ button:is(.change-id, .change-ref):hover { text-decoration: underline; }
 .email-remove-confirm { margin: var(--space-2) 0 0 38px; display: grid; gap: var(--space-2); font-size: 0.75rem; line-height: 1.5; }
 .email-remove-confirm p { margin: 0; overflow-wrap: anywhere; }
 .email-remove-confirm .upload-actions { flex-wrap: wrap; margin-left: 0; }
+/* Marker chips in a rendered document (document-markers.ts): display-only spans
+   around redaction marks and placeholders. Never colour alone: a solid border for
+   redactions, a dashed one for placeholders, and a tooltip on each. */
+.docx-render .doc-marker { padding: 0 2px; border-radius: var(--radius-sm); border: 1px solid transparent; font-weight: 500; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
+.docx-render .doc-marker-redaction { background: var(--md-sys-color-inverse-surface); color: var(--md-sys-color-inverse-on-surface); border-color: var(--md-sys-color-inverse-surface); }
+.docx-render .doc-marker-placeholder { background: var(--md-sys-color-warning-container); color: var(--md-sys-color-warning); border: 1px dashed var(--md-sys-color-warning); }
+.viewer-title-markers { color: var(--md-sys-color-warning); font-weight: 500; }
+@media (forced-colors: active) {
+  .docx-render .doc-marker-redaction { border: 1px solid CanvasText; }
+  .docx-render .doc-marker-placeholder { border: 1px dashed CanvasText; }
+}
+.docx-render .doc-marker[data-marker-part="first"], .docx-render .doc-marker[data-marker-part="middle"] { border-top-right-radius: 0; border-bottom-right-radius: 0; border-right: 0; padding-right: 0; }
+.docx-render .doc-marker[data-marker-part="last"], .docx-render .doc-marker[data-marker-part="middle"] { border-top-left-radius: 0; border-bottom-left-radius: 0; border-left: 0; padding-left: 0; }
+.docx-render .doc-marker[data-marker-part="only"], .docx-render .doc-marker[data-marker-part="first"] { margin-left: 1px; }
+.docx-render .doc-marker[data-marker-part="only"], .docx-render .doc-marker[data-marker-part="last"] { margin-right: 1px; }

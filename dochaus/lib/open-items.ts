@@ -1,9 +1,10 @@
+import { OPEN_ITEM_PATTERN } from "./marker-patterns"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 
 export const OPEN_ITEM_HIGHLIGHT_FILL = "FFF2CC"
 export const FIELD_HIGHLIGHT_FILL = "DDEBF7"
 
-const OPEN_ITEM_RE = /\[open item:[^\]\r\n]*\]|\(open item:[^)\r\n]*\)|_{3,}/gi
+const OPEN_ITEM_RE = OPEN_ITEM_PATTERN
 const RUN_RE = /<w:r\b[^>]*>[\s\S]*?<\/w:r>/g
 const TEXT_RE = /(<w:t(?:\s[^>]*)?>)([\s\S]*?)(<\/w:t>)/
 

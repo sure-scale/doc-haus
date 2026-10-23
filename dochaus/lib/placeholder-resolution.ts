@@ -1,4 +1,5 @@
 import { visibleTextMatches } from "./markdown-visible-text"
+import { INSTRUCTION_COMMENT_PATTERN, PLACEHOLDER_PATTERN } from "./marker-patterns"
 
 export type RenderPlaceholderResolution = {
   placeholder: string
@@ -31,24 +32,6 @@ type Heading = {
   label: string
   tokens: string[]
 }
-
-const PLACEHOLDER_PATTERN =
-  /\[\s*(?:(?:insert|tbd|to be determined|to be confirmed|placeholder)\b[^\]\n]*|_{2,}[^\]\n]*)\]/gi
-
-// A model often invents its own bracket convention for counsel asides
-// ("[BRACKETED COMMENT: ...]", "[VERIFY BEFORE FINAL — ...]",
-// "[DRAFTED-FOR-REVIEW: ...]") where the directive verb is not at the start of
-// the bracket, so PLACEHOLDER_PATTERN misses it and the aside would otherwise
-// ship in the rendered document undetected. This is detection only: it makes the
-// render-readiness gate SEE these brackets so it blocks and routes the body to
-// the LLM finalizer, which has the judgment to unwrap, rewrite, or keep each one.
-// We deliberately do NOT auto-rewrite them — a regex cannot tell a stray tag from
-// a fully drafted definition or a negotiated bracketed alternative. Keyed on
-// directive markers, never on a specific phrase, so it stays transfer-safe and
-// does not flag legitimate bracket usage that carries no instruction ("[●]",
-// "[Signature page follows]", "[Reserved]").
-const INSTRUCTION_COMMENT_PATTERN =
-  /\[[^[\]\n]*\b(?:insert|inserted|tbd|to be (?:determined|confirmed|inserted|supplied|provided)|verify before final|drafted[ -]for[ -]review|bracketed comment|attorney (?:comment|note)|decision required|bracketed alternatives|counsel to (?:confirm|verify|review|determine)|see\s+r\d+|research required|analysis required|route\s+(?:it|this|them)\s+to|do\s+not\s+treat|placeholder)\b[^[\]\n]*\]/gi
 
 const STRUCTURAL_REFERENCE_PLACEHOLDER_PATTERN =
   /\b(?:article|section|clause|paragraph|subsection|schedule|exhibit|appendix)\s+\[(?:[A-Z][A-Z0-9.-]*|[IVXLC]+|[A-Za-z][^[\]\n]{1,80})\]/gi
