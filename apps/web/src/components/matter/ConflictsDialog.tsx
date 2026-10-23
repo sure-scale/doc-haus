@@ -52,7 +52,8 @@ export default function ConflictsDialog({
   return (
     <div className={`viewer-overlay${closing ? " is-closing" : ""}`} inert={closing} {...backdropClose(() => !saving && onClose())}>
       <div className="picker-panel compare-dialog" role="dialog" aria-modal="true" aria-labelledby="conflicts-dialog-title" onClick={(e) => e.stopPropagation()}>
-        <ModalHeader title={<span id="conflicts-dialog-title">Conflicts check</span>} onClose={onClose} />
+        {/* Closing mid-save would hide a failed save; Close and Escape wait for it, as the backdrop does. */}
+        <ModalHeader title={<span id="conflicts-dialog-title">Conflicts check</span>} onClose={() => !saving && onClose()} />
         <form
           className="picker-body compare-form"
           onSubmit={(event) => {
