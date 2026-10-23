@@ -514,6 +514,32 @@ try {
     assert.deepEqual(writes, [])
   })
 
+  await scenario("Cancel, × and the panel toggle abandon a typed client; tabbing off still adds it", seed, async (page) => {
+    const dialog = page.getByRole("dialog", { name: "Edit matter" })
+    for (const leave of ["Cancel", "Close"]) {
+      await page.getByRole("button", { name: "Edit Board minutes" }).click()
+      await dialog.getByRole("combobox", { name: "Client" }).pressSequentially("Zeta Corp")
+      await dialog.getByRole("button", { name: leave, exact: true }).click()
+      await expect(dialog).toHaveCount(0)
+    }
+    // Narrow, closing the new-matter panel with its toggle abandons it too.
+    await page.setViewportSize({ width: 420, height: 860 })
+    const toggle = page.getByRole("button", { name: "New matter" })
+    await toggle.click()
+    const field = page.getByRole("combobox", { name: "Client you act for (optional)" })
+    await field.pressSequentially("Zeta Corp")
+    await toggle.click()
+    await expect(field).toBeHidden()
+    await page.waitForTimeout(200)
+    assert.deepEqual(clientWrites, [])
+    assert.deepEqual(writes, [])
+    // The same text left by Tab is added, so the checks above could see an add.
+    await toggle.click()
+    await field.focus()
+    await page.keyboard.press("Tab")
+    await expect.poll(() => clientWrites).toEqual([{ method: "POST", body: { name: "Zeta Corp" } }])
+  })
+
   await scenario("the Matters and Clients edit dialogs match side by side", seed, async (page) => {
     await page.getByRole("button", { name: "Edit Supply note" }).click()
     const matterDialog = page.getByRole("dialog", { name: "Edit matter" })

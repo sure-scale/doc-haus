@@ -17,7 +17,8 @@ type InputProps = Omit<InputHTMLAttributes<HTMLInputElement>, "value" | "onChang
 // spelling of a known client becomes that client's name, before the caller's
 // own blur or Enter handler sees it, and a new name is added as a client. The
 // caller's own keys (Enter to save, Escape to cancel) apply whenever the list
-// is closed; Escape never adds.
+// is closed. Leaving by Escape or by a control marked data-dismiss (Cancel, ×,
+// a panel's close toggle) abandons the form, so nothing is added or changed.
 export default function ClientCombobox({
   value,
   onChange,
@@ -32,6 +33,9 @@ export default function ClientCombobox({
   const [adding, setAdding] = useState(false)
   const field = useRef<HTMLInputElement>(null)
   const composing = useRef(false)
+  // Set when the pointer goes down on a dismiss control. Safari does not focus a
+  // clicked button, so the blur's relatedTarget alone cannot tell.
+  const dismissing = useRef(false)
   // The key a settle is adding, so a second blur does not add it again.
   const settling = useRef<string | undefined>(undefined)
   // The caller's handlers from the latest render, so they run after a snap.
@@ -47,6 +51,14 @@ export default function ClientCombobox({
   const addable = open && canAdd
   const count = options.length + (addable ? 1 : 0)
   const shown = count > 0
+
+  useEffect(() => {
+    const down = (event: PointerEvent) => {
+      dismissing.current = event.target instanceof Element && event.target.closest("[data-dismiss]") !== null
+    }
+    document.addEventListener("pointerdown", down, true)
+    return () => document.removeEventListener("pointerdown", down, true)
+  }, [])
 
   useEffect(() => {
     let live = true
@@ -169,11 +181,18 @@ export default function ClientCombobox({
           setOpen(true)
           setActive(-1)
         }}
+        onFocus={(event) => {
+          // A dismiss click that did not take focus from this field is no longer current.
+          dismissing.current = false
+          input.onFocus?.(event)
+        }}
         onCompositionStart={() => { composing.current = true }}
         onCompositionEnd={() => { composing.current = false }}
         onBlur={(event) => {
           setOpen(false)
-          settle()
+          const to = event.relatedTarget
+          if (!dismissing.current && !(to instanceof Element && to.closest("[data-dismiss]"))) settle()
+          dismissing.current = false
           latest.current.onBlur?.(event)
         }}
         onKeyDown={keyDown}
