@@ -8,6 +8,7 @@ import { AUTO_CANDIDATES, CHAT_ASSISTANTS, EXPLICIT_ONLY, QUICK_DRAFT, isAuto, t
 import { startDraftingRun } from "../../api/ingest/drafting-run"
 import { getPreferences } from "../../api/ingest/preferences"
 import type { Turn } from "./turn-model"
+import { FALLBACK_ACK, withAck, withoutAck } from "./acknowledgement"
 import { bounded } from "./conversation"
 import {
   quickDraftLimit,
@@ -159,14 +160,24 @@ export function useChatActions({
   // routing never returns "auto", and any failure or timeout is surfaced rather
   // than silently choosing a different assistant. The resolved agent drives the
   // "Auto · <label>" chip and the in-flight bubble's byline.
-  async function resolveAgent(text: string, prior: Turn[]): Promise<Route> {
+  // Auto also shows the router's acknowledgement under the message the moment
+  // it streams (see acknowledge); an explicit pick has none.
+  async function resolveAgent(text: string, prior: Turn[], turn: { stopped: boolean }): Promise<Route> {
     if (!isAuto(agent)) return { name: agent }
-    const route = await routeMessage(text, prior, AUTO_CANDIDATES)
+    const route = await routeMessage(text, prior, AUTO_CANDIDATES, (ack) => acknowledge(turn, text, ack))
     setResolvedAgent(route.name)
     return route
   }
 
-  async function routeMessage(text: string, prior: Turn[], candidates: AssistantMeta[]) {
+  // The acknowledgement shown under the pending message for `text`, which
+  // must still be this running turn's: the first line shown stays, so the
+  // router's streamed line wins over its parsed copy or the chat's fallback.
+  function acknowledge(turn: { stopped: boolean }, text: string, ack: string) {
+    if (turn.stopped || turnRef.current !== turn) return
+    setTurns((prev) => withAck(prev, text, ack))
+  }
+
+  async function routeMessage(text: string, prior: Turn[], candidates: AssistantMeta[], onAck?: (ack: string) => void) {
     const history = prior
       .filter((t) => t.text)
       .slice(-6)
@@ -193,6 +204,7 @@ export function useChatActions({
       candidates: candidates.map((a) => ({ name: a.name, description: a.description })),
       history,
       text,
+      onAck,
     })
   }
 
@@ -379,22 +391,29 @@ export function useChatActions({
           return
         }
       }
-      const resolved = await resolveAgent(text, prior)
+      const resolved = await resolveAgent(text, prior, turn)
       // Stopped while Auto chose the assistant.
       if (turn.stopped) return cancelUnsent(text)
+      // Auto acknowledges every routed request: the router's line, or the
+      // chat's own short one by what happens next.
+      const ack = (kind: keyof typeof FALLBACK_ACK) => isAuto(agent) && acknowledge(turn, text, resolved.ack ?? FALLBACK_ACK[kind])
       let target = resolved.name
       if (resolved.name === "draft" && matterId) {
         // A request Auto judged a quick draft can serve is offered, or started
         // under the firm's Automatic setting, unless the firm turned quick
         // drafts off; any other drafting request runs in full.
         const offer = isAuto(agent) && quickDraftEligible(withMatterSources(resolved.scope, sourceCount)) ? await quickDraftOffer() : "off"
-        if (offer === "ask") return await offerQuickDraft(text, turn)
+        if (offer === "ask") {
+          ack("offer")
+          return await offerQuickDraft(text, turn)
+        }
+        ack("draft")
         if (offer === "off") return await startFullRun(text, prior.length)
         // Automatic is the firm's consent, as the Quick draft pick is the
         // lawyer's: the request goes to Quick draft like that pick.
         target = QUICK_DRAFT
         setResolvedAgent(target)
-      }
+      } else ack(resolved.name === "draft" ? "draft" : "answer")
       // Other chats create their ordinary conversation lazily.
       if (!sessionRef.current) {
         sessionRef.current = (await createSession(client, titleFrom(text))).id
@@ -409,7 +428,9 @@ export function useChatActions({
       if (turn.stopped) return sent ? settleStopped() : cancelUnsent(text)
       // Routing happens before a fresh session is minted, so there is no stored
       // user message to retry yet. Restore the text to the composer instead of
-      // losing it when Auto cannot choose an assistant.
+      // losing it when Auto cannot choose an assistant. Nothing was handed
+      // over, so the acknowledgement goes.
+      setTurns((prev) => withoutAck(prev, text))
       setInput(text)
       failTurn(e instanceof Error ? e.message : "Could not reach the engine. Try again.")
     } finally {
@@ -481,14 +502,17 @@ export function useChatActions({
       // that request.
       const chosen = turns[index + 1]?.agent
       const keep = chosen && EXPLICIT_ONLY.has(chosen) && text === turn.text ? chosen : undefined
-      const resolved = keep ?? (await resolveAgent(text, turns.slice(0, index))).name
+      const route = keep ? undefined : await resolveAgent(text, turns.slice(0, index), run)
+      const resolved = keep ?? route!.name
       if (run.stopped) return cancelUnsent(text)
+      if (route && isAuto(agent)) acknowledge(run, text, route.ack ?? FALLBACK_ACK[resolved === "draft" ? "draft" : "answer"])
       await revertMessage(client, sessionRef.current, turn.id)
       if (run.stopped) return cancelUnsent(text)
       sent = true
       await sendPrompt(client, sessionRef.current, resolved, text)
     } catch (e) {
       if (run.stopped) return sent ? settleStopped() : cancelUnsent(text)
+      setTurns((prev) => withoutAck(prev, text))
       failTurn(e instanceof Error ? e.message : "Could not reach the engine. Try again.")
     } finally {
       run.owned = false

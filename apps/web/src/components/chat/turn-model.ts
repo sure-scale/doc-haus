@@ -60,6 +60,9 @@ export type Turn = {
   superseded?: boolean
   // The answer was stopped before it finished; what it had produced is kept.
   stopped?: boolean
+  // On a user turn Auto routed: the acknowledgement shown under it (see
+  // acknowledgement.ts). Display only; never part of any text.
+  ack?: string
 }
 
 // Reduce a turn's parts to its visible text, search-document citations, and
