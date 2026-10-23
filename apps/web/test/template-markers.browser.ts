@@ -87,7 +87,7 @@ try {
   assert.deepEqual(await look(placeholderEntry), await look(chips("placeholder").first()))
   assert.deepEqual(await look(redactionEntry), await look(chips("redaction").first()))
   assert.equal((await look(placeholderEntry)).border, "dashed"); assert.equal((await look(redactionEntry)).border, "solid")
-  assert.match(await redactionEntry.getAttribute("aria-label") ?? "", /redacted text.*3 occurrences/)
+  assert.match(await redactionEntry.getAttribute("aria-label") ?? "", /^\[REDACTED\], redaction, 3 occurrences\. Show in document$/)
   await shot(page, "template-panel.png")
   console.log("PASS the panel lists the document's markers with matching counts and chip styles")
 

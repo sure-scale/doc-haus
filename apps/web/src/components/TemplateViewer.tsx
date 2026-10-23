@@ -186,7 +186,7 @@ function MarkerPanel({ document: host, groups }: { document: RefObject<HTMLDivEl
               <button
                 type="button"
                 className={`marker-entry doc-marker-${entry.kind}${linked === entry ? ` ${LINKED}` : ""}`}
-                aria-label={`${entry.text}, ${entry.kind === "redaction" ? "redacted text" : "to complete"}${many ? `, ${entry.ids.length} occurrences` : ""}. Show in document`}
+                aria-label={`${entry.text}, ${noun}${many ? `, ${entry.ids.length} occurrences` : ""}. Show in document`}
                 title={many ? "Show the next occurrence in the document" : "Show in the document"}
                 onMouseEnter={() => setLinked(entry)}
                 onMouseLeave={() => setLinked(undefined)}
