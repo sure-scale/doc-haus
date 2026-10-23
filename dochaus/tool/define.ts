@@ -3,6 +3,7 @@ import { Database } from "bun:sqlite"
 import { existsSync } from "node:fs"
 import path from "node:path"
 import { findTermUse } from "../lib/search/term-use"
+import { provenanceFooter, sourceProvenance } from "../lib/source-provenance"
 
 // doc.haus defined-term lookup. Reads the deterministic `defined_terms` table
 // that `services/ingest` extracts by regex (see services/ingest/src/structure.ts)
@@ -131,7 +132,8 @@ export default tool({
       ? `\n\n${usageTitle} (up to ${USAGE_LIMIT}):\n` + usageLines.join("\n")
       : ""
 
-    return `${heading}\n\n${definitions}${differNote}${usageBlock}`
+    const provenance = provenanceFooter([...hits.map((row) => row.doc_name), ...usage.map((row) => row.doc_name)], sourceProvenance(ctx.directory))
+    return `${heading}\n\n${definitions}${differNote}${usageBlock}${provenance}`
   },
 })
 

@@ -65,3 +65,26 @@ export function nameWithProvenance(name: string, provenance: ReadonlyMap<string,
   const chain = provenance.get(name)
   return chain ? `${name} (provenance: ${chain})` : name
 }
+
+// A "Provenance:" block after a tool's output, one line per distinct child
+// document the output names, so every line above keeps the plain name. Empty
+// when none of the names is a child.
+export function provenanceFooter(names: Iterable<string>, provenance: ReadonlyMap<string, string>) {
+  const lines = [...new Set(names)].flatMap((name) => {
+    const chain = provenance.get(name)
+    return chain ? [`${name}: ${chain}`] : []
+  })
+  return lines.length ? `\n\nProvenance:\n${lines.join("\n")}` : ""
+}
+
+// For prompts that show names as a JSON array consumers parse unchanged: a
+// separate labelled line mapping each child name to its chain. Empty when the
+// list has no child, so a plain matter's prompt is unchanged.
+export function provenanceMapLine(names: Iterable<string>, provenance: ReadonlyMap<string, string>) {
+  const map: Record<string, string> = {}
+  for (const name of names) {
+    const chain = provenance.get(name)
+    if (chain) map[name] = chain
+  }
+  return Object.keys(map).length ? `Source provenance (where each attachment or archive entry came from; display only, not part of the source names or citations): ${JSON.stringify(map)}` : ""
+}

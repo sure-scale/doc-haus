@@ -1,4 +1,5 @@
 import { currentDocumentArtifacts } from "../../lib/current-document-artifacts"
+import { sourceProvenance } from "../../lib/source-provenance"
 import path from "node:path"
 import { z } from "zod"
 import { readRegularFile } from "../../lib/regular-file"
@@ -175,7 +176,7 @@ function originalSourceInventory(directory: string, warnings: string[]) {
     document: z.string().min(1), characters: z.number().nonnegative(),
     chunks: z.array(z.object({ heading_path: z.array(z.string()) })).default([]),
   })) })
-  const inventory = new Map<string, { document: string; characters: number | null; heading_paths: string[][]; heading_path_count: number; map_record?: string }>()
+  const inventory = new Map<string, { document: string; characters: number | null; heading_paths: string[][]; heading_path_count: number; map_record?: string; provenance?: string }>()
   try {
     const bytes = readRegularFile(path.join(directory, "source-map.json"))
     if (!bytes) throw new Error("source-map.json is unavailable")
@@ -190,5 +191,7 @@ function originalSourceInventory(directory: string, warnings: string[]) {
     warnings.push("Original source-map navigation metadata is unavailable; indexed source identities below may still be retrieved. Missing metadata is not absence of source evidence.")
   }
   for (const document of matterSourceIDs(directory)) if (!inventory.has(document)) inventory.set(document, { document, characters: null, heading_paths: [], heading_path_count: 0 })
-  return [...inventory.values()]
+  // Container chain of an email attachment or zip entry, a separate field beside the exact name.
+  const provenance = sourceProvenance(directory)
+  return [...inventory.values()].map(row => provenance.has(row.document) ? { ...row, provenance: provenance.get(row.document)! } : row)
 }

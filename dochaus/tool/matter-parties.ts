@@ -2,6 +2,7 @@ import { tool } from "./legacy-definition"
 import { Database } from "bun:sqlite"
 import { existsSync } from "node:fs"
 import path from "node:path"
+import { provenanceFooter, sourceProvenance } from "../lib/source-provenance"
 
 // doc.haus party lookup tool. Reads the `parties` table that
 // `services/ingest` populates deterministically (structure.ts): each row is a
@@ -77,6 +78,7 @@ export default tool({
 
     return (
       body +
+      provenanceFooter(byDoc.keys(), sourceProvenance(ctx.directory)) +
       truncation +
       "\n\nNote: parties are extracted verbatim from each document's preamble and the list may be incomplete. Use the search-document tool to confirm any party."
     )
