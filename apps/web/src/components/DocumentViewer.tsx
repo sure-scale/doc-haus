@@ -20,6 +20,7 @@ import { convertPdfToDocx, documentContentUrl, fetchDocumentText, matterDocument
 import { ModalClose } from "./ModalHeader"
 import { CompareIcon } from "./CompareDialog"
 import { citationPassage, focusCitationPassage, type CitationFocus } from "./citation-target"
+import { decorateMarkers, markerSummary, type MarkerCounts } from "./document-markers"
 import { useToast } from "./Toast"
 import useModalFocus from "./useModalFocus"
 import backdropClose from "./backdropClose"
@@ -109,6 +110,7 @@ function WordDocumentViewer({
   const documentRef = useRef<HTMLDivElement>(null)
   const [passage, setPassage] = useState<"matched" | "ambiguous" | "unavailable">()
   const moreRef = useRef<HTMLDetailsElement>(null)
+  const [markers, setMarkers] = useState<MarkerCounts>()
   const toast = useToast()
   // Keep React from resetting the HTML when passage status or viewer controls
   // re-render. The citation effect owns only its temporary text highlights.
@@ -144,6 +146,12 @@ function WordDocumentViewer({
   useEffect(() => {
     if (focusId !== undefined) focusRef.current?.scrollIntoView({ block: "center" })
   }, [focusId, redlines])
+
+  // Colour-code redaction marks and placeholders in place. Declared before the
+  // citation effect so its text walk sees the same text with the spans around it.
+  useEffect(() => {
+    setMarkers(html && documentRef.current ? decorateMarkers(documentRef.current) : undefined)
+  }, [html])
 
   useEffect(() => {
     setPassage(undefined)
@@ -274,7 +282,7 @@ function WordDocumentViewer({
         if (e.key === "Escape" && !e.defaultPrevented) { e.preventDefault(); e.stopPropagation(); onClose() }
       }}>
         <div className="viewer-bar">
-          <ViewerTitle name={name} kind="Word document" pending={redlines.length} />
+          <ViewerTitle name={name} kind="Word document" pending={redlines.length} markers={markers && markerSummary(markers)} />
           <div className="viewer-bar-actions">
             <DownloadActions redlines={redlines} preview={Boolean(html)} onDownload={download} />
             <button className="primary" onClick={() => setEditing((value) => !value)} disabled={busy !== undefined} aria-expanded={editing} aria-controls="document-edit-request">
@@ -625,7 +633,7 @@ export function combinedNotUpdatedNotice(result: AcceptResult | void) {
 
 // File glyph, name and a quiet status line. The pending count stays visible on
 // narrow screens, where the change list sits below the document.
-export function ViewerTitle({ name, kind, pending = 0 }: { name: string; kind: string; pending?: number }) {
+export function ViewerTitle({ name, kind, pending = 0, markers }: { name: string; kind: string; pending?: number; markers?: string }) {
   return (
     <div className="viewer-title">
       <span className="viewer-file-icon" aria-hidden="true">
@@ -639,6 +647,7 @@ export function ViewerTitle({ name, kind, pending = 0 }: { name: string; kind: s
         <span className="viewer-title-meta">
           {kind}
           {pending > 0 && <span className="viewer-title-pending">{pending} pending change{pending === 1 ? "" : "s"}</span>}
+          {markers && <span className="viewer-title-markers">{markers}</span>}
         </span>
       </span>
     </div>

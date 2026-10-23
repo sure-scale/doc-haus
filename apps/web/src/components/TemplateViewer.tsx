@@ -4,6 +4,7 @@ import { createPortal } from "react-dom"
 import { createViewer, type DocxViewer } from "docxodus/embed"
 import { fetchTemplateBytes, type TemplatePlaceholder } from "../api/ingest/library"
 import { ModalClose } from "./ModalHeader"
+import { decorateMarkers } from "./document-markers"
 import backdropClose from "./backdropClose"
 import useModalFocus from "./useModalFocus"
 
@@ -59,6 +60,7 @@ export default function TemplateViewer({
         if (cancelled) { result.destroy(); return }
         viewer = result
         documentHost.current?.replaceChildren(mount)
+        decorateMarkers(mount)
         setReady(true)
         rendered.current?.()
       })
