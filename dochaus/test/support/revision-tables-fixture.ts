@@ -1,4 +1,5 @@
-import { writeFileSync } from "node:fs"
+import { readFileSync, writeFileSync } from "node:fs"
+import { fileURLToPath } from "node:url"
 import { strToU8, zipSync } from "fflate"
 
 // A synthetic original for revision runs that must keep the original's tables:
@@ -87,6 +88,14 @@ const STYLES = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles
   '<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:basedOn w:val="Normal"/><w:pPr><w:keepNext/><w:outlineLvl w:val="0"/></w:pPr><w:rPr><w:b/><w:sz w:val="28"/></w:rPr></w:style>' +
   '<w:style w:type="table" w:default="1" w:styleId="TableNormal"><w:name w:val="Normal Table"/></w:style>' +
   "</w:styles>"
+
+/** The same original as a word processor saves it, with document defaults,
+ * a theme, explicit paragraph styles and cell borders: the bytes above saved
+ * again by LibreOffice (soffice --headless --convert-to docx), its document
+ * properties empty. */
+export function revisionTablesWordStyleDocx(): Uint8Array {
+  return new Uint8Array(readFileSync(fileURLToPath(new URL("../fixtures/carton-supply-agreement-libreoffice.docx", import.meta.url))))
+}
 
 /** The synthetic original's .docx bytes. */
 export function revisionTablesOriginalDocx(): Uint8Array {
