@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { readFileSync, writeFileSync } from "node:fs"
 import { finalBodyParagraphs, shownText } from "./checks"
-import { consistencyFindings, type PackDocument, type Para } from "./consistency"
+import { consistencyFindings, resolvedReferences, type PackDocument, type Para } from "./consistency"
 import { finalGate, type GateResult } from "./gate"
 import { runLean } from "./runner"
 import { leanFile, readLeanJson, readOpenItems } from "./state"
@@ -118,18 +118,64 @@ describe("cross-references after changes", () => {
     expect(details({ title: TITLE, final: doc(fixed), baselines: [doc(BASE)], others: [longer] })).toEqual([])
   })
 
-  test("a schedule heading the changes close with an open-item marker and a full stop is still its heading; a schedule the text does not have is still reported", () => {
+  test("a schedule heading the changes close with a marker and a full stop heads its schedule where it is a heading: marked as one, or after the clauses with the original's heading", () => {
     // Schedule headings with no separator after the number, as an original may write them.
     const schedules = ["Schedule 1 Goods and packaging", "Printed cartons as specified in each order.", "Schedule 2 Price", "The Price is stated in each order."]
     const before = [...BASE.slice(0, -4), "5.2 The service levels in Schedule 3 apply.", ...schedules]
-    const final = before.map(line => line === schedules[0] ? `${line} [open item: confirm the carton specification].` : line)
-    expect(details({ title: TITLE, final: doc(final), baselines: [doc(before)], others: [] })).toEqual([
-      "Clause 5.2 refers to Schedule 3, but the final text has no Schedule 3.",
-    ])
-    // A sentence about a schedule, closed by a marker, does not head it.
-    const mention = final.map(line => line === schedules[2] ? "Schedule 2 is to follow [open item: confirm the price list]." : line)
-    expect(details({ title: TITLE, final: doc(mention), baselines: [doc(before)], others: [] })).toContain(
+    const close = (heading: string, marker: string) => before.map(line => line === heading ? `${line} ${marker}.` : line)
+    const marked = (lines: string[], heading: string) => doc(lines).map(para => para.text.startsWith(`${heading} [`) ? { ...para, heading: true as const } : para)
+    const missing3 = "Clause 5.2 refers to Schedule 3, but the final text has no Schedule 3."
+
+    const first = close(schedules[0]!, "[open item: confirm the carton specification]")
+    expect(details({ title: TITLE, final: marked(first, schedules[0]!), baselines: [doc(before)], others: [] })).toEqual([missing3])
+    // Unmarked, the first schedule's line reads as a sentence, even with the
+    // original's heading: only a marked heading ends the clauses.
+    expect(details({ title: TITLE, final: doc(first), original: doc(before), baselines: [doc(before)], others: [] })).toContain(
+      "Clause 1.1 refers to Schedule 1, but the final text has no Schedule 1. Schedule 1 was in the text before the changes.")
+
+    const second = close(schedules[2]!, "[open item: confirm the price list]")
+    expect(details({ title: TITLE, final: doc(second), original: doc(before), baselines: [doc(before)], others: [] })).toEqual([missing3])
+    expect(details({ title: TITLE, final: doc(second), baselines: [doc(before)], others: [] })).toContain(
       "Clause 1.2 refers to Schedule 2, but the final text has no Schedule 2. Schedule 2 was in the text before the changes.")
+    // Live cross-references follow the text alone unless the line is marked.
+    const schedule2 = (paras: Para[]) => resolvedReferences(TITLE, paras, [], "agreement").filter(ref => ref.kind === "schedule" && ref.label === "2").map(ref => ref.target)
+    expect(schedule2(doc(second))).toEqual([])
+    expect(schedule2(marked(second, schedules[2]!))).toEqual([second.indexOf(`${schedules[2]} [open item: confirm the price list].`)])
+  })
+
+  test("a sentence, list line or table cell closed by a marker and a full stop heads no schedule, among the clauses or after them", () => {
+    // The original's schedule headings are given and marked, so each case
+    // has every input that can make a line a heading.
+    const headings = new Set(SCHEDULES.filter(line => line.startsWith("Schedule")))
+    const marked = (lines: string[]) => doc(lines).map(para => headings.has(para.text) ? { ...para, heading: true as const } : para)
+    const findings = (final: string[], original = BASE) => details({ title: TITLE, final: marked(final), original: doc(original), baselines: [doc(original)], others: [] })
+    const without2 = BASE.slice(0, -2)
+    const gone2 = ["Clause 1.2 refers to Schedule 2, but the final text has no Schedule 2. Schedule 2 was in the text before the changes.",
+      "Schedule 1 refers to Schedule 2, but the final text has no Schedule 2. Schedule 2 was in the text before the changes."]
+    for (const sentence of [
+      "Schedule 2 The Price list will be provided by the Supplier [open item: confirm the price list].",
+      "Schedule 2 Pricing [insert pricing table].",
+      "Schedule 2 Price [insert]. Payable monthly [insert].",
+      "Schedule 2 Price Is To Be Attached [open item: confirm the price list]?",
+      "Schedule 2 Part B applies to all orders [insert].",
+    ]) expect(findings([...without2, sentence])).toEqual(gone2)
+    expect(findings([...BASE.slice(0, -4), "5.2 The service levels in Schedule 3 apply.", ...SCHEDULES,
+      "Schedule 3 Service Levels will be agreed between the parties [open item: confirm the levels]."])).toEqual([
+      "Clause 5.2 refers to Schedule 3, but the final text has no Schedule 3.", "Schedule 2 refers to Schedule 3, but the final text has no Schedule 3."])
+    // Among the clauses: a paragraph of clause 4, table cells, and a list of the schedules.
+    expect(findings([...BASE.slice(0, 13), "Schedule 4 Service Credits apply to late delivery [open item: confirm whether retained].", ...BASE.slice(13)])).toEqual([
+      "Clause 4 refers to Schedule 4, but the final text has no Schedule 4."])
+    expect(findings([...BASE.slice(0, 6), "Schedule", "Description", "Schedule 2 Pricing [tbc].", "Schedule 1 Goods [tbc].", ...BASE.slice(6, -2)])).toEqual([
+      "Clause 1.2 refers to Schedule 2, but the final text has no Schedule 2. Schedule 2 was in the text before the changes.",
+      "Clause 1.3 refers to Schedule 2, but the final text has no Schedule 2. Schedule 2 was in the text before the changes."])
+    const clauses = [...SUPPLY, ...PAYMENT, ...LIABILITY, "5. Termination", "5.1 Either party may terminate by notice if the other commits a material breach of clause 3 or clause 9."]
+    const listed = ["Supply Agreement", PARTIES, "1. Interpretation", "1.1 The Schedules form part of this agreement:", "Schedule 1 Goods [insert description];",
+      "Schedule 2 Price [insert price list];", "Schedule 3 Service Levels [to be agreed].", '1.2 "Goods" means the printed cartons described in Schedule 1.', ...clauses, ...SCHEDULES]
+    expect(findings(listed, listed)).toEqual(["Clause 1.1 refers to Schedule 3, but the final text has no Schedule 3.",
+      "Clause 5.1 refers to clause 9, but no clause in the final text is numbered 9."])
+    const particulars = ["Supply Agreement", PARTIES, "Item", "Detail", "Goods", "Schedule 1 Goods [insert description].", "Price", "Schedule 2 Price [insert].",
+      "1. Interpretation", '1.1 "Goods" means the printed cartons described in Schedule 1.', ...clauses, ...SCHEDULES]
+    expect(findings(particulars, particulars)).toEqual(["Clause 5.1 refers to clause 9, but no clause in the final text is numbered 9."])
   })
 
   test("a schedule's reference to its own paragraphs, and a reference to a lettered clause, are not checked as the agreement's clauses", () => {
@@ -295,6 +341,36 @@ describe("the check in a lean run", () => {
     writeFileSync(leanFile(directory, "drafting-notes.md"), "# Drafting notes\n\nNothing to report.\n")
     expect(finalGate(directory)).toMatchObject({ status: "blocked",
       blocking: [expect.objectContaining({ kind: "consistency", resolution: "the drafting notes do not name this cross-reference or defined-term problem" })] })
+  }, 120_000)
+
+  test("a drafted schedule heading the changes close with an open item still heads the schedule its clauses refer to", async () => {
+    // Each part prints its own heading, as an outline's display headings have it.
+    const parts: Record<string, string> = {
+      "1 Delivery": "## 1 Delivery\n\n1.1 The supplier shall deliver the goods described in Schedule 1 within thirty days of the order date.\n\n1.2 The goods are packed as set out in Schedule 2.",
+      "2 Payment": "## 2 Payment\n\n2.1 Payment is due on delivery.",
+      "Schedule 1 Goods": "## Schedule 1 Goods\n\nPrinted cartons as specified in each order.",
+    }
+    const outline = ["Acting for: not stated", "# Supply agreement", "Form: agreement",
+      ...Object.keys(parts).flatMap(heading => [`## ${heading}`, `Display heading: ${heading}`, `The ${heading} part.`])].join("\n")
+    const draft: Reply = prompt => {
+      const named = /^Draft part \d+ of \d+ of "[^"]*": (.+)$/m.exec(prompt)
+      return named ? parts[named[1]!]! : outline
+    }
+    const flag: Reply = prompt => JSON.stringify({
+      amendments: [{ pid: pidIn(prompt, "Schedule 1 Goods"), updated: "Schedule 1 Goods [open item: confirm the carton specification].",
+        reason: "The carton specification is not settled.", sources: [{ source_id: SOURCE, quote: "Payment is due on delivery." }] }],
+      questions: [],
+    })
+    const directory = matter()
+    const model = scriptedModel({ [AGENT.draft]: draft, [AGENT.review]: () => NO_FINDINGS, [AGENT.changes]: sameSession(flag), [AGENT.finalize]: draftingNotes })
+    const state = await runLean(directory, { sessions: model.port })
+
+    expect(state.status).toBe("completed")
+    expect(finalBodyParagraphs(directory, "d1").map(row => row.text)).toContain("Schedule 1 Goods [open item: confirm the carton specification].")
+    // Schedule 2, which the text never had, is still reported.
+    expect(readOpenItems(directory).filter(item => item.kind === "consistency").map(item => item.detail)).toEqual([
+      "Clause 1.2 refers to Schedule 2, but the final text has no Schedule 2.",
+    ])
   }, 120_000)
 
   test("a body numbered by Word's list numbering is checked by the numbers its list gives it", async () => {
