@@ -252,6 +252,21 @@ test("deleting a sub-clause two clauses cite leaves no reference to the clause n
     .toEqual([row("The Customer shall pay").pid, row("Late payment").pid].toSorted())
 }, 60_000)
 
+test("a changed paragraph keeps a live reference the change did not rewrite where a removed clause's open item breaks the list it was in", async () => {
+  const { directory, row } = await drafted()
+  const removed = row("Invoices are payable")
+  const citing = row("The Customer shall pay")
+  const { rows, fields: after } = await apply(directory, [
+    { pid: removed.pid, existing_sha256: removed.sha256, operation: "delete", updated: "" },
+    { pid: citing.pid, existing_sha256: citing.sha256, updated: "The Customer shall promptly pay as set out in clauses 3.1 and 3.2." },
+  ])
+  const marker = "[open item: refers to 3.1, which was removed]"
+  expect(rows.map(shownText)).toContain(`2.2 The Customer shall promptly pay as set out in clauses ${marker} and 3.1.`)
+  // The former 3.2, now 3.1, still follows its clause.
+  expect(after.filter(field => field.from === "2.2 ").map(field => [field.cached, field.target?.slice(0, 4)])).toEqual([["3.1", "3.1 "]])
+  expect(after.find(field => field.from === "2.2 ")?.target).toStartWith("3.1 Late payment")
+}, 60_000)
+
 test("a clause split in parts stays the target of its references, its bookmark on its first part only", async () => {
   const { directory, row } = await drafted()
   const split = row("Invoices are payable")

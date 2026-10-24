@@ -32,10 +32,13 @@ import { shownText } from "./list-label"
 // keeps its bookmark on its first part, the one that keeps its number.
 //
 // A pass may link only some paragraphs (`relink`), as after an edit: each is
-// read again as the text it shows, its refreshed fields unwrapped, and its
-// references are then linked as a drafted paragraph's are, so a number the edit
-// extended ("clause 6" to "clause 6.2") points at the clause it now names. The
-// other paragraphs are only refreshed.
+// read again as the text it shows, refreshed, and its references are linked as
+// a drafted paragraph's are. A refreshed field that shows a whole reference and
+// points at its clause stays; one showing part of a reference, or pointing at
+// another clause, is replaced by it, so a number the edit extended ("clause 6"
+// to "clause 6.2") points at the clause it now names. A field no reference
+// read from the text covers stays as refreshed. The other paragraphs are only
+// refreshed.
 
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 const XML = "http://www.w3.org/XML/1998/namespace"
@@ -125,13 +128,7 @@ export async function linkCrossReferences(bytes: Uint8Array, options: CrossRefer
       if (changed && row.exact) row.text = runText(row.node)
     })
 
-    // A paragraph to relink shows the same text with its fields unwrapped.
     const relinked = new Set(options.relink && !options.refreshOnly ? rows.flatMap((row, at) => row.exact && options.relink!(row.node) ? [at] : []) : [])
-    for (const at of relinked) for (const field of paragraphFields(rows[at]!.node)) {
-      if (!refInstruction(field)) continue
-      unlink(field)
-      changed = true
-    }
 
     if (!options.refreshOnly && (!options.relink || relinked.size)) {
       const paras = rows.map(row => ({ text: row.clause ? shownText(row) : row.text }))
@@ -147,7 +144,12 @@ export async function linkCrossReferences(bytes: Uint8Array, options: CrossRefer
         const end = start + ref.length
         if (!source.exact || !target.exact || start < 0 || source.text.slice(start, end) !== ref.label) continue
         if ((unlinked.get(ref.at) ?? []).some(span => start <= span.end && span.start <= end)) continue
-        if (paragraphFields(source.node).some(field => start <= field.to && field.from <= end)) continue
+        // A paragraph to relink keeps a field that shows this whole reference
+        // and points at its clause; one showing part of it, or pointing at
+        // another clause, gives way to the reference its text now makes.
+        const overlapping = paragraphFields(source.node).filter(field => start <= field.to && field.from <= end)
+        if (overlapping.length && (!relinked.has(ref.at) || overlapping.some(field => !refInstruction(field)
+          || (field.from === start && field.to === end && marks.get(refInstruction(field)!.name)?.at === ref.target)))) continue
         const attachment = ref.number !== undefined
         const key = `${ref.target}\0${attachment}`
         let name = names.get(key)
@@ -177,6 +179,7 @@ export async function linkCrossReferences(bytes: Uint8Array, options: CrossRefer
           }
           names.set(key, name)
         }
+        for (const field of overlapping) unlink(field)
         const runs = isolate(source.node, start, end)
         if (!runs) continue
         wrapInField(doc, runs, attachment ? ` REF ${name} \\h ` : ` REF ${name} \\r \\h `)
