@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs"
 import { readDocxCommentParagraphs } from "../../lib/docx-comments"
+import { quotedInParagraph } from "../../lib/list-label"
 import { checklistFindingSchema, checklistFindingRecovery, isDeliveryArtifactEvidence, type ChecklistItem } from "./checklist-contract"
 import { readChecklistAdjudicationCounterevidence, readEffectiveChecklistItems } from "./checklist-flow"
 import { checklistDeliveryEvidence } from "./checklist-document-context"
@@ -195,8 +196,9 @@ function pidLabel(item: OpenItem, paragraphs: ParagraphRow[]) {
   // The draft step's only omission is a template gap (draftTemplateItems): it names a part, not a paragraph.
   if (item.stage === "draft" && item.kind === "omission") return "(template part missing, cut short or without its heading in the draft)"
   if (item.ref.pid) return paragraphs.some(row => row.pid === item.ref.pid) ? `[${item.ref.pid}]` : "(not an initial draft paragraph; reassess the finding in the current draft)"
-  const needle = normalize(item.ref.quote ?? item.ref.citation ?? "")
-  const pid = needle ? paragraphs.find(row => normalize(row.text).includes(needle))?.pid : undefined
+  // A quote may open with the list number its reader was shown before the text.
+  const needle = item.ref.quote ?? item.ref.citation ?? ""
+  const pid = normalize(needle) ? paragraphs.find(row => quotedInParagraph(row, needle, normalize))?.pid : undefined
   return pid ? `[${pid}]` : "(paragraph not located)"
 }
 
@@ -257,15 +259,18 @@ export function checklistRepairItems(directory: string, skip: (item_id: string, 
     let current: ReturnType<typeof readDocxCommentParagraphs>
     try { current = readDocxCommentParagraphs(readFileSync(leanFile(directory, file))) } catch { return [] }
     const originals = readParagraphs(directory, document.id)
+    // List numbers come from the lean rows recorded with this body, by paragraph PID.
+    const labels = new Map((file.endsWith("body-applied.docx") ? readParagraphs(directory, document.id, "paragraphs-applied.json") : originals).flatMap(row => row.label ? [[row.pid, row.label] as const] : []))
     const applied = (readLeanJson(directory, `${document.id}/apply.json`) as ApplyResult | undefined)?.applied ?? []
     let pid: string | undefined
-    const inspected: typeof current = []
+    const inspected: (typeof current[number] & { label?: string })[] = []
     for (const evidence of finding.evidence.filter(evidence => evidence.kind === "body" && [document.id, document.file].includes(evidence.document))) {
       const needle = normalize(evidence.text)
       const paragraphs = needle ? current.filter(paragraph => normalize(paragraph.paragraph_text).includes(needle)) : []
       if (paragraphs.length !== 1) continue
       const paragraph = paragraphs[0]!
-      if (!inspected.includes(paragraph)) inspected.push(paragraph)
+      const label = paragraph.pids.map(currentPID => labels.get(currentPID)).find(Boolean)
+      if (!inspected.some(row => row.paragraph_index === paragraph.paragraph_index)) inspected.push(label ? { ...paragraph, label } : paragraph)
       const initial = new Set(paragraph.pids.flatMap(currentPID => [
         ...originals.filter(row => row.pid === currentPID).map(row => row.pid),
         ...applied.filter(row => row.result_pids?.includes(currentPID) && originals.some(original => original.pid === row.pid)).map(row => row.pid),

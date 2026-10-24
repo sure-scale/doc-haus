@@ -1,4 +1,5 @@
 import type { Amendment } from "../../lib/drafting-amendment"
+import { shownText } from "../../lib/list-label"
 import type { ParagraphRow } from "./checks"
 import { plannedDocument, type DocID, type PlannedPart } from "./plan"
 import { excerpt, openItem } from "./quotes"
@@ -86,8 +87,10 @@ export function contractGaps(contract: TemplateContract, body: Body) {
   return measureContract(contract, body).filter(row => row.gap)
 }
 
-/** The body of a rendered draft, or of its final text: the outlined headings
- * are found in the draft's paragraphs in order, and a final paragraph belongs
+/** The body of a rendered draft, or of its final text, as a reader sees it:
+ * each paragraph with the list number Word prints before it, so a numbered
+ * clause line heads its part. The outlined headings are found in the draft's
+ * paragraphs in order, and a final paragraph belongs
  * to the part its paragraph pointer had in the draft (a new one, to the part of
  * the paragraph before it). The document's title line, which the draft opens
  * with, is a heading too, so a title that holds a part's name heads no part. */
@@ -97,7 +100,7 @@ export function rowsBody(outline: Outline, draft: ParagraphRow[], final?: Paragr
     const headingPids = new Set(draft.filter(row => row.draft_heading).map(row => row.pid))
     const rows = final ?? draft
     return {
-      paragraphs: rows.map(row => row.text),
+      paragraphs: rows.map(shownText),
       partOf: rows.reduce<(number | undefined)[]>((acc, row) => [...acc, byPid.has(row.pid) ? byPid.get(row.pid) : acc.at(-1)], []),
       headings: new Set(rows.flatMap((row, at) => headingPids.has(row.pid) ? [at] : [])),
       printed: printedHeadings(outline),
@@ -115,7 +118,7 @@ export function rowsBody(outline: Outline, draft: ParagraphRow[], final?: Paragr
   const byPid = new Map(draft.map((row, at) => [row.pid, draftPart[at]]))
   const rows = final ?? draft
   return {
-    paragraphs: rows.map(row => row.text),
+    paragraphs: rows.map(shownText),
     partOf: rows.reduce<(number | undefined)[]>((acc, row) => [...acc, byPid.has(row.pid) ? byPid.get(row.pid) : acc.at(-1)], []),
     headings: new Set(rows.flatMap((row, at) => headingPids.has(row.pid) ? [at] : [])),
     printed: printedHeadings(outline),

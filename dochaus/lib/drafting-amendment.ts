@@ -4,13 +4,14 @@ import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { z } from "zod"
 import { openRevision } from "./docx-amendments"
+import { clauseNumbering } from "./docx-numbering"
 import { writeDurableBytes } from "./durable-json"
 import { docxodus } from "./docxodus"
 
 // One amendment explicitly replaces, deletes or splits one paragraph, addressed by the
 // paragraph pointer (pid) minted by ensureParagraphPointers. existing_sha256 is
-// paragraphSha256 of the paragraph text the author saw; it is the only
-// integrity check the applier performs.
+// paragraphSha256 of the paragraph text the author saw, without the list label
+// Word numbers it with; it is the only integrity check the applier performs.
 export const amendmentSchema = z.object({
   id: z.string().min(1),
   pid: z.string().min(1),
@@ -59,6 +60,16 @@ export function paragraphBookmarkName(pid: string) {
   return `${PREFIX}${pid}`
 }
 
+/** Whether a .docx body carries paragraph pointers: a document doc.haus rendered. */
+export function hasParagraphPointers(bytes: Uint8Array) {
+  try {
+    const body = unzipSync(bytes, { filter: file => file.name === BODY })[BODY]
+    return Boolean(body) && new RegExp(`w:name="${PREFIX}p[0-9a-f]{12}"`).test(strFromU8(body!))
+  } catch {
+    return false
+  }
+}
+
 // Pids of one opened body paragraph: hidden bookmarks whose start sits in this
 // paragraph (not in a nested text-box paragraph or deleted revision history).
 export function paragraphPointers(node: Element) {
@@ -103,13 +114,27 @@ export function resolveParagraphTarget(targets: ParagraphTarget[], pid: string) 
 // split paragraphs) or a second pointer on one paragraph is replaced. The file
 // is rewritten atomically only when a pointer was added or replaced.
 export async function ensureParagraphPointers(docxPath: string) {
+  return Object.fromEntries((await ensureParagraphRows(docxPath)).map(row => [row.pid, row.text]))
+}
+
+// The same pointers, with the list label Word shows before each numbered
+// paragraph ("1.1", "(a)"). The label is list numbering, not paragraph text:
+// `text` stays the paragraph's own text, which amendments are checked against.
+// `clause` marks a label of the document's clause list (the numbers clause
+// references cite), as against an ordinary numbered list inside a clause.
+export async function ensureParagraphRows(docxPath: string) {
   const source = new Uint8Array(await readFile(docxPath))
   const opened = await openRevision(source)
   try {
-    const result = addParagraphPointers(source, opened.parts, opened.documents[BODY]!, opened.paragraphs
-      .filter(paragraph => paragraph.part === BODY).map(paragraph => ({ node: paragraph.node, text: paragraph.match.text })))
+    const body = opened.paragraphs.filter(paragraph => paragraph.part === BODY)
+    const result = addParagraphPointers(source, opened.parts, opened.documents[BODY]!, body.map(paragraph => ({ node: paragraph.node, text: paragraph.match.text })))
     if (result.bytes !== source) writeDurableBytes(docxPath, result.bytes)
-    return result.pointers
+    const clauses = clauseNumbering(source).numIds
+    return Object.entries(result.pointers).map(([pid, text], index) => {
+      const list = body[index]!.metadata.list
+      const label = list?.generatedLabel?.trim()
+      return { pid, text, ...(label ? { label } : {}), ...(label && clauses.has(String(list!.numId)) ? { clause: true as const } : {}) }
+    })
   } finally {
     opened.session.close()
   }

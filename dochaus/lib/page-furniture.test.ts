@@ -211,11 +211,11 @@ describe("applyPageFurniture", () => {
   test("new relationship ids never take one in use", async () => {
     const parts = unzipSync((await renderMarkdownToDocx(BODY)).bytes)
     parts["word/_rels/document.xml.rels"] = strToU8(strFromU8(parts["word/_rels/document.xml.rels"]!).replace("</Relationships>",
-      `<Relationship Id="rId3" Type="${O}/hyperlink" Target="https://example.com/a" TargetMode="External"/><Relationship Id="rId5" Type="${O}/hyperlink" Target="https://example.com/b" TargetMode="External"/></Relationships>`))
+      `<Relationship Id="rId4" Type="${O}/hyperlink" Target="https://example.com/a" TargetMode="External"/><Relationship Id="rId6" Type="${O}/hyperlink" Target="https://example.com/b" TargetMode="External"/></Relationships>`))
     const bytes = applyPageFurniture(zipSync(parts), AGREEMENT)
     const ids = all(strict(unzipSync(bytes)["word/_rels/document.xml.rels"]!), R, "Relationship").map(row => row.getAttribute("Id"))
     expect(new Set(ids).size).toBe(ids.length)
-    expect(elementChildren(sectPr(bytes)).slice(0, 2).map(node => node.getAttributeNS(O, "id"))).toEqual(["rId4", "rId6"])
+    expect(elementChildren(sectPr(bytes)).slice(0, 2).map(node => node.getAttributeNS(O, "id"))).toEqual(["rId5", "rId7"])
   }, 120000)
 
   test("a document that already has a header or footer is returned unchanged", async () => {
@@ -253,7 +253,7 @@ describe("rendering with furniture", () => {
       for (const name of ["word/header1.xml", "word/footer1.xml"]) expect(strFromU8(parts[name]!)).not.toContain("_dh_")
       const file = path.join(dir, "body.docx")
       writeFileSync(file, rendered.bytes)
-      expect((await paragraphRows(file)).map(row => row.text)).toEqual(["Services Agreement", "1. Term", "The term is one year.", "2. Fees", "The fees are payable monthly."])
+      expect((await paragraphRows(file)).map(row => [row.label, row.text])).toEqual([[undefined, "Services Agreement"], ["1.", "Term"], [undefined, "The term is one year."], ["2.", "Fees"], [undefined, "The fees are payable monthly."]])
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

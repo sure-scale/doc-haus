@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import { workspaceRoot } from "./matter"
-import { DEFAULT_DRAFTING, normalizeApprovedSources, normalizePreferences, renderInstructions, type DraftingPreferences } from "../../../dochaus/lib/drafting-preferences"
+import { DEFAULT_DRAFTING, normalizeApprovedSources, normalizePreferences, normalizeStyleTemplate, renderInstructions, type DraftingPreferences } from "../../../dochaus/lib/drafting-preferences"
 
 export { DEFAULT_DRAFTING, type DraftingPreferences, type RateOverride, type TelemetryPreferences } from "../../../dochaus/lib/drafting-preferences"
 
@@ -66,6 +66,10 @@ export function validateResearchPreferences(input: unknown): asserts input is Re
       typeof value !== "string" || !normalizeApprovedSources([value]).length))
       throw new PreferencesValidationError("Approved sources must be bare hostnames, one per line, with no URL, path, port or wildcard.")
   }
+  // A library template's file name, or "" for the house style. A template
+  // later removed from the library renders in the house style.
+  if (Object.hasOwn(patch, "styleTemplate") && patch.styleTemplate !== "" && (typeof patch.styleTemplate !== "string" || normalizeStyleTemplate(patch.styleTemplate) !== patch.styleTemplate))
+    throw new PreferencesValidationError("Choose a Word template from the template library, or the doc.haus house style.")
 }
 
 export function readDraftingTelemetryRetentionPreference(): number | undefined {

@@ -4,6 +4,7 @@ import path from "node:path"
 import { docxodus } from "../lib/docxodus"
 import { recordRedlineProposal, withRedlineDocumentLock } from "../lib/redlines"
 import { draftingAttribution } from "../lib/docx-attribution"
+import { findPastListLabel } from "../lib/list-label"
 
 // doc.haus tracked-changes tool. Proposes a surgical find/replace edit to the
 // matter's canonical Word (.docx) document as a tracked change, attributed to an
@@ -15,7 +16,7 @@ import { draftingAttribution } from "../lib/docx-attribution"
 
 export default tool({
   description:
-    "Propose a surgical edit to the matter's canonical Word (.docx) document as a tracked change. Finds exact text and proposes replacing it, attributed to an author. The change is recorded as a pending redline the user reviews and accepts or rejects in the doc.haus app — the document is not modified until they accept. Use this for a word/phrase swap; use redline for a whole-clause rewrite, and word-integration for silent (non-tracked) edits.",
+    "Propose a surgical edit to the matter's canonical Word (.docx) document as a tracked change. Finds exact text and proposes replacing it, attributed to an author. The change is recorded as a pending redline the user reviews and accepts or rejects in the doc.haus app — the document is not modified until they accept. Use this for a word/phrase swap; use redline for a whole-clause rewrite, and word-integration for silent (non-tracked) edits. A list number Word prints before a paragraph (\"2.1\") is not text; leave it out of find and replace.",
   args: {
     document: tool.schema.string().describe("Document file name within the matter (the docPath from a citation)"),
     find: tool.schema.string().describe("The exact text to find"),
@@ -34,12 +35,11 @@ export default tool({
     const dx = await docxodus()
     const session = dx.openDocxSession(await Bun.file(file).bytes(), {})
 
-    const targets = session.findAllByText(args.find)
-    if (!targets.length) {
-      session.close()
-      return `Text not found in ${path.basename(file)}: ${JSON.stringify(args.find)}`
-    }
+    const located = locate(session, args.find, args.replace)
     session.close()
+    if (!located.targets.length) return `Text not found in ${path.basename(file)}: ${JSON.stringify(args.find)}`
+    if (located.error) return located.error
+    const { find, replace } = located
 
     const author = args.author ?? draftingAttribution().author
     // Recording the proposal is gated on the matter owner's approval (permission
@@ -51,31 +51,31 @@ export default tool({
       permission: "tracked-changes",
       patterns: [file],
       always: [file],
-      metadata: { document: path.basename(file), find: args.find, replace: args.replace, comment: args.comment, author },
+      metadata: { document: path.basename(file), find, replace, comment: args.comment, author },
     })
 
     const proposal = await withRedlineDocumentLock(ctx.directory, file, async () => {
       if (!existsSync(file)) return { error: `Document not found in this matter: ${args.document}` }
       const current = dx.openDocxSession(await Bun.file(file).bytes(), {})
-      const currentTargets = current.findAllByText(args.find)
-      if (!currentTargets.length) {
-        current.close()
-        return { error: `Text changed before approval and is no longer present in ${path.basename(file)}.` }
-      }
-      const anchor = currentTargets[0].id
+      const again = locate(current, args.find, args.replace)
+      // Accepting the change replaces every occurrence of the recorded text.
+      const matches = again.find === find ? current.findAllByText(find).length : 0
       current.close()
+      if (again.error) return { error: again.error }
+      if (!again.targets.length || !matches) return { error: `Text changed before approval and is no longer present in ${path.basename(file)}.` }
+      const anchor = again.targets[0]!.id
       const recorded = recordRedlineProposal(ctx.directory, {
         docPath: file,
         docName: path.basename(file),
         scope: "phrase",
-        findText: args.find,
-        oldText: args.find,
-        newText: args.replace,
+        findText: find,
+        oldText: find,
+        newText: replace,
         author,
         reviewComment: args.comment,
         anchorId: anchor,
       })
-      return { ...recorded, anchor, matches: currentTargets.length }
+      return { ...recorded, anchor, matches }
     })
     if ("error" in proposal) return proposal.error
 
@@ -84,8 +84,8 @@ export default tool({
       : ""
     return {
       title: `Proposed tracked change in ${path.basename(file)}`,
-      output: `Proposed replacing ${JSON.stringify(args.find)} with ${JSON.stringify(args.replace)} in ${path.basename(file)} (${proposal.matches} occurrence(s)), attributed to ${author}. Recorded as pending redline #${proposal.id} with its lawyer-facing review comment — the user reviews and accepts or rejects it in the doc.haus app.${superseded}`,
-      metadata: { document: file, find: args.find, replace: args.replace, comment: args.comment, matches: proposal.matches, author, redline: proposal.id, superseded: proposal.superseded.map((candidate) => candidate.id) },
+      output: `Proposed replacing ${JSON.stringify(find)} with ${JSON.stringify(replace)} in ${path.basename(file)} (${proposal.matches} occurrence(s)), attributed to ${author}. Recorded as pending redline #${proposal.id} with its lawyer-facing review comment — the user reviews and accepts or rejects it in the doc.haus app.${superseded}`,
+      metadata: { document: file, find, replace, comment: args.comment, matches: proposal.matches, author, redline: proposal.id, superseded: proposal.superseded.map((candidate) => candidate.id) },
     }
   },
 })
@@ -100,4 +100,10 @@ function matterDocument(directory: string, file: string) {
   } catch {
     return false
   }
+}
+
+/** Where `find` is in the document, past a copied list number (findPastListLabel).
+ * Accept replaces the recorded text wherever it occurs. */
+function locate(session: ReturnType<Awaited<ReturnType<typeof docxodus>>["openDocxSession"]>, find: string, replace: string) {
+  return findPastListLabel(find, replace, text => session.findAllByText(text), id => session.getAnchorInfo(id)?.visibleText, { recorded: true })
 }

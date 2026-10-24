@@ -51,7 +51,7 @@ export function assignChecklistTargetContext(context: ChecklistDocumentContext, 
     if (!paragraph || range.end_char < range.start_char || range.end_char > paragraph.paragraph_text.length) throw Error("Assigned current paragraph range is unavailable.")
     const text = paragraph.paragraph_text.slice(range.start_char, range.end_char)
     // The range stays assigned; a whitespace-only slice is not evidence.
-    return text.trim() ? [{ document: context.input.item.target.document, locator: `native PIDs ${paragraph.pids.join(", ") || "unavailable"}; accepted paragraph_index ${range.paragraph_index}; UTF-16 chars ${range.start_char}-${range.end_char}`, text, kind: "body" as const }] : []
+    return text.trim() ? [{ document: context.input.item.target.document, locator: `${paragraph.label ? `Word list number ${paragraph.label} (printed before the text, not part of it); ` : ""}native PIDs ${paragraph.pids.join(", ") || "unavailable"}; accepted paragraph_index ${range.paragraph_index}; UTF-16 chars ${range.start_char}-${range.end_char}`, text, kind: "body" as const }] : []
   })
   // The whole-target unit receives each exact artifact property string, not
   // passages, and the delivery rows of the files that deliver the target

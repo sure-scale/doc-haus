@@ -2,7 +2,9 @@ import { afterAll, expect, test } from "bun:test"
 import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import mammoth from "mammoth"
 import { ingestDocument } from "../../services/ingest/src/ingest"
+import { verifyQuote } from "../lib/quote-verify"
 import { renderMarkdownToDocx } from "../lib/render"
 import cite from "../tool/cite"
 
@@ -12,12 +14,15 @@ import cite from "../tool/cite"
 const directories: string[] = []
 afterAll(() => directories.forEach((directory) => rmSync(directory, { recursive: true, force: true })))
 
-const TERMS = Buffer.from((await renderMarkdownToDocx([
+// Rendered drafts carry Word list numbering, not typed numbers; ingest reads
+// the labels Word shows (docx-list-labels.ts).
+const render = async (blocks: string[]) => Buffer.from((await renderMarkdownToDocx(blocks.join("\n\n"))).bytes)
+const TERMS = await render([
   "## 1. Delivery",
   "The Supplier shall deliver the synthetic cartons to the Customer's site.",
   "## 2. Payment",
   "The Customer shall pay each synthetic invoice within thirty days of receipt.",
-].join("\n\n"))).bytes)
+])
 
 async function citeQuote(directory: string, name: string, quote: string) {
   const result = await cite.execute(
@@ -41,6 +46,21 @@ test("a verified quotation carries the section of the indexed passage that holds
   const delivery = await citeQuote(directory, "Supply terms.docx", "deliver the synthetic cartons")
   expect(payment.section).toBe("2")
   expect(delivery.section).toBe("1")
+})
+
+test("a re-uploaded draft keeps its clause numbers in citations and quote checks", async () => {
+  const draft = await render([
+    "## 1. Delivery",
+    "The Supplier shall deliver the synthetic cartons to the Customer's site.",
+    "## 2. Payment",
+    "2.1 The Customer shall pay each synthetic invoice within thirty days of receipt.",
+  ])
+  // The number is Word list numbering, not text in the paragraph's runs.
+  expect((await mammoth.extractRawText({ buffer: draft })).value).not.toContain("2.1")
+  const directory = matterDir()
+  await ingestDocument(directory, "Supply draft.docx", draft)
+  expect((await citeQuote(directory, "Supply draft.docx", "pay each synthetic invoice within thirty days")).section).toBe("2.1")
+  expect(verifyQuote({ directory, quote: "2.1 The Customer shall pay each synthetic invoice" }).found).toBe(true)
 })
 
 test("a document outside the index keeps the generic label", async () => {

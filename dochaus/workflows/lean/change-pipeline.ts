@@ -5,7 +5,7 @@ import { existsSync, readFileSync } from "node:fs"
 import { readDocxCommentParagraphs } from "../../lib/docx-comments"
 import { amendmentParagraphs } from "../../lib/drafting-amendment"
 import { askedQuestions, checkChanges, parseJsonObject, questionIssues } from "./change-checks"
-import { finalBodyParagraphs, readChangeList, readParagraphs, record, type ChangeList } from "./checks"
+import { finalBodyParagraphs, readChangeList, readParagraphs, record, type ChangeList, shownText } from "./checks"
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { reviewStages, earlierDocuments, readLeanPlan, type DocID } from "./plan"
 import { packageCompositionBlock, stagePrompt, retryPrompt } from "./prompts"
@@ -47,7 +47,7 @@ const PREPARATION_WIDTH = 4
 export function changePlanPrompt(directory: string, document: DocID) {
   return [
     stagePrompt(directory, `${document}.change-plan`, { contextOnly: true }),
-    `<draft_paragraphs>\n${readParagraphs(directory, document).map(row => `[${row.pid}] ${row.text}`).join("\n\n")}\n</draft_paragraphs>`,
+    `<draft_paragraphs>\n${readParagraphs(directory, document).map(row => `[${row.pid}] ${shownText(row)}`).join("\n\n")}\n</draft_paragraphs>`,
     draftingStyleWarningsBlock(readParagraphs(directory, document)),
     `<review_findings>\n${findingsText(findingsFor(directory, document), document)}\n</review_findings>`,
     "Each review finding above concerns this document; one with raised_by was found by the review of that earlier document. Adjudicate every one: name its id in the resolves of the group that amends for it, of the findings entry (disposition) that defers, recommends or rejects it, or of the question it needs. One entry may resolve several findings. A review finding that needs no change is a rejected entry with its reason; dismissed resolves nothing.",
@@ -235,7 +235,7 @@ export function changePreparationPrompt(directory: string, document: DocID, plan
     `<adjudicated_dependencies_not_independent_authority>\n${plan.shared_decisions.join("\n")}\n</adjudicated_dependencies_not_independent_authority>`,
     "These generated dependencies summarize prior source adjudication. They do not themselves establish a human decision, override original source instructions or waive unresolved work. Actual source instructions and human answers govern; disclose a conflict rather than silently adopting a generated scope limit.",
     `<group_goal_and_evidence>\n${JSON.stringify(writerGroup(group), null, 2)}\n</group_goal_and_evidence>`,
-    `<draft_paragraphs>\n${readParagraphs(directory, document).filter(row => pids.has(row.pid)).map(row => `[${row.pid}] ${row.text}`).join("\n\n")}\n</draft_paragraphs>`,
+    `<draft_paragraphs>\n${readParagraphs(directory, document).filter(row => pids.has(row.pid)).map(row => `[${row.pid}] ${shownText(row)}`).join("\n\n")}\n</draft_paragraphs>`,
     `<previous_group_changes>\n${JSON.stringify([...(prior?.amendments ?? []), ...(prior?.withheld ?? []).map(row => row.amendment)].filter(row => pids.has(row.pid)), null, 2)}\n</previous_group_changes>`,
     "Amend the listed initial draft paragraphs, not paragraphs reconstructed from the supplied original: the original is evidence and the comparison baseline, while the listed draft is the amendment target. Use the listed group pids exactly. A scope mismatch is a preparation limitation for the reconciler, not a question for the human about internal identifiers. Ask only a genuinely indispensable human decision; never request paragraph bookkeeping from the user.",
     "Prepare this adjudicated group only. Retain unaffected wording and every supported goal; reconcile dependent paragraphs together. Supporting excerpts and the spine are retrieval guides, not authority: inspect underlying canonical passages and qualifications on demand. Other groups cannot be amended here. If the supplied scope misses a material dependency or decision, do not guess: explain the problem and ask an indispensable question when only the lawyer can decide. A final reconciler independently considers the whole body.",
@@ -316,7 +316,8 @@ export function projectedChangeParagraphs(directory: string, document: DocID) {
   const amendments = new Map(changes.amendments.map(row => [row.pid, amendmentParagraphs(row)]))
   const paragraphs = readParagraphs(directory, document)
   if (changes.amendments.some(row => !paragraphs.some(paragraph => paragraph.pid === row.pid))) throw new Error("Changes address an unknown initial paragraph.")
-  return paragraphs.flatMap(row => (amendments.get(row.pid) ?? [row.text]).map(text => ({ ...row, text })))
+  // A split's later paragraphs take numbers the list assigns once applied.
+  return paragraphs.flatMap(row => (amendments.get(row.pid) ?? [row.text]).map((text, at) => at ? { ...row, text, label: undefined } : { ...row, text }))
 }
 
 /** The body a semantic repair refers to: for a checklist repair, focused
@@ -324,9 +325,12 @@ export function projectedChangeParagraphs(directory: string, document: DocID) {
  * apply, or the applied final body after it. */
 export function repairBodyText(directory: string, document: DocID, projected: boolean, actualWord = false) {
   if (actualWord) {
-    const file = currentDocumentArtifacts(directory, document).body
+    const current = currentDocumentArtifacts(directory, document)
+    const file = current.body
     if (!file) throw new Error(`Checklist repair requires a readable current Word body for ${document}.`)
     const rows = readDocxCommentParagraphs(readFileSync(leanFile(directory, file)))
+    // List numbers come from the lean rows recorded with this body, by paragraph PID.
+    const labels = new Map(readParagraphs(directory, document, current.applied ? "paragraphs-applied.json" : "paragraphs.json").flatMap(row => row.label ? [[row.pid, row.label] as const] : []))
     const repairs = documentRepairs(directory, document)?.items ?? []
     // Other semantic repair stages retain their existing full-body context.
     if (repairs.some(item => item.stage !== "checklist-check"))
@@ -342,11 +346,11 @@ export function repairBodyText(directory: string, document: DocID, projected: bo
     }
     return [
       `Focused actual current Word context from .dochaus/lean/${file}. This is not the whole body. For additional relevant text use read-document with document=${document}, view=current_body and bounded offset/count; search-document supports the same document/view. Current PIDs identify evidence only; amendments still target initial draft PIDs.`,
-      selected.size ? [...selected].sort((a, b) => a - b).map(index => `[${rows[index]!.pids.join(", ") || "native PID unavailable"}] ${rows[index]!.paragraph_text}`).join("\n\n")
+      selected.size ? [...selected].sort((a, b) => a - b).map(index => `[${rows[index]!.pids.join(", ") || "native PID unavailable"}] ${shownText({ text: rows[index]!.paragraph_text, label: rows[index]!.pids.map(pid => labels.get(pid)).find(Boolean) })}`).join("\n\n")
         : "No affected current paragraph was located uniquely. Retrieve the relevant current text before deciding; do not guess a paragraph or treat missing inspection as a body defect.",
     ].join("\n\n")
   }
-  return (projected ? projectedChangeParagraphs(directory, document) : finalBodyParagraphs(directory, document)).map(row => `[${row.pid}] ${row.text}`).join("\n\n")
+  return (projected ? projectedChangeParagraphs(directory, document) : finalBodyParagraphs(directory, document)).map(row => `[${row.pid}] ${shownText(row)}`).join("\n\n")
 }
 
 export function changeReviewPrompt(directory: string, document: DocID) {
@@ -355,9 +359,10 @@ export function changeReviewPrompt(directory: string, document: DocID) {
     stagePrompt(directory, `${document}.change-review`, { contextOnly: true }),
     '<artifact_phase>before-apply</artifact_phase>',
     "This review precedes application of the current projected revision. Review the proposed explanations in reconciled_changes reason/source records, their evidence and consistency with the projected wording. Native redlines and anchored Word comments for this revision are generated by the apply step and checked against actual exported records in package review afterwards. Earlier exports may exist on disk but do not verify this revision. Absence of the current export is not a pre-apply defect or proof of missing final delivery. Do not claim it already exists or ask the read-only correction agents to create or verify an artifact before apply. The explanations array records source-to-initial-draft revisions separately from later amendments and is exported at apply without changing body text. Verify material coverage against the supplied original, and that each reason describes the actual change and its final effect. Missing or inaccurate proposed explanations remain material findings.",
-    `<initial_draft>\n${readParagraphs(directory, document).map(row => `[${row.pid}] ${row.text}`).join("\n\n")}\n</initial_draft>`,
-    `<projected_full_body>\n${projectedChangeParagraphs(directory, document).map(row => `[${row.pid}] ${row.text}`).join("\n\n")}\n</projected_full_body>`,
-    ...earlierDocuments(directory, document).map(row => `<earlier_body document="${row.id}">\n${finalBodyParagraphs(directory, row.id).map(paragraph => `[${paragraph.pid}] ${paragraph.text}`).join("\n\n")}\n</earlier_body>`),
+    `<initial_draft>\n${readParagraphs(directory, document).map(row => `[${row.pid}] ${shownText(row)}`).join("\n\n")}\n</initial_draft>`,
+    "List numbers in projected_full_body are those before apply: when the changes are applied, the list renumbers the paragraphs after a deleted or split one, and a split's later paragraphs show the numbers the list then gives them.",
+    `<projected_full_body>\n${projectedChangeParagraphs(directory, document).map(row => `[${row.pid}] ${shownText(row)}`).join("\n\n")}\n</projected_full_body>`,
+    ...earlierDocuments(directory, document).map(row => `<earlier_body document="${row.id}">\n${finalBodyParagraphs(directory, row.id).map(paragraph => `[${paragraph.pid}] ${shownText(paragraph)}`).join("\n\n")}\n</earlier_body>`),
     `<reconciled_changes>\n${readLeanText(directory, `${document}/changes.json`)}\n</reconciled_changes>`,
     `<adjudicated_goals>\n${adjudicated ? JSON.stringify(writerPlan(adjudicated), null, 2) : "No prior adjudication."}\n</adjudicated_goals>`,
     `<questions>\n${JSON.stringify(readQuestions(directory).map(questionContent), null, 2)}\n</questions>`,

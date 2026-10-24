@@ -67,7 +67,7 @@
         "fflate": "0.8.3",
         "htmlparser2": "8.0.2",
         "iconv-lite": "0.7.3",
-        "mammoth": "^1.8.0",
+        "mammoth": "1.12.3",
         "micromark": "4.0.2",
         "micromark-util-decode-string": "2.0.1",
         "playwright": "1.59.1",

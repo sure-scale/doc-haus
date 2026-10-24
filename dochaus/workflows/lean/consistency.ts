@@ -1,5 +1,5 @@
 import { DOCUMENT_FORMS } from "../../lib/page-furniture"
-import { finalBodyParagraphs, type ParagraphRow } from "./checks"
+import { finalBodyParagraphs, shownText, type ParagraphRow } from "./checks"
 import { nameKey, namedIn, readLeanPlan, type DocID } from "./plan"
 import { excerpt, openItem } from "./quotes"
 import type { OpenItem } from "./state"
@@ -24,12 +24,16 @@ import { sourceText } from "./template-structure"
 // refers to. A reference "of" another named instrument, or placed after a
 // pack document's title, is resolved in that pack document when one has that
 // title and is otherwise not this document's to check, nor is a statutory
-// citation. Text in square brackets (a placeholder or an open-item marker)
-// refers to nothing. A document whose clause numbers are not in its text
-// (Word's own numbering, or no numbering) has its clause references left
-// unchecked, and so has advice or a letter, which cites the clauses of the
-// documents it discusses. A document planned without a known form is not
-// checked at all.
+// citation or a reference "of this Schedule" (annex, part …), which cites the
+// attachment's own numbering. Text in square brackets (a placeholder or an open-item marker)
+// refers to nothing. A paragraph numbered by the document's clause list (Word
+// list numbering) is read with the label the list gives it, as a reader sees
+// it; an ordinary numbered list inside a clause numbers no clauses, so its
+// labels are not read. A document with no clause numbers has its clause
+// references left unchecked, and so has advice or a letter, which cites the
+// clauses of the documents it discusses. An original read from its source
+// text carries the list labels ingest's extraction writes into it as text. A
+// document planned without a known form is not checked at all.
 //
 // Defined terms. A term is defined by a quoted or "the"-introduced parenthetical
 // ("… Limited (the "Customer")", "(the Supplier)") or by a "means" definition.
@@ -43,8 +47,10 @@ import { sourceText } from "./template-structure"
 // Date") that the pack defines nowhere. Plural and possessive forms are uses of
 // the term.
 
-/** One paragraph of a document's text; the final body's carry a pointer. */
-export type Para = { pid?: string; text: string }
+/** One paragraph of a document's text; the final body's carry a pointer, and
+ * `links` for its live cross-references (REF fields): where each cached number
+ * is in `text`, and the number its target now has (`to`), when known. */
+export type Para = { pid?: string; text: string; links?: { start: number; length: number; to?: string }[] }
 /** Another document of the pack, by its title; `earlier` documents are compared for definitions. */
 export type PackDocument = { title: string; paras: Para[]; earlier: boolean }
 export type ConsistencyFinding = { pid?: string; detail: string }
@@ -53,18 +59,26 @@ export type ConsistencyFinding = { pid?: string; detail: string }
  * final body. The baselines are the original it revises, when the outline
  * names one, and its drafted body; the other pack documents are those whose
  * final bodies exist. */
-export function consistencyItems(directory: string, document: DocID, draft: ParagraphRow[], final: ParagraphRow[]): OpenItem[] {
+export function consistencyItems(directory: string, document: DocID, draft: ParagraphRow[], final: ParagraphRow[], fields?: ReferenceFields): OpenItem[] {
   const plan = readLeanPlan(directory)
   const position = plan?.documents.findIndex(row => row.id === document) ?? -1
   const entry = plan?.documents[position]
   if (!plan || !entry) return []
   const original = entry.comparison ? sourceLines(sourceText(directory, entry.comparison)) : []
+  const shown = (rows: ParagraphRow[]) => rows.map(row => ({ pid: row.pid, text: row.clause ? shownText(row) : row.text }))
   const others = plan.documents.flatMap((row, at): PackDocument[] => {
     if (row.id === document) return []
-    const paras = finalBodyParagraphs(directory, row.id)
+    const paras = shown(finalBodyParagraphs(directory, row.id))
     return paras.length ? [{ title: row.title, paras, earlier: at < position }] : []
   })
-  return consistencyFindings({ title: entry.title, form: entry.form, final, baselines: [original, draft].filter(rows => rows.length), others })
+  const labels = new Map(final.map(row => [row.pid, row.label]))
+  const linked = shown(final).map((para, at) => {
+    const row = final[at]!
+    const links = fields?.get(row.pid)?.map(field => ({ start: field.start + (row.clause ? row.label!.length + 1 : 0), length: field.length,
+      to: field.number ? listNumber(labels.get(field.target ?? "")) : field.covers }))
+    return links ? { ...para, links } : para
+  })
+  return consistencyFindings({ title: entry.title, form: entry.form, final: linked, baselines: [original, shown(draft)].filter(rows => rows.length), others })
     .map(finding => openItem("apply", "consistency", finding.detail, finding.pid ? { pid: finding.pid } : {}))
 }
 
@@ -79,9 +93,26 @@ export function consistencyFindings(input: { title: string; form?: string; final
   // Advice and letters point at clauses of the documents they discuss and name
   // things without defining them; only references to a named pack document,
   // and definitions they do make, are theirs to check.
-  const advisory = input.form === "advice" || input.form === "letter" || input.form === "advice letter"
+  const advisory = advisoryForm(input.form)
   const findings = [...referenceFindings(input.title, final, baselines, pack, advisory), ...termFindings(input.title, final, baselines, pack, advisory)]
   return [...new Map(findings.map(finding => [`${finding.pid ?? ""}\0${finding.detail}`, finding])).values()]
+}
+
+/** The live cross-references of a body by paragraph pointer (docx-crossrefs.ts
+ * referenceFields): where each cached result is in the paragraph's text, and
+ * the paragraph its bookmark is on, or the text it covers. */
+export type ReferenceFields = Map<string, { start: number; length: number; number: boolean; target?: string; covers?: string }[]>
+
+/** The number a cross-reference to a list paragraph shows: its label without
+ * a trailing period, when that is a plain dotted number. */
+function listNumber(label: string | undefined) {
+  const number = label?.replace(/\.+$/, "")
+  return number && /^\d+(?:\.\d+)*$/.test(number) ? number : undefined
+}
+
+/** Advice and letters: they cite the clauses of the documents they discuss. */
+export function advisoryForm(form: string | undefined) {
+  return form === "advice" || form === "letter" || form === "advice letter"
 }
 
 function sourceLines(text: string): Para[] {
@@ -178,7 +209,17 @@ function outline(paras: Para[]): Outline {
 }
 
 function visible(text: string) {
-  return text.replace(/\[[^\]]*\]/g, match => " ".repeat(match.length)).trim()
+  return blanked(text).trim()
+}
+
+function blanked(text: string) {
+  return text.replace(/\[[^\]]*\]/g, match => " ".repeat(match.length))
+}
+
+/** Where a paragraph's visible text starts in its text. */
+function leading(text: string) {
+  const blank = blanked(text)
+  return blank.length - blank.trimStart().length
 }
 
 function top(label: string) {
@@ -223,14 +264,18 @@ function key(text: string) {
 
 // --------------------------------------------------------------- references
 
-type Reference = { kind: Kind; labels: string[]; at: number; index: number; target?: string }
+/** `spans` holds where each label starts in the paragraph's visible text. */
+type Reference = { kind: Kind; labels: string[]; spans: number[]; at: number; index: number; target?: string }
 
 const REFERENCE_WORD = /\b(clauses?|sub-?clauses?|sections?|articles?|schedules?|annex(?:es)?|appendix|appendices|exhibits?|attachments?)\s+/gi
-const CLAUSE_NUMBER = /^(\d{1,3}(?:\.\d{1,3}){0,3})(?![\d])((?:\s?\([a-zA-Z0-9]{1,5}\))*)/
+/** A clause number, whole: "2A", "2.1A" and "2.1.1.1.1" are not clause 2, 2.1 or 2.1.1.1. */
+const CLAUSE_NUMBER = /^(\d{1,3}(?:\.\d{1,3}){0,3})(?![\d\p{L}]|\.[\d\p{L}])((?:\s?\([a-zA-Z0-9]{1,5}\))*)/u
 const ATTACHMENT_NUMBER = /^(\d{1,3}|[A-Z]|[IVX]{1,5})(?![\w])/
 const CHAIN = /^(?:\s*,\s*(?:and\s+|or\s+)?|\s+(?:and|or|to|through|until)\s+|\s*[-–—]\s*)((?:clauses?|sub-?clauses?|sections?|articles?|schedules?|annex(?:es)?|appendix|appendices|exhibits?|attachments?)\s+)?/i
 const LINKING_WORDS = new Set(["and", "or", "to", "through", "until", "inclusive", "above", "below", "of", "shall", "will", "apply", "applies", "is", "are", "has", "have", "may", "must", "which", "that", "as", "in", "on", "for", "by", "with", "where", "if", "does", "do", "respectively", "nor", "but", "not", "unless", "hereof", "hereto", "herein"])
 const OTHER_INSTRUMENT = /^\s*(of|to|in|under)\s+(?:the\s+)?(\p{Lu}[\p{L}\p{N}’'&.-]*(?:\s+(?:(?:of|and|for|the|on|in|to|&)\s+)?(?:\p{Lu}[\p{L}\p{N}’'&.-]*|\d{4}))*)/u
+/** "… of this Schedule": the attachment's own numbering, not the document's clauses. */
+const THIS_ATTACHMENT = /^\s*(?:of|to|in|under)\s+this\s+(?:schedule|annex|appendix|exhibit|attachment|part)\b/i
 /** A caption after a cited number: "clause 4 (Payment)". */
 const CAPTION = /^\s*\([^()]{2,60}\)/
 /** An abbreviated statute right after the number: "section 5 CA 2006", "Article 6 GDPR". */
@@ -277,6 +322,7 @@ function references(document: Outline, title: string, titles: string[]): Referen
     const first = number.exec(rest)
     if (!first) return []
     const labels = [CLAUSE_KINDS.has(kind) ? first[1]! : first[1]!.toUpperCase()]
+    const spans = [match.index + match[0].length]
     rest = rest.slice(first[0].length)
     const bare = rest
     rest = caption(rest)
@@ -289,10 +335,12 @@ function references(document: Outline, title: string, titles: string[]): Referen
       const word = /^\s+([a-z]+)\b/.exec(after)?.[1]
       if (word && !LINKING_WORDS.has(word)) break
       labels.push(CLAUSE_KINDS.has(kind) ? next[1]! : next[1]!.toUpperCase())
+      spans.push(text.length - rest.length + link[0].length)
       rest = after
     }
+    if (THIS_ATTACHMENT.test(rest)) return []
     const before = text.slice(Math.max(0, match.index - 60), match.index)
-    const reference: Reference = { kind, labels, at, index: match.index }
+    const reference: Reference = { kind, labels, spans, at, index: match.index }
     if (AUTHORITY_BEFORE.test(before) || (labels.length === 1 && ACRONYM_AFTER.test(bare))) return [{ ...reference, external: true }]
     const lead = key(before).replace(/\s+(?:under|in|pursuant to|at|see)$/, "")
     const preceding = titles.find(name => words(key(name)) >= 2 && (lead === key(name) || lead.endsWith(` ${key(name)}`)))
@@ -304,8 +352,11 @@ function references(document: Outline, title: string, titles: string[]): Referen
   // A number cited as statute's, or as another instrument's, is not this
   // document's wherever it recurs.
   found.forEach(row => row.external && row.labels.forEach(label => external.add(`${row.kind} ${label}`)))
-  return found.filter(row => row.target || !row.external).map(({ external: _external, ...row }) => row.target ? row : { ...row, labels: row.labels.filter(label => !external.has(`${row.kind} ${label}`)) })
-    .filter(row => row.labels.length)
+  return found.filter(row => row.target || !row.external).map(({ external: _external, ...row }) => {
+    if (row.target) return row
+    const kept = row.labels.flatMap((label, n) => external.has(`${row.kind} ${label}`) ? [] : [n])
+    return { ...row, labels: kept.map(n => row.labels[n]!), spans: kept.map(n => row.spans[n]!) }
+  }).filter(row => row.labels.length)
 }
 
 type State = "present" | "missing" | "unknown"
@@ -347,12 +398,62 @@ function moved(before: Outline, after: Outline, label: string): string | undefin
   return guess && after.printed.has(guess) ? guess : undefined
 }
 
-function referenceFindings(title: string, final: Outline, baselines: Outline[], pack: (PackDocument & { outline: Outline })[], advisory: boolean): ConsistencyFinding[] {
-  const refs = references(final, title, pack.map(row => row.title))
+/** The words that cite this document's own clauses: "clause" always, and
+ * "section" or "article" where the document is written with them or cites no
+ * clause as "clause". */
+function clauseKinds(final: Outline, refs: Reference[]) {
   const kinds = new Set<Kind>(["clause"])
   for (const kind of ["section", "article"] as const)
     if (final.keywords.has(kind) || final.texts.some(text => new RegExp(`\\b(?:this|these) ${kind}s?\\b`, "i").test(text)) || !refs.some(row => row.kind === "clause"))
       kinds.add(kind)
+  return kinds
+}
+
+/** Each reference in a document to one of its own clauses (printed once) or
+ * attachments, where the text settles which paragraph it points at: the
+ * paragraph it is in (`at`) and where its number is in that paragraph's text,
+ * and the paragraph it points at (`target`), with where an attachment's number
+ * is in its heading. Advice and letters cite the clauses of the documents they
+ * discuss, so they have none, and quoted text (a clause a deed of variation
+ * inserts into another agreement) is that other document's. */
+export function resolvedReferences(title: string, paras: Para[], titles: string[] = [], form?: string): { kind: Kind; label: string; at: number; start: number; length: number; target: number; number?: number }[] {
+  if (advisoryForm(form)) return []
+  const document = outline(paras)
+  const refs = references(document, title, titles)
+  const kinds = clauseKinds(document, refs)
+  const twice = new Set(document.duplicates.map(row => row.label))
+  const lead = (at: number) => leading(paras[at]!.text)
+  return refs.flatMap(ref => ref.target ? [] : ref.labels.flatMap((label, n) => {
+    if (quoted(document.texts[ref.at]!, ref.spans[n]!)) return []
+    const start = lead(ref.at) + ref.spans[n]!
+    if (CLAUSE_KINDS.has(ref.kind)) {
+      const target = document.printed.get(label)
+      if (!kinds.has(ref.kind) || twice.has(label) || target === undefined || clauseState(document, label) !== "present") return []
+      return [{ kind: ref.kind, label, at: ref.at, start, length: label.length, target }]
+    }
+    const target = document.attachments.get(`${ref.kind} ${label}`)
+    if (target === undefined) return []
+    const number = lead(target) + /^\S+\s+/.exec(document.texts[target]!)![0].length
+    return [{ kind: ref.kind, label, at: ref.at, start, length: label.length, target, number }]
+  }))
+}
+
+/** Whether `index` of a paragraph's text is inside a quotation in double
+ * marks ("…" or “…”), or after a mark the paragraph does not close: a
+ * quotation running on into the next paragraph opens each of its paragraphs. */
+function quoted(text: string, index: number) {
+  let open = false
+  for (const char of text.slice(0, index)) {
+    if (char === "“") open = true
+    else if (char === "”") open = false
+    else if (char === "\"") open = !open
+  }
+  return open
+}
+
+function referenceFindings(title: string, final: Outline, baselines: Outline[], pack: (PackDocument & { outline: Outline })[], advisory: boolean): ConsistencyFinding[] {
+  const refs = references(final, title, pack.map(row => row.title))
+  const kinds = clauseKinds(final, refs)
   // A number printed twice matters where something refers to it, unless one of
   // the two is a heading and the other the text under it ("6.2 Seller's
   // obligations" over "6.2 At Completion …").
@@ -363,7 +464,7 @@ function referenceFindings(title: string, final: Outline, baselines: Outline[], 
     pid: final.paras[row.at]!.pid,
     detail: `Two paragraphs of the final text are numbered ${row.label} (${where(final, final.printed.get(row.label)!)} and the paragraph beginning "${excerpt(final.paras[row.at]!.text, 60)}"); a reference to ${row.label} is ambiguous.`,
   }))
-  for (const ref of refs) for (const label of ref.labels) {
+  for (const ref of refs) for (const [n, label] of ref.labels.entries()) {
     const pid = final.paras[ref.at]!.pid
     const from = capitalize(where(final, ref.at))
     if (ref.target) {
@@ -373,6 +474,15 @@ function referenceFindings(title: string, final: Outline, baselines: Outline[], 
       continue
     }
     if (advisory) continue
+    // A live cross-reference points where its field's bookmark is: it is
+    // settled when its cached number is its target's, and stale otherwise.
+    const start = leading(final.paras[ref.at]!.text) + ref.spans[n]!
+    const link = final.paras[ref.at]!.links?.find(row => row.start === start && row.length === label.length && row.to !== undefined)
+    if (link) {
+      if (link.to !== label) findings.push({ pid, detail: `${from} shows ${ref.kind} ${label}, but its cross-reference field points at what is now ${ref.kind} ${link.to}. ` +
+        `Check which ${ref.kind} is meant; updating the document's fields (F9 in Word) shows ${link.to}.` })
+      continue
+    }
     if (!CLAUSE_KINDS.has(ref.kind)) {
       const name = `${capitalize(ref.kind)} ${label}`
       const keyName = `${ref.kind} ${label}`

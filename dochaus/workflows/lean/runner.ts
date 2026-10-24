@@ -3,7 +3,6 @@ import { classifyAnswers } from "./answer-class"
 import { runFocusedChangeReview } from "./focused-change-review"
 import { DRAFTING_STOPPED_REASON } from "../../lib/drafting-update-admission"
 import { PROVIDER_STOP_MESSAGES, providerStopKind, type ProviderStopKind } from "../../lib/provider-stop"
-import { renderMarkdownToDocx } from "../../lib/render"
 import { existsSync, readFileSync, rmSync } from "node:fs"
 import { runChangeReconciliation } from "./change-reconciliation"
 import { focusedChecklistRepairs, runFocusedRepairAdjudication } from "./checklist-repair-adjudication"
@@ -34,7 +33,7 @@ import {
   LEAN_PROMPT_VERSION,
   LEAN_STAGE_AGENTS,
   acceptStageReply,
-  notesFurniture,
+  renderNotes,
   researchBasis,
   stageDraftingPreferences,
   stageInputs,
@@ -720,7 +719,7 @@ async function runGate(directory: string): Promise<StageRun> {
   const previous = leanFile(directory, DELIVERED_NOTES.docx)
   if (notes !== undefined) {
     if (!existsSync(previous) || readLeanText(directory, DELIVERED_NOTES.markdown) !== notes) {
-      writeLeanBytes(directory, DELIVERED_NOTES.docx, (await renderMarkdownToDocx(notes, existsSync(previous) ? readFileSync(previous) : undefined, notesFurniture(directory))).bytes)
+      writeLeanBytes(directory, DELIVERED_NOTES.docx, await renderNotes(directory, notes, existsSync(previous) ? readFileSync(previous) : undefined))
       writeLeanText(directory, DELIVERED_NOTES.markdown, notes)
     }
   } else for (const name of [DELIVERED_NOTES.markdown, DELIVERED_NOTES.docx]) rmSync(leanFile(directory, name), { force: true })

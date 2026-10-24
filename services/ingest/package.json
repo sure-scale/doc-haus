@@ -21,7 +21,7 @@
     "fflate": "0.8.3",
     "hono": "4.13.13",
     "iconv-lite": "0.7.3",
-    "mammoth": "^1.8.0",
+    "mammoth": "1.12.3",
     "postal-mime": "2.7.4",
     "rtf-stream-parser": "4.0.0",
     "unpdf": "^1.6.2",

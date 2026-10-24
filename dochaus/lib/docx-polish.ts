@@ -12,8 +12,10 @@ const HEADING_SPACING = {
 const TABLE_CELL_PARAGRAPH_PROPERTIES =
   '<w:pPr><w:spacing w:before="0" w:after="80"/></w:pPr>'
 
-export function polishMarkdownArtifactsInDocx(bytes: Uint8Array) {
-  return rewriteDocumentXml(bytes, polishMarkdownArtifactsInDocumentXml)
+/** `headingSpacing: false` leaves headings the spacing of their own styles:
+ * for a document rendered onto a template's styles. */
+export function polishMarkdownArtifactsInDocx(bytes: Uint8Array, options: { headingSpacing?: boolean } = {}) {
+  return rewriteDocumentXml(bytes, xml => polishMarkdownArtifactsInDocumentXml(xml, options))
 }
 
 function rewriteDocumentXml(
@@ -43,7 +45,7 @@ function addMissingInlineCodeStyle(parts: Record<string, Uint8Array>, document: 
   return true
 }
 
-export function polishMarkdownArtifactsInDocumentXml(xml: string) {
+export function polishMarkdownArtifactsInDocumentXml(xml: string, options: { headingSpacing?: boolean } = {}) {
   const paragraphs = [...xml.matchAll(PARAGRAPH_RE)]
   let output = ""
   let cursor = 0
@@ -71,7 +73,7 @@ export function polishMarkdownArtifactsInDocumentXml(xml: string) {
       continue
     }
 
-    output += polishHeadingParagraph(paragraphXml)
+    output += options.headingSpacing === false ? paragraphXml : polishHeadingParagraph(paragraphXml)
     cursor = paragraphEnd
     index++
   }
