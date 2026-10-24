@@ -1,4 +1,6 @@
 import { copyFileSync, existsSync, readFileSync, rmSync } from "node:fs"
+import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
+import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { comparisonBaseline } from "./comparison"
 import { compareDocxWithPointers, paragraphPointers, withStableRevisionDates } from "../../lib/drafting-amendment"
 import { applyAmendments } from "../../lib/drafting-amendment-apply"
@@ -14,6 +16,10 @@ import { exportAppliedChangeComments } from "./review-evidence"
 import { draftingAttribution, withGeneratedDocxAttribution } from "../../lib/docx-attribution"
 import { numberDocxClauses } from "../../lib/docx-numbering"
 import { linkCrossReferences, referenceFields } from "../../lib/docx-crossrefs"
+import { paragraphFields, refInstruction, unlink } from "../../lib/docx-fields"
+
+const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+const BODY = "word/document.xml"
 
 // The apply step of one document. Applies the document's change list to its
 // drafted body, always from body.docx and never onto an earlier apply output,
@@ -85,8 +91,44 @@ export async function documentRedline(directory: string, document: DocID, final:
   changes: ChangeList | undefined = readChangeList(directory, document),
   applied: ApplyResult["applied"] | undefined = recordedApplied(directory, document), identity = draftingAttribution()) {
   if (!changes || !applied) throw new Error(`${document}: the change list or the apply outcome is missing or unreadable.`)
-  const redline = withGeneratedDocxAttribution(await compareDocxWithPointers(comparisonBaseline(directory, document).bytes, final, { authorName: identity.author }), identity)
+  const [before, after] = withComparableReferences(comparisonBaseline(directory, document).bytes, final)
+  const redline = withGeneratedDocxAttribution(await compareDocxWithPointers(before, after, { authorName: identity.author }), identity)
   return exportAppliedChangeComments(redline, final, document, changes.amendments, applied, changes.explanations, readParagraphs(directory, document), identity.author)
+}
+
+/** The two bodies as the redline compares them. The comparer marks a whole
+ * paragraph deleted and inserted again when its cross-reference fields differ
+ * (one linked, unlinked, pointed at another clause or showing a new number),
+ * so a paragraph whose fields differ between the two, by paragraph pointer, is
+ * the text it shows on both sides: the redline marks only the words that
+ * changed, and its references there are plain text. Each body is returned
+ * itself when none of its paragraphs is. */
+function withComparableReferences(baseline: Uint8Array, final: Uint8Array): [Uint8Array, Uint8Array] {
+  const read = (bytes: Uint8Array) => {
+    const parts = unzipSync(bytes)
+    const doc = new DOMParser().parseFromString(strFromU8(parts[BODY]!), "application/xml")
+    const paragraphs = new Map<string, Element>()
+    for (const paragraph of Array.from(doc.getElementsByTagNameNS(W, "p"))) {
+      const pid = paragraphPointers(paragraph)[0]?.pid
+      if (pid && !paragraphs.has(pid)) paragraphs.set(pid, paragraph)
+    }
+    return { bytes, parts, doc, paragraphs, changed: false }
+  }
+  const before = read(baseline)
+  const after = read(final)
+  const references = (paragraph: Element) => paragraphFields(paragraph).filter(field => refInstruction(field))
+  const shown = (paragraph: Element) => JSON.stringify(references(paragraph).map(field => [field.instruction.trim(), field.result]))
+  for (const [pid, paragraph] of after.paragraphs) {
+    const earlier = before.paragraphs.get(pid)
+    if (!earlier || shown(earlier) === shown(paragraph)) continue
+    for (const [body, node] of [[before, earlier], [after, paragraph]] as const) for (const field of references(node)) {
+      unlink(field)
+      body.changed = true
+    }
+  }
+  const serialized = (body: typeof before) => body.changed
+    ? zipSync({ ...body.parts, [BODY]: strToU8(new XMLSerializer().serializeToString(body.doc)) }, { mtime: new Date(1980, 0, 1) }) : body.bytes
+  return [serialized(before), serialized(after)]
 }
 
 function recordedApplied(directory: string, document: DocID) {

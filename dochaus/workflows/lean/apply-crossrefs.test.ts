@@ -92,6 +92,34 @@ function fields(bytes: Uint8Array, rows: ParagraphRow[]) {
   })
 }
 
+// The tracked changes of a document's redline, in document order: what each
+// inserts or deletes, by the opening words of its paragraph as accepted, and
+// how many field codes are tracked (a field the comparer could not match).
+function revisions(directory: string) {
+  const doc = new DOMParser().parseFromString(strFromU8(unzipSync(readFileSync(leanFile(directory, "d1/redline.docx")))["word/document.xml"]!), "application/xml")
+  const all = (node: Document | Element, name: string) => Array.from(node.getElementsByTagNameNS(W, name))
+  const text = (node: Element, name: string) => all(node, name).map(t => t.textContent).join("")
+  const changes = all(doc, "p").flatMap(paragraph => (["ins", "del"] as const).flatMap(kind => all(paragraph, kind)
+    .map(node => [(text(paragraph, "t") || text(paragraph, "delText")).slice(0, 12), kind, text(node, kind === "ins" ? "t" : "delText")])
+    .filter(([, , changed]) => changed)))
+  const fields = ["ins", "del"].flatMap(kind => all(doc, kind)).flatMap(node => ["fldChar", "instrText", "delInstrText"].flatMap(name => all(node, name))).length
+  return { changes, fields }
+}
+
+test("the redline marks only the words that changed where a change turns a cross-reference into an open item or renumbers it", async () => {
+  const { directory, row } = await drafted()
+  const removed = row("The Supplier shall provide")
+  await apply(directory, [{ pid: removed.pid, existing_sha256: removed.sha256, operation: "delete", updated: "" }])
+  expect(revisions(directory)).toEqual({
+    changes: [
+      ["In this Agre", "ins", "[open item: refers to "], ["In this Agre", "ins", ", which was removed]"],
+      ["The Supplier", "del", "The Supplier shall provide the Services."],
+      ["Late payment", "ins", "2.1"], ["Late payment", "del", "2.2"],
+    ],
+    fields: 0,
+  })
+}, 60_000)
+
 test("an amendment beside a cross-reference keeps it live; one that rewrites its number leaves that number as text", async () => {
   const { directory, row } = await drafted()
   const beside = row("In this Agreement")
