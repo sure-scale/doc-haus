@@ -79,14 +79,15 @@ async function emailOf(reader: MsgReader, fields: FieldsData): Promise<ParsedEma
     else embedded++
   }
   const known = await transportAddresses(str(fields.headers))
+  // A draft never sent has no date it was sent unless it states one; its
+  // delivery time is when it was saved.
+  const unsent = ((num(fields.messageFlags) ?? 0) & MSGFLAG_UNSENT) !== 0
   const headers = {
     subject: str(fields.subject),
     from: sender(fields, known),
     to: recipients(fields, "to", known),
     cc: recipients(fields, "cc", known),
-    // A draft never sent has no date it was sent; its delivery time is when it
-    // was saved.
-    date: (num(fields.messageFlags) ?? 0) & MSGFLAG_UNSENT ? undefined : isoDate(str(fields.clientSubmitTime) ?? str(fields.messageDeliveryTime)),
+    date: isoDate(str(fields.clientSubmitTime) ?? (unsent ? undefined : str(fields.messageDeliveryTime))),
   }
   return {
     text: emailText(headers, attachments, body.text),

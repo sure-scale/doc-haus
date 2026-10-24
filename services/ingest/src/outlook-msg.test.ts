@@ -408,13 +408,15 @@ test("From, To and Date read as an .eml's: the person a delegate sent for, Excha
   expect((await parseMsg(internal("Example, Pat", "/o=example/cn=pat"))).text).toContain("\nFrom: Example, Pat <pat@example.test>\n")
   expect((await parseMsg(internal("Partner Example", "/O=EXAMPLE/CN=PARTNER"))).text).toContain("\nFrom: Partner Example\n")
 
-  // A draft never sent has no Date; a received message dates from delivery.
-  const saved = (flags: number) => {
-    const node = outlookMessage({ subject: "Synthetic draft", body: "Draft." })
+  // A draft never sent has no Date unless it states when it was sent; a
+  // received message dates from delivery.
+  const saved = (flags: number, submitted?: Date) => {
+    const node = outlookMessage({ subject: "Synthetic draft", body: "Draft.", date: submitted })
     node.props.push([TAG.messageFlags, flags], [TAG.messageDeliveryTime, SENT])
     return msgFile(node)
   }
   expect((await parseMsg(saved(8))).text).toBe("Subject: Synthetic draft\n\nDraft.")
+  expect((await parseMsg(saved(8, new Date("2024-03-01T08:00:00Z")))).text).toBe("Subject: Synthetic draft\nDate: 2024-03-01T08:00:00.000Z\n\nDraft.")
   expect((await parseMsg(saved(1))).text).toBe("Subject: Synthetic draft\nDate: 2024-03-04T09:30:00.000Z\n\nDraft.")
 })
 
