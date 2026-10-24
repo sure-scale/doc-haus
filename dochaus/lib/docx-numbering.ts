@@ -18,16 +18,17 @@ import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 // started), so the numbers a reader sees, and the references that cite them,
 // do not change. Numbers convert by sequence: a sequence opens at a heading
 // numbered with the list's first top-level label ("1.") and runs to the next
-// such heading (a schedule numbered afresh, which restarts the list). A
-// sequence converts whole or stays exactly as typed: one number the list cannot
-// show (a gap, an undotted or run-in number, a label the list writes
-// differently) keeps all of its numbers typed. Numbers before the first
-// sequence (parties, recitals) stay typed. Converting removes the literal from
-// the paragraph's text; Docxodus reports the list label instead
-// (BlockMetadata.list.generatedLabel). A paragraph that already belongs to the
-// clause list and repeats its own number as text (an amendment that copied the
-// visible number) loses the repeated literal. The pass is idempotent and leaves
-// the package untouched when it changes nothing.
+// such heading (a schedule numbered afresh, which restarts the list) or to an
+// unnumbered heading at or above its own level (a schedule or execution
+// heading; the numbers after it stay typed). A sequence converts whole or stays
+// exactly as typed: one number the list cannot show (a gap, an undotted or
+// run-in number, a label the list writes differently) keeps all of its numbers
+// typed. Numbers before the first sequence (parties, recitals) stay typed.
+// Converting removes the literal from the paragraph's text; Docxodus reports
+// the list label instead (BlockMetadata.list.generatedLabel). A paragraph that
+// already belongs to the clause list and repeats its own number as text (an
+// amendment that copied the visible number) loses the repeated literal. The
+// pass is idempotent and leaves the package untouched when it changes nothing.
 
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 const BODY = "word/document.xml"
@@ -75,6 +76,10 @@ type Paragraph = {
   node: Element
   style: string
   heading: boolean
+  // A heading's outline level (0 for the top).
+  outline?: number
+  // Its text opens with something other than a digit ("Schedule 1", "Execution").
+  unnumbered: boolean
   table: boolean
   member?: { abstract: string; numId: string; level: number }
   // The paragraph's own numPr numId when it is 0 (numbering suppressed).
@@ -221,6 +226,7 @@ type Catalog = {
   defaultStyle: string
   outline: (style: string) => number | undefined
   numPr: (style: string) => { numId?: string; level?: number } | undefined
+  headingLevel: (style: string) => number | undefined
   headingLike: (style: string) => boolean
 }
 
@@ -256,10 +262,13 @@ function readStyles(styles: Document): Catalog {
     }
     return undefined
   }
-  const headingLike = (style: string) => outline(style) !== undefined
-    || /^heading [1-9]$/i.test(value(child(elements.get(style), "name")) ?? "")
-    || /^Heading[1-9]$/.test(style)
-  return { elements, defaultStyle, outline, numPr, headingLike }
+  // A heading style's outline level, from its own outline or its built-in name or id.
+  const headingLevel = (style: string) => {
+    const named = (value(child(elements.get(style), "name")) ?? "").match(/^heading ([1-9])$/i)?.[1] ?? style.match(/^Heading([1-9])$/)?.[1]
+    return outline(style) ?? (named === undefined ? undefined : Number(named) - 1)
+  }
+  const headingLike = (style: string) => headingLevel(style) !== undefined
+  return { elements, defaultStyle, outline, numPr, headingLevel, headingLike }
 }
 
 // ---- numbering
@@ -356,10 +365,12 @@ function bodyParagraphs(document: Document, catalog: Catalog, lists: Lists, spli
       const level = ownLevel !== undefined ? Number(ownLevel) : styled?.level ?? (bound >= 0 ? bound : 0)
       member = { abstract, numId, level }
     }
-    const outline = value(child(pPr, "outlineLvl"))
-    const heading = (outline !== undefined && Number(outline) < 9) || catalog.headingLike(style)
+    const ownOutline = value(child(pPr, "outlineLvl"))
+    const outline = ownOutline !== undefined && Number(ownOutline) < 9 ? Number(ownOutline) : catalog.headingLevel(style)
+    const heading = outline !== undefined
     const excluded = /^(Title|Subtitle|TOC\d*|TOCHeading)$/i.test(style)
-    return [{ node, style, heading, table, member, suppressed, split: Boolean(split?.(node)), literal: excluded ? undefined : readLiteral(paragraphText(node), heading) }]
+    const text = paragraphText(node)
+    return [{ node, style, heading, outline, unnumbered: /^\s*[^\s\d]/.test(text), table, member, suppressed, split: Boolean(split?.(node)), literal: excluded ? undefined : readLiteral(text, heading) }]
   })
 }
 
@@ -570,7 +581,8 @@ function opensSequence(literal: Literal, list: ClauseList) {
   return labelOf(list.levels, 0, level => list.overrides.get(list.numId)?.get(level) ?? list.levels[level]?.start ?? 1) === literal.text
 }
 
-type Sequence = { converts: Decision[]; settled: boolean; saved: ReturnType<Counters["save"]>; numId?: string }
+// `outline` is the outline level of the heading that opened the sequence.
+type Sequence = { converts: Decision[]; settled: boolean; saved: ReturnType<Counters["save"]>; numId?: string; outline?: number }
 
 // The decisions numbering the document with `list`, sequence by sequence; the
 // score is the paragraphs the list would then number. `settledOnly` converts
@@ -582,7 +594,7 @@ function plan(list: ClauseList, paragraphs: Paragraph[], settledOnly: boolean, f
   let used = false
   let members = 0
   let sequence: Sequence | undefined
-  const open = (settled: boolean): Sequence => ({ converts: [], settled, saved: counters.save() })
+  const open = (settled: boolean, outline: number | undefined): Sequence => ({ converts: [], settled, saved: counters.save(), outline })
   const close = () => {
     if (!sequence) return
     if (sequence.settled) decisions.push(...sequence.converts)
@@ -605,7 +617,7 @@ function plan(list: ClauseList, paragraphs: Paragraph[], settledOnly: boolean, f
       counters.enter(member.numId)
       if (!sequence || (member.level === 0 && counters.next(0, member.numId) === counters.start(0, member.numId))) {
         close()
-        sequence = open(true)
+        sequence = open(true, member.level === 0 ? paragraph.outline : undefined)
       }
       sequence.numId = member.numId
       used = true
@@ -626,10 +638,17 @@ function plan(list: ClauseList, paragraphs: Paragraph[], settledOnly: boolean, f
       } else decisions.push({ paragraph, level: 0, kind: "detach", numId: "0" })
       continue
     }
-    if (paragraph.member || !paragraph.literal) continue
+    if (paragraph.member) continue
+    if (!paragraph.literal) {
+      // An unnumbered heading at or above the heading that opened the sequence
+      // (a schedule, the execution block) ends it; the numbers after it stay
+      // typed until a heading opens a sequence afresh.
+      if (sequence?.outline !== undefined && paragraph.outline !== undefined && paragraph.outline <= sequence.outline && paragraph.unnumbered) close()
+      continue
+    }
     if (paragraph.heading && opensSequence(paragraph.literal, list)) {
       close()
-      sequence = open(false)
+      sequence = open(false, paragraph.outline)
       counters.values = []
       counters.enter(list.numId)
       counters.advance(0, list.numId)

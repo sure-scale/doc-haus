@@ -238,6 +238,17 @@ ${AGREEMENT.split("\n").slice(2).join("\n")}`)
     expect(numbered.find(row => row.shown === "1. Services")!.numId).not.toBe(one)
   })
 
+  test("an unnumbered heading at the clause headings' level ends the sequence, and the numbers after it stay typed", async () => {
+    // A schedule in parts numbered 1.1, 1.2, 2.1 without a "1." heading.
+    const { literal, numbered } = await both("# Agreement\n\n## 1. Supply\n\n1.1 The Supplier shall supply the Goods.\n\n## 2. Price\n\n2.1 The price is fixed.\n\n## Schedule 1 – Services\n\n### Part A – Help desk\n\n1.1 The help desk is staffed.\n\n1.2 Calls are logged.\n\n### Part B – On site\n\n2.1 Engineers attend.\n\n## Execution\n\nSigned for the Supplier.")
+    expect(numbered.map(row => row.shown)).toEqual(literal.map(row => row.shown))
+    expect(labelled(numbered)).toEqual(["1. Supply", "1.1 The Supplier shall supply the Goods.", "2. Price", "2.1 The price is fixed."])
+    // An undotted clause heading is a number the list writes differently, not an end: typed whole.
+    const undotted = await both("# Agreement\n\n## 1. Supply\n\n1.1 Goods.\n\n## 2 Price\n\n2.1 Fixed.")
+    expect(undotted.numbered.map(row => row.shown)).toEqual(undotted.literal.map(row => row.shown))
+    expect(labelled(undotted.numbered)).toEqual([])
+  })
+
   test("an ordered list inside a clause stays its own list, and the clause list numbers around it", async () => {
     const { literal, numbered, bytes } = await both("# Agreement\n\n## 1. Supply\n\n1.1 The Supplier shall:\n\n1. deliver the Goods;\n2. invoice the Buyer.\n\n1.2 Payment is due on delivery.\n\n## 2. Term\n\n2.1 One year.")
     expect(numbered.map(row => row.shown)).toEqual(literal.map(row => row.shown))
