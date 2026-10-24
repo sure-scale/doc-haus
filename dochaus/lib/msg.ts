@@ -109,11 +109,18 @@ function readMsg(buffer: Buffer | Uint8Array) {
   if (!read) throw new MsgFormatError(UNREADABLE)
   // A string stored as ANSI (PT_STRING8, type 001E) is in the message's
   // codepage, which the reader learns only from the message: read it again with
-  // that codepage. One the reader cannot decode keeps the first reading.
+  // that codepage. One the reader cannot decode keeps the first reading. With
+  // no message codepage, the internet codepage (the body's) stands in only when
+  // it is a Windows ANSI one, as ANSI strings always are; else Windows-1252.
   if (!hasAnsiStrings(buffer)) return read
-  const codepage = num(read.fields.messageCodepage) ?? num(read.fields.internetCodepage)
+  const internet = num(read.fields.internetCodepage)
+  const codepage = num(read.fields.messageCodepage) ?? (internet !== undefined && ANSI_CODEPAGES.has(internet) ? internet : undefined)
   return openMsg(bytes, iconvName(codepage) ?? "cp1252") ?? read
 }
+
+// The Windows ANSI codepages: Thai, the East Asian double-byte ones, and
+// 1250 to 1258.
+const ANSI_CODEPAGES = new Set([874, 932, 936, 949, 950, 1250, 1251, 1252, 1253, 1254, 1255, 1256, 1257, 1258])
 
 function openMsg(bytes: ArrayBuffer, ansiEncoding?: string) {
   const reader = new MsgReader(bytes)

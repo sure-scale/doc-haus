@@ -337,6 +337,15 @@ test("an ANSI Outlook email reads in its own codepage, an RTF body in each font'
   const central = outlookMessage({})
   central.props.push([0x0037001e, encoded("Zażółć gęślą jaźń", "cp1250")], [0x1000001e, encoded("Łódź – umowa", "cp1250")], [TAG.messageCodepage, 1250])
   expect((await parseMsg(msgFile(central))).text).toBe("Subject: Zażółć gęślą jaźń\n\nŁódź – umowa")
+  // With no message codepage, the internet codepage stands in only when it is
+  // a Windows ANSI one; any other (UTF-8 here) leaves Windows-1252.
+  const internet = (text: string, codepage: string, internetCodepage: number) => {
+    const node = outlookMessage({})
+    node.props.push([0x0037001e, encoded(text, codepage)], [TAG.internetCodepage, internetCodepage])
+    return msgFile(node)
+  }
+  expect((await parseMsg(internet("Renée’s fee", "cp1252", 65001))).text).toBe("Subject: Renée’s fee\n\n")
+  expect((await parseMsg(internet("Łódź – umowa", "cp1250", 1250))).text).toBe("Subject: Łódź – umowa\n\n")
 
   // An RTF font's character set decides its bytes, else the document's \ansicpg.
   const rtf = String.raw`{\rtf1\ansi\ansicpg1252\deff0{\fonttbl{\f0 Arial;}{\f1\fcharset238 Arial CE;}}\pard\f0 Price \'80 5m\par\f1 Miasto \'b3\'f3d\'9f\par\plain Total \'80\par}`
