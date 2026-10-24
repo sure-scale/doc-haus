@@ -169,17 +169,19 @@ export type ParagraphCarry = { paragraphs: number; carried: number; breaks: numb
  * are paired in order (a longest common subsequence), so a moved paragraph is
  * not paired. A pair reads alike when its words do (wordsOf) and Markdown's
  * emphasis (bold, italics, strikethrough) falls on the same characters, a
- * leading clause number's aside and emphasis on all the rest of the paragraph
- * aside (wholeAside). The carried paragraph keeps the drafted paragraph's
+ * leading clause number's aside and bold on all the rest of the paragraph
+ * aside (boldAside). The carried paragraph keeps the drafted paragraph's
  * pointer bookmarks. An original paragraph with content that cannot move
  * between packages, list numbering included (refusal), or with hidden text is
  * not carried, nor is a drafted one with an open item or a placeholder, a link
  * or a field. An original paragraph holding only a page break is carried
  * before the original paragraph after it where that one is carried, or where
- * it falls between two paired paragraphs. Between two carried paragraphs, a
- * drafted paragraph left as drafted and an original one not carried that open
- * with the same clause number (paired in order) give the drafted one the
- * original's spaces after its number, and nothing else of the original. */
+ * it falls between two paired paragraphs. Between two carried paragraphs, or
+ * a carried paragraph and the start or end of the body, a drafted paragraph
+ * left as drafted and an original one not carried that open with the same
+ * clause number, one that each side has only once there (paired in order),
+ * give the drafted one the original's spaces after its number, and nothing
+ * else of the original. */
 export function carryOriginalParagraphs(rendered: Uint8Array, original: Uint8Array): { bytes: Uint8Array; carry: ParagraphCarry } {
   const none = { bytes: rendered, carry: { paragraphs: 0, carried: 0, breaks: 0, spaced: 0 } }
   const originalParts = unzipSync(original)
@@ -209,7 +211,7 @@ export function carryOriginalParagraphs(rendered: Uint8Array, original: Uint8Arr
     if (DRAFTED_MARKERS.some(pattern => new RegExp(pattern.source, "i").test(now.words))
       || Array.from(now.node.getElementsByTagName("*")).some(node => UNCARRIED.has(node.localName) || node.localName === "hyperlink")) continue
     const number = CLAUSE_NUMBER.exec(now.words)?.[0].length ?? 0
-    const [before, after] = [wholeAside(emphasis(was.node, sourceStyles), number), wholeAside(emphasis(now.node, targetStyles), number)]
+    const [before, after] = [boldAside(emphasis(was.node, sourceStyles), number), boldAside(emphasis(now.node, targetStyles), number)]
     if (before.length !== after.length || before.some((mark, position) => mark !== after[position])) continue
     const node = target.importNode(was.node, true) as Element
     clean(node)
@@ -240,13 +242,18 @@ export function carryOriginalParagraphs(rendered: Uint8Array, original: Uint8Arr
     breaks++
   }
   // A drafted paragraph left as drafted whose clause number is an uncarried
-  // original paragraph's, between the same carried paragraphs, keeps the
-  // original's spacing after that number; the rest of it stays as drafted.
+  // original paragraph's, between the same carried paragraphs (or a carried
+  // one and the body's start or end), keeps the original's spacing after that
+  // number; the rest of it stays as drafted. A number either side has more
+  // than once there pairs with none.
   let spaced = 0
-  const numbered = (rows: typeof left) => rows.flatMap(row => {
-    const label = CLAUSE_NUMBER.exec(row.words)?.[0]
-    return label ? [{ node: row.node, label }] : []
-  })
+  const numbered = (rows: typeof left) => {
+    const labelled = rows.flatMap(row => {
+      const label = CLAUSE_NUMBER.exec(row.words)?.[0]
+      return label ? [{ node: row.node, label }] : []
+    })
+    return labelled.filter(row => labelled.filter(other => other.label === row.label).length === 1)
+  }
   const bounds: [number, number][] = [[-1, -1], ...anchors, [left.length, right.length]]
   for (const [gap, [fromLeft, fromRight]] of bounds.slice(0, -1).entries()) {
     const [toLeft, toRight] = bounds[gap + 1]!
@@ -261,11 +268,13 @@ export function carryOriginalParagraphs(rendered: Uint8Array, original: Uint8Arr
 }
 
 /** A paragraph's emphasis marks with a leading clause number's (its first
- * `number` marks) aside, and with emphasis that falls on all the rest of it
- * aside too: a heading drafted in bold, or set in a bold style, reads as plain. */
-function wholeAside(marks: string[], number: number) {
-  const rest = marks.slice(number)
-  return [...new Array<string>(Math.min(number, marks.length)).fill(""), ...(rest.every(mark => mark === rest[0]) ? rest.map(() => "") : rest)]
+ * `number` marks) aside, and with bold that falls on all the rest of it aside
+ * too: a heading drafted in bold reads as one set in a heading style. Italics
+ * and strikethrough on all of it still count. */
+function boldAside(marks: string[], number: number) {
+  const rest = marks.slice(number).map(mark => mark.split(" "))
+  const bold = rest.every(names => names.includes("b"))
+  return [...new Array<string>(Math.min(number, marks.length)).fill(""), ...rest.map(names => (bold ? names.filter(name => name !== "b") : names).join(" "))]
 }
 
 /** A paragraph's visible text pieces in order: each text element with its

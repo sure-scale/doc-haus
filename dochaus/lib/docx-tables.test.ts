@@ -475,3 +475,22 @@ test("a paragraph is carried as the original's only when its words and emphasis 
   const pointers = (bytes: Uint8Array) => (strFromU8(unzipSync(bytes)["word/document.xml"]!).match(/_dh_p[0-9a-f]{12}/g) ?? []).join()
   expect(pointers(bytes)).toBe(pointers(rendered))
 }, 60_000)
+
+test("a heading drafted in bold is carried as the original's, while strikethrough, italics or part-emphasis keep a paragraph as drafted, and a clause number takes the original's spacing only where it is the only one", async () => {
+  const typed = (markdown: string) => renderMarkdownToDocx(markdown, undefined, undefined, { numbering: false }).then(result => result.bytes)
+  const original = await typed(["# Terms", "~~1.3 Old clause~~", "*Note to draft*", "1.4 The Buyer shall pay the Price.", "## Schedule", "(a)  Pay", "(b)  Deliver", "The end."].join("\n\n"))
+  const rendered = await typed(["# Terms", "1.3 Old clause", "Note to draft", "1.4 The Buyer shall pay the **Price**.", "**Schedule**", "(a) New item", "(a) Pay on time", "(b) Deliver promptly", "The end."].join("\n\n"))
+  const { bytes, carry } = carryOriginalParagraphs(rendered, original)
+  // The title, the schedule heading and the last line are the original's; the
+  // struck, italic and part-bold paragraphs stay as drafted. Of the drafted
+  // "(a)" and "(b)", only "(b)" is drafted once, so it alone takes the two spaces.
+  expect(carry).toEqual({ paragraphs: 8, carried: 3, breaks: 0, spaced: 1 })
+  const document = new DOMParser().parseFromString(strFromU8(unzipSync(bytes)["word/document.xml"]!), "application/xml")
+  const paragraphs = Array.from(document.getElementsByTagNameNS(W, "p")).filter(paragraph => paragraph.getElementsByTagNameNS(W, "t").length)
+  const text = (paragraph: Element) => Array.from(paragraph.getElementsByTagNameNS(W, "t")).map(node => node.textContent).join("")
+  expect(paragraphs.map(text)).toEqual(["Terms", "1.3 Old clause", "Note to draft", "1.4 The Buyer shall pay the Price.", "Schedule", "(a) New item", "(a) Pay on time", "(b)  Deliver promptly", "The end."])
+  const emphasised = (paragraph: Element, name: string) => paragraph.getElementsByTagNameNS(W, name).length > 0
+  expect(paragraphs.map(paragraph => [emphasised(paragraph, "b"), emphasised(paragraph, "i"), emphasised(paragraph, "strike")])).toEqual([
+    [false, false, false], [false, false, false], [false, false, false], [true, false, false], [false, false, false], [false, false, false], [false, false, false], [false, false, false], [false, false, false]])
+  expect(paragraphs[4]!.getElementsByTagNameNS(W, "pStyle")[0]?.getAttributeNS(W, "val")).toBe("Heading2")
+}, 60_000)

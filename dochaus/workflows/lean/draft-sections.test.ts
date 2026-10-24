@@ -826,6 +826,7 @@ describe("a planned document's form", () => {
       // The text of each paragraph whose properties the redline changes.
       restyled: [...redline.matchAll(/<w:p\b[\s\S]*?<\/w:p>/g)].filter(match => match[0].includes("<w:pPrChange")).map(match => text(match[0], "t") + text(match[0], "delText")),
       redline,
+      carry: readLeanEvents(directory).find(row => row.event === "paragraphs")?.outcome,
     }
   }
 
@@ -866,14 +867,16 @@ describe("a planned document's form", () => {
     typed["word/document.xml"] = strToU8(strFromU8(typed["word/document.xml"]!).replace(/<w:p\b(?:(?!<w:p\b)[\s\S])*?Schedule 1/, '<w:p><w:r><w:br w:type="page"/></w:r></w:p>$&'))
     const original = zipSync(typed)
     const reply = "# Supply terms\n\n**1 Term**\n\n1.1 The term is two years.\n\n1.2 Either party may renew it.\n\n**2 Notices**\n\n2.1 Notices must be in writing and signed.\n\n**Schedule 1 Particulars**\n\nThe Goods are cartons.\n"
-    const { rows, inserted, deleted, restyled, redline } = await reviseAgainst(original, reply)
+    const { rows, inserted, deleted, restyled, redline, carry } = await reviseAgainst(original, reply)
+    // Six paragraphs are the original's, its page break is carried once, and the two changed clauses take its spacing.
+    expect(carry).toBe("carried 6 of 8, page breaks 1, number spacing 2")
     // The redline marks only the changed words: no heading changes its style or
     // emphasis, no space after a number is deleted, and the page break stays.
     expect(restyled).toEqual([])
     expect(redline).not.toMatch(/<w:rPrChange\b/)
     expect(deleted).toEqual(["one year"])
     expect(inserted.map(text => text.trim())).toEqual(["two years", "and signed"])
-    expect(redline).toMatch(/<w:br w:type="page"\s*\/>/)
+    expect(redline.match(/<w:br w:type="page"\s*\/>/g)).toHaveLength(1)
     expect(redline).not.toMatch(/<w:del\b(?:(?!<\/w:del>)[\s\S])*<w:br w:type="page"/)
     // The changed clauses keep their drafted words with the original's spacing, in the paragraphs the applier hashes.
     expect(rows.map(row => row.text)).toEqual(["Supply terms", "1  Term", "1.1  The term is two years.", "1.2  Either party may renew it.", "2  Notices",
