@@ -195,6 +195,20 @@ describe("rendering onto a template", () => {
     expect(Object.keys(parts).filter(name => /printerSettings/.test(name))).toEqual([])
   })
 
+  test("a precedent's cover page does not set the draft's page", async () => {
+    // A centred cover page numbered in roman, the main body after it, and a closing landscape schedule.
+    const cover = '<w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="2880" w:right="2880" w:bottom="2880" w:left="2880" w:header="708" w:footer="708" w:gutter="0"/><w:pgNumType w:fmt="lowerRoman" w:start="1"/><w:vAlign w:val="center"/><w:titlePg/>'
+    const landscape = '<w:pgSz w:w="16838" w:h="11906" w:orient="landscape"/><w:pgMar w:top="1134" w:right="1134" w:bottom="1134" w:left="1134" w:header="567" w:footer="567" w:gutter="0"/>'
+    const paragraph = (text: string) => `<w:p><w:r><w:t>${text}</w:t></w:r></w:p>`
+    const precedent = template({
+      body: `${paragraph("Dated")}<w:p><w:pPr><w:sectPr>${cover}</w:sectPr></w:pPr><w:r><w:t>Supply Agreement</w:t></w:r></w:p>`
+        + `${paragraph("1. Definitions")}${paragraph("1.1 Terms.")}${paragraph("2. Supply")}<w:p><w:pPr><w:sectPr><w:type w:val="nextPage"/>${A4}<w:pgNumType w:start="1"/></w:sectPr></w:pPr><w:r><w:t>2.1 Goods.</w:t></w:r></w:p>`
+        + `${paragraph("Schedule 1")}<w:sectPr><w:type w:val="nextPage"/>${landscape}</w:sectPr>`,
+    })
+    const document = strFromU8(unzipSync((await renderMarkdownToDocx(BODY, undefined, undefined, { styleTemplate: precedent })).bytes)["word/document.xml"]!)
+    expect(tight(document.match(/<w:sectPr\b[\s\S]*<\/w:sectPr>/)![0])).toBe(`<w:sectPr>${A4}</w:sectPr>`)
+  })
+
   test("revising a document doc.haus rendered keeps its headings' spacing", async () => {
     const spacing = (bytes: Uint8Array) => strFromU8(unzipSync(bytes)["word/document.xml"]!).match(/<w:spacing\b/g)?.length ?? 0
     const original = (await renderMarkdownToDocx(BODY)).bytes

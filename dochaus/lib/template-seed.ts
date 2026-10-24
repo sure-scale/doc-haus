@@ -9,8 +9,9 @@ import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 // parties), comments, notes, custom XML, document properties, glossary and
 // macros. Settings that would lock, track or re-link the new document, or
 // carry the template's edit history, are removed, as is anything left pointing
-// at a part not carried over. The page set-up is the template's first section
-// (its main body; a closing landscape schedule does not turn the draft).
+// at a part not carried over. The page set-up is the template's main body, the
+// section with the most paragraphs (a precedent's cover page does not set the
+// draft's margins and page numbers, nor a closing landscape schedule turn it).
 // Styles the render writes by id and the template lacks are added from the
 // house seed, based on the template's own default paragraph style; a template
 // that has the style under another id (Word translates built-in style ids, not
@@ -92,23 +93,41 @@ function seed(parts: Record<string, Uint8Array>, house: Record<string, Uint8Arra
   return zipSync(Object.fromEntries(kept), { mtime: new Date(1980, 0, 1) })
 }
 
-// One empty paragraph, then the template's first section properties without
-// its header and footer references and its distinct first page, which the
-// page furniture decides. Whatever still points at a relationship not kept
-// (the printer settings, a page background picture) goes.
+// One empty paragraph, then the main body's section properties without its
+// header and footer references, distinct first page and page numbering, which
+// the page furniture decides, and without its vertical alignment and section
+// break, which belong to its place in the template. Whatever still points at a
+// relationship not kept (the printer settings, a page background picture) goes.
 function emptyBody(document: Document, relationships: Set<string | null>) {
   const body = elements(document, W, "body")[0]
   if (!body) throw new Error("template_seed: no body")
-  const section = elements(body, W, "sectPr")[0]
+  const section = mainSection(body)
   for (const node of Array.from(body.childNodes)) body.removeChild(node)
   body.appendChild(document.createElementNS(W, "w:p"))
   if (section) {
     for (const node of children(section))
-      if (["headerReference", "footerReference", "titlePg"].includes(node.localName)) section.removeChild(node)
+      if (["headerReference", "footerReference", "titlePg", "pgNumType", "vAlign", "type"].includes(node.localName)) section.removeChild(node)
     body.appendChild(section)
   }
   withoutDanglingReferences(document.documentElement, relationships)
   return serialize(document)
+}
+
+// The properties of the section with the most paragraphs, the first of equals.
+// A section's properties close it: in its last paragraph, or the body's own
+// for the last section.
+function mainSection(body: Element) {
+  let main: { section: Element; paragraphs: number } | undefined
+  let paragraphs = 0
+  for (const node of children(body)) {
+    const properties = node.localName === "p" ? children(node).find(entry => entry.localName === "pPr") : undefined
+    const section = node.localName === "sectPr" ? node : properties && children(properties).find(entry => entry.localName === "sectPr")
+    if (node.localName !== "sectPr") paragraphs += node.localName === "p" ? 1 : elements(node, W, "p").length
+    if (!section) continue
+    if (!main || paragraphs > main.paragraphs) main = { section, paragraphs }
+    paragraphs = 0
+  }
+  return main?.section
 }
 
 function withoutDanglingReferences(root: Element, relationships: Set<string | null>) {
