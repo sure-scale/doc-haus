@@ -142,6 +142,19 @@ describe("unsupported content in the final body", () => {
     expect(readFileSync(leanFile(directory, "drafting-notes-coverage.md"), "utf8")).toContain(gate.disclosed[0]!.id)
   }, 120_000)
 
+  test("a bracketed TBC is a body placeholder like [to be confirmed]: listed in its paragraph and disclosed, never shipped as execution ready; TBC outside brackets is not", async () => {
+    const payment = "Payment is due on [TBC – payment date]; the payment method remains TBC."
+    const directory = matter()
+    const state = await runLean(directory, { sessions: scriptedModel({
+      ...happyPath, ...quiet, [AGENT.draft]: drafter(`# Supply note\n\n## Delivery\n\nThe supplier shall deliver the goods.\n\n## Payment\n\n${payment}\n`),
+    }).port })
+    expect(state.status).toBe("completed")
+    const gate = gateOf(directory)
+    expect(gate).toMatchObject({ status: "pass", delivery: "review_draft", blocking: [] })
+    expect(gate.disclosed.map(item => [item.kind, item.ref.placeholder, item.ref.pid]))
+      .toEqual([["placeholder", "[TBC – payment date]", readParagraphs(directory, "d1").find(row => row.text === payment)!.pid]])
+  }, 120_000)
+
   test("a placeholder the draft and the final body both carry is one open item once the body is applied; before that, the draft's finding stands", async () => {
     const marked = drafter("# Supply note\n\n## Delivery\n\nThe supplier shall deliver the goods by [open item: confirm the delivery date].\n\n## Payment\n\nPayment is due on delivery.\n")
     const placeholders = (items: { kind: string; stage: string }[]) => items.filter(item => item.kind === "placeholder").map(item => item.stage)

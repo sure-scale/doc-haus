@@ -3,7 +3,7 @@
 // No imports on purpose: the browser bundle pulls this file directly.
 
 export const PLACEHOLDER_PATTERN =
-  /\[\s*(?:(?:insert|tbd|to be determined|to be confirmed|placeholder)\b[^\]\n]*|_{2,}[^\]\n]*)\]/gi
+  /\[\s*(?:(?:insert|tbd|tbc|to be determined|to be confirmed|placeholder)\b[^\]\n]*|_{2,}[^\]\n]*)\]/gi
 
 // A model often invents its own bracket convention for counsel asides
 // ("[BRACKETED COMMENT: ...]", "[VERIFY BEFORE FINAL — ...]",
@@ -18,7 +18,7 @@ export const PLACEHOLDER_PATTERN =
 // does not flag legitimate bracket usage that carries no instruction ("[●]",
 // "[Signature page follows]", "[Reserved]").
 export const INSTRUCTION_COMMENT_PATTERN =
-  /\[[^[\]\n]*\b(?:insert|inserted|tbd|to be (?:determined|confirmed|inserted|supplied|provided)|verify before final|drafted[ -]for[ -]review|bracketed comment|attorney (?:comment|note)|decision required|bracketed alternatives|counsel to (?:confirm|verify|review|determine)|see\s+r\d+|research required|analysis required|route\s+(?:it|this|them)\s+to|do\s+not\s+treat|placeholder)\b[^[\]\n]*\]/gi
+  /\[[^[\]\n]*\b(?:insert|inserted|tbd|tbc|to be (?:determined|confirmed|inserted|supplied|provided)|verify before final|drafted[ -]for[ -]review|bracketed comment|attorney (?:comment|note)|decision required|bracketed alternatives|counsel to (?:confirm|verify|review|determine)|see\s+r\d+|research required|analysis required|route\s+(?:it|this|them)\s+to|do\s+not\s+treat|placeholder)\b[^[\]\n]*\]/gi
 
 /** An open-item note or a blank line, as the generated DOCX highlights them. */
 export const OPEN_ITEM_PATTERN = /\[open item:[^\]\r\n]*\]|\(open item:[^)\r\n]*\)|_{3,}/gi
