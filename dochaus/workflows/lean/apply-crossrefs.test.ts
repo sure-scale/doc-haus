@@ -4,6 +4,7 @@ import { readFileSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
 import { strFromU8, unzipSync } from "fflate"
+import { OPEN_ITEM_HIGHLIGHT_FILL, highlightOpenItemsInDocx } from "../../lib/open-items"
 import { renderMarkdownToDocx } from "../../lib/render"
 import { runApply } from "./apply-stage"
 import { shownText, type ParagraphRow } from "./checks"
@@ -44,10 +45,10 @@ The services listed here.`
 
 type Amendment = { pid: string; existing_sha256: string; operation?: "delete" | "split"; updated: string | string[] }
 
-async function drafted() {
+async function drafted(markdown = AGREEMENT) {
   const directory = matter()
   writeLeanPlan(directory, [{ title: "Services Agreement", form: "agreement", purpose: "", parts: [{ heading: "Services", scope: "" }] }])
-  writeLeanBytes(directory, "d1/body.docx", (await renderMarkdownToDocx(AGREEMENT, undefined, undefined, { form: "agreement" })).bytes)
+  writeLeanBytes(directory, "d1/body.docx", (await renderMarkdownToDocx(markdown, undefined, undefined, { form: "agreement" })).bytes)
   const rows = await paragraphRows(leanFile(directory, "d1/body.docx"))
   writeLeanText(directory, "d1/paragraphs.json", `${JSON.stringify(rows, null, 2)}\n`)
   const row = (start: string) => rows.find(row => row.text.startsWith(start))!
@@ -107,6 +108,21 @@ function revisions(directory: string) {
   return { changes, fields }
 }
 
+// Each paragraph's XML in a body, by its paragraph pointer.
+function paragraphXml(directory: string, file: string) {
+  const doc = new DOMParser().parseFromString(strFromU8(unzipSync(readFileSync(leanFile(directory, file)))["word/document.xml"]!), "application/xml")
+  const pid = (paragraph: Element) => Array.from(paragraph.getElementsByTagNameNS(W, "bookmarkStart")).map(node => node.getAttributeNS(W, "name") ?? "").find(name => name.startsWith("_dh_"))?.slice(4)
+  return new Map(Array.from(doc.getElementsByTagNameNS(W, "p")).map(paragraph => [pid(paragraph), new XMLSerializer().serializeToString(paragraph)]))
+}
+
+// The text of each run of a body shaded as an open item, in document order.
+function shadedOpenItems(bytes: Uint8Array) {
+  const doc = new DOMParser().parseFromString(strFromU8(unzipSync(bytes)["word/document.xml"]!), "application/xml")
+  return Array.from(doc.getElementsByTagNameNS(W, "r"))
+    .filter(run => Array.from(run.getElementsByTagNameNS(W, "shd")).some(shd => shd.getAttributeNS(W, "fill") === OPEN_ITEM_HIGHLIGHT_FILL))
+    .map(run => Array.from(run.getElementsByTagNameNS(W, "t")).map(text => text.textContent).join(""))
+}
+
 test("the redline marks only the words that changed where a change turns a cross-reference into an open item or renumbers it", async () => {
   const { directory, row } = await drafted()
   const removed = row("The Supplier shall provide")
@@ -159,13 +175,8 @@ test("a reference an amendment extends or writes points at the clause it names; 
   expect(after.map(field => [field.from, field.cached, field.target?.slice(0, 4)])).toEqual([
     ["1.1 ", "2.1", "2.1 "], ["1.1 ", "1", "Sche"], ["1.2 ", "3.2", "3.2 "], ["2.2 ", "3.1", "3.1 "], ["2.2 ", "3.2", "3.2 "], ["3.1 ", "2.1", "2.1 "], ["3.2 ", "3.1", "3.1 "], ["3.2 ", "2.2", "2.2 "],
   ])
-  const xml = (file: string) => {
-    const doc = new DOMParser().parseFromString(strFromU8(unzipSync(readFileSync(leanFile(directory, file)))["word/document.xml"]!), "application/xml")
-    const pid = (paragraph: Element) => Array.from(paragraph.getElementsByTagNameNS(W, "bookmarkStart")).map(node => node.getAttributeNS(W, "name") ?? "").find(name => name.startsWith("_dh_"))?.slice(4)
-    return new Map(Array.from(doc.getElementsByTagNameNS(W, "p")).map(paragraph => [pid(paragraph), new XMLSerializer().serializeToString(paragraph)]))
-  }
-  const drafted_ = xml("d1/body.docx")
-  const applied = xml("d1/body-applied.docx")
+  const drafted_ = paragraphXml(directory, "d1/body.docx")
+  const applied = paragraphXml(directory, "d1/body-applied.docx")
   const unchanged = [...drafted_.keys()].filter(pid => pid && pid !== extended.pid && pid !== written.pid)
   expect(unchanged).toContain(stale.pid)
   for (const pid of unchanged) expect(applied.get(pid)).toBe(drafted_.get(pid)!)
@@ -250,4 +261,25 @@ test("a clause split in parts stays the target of its references, its bookmark o
   const paragraph = xml.split("</w:p>").find(part => part.includes("Invoices are payable"))!
   const id = /<w:bookmarkStart w:id="(\d+)" w:name="_Ref\d+"\/>/.exec(paragraph)?.[1]
   expect(paragraph).toContain(`<w:bookmarkEnd w:id="${id}"/>`)
+}, 60_000)
+
+test("an open item a change writes is shaded as drafting shades one; the paragraphs no change touched, and the body applied again, keep their bytes", async () => {
+  const { directory, row } = await drafted(AGREEMENT.replace("2.1 The Supplier shall provide the Services.", "2.1 The Supplier shall provide the Services [open item: service levels]."))
+  const written = row("Invoices are payable")
+  const amendment = { pid: written.pid, existing_sha256: written.sha256, updated: "Invoices are payable within thirty days [open item: confirm the payment period]." }
+  await apply(directory, [amendment])
+  const applied = readFileSync(leanFile(directory, "d1/body-applied.docx"))
+  expect(shadedOpenItems(applied)).toEqual(["[open item: service levels]", "[open item: confirm the payment period]"])
+  const drafted_ = paragraphXml(directory, "d1/body.docx")
+  const after = paragraphXml(directory, "d1/body-applied.docx")
+  const unchanged = [...drafted_.keys()].filter(pid => pid && pid !== written.pid)
+  expect(unchanged.length).toBeGreaterThan(5)
+  for (const pid of unchanged) expect(after.get(pid)).toBe(drafted_.get(pid)!)
+  // The redline marks the words the change wrote, the marker in its shaded run.
+  expect(revisions(directory)).toEqual({ changes: [["Invoices are", "ins", " "], ["Invoices are", "ins", "[open item: confirm the payment period]"]], fields: 0 })
+  expect(strFromU8(unzipSync(readFileSync(leanFile(directory, "d1/redline.docx")))["word/document.xml"]!)).not.toContain("rPrChange")
+  // Shaded again, the body does not change; applied again, it is the same bytes.
+  expect(highlightOpenItemsInDocx(applied)).toBe(applied)
+  await apply(directory, [amendment])
+  expect(readFileSync(leanFile(directory, "d1/body-applied.docx")).equals(applied)).toBe(true)
 }, 60_000)

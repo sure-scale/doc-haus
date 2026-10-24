@@ -17,6 +17,7 @@ import { draftingAttribution, withGeneratedDocxAttribution } from "../../lib/doc
 import { numberDocxClauses } from "../../lib/docx-numbering"
 import { linkCrossReferences, referenceFields } from "../../lib/docx-crossrefs"
 import { paragraphFields, refInstruction, unlink } from "../../lib/docx-fields"
+import { highlightOpenItemsInDocx } from "../../lib/open-items"
 
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 const BODY = "word/document.xml"
@@ -66,7 +67,10 @@ export async function runApply(directory: string, state: LeanState, document: Do
   const rewritten = new Set(settled.result.applied.flatMap(row => row.mode === "code" ? row.result_pids ?? [row.pid] : []))
   const relink = (paragraph: Element) => paragraphPointers(paragraph).some(pointer => rewritten.has(pointer.pid))
   const links = draftedReferences(directory, document).links
-  writeLeanBytes(directory, `${document}/body-applied.docx`, withGeneratedDocxAttribution(await linkCrossReferences(renumbered, links ? { ...links, relink } : { refreshOnly: true }), identity))
+  // The open items the changes and the refresh wrote are shaded as drafting
+  // shades the body's; one already shaded keeps its shading.
+  const linked = await linkCrossReferences(renumbered, links ? { ...links, relink } : { refreshOnly: true })
+  writeLeanBytes(directory, `${document}/body-applied.docx`, withGeneratedDocxAttribution(highlightOpenItemsInDocx(linked), identity))
   const rows = await paragraphRows(out)
   writeLeanText(directory, `${document}/paragraphs-applied.json`, `${JSON.stringify(rows, null, 2)}\n`)
   const annotated = await documentRedline(directory, document, readFileSync(out), changes, settled.result.applied, identity)
