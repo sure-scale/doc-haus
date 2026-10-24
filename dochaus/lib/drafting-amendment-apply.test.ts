@@ -342,6 +342,62 @@ describe("pointer-based paragraph amendments", () => {
   })
 })
 
+describe("amendments beside live cross-references", () => {
+  // A numbered agreement whose clause references render as REF fields.
+  const AGREEMENT = ["# Services Agreement", "## 1. Definitions", "1.1 In this Agreement the terms in clause 2.1 apply.",
+    "## 2. Services", "2.1 The Supplier shall provide the Services.", "2.2 Late payment carries interest, subject to clause 2.1."].join("\n\n")
+  let root: string
+  beforeAll(async () => { root = await mkdtemp(path.join(tmpdir(), "dh-amend-refs-")) })
+  afterAll(async () => { await rm(root, { recursive: true, force: true }) })
+
+  async function drafted(name: string) {
+    const file = path.join(root, `${name}.docx`)
+    await writeFile(file, (await renderMarkdownToDocx(AGREEMENT)).bytes)
+    const pointers = await ensureParagraphPointers(file)
+    const pid = (start: string) => Object.entries(pointers).find(([, text]) => text.startsWith(start))![0]
+    return { file, out: path.join(root, `${name}.out.docx`), pid, text: (start: string) => pointers[pid(start)]! }
+  }
+
+  // The REF fields of each paragraph, by its opening words.
+  async function fields(file: string) {
+    const body = new DOMParser().parseFromString(strFromU8(unzipSync(new Uint8Array(await readFile(file)))["word/document.xml"]!), "application/xml")
+    return Object.fromEntries(Array.from(body.getElementsByTagNameNS(W, "p")).flatMap(paragraph => {
+      const count = Array.from(paragraph.getElementsByTagNameNS(W, "instrText")).filter(node => /^\s*REF\s/.test(node.textContent ?? "")).length
+      return count ? [[Array.from(paragraph.getElementsByTagNameNS(W, "t")).map(node => node.textContent).join("").slice(0, 12), count]] : []
+    }))
+  }
+
+  test("an edit the engine cannot write keeps its paragraph's cross-references live; with nothing applied the body is unchanged", async () => {
+    const doc = await drafted("ref-failed")
+    expect(await fields(doc.file)).toEqual({ "In this Agre": 1, "Late payment": 1 })
+    // The edit rewrites the reference's number, and its control character makes the engine refuse it.
+    const broken = amend("broken", doc.pid("Late payment"), doc.text("Late payment"), "Late payment carries interest, subject to clause 2.2\u0001.")
+    const alone = await applyAmendments({ docxPath: doc.file, outPath: doc.out, amendments: [broken] })
+    expect(alone.unapplied).toMatchObject([{ id: "broken", reason: "apply_failed" }])
+    expect(Buffer.from(await readFile(doc.out)).equals(Buffer.from(await readFile(doc.file)))).toBe(true)
+    const beside = amend("beside", doc.pid("In this Agreement"), doc.text("In this Agreement"), "In this Agreement the defined terms in clause 2.1 apply.")
+    const mixed = await applyAmendments({ docxPath: doc.file, outPath: doc.out, amendments: [broken, beside] })
+    expect([mixed.applied.map(row => row.id), mixed.unapplied.map(row => row.id)]).toEqual([["beside"], ["broken"]])
+    expect((await texts(doc.out)).get(doc.pid("In this Agreement"))).toBe("In this Agreement the defined terms in clause 2.1 apply.")
+    expect(await fields(doc.out)).toEqual({ "In this Agre": 1, "Late payment": 1 })
+  })
+
+  test("a deletion the engine cannot write leaves the references to its clause live", async () => {
+    const doc = await drafted("ref-delete-failed")
+    // A section break in the clause contains the deletion.
+    await writeFile(doc.file, await editBody(doc.file, body => {
+      const target = Array.from(body.getElementsByTagNameNS(W, "p")).find(node => paragraphPointers(node).some(row => row.pid === doc.pid("The Supplier")))!
+      target.getElementsByTagNameNS(W, "pPr")[0]!.appendChild(body.createElementNS(W, "w:sectPr"))
+    }))
+    const result = await applyAmendments({ docxPath: doc.file, outPath: doc.out, amendments: [
+      { ...amend("delete", doc.pid("The Supplier"), doc.text("The Supplier"), ""), operation: "delete", sources: [{ source_id: "instruction", quote: "Remove the services clause." }] },
+    ] })
+    expect(result.unapplied).toMatchObject([{ id: "delete", reason: "apply_failed" }])
+    expect(Buffer.from(await readFile(doc.out)).equals(Buffer.from(await readFile(doc.file)))).toBe(true)
+    expect(await fields(doc.out)).toEqual({ "In this Agre": 1, "Late payment": 1 })
+  })
+})
+
 // Text of every run carrying a w:shd fill in the body.
 async function shaded(file: string) {
   const body = new DOMParser().parseFromString(strFromU8(unzipSync(new Uint8Array(await readFile(file)))["word/document.xml"]!), "application/xml")
