@@ -32,11 +32,16 @@ const PARAGRAPHS = new Set(["p", "li", "h"])
 
 export async function writeListLabels(buffer: Buffer): Promise<Buffer> {
   try {
-    const numbered = numberedParts(buffer)
-    if (!numbered) return buffer
-    const anchors = await bodyParagraphs(buffer, numbered.bullets)
+    const head = unzipSync(buffer, { filter: file => [BODY, NUMBERING, STYLES].includes(file.name) })
+    const body = head[BODY] && strFromU8(head[BODY])
+    // Opening Docxodus costs more than mammoth itself, so a file whose body
+    // cannot be numbered skips it.
+    if (!body || !head[NUMBERING] || !usesNumbering(body, head[STYLES])) return buffer
+    const levels = listLevels(head[NUMBERING])
+    if (!levels.numbered) return buffer
+    const anchors = await bodyParagraphs(buffer, levels.bullets)
     if (!anchors.some(anchor => anchor.label)) return buffer
-    const doc = parse(numbered.body)
+    const doc = parse(body)
     // Docxodus lists every body paragraph in document order, as the DOM does,
     // so each label goes to the paragraph at its own position: two clauses of
     // the same text keep their own numbers. A paragraph the two read with
@@ -60,27 +65,6 @@ export async function writeListLabels(buffer: Buffer): Promise<Buffer> {
   } catch {
     return buffer
   }
-}
-
-/** Whether a Word file may carry list numbers writeListLabels would write in,
- * read without opening Docxodus: a body paragraph takes numbering, and some
- * list level numbers rather than bullets. */
-export function hasNumberedList(buffer: Buffer) {
-  try {
-    return Boolean(numberedParts(buffer))
-  } catch {
-    return false
-  }
-}
-
-// Opening Docxodus costs more than mammoth itself, so a file whose body cannot
-// be numbered is passed by on its parts alone.
-function numberedParts(buffer: Buffer) {
-  const head = unzipSync(buffer, { filter: file => [BODY, NUMBERING, STYLES].includes(file.name) })
-  const body = head[BODY] && strFromU8(head[BODY])
-  if (!body || !head[NUMBERING] || !usesNumbering(body, head[STYLES])) return
-  const levels = listLevels(head[NUMBERING])
-  return levels.numbered ? { body, bullets: levels.bullets } : undefined
 }
 
 /** The body's paragraph anchors in document order, each with its text preview
