@@ -282,6 +282,16 @@ describe("pointer-based paragraph amendments", () => {
     expect(await shaded(doc.out)).toEqual(["[open item: confirm reasonableness qualification; what is the evidence of bargaining strength to support reasonableness]"])
   })
 
+  test("an open item an amendment closes with a later open item's bracket stays in one shaded run", async () => {
+    const doc = await single("merged-open-items", "Defects may be notified within a reasonable time, and in any event within [open item: confirm the notice period and its start] after delivery [open item: confirm the remedy].")
+    const before = (await texts(doc.file)).get(doc.pid)!
+    const updated = "Defects may be notified within a reasonable time [open item: confirm the notice period and its start date]."
+    const result = await applyAmendments({ docxPath: doc.file, outPath: doc.out, amendments: [amend("merged", doc.pid, before, updated)] })
+    expect(result.applied.map(row => row.mode)).toEqual(["code"])
+    expect((await texts(doc.out)).get(doc.pid)).toBe(updated)
+    expect(await shaded(doc.out)).toEqual(["[open item: confirm the notice period and its start date]"])
+  })
+
   test("words an open item held that an amendment makes clause text are not shaded as open", async () => {
     const doc = await single("open-item-to-text", "The Buyer may reject the excess [open item: confirm that this regime is accepted, including that the Buyer may not reject a slight excess where unreasonable].")
     const before = (await texts(doc.file)).get(doc.pid)!

@@ -281,11 +281,18 @@ function touchedRanges(from: string, to: string) {
 // just before an open-item marker would be written in the marker's shaded run
 // and read as open. Such an insertion takes the character before the marker
 // instead, unless that character is in a marker too. Only a pure insertion's
-// text ends with the character it keeps.
+// text ends with the character it keeps. A replacement that runs from before a
+// marker into it would keep the marker's end (its closing bracket) in the
+// marker's run while writing what comes before it into another run, so the
+// marker that text ends would span two runs and go unshaded; it rewrites the
+// rest of the marker too.
 function hunkRange(from: string, to: string) {
   const range = changedRange(from, to)
   const { offset, replaced, changed } = range
   const markers = markerSpans(from)
+  const end = offset + replaced.length
+  const entered = markers.find(([start, stop]) => offset < start && start < end && end < stop)
+  if (entered) return { offset, replaced: from.slice(offset, entered[1]), changed: changed + from.slice(end, entered[1]) }
   if (!offset || changed === replaced || !changed.endsWith(replaced) || !markers.some(([start]) => start === offset)) return range
   const previous = Array.from(from.slice(0, offset)).at(-1)!
   const at = offset - previous.length
