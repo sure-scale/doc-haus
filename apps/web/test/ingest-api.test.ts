@@ -2,8 +2,9 @@ import { afterEach, expect, test } from "bun:test"
 import completed from "../../../dochaus/workflows/lean/fixtures/status-completed.json"
 import { createMatter, deleteMatterSession, renameMatter } from "../src/api/ingest/matters"
 import { dispatchMatterContinuation } from "../src/api/ingest/drafting-run"
-import { DocumentExistsError, uploadDocument } from "../src/api/ingest/documents"
+import { DocumentExistsError, DuplicateUploadError, uploadDocument } from "../src/api/ingest/documents"
 import { getDraftingStatus } from "../src/api/ingest/drafting-status"
+import { failedUpload } from "../src/components/DocumentUpload"
 import type { LeanDraftingStatus } from "../src/api/ingest/lean"
 
 const status = completed as LeanDraftingStatus
@@ -201,4 +202,39 @@ test("a same-name upload is refused with the existing name until the caller choo
   const alias = await uploadDocument("matter", new File(["x"], "Alias.docx")).catch((error: unknown) => error)
   expect(alias).not.toBeInstanceOf(DocumentExistsError)
   expect((alias as Error).message).toBe("Alias.docx is a symbolic-link alias, not a matter document.")
+})
+
+// #268: bytes the same-name document already keeps are refused as a duplicate,
+// whatever the choice, naming the version that holds them.
+test("an identical upload is refused as a duplicate of the version that holds its bytes", async () => {
+  scriptXhr(409, JSON.stringify({
+    error: "Agreement.docx is already in this matter as version 2 of Agreement.docx. Nothing new was stored.",
+    code: "duplicate", name: "Agreement.docx", document_id: "doc-1", version: { id: "v-2", number: 2, current: false },
+  }))
+  const error = await uploadDocument("matter", new File(["same"], "Agreement.docx"), { existing: "replace" }).catch((error: unknown) => error)
+  expect(error).toBeInstanceOf(DuplicateUploadError)
+  expect(error).toMatchObject({ existing: "Agreement.docx", version: { id: "v-2", number: 2, current: false } })
+  // A file from before versions were kept has no version to name.
+  scriptXhr(409, JSON.stringify({ error: "Old.docx is already in this matter as Old.docx. Nothing new was stored.", code: "duplicate", name: "Old.docx", document_id: null, version: null }))
+  expect(await uploadDocument("matter", new File(["same"], "Old.docx")).catch((error: unknown) => error)).toMatchObject({ existing: "Old.docx", version: null })
+})
+
+// A refusal the service gives for this file (unsupported, unreadable, too large)
+// is the same on retry, so only a lost connection or a service failure offers Retry.
+test("a failed upload offers Retry only when trying again can succeed", async () => {
+  const file = new File(["x"], "source.docx")
+  const outcome = async () => failedUpload(await uploadDocument("matter", file).catch((error: unknown) => error), file)
+  scriptXhr(400, JSON.stringify({ error: "The source document filename or extension is not supported." }))
+  expect(await outcome()).toEqual({ status: "failed", error: "The source document filename or extension is not supported." })
+  scriptXhr(413, JSON.stringify({ error: "The zip file is too large to unpack.", code: "zip_too_large" }))
+  expect((await outcome()).retryable).toBeUndefined()
+  scriptXhr(503, JSON.stringify({ error: "The embedding model could not be loaded." }))
+  expect((await outcome()).retryable).toBe(true)
+  globalThis.XMLHttpRequest = class {
+    upload = {}
+    onerror?: () => void
+    open() {}
+    send() { queueMicrotask(() => this.onerror?.()) }
+  } as unknown as typeof XMLHttpRequest
+  expect((await outcome()).retryable).toBe(true)
 })

@@ -71,12 +71,15 @@ export function recordDocumentMutationCommit(db: Database, mutation: ActiveDocum
   )
 }
 
+// `origin`: what made the change, as the writer states it (the version origin
+// of a write, "delete" for a delete); the lineage rows carry it.
 export function recordDocumentMutationLineageIntent(
   mutation: ActiveDocumentMutation,
   documents: string[],
   correlation: string,
+  origin: string,
 ) {
-  const content = `${JSON.stringify({ version: 1, documents, correlation }, null, 2)}\n`
+  const content = `${JSON.stringify({ version: 1, documents, correlation, origin }, null, 2)}\n`
   if (existsSync(mutation.lineageIntent)) {
     if (readFileSync(mutation.lineageIntent, "utf8") !== content)
       throw new Error(`Document mutation ${mutation.mutation_id} has conflicting lineage intent.`)
@@ -96,7 +99,7 @@ export function finalizeDocumentMutationLineage(
   settleDocumentMutationCommit(db, mutation)
   const intent = readDocumentMutationLineageIntent(db, mutation)
   db.run("PRAGMA wal_checkpoint(FULL)")
-  stampIngestLineage(mutation.matterDir, intent.documents, intent.correlation, mutation.mutation_id, files)
+  stampIngestLineage(mutation.matterDir, intent.documents, intent.correlation, mutation.mutation_id, files, intent.origin)
   writeDurableMutationPhase(mutation, mutation.lineageSettled, "lineage-settled")
 }
 
@@ -344,10 +347,13 @@ function mutationPhaseContent(
 }
 
 function readDocumentMutationLineageIntent(db: Database, mutation: ActiveDocumentMutation) {
+  // Recovery of a mutation that stopped before it recorded its intent: what
+  // made the change is not known.
   if (!existsSync(mutation.lineageIntent))
     return {
       documents: (listSourceDocuments(db) as { name: string }[]).map((document) => document.name),
       correlation: `recovery-${mutation.mutation_id}`,
+      origin: "unknown",
     }
   const parsed = JSON.parse(readFileSync(mutation.lineageIntent, "utf8")) as unknown
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
@@ -357,7 +363,8 @@ function readDocumentMutationLineageIntent(db: Database, mutation: ActiveDocumen
     intent.version !== 1 ||
     !Array.isArray(intent.documents) ||
     intent.documents.some((document) => typeof document !== "string") ||
-    typeof intent.correlation !== "string"
+    typeof intent.correlation !== "string" ||
+    (intent.origin !== undefined && typeof intent.origin !== "string")
   ) throw new Error(`Document mutation ${mutation.mutation_id} has invalid lineage intent.`)
-  return { documents: intent.documents as string[], correlation: intent.correlation }
+  return { documents: intent.documents as string[], correlation: intent.correlation, origin: typeof intent.origin === "string" ? intent.origin : "unknown" }
 }

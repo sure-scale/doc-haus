@@ -8,7 +8,7 @@ import { openDb } from "./db"
 import { deleteMatterDocument, DocumentMutationConflictError, RegisteredDocumentNotFoundError } from "./document-delete"
 import { documentRegistryIdentity } from "./document-identity"
 import { readExtractionQuality } from "./extraction-quality"
-import { extractSourceText, ingestDocument, sourceTextRevision, type ExistingSourceChoice, type ExtractedSourceText } from "./ingest"
+import { extractSourceText, ingestDocument, sourceTextRevision, type ExistingSourceChoice, type ExtractedSourceText, type IngestVersion } from "./ingest"
 import { detectInjection } from "./sanitize"
 import { archiveBudget, ingestZipDocument, ZipTooLargeError, type ArchiveBudget } from "./zip-archive"
 
@@ -113,7 +113,13 @@ export type ContainerOptions = {
   // What zip files may still expand to in this upload, shared by every zip in
   // it (zip-archive.ts).
   budget?: ArchiveBudget
+  // The container's own version: who uploaded it, with what label (#268).
+  version?: IngestVersion
 }
+
+// doc.haus's own commits of a container it already holds (its attachment
+// outcomes, a re-ingest at start), which add no version of their own.
+const SYSTEM_VERSION: IngestVersion = { origin: "system", actor: "doc.haus" }
 
 // Ingest an uploaded email and then its attachments.
 export async function ingestEmailDocument(matterDir: string, fileName: string, buffer: Buffer, options: ContainerOptions = {}) {
@@ -145,6 +151,7 @@ export async function ingestContainerDocument(
     existing: options.existing,
     extracted,
     links: { parentName: options.parentName ?? null, attachments: record() },
+    version: options.version,
   })
   if (!entries.some((entry) => entry.outcome === "pending")) return { ...email, attachments: emailAttachmentsView(matterDir, email.name, entries) }
   for (const [index, part] of parts.entries()) {
@@ -159,6 +166,7 @@ export async function ingestContainerDocument(
       requireExistingSource: true,
       extracted,
       links: { attachments: record() },
+      version: SYSTEM_VERSION,
     })
   } catch (error) {
     // The email and its attachments are in; it keeps showing them as pending,
@@ -312,6 +320,23 @@ function readRecord(value: string | null): EmailAttachmentsRecord | undefined {
   return JSON.parse(value) as EmailAttachmentsRecord
 }
 
+/** Whether the registered email or zip file at `docPath` has attachments still
+ * to bring in: its record lists pending entries (an upload stopped before
+ * recording them) or it has no record yet. Uploading it again brings them in. */
+export function containerAttachmentsPending(matterDir: string, docPath: string) {
+  const db = openDb(matterDir)
+  try {
+    const identity = documentRegistryIdentity(docPath)
+    const row = (db.query("SELECT doc_path, attachments FROM documents WHERE role = 'source'").all() as { doc_path: string; attachments: string | null }[])
+      .find((candidate) => documentRegistryIdentity(candidate.doc_path) === identity)
+    if (!row) return false
+    const record = readRecord(row.attachments)
+    return !record || record.attachments.some((entry) => entry.outcome === "pending")
+  } finally {
+    db.close()
+  }
+}
+
 function linkRows(db: Database) {
   return db.query("SELECT name, doc_path, role, rev, parent_name, attachments, extraction_quality FROM documents").all() as LinkRow[]
 }
@@ -432,6 +457,7 @@ export async function removeMatterDocument(matterDir: string, name: string, keep
     }
   })() : undefined
   const result = await deleteMatterDocument(matterDir, name)
+  const purgeFailed = result.purge_failed ? [result.purge_failed] : []
   const removed: string[] = []
   // The email is already gone, so an attachment that cannot be removed now is
   // named with the reason, not turned into a failed request; it stays in the
@@ -439,7 +465,8 @@ export async function removeMatterDocument(matterDir: string, name: string, keep
   const failed: { name: string; reason: string }[] = []
   for (const attachment of plan?.attachments ?? []) {
     try {
-      await deleteMatterDocument(matterDir, attachment)
+      const deleted = await deleteMatterDocument(matterDir, attachment)
+      if (deleted.purge_failed) purgeFailed.push(deleted.purge_failed)
       removed.push(attachment)
     } catch (error) {
       // Already removed meanwhile.
@@ -448,7 +475,7 @@ export async function removeMatterDocument(matterDir: string, name: string, keep
       failed.push({ name: attachment, reason: error instanceof DocumentMutationConflictError ? error.message : "It could not be removed. Try removing it on its own." })
     }
   }
-  return { ...result, attachments: { removed, kept: plan?.kept ?? [], failed } }
+  return { ...result, ...(purgeFailed.length ? { purge_failed: purgeFailed.join(" ") } : {}), attachments: { removed, kept: plan?.kept ?? [], failed } }
 }
 
 // Emails ingested before attachments were read have no attachments record, and
@@ -483,7 +510,7 @@ export async function reingestLegacyEmails(matterDir: string) {
     if (!existsSync(email.doc_path)) continue
     try {
       const ingest = zip ? ingestZipDocument : ingestEmailDocument
-      await ingest(matterDir, email.name, readFileSync(email.doc_path), { existing: "replace" })
+      await ingest(matterDir, email.name, readFileSync(email.doc_path), { existing: "replace", version: SYSTEM_VERSION })
       count++
     } catch (error) {
       console.error("email re-ingest failed", { matter_ref: draftingTraceReference(matterDir), ...diagnosticErrorMetadata(error) })

@@ -96,11 +96,17 @@ export async function uploadDeliverable(
   precondition?:
     | { kind: "create" }
     | { kind: "replace"; prior_sha256: string },
+  // Who made the write, kept on its version (#268): the agent and its session.
+  provenance?: { actor: string; run: string },
 ) {
   const matter = JSON.parse(readFileSync(path.join(directory, "matter.json"), "utf8")) as { id: string }
   const form = new FormData()
   form.append("file", new File([new Uint8Array(bytes)], name))
-  const headers = precondition ? new Headers() : undefined
+  const headers = precondition || provenance ? new Headers() : undefined
+  if (provenance) {
+    headers!.set("x-dochaus-actor", provenance.actor)
+    headers!.set("x-dochaus-run", provenance.run)
+  }
   if (precondition?.kind === "create")
     headers!.set("x-dochaus-deliverable-precondition", "create")
   if (precondition?.kind === "replace") {

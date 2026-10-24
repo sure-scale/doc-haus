@@ -191,3 +191,23 @@ heights without asserting them, `DOCHAUS_ONLY=<label>` to run one scenario
 `PDF_FIXTURE=<file>` to use another synthetic PDF. From `apps/web`,
 `bun test/pdf-citation.browser.ts` mounts the viewer alone and checks that a
 citation changed while the PDF stays open never shows the previous page.
+
+Run the document versions regression with the same preview environment:
+
+```sh
+PLAYWRIGHT_BASE_URL=http://127.0.0.1:5189 \
+DOCHAUS_EVIDENCE_DIR=/tmp/doc-haus-versions-evidence \
+bun apps/web/e2e/document-versions.ts
+```
+
+It opens synthetic Word, PDF and email documents with kept versions (one
+removed by a redaction) at 1440×1000 and 400×860: the versions list, viewing an
+older version (what it switches off, and where focus goes there and back), the
+restore confirmation (Escape cancels it, and the request body is checked), the
+restored list, a file changed outside doc.haus, versions made elsewhere and an
+already-current refusal, PDF and email versions, a version blackline and the
+return to the list, the compare dialog's previous-version default, duplicate
+uploads and a file without versions, and the upload prompt's Save as new
+version, duplicate (with Restore, failed then made) and tracked-changes
+messages. Version bytes, restore, compare and upload answers are fixtures;
+every other request is refused.

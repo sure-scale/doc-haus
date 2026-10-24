@@ -1,4 +1,5 @@
 import { DeliverableConflictError, writeDeliverable } from "./deliverable"
+import { readLeanState } from "../../../dochaus/workflows/lean/state"
 
 // Lean drafting's deliverable port: finished Word files become matter documents
 // with role "deliverable" through the same registry write as every other
@@ -8,7 +9,8 @@ import { DeliverableConflictError, writeDeliverable } from "./deliverable"
 // write: its stored bytes are recorded (system-docx.ts), so a saved combined file
 // stays the system's to rebuild until anything else writes it. With `owned`, a
 // replace also requires that the file is still the system's to write over,
-// checked under the write's lock.
+// checked under the write's lock. The write records a generated version
+// carrying the run that made it (document-versions.ts).
 export function registerLeanDeliverable(
   directory: string,
   fileName: string,
@@ -19,6 +21,7 @@ export function registerLeanDeliverable(
   return writeDeliverable(directory, fileName, Buffer.from(bytes), {
     precondition: priorSha256 ? { kind: "replace", prior_sha256: priorSha256, owned: options.owned } : { kind: "create" },
     system: true,
+    version: { origin: "generated", actor: "doc.haus", run: leanRun(directory) },
   }).then(
     written => written.name,
     (error: unknown) => {
@@ -26,4 +29,13 @@ export function registerLeanDeliverable(
       throw error
     },
   )
+}
+
+/** The lean run writing this matter's deliverables: its owner session. */
+function leanRun(directory: string) {
+  try {
+    return readLeanState(directory)?.owner_session_id ?? null
+  } catch {
+    return null
+  }
 }

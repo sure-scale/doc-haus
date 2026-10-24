@@ -124,7 +124,7 @@ export default function BlacklineViewer({ matterId, params, focus, onClose }: { 
     <div className={`viewer-overlay${closing ? " is-closing" : ""}`} inert={closing} {...backdropClose(() => onClose())}>
       <div ref={panel} className="viewer-panel document-reader blackline-reader" role="dialog" aria-modal="true" aria-label={name} onClick={(e) => e.stopPropagation()}>
         <div className="viewer-bar">
-          <ViewerTitle name={name} kind={`Blackline: ${params.left} → ${params.right}`} />
+          <ViewerTitle name={name} kind={`Blackline: ${sideName(params.left, comparison?.left)} → ${sideName(params.right, comparison?.right)}`} />
           <div className="viewer-bar-actions">
             <button onClick={() => blackline && saveDocx(blackline, name)} disabled={!blackline} title="Download the blackline as a Word file with tracked changes">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -169,6 +169,9 @@ export default function BlacklineViewer({ matterId, params, focus, onClose }: { 
     </div>
   )
 }
+
+// A kept version reads as its document and number (#268), as the route names it.
+const sideName = (name: string, side?: ComparisonSide) => (side?.version ? `${fileStem(name)} (version ${side.version.number})` : name)
 
 // Save the blackline already on screen rather than asking the route again: the
 // file matches what the lawyer reviewed, and a refusal can never be saved as a

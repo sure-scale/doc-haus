@@ -13,7 +13,7 @@ import { readEngineSettings, patchEngineConfig, engineConfigFile } from "./engin
 import { setupRoutes } from "./setup"
 import { authReuseRoutes } from "./auth-reuse"
 import { providerSetupRoutes } from "./provider-setup"
-import { Hono } from "hono"
+import { Hono, type Context } from "hono"
 import { attachmentDocumentDisposition, inlineDocumentDisposition } from "./content-disposition"
 import { createHash } from "node:crypto"
 import { cors } from "hono/cors"
@@ -35,6 +35,7 @@ import {
   ingestDocument,
   extractDocumentText,
   matterDocumentName,
+  versionNotice,
   DeliverableDocumentExistsError,
   SourceDocumentConflictError,
   SourceDocumentExistsError,
@@ -69,7 +70,7 @@ import { DocxTrackedRevisionsError } from "../../../dochaus/lib/docx-amendments"
 import { compareVersions } from "../../../dochaus/lib/version-compare"
 import { pendingRedlinesForDoc } from "../../../dochaus/lib/redlines"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
-import { ingestEmailDocument, reingestLegacyEmails, removeMatterDocument, withEmailLinks } from "./email-attachments"
+import { containerAttachmentsPending, ingestEmailDocument, isContainerName, reingestLegacyEmails, removeMatterDocument, withEmailLinks } from "./email-attachments"
 import { ingestZipDocument, ZipFormatError, ZipTooLargeError } from "./zip-archive"
 import { draftingTraceReference } from "../../../dochaus/lib/drafting-trace-identity"
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
@@ -86,6 +87,20 @@ import {
 import { MatterDocumentIdentityError, resolveMatterDocumentTarget, documentRegistryIdentity } from "./document-identity"
 import { recoverDocumentMutations } from "./document-mutation"
 import { appendAcceptedChangesToNotes } from "./notes-addendum"
+import {
+  findVersionBySha,
+  oneLine,
+  purgeVersionBytes,
+  sweepRemovedVersionBytes,
+  readCurrentVersion,
+  readDocumentVersions,
+  readVersion,
+  readVersionBytes,
+  recordVersionEvent,
+  type VersionOrigin,
+  type VersionRow,
+  type VersionWrite,
+} from "./document-versions"
 import { readLeanDocuments } from "../../../dochaus/workflows/lean/deliverables"
 import { replaceableDeliverable } from "../../../dochaus/lib/system-docx"
 import { buildCombinedFile } from "../../../dochaus/lib/combined-docx"
@@ -582,13 +597,20 @@ app.post("/matters/:id/documents", async (c) => {
   if (existing !== undefined && existing !== "replace" && existing !== "keep-both")
     return c.json({ error: "Choose replace or keep-both for an existing document." }, 400)
   const buffer = Buffer.from(await file.arrayBuffer())
+  // Bytes the matter already keeps for the document of that name add nothing,
+  // whatever the choice: the upload is reported as a duplicate of the version
+  // that holds them (#268).
+  const duplicate = duplicateUpload(dir, name, buffer, existing)
+  if (duplicate) return c.json(duplicate, 409)
+  // A replace saves the upload as the next version of the document it replaces.
+  const version = { actor: requestActor(c), label: formText(body["version_label"]) }
   try {
     // An email brings its attachments in after it (email-attachments.ts), and a
     // zip file the files inside it (zip-archive.ts). A lawyer's upload is never
     // an attachment, even under an attachment's name.
-    if (name.toLowerCase().endsWith(".eml")) return c.json(await ingestEmailDocument(dir, name, buffer, { existing }))
-    if (name.toLowerCase().endsWith(".zip")) return c.json(await ingestZipDocument(dir, name, buffer, { existing }))
-    return c.json(await ingestDocument(dir, name, buffer, { existing, links: { parentName: null } }))
+    if (name.toLowerCase().endsWith(".eml")) return c.json(await ingestEmailDocument(dir, name, buffer, { existing, version }))
+    if (name.toLowerCase().endsWith(".zip")) return c.json(await ingestZipDocument(dir, name, buffer, { existing, version }))
+    return c.json(await ingestDocument(dir, name, buffer, { existing, links: { parentName: null }, version }))
   } catch (error) {
     // Refused before anything of the zip was added.
     if (error instanceof ZipTooLargeError) return c.json({ error: error.message, code: "zip_too_large" }, 413)
@@ -633,7 +655,7 @@ app.post("/matters/:id/deliverables", async (c) => {
       matterDir(c.req.param("id")),
       file.name,
       Buffer.from(await file.arrayBuffer()),
-      { precondition },
+      { precondition, version: { origin: "generated", actor: requestActor(c), run: oneLine(c.req.header("x-dochaus-run")) || null } },
     ))
   } catch (e) {
     if (e instanceof DeliverableConflictError) return c.json({ error: e.message }, 409)
@@ -668,6 +690,11 @@ app.post("/matters/:id/documents/revisions", async (c) => {
   if (!role) return c.json({ error: "The document is not registered in this matter." }, 404)
   if ((role === "source" && !sourceName) || (role === "deliverable" && !deliverableName))
     return c.json({ error: `The filename extension is not valid for a ${role} document.` }, 400)
+  // What made the revision, as its writer states it: a save of the lawyer's
+  // Word revision (the default), an agent's edit or a redaction (#268).
+  const origin = c.req.header("x-dochaus-origin") ?? "revision"
+  if (!REVISION_ORIGINS.has(origin)) return c.json({ error: "The revision origin is not supported." }, 400)
+  const version: VersionWrite = { origin: origin as VersionOrigin, actor: requestActor(c), run: oneLine(c.req.header("x-dochaus-run")) || null, label: formText(body["version_label"]) }
   try {
     const priorSha256 = c.req.header("x-document-prior-sha256")
     const bytes = Buffer.from(await file.arrayBuffer())
@@ -683,8 +710,15 @@ app.post("/matters/:id/documents/revisions", async (c) => {
       // A deliverable's prior hash is checked by its writer; a source's here.
       if (priorSha256 && role === "source" && sha256Hex(readFileSync(target.docPath)) !== priorSha256)
         return c.json({error:"The document changed after it was read. Read it again before editing."},409)
-      const combined = await prepareCombinedFile(dir, target.docPath)
-      return c.json({ ...await writeDocumentRevision(dir, target.name, bytes,[],priorSha256), ...await rebuildCombinedFile(combined) })
+      // A redaction of a part also rebuilds the combined file, which holds the
+      // part's text, whatever the parts (the tool saved the part in place first).
+      const combined = await prepareCombinedFile(dir, target.docPath, { redaction: origin === "redaction" })
+      // A lawyer's save is kept even with pending tracked changes; doc.haus edits
+      // on top of it then wait until they are resolved.
+      const revision = await writeDocumentRevision(dir, target.name, bytes, [], priorSha256, false, { version, keepTracked: origin === "revision" })
+      const rebuilt = await rebuildCombinedFile(combined)
+      const purgeFailed = [revision, rebuilt].map((result) => result && "purge_failed" in result ? result.purge_failed : undefined).filter(Boolean).join(" ")
+      return c.json({ ...revision, ...rebuilt, ...(purgeFailed ? { purge_failed: purgeFailed } : {}) })
     })
   } catch (error) {
     if (error instanceof SourceDocumentConflictError || error instanceof DeliverableConflictError)
@@ -692,6 +726,93 @@ app.post("/matters/:id/documents/revisions", async (c) => {
     // An accepted working revision must be readable paragraph by paragraph.
     if (error instanceof DocxTrackedRevisionsError)
       return c.json({ error: "This Word file contains tracked changes. Accept or reject them in Word, then upload it again." }, 409)
+    throw error
+  }
+})
+
+// A document's kept versions (#268): number, parent, origin, actor, run, time
+// and label, newest first, with its accept, reject and restore events, and the
+// version its working file holds (null when the file has changed since doc.haus
+// last wrote it, is missing, or no version is kept yet). A version a redaction
+// removed is listed with removed "redaction" and cannot be opened, compared or
+// restored. A document whose working file was deleted outside doc.haus keeps
+// its history. Read only.
+app.get("/matters/:id/documents/versions", (c) => {
+  const dir = matterDir(c.req.param("id"))
+  const name = registeredDocumentName(c.req.query("name") ?? "")
+  if (!name) return c.json({ error: "The document filename or extension is not supported." }, 400)
+  const target = readDocumentTarget(dir, name)
+  const present = target && existsSync(target.docPath)
+  const { document, versions, events } = target ? readDocumentVersions(dir, target.name) : { document: null, versions: [], events: [] }
+  if (!target || (!present && !document)) return c.json({ error: `${name} is not a document in this matter.` }, 404)
+  const working = present ? sha256Hex(readFileSync(target.docPath)) : undefined
+  const held = versions.find((version) => version.current && version.sha256 === working)
+  return c.json({ name: target.name, document, versions, events, working_version: held?.id ?? null })
+})
+
+// One kept version's exact bytes, checked against its hash, served as the
+// document content route serves the working file. A removed document's versions
+// are not in the matter; a version a redaction removed has no bytes.
+app.get("/matters/:id/documents/versions/:version/content", (c) => {
+  const dir = matterDir(c.req.param("id"))
+  const found = readVersion(dir, c.req.param("version"))
+  if (!found || found.document.removed_at != null) return c.json({ error: "That version is not in this matter." }, 404)
+  if (found.version.removed) return removedByRedaction(c, found.version)
+  const bytes = readVersionBytes(dir, found.version)
+  if (!bytes) return c.json({ error: "The kept bytes of this version are missing or damaged.", code: "version_damaged" }, 409)
+  const parsed = path.parse(found.document.name)
+  const filename = `${parsed.name} (version ${found.version.number})${parsed.ext}`
+  return new Response(new Uint8Array(bytes), {
+    headers: {
+      "Content-Type": documentContentType(found.document.name),
+      "Content-Disposition": c.req.query("download") === "1" ? attachmentDocumentDisposition(filename) : inlineDocumentDisposition(filename),
+    },
+  })
+})
+
+// Restore a kept version: its exact bytes become the document's next version,
+// written by the same revision writer as a lawyer's save, so history is never
+// rewritten and the version restored from stays as it was.
+app.post("/matters/:id/documents/versions/:version/restore", async (c) => {
+  const dir = matterDir(c.req.param("id"))
+  const id = c.req.param("version")
+  const body = await c.req.json().catch(() => ({})) as { label?: unknown }
+  const initial = readVersion(dir, id)
+  if (!initial) return c.json({ error: "That version is not in this matter." }, 404)
+  if (initial.document.removed_at != null)
+    return c.json({ error: `${initial.document.name} was removed from this matter.`, code: "document_removed" }, 409)
+  if (initial.version.removed) return removedByRedaction(c, initial.version)
+  // A working file deleted outside doc.haus is written back from the version.
+  const target = readDocumentTarget(dir, initial.document.name)
+  if (!target) return c.json({ error: `${initial.document.name} is not a document in this matter.` }, 404)
+  const actor = requestActor(c)
+  try {
+    // The revision route's locks: the document's and its run's saved combined file's.
+    return await withArtifactMutationLocksAsync(dir, [target.name, ...runCombinedLock(dir, target.docPath), ".dochaus/source-corpus"], async () => {
+      const found = readVersion(dir, id)
+      if (!found || found.document.removed_at != null)
+        return c.json({ error: `${initial.document.name} was removed from this matter.`, code: "document_removed" }, 409)
+      if (found.version.removed) return removedByRedaction(c, found.version)
+      const bytes = readVersionBytes(dir, found.version)
+      if (!bytes) return c.json({ error: "The kept bytes of this version are missing or damaged.", code: "version_damaged" }, 409)
+      const working = existsSync(target.docPath) ? sha256Hex(readFileSync(target.docPath)) : undefined
+      if (working === found.version.sha256)
+        return c.json({ error: `${target.name} already holds version ${found.version.number}.`, code: "already_current" }, 409)
+      const restored = { id: found.version.id, number: found.version.number }
+      const combined = await prepareCombinedFile(dir, target.docPath)
+      const written = await writeDocumentRevision(dir, target.name, bytes, [], working, false, {
+        exact: true,
+        keepTracked: true,
+        version: {
+          origin: "restore", actor, label: formText(body.label) ?? `Restored from version ${restored.number}`,
+          event: { kind: "restore", actor, detail: { restored_from: restored.id, restored_number: restored.number } },
+        },
+      })
+      return c.json({ ...written, restored_from: restored, ...await rebuildCombinedFile(combined) })
+    })
+  } catch (error) {
+    if (error instanceof SourceDocumentConflictError || error instanceof DeliverableConflictError)
+      return c.json({ error: error.message }, 409)
     throw error
   }
 })
@@ -721,7 +842,11 @@ app.post("/matters/:id/documents/convert", async (c) => {
     db.close()
     if (role !== "source") return c.json({ error: `${target.name} is not a registered source document.` }, 409)
     const docxName = target.name.replace(/\.pdf$/i, ".docx")
-    const result = await ingestDocument(dir, docxName, await pdfToDocx(Buffer.from(await Bun.file(file).bytes())), { existing: "keep-both" })
+    // The new Word document's first version is linked to the PDF version it was made from.
+    const result = await ingestDocument(dir, docxName, await pdfToDocx(Buffer.from(await Bun.file(file).bytes())), {
+      existing: "keep-both",
+      version: { origin: "conversion", actor: requestActor(c), derivedFrom: target.name },
+    })
     return c.json(result)
   })
 })
@@ -800,12 +925,9 @@ app.get("/matters/:id/documents/content", async (c) => {
   return withArtifactMutationLocksAsync(dir, [name], async () => {
     const target = readDocumentTarget(dir, name)
     if (!target || !existsSync(target.docPath)) return c.notFound()
-    const mime = target.docPath.toLowerCase().endsWith(".pdf")
-      ? "application/pdf"
-      : "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     return new Response(await Bun.file(target.docPath).bytes(), {
       headers: {
-        "Content-Type": mime,
+        "Content-Type": documentContentType(target.docPath),
         "Content-Disposition": inlineDocumentDisposition(target.name),
       },
     })
@@ -973,41 +1095,95 @@ app.get("/matters/:id/documents/redlined", async (c) => {
 // the whole file by rename, so each read sees one complete version, and legal.db
 // is opened read-only, never created or migrated.
 app.get("/matters/:id/compare", async (c) => {
-  const refuse = (status: 400 | 404 | 422, error: string, message: string) => c.json({ error, message }, status)
+  const refuse = (status: 400 | 404 | 409 | 410 | 422, error: string, message: string) => c.json({ error, message }, status)
   const unknown = (name: string) => refuse(404, "not_found", `${name} is not a document in this matter.`)
   const dir = matterDir(c.req.param("id"))
-  const requested = [c.req.query("left")?.trim() ?? "", c.req.query("right")?.trim() ?? ""]
-  if (!requested[0] || !requested[1]) return refuse(400, "missing_name", "Choose two documents to compare.")
+  const query = (key: string) => c.req.query(key)?.trim() ?? ""
+  // A side is a matter document by name (left, right) or a kept version by id
+  // (leftVersion, rightVersion; #268), the version taking precedence. Without a
+  // left side, a rightVersion is compared with the version before it, as is any
+  // right side with leftVersion=previous.
+  const names = [query("left"), query("right")]
+  const versionIDs = [query("leftVersion"), query("rightVersion")]
+  const previous = versionIDs[0] === "previous" || (!names[0] && !versionIDs[0] && Boolean(versionIDs[1]))
+  if ((!names[0] && !versionIDs[0]) && !previous || (!names[1] && !versionIDs[1])) return refuse(400, "missing_name", "Choose two documents to compare.")
   if (!existsSync(dir)) return refuse(404, "not_found", "This matter does not exist.")
-  const [leftName, rightName] = requested.map((name) => registeredDocumentName(name))
-  if (!leftName) return unknown(requested[0])
-  if (!rightName) return unknown(requested[1])
-  // A symbolic-link alias, inside or out of the matter, resolves to no target.
-  const left = readDocumentTarget(dir, leftName)
-  if (!left || !existsSync(left.docPath)) return unknown(leftName)
-  const right = readDocumentTarget(dir, rightName)
-  if (!right || !existsSync(right.docPath)) return unknown(rightName)
-  for (const target of [left, right])
-    if (path.extname(target.name).toLowerCase() !== ".docx")
-      return refuse(400, "not_docx", `${target.name} is not a Word document. Use Convert to DOCX on it first, then compare the converted file.`)
-  if (left.identity === right.identity) return refuse(400, "same_document", `Both sides are ${left.name}. Choose two different documents.`)
   const stem = (name: string) => path.parse(name).name
+  type Side = { name: string; docPath?: string; identity?: string; version?: VersionRow; current?: boolean; display: string }
+  // A removed document's versions are not in the matter; a version a redaction
+  // removed has no bytes to compare.
+  const ofVersion = (version: VersionRow, document: { name: string; current_version: string | null }): Side | Response => {
+    const display = `${stem(document.name)} (version ${version.number})`
+    if (version.removed) return refuse(410, "removed_by_redaction", `${display} was removed by a redaction and cannot be compared.`)
+    return { name: document.name, version, current: document.current_version === version.id, display }
+  }
+  const resolve = (name: string, versionID: string) => {
+    if (versionID) {
+      const found = readVersion(dir, versionID)
+      return found && found.document.removed_at == null ? ofVersion(found.version, found.document) : refuse(404, "not_found", "That version is not in this matter.")
+    }
+    const registered = registeredDocumentName(name)
+    if (!registered) return unknown(name)
+    // A symbolic-link alias, inside or out of the matter, resolves to no target.
+    const target = readDocumentTarget(dir, registered)
+    if (!target || !existsSync(target.docPath)) return unknown(registered)
+    return { name: target.name, docPath: target.docPath, identity: target.identity, display: stem(target.name) } satisfies Side
+  }
+  // Left is resolved first, so an unknown left is reported first.
+  const named = previous ? undefined : resolve(names[0]!, versionIDs[0]!)
+  if (named instanceof Response) return named
+  const right = resolve(names[1]!, versionIDs[1]!)
+  if (right instanceof Response) return right
+  // The version before the right side's: its parent, or, for the working file,
+  // its current version's parent (the current version itself when the file has
+  // changed since doc.haus last wrote it).
+  const before = (): Side | Response => {
+    const none = refuse(400, "no_previous_version", `${right.display} has no earlier version to compare with.`)
+    if (right.version) {
+      const parent = right.version.parent ? readVersion(dir, right.version.parent) : undefined
+      return parent && parent.document.removed_at == null ? ofVersion(parent.version, parent.document) : none
+    }
+    const kept = readCurrentVersion(dir, right.name)
+    if (!kept) return none
+    const working = readFileSync(right.docPath!)
+    const version = sha256Hex(working) === kept.current.sha256 ? kept.parent : kept.current
+    return version ? ofVersion(version, kept.document) : none
+  }
+  const left = named ?? before()
+  if (left instanceof Response) return left
+  for (const side of [left, right])
+    if (path.extname(side.name).toLowerCase() !== ".docx")
+      return refuse(400, "not_docx", `${side.name} is not a Word document. Use Convert to DOCX on it first, then compare the converted file.`)
+  if (left.identity && left.identity === right.identity) return refuse(400, "same_document", `Both sides are ${left.name}. Choose two different documents.`)
+  if (left.version && left.version.id === right.version?.id) return refuse(400, "same_version", `Both sides are ${left.display}. Choose two different versions.`)
   // A label becomes a Word revision author: one line, capped as the compare tool caps it.
-  const oneLine = (text: string) => Array.from(text.replace(/[\p{Cc}\s]+/gu, " ").trim()).slice(0, 120).join("").trim()
-  const label = (key: string, name: string) => oneLine(c.req.query(key) ?? "") || oneLine(stem(name))
+  const label = (key: string, side: Side) => oneLine(c.req.query(key) ?? "") || oneLine(side.display)
   const flag = (key: string) => c.req.query(key) !== "0"
   const options = { ignoreFormatting: flag("ignoreFormatting"), detectMoves: flag("moves"), headersFooters: flag("headers") }
-  const labels = { left: label("leftLabel", left.name), right: label("rightLabel", right.name) }
+  const labels = { left: label("leftLabel", left), right: label("rightLabel", right) }
   // A document deleted, or between the two renames of a replacement, since it was resolved.
   const read = (file: string) => Bun.file(file).bytes().catch((error: unknown) => {
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return undefined
     throw error
   })
-  const leftBytes = await read(left.docPath)
-  if (!leftBytes) return unknown(left.name)
-  const rightBytes = await read(right.docPath)
-  if (!rightBytes) return unknown(right.name)
-  const pending = { left: pendingRedlinesForDoc(dir, left.docPath).length, right: pendingRedlinesForDoc(dir, right.docPath).length }
+  const sideBytes = async (side: Side) => {
+    if (!side.version) return (await read(side.docPath!)) ?? unknown(side.name)
+    return readVersionBytes(dir, side.version) ?? refuse(409, "version_damaged", `The kept bytes of ${side.display} are missing or damaged.`)
+  }
+  const leftBytes = await sideBytes(left)
+  if (leftBytes instanceof Response) return leftBytes
+  const rightBytes = await sideBytes(right)
+  if (rightBytes instanceof Response) return rightBytes
+  // Pending proposals apply to the working file, so a version other than the one
+  // it holds has none.
+  const pendingFor = (side: Side) => {
+    if (!side.version) return pendingRedlinesForDoc(dir, side.docPath!).length
+    const working = side.current ? readDocumentTarget(dir, side.name) : undefined
+    return working && existsSync(working.docPath) && sha256Hex(readFileSync(working.docPath)) === side.version.sha256
+      ? pendingRedlinesForDoc(dir, working.docPath).length : 0
+  }
+  const pending = { left: pendingFor(left), right: pendingFor(right) }
+  const versionOf = (side: Side) => side.version ? { version: { id: side.version.id, number: side.version.number } } : {}
   const comparison = await compareVersions(
     { bytes: leftBytes, label: labels.left },
     { bytes: rightBytes, label: labels.right },
@@ -1019,11 +1195,11 @@ app.get("/matters/:id/compare", async (c) => {
   })
   if (!comparison)
     return refuse(422, "compare_failed", `${left.name} and ${right.name} could not be compared. One of them may be damaged or not a standard Word file: open it in Word, save it again and retry.`)
-  const blacklineName = `Blackline - ${stem(left.name)} vs ${stem(right.name)}.docx`
+  const blacklineName = `Blackline - ${left.display} vs ${right.display}.docx`
   if (c.req.query("format") === "json")
     return c.json({
-      left: { name: left.name, label: labels.left, trackedChanges: comparison.left, pendingProposals: pending.left },
-      right: { name: right.name, label: labels.right, trackedChanges: comparison.right, pendingProposals: pending.right },
+      left: { name: left.name, label: labels.left, trackedChanges: comparison.left, pendingProposals: pending.left, ...versionOf(left) },
+      right: { name: right.name, label: labels.right, trackedChanges: comparison.right, pendingProposals: pending.right, ...versionOf(right) },
       options,
       attribution: comparison.attribution,
       changes: comparison.changes,
@@ -1067,7 +1243,7 @@ app.post("/matters/:id/redlines/:rid/accept", async (c) => {
       if (stale || working && working.source_sha256 !== prior) return c.json({error:stale ?? "The working Word revision is inconsistent. Refresh it through the revision API."},409)
       const baked = documentRevisionBytes(dir,current.doc_name,Buffer.from(await bake(original,[current],state))).bytes
       redline = await prepareDeliveredRedline(dir,current.doc_path,baked)
-      await writeDocumentRevision(dir,current.doc_name,baked,[current.id],prior,current.target_json != null)
+      await writeDocumentRevision(dir,current.doc_name,baked,[current.id],prior,current.target_json != null,{version:acceptVersion(c,[current.id])})
     } catch (error) {
       console.warn("[redline] acceptance refused",diagnosticErrorMetadata(error))
       return c.json({error:"Acceptance could not be confirmed. Refresh the document and change list before trying again."},409)
@@ -1097,7 +1273,10 @@ app.post("/matters/:id/redlines/:rid/reject", async (c) => {
     const combined = await prepareCombinedFile(dir, current.doc_path, { rejected: true })
     const update = openDb(dir)
     try {
-      setRedlineStatus(update, current.id, "rejected")
+      update.transaction(() => {
+        setRedlineStatus(update, current.id, "rejected")
+        recordVersionEvent(update, dir, current.doc_name, { kind: "reject", actor: requestActor(c), detail: { redline_ids: [current.id] } })
+      })()
     } finally {
       update.close()
     }
@@ -1131,7 +1310,7 @@ app.post("/matters/:id/redlines/accept-all", async (c) => {
       if (stale || working && working.source_sha256 !== prior) return c.json({error:stale ?? "The working Word revision is inconsistent. Refresh it through the revision API."},409)
       const baked = documentRevisionBytes(dir,name,Buffer.from(await bake(original,rows,state))).bytes
       redline = await prepareDeliveredRedline(dir,file,baked)
-      await writeDocumentRevision(dir,name,baked,rows.map((row) => row.id),prior,rows.some((row) => row.target_json != null))
+      await writeDocumentRevision(dir,name,baked,rows.map((row) => row.id),prior,rows.some((row) => row.target_json != null),{version:acceptVersion(c,rows.map((row) => row.id))})
     } catch (error) {
       console.warn("[redline] batch acceptance refused",diagnosticErrorMetadata(error))
       return c.json({error:"Batch acceptance could not be confirmed. Refresh the document and change list before trying again."},409)
@@ -1160,7 +1339,10 @@ app.post("/matters/:id/redlines/reject-all", async (c) => {
     const combined = await prepareCombinedFile(dir, file, { rejected: true })
     const update = openDb(dir)
     try {
-      update.transaction(() => rows.forEach((row) => setRedlineStatus(update, row.id, "rejected")))()
+      update.transaction(() => {
+        rows.forEach((row) => setRedlineStatus(update, row.id, "rejected"))
+        recordVersionEvent(update, dir, name, { kind: "reject", actor: requestActor(c), detail: { redline_ids: rows.map((row) => row.id) } })
+      })()
     } finally {
       update.close()
     }
@@ -1168,32 +1350,67 @@ app.post("/matters/:id/redlines/reject-all", async (c) => {
   })
 })
 
+/** Writes a revision of the registered document `name` as its next version.
+ * `version`: the writer's provenance. `exact`: store `input` unchanged (a
+ * restore), without adding paragraph pointers. `keepTracked`: a lawyer's save
+ * with pending tracked changes is kept as a version, and an accepted working
+ * Word revision keeps its last clean record, so doc.haus edits on top of it are
+ * refused until the changes are resolved; any other writer is refused. */
 async function writeDocumentRevision(
   directory: string,
   name: string,
   input: Buffer,
   acceptedRedlineIDs: readonly number[] = [],
-  priorSha256?: string,
-  boundAcceptance = false,
+  priorSha256: string | undefined,
+  boundAcceptance: boolean,
+  options: { version: VersionWrite; exact?: boolean; keepTracked?: boolean },
 ) {
-  const { role, bytes } = documentRevisionBytes(directory, name, input)
+  const { role, bytes } = documentRevisionBytes(directory, name, input, options.exact)
   const existing = readWorkingDocx(directory,name)
-  const working = role === "deliverable" && (boundAcceptance || existing) && name.toLowerCase().endsWith(".docx")
-    ? await acceptedWorkingDocxUpdate(directory,name,bytes) : undefined
+  let working: Awaited<ReturnType<typeof acceptedWorkingDocxUpdate>> | undefined
+  if (role === "deliverable" && (boundAcceptance || existing) && name.toLowerCase().endsWith(".docx")) {
+    try {
+      working = await acceptedWorkingDocxUpdate(directory,name,bytes)
+    } catch (error) {
+      if (!(error instanceof DocxTrackedRevisionsError) || !options.keepTracked || boundAcceptance) throw error
+    }
+  }
   const updateRegistry = (registry: ReturnType<typeof openDb>) => {
     acceptedRedlineIDs.forEach((id) => setRedlineStatus(registry,id,"accepted"))
   }
-  if (role === "deliverable") return writeDeliverableRevision(directory, name, bytes, { updateRegistry,priorSha256,updateWorkingRevision:working })
-  return ingestDocument(directory, name, bytes, { existing: "replace", requireExistingSource: true, updateRegistry })
+  const written = role === "deliverable"
+    ? await (async () => {
+      const written = await writeDeliverableRevision(directory, name, bytes, {
+        updateRegistry, priorSha256, updateWorkingRevision: working, keepWorkingRecord: Boolean(existing) && !working, version: options.version,
+      })
+      return { ...written, ...versionNotice(written.name, bytes, written.version) }
+    })()
+    : await ingestDocument(directory, name, bytes, { existing: "replace", requireExistingSource: true, updateRegistry, version: options.version })
+  return { ...written, ...(options.version.origin === "redaction" ? purgeRedactedVersions(directory, written.version.document_id, path.basename(name)) : {}) }
+}
+
+// A committed redaction deletes the stored bytes of the document's earlier
+// versions (captureVersion marked them removed), so the removed text is gone
+// from doc.haus as it was before versions were kept. Under the caller's lock on
+// the document. A purge that fails is reported for the redaction tool's
+// warnings; the startup sweep (sweepRemovedVersionBytes) finishes it.
+function purgeRedactedVersions(directory: string, documentId: string, name: string): { purge_failed?: string } {
+  try {
+    purgeVersionBytes(directory, documentId)
+    return {}
+  } catch (error) {
+    console.error("[versions] redacted versions not purged", diagnosticErrorMetadata(error))
+    return { purge_failed: `The earlier versions of ${name} could not be deleted from doc.haus's kept versions; they may still hold the removed text until doc.haus next starts.` }
+  }
 }
 
 /** The document's role and the bytes writeDocumentRevision stores for `input`:
  * a deliverable docx gains paragraph pointers. Idempotent, so an accept can build
  * what depends on the stored body (its run's redline) before writing it. */
-function documentRevisionBytes(directory: string, name: string, input: Buffer) {
+function documentRevisionBytes(directory: string, name: string, input: Buffer, exact = false) {
   const db = openDb(directory)
   const role = (() => { try { return getDocumentRole(db, path.join(directory, path.basename(name))) } finally { db.close() } })()
-  return { role, bytes: role === "deliverable" && name.toLowerCase().endsWith(".docx") ? Buffer.from(withParagraphPointers(input)) : input }
+  return { role, bytes: !exact && role === "deliverable" && name.toLowerCase().endsWith(".docx") ? Buffer.from(withParagraphPointers(input)) : input }
 }
 
 // Changes accepted into the body of a completed lean run are appended to that
@@ -1247,7 +1464,8 @@ async function recordAcceptedChangesInRunNotes(directory: string, body: string, 
         if (pending.some((row) => !redlineStaleReason(row, before, protectedWord) && redlineStaleReason(row, after, true)))
           return skipped("pending_notes_proposals")
       }
-      await writeDocumentRevision(directory, notes, Buffer.from(next), [], createHash("sha256").update(prior).digest("hex"), true)
+      await writeDocumentRevision(directory, notes, Buffer.from(next), [], createHash("sha256").update(prior).digest("hex"), true,
+        { version: { origin: "system", actor: "doc.haus", run, label: "Accepted changes added to the drafting notes" } })
       return { notes_updated: true }
     })
   } catch (error) {
@@ -1360,7 +1578,8 @@ async function writeDeliveredRedline(prepared: PreparedRedline): Promise<Redline
       if (!delivered || deliveredRedlineName(delivered) !== name) return redlineSkipped(directory, run, "redline_not_delivered")
       const blocked = redlineBlocked(directory, name)
       if (blocked) return redlineSkipped(directory, run, blocked)
-      await writeDocumentRevision(directory, name, Buffer.from(bytes), [], prior)
+      await writeDocumentRevision(directory, name, Buffer.from(bytes), [], prior, false,
+        { version: { origin: "system", actor: "doc.haus", run, label: "Redline rebuilt after an accept" } })
       return { redline_updated: true }
     })
   } catch (error) {
@@ -1425,8 +1644,8 @@ function runRedlineLock(directory: string, body: string): string[] {
 // combined file was rebuilt or why not (logged too). Nothing is returned when no
 // completed run registered a combined file or the change touched neither part.
 type CombinedSkipReason = "combined_missing" | "combined_not_deliverable" | "pending_combined_proposals" | "combined_changed" | "build_refused" | "rebuild_failed" | "write_failed"
-type CombinedRebuild = { combined_updated: true } | { combined_updated: false; combined_skip_reason: CombinedSkipReason }
-type PreparedCombined = { directory: string; accepted: string; file: string; body: string; notes: string; rejected: boolean; parts?: string; error?: unknown }
+type CombinedRebuild = { combined_updated: true; purge_failed?: string } | { combined_updated: false; combined_skip_reason: CombinedSkipReason }
+type PreparedCombined = { directory: string; accepted: string; file: string; body: string; notes: string; rejected: boolean; redaction: boolean; parts?: string; error?: unknown }
 
 function combinedSkipped(directory: string, reason: CombinedSkipReason, detail: Record<string, unknown> = {}): CombinedRebuild {
   console.warn("[redline] combined file not rebuilt", { matter_ref: draftingTraceReference(directory), reason, ...detail })
@@ -1476,8 +1695,11 @@ const sha256Hex = (bytes: Uint8Array) => createHash("sha256").update(bytes).dige
 /** Before the accept writes anything: the saved combined file it may rebuild and
  * the sha256 of its parts as they are now, so the rebuild runs only when the
  * accept changed one. With `rejected`, before a reject: the rebuild runs
- * whatever the parts, and writes only a build that differs from the saved file. */
-async function prepareCombinedFile(directory: string, accepted: string, options: { rejected?: boolean } = {}): Promise<PreparedCombined | undefined> {
+ * whatever the parts, and writes only a build that differs from the saved file.
+ * With `redaction`, before a redaction's save of a part: the rebuild runs
+ * whatever the parts, is the redaction's own write of the combined file, and
+ * deletes the combined file's earlier versions, which hold the removed text. */
+async function prepareCombinedFile(directory: string, accepted: string, options: { rejected?: boolean; redaction?: boolean } = {}): Promise<PreparedCombined | undefined> {
   const rejected = options.rejected ?? false
   let combined: ReturnType<typeof registeredCombined>
   try {
@@ -1488,14 +1710,17 @@ async function prepareCombinedFile(directory: string, accepted: string, options:
   }
   if (!combined) return
   const { file, body, notes } = combined
+  // Only a part's text is in the combined file (not a delivered body's whose accept changes the notes).
+  const identity = documentRegistryIdentity(accepted)
+  const redaction = Boolean(options.redaction) && [body, notes].some((name) => documentRegistryIdentity(path.join(directory, name)) === identity)
   try {
     return await withArtifactMutationLocksAsync(directory, [file, body, notes, ".dochaus/source-corpus"], async (): Promise<PreparedCombined> => {
       // A link is never read or written as the combined file or one of its parts.
       if (![file, body, notes].every((name) => readDocumentTarget(directory, name))) throw new Error("A combined file part is a link, not a matter document.")
-      return { directory, accepted, file, body, notes, rejected, parts: (await combinedPartsSha256(directory, body, notes)).key }
+      return { directory, accepted, file, body, notes, rejected, redaction, parts: (await combinedPartsSha256(directory, body, notes)).key }
     })
   } catch (error) {
-    return { directory, accepted, file, body, notes, rejected, error }
+    return { directory, accepted, file, body, notes, rejected, redaction, error }
   }
 }
 
@@ -1518,7 +1743,7 @@ async function rebuildCombinedFile(prepared: PreparedCombined | undefined): Prom
     return await withArtifactMutationLocksAsync(directory, [file, body, notes, ".dochaus/source-corpus"], async (): Promise<CombinedRebuild | undefined> => {
       if (![file, body, notes].every((name) => readDocumentTarget(directory, name))) throw new Error("A combined file part is a link, not a matter document.")
       const { key, memoBytes, bodyBytes } = await combinedPartsSha256(directory, body, notes)
-      if (prepared.parts === key && !prepared.rejected) return
+      if (prepared.parts === key && !prepared.rejected && !prepared.redaction) return
       const target = path.join(directory, file)
       const saved = existsSync(target) ? await Bun.file(target).bytes() : undefined
       const built = buildCombinedFile({ memo: memoBytes, body: bodyBytes })
@@ -1537,8 +1762,11 @@ async function rebuildCombinedFile(prepared: PreparedCombined | undefined): Prom
       if ("refused" in built) return combinedSkipped(directory, "build_refused", { refused: built.refused, ...(built.part ? { part: built.part } : {}) })
       // combinedBlocked found the file, read above under this lock.
       if (!saved || !bytes) return combinedSkipped(directory, "combined_missing")
-      await writeDeliverableRevision(directory, file, bytes, { priorSha256: sha256Hex(saved), system: true })
-      return { combined_updated: true }
+      const written = await writeDeliverableRevision(directory, file, bytes, {
+        priorSha256: sha256Hex(saved), system: true,
+        version: { origin: prepared.redaction ? "redaction" : "system", actor: "doc.haus", run: readLeanState(directory)?.owner_session_id ?? null, label: "Combined file rebuilt" },
+      })
+      return { combined_updated: true, ...(prepared.redaction ? purgeRedactedVersions(directory, written.version.document_id, file) : {}) }
     })
   } catch (error) {
     return combinedSkipped(directory, "write_failed", diagnosticErrorMetadata(error))
@@ -1556,6 +1784,59 @@ function combinedBlocked(directory: string, name: string): CombinedSkipReason | 
   if (pending.length) return "pending_combined_proposals"
   // The lawyer's accepted Word changes into the combined file itself are never written over.
   if (readWorkingDocx(directory, file)) return "combined_changed"
+}
+
+// What a writer states about a write (#268): who made it, from x-dochaus-actor
+// (absent: "unknown"), and a label from a form field or body. One line each.
+const REVISION_ORIGINS = new Set<string>(["revision", "agent-edit", "redaction"])
+// The content type the document content routes serve a matter file under.
+function documentContentType(name: string) {
+  return name.toLowerCase().endsWith(".pdf") ? "application/pdf" : "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+}
+function removedByRedaction(c: Context, version: Pick<VersionRow, "number">) {
+  return c.json({ error: `Version ${version.number} was removed by a redaction; its text is no longer kept.`, code: "removed_by_redaction" }, 410)
+}
+function requestActor(c: Context) {
+  return oneLine(c.req.header("x-dochaus-actor")) || undefined
+}
+function formText(value: unknown) {
+  return typeof value === "string" ? oneLine(value) || null : null
+}
+function acceptVersion(c: Context, redlineIDs: number[]): VersionWrite {
+  const actor = requestActor(c)
+  return { origin: "accept", actor, event: { kind: "accept", actor, detail: { redline_ids: redlineIDs } } }
+}
+
+/** A re-upload of bytes the matter already keeps for the registered document
+ * of that name, reported whatever the replace or keep-both choice, with
+ * nothing stored: the bytes its working file holds, or an earlier version's
+ * (restored, not uploaded again). Not a duplicate: the current version's bytes
+ * once the working file has changed outside doc.haus (the upload keeps those
+ * changes as a version), a version whose kept bytes are damaged (the upload
+ * stores them again; a keep-both of the working file's bytes is still a
+ * duplicate, as only a replace repairs them), an email or zip file whose
+ * attachments are not all in yet (uploading it again brings them in), or the
+ * same bytes under another name (another document). */
+function duplicateUpload(directory: string, name: string, bytes: Uint8Array, existing: unknown) {
+  const target = readDocumentTarget(directory, name)
+  if (!target || !existsSync(target.docPath)) return
+  const db = openDb(directory)
+  const role = (() => { try { return getDocumentRole(db, target.docPath) } finally { db.close() } })()
+  if (!role || (role === "source" && isContainerName(target.name) && containerAttachmentsPending(directory, target.docPath))) return
+  const sha256 = sha256Hex(bytes)
+  const working = sha256Hex(readFileSync(target.docPath)) === sha256
+  const found = findVersionBySha(directory, target.name, sha256)
+  const kept = found && readVersionBytes(directory, found) ? found : undefined
+  if (found && !kept && !(working && existing === "keep-both")) return
+  const stored = "Nothing new was stored."
+  if (working) {
+    if (!kept?.current) return { error: `${name} is already in this matter as ${target.name}. ${stored}`, code: "duplicate" as const, name: target.name, document_id: null, version: null }
+    return { error: `${name} is already in this matter as the current version of ${kept.name}. ${stored}`, code: "duplicate" as const,
+      name: kept.name, document_id: kept.document_id, version: { id: kept.id, number: kept.number, current: true } }
+  }
+  if (!kept || kept.current) return
+  return { error: `${name} is already in this matter as version ${kept.number} of ${kept.name}. ${stored} Use Restore on version ${kept.number} to make it current again.`,
+    code: "duplicate" as const, name: kept.name, document_id: kept.document_id, version: { id: kept.id, number: kept.number, current: false } }
 }
 
 // Every install gets the repo-shipped starter playbooks, so seed them on boot.
@@ -1600,6 +1881,14 @@ for (const matter of listMatters()) {
     console.error("matter migration failed", { matter_ref: matterRef, ...diagnosticErrorMetadata(e) })
   }
   if (!recovery) continue
+  // What a purge of kept versions left (#268): one that failed, or a stop
+  // between a redaction's or a delete's commit and its purge.
+  try {
+    const swept = sweepRemovedVersionBytes(matter.dir)
+    if (swept) console.log("removed versions deleted", { count: swept, matter_ref: matterRef })
+  } catch (e) {
+    console.error("removed versions not deleted", { matter_ref: matterRef, ...diagnosticErrorMetadata(e) })
+  }
   // The source artifacts derive from the chunks, not from the migrated rows, so
   // a failed migration (rolled back, retried next start) does not stop them
   // being healed.

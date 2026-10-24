@@ -108,10 +108,18 @@ export type IngestResult = {
   attachments?: EmailAttachment[]
   // The extraction quality gate's result for the uploaded file.
   quality?: ExtractionQuality
+  // The version this upload saved (#268); created is false when the file
+  // already held these bytes.
+  version?: { id: string; number: number; created: boolean } | null
+  // A Word file saved with pending tracked changes: kept as a version, with a
+  // plain notice that doc.haus edits wait until they are resolved.
+  tracked_changes?: { count: number; authors: string[] }
+  notice?: string
 }
 
 // What an upload does when a source of the same name is already in the matter:
-// replace it, or keep both by storing the upload under the next free name
+// save it as that document's next version ("replace"; earlier versions stay
+// kept), or keep both by storing the upload under the next free name
 // ("Name (2).docx"), returned as the result's `name`. Without a choice the
 // upload is refused with DocumentExistsError, so a lawyer's file is never
 // replaced silently. A generated deliverable is never replaced by an upload;
@@ -124,6 +132,30 @@ export class DocumentExistsError extends Error {
   constructor(readonly existing: string, readonly role: "source" | "deliverable", message: string) {
     super(message)
   }
+}
+
+// The upload's bytes are already kept for the document of that name, as one of
+// its versions (or, from before versions were kept, as the file itself), so
+// nothing was saved. `existing` is that document's name.
+export class DuplicateUploadError extends Error {
+  constructor(readonly existing: string, readonly version: { id: string; number: number; current: boolean } | null, message: string) {
+    super(message)
+  }
+}
+
+// The service refused the upload, with its HTTP status: a refusal for this file
+// (4xx) is the same on retry; a service failure (5xx) may not be.
+export class UploadFailedError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message)
+  }
+}
+
+// What an identical upload matched, said beside the file's name: plainly that
+// nothing was saved.
+export function duplicateMessage(name: string, version: DuplicateUploadError["version"]) {
+  if (!version) return `Identical to ${name}, already in this matter. Nothing was saved.`
+  return `Identical to ${version.current ? `the current version (version ${version.number})` : `version ${version.number}`} of ${name}. Nothing was saved.`
 }
 
 // XHR rather than fetch so the row can tell "uploading" (bytes still leaving the
@@ -147,7 +179,9 @@ export function uploadDocument(
       const res = new Response(xhr.responseText, { status: xhr.status })
       const exists = documentExists(xhr.status, xhr.responseText)
       if (exists) return reject(exists)
-      if (!res.ok) return ingestError(res, `Could not read ${file.name}`).then((message) => reject(new Error(message)))
+      const duplicate = duplicateUpload(xhr.status, xhr.responseText)
+      if (duplicate) return reject(duplicate)
+      if (!res.ok) return ingestError(res, `Could not read ${file.name}`).then((message) => reject(new UploadFailedError(xhr.status, message)))
       return res.json().then(resolve, reject)
     }
     xhr.send(form)
@@ -161,6 +195,21 @@ function documentExists(status: number, text: string) {
     const role = body.code === "source_exists" ? "source" : body.code === "deliverable_exists" ? "deliverable" : undefined
     if (!role || typeof body.name !== "string") return
     return new DocumentExistsError(body.name, role, typeof body.error === "string" ? body.error : `${body.name} is already in this matter.`)
+  } catch {
+    return
+  }
+}
+
+function duplicateUpload(status: number, text: string) {
+  if (status !== 409) return
+  try {
+    const body = JSON.parse(text) as { code?: unknown; name?: unknown; error?: unknown; version?: { id?: unknown; number?: unknown; current?: unknown } | null }
+    if (body.code !== "duplicate" || typeof body.name !== "string") return
+    const kept = body.version
+    const version = kept && typeof kept.id === "string" && typeof kept.number === "number"
+      ? { id: kept.id, number: kept.number, current: kept.current === true }
+      : null
+    return new DuplicateUploadError(body.name, version, typeof body.error === "string" ? body.error : `${body.name} is already in this matter.`)
   } catch {
     return
   }

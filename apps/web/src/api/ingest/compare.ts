@@ -10,9 +10,13 @@ export type CompareOptions = { ignoreFormatting: boolean; detectMoves: boolean; 
 // left = the earlier version (e.g. what we sent); right = the later one (e.g.
 // the draft that came back). Labels default to each file's name without its
 // extension; the right label is the author of the blackline's changes in Word.
+// A side given a kept version id (#268) compares that version's stored bytes;
+// its name is then the document's, and the route labels it "Name (version N)".
 export type CompareParams = {
   left: string
   right: string
+  leftVersion?: string
+  rightVersion?: string
   leftLabel?: string
   rightLabel?: string
 } & Partial<CompareOptions>
@@ -47,6 +51,8 @@ export type ComparisonSide = {
   trackedChanges: SideRevisions
   // Pending doc.haus proposals on the stored file; not part of the comparison.
   pendingProposals: number
+  // The kept version compared, when the side was given one.
+  version?: { id: string; number: number }
 }
 
 // What became of one tracked insertion or deletion pending in the left file,
@@ -95,6 +101,8 @@ export function compareUrl(
   const query: [string, string | undefined][] = [
     ["left", params.left],
     ["right", params.right],
+    ["leftVersion", params.leftVersion || undefined],
+    ["rightVersion", params.rightVersion || undefined],
     ["leftLabel", params.leftLabel?.trim() || undefined],
     ["rightLabel", params.rightLabel?.trim() || undefined],
     ["ignoreFormatting", flag(params.ignoreFormatting)],
