@@ -2,10 +2,8 @@ import { existsSync } from "node:fs"
 import path from "node:path"
 import { Hono } from "hono"
 import { withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
-import { deliverableDocumentName } from "./deliverable"
-import { MatterDocumentIdentityError, resolveMatterDocumentTarget } from "./document-identity"
-import { matterDocumentName } from "./ingest"
 import { looksScanned } from "./pdf"
+import { readDocumentTarget, registeredDocumentName } from "./registered-document"
 
 export type PdfPassagePage =
   | { status: "matched"; page: number }
@@ -15,9 +13,8 @@ export type PdfPassagePage =
 // A citation excerpt is chunk text; this is far above any chunk.
 export const MAX_EXCERPT_CHARS = 20_000
 
-// The shortest leading run of an excerpt (letters and digits) taken as evidence
-// of where it starts when the whole excerpt is not found verbatim. A shorter
-// excerpt must be found whole.
+// The opening of an excerpt (letters and digits) whose start decides the page
+// when the whole excerpt is not found. A shorter excerpt must be found whole.
 const MIN_LEADING_CHARS = 24
 
 // The page of a matter PDF where a cited excerpt starts, so the web viewer can
@@ -33,26 +30,17 @@ export function pdfPassageRoutes(resolveMatter: (id: string) => string) {
       return c.json({ error: "Send the PDF's name and the cited excerpt." }, 400)
     if (input.excerpt.length > MAX_EXCERPT_CHARS)
       return c.json({ error: `The excerpt is longer than ${MAX_EXCERPT_CHARS} characters.` }, 400)
-    const name = matterDocumentName(input.name) ?? deliverableDocumentName(input.name)
+    const name = registeredDocumentName(input.name)
     if (!name || path.extname(name).toLowerCase() !== ".pdf") return c.notFound()
     const dir = resolveMatter(c.req.param("id"))
     const bytes = await withArtifactMutationLocksAsync(dir, [name], async () => {
-      const target = documentTarget(dir, name)
+      const target = readDocumentTarget(dir, name)
       return target && existsSync(target.docPath) ? Bun.file(target.docPath).bytes() : undefined
     })
     if (!bytes) return c.notFound()
     return c.json(await pdfPassagePage(bytes, input.excerpt))
   })
   return app
-}
-
-function documentTarget(directory: string, name: string) {
-  try {
-    return resolveMatterDocumentTarget(directory, name)
-  } catch (error) {
-    if (error instanceof MatterDocumentIdentityError) return
-    throw error
-  }
 }
 
 // A flat scan (the same test ingest uses to route a PDF through OCR) has no text
@@ -75,14 +63,14 @@ function textKey(text: string) {
   return text.normalize("NFKC").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "")
 }
 
-// The page where the excerpt starts. The pages are joined, so an excerpt that
-// runs onto the next page still matches whole. When the whole excerpt is not in
-// the text layer (a running header or page number interrupts it, or the indexed
-// projection differs further on), its longest leading part that is found counts,
-// if it is at least MIN_LEADING_CHARS long. Starts on more than one page are
-// ambiguous.
+// The page where the excerpt starts. Running headers and footers are dropped and
+// the pages joined, so an excerpt that runs onto the next page still matches
+// whole. When the whole excerpt is not in the text layer (the indexed projection
+// differs further on), only its first MIN_LEADING_CHARS count: a longer opening
+// can be shared by a draft and its executed copy. Starts on more than one page
+// are ambiguous.
 export function locatePdfPassage(pages: readonly string[], excerpt: string): PdfPassagePage {
-  const keys = pages.map(textKey)
+  const keys = withoutRunningLines(pages).map(textKey)
   const starts: number[] = []
   let length = 0
   for (const key of keys) {
@@ -91,16 +79,8 @@ export function locatePdfPassage(pages: readonly string[], excerpt: string): Pdf
   }
   const text = keys.join("")
   const needle = textKey(excerpt)
-  let found = Math.min(needle.length, MIN_LEADING_CHARS)
-  if (!needle || !text.includes(needle.slice(0, found))) return { status: "unavailable", reason: "not_found" }
-  // Every shorter lead of a found lead is found too, so search for the longest.
-  let high = needle.length
-  while (found < high) {
-    const middle = Math.ceil((found + high) / 2)
-    if (text.includes(needle.slice(0, middle))) found = middle
-    else high = middle - 1
-  }
-  const lead = needle.slice(0, found)
+  const lead = text.includes(needle) ? needle : needle.slice(0, MIN_LEADING_CHARS)
+  if (!needle || !text.includes(lead)) return { status: "unavailable", reason: "not_found" }
   const matches = new Set<number>()
   let page = 0
   for (let at = text.indexOf(lead); at >= 0; at = text.indexOf(lead, at + 1)) {
@@ -111,4 +91,22 @@ export function locatePdfPassage(pages: readonly string[], excerpt: string): Pdf
   }
   const ordered = [...matches].sort((a, b) => a - b)
   return ordered.length === 1 ? { status: "matched", page: ordered[0]! } : { status: "ambiguous", pages: ordered }
+}
+
+// The text layer keeps running headers, footers and page numbers that the
+// indexed text drops. Treat a line among the first or last two of a page as one
+// when, digits aside, it is at the top or foot of most pages, and of three or
+// more (two pages that open with the same heading are not evidence).
+function withoutRunningLines(pages: readonly string[]) {
+  const lines = pages.map((page) => page.split("\n").filter((line) => line.trim()))
+  const edges = lines.map((page) => new Set([...page.slice(0, 2), ...page.slice(-2)]))
+  const signature = (line: string) => textKey(line).replace(/\p{N}+/gu, "")
+  const counts = new Map<string, number>()
+  for (const edge of edges)
+    for (const sign of new Set([...edge].map(signature))) counts.set(sign, (counts.get(sign) ?? 0) + 1)
+  const running = (line: string) => {
+    const count = counts.get(signature(line)) ?? 0
+    return count >= 3 && count > pages.length / 2
+  }
+  return lines.map((page, index) => page.filter((line) => !(edges[index]!.has(line) && running(line))).join("\n"))
 }

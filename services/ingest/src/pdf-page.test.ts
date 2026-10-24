@@ -3,17 +3,18 @@ import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "n
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { readPdf } from "./pdf"
-import { MAX_EXCERPT_CHARS, pdfPassagePage, pdfPassageRoutes } from "./pdf-page"
+import { locatePdfPassage, MAX_EXCERPT_CHARS, pdfPassagePage, pdfPassageRoutes } from "./pdf-page"
 
 // A five-page born-digital PDF of invented supply terms: one Helvetica line per
 // text row and a running "Page N of 5" footer, which interrupts a sentence that
-// runs from page 3 onto page 4. Pages 2 and 5 share one sentence.
+// runs from page 3 onto page 4 and separates page 4's last heading from its
+// clause on page 5. Pages 2 and 5 share one sentence.
 const PAGES = [
   ["SYNTHETIC SUPPLY TERMS", "1. Scope", "The supplier lends garden furniture samples for a showroom display.", "Each sample stays the property of the supplier."],
   ["2. Delivery", "Each delivery is checked against the packing list on arrival.", "Late deliveries are recorded in the showroom log."],
   ["3. Liability", "The supplier's total liabil-", "ity under these terms is capped at the fees paid.", "The buyer returns any rejected sample to the supplier"],
-  ["within ten working days of the inspection.", "4. Payment", "Invoices are payable within thirty days of receipt."],
-  ["5. Returns", "Each delivery is checked against the packing list on arrival.", "Returned samples are wrapped in the original covers."],
+  ["within ten working days of the inspection.", "4. Payment", "Invoices are payable within thirty days of receipt.", "5. Notices"],
+  ["Any notice under these terms is given in writing.", "6. Returns", "Each delivery is checked against the packing list on arrival.", "Returned samples are wrapped in the original covers."],
 ]
 
 function syntheticPdf(pages: string[][]) {
@@ -46,6 +47,30 @@ test("an excerpt that runs from page 3 onto page 4 opens page 3, with or without
   const sentence = "The buyer returns any rejected sample to the supplier within ten working days of the inspection."
   expect(await pdfPassagePage(terms(), sentence)).toEqual({ status: "matched", page: 3 })
   expect(await pdfPassagePage(terms(), sentence.replace("supplier ", "supplier\nPage 3 of 5\n"))).toEqual({ status: "matched", page: 3 })
+})
+
+// The indexed text drops the running footer and marks the page break.
+test("a heading at the foot of page 4 with its clause on page 5 opens page 4, past the running footer", async () => {
+  expect(await pdfPassagePage(terms(), "## 5. Notices\n\n-----\n\nAny notice under these terms is given in writing.")).toEqual({ status: "matched", page: 4 })
+})
+
+// A bundle with a draft and the executed copy: the draft has the clause's
+// opening whole on page 3; the executed clause runs from page 9 onto page 10
+// with a footer between, so only its opening is found, on both pages.
+test("an excerpt found only by its opening, which starts on two pages, is ambiguous", () => {
+  const pages = ["Cover", "Contents", "Schedule 2 (draft)\n7. Liability\nThe Supplier's total liability under this Agreement is capped at one million pounds in aggregate.\nPage 3 of 12", "a", "b", "c", "d", "e", "7. Liability\nThe Supplier's total liability under this\nPage 9 of 12", "Agreement is capped at five million pounds in aggregate.\nPage 10 of 12", "x", "y"]
+  expect(locatePdfPassage(pages, "7. Liability\n\nThe Supplier's total liability under this\n\n-----\n\nAgreement is capped at five million pounds in aggregate.")).toEqual({ status: "ambiguous", pages: [3, 9] })
+})
+
+test("accented text in another Unicode form and Cyrillic text are found", () => {
+  const french = "La responsabilité du fournisseur est limitée au montant payé."
+  expect(locatePdfPassage(["Préambule", french.normalize("NFD")], french)).toEqual({ status: "matched", page: 2 })
+  const russian = "Ответственность поставщика ограничена суммой уплаченных сборов."
+  expect(locatePdfPassage(["Предмет договора", russian], russian)).toEqual({ status: "matched", page: 2 })
+})
+
+test("a file that is not a readable PDF is unavailable", async () => {
+  expect(await pdfPassagePage(new Uint8Array(Buffer.from("This file is not a PDF.")), "The supplier's total liability")).toEqual({ status: "unavailable", reason: "unreadable" })
 })
 
 test("text that is not in the PDF is unavailable", async () => {
