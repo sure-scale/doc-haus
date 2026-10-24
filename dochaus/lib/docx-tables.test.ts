@@ -131,6 +131,18 @@ test("a carried table's lead-in keeps with it where the original's did, in its o
   expect(leadIns(result.bytes)).toEqual({ tables: before.tables.map(([text, style], index) => [text, style, index === 1]), kept: ["Approval record"] })
 })
 
+test("another line the drafter puts directly above a carried table is not kept with it", async () => {
+  const heading = (text: string) => `<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t xml:space="preserve">${text}</w:t></w:r></w:p>`
+  const record = [["Version", ""], ["Approved by", ""]]
+  const sentence = "The parties shall sign this record on every change of version."
+  const original = originalWith(heading("Approval record") + tbl(record) + p(sentence) + p("End"))
+  // The original's sentence after the table is moved above it, under the record's line.
+  const rendered = (await renderMarkdownToDocx(markdown("Approval record", sentence, pipeTable(record), "End"))).bytes
+  const result = carryOriginalTables(rendered, original)
+  expect(result.carries.map(row => row.outcome)).toEqual(["carried"])
+  expect(leadIns(result.bytes)).toEqual({ tables: [[sentence, undefined, false]], kept: [] })
+})
+
 test("a table that refers to its own package's numbering is not carried", async () => {
   const parts = unzipSync(revisionTablesOriginalDocx())
   const xml = strFromU8(parts["word/document.xml"]!).replace("<w:tc><w:tcPr><w:tcW w:w=\"2250\" w:type=\"dxa\"/></w:tcPr><w:p>",

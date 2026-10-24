@@ -132,10 +132,12 @@ export function carryOriginalTables(rendered: Uint8Array, original: Uint8Array):
     // The line a carried table follows stays on its page where the original's
     // did: the drafted line may be plain where the original's heading style
     // kept it with the table. It is kept directly and keeps its own style; a
-    // line the original did not keep is left as drafted, so the redline shows
-    // no formatting change on it.
+    // line the original did not keep, or one that is not the original's line
+    // (other text moved above the table), is left as drafted, so the redline
+    // shows no formatting change on it.
     const [was, lead] = [leadIn(node), leadIn(carried.node)]
-    if (was && lead && keepsWithNext(was, sourceLook) && !keepsWithNext(lead, renderedLook)) property(first(lead, "pPr"), "keepNext", PARAGRAPH_ORDER)
+    if (was && lead && plain(paragraphText(was, was)) === plain(paragraphText(lead, lead)) && keepsWithNext(was, sourceLook) && !keepsWithNext(lead, renderedLook))
+      property(first(lead, "pPr"), "keepNext", PARAGRAPH_ORDER)
     referencedStyles(carried.node).forEach(id => styles.add(id))
     placed.push(carried.node)
     return carried.cells.length || carried.added || carried.removed.length
