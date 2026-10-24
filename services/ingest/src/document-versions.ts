@@ -179,9 +179,11 @@ function storeVersionBytes(matterDir: string, documentId: string, sha256: string
   const file = versionFile(matterDir, { document_id: documentId, sha256, ext })
   if (existsSync(file) && sha256Hex(readFileSync(file)) === sha256) return
   const directory = path.dirname(file)
-  if (!existsSync(directory)) {
-    mkdirSync(directory, { recursive: true })
-    syncDirectory(path.dirname(directory))
+  // Each directory this creates (revisions/, then the document's) is synced into its parent.
+  const created = mkdirSync(directory, { recursive: true })
+  if (created) for (let parent = path.dirname(directory); ; parent = path.dirname(parent)) {
+    syncDirectory(parent)
+    if (parent === path.dirname(created) || parent === path.dirname(parent)) break
   }
   const temporary = path.join(directory, `.${sha256}.${process.pid}.${randomUUID()}.tmp`)
   try {
@@ -309,8 +311,9 @@ export function captureVersion(
     ? insertVersion(db, matterDir, document, input.bytes, sha256, input.version, current?.id ?? null, derivedFrom, now, stage)
     : current!
   if (!created && !staged(stage, document.id, sha256)) storeVersionBytes(matterDir, document.id, sha256, version.ext, input.bytes)
+  // A removed version keeps its row, but not its label: free text that may name what was removed.
   if (redaction)
-    db.run("UPDATE document_versions SET removed = 'redaction' WHERE document_id = ? AND sha256 != ? AND removed IS NULL", [document.id, sha256])
+    db.run("UPDATE document_versions SET removed = 'redaction', label = NULL WHERE document_id = ? AND sha256 != ? AND removed IS NULL", [document.id, sha256])
   if (input.version.event) insertEvent(db, document.id, version.id, input.version.event, now)
   return { document_id: document.id, id: version.id, number: version.number, parent: version.parent, origin: version.origin, created }
 }
@@ -346,22 +349,36 @@ export function detachVersionedDocument(db: Database, matterDir: string, name: s
 /** Deletes the stored files of document `documentId` that no kept version
  * holds: all of them once the document is removed, else those of versions a
  * redaction removed (and any a failed write left). After the write that marked
- * them commits, under the document's artifact lock. Throws when a file cannot
- * be deleted. */
+ * them commits, under the document's artifact lock, or at startup. Returns how
+ * many entries it deleted; throws when one cannot be deleted. */
 export function purgeVersionBytes(matterDir: string, documentId: string) {
   const directory = path.join(matterDir, ".dochaus", "revisions", documentId)
-  if (!existsSync(directory)) return
+  if (!existsSync(directory)) return 0
   const kept = new Set(readStore(matterDir, (db) => (db.query(
     `SELECT v.sha256 || v.ext AS file FROM document_versions v JOIN versioned_documents d ON d.id = v.document_id
      WHERE v.document_id = ? AND v.removed IS NULL AND d.removed_at IS NULL`,
   ).all(documentId) as { file: string }[]).map((row) => row.file), [] as string[]))
+  const entries = readdirSync(directory).filter((entry) => !kept.has(entry))
   if (!kept.size) {
     rmSync(directory, { recursive: true, force: true })
     syncDirectory(path.dirname(directory))
-    return
+    return entries.length + 1
   }
-  for (const entry of readdirSync(directory)) if (!kept.has(entry)) rmSync(path.join(directory, entry), { recursive: true, force: true })
-  syncDirectory(directory)
+  for (const entry of entries) rmSync(path.join(directory, entry), { recursive: true, force: true })
+  if (entries.length) syncDirectory(directory)
+  return entries.length
+}
+
+/** At startup, before any write: deletes what a purge left (one that failed,
+ * or a stop between a commit and its purge), the stored bytes of every version
+ * a redaction removed and the folder of every removed document. Returns how
+ * many entries it deleted; throws on the first that cannot be deleted. */
+export function sweepRemovedVersionBytes(matterDir: string) {
+  const ids = readStore(matterDir, (db) => (db.query(
+    `SELECT id FROM versioned_documents WHERE removed_at IS NOT NULL
+     UNION SELECT document_id AS id FROM document_versions WHERE removed IS NOT NULL`,
+  ).all() as { id: string }[]).map((row) => row.id), [] as string[])
+  return ids.reduce((deleted, id) => deleted + purgeVersionBytes(matterDir, id), 0)
 }
 
 // Reads open legal.db read-only, so a read never creates or migrates it.

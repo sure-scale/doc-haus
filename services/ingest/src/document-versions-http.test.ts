@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test"
 import { createHash } from "node:crypto"
-import { access, mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises"
+import { access, chmod, mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises"
 import { Database } from "bun:sqlite"
 import { tmpdir } from "node:os"
 import path from "node:path"
@@ -92,6 +92,28 @@ const compareJSON = (query: Record<string, string>) => matterRoute(`/compare?${n
 const docx = async (paragraphs: Paragraph[]) => new Uint8Array(await Packer.toBuffer(new Document({ sections: [{ children: paragraphs }] })))
 const plain = (...texts: string[]) => docx(texts.map((text) => new Paragraph(text)))
 
+// Starts the service on a free port, as a start of doc.haus does: its startup
+// work (recovery, the version store sweep) runs before it answers.
+async function startService() {
+  const probe = Bun.serve({ port: 0, fetch: () => new Response() })
+  const port = probe.port
+  probe.stop(true)
+  const serviceLog = path.join(temporary, "ingest.log")
+  service = Bun.spawn([process.execPath, "run", "src/server.ts"], {
+    cwd: path.resolve(import.meta.dir, ".."),
+    env: { ...process.env, WORKSPACE_ROOT: path.join(temporary, "workspace"), DOCHAUS_DIR: path.join(temporary, "config"),
+      INGEST_PORT: String(port), INGEST_HOST: "127.0.0.1", OPENCODE_URL: `http://127.0.0.1:${engine!.port}` },
+    stdout: Bun.file(serviceLog), stderr: Bun.file(serviceLog),
+  })
+  base = `http://127.0.0.1:${port}`
+  const deadline = Date.now() + 20_000
+  while (true) {
+    if (await request("/matters").then((response) => response.ok).catch(() => false)) break
+    if (Date.now() >= deadline) throw new Error(`Ingest startup failed:\n${await readFile(serviceLog, "utf8")}`)
+    await Bun.sleep(50)
+  }
+}
+
 beforeAll(async () => {
   temporary = await mkdtemp(path.join(tmpdir(), "dochaus-versions-http-"))
   const workspace = path.join(temporary, "workspace")
@@ -103,23 +125,7 @@ beforeAll(async () => {
     engineRequests.push(request.url)
     return new Response("No engine in this versions test", { status: 503 })
   } })
-  const probe = Bun.serve({ port: 0, fetch: () => new Response() })
-  const port = probe.port
-  probe.stop(true)
-  const serviceLog = path.join(temporary, "ingest.log")
-  service = Bun.spawn([process.execPath, "run", "src/server.ts"], {
-    cwd: path.resolve(import.meta.dir, ".."),
-    env: { ...process.env, WORKSPACE_ROOT: workspace, DOCHAUS_DIR: config,
-      INGEST_PORT: String(port), INGEST_HOST: "127.0.0.1", OPENCODE_URL: `http://127.0.0.1:${engine.port}` },
-    stdout: Bun.file(serviceLog), stderr: Bun.file(serviceLog),
-  })
-  base = `http://127.0.0.1:${port}`
-  const deadline = Date.now() + 20_000
-  while (true) {
-    if (await request("/matters").then((response) => response.ok).catch(() => false)) break
-    if (Date.now() >= deadline) throw new Error(`Ingest startup failed:\n${await readFile(serviceLog, "utf8")}`)
-    await Bun.sleep(50)
-  }
+  await startService()
   const created = await request("/matters", { method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ title: "Neutral versions matter" }) })
   expect(created.status).toBe(200)
@@ -370,8 +376,12 @@ test("a version whose kept bytes are damaged is refused, and uploading those byt
   expect(again.status).toBe(200)
   expect((await again.json() as { version: Captured }).version).toMatchObject({ number: 3, origin: "replace", created: true })
   expect(await versionBytes(first.id)).toEqual(original)
-  // The current version's bytes damaged: uploading the working file's bytes repairs them and adds no version.
+  // The current version's bytes damaged: keeping both is still a duplicate of
+  // the working file, and adds no copy; a replace repairs them and adds no version.
   await writeFile(kept, "damaged")
+  const both = await upload(name, original, { existing: "keep-both" })
+  expect([both.status, (await both.json() as Refusal).code]).toEqual([409, "duplicate"])
+  expect((await documentFiles()).filter((file) => file.startsWith("Damaged"))).toEqual([name])
   const repaired = await upload(name, original, { existing: "replace" })
   expect(repaired.status).toBe(200)
   expect((await repaired.json() as { version: Captured }).version).toMatchObject({ number: 3, created: false })
@@ -481,6 +491,43 @@ test("an email upload keeps its uploader and label, and one whose attachments ar
   expect((await again.json() as { attachments: unknown[] }).attachments).toMatchObject([{ status: "indexed", document: "Thread draft.docx" }])
   expect((await history(name)).versions).toHaveLength(1)
 })
+
+test("a purge that cannot finish is reported, and the next start deletes what it left", async () => {
+  // A redaction whose earlier version cannot be deleted: its own bytes are
+  // already kept (as a staged write leaves them), and the store folder is then
+  // made unchangeable, so only the purge fails.
+  const name = "Unpurged.docx"
+  const original = await plain("Unpurged", "The invented contractor holds the sample key.")
+  const first = (await (await upload(name, original, { version_label: "Holds the sample key" })).json() as { version: Captured }).version
+  const redacted = await plain("Unpurged", "The invented contractor holds [REDACTED].")
+  const store = storeOf(first.document_id)
+  await writeFile(path.join(store, `${sha256(redacted)}.docx`), redacted)
+  await chmod(store, 0o555)
+  const saved = await revise(name, redacted, { "x-dochaus-origin": "redaction" }).finally(() => chmod(store, 0o755))
+  expect(saved.status).toBe(200)
+  expect((await saved.json() as { purge_failed?: string }).purge_failed).toContain("could not be deleted")
+  // Marked removed, its label dropped with its bytes, though the bytes are still on disk.
+  const listed = await history(name)
+  expect(listed.versions.map((row) => [row.number, row.origin, row.removed, row.label])).toEqual([[2, "redaction", null, null], [1, "upload", "redaction", null]])
+  expect(await status(await matterRoute(`/documents/versions/${first.id}/content`))).toEqual([410, "removed_by_redaction"])
+  expect(await exists(path.join(store, `${sha256(original)}.docx`))).toBe(true)
+  // A delete whose kept versions cannot be deleted says so too.
+  const gone = "Undeleted.docx"
+  const removed = (await (await upload(gone, await plain("Undeleted", SCOPE))).json() as { version: Captured }).version
+  await chmod(storeOf(removed.document_id), 0o555)
+  const deleted = await remove(gone).finally(() => chmod(storeOf(removed.document_id), 0o755))
+  expect(deleted.status).toBe(200)
+  expect((await deleted.json() as { purge_failed?: string }).purge_failed).toContain("could not be deleted")
+  expect(await exists(storeOf(removed.document_id))).toBe(true)
+  // The next start deletes both; the redacted current version stays.
+  service?.kill()
+  await service?.exited
+  await startService()
+  expect(await exists(path.join(store, `${sha256(original)}.docx`))).toBe(false)
+  expect(await exists(storeOf(removed.document_id))).toBe(false)
+  expect(await versionBytes(listed.versions[0]!.id)).toEqual(redacted)
+  await observe(name)
+}, 90_000)
 
 test("every working-file state is kept as a version whose bytes match its hash", async () => {
   for (const [name, seen] of states) {

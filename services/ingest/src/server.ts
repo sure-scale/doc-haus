@@ -89,6 +89,7 @@ import {
   findVersionBySha,
   oneLine,
   purgeVersionBytes,
+  sweepRemovedVersionBytes,
   readCurrentVersion,
   readDocumentVersions,
   readVersion,
@@ -595,7 +596,7 @@ app.post("/matters/:id/documents", async (c) => {
   // Bytes the matter already keeps for the document of that name add nothing,
   // whatever the choice: the upload is reported as a duplicate of the version
   // that holds them (#268).
-  const duplicate = duplicateUpload(dir, name, buffer)
+  const duplicate = duplicateUpload(dir, name, buffer, existing)
   if (duplicate) return c.json(duplicate, 409)
   // A replace saves the upload as the next version of the document it replaces.
   const version = { actor: requestActor(c), label: formText(body["version_label"]) }
@@ -705,11 +706,15 @@ app.post("/matters/:id/documents/revisions", async (c) => {
       // A deliverable's prior hash is checked by its writer; a source's here.
       if (priorSha256 && role === "source" && sha256Hex(readFileSync(target.docPath)) !== priorSha256)
         return c.json({error:"The document changed after it was read. Read it again before editing."},409)
-      const combined = await prepareCombinedFile(dir, target.docPath)
+      // A redaction of a part also rebuilds the combined file, which holds the
+      // part's text, whatever the parts (the tool saved the part in place first).
+      const combined = await prepareCombinedFile(dir, target.docPath, { redaction: origin === "redaction" })
       // A lawyer's save is kept even with pending tracked changes; doc.haus edits
       // on top of it then wait until they are resolved.
       const revision = await writeDocumentRevision(dir, target.name, bytes, [], priorSha256, false, { version, keepTracked: origin === "revision" })
-      return c.json({ ...revision, ...await rebuildCombinedFile(combined) })
+      const rebuilt = await rebuildCombinedFile(combined)
+      const purgeFailed = [revision, rebuilt].map((result) => result && "purge_failed" in result ? result.purge_failed : undefined).filter(Boolean).join(" ")
+      return c.json({ ...revision, ...rebuilt, ...(purgeFailed ? { purge_failed: purgeFailed } : {}) })
     })
   } catch (error) {
     if (error instanceof SourceDocumentConflictError || error instanceof DeliverableConflictError)
@@ -1377,20 +1382,21 @@ async function writeDocumentRevision(
       return { ...written, ...versionNotice(written.name, bytes, written.version) }
     })()
     : await ingestDocument(directory, name, bytes, { existing: "replace", requireExistingSource: true, updateRegistry, version: options.version })
-  return { ...written, ...(options.version.origin === "redaction" ? purgeRedactedVersions(directory, written.version.document_id) : {}) }
+  return { ...written, ...(options.version.origin === "redaction" ? purgeRedactedVersions(directory, written.version.document_id, path.basename(name)) : {}) }
 }
 
 // A committed redaction deletes the stored bytes of the document's earlier
 // versions (captureVersion marked them removed), so the removed text is gone
 // from doc.haus as it was before versions were kept. Under the caller's lock on
-// the document. A purge that fails is reported for the redaction tool's warnings.
-function purgeRedactedVersions(directory: string, documentId: string): { purge_failed?: string } {
+// the document. A purge that fails is reported for the redaction tool's
+// warnings; the startup sweep (sweepRemovedVersionBytes) finishes it.
+function purgeRedactedVersions(directory: string, documentId: string, name: string): { purge_failed?: string } {
   try {
     purgeVersionBytes(directory, documentId)
     return {}
   } catch (error) {
     console.error("[versions] redacted versions not purged", diagnosticErrorMetadata(error))
-    return { purge_failed: "The earlier versions of this document could not be deleted from doc.haus's kept versions; they may still hold the removed text." }
+    return { purge_failed: `The earlier versions of ${name} could not be deleted from doc.haus's kept versions; they may still hold the removed text until doc.haus next starts.` }
   }
 }
 
@@ -1634,8 +1640,8 @@ function runRedlineLock(directory: string, body: string): string[] {
 // combined file was rebuilt or why not (logged too). Nothing is returned when no
 // completed run registered a combined file or the change touched neither part.
 type CombinedSkipReason = "combined_missing" | "combined_not_deliverable" | "pending_combined_proposals" | "combined_changed" | "build_refused" | "rebuild_failed" | "write_failed"
-type CombinedRebuild = { combined_updated: true } | { combined_updated: false; combined_skip_reason: CombinedSkipReason }
-type PreparedCombined = { directory: string; accepted: string; file: string; body: string; notes: string; rejected: boolean; parts?: string; error?: unknown }
+type CombinedRebuild = { combined_updated: true; purge_failed?: string } | { combined_updated: false; combined_skip_reason: CombinedSkipReason }
+type PreparedCombined = { directory: string; accepted: string; file: string; body: string; notes: string; rejected: boolean; redaction: boolean; parts?: string; error?: unknown }
 
 function combinedSkipped(directory: string, reason: CombinedSkipReason, detail: Record<string, unknown> = {}): CombinedRebuild {
   console.warn("[redline] combined file not rebuilt", { matter_ref: draftingTraceReference(directory), reason, ...detail })
@@ -1685,8 +1691,11 @@ const sha256Hex = (bytes: Uint8Array) => createHash("sha256").update(bytes).dige
 /** Before the accept writes anything: the saved combined file it may rebuild and
  * the sha256 of its parts as they are now, so the rebuild runs only when the
  * accept changed one. With `rejected`, before a reject: the rebuild runs
- * whatever the parts, and writes only a build that differs from the saved file. */
-async function prepareCombinedFile(directory: string, accepted: string, options: { rejected?: boolean } = {}): Promise<PreparedCombined | undefined> {
+ * whatever the parts, and writes only a build that differs from the saved file.
+ * With `redaction`, before a redaction's save of a part: the rebuild runs
+ * whatever the parts, is the redaction's own write of the combined file, and
+ * deletes the combined file's earlier versions, which hold the removed text. */
+async function prepareCombinedFile(directory: string, accepted: string, options: { rejected?: boolean; redaction?: boolean } = {}): Promise<PreparedCombined | undefined> {
   const rejected = options.rejected ?? false
   let combined: ReturnType<typeof registeredCombined>
   try {
@@ -1697,14 +1706,17 @@ async function prepareCombinedFile(directory: string, accepted: string, options:
   }
   if (!combined) return
   const { file, body, notes } = combined
+  // Only a part's text is in the combined file (not a delivered body's whose accept changes the notes).
+  const identity = documentRegistryIdentity(accepted)
+  const redaction = Boolean(options.redaction) && [body, notes].some((name) => documentRegistryIdentity(path.join(directory, name)) === identity)
   try {
     return await withArtifactMutationLocksAsync(directory, [file, body, notes, ".dochaus/source-corpus"], async (): Promise<PreparedCombined> => {
       // A link is never read or written as the combined file or one of its parts.
       if (![file, body, notes].every((name) => readDocumentTarget(directory, name))) throw new Error("A combined file part is a link, not a matter document.")
-      return { directory, accepted, file, body, notes, rejected, parts: (await combinedPartsSha256(directory, body, notes)).key }
+      return { directory, accepted, file, body, notes, rejected, redaction, parts: (await combinedPartsSha256(directory, body, notes)).key }
     })
   } catch (error) {
-    return { directory, accepted, file, body, notes, rejected, error }
+    return { directory, accepted, file, body, notes, rejected, redaction, error }
   }
 }
 
@@ -1727,7 +1739,7 @@ async function rebuildCombinedFile(prepared: PreparedCombined | undefined): Prom
     return await withArtifactMutationLocksAsync(directory, [file, body, notes, ".dochaus/source-corpus"], async (): Promise<CombinedRebuild | undefined> => {
       if (![file, body, notes].every((name) => readDocumentTarget(directory, name))) throw new Error("A combined file part is a link, not a matter document.")
       const { key, memoBytes, bodyBytes } = await combinedPartsSha256(directory, body, notes)
-      if (prepared.parts === key && !prepared.rejected) return
+      if (prepared.parts === key && !prepared.rejected && !prepared.redaction) return
       const target = path.join(directory, file)
       const saved = existsSync(target) ? await Bun.file(target).bytes() : undefined
       const built = buildCombinedFile({ memo: memoBytes, body: bodyBytes })
@@ -1746,11 +1758,11 @@ async function rebuildCombinedFile(prepared: PreparedCombined | undefined): Prom
       if ("refused" in built) return combinedSkipped(directory, "build_refused", { refused: built.refused, ...(built.part ? { part: built.part } : {}) })
       // combinedBlocked found the file, read above under this lock.
       if (!saved || !bytes) return combinedSkipped(directory, "combined_missing")
-      await writeDeliverableRevision(directory, file, bytes, {
+      const written = await writeDeliverableRevision(directory, file, bytes, {
         priorSha256: sha256Hex(saved), system: true,
-        version: { origin: "system", actor: "doc.haus", run: readLeanState(directory)?.owner_session_id ?? null, label: "Combined file rebuilt" },
+        version: { origin: prepared.redaction ? "redaction" : "system", actor: "doc.haus", run: readLeanState(directory)?.owner_session_id ?? null, label: "Combined file rebuilt" },
       })
-      return { combined_updated: true }
+      return { combined_updated: true, ...(prepared.redaction ? purgeRedactedVersions(directory, written.version.document_id, file) : {}) }
     })
   } catch (error) {
     return combinedSkipped(directory, "write_failed", diagnosticErrorMetadata(error))
@@ -1801,10 +1813,11 @@ function acceptVersion(c: Context, redlineIDs: number[]): VersionWrite {
  * (restored, not uploaded again). Not a duplicate: the current version's bytes
  * once the working file has changed outside doc.haus (the upload keeps those
  * changes as a version), a version whose kept bytes are damaged (the upload
- * stores them again), an email or zip file whose attachments are not all in
- * yet (uploading it again brings them in), or the same bytes under another
- * name (another document). */
-function duplicateUpload(directory: string, name: string, bytes: Uint8Array) {
+ * stores them again; a keep-both of the working file's bytes is still a
+ * duplicate, as only a replace repairs them), an email or zip file whose
+ * attachments are not all in yet (uploading it again brings them in), or the
+ * same bytes under another name (another document). */
+function duplicateUpload(directory: string, name: string, bytes: Uint8Array, existing: unknown) {
   const target = readDocumentTarget(directory, name)
   if (!target || !existsSync(target.docPath)) return
   const db = openDb(directory)
@@ -1814,7 +1827,7 @@ function duplicateUpload(directory: string, name: string, bytes: Uint8Array) {
   const working = sha256Hex(readFileSync(target.docPath)) === sha256
   const found = findVersionBySha(directory, target.name, sha256)
   const kept = found && readVersionBytes(directory, found) ? found : undefined
-  if (found && !kept) return
+  if (found && !kept && !(working && existing === "keep-both")) return
   const stored = "Nothing new was stored."
   if (working) {
     if (!kept?.current) return { error: `${name} is already in this matter as ${target.name}. ${stored}`, code: "duplicate" as const, name: target.name, document_id: null, version: null }
@@ -1877,6 +1890,14 @@ for (const matter of listMatters()) {
     console.error("matter migration failed", { matter_ref: matterRef, ...diagnosticErrorMetadata(e) })
   }
   if (!recovery) continue
+  // What a purge of kept versions left (#268): one that failed, or a stop
+  // between a redaction's or a delete's commit and its purge.
+  try {
+    const swept = sweepRemovedVersionBytes(matter.dir)
+    if (swept) console.log("removed versions deleted", { count: swept, matter_ref: matterRef })
+  } catch (e) {
+    console.error("removed versions not deleted", { matter_ref: matterRef, ...diagnosticErrorMetadata(e) })
+  }
   // The source artifacts derive from the chunks, not from the migrated rows, so
   // a failed migration (rolled back, retried next start) does not stop them
   // being healed.

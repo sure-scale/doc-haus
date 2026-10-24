@@ -430,6 +430,7 @@ export async function removeMatterDocument(matterDir: string, name: string, keep
     }
   })() : undefined
   const result = await deleteMatterDocument(matterDir, name)
+  const purgeFailed = result.purge_failed ? [result.purge_failed] : []
   const removed: string[] = []
   // The email is already gone, so an attachment that cannot be removed now is
   // named with the reason, not turned into a failed request; it stays in the
@@ -437,7 +438,8 @@ export async function removeMatterDocument(matterDir: string, name: string, keep
   const failed: { name: string; reason: string }[] = []
   for (const attachment of plan?.attachments ?? []) {
     try {
-      await deleteMatterDocument(matterDir, attachment)
+      const deleted = await deleteMatterDocument(matterDir, attachment)
+      if (deleted.purge_failed) purgeFailed.push(deleted.purge_failed)
       removed.push(attachment)
     } catch (error) {
       // Already removed meanwhile.
@@ -446,7 +448,7 @@ export async function removeMatterDocument(matterDir: string, name: string, keep
       failed.push({ name: attachment, reason: error instanceof DocumentMutationConflictError ? error.message : "It could not be removed. Try removing it on its own." })
     }
   }
-  return { ...result, attachments: { removed, kept: plan?.kept ?? [], failed } }
+  return { ...result, ...(purgeFailed.length ? { purge_failed: purgeFailed.join(" ") } : {}), attachments: { removed, kept: plan?.kept ?? [], failed } }
 }
 
 // Emails ingested before attachments were read have no attachments record, and
