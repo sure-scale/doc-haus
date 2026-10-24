@@ -5,7 +5,7 @@ import { checkDeliverySelections, deliveryNameAsked, deliveryRowRefusal, selecte
 import { appliedChangeEvidence, nativeExportEvidence } from "./review-evidence"
 import { comparisonDescription } from "./comparison"
 import { combinedDelivery, deliveryArtifactEvidence, plannedRegistration, requestedMemo } from "./deliverables"
-import { finalBodyParagraphs } from "./checks"
+import { finalBodyParagraphs, shownText } from "./checks"
 import { readLeanPlan, type DocID } from "./plan"
 import { excerpt, matterSourceIDs, openItem } from "./quotes"
 import { nameWithProvenance, sourceProvenance } from "../../lib/source-provenance"
@@ -65,7 +65,7 @@ export function packageReviewPrompt(directory: string) {
     `<sources>\n${matterSourceIDs(directory).map(name => nameWithProvenance(name, provenance)).join("\n")}\n</sources>`,
     `<delivery_artifacts>\n${JSON.stringify(deliveryArtifactEvidence(directory), null, 2)}\n</delivery_artifacts>`,
     `<legal_research>\n${researchHandoff(directory)}\n</legal_research>`,
-    ...documents.map(row => `<final_document id="${row.id}" title="${row.title.replaceAll('"', "'")}">\nPurpose: ${row.purpose ?? "See request"}\n${comparisonDescription(directory, row.id)}\n${finalBodyParagraphs(directory, row.id).map(paragraph => `[${paragraph.pid}] ${paragraph.text}`).join("\n\n")}\n</final_document>`),
+    ...documents.map(row => `<final_document id="${row.id}" title="${row.title.replaceAll('"', "'")}">\nPurpose: ${row.purpose ?? "See request"}\n${comparisonDescription(directory, row.id)}\n${finalBodyParagraphs(directory, row.id).map(paragraph => `[${paragraph.pid}] ${shownText(paragraph)}`).join("\n\n")}\n</final_document>`),
     ...documents.filter(row => row.playbook_review?.sources.length).map(row => `<playbook_review document="${row.id}">\nSelection: ${JSON.stringify(row.playbook_review)}\n${reviewText(directory, row.id, "review-playbook") ?? "Not available"}\n</playbook_review>`),
     "For documents with selected playbook guidance, verify its applicable positions against the actual final body and settled instructions. Earlier coverage is a navigation aid, not approval. Confirm corrections were incorporated or accurately disclosed as unresolved; preserve justified overrides and inapplicable positions. Do not treat a memo recommendation as completed proposed wording when the request requires that wording.",
     ...documents.map(row => `<review_dispositions document="${row.id}">\n${reviewDispositionText(directory, row.id)}\n</review_dispositions>`),

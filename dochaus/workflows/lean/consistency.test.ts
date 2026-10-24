@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { readFileSync, writeFileSync } from "node:fs"
+import { finalBodyParagraphs, shownText } from "./checks"
 import { consistencyFindings, type PackDocument, type Para } from "./consistency"
 import { finalGate, type GateResult } from "./gate"
 import { runLean } from "./runner"
@@ -185,6 +186,17 @@ const renumber: Reply = prompt => JSON.stringify({
   questions: [],
 })
 
+// The same agreement written with Word-numberable clause numbers; the changes
+// restate one paragraph's number and delete a sub-clause a later clause cites.
+const LISTED = AGREEMENT.replace(/^## (\d) /gm, "## $1. ")
+const removeListed: Reply = prompt => JSON.stringify({
+  amendments: [
+    { pid: pidIn(prompt, "2\\.1 Payment is due"), updated: "2.1 Payment is due on delivery in full.", reason: "States that payment is in full.", sources: [{ source_id: SOURCE, quote: "Payment is due on delivery." }] },
+    { pid: pidIn(prompt, "2\\.2 Payment is made"), operation: "delete", updated: "", reason: "The terms do not settle the payment method.", sources: [{ source_id: SOURCE, quote: "Payment is due on delivery." }] },
+  ],
+  questions: [],
+})
+
 // A definition the changes take out while "the Specification" stays in use, and a
 // clause referred to twice from one paragraph and then renumbered.
 const DEFINED = [
@@ -225,6 +237,21 @@ describe("the check in a lean run", () => {
     writeFileSync(leanFile(directory, "drafting-notes.md"), "# Drafting notes\n\nNothing to report.\n")
     expect(finalGate(directory)).toMatchObject({ status: "blocked",
       blocking: [expect.objectContaining({ kind: "consistency", resolution: "the drafting notes do not name this cross-reference or defined-term problem" })] })
+  }, 120_000)
+
+  test("a body numbered by Word's list numbering is checked by the numbers its list gives it", async () => {
+    const directory = matter()
+    const model = scriptedModel({ [AGENT.draft]: drafter(LISTED), [AGENT.review]: () => NO_FINDINGS, [AGENT.changes]: sameSession(removeListed), [AGENT.finalize]: draftingNotes })
+    const state = await runLean(directory, { sessions: model.port })
+
+    expect(state.status).toBe("completed")
+    // The numbers are list labels, not text; a replacement that restates its
+    // label does not print it twice.
+    const final = finalBodyParagraphs(directory, "d1")
+    expect(final.find(row => row.text === "Payment is due on delivery in full.")?.label).toBe("2.1")
+    expect(final.map(shownText)).toContain("3.1 Late payment under clause 2.2 carries interest.")
+    expect(readOpenItems(directory).filter(item => item.kind === "consistency").map(item => item.detail))
+      .toEqual([expect.stringContaining("Clause 3.1 refers to clause 2.2, but no clause in the final text is numbered 2.2.")])
   }, 120_000)
 
   test("each underlying problem becomes exactly one open item", async () => {

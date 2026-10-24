@@ -6,7 +6,7 @@ import { appliedChangeEvidence, nativeExportEvidence } from "./review-evidence"
 import { comparisonDescription } from "./comparison"
 import { combinedDelivery, deliveryArtifactEvidence, requestedMemo } from "./deliverables"
 import { researchHandoff } from "./research"
-import { finalBodyParagraphs, readChangeList, readParagraphs, type ApplyResult } from "./checks"
+import { finalBodyParagraphs, readChangeList, readParagraphs, type ApplyResult, shownText } from "./checks"
 import { reviewStages, FIRST_DOCUMENT, earlierDocuments, planActingFor, operativeDocument, plannedDocument, readLeanPlan, runPosture, stepDocument, stepStage, type DocID, type StepID } from "./plan"
 import { REQUEST_SOURCE, matterSourceIDs } from "./quotes"
 import { nameWithProvenance, sourceProvenance } from "../../lib/source-provenance"
@@ -75,7 +75,7 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
   const stage = stepStage(step)
   const title = plannedDocument(directory, document)?.title
   const finished = completedDocumentsBlock(directory, document)
-  const paragraphs = tagged("draft", readParagraphs(directory, document).map(row => `[${row.pid}] ${row.text}`).join("\n\n"))
+  const paragraphs = tagged("draft", readParagraphs(directory, document).map(row => `[${row.pid}] ${shownText(row)}`).join("\n\n"))
   const adjudicated = stage === "changes" ? readChangePlan(directory, document) : undefined
   const named = title ? ` of "${title}"` : ""
   const template = stage === "draft" || stage === "changes" ? plannedContract(directory, document)?.source : undefined
@@ -263,9 +263,9 @@ export function completedDocumentsText(directory: string, document: DocID) {
   return earlierDocuments(directory, document)
     .map(row => {
       const guidanceReview = row.playbook_review?.sources.length ? reviewText(directory, row.id, "review-playbook", { strip: true }) : undefined
-      return `<document title="${attribute(row.title)}">\n${finalBodyParagraphs(directory, row.id).map(paragraph => paragraph.text).join("\n\n")}\n<accepted_change_explanations>\n${JSON.stringify(appliedChangeEvidence(directory, row.id).map(change => ({
+      return `<document title="${attribute(row.title)}">\n${finalBodyParagraphs(directory, row.id).map(shownText).join("\n\n")}\n<accepted_change_explanations>\n${JSON.stringify(appliedChangeEvidence(directory, row.id).map(change => ({
       change_origin: change.change_origin, operation: change.operation, deleted_text: change.deleted_text, result_text: change.result_paragraphs.map(row => row.text), reason: change.reason, sources: change.sources, evidence_basis: change.evidence_basis,
-      final_text: finalBodyParagraphs(directory, row.id).find(paragraph => paragraph.pid === change.pid)?.text ?? "",
+      final_text: (paragraph => paragraph ? shownText(paragraph) : "")(finalBodyParagraphs(directory, row.id).find(paragraph => paragraph.pid === change.pid)),
       comment_status: change.native_comment.status,
     })), null, 2)}\n</accepted_change_explanations>\n<review_dispositions>\n${reviewDispositionText(directory, row.id, true)}\n</review_dispositions>${guidanceReview ? `\n<prior_playbook_review>\nEarlier guidance review is a navigation aid, not approval. Verify its conclusions against the canonical guidance, current instructions and final wording. When this document provides advice, explain the material original exposure and proposed effect; preserve conditions, exceptions and proposal status. Earlier paragraph references are not amendment targets in this document.\n${guidanceReview}\n</prior_playbook_review>` : ""}\n</document>`
     })
@@ -371,7 +371,7 @@ function documentSections(directory: string, document: DocID, items: OpenItem[])
   return [
     tagged("comparison_baseline", comparisonDescription(directory, document)),
     tagged("native_export", JSON.stringify(nativeExportEvidence(directory, document), null, 2)),
-    tagged("final_body", finalBodyParagraphs(directory, document).map(row => `[${row.pid}] ${row.text}`).join("\n\n")),
+    tagged("final_body", finalBodyParagraphs(directory, document).map(row => `[${row.pid}] ${shownText(row)}`).join("\n\n")),
     draftingStyleWarningsBlock(finalBodyParagraphs(directory, document), true),
     tagged("applied_changes", JSON.stringify(appliedChangeEvidence(directory, document), null, 2)),
     tagged("review_dispositions", reviewDispositionText(directory, document)),

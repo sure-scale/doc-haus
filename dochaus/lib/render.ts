@@ -11,6 +11,7 @@ import { normalizePreferences } from "./drafting-preferences"
 import { prepareMarkdownRenderText } from "./markdown-render-text"
 import { withGeneratedDocxAttribution } from "./docx-attribution"
 import { applyPageFurniture, type PageFurniture } from "./page-furniture"
+import { numberDocxClauses } from "./docx-numbering"
 
 // Shared markdown -> .docx -> deliverable render core for doc.haus drafting.
 // draft-document (from-scratch create) and the lean drafting stages compose a
@@ -37,8 +38,10 @@ const ingestUrl = process.env.INGEST_URL ?? `http://127.0.0.1:${process.env.DOC_
 // uploadDeliverable so each tool can name the file and report independently.
 // A re-render of an earlier render's unchanged text keeps its paragraph ids.
 // `furniture` (page-furniture.ts) adds the header and footer the document's
-// form carries.
-export async function renderMarkdownToDocx(content: string, previous?: Uint8Array, furniture?: PageFurniture) {
+// form carries. Literal clause numbers become Word list numbering
+// (docx-numbering.ts) unless `numbering` is false, for a caller that numbers
+// after reshaping the headings itself.
+export async function renderMarkdownToDocx(content: string, previous?: Uint8Array, furniture?: PageFurniture, options: { numbering?: false } = {}) {
   const text = prepareMarkdownRenderText(splitBlocks(content))
   const dx = await docxodus()
   const session = dx.openDocxSession(await Bun.file(baseSeed).bytes(), {})
@@ -78,7 +81,9 @@ export async function renderMarkdownToDocx(content: string, previous?: Uint8Arra
   // document.xml, and a header date would trip the lint's date-style rule.
   // Highlighting and paragraph pointers read document.xml only, so header and
   // footer text takes neither.
-  const furnished = furniture ? applyPageFurniture(composed, furniture) : composed
+  // Numbering follows the lint, which reads the literal numbers as Markdown.
+  const numbered = options.numbering === false ? composed : numberDocxClauses(composed)
+  const furnished = furniture ? applyPageFurniture(numbered, furniture) : numbered
   const bytes = withGeneratedDocxAttribution(withParagraphPointers(highlightOpenItemsInDocx(furnished), previous))
   return { bytes, lint }
 }

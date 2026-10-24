@@ -17,8 +17,9 @@ import { pageFurniture, type FurnitureKind, type RequestedFurniture } from "../.
 import { matterClient } from "../../lib/matter-client"
 import { readFirmPreferences } from "../../lib/preferences"
 import { existsSync, readFileSync } from "node:fs"
-import { ensureParagraphPointers, paragraphSha256 } from "../../lib/drafting-amendment"
+import { ensureParagraphRows, paragraphSha256 } from "../../lib/drafting-amendment"
 import { renderMarkdownToDocx } from "../../lib/render"
+import { numberDocxClauses } from "../../lib/docx-numbering"
 import { presentDraft, type DraftPresentation } from "./draft-presentation"
 import { checkChanges, parseJsonObject } from "./change-checks"
 import {
@@ -356,8 +357,11 @@ export async function acceptStageReply(directory: string, step: StepID, reply: s
     // A plan without a form (a legacy plan, or an outline's last attempt) carries the plain page numbers.
     const planned = plannedDocument(directory, document)
     const furniture = renderedFurniture(directory, planned?.form ?? "other", requestedFurniture(planned?.furniture))
-    const rendered = await renderMarkdownToDocx(options.presentation?.source ?? reply, undefined, furniture)
+    // Clause numbering follows presentation, which matches and reshapes the
+    // headings by their literal text.
+    const rendered = await renderMarkdownToDocx(options.presentation?.source ?? reply, undefined, furniture, { numbering: false })
       .then(result => options.presentation ? presentDraft(result.bytes, options.presentation.parts, options.presentation.title !== false) : { bytes: result.bytes, attribution: undefined })
+      .then(result => ({ ...result, bytes: numberDocxClauses(result.bytes) }))
       .then(result => result, (error: unknown) => ({ error }))
     if ("error" in rendered)
       return { issues: [`The document could not be rendered to Word (${message(rendered.error)}). Use plain Markdown headings, paragraphs, lists and tables.`], openItems: [], outputs: [] }
@@ -422,9 +426,10 @@ export function notesFurniture(directory: string) {
 }
 
 /** Gives every body paragraph a pointer (rewriting the docx when one is added)
- * and lists the paragraphs with the text hash amendments are authored against. */
+ * and lists the paragraphs with the text hash amendments are authored against
+ * and the list label Word numbers each with. */
 export async function paragraphRows(docxPath: string): Promise<ParagraphRow[]> {
-  return Object.entries(await ensureParagraphPointers(docxPath)).map(([pid, text]) => ({ pid, sha256: paragraphSha256(text), text }))
+  return (await ensureParagraphRows(docxPath)).map(row => ({ pid: row.pid, sha256: paragraphSha256(row.text), text: row.text, ...(row.label ? { label: row.label } : {}) }))
 }
 
 /** A draft step's accepted document: planned, with its Word body and its paragraphs. */

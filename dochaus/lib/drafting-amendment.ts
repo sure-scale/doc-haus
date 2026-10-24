@@ -9,8 +9,8 @@ import { docxodus } from "./docxodus"
 
 // One amendment explicitly replaces, deletes or splits one paragraph, addressed by the
 // paragraph pointer (pid) minted by ensureParagraphPointers. existing_sha256 is
-// paragraphSha256 of the paragraph text the author saw; it is the only
-// integrity check the applier performs.
+// paragraphSha256 of the paragraph text the author saw, without the list label
+// Word numbers it with; it is the only integrity check the applier performs.
 export const amendmentSchema = z.object({
   id: z.string().min(1),
   pid: z.string().min(1),
@@ -103,13 +103,23 @@ export function resolveParagraphTarget(targets: ParagraphTarget[], pid: string) 
 // split paragraphs) or a second pointer on one paragraph is replaced. The file
 // is rewritten atomically only when a pointer was added or replaced.
 export async function ensureParagraphPointers(docxPath: string) {
+  return Object.fromEntries((await ensureParagraphRows(docxPath)).map(row => [row.pid, row.text]))
+}
+
+// The same pointers, with the list label Word shows before each numbered
+// paragraph ("1.1", "(a)"). The label is list numbering, not paragraph text:
+// `text` stays the paragraph's own text, which amendments are checked against.
+export async function ensureParagraphRows(docxPath: string) {
   const source = new Uint8Array(await readFile(docxPath))
   const opened = await openRevision(source)
   try {
-    const result = addParagraphPointers(source, opened.parts, opened.documents[BODY]!, opened.paragraphs
-      .filter(paragraph => paragraph.part === BODY).map(paragraph => ({ node: paragraph.node, text: paragraph.match.text })))
+    const body = opened.paragraphs.filter(paragraph => paragraph.part === BODY)
+    const result = addParagraphPointers(source, opened.parts, opened.documents[BODY]!, body.map(paragraph => ({ node: paragraph.node, text: paragraph.match.text })))
     if (result.bytes !== source) writeDurableBytes(docxPath, result.bytes)
-    return result.pointers
+    return Object.entries(result.pointers).map(([pid, text], index) => {
+      const label = body[index]!.metadata.list?.generatedLabel?.trim()
+      return { pid, text, ...(label ? { label } : {}) }
+    })
   } finally {
     opened.session.close()
   }

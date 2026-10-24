@@ -22,7 +22,31 @@ import { delegatedQuestions, readLeanJson, type OpenItem, type Question, type St
 
 export type StageCheck = { issues: string[]; openItems: OpenItem[] }
 
-export type ParagraphRow = { pid: string; sha256: string; text: string; draft_part?: number | null; draft_heading?: boolean }
+/** One body paragraph: `text` is its own text, which `sha256` hashes and
+ * amendments replace; `label` is the number Word's list numbering prints
+ * before it ("1.1", "(a)"), which is not part of that text. */
+export type ParagraphRow = { pid: string; sha256: string; text: string; label?: string; draft_part?: number | null; draft_heading?: boolean }
+
+/** A paragraph as a reader sees it: its list label, then its text. */
+export function shownText(row: { text: string; label?: string }) {
+  return row.label ? `${row.label} ${row.text}` : row.text
+}
+
+/** Amendment text without a leading number shaped like the list label its
+ * paragraph prints ("2.3 " on a paragraph Word numbers 2.2): the list supplies
+ * the number, a replacement may restate the one it was shown, and a paragraph
+ * split from a numbered one is numbered by the same list level. Typing another
+ * number cannot renumber a list paragraph; it would print both. */
+export function withoutListLabel(text: string, label: string | undefined) {
+  if (!label) return text
+  const shape = label.replace(/\d+|[a-z]+|[A-Z]+|[^\da-zA-Z]/g, part =>
+    /^\d/.test(part) ? "\\d{1,3}" : /^[a-z]/.test(part) ? "[a-z]{1,4}" : /^[A-Z]/.test(part) ? "[A-Z]{1,4}" : escapeRegExp(part))
+  return text.replace(new RegExp(`^\\s*${shape}[ \\t\\u00a0]+(?=\\S)`), "")
+}
+
+function escapeRegExp(text: string) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+}
 
 export type CommentExport = {
   author: string
@@ -316,6 +340,7 @@ function documentShapeIssues(content: string, noun: "document" | "drafting notes
 
 function isParagraphRow(value: unknown): value is ParagraphRow {
   return record(value) && typeof value.pid === "string" && typeof value.sha256 === "string" && typeof value.text === "string"
+    && (value.label === undefined || typeof value.label === "string")
 }
 
 export function record(value: unknown): value is Record<string, unknown> {

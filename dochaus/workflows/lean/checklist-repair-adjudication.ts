@@ -4,7 +4,7 @@ import { checklistItemSchema, checklistFindingSchema, isDeliveryArtifactEvidence
 import { checklistProducerInputs } from "./checklist-source-context"
 import { CHECKLIST_JOB_PERMISSIONS, type ChecklistJobDeps, type ChecklistJobResult } from "./checklist-job"
 import { acceptChangePlan, checkChangePlan, readChangePlan, type ChangePlan, type ChangeGroup } from "./change-pipeline"
-import { readChangeList, readParagraphs, record, type ApplyResult } from "./checks"
+import { readChangeList, readParagraphs, record, type ApplyResult, shownText } from "./checks"
 import { parseJsonObject } from "./change-checks"
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { documentRepairs } from "./repairs"
@@ -68,7 +68,7 @@ export function buildRepairAdjudicationInput(directory: string, document: DocID,
     `<original_instructions_and_actual_answers>\n${JSON.stringify(context.input.settled_instructions)}\n</original_instructions_and_actual_answers>`,
     ...(composition ? [composition] : []),
     `<current_target_hints>\n${JSON.stringify(exactEvidence.length ? [] : context.input.current_evidence.filter(row => !isDeliveryArtifactEvidence(row, context.input.current_evidence)))}\n</current_target_hints>`,
-    `<initial_draft_paragraphs>\n${paragraphs.map(row => `[${row.pid}] ${row.text}`).join("\n\n")}\n</initial_draft_paragraphs>`,
+    `<initial_draft_paragraphs>\n${paragraphs.map(row => `[${row.pid}] ${shownText(row)}`).join("\n\n")}\n</initial_draft_paragraphs>`,
     `<related_generated_history_not_authority>\n${JSON.stringify({ common_dependencies: decision_indices.map(index => ({ index, generated_decision: previous.shared_decisions[index] })), groups: group_indices.map(index => ({ index, goal: previous.groups[index]!.goal, pids: previous.groups[index]!.pids, lookup: `.dochaus/lean/${document}/change-plan.json /groups/${index}` })), findings: finding_indices.map(index => ({ index, detail: previous.findings![index]!.detail, lookup: `.dochaus/lean/${document}/change-plan.json /findings/${index}` })), amendments: priorChanges?.amendments.flatMap((row, index) => paragraphs.some(paragraph => paragraph.pid === row.pid) ? [{ pid: row.pid, lookup: `.dochaus/lean/${document}/changes.json /amendments/${index}` }] : []) ?? [] })}\n</related_generated_history_not_authority>`,
     `<existing_open_questions>\n${JSON.stringify(readQuestions(directory).filter(row => row.status === "open" && row.stage !== "gate").map(questionContent))}\n</existing_open_questions>`,
     `Targeted evidence lookup: original sources ${JSON.stringify(matterSourceIDs(directory))}${sourceProvenanceNote} use search-document/read-document view=source with exact filename. These original uploads may contain applicability facts missing from the cited excerpt. Generated current documents ${JSON.stringify(context.documents.map(row => ({ id: row.id, status: row.status, path: row.path })))} use view=current_body; comments/deleted_text are separate artifact-specific views. read-document offset/count returns consecutive paragraph text and PIDs. Unavailable means no search occurred; lexical no hits is not proof of absence. Read necessary adjacent definitions/conditions and related documents on demand. Hints are nonexhaustive. Source headings and generated decisions are navigation, never original instruction authority.` ,

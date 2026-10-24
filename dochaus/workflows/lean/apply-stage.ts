@@ -11,6 +11,7 @@ import { templateItems } from "./template-coverage"
 import { consistencyItems } from "./consistency"
 import { exportAppliedChangeComments } from "./review-evidence"
 import { draftingAttribution, withGeneratedDocxAttribution } from "../../lib/docx-attribution"
+import { numberDocxClauses } from "../../lib/docx-numbering"
 
 // The apply step of one document. Applies the document's change list to its
 // drafted body, always from body.docx and never onto an earlier apply output,
@@ -41,7 +42,9 @@ export async function runApply(directory: string, state: LeanState, document: Do
   const settled = "error" in result ? settleApply(changes, undefined, false, result.error) : settleApply(changes, result, existsSync(out))
   if (settled.bodyUnchanged) copyFileSync(body, out)
   const identity = draftingAttribution()
-  writeLeanBytes(directory, `${document}/body-applied.docx`, withGeneratedDocxAttribution(readFileSync(out), identity))
+  // A changed paragraph whose text now carries a clause number the body's list
+  // supplies is numbered by the list, as at drafting.
+  writeLeanBytes(directory, `${document}/body-applied.docx`, withGeneratedDocxAttribution(numberDocxClauses(readFileSync(out), { house: false }), identity))
   const rows = await paragraphRows(out)
   writeLeanText(directory, `${document}/paragraphs-applied.json`, `${JSON.stringify(rows, null, 2)}\n`)
   const annotated = await documentRedline(directory, document, readFileSync(out), changes, settled.result.applied, identity)

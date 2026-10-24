@@ -6,6 +6,7 @@ import { withParagraphPointers } from "../lib/drafting-amendment"
 import { renumberHeadings, splitBlocks } from "../lib/markdown"
 import { lintRenderedDraftMarkdown, renderMarkdownToDocx, uploadDeliverable } from "../lib/render"
 import { withGeneratedDocxAttribution } from "../lib/docx-attribution"
+import { numberDocxClauses } from "../lib/docx-numbering"
 import { normalizePreferences } from "../lib/drafting-preferences"
 import { pageFurniture } from "../lib/page-furniture"
 import { readFirmPreferences } from "../lib/preferences"
@@ -204,7 +205,9 @@ export default tool({
     )
 
     const remaining = session.findPlaceholders().map((p) => p.match.text)
-    const bytes = withGeneratedDocxAttribution(withParagraphPointers(session.save()))
+    // The template's literal clause numbers become its own (or the house)
+    // Word list numbering once the text is final.
+    const bytes = withGeneratedDocxAttribution(withParagraphPointers(numberDocxClauses(session.save())))
     session.close()
 
     // Upload through ingest rather than writing the file directly: its

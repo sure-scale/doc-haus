@@ -5,7 +5,7 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { strFromU8, unzipSync } from "fflate"
 import { paragraphSha256 } from "../../lib/drafting-amendment"
-import { readParagraphs } from "./checks"
+import { readParagraphs, shownText } from "./checks"
 import { assembleDraft, checkSection, runDraftStage, sectionPrompt } from "./draft-sections"
 import { readLeanEvents } from "./events"
 import { NOT_STATED, leanPlanIssue, operativeDocument, parsePlan, readLeanPlan, writeLeanPlan, type PlannedDocument } from "./plan"
@@ -111,7 +111,7 @@ describe("sectioned draft stage", () => {
     })
     const result = await runDraftStage(directory, state, { sessions: model.sessions }, () => {}, "d1", () => {})
     expect(result.status).toBe("done")
-    expect(readParagraphs(directory, "d1").map(row => [row.text, row.draft_part, row.draft_heading])).toEqual([
+    expect(readParagraphs(directory, "d1").map(row => [shownText(row), row.draft_part, row.draft_heading])).toEqual([
       ["Deed", null, true], ["1. Clause", 0, false], ["Text 1.", 0, false], ["2. Clause", 1, false], ["Text 2.", 1, false], ["3. Clause", 2, false], ["Text 3.", 2, false],
     ])
     expect(readLeanEvents(directory).filter(event => event.step === "presentation")).toEqual([])
@@ -209,14 +209,15 @@ describe("sectioned draft stage", () => {
     expect(result.status).toBe("done")
     expect(readFileSync(leanFile(directory, "d1/draft.md"), "utf8")).toBe("# Supply Agreement\n\n## 1. Parties\n\n1.1 The supplier and the buyer.\n\n" +
       "### 1.2 Definitions\n\nWords have their defined meanings.\n\n## Schedule\n\n### Goods supplied\n\nThe goods in the order.\n")
-    // Text, heading style and the spacing rendering gives that style.
+    // Text, heading style and the spacing rendering gives that style; clause
+    // numbers are Word list numbering, not text.
     expect(styledParagraphs(directory)).toEqual([
       ["Supply Agreement", "Heading1", "320"],
-      ["1. Parties", "Heading2", "280"], ["1.1 The supplier and the buyer.", undefined, undefined],
-      ["1.2 Definitions", "Heading3", "220"], ["Words have their defined meanings.", undefined, undefined],
+      ["Parties", "Heading2", "280"], ["The supplier and the buyer.", undefined, undefined],
+      ["Definitions", "Heading3", "220"], ["Words have their defined meanings.", undefined, undefined],
       ["Schedule", "Heading2", "280"], ["Goods supplied", "Heading3", "220"], ["The goods in the order.", undefined, undefined],
     ])
-    expect(readParagraphs(directory, "d1").map(row => [row.text, row.draft_part, row.draft_heading])).toEqual([
+    expect(readParagraphs(directory, "d1").map(row => [shownText(row), row.draft_part, row.draft_heading])).toEqual([
       ["Supply Agreement", null, true],
       ["1. Parties", 0, false], ["1.1 The supplier and the buyer.", 0, false], ["1.2 Definitions", 0, false], ["Words have their defined meanings.", 0, false],
       ["Schedule", 1, true], ["Goods supplied", 1, false], ["The goods in the order.", 1, false],

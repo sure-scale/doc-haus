@@ -12,12 +12,14 @@ import cite from "../tool/cite"
 const directories: string[] = []
 afterAll(() => directories.forEach((directory) => rmSync(directory, { recursive: true, force: true })))
 
+// Typed clause numbers, as many source documents carry them: ingest reads a
+// source's text without Word's list labels (#197).
 const TERMS = Buffer.from((await renderMarkdownToDocx([
   "## 1. Delivery",
   "The Supplier shall deliver the synthetic cartons to the Customer's site.",
   "## 2. Payment",
   "The Customer shall pay each synthetic invoice within thirty days of receipt.",
-].join("\n\n"))).bytes)
+].join("\n\n"), undefined, undefined, { numbering: false })).bytes)
 
 async function citeQuote(directory: string, name: string, quote: string) {
   const result = await cite.execute(

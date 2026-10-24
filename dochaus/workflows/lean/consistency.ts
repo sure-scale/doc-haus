@@ -1,5 +1,5 @@
 import { DOCUMENT_FORMS } from "../../lib/page-furniture"
-import { finalBodyParagraphs, type ParagraphRow } from "./checks"
+import { finalBodyParagraphs, shownText, type ParagraphRow } from "./checks"
 import { nameKey, namedIn, readLeanPlan, type DocID } from "./plan"
 import { excerpt, openItem } from "./quotes"
 import type { OpenItem } from "./state"
@@ -25,10 +25,12 @@ import { sourceText } from "./template-structure"
 // pack document's title, is resolved in that pack document when one has that
 // title and is otherwise not this document's to check, nor is a statutory
 // citation. Text in square brackets (a placeholder or an open-item marker)
-// refers to nothing. A document whose clause numbers are not in its text
-// (Word's own numbering, or no numbering) has its clause references left
-// unchecked, and so has advice or a letter, which cites the clauses of the
-// documents it discusses. A document planned without a known form is not
+// refers to nothing. A paragraph numbered by Word's list numbering is read with
+// the label the list gives it (its list membership), as a reader sees it. A
+// document with no clause numbers has its clause references left unchecked,
+// and so has advice or a letter, which cites the clauses of the documents it
+// discusses. An original read from its source text (ingest's extraction)
+// carries no list labels. A document planned without a known form is not
 // checked at all.
 //
 // Defined terms. A term is defined by a quoted or "the"-introduced parenthetical
@@ -59,12 +61,13 @@ export function consistencyItems(directory: string, document: DocID, draft: Para
   const entry = plan?.documents[position]
   if (!plan || !entry) return []
   const original = entry.comparison ? sourceLines(sourceText(directory, entry.comparison)) : []
+  const shown = (rows: ParagraphRow[]) => rows.map(row => ({ pid: row.pid, text: shownText(row) }))
   const others = plan.documents.flatMap((row, at): PackDocument[] => {
     if (row.id === document) return []
-    const paras = finalBodyParagraphs(directory, row.id)
+    const paras = shown(finalBodyParagraphs(directory, row.id))
     return paras.length ? [{ title: row.title, paras, earlier: at < position }] : []
   })
-  return consistencyFindings({ title: entry.title, form: entry.form, final, baselines: [original, draft].filter(rows => rows.length), others })
+  return consistencyFindings({ title: entry.title, form: entry.form, final: shown(final), baselines: [original, shown(draft)].filter(rows => rows.length), others })
     .map(finding => openItem("apply", "consistency", finding.detail, finding.pid ? { pid: finding.pid } : {}))
 }
 
