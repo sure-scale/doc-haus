@@ -272,6 +272,39 @@ describe("sectioned draft stage", () => {
     expect(rowsBody(plan, rows).partOf).toEqual([undefined, 0, 0, 0, 1, 1])
   }, 60_000)
 
+  test("a display heading that reads as the heading opening its part, clause number aside, prints once, in the Markdown and the Word body, its text still attributed to it", async () => {
+    const { directory, state } = matter()
+    const outline = "Acting for: not stated\n# Supply Agreement\nForm: agreement\n## Parties and background\nDisplay heading: Parties and Background\nWho is bound.\n" +
+      "## Term and ordering\nDisplay heading: Term and Ordering\nHow goods are ordered.\n## Price\nDisplay heading: Price\nWhat is paid.\n" +
+      "## Schedules and signing\nDisplay heading: Schedules and Signing\nThe schedules."
+    const replies: Record<string, string> = {
+      "part 1 of 4": "## Parties and background\n\n### Parties\n\nThis agreement is between the supplier and the buyer.",
+      "part 2 of 4": "## Term and ordering\n\n### 1. Term and ordering\n\nThe buyer orders goods by written order.",
+      "part 3 of 4": "## Price\n\nThe price is stated in the order.",
+      "part 4 of 4": "## Schedules and signing\n\n### Schedules\n\nThe goods are listed in the order.",
+    }
+    const model = scripted((text, index) => index === 0 ? outline : Object.entries(replies).find(([part]) => text.includes(part))![1])
+    const result = await runDraftStage(directory, state, { sessions: model.sessions }, () => {}, "d1", () => {})
+    expect(result.status).toBe("done")
+    // Only the second part's display heading repeats its own first heading: it prints nothing and that heading moves up.
+    expect(readFileSync(leanFile(directory, "d1/draft.md"), "utf8")).toBe("# Supply Agreement\n\n## Parties and Background\n\n### Parties\n\n" +
+      "This agreement is between the supplier and the buyer.\n\n## 1. Term and ordering\n\nThe buyer orders goods by written order.\n\n" +
+      "## Price\n\nThe price is stated in the order.\n\n## Schedules and Signing\n\n### Schedules\n\nThe goods are listed in the order.\n")
+    // Word list numbering may take over a typed clause number; the heading's words and level are what count here.
+    expect(styledParagraphs(directory).map(([text, style]) => [text!.replace(/^\d+\.\s+/, ""), style])).toEqual([
+      ["Supply Agreement", "Heading1"], ["Parties and Background", "Heading2"], ["Parties", "Heading3"], ["This agreement is between the supplier and the buyer.", undefined],
+      ["Term and ordering", "Heading2"], ["The buyer orders goods by written order.", undefined], ["Price", "Heading2"], ["The price is stated in the order.", undefined],
+      ["Schedules and Signing", "Heading2"], ["Schedules", "Heading3"], ["The goods are listed in the order.", undefined],
+    ])
+    const rows = readParagraphs(directory, "d1")
+    expect(rows.map(row => [row.text.replace(/^\d+\.\s+/, ""), row.draft_part, row.draft_heading])).toEqual([
+      ["Supply Agreement", null, true], ["Parties and Background", 0, true], ["Parties", 0, false], ["This agreement is between the supplier and the buyer.", 0, false],
+      ["Term and ordering", 1, false], ["The buyer orders goods by written order.", 1, false], ["Price", 2, true], ["The price is stated in the order.", 2, false],
+      ["Schedules and Signing", 3, true], ["Schedules", 3, false], ["The goods are listed in the order.", 3, false],
+    ])
+    expect(rowsBody(readLeanPlan(directory)!.documents[0]!, rows).partOf).toEqual([undefined, 0, 0, 0, 1, 1, 2, 2, 3, 3, 3])
+  }, 60_000)
+
   test("a plan saved before labels were planned unheaded keeps them as visible headings and tells the drafter so", async () => {
     const { directory, state } = matter()
     writeLeanPlan(directory, [{ title: "Notice letter", purpose: "", parts: [{ heading: "Background", scope: "" }, { heading: "Notice", scope: "" }] }], outlineBasis(directory), NOT_STATED)
