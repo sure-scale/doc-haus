@@ -161,8 +161,7 @@ control regressions with `bun test/material-primitives.browser.ts` and
 `bun test/jurisdiction-select.browser.ts`; use `PLAYWRIGHT_CHROMIUM_PATH` if the
 installed Chromium differs from the package's default.
 
-Run the PDF preview acceptance (#275) against a built web preview, with a full
-Chromium (the headless shell has no PDF plugin and shows a blank frame):
+Run the PDF preview acceptance (#275) against a built web preview:
 
 ```sh
 PLAYWRIGHT_BASE_URL=http://localhost:5321 \
@@ -171,7 +170,13 @@ PLAYWRIGHT_CHROMIUM_EXECUTABLE="<full Chromium binary>" \
 bun apps/web/e2e/pdf-preview.ts
 ```
 
-It serves a generated synthetic multi-page PDF through intercepted routes and
-asserts the iframe fills the viewer body at 1440 px and 400 px wide, and that the
-PDF scrolls inside its frame. Set `DOCHAUS_MEASURE_ONLY=1` to print the heights
-without asserting, and `PDF_FIXTURE=<file>` to use another synthetic PDF.
+It serves a generated synthetic multi-page PDF through intercepted routes and,
+at 1440 px and 400 px wide, opens it from the Documents list and from a review
+table citation (which adds a status line). For each it asserts that the iframe
+fills the viewer body (within 80 px, 120 px with the status line), that the
+viewer fits the screen, and that the viewer body does not scroll. The layout
+assertions do not depend on the PDF plugin, so they also pass in the headless
+shell; only the screenshots need a full Chromium (the shell renders a blank frame).
+Set `DOCHAUS_MEASURE_ONLY=1` to print the heights without asserting,
+`DOCHAUS_ONLY=<desktop|narrow|citation-desktop|citation-narrow>` to run one
+scenario, and `PDF_FIXTURE=<file>` to use another synthetic PDF.

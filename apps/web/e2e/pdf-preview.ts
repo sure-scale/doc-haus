@@ -35,6 +35,10 @@ function syntheticPdf(pages: number) {
   body += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets.map(o => `${String(o).padStart(10, "0")} 00000 n \n`).join("")}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`
   return Buffer.from(body, "latin1")
 }
+// A review-grid cell whose source is the PDF: its citation opens the viewer with a status line.
+const question = "What does the supplier deliver?"
+function hashQuestion(text: string) { let hash = 5381; for (let i = 0; i < text.length; i++) hash = (hash * 33) ^ text.charCodeAt(i); return (hash >>> 0).toString(36) }
+const grid = { columns: [{ id: "deliver", question }], cells: { [`${NAME}::deliver`]: { answer: "The supplier delivers the services.", status: "reviewed", questionHash: hashQuestion(question), citation: { documentName: NAME, docPath: documents[0]!.doc_path, section: "1. Delivery", excerpt: "the supplier shall deliver the services", charStart: 0, charEnd: 40 }, comments: [] } } }
 const pdf = process.env.PDF_FIXTURE ? Buffer.from(await Bun.file(process.env.PDF_FIXTURE).arrayBuffer()) : syntheticPdf(8)
 
 const browser = await chromium.launch({ headless: process.env.PLAYWRIGHT_HEADED !== "1", executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE })
@@ -42,7 +46,8 @@ const unexpected: string[] = []
 const pageErrors: string[] = []
 const measurements: Record<string, unknown> = {}
 
-async function run(label: string, width: number, height: number) {
+async function run(label: string, width: number, height: number, citation = false) {
+  if (process.env.DOCHAUS_ONLY && process.env.DOCHAUS_ONLY !== label) return // run one scenario by label
   const context = await browser.newContext({ viewport: { width, height }, hasTouch: width <= 768, reducedMotion: "reduce", timezoneId: "Europe/London" })
   await context.addInitScript(() => { try { sessionStorage.setItem("dh.launch-notice.v1", "accepted"); localStorage.setItem("dh.sidebar", innerWidth > 960 ? "0" : "1") } catch { /* the browser's PDF viewer frame has no storage */ } })
   await context.route("**/*", async (route: Route) => {
@@ -59,8 +64,12 @@ async function run(label: string, width: number, height: number) {
     if (method === "OPTIONS") return route.fulfill({ status: 204, headers })
     const reply = (body: unknown, status = 200) => route.fulfill({ status, headers, contentType: "application/json", body: JSON.stringify(body) })
     if (method === "POST" && pathname === "/api/dochaus/provider-test") return reply({ ok: true })
+    // The review grid saves itself and re-checks its sources when opened.
+    if (method === "PUT" && pathname === `/matters/${matter.id}/grid`) return reply({ ok: true })
+    if (method === "POST" && pathname === `/matters/${matter.id}/grid/sources`) return reply({ [`${NAME}::deliver`]: "verified" })
     if (method !== "GET") { unexpected.push(`${method} ${pathname}`); return route.abort() }
     if (pathname === `/matters/${matter.id}/documents/content`) return route.fulfill({ status: 200, headers: { ...headers, "content-disposition": "inline" }, contentType: "application/pdf", body: pdf })
+    if (pathname === `/matters/${matter.id}/grid`) return reply(grid)
     if (pathname === "/auth/reuse") return reply({ sources: [] })
     if (pathname === "/api/dochaus/ready") return reply({ ready: true, consentState: "active" })
     if (pathname === "/setup") return reply({ version: 1, ready: true, completed: ["models", "research", "details"], skipped: [], next: "done" })
@@ -86,35 +95,54 @@ async function run(label: string, width: number, height: number) {
   page.setDefaultTimeout(15000)
   page.on("pageerror", (error: Error) => pageErrors.push(error.message))
   await page.goto(`${baseURL}/matter/${matter.id}`)
-  const docs = page.locator(".sidebar").getByRole("button", { name: /^Documents(?: \d+)?$/ })
-  await expect(docs).toBeVisible()
-  if (await docs.getAttribute("aria-expanded") !== "true") await docs.click()
-  await page.getByRole("button", { name: NAME, exact: true }).click()
   const dialog = page.getByRole("dialog", { name: NAME, exact: true })
-  const frame = dialog.locator("iframe.pdf-render")
-  await expect(frame).toBeVisible()
-  await page.waitForTimeout(1500) // let the PDF plugin lay out
-  const m = await page.evaluate(() => {
+  if (citation) {
+    // The citation path: Review table -> cell -> its source link opens the viewer with a status line.
+    await expect(page.locator(".sidebar")).toBeVisible()
+    await page.getByRole("link", { name: "Review table", exact: true }).click()
+    await page.locator(".review-cell button", { hasText: "The supplier delivers the services." }).dispatchEvent("click") // a sticky column covers its centre at phone width
+    await page.getByRole("button", { name: `Open ${NAME} at section 1. Delivery`, exact: true }).click()
+    await expect(dialog.getByRole("status")).toBeVisible()
+  } else {
+    const docs = page.locator(".sidebar").getByRole("button", { name: /^Documents(?: \d+)?$/ })
+    await expect(docs).toBeVisible()
+    if (await docs.getAttribute("aria-expanded") !== "true") await docs.click()
+    await page.getByRole("button", { name: NAME, exact: true }).click()
+  }
+  await expect(dialog.locator("iframe.pdf-render")).toBeVisible()
+  const measure = () => page.evaluate(() => {
     const box = (selector: string) => { const r = document.querySelector(selector)!.getBoundingClientRect(); return { top: r.top, height: r.height } }
     const scroller = document.querySelector<HTMLElement>(".document-reader .viewer-body")!
     return { iframe: box("iframe.pdf-render"), body: box(".document-reader .viewer-body"), panel: box(".document-reader"), doc: box(".document-reader .viewer-doc"), viewport: innerHeight, bodyScrollable: scroller.scrollHeight > scroller.clientHeight, pageScrollable: document.documentElement.scrollHeight > document.documentElement.clientHeight }
   })
+  // Layout is settled when two consecutive measurements agree (the open animation has finished).
+  let m = await measure()
+  for (let tries = 0; tries < 40; tries++) {
+    await page.waitForTimeout(100)
+    const next = await measure()
+    const settled = JSON.stringify(next) === JSON.stringify(m)
+    m = next
+    if (settled) break
+  }
   measurements[label] = m
-  await page.screenshot({ path: path.join(evidence!, `pdf-${label}.png`) })
+  await page.waitForTimeout(1000) // the screenshot only: let the PDF plugin paint
+  await page.screenshot({ path: path.join(evidence, `pdf-${label}.png`) })
   console.log(label, JSON.stringify(m))
   if (process.env.DOCHAUS_MEASURE_ONLY === "1") return context.close() // report heights without asserting
-  // The PDF fills the viewer body (within its padding/status line), not a strip,
-  // and the viewer never grows past the screen.
+  // The frame fills the viewer body (less its padding and, for a citation, the
+  // status line), not a strip, and the viewer never grows past the screen.
   expect(m.iframe.height).toBeGreaterThanOrEqual(m.viewport * 0.5)
-  expect(m.iframe.height).toBeGreaterThanOrEqual(m.body.height * 0.8)
+  expect(m.iframe.height).toBeGreaterThanOrEqual(m.body.height - (citation ? 120 : 80))
   expect(m.panel.height).toBeLessThanOrEqual(m.viewport + 1)
-  expect(m.bodyScrollable).toBe(false) // the PDF scrolls inside its frame, not the viewer
+  expect(m.bodyScrollable).toBe(false) // the viewer body does not scroll; the frame fills it
   await context.close()
 }
 
 try {
   await run("desktop", 1440, 900)
   await run("narrow", 400, 800)
+  await run("citation-desktop", 1440, 900, true)
+  await run("citation-narrow", 400, 800, true)
   expect(pageErrors.slice(0, 5)).toEqual([])
   expect(unexpected.slice(0, 5)).toEqual([])
   console.log(JSON.stringify(measurements, null, 2))
