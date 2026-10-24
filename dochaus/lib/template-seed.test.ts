@@ -220,7 +220,7 @@ describe("rendering onto a template", () => {
     expect(tight(document.match(/<w:sectPr\b[\s\S]*<\/w:sectPr>/)![0])).toBe(`<w:sectPr>${A4}</w:sectPr>`)
   })
 
-  test("a revised original keeps the header and footer its main body shows, those it continues from an earlier section and their pictures included, in place of the firm's", async () => {
+  test("a revised original keeps the header and footer its main body shows, those it continues from an earlier section and their pictures included, the firm's header lines above its own", async () => {
     const story = (root: "hdr" | "ftr", text: string) => `<w:${root} ${NS}><w:p><w:r><w:t>${text}</w:t></w:r></w:p></w:${root}>`
     const paragraph = (text: string) => `<w:p><w:r><w:t>${text}</w:t></w:r></w:p>`
     const reference = (kind: "header" | "footer", type: string, id: string) => `<w:${kind}Reference w:type="${type}" r:id="${id}"/>`
@@ -253,12 +253,24 @@ describe("rendering onto a template", () => {
     const shown = Object.fromEntries([...document.matchAll(/<w:(header|footer)Reference w:type="(\w+)" r:id="(\w+)"\/>/g)]
       .map(([, kind, type, id]) => [`${kind}:${type}`, new RegExp(`Id="${id}"[^>]*Target="([^"]+)"`).exec(relationships)?.[1]]))
     expect(shown).toEqual({ "header:default": "header1.xml", "header:first": "header2.xml", "header:even": "header3.xml", "footer:default": "footer1.xml" })
-    expect(strFromU8(parts["word/header1.xml"]!)).toContain("Precedent party header")
+    // Each header shown (default, first page, even pages) takes the firm's lines above its own text; the footer and its logo stay, with no firm page number.
+    const texts = (name: string, from = parts) => [...strFromU8(from[name]!).matchAll(/<w:t(?:\s[^>]*)?>([^<]*)</g)].map(match => match[1])
+    expect(["word/header1.xml", "word/header2.xml", "word/header3.xml"].map(name => texts(name)))
+      .toEqual(["Precedent party header", "First page header", "Even page header"].map(own => [...firm.header, own]))
+    const same = (xml: string) => tight(xml).replace(/encoding="[^"]*"/, "")
+    expect(same(strFromU8(parts["word/footer1.xml"]!))).toBe(same(strFromU8(unzipSync(original)["word/footer1.xml"]!)))
     expect(Object.keys(parts).filter(name => /header|footer|media/.test(name)).sort())
       .toEqual(["word/_rels/footer1.xml.rels", "word/footer1.xml", "word/header1.xml", "word/header2.xml", "word/header3.xml", "word/media/logo.png"])
     expect(document).toContain('<w:pgNumType w:fmt="lowerRoman"/>')
     expect(document).toContain("<w:titlePg/>")
-    expect(document).not.toContain("Subject to contract")
+    expect(document).not.toContain(" PAGE ")
+    // An original with only a footer gains a header of the lines alone, its footer kept.
+    const footed = template({ body: `${paragraph("1. Term")}<w:sectPr>${reference("footer", "default", "rId6")}${A4}</w:sectPr>`, rels: `<Relationship Id="rId6" Type="${REL}/footer" Target="footer1.xml"/>`,
+      types: `<Override PartName="/word/footer1.xml" ContentType="${TYPE}.footer+xml"/>`, parts: { "word/footer1.xml": story("ftr", "Matter PP/7") } })
+    const footer = unzipSync((await renderMarkdownToDocx(BODY, undefined, firm, { styleTemplate: footed, revising: true })).bytes)
+    expect(Object.keys(footer).filter(name => /header|footer/.test(name)).sort()).toEqual(["word/footer1.xml", "word/header1.xml"])
+    expect(texts("word/header1.xml", footer)).toEqual(firm.header)
+    expect(texts("word/footer1.xml", footer)).toEqual(["Matter PP/7"])
     expect(tight(strFromU8(parts["word/settings.xml"]!))).toContain("<w:evenAndOddHeaders/>")
     // Drawn on as a template, the same file gives none of its furniture, and the firm's applies.
     const templated = unzipSync((await renderMarkdownToDocx(BODY, undefined, firm, { styleTemplate: original })).bytes)

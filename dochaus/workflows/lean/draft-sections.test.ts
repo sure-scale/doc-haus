@@ -665,7 +665,7 @@ describe("a planned document's form", () => {
     }
   }, 60_000)
 
-  test("a revised original keeps its own header and footer, first page included, and takes none of the firm's: its redline changes neither", async () => {
+  test("a revised original keeps its own header and footer, the firm's legend, a requested legend and the draft line written above its header text: its redline only inserts them", async () => {
     const { directory, state } = matter()
     dated(directory, state)
     // An original whose pages carry its firm's name, a different first-page header, and its matter reference beside a page number.
@@ -685,20 +685,37 @@ describe("a planned document's form", () => {
     const own = { "header:default": ["Precedent Partners LLP"], "header:first": ["Strictly private"], "footer:default": ["PP/2026/7 | 1"] }
     expect(furnitureLines(parts)).toEqual(own)
     writeFileSync(path.join(directory, "original.docx"), original)
-    writeLeanPlan(directory, [{ title: "Supply terms", purpose: "", parts: [{ heading: "Terms", scope: "" }], form: "agreement", mode: "revise", comparison: "original.docx" }])
+    // The request asks for a legend of its own.
+    writeLeanPlan(directory, [{ title: "Supply terms", purpose: "", parts: [{ heading: "Terms", scope: "" }], form: "agreement", mode: "revise", comparison: "original.docx", furniture: { legend: "Without prejudice" } }])
     // The firm marks its agreements and dates its drafts.
     const firm = { firm: "Doe Partners LLP", agreementLegend: "Subject to contract" }
     expect((await withFirm(firm, () => acceptStageReply(directory, "d1.draft", "# Supply terms\n\n## 1. Term\n\n1.1 The term is two years.\n"))).issues).toEqual([])
     const body = readFileSync(leanFile(directory, "d1/body.docx"))
     const revised = unzipSync(new Uint8Array(body))
-    expect(furnitureLines(revised)).toEqual(own)
+    // Every page shows the lines above the original's own header; its footer and page number stay its own.
+    const lines = ["Subject to contract", "Without prejudice", "Doe Partners LLP draft: 20 October 2026"]
+    expect(furnitureLines(revised)).toEqual({ "header:default": [...lines, "Precedent Partners LLP"], "header:first": [...lines, "Strictly private"], "footer:default": ["PP/2026/7 | 1"] })
     expect(strFromU8(revised["word/document.xml"]!)).toContain("<w:titlePg")
     expect(Object.keys(revised).filter(name => /^word\/(header|footer)\d*\.xml$/.test(name)).sort()).toEqual(["word/footer7.xml", "word/header7.xml", "word/header8.xml"])
-    // The redline shows the body's change and no change to the pages' header or footer.
+    // The redline shows the body's change and, in each header, the lines inserted: nothing deleted or restyled, the footer untouched.
     const redline = unzipSync(await compareDocxWithPointers(original, body, { authorName: "Test" }))
     expect(strFromU8(redline["word/document.xml"]!)).toContain("two years")
-    const marked = Object.keys(redline).filter(name => /^word\/(header|footer)\d*\.xml$/.test(name) && /<w:(?:ins|del|pPrChange|rPrChange)\b/.test(strFromU8(redline[name]!)))
-    expect(marked).toEqual([])
+    const marks = (name: string) => strFromU8(redline[name]!)
+    const inserted = (xml: string) => [...xml.matchAll(/<w:ins\b[^>]*>([\s\S]*?)<\/w:ins>/g)].map(([, run]) => [...run!.matchAll(/<w:t(?:\s[^>]*)?>([^<]*)</g)].map(text => text[1]).join("")).filter(Boolean)
+    for (const name of ["word/header7.xml", "word/header8.xml"]) {
+      expect(marks(name)).not.toMatch(/<w:(?:del|pPrChange|rPrChange)\b/)
+      expect(inserted(marks(name))).toEqual(lines)
+    }
+    expect(marks("word/footer7.xml")).not.toMatch(/<w:(?:ins|del|pPrChange|rPrChange)\b/)
+  }, 60_000)
+
+  test("a revised original with no header or footer of its own takes the firm's furniture as a new draft does", async () => {
+    const { directory, state } = matter()
+    dated(directory, state)
+    writeFileSync(path.join(directory, "original.docx"), (await renderMarkdownToDocx("# Supply terms\n\n## 1. Term\n\n1.1 The term is one year.", undefined, undefined, { numbering: false })).bytes)
+    writeLeanPlan(directory, [{ title: "Supply terms", purpose: "", parts: [{ heading: "Terms", scope: "" }], form: "agreement", mode: "revise", comparison: "original.docx" }])
+    expect((await withFirm({ agreementLegend: "Subject to contract" }, () => acceptStageReply(directory, "d1.draft", "# Supply terms\n\n## 1. Term\n\n1.1 The term is two years.\n"))).issues).toEqual([])
+    expect(furnitureLines(unzipSync(new Uint8Array(readFileSync(leanFile(directory, "d1/body.docx")))))).toEqual({ "header:default": ["Subject to contract", "Draft: 20 October 2026"], "footer:default": ["1"] })
   }, 60_000)
 
   test("a document drafted from a Word template takes its clause numbering and page set-up", async () => {

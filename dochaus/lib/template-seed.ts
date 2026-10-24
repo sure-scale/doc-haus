@@ -16,7 +16,8 @@ import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 // and footer parts its main body shows (with the pictures they use), its own
 // references or those it continues from an earlier section, as Word shows
 // them, its distinct first page, page numbering and even-page setting, so its
-// revision and redline show its pages unchanged.
+// revision and redline keep its pages' own furniture (the render writes the
+// firm's header lines above it).
 // Styles the render writes by id and the template lacks are added from the
 // house seed, based on the template's own default paragraph style; a template
 // that has the style under another id (Word translates built-in style ids, not

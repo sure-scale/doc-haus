@@ -9,7 +9,8 @@ import { furnitureLegend } from "./furniture-legend"
 // settings. Legends have legal effect, so they are the firm's own text and are
 // never written by a model. Uploaded, counterparty and template files are
 // never given furniture, and a document that already has a header or footer
-// keeps it.
+// keeps it; a revised original keeps its own, the firm's header lines written
+// above its own header text (addPageFurnitureLines).
 
 /** A planned document's form, from its outline "Form:" line. */
 export type DocumentForm = "agreement" | "advice" | "letter" | "advice letter" | "other"
@@ -104,37 +105,14 @@ type Row = { text: string; align: "center" | "right"; page?: string; after?: str
 export function applyPageFurniture(docx: Uint8Array, furniture: PageFurniture): Uint8Array {
   if (!furniture.header.length && !furniture.pageNumber) return docx
   const parts = unzipSync(docx)
-  const parse = (bytes: Uint8Array) => new DOMParser().parseFromString(strFromU8(bytes), "application/xml")
-  const document = parse(parts[BODY]!)
+  const document = parseXml(parts[BODY]!)
   if (["headerReference", "footerReference"].some(name => document.getElementsByTagNameNS(W, name).length)) return docx
   const body = document.getElementsByTagNameNS(W, "body")[0]!
   const section = elementChildren(body).findLast(node => node.localName === "sectPr") ?? body.appendChild(document.createElementNS(W, "w:sectPr"))
-  const relationships = parse(parts[RELS] ?? strToU8(`<Relationships xmlns="${R}"/>`))
-  const types = parse(parts[TYPES]!)
-  const ids = new Set(Array.from(relationships.getElementsByTagNameNS(R, "Relationship")).map(row => row.getAttribute("Id")))
+  const stories = storyWriter(parts, document)
   const references: Element[] = []
   const unnumbered = furniture.firstPage === "unnumbered" && furniture.pageNumber !== undefined
-  const add = (kind: "header" | "footer", type: "default" | "first", rows: Row[]) => {
-    let n = 1
-    while (parts[`word/${kind}${n}.xml`]) n++
-    parts[`word/${kind}${n}.xml`] = storyPart(kind, rows)
-    let id = 1
-    while (ids.has(`rId${id}`)) id++
-    ids.add(`rId${id}`)
-    const relationship = relationships.createElementNS(R, "Relationship")
-    relationship.setAttribute("Id", `rId${id}`)
-    relationship.setAttribute("Type", `${O}/${kind}`)
-    relationship.setAttribute("Target", `${kind}${n}.xml`)
-    relationships.documentElement.appendChild(relationship)
-    const override = types.createElementNS(CT, "Override")
-    override.setAttribute("PartName", `/word/${kind}${n}.xml`)
-    override.setAttribute("ContentType", `application/vnd.openxmlformats-officedocument.wordprocessingml.${kind}+xml`)
-    types.documentElement.appendChild(override)
-    const reference = document.createElementNS(W, `w:${kind}Reference`)
-    reference.setAttributeNS(W, "w:type", type)
-    reference.setAttributeNS(O, "r:id", `rId${id}`)
-    references.push(reference)
-  }
+  const add = (kind: "header" | "footer", type: "default" | "first", rows: Row[]) => references.push(stories.add(kind, type, rows))
   if (furniture.header.length) {
     const rows = furniture.header.map(text => ({ text, align: "right" as const }))
     add("header", "default", rows)
@@ -152,19 +130,109 @@ export function applyPageFurniture(docx: Uint8Array, furniture: PageFurniture): 
   // title-page switch goes before the elements the schema puts after it.
   const first = section.firstChild
   for (const reference of references) section.insertBefore(reference, first)
-  // Declared once on the root, not on every reference.
-  if (!document.documentElement.lookupNamespaceURI("r")) document.documentElement.setAttributeNS("http://www.w3.org/2000/xmlns/", "xmlns:r", O)
+  withRelationshipsPrefix(document)
   if (unnumbered) {
     const existing = elementChildren(section).find(node => node.localName === "titlePg")
     if (existing) existing.removeAttributeNS(W, "val")
     else section.insertBefore(document.createElementNS(W, "w:titlePg"), elementChildren(section)
       .find(node => ["textDirection", "bidi", "rtlGutter", "docGrid", "printerSettings", "sectPrChange"].includes(node.localName)) ?? null)
   }
-  const serializer = new XMLSerializer()
-  parts[BODY] = strToU8(serializer.serializeToString(document))
-  parts[RELS] = strToU8(serializer.serializeToString(relationships))
-  parts[TYPES] = strToU8(serializer.serializeToString(types))
-  return zipSync(parts, { mtime: new Date(1980, 0, 1) })
+  return stories.save()
+}
+
+/** Writes `furniture`'s header lines into a revised original that keeps its
+ * own header and footer: new paragraphs, as applyPageFurniture writes them,
+ * above the text of each header its last section shows (the default one, the
+ * first page's when it has a distinct first page, even pages' when the
+ * document sets them apart), and a header of the lines alone in place of one
+ * it shows none for. Its footers and its own page numbering stay as they are:
+ * the firm's page numbers are not added. An original with no header or footer
+ * at all takes applyPageFurniture's. Pure; fixed zip entry times. */
+export function addPageFurnitureLines(docx: Uint8Array, furniture: PageFurniture): Uint8Array {
+  const parts = unzipSync(docx)
+  const document = parseXml(parts[BODY]!)
+  if (!["headerReference", "footerReference"].some(name => document.getElementsByTagNameNS(W, name).length)) return applyPageFurniture(docx, furniture)
+  const body = document.getElementsByTagNameNS(W, "body")[0]!
+  const section = elementChildren(body).findLast(node => node.localName === "sectPr")
+  if (!furniture.header.length || !section) return docx
+  const stories = storyWriter(parts, document)
+  const on = (node: Element | undefined) => node !== undefined && !["0", "false", "off"].includes(node.getAttributeNS(W, "val") ?? "")
+  const settings = stories.part(row => row.getAttribute("Type") === `${O}/settings`)
+  const shown = ["default" as const,
+    ...on(elementChildren(section).find(node => node.localName === "titlePg")) ? ["first" as const] : [],
+    ...settings && parts[settings] && on(parseXml(parts[settings]).getElementsByTagNameNS(W, "evenAndOddHeaders")[0]) ? ["even" as const] : []]
+  const rows = furniture.header.map(text => ({ text, align: "right" as const }))
+  const lines = elementChildren(parseXml(storyPart("header", rows)).documentElement)
+  const written = new Set<string>()
+  const added: Element[] = []
+  for (const type of shown) {
+    const reference = elementChildren(section).find(node => node.localName === "headerReference" && (node.getAttributeNS(W, "type") || "default") === type)
+    if (!reference) {
+      added.push(stories.add("header", type, rows))
+      continue
+    }
+    const name = stories.part(row => row.getAttribute("Id") === reference.getAttributeNS(O, "id"))
+    if (!name || !parts[name] || written.has(name)) continue
+    written.add(name)
+    const header = parseXml(parts[name])
+    const opening = header.documentElement.firstChild
+    for (const line of lines) header.documentElement.insertBefore(header.importNode(line, true), opening)
+    parts[name] = strToU8(new XMLSerializer().serializeToString(header).replaceAll("/>", " />"))
+  }
+  for (const reference of added) section.insertBefore(reference, section.firstChild)
+  if (added.length) withRelationshipsPrefix(document)
+  return stories.save()
+}
+
+const parseXml = (bytes: Uint8Array) => new DOMParser().parseFromString(strFromU8(bytes), "application/xml")
+
+/** Declares the relationships prefix once on the root, not on every reference. */
+function withRelationshipsPrefix(document: Document) {
+  if (!document.documentElement.lookupNamespaceURI("r")) document.documentElement.setAttributeNS("http://www.w3.org/2000/xmlns/", "xmlns:r", O)
+}
+
+// Header and footer parts added to a package: `add` writes a part of `rows`
+// with its relationship and content type and returns the section reference to
+// it; `part` names the part a document relationship targets; `save` writes the
+// body, relationships and content types back and zips the package.
+function storyWriter(parts: Record<string, Uint8Array>, document: Document) {
+  const relationships = parseXml(parts[RELS] ?? strToU8(`<Relationships xmlns="${R}"/>`))
+  const types = parseXml(parts[TYPES]!)
+  const rows = () => Array.from(relationships.getElementsByTagNameNS(R, "Relationship"))
+  const ids = new Set(rows().map(row => row.getAttribute("Id")))
+  const add = (kind: "header" | "footer", type: "default" | "first" | "even", lines: Row[]) => {
+    let n = 1
+    while (parts[`word/${kind}${n}.xml`]) n++
+    parts[`word/${kind}${n}.xml`] = storyPart(kind, lines)
+    let id = 1
+    while (ids.has(`rId${id}`)) id++
+    ids.add(`rId${id}`)
+    const relationship = relationships.createElementNS(R, "Relationship")
+    relationship.setAttribute("Id", `rId${id}`)
+    relationship.setAttribute("Type", `${O}/${kind}`)
+    relationship.setAttribute("Target", `${kind}${n}.xml`)
+    relationships.documentElement.appendChild(relationship)
+    const override = types.createElementNS(CT, "Override")
+    override.setAttribute("PartName", `/word/${kind}${n}.xml`)
+    override.setAttribute("ContentType", `application/vnd.openxmlformats-officedocument.wordprocessingml.${kind}+xml`)
+    types.documentElement.appendChild(override)
+    const reference = document.createElementNS(W, `w:${kind}Reference`)
+    reference.setAttributeNS(W, "w:type", type)
+    reference.setAttributeNS(O, "r:id", `rId${id}`)
+    return reference
+  }
+  const part = (where: (row: Element) => boolean) => {
+    const target = rows().find(where)?.getAttribute("Target")
+    return target ? target.startsWith("/") ? target.slice(1) : `word/${target}` : undefined
+  }
+  const save = () => {
+    const serializer = new XMLSerializer()
+    parts[BODY] = strToU8(serializer.serializeToString(document))
+    parts[RELS] = strToU8(serializer.serializeToString(relationships))
+    parts[TYPES] = strToU8(serializer.serializeToString(types))
+    return zipSync(parts, { mtime: new Date(1980, 0, 1) })
+  }
+  return { add, part, save }
 }
 
 // One header or footer part, a paragraph per row in the part's style. Text goes
