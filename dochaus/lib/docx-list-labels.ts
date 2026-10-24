@@ -8,15 +8,18 @@ import { docxodus } from "./docxodus"
 // drops it: a natively numbered clause reads without its number in search,
 // sections, citations and quote checks. Both lockstep readers (ingest's
 // extractDocumentText and dochaus/lib/extract.ts) pass a Word file through
-// writeListLabels after markTrackedChanges and before mammoth: each numbered
-// body paragraph (tables included) gets its label as literal text, followed by
-// one space. Labels come from Docxodus, the engine that numbers paragraph rows
-// and views elsewhere, so the text shows the numbers the other readers show.
+// writeListLabels before markTrackedChanges and mammoth: each numbered body
+// paragraph (tables included) gets its label as literal text, followed by one
+// space. Labels come from Docxodus, the engine that numbers paragraph rows and
+// views elsewhere, so the text shows the numbers the other readers show. They
+// are read from the file as saved: markTrackedChanges keeps a deleted clause as
+// a paragraph and adds a summary paragraph, which Docxodus would number too.
 //
 // Only document.xml is labelled: mammoth's plain text reads the body and its
 // tables, not headers, footers, footnotes or comments. Bullets take no label;
-// nor do empty paragraphs (they still count in the numbering) and text-box
-// paragraphs (Docxodus numbers them apart from the body). A file without a
+// nor do empty paragraphs (they still count in the numbering), text-box
+// paragraphs (Docxodus numbers them apart from the body) and clauses a pending
+// change deletes or moves away (they do not count). A file without a
 // numbered list, or one Docxodus cannot read, is returned as the same buffer,
 // so its text and offsets do not change.
 
@@ -52,7 +55,7 @@ export async function writeListLabels(buffer: Buffer): Promise<Buffer> {
     anchors.forEach(({ preview, label }, at) => {
       const node = paragraphs[at]!
       const text = flatText(node)
-      if (!label || !text || !sameText(preview, text) || inTextBox(node)) return
+      if (!label || !text || !sameText(preview, text) || within(node, "txbxContent") || movedAway(node)) return
       const pPr = Array.from(node.childNodes).find(child => (child as Element).namespaceURI === W && (child as Element).localName === "pPr")
       node.insertBefore(labelRun(doc, node, label), pPr ? pPr.nextSibling : node.firstChild)
       written++
@@ -153,10 +156,17 @@ function sameText(preview: string, text: string) {
   return cut !== undefined && text.length > cut.length && text.startsWith(cut)
 }
 
-function inTextBox(node: Element) {
+function within(node: Node, localName: string) {
   for (let parent = node.parentNode; parent && parent.nodeType === 1; parent = parent.parentNode)
-    if ((parent as Element).namespaceURI === W && (parent as Element).localName === "txbxContent") return true
+    if ((parent as Element).namespaceURI === W && (parent as Element).localName === localName) return true
   return false
+}
+
+/** A pending move of a whole clause: all its text is marked as moved away.
+ * Docxodus numbers it like the clause after it, as it does a deleted clause,
+ * whose text is gone from w:t; the number belongs where the clause moves to. */
+function movedAway(node: Element) {
+  return Array.from(node.getElementsByTagNameNS(W, "t")).every(text => !text.textContent || within(text, "moveFrom"))
 }
 
 function labelRun(doc: Document, like: Element, label: string) {

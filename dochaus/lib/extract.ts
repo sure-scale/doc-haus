@@ -88,7 +88,7 @@ async function extract(docPath: string, buffer: Buffer) {
     return zipToText(buffer)
   }
   const { default: mammoth } = await import("mammoth")
-  return (await mammoth.extractRawText({ buffer: await writeListLabels(markTrackedChanges(buffer)) })).value
+  return (await mammoth.extractRawText({ buffer: markTrackedChanges(await writeListLabels(buffer)) })).value
 }
 
 // Spreadsheet sources (.xlsx) — same tolerant reader as ingest, one labeled CSV
