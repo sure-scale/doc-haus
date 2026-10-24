@@ -181,7 +181,9 @@ export async function linkCrossReferences(bytes: Uint8Array, options: CrossRefer
           }
           names.set(key, name)
         }
+        // A field that gave way stays typed if the new one cannot be made.
         for (const field of overlapping) unlink(field)
+        if (overlapping.length) changed = true
         const runs = isolate(source.node, start, end)
         if (!runs) continue
         wrapInField(doc, runs, attachment ? ` REF ${name} \\h ` : ` REF ${name} \\r \\h `)
