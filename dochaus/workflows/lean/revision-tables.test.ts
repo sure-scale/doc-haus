@@ -4,6 +4,7 @@ import path from "node:path"
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { pipeTable, readDocxTables } from "../../lib/docx-tables"
+import { paragraphSha256 } from "../../lib/drafting-amendment"
 import { liveText } from "../../lib/extract"
 import { TABLE_FIXTURE, revisionTablesOriginalDocx } from "../../test/support/revision-tables-fixture"
 import { readLeanEvents } from "./events"
@@ -167,15 +168,49 @@ function leadLines(bytes: Uint8Array) {
   })
 }
 
-test("a lead-in the drafter writes plain over a carried table keeps with it to the final body, as the original's heading did, and a lead-in the original did not keep shows no formatting change", async () => {
-  // The original's approval record heading keeps with its table by its style; the drafter writes it as a plain line.
-  const { directory, result } = await revise(TABLE_FIXTURE.untouched, revisedAgreement().replace("### Approval record", "Approval record"))
+test("a lead-in the drafter rewords plain over a carried table keeps with it to the final body, as the original's heading did, a heading drafted word for word is the original's, and a lead-in the original did not keep shows no formatting change", async () => {
+  // The original's approval record heading keeps with its table by its style;
+  // the drafter writes it as a plain line in other words (its case), so it is
+  // not the original's paragraph. The schedule heading, drafted at another
+  // level in the same words, is the original's paragraph, style and all.
+  const { directory, result } = await revise(TABLE_FIXTURE.untouched, revisedAgreement().replace("### Approval record", "Approval Record"))
   expect(result.status).toBe("completed")
   expect(tables(file(directory, "d1/body-applied.docx"))).toHaveLength(4)
   expect(leadLines(file(directory, "d1/body-applied.docx")).map(row => row.slice(0, 3))).toEqual([
-    ["Schedule 1 – Particulars", "Heading2", false], ["Approval record", undefined, true], [SUPPLIER, undefined, false], [BUYER, undefined, false]])
-  // The signing lines, which the original did not keep with their grids, are unchanged in the redline.
-  expect(leadLines(file(directory, "d1/redline.docx")).filter(row => row[0] === SUPPLIER || row[0] === BUYER).map(row => row.slice(2))).toEqual([[false, false], [false, false]])
+    ["Schedule 1 – Particulars", "Heading1", false], ["Approval Record", undefined, true], [SUPPLIER, undefined, false], [BUYER, undefined, false]])
+  // The schedule heading and the signing lines, which the original did not
+  // keep with their grids directly, are unchanged in the redline.
+  expect(leadLines(file(directory, "d1/redline.docx")).filter(row => row[0] !== "Approval Record").map(row => row.slice(2))).toEqual([[false, false], [false, false], [false, false]])
+}, 120_000)
+
+test("a revision keeps the original's paragraphs it leaves word for word as the original's, so the redline marks only the wording that changed", async () => {
+  // Word's typing in the original: curly quotes, two spaces after a clause
+  // number, and a page break before the schedule. The drafter writes straight
+  // quotes, one space and a heading at another level, and changes one term.
+  // Its opening paragraph sits under clause 1, where the drafter writes it.
+  const opening = "This agreement is made between Northwind Cartons Limited (the Supplier) and Bluebell Foods Limited (the Buyer)."
+  const original = editedOriginal(xml => {
+    const [lead, heading] = [`<w:p><w:r><w:t xml:space="preserve">${opening}</w:t></w:r></w:p>`, '<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t xml:space="preserve">1. Supply</w:t></w:r></w:p>']
+    return xml.replace(lead + heading, heading.replace(">1. Supply<", ">1.  Supply<") + lead.replace(/\(the (\w+)\)/g, "(the “$1”)"))
+      .replace('<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t xml:space="preserve">Schedule 1', '<w:p><w:r><w:br w:type="page"/></w:r></w:p>$&')
+  })
+  const agreement = revisedAgreement().replace(opening, opening.replace(/\(the (\w+)\)/g, '(the "$1")')).replace("## 3. Term", "### 3. Term")
+  const { directory, result } = await revise(TABLE_FIXTURE.untouched, agreement, undefined, { original })
+  expect(result.status).toBe("completed")
+  const redline = strFromU8(unzipSync(file(directory, "d1/redline.docx"))["word/document.xml"]!)
+  const marked = (tag: string, text: string) => [...redline.matchAll(new RegExp(`<w:${tag}\\b[\\s\\S]*?</w:${tag}>`, "g"))]
+    .map(match => [...match[0].matchAll(new RegExp(`<w:${text}\\b[^>]*>([^<]*)<`, "g"))].map(row => row[1]).join("")).filter(Boolean)
+  expect(marked("del", "delText")).toEqual(["thirty"])
+  expect(marked("ins", "t")).toEqual(["forty-five"])
+  expect(redline).not.toMatch(/<w:(rPrChange|pPrChange)\b/)
+  expect(redline).toContain('<w:br w:type="page"/>')
+  // The body's paragraphs, and the hashes the applier checks, are the original's text.
+  const rows = JSON.parse(readLeanText(directory, "d1/paragraphs.json")!) as { text: string; sha256: string }[]
+  const carried = rows.find(row => row.text.startsWith("This agreement is made"))!
+  expect(carried.text).toContain("(the “Supplier”)")
+  expect(carried.sha256).toBe(paragraphSha256(carried.text))
+  expect(rows.map(row => row.text)).toContain("1.  Supply")
+  expect(readLeanEvents(directory).find(row => row.event === "paragraphs")?.outcome).toMatch(/^carried \d+ of \d+, page breaks 1$/)
 }, 120_000)
 
 test("a cell edit changes only that cell of the original's tables", async () => {

@@ -24,7 +24,7 @@ import { numberDocxClauses, numberedList } from "../../lib/docx-numbering"
 import { linkCrossReferences } from "../../lib/docx-crossrefs"
 import { withTemplateStyleIds } from "../../lib/template-seed"
 import { presentDraft, type DraftPresentation } from "./draft-presentation"
-import { carryRevisionTables, draftedTablesNotes } from "./original-tables"
+import { carryRevisionParagraphs, carryRevisionTables, draftedTablesNotes } from "./original-tables"
 import { checkChanges, parseJsonObject } from "./change-checks"
 import {
   checkDraft,
@@ -362,7 +362,9 @@ export async function acceptStageReply(directory: string, step: StepID, reply: s
     const planned = plannedDocument(directory, document)
     const furniture = renderedFurniture(directory, planned?.form ?? "other", requestedFurniture(planned?.furniture))
     // A revised original's tables are carried over their drafted counterparts
-    // before the body's paragraphs are attributed to parts and listed.
+    // before the body's paragraphs are attributed to parts and listed; its
+    // paragraphs, once attributed (their pointers stay), when the body is
+    // drafted on its styles, so headings keep the original's styles.
     // Clause numbering, and a template's own style ids, follow presentation,
     // which matches and reshapes the headings by their literal text and style.
     // A document compared against an original that types its clause numbers
@@ -379,6 +381,7 @@ export async function acceptStageReply(directory: string, step: StepID, reply: s
     const rendered = await renderMarkdownToDocx(options.presentation?.source ?? reply, undefined, furniture, { numbering: false, styleTemplate })
       .then(result => ({ ...result, bytes: carryRevisionTables(directory, document, result.bytes) }))
       .then(result => ({ ...(options.presentation ? presentDraft(result.bytes, options.presentation.parts, options.presentation.title !== false, result.headingSpacing) : { bytes: result.bytes, attribution: undefined }), templated: result.templated }))
+      .then(result => ({ ...result, bytes: result.templated ? carryRevisionParagraphs(directory, document, result.bytes) : result.bytes }))
       .then(async ({ templated, ...result }) => {
         const styled = templated ? withTemplateStyleIds(result.bytes) : result.bytes
         return { ...result, bytes: links ? await linkCrossReferences(numberDocxClauses(styled, templated ? into : {}), links) : styled }

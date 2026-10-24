@@ -1,6 +1,7 @@
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { decodeString } from "micromark-util-decode-string"
+import { INSTRUCTION_COMMENT_PATTERN, OPEN_ITEM_PATTERN, OPTIONAL_CLAUSE_PATTERN, PLACEHOLDER_PATTERN } from "./marker-patterns"
 
 // The tables of a Word body, read as grids of cell text, and the carry of an
 // original's tables into a body rendered from Markdown. The canonical source
@@ -17,6 +18,10 @@ import { decodeString } from "micromark-util-decode-string"
 // spacing, size and font its paragraphs had from the original's defaults and
 // styles, and the line it follows keeps with it where the original's did.
 // What happened to each original table is returned, so the caller records it.
+// The body's paragraphs outside tables are carried the same way
+// (carryOriginalParagraphs): a drafted paragraph whose words are the original
+// paragraph's, in order, is replaced by the original's own paragraph, so its
+// redline shows no change the drafter's Markdown could not have meant.
 
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 const A = "http://schemas.openxmlformats.org/drawingml/2006/main"
@@ -152,6 +157,145 @@ export function carryOriginalTables(rendered: Uint8Array, original: Uint8Array):
   return { bytes: zipSync(parts, { mtime: new Date(1980, 0, 1) }), carries }
 }
 
+/** Of the original's body paragraphs outside tables: how many have text, how
+ * many of those were carried, and how many page breaks were carried with them. */
+export type ParagraphCarry = { paragraphs: number; carried: number; breaks: number }
+
+/** The rendered body, drafted on the original's own styles, with each of its
+ * paragraphs outside tables that reads as an original one replaced by the
+ * original's paragraph, its paragraph and run formatting included. Paragraphs
+ * are paired in order (a longest common subsequence), so a moved paragraph is
+ * not paired. A pair reads alike when its words do (wordsOf) and Markdown's
+ * emphasis (bold, italics, strikethrough) falls on the same characters, a
+ * leading clause number's aside. The carried paragraph keeps the drafted
+ * paragraph's pointer bookmarks. An original paragraph with content that
+ * cannot move between packages, list numbering included (refusal), or with
+ * hidden text is not carried, nor is a drafted one with an open item or a
+ * placeholder, a link or a field. An original paragraph holding only a page
+ * break between two paired paragraphs is carried before the second. */
+export function carryOriginalParagraphs(rendered: Uint8Array, original: Uint8Array): { bytes: Uint8Array; carry: ParagraphCarry } {
+  const none = { bytes: rendered, carry: { paragraphs: 0, carried: 0, breaks: 0 } }
+  const originalParts = unzipSync(original)
+  const parts = unzipSync(rendered)
+  if (!originalParts[BODY] || !parts[BODY]) return none
+  const source = parse(strFromU8(originalParts[BODY]))
+  const target = parse(strFromU8(parts[BODY]))
+  const styles = (bytes: Uint8Array | undefined) => bytes ? stylesById(parse(strFromU8(bytes))) : new Map<string, Element>()
+  const [sourceStyles, targetStyles] = [styles(originalParts[STYLES]), styles(parts[STYLES])]
+  const originals = bodyParagraphs(source)
+  const drafted = bodyParagraphs(target)
+  const worded = (rows: Element[]) => rows.flatMap((node, at) => {
+    const words = wordsOf(paragraphText(node, node))
+    return words ? [{ node, at, words }] : []
+  })
+  const [left, right] = [worded(originals), worded(drafted)]
+  const pairs = alignWords(left.map(row => row.words), right.map(row => row.words))
+  const counterpart = new Map<number, Element>()
+  let carried = 0
+  for (const [index, at] of pairs.entries()) {
+    if (at === undefined) continue
+    const [was, now] = [left[index]!, right[at]!]
+    counterpart.set(was.at, now.node)
+    if (refusal(was.node, sourceStyles) || Array.from(was.node.getElementsByTagNameNS(W, "r")).some(hidden)) continue
+    if (DRAFTED_MARKERS.some(pattern => new RegExp(pattern.source, "i").test(now.words))
+      || Array.from(now.node.getElementsByTagName("*")).some(node => UNCARRIED.has(node.localName) || node.localName === "hyperlink")) continue
+    const number = CLAUSE_NUMBER.exec(now.words)?.[0].length ?? 0
+    const [before, after] = [emphasis(was.node, sourceStyles), emphasis(now.node, targetStyles)]
+    if (before.length !== after.length || before.some((mark, position) => position >= number && mark !== after[position])) continue
+    const node = target.importNode(was.node, true) as Element
+    clean(node)
+    // The drafted paragraph's pointers open and close the carried one.
+    const properties = children(node, "pPr")[0]
+    const marks = (name: string) => Array.from(now.node.getElementsByTagNameNS(W, name))
+    for (const start of marks("bookmarkStart").reverse()) node.insertBefore(start, properties ? properties.nextSibling : node.firstChild)
+    for (const end of marks("bookmarkEnd")) node.appendChild(end)
+    now.node.parentNode!.replaceChild(node, now.node)
+    counterpart.set(was.at, node)
+    carried++
+  }
+  // A page break the original keeps between two paired paragraphs.
+  let breaks = 0
+  for (const [at, node] of originals.entries()) {
+    if (paragraphText(node, node).trim() || !Array.from(node.getElementsByTagNameNS(W, "br")).some(mark => mark.getAttributeNS(W, "type") === "page")) continue
+    if (refusal(node, sourceStyles)) continue
+    const previous = originals.slice(0, at).findLastIndex(row => paragraphText(row, row).trim())
+    const next = originals.findIndex((row, index) => index > at && paragraphText(row, row).trim())
+    if (previous < 0 || next < 0 || !counterpart.has(previous) || !counterpart.has(next) || !adjacent(originals, previous, next)) continue
+    const copy = target.importNode(node, true) as Element
+    clean(copy)
+    counterpart.get(next)!.parentNode!.insertBefore(copy, counterpart.get(next)!)
+    breaks++
+  }
+  const carry = { paragraphs: left.length, carried, breaks }
+  if (!carried && !breaks) return { ...none, carry }
+  parts[BODY] = strToU8(new XMLSerializer().serializeToString(target))
+  return { bytes: zipSync(parts, { mtime: new Date(1980, 0, 1) }), carry }
+}
+
+// A drafted paragraph with one of these is never carried: what it marks is the
+// drafter's, even where the original's words are the same.
+const DRAFTED_MARKERS = [OPEN_ITEM_PATTERN, PLACEHOLDER_PATTERN, INSTRUCTION_COMMENT_PATTERN, OPTIONAL_CLAUSE_PATTERN]
+// A clause number that opens a paragraph ("1.", "1.1", "(a)"), as docx-numbering.ts reads one.
+const CLAUSE_NUMBER = /^(?:\d{1,3}(?:\.\d{1,3}){0,8}\.?|\((?:[a-z]{1,4}|[A-Z]{1,4}|\d{1,3})\))(?= |$)/
+
+/** The body's paragraphs outside tables, in order, including those inside
+ * block-level content controls. */
+function bodyParagraphs(document: Document) {
+  const body = document.getElementsByTagNameNS(W, "body")[0]
+  return body ? content(body, ["p", "tbl"]).filter(node => node.localName === "p") : []
+}
+
+/** Whether only text-less paragraphs come between two paragraphs, no table. */
+function adjacent(paragraphs: Element[], previous: number, next: number) {
+  const [from, to] = [paragraphs[previous]!, paragraphs[next]!]
+  const blocks = content(from.ownerDocument!.getElementsByTagNameNS(W, "body")[0]!, ["p", "tbl"])
+  return blocks.slice(blocks.indexOf(from) + 1, blocks.indexOf(to)).every(node => node.localName === "p")
+}
+
+/** Original paragraphs paired with drafted ones by their words, in order (a longest common subsequence). */
+function alignWords(a: string[], b: string[]) {
+  const width = b.length + 1
+  const lengths = new Int32Array((a.length + 1) * width)
+  for (let i = a.length - 1; i >= 0; i--)
+    for (let j = b.length - 1; j >= 0; j--)
+      lengths[i * width + j] = a[i] === b[j] ? lengths[(i + 1) * width + j + 1]! + 1 : Math.max(lengths[(i + 1) * width + j]!, lengths[i * width + j + 1]!)
+  const pairs: (number | undefined)[] = new Array(a.length).fill(undefined)
+  for (let i = 0, j = 0; i < a.length && j < b.length;) {
+    if (a[i] === b[j]) pairs[i++] = j++
+    else if (lengths[(i + 1) * width + j]! >= lengths[i * width + j + 1]!) i++
+    else j++
+  }
+  return pairs
+}
+
+/** The emphasis Markdown writes (bold, italics, strikethrough) on each visible
+ * character of a paragraph but whitespace, from its run's own formatting and
+ * character style. */
+function emphasis(paragraph: Element, styles: Map<string, Element>) {
+  const marks: string[] = []
+  const visit = (node: Node, mark: string) => {
+    if (node.nodeType !== 1) return
+    const element = node as Element
+    if (element.namespaceURI === W) {
+      if (["del", "moveFrom"].includes(element.localName) || element.localName === "p" && element !== paragraph) return
+      if (element.localName === "r") {
+        if (hidden(element)) return
+        const own = children(element, "rPr")[0]
+        const sources = [own, ...styleChain(styles, children(own, "rStyle")[0]?.getAttributeNS(W, "val") || undefined).map(style => children(style, "rPr")[0])]
+        mark = ["b", "i", "strike"].filter(name => {
+          const set = sources.map(rPr => children(rPr, name)[0]).find(Boolean)
+          return set !== undefined && !["0", "false", "off"].includes(set.getAttributeNS(W, "val") ?? "")
+        }).join(" ")
+      }
+      if (element.localName === "t") for (const character of (element.textContent ?? "").normalize("NFC")) if (character.trim()) marks.push(mark)
+      if (element.localName === "noBreakHyphen") marks.push(mark)
+    }
+    for (const child of Array.from(element.childNodes)) visit(child, mark)
+  }
+  visit(paragraph, "")
+  return marks
+}
+
 /** The original table element, already imported into the rendered body, made
  * to read as the drafted rows: rows paired by position when the counts agree,
  * else by their first cell; a cell is rewritten only where its text differs. */
@@ -280,8 +424,14 @@ function inCommon(left: string[], right: string[]) {
 
 /** Cell text as compared: Unicode-normalized, typographic dashes, quotes and spaces made plain, whitespace collapsed. */
 function normalized(text: string) {
-  return text.normalize("NFKC").replace(/[\u2010-\u2015\u2212]/g, "-").replace(/[\u2018\u2019\u201A\u201B]/g, "'").replace(/[\u201C\u201D\u201E\u201F]/g, "\"")
-    .replace(/\s+/g, " ").trim()
+  return wordsOf(text.normalize("NFKC").replace(/[\u2010-\u2015\u2212]/g, "-"))
+}
+
+/** A body paragraph's text as the paragraph carry compares it: typographic
+ * quotes made plain and each run of whitespace one space. Case, digits,
+ * dashes and every other character count as written. */
+function wordsOf(text: string) {
+  return text.normalize("NFC").replace(/[\u2018\u2019\u201A\u201B]/g, "'").replace(/[\u201C\u201D\u201E\u201F]/g, "\"").replace(/\s+/g, " ").trim()
 }
 
 /** Whether a drafted cell reads as the original one: as written, or as the

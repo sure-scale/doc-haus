@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
-import { carryOriginalTables, pipeTable, readDocxTables } from "./docx-tables"
+import { carryOriginalParagraphs, carryOriginalTables, pipeTable, readDocxTables } from "./docx-tables"
 import { renderMarkdownToDocx } from "./render"
 import { TABLE_FIXTURE, revisionTablesOriginalDocx, revisionTablesWordStyleDocx } from "../test/support/revision-tables-fixture"
 
@@ -442,3 +442,36 @@ test("hidden text is not read as a cell's text, and stays hidden in a carried ce
   expect(result.carries[0]!.outcome).toBe("carried")
   expect(tableXml(result.bytes)[0]).toContain("<w:rPr><w:vanish/></w:rPr><w:t>internal note</w:t>")
 })
+
+test("a paragraph is carried as the original's only when its words and emphasis read alike, a clause number's bold aside", async () => {
+  const typed = (markdown: string) => renderMarkdownToDocx(markdown, undefined, undefined, { numbering: false }).then(result => result.bytes)
+  const parts = unzipSync(await typed([
+    "# Supply terms",
+    "**1.1** The Supplier shall deliver the “Goods”  on the agreed date.",
+    "The Buyer shall pay the **Price** on delivery.",
+    "Notice must be given in writing.",
+    "The fee is [insert amount].",
+    "Either party may terminate on notice.",
+  ].join("\n\n")))
+  // A revision tracked in the original is not carried, though its words read alike.
+  parts["word/document.xml"] = strToU8(strFromU8(parts["word/document.xml"]!).replace(/<w:r>(<w:t[^>]*>Either party)/, '<w:ins w:id="90" w:author="Firm"><w:r>$1').replace(/(on notice\.<\/w:t><\/w:r>)/, "$1</w:ins>"))
+  const rendered = await typed([
+    "# Supply terms",
+    '1.1 The Supplier shall deliver the "Goods" on the agreed date.',
+    "The Buyer shall pay the Price on delivery.",
+    "Notice must be given in Writing.",
+    "The fee is [insert amount].",
+    "Either party may terminate on notice.",
+  ].join("\n\n"))
+  const { bytes, carry } = carryOriginalParagraphs(rendered, zipSync(parts))
+  // The heading and the clause are the original's; emphasis, case, a placeholder and a tracked revision keep the others as drafted.
+  expect(carry).toEqual({ paragraphs: 6, carried: 2, breaks: 0 })
+  const document = new DOMParser().parseFromString(strFromU8(unzipSync(bytes)["word/document.xml"]!), "application/xml")
+  const text = (paragraph: Element) => Array.from(paragraph.getElementsByTagNameNS(W, "t")).map(node => node.textContent).join("")
+  expect(Array.from(document.getElementsByTagNameNS(W, "p")).map(text).filter(Boolean)).toEqual(["Supply terms",
+    "1.1 The Supplier shall deliver the “Goods”  on the agreed date.", "The Buyer shall pay the Price on delivery.",
+    "Notice must be given in Writing.", "The fee is [insert amount].", "Either party may terminate on notice."])
+  // Each paragraph keeps the drafted paragraph's pointer.
+  const pointers = (bytes: Uint8Array) => (strFromU8(unzipSync(bytes)["word/document.xml"]!).match(/_dh_p[0-9a-f]{12}/g) ?? []).join()
+  expect(pointers(bytes)).toBe(pointers(rendered))
+}, 60_000)
