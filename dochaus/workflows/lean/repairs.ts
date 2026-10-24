@@ -45,7 +45,7 @@ export function readRepairRound(directory: string): RepairRound | undefined {
 
 export function startRepairRound(directory: string, blocking: OpenItem[], substantive = false): RepairRound {
   const previous = readRepairRound(directory)
-  const addressed = new Set(blocking.filter(item => item.ref.document || !["memo", "research"].includes(item.ref.repair_target ?? "body"))
+  const addressed = new Set(blocking.filter(item => !notesRepair(item) && (item.ref.document || !["memo", "research"].includes(item.ref.repair_target ?? "body")))
     .map(item => item.ref.document ?? FIRST_DOCUMENT))
   const contexts = { ...previous?.document_contexts }
   for (const document of Object.keys(contexts) as DocID[]) {
@@ -100,7 +100,14 @@ export function documentRepairs(directory: string, document: DocID) {
 }
 
 function bodyRepairItems(items: OpenItem[], document: DocID) {
-  return items.filter(item => ofDocument(item, document) && item.ref.repair_target !== "research" && item.ref.repair_target !== "memo" && (item.stage !== "package-review" || item.ref.document !== undefined))
+  return items.filter(item => ofDocument(item, document) && !notesRepair(item) && item.ref.repair_target !== "research" && item.ref.repair_target !== "memo" && (item.stage !== "package-review" || item.ref.document !== undefined))
+}
+
+/** An item only the drafting notes can settle: an original table missing from
+ * the final body or short of its rows (original-tables.ts), which no amendment
+ * to a paragraph restores. A repair round gives it to the notes, not the body. */
+export function notesRepair(item: OpenItem) {
+  return item.ref.table !== undefined
 }
 
 function documentRepairBasis(directory: string, document: DocID) {

@@ -34,6 +34,7 @@ import { stageInputSha } from "./runner"
 import { outlineCoverageIssues, partCarries, plannedContract } from "./template-contract"
 import { draftStatusItems } from "./draft-status"
 import { draftTemplateItems } from "./template-coverage"
+import { originalTables, originalTablesBlock, partTableIssues, tableParts } from "./original-tables"
 
 // Sectioned draft step. A long document can need more tokens than one model
 // reply may carry, so the draft agent writes one part per reply in the same
@@ -317,6 +318,9 @@ export async function runDraftStage(
   const key = stageInputSha(directory, step)
   const contract = plannedContract(directory, document)
   const carries = contract ? partCarries(contract, plan.parts.length) : []
+  // A revised original's tables: each part is shown those its scope holds.
+  const original = originalTables(directory, document)
+  const scopes = original ? tableParts(directory, document, original.tables) : []
   const drafted: string[] = []
   for (const [index, part] of plan.parts.entries()) {
     const label = `part ${index + 1}/${plan.parts.length}`
@@ -325,11 +329,28 @@ export async function runDraftStage(
       ? { source: contract.source, parts: carried.carried.map(unit => unit.label), left: carried.left.map(unit => unit.label) }
       : undefined)
     const brief = sectionHandoff(directory, document)
+    const own = scopes.flatMap((parts, table) => parts.includes(index) ? [table] : [])
     // The outline's session saw the run context before the plan named a memo.
-    const text = [...(index > 0 ? [] : outlined ? [actingForBlock(directory), packageCompositionBlock(directory, document)] : [stagePrompt(directory, step)]), brief, section].filter(Boolean).join("\n\n")
-    const written = await ask(label, text, (reply, final) => checkSection(reply, plan, index, final))
-    if (!written.value) return failed(`${label} "${part.heading}"`, written.issues)
-    drafted.push(written.value)
+    const text = [...(index > 0 ? [] : outlined ? [actingForBlock(directory), packageCompositionBlock(directory, document)] : [stagePrompt(directory, step)]), originalTablesBlock(original, own), brief, section].filter(Boolean).join("\n\n")
+    // The first reply the section check passes is checked once for an
+    // original table it leaves out (partTableIssues); asked for it, the part
+    // keeps that reply when no later one passes, so the table check never
+    // costs a part the text it had.
+    let tables = original?.tables
+    let kept: string | undefined
+    const written = await ask(label, text, (reply, final) => {
+      const checked = checkSection(reply, plan, index, final)
+      if (!tables || checked.value === undefined) return checked
+      const issues = partTableIssues(checked.value, tables, own)
+      tables = undefined
+      if (!issues.length) return checked
+      if (final) return { issues, value: checked.value }
+      kept = checked.value
+      return { issues }
+    })
+    const value = written.value ?? kept
+    if (!value) return failed(`${label} "${part.heading}"`, written.issues)
+    drafted.push(value)
     writeLeanText(directory, `${document}/draft-in-progress.md`, assembleDraft(plan, drafted, false))
   }
   const letter = isLetter(plan.form)

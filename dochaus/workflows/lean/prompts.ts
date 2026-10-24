@@ -10,7 +10,7 @@ import { finalBodyParagraphs, readChangeList, readParagraphs, type ApplyResult }
 import { reviewStages, FIRST_DOCUMENT, earlierDocuments, planActingFor, operativeDocument, plannedDocument, readLeanPlan, runPosture, stepDocument, stepStage, type DocID, type StepID } from "./plan"
 import { REQUEST_SOURCE, matterSourceIDs } from "./quotes"
 import { nameWithProvenance, sourceProvenance } from "../../lib/source-provenance"
-import { readRepairRound, changesRepairSections } from "./repairs"
+import { readRepairRound, changesRepairSections, notesRepair } from "./repairs"
 import { MEMO_TARGET, REVIEW_FINDINGS_CONTRACT, findingsText, forwardedFindings, reviewText } from "./review-findings"
 import { disclosableItems } from "./stages"
 import { QUESTION_KIND_CONTRACT, WORKING_DRAFT, isReviewStage, answeredQuestions, answeredQuestionsText, delegatedQuestions, questionOptions, readLeanJson, readLeanText, readQuestions, type OpenItem, type Question, type StageID } from "./state"
@@ -302,7 +302,7 @@ function draftingNotesSections(directory: string, request: string) {
     memo
       ? `This is a lean drafting run. The request asks for a memo to accompany the drafted documents, "${memo.name}". Write the drafting notes as that memo.`
       : "This is a lean drafting run. Write the drafting notes that go to the lawyer with the drafted documents.",
-    tagged("required_repairs", (readRepairRound(directory)?.items ?? []).filter(item => item.stage === "package-review" || item.ref.repair_target === "memo").map(item => `- ${item.detail}`).join("\n") || "None."),
+    tagged("required_repairs", (readRepairRound(directory)?.items ?? []).filter(item => item.stage === "package-review" || item.ref.repair_target === "memo" || notesRepair(item)).map(item => `- ${item.detail}`).join("\n") || "None."),
     request, actingForBlock(directory), answers ? tagged("answers", answers) : "",
     tagged("sources", matterSourceIDs(directory).map(name => nameWithProvenance(name, provenance)).join("\n")),
     tagged("delivery_artifacts", JSON.stringify(deliveryArtifactEvidence(directory), null, 2)),
