@@ -6,6 +6,7 @@ import { Document, Packer, Paragraph } from "docx"
 import { strToU8, zipSync } from "fflate"
 import { getDocumentRole, listSourceDocuments, openDb } from "./db"
 import { MAX_ZIP_FILES } from "./zip-archive"
+import { fileAttachment, msgFile, outlookMessage } from "./fixtures/synthetic-msg"
 
 // A same-name upload never replaces an uploaded source silently: the lawyer's
 // own Agreement.docx survives the counterparty's returned Agreement.docx unless
@@ -208,6 +209,35 @@ test("a zip upload adds its files, and one over the limits is refused whole", as
     expect(listed.documents.map((document) => [document.name, document.attachment_of?.name]).toSorted()).toEqual([
       ["Agreement.docx", "Bundle.zip"],
       ["Bundle.zip", undefined],
+    ])
+  })
+}, 120_000)
+
+// An Outlook email upload brings in its attachments like an .eml; a file that
+// is not an Outlook email is refused with a message the upload row can show.
+test("an Outlook email upload adds its attachments, and an unreadable one is refused", async () => {
+  await withMatter("Outlook uploads", async ({ matter, request, upload }) => {
+    const msg = msgFile(outlookMessage({
+      subject: "Synthetic thread",
+      from: { address: "sender@example.test" },
+      body: "See attached.",
+      attachments: [fileAttachment("Agreement.docx", undefined, await docx("Outlook marker"))],
+    }))
+    const added = await upload("Thread.msg", new Uint8Array(msg))
+    expect(added.status).toBe(200)
+    expect(await added.json()).toMatchObject({
+      name: "Thread.msg",
+      quality: { status: "ok" },
+      attachments: [{ name: "Agreement.docx", document: "Agreement.docx", status: "indexed" }],
+    })
+
+    const refused = await upload("Broken.msg", new Uint8Array(Buffer.from("Not an Outlook email.")))
+    expect(refused.status).toBe(400)
+    expect(await refused.json()).toEqual({ error: "Broken.msg could not be read as an Outlook email." })
+    const listed = await (await request(`/matters/${matter.id}`)).json() as { documents: { name: string; attachment_of?: { name: string } }[] }
+    expect(listed.documents.map((document) => [document.name, document.attachment_of?.name]).toSorted()).toEqual([
+      ["Agreement.docx", "Thread.msg"],
+      ["Thread.msg", undefined],
     ])
   })
 }, 120_000)

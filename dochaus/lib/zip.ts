@@ -1,5 +1,5 @@
 import { inflateSync } from "fflate"
-import { EMAIL_ATTACHMENT_EXTENSIONS, extension, formatSize, oneLine, safeAttachmentName } from "./email"
+import { EMAIL_ATTACHMENT_EXTENSIONS, EXTENSION_TYPE, extension, formatSize, oneLine, safeAttachmentName } from "./email"
 
 // Zip sources (.zip) are containers, like an email's attachments: each file
 // inside can become a matter document of its own (services/ingest/src/zip-archive.ts).
@@ -40,14 +40,6 @@ export type ParsedZip = {
   entries: ZipEntry[]
   // The stated uncompressed size of all `entries`.
   uncompressed: number
-}
-
-const ENTRY_TYPE: Record<string, string> = {
-  ".pdf": "application/pdf",
-  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-  ".eml": "message/rfc822",
-  ".zip": "application/zip",
 }
 
 const EOCD = 0x06054b50
@@ -111,11 +103,11 @@ export function parseZip(input: Buffer | Uint8Array): ParsedZip {
     const metadata = segments.includes("__MACOSX") || segments.at(-1) === ".DS_Store"
     if (folder || metadata) continue
     const filename = oneLine(path)
-    const name = safeAttachmentName(segments.at(-1), ENTRY_TYPE[extension(segments.at(-1) ?? "")] ?? "", index + 1)
+    const name = safeAttachmentName(segments.at(-1), EXTENSION_TYPE[extension(segments.at(-1) ?? "")] ?? "", index + 1)
     entries.push({
       filename,
       name,
-      mimeType: ENTRY_TYPE[extension(name)] ?? "application/octet-stream",
+      mimeType: EXTENSION_TYPE[extension(name)] ?? "application/octet-stream",
       size,
       supported: (EMAIL_ATTACHMENT_EXTENSIONS as readonly string[]).includes(extension(name)),
       encrypted: (flags & 0x1) !== 0,

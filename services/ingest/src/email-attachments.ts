@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite"
 import { existsSync, readFileSync } from "node:fs"
 import { EMAIL_ATTACHMENT_EXTENSIONS, extension, parseEmail, safeAttachmentName } from "../../../dochaus/lib/email"
+import { parseMsg } from "../../../dochaus/lib/msg"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
 import { draftingTraceReference } from "../../../dochaus/lib/drafting-trace-identity"
 import { openDb } from "./db"
@@ -24,9 +25,11 @@ import { archiveBudget, ingestZipDocument, ZipTooLargeError, type ArchiveBudget 
 // own attachments follow, down to MAX_EMAIL_DEPTH. Expansion lives here, not in
 // ingestDocument, so a revision or a re-ingest of the email never repeats it.
 //
-// A zip file is the same kind of container (zip-archive.ts): its files become
-// documents that name it, through the same flow and record. Emails and zips nest
-// in each other under one depth limit.
+// An Outlook email (.msg) is read into the same email shape (dochaus/lib/msg.ts)
+// and takes the same path; an attached Outlook message becomes a child email
+// like a forwarded one. A zip file is the same kind of container
+// (zip-archive.ts): its files become documents that name it, through the same
+// flow and record. Emails and zips nest in each other under one depth limit.
 
 // How many levels of attached emails and zip files are ingested below the
 // uploaded document. A container nested deeper is listed on its parent, not
@@ -35,7 +38,12 @@ export const MAX_EMAIL_DEPTH = 5
 
 // An email or a zip file: a document whose parts become documents of their own.
 export function isContainerName(name: string) {
-  return /\.(eml|zip)$/i.test(name)
+  return /\.(eml|msg|zip)$/i.test(name)
+}
+
+// An email in either format.
+export function isEmailName(name: string) {
+  return /\.(eml|msg)$/i.test(name)
 }
 
 // One part of a container as this flow takes it: an email's attachment or a zip
@@ -112,9 +120,10 @@ export type ContainerOptions = {
   budget?: ArchiveBudget
 }
 
-// Ingest an uploaded email and then its attachments.
+// Ingest an uploaded email (.eml or .msg) and then its attachments. A .msg that
+// is not a readable Outlook email throws MsgFormatError before anything is added.
 export async function ingestEmailDocument(matterDir: string, fileName: string, buffer: Buffer, options: ContainerOptions = {}) {
-  const parsed = await parseEmail(buffer)
+  const parsed = await (fileName.toLowerCase().endsWith(".msg") ? parseMsg(buffer) : parseEmail(buffer))
   const parts = parsed.attachments.map(({ content, ...attachment }): ContainerPart => ({ ...attachment, content: () => content }))
   return ingestContainerDocument(matterDir, fileName, buffer, parts, parsed.embedded, options)
 }
@@ -207,7 +216,7 @@ async function ingestAttachment(
     if (same) return { outcome: "indexed", ...same }
     const container: ContainerOptions = { existing: "keep-both", parentName: emailName, depth: depth + 1, findings: nameFindings, budget }
     const lower = attachment.name.toLowerCase()
-    const child = lower.endsWith(".eml")
+    const child = isEmailName(lower)
       ? await ingestEmailDocument(matterDir, attachment.name, bytes, container)
       : lower.endsWith(".zip")
         ? await ingestZipDocument(matterDir, attachment.name, bytes, container)
@@ -430,7 +439,8 @@ export async function removeMatterDocument(matterDir: string, name: string, keep
 // brings in its attachments. So is an email whose record still has pending
 // entries (an upload stopped before it recorded them); its attachments already
 // in the matter are reused, not copied. So is an email with an attachment once
-// listed as not supported that a matter document can now take (a zip file). A
+// listed as not supported that a matter document can now take (a zip file, an
+// Outlook email). A
 // zip file left with pending entries is finished the same way. Runs in the
 // background after startup; one that fails is logged and retried at the next
 // start.
@@ -439,7 +449,7 @@ export async function reingestLegacyEmails(matterDir: string) {
   const legacy = (() => {
     try {
       return db
-        .query("SELECT name, doc_path, attachments FROM documents WHERE role = 'source' AND (lower(name) LIKE '%.eml' OR lower(name) LIKE '%.zip')")
+        .query("SELECT name, doc_path, attachments FROM documents WHERE role = 'source' AND (lower(name) LIKE '%.eml' OR lower(name) LIKE '%.msg' OR lower(name) LIKE '%.zip')")
         .all() as { name: string; doc_path: string; attachments: string | null }[]
     } finally {
       db.close()

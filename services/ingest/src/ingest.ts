@@ -15,6 +15,7 @@ import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadat
 import { markTrackedChanges } from "../../../dochaus/lib/docx-tracked-text"
 import { draftingTraceReference } from "../../../dochaus/lib/drafting-trace-identity"
 import { parseEmail } from "../../../dochaus/lib/email"
+import { parseMsg } from "../../../dochaus/lib/msg"
 import { zipToText } from "../../../dochaus/lib/zip"
 import { commitDocumentWriteAsync } from "./atomic-document-write"
 import { MatterDocumentIdentityError, resolveMatterDocumentTarget } from "./document-identity"
@@ -29,7 +30,7 @@ import {
   type ActiveDocumentMutation,
 } from "./document-mutation"
 
-const MATTER_DOCUMENT_EXTENSIONS = new Set([".docx", ".pdf", ".xlsx", ".eml", ".zip"])
+const MATTER_DOCUMENT_EXTENSIONS = new Set([".docx", ".pdf", ".xlsx", ".eml", ".msg", ".zip"])
 
 export class SourceDocumentConflictError extends Error {}
 
@@ -393,8 +394,8 @@ async function extractRawText(fileName: string, buffer: Buffer): Promise<{ text:
     const { text, pages } = await readPdf(buffer)
     return { text, facts: { format: "pdf", pages } }
   }
-  if (lower.endsWith(".eml")) {
-    const email = await parseEmail(buffer)
+  if (lower.endsWith(".eml") || lower.endsWith(".msg")) {
+    const email = await (lower.endsWith(".msg") ? parseMsg(buffer) : parseEmail(buffer))
     return { text: email.text, facts: { format: "email", body: email.body, attachments: email.attachments.length } }
   }
   if (lower.endsWith(".xlsx")) return xlsxToText(buffer)

@@ -4,7 +4,9 @@ import PostalMime, { type Attachment } from "postal-mime"
 // through a real RFC822 parser. This is the one email extractor: ingest indexes
 // its text and records its attachments, and liveText (extract.ts) re-extracts the
 // same text to check citation offsets, so the text must depend on the email's
-// bytes alone, never on what became of an attachment.
+// bytes alone, never on what became of an attachment. Outlook emails (.msg) are
+// read into the same shape by msg.ts and written out by the same emailText, so
+// both formats read alike everywhere downstream.
 //
 // The headers that carry legal meaning in a chain (who wrote, to whom, when,
 // about what) sit above the body, followed by one line listing each attachment's
@@ -15,16 +17,26 @@ import PostalMime, { type Attachment } from "postal-mime"
 
 // The formats a matter document can take (ingest's MATTER_DOCUMENT_EXTENSIONS).
 // An email or a zip file is a container: its parts become documents of their own.
-export const EMAIL_ATTACHMENT_EXTENSIONS = [".docx", ".pdf", ".xlsx", ".eml", ".zip"] as const
+export const EMAIL_ATTACHMENT_EXTENSIONS = [".docx", ".pdf", ".xlsx", ".eml", ".msg", ".zip"] as const
+
+// The type of each format a matter document can take, for a file whose type is
+// not stated (a zip entry, an Outlook attachment without one).
+export const EXTENSION_TYPE: Record<string, string> = {
+  ".pdf": "application/pdf",
+  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ".eml": "message/rfc822",
+  ".msg": "application/vnd.ms-outlook",
+  ".zip": "application/zip",
+}
 
 const TYPE_EXTENSION: Record<string, string> = {
-  "application/pdf": ".pdf",
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
-  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
-  "message/rfc822": ".eml",
-  "application/zip": ".zip",
+  ...Object.fromEntries(Object.entries(EXTENSION_TYPE).map(([ext, type]) => [type, ext])),
   "application/x-zip-compressed": ".zip",
 }
+
+// An attached email: a forwarded MIME message or an Outlook message.
+const MESSAGE_TYPES = new Set(["message/rfc822", "application/vnd.ms-outlook"])
 
 // Leaves room under the usual 255-byte file-name limit for a keep-both suffix.
 const MAX_NAME_BYTES = 200
@@ -54,18 +66,41 @@ export type ParsedEmail = {
   embedded: number
 }
 
+export type EmailAddress = { name?: string; address?: string }
+
+// What an email's text is made of, whatever its file format.
+export type EmailHeaders = {
+  subject?: string
+  from?: EmailAddress
+  to?: EmailAddress[]
+  cc?: EmailAddress[]
+  // ISO 8601, as postal-mime gives a parseable Date header.
+  date?: string
+}
+
 export async function parseEmail(buffer: Buffer | Uint8Array): Promise<ParsedEmail> {
   const email = await PostalMime.parse(buffer, { forceRfc822Attachments: true })
   // Only images the HTML body shows inline are left out; any other part,
   // even one the body references by Content-ID, is listed.
   const parts = email.attachments.filter((part) => !(part.related && part.contentId && part.mimeType?.toLowerCase().startsWith("image/")))
-  const attachments = parts.map((part, index) => emailAttachment(part, index + 1))
+  const attachments = parts.map((part, index) => emailAttachment(part.filename, part.mimeType, partContent(part), index + 1))
+  const body = email.text ?? (email.html ? htmlBodyText(email.html) : "")
+  return { text: emailText(email, attachments, body), body, attachments, embedded: email.attachments.length - parts.length }
+}
+
+export async function emlToText(buffer: Buffer | Uint8Array) {
+  return (await parseEmail(buffer)).text
+}
+
+// The email's text: the headers that carry legal meaning, one line listing the
+// attachments as the email states them, then the body.
+export function emailText(headers: EmailHeaders, attachments: EmailAttachment[], body: string) {
   const header = [
-    email.subject && `Subject: ${email.subject}`,
-    email.from && `From: ${formatAddress(email.from)}`,
-    email.to?.length && `To: ${email.to.map(formatAddress).join(", ")}`,
-    email.cc?.length && `Cc: ${email.cc.map(formatAddress).join(", ")}`,
-    email.date && `Date: ${email.date}`,
+    headers.subject && `Subject: ${headers.subject}`,
+    headers.from && `From: ${formatAddress(headers.from)}`,
+    headers.to?.length && `To: ${headers.to.map(formatAddress).join(", ")}`,
+    headers.cc?.length && `Cc: ${headers.cc.map(formatAddress).join(", ")}`,
+    headers.date && `Date: ${headers.date}`,
     attachments.length &&
       `Attachments: ${attachments
         .map((attachment) => `${attachment.filename || "unnamed"} (${attachment.mimeType}, ${formatSize(attachment.size)})`)
@@ -73,31 +108,29 @@ export async function parseEmail(buffer: Buffer | Uint8Array): Promise<ParsedEma
   ]
     .filter(Boolean)
     .join("\n")
-  // An HTML-only body keeps the plain tag strip until a real converter lands (#103).
-  const body = email.text ?? (email.html ? email.html.replace(/<[^>]+>/g, " ") : "")
-  return {
-    text: header ? `${header}\n\n${body}` : body,
-    body,
-    attachments,
-    embedded: email.attachments.length - parts.length,
-  }
+  return header ? `${header}\n\n${body}` : body
 }
 
-export async function emlToText(buffer: Buffer | Uint8Array) {
-  return (await parseEmail(buffer)).text
+// An HTML-only body keeps the plain tag strip until a real converter lands (#103).
+export function htmlBodyText(html: string) {
+  return html.replace(/<[^>]+>/g, " ")
 }
 
-function emailAttachment(part: Attachment, position: number): EmailAttachment {
-  const content =
-    typeof part.content === "string"
-      ? new TextEncoder().encode(part.content)
-      : part.content instanceof Uint8Array
-        ? part.content
-        : new Uint8Array(part.content)
-  const mimeType = (part.mimeType || "application/octet-stream").toLowerCase()
-  const name = safeAttachmentName(part.filename, mimeType, position)
+function partContent(part: Attachment) {
+  return typeof part.content === "string"
+    ? new TextEncoder().encode(part.content)
+    : part.content instanceof Uint8Array
+      ? part.content
+      : new Uint8Array(part.content)
+}
+
+// One attachment as the email states it: its name (null when it has none), its
+// type (null when not stated) and its bytes.
+export function emailAttachment(filename: string | null | undefined, type: string | null | undefined, content: Uint8Array, position: number): EmailAttachment {
+  const mimeType = (type || "application/octet-stream").toLowerCase()
+  const name = safeAttachmentName(filename, mimeType, position)
   return {
-    filename: oneLine(part.filename ?? ""),
+    filename: oneLine(filename ?? ""),
     name,
     mimeType,
     size: content.byteLength,
@@ -117,7 +150,7 @@ export function safeAttachmentName(filename: string | null | undefined, mimeType
     .replace(/^[.\s]+/, "")
     .replace(/[.\s]+$/, "")
   const typed = TYPE_EXTENSION[mimeType] ?? ""
-  if (!clean) return `${mimeType === "message/rfc822" ? "message" : "attachment"}-${position}${typed}`
+  if (!clean) return `${MESSAGE_TYPES.has(mimeType) ? "message" : "attachment"}-${position}${typed}`
   const own = extension(clean)
   const ext = own && /^\.[a-z0-9]{1,10}$/.test(own) ? clean.slice(-own.length) : typed
   const stem = own && ext === clean.slice(-own.length) ? clean.slice(0, -own.length) : clean
@@ -148,7 +181,7 @@ export function formatSize(bytes: number) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
-function formatAddress(addr: { name?: string; address?: string }) {
+function formatAddress(addr: EmailAddress) {
   if (addr.name && addr.address) return `${addr.name} <${addr.address}>`
   return addr.address ?? addr.name ?? ""
 }
