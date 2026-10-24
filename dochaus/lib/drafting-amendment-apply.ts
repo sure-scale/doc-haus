@@ -285,12 +285,17 @@ function touchedRanges(from: string, to: string) {
 function hunkRange(from: string, to: string) {
   const range = changedRange(from, to)
   const { offset, replaced, changed } = range
-  const markers = [...from.matchAll(OPEN_ITEM_PATTERN)].map(marker => [marker.index ?? 0, (marker.index ?? 0) + marker[0].length] as const)
+  const markers = markerSpans(from)
   if (!offset || changed === replaced || !changed.endsWith(replaced) || !markers.some(([start]) => start === offset)) return range
   const previous = Array.from(from.slice(0, offset)).at(-1)!
   const at = offset - previous.length
   if (markers.some(([start, end]) => start <= at && at < end)) return range
   return { offset: at, replaced: previous, changed: previous + changed.slice(0, -replaced.length) }
+}
+
+// [start, end) of each open-item marker in a paragraph's text.
+function markerSpans(text: string) {
+  return [...text.matchAll(OPEN_ITEM_PATTERN)].map(marker => [marker.index ?? 0, (marker.index ?? 0) + marker[0].length] as const)
 }
 
 // Cardinality edits must not silently discard section breaks, fields, or ranges
@@ -365,12 +370,24 @@ async function readBack(bytes: Uint8Array, before: Opened, edits: Edit[]) {
 }
 
 // Intermediate paragraph texts from `from` to `to`, one per word-level hunk.
-// Whitespace runs compare equal, so the document's own spacing is kept.
+// Whitespace runs compare equal, so the document's own spacing is kept. A word
+// in an open-item marker never matches one outside a marker: kept, it would
+// keep its run, and so the marker's shading where it became clause text, or
+// leave a rewritten marker's opening in the clause text's run and the marker
+// split across runs and unshaded.
 function hunkTexts(from: string, to: string) {
   const a = from.match(/\s+|\S+/g) ?? []
   const b = to.match(/\s+|\S+/g) ?? []
-  const key = (token: string) => (/^\s/.test(token) ? " " : token)
-  const pairs = matchTokens(a.map(key), b.map(key))
+  const keys = (text: string, tokens: string[]) => {
+    const markers = markerSpans(text)
+    let at = 0
+    return tokens.map(token => {
+      const start = at
+      at += token.length
+      return (markers.some(([from, to]) => from < at && start < to) ? "\u0000" : "") + (/^\s/.test(token) ? " " : token)
+    })
+  }
+  const pairs = matchTokens(keys(from, a), keys(to, b))
   if (!pairs) return [to]
   // Hunks separated only by whitespace become one edit.
   const hunks = gaps(pairs, a.length, b.length).reduce<{ start: number; end: number; text: string }[]>((joined, gap) => {

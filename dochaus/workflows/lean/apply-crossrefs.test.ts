@@ -322,6 +322,22 @@ test("an open item a change writes is shaded as drafting shades one; the paragra
   expect(readFileSync(leanFile(directory, "d1/body-applied.docx")).equals(applied)).toBe(true)
 }, 60_000)
 
+test("the redline shades the whole of an open item a change rewrote word by word, and nothing around it", async () => {
+  const { directory, row } = await drafted(AGREEMENT.replace("3.1 Invoices are payable within thirty days.", "3.1 Invoices are payable within thirty days [open item: confirm the payment period with the client]."))
+  const written = row("Invoices are payable")
+  const marker = "[open item: confirm the revised payment period with the finance team]"
+  await apply(directory, [{ pid: written.pid, existing_sha256: written.sha256, updated: `Invoices are payable within thirty days ${marker}.` }])
+  expect(shadedOpenItems(readFileSync(leanFile(directory, "d1/body-applied.docx")))).toEqual([marker])
+  // The comparison splits the marker at the words the change rewrote; every
+  // piece the redline shows is shaded, the words before and after it are not,
+  // and no formatting change is tracked.
+  const redline = readFileSync(leanFile(directory, "d1/redline.docx"))
+  const pieces = shadedOpenItems(redline)
+  expect(pieces.length).toBeGreaterThan(1)
+  expect(pieces.join("")).toBe(marker)
+  expect(revisions(directory).formatting).toBe(0)
+}, 60_000)
+
 // A lawyer's original numbered by a Word list, as the drafted body is but
 // without its paragraph pointers: its references typed, or its own fields.
 function suppliedOriginal(drafted: Uint8Array, references: "typed" | "fields") {

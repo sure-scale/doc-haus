@@ -272,6 +272,26 @@ describe("pointer-based paragraph amendments", () => {
     expect(await shaded(doc.out)).toEqual(["[open item: confirm both periods]"])
   })
 
+  test("an open item an amendment rewrites with the words before it stays in one shaded run", async () => {
+    const doc = await single("rewritten-open-item", "The exclusion applies so far as it satisfies the requirement of reasonableness under clause 12 of this Agreement [open item: what is the evidence of bargaining strength to support reasonableness].")
+    const before = (await texts(doc.file)).get(doc.pid)!
+    const updated = "The exclusion applies so far as it satisfies the requirement of reasonableness [open item: confirm reasonableness qualification; what is the evidence of bargaining strength to support reasonableness]."
+    const result = await applyAmendments({ docxPath: doc.file, outPath: doc.out, amendments: [amend("rewritten", doc.pid, before, updated)] })
+    expect(result.applied.map(row => row.mode)).toEqual(["code"])
+    expect((await texts(doc.out)).get(doc.pid)).toBe(updated)
+    expect(await shaded(doc.out)).toEqual(["[open item: confirm reasonableness qualification; what is the evidence of bargaining strength to support reasonableness]"])
+  })
+
+  test("words an open item held that an amendment makes clause text are not shaded as open", async () => {
+    const doc = await single("open-item-to-text", "The Buyer may reject the excess [open item: confirm that this regime is accepted, including that the Buyer may not reject a slight excess where unreasonable].")
+    const before = (await texts(doc.file)).get(doc.pid)!
+    const updated = "The Buyer may reject the excess, provided that the Buyer may not reject a slight excess where unreasonable [open item: confirm that this regime, including what counts as slight, is accepted]."
+    const result = await applyAmendments({ docxPath: doc.file, outPath: doc.out, amendments: [amend("to-text", doc.pid, before, updated)] })
+    expect(result.applied.map(row => row.mode)).toEqual(["code"])
+    expect((await texts(doc.out)).get(doc.pid)).toBe(updated)
+    expect(await shaded(doc.out)).toEqual(["[open item: confirm that this regime, including what counts as slight, is accepted]"])
+  })
+
   test("a split lands with its pointers; an overlapping replacement after it is stale", async () => {
     const original = "The archive record is paper. Inspection is annual."
     const split = ["The archive record is paper.", "Inspection is annual."]
