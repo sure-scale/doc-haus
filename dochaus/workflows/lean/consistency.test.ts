@@ -118,6 +118,20 @@ describe("cross-references after changes", () => {
     expect(details({ title: TITLE, final: doc(fixed), baselines: [doc(BASE)], others: [longer] })).toEqual([])
   })
 
+  test("a schedule heading the changes close with an open-item marker and a full stop is still its heading; a schedule the text does not have is still reported", () => {
+    // Schedule headings with no separator after the number, as an original may write them.
+    const schedules = ["Schedule 1 Goods and packaging", "Printed cartons as specified in each order.", "Schedule 2 Price", "The Price is stated in each order."]
+    const before = [...BASE.slice(0, -4), "5.2 The service levels in Schedule 3 apply.", ...schedules]
+    const final = before.map(line => line === schedules[0] ? `${line} [open item: confirm the carton specification].` : line)
+    expect(details({ title: TITLE, final: doc(final), baselines: [doc(before)], others: [] })).toEqual([
+      "Clause 5.2 refers to Schedule 3, but the final text has no Schedule 3.",
+    ])
+    // A sentence about a schedule, closed by a marker, does not head it.
+    const mention = final.map(line => line === schedules[2] ? "Schedule 2 is to follow [open item: confirm the price list]." : line)
+    expect(details({ title: TITLE, final: doc(mention), baselines: [doc(before)], others: [] })).toContain(
+      "Clause 1.2 refers to Schedule 2, but the final text has no Schedule 2. Schedule 2 was in the text before the changes.")
+  })
+
   test("a schedule's reference to its own paragraphs, and a reference to a lettered clause, are not checked as the agreement's clauses", () => {
     // The agreement has five clauses: "clause 7 of this Schedule" is the
     // schedule's own numbering and "clause 6A" an inserted clause, not clause 6.

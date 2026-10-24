@@ -150,11 +150,13 @@ const DATE_START = new RegExp(`^\\d{1,2}\\s+(?:${MONTHS})\\b`)
 const NUMBERED = /^(\d{1,3}(?:\.\d{1,3}){0,3})\.?\s+(?=[\p{Lu}(\[“"‘'])/u
 const KEYED = /^(clause|section|article)\s+(\d{1,3}(?:\.\d{1,3}){0,3})\.?(.*)$/i
 const ATTACHMENT_HEAD = /^(schedule|annex|appendix|exhibit|attachment)\s+(\d{1,3}|[A-Z]|[IVX]{1,5})(?![\w])(.*)$/i
+/** A square-bracketed marker closing a line, and the punctuation after it. */
+const CLOSING_MARKER = /(\[[^\]]*\])[\s.;:,!?]+$/
 const MAX_HEADING_WORDS = 12
 
 function outline(paras: Para[]): Outline {
   const texts = paras.map(para => visible(para.text))
-  const heads = texts.map(attachmentHead)
+  const heads = paras.map(para => attachmentHead(para.text))
   const first = heads.findIndex(Boolean)
   const end = first < 0 ? paras.length : first
   // Labels are read as printed: "4.2 [Amount]" is clause 4.2 with a placeholder.
@@ -234,10 +236,15 @@ function clauseLabel(text: string): { label: string; rest: string } | undefined 
   if (keyed && headed(keyed[3]!, text)) return { label: keyed[2]!, rest: keyed[3]!.replace(/^\s*[-–—:.]?\s*/, "").trim() }
 }
 
-/** "schedule 1" for a schedule's (annex's …) heading paragraph. */
+/** "schedule 1" for a schedule's (annex's …) heading paragraph, read from the
+ * paragraph's text as written. A marker or placeholder in square brackets that
+ * closes the heading takes the punctuation after it, which ends the marker's
+ * note, not the heading: "Schedule 1 Goods [open item: confirm them]." heads
+ * Schedule 1. */
 function attachmentHead(text: string) {
-  const head = ATTACHMENT_HEAD.exec(text)
-  return head && headed(head[3]!, text) ? `${head[1]!.toLowerCase()} ${head[2]!.toUpperCase()}` : undefined
+  const line = visible(text.replace(CLOSING_MARKER, "$1"))
+  const head = ATTACHMENT_HEAD.exec(line)
+  return head && headed(head[3]!, line) ? `${head[1]!.toLowerCase()} ${head[2]!.toUpperCase()}` : undefined
 }
 
 /** A keyword label heads its paragraph when nothing follows it, a separator
@@ -315,7 +322,7 @@ function references(document: Outline, title: string, titles: string[]): Referen
   const external = new Set<string>()
   const caption = (text: string) => text.replace(CAPTION, "")
   const found = document.texts.flatMap((text, at) => [...text.matchAll(REFERENCE_WORD)].flatMap((match): (Reference & { external?: boolean })[] => {
-    if (match.index === 0 && (clauseLabel(text) || attachmentHead(text))) return []
+    if (match.index === 0 && (clauseLabel(text) || attachmentHead(document.paras[at]!.text))) return []
     const kind = kindOf(match[1]!)
     const number = CLAUSE_KINDS.has(kind) ? CLAUSE_NUMBER : ATTACHMENT_NUMBER
     let rest = text.slice(match.index + match[0].length)
