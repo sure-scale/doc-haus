@@ -82,7 +82,7 @@ import { originalTables, originalTablesBlock, partTableIssues, tableParts } from
 // step: the draft is never rewritten for it, the change cycle receives it as a
 // required repair, and the apply step records any gap left in the final body.
 
-export type DraftOutline = Pick<PlannedDocument, "title" | "parts" | "form" | "mode">
+export type DraftOutline = Pick<PlannedDocument, "title" | "parts" | "form" | "mode" | "template">
 
 export type DraftStageRun =
   | { status: "done"; outputs: string[]; openItems: OpenItem[]; questions?: Question[] }
@@ -375,6 +375,10 @@ export function sectionPrompt(outline: DraftOutline, index: number, template?: {
   const part = outline.parts[index]!
   const names = (labels: string[]) => labels.map(name => `"${name}"`).join("; ")
   const original = outline.mode === "revise" ? "the original" : template ? `the template "${template.source}"` : undefined
+  // A new agreement has no source numbering to follow; clause numbering
+  // (lib/docx-numbering.ts) becomes native Word numbering only from numbered
+  // clause headings, whether or not a part heading is printed above them.
+  const numbered = outline.form === "agreement" && !original && !outline.template
   return [
     `Draft part ${index + 1} of ${outline.parts.length} of "${outline.title}": ${part.heading}`,
     ...(part.scope ? [`This part covers: ${part.scope}`] : []),
@@ -396,6 +400,7 @@ export function sectionPrompt(outline: DraftOutline, index: number, template?: {
       : isLetter(outline.form) ? "- That first line is an internal part label; the renderer omits it. Begin the body with the document text itself, without a replacement heading."
       : "- That first line is an internal part label; the renderer omits it. Write the headings the document itself needs in the part's text, in its own style" +
         (original ? `, following the heading text and hierarchy of ${original} except where the outline or the instructions change them.` : "."),
+    ...(numbered ? ['- Number the clauses in one sequence across the whole document: each clause has a numbered heading ("### 3. <clause heading>") and its subclauses continue that number (3.1, 3.2). A part heading the renderer prints is not a clause and is not numbered.'] : []),
     "- Do not repeat the title or write any other part. Keep defined terms, numbering and cross-references consistent with the outline, the instructions and the parts already drafted.",
     "- The source, quotation and open item rules of the first prompt still apply.",
   ].join("\n")
