@@ -75,7 +75,8 @@ export default tool({
     const ingestUrl = process.env.INGEST_URL ?? "http://127.0.0.1:4500"
     const refusal = await fetch(`${ingestUrl}/matters/${encodeURIComponent(path.basename(ctx.directory))}/documents/revisions`, {
       method: "POST",
-      headers: { "x-document-prior-sha256": edit.priorSha256 },
+      // Saved as the document's next version, made by this agent in this session.
+      headers: { "x-document-prior-sha256": edit.priorSha256, "x-dochaus-origin": "agent-edit", "x-dochaus-actor": `agent:${ctx.agent}`, "x-dochaus-run": ctx.sessionID },
       body: form,
       signal: ctx.abort,
     }).then(

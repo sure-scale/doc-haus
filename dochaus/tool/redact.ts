@@ -179,6 +179,7 @@ export default tool({
     // outside source retrieval.
     const reingest = await fetch(`${ingestUrl}/matters/${path.basename(ctx.directory)}/documents/revisions`, {
       method: "POST",
+      headers: { "x-dochaus-origin": "redaction", "x-dochaus-actor": `agent:${ctx.agent}`, "x-dochaus-run": ctx.sessionID },
       body: (() => {
         const form = new FormData()
         form.append("file", new File([redaction.scrub.bytes], path.basename(file)))
