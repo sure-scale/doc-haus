@@ -175,6 +175,20 @@ function unlinkedSource(opened: Opened, edits: ReturnType<typeof admitted>[]) {
   return zipSync(parts, { mtime: new Date(1980, 0, 1) })
 }
 
+// The report's line for the live cross-references unlinkedSource made text:
+// how many, and the paragraphs they are in, by list number or opening words.
+function unlinkedFields(opened: Opened, edits: ReturnType<typeof admitted>[]) {
+  const counts = [...Map.groupBy(edits, edit => edit.ordinal)].map(([ordinal, rows]) => [ordinal, new Set(rows.flatMap(row => row.unlinks)).size] as const)
+    .filter(([, count]) => count)
+  if (!counts.length) return []
+  const total = counts.reduce((sum, [, count]) => sum + count, 0)
+  const where = counts.map(([ordinal]) => {
+    const view = opened.revision.paragraphs[ordinal]!
+    return view.label ?? `"${view.text.length > 40 ? `${view.text.slice(0, 40).trimEnd()}…` : view.text}"`
+  })
+  return [`${total} cross-reference field${total === 1 ? "" : "s"} converted to text in paragraph${where.length === 1 ? "" : "s"} ${where.join(", ")}`]
+}
+
 async function writeEdits(opened: Opened, edits: ReturnType<typeof admitted>[]) {
   if (edits.some((a, i) => edits.slice(i + 1).some(b => a.ordinal === b.ordinal
     && a.match.span.start < b.match.span.start + b.match.span.length
@@ -225,7 +239,8 @@ async function writeEdits(opened: Opened, edits: ReturnType<typeof admitted>[]) 
           })),
           unchanged_paragraphs_verified: opened.paragraphs.length - changed.size,
           package_structure_verified: true,
-          limitation: "changed text inherits first touched run formatting; structural edits and existing tracked revisions unsupported",
+          limitation: ["changed text inherits first touched run formatting; structural edits and existing tracked revisions unsupported",
+            ...unlinkedFields(opened, edits)].join("; "),
         },
       }
     } finally { reopened.session.close() }

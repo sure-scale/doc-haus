@@ -350,18 +350,21 @@ describe("live cross-references", () => {
   const refs = (bytes: Uint8Array) => [...strFromU8(unzipSync(bytes)["word/document.xml"]!).matchAll(/<w:instrText[^>]*>([^<]*)<\/w:instrText>[\s\S]*?<w:t[^>]*>([^<]*)<\/w:t>/g)]
     .map(match => [match[1]!.replace(/_Ref\d+/, "_Ref#"), match[2]])
 
-  test("an edit beside a REF field keeps it live; an edit of its number leaves that number as text", async () => {
+  test("an edit beside a REF field keeps it live; an edit of its number leaves that number as text, and the report says so", async () => {
     const source = (await renderMarkdownToDocx(AGREEMENT)).bytes
     expect(refs(source)).toEqual([[" REF _Ref# \\r \\h ", "2.1"], [" REF _Ref# \\h ", "1"], [" REF _Ref# \\r \\h ", "2.1"]])
     const revision = await createDocxRevision(source)
     const handle = (start: string) => revision.paragraphs.find(row => row.text.startsWith(start))!.paragraph_handle
+    const beside = { id: "beside", paragraph_handle: handle("In this Agreement"), occurrence: 0, before_quote: "the terms", replacement: "the defined terms" }
     const output = await applyDocxParagraphEdits(source, [
-      { id: "beside", paragraph_handle: handle("In this Agreement"), occurrence: 0, before_quote: "the terms", replacement: "the defined terms" },
+      beside,
       { id: "number", paragraph_handle: handle("The Customer"), occurrence: 0, before_quote: "clause 2.1", replacement: "clause 2.2" },
     ])
     expect((await createDocxRevision(output.bytes)).paragraphs.map(row => row.text)).toContain("In this Agreement the defined terms in clause 2.1 and Schedule 1 apply.")
     expect((await createDocxRevision(output.bytes)).paragraphs.map(row => row.text)).toContain("The Customer shall pay as set out in clause 2.2.")
     expect(refs(output.bytes)).toEqual([[" REF _Ref# \\r \\h ", "2.1"], [" REF _Ref# \\h ", "1"]])
+    expect(output.report.limitation).toEndWith("; 1 cross-reference field converted to text in paragraph 2.2")
+    expect((await applyDocxParagraphEdits(source, [beside])).report.limitation).not.toContain("cross-reference")
   })
 
   test("a changed format of an existing run is refused, also in a batch that rewrites a cross-reference number", async () => {
