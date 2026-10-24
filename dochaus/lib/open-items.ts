@@ -6,7 +6,9 @@ export const FIELD_HIGHLIGHT_FILL = "DDEBF7"
 
 const OPEN_ITEM_RE = OPEN_ITEM_PATTERN
 const RUN_RE = /<w:r\b[^>]*>[\s\S]*?<\/w:r>/g
-const TEXT_RE = /(<w:t(?:\s[^>]*)?>)([\s\S]*?)(<\/w:t>)/
+/** A run's start tag and its properties, which every piece of a split run repeats. */
+const RUN_START_RE = /^<w:r\b[^>]*>(?:\s*<w:rPr>[\s\S]*?<\/w:rPr>)?/
+const TEXT_RE = /(<w:t(?:\s[^>]*)?>)([\s\S]*?)(<\/w:t>)/g
 
 /** The open-item markers render highlights, as they appear in plain text. */
 export function openItemMarkers(text: string) {
@@ -27,31 +29,39 @@ function highlightOpenItemsInDocumentXml(xml: string) {
   return xml.replace(RUN_RE, (run) => highlightRunOpenItems(run))
 }
 
+/** A run with each open-item marker of its texts in a run of its own,
+ * shaded. Only a text that holds a marker is split; each piece keeps the run's
+ * properties and its own share of the run's content (Word puts several texts,
+ * breaks and tabs in one run), and a split text keeps its spaces. A run with no
+ * marker is returned as it is. */
 function highlightRunOpenItems(run: string) {
-  const text = TEXT_RE.exec(run)
-  if (!text) return run
-  const content = text[2] ?? ""
-  const matches = [...content.matchAll(OPEN_ITEM_RE)]
-  if (matches.length === 0) return run
-
-  const textStart = text.index + text[1]!.length
-  const textEnd = textStart + content.length
-  const beforeText = run.slice(0, textStart)
-  const afterText = run.slice(textEnd)
-  let offset = 0
-  return matches
-    .flatMap((match) => {
-      const start = match.index ?? 0
-      const before = content.slice(offset, start)
-      const marker = match[0]
-      offset = start + marker.length
-      return [
-        before ? `${beforeText}${before}${afterText}` : "",
-        `${highlightRun(beforeText, markerFill(marker))}${marker}${afterText}`,
-      ].filter(Boolean)
-    })
-    .concat(content.slice(offset) ? `${beforeText}${content.slice(offset)}${afterText}` : [])
-    .join("")
+  const start = RUN_START_RE.exec(run)?.[0]
+  if (!start || !run.endsWith("</w:r>")) return run
+  const content = run.slice(start.length, -"</w:r>".length)
+  const pieces: string[] = []
+  const piece = (prefix: string, inner: string) => {
+    if (inner.trim()) pieces.push(`${prefix}${inner}</w:r>`)
+  }
+  let cursor = 0
+  for (const text of content.matchAll(TEXT_RE)) {
+    const value = text[2] ?? ""
+    const markers = [...value.matchAll(OPEN_ITEM_RE)]
+    if (!markers.length) continue
+    piece(start, content.slice(cursor, text.index))
+    const tag = /\sxml:space=/.test(text[1]!) ? text[1]! : text[1]!.replace("<w:t", '<w:t xml:space="preserve"')
+    let offset = 0
+    for (const marker of markers) {
+      const at = marker.index ?? 0
+      if (at > offset) piece(start, `${tag}${value.slice(offset, at)}</w:t>`)
+      piece(highlightRun(start, markerFill(marker[0])), `${tag}${marker[0]}</w:t>`)
+      offset = at + marker[0].length
+    }
+    if (offset < value.length) piece(start, `${tag}${value.slice(offset)}</w:t>`)
+    cursor = text.index + text[0].length
+  }
+  if (!pieces.length) return run
+  piece(start, content.slice(cursor))
+  return pieces.join("")
 }
 
 function markerFill(marker: string) {
