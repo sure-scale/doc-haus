@@ -262,6 +262,16 @@ describe("pointer-based paragraph amendments", () => {
     expect(await shaded(doc.out)).toEqual([])
   })
 
+  test("words an amendment writes just before a highlighted open item are not shaded as open", async () => {
+    const doc = await single("before-open-item", "The Customer may reject within 30 days [open item: confirm the period] of delivery.")
+    const before = (await texts(doc.file)).get(doc.pid)!
+    const updated = "The Customer may reject within 30 days and in any event within 90 days [open item: confirm both periods] of delivery."
+    const result = await applyAmendments({ docxPath: doc.file, outPath: doc.out, amendments: [amend("before", doc.pid, before, updated)] })
+    expect(result.applied.map(row => row.mode)).toEqual(["code"])
+    expect((await texts(doc.out)).get(doc.pid)).toBe(updated)
+    expect(await shaded(doc.out)).toEqual(["[open item: confirm both periods]"])
+  })
+
   test("a split lands with its pointers; an overlapping replacement after it is stale", async () => {
     const original = "The archive record is paper. Inspection is annual."
     const split = ["The archive record is paper.", "Inspection is annual."]
