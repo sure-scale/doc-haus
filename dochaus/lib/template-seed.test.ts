@@ -220,6 +220,52 @@ describe("rendering onto a template", () => {
     expect(tight(document.match(/<w:sectPr\b[\s\S]*<\/w:sectPr>/)![0])).toBe(`<w:sectPr>${A4}</w:sectPr>`)
   })
 
+  test("a revised original keeps the header and footer its main body shows, those it continues from an earlier section and their pictures included, in place of the firm's", async () => {
+    const story = (root: "hdr" | "ftr", text: string) => `<w:${root} ${NS}><w:p><w:r><w:t>${text}</w:t></w:r></w:p></w:${root}>`
+    const paragraph = (text: string) => `<w:p><w:r><w:t>${text}</w:t></w:r></w:p>`
+    const reference = (kind: "header" | "footer", type: string, id: string) => `<w:${kind}Reference w:type="${type}" r:id="${id}"/>`
+    const landscape = '<w:pgSz w:w="16838" w:h="11906" w:orient="landscape"/>'
+    // A cover section sets the default header and a footer with the firm's logo;
+    // the main body, linked to it, sets only its first-page and even-page headers
+    // and numbers its pages in roman; a closing schedule has a header of its own.
+    const original = template({
+      settings: '<w:evenAndOddHeaders/><w:defaultTabStop w:val="567"/>',
+      rels: [["rId5", "header", "header2.xml"], ["rId6", "footer", "footer1.xml"], ["rId7", "header", "header3.xml"], ["rId8", "header", "header4.xml"]]
+        .map(([id, kind, target]) => `<Relationship Id="${id}" Type="${REL}/${kind}" Target="${target}"/>`).join(""),
+      types: '<Default Extension="png" ContentType="image/png"/>' + ["header2", "header3", "header4", "footer1"]
+        .map(name => `<Override PartName="/word/${name}.xml" ContentType="${TYPE}.${name.replace(/\d$/, "")}+xml"/>`).join(""),
+      parts: {
+        "word/header2.xml": story("hdr", "First page header"),
+        "word/header3.xml": story("hdr", "Even page header"),
+        "word/header4.xml": story("hdr", "Schedule header"),
+        "word/footer1.xml": `<w:ftr ${NS}><w:p><w:r><w:drawing><a:blip xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" r:embed="rIdLogo"/></w:drawing></w:r></w:p></w:ftr>`,
+        "word/_rels/footer1.xml.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdLogo" Type="${REL}/image" Target="media/logo.png"/></Relationships>`,
+        "word/media/logo.png": "PNG",
+      },
+      body: `<w:p><w:pPr><w:sectPr>${reference("header", "default", "rId4")}${reference("footer", "default", "rId6")}${A4}</w:sectPr></w:pPr><w:r><w:t>Cover</w:t></w:r></w:p>`
+        + `${paragraph("1. Term")}${paragraph("1.1 One year.")}<w:p><w:pPr><w:sectPr>${reference("header", "first", "rId5")}${reference("header", "even", "rId7")}${A4}<w:pgNumType w:fmt="lowerRoman"/><w:titlePg/></w:sectPr></w:pPr><w:r><w:t>2. Supply</w:t></w:r></w:p>`
+        + `${paragraph("Schedule")}<w:sectPr>${reference("header", "default", "rId8")}${landscape}</w:sectPr>`,
+    })
+    const firm = { header: ["Subject to contract", "Draft: 20 October 2026"], pageNumber: { format: "plain" as const, align: "center" as const } }
+    const parts = unzipSync((await renderMarkdownToDocx(BODY, undefined, firm, { styleTemplate: original, revising: true })).bytes)
+    const document = strFromU8(parts["word/document.xml"]!)
+    const relationships = strFromU8(parts["word/_rels/document.xml.rels"]!)
+    const shown = Object.fromEntries([...document.matchAll(/<w:(header|footer)Reference w:type="(\w+)" r:id="(\w+)"\/>/g)]
+      .map(([, kind, type, id]) => [`${kind}:${type}`, new RegExp(`Id="${id}"[^>]*Target="([^"]+)"`).exec(relationships)?.[1]]))
+    expect(shown).toEqual({ "header:default": "header1.xml", "header:first": "header2.xml", "header:even": "header3.xml", "footer:default": "footer1.xml" })
+    expect(strFromU8(parts["word/header1.xml"]!)).toContain("Precedent party header")
+    expect(Object.keys(parts).filter(name => /header|footer|media/.test(name)).sort())
+      .toEqual(["word/_rels/footer1.xml.rels", "word/footer1.xml", "word/header1.xml", "word/header2.xml", "word/header3.xml", "word/media/logo.png"])
+    expect(document).toContain('<w:pgNumType w:fmt="lowerRoman"/>')
+    expect(document).toContain("<w:titlePg/>")
+    expect(document).not.toContain("Subject to contract")
+    expect(tight(strFromU8(parts["word/settings.xml"]!))).toContain("<w:evenAndOddHeaders/>")
+    // Drawn on as a template, the same file gives none of its furniture, and the firm's applies.
+    const templated = unzipSync((await renderMarkdownToDocx(BODY, undefined, firm, { styleTemplate: original })).bytes)
+    expect(Object.keys(templated).filter(name => /header|footer|media/.test(name)).sort()).toEqual(["word/footer1.xml", "word/header1.xml"])
+    expect(strFromU8(templated["word/header1.xml"]!)).toContain("Subject to contract")
+  })
+
   test("revising a document doc.haus rendered keeps its headings' spacing", async () => {
     const spacing = (bytes: Uint8Array) => strFromU8(unzipSync(bytes)["word/document.xml"]!).match(/<w:spacing\b/g)?.length ?? 0
     const original = (await renderMarkdownToDocx(BODY)).bytes

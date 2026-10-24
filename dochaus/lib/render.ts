@@ -56,16 +56,20 @@ const ingestUrl = process.env.INGEST_URL ?? `http://127.0.0.1:${process.env.DOC_
 // house spacing directly (`headingSpacing`) unless a template's own styles
 // space them; a template whose own headings carry spacing directly (a document
 // doc.haus rendered in the house style, revised from itself) keeps it.
+// `revising` says `styleTemplate` is the original the document revises: when
+// it seeds the render, the original's own header and footer stay as they are
+// and `furniture` is not added.
 // A numbered document's references to its own clauses become live
 // cross-references (docx-crossrefs.ts) only when its `form` is known and is
 // not advice or a letter, which cite the clauses of the documents they discuss;
 // without a form they stay typed.
-export async function renderMarkdownToDocx(content: string, previous?: Uint8Array, furniture?: PageFurniture, options: { numbering?: false; form?: DocumentForm; styleTemplate?: Uint8Array | false } = {}) {
+export async function renderMarkdownToDocx(content: string, previous?: Uint8Array, furniture?: PageFurniture, options: { numbering?: false; form?: DocumentForm; styleTemplate?: Uint8Array | false; revising?: true } = {}) {
   const text = prepareMarkdownRenderText(splitBlocks(content))
   const dx = await docxodus()
   const house = await Bun.file(baseSeed).bytes()
   const styleTemplate = options.styleTemplate === false ? undefined : options.styleTemplate ?? firmStyleTemplate()
-  const templated = styleTemplate && templateSeed(styleTemplate, house)
+  const own = Boolean(options.revising && options.styleTemplate)
+  const templated = styleTemplate && templateSeed(styleTemplate, house, own ? { furniture: "own" } : {})
   if (styleTemplate && !templated) warnOnce("a style template that is not a Word document with styles of its own; the house style applies")
   const headingSpacing = !templated || headingsSpaced(styleTemplate!)
   const session = dx.openDocxSession(templated || house, {})
@@ -109,7 +113,7 @@ export async function renderMarkdownToDocx(content: string, previous?: Uint8Arra
   // Numbering follows the lint, which reads the literal numbers as Markdown,
   // and the furniture, whose header and footer take the template's style ids too.
   // Cross-references follow the numbering.
-  const furnished = furniture ? applyPageFurniture(composed, furniture) : composed
+  const furnished = furniture && !(own && templated) ? applyPageFurniture(composed, furniture) : composed
   const numbered = options.numbering === false ? furnished : numberDocxClauses(templated ? withTemplateStyleIds(furnished) : furnished)
   const operative = options.form !== undefined && !advisoryForm(options.form)
   const linked = options.numbering === false || !operative ? numbered : await linkCrossReferences(numbered, { form: options.form })
