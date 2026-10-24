@@ -93,6 +93,44 @@ test("a table the draft leaves out is reported missing, and one with other colum
   expect(readDocxTables(result.bytes).map(table => table.rows)).toEqual([particulars, restructured, buyerGrid])
 })
 
+/** For each body table, the paragraph directly above it: its text, its style and whether it keeps with the next block. */
+function leadIns(bytes: Uint8Array) {
+  const document = new DOMParser().parseFromString(strFromU8(unzipSync(bytes)["word/document.xml"]!), "application/xml")
+  const paragraphs = Array.from(document.getElementsByTagNameNS(W, "p"))
+  const text = (node: Element) => Array.from(node.getElementsByTagNameNS(W, "t")).map(row => row.textContent).join("")
+  const style = (node: Element) => node.getElementsByTagNameNS(W, "pStyle")[0]?.getAttributeNS(W, "val") ?? undefined
+  const keeps = (node: Element) => Array.from(node.childNodes).some(child => (child as Element).localName === "pPr" &&
+    Array.from(child.childNodes).some(property => (property as Element).localName === "keepNext"))
+  return {
+    tables: Array.from(document.getElementsByTagNameNS(W, "tbl")).map(table => {
+      let before = table.previousSibling
+      while (before && before.nodeType !== 1) before = before.previousSibling
+      const lead = before as Element
+      return [text(lead), style(lead), keeps(lead)] as const
+    }),
+    kept: paragraphs.filter(node => node.parentNode?.localName === "body" && keeps(node)).map(text),
+  }
+}
+
+test("a carried table's lead-in keeps with it where the original's did, in its own style; other lead-ins, and a table kept as drafted, are left as rendered", async () => {
+  // The original keeps a heading-styled line with each table but the third.
+  const heading = (text: string) => `<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t xml:space="preserve">${text}</w:t></w:r></w:p>`
+  const [particularsGrid, record, alpha, beta] = [[["Item", "Value"], ["Price", "10"]], [["Version", ""], ["Approved by", ""]], [["Signature", ""], ["Name", ""]], [["Signature", ""], ["Date", ""]]]
+  const original = originalWith(heading("Particulars") + tbl(particularsGrid) + heading("Approval record") + tbl(record) + p("Signed for Alpha Limited") + tbl(alpha) +
+    heading("Beta Limited") + tbl(beta) + p("End"))
+  // The drafter writes the first as a heading, the record's and Beta's as plain lines, and Beta's grid with another column.
+  const rendered = (await renderMarkdownToDocx(markdown("### Particulars", pipeTable(particularsGrid), "Approval record", pipeTable(record),
+    "Signed for Alpha Limited", pipeTable(alpha), "Beta Limited", pipeTable([["Signature", "", ""], ["Date", "", ""]]), "End"))).bytes
+  const result = carryOriginalTables(rendered, original)
+  expect(result.carries.map(row => row.outcome)).toEqual(["carried", "carried", "carried", "drafted"])
+  const before = leadIns(rendered)
+  expect(before.kept).toEqual([])
+  // Only the record's plain line is given the original's keep: the heading
+  // keeps by its style, the original did not keep Alpha's line, and Beta's
+  // table stays as drafted.
+  expect(leadIns(result.bytes)).toEqual({ tables: before.tables.map(([text, style], index) => [text, style, index === 1]), kept: ["Approval record"] })
+})
+
 test("a table that refers to its own package's numbering is not carried", async () => {
   const parts = unzipSync(revisionTablesOriginalDocx())
   const xml = strFromU8(parts["word/document.xml"]!).replace("<w:tc><w:tcPr><w:tcW w:w=\"2250\" w:type=\"dxa\"/></w:tcPr><w:p>",
