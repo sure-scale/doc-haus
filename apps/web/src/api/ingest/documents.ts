@@ -197,6 +197,26 @@ export function documentContentUrl(id: string, name: string): string {
   return `${INGEST_URL}/matters/${id}/documents/content?name=${encodeURIComponent(name)}`
 }
 
+export type PdfPassagePage =
+  | { status: "matched"; page: number }
+  | { status: "ambiguous"; pages: number[] }
+  | { status: "unavailable"; reason: "no_text_layer" | "not_found" | "unreadable" }
+
+// The page of a matter PDF where a cited excerpt starts, found by ingest in the
+// PDF's own text layer, so the browser's PDF viewer can open at it (#page=N).
+// The viewer waits for this before loading the PDF, so a slow answer (a held
+// document lock, a busy ingest) is given up and the PDF opens at page 1.
+export async function locatePdfPassage(id: string, name: string, excerpt: string): Promise<PdfPassagePage> {
+  const res = await fetch(`${INGEST_URL}/matters/${id}/documents/pdf-page`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, excerpt }),
+    signal: AbortSignal.timeout(4000),
+  })
+  if (!res.ok) throw new Error(await ingestError(res, `Could not locate the cited passage in ${name}`))
+  return res.json()
+}
+
 // The normalised text ingest extracted from a matter document: the same text the
 // assistant reads and cites. Emails and spreadsheets are viewed as this text.
 export async function fetchDocumentText(id: string, name: string): Promise<string> {

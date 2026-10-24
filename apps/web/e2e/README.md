@@ -160,3 +160,34 @@ skipped. Screenshots/results remain outside public source. Run focused native
 control regressions with `bun test/material-primitives.browser.ts` and
 `bun test/jurisdiction-select.browser.ts`; use `PLAYWRIGHT_CHROMIUM_PATH` if the
 installed Chromium differs from the package's default.
+
+Run the PDF preview acceptance (#275) against a built web preview:
+
+```sh
+PLAYWRIGHT_BASE_URL=http://localhost:5321 \
+DOCHAUS_EVIDENCE_DIR=/tmp/doc-haus-pdf-evidence \
+PLAYWRIGHT_CHROMIUM_EXECUTABLE="<full Chromium binary>" \
+bun apps/web/e2e/pdf-preview.ts
+```
+
+It serves a generated synthetic multi-page PDF through intercepted routes and,
+at 1440 px and 400 px wide, opens it from the Documents list and from a review
+table citation (which adds a status line). For each it asserts that the iframe
+fills the viewer body (within 80 px, 120 px with the status line), that the
+viewer fits the screen, the viewer body does not scroll, and the PDF is
+fetched exactly once. A citation sends one page lookup with its excerpt; for the
+stubbed answer the iframe must end in `#page=5` and the line open with page 5,
+or (ambiguous and scanned at 400 px, not found and a lookup that never answers
+at 1440 px) stay at page 1 and open with why; a hung lookup must give way to the
+PDF within 6 s. The line then names the section and quotes the excerpt without
+its Markdown. The assertions do not depend on the PDF
+plugin, so they also pass in the headless shell; only the screenshots need a
+full Chromium (the shell renders a blank frame), and only they show that the
+browser's viewer honours `#page=`. Set `DOCHAUS_MEASURE_ONLY=1` to print the
+heights without asserting them, `DOCHAUS_ONLY=<label>` to run one scenario
+(`desktop`, `narrow`, `citation-desktop`, `citation-narrow`,
+`citation-ambiguous-narrow`, `citation-unavailable-desktop`,
+`citation-scanned-narrow` or `citation-hung-desktop`), and
+`PDF_FIXTURE=<file>` to use another synthetic PDF. From `apps/web`,
+`bun test/pdf-citation.browser.ts` mounts the viewer alone and checks that a
+citation changed while the PDF stays open never shows the previous page.

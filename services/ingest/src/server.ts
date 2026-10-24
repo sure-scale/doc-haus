@@ -6,6 +6,8 @@ import { documentCopyRoutes } from "./document-copy"
 import { templateDraftRoutes } from "./template-drafts"
 import { registeredCombinedParts } from "./combined-output"
 import { documentLabelRoutes } from "./document-labels"
+import { pdfPassageRoutes } from "./pdf-page"
+import { readDocumentTarget, registeredDocumentName } from "./registered-document"
 import { answerDraftRoutes } from "./answer-drafts"
 import { readEngineSettings, patchEngineConfig, engineConfigFile } from "./engine-config"
 import { setupRoutes } from "./setup"
@@ -140,6 +142,8 @@ app.route("/", updateRoutes(new RepoUpdater(updateRoot, updateRuntime), async ()
 }, () => managedUpdateOwner(updateRoot, updateRuntime)))
 
 app.route("/", documentLabelRoutes(matterDir))
+// The page a PDF citation's excerpt starts on, for the web viewer's #page=N.
+app.route("/", pdfPassageRoutes(matterDir))
 app.route("/", answerDraftRoutes(matterDir))
 
 app.route("/", authReuseRoutes())
@@ -1552,19 +1556,6 @@ function combinedBlocked(directory: string, name: string): CombinedSkipReason | 
   if (pending.length) return "pending_combined_proposals"
   // The lawyer's accepted Word changes into the combined file itself are never written over.
   if (readWorkingDocx(directory, file)) return "combined_changed"
-}
-
-function registeredDocumentName(requested: string) {
-  return matterDocumentName(requested) ?? deliverableDocumentName(requested)
-}
-
-function readDocumentTarget(directory: string, name: string) {
-  try {
-    return resolveMatterDocumentTarget(directory, name)
-  } catch (error) {
-    if (error instanceof MatterDocumentIdentityError) return
-    throw error
-  }
 }
 
 // Every install gets the repo-shipped starter playbooks, so seed them on boot.
