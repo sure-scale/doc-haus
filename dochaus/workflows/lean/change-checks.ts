@@ -2,7 +2,7 @@ import { amendmentSchema, amendmentParagraphs, amendmentText, normalizeParagraph
 import { normalize } from "../../lib/quote-verify"
 import { markerIssues } from "./change-markers"
 import { draftStatusAmendmentIssues } from "./draft-status"
-import { record, withoutListLabel, type ChangeList, type ParagraphRow, type StageCheck } from "./checks"
+import { record, retypedLabelIssues, withoutListLabel, type ChangeList, type ParagraphRow, type StageCheck } from "./checks"
 import { paragraphShowsOpenItem } from "./gate"
 import { approvedResearch } from "./research"
 import { REQUEST_SOURCE, excerpt, matterSourceIDs, openItem, proseQuoteFound, quoteFound, quoteMissIssue, sourceQuotes } from "./quotes"
@@ -141,6 +141,8 @@ function amendmentIssues(item: unknown, index: number, rows: Map<string, Paragra
     ...(item.operation !== undefined && !["replace", "delete", "split"].includes(String(item.operation)) ? [`${at}.operation must be replace, delete or split.`] : []),
     ...(/[\r\n]/.test(updated) ? [`${at}.updated must be one paragraph without line breaks; use operation split with an array of resulting paragraphs for a deliberate split.`] : []),
     ...(row && updated && normalizeParagraphText(withoutListLabel(updated, row.label)) === normalizeParagraphText(row.text) ? [`${at}.updated is identical to the current paragraph; drop it or change the text.${row.label ? ` Its number ${row.label} is Word list numbering, which renumbers itself.` : ""}`] : []),
+    // Only a split's first part keeps the paragraph's number; later parts are new paragraphs.
+    ...(row && (updated || split) ? retypedLabelIssues(split ? `${at}.updated[0]` : `${at}.updated`, split ? String((item.updated as string[])[0]).trim() : updated, row.label) : []),
     ...(typeof item.reason !== "string" || !item.reason.trim() ? [`${at}.reason must say why the paragraph changes.`] : []),
     ...(!sourceList ? [`${at}.sources must be a list of {source_id, quote}.`] : []),
     ...(sourceList ?? []).flatMap((source, sourceIndex) => {

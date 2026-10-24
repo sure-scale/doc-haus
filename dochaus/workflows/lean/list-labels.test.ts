@@ -1,8 +1,9 @@
 import { afterEach, expect, test } from "bun:test"
 import { paragraphSha256 } from "../../lib/drafting-amendment"
 import { advisePrompt } from "./advise"
+import { checkChanges } from "./change-checks"
 import { retypedLabelIssues, withoutListLabel, type ParagraphRow } from "./checks"
-import { openItem } from "./quotes"
+import { REQUEST_SOURCE, openItem } from "./quotes"
 import { changesRepairSections } from "./repairs"
 import { replaceStageOpenItems, writeLeanText, type Question } from "./state"
 import { cleanupMatters, matter } from "./test-support"
@@ -55,4 +56,18 @@ test("an adviser is shown the affected paragraph with its list number, as the dr
   const rows = numbered(directory)
   const question: Question = { id: "q1", stage: "changes", question: "How long may the Customer take to pay?", context: "", pid: rows[1]!.pid, document: "d1", status: "open" }
   expect(advisePrompt(directory, question)).toContain("<affected_paragraph>\n2.1 The Customer shall pay within thirty days.")
+})
+
+// The change stage retries a replacement that types a different number in
+// place of the one Word prints, rather than shipping both numbers side by side.
+test("a change that retypes another number before a Word-numbered paragraph is retried", () => {
+  const directory = matter()
+  const rows = numbered(directory)
+  const amend = (updated: string | string[], operation?: string) =>
+    JSON.stringify({ amendments: [{ pid: rows[1]!.pid, ...(operation ? { operation } : {}), updated, reason: "Review finding.", sources: [{ source_id: REQUEST_SOURCE, quote: "Draft a short supply note" }] }], questions: [] })
+  expect(checkChanges(directory, amend("3.1 The Customer shall pay within ten days."), rows, { document: "d1" }).issues.join(" ")).toContain('begins with "3.1"')
+  expect(checkChanges(directory, amend(["3.1 The Customer shall pay within ten days.", "Late sums bear interest."], "split"), rows, { document: "d1" }).issues.join(" ")).toContain('begins with "3.1"')
+  const own = checkChanges(directory, amend("2.1 The Customer shall pay within ten days."), rows, { document: "d1" })
+  expect(own.issues).toEqual([])
+  expect(own.changes?.amendments[0]?.updated).toBe("The Customer shall pay within ten days.")
 })
