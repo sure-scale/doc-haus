@@ -270,6 +270,25 @@ test("a changed paragraph keeps a live reference the change did not rewrite wher
   expect(after.find(field => field.from === "2.2 ")?.target).toStartWith("3.1 Late payment")
 }, 60_000)
 
+test("a clause citing itself keeps the number typed, when drafted and when a change writes it", async () => {
+  const own = "Invoices are payable within thirty days under this clause 3.1."
+  const consistency = (items: OpenItem[]) => items.filter(item => item.kind === "consistency").map(item => item.detail)
+  // Drafted: the body's other references are linked, this one is not.
+  const draft = await drafted(AGREEMENT.replace("3.1 Invoices are payable within thirty days.", `3.1 ${own}`))
+  const kept = draft.row("Invoices are payable")
+  const unchanged = await apply(draft.directory, [{ pid: kept.pid, existing_sha256: "0".repeat(64), updated: own }])
+  expect(unchanged.rows.map(shownText)).toContain(`3.1 ${own}`)
+  expect(unchanged.fields.filter(field => field.from === "3.1 ")).toEqual([])
+  expect(unchanged.fields.length).toBeGreaterThan(5)
+  // Written by a change, it stays typed too, and it is no inconsistency.
+  const { directory, row } = await drafted()
+  const written = row("Invoices are payable")
+  const { rows, openItems, fields: after } = await apply(directory, [{ pid: written.pid, existing_sha256: written.sha256, updated: own }])
+  expect(rows.map(shownText)).toContain(`3.1 ${own}`)
+  expect(after.filter(field => field.from === "3.1 ")).toEqual([])
+  expect(consistency(openItems)).toEqual(consistency(unchanged.openItems))
+}, 60_000)
+
 test("a clause split in parts stays the target of its references, its bookmark on its first part only", async () => {
   const { directory, row } = await drafted()
   const split = row("Invoices are payable")

@@ -18,7 +18,9 @@ import { shownText } from "./list-label"
 // trailing period, which is what `REF … \r` shows for the clause list's
 // labels; an attachment's number is typed in its heading, so the field shows
 // the bookmarked number itself. A document whose clause numbers are typed has
-// no clause list, and so no fields.
+// no clause list, and so no fields. A reference to the paragraph it is in
+// ("this clause 5.3" in clause 5.3) stays text: a REF field inside its own
+// bookmark is an error in Word.
 //
 // Each pass also refreshes the fields already in the body: a cached number
 // follows its target. A field whose bookmark is gone (its clause deleted, or
@@ -137,7 +139,7 @@ export async function linkCrossReferences(bytes: Uint8Array, options: CrossRefer
       const taken = new Set(marks.keys())
       let next = nextBookmarkId(opened.documents)
       for (const ref of resolvedReferences(title, paras, options.titles, options.form)) {
-        if (options.relink && !relinked.has(ref.at)) continue
+        if ((options.relink && !relinked.has(ref.at)) || ref.target === ref.at) continue
         const source = rows[ref.at]!
         const target = rows[ref.target]!
         const start = ref.start - (source.clause ? source.label!.length + 1 : 0)
