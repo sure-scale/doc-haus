@@ -7,7 +7,7 @@
 // test runner throws ("Cannot use describe outside of the test runner").
 import { describe, expect, spyOn, test } from "bun:test"
 import { Database } from "bun:sqlite"
-import { mkdtempSync } from "node:fs"
+import { mkdirSync, mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
@@ -268,6 +268,18 @@ describe("redact tool", () => {
     expect(listRedactions(dir)).toEqual([])
     expect(pendingRedlinesForDoc(dir, file)).toHaveLength(1)
   }, 30_000)
+
+  test("doc.haus's own records are not a document it redacts", async () => {
+    const { dir } = await matterWith(buildFixture())
+    const kept = path.join(dir, ".dochaus", "revisions", "document", "kept.docx")
+    mkdirSync(path.dirname(kept), { recursive: true })
+    const bytes = buildFixture()
+    await Bun.write(kept, bytes)
+    for (const document of [kept, ".dochaus/revisions/document/kept.docx", ".DOCHAUS/revisions/document/kept.docx"])
+      expect(await redact.execute({ document, text: SSN, reason: "SSN — PII", author: "A. Lawyer", label: undefined }, ctxFor(dir)))
+        .toBe(`Document not found in this matter: ${document}`)
+    expect(await Bun.file(kept).bytes()).toEqual(bytes)
+  })
 })
 
 // A hand-built synthetic package with one fictional surname planted in every

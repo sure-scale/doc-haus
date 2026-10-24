@@ -44,7 +44,8 @@ export default tool({
   },
   async execute(args, ctx) {
     const file = path.isAbsolute(args.document) ? args.document : path.join(ctx.directory, args.document)
-    if (!existsSync(file)) return `Document not found in this matter: ${args.document}`
+    // doc.haus's own records (kept versions, the registry) are not matter documents.
+    if (insideDochausRecords(ctx.directory, file) || !existsSync(file)) return `Document not found in this matter: ${args.document}`
     const label = args.label ?? "[REDACTED]"
     if (label.includes(args.text)) return "The redaction label must not contain the text being redacted."
 
@@ -228,4 +229,8 @@ function attempt<T>(write: () => T): T | Error {
   } catch (error) {
     return error instanceof Error ? error : new Error(String(error))
   }
+}
+
+function insideDochausRecords(directory: string, file: string) {
+  return path.relative(path.resolve(directory), path.resolve(file)).split(path.sep)[0]?.toLowerCase() === ".dochaus"
 }

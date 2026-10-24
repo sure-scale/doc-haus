@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { mkdtempSync } from "node:fs"
+import { mkdirSync, mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { pendingRedlinesForDoc } from "../lib/redlines"
@@ -98,5 +98,20 @@ describe("redline review comments", () => {
 
     expect(result).toBe("agreement.docx contains tracked changes. Accept or reject them in Word before proposing changes to it.")
     expect(pendingRedlinesForDoc(fixture.directory, fixture.document)).toEqual([])
+  })
+
+  test("doc.haus's own records are not a document to propose changes to", async () => {
+    const fixture = await documentFixture()
+    const kept = path.join(fixture.directory, ".dochaus", "revisions", "document", "kept.docx")
+    mkdirSync(path.dirname(kept), { recursive: true })
+    await Bun.write(kept, fixtureBytes)
+    const comment = "Aligns the defined term with the terminology used throughout the agreement."
+    for (const document of [kept, ".dochaus/revisions/document/kept.docx"]) {
+      expect(await trackedChanges.execute({ document, find: "Confidential Information", replace: "Protected Information", comment }, ctxFor(fixture.directory)))
+        .toBe(`Document not found in this matter: ${document}`)
+      expect(await redline.execute({ document, clause: "Entire Agreement", replacement: "Entire Agreement.", comment }, ctxFor(fixture.directory)))
+        .toBe(`Document not found in this matter: ${document}`)
+    }
+    expect(pendingRedlinesForDoc(fixture.directory, kept)).toEqual([])
   })
 })
