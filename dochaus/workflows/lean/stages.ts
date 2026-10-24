@@ -16,7 +16,8 @@ import { normalizeLegend, normalizePreferences, readFirmDraftingPreferences } fr
 import { pageFurniture, type FurnitureKind, type RequestedFurniture } from "../../lib/page-furniture"
 import { matterClient } from "../../lib/matter-client"
 import { readFirmPreferences } from "../../lib/preferences"
-import { existsSync, readFileSync } from "node:fs"
+import { existsSync, readFileSync, statSync } from "node:fs"
+import path from "node:path"
 import { ensureParagraphRows, paragraphSha256 } from "../../lib/drafting-amendment"
 import { renderMarkdownToDocx } from "../../lib/render"
 import { numberDocxClauses } from "../../lib/docx-numbering"
@@ -359,8 +360,8 @@ export async function acceptStageReply(directory: string, step: StepID, reply: s
     const furniture = renderedFurniture(directory, planned?.form ?? "other", requestedFurniture(planned?.furniture))
     // Clause numbering follows presentation, which matches and reshapes the
     // headings by their literal text.
-    const rendered = await renderMarkdownToDocx(options.presentation?.source ?? reply, undefined, furniture, { numbering: false })
-      .then(result => options.presentation ? presentDraft(result.bytes, options.presentation.parts, options.presentation.title !== false) : { bytes: result.bytes, attribution: undefined })
+    const rendered = await renderMarkdownToDocx(options.presentation?.source ?? reply, undefined, furniture, { numbering: false, styleTemplate: plannedStyleTemplate(directory, planned) })
+      .then(result => options.presentation ? presentDraft(result.bytes, options.presentation.parts, options.presentation.title !== false, !result.templated) : { bytes: result.bytes, attribution: undefined })
       .then(result => ({ ...result, bytes: numberDocxClauses(result.bytes) }))
       .then(result => result, (error: unknown) => ({ error }))
     if ("error" in rendered)
@@ -410,6 +411,17 @@ export async function acceptStageReply(directory: string, step: StepID, reply: s
  * every file and render in the run reads the same date. */
 export function renderedFurniture(directory: string, kind: FurnitureKind, requested?: RequestedFurniture) {
   return pageFurniture(kind, normalizePreferences(readFirmPreferences()), readLeanState(directory)?.created_at, requested)
+}
+
+/** The Word file a planned document is drafted from (its template, or the
+ * original it revises), whose styles, numbering and page set-up its body takes.
+ * Without one the firm's style template or the house style applies. */
+function plannedStyleTemplate(directory: string, planned: PlannedDocument | undefined) {
+  const source = templateSource(planned)
+  if (!source?.toLowerCase().endsWith(".docx")) return
+  const file = path.resolve(directory, source)
+  if (!file.startsWith(path.resolve(directory) + path.sep) || !existsSync(file) || !statSync(file).isFile()) return
+  return readFileSync(file)
 }
 
 /** A planned document's furniture lines as the renderer takes them; a lawyer's

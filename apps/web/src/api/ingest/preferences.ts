@@ -31,6 +31,10 @@ export type DraftingPreferences = {
   agreementLegend: string
   adviceLegend: string
   notesMarking: boolean
+  // The library template whose styles, clause numbering, fonts and page set-up
+  // a document drafted without a template of its own takes; "" is the house
+  // style. Read when a document renders, never sent to the model.
+  styleTemplate: string
   // Whether Auto offers a quick draft in chat for a short drafting request
   // ("ask"), starts one without asking ("auto") or always starts the full run
   // ("off"). Never sent to the model.

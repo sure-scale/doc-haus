@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react"
+import { listTemplates } from "../../api/ingest/library"
 import { getPreferences, POSTURES, savePreferences, type DraftingPreferences } from "../../api/ingest/preferences"
 import { FieldRow, SegRow } from "./controls"
 import { CheckRow, LegendField, PageLayoutPreview } from "./PageLayout"
@@ -17,6 +18,20 @@ export default function DraftingTab({ onSaved }: { onSaved: (text: string) => vo
   const [error, setError] = useState("")
   const [reload, setReload] = useState(0)
   const mounted = useRef(false)
+  // Library templates a firm can take its document style from; none listed
+  // when the library cannot be read.
+  const [templates, setTemplates] = useState<string[] | null>(null)
+  useEffect(() => {
+    let active = true
+    listTemplates().then((library) => {
+      if (active) setTemplates(library.templates.map((template) => template.name))
+    }).catch(() => {
+      if (active) setTemplates([])
+    })
+    return () => {
+      active = false
+    }
+  }, [])
   useEffect(() => {
     mounted.current = true
     let active = true
@@ -145,14 +160,32 @@ export default function DraftingTab({ onSaved }: { onSaved: (text: string) => vo
       <section className="settings-section">
         <h3>Page layout</h3>
         <p className="settings-hint muted">
-          Page numbers, the draft line and legends doc.haus adds to the documents it drafts. Changes apply to
-          documents rendered after you save; uploaded, counterparty and template files keep their own.
+          The document style, page numbers, draft line and legends of the documents doc.haus drafts. Changes apply
+          to documents rendered after you save; uploaded, counterparty and template files keep their own.
         </p>
         <p className="settings-hint muted">
           Legends have legal effect, so they are your firm's choice: none is added unless you choose one, and each
           appears only on the documents it names.
         </p>
         <fieldset className="settings-drafting-fields" disabled={saving} aria-label="Page layout">
+          <FieldRow
+            id="drafting-style-template"
+            label="Document style"
+            hint="Fonts, heading and clause numbering styles and page size for documents drafted without a template of their own. A document drafted from a template or precedent takes that file's styles. Headers and footers follow the settings below."
+          >
+            <select
+              id="drafting-style-template"
+              aria-describedby="drafting-style-template-hint"
+              value={prefs.styleTemplate}
+              onChange={(e) => set({ styleTemplate: e.target.value })}
+            >
+              <option value="">doc.haus house style</option>
+              {templates?.map((name) => <option key={name} value={name}>{name}</option>)}
+              {prefs.styleTemplate && !templates?.includes(prefs.styleTemplate) && (
+                <option value={prefs.styleTemplate}>{prefs.styleTemplate}{templates ? " (not in the template library)" : ""}</option>
+              )}
+            </select>
+          </FieldRow>
           <SegRow
             label="Page numbers"
             hint="In the footer of each page."

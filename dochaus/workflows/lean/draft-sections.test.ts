@@ -3,8 +3,9 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { strFromU8, unzipSync } from "fflate"
+import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { paragraphSha256 } from "../../lib/drafting-amendment"
+import { renderMarkdownToDocx } from "../../lib/render"
 import { readParagraphs, shownText } from "./checks"
 import { assembleDraft, checkSection, runDraftStage, sectionPrompt } from "./draft-sections"
 import { readLeanEvents } from "./events"
@@ -601,6 +602,20 @@ describe("a planned document's form", () => {
       if (root === undefined) delete process.env.WORKSPACE_ROOT
       else process.env.WORKSPACE_ROOT = root
     }
+  }, 60_000)
+
+  test("a document drafted from a Word template takes its clause numbering and page set-up", async () => {
+    const { directory } = matter()
+    // An A4 precedent whose clauses are numbered by its own Word list.
+    const precedent = unzipSync((await renderMarkdownToDocx("# Precedent terms\n\n## 1. Term\n\n1.1 The term is one year.")).bytes)
+    const a4 = strFromU8(precedent["word/document.xml"]!).replace(/<w:pgSz [^>]*\/>/, '<w:pgSz w:w="11906" w:h="16838"/>')
+    writeFileSync(path.join(directory, "precedent.docx"), zipSync({ ...precedent, "word/document.xml": strToU8(a4) }))
+    writeLeanPlan(directory, [{ title: "Supply terms", purpose: "", parts: [{ heading: "Terms", scope: "" }], form: "agreement", template: "precedent.docx" }])
+    expect((await acceptStageReply(directory, "d1.draft", "# Supply terms\n\n## Terms\n\n### 1. Definitions\n\n1.1 Terms have their defined meanings.\n\n### 2. Supply\n\n2.1 The Supplier shall deliver the Goods.\n")).issues).toEqual([])
+    const parts = unzipSync(new Uint8Array(readFileSync(leanFile(directory, "d1/body.docx"))))
+    expect(strFromU8(parts["word/document.xml"]!)).toContain('<w:pgSz w:w="11906" w:h="16838"/>')
+    expect(strFromU8(parts["word/numbering.xml"]!)).toBe(strFromU8(precedent["word/numbering.xml"]!))
+    expect(readParagraphs(directory, "d1").map(shownText)).toEqual(["Supply terms", "Terms", "1. Definitions", "1.1 Terms have their defined meanings.", "2. Supply", "2.1 The Supplier shall deliver the Goods."])
   }, 60_000)
 
   test("a saved plan reads with or without a form; an edited form must be one of the forms, and it keys the draft", () => {

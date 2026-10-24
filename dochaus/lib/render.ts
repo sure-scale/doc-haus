@@ -12,6 +12,7 @@ import { prepareMarkdownRenderText } from "./markdown-render-text"
 import { withGeneratedDocxAttribution } from "./docx-attribution"
 import { applyPageFurniture, type PageFurniture } from "./page-furniture"
 import { numberDocxClauses } from "./docx-numbering"
+import { templateSeed } from "./template-seed"
 
 // Shared markdown -> .docx -> deliverable render core for doc.haus drafting.
 // draft-document (from-scratch create) and the lean drafting stages compose a
@@ -22,7 +23,10 @@ import { numberDocxClauses } from "./docx-numbering"
 // Docxodus can edit a .docx but not create one from nothing, so every render
 // starts from the seed bytes that carry the house style set (Title, Heading 1-3)
 // — that is what makes markdown headings land as real Word styles. Starting from
-// raw bytes instead would lose those styles.
+// raw bytes instead would lose those styles. A document drafted from a template
+// or precedent .docx, or for a firm that chose a library template as its style
+// (Settings → Drafting), starts from that file's styles, numbering, fonts and
+// page set-up instead (template-seed.ts).
 //
 // The finished bytes go to the ingest service's deliverable route, which writes
 // and registers the .docx for the web viewer without treating generated output as
@@ -40,11 +44,17 @@ const ingestUrl = process.env.INGEST_URL ?? `http://127.0.0.1:${process.env.DOC_
 // `furniture` (page-furniture.ts) adds the header and footer the document's
 // form carries. Literal clause numbers become Word list numbering
 // (docx-numbering.ts) unless `numbering` is false, for a caller that numbers
-// after reshaping the headings itself.
-export async function renderMarkdownToDocx(content: string, previous?: Uint8Array, furniture?: PageFurniture, options: { numbering?: false } = {}) {
+// after reshaping the headings itself. `styleTemplate` is the .docx whose
+// styles the document takes; without one the firm's style template applies,
+// and without that, or when the file is not a Word document, the house style;
+// `templated` says whether a template's styles were used.
+export async function renderMarkdownToDocx(content: string, previous?: Uint8Array, furniture?: PageFurniture, options: { numbering?: false; styleTemplate?: Uint8Array } = {}) {
   const text = prepareMarkdownRenderText(splitBlocks(content))
   const dx = await docxodus()
-  const session = dx.openDocxSession(await Bun.file(baseSeed).bytes(), {})
+  const house = await Bun.file(baseSeed).bytes()
+  const styleTemplate = options.styleTemplate ?? firmStyleTemplate()
+  const templated = styleTemplate && templateSeed(styleTemplate, house)
+  const session = dx.openDocxSession(templated || house, {})
 
   // The seed's single empty paragraph is the insertion anchor; the whole markdown
   // body goes in as one multi-block insert, then the seed is dropped.
@@ -59,7 +69,8 @@ export async function renderMarkdownToDocx(content: string, previous?: Uint8Arra
   } finally {
     session.close()
   }
-  const composed = text.restore(polishMarkdownArtifactsInDocx(saved))
+  // The house headings carry their spacing directly; a template's keep its own.
+  const composed = text.restore(polishMarkdownArtifactsInDocx(saved, { headingSpacing: !templated }))
   const accepted = dx.openDocxSession(composed, {})
   const projection = accepted.project()
   accepted.close()
@@ -85,7 +96,17 @@ export async function renderMarkdownToDocx(content: string, previous?: Uint8Arra
   const numbered = options.numbering === false ? composed : numberDocxClauses(composed)
   const furnished = furniture ? applyPageFurniture(numbered, furniture) : numbered
   const bytes = withGeneratedDocxAttribution(withParagraphPointers(highlightOpenItemsInDocx(furnished), previous))
-  return { bytes, lint }
+  return { bytes, lint, templated: Boolean(templated) }
+}
+
+// The firm's style template: a file in the template library, read when a
+// document renders. A template since removed from the library is no style.
+function firmStyleTemplate() {
+  const name = normalizePreferences(readFirmPreferences()).styleTemplate
+  const root = process.env.WORKSPACE_ROOT
+  if (!name || !root) return
+  const file = path.join(root, ".templates", path.basename(name))
+  return existsSync(file) ? readFileSync(file) : undefined
 }
 
 export function lintRenderedDraftMarkdown(markdown: string) {
