@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite"
 import { createHash, randomUUID } from "node:crypto"
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeSync } from "node:fs"
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeSync } from "node:fs"
 import path from "node:path"
 import { strFromU8, unzipSync } from "fflate"
 import { canonicalArtifactIdentity } from "../../../dochaus/capabilities/artifacts/mutation-lock"
@@ -19,8 +19,14 @@ import { canonicalArtifactIdentity } from "../../../dochaus/capabilities/artifac
 // when no version holds them yet (a document from before this store, or a file
 // changed outside doc.haus): they become a version of origin "unknown" first,
 // so no write loses bytes. History is never rewritten: restore copies an old
-// version forward as a new one, and deleting a document through doc.haus only
+// version forward as a new one, and deleting a document through doc.haus
 // detaches its history, so a later file of that name starts a new document.
+//
+// Two writes remove kept bytes, as they did before this store: a redaction
+// deletes the stored bytes of the document's earlier versions once it commits
+// (their rows stay, marked removed by redaction), and deleting a document
+// deletes all of its stored bytes. A removed version is listed but cannot be
+// read, compared or restored.
 
 export const VERSION_ORIGINS = [
   "upload", "replace", "generated", "revision", "agent-edit", "redaction",
@@ -31,6 +37,8 @@ export type VersionOrigin = (typeof VERSION_ORIGINS)[number]
 /** What the writer knows about a write. */
 export type VersionProvenance = { origin: VersionOrigin; actor?: string; run?: string | null; label?: string | null }
 export type VersionEventKind = "accept" | "reject" | "restore"
+/** Why a kept version's bytes were deleted: a later redaction of its document. */
+export type VersionRemoval = "redaction"
 export type VersionEventInput = { kind: VersionEventKind; actor?: string; detail?: Record<string, unknown> }
 /** A writer's version capture: its provenance, the matter document the new
  * version was derived from (a conversion's PDF, a copy's original) and the
@@ -51,6 +59,7 @@ export type VersionRow = {
   run: string | null
   label: string | null
   created_at: number
+  removed: VersionRemoval | null
 }
 export type VersionedDocumentRow = {
   id: string
@@ -106,9 +115,13 @@ export function createVersionTables(db: Database) {
       run TEXT,
       label TEXT,
       created_at INTEGER NOT NULL,
+      removed TEXT,
       UNIQUE (document_id, number)
     )
   `)
+  // removed: why the version's stored bytes were deleted (VersionRemoval).
+  if (!(db.query("PRAGMA table_info(document_versions)").all() as { name: string }[]).some((column) => column.name === "removed"))
+    db.run("ALTER TABLE document_versions ADD COLUMN removed TEXT")
   db.run("CREATE INDEX IF NOT EXISTS document_versions_sha ON document_versions(sha256)")
   // version_id: the version an accept or restore made, or the version a reject
   // left current. detail: JSON (redline ids, the restored version).
@@ -140,13 +153,14 @@ function versionById(db: Database, id: string | null) {
   return id ? db.query("SELECT * FROM document_versions WHERE id = ?").get(id) as VersionRow | null : null
 }
 
-function documentOf(db: Database, matterDir: string, name: string, now: number) {
+// `planned`: the id a new document takes, under which its bytes were staged.
+function documentOf(db: Database, matterDir: string, name: string, now: number, planned?: string) {
   const existing = liveDocument(db, matterDir, name)
   if (existing) {
     if (existing.name !== name) db.run("UPDATE versioned_documents SET name = ? WHERE id = ?", [name, existing.id])
     return { ...existing, name }
   }
-  const row: VersionedDocumentRow = { id: randomUUID(), name, name_key: nameKey(matterDir, name), current_version: null, created_at: now, removed_at: null }
+  const row: VersionedDocumentRow = { id: planned ?? randomUUID(), name, name_key: nameKey(matterDir, name), current_version: null, created_at: now, removed_at: null }
   db.run("INSERT INTO versioned_documents (id, name, name_key, current_version, created_at, removed_at) VALUES (?, ?, ?, NULL, ?, NULL)",
     [row.id, row.name, row.name_key, row.created_at])
   return row
@@ -157,13 +171,19 @@ export function versionFile(matterDir: string, version: Pick<VersionRow, "docume
 }
 
 // Written once under its content hash: complete bytes go to a private file
-// first (wx), are synced, and are then renamed into place, so the store never
-// holds a partial version. Bytes already stored are not written again.
+// first (wx), are synced, and are then renamed into place, and the directories
+// holding the new entries are synced, so the store never holds a partial
+// version and a committed row's bytes survive a crash. Bytes already stored are
+// not written again; missing or damaged ones are written afresh.
 function storeVersionBytes(matterDir: string, documentId: string, sha256: string, ext: string, bytes: Uint8Array) {
   const file = versionFile(matterDir, { document_id: documentId, sha256, ext })
   if (existsSync(file) && sha256Hex(readFileSync(file)) === sha256) return
-  mkdirSync(path.dirname(file), { recursive: true })
-  const temporary = path.join(path.dirname(file), `.${sha256}.${process.pid}.${randomUUID()}.tmp`)
+  const directory = path.dirname(file)
+  if (!existsSync(directory)) {
+    mkdirSync(directory, { recursive: true })
+    syncDirectory(path.dirname(directory))
+  }
+  const temporary = path.join(directory, `.${sha256}.${process.pid}.${randomUUID()}.tmp`)
   try {
     const descriptor = openSync(temporary, "wx")
     try {
@@ -173,9 +193,40 @@ function storeVersionBytes(matterDir: string, documentId: string, sha256: string
       closeSync(descriptor)
     }
     renameSync(temporary, file)
+    syncDirectory(directory)
   } finally {
     rmSync(temporary, { force: true })
   }
+}
+
+function syncDirectory(directory: string) {
+  const descriptor = openSync(directory, "r")
+  try {
+    fsyncSync(descriptor)
+  } finally {
+    closeSync(descriptor)
+  }
+}
+
+/** The bytes a write of `name` will capture, stored before the writer's
+ * registry transaction opens (under its artifact lock), so no byte write or
+ * sync holds legal.db's write lock: the new bytes and the working file's, which
+ * the write keeps as a version when none holds them (a redaction keeps none).
+ * Bytes of a write that then fails stay unreferenced in the store. */
+export type VersionStage = { document_id: string; stored: ReadonlySet<string> }
+export function stageVersionBytes(matterDir: string, name: string, bytes: Uint8Array, origin: VersionOrigin): VersionStage {
+  const live = readStore(matterDir, (db) => liveDocument(db, matterDir, name), null)
+  const documentId = live?.id ?? randomUUID()
+  const ext = path.extname(name).toLowerCase()
+  const file = path.join(matterDir, path.basename(name))
+  const stored = new Set<string>()
+  for (const entry of [bytes, ...(origin !== "redaction" && existsSync(file) ? [readFileSync(file)] : [])]) {
+    const sha256 = sha256Hex(entry)
+    if (stored.has(sha256)) continue
+    storeVersionBytes(matterDir, documentId, sha256, ext, entry)
+    stored.add(sha256)
+  }
+  return { document_id: documentId, stored }
 }
 
 function insertVersion(
@@ -188,14 +239,15 @@ function insertVersion(
   parent: string | null,
   derivedFrom: string | null,
   now: number,
+  stage?: VersionStage,
 ): VersionRow {
   const ext = path.extname(document.name).toLowerCase()
-  storeVersionBytes(matterDir, document.id, sha256, ext, bytes)
+  if (!staged(stage, document.id, sha256)) storeVersionBytes(matterDir, document.id, sha256, ext, bytes)
   const number = ((db.query("SELECT MAX(number) AS n FROM document_versions WHERE document_id = ?").get(document.id) as { n: number | null }).n ?? 0) + 1
   const row: VersionRow = {
     id: randomUUID(), document_id: document.id, number, sha256, ext, bytes: bytes.byteLength, parent, derived_from: derivedFrom,
     origin: provenance.origin, actor: oneLine(provenance.actor) || UNKNOWN_ACTOR, run: oneLine(provenance.run) || null,
-    label: oneLine(provenance.label) || null, created_at: now,
+    label: oneLine(provenance.label) || null, created_at: now, removed: null,
   }
   db.run(
     "INSERT INTO document_versions (id, document_id, number, sha256, ext, bytes, parent, derived_from, origin, actor, run, label, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -204,6 +256,10 @@ function insertVersion(
   db.run("UPDATE versioned_documents SET current_version = ? WHERE id = ?", [row.id, document.id])
   document.current_version = row.id
   return row
+}
+
+function staged(stage: VersionStage | undefined, documentId: string, sha256: string) {
+  return stage?.document_id === documentId && stage.stored.has(sha256)
 }
 
 /** The current version of the matter document `name`, adding the working
@@ -224,28 +280,37 @@ function currentOrFoundVersion(db: Database, matterDir: string, name: string, no
 /** Records the bytes a writer has just put in the working file of `name` as
  * that document's next version, in the writer's open registry transaction.
  * `prior`: the bytes the write replaced (its backup), kept as a version first
- * when no version holds them. A write of the current version's bytes adds none. */
+ * when no version holds them. A write of the current version's bytes adds none
+ * (and stores them again if the kept copy is missing or damaged). `stage`: the
+ * bytes stageVersionBytes stored for this write. A redaction keeps no prior
+ * bytes and marks every earlier version removed; purgeVersionBytes deletes
+ * their bytes once the write commits. */
 export function captureVersion(
   db: Database,
   matterDir: string,
-  input: { name: string; bytes: Uint8Array; prior?: Uint8Array | null; version: VersionWrite },
+  input: { name: string; bytes: Uint8Array; prior?: Uint8Array | null; version: VersionWrite; stage?: VersionStage },
 ): CapturedVersion {
   const now = Date.now()
-  const document = documentOf(db, matterDir, input.name, now)
+  const { stage } = input
+  const document = documentOf(db, matterDir, input.name, now, stage?.document_id)
   const sha256 = sha256Hex(input.bytes)
+  const redaction = input.version.origin === "redaction"
   let current = versionById(db, document.current_version)
-  if (input.prior) {
+  if (input.prior && !redaction) {
     const prior = sha256Hex(input.prior)
-    // A writer that saved the file in place before calling (as the redaction
-    // tool does) replaced nothing unrecorded: its prior bytes are its own.
+    // A writer that saved the file in place before calling replaced nothing
+    // unrecorded: its prior bytes are its own.
     if (prior !== current?.sha256 && prior !== sha256)
-      current = insertVersion(db, matterDir, document, input.prior, prior, { origin: "unknown" }, current?.id ?? null, null, now)
+      current = insertVersion(db, matterDir, document, input.prior, prior, { origin: "unknown" }, current?.id ?? null, null, now, stage)
   }
   const derivedFrom = input.version.derivedFrom ? currentOrFoundVersion(db, matterDir, input.version.derivedFrom, now)?.id ?? null : null
   const created = current?.sha256 !== sha256
   const version = created
-    ? insertVersion(db, matterDir, document, input.bytes, sha256, input.version, current?.id ?? null, derivedFrom, now)
+    ? insertVersion(db, matterDir, document, input.bytes, sha256, input.version, current?.id ?? null, derivedFrom, now, stage)
     : current!
+  if (!created && !staged(stage, document.id, sha256)) storeVersionBytes(matterDir, document.id, sha256, version.ext, input.bytes)
+  if (redaction)
+    db.run("UPDATE document_versions SET removed = 'redaction' WHERE document_id = ? AND sha256 != ? AND removed IS NULL", [document.id, sha256])
   if (input.version.event) insertEvent(db, document.id, version.id, input.version.event, now)
   return { document_id: document.id, id: version.id, number: version.number, parent: version.parent, origin: version.origin, created }
 }
@@ -267,11 +332,36 @@ function insertEvent(db: Database, documentId: string, versionId: string | null,
     [documentId, versionId, event.kind, oneLine(event.actor) || UNKNOWN_ACTOR, event.detail ? JSON.stringify(event.detail) : null, now])
 }
 
-/** Detaches the history of `name` when doc.haus deletes its working file: rows
- * and stored bytes stay, and a later file of that name starts a new document.
- * In the delete's registry transaction. */
+/** Detaches the history of `name` when doc.haus deletes its working file, so a
+ * later file of that name starts a new document; its rows stay. Returns the
+ * detached document ids, whose bytes purgeVersionBytes deletes once the delete
+ * commits. In the delete's registry transaction. */
 export function detachVersionedDocument(db: Database, matterDir: string, name: string) {
-  db.run("UPDATE versioned_documents SET removed_at = ? WHERE name_key = ? AND removed_at IS NULL", [Date.now(), nameKey(matterDir, name)])
+  const key = nameKey(matterDir, name)
+  const ids = (db.query("SELECT id FROM versioned_documents WHERE name_key = ? AND removed_at IS NULL").all(key) as { id: string }[]).map((row) => row.id)
+  db.run("UPDATE versioned_documents SET removed_at = ? WHERE name_key = ? AND removed_at IS NULL", [Date.now(), key])
+  return ids
+}
+
+/** Deletes the stored files of document `documentId` that no kept version
+ * holds: all of them once the document is removed, else those of versions a
+ * redaction removed (and any a failed write left). After the write that marked
+ * them commits, under the document's artifact lock. Throws when a file cannot
+ * be deleted. */
+export function purgeVersionBytes(matterDir: string, documentId: string) {
+  const directory = path.join(matterDir, ".dochaus", "revisions", documentId)
+  if (!existsSync(directory)) return
+  const kept = new Set(readStore(matterDir, (db) => (db.query(
+    `SELECT v.sha256 || v.ext AS file FROM document_versions v JOIN versioned_documents d ON d.id = v.document_id
+     WHERE v.document_id = ? AND v.removed IS NULL AND d.removed_at IS NULL`,
+  ).all(documentId) as { file: string }[]).map((row) => row.file), [] as string[]))
+  if (!kept.size) {
+    rmSync(directory, { recursive: true, force: true })
+    syncDirectory(path.dirname(directory))
+    return
+  }
+  for (const entry of readdirSync(directory)) if (!kept.has(entry)) rmSync(path.join(directory, entry), { recursive: true, force: true })
+  syncDirectory(directory)
 }
 
 // Reads open legal.db read-only, so a read never creates or migrates it.
@@ -287,7 +377,7 @@ function readStore<T>(matterDir: string, read: (db: Database) => T, empty: T): T
   }
 }
 
-export type VersionView = Omit<VersionRow, "ext" | "document_id"> & { ext: string; current: boolean }
+export type VersionView = Omit<VersionRow, "document_id"> & { current: boolean }
 export type VersionEventView = { id: number; kind: VersionEventKind; version_id: string | null; actor: string; detail: Record<string, unknown> | null; created_at: number }
 
 /** The live document `name` with its versions, newest first, and its events. */
@@ -296,7 +386,7 @@ export function readDocumentVersions(matterDir: string, name: string) {
     const document = liveDocument(db, matterDir, name)
     if (!document) return { document: null, versions: [] as VersionView[], events: [] as VersionEventView[] }
     const versions = (db.query("SELECT * FROM document_versions WHERE document_id = ? ORDER BY number DESC").all(document.id) as VersionRow[])
-      .map(({ document_id: _document, ...row }) => ({ ...row, current: row.id === document.current_version }))
+      .map(({ document_id: _document, ...row }) => ({ ...row, removed: row.removed ?? null, current: row.id === document.current_version }))
     const events = (db.query("SELECT id, kind, version_id, actor, detail, created_at FROM document_version_events WHERE document_id = ? ORDER BY id").all(document.id) as
       Array<Omit<VersionEventView, "detail"> & { detail: string | null }>)
       .map((row) => ({ ...row, detail: row.detail ? JSON.parse(row.detail) as Record<string, unknown> : null }))
@@ -333,24 +423,27 @@ export function readVersionBytes(matterDir: string, version: Pick<VersionRow, "d
   return sha256Hex(bytes) === version.sha256 ? bytes : undefined
 }
 
-/** The version of the live document `name` holding exactly these bytes, the
- * current one first, with that document's name; undefined when none does. */
+/** The kept (not removed) version of the live document `name` holding exactly
+ * these bytes, the current one first, with that document's name; undefined
+ * when none does. */
 export function findVersionBySha(matterDir: string, name: string, sha256: string) {
   return readStore(matterDir, (db) => db.query(
-    `SELECT v.id, v.number, v.document_id, d.name, v.id = d.current_version AS current
+    `SELECT v.id, v.number, v.document_id, v.sha256, v.ext, d.name, v.id = d.current_version AS current
      FROM document_versions v JOIN versioned_documents d ON d.id = v.document_id
-     WHERE d.name_key = ? AND d.removed_at IS NULL AND v.sha256 = ?
+     WHERE d.name_key = ? AND d.removed_at IS NULL AND v.sha256 = ? AND v.removed IS NULL
      ORDER BY current DESC, v.number DESC LIMIT 1`,
-  ).get(nameKey(matterDir, name), sha256) as { id: string; number: number; document_id: string; name: string; current: number } | null ?? undefined, undefined)
+  ).get(nameKey(matterDir, name), sha256) as
+    { id: string; number: number; document_id: string; sha256: string; ext: string; name: string; current: number } | null ?? undefined, undefined)
 }
 
-/** The pending tracked changes in a Word file's body: how many, and by whom. */
+/** The pending tracked changes in a Word file: how many, and by whom, in every
+ * XML part (body, headers, footers, notes, comments), as the accepted-revision
+ * reader (openRevision) checks them. */
 export function trackedChanges(name: string, bytes: Uint8Array) {
   if (path.extname(name).toLowerCase() !== ".docx") return { count: 0, authors: [] as string[] }
   try {
-    const body = unzipSync(bytes, { filter: (file) => file.name === "word/document.xml" })["word/document.xml"]
-    if (!body) return { count: 0, authors: [] as string[] }
-    const tags = strFromU8(body).match(/<w:(?:ins|del|moveFrom|moveTo)\b[^>]*>/g) ?? []
+    const parts = Object.values(unzipSync(bytes, { filter: (file) => file.name.endsWith(".xml") }))
+    const tags = parts.flatMap((part) => strFromU8(part).match(/<w:(?:ins|del|moveFrom|moveTo)\b[^>]*>/g) ?? [])
     const authors = [...new Set(tags.flatMap((tag) => {
       const author = /\bw:author="([^"]*)"/.exec(tag)?.[1]?.trim()
       return author ? [decodeXml(author)] : []

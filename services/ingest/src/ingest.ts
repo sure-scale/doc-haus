@@ -18,7 +18,7 @@ import { parseEmail } from "../../../dochaus/lib/email"
 import { zipToText } from "../../../dochaus/lib/zip"
 import { commitDocumentWriteAsync } from "./atomic-document-write"
 import { MatterDocumentIdentityError, resolveMatterDocumentTarget } from "./document-identity"
-import { captureVersion, trackedChanges, trackedChangesNotice, type CapturedVersion, type VersionOrigin, type VersionWrite } from "./document-versions"
+import { captureVersion, stageVersionBytes, trackedChanges, trackedChangesNotice, type CapturedVersion, type VersionOrigin, type VersionWrite } from "./document-versions"
 import {
   beginDocumentMutation,
   completeDocumentMutation,
@@ -315,6 +315,8 @@ async function commitIngestedDocument(
     text: canonicalText(input.chunks),
     ...links,
   })
+  // The version's bytes, likewise stored before the lock (stageVersionBytes).
+  const stage = stageVersionBytes(input.matterDir, input.fileName, input.buffer, input.version.origin)
   return commitDocumentWriteAsync(input.docPath, input.buffer, async () => {
     db.run("BEGIN IMMEDIATE")
     let settled = false
@@ -354,6 +356,7 @@ async function commitIngestedDocument(
         bytes: input.buffer,
         prior: existsSync(backup) ? readFileSync(backup) : null,
         version: input.version,
+        stage,
       })
       recordDocumentMutationLineageIntent(
         input.mutation,

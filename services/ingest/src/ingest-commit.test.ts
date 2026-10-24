@@ -631,6 +631,8 @@ describe("after a source mutation is interrupted", () => {
       expect(unrecorded(directory, latest).map(({ artifact }) => artifact)).toContain(".dochaus/legal.db")
       expect(await healSourceArtifacts(directory, true)).toBe("recovered")
       expect(stampedSince(directory, before)).toEqual(unrecorded(directory, latest))
+      // doc.haus's own restamp, not a lawyer's upload (#268).
+      expect(lineageRows(directory)[before]?.provenance.origin).toBe("system")
       expect(unrecorded(directory)).toEqual([])
       expect(await transactionsSettled(directory)).toBe(true)
     } finally {

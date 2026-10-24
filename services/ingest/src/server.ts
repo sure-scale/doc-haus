@@ -68,7 +68,7 @@ import { DocxTrackedRevisionsError } from "../../../dochaus/lib/docx-amendments"
 import { compareVersions } from "../../../dochaus/lib/version-compare"
 import { pendingRedlinesForDoc } from "../../../dochaus/lib/redlines"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
-import { ingestEmailDocument, reingestLegacyEmails, removeMatterDocument, withEmailLinks } from "./email-attachments"
+import { containerAttachmentsPending, ingestEmailDocument, isContainerName, reingestLegacyEmails, removeMatterDocument, withEmailLinks } from "./email-attachments"
 import { ingestZipDocument, ZipFormatError, ZipTooLargeError } from "./zip-archive"
 import { draftingTraceReference } from "../../../dochaus/lib/drafting-trace-identity"
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
@@ -88,6 +88,7 @@ import { appendAcceptedChangesToNotes } from "./notes-addendum"
 import {
   findVersionBySha,
   oneLine,
+  purgeVersionBytes,
   readCurrentVersion,
   readDocumentVersions,
   readVersion,
@@ -602,8 +603,8 @@ app.post("/matters/:id/documents", async (c) => {
     // An email brings its attachments in after it (email-attachments.ts), and a
     // zip file the files inside it (zip-archive.ts). A lawyer's upload is never
     // an attachment, even under an attachment's name.
-    if (name.toLowerCase().endsWith(".eml")) return c.json(await ingestEmailDocument(dir, name, buffer, { existing }))
-    if (name.toLowerCase().endsWith(".zip")) return c.json(await ingestZipDocument(dir, name, buffer, { existing }))
+    if (name.toLowerCase().endsWith(".eml")) return c.json(await ingestEmailDocument(dir, name, buffer, { existing, version }))
+    if (name.toLowerCase().endsWith(".zip")) return c.json(await ingestZipDocument(dir, name, buffer, { existing, version }))
     return c.json(await ingestDocument(dir, name, buffer, { existing, links: { parentName: null }, version }))
   } catch (error) {
     // Refused before anything of the zip was added.
@@ -723,31 +724,38 @@ app.post("/matters/:id/documents/revisions", async (c) => {
 // A document's kept versions (#268): number, parent, origin, actor, run, time
 // and label, newest first, with its accept, reject and restore events, and the
 // version its working file holds (null when the file has changed since doc.haus
-// last wrote it, or no version is kept yet). Read only.
+// last wrote it, is missing, or no version is kept yet). A version a redaction
+// removed is listed with removed "redaction" and cannot be opened, compared or
+// restored. A document whose working file was deleted outside doc.haus keeps
+// its history. Read only.
 app.get("/matters/:id/documents/versions", (c) => {
   const dir = matterDir(c.req.param("id"))
   const name = registeredDocumentName(c.req.query("name") ?? "")
   if (!name) return c.json({ error: "The document filename or extension is not supported." }, 400)
   const target = readDocumentTarget(dir, name)
-  if (!target || !existsSync(target.docPath)) return c.json({ error: `${name} is not a document in this matter.` }, 404)
-  const { document, versions, events } = readDocumentVersions(dir, target.name)
-  const working = sha256Hex(readFileSync(target.docPath))
+  const present = target && existsSync(target.docPath)
+  const { document, versions, events } = target ? readDocumentVersions(dir, target.name) : { document: null, versions: [], events: [] }
+  if (!target || (!present && !document)) return c.json({ error: `${name} is not a document in this matter.` }, 404)
+  const working = present ? sha256Hex(readFileSync(target.docPath)) : undefined
   const held = versions.find((version) => version.current && version.sha256 === working)
   return c.json({ name: target.name, document, versions, events, working_version: held?.id ?? null })
 })
 
-// One kept version's exact bytes, checked against its hash.
+// One kept version's exact bytes, checked against its hash, served as the
+// document content route serves the working file. A removed document's versions
+// are not in the matter; a version a redaction removed has no bytes.
 app.get("/matters/:id/documents/versions/:version/content", (c) => {
   const dir = matterDir(c.req.param("id"))
   const found = readVersion(dir, c.req.param("version"))
-  if (!found) return c.json({ error: "That version is not in this matter." }, 404)
+  if (!found || found.document.removed_at != null) return c.json({ error: "That version is not in this matter." }, 404)
+  if (found.version.removed) return removedByRedaction(c, found.version)
   const bytes = readVersionBytes(dir, found.version)
   if (!bytes) return c.json({ error: "The kept bytes of this version are missing or damaged.", code: "version_damaged" }, 409)
   const parsed = path.parse(found.document.name)
   const filename = `${parsed.name} (version ${found.version.number})${parsed.ext}`
   return new Response(new Uint8Array(bytes), {
     headers: {
-      "Content-Type": VERSION_MIME[found.version.ext] ?? "application/octet-stream",
+      "Content-Type": documentContentType(found.document.name),
       "Content-Disposition": c.req.query("download") === "1" ? attachmentDocumentDisposition(filename) : inlineDocumentDisposition(filename),
     },
   })
@@ -764,8 +772,10 @@ app.post("/matters/:id/documents/versions/:version/restore", async (c) => {
   if (!initial) return c.json({ error: "That version is not in this matter." }, 404)
   if (initial.document.removed_at != null)
     return c.json({ error: `${initial.document.name} was removed from this matter.`, code: "document_removed" }, 409)
+  if (initial.version.removed) return removedByRedaction(c, initial.version)
+  // A working file deleted outside doc.haus is written back from the version.
   const target = readDocumentTarget(dir, initial.document.name)
-  if (!target || !existsSync(target.docPath)) return c.json({ error: `${initial.document.name} is not a document in this matter.` }, 404)
+  if (!target) return c.json({ error: `${initial.document.name} is not a document in this matter.` }, 404)
   const actor = requestActor(c)
   try {
     // The revision route's locks: the document's and its run's saved combined file's.
@@ -773,10 +783,10 @@ app.post("/matters/:id/documents/versions/:version/restore", async (c) => {
       const found = readVersion(dir, id)
       if (!found || found.document.removed_at != null)
         return c.json({ error: `${initial.document.name} was removed from this matter.`, code: "document_removed" }, 409)
+      if (found.version.removed) return removedByRedaction(c, found.version)
       const bytes = readVersionBytes(dir, found.version)
       if (!bytes) return c.json({ error: "The kept bytes of this version are missing or damaged.", code: "version_damaged" }, 409)
-      if (!existsSync(target.docPath)) return c.json({ error: `${target.name} is not a document in this matter.` }, 404)
-      const working = sha256Hex(readFileSync(target.docPath))
+      const working = existsSync(target.docPath) ? sha256Hex(readFileSync(target.docPath)) : undefined
       if (working === found.version.sha256)
         return c.json({ error: `${target.name} already holds version ${found.version.number}.`, code: "already_current" }, 409)
       const restored = { id: found.version.id, number: found.version.number }
@@ -906,12 +916,9 @@ app.get("/matters/:id/documents/content", async (c) => {
   return withArtifactMutationLocksAsync(dir, [name], async () => {
     const target = readDocumentTarget(dir, name)
     if (!target || !existsSync(target.docPath)) return c.notFound()
-    const mime = target.docPath.toLowerCase().endsWith(".pdf")
-      ? "application/pdf"
-      : "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     return new Response(await Bun.file(target.docPath).bytes(), {
       headers: {
-        "Content-Type": mime,
+        "Content-Type": documentContentType(target.docPath),
         "Content-Disposition": inlineDocumentDisposition(target.name),
       },
     })
@@ -1079,7 +1086,7 @@ app.get("/matters/:id/documents/redlined", async (c) => {
 // the whole file by rename, so each read sees one complete version, and legal.db
 // is opened read-only, never created or migrated.
 app.get("/matters/:id/compare", async (c) => {
-  const refuse = (status: 400 | 404 | 409 | 422, error: string, message: string) => c.json({ error, message }, status)
+  const refuse = (status: 400 | 404 | 409 | 410 | 422, error: string, message: string) => c.json({ error, message }, status)
   const unknown = (name: string) => refuse(404, "not_found", `${name} is not a document in this matter.`)
   const dir = matterDir(c.req.param("id"))
   const query = (key: string) => c.req.query(key)?.trim() ?? ""
@@ -1094,12 +1101,17 @@ app.get("/matters/:id/compare", async (c) => {
   if (!existsSync(dir)) return refuse(404, "not_found", "This matter does not exist.")
   const stem = (name: string) => path.parse(name).name
   type Side = { name: string; docPath?: string; identity?: string; version?: VersionRow; current?: boolean; display: string }
-  const ofVersion = (version: VersionRow, document: { name: string; current_version: string | null }): Side =>
-    ({ name: document.name, version, current: document.current_version === version.id, display: `${stem(document.name)} (version ${version.number})` })
+  // A removed document's versions are not in the matter; a version a redaction
+  // removed has no bytes to compare.
+  const ofVersion = (version: VersionRow, document: { name: string; current_version: string | null }): Side | Response => {
+    const display = `${stem(document.name)} (version ${version.number})`
+    if (version.removed) return refuse(410, "removed_by_redaction", `${display} was removed by a redaction and cannot be compared.`)
+    return { name: document.name, version, current: document.current_version === version.id, display }
+  }
   const resolve = (name: string, versionID: string) => {
     if (versionID) {
       const found = readVersion(dir, versionID)
-      return found ? ofVersion(found.version, found.document) : refuse(404, "not_found", "That version is not in this matter.")
+      return found && found.document.removed_at == null ? ofVersion(found.version, found.document) : refuse(404, "not_found", "That version is not in this matter.")
     }
     const registered = registeredDocumentName(name)
     if (!registered) return unknown(name)
@@ -1120,7 +1132,7 @@ app.get("/matters/:id/compare", async (c) => {
     const none = refuse(400, "no_previous_version", `${right.display} has no earlier version to compare with.`)
     if (right.version) {
       const parent = right.version.parent ? readVersion(dir, right.version.parent) : undefined
-      return parent ? ofVersion(parent.version, parent.document) : none
+      return parent && parent.document.removed_at == null ? ofVersion(parent.version, parent.document) : none
     }
     const kept = readCurrentVersion(dir, right.name)
     if (!kept) return none
@@ -1357,13 +1369,29 @@ async function writeDocumentRevision(
   const updateRegistry = (registry: ReturnType<typeof openDb>) => {
     acceptedRedlineIDs.forEach((id) => setRedlineStatus(registry,id,"accepted"))
   }
-  if (role === "deliverable") {
-    const written = await writeDeliverableRevision(directory, name, bytes, {
-      updateRegistry, priorSha256, updateWorkingRevision: working, keepWorkingRecord: Boolean(existing) && !working, version: options.version,
-    })
-    return { ...written, ...versionNotice(written.name, bytes, written.version) }
+  const written = role === "deliverable"
+    ? await (async () => {
+      const written = await writeDeliverableRevision(directory, name, bytes, {
+        updateRegistry, priorSha256, updateWorkingRevision: working, keepWorkingRecord: Boolean(existing) && !working, version: options.version,
+      })
+      return { ...written, ...versionNotice(written.name, bytes, written.version) }
+    })()
+    : await ingestDocument(directory, name, bytes, { existing: "replace", requireExistingSource: true, updateRegistry, version: options.version })
+  return { ...written, ...(options.version.origin === "redaction" ? purgeRedactedVersions(directory, written.version.document_id) : {}) }
+}
+
+// A committed redaction deletes the stored bytes of the document's earlier
+// versions (captureVersion marked them removed), so the removed text is gone
+// from doc.haus as it was before versions were kept. Under the caller's lock on
+// the document. A purge that fails is reported for the redaction tool's warnings.
+function purgeRedactedVersions(directory: string, documentId: string): { purge_failed?: string } {
+  try {
+    purgeVersionBytes(directory, documentId)
+    return {}
+  } catch (error) {
+    console.error("[versions] redacted versions not purged", diagnosticErrorMetadata(error))
+    return { purge_failed: "The earlier versions of this document could not be deleted from doc.haus's kept versions; they may still hold the removed text." }
   }
-  return ingestDocument(directory, name, bytes, { existing: "replace", requireExistingSource: true, updateRegistry, version: options.version })
 }
 
 /** The document's role and the bytes writeDocumentRevision stores for `input`:
@@ -1720,7 +1748,7 @@ async function rebuildCombinedFile(prepared: PreparedCombined | undefined): Prom
       if (!saved || !bytes) return combinedSkipped(directory, "combined_missing")
       await writeDeliverableRevision(directory, file, bytes, {
         priorSha256: sha256Hex(saved), system: true,
-        version: { origin: "system", actor: "doc.haus", run: readLeanState(directory)?.owner_session_id ?? null, label: "Combined file rebuilt after an accept" },
+        version: { origin: "system", actor: "doc.haus", run: readLeanState(directory)?.owner_session_id ?? null, label: "Combined file rebuilt" },
       })
       return { combined_updated: true }
     })
@@ -1749,14 +1777,12 @@ function registeredDocumentName(requested: string) {
 // What a writer states about a write (#268): who made it, from x-dochaus-actor
 // (absent: "unknown"), and a label from a form field or body. One line each.
 const REVISION_ORIGINS = new Set<string>(["revision", "agent-edit", "redaction"])
-const VERSION_MIME: Record<string, string> = {
-  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  ".pdf": "application/pdf",
-  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-  ".txt": "text/plain; charset=utf-8",
-  ".md": "text/markdown; charset=utf-8",
-  ".eml": "message/rfc822",
-  ".zip": "application/zip",
+// The content type the document content routes serve a matter file under.
+function documentContentType(name: string) {
+  return name.toLowerCase().endsWith(".pdf") ? "application/pdf" : "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+}
+function removedByRedaction(c: Context, version: Pick<VersionRow, "number">) {
+  return c.json({ error: `Version ${version.number} was removed by a redaction; its text is no longer kept.`, code: "removed_by_redaction" }, 410)
 }
 function requestActor(c: Context) {
   return oneLine(c.req.header("x-dochaus-actor")) || undefined
@@ -1769,26 +1795,35 @@ function acceptVersion(c: Context, redlineIDs: number[]): VersionWrite {
   return { origin: "accept", actor, event: { kind: "accept", actor, detail: { redline_ids: redlineIDs } } }
 }
 
-/** A re-upload of bytes the matter already keeps for the document of that
- * name: one of its versions while its working file is present, or, for a
- * document from before the version store, the registered file itself. Reported
- * whatever the replace or keep-both choice, and nothing is stored. The same
- * bytes under another name are another document, uploaded as before. */
+/** A re-upload of bytes the matter already keeps for the registered document
+ * of that name, reported whatever the replace or keep-both choice, with
+ * nothing stored: the bytes its working file holds, or an earlier version's
+ * (restored, not uploaded again). Not a duplicate: the current version's bytes
+ * once the working file has changed outside doc.haus (the upload keeps those
+ * changes as a version), a version whose kept bytes are damaged (the upload
+ * stores them again), an email or zip file whose attachments are not all in
+ * yet (uploading it again brings them in), or the same bytes under another
+ * name (another document). */
 function duplicateUpload(directory: string, name: string, bytes: Uint8Array) {
-  const sha256 = sha256Hex(bytes)
-  const kept = findVersionBySha(directory, name, sha256)
-  const keptTarget = kept ? readDocumentTarget(directory, kept.name) : undefined
-  if (kept && keptTarget && existsSync(keptTarget.docPath)) {
-    const version = { id: kept.id, number: kept.number, current: Boolean(kept.current) }
-    const which = version.current ? `the current version of ${kept.name}` : `version ${kept.number} of ${kept.name}`
-    return { error: `${name} is already in this matter as ${which}. Nothing new was stored.`, code: "duplicate" as const, name: kept.name, document_id: kept.document_id, version }
-  }
-  const same = readDocumentTarget(directory, name)
-  if (!same || !existsSync(same.docPath) || sha256Hex(readFileSync(same.docPath)) !== sha256) return
+  const target = readDocumentTarget(directory, name)
+  if (!target || !existsSync(target.docPath)) return
   const db = openDb(directory)
-  const role = (() => { try { return getDocumentRole(db, same.docPath) } finally { db.close() } })()
-  if (!role) return
-  return { error: `${name} is already in this matter as ${same.name}. Nothing new was stored.`, code: "duplicate" as const, name: same.name, document_id: null, version: null }
+  const role = (() => { try { return getDocumentRole(db, target.docPath) } finally { db.close() } })()
+  if (!role || (role === "source" && isContainerName(target.name) && containerAttachmentsPending(directory, target.docPath))) return
+  const sha256 = sha256Hex(bytes)
+  const working = sha256Hex(readFileSync(target.docPath)) === sha256
+  const found = findVersionBySha(directory, target.name, sha256)
+  const kept = found && readVersionBytes(directory, found) ? found : undefined
+  if (found && !kept) return
+  const stored = "Nothing new was stored."
+  if (working) {
+    if (!kept?.current) return { error: `${name} is already in this matter as ${target.name}. ${stored}`, code: "duplicate" as const, name: target.name, document_id: null, version: null }
+    return { error: `${name} is already in this matter as the current version of ${kept.name}. ${stored}`, code: "duplicate" as const,
+      name: kept.name, document_id: kept.document_id, version: { id: kept.id, number: kept.number, current: true } }
+  }
+  if (!kept || kept.current) return
+  return { error: `${name} is already in this matter as version ${kept.number} of ${kept.name}. ${stored} Use Restore on version ${kept.number} to make it current again.`,
+    code: "duplicate" as const, name: kept.name, document_id: kept.document_id, version: { id: kept.id, number: kept.number, current: false } }
 }
 
 function readDocumentTarget(directory: string, name: string) {

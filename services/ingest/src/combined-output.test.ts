@@ -433,6 +433,9 @@ describe("combined file rebuild: lock, contention and ownership", () => {
       const uploaded = await request(`${matter.route}/documents/revisions`, { method: "POST", body: form })
       expect({ status: uploaded.status, body: await uploaded.json() }).toMatchObject({ status: 200, body: { combined_updated: true } })
       expect(documentText(readFileSync(path.join(matter.dir, SAVED)))).toContain("by rail")
+      // The rebuilt file's version says what made it: a rebuild, not an accept (#268).
+      const history = await (await request(`${matter.route}/documents/versions?${new URLSearchParams({ name: SAVED })}`)).json() as { versions: { origin: string; label: string | null }[] }
+      expect(history.versions[0]).toMatchObject({ origin: "system", label: "Combined file rebuilt" })
     })
   }, 120_000)
 

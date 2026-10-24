@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test"
 import { createHash } from "node:crypto"
-import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises"
+import { access, mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises"
+import { Database } from "bun:sqlite"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { Document, InsertedTextRun, Packer, Paragraph, TextRun } from "docx"
@@ -22,9 +23,10 @@ const NOTICES = "Notices are given in writing."
 
 type Captured = { document_id: string; id: string; number: number; parent: string | null; origin: string; created: boolean }
 type Version = { id: string; number: number; sha256: string; ext: string; bytes: number; parent: string | null; derived_from: string | null
-  origin: string; actor: string; run: string | null; label: string | null; created_at: number; current: boolean }
+  origin: string; actor: string; run: string | null; label: string | null; created_at: number; removed: string | null; current: boolean }
 type VersionEvent = { id: number; kind: string; version_id: string | null; actor: string; detail: Record<string, unknown> | null; created_at: number }
 type History = { name: string; document: { id: string; name: string; current_version: string } | null; versions: Version[]; events: VersionEvent[]; working_version: string | null }
+type Refusal = { error: string; code?: string }
 
 let temporary = ""
 let service: ReturnType<typeof Bun.spawn> | undefined
@@ -80,6 +82,12 @@ const lineageOrigins = async () => {
   for (const row of rows) if (row.op === "ingest" && !runs.has(row.run)) runs.set(row.run, row.provenance?.origin)
   return [...runs.values()]
 }
+
+const storeOf = (documentId: string) => path.join(matter.dir, ".dochaus", "revisions", documentId)
+const exists = (file: string) => access(file).then(() => true, () => false)
+const status = async (response: Response) => [response.status, (await response.json() as Refusal).code] as const
+const remove = (name: string) => matterRoute(`/documents?${new URLSearchParams({ name })}`, { method: "DELETE" })
+const compareJSON = (query: Record<string, string>) => matterRoute(`/compare?${new URLSearchParams({ ...query, format: "json" })}`)
 
 const docx = async (paragraphs: Paragraph[]) => new Uint8Array(await Packer.toBuffer(new Document({ sections: [{ children: paragraphs }] })))
 const plain = (...texts: string[]) => docx(texts.map((text) => new Paragraph(text)))
@@ -328,13 +336,175 @@ test("compare takes version ids, with the version before the right side as the d
   expect(await refusal({ rightVersion: "not-a-version" })).toEqual([404, "not_found"])
 })
 
+test("an outside edit is kept as a version of origin unknown before a replace, even one with the current version's bytes", async () => {
+  const name = "Outside edit.docx"
+  const original = await plain("Outside edit", SCOPE)
+  expect((await upload(name, original)).status).toBe(200)
+  await observe(name)
+  const outside = await plain("Outside edit", SCOPE, "A clause added outside doc.haus.")
+  await writeFile(path.join(matter.dir, name), outside)
+  await observe(name)
+  // Replacing it with its current version's bytes is not a duplicate: the working file holds other bytes.
+  const replaced = await upload(name, original, { existing: "replace" })
+  expect(replaced.status).toBe(200)
+  expect(await observe(name)).toEqual(original)
+  const { versions } = await history(name)
+  expect(versions.map((row) => [row.number, row.origin, row.current])).toEqual([[3, "replace", true], [2, "unknown", false], [1, "upload", false]])
+  expect(await versionBytes(versions[1]!.id)).toEqual(outside)
+  expect(await versionBytes(versions[0]!.id)).toEqual(original)
+})
+
+test("a version whose kept bytes are damaged is refused, and uploading those bytes again stores them afresh", async () => {
+  const name = "Damaged.docx"
+  const original = await plain("Damaged", SCOPE)
+  const first = (await (await upload(name, original)).json() as { version: Captured }).version
+  expect((await upload(name, await plain("Damaged", PAYMENT), { existing: "replace" })).status).toBe(200)
+  const kept = path.join(storeOf(first.document_id), `${sha256(original)}.docx`)
+  await writeFile(kept, "damaged")
+  expect(await status(await matterRoute(`/documents/versions/${first.id}/content`))).toEqual([409, "version_damaged"])
+  expect(await status(await matterRoute(`/documents/versions/${first.id}/restore`, { method: "POST" }))).toEqual([409, "version_damaged"])
+  const compared = await compareJSON({ leftVersion: first.id, right: name })
+  expect([compared.status, (await compared.json() as Refusal).error]).toEqual([409, "version_damaged"])
+  // Not a duplicate of the damaged version: the upload is the next version and stores the bytes again.
+  const again = await upload(name, original, { existing: "replace" })
+  expect(again.status).toBe(200)
+  expect((await again.json() as { version: Captured }).version).toMatchObject({ number: 3, origin: "replace", created: true })
+  expect(await versionBytes(first.id)).toEqual(original)
+  // The current version's bytes damaged: uploading the working file's bytes repairs them and adds no version.
+  await writeFile(kept, "damaged")
+  const repaired = await upload(name, original, { existing: "replace" })
+  expect(repaired.status).toBe(200)
+  expect((await repaired.json() as { version: Captured }).version).toMatchObject({ number: 3, created: false })
+  expect(await versionBytes(first.id)).toEqual(original)
+  await observe(name)
+})
+
+test("a working file deleted outside doc.haus keeps its history, and a restore writes it back", async () => {
+  const name = "Missing.docx"
+  const original = await plain("Missing", SCOPE)
+  const first = (await (await upload(name, original)).json() as { version: Captured }).version
+  expect((await upload(name, await plain("Missing", PAYMENT), { existing: "replace" })).status).toBe(200)
+  await rm(path.join(matter.dir, name))
+  const listed = await history(name)
+  expect([listed.versions.map((row) => row.number), listed.working_version]).toEqual([[2, 1], null])
+  const restored = await matterRoute(`/documents/versions/${first.id}/restore`, { method: "POST" })
+  expect(restored.status).toBe(200)
+  expect((await restored.json() as { version: Captured }).version).toMatchObject({ number: 3, origin: "restore" })
+  expect(await observe(name)).toEqual(original)
+})
+
+test("a redaction deletes the kept bytes of every earlier version, which stay listed as removed by redaction", async () => {
+  const secret = "The invented account number is 0000-1111."
+  for (const [name, role] of [["Redacted source.docx", "source"], ["Redacted letter.docx", "deliverable"]] as const) {
+    const first = await plain("Redaction", secret, SCOPE)
+    const second = await plain("Redaction", secret, PAYMENT)
+    const created = role === "source" ? await upload(name, first) : await matterRoute("/deliverables", { method: "POST", body: form(name, first) })
+    const { document_id: documentId } = (await created.json() as { version: Captured }).version
+    expect((role === "source" ? await upload(name, second, { existing: "replace" }) : await revise(name, second)).status).toBe(200)
+    // As the redaction tool saves: the file in place, then its revision.
+    const redacted = await plain("Redaction", "[REDACTED]", PAYMENT)
+    await writeFile(path.join(matter.dir, name), redacted)
+    const saved = await revise(name, redacted, { "x-dochaus-origin": "redaction", "x-dochaus-actor": "agent:redactor" })
+    expect(saved.status).toBe(200)
+    const body = await saved.json() as { version: Captured; purge_failed?: string }
+    expect([body.version.number, body.version.origin, body.purge_failed]).toEqual([3, "redaction", undefined])
+    const { versions } = await history(name)
+    expect(versions.map((row) => [row.number, row.removed])).toEqual([[3, null], [2, "redaction"], [1, "redaction"]])
+    // Only the redacted bytes are kept (a deliverable's with the paragraph pointers its revision adds).
+    const kept = await working(name)
+    expect(await readdir(storeOf(documentId))).toEqual([`${sha256(kept)}.docx`])
+    expect(await versionBytes(versions[0]!.id)).toEqual(kept)
+    // Listed, but not opened, restored or compared.
+    const [, older, oldest] = versions
+    expect(await status(await matterRoute(`/documents/versions/${oldest!.id}/content`))).toEqual([410, "removed_by_redaction"])
+    expect(await status(await matterRoute(`/documents/versions/${oldest!.id}/restore`, { method: "POST" }))).toEqual([410, "removed_by_redaction"])
+    for (const query of [{ rightVersion: versions[0]!.id }, { leftVersion: older!.id, right: name }, { right: name, leftVersion: "previous" }] as Record<string, string>[]) {
+      const compared = await compareJSON(query)
+      expect([compared.status, (await compared.json() as Refusal).error]).toEqual([410, "removed_by_redaction"])
+    }
+    // The text is in no kept file of the matter's version store.
+    for (const file of await storedFiles())
+      expect(Buffer.from(await readFile(path.join(matter.dir, ".dochaus", "revisions", file))).includes(Buffer.from("0000-1111"))).toBe(false)
+    await observe(name)
+  }
+})
+
+test("deleting a document deletes its kept versions, and a later file of that name starts a new document", async () => {
+  const name = "Removed.docx"
+  const original = await plain("Removed", SCOPE)
+  const first = (await (await upload(name, original)).json() as { version: Captured }).version
+  expect((await upload(name, await plain("Removed", PAYMENT), { existing: "replace" })).status).toBe(200)
+  expect(await exists(storeOf(first.document_id))).toBe(true)
+  expect((await remove(name)).status).toBe(200)
+  expect(await exists(storeOf(first.document_id))).toBe(false)
+  // Its versions are no longer in the matter.
+  expect((await matterRoute(`/documents/versions/${first.id}/content`)).status).toBe(404)
+  expect((await compareJSON({ leftVersion: first.id, right: LETTER })).status).toBe(404)
+  expect(await status(await matterRoute(`/documents/versions/${first.id}/restore`, { method: "POST" }))).toEqual([409, "document_removed"])
+  const again = await upload(name, original)
+  expect(again.status).toBe(200)
+  const next = (await again.json() as { version: Captured }).version
+  expect([next.number, next.origin, next.document_id === first.document_id]).toEqual([1, "upload", false])
+  expect((await history(name)).versions.map((row) => row.number)).toEqual([1])
+  await observe(name)
+})
+
+test("an email upload keeps its uploader and label, and one whose attachments are not all in is taken again", async () => {
+  const name = "Thread.eml"
+  const message = email("Synthetic thread", "Draft attached.", [part("Thread draft.docx", Buffer.from(await plain("Thread draft", SCOPE)))])
+  const before = (await lineageOrigins()).length
+  const uploaded = await upload(name, message, { version_label: "From the client" }, { "x-dochaus-actor": "Lawyer One" })
+  expect(uploaded.status).toBe(200)
+  const { versions } = await history(name)
+  expect(versions.map((row) => [row.number, row.origin, row.actor, row.label])).toEqual([[1, "upload", "Lawyer One", "From the client"]])
+  // The email, its attachment, then doc.haus's own commit of the attachment's outcome.
+  expect((await lineageOrigins()).slice(before)).toEqual(["upload", "upload", "system"])
+  // A kept email is served as the content route serves its working file.
+  const kept = await matterRoute(`/documents/versions/${versions[0]!.id}/content`)
+  const current = await matterRoute(`/documents/content?${new URLSearchParams({ name })}`)
+  expect([kept.status, kept.headers.get("content-type")]).toEqual([200, current.headers.get("content-type")])
+  expect(kept.headers.get("content-type")).not.toContain("rfc822")
+  // With its attachments in, the same email again is a duplicate.
+  expect(await status(await upload(name, message, { existing: "replace" }))).toEqual([409, "duplicate"])
+  // As if the upload had stopped before recording the outcome: uploading it again brings the attachment in.
+  const db = new Database(path.join(matter.dir, ".dochaus", "legal.db"))
+  try {
+    const row = db.query("SELECT attachments FROM documents WHERE name = ?").get(name) as { attachments: string }
+    const record = JSON.parse(row.attachments) as { attachments: { outcome: string }[] }
+    record.attachments[0]!.outcome = "pending"
+    db.run("UPDATE documents SET attachments = ? WHERE name = ?", [JSON.stringify(record), name])
+  } finally {
+    db.close()
+  }
+  const again = await upload(name, message, { existing: "replace" })
+  expect(again.status).toBe(200)
+  expect((await again.json() as { attachments: unknown[] }).attachments).toMatchObject([{ status: "indexed", document: "Thread draft.docx" }])
+  expect((await history(name)).versions).toHaveLength(1)
+})
+
 test("every working-file state is kept as a version whose bytes match its hash", async () => {
   for (const [name, seen] of states) {
     const { versions } = await history(name)
     expect([...seen].filter((hash) => !versions.some((row) => row.sha256 === hash))).toEqual([])
-    for (const row of versions) expect(sha256(await versionBytes(row.id))).toBe(row.sha256)
+    // A version a redaction removed has no bytes (above); every other one has its own.
+    for (const row of versions) if (!row.removed) expect(sha256(await versionBytes(row.id))).toBe(row.sha256)
   }
 })
+
+// A neutral email with base64 Word attachments.
+function part(name: string, bytes: Buffer) {
+  const type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+  return [`Content-Type: ${type}; name="${name}"`, `Content-Disposition: attachment; filename="${name}"`, "Content-Transfer-Encoding: base64", "", bytes.toString("base64")].join("\r\n")
+}
+function email(subject: string, body: string, parts: string[]) {
+  const boundary = "B-versions"
+  return new Uint8Array(Buffer.from([
+    "From: Sender <sender@example.test>", "To: Recipient <recipient@example.test>", `Subject: ${subject}`,
+    "Date: Mon, 01 Jan 2024 00:00:00 +0000", "MIME-Version: 1.0", `Content-Type: multipart/mixed; boundary="${boundary}"`, "",
+    `--${boundary}`, "Content-Type: text/plain; charset=utf-8", "", body,
+    ...parts.flatMap((raw) => [`--${boundary}`, raw]), `--${boundary}--`, "",
+  ].join("\r\n")))
+}
 
 function pdf(wording: string) {
   const stream = `BT /F1 12 Tf 40 700 Td (${wording}) Tj ET`

@@ -16,7 +16,7 @@ import { sha256File } from "../../../dochaus/lib/lineage"
 import { readWorkingDocx } from "../../../dochaus/lib/working-docx"
 import { forgetSystemDocx, recordSystemDocx, replaceableDeliverable } from "../../../dochaus/lib/system-docx"
 import { withParagraphPointers } from "../../../dochaus/lib/drafting-amendment"
-import { captureVersion, type VersionWrite } from "./document-versions"
+import { captureVersion, stageVersionBytes, type VersionWrite } from "./document-versions"
 import {
   beginDocumentMutation,
   completeDocumentMutation,
@@ -129,12 +129,14 @@ export async function copyWordDocument(matterDir: string, sourceName: string, fi
 async function persistDeliverable(db: Database, matterDir: string, target: { name: string; docPath: string }, bytes: Buffer, version: VersionWrite, system = false) {
   const mutation = beginDocumentMutation(matterDir, target.name, "write", false)
   try {
+    // Version bytes are stored before legal.db's write lock is taken.
+    const stage = stageVersionBytes(matterDir, target.name, bytes, version.origin)
     const captured = await commitDocumentWriteAsync(target.docPath, bytes, async () => {
       db.run("BEGIN IMMEDIATE")
       try {
         upsertDeliverable(db, target.docPath, target.name, Date.now())
         updateSystemDocx(db, matterDir, target.docPath, bytes, system)
-        const captured = captureVersion(db, matterDir, { name: target.name, bytes, prior: priorBytes(mutation.documentBackup), version })
+        const captured = captureVersion(db, matterDir, { name: target.name, bytes, prior: priorBytes(mutation.documentBackup), version, stage })
         recordDocumentMutationCommit(db, mutation)
         db.run("COMMIT")
         return captured
@@ -187,7 +189,10 @@ export async function writeDeliverableRevision(
       if (options.priorSha256 && sha256File(target.docPath)?.sha256 !== options.priorSha256)
         throw new DeliverableConflictError("The accepted Word revision changed before publication.")
       const mutation = beginDocumentMutation(matterDir, target.name, "write", false)
+      const version = options.version ?? { origin: "unknown" }
       try {
+        // Version bytes are stored before legal.db's write lock is taken.
+        const stage = stageVersionBytes(matterDir, target.name, buffer, version.origin)
         const captured = await commitDocumentWriteAsync(target.docPath, buffer, async () => {
           db.run("BEGIN IMMEDIATE")
           try {
@@ -195,7 +200,7 @@ export async function writeDeliverableRevision(
             updateSystemDocx(db, matterDir, target.docPath, buffer, options.system)
             options.updateRegistry?.(db)
             options.updateWorkingRevision?.(db)
-            const captured = captureVersion(db, matterDir, { name: target.name, bytes: buffer, prior: priorBytes(mutation.documentBackup), version: options.version ?? { origin: "unknown" } })
+            const captured = captureVersion(db, matterDir, { name: target.name, bytes: buffer, prior: priorBytes(mutation.documentBackup), version, stage })
             recordDocumentMutationCommit(db, mutation)
             db.run("COMMIT")
             return captured
