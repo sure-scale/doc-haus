@@ -69,8 +69,8 @@ test("an RTF body nested deeper than any message is not read, and says so", asyn
 })
 
 test("an RTF body that would inflate past the limit is not read; a long one within it reads in full", async () => {
-  // 4 MB of compressed RTF that inflates to 34 MB, past the 32 MB limit.
-  const bomb = withRtf(rtfBomb(34 * 1024 * 1024))
+  // 1 MB of compressed RTF that inflates to 9 MB, past the 8 MB limit.
+  const bomb = withRtf(rtfBomb(9 * 1024 * 1024))
   const before = process.memoryUsage().rss
   const { result, ms } = await timed(() => parseMsg(bomb))
   expect(result).toMatchObject({ body: "", bodyUnreadable: true })

@@ -426,7 +426,9 @@ function msgBody(fields: FieldsData): MsgBody {
 
 // Compressed RTF (MS-OXRTFCP) inflates up to eight times its size, so a small
 // file can hold a huge body: one that would inflate past this is not read.
-const MAX_RTF_BYTES = 32 * 1024 * 1024
+// A body of \'xx escapes takes some 35 times its size in memory to read, so
+// this keeps one body near 300 MB.
+const MAX_RTF_BYTES = 8 * 1024 * 1024
 // The RTF readers below keep one state per open group, and the encapsulated
 // reader's cost grows with the depth each group opens at, so a body nested
 // deep enough would hold the parse for minutes. Each group counts its depth;
@@ -637,8 +639,10 @@ function rtfText(rtf: Buffer) {
   const fontCodepage = new Map<number, number>()
   const fontCharset = new Map<number, number>()
   const parts: string[] = []
-  // Bytes not yet decoded, all in one codepage.
-  let bytes: Buffer[] = []
+  // Bytes not yet decoded, all in one codepage, in one growing buffer: a body
+  // can hold millions of one-byte \'xx escapes.
+  let bytes = Buffer.alloc(4096)
+  let length = 0
   let bytesCodepage = ansi
   // Characters still to skip after a \u character: its stand-ins for readers
   // without Unicode.
@@ -649,15 +653,20 @@ function rtfText(rtf: Buffer) {
     return (font === undefined ? undefined : fontCodepage.get(font) ?? fontCharset.get(font)) ?? ansi
   }
   const flush = () => {
-    if (bytes.length) parts.push(decode(Buffer.concat(bytes), bytesCodepage))
-    bytes = []
+    if (length) parts.push(decode(bytes.subarray(0, length), bytesCodepage))
+    length = 0
   }
   const add = (data: Buffer) => {
     if (group.hidden || !data.length) return
     const current = codepage()
-    if (bytes.length && current !== bytesCodepage) flush()
+    if (length && current !== bytesCodepage) flush()
     bytesCodepage = current
-    bytes.push(data)
+    if (length + data.length > bytes.length) {
+      const grown = Buffer.alloc(Math.max(2 * bytes.length, length + data.length))
+      bytes.copy(grown, 0, 0, length)
+      bytes = grown
+    }
+    length += data.copy(bytes, length)
   }
   const emit = (text: string) => {
     if (group.hidden) return
