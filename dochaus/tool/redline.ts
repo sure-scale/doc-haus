@@ -114,7 +114,8 @@ export default tool({
 })
 
 /** The paragraph `clause` locates, past a copied list number (findPastListLabel).
- * Accept rewrites the first paragraph holding the recorded clause text. */
+ * Accept rewrites the whole of the first paragraph holding the recorded
+ * clause text. */
 function locate(session: ReturnType<Awaited<ReturnType<typeof docxodus>>["openDocxSession"]>, clause: string, replacement: string) {
-  return findPastListLabel(clause, replacement, text => session.findAllByText(text, { ignoreWhitespace: true }), id => session.getAnchorInfo(id)?.visibleText, { recorded: true })
+  return findPastListLabel(clause, replacement, text => session.findAllByText(text, { ignoreWhitespace: true }), id => session.getAnchorInfo(id)?.visibleText, { recorded: true, whole: true })
 }

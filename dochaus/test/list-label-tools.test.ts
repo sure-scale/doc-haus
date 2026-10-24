@@ -121,3 +121,39 @@ test("a number typed into a paragraph's text is not taken for Word's list number
   expect(typeof result === "string" ? result : result.output).toStartWith("Text not found")
   expect(pendingRedlinesForDoc(root, document)).toEqual([])
 })
+
+// A replacement that starts a numbered paragraph starts right after the
+// number Word prints there: a copy of that number is dropped wherever the
+// find text came from, and a different number typed there is refused.
+test("a replacement starting a numbered clause prints its number once and cannot retype it", async () => {
+  const comment = "Reflects the agreed term."
+  const { root, document, context } = await numbered(`${sharedOpening}\n\n3.2 1.5 times the Fees is the cap.`)
+  const output = (result: Awaited<ReturnType<typeof trackedChanges.execute>>) => typeof result === "string" ? result : result.output
+  for (const result of [
+    await trackedChanges.execute({ document: "supply.docx", find: "2.1 The Supplier shall install", replace: "3.1 The Supplier shall install", comment }, context),
+    await trackedChanges.execute({ document: "supply.docx", find: "The Supplier shall install", replace: "3.1 The Supplier must install", comment }, context),
+    await redline.execute({ document: "supply.docx", clause: "within ten days", replacement: "3.1 The Supplier shall install the Goods within five days.", comment }, context),
+  ]) expect(output(result)).toContain('The replacement begins with "3.1", but Word numbers its paragraph 2.1')
+  expect(pendingRedlinesForDoc(root, document)).toEqual([])
+  await trackedChanges.execute({ document: "supply.docx", find: "The Supplier shall insure", replace: "3.1 The Supplier must insure", comment }, context)
+  await redline.execute({ document: "supply.docx", clause: "within ten days", replacement: "2.1 The Supplier shall install the Goods within five days.", comment }, context)
+  await trackedChanges.execute({ document: "supply.docx", find: "1.5 times the Fees", replace: "1.5 times the annual Fees", comment }, context)
+  expect(pendingRedlinesForDoc(root, document).map(row => row.new_text)).toEqual(["The Supplier must insure", "The Supplier shall install the Goods within five days.", "1.5 times the annual Fees"])
+  expect(await accepted(root, document)).toEqual(["1.1 The Supplier shall deliver the Goods to the Site.", "2.1 The Supplier shall install the Goods within five days.", "3.1 The Supplier must insure the Goods until Acceptance."])
+})
+
+test("a plain edit whose replacement copies its clause's number prints it once", async () => {
+  const { context } = await numbered(sharedOpening)
+  let saved: Uint8Array | undefined
+  const ingest = Bun.serve({ port: 0, async fetch(request) {
+    saved = await ((await request.formData()).get("file") as File).bytes()
+    return Response.json({ ok: true })
+  } })
+  process.env.INGEST_URL = ingest.url.href.replace(/\/$/, "")
+  try {
+    await wordIntegration.execute({ document: "supply.docx", action: "replace", find: "The Supplier shall deliver", replace: "1.1 The Supplier must deliver" }, context)
+    expect((await clauses(saved!))[0]).toBe("1.1 The Supplier must deliver the Goods to the Site.")
+  } finally {
+    ingest.stop(true)
+  }
+})

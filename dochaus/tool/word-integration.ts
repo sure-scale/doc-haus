@@ -59,8 +59,9 @@ export default tool({
       const original = await Bun.file(file).bytes()
       const session = (await docxodus()).openDocxSession(original,{})
       try {
-        const {find,replace,targets} = findPastListLabel(args.find!,args.replace!,(text) => session.findAllByText(text),(id) => session.getAnchorInfo(id)?.visibleText)
+        const {find,replace,targets,error} = findPastListLabel(args.find!,args.replace!,(text) => session.findAllByText(text),(id) => session.getAnchorInfo(id)?.visibleText)
         if (!targets.length) return `Text not found in ${name}: ${JSON.stringify(args.find)}`
+        if (error) return error
         const results = targets.flatMap((target) => session.replaceTextRange(target.id,find,replace))
         const failed = results.find((result) => !result.success)
         if (failed) return `Edit failed: ${failed.error?.message ?? JSON.stringify(failed.error)}`
