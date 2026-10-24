@@ -93,7 +93,7 @@ type Decision = { paragraph: Paragraph; level: number; kind: "convert" | "strip"
  * names the later parts of paragraphs an amendment split: each leaves the
  * clause list, unless it opens with a number of a deeper level of the same
  * list, which it then takes. */
-export function numberDocxClauses(bytes: Uint8Array, options: { house?: false; split?: (paragraph: Element) => boolean } = {}): Uint8Array {
+export function numberDocxClauses(bytes: Uint8Array, options: { house?: false; split?: (paragraph: Element) => boolean; list?: { numId: string; styles: Map<number, string> } } = {}): Uint8Array {
   const parts = unzipSync(bytes)
   if (!parts[BODY] || !parts[STYLES]) return bytes
   const document = parse(strFromU8(parts[BODY]))
@@ -106,6 +106,11 @@ export function numberDocxClauses(bytes: Uint8Array, options: { house?: false; s
   // Of the document's own clause lists the one that numbers the most; the
   // house list only for a document without one.
   const own = clauseLists(lists, catalog, paragraphs)
+  // `list` (numberedList) is the list of the original a revision is numbered
+  // into, for an original that numbers its paragraphs with a list no style
+  // binds (Word's default numbering); its paragraphs' styles go with it.
+  const named = own.length || !options.list ? undefined : lists.numToAbstract.get(options.list.numId)
+  if (named !== undefined && lists.abstracts.get(named)?.levels[0]?.format) own.push({ abstract: named, levels: lists.abstracts.get(named)!.levels, numId: options.list!.numId, overrides: lists.overrides })
   const house = own.length || options.house === false ? undefined : houseList(lists, paragraphs)
   const candidates = house ? [house] : own
   const firstRestart = lists.maxNum + (house ? 2 : 1)
@@ -132,7 +137,9 @@ export function numberDocxClauses(bytes: Uint8Array, options: { house?: false; s
   // style; the house list binds only the style the clauses already use. A
   // style supplies the number only where its own numbering is this level of
   // this list instance; otherwise the paragraph carries it directly.
-  const levelStyles = house ? new Map<number, string>() : boundLevelStyles(list, catalog, lists)
+  const levelStyles = house ? new Map<number, string>()
+    : list.abstract === named ? new Map([...options.list!.styles].filter(([, style]) => catalog.elements.has(style)))
+      : boundLevelStyles(list, catalog, lists)
   for (const { paragraph, level, kind, numId } of decisions) {
     if (kind === "detach") {
       if (catalog.numPr(paragraph.style)?.numId) setParagraphNumbering(paragraph.node, 0, "0")
@@ -172,6 +179,24 @@ export function clauseNumbering(bytes: Uint8Array): { numIds: Set<string>; parag
   const best = ranked.reduce<(typeof ranked)[number] | undefined>((top, row) => !top || row.members > top.members ? row : top, undefined)
   if (!best?.members) return none
   return { numIds: new Set([...lists.numToAbstract].filter(([, abstract]) => abstract === best.list.abstract).map(([numId]) => numId)), paragraphs: best.members }
+}
+
+/** The list that numbers the most of a document's numbered (not bulleted)
+ * body paragraphs outside tables, bound to a style or not: the w:num its first
+ * such paragraph names and the style its first paragraph at each level takes.
+ * Undefined when no such paragraph is numbered. */
+export function numberedList(bytes: Uint8Array): { numId: string; styles: Map<number, string> } | undefined {
+  const parts = unzipSync(bytes)
+  if (!parts[BODY] || !parts[STYLES]) return
+  const catalog = readStyles(parse(strFromU8(parts[STYLES])))
+  const lists = readNumbering(parts[NUMBERING] ? parse(strFromU8(parts[NUMBERING])) : undefined, catalog)
+  const numbered = bodyParagraphs(parse(strFromU8(parts[BODY])), catalog, lists)
+    .filter(row => !row.table && row.member && lists.abstracts.get(row.member.abstract)?.levels[row.member.level]?.format)
+  const rows = [...Map.groupBy(numbered, row => row.member!.abstract).values()].reduce<Paragraph[] | undefined>((top, group) => !top || group.length > top.length ? group : top, undefined)
+  if (!rows) return
+  const styles = new Map<number, string>()
+  for (const row of rows) if (!styles.has(row.member!.level)) styles.set(row.member!.level, row.style)
+  return { numId: rows[0]!.member!.numId, styles }
 }
 
 function parse(xml: string) {

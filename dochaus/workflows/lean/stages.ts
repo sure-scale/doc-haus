@@ -20,7 +20,7 @@ import { existsSync, readFileSync, realpathSync, statSync } from "node:fs"
 import path from "node:path"
 import { ensureParagraphRows, paragraphSha256 } from "../../lib/drafting-amendment"
 import { renderMarkdownToDocx } from "../../lib/render"
-import { clauseNumbering, numberDocxClauses } from "../../lib/docx-numbering"
+import { numberDocxClauses, numberedList } from "../../lib/docx-numbering"
 import { withTemplateStyleIds } from "../../lib/template-seed"
 import { presentDraft, type DraftPresentation } from "./draft-presentation"
 import { checkChanges, parseJsonObject } from "./change-checks"
@@ -361,17 +361,21 @@ export async function acceptStageReply(directory: string, step: StepID, reply: s
     const furniture = renderedFurniture(directory, planned?.form ?? "other", requestedFurniture(planned?.furniture))
     // Clause numbering, and a template's own style ids, follow presentation,
     // which matches and reshapes the headings by their literal text and style.
-    // A document compared against an original that types its clause numbers
-    // keeps them typed, so its redline (comparisonBaseline) shows no number
-    // changes.
+    // A document compared against an original that numbers none of its
+    // paragraphs keeps its clause numbers typed, so its redline
+    // (comparisonBaseline) shows no number changes. A draft rendered on that
+    // original's own styles is numbered into the original's list, a list no
+    // style binds (Word's default numbering) included.
     const styleTemplate = plannedStyleTemplate(directory, planned)
     const original = matterWordFile(directory, planned?.comparison)
-    const typed = original !== undefined && !clauseNumbering(original).paragraphs
+    const list = original && numberedList(original)
+    const typed = original !== undefined && !list
+    const into = list && templateSource(planned) === planned?.comparison ? { list } : {}
     const rendered = await renderMarkdownToDocx(options.presentation?.source ?? reply, undefined, furniture, { numbering: false, styleTemplate })
       .then(result => ({ ...(options.presentation ? presentDraft(result.bytes, options.presentation.parts, options.presentation.title !== false, result.headingSpacing) : { bytes: result.bytes, attribution: undefined }), templated: result.templated }))
       .then(({ templated, ...result }) => {
         const styled = templated ? withTemplateStyleIds(result.bytes) : result.bytes
-        return { ...result, bytes: typed ? styled : numberDocxClauses(styled) }
+        return { ...result, bytes: typed ? styled : numberDocxClauses(styled, templated ? into : {}) }
       })
       .then(result => result, (error: unknown) => ({ error }))
     if ("error" in rendered)
