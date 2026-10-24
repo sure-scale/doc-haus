@@ -6,7 +6,8 @@ import path from "node:path"
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { openRevision } from "./docx-amendments"
-import { linkCrossReferences } from "./docx-crossrefs"
+import { linkCrossReferences, referenceFields } from "./docx-crossrefs"
+import { ensureParagraphRows } from "./drafting-amendment"
 import { shownText } from "./list-label"
 import { renderMarkdownToDocx } from "./render"
 
@@ -212,6 +213,26 @@ describe("linkCrossReferences", () => {
     } finally {
       opened.session.close()
     }
+  }, 60_000)
+
+  test("the reader gives each paragraph's fields by pointer: where the cached number is, and the paragraph or text it points at", async () => {
+    const file = path.join(workspace, "read.docx")
+    writeFileSync(file, (await renderMarkdownToDocx(AGREEMENT)).bytes)
+    const rows = await ensureParagraphRows(file)
+    const byPid = new Map(rows.map(row => [row.pid, row]))
+    const read = [...referenceFields(readFileSync(file))].flatMap(([pid, links]) => links.map(link => ({
+      cites: byPid.get(pid)!.text.slice(link.start, link.start + link.length), number: link.number,
+      to: link.number ? shownText(byPid.get(link.target!)!) : link.covers,
+    })))
+    expect(read).toEqual([
+      { cites: "2.1", number: true, to: "2.1 The Supplier shall provide the Services." },
+      { cites: "1", number: false, to: "1" },
+      { cites: "3", number: true, to: "3. Payment" },
+      { cites: "3.1", number: true, to: "3.1 Invoices are payable within thirty days." },
+      { cites: "3.2", number: true, to: "3.2 Late payment under clause 3.1 carries interest, subject to clause 2.2." },
+      { cites: "3.1", number: true, to: "3.1 Invoices are payable within thirty days." },
+      { cites: "2.2", number: true, to: "2.2 The Customer shall pay as set out in clauses 3.1 and 3.2." },
+    ])
   }, 60_000)
 
   test.skipIf(!Bun.which("soffice"))("LibreOffice shows the renumbered references after a clause and a heading are inserted", async () => {

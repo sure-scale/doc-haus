@@ -1,7 +1,8 @@
-import { XMLSerializer } from "@xmldom/xmldom"
-import { strToU8, zipSync } from "fflate"
-import { resolvedReferences } from "../workflows/lean/consistency"
+import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
+import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
+import { resolvedReferences, type ReferenceFields } from "../workflows/lean/consistency"
 import { openRevision } from "./docx-amendments"
+import { owningParagraph, paragraphPointers } from "./drafting-amendment"
 import { clauseNumbering } from "./docx-numbering"
 import { shownText } from "./list-label"
 
@@ -155,6 +156,34 @@ export async function linkCrossReferences(bytes: Uint8Array, options: CrossRefer
   } finally {
     opened.session.close()
   }
+}
+
+/** The REF fields of a body's paragraphs, by paragraph pointer: where each
+ * cached result is in the paragraph's text, and the paragraph its bookmark is
+ * on (a number field) or the text the bookmark covers. For the
+ * cross-reference check (consistency.ts). */
+export function referenceFields(bytes: Uint8Array): ReferenceFields {
+  const doc = new DOMParser().parseFromString(strFromU8(unzipSync(bytes)[BODY]!), "application/xml")
+  const marks = new Map<string, Element>()
+  for (const start of elements(doc, "bookmarkStart")) {
+    const name = start.getAttributeNS(W, "name")
+    if (name && !marks.has(name)) marks.set(name, start)
+  }
+  const pid = (paragraph: Node | null) => paragraph ? paragraphPointers(paragraph as Element)[0]?.pid : undefined
+  const found: ReferenceFields = new Map()
+  for (const paragraph of elements(doc, "p")) {
+    const own = pid(paragraph)
+    if (!own) continue
+    const links = paragraphFields(paragraph).flatMap(field => {
+      const ref = refInstruction(field)
+      if (!ref) return []
+      const mark = marks.get(ref.name)
+      return [{ start: field.from, length: field.to - field.from, number: ref.number !== undefined,
+        ...(mark && ref.number ? { target: pid(owningParagraph(mark)) } : {}), ...(mark && !ref.number ? { covers: covered(mark) } : {}) }]
+    })
+    if (links.length) found.set(own, links)
+  }
+  return found
 }
 
 // ------------------------------------------------------------------ fields

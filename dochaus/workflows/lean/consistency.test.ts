@@ -73,6 +73,30 @@ describe("cross-references after changes", () => {
     ])
   })
 
+  test("a live cross-reference is read as pointing at its field's target: a stale cached number is reported, a current one is not checked again", () => {
+    const linked = "4.2 Late payment carries interest under clause 3.1 and clauses 2.1 and 2.2."
+    const final = ["Supply Agreement", PARTIES, ...DEFINITIONS, ...SUPPLY,
+      "3. Quality", "3.1 The Goods shall conform to Schedule 1.",
+      "4. Price and payment", "4.1 The Customer shall pay the Price within thirty days of invoice.", linked,
+      "5. Liability", "5.1 Subject to clause 5, the liability of each party is limited to the Price paid in the preceding year.",
+      "6. Termination", "6.1 Either party may terminate by notice if the other commits a material breach of clause 3 or clause 4.",
+      ...SCHEDULES]
+    // The field on "3.1" still points at the payment clause, now 4.1; Word
+    // shows 4.1 once its fields are updated.
+    const link = (label: string, to: string, from = 0) => ({ start: linked.indexOf(label, from), length: label.length, to })
+    const paras = doc(final).map(row => row.text === linked ? { ...row, links: [link("3.1", "4.1"), link("2.1", "2.1"), link("2.2", "2.2", linked.indexOf("2.1"))] } : row)
+    expect(details({ title: TITLE, final: paras, baselines: [doc(BASE)], others: [] })).toEqual([
+      "Clause 4.2 shows clause 3.1, but its cross-reference field points at what is now clause 4.1. Check which clause is meant; updating the document's fields (F9 in Word) shows 4.1.",
+      'Clause 5.1 refers to clause 5. Before the changes that reference was to "Termination", which is now clause 6; clause 5 is now "Liability". Check that the reference points where it should.',
+      'Clause 6.1 refers to clause 3. Before the changes that reference was to "Price and payment", which is now clause 4; clause 3 is now "Quality". Check that the reference points where it should.',
+      'Clause 6.1 refers to clause 4. Before the changes that reference was to "Liability", which is now clause 5; clause 4 is now "Price and payment". Check that the reference points where it should.',
+    ])
+    // A field on "clause 4" pointing at what is now clause 4 settles that reference.
+    const terminate = final.find(line => line.startsWith("6.1 "))!
+    const settled = paras.map(row => row.text === terminate ? { ...row, links: [{ start: terminate.lastIndexOf("4"), length: 1, to: "4" }] } : row)
+    expect(details({ title: TITLE, final: settled, baselines: [doc(BASE)], others: [] })).not.toContainEqual(expect.stringContaining("refers to clause 4."))
+  })
+
   test("a renumbered sub-clause is reported where the old number is gone, with its new number", () => {
     const final = BASE.map(line => line.startsWith("2.2 ") ? line.replace("2.2 ", "2.3 ") : line)
     const found = check({ title: TITLE, final: doc(final), baselines: [doc(BASE)], others: [] })

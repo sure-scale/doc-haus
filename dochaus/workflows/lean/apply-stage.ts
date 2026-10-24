@@ -12,7 +12,7 @@ import { consistencyItems } from "./consistency"
 import { exportAppliedChangeComments } from "./review-evidence"
 import { draftingAttribution, withGeneratedDocxAttribution } from "../../lib/docx-attribution"
 import { numberDocxClauses } from "../../lib/docx-numbering"
-import { linkCrossReferences } from "../../lib/docx-crossrefs"
+import { linkCrossReferences, referenceFields } from "../../lib/docx-crossrefs"
 
 // The apply step of one document. Applies the document's change list to its
 // drafted body, always from body.docx and never onto an earlier apply output,
@@ -68,7 +68,7 @@ export async function runApply(directory: string, state: LeanState, document: Do
     openItems: [
       ...settled.openItems, ...annotated.openItems, ...finalBodyItems(directory, rows), ...draftStatusItems(directory, document, rows, "apply"),
       ...templateItems(directory, document, readParagraphs(directory, document), rows, changes.amendments, new Set(settled.result.applied.map(row => row.id))),
-      ...consistencyItems(directory, document, readParagraphs(directory, document), rows),
+      ...consistencyItems(directory, document, readParagraphs(directory, document), rows, referenceFields(readFileSync(out))),
     ],
   }
 }

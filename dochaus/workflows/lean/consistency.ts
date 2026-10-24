@@ -46,8 +46,10 @@ import { sourceText } from "./template-structure"
 // Date") that the pack defines nowhere. Plural and possessive forms are uses of
 // the term.
 
-/** One paragraph of a document's text; the final body's carry a pointer. */
-export type Para = { pid?: string; text: string }
+/** One paragraph of a document's text; the final body's carry a pointer, and
+ * `links` for its live cross-references (REF fields): where each cached number
+ * is in `text`, and the number its target now has (`to`), when known. */
+export type Para = { pid?: string; text: string; links?: { start: number; length: number; to?: string }[] }
 /** Another document of the pack, by its title; `earlier` documents are compared for definitions. */
 export type PackDocument = { title: string; paras: Para[]; earlier: boolean }
 export type ConsistencyFinding = { pid?: string; detail: string }
@@ -56,7 +58,7 @@ export type ConsistencyFinding = { pid?: string; detail: string }
  * final body. The baselines are the original it revises, when the outline
  * names one, and its drafted body; the other pack documents are those whose
  * final bodies exist. */
-export function consistencyItems(directory: string, document: DocID, draft: ParagraphRow[], final: ParagraphRow[]): OpenItem[] {
+export function consistencyItems(directory: string, document: DocID, draft: ParagraphRow[], final: ParagraphRow[], fields?: ReferenceFields): OpenItem[] {
   const plan = readLeanPlan(directory)
   const position = plan?.documents.findIndex(row => row.id === document) ?? -1
   const entry = plan?.documents[position]
@@ -68,7 +70,14 @@ export function consistencyItems(directory: string, document: DocID, draft: Para
     const paras = shown(finalBodyParagraphs(directory, row.id))
     return paras.length ? [{ title: row.title, paras, earlier: at < position }] : []
   })
-  return consistencyFindings({ title: entry.title, form: entry.form, final: shown(final), baselines: [original, shown(draft)].filter(rows => rows.length), others })
+  const labels = new Map(final.map(row => [row.pid, row.label]))
+  const linked = shown(final).map((para, at) => {
+    const row = final[at]!
+    const links = fields?.get(row.pid)?.map(field => ({ start: field.start + (row.clause ? row.label!.length + 1 : 0), length: field.length,
+      to: field.number ? listNumber(labels.get(field.target ?? "")) : field.covers }))
+    return links ? { ...para, links } : para
+  })
+  return consistencyFindings({ title: entry.title, form: entry.form, final: linked, baselines: [original, shown(draft)].filter(rows => rows.length), others })
     .map(finding => openItem("apply", "consistency", finding.detail, finding.pid ? { pid: finding.pid } : {}))
 }
 
@@ -86,6 +95,18 @@ export function consistencyFindings(input: { title: string; form?: string; final
   const advisory = advisoryForm(input.form)
   const findings = [...referenceFindings(input.title, final, baselines, pack, advisory), ...termFindings(input.title, final, baselines, pack, advisory)]
   return [...new Map(findings.map(finding => [`${finding.pid ?? ""}\0${finding.detail}`, finding])).values()]
+}
+
+/** The live cross-references of a body by paragraph pointer (docx-crossrefs.ts
+ * referenceFields): where each cached result is in the paragraph's text, and
+ * the paragraph its bookmark is on, or the text it covers. */
+export type ReferenceFields = Map<string, { start: number; length: number; number: boolean; target?: string; covers?: string }[]>
+
+/** The number a cross-reference to a list paragraph shows: its label without
+ * a trailing period, when that is a plain dotted number. */
+function listNumber(label: string | undefined) {
+  const number = label?.replace(/\.+$/, "")
+  return number && /^\d+(?:\.\d+)*$/.test(number) ? number : undefined
 }
 
 /** Advice and letters: they cite the clauses of the documents they discuss. */
@@ -423,7 +444,7 @@ function referenceFindings(title: string, final: Outline, baselines: Outline[], 
     pid: final.paras[row.at]!.pid,
     detail: `Two paragraphs of the final text are numbered ${row.label} (${where(final, final.printed.get(row.label)!)} and the paragraph beginning "${excerpt(final.paras[row.at]!.text, 60)}"); a reference to ${row.label} is ambiguous.`,
   }))
-  for (const ref of refs) for (const label of ref.labels) {
+  for (const ref of refs) for (const [n, label] of ref.labels.entries()) {
     const pid = final.paras[ref.at]!.pid
     const from = capitalize(where(final, ref.at))
     if (ref.target) {
@@ -433,6 +454,15 @@ function referenceFindings(title: string, final: Outline, baselines: Outline[], 
       continue
     }
     if (advisory) continue
+    // A live cross-reference points where its field's bookmark is: it is
+    // settled when its cached number is its target's, and stale otherwise.
+    const start = leading(final.paras[ref.at]!.text) + ref.spans[n]!
+    const link = final.paras[ref.at]!.links?.find(row => row.start === start && row.length === label.length && row.to !== undefined)
+    if (link) {
+      if (link.to !== label) findings.push({ pid, detail: `${from} shows ${ref.kind} ${label}, but its cross-reference field points at what is now ${ref.kind} ${link.to}. ` +
+        `Check which ${ref.kind} is meant; updating the document's fields (F9 in Word) shows ${link.to}.` })
+      continue
+    }
     if (!CLAUSE_KINDS.has(ref.kind)) {
       const name = `${capitalize(ref.kind)} ${label}`
       const keyName = `${ref.kind} ${label}`
