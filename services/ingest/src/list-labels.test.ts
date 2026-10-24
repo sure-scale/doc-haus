@@ -118,3 +118,11 @@ test("with a numbered default paragraph style, the tracked-changes summary takes
   expect(ingest).toStartWith("[This Word file contains 1 pending tracked change by Counterparty")
   expect(ingest).toEndWith("]\n\n1. Delivery\n\n2. Payment [Tracked insertion by Counterparty: on time]\n\n3. Term\n\n")
 }, 120_000)
+
+test("a field result marked without its field start reads alike in both readers", async () => {
+  // Word can leave a field's separate and end marks after its start is deleted.
+  const field = (type: string) => `<w:r><w:fldChar w:fldCharType="${type}"/></w:r>`
+  const { ingest, live } = await readers("Stray field.docx", docx(typed(run("Payment within ") + field("separate") + run("thirty") + field("end") + run(" days.")) + typed(run("Term"))))
+  expect(live).toBe(`${ingest}\n`)
+  expect(ingest).toBe("Payment within thirty days.\n\nTerm\n\n")
+})
