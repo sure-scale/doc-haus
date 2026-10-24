@@ -1,4 +1,5 @@
 import { beforeAll, describe, expect, test } from "bun:test"
+import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { createDocxRevision, createDocxLocalization, applyDocxLocalization, applyDocxParagraphEdits } from "./docx-amendments"
 import { renderMarkdownToDocx } from "./render"
@@ -361,5 +362,37 @@ describe("live cross-references", () => {
     expect((await createDocxRevision(output.bytes)).paragraphs.map(row => row.text)).toContain("In this Agreement the defined terms in clause 2.1 and Schedule 1 apply.")
     expect((await createDocxRevision(output.bytes)).paragraphs.map(row => row.text)).toContain("The Customer shall pay as set out in clause 2.2.")
     expect(refs(output.bytes)).toEqual([[" REF _Ref# \\r \\h ", "2.1"], [" REF _Ref# \\h ", "1"]])
+  })
+
+  test("a changed format of an existing run is refused, also in a batch that rewrites a cross-reference number", async () => {
+    const source = (await renderMarkdownToDocx(`${AGREEMENT}\n\n2.3 Nothing here limits the **Supplier**.`)).bytes
+    const revision = await createDocxRevision(source)
+    const handle = (start: string) => revision.paragraphs.find(row => row.text.startsWith(start))!.paragraph_handle
+    const plain = { id: "plain", paragraph_handle: handle("Nothing here"), occurrence: 0, before_quote: "Nothing here", replacement: "Nothing in this clause" }
+    const number = { id: "number", paragraph_handle: handle("The Customer"), occurrence: 0, before_quote: "clause 2.1", replacement: "clause 2.2" }
+    // A faulty engine edit: the untouched bold run "Supplier" gains capitals.
+    const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    const dx = await docxodus()
+    const probe = dx.openDocxSession(source, {})
+    const prototype = Object.getPrototypeOf(probe)
+    probe.close()
+    const replaceMatch = prototype.replaceMatch
+    prototype.replaceMatch = function (this: typeof probe, ...args: Parameters<typeof probe.replaceMatch>) {
+      const result = replaceMatch.apply(this, args)
+      const id = args[0].enclosingAnchor.id
+      if (!this.raw.getXml(id).includes("Nothing in this clause")) return result
+      const doc = new DOMParser().parseFromString(this.raw.getXml(id), "application/xml")
+      const run = Array.from(doc.getElementsByTagNameNS(W, "r")).find(row => row.getElementsByTagNameNS(W, "t")[0]?.textContent === "Supplier")!
+      run.getElementsByTagNameNS(W, "rPr")[0]!.appendChild(doc.createElementNS(W, "w:caps"))
+      this.raw.replaceXml(id, new XMLSerializer().serializeToString(doc))
+      return result
+    }
+    try {
+      await expect(applyDocxParagraphEdits(source, [plain])).rejects.toThrow("docx_existing_run_properties_changed")
+      await expect(applyDocxParagraphEdits(source, [plain, number])).rejects.toThrow("docx_existing_run_properties_changed")
+    } finally { prototype.replaceMatch = replaceMatch }
+    // Without the fault both batches apply.
+    expect((await createDocxRevision((await applyDocxParagraphEdits(source, [plain, number])).bytes)).paragraphs.map(row => row.text))
+      .toEqual(expect.arrayContaining(["Nothing in this clause limits the Supplier.", "The Customer shall pay as set out in clause 2.2."]))
   })
 })

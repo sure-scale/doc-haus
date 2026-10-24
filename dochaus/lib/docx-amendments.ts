@@ -185,7 +185,6 @@ async function writeEdits(opened: Opened, edits: ReturnType<typeof admitted>[]) 
   // field unwrapped: the same paragraphs and text, so the same spans.
   const unlinked = unlinkedSource(opened, edits)
   const target = unlinked ? await openRevision(unlinked) : opened
-  let output: Uint8Array
   try {
     for (const edit of ordered) {
       const text = expected[edit.ordinal]
@@ -200,34 +199,37 @@ async function writeEdits(opened: Opened, edits: ReturnType<typeof admitted>[]) 
       const result = target.session.replaceMatch(change.match, change.replacement)
       if (!result.success) throw new Error(`docx_mutation_failed:${result.error?.code}`)
     }
-    output = target.session.save()
+    const output = target.session.save()
+    const reopened = await openRevision(output)
+    try {
+      if (JSON.stringify(reopened.paragraphs.map(p => p.match.text)) !== JSON.stringify(expected))
+        throw new Error("docx_saved_text_mismatch")
+      const changed = new Set(edits.map(edit => edit.ordinal))
+      // The edited runs are those of the session the edits were written in,
+      // which stays open until its own check has compared their formatting.
+      verifyPreservation(opened, reopened, changed)
+      if (target !== opened) verifyPreservation(target, reopened, changed)
+      return {
+        bytes: output,
+        // The projection these edits were admitted against.
+        revision: opened.revision,
+        report: {
+          source_sha256: opened.revision.source_sha256,
+          output_sha256: reopened.revision.source_sha256,
+          amendments: edits.map(edit => ({ amendment_id: edit.amendment.id, target_handle: edit.handle,
+            paragraph_handle: opened.revision.paragraphs[edit.ordinal].paragraph_handle,
+            before_quote: edit.amendment.before_quote, replacement: edit.amendment.replacement,
+            paragraph_before: opened.revision.paragraphs[edit.ordinal].text,
+            paragraph_after: expected[edit.ordinal],
+            replacement_formatting: edit.change.formatting,
+          })),
+          unchanged_paragraphs_verified: opened.paragraphs.length - changed.size,
+          package_structure_verified: true,
+          limitation: "changed text inherits first touched run formatting; structural edits and existing tracked revisions unsupported",
+        },
+      }
+    } finally { reopened.session.close() }
   } finally { if (target !== opened) target.session.close() }
-  const reopened = await openRevision(output)
-  try {
-    if (JSON.stringify(reopened.paragraphs.map(p => p.match.text)) !== JSON.stringify(expected))
-      throw new Error("docx_saved_text_mismatch")
-    const changed = new Set(edits.map(edit => edit.ordinal))
-    verifyPreservation(opened, reopened, changed)
-    return {
-      bytes: output,
-      // The projection these edits were admitted against.
-      revision: opened.revision,
-      report: {
-        source_sha256: opened.revision.source_sha256,
-        output_sha256: reopened.revision.source_sha256,
-        amendments: edits.map(edit => ({ amendment_id: edit.amendment.id, target_handle: edit.handle,
-          paragraph_handle: opened.revision.paragraphs[edit.ordinal].paragraph_handle,
-          before_quote: edit.amendment.before_quote, replacement: edit.amendment.replacement,
-          paragraph_before: opened.revision.paragraphs[edit.ordinal].text,
-          paragraph_after: expected[edit.ordinal],
-          replacement_formatting: edit.change.formatting,
-        })),
-        unchanged_paragraphs_verified: opened.paragraphs.length - changed.size,
-        package_structure_verified: true,
-        limitation: "changed text inherits first touched run formatting; structural edits and existing tracked revisions unsupported",
-      },
-    }
-  } finally { reopened.session.close() }
 }
 
 export function changedDocxSpan(match: Match, replacement: string) {
