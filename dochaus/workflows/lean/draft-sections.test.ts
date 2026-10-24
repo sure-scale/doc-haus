@@ -244,6 +244,34 @@ describe("sectioned draft stage", () => {
     ])
   }, 60_000)
 
+  test("an opening part whose display heading repeats the title prints the title once, in the Markdown and the Word body, its text still attributed to it", async () => {
+    const { directory, state } = matter()
+    const outline = "Acting for: not stated\n# Supply Agreement\nForm: agreement\n## Parties and subject matter\nDisplay heading: supply  AGREEMENT\nWho is bound.\n" +
+      "## Goods\nDisplay heading: Goods\nWhat is supplied."
+    const model = scripted((text, index) => {
+      if (index === 0) return outline
+      if (text.includes("part 1 of 2")) return "## Parties and subject matter\n\nThis agreement is between the supplier and the buyer.\n\n### Subject matter\n\nThe supply of goods."
+      return "## Goods\n\nThe goods in the order."
+    })
+    const result = await runDraftStage(directory, state, { sessions: model.sessions }, () => {}, "d1", () => {})
+    expect(result.status).toBe("done")
+    const plan = readLeanPlan(directory)!.documents[0]!
+    expect(plan.parts.map(part => part.display_heading)).toEqual(["supply  AGREEMENT", "Goods"])
+    // The part prints no heading of its own, so its headings sit directly under the title.
+    expect(readFileSync(leanFile(directory, "d1/draft.md"), "utf8")).toBe("# Supply Agreement\n\nThis agreement is between the supplier and the buyer.\n\n" +
+      "## Subject matter\n\nThe supply of goods.\n\n## Goods\n\nThe goods in the order.\n")
+    expect(styledParagraphs(directory).map(([text, style]) => [text, style])).toEqual([
+      ["Supply Agreement", "Heading1"], ["This agreement is between the supplier and the buyer.", undefined],
+      ["Subject matter", "Heading2"], ["The supply of goods.", undefined], ["Goods", "Heading2"], ["The goods in the order.", undefined],
+    ])
+    const rows = readParagraphs(directory, "d1")
+    expect(rows.map(row => [row.text, row.draft_part, row.draft_heading])).toEqual([
+      ["Supply Agreement", null, true], ["This agreement is between the supplier and the buyer.", 0, false],
+      ["Subject matter", 0, false], ["The supply of goods.", 0, false], ["Goods", 1, true], ["The goods in the order.", 1, false],
+    ])
+    expect(rowsBody(plan, rows).partOf).toEqual([undefined, 0, 0, 0, 1, 1])
+  }, 60_000)
+
   test("a plan saved before labels were planned unheaded keeps them as visible headings and tells the drafter so", async () => {
     const { directory, state } = matter()
     writeLeanPlan(directory, [{ title: "Notice letter", purpose: "", parts: [{ heading: "Background", scope: "" }, { heading: "Notice", scope: "" }] }], outlineBasis(directory), NOT_STATED)
