@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test"
 import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
-import { DocumentExistsError, DuplicateUploadError, MATTER_DOCUMENT_EXTENSIONS, matterDocumentKind, type AttachmentStatus, type Document, type IngestResult } from "../src/api/ingest/documents"
-import DocumentUpload, { attachmentsSummary, documentTree, failedUpload, newUpload, uploadedToast, UploadRow } from "../src/components/DocumentUpload"
+import { DocumentExistsError, DuplicateUploadError, MATTER_DOCUMENT_EXTENSIONS, matterDocumentKind, type AttachmentStatus, type Document, type EmailAttachment, type IngestResult } from "../src/api/ingest/documents"
+import DocumentUpload, { AttachmentEntryRow, attachmentsSummary, documentTree, failedUpload, newUpload, uploadedToast, UploadRow } from "../src/components/DocumentUpload"
 
 const file = new File(["theirs"], "Agreement.docx")
 const row = (upload: Parameters<typeof UploadRow>[0]["upload"]) => {
@@ -80,33 +80,33 @@ test("any other failed upload stays retryable and offers no replace choice", () 
 
 test("every format ingest reads can be added; any other file is refused before upload", () => {
   // Mirrors MATTER_DOCUMENT_EXTENSIONS in services/ingest/src/ingest.ts.
-  expect([...MATTER_DOCUMENT_EXTENSIONS]).toEqual([".docx", ".pdf", ".eml", ".xlsx", ".zip"])
-  for (const [name, kind] of [["Agreement.docx", "docx"], ["Scan.PDF", "pdf"], ["Client instructions.eml", "eml"], ["Cap table.XLSX", "xlsx"], ["Artwork files.ZIP", "zip"]] as const) {
+  expect([...MATTER_DOCUMENT_EXTENSIONS]).toEqual([".docx", ".pdf", ".eml", ".msg", ".xlsx", ".zip"])
+  for (const [name, kind] of [["Agreement.docx", "docx"], ["Scan.PDF", "pdf"], ["Client instructions.eml", "eml"], ["Forwarded thread.MSG", "msg"], ["Cap table.XLSX", "xlsx"], ["Artwork files.ZIP", "zip"]] as const) {
     expect(matterDocumentKind(name)).toBe(kind)
     expect(newUpload(1, new File(["synthetic"], name))).toMatchObject({ key: 1, status: "queued" })
   }
   // Like path.extname, which ingest checks: a name whose only dot leads it has no extension.
   for (const [name, kind] of [[".hidden.eml", "eml"], ["..pdf", "pdf"]] as const) expect(matterDocumentKind(name)).toBe(kind)
-  for (const name of ["Notes.msg", "Old.doc", "Table.csv", "eml", "mail.eml.txt", "Agreement", ".pdf", ".DOCX", " .xlsx"]) {
+  for (const name of ["Notes.mbox", "Old.doc", "Table.csv", "eml", "mail.eml.txt", "Agreement", ".pdf", ".DOCX", " .xlsx"]) {
     expect(matterDocumentKind(name)).toBeUndefined()
     expect(newUpload(2, new File(["synthetic"], name))).toMatchObject({
       status: "failed",
-      error: "Only Word (.docx), PDF, email (.eml), Excel (.xlsx) and zip (.zip) files can be added.",
+      error: "Only Word (.docx), PDF, email (.eml, .msg), Excel (.xlsx) and zip (.zip) files can be added.",
     })
     expect(newUpload(2, new File(["synthetic"], name)).retryable).toBeUndefined()
   }
 })
 
 test("the picker offers every format and the list marks emails and spreadsheets with their own glyph", () => {
-  const documents: Document[] = ["Agreement.docx", "Scan.pdf", "Client instructions.eml", "Cap table.xlsx"].map((name, index) => ({
+  const documents: Document[] = ["Agreement.docx", "Scan.pdf", "Client instructions.eml", "Cap table.xlsx", "Forwarded thread.msg"].map((name, index) => ({
     id: index + 1, name, doc_path: `/matters/m/${name}`, created_at: index + 1, role: "source",
   }))
   const html = renderToStaticMarkup(createElement(DocumentUpload, { matterId: "m", documents, onUploaded: () => {}, onView: () => {} }))
-  expect(html).toContain('accept=".docx,.pdf,.eml,.xlsx,.zip"')
+  expect(html).toContain('accept=".docx,.pdf,.eml,.msg,.xlsx,.zip"')
   expect(html).toContain("Drop Word, PDF, email, Excel or zip files here, or click to browse.")
   const glyphs = [...html.matchAll(/<span class="doc-type is-(\w+)" title="([^"]+)"[^>]*>([\s\S]*?)<\/span>/g)].map(([, kind, title, svg]) => ({ kind, title, svg }))
   expect(glyphs.map(({ kind, title }) => [kind, title])).toEqual([
-    ["xlsx", "Excel spreadsheet"], ["eml", "Email"], ["pdf", "PDF document"], ["docx", "Word document"],
+    ["msg", "Outlook email"], ["xlsx", "Excel spreadsheet"], ["eml", "Email"], ["pdf", "PDF document"], ["docx", "Word document"],
   ])
   // Email and spreadsheet glyphs differ from the document glyph Word and PDF share.
   expect(new Set(glyphs.map(({ svg }) => svg)).size).toBe(3)
@@ -193,6 +193,18 @@ test("an email lists an attachment with no readable text, and one whose text is 
   // A status from a newer ingest still reads as not added.
   expect(attachmentsSummary({ attachments: [{ name: "Later.bin", type: "", size: 1, status: "from_a_newer_ingest" as unknown as "failed" }] }))
     .toBe(" Not added: Later.bin (not added).")
+})
+
+test("an Outlook attachment held as a link, or an embedded object, says why it was not added", () => {
+  const linked: EmailAttachment = { name: "Contract.docx", type: "", size: 1, status: "unsupported", note: "linked" }
+  const ole: EmailAttachment = { name: "Embedded chart.docx", type: "", size: 1, status: "unsupported", note: "ole" }
+  expect(attachmentsSummary({ attachments: [linked, ole] })).toBe(
+    " Not added: Contract.docx (not supported: a link to a file stored elsewhere), Embedded chart.docx (not supported: an embedded object, not a file).",
+  )
+  const status = (attachment: EmailAttachment) =>
+    renderToStaticMarkup(createElement(AttachmentEntryRow, { attachment, documents: [], onView: () => {} })).match(/<span class="doc-child-status">([^<]*)<\/span>/)?.[1]
+  expect(status(linked)).toBe("Not supported · a link to a file stored elsewhere")
+  expect(status(ole)).toBe("Not supported · an embedded object, not a file")
 })
 
 // Each extracted document is listed once, under the document it came from, by

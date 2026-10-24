@@ -46,7 +46,7 @@ export const DOCX_RENDER_OPTIONS: ConversionOptions = {
 // files and PDFs open in the redline viewer.
 export default function DocumentViewer(props: Parameters<typeof WordDocumentViewer>[0]) {
   const kind = matterDocumentKind(props.name)
-  if (kind === "eml" || kind === "xlsx" || kind === "zip")
+  if (kind === "eml" || kind === "msg" || kind === "xlsx" || kind === "zip")
     return <DocumentTextViewer matterId={props.matterId} name={props.name} kind={kind} citation={props.citation} onClose={props.onClose} onChanged={props.onChanged} />
   return <WordDocumentViewer {...props} />
 }
@@ -670,7 +670,7 @@ function pageList(pages: number[]) {
 function DocumentTextViewer({ matterId, name, kind, citation, onClose, onChanged }: {
   matterId: string
   name: string
-  kind: "eml" | "xlsx" | "zip"
+  kind: "eml" | "msg" | "xlsx" | "zip"
   citation?: CitationFocus
   onClose: () => void
   onChanged?: () => void
@@ -730,7 +730,7 @@ function DocumentTextViewer({ matterId, name, kind, citation, onClose, onChanged
         if (e.key === "Escape" && !e.defaultPrevented) { e.preventDefault(); e.stopPropagation(); onClose() }
       }}>
         <div className="viewer-bar">
-          <ViewerTitle name={name} kind={kind === "zip" ? "Zip file · list of files, read-only" : `${kind === "eml" ? "Email" : "Excel spreadsheet"} · extracted text, read-only`} />
+          <ViewerTitle name={name} kind={kind === "zip" ? "Zip file · list of files, read-only" : `${kind === "eml" || kind === "msg" ? "Email" : "Excel spreadsheet"} · extracted text, read-only`} />
           <div className="viewer-bar-actions">
             <VersionsToggle open={versionsOpen} count={versions.data?.versions.length} onToggle={toggleVersions} />
             <span className="viewer-bar-divider" aria-hidden="true" />
@@ -759,7 +759,7 @@ function DocumentTextViewer({ matterId, name, kind, citation, onClose, onChanged
 
 // The extracted text on the viewer's sheet, the matched excerpt marked in place.
 export function ExtractedText({ kind, text, match, markRef }: {
-  kind: "eml" | "xlsx" | "zip"
+  kind: "eml" | "msg" | "xlsx" | "zip"
   text: string
   match?: ReturnType<typeof citationPassage>
   markRef?: Ref<HTMLElement>

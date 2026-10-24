@@ -80,6 +80,11 @@ async function extract(docPath: string, buffer: Buffer) {
     const { emlToText } = await import("./email")
     return emlToText(buffer)
   }
+  if (name.endsWith(".msg")) {
+    // The one Outlook email extractor ingest also uses (msg.ts).
+    const { msgToText } = await import("./msg")
+    return msgToText(buffer)
+  }
   if (name.endsWith(".xlsx")) return xlsxToText(buffer)
   if (name.endsWith(".zip")) {
     // The one zip reader ingest also uses (zip.ts): the listing of its files.

@@ -111,7 +111,7 @@ describe("email and spreadsheet sources", () => {
   const viewer = (name: string) => renderToStaticMarkup(createElement(DocumentViewer, { matterId: "m", name, onClose: () => {} }))
 
   test("open as read-only extracted text, never on the Word or PDF path", () => {
-    for (const [name, kind] of [["Client instructions.eml", "Email"], ["Cap table.XLSX", "Excel spreadsheet"]]) {
+    for (const [name, kind] of [["Client instructions.eml", "Email"], ["Forwarded thread.msg", "Email"], ["Cap table.XLSX", "Excel spreadsheet"]]) {
       const html = viewer(name)
       expect(html).toContain(`<span class="viewer-title-meta">${kind} · extracted text, read-only</span>`)
       expect(html).toContain('aria-label="Reading the text"')

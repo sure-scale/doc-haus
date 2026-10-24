@@ -506,7 +506,7 @@ export function attachmentsSummary(result: Pick<IngestResult, "attachments"> & {
     added && ` ${added} ${noun}${added === 1 ? "" : "s"} added.`,
     same && ` ${same} already in the matter.`,
     unreadable.length && ` Added but not indexed, no readable text: ${unreadable.map(attachmentName).join(", ")}.`,
-    missing.length && ` Not added: ${missing.map((a) => `${attachmentName(a)} (${attachmentStatus(a.status).toLowerCase()})`).join(", ")}.`,
+    missing.length && ` Not added: ${missing.map((a) => `${attachmentName(a)} (${[attachmentStatus(a.status).toLowerCase(), attachmentNote(a)].filter(Boolean).join(": ")})`).join(", ")}.`,
   ]
     .filter(Boolean)
     .join("")
@@ -534,6 +534,12 @@ function attachmentStatus(status: string) {
 
 function attachmentName(attachment: EmailAttachment) {
   return attachment.name || attachment.document || "Unnamed attachment"
+}
+
+// Why an Outlook attachment named like a document was not read.
+function attachmentNote(attachment: EmailAttachment) {
+  if (attachment.note === "linked") return "a link to a file stored elsewhere"
+  if (attachment.note === "ole") return "an embedded object, not a file"
 }
 
 // The documents list as a tree. A document extracted from another (an email's
@@ -578,7 +584,7 @@ const EXPANDED_CHILDREN = 5
 // How a parent and what came out of it are named: an email's attachments, a
 // zip's files, or any other parent's files.
 function parentWords(name: string) {
-  const parent = /\.eml$/i.test(name) ? "email" : /\.zip$/i.test(name) ? "zip" : "file"
+  const parent = /\.(eml|msg)$/i.test(name) ? "email" : /\.zip$/i.test(name) ? "zip" : "file"
   const child = parent === "email" ? "attachment" : "file"
   return {
     parent,
@@ -601,6 +607,7 @@ export function AttachmentEntryRow({ attachment, documents, onView }: {
     ? attachment.document
     : undefined
   const status = attachment.status === "same" && attachment.document ? `Same as ${attachment.document}` : attachmentStatus(attachment.status)
+  const note = attachmentNote(attachment)
   return (
     <div className={`doc-row is-child is-entry is-${attachment.status}`}>
       <div className="doc-row-main">
@@ -616,6 +623,7 @@ export function AttachmentEntryRow({ attachment, documents, onView }: {
           status
         )}
         {attachment.note === "may-contain-attachments" && " · may contain further attachments"}
+        {note && ` · ${note}`}
         {attachment.flagged && " · suspicious name"}
       </span>
     </div>
@@ -668,7 +676,7 @@ export function EmailRemoveConfirm({ name, removal, onRemove, onCancel }: {
 // format ingest cannot read is refused here, with the formats it can.
 export function newUpload(key: number, file: File): Upload {
   if (matterDocumentKind(file.name)) return { key, file, status: "queued" }
-  return { key, file, status: "failed", error: "Only Word (.docx), PDF, email (.eml), Excel (.xlsx) and zip (.zip) files can be added." }
+  return { key, file, status: "failed", error: "Only Word (.docx), PDF, email (.eml, .msg), Excel (.xlsx) and zip (.zip) files can be added." }
 }
 
 // A same-name clash asks the lawyer what to do with the existing document; an
@@ -840,6 +848,7 @@ const DOCUMENT_TYPE_LABEL: Record<DocumentGlyph, string> = {
   docx: "Word document",
   pdf: "PDF document",
   eml: "Email",
+  msg: "Outlook email",
   xlsx: "Excel spreadsheet",
   zip: "Zip file",
   file: "File",
@@ -849,7 +858,7 @@ function DocumentType({ name }: { name: string }) {
   const kind: DocumentGlyph = matterDocumentKind(name) ?? (/\.zip$/i.test(name.trim()) ? "zip" : "file")
   return (
     <span className={`doc-type is-${kind}`} title={DOCUMENT_TYPE_LABEL[kind]} aria-hidden>
-      {kind === "eml" ? <IconEmail /> : kind === "xlsx" ? <IconSheet /> : kind === "zip" ? <IconArchive /> : <IconFile />}
+      {kind === "eml" || kind === "msg" ? <IconEmail /> : kind === "xlsx" ? <IconSheet /> : kind === "zip" ? <IconArchive /> : <IconFile />}
     </span>
   )
 }

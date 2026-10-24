@@ -6,6 +6,7 @@ import { Document, Packer, Paragraph } from "docx"
 import { strToU8, zipSync } from "fflate"
 import { getDocumentRole, listSourceDocuments, openDb } from "./db"
 import { MAX_ZIP_FILES } from "./zip-archive"
+import { fileAttachment, msgFile, outlookMessage } from "./fixtures/synthetic-msg"
 
 // A same-name upload never replaces an uploaded source silently: the lawyer's
 // own Agreement.docx survives the counterparty's returned Agreement.docx unless
@@ -244,6 +245,39 @@ test("email and zip uploads keep revised same-sized attachments and distinct nes
     expect(nested.status).toBe(200)
     expect(await nested.json()).toMatchObject({ attachments: [{ document: "First.zip" }, { document: "Second.zip" }] })
     expect(await stored("First.zip")).not.toEqual(await stored("Second.zip"))
+  })
+}, 120_000)
+
+// An Outlook email upload brings in its attachments like an .eml; a file that
+// is not an Outlook email is refused with a message the upload row can show.
+test("an Outlook email upload adds its attachments, and an unreadable one is refused", async () => {
+  await withMatter("Outlook uploads", async ({ matter, request, upload }) => {
+    const msg = msgFile(outlookMessage({
+      subject: "Synthetic thread",
+      from: { address: "sender@example.test" },
+      body: "See attached.",
+      attachments: [fileAttachment("Agreement.docx", undefined, await docx("Outlook marker"))],
+    }))
+    const added = await upload("Thread.msg", new Uint8Array(msg))
+    expect(added.status).toBe(200)
+    expect(await added.json()).toMatchObject({
+      name: "Thread.msg",
+      quality: { status: "ok" },
+      attachments: [{ name: "Agreement.docx", document: "Agreement.docx", status: "indexed" }],
+    })
+    // With its attachments in, the same Outlook email again is a duplicate (#268).
+    const again = await upload("Thread.msg", new Uint8Array(msg), "replace")
+    expect(again.status).toBe(409)
+    expect(await again.json()).toMatchObject({ code: "duplicate", name: "Thread.msg" })
+
+    const refused = await upload("Broken.msg", new Uint8Array(Buffer.from("Not an Outlook email.")))
+    expect(refused.status).toBe(400)
+    expect(await refused.json()).toEqual({ error: "Broken.msg could not be read as an Outlook email." })
+    const listed = await (await request(`/matters/${matter.id}`)).json() as { documents: { name: string; attachment_of?: { name: string } }[] }
+    expect(listed.documents.map((document) => [document.name, document.attachment_of?.name]).toSorted()).toEqual([
+      ["Agreement.docx", "Thread.msg"],
+      ["Thread.msg", undefined],
+    ])
   })
 }, 120_000)
 
