@@ -246,7 +246,7 @@ function WordDocumentViewer({
   if (isPdf)
     return (
       <div className={`viewer-overlay${closing ? " is-closing" : ""}`} inert={closing} {...backdropClose(() => onClose())}>
-        <div ref={modalRef} className="viewer-panel document-reader" role="dialog" aria-modal="true" aria-label={name} tabIndex={-1} onClick={(e) => e.stopPropagation()} onKeyDown={(e) => {
+        <div ref={modalRef} className="viewer-panel document-reader pdf-reader" role="dialog" aria-modal="true" aria-label={name} tabIndex={-1} onClick={(e) => e.stopPropagation()} onKeyDown={(e) => {
           if (e.key === "Escape" && !e.defaultPrevented) { e.preventDefault(); e.stopPropagation(); onClose() }
         }}>
           <div className="viewer-bar">
@@ -265,7 +265,7 @@ function WordDocumentViewer({
             </div>
           </div>
           <div className="viewer-body">
-            <div className="viewer-doc">
+            <div className="viewer-doc pdf-doc">
               {citation && <p role="status">Source section {citation.section}. PDF passage navigation is unavailable; the source document is open.</p>}
               {error && <p className="muted">{error}</p>}
               <iframe className="pdf-render" title={name} src={documentContentUrl(matterId, name)} />

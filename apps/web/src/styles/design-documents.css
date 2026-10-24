@@ -53,6 +53,12 @@
 .document-reader .modal-close svg { flex-shrink: 0; }
 .viewer-bar-divider { width: 1px; height: 22px; margin: 0 var(--space-1); background: var(--border); }
 .document-reader .viewer-doc { padding: 36px var(--space-8) 64px; background: var(--md-sys-color-surface-container-low); }
+/* A PDF preview fills the viewer. The panel gets a definite height so the frame
+   can take the room left below the header; the PDF scrolls inside the frame. */
+.viewer-panel.pdf-reader { height: calc(var(--viewport-block) - 48px); }
+.pdf-reader .viewer-doc.pdf-doc { display: flex; flex-direction: column; gap: var(--space-3); overflow: hidden; padding: var(--space-4) var(--space-6); }
+.pdf-reader .pdf-doc > p { flex: none; margin: 0; }
+.pdf-reader .pdf-doc .pdf-render { flex: 1 1 0; min-height: 0; height: auto; background: var(--md-sys-color-surface); }
 .document-reader .docx-render { background: var(--md-sys-color-surface); line-height: 1.85; border-color: var(--md-sys-color-outline-variant); }
 .document-reader .changes-panel { background: var(--panel); padding: 0 var(--space-5) var(--space-5); }
 .document-reader .changes-head { background: var(--panel); }
@@ -86,7 +92,9 @@
   .document-reader .viewer-bar-actions > button:not(.modal-close) { flex: 1; justify-content: center; padding: 0 10px; }
   .document-reader .viewer-body { flex-direction: column; overflow: auto; }
   .document-reader .viewer-doc { flex: none; overflow: visible; padding: var(--space-5) var(--space-3) var(--space-8); }
-  .document-reader .pdf-render { min-height: 65dvh; }
+  .pdf-reader .viewer-body { flex-direction: column; overflow: hidden; }
+  .pdf-reader .viewer-doc.pdf-doc { flex: 1 1 0; min-height: 0; overflow: hidden; padding: var(--space-3); }
+  .pdf-reader .pdf-doc .pdf-render { min-height: 0; }
   .document-reader .docx-render { padding: 30px var(--space-6); }
   .document-reader .changes-panel { width: 100%; overflow: visible; padding: 0 18px 18px; border-left: 0; border-top: 1px solid var(--border); }
   .document-reader .document-edit-request, .document-reader .document-open-items { padding: 18px; }

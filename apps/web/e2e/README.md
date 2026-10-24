@@ -160,3 +160,18 @@ skipped. Screenshots/results remain outside public source. Run focused native
 control regressions with `bun test/material-primitives.browser.ts` and
 `bun test/jurisdiction-select.browser.ts`; use `PLAYWRIGHT_CHROMIUM_PATH` if the
 installed Chromium differs from the package's default.
+
+Run the PDF preview acceptance (#275) against a built web preview, with a full
+Chromium (the headless shell has no PDF plugin and shows a blank frame):
+
+```sh
+PLAYWRIGHT_BASE_URL=http://localhost:5321 \
+DOCHAUS_EVIDENCE_DIR=/tmp/doc-haus-pdf-evidence \
+PLAYWRIGHT_CHROMIUM_EXECUTABLE="<full Chromium binary>" \
+bun apps/web/e2e/pdf-preview.ts
+```
+
+It serves a generated synthetic multi-page PDF through intercepted routes and
+asserts the iframe fills the viewer body at 1440 px and 400 px wide, and that the
+PDF scrolls inside its frame. Set `DOCHAUS_MEASURE_ONLY=1` to print the heights
+without asserting, and `PDF_FIXTURE=<file>` to use another synthetic PDF.
