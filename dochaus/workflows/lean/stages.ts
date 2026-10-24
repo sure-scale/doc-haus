@@ -375,10 +375,12 @@ export async function acceptStageReply(directory: string, step: StepID, reply: s
     // default numbering) included. Numbered references to the document's own
     // clauses then become live cross-references; one placed after another pack
     // document's title is that document's. A typed document gets no fields.
+    // A revised original keeps its own header and footer, the firm's header
+    // lines written above its own header text.
     const styleTemplate = plannedStyleTemplate(directory, planned)
     const { list, links } = draftedReferences(directory, document, planned)
     const into = list && templateSource(planned) === planned?.comparison ? { list } : {}
-    const rendered = await renderMarkdownToDocx(options.presentation?.source ?? reply, undefined, furniture, { numbering: false, styleTemplate })
+    const rendered = await renderMarkdownToDocx(options.presentation?.source ?? reply, undefined, furniture, { numbering: false, styleTemplate, ...(planned?.mode === "revise" ? { revising: true as const } : {}) })
       .then(result => ({ ...result, bytes: carryRevisionTables(directory, document, result.bytes) }))
       .then(result => ({ ...(options.presentation ? presentDraft(result.bytes, options.presentation.parts, options.presentation.title !== false, result.headingSpacing) : { bytes: result.bytes, attribution: undefined }), templated: result.templated }))
       .then(result => ({ ...result, bytes: result.templated ? carryRevisionParagraphs(directory, document, result.bytes) : result.bytes }))

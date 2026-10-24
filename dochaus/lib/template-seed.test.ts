@@ -5,6 +5,7 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { docxodus } from "./docxodus"
+import { compareDocxWithPointers } from "./drafting-amendment"
 import { renderMarkdownToDocx } from "./render"
 
 // A synthetic firm template: its own body style, fonts and A4 page, and a
@@ -218,6 +219,88 @@ describe("rendering onto a template", () => {
     })
     const document = strFromU8(unzipSync((await renderMarkdownToDocx(BODY, undefined, undefined, { styleTemplate: precedent })).bytes)["word/document.xml"]!)
     expect(tight(document.match(/<w:sectPr\b[\s\S]*<\/w:sectPr>/)![0])).toBe(`<w:sectPr>${A4}</w:sectPr>`)
+  })
+
+  test("a revised original keeps the header and footer its main body shows, those it continues from an earlier section and their pictures included, the firm's header lines above its own", async () => {
+    const story = (root: "hdr" | "ftr", text: string) => `<w:${root} ${NS}><w:p><w:r><w:t>${text}</w:t></w:r></w:p></w:${root}>`
+    const paragraph = (text: string) => `<w:p><w:r><w:t>${text}</w:t></w:r></w:p>`
+    const reference = (kind: "header" | "footer", type: string, id: string) => `<w:${kind}Reference w:type="${type}" r:id="${id}"/>`
+    const landscape = '<w:pgSz w:w="16838" w:h="11906" w:orient="landscape"/>'
+    // A cover section sets the default header and a footer with the firm's logo;
+    // the main body, linked to it, sets only its first-page and even-page headers
+    // and numbers its pages in roman; a closing schedule has a header of its own.
+    const original = template({
+      settings: '<w:evenAndOddHeaders/><w:defaultTabStop w:val="567"/>',
+      rels: [["rId5", "header", "header2.xml"], ["rId6", "footer", "footer1.xml"], ["rId7", "header", "header3.xml"], ["rId8", "header", "header4.xml"]]
+        .map(([id, kind, target]) => `<Relationship Id="${id}" Type="${REL}/${kind}" Target="${target}"/>`).join(""),
+      types: '<Default Extension="png" ContentType="image/png"/>' + ["header2", "header3", "header4", "footer1"]
+        .map(name => `<Override PartName="/word/${name}.xml" ContentType="${TYPE}.${name.replace(/\d$/, "")}+xml"/>`).join(""),
+      parts: {
+        "word/header2.xml": story("hdr", "First page header"),
+        "word/header3.xml": story("hdr", "Even page header"),
+        "word/header4.xml": story("hdr", "Schedule header"),
+        "word/footer1.xml": `<w:ftr ${NS}><w:p><w:r><w:drawing><a:blip xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" r:embed="rIdLogo"/></w:drawing></w:r></w:p></w:ftr>`,
+        "word/_rels/footer1.xml.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdLogo" Type="${REL}/image" Target="media/logo.png"/></Relationships>`,
+        "word/media/logo.png": "PNG",
+      },
+      body: `<w:p><w:pPr><w:sectPr>${reference("header", "default", "rId4")}${reference("footer", "default", "rId6")}${A4}</w:sectPr></w:pPr><w:r><w:t>Cover</w:t></w:r></w:p>`
+        + `${paragraph("1. Term")}${paragraph("1.1 One year.")}<w:p><w:pPr><w:sectPr>${reference("header", "first", "rId5")}${reference("header", "even", "rId7")}${A4}<w:pgNumType w:fmt="lowerRoman"/><w:titlePg/></w:sectPr></w:pPr><w:r><w:t>2. Supply</w:t></w:r></w:p>`
+        + `${paragraph("Schedule")}<w:sectPr>${reference("header", "default", "rId8")}${landscape}</w:sectPr>`,
+    })
+    const firm = { header: ["Subject to contract", "Draft: 20 October 2026"], pageNumber: { format: "plain" as const, align: "center" as const } }
+    const parts = unzipSync((await renderMarkdownToDocx(BODY, undefined, firm, { styleTemplate: original, revising: true })).bytes)
+    const document = strFromU8(parts["word/document.xml"]!)
+    const relationships = strFromU8(parts["word/_rels/document.xml.rels"]!)
+    const shown = Object.fromEntries([...document.matchAll(/<w:(header|footer)Reference w:type="(\w+)" r:id="(\w+)"\/>/g)]
+      .map(([, kind, type, id]) => [`${kind}:${type}`, new RegExp(`Id="${id}"[^>]*Target="([^"]+)"`).exec(relationships)?.[1]]))
+    expect(shown).toEqual({ "header:default": "header1.xml", "header:first": "header2.xml", "header:even": "header3.xml", "footer:default": "footer1.xml" })
+    // Each header shown (default, first page, even pages) takes the firm's lines above its own text; the footer and its logo stay, with no firm page number.
+    const texts = (name: string, from = parts) => [...strFromU8(from[name]!).matchAll(/<w:t(?:\s[^>]*)?>([^<]*)</g)].map(match => match[1])
+    expect(["word/header1.xml", "word/header2.xml", "word/header3.xml"].map(name => texts(name)))
+      .toEqual(["Precedent party header", "First page header", "Even page header"].map(own => [...firm.header, own]))
+    const same = (xml: string) => tight(xml).replace(/encoding="[^"]*"/, "")
+    expect(same(strFromU8(parts["word/footer1.xml"]!))).toBe(same(strFromU8(unzipSync(original)["word/footer1.xml"]!)))
+    expect(Object.keys(parts).filter(name => /header|footer|media/.test(name)).sort())
+      .toEqual(["word/_rels/footer1.xml.rels", "word/footer1.xml", "word/header1.xml", "word/header2.xml", "word/header3.xml", "word/media/logo.png"])
+    expect(document).toContain('<w:pgNumType w:fmt="lowerRoman"/>')
+    expect(document).toContain("<w:titlePg/>")
+    expect(document).not.toContain(" PAGE ")
+    // An original with only a footer gains a header of the lines alone, its footer kept.
+    const footed = template({ body: `${paragraph("1. Term")}<w:sectPr>${reference("footer", "default", "rId6")}${A4}</w:sectPr>`, rels: `<Relationship Id="rId6" Type="${REL}/footer" Target="footer1.xml"/>`,
+      types: `<Override PartName="/word/footer1.xml" ContentType="${TYPE}.footer+xml"/>`, parts: { "word/footer1.xml": story("ftr", "Matter PP/7") } })
+    const footer = unzipSync((await renderMarkdownToDocx(BODY, undefined, firm, { styleTemplate: footed, revising: true })).bytes)
+    expect(Object.keys(footer).filter(name => /header|footer/.test(name)).sort()).toEqual(["word/footer1.xml", "word/header1.xml"])
+    expect(texts("word/header1.xml", footer)).toEqual(firm.header)
+    expect(texts("word/footer1.xml", footer)).toEqual(["Matter PP/7"])
+    expect(tight(strFromU8(parts["word/settings.xml"]!))).toContain("<w:evenAndOddHeaders/>")
+    // Drawn on as a template, the same file gives none of its furniture, and the firm's applies.
+    const templated = unzipSync((await renderMarkdownToDocx(BODY, undefined, firm, { styleTemplate: original })).bytes)
+    expect(Object.keys(templated).filter(name => /header|footer|media/.test(name)).sort()).toEqual(["word/footer1.xml", "word/header1.xml"])
+    expect(strFromU8(templated["word/header1.xml"]!)).toContain("Subject to contract")
+  })
+
+  test("revising a doc.haus draft repeats no header line and dates its draft line anew; the original's other header text stays", async () => {
+    const page = { format: "plain" as const, align: "center" as const }
+    const texts = (bytes: Uint8Array, name: string) => [...strFromU8(unzipSync(bytes)[name]!).matchAll(/<w:t(?:\s[^>]*)?>([^<]*)</g)].map(match => match[1])
+    const original = (await renderMarkdownToDocx("# Supply terms\n\n## 1. Term\n\n1.1 One year.", undefined, { header: ["Subject to contract", "Draft: 1 October 2026"], pageNumber: page }, { numbering: false })).bytes
+    // The redline changes only the draft line's date, or its firm and date.
+    for (const [line, deleted, inserted] of [["Draft: 20 October 2026", "1", "20"], ["Doe LLP draft: 20 October 2026", "Draft: 1", "Doe LLP draft: 20"]]) {
+      const revised = (await renderMarkdownToDocx("# Supply terms\n\n## 1. Term\n\n1.1 Two years.", undefined, { header: ["subject to  contract", line!], pageNumber: page }, { numbering: false, styleTemplate: original, revising: true })).bytes
+      expect(texts(revised, "word/header1.xml")).toEqual(["Subject to contract", line])
+      expect(texts(revised, "word/footer1.xml")).toEqual(["1"])
+      const redline = unzipSync(await compareDocxWithPointers(original, revised, { authorName: "Test" }))
+      const header = strFromU8(redline["word/header1.xml"]!)
+      expect([...header.matchAll(/<w:delText[^>]*>([^<]*)</g)].map(match => match[1]!.trim())).toEqual([deleted])
+      expect([...header.matchAll(/<w:ins\b[^>]*>[\s\S]*?<\/w:ins>/g)].flatMap(match => [...match[0].matchAll(/<w:t[^>]*>([^<]*)</g)].map(text => text[1]!.trim()))).toEqual([inserted])
+      expect(header).not.toMatch(/<w:(?:pPrChange|rPrChange)\b/)
+      expect(strFromU8(redline["word/footer1.xml"]!)).not.toMatch(/<w:(?:ins|del)\b/)
+    }
+    // A header line that only starts like a draft line is the original's own text.
+    for (const own of ["Draft: for discussion", "Draft: 1 October 2026 (for discussion)"]) {
+      const marked = (await renderMarkdownToDocx("# Supply terms", undefined, { header: [own] }, { numbering: false })).bytes
+      const kept = (await renderMarkdownToDocx("# Supply terms", undefined, { header: ["Draft: 20 October 2026"] }, { numbering: false, styleTemplate: marked, revising: true })).bytes
+      expect(texts(kept, "word/header1.xml")).toEqual(["Draft: 20 October 2026", own])
+    }
   })
 
   test("revising a document doc.haus rendered keeps its headings' spacing", async () => {

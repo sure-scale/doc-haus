@@ -12,6 +12,12 @@ import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 // at a part not carried over. The page set-up is the template's main body, the
 // section with the most paragraphs (a precedent's cover page does not set the
 // draft's margins and page numbers, nor a closing landscape schedule turn it).
+// An original the document revises keeps its own furniture instead: the header
+// and footer parts its main body shows (with the pictures they use), its own
+// references or those it continues from an earlier section, as Word shows
+// them, its distinct first page, page numbering and even-page setting, so its
+// revision and redline keep its pages' own furniture (the render writes the
+// firm's header lines above it).
 // Styles the render writes by id and the template lacks are added from the
 // house seed, based on the template's own default paragraph style; a template
 // that has the style under another id (Word translates built-in style ids, not
@@ -43,18 +49,26 @@ const DROPPED_SETTINGS = new Set(["attachedTemplate", "documentProtection", "wri
 
 /** The render seed `template` gives, or undefined when it is not a Word
  * document with styles of its own. `house` is the house seed, whose styles
- * fill in any the render needs that the template lacks. */
-export function templateSeed(template: Uint8Array, house: Uint8Array): Uint8Array | undefined {
+ * fill in any the render needs that the template lacks. `furniture: "own"`
+ * keeps the header and footer of `template`, the original a revision is
+ * drawn from. */
+export function templateSeed(template: Uint8Array, house: Uint8Array, options: { furniture?: "own" } = {}): Uint8Array | undefined {
   try {
-    return seed(unzipSync(template), unzipSync(house))
+    return seed(unzipSync(template), unzipSync(house), options.furniture === "own")
   } catch {
     return undefined
   }
 }
 
-function seed(parts: Record<string, Uint8Array>, house: Record<string, Uint8Array>) {
+function seed(parts: Record<string, Uint8Array>, house: Record<string, Uint8Array>, own: boolean) {
   if (!parts[BODY] || !parts[DOCUMENT_RELS] || !parts["[Content_Types].xml"]) return
   const relationships = parse(parts[DOCUMENT_RELS])
+  const document = parse(parts[BODY])
+  const body = elements(document, W, "body")[0]
+  if (!body) throw new Error("template_seed: no body")
+  const section = pageSection(body, own)
+  // The header and footer parts the kept section shows.
+  const stories = new Set(section ? children(section).filter(node => ["headerReference", "footerReference"].includes(node.localName)).map(node => node.getAttributeNS(R, "id")) : [])
   const kept = new Map<string, Uint8Array>()
   // The kept parts and, but for settings, the parts they relate to in turn
   // (embedded fonts, picture bullets, theme images).
@@ -72,7 +86,7 @@ function seed(parts: Record<string, Uint8Array>, house: Record<string, Uint8Arra
   for (const relationship of elements(relationships, PACKAGE_RELS, "Relationship")) {
     const type = relationship.getAttribute("Type") ?? ""
     const target = resolve(BODY, relationship.getAttribute("Target") ?? "")
-    if (!KEPT.has(type) || relationship.getAttribute("TargetMode") === "External" || !parts[target]) {
+    if (!(KEPT.has(type) || stories.has(relationship.getAttribute("Id"))) || relationship.getAttribute("TargetMode") === "External" || !parts[target]) {
       relationship.parentNode!.removeChild(relationship)
       continue
     }
@@ -83,51 +97,64 @@ function seed(parts: Record<string, Uint8Array>, house: Record<string, Uint8Arra
   if (!styles) return
 
   const ids = new Set(elements(relationships, PACKAGE_RELS, "Relationship").map(relationship => relationship.getAttribute("Id")))
-  kept.set(BODY, emptyBody(parse(parts[BODY]), ids))
+  kept.set(BODY, emptyBody(document, body, section, ids))
   kept.set(DOCUMENT_RELS, serialize(relationships))
   kept.set(styles, withRenderStyles(parse(parts[styles]), house["word/styles.xml"]))
   // The settings' own relationships (an attached template, a data source) are not kept.
-  if (settings) kept.set(settings, sanitizedSettings(parse(parts[settings])))
+  if (settings) kept.set(settings, sanitizedSettings(parse(parts[settings]), own))
   kept.set("_rels/.rels", strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="${PACKAGE_RELS}"><Relationship Id="rId1" Type="${RELATIONSHIP}officeDocument" Target="${BODY}"/></Relationships>`))
   kept.set("[Content_Types].xml", contentTypes(parse(parts["[Content_Types].xml"]), kept))
   return zipSync(Object.fromEntries(kept), { mtime: new Date(1980, 0, 1) })
 }
 
-// One empty paragraph, then the main body's section properties without its
+// The main body's section properties without its vertical alignment and
+// section break, which belong to its place in the template, and without its
 // header and footer references, distinct first page and page numbering, which
-// the page furniture decides, and without its vertical alignment and section
-// break, which belong to its place in the template. Whatever still points at a
-// relationship not kept (the printer settings, a page background picture) goes.
-function emptyBody(document: Document, relationships: Set<string | null>) {
-  const body = elements(document, W, "body")[0]
-  if (!body) throw new Error("template_seed: no body")
-  const section = mainSection(body)
+// the page furniture decides, unless the seed keeps its `own` furniture: then
+// each header or footer it does not set itself is the one it continues from
+// the nearest earlier section that sets it.
+function pageSection(body: Element, own: boolean) {
+  const main = mainSection(body)
+  if (!main) return
+  const { section, earlier } = main
+  for (const node of children(section))
+    if (["vAlign", "type", ...own ? [] : ["headerReference", "footerReference", "titlePg", "pgNumType"]].includes(node.localName)) section.removeChild(node)
+  if (own) for (const kind of ["headerReference", "footerReference"]) for (const type of ["default", "first", "even"]) {
+    const set = (properties: Element) => children(properties).find(node => node.localName === kind && (node.getAttributeNS(W, "type") || "default") === type)
+    const continued = set(section) ? undefined : earlier.map(set).findLast(Boolean)
+    if (continued) section.insertBefore(continued.cloneNode(true), section.firstChild)
+  }
+  return section
+}
+
+// One empty paragraph, then the kept section's properties. Whatever still
+// points at a relationship not kept (the printer settings, a page background
+// picture) goes.
+function emptyBody(document: Document, body: Element, section: Element | undefined, relationships: Set<string | null>) {
   for (const node of Array.from(body.childNodes)) body.removeChild(node)
   body.appendChild(document.createElementNS(W, "w:p"))
-  if (section) {
-    for (const node of children(section))
-      if (["headerReference", "footerReference", "titlePg", "pgNumType", "vAlign", "type"].includes(node.localName)) section.removeChild(node)
-    body.appendChild(section)
-  }
+  if (section) body.appendChild(section)
   withoutDanglingReferences(document.documentElement, relationships)
   return serialize(document)
 }
 
-// The properties of the section with the most paragraphs, the first of equals.
-// A section's properties close it: in its last paragraph, or the body's own
-// for the last section.
+// The properties of the section with the most paragraphs, the first of equals,
+// and those of the sections before it. A section's properties close it: in its
+// last paragraph, or the body's own for the last section.
 function mainSection(body: Element) {
-  let main: { section: Element; paragraphs: number } | undefined
+  let main: { section: Element; paragraphs: number; earlier: Element[] } | undefined
+  const sections: Element[] = []
   let paragraphs = 0
   for (const node of children(body)) {
     const properties = node.localName === "p" ? children(node).find(entry => entry.localName === "pPr") : undefined
     const section = node.localName === "sectPr" ? node : properties && children(properties).find(entry => entry.localName === "sectPr")
     if (node.localName !== "sectPr") paragraphs += node.localName === "p" ? 1 : elements(node, W, "p").length
     if (!section) continue
-    if (!main || paragraphs > main.paragraphs) main = { section, paragraphs }
+    if (!main || paragraphs > main.paragraphs) main = { section, paragraphs, earlier: [...sections] }
+    sections.push(section)
     paragraphs = 0
   }
-  return main?.section
+  return main
 }
 
 function withoutDanglingReferences(root: Element, relationships: Set<string | null>) {
@@ -154,9 +181,9 @@ function withRenderStyles(styles: Document, houseStyles: Uint8Array | undefined)
   return serialize(styles)
 }
 
-function sanitizedSettings(settings: Document) {
+function sanitizedSettings(settings: Document, own: boolean) {
   for (const node of children(settings.documentElement))
-    if (node.namespaceURI === W && DROPPED_SETTINGS.has(node.localName)) settings.documentElement.removeChild(node)
+    if (node.namespaceURI === W && DROPPED_SETTINGS.has(node.localName) && !(own && node.localName === "evenAndOddHeaders")) settings.documentElement.removeChild(node)
   withoutDanglingReferences(settings.documentElement, new Set())
   return serialize(settings)
 }
