@@ -111,9 +111,29 @@ export function emailText(headers: EmailHeaders, attachments: EmailAttachment[],
   return header ? `${header}\n\n${body}` : body
 }
 
-// An HTML-only body keeps the plain tag strip until a real converter lands (#103).
+// An HTML-only body keeps the plain tag strip until a real converter lands (#103):
+// each "<" with at least one character before the next ">" becomes one space,
+// through that ">". The same output as html.replace(/<[^>]+>/g, " "), whose
+// retries after an unclosed "<" make it quadratic, so stored offsets into
+// earlier text still hold.
 export function htmlBodyText(html: string) {
-  return html.replace(/<[^>]+>/g, " ")
+  const parts: string[] = []
+  let from = 0
+  for (let open = html.indexOf("<"); open >= 0; open = html.indexOf("<", from)) {
+    const close = html.indexOf(">", open + 1)
+    // No ">" after this "<", so none after any later one: the rest stays.
+    if (close < 0) break
+    if (close === open + 1) {
+      // "<>" is not a tag; the search goes on after its "<".
+      parts.push(html.slice(from, open + 1))
+      from = open + 1
+      continue
+    }
+    parts.push(html.slice(from, open), " ")
+    from = close + 1
+  }
+  parts.push(html.slice(from))
+  return parts.join("")
 }
 
 function partContent(part: Attachment) {
