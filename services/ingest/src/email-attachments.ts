@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite"
 import { existsSync, readFileSync } from "node:fs"
-import { EMAIL_ATTACHMENT_EXTENSIONS, extension, type ParsedEmail } from "../../../dochaus/lib/email"
+import { EMAIL_ATTACHMENT_EXTENSIONS, extension, safeAttachmentName, type ParsedEmail } from "../../../dochaus/lib/email"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
 import { draftingTraceReference } from "../../../dochaus/lib/drafting-trace-identity"
 import { openDb } from "./db"
@@ -495,8 +495,13 @@ export async function reingestLegacyEmails(matterDir: string) {
       db.close()
     }
   })()
-  const nowSupported = (entry: AttachmentEntry) =>
-    entry.outcome === "unsupported" && entry.extension !== undefined && (EMAIL_ATTACHMENT_EXTENSIONS as readonly string[]).includes(entry.extension)
+  // An entry recorded before its extension was stored is judged by its name;
+  // the re-read records the extension, so this happens once.
+  const nowSupported = (entry: AttachmentEntry, index: number) =>
+    entry.outcome === "unsupported" &&
+    entry.note !== "linked" &&
+    entry.note !== "ole" &&
+    (EMAIL_ATTACHMENT_EXTENSIONS as readonly string[]).includes(entry.extension ?? extension(safeAttachmentName(entry.name, entry.type, index + 1)))
   // A container's parent is a container too.
   const parents = new Map(legacy.map((row) => [row.name, row.parent_name]))
   const depthOf = (name: string) => {
