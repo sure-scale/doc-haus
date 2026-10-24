@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite"
 import { existsSync, readFileSync } from "node:fs"
-import { EMAIL_ATTACHMENT_EXTENSIONS, extension, safeAttachmentName, type ParsedEmail } from "../../../dochaus/lib/email"
+import { EMAIL_ATTACHMENT_EXTENSIONS, extension, type ParsedEmail } from "../../../dochaus/lib/email"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
 import { draftingTraceReference } from "../../../dochaus/lib/drafting-trace-identity"
 import { openDb } from "./db"
@@ -107,6 +107,9 @@ export type AttachmentEntry = {
   note?: "may-contain-attachments" | "linked" | "ole"
   // The stated name matched the prompt-injection scan.
   flagged?: true
+  // For one not supported by its name: the extension of the safe name it was
+  // judged by, for a later build that takes more formats to judge it again.
+  extension?: string
 }
 
 export type EmailAttachmentsRecord = { attachments: AttachmentEntry[]; embedded: number }
@@ -118,7 +121,7 @@ export type EmailAttachmentsRecord = { attachments: AttachmentEntry[]; embedded:
 // `degraded` is set on an attachment whose document's extracted text may be
 // incomplete or garbled (extraction-quality.ts).
 export type AttachmentStatus = "indexed" | "same" | "removed" | Exclude<AttachmentOutcome, "indexed">
-export type AttachmentView = Omit<AttachmentEntry, "outcome" | "rev"> & { status: AttachmentStatus; degraded?: true }
+export type AttachmentView = Omit<AttachmentEntry, "outcome" | "rev" | "extension"> & { status: AttachmentStatus; degraded?: true }
 
 // `parentName` and `depth` are set when the container is itself an attachment
 // or a zip entry.
@@ -214,6 +217,7 @@ function initialEntry(attachment: ContainerPart, depth: number): AttachmentEntry
   if (attachment.tnef) entry.note = "may-contain-attachments"
   else if (attachment.note) entry.note = attachment.note
   if (detectInjection(attachment.filename).length) entry.flagged = true
+  if (entry.outcome === "unsupported" && !attachment.note) entry.extension = extension(attachment.name)
   return entry
 }
 
@@ -334,7 +338,7 @@ function linkRows(db: Database) {
 }
 
 function attachmentView(entry: AttachmentEntry, emailName: string, rows: ReadonlyMap<string, LinkRow>): AttachmentView {
-  const { outcome, rev: _rev, ...rest } = entry
+  const { outcome, rev: _rev, extension: _extension, ...rest } = entry
   if (outcome !== "indexed" && outcome !== "no_readable_text") return { ...rest, status: outcome }
   const document = entry.document ? rows.get(entry.document) : undefined
   if (!document) return { ...rest, status: "removed" }
@@ -474,12 +478,12 @@ export async function removeMatterDocument(matterDir: string, name: string, keep
 // brings in its attachments. So is an email whose record still has pending
 // entries (an upload stopped before it recorded them); its attachments already
 // in the matter are reused, not copied. So is an email with an attachment once
-// listed as not supported that a matter document can now take (a zip file, an
-// Outlook email); an Outlook link or OLE object keeps a document's name but is
-// noted as never read. A zip file left with pending entries is finished the
-// same way. An attached email or zip keeps the container it came from and its
-// depth below the upload. Runs in the background after startup; one that fails
-// is logged and retried at the next start.
+// listed as not supported whose extension, as recorded, a matter document can
+// now take; an Outlook link or OLE object records none, as it is never read. A
+// zip file left with pending entries is finished the same way. An attached
+// email or zip keeps the container it came from and its depth below the
+// upload. Runs in the background after startup; one that fails is logged and
+// retried at the next start.
 export async function reingestLegacyEmails(matterDir: string) {
   const db = openDb(matterDir)
   const legacy = (() => {
@@ -491,11 +495,8 @@ export async function reingestLegacyEmails(matterDir: string) {
       db.close()
     }
   })()
-  const nowSupported = (entry: AttachmentEntry, index: number) =>
-    entry.outcome === "unsupported" &&
-    entry.note !== "linked" &&
-    entry.note !== "ole" &&
-    (EMAIL_ATTACHMENT_EXTENSIONS as readonly string[]).includes(extension(safeAttachmentName(entry.name, entry.type, index + 1)))
+  const nowSupported = (entry: AttachmentEntry) =>
+    entry.outcome === "unsupported" && entry.extension !== undefined && (EMAIL_ATTACHMENT_EXTENSIONS as readonly string[]).includes(entry.extension)
   // A container's parent is a container too.
   const parents = new Map(legacy.map((row) => [row.name, row.parent_name]))
   const depthOf = (name: string) => {

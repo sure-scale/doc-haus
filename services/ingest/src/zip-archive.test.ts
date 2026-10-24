@@ -269,12 +269,12 @@ test("an email whose zip attachment was listed as not supported is re-read once 
   const directory = matter()
   const archive = zip({ "Brief.docx": await docx("Synthetic earlier brief marker") })
   await ingestEmailDocument(directory, "Earlier.eml", email("Synthetic earlier", [{ name: "Artwork files.zip", type: "application/zip", bytes: archive }]))
-  // The state an email ingested before zips were read is left in: the zip
-  // listed as not supported, nothing extracted from it.
+  // The state a build that did not read zips leaves: the zip listed as not
+  // supported by its extension, nothing extracted from it.
   await removeMatterDocument(directory, "Artwork files.zip", false)
   const db = openDb(directory)
   db.run("UPDATE documents SET attachments = ? WHERE name = 'Earlier.eml'", [
-    JSON.stringify({ attachments: [{ name: "Artwork files.zip", type: "application/zip", size: archive.length, outcome: "unsupported" }], embedded: 0 }),
+    JSON.stringify({ attachments: [{ name: "Artwork files.zip", type: "application/zip", size: archive.length, outcome: "unsupported", extension: ".zip" }], embedded: 0 }),
   ])
   db.close()
 

@@ -504,7 +504,7 @@ test("each email is parsed once, and a restart that takes one in again keeps its
   await deleteMatterDocument(directory, "Outlook.msg")
   const db = openDb(directory)
   const childRecord = JSON.parse(registry(directory).find((row) => row.name === "Child.eml")!.attachments!)
-  childRecord.attachments = childRecord.attachments.map(({ name, type, size }: { name: string; type: string; size: number }) => ({ name, type, size, outcome: "unsupported" }))
+  childRecord.attachments = childRecord.attachments.map(({ name, type, size }: { name: string; type: string; size: number }) => ({ name, type, size, outcome: "unsupported", extension: ".msg" }))
   db.query("UPDATE documents SET attachments = ? WHERE name = 'Child.eml'").run(JSON.stringify(childRecord))
   db.close()
 
