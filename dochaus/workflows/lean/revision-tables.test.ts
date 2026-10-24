@@ -149,6 +149,35 @@ test("a revision that touches no table keeps every original table, empty signatu
   expect((readLeanJson(directory, "gate.json") as GateResult).delivery).toBe("execution_ready")
 }, 120_000)
 
+/** For each body table, the paragraph directly above it: its text, its style,
+ * whether it keeps with the next block directly, and whether a redline marks
+ * a formatting change on it. */
+function leadLines(bytes: Uint8Array) {
+  const document = new DOMParser().parseFromString(strFromU8(unzipSync(bytes)["word/document.xml"]!), "application/xml")
+  const body = document.getElementsByTagNameNS(W, "body")[0]!
+  const own = (node: Element, name: string) => Array.from(node.childNodes).find(child => (child as Element).localName === name) as Element | undefined
+  return Array.from(body.childNodes).flatMap(node => {
+    if ((node as Element).localName !== "tbl") return []
+    let before = node.previousSibling
+    while (before && before.nodeType !== 1) before = before.previousSibling
+    const lead = before as Element
+    const properties = own(lead, "pPr")
+    return [[Array.from(lead.getElementsByTagNameNS(W, "t")).map(row => row.textContent).join(""),
+      properties && own(properties, "pStyle")?.getAttributeNS(W, "val"), Boolean(properties && own(properties, "keepNext")), Boolean(properties && own(properties, "pPrChange"))]]
+  })
+}
+
+test("a lead-in the drafter writes plain over a carried table keeps with it to the final body, as the original's heading did, and a lead-in the original did not keep shows no formatting change", async () => {
+  // The original's approval record heading keeps with its table by its style; the drafter writes it as a plain line.
+  const { directory, result } = await revise(TABLE_FIXTURE.untouched, revisedAgreement().replace("### Approval record", "Approval record"))
+  expect(result.status).toBe("completed")
+  expect(tables(file(directory, "d1/body-applied.docx"))).toHaveLength(4)
+  expect(leadLines(file(directory, "d1/body-applied.docx")).map(row => row.slice(0, 3))).toEqual([
+    ["Schedule 1 – Particulars", "Heading2", false], ["Approval record", undefined, true], [SUPPLIER, undefined, false], [BUYER, undefined, false]])
+  // The signing lines, which the original did not keep with their grids, are unchanged in the redline.
+  expect(leadLines(file(directory, "d1/redline.docx")).filter(row => row[0] === SUPPLIER || row[0] === BUYER).map(row => row.slice(2))).toEqual([[false, false], [false, false]])
+}, 120_000)
+
 test("a cell edit changes only that cell of the original's tables", async () => {
   const { directory, original, result } = await revise(TABLE_FIXTURE.cellEdit, revisedAgreement({ quantity: "45,000 cartons" }))
   expect(result.status).toBe("completed")

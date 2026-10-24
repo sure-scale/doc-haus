@@ -15,8 +15,8 @@ import { decodeString } from "micromark-util-decode-string"
 // whose columns change, or whose original holds content that cannot move
 // between packages, keeps the drafted table. A carried table keeps the
 // spacing, size and font its paragraphs had from the original's defaults and
-// styles. What happened to each original table is returned, so the caller
-// records it.
+// styles, and the line it follows keeps with it where the original's did.
+// What happened to each original table is returned, so the caller records it.
 
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 const A = "http://schemas.openxmlformats.org/drawingml/2006/main"
@@ -113,6 +113,9 @@ export function carryOriginalTables(rendered: Uint8Array, original: Uint8Array):
   const pairs = matchTables(originals.map(row => row.table), drafted.map(row => row.table))
   const sourceStyles = originalParts[STYLES] ? parse(strFromU8(originalParts[STYLES])) : undefined
   const sourceById = sourceStyles ? stylesById(sourceStyles) : new Map<string, Element>()
+  const targetStyles = parts[STYLES] ? parse(strFromU8(parts[STYLES])) : undefined
+  // The styles as each package has them before any is copied, for the lines the tables follow.
+  const [sourceLook, renderedLook] = [formatting(sourceStyles, undefined), formatting(targetStyles, undefined)]
   const styles = new Set<string>()
   const placed: Element[] = []
   const carries = originals.map(({ node, table }, index): TableCarry => {
@@ -126,6 +129,15 @@ export function carryOriginalTables(rendered: Uint8Array, original: Uint8Array):
     if ("reason" in carried) return { ...base, outcome: "drafted", reason: carried.reason }
     dropRenderedSpacer(counterpart.node)
     counterpart.node.parentNode!.replaceChild(carried.node, counterpart.node)
+    // The line a carried table follows stays on its page where the original's
+    // did: the drafted line may be plain where the original's heading style
+    // kept it with the table. It is kept directly and keeps its own style; a
+    // line the original did not keep, or one that is not the original's line
+    // (other text moved above the table), is left as drafted, so the redline
+    // shows no formatting change on it.
+    const [was, lead] = [leadIn(node), leadIn(carried.node)]
+    if (was && lead && plain(paragraphText(was, was)) === plain(paragraphText(lead, lead)) && keepsWithNext(was, sourceLook) && !keepsWithNext(lead, renderedLook))
+      property(first(lead, "pPr"), "keepNext", PARAGRAPH_ORDER)
     referencedStyles(carried.node).forEach(id => styles.add(id))
     placed.push(carried.node)
     return carried.cells.length || carried.added || carried.removed.length
@@ -133,7 +145,6 @@ export function carryOriginalTables(rendered: Uint8Array, original: Uint8Array):
       : { ...base, outcome: "carried" }
   })
   if (!placed.length) return { bytes: rendered, carries }
-  const targetStyles = parts[STYLES] ? parse(strFromU8(parts[STYLES])) : undefined
   if (targetStyles && sourceStyles && copyStyles(targetStyles, sourceStyles, styles)) parts[STYLES] = strToU8(new XMLSerializer().serializeToString(targetStyles))
   const theme = Object.keys(originalParts).find(name => /^word\/theme\/[^/]+\.xml$/.test(name))
   keepOriginalDefaults(placed, formatting(sourceStyles, theme ? parse(strFromU8(originalParts[theme]!)) : undefined), formatting(targetStyles, undefined))
@@ -499,6 +510,24 @@ function dropRenderedSpacer(table: Element) {
   const inner = Array.from(paragraph.childNodes).filter(node => node.nodeType === 1 && (node as Element).localName !== "pPr")
   const spacing = paragraph.getElementsByTagNameNS(W, "spacing")[0]
   if (!inner.length && spacing?.getAttributeNS(W, "before") === "80" && spacing.getAttributeNS(W, "after") === "120") paragraph.parentNode!.removeChild(paragraph)
+}
+
+/** The paragraph a table directly follows, when it has text: the line that
+ * introduces it (a party's name over its signature grid, a record's heading).
+ * A table after an empty paragraph or another table has none. */
+function leadIn(table: Element) {
+  let before = table.previousSibling
+  while (before && before.nodeType !== 1) before = before.previousSibling
+  const paragraph = before as Element | null
+  return paragraph?.namespaceURI === W && paragraph.localName === "p" && paragraphText(paragraph, paragraph).trim() ? paragraph : undefined
+}
+
+/** Whether a paragraph keeps with the next block, by its own property or its style's. */
+function keepsWithNext(paragraph: Element, look: Formatting) {
+  const properties = children(paragraph, "pPr")[0]
+  const style = children(properties, "pStyle")[0]?.getAttributeNS(W, "val") || look.paragraph
+  const mark = [properties, ...styleChain(look.styles, style).map(row => children(row, "pPr")[0])].map(pPr => children(pPr, "keepNext")[0]).find(Boolean)
+  return mark !== undefined && !["0", "false", "off"].includes(mark.getAttributeNS(W, "val") ?? "")
 }
 
 function referencedStyles(table: Element) {

@@ -355,7 +355,7 @@ export async function runDraftStage(
   }
   const letter = isLetter(plan.form)
   const presentation = letter || plan.parts.some(part => part.display_heading !== undefined)
-    ? { source: assembleDraft(plan, drafted, false), parts: drafted.map((text, part) => ({ heading: headingText(text.split("\n")[0]!.replace(/^##\s+/, "")), display_heading: plan.parts[part]?.display_heading, part })), ...(letter ? { title: false as const } : {}) }
+    ? { source: assembleDraft(plan, drafted, false), parts: drafted.map((text, part) => ({ heading: headingText(text.split("\n")[0]!.replace(/^##\s+/, "")), display_heading: printedDisplayHeading(plan, part), part })), ...(letter ? { title: false as const } : {}) }
     : undefined
   const accepted = await acceptStageReply(directory, step, assembleDraft(plan, drafted), { presentation })
   if (accepted.issues.length) return failed("assembled document", accepted.issues)
@@ -493,6 +493,17 @@ function plainLine(line: string) {
   return visibleInlineText(line.trim().replace(/^#{1,6}\s+/, "")).replace(/[*_`]/g, "").replace(/[\s.:;,]+$/, "").replace(/\s+/g, " ").trim().toLowerCase()
 }
 
+/** The heading publication prints in place of part `index`'s label: its
+ * display heading (undefined: the label itself). The title is printed once,
+ * above the part that opens the document (not in a letter), so that part's
+ * display heading repeating the title (markup, case, spacing and closing
+ * punctuation aside) prints nothing; a later part's stands, as a title
+ * restated after a cover sheet does. */
+function printedDisplayHeading(outline: DraftOutline, index: number) {
+  const display = outline.parts[index]?.display_heading
+  return display && index === 0 && !isLetter(outline.form) && plainLine(display) === plainLine(outline.title) ? "" : display
+}
+
 /** The draft from its parts. With `presentation`, each part label gives way to
  * its display heading, and a part that prints none has its own headings moved
  * up, keeping their relative depth, until the shallowest is a second-level
@@ -503,7 +514,8 @@ export function assembleDraft(outline: DraftOutline, parts: string[], presentati
   return `# ${outline.title}\n\n${parts.map(part => {
     const text = part.trim()
     const label = headingText(text.split("\n")[0]!.replace(/^##\s+/, ""))
-    const display = outline.parts.find(row => normalizedHeading(row.heading) === normalizedHeading(label))?.display_heading
+    const at = outline.parts.findIndex(row => normalizedHeading(row.heading) === normalizedHeading(label))
+    const display = at < 0 ? undefined : printedDisplayHeading(outline, at)
     if (!presentation || display === undefined) return text
     const body = text.split("\n").slice(1).join("\n").trim()
     if (display) return [`## ${display}`, body].filter(Boolean).join("\n\n")

@@ -14,6 +14,11 @@ import { sourceText } from "./template-structure"
 // References. A document's clause numbering is read from the numbers printed
 // at the start of its paragraphs ("9.1 …", "9 Liability", "Clause 9 – …")
 // before its first schedule, annex, appendix, exhibit or attachment heading.
+// Such a heading is read from its text, or, closed by a square-bracketed
+// marker and punctuation ("Schedule 1 Goods [open item: …]."), where the
+// paragraph is structurally a heading: the input marks it as one (a drafted
+// part's heading), or it follows the clauses and the original being revised has
+// that heading. Only a marked heading ends the clauses.
 // An unnumbered heading among the clauses stands for a clause whose number is
 // not printed, so a gap in the printed numbers that unnumbered headings
 // account for is not a missing clause. Reported: a reference to a clause,
@@ -49,8 +54,9 @@ import { sourceText } from "./template-structure"
 
 /** One paragraph of a document's text; the final body's carry a pointer, and
  * `links` for its live cross-references (REF fields): where each cached number
- * is in `text`, and the number its target now has (`to`), when known. */
-export type Para = { pid?: string; text: string; links?: { start: number; length: number; to?: string }[] }
+ * is in `text`, and the number its target now has (`to`), when known.
+ * `heading` when the input marks the paragraph as a heading. */
+export type Para = { pid?: string; text: string; heading?: true; links?: { start: number; length: number; to?: string }[] }
 /** Another document of the pack, by its title; `earlier` documents are compared for definitions. */
 export type PackDocument = { title: string; paras: Para[]; earlier: boolean }
 export type ConsistencyFinding = { pid?: string; detail: string }
@@ -66,28 +72,33 @@ export function consistencyItems(directory: string, document: DocID, draft: Para
   if (!plan || !entry) return []
   const original = entry.comparison ? sourceLines(sourceText(directory, entry.comparison)) : []
   const shown = (rows: ParagraphRow[]) => rows.map(row => ({ pid: row.pid, text: row.clause ? shownText(row) : row.text }))
+  // A drafted part's heading is still its paragraph's heading after the changes.
+  const headings = new Set(draft.flatMap(row => row.draft_heading ? [row.pid] : []))
+  const own = (rows: ParagraphRow[]) => shown(rows).map(para => headings.has(para.pid) ? { ...para, heading: true as const } : para)
   const others = plan.documents.flatMap((row, at): PackDocument[] => {
     if (row.id === document) return []
     const paras = shown(finalBodyParagraphs(directory, row.id))
     return paras.length ? [{ title: row.title, paras, earlier: at < position }] : []
   })
   const labels = new Map(final.map(row => [row.pid, row.label]))
-  const linked = shown(final).map((para, at) => {
+  const linked = own(final).map((para, at) => {
     const row = final[at]!
     const links = fields?.get(row.pid)?.map(field => ({ start: field.start + (row.clause ? row.label!.length + 1 : 0), length: field.length,
       to: field.number ? listNumber(labels.get(field.target ?? "")) : field.covers }))
     return links ? { ...para, links } : para
   })
-  return consistencyFindings({ title: entry.title, form: entry.form, final: linked, baselines: [original, shown(draft)].filter(rows => rows.length), others })
+  return consistencyFindings({ title: entry.title, form: entry.form, final: linked, original, baselines: [original, own(draft)].filter(rows => rows.length), others })
     .map(finding => openItem("apply", "consistency", finding.detail, finding.pid ? { pid: finding.pid } : {}))
 }
 
-export function consistencyFindings(input: { title: string; form?: string; final: Para[]; baselines: Para[][]; others: PackDocument[] }): ConsistencyFinding[] {
+/** `original`: the original being revised, when there is one (also a baseline). */
+export function consistencyFindings(input: { title: string; form?: string; final: Para[]; original?: Para[]; baselines: Para[][]; others: PackDocument[] }): ConsistencyFinding[] {
   // A document planned without a known form (a legacy plan, or an outline's
   // last attempt) may be a letter or advice as easily as an agreement; it is
   // not checked rather than checked as the wrong kind of document.
   if (!DOCUMENT_FORMS.some(form => form === input.form)) return []
-  const final = outline(input.final)
+  const original = outline(input.original ?? [])
+  const final = outline(input.final, new Set(original.texts.filter((_, at) => original.heads[at]).map(key)))
   const baselines = input.baselines.map(rows => outline(rows))
   const pack = input.others.map(other => ({ ...other, outline: outline(other.paras) }))
   // Advice and letters point at clauses of the documents they discuss and name
@@ -130,6 +141,8 @@ type Outline = {
   texts: string[]
   /** Paragraphs before this index are the clauses; attachments follow. */
   end: number
+  /** The attachment heading each paragraph is ("schedule 1"), if any. */
+  heads: (string | undefined)[]
   labelAt: (string | undefined)[]
   printed: Map<string, number>
   duplicates: { label: string; at: number }[]
@@ -150,13 +163,23 @@ const DATE_START = new RegExp(`^\\d{1,2}\\s+(?:${MONTHS})\\b`)
 const NUMBERED = /^(\d{1,3}(?:\.\d{1,3}){0,3})\.?\s+(?=[\p{Lu}(\[“"‘'])/u
 const KEYED = /^(clause|section|article)\s+(\d{1,3}(?:\.\d{1,3}){0,3})\.?(.*)$/i
 const ATTACHMENT_HEAD = /^(schedule|annex|appendix|exhibit|attachment)\s+(\d{1,3}|[A-Z]|[IVX]{1,5})(?![\w])(.*)$/i
+/** A square-bracketed marker closing a line, and the punctuation after it. */
+const CLOSING_MARKER = /\[[^\]]*\][\s.;:,!?]+$/
 const MAX_HEADING_WORDS = 12
 
-function outline(paras: Para[]): Outline {
+/** `kept`: the original's attachment headings, as keys. */
+function outline(paras: Para[], kept = new Set<string>()): Outline {
   const texts = paras.map(para => visible(para.text))
-  const heads = texts.map(attachmentHead)
-  const first = heads.findIndex(Boolean)
+  // A line closed by a marker and punctuation reads as a sentence; it heads an
+  // attachment where it is structurally a heading (see the notes above).
+  const closed = paras.map(para => {
+    const marker = CLOSING_MARKER.exec(para.text)
+    return marker ? visible(para.text.slice(0, marker.index)) : undefined
+  })
+  const marked = texts.map((text, at) => attachmentHead(text) ?? (paras[at]!.heading && closed[at] !== undefined ? attachmentHead(closed[at]!) : undefined))
+  const first = marked.findIndex(Boolean)
   const end = first < 0 ? paras.length : first
+  const heads = marked.map((head, at) => head ?? (at > end && closed[at] !== undefined && kept.has(key(closed[at]!)) ? attachmentHead(closed[at]!) : undefined))
   // Labels are read as printed: "4.2 [Amount]" is clause 4.2 with a placeholder.
   const labels = paras.map((para, at) => at < end ? clauseLabel(para.text.trim()) : undefined)
   const labelAt = labels.map(row => row?.label)
@@ -205,7 +228,7 @@ function outline(paras: Para[]): Outline {
     const keyed = KEYED.exec(text)
     return keyed && clauseLabel(text) ? [keyed[1]!.toLowerCase()] : []
   }))
-  return { paras, texts, end, labelAt, printed, duplicates, tops, numbered, keywords, attachments, attachmentAt, heading, content }
+  return { paras, texts, end, heads, labelAt, printed, duplicates, tops, numbered, keywords, attachments, attachmentAt, heading, content }
 }
 
 function visible(text: string) {
@@ -315,7 +338,7 @@ function references(document: Outline, title: string, titles: string[]): Referen
   const external = new Set<string>()
   const caption = (text: string) => text.replace(CAPTION, "")
   const found = document.texts.flatMap((text, at) => [...text.matchAll(REFERENCE_WORD)].flatMap((match): (Reference & { external?: boolean })[] => {
-    if (match.index === 0 && (clauseLabel(text) || attachmentHead(text))) return []
+    if (match.index === 0 && (clauseLabel(text) || document.heads[at])) return []
     const kind = kindOf(match[1]!)
     const number = CLAUSE_KINDS.has(kind) ? CLAUSE_NUMBER : ATTACHMENT_NUMBER
     let rest = text.slice(match.index + match[0].length)
