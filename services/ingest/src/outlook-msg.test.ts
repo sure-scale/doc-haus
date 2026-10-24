@@ -383,6 +383,11 @@ test("From, To and Date read as an .eml's: the person a delegate sent for, Excha
   expect((await parseMsg(msgFile(exchange))).text).toStartWith(
     "Subject: Synthetic exchange\nFrom: Partner Example <partner@example.test>\nTo: Client Example <client@example.test>\nCc: Colleague Example\n\n",
   )
+  // Two people of one name in the headers: neither address stands in for it.
+  const namesakes = outlookMessage({ subject: "Synthetic namesakes", body: "Body." })
+  namesakes.props.push([TAG.transportHeaders, "From: sender@example.test\r\nTo: Sam Example <sam@one.example.test>\r\nCc: Sam Example <sam@two.example.test>\r\n"])
+  namesakes.recipients = [exchangeRecipient(1, "Sam Example"), exchangeRecipient(2, "Sam Example")]
+  expect((await parseMsg(msgFile(namesakes))).text).toStartWith("Subject: Synthetic namesakes\nTo: Sam Example\nCc: Sam Example\n\n")
 
   // A draft never sent has no Date; a received message dates from delivery.
   const saved = (flags: number) => {

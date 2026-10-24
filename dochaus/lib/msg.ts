@@ -70,10 +70,11 @@ export async function msgToText(buffer: Buffer | Uint8Array) {
 
 async function emailOf(reader: MsgReader, fields: FieldsData): Promise<ParsedEmail> {
   const body = msgBody(fields)
+  const shown = cidReferences(body.html)
   const attachments: EmailAttachment[] = []
   let embedded = 0
   for (const attachment of fields.attachments ?? []) {
-    const part = msgAttachment(reader, attachment, attachments.length + 1, body.html)
+    const part = msgAttachment(reader, attachment, attachments.length + 1, shown)
     if (part) attachments.push(part)
     else embedded++
   }
@@ -279,11 +280,11 @@ function chainsEnd(bytes: Uint8Array) {
 // body shows inline (a logo, a signature), which is counted, not listed. An OLE
 // object or a linked file is listed and not read; an attachment whose content
 // cannot be read out of the message is listed as failed.
-function msgAttachment(reader: MsgReader, attachment: FieldsData, position: number, html: string | undefined): EmailAttachment | undefined {
+function msgAttachment(reader: MsgReader, attachment: FieldsData, position: number, shown: ReadonlySet<string>): EmailAttachment | undefined {
   const method = num(rawProp(attachment, "3705"))
   const filename = str(attachment.fileName) ?? str(attachment.fileNameShort) ?? str(attachment.name)
   const type = str(attachment.attachMimeTag) || EXTENSION_TYPE[extension(filename ?? "")]
-  if (shownInline(attachment, filename, type, html)) return
+  if (shownInline(attachment, filename, type, shown)) return
   const linked = method !== undefined && ATTACH_LINKED.has(method)
   // Bytes held in the attachment, or a storage (an attached message or an OLE
   // object) written out as a compound file of its own; a link has neither.
@@ -309,11 +310,17 @@ function msgAttachment(reader: MsgReader, attachment: FieldsData, position: numb
 
 // An image the HTML body shows: one with a Content-ID that Outlook hides from
 // the attachment list, marks as shown by the HTML (ATT_MHTML_REF), or that the
-// HTML names by that Content-ID.
-function shownInline(attachment: FieldsData, filename: string | undefined, type: string | undefined, html: string | undefined) {
+// HTML names by that Content-ID (one of `shown`).
+function shownInline(attachment: FieldsData, filename: string | undefined, type: string | undefined, shown: ReadonlySet<string>) {
   const id = str(attachment.pidContentId)
   if (!id || !(type?.toLowerCase().startsWith("image/") || IMAGE_NAME.test(filename ?? ""))) return false
-  return attachment.attachmentHidden === true || ((num(rawProp(attachment, "3714")) ?? 0) & ATT_MHTML_REF) !== 0 || (html?.includes(`cid:${id}`) ?? false)
+  return attachment.attachmentHidden === true || ((num(rawProp(attachment, "3714")) ?? 0) & ATT_MHTML_REF) !== 0 || shown.has(id)
+}
+
+// The Content-IDs the HTML body names (src="cid:..."), read once for every
+// attachment.
+function cidReferences(html: string | undefined) {
+  return new Set(Array.from(html?.matchAll(/cid:([^\s"'<>()]+)/gi) ?? [], (match) => match[1]!))
 }
 
 function readAttachment(reader: MsgReader, attachment: FieldsData) {
@@ -327,7 +334,7 @@ function readAttachment(reader: MsgReader, attachment: FieldsData) {
 
 // From: who the message is from (PidTagSentRepresenting*: the person a
 // delegate sent it for, as an .eml's From names them), else its sender.
-function sender(fields: FieldsData, known: EmailAddress[]) {
+function sender(fields: FieldsData, known: KnownAddresses) {
   const representing = address(
     str(rawProp(fields, "0042")),
     str(fields.sentRepresentingSmtpAddress),
@@ -338,7 +345,7 @@ function sender(fields: FieldsData, known: EmailAddress[]) {
   return representing ?? address(str(fields.senderName), str(fields.senderSmtpAddress), str(fields.senderEmail), str(fields.senderAddressType), known)
 }
 
-function recipients(fields: FieldsData, type: "to" | "cc", known: EmailAddress[]) {
+function recipients(fields: FieldsData, type: "to" | "cc", known: KnownAddresses) {
   return (fields.recipients ?? [])
     .filter((recipient) => recipient.recipType === type)
     .map((recipient) => address(str(recipient.name), str(recipient.smtpAddress), str(recipient.email), str(recipient.addressType), known))
@@ -350,27 +357,37 @@ function recipients(fields: FieldsData, type: "to" | "cc", known: EmailAddress[]
 // message's transport headers give the same name stands in, else the name
 // alone. A name that only repeats the address is left out, as a bare address in
 // an .eml has none.
-function address(name: string | undefined, smtp: string | undefined, email: string | undefined, type: string | undefined, known: EmailAddress[]): EmailAddress | undefined {
-  const sameName = (entry: EmailAddress) => !!name && entry.name?.trim().toLowerCase() === name.trim().toLowerCase()
-  const addr = smtp || (type?.toUpperCase() === "SMTP" ? email : undefined) || known.find(sameName)?.address || undefined
+function address(name: string | undefined, smtp: string | undefined, email: string | undefined, type: string | undefined, known: KnownAddresses): EmailAddress | undefined {
+  const addr = smtp || (type?.toUpperCase() === "SMTP" ? email : undefined) || (name ? known.get(name.trim().toLowerCase()) : undefined) || undefined
   const shown = name && name.toLowerCase() !== addr?.toLowerCase() ? name : undefined
   if (!shown && !addr) return
   return { name: shown, address: addr }
 }
 
-// The addresses in the message's transport headers (PidTagTransportMessageHeaders),
-// which a message that came in over SMTP keeps.
-async function transportAddresses(headers: string | undefined): Promise<EmailAddress[]> {
-  if (!headers?.trim()) return []
+// The address of each name in the message's transport headers
+// (PidTagTransportMessageHeaders), which a message that came in over SMTP
+// keeps, by its trimmed lower-case name. A name listed with two addresses has
+// none: which is whose is not stated.
+type KnownAddresses = ReadonlyMap<string, string | undefined>
+
+async function transportAddresses(headers: string | undefined): Promise<KnownAddresses> {
+  const known = new Map<string, string | undefined>()
+  if (!headers?.trim()) return known
   try {
     const parsed = await PostalMime.parse(`${headers.replace(/\s+$/, "")}\r\n\r\n`)
     const listed: Address[] = [parsed.from, parsed.sender, ...(parsed.to ?? []), ...(parsed.cc ?? []), ...(parsed.bcc ?? [])].filter(
       (entry): entry is Address => entry !== undefined,
     )
-    return listed.flatMap((entry) => (entry.group ? entry.group : [entry])).filter((entry) => entry.address)
+    for (const entry of listed.flatMap((entry) => (entry.group ? entry.group : [entry]))) {
+      const name = entry.name?.trim().toLowerCase()
+      if (!name || !entry.address) continue
+      if (!known.has(name)) known.set(name, entry.address)
+      else if (known.get(name)?.toLowerCase() !== entry.address.toLowerCase()) known.set(name, undefined)
+    }
   } catch {
-    return []
+    // Headers it cannot read give no addresses.
   }
+  return known
 }
 
 // MAPI times read as UTC strings; an .eml's Date reads as ISO 8601.
