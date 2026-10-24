@@ -228,6 +228,17 @@ test("an attached Outlook message becomes a child email with its own attachments
   expect(JSON.parse(last.attachments!).attachments).toEqual([
     expect.objectContaining({ name: `level-${MAX_EMAIL_DEPTH + 1}`, outcome: "nested" }),
   ])
+  // Taken in again at a start (here, as recorded before attachments were
+  // read), the deepest message keeps its depth: its own message stays nested.
+  const legacy = openDb(deep)
+  legacy.query("UPDATE documents SET attachments = NULL WHERE name = ?").run(`level-${MAX_EMAIL_DEPTH}.msg`)
+  legacy.close()
+  expect(await reingestLegacyEmails(deep)).toBe(1)
+  const restarted = registry(deep)
+  expect(restarted).toHaveLength(MAX_EMAIL_DEPTH + 1)
+  expect(JSON.parse(restarted.find((row) => row.name === `level-${MAX_EMAIL_DEPTH}.msg`)!.attachments!).attachments).toEqual([
+    expect.objectContaining({ name: `level-${MAX_EMAIL_DEPTH + 1}`, outcome: "nested" }),
+  ])
 
   // An .eml carrying an Outlook message brings it in as a child email too.
   const mixed = matter()
