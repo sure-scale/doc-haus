@@ -17,10 +17,11 @@ import { draftingAttribution, withGeneratedDocxAttribution } from "../../lib/doc
 import { numberDocxClauses } from "../../lib/docx-numbering"
 import { linkCrossReferences, referenceFields } from "../../lib/docx-crossrefs"
 import { paragraphFields, refInstruction, unlink } from "../../lib/docx-fields"
-import { highlightOpenItemsInDocx } from "../../lib/open-items"
+import { FIELD_HIGHLIGHT_FILL, OPEN_ITEM_HIGHLIGHT_FILL, hasOpenItemMarker, highlightOpenItemsInDocx } from "../../lib/open-items"
 
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 const BODY = "word/document.xml"
+const OPEN_ITEM_FILLS = new Set([OPEN_ITEM_HIGHLIGHT_FILL, FIELD_HIGHLIGHT_FILL])
 
 // The apply step of one document. Applies the document's change list to its
 // drafted body, always from body.docx and never onto an earlier apply output,
@@ -101,8 +102,8 @@ export async function documentRedline(directory: string, document: DocID, final:
   changes: ChangeList | undefined = readChangeList(directory, document),
   applied: ApplyResult["applied"] | undefined = recordedApplied(directory, document), identity = draftingAttribution()) {
   if (!changes || !applied) throw new Error(`${document}: the change list or the apply outcome is missing or unreadable.`)
-  const [before, after] = withComparableReferences(comparisonBaseline(directory, document).bytes, final)
-  const redline = withGeneratedDocxAttribution(await compareDocxWithPointers(before, after, { authorName: identity.author }), identity)
+  const [before, after] = comparableBodies(comparisonBaseline(directory, document).bytes, final)
+  const redline = withGeneratedDocxAttribution(highlightOpenItemsInDocx(await compareDocxWithPointers(before, after, { authorName: identity.author })), identity)
   return exportAppliedChangeComments(redline, final, document, changes.amendments, applied, changes.explanations, readParagraphs(directory, document), identity.author)
 }
 
@@ -112,9 +113,12 @@ export async function documentRedline(directory: string, document: DocID, final:
  * so a paragraph whose fields differ between the two, by paragraph pointer, is
  * the text it shows on both sides, and so is every paragraph when the baseline
  * is a supplied original: the redline marks only the words that changed, and
- * its references there are plain text. The body itself keeps its fields. Each
- * body is returned itself when none of its paragraphs is unlinked. */
-function withComparableReferences(baseline: Uint8Array, final: Uint8Array): [Uint8Array, Uint8Array] {
+ * its references there are plain text. Open items are compared unshaded, so a
+ * word kept inside a new open item ("2.1" in "[open item: refers to 2.1, which
+ * was removed]") is no formatting change; the redline shades its open items
+ * afterwards. The body itself keeps its fields and shading. Each body is
+ * returned itself when nothing in it is unlinked or unshaded. */
+function comparableBodies(baseline: Uint8Array, final: Uint8Array): [Uint8Array, Uint8Array] {
   const read = (bytes: Uint8Array) => {
     const parts = unzipSync(bytes)
     const doc = new DOMParser().parseFromString(strFromU8(parts[BODY]!), "application/xml")
@@ -123,7 +127,15 @@ function withComparableReferences(baseline: Uint8Array, final: Uint8Array): [Uin
       const pid = paragraphPointers(paragraph)[0]?.pid
       if (pid && !paragraphs.has(pid)) paragraphs.set(pid, paragraph)
     }
-    return { bytes, parts, doc, paragraphs, changed: false }
+    let changed = false
+    for (const shading of Array.from(doc.getElementsByTagNameNS(W, "shd"))) {
+      const run = shading.parentNode?.parentNode as Element | null
+      if (run?.localName !== "r" || !OPEN_ITEM_FILLS.has((shading.getAttributeNS(W, "fill") ?? "").toUpperCase())) continue
+      if (!hasOpenItemMarker(Array.from(run.getElementsByTagNameNS(W, "t")).map(text => text.textContent ?? "").join(""))) continue
+      shading.parentNode!.removeChild(shading)
+      changed = true
+    }
+    return { bytes, parts, doc, paragraphs, changed }
   }
   const before = read(baseline)
   const after = read(final)

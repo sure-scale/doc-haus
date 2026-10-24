@@ -96,8 +96,9 @@ function fields(bytes: Uint8Array, rows: ParagraphRow[]) {
 }
 
 // The tracked changes of a document's redline, in document order: what each
-// inserts or deletes, by the opening words of its paragraph as accepted, and
-// how many field codes are tracked (a field the comparer could not match).
+// inserts or deletes, by the opening words of its paragraph as accepted; how
+// many field codes are tracked (a field the comparer could not match), and how
+// many formatting changes.
 function revisions(directory: string) {
   const doc = new DOMParser().parseFromString(strFromU8(unzipSync(readFileSync(leanFile(directory, "d1/redline.docx")))["word/document.xml"]!), "application/xml")
   const all = (node: Document | Element, name: string) => Array.from(node.getElementsByTagNameNS(W, name))
@@ -106,7 +107,7 @@ function revisions(directory: string) {
     .map(node => [(text(paragraph, "t") || text(paragraph, "delText")).slice(0, 12), kind, text(node, kind === "ins" ? "t" : "delText")])
     .filter(([, , changed]) => changed)))
   const fields = ["ins", "del"].flatMap(kind => all(doc, kind)).flatMap(node => ["fldChar", "instrText", "delInstrText"].flatMap(name => all(node, name))).length
-  return { changes, fields }
+  return { changes, fields, formatting: all(doc, "rPrChange").length }
 }
 
 // Each paragraph's XML in a body, by its paragraph pointer.
@@ -135,6 +136,7 @@ test("the redline marks only the words that changed where a change turns a cross
       ["Late payment", "ins", "2.1"], ["Late payment", "del", "2.2"],
     ],
     fields: 0,
+    formatting: 0,
   })
 }, 60_000)
 
@@ -188,6 +190,7 @@ test("a reference an amendment extends or writes points at the clause it names; 
       ["Invoices are", "ins", " of delivery under clause "], ["Invoices are", "ins", "2.1"],
     ],
     fields: 0,
+    formatting: 0,
   })
 }, 60_000)
 
@@ -291,9 +294,9 @@ test("an open item a change writes is shaded as drafting shades one; the paragra
   const unchanged = [...drafted_.keys()].filter(pid => pid && pid !== written.pid)
   expect(unchanged.length).toBeGreaterThan(5)
   for (const pid of unchanged) expect(after.get(pid)).toBe(drafted_.get(pid)!)
-  // The redline marks the words the change wrote, the marker in its shaded run.
-  expect(revisions(directory)).toEqual({ changes: [["Invoices are", "ins", " "], ["Invoices are", "ins", "[open item: confirm the payment period]"]], fields: 0 })
-  expect(strFromU8(unzipSync(readFileSync(leanFile(directory, "d1/redline.docx")))["word/document.xml"]!)).not.toContain("rPrChange")
+  // The redline marks the words the change wrote, its markers shaded as in the body.
+  expect(revisions(directory)).toEqual({ changes: [["Invoices are", "ins", " "], ["Invoices are", "ins", "[open item: confirm the payment period]"]], fields: 0, formatting: 0 })
+  expect(shadedOpenItems(readFileSync(leanFile(directory, "d1/redline.docx")))).toEqual(["[open item: service levels]", "[open item: confirm the payment period]"])
   // Shaded again, the body does not change; applied again, it is the same bytes.
   expect(highlightOpenItemsInDocx(applied)).toBe(applied)
   await apply(directory, [amendment])
@@ -323,7 +326,7 @@ test("revising a supplied original, the redline marks only the words that change
     { references: "typed", start: "Invoices are payable", updated: "Invoices are payable within forty days.", changes: [["Invoices are", "ins", "forty"], ["Invoices are", "del", "thirty"]] },
     { references: "typed", start: "Late payment", updated: "Late payment under clause 3.1 carries default interest, subject to clause 2.2.", changes: [["Late payment", "ins", "default "]] },
     { references: "fields", start: "Invoices are payable", updated: "Invoices are payable within forty days.", changes: [["Invoices are", "ins", "forty"], ["Invoices are", "del", "thirty"]] },
-  ] as const
+  ] satisfies { references: "typed" | "fields"; start: string; updated: string; changes: string[][] }[]
   for (const { references, start, updated, changes } of cases) {
     const directory = matter()
     const body = (await renderMarkdownToDocx(AGREEMENT, undefined, undefined, { form: "agreement" })).bytes
@@ -336,7 +339,7 @@ test("revising a supplied original, the redline marks only the words that change
     const row = rows.find(row => row.text.startsWith(start))!
     const { fields: after } = await apply(directory, [{ pid: row.pid, existing_sha256: row.sha256, updated }])
     expect(after.length).toBeGreaterThan(5)
-    expect([references, start, revisions(directory)]).toEqual([references, start, { changes, fields: 0 }])
+    expect([references, start, revisions(directory)]).toEqual([references, start, { changes, fields: 0, formatting: 0 }])
     // Accepted, the redline reads as the body; rejected, as the original.
     const redline = readFileSync(leanFile(directory, "d1/redline.docx"))
     expect(shownParagraphs(redline, "accept")).toEqual(shownParagraphs(readFileSync(leanFile(directory, "d1/body-applied.docx"))))
