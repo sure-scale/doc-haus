@@ -269,6 +269,21 @@ describe("redact tool", () => {
     expect(pendingRedlinesForDoc(dir, file)).toHaveLength(1)
   }, 30_000)
 
+  test("a save that could not delete the document's earlier versions is a warning", async () => {
+    const { dir } = await matterWith(buildFixture())
+    const failed = "The earlier versions of this document could not be deleted from doc.haus's kept versions; they may still hold the removed text."
+    const fetchSpy = spyOn(globalThis, "fetch").mockImplementation((async () => Response.json({ ok: true, purge_failed: failed })) as typeof fetch)
+    let result: Awaited<ReturnType<typeof redact.execute>>
+    try {
+      result = await redact.execute({ document: "personnel.docx", text: SSN, reason: "SSN — PII", author: "A. Lawyer", label: undefined }, ctxFor(dir))
+    } finally {
+      fetchSpy.mockRestore()
+    }
+    if (!result || typeof result === "string") throw new Error(String(result))
+    expect(result.output).toContain(`WARNING: ${failed}`)
+    expect(result.output).not.toContain("re-indexing failed")
+  })
+
   test("doc.haus's own records are not a document it redacts", async () => {
     const { dir } = await matterWith(buildFixture())
     const kept = path.join(dir, ".dochaus", "revisions", "document", "kept.docx")

@@ -187,6 +187,9 @@ export default tool({
         return form
       })(),
     }).catch(() => null)
+    // A redaction also deletes the document's earlier versions kept by doc.haus,
+    // which hold the removed text; the response says when that failed.
+    const saved = reingest?.ok ? await reingest.json().catch(() => ({})) as { purge_failed?: unknown } : undefined
 
     const { id, stale } = redaction
     const warnings = [
@@ -195,7 +198,8 @@ export default tool({
       stale instanceof Error &&
         `WARNING: pending redlines that reference the removed text were not retired (${stale.message}). Reject any that still propose or anchor to the removed text in the redline review.`,
       !reingest?.ok &&
-        "WARNING: re-indexing failed — the matter's search index may still contain the removed text until the document is re-ingested.",
+        "WARNING: re-indexing failed — the matter's search index may still contain the removed text until the document is re-ingested, and doc.haus's earlier versions of the document still hold it.",
+      typeof saved?.purge_failed === "string" && `WARNING: ${saved.purge_failed}`,
       redaction.residue.unread.length &&
         `NOTE: ${redaction.residue.unread.length} part(s) are not readable text (${redaction.residue.unread.join(", ")}). The scan searched them only for a literal copy of the text and found none; it cannot see compressed, encoded or image content, so review them manually if they could contain or depict it.`,
       !(stale instanceof Error) && stale.length && `Retired ${stale.length} pending redline(s) that referenced the removed text.`,

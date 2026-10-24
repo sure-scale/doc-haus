@@ -108,6 +108,7 @@ export default tool({
         name,
         rendered.bytes,
         { kind: "create" },
+        { actor: `agent:${ctx.agent}`, run: ctx.sessionID },
       )
       if (uploadError) return `Draft composed but ${uploadError}`
       return {
@@ -215,6 +216,7 @@ export default tool({
       name,
       bytes,
       { kind: "create" },
+      { actor: `agent:${ctx.agent}`, run: ctx.sessionID },
     )
     if (uploadError) return `Draft composed but ${uploadError}`
 
