@@ -110,9 +110,10 @@ export async function documentRedline(directory: string, document: DocID, final:
  * paragraph deleted and inserted again when its cross-reference fields differ
  * (one linked, unlinked, pointed at another clause or showing a new number),
  * so a paragraph whose fields differ between the two, by paragraph pointer, is
- * the text it shows on both sides: the redline marks only the words that
- * changed, and its references there are plain text. Each body is returned
- * itself when none of its paragraphs is. */
+ * the text it shows on both sides, and so is every paragraph when the baseline
+ * is a supplied original: the redline marks only the words that changed, and
+ * its references there are plain text. The body itself keeps its fields. Each
+ * body is returned itself when none of its paragraphs is unlinked. */
 function withComparableReferences(baseline: Uint8Array, final: Uint8Array): [Uint8Array, Uint8Array] {
   const read = (bytes: Uint8Array) => {
     const parts = unzipSync(bytes)
@@ -128,13 +129,21 @@ function withComparableReferences(baseline: Uint8Array, final: Uint8Array): [Uin
   const after = read(final)
   const references = (paragraph: Element) => paragraphFields(paragraph).filter(field => refInstruction(field))
   const shown = (paragraph: Element) => JSON.stringify(references(paragraph).map(field => [field.instruction.trim(), field.result]))
-  for (const [pid, paragraph] of after.paragraphs) {
-    const earlier = before.paragraphs.get(pid)
-    if (!earlier || shown(earlier) === shown(paragraph)) continue
-    for (const [body, node] of [[before, earlier], [after, paragraph]] as const) for (const field of references(node)) {
+  const unlinked = (body: typeof before, paragraphs: Iterable<Element>) => {
+    for (const paragraph of paragraphs) for (const field of references(paragraph)) {
       unlink(field)
       body.changed = true
     }
+  }
+  // A supplied original has no paragraph pointers, so none of its paragraphs
+  // pairs; its references, typed or its own fields, are compared as text with
+  // the text the body's show.
+  if (!before.paragraphs.size) for (const body of [before, after]) unlinked(body, Array.from(body.doc.getElementsByTagNameNS(W, "p")))
+  else for (const [pid, paragraph] of after.paragraphs) {
+    const earlier = before.paragraphs.get(pid)
+    if (!earlier || shown(earlier) === shown(paragraph)) continue
+    unlinked(before, [earlier])
+    unlinked(after, [paragraph])
   }
   const serialized = (body: typeof before) => body.changed
     ? zipSync({ ...body.parts, [BODY]: strToU8(new XMLSerializer().serializeToString(body.doc)) }, { mtime: new Date(1980, 0, 1) }) : body.bytes

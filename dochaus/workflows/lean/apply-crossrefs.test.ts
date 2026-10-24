@@ -3,13 +3,14 @@ import { afterEach, expect, test } from "bun:test"
 import { readFileSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
-import { strFromU8, unzipSync } from "fflate"
+import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { OPEN_ITEM_HIGHLIGHT_FILL, highlightOpenItemsInDocx } from "../../lib/open-items"
 import { renderMarkdownToDocx } from "../../lib/render"
 import { runApply } from "./apply-stage"
 import { shownText, type ParagraphRow } from "./checks"
 import { writeLeanPlan } from "./plan"
 import { paragraphRows } from "./stages"
+import { paragraphFields, unlink } from "../../lib/docx-fields"
 import { leanFile, readLeanJson, readLeanState, writeLeanBytes, writeLeanText, type OpenItem } from "./state"
 import { cleanupMatters, matter, SOURCE } from "./test-support"
 
@@ -282,4 +283,48 @@ test("an open item a change writes is shaded as drafting shades one; the paragra
   expect(highlightOpenItemsInDocx(applied)).toBe(applied)
   await apply(directory, [amendment])
   expect(readFileSync(leanFile(directory, "d1/body-applied.docx")).equals(applied)).toBe(true)
+}, 60_000)
+
+// A lawyer's original numbered by a Word list, as the drafted body is but
+// without its paragraph pointers: its references typed, or its own fields.
+function suppliedOriginal(drafted: Uint8Array, references: "typed" | "fields") {
+  const parts = unzipSync(drafted)
+  const doc = new DOMParser().parseFromString(strFromU8(parts["word/document.xml"]!), "application/xml")
+  if (references === "typed") for (const paragraph of Array.from(doc.getElementsByTagNameNS(W, "p"))) for (const field of paragraphFields(paragraph)) unlink(field)
+  for (const mark of Array.from(doc.getElementsByTagNameNS(W, "bookmarkStart"))) if (mark.getAttributeNS(W, "name")?.startsWith("_dh_")) mark.setAttributeNS(W, "w:name", `_lawyer${mark.getAttributeNS(W, "id")}`)
+  return zipSync({ ...parts, "word/document.xml": strToU8(new XMLSerializer().serializeToString(doc)) })
+}
+
+// The paragraphs of a body as Word shows them, its tracked changes accepted or rejected.
+function shownParagraphs(bytes: Uint8Array, changes?: "accept" | "reject") {
+  const doc = new DOMParser().parseFromString(strFromU8(unzipSync(bytes)["word/document.xml"]!), "application/xml")
+  const all = (node: Document | Element, name: string) => Array.from(node.getElementsByTagNameNS(W, name))
+  for (const node of changes ? all(doc, changes === "accept" ? "del" : "ins") : []) if (node.parentNode && (node.parentNode as Element).localName !== "rPr") node.parentNode.removeChild(node)
+  return all(doc, "p").map(paragraph => all(paragraph, "*").map(node => node.localName === "t" || node.localName === "delText" ? node.textContent : "").join("").trim()).filter(Boolean)
+}
+
+test("revising a supplied original, the redline marks only the words that changed in paragraphs that cite clauses; the body keeps its references live", async () => {
+  const cases = [
+    { references: "typed", start: "Invoices are payable", updated: "Invoices are payable within forty days.", changes: [["Invoices are", "ins", "forty"], ["Invoices are", "del", "thirty"]] },
+    { references: "typed", start: "Late payment", updated: "Late payment under clause 3.1 carries default interest, subject to clause 2.2.", changes: [["Late payment", "ins", "default "]] },
+    { references: "fields", start: "Invoices are payable", updated: "Invoices are payable within forty days.", changes: [["Invoices are", "ins", "forty"], ["Invoices are", "del", "thirty"]] },
+  ] as const
+  for (const { references, start, updated, changes } of cases) {
+    const directory = matter()
+    const body = (await renderMarkdownToDocx(AGREEMENT, undefined, undefined, { form: "agreement" })).bytes
+    const original = suppliedOriginal(body, references)
+    writeFileSync(path.join(directory, SOURCE), original)
+    writeLeanPlan(directory, [{ title: "Services Agreement", form: "agreement", purpose: "", parts: [{ heading: "Services", scope: "" }], comparison: SOURCE }])
+    writeLeanBytes(directory, "d1/body.docx", body)
+    const rows = await paragraphRows(leanFile(directory, "d1/body.docx"))
+    writeLeanText(directory, "d1/paragraphs.json", `${JSON.stringify(rows, null, 2)}\n`)
+    const row = rows.find(row => row.text.startsWith(start))!
+    const { fields: after } = await apply(directory, [{ pid: row.pid, existing_sha256: row.sha256, updated }])
+    expect(after.length).toBeGreaterThan(5)
+    expect([references, start, revisions(directory)]).toEqual([references, start, { changes, fields: 0 }])
+    // Accepted, the redline reads as the body; rejected, as the original.
+    const redline = readFileSync(leanFile(directory, "d1/redline.docx"))
+    expect(shownParagraphs(redline, "accept")).toEqual(shownParagraphs(readFileSync(leanFile(directory, "d1/body-applied.docx"))))
+    expect(shownParagraphs(redline, "reject")).toEqual(shownParagraphs(original))
+  }
 }, 60_000)
