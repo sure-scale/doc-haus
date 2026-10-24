@@ -57,7 +57,6 @@
       "name": "@dochaus/config",
       "dependencies": {
         "@huggingface/transformers": "4.2.0",
-        "@kenjiuno/decompressrtf": "0.1.4",
         "@kenjiuno/msgreader": "1.28.0",
         "@opencode/client": "workspace:*",
         "@opencode/core": "workspace:*",

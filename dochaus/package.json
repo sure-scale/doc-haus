@@ -9,7 +9,6 @@
   },
   "dependencies": {
     "@huggingface/transformers": "4.2.0",
-    "@kenjiuno/decompressrtf": "0.1.4",
     "@kenjiuno/msgreader": "1.28.0",
     "@xmldom/xmldom": "0.8.15",
     "docxodus": "^13.0.0",
