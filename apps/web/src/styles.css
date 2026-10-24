@@ -1126,7 +1126,8 @@ li.list-row {
   color: #b3423a;
 }
 
-.doc-type.is-eml {
+.doc-type.is-eml,
+.doc-type.is-msg {
   color: #6a5a8c;
 }
 

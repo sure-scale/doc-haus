@@ -533,7 +533,7 @@ const EXPANDED_CHILDREN = 5
 // How a parent and what came out of it are named: an email's attachments, a
 // zip's files, or any other parent's files.
 function parentWords(name: string) {
-  const parent = /\.eml$/i.test(name) ? "email" : /\.zip$/i.test(name) ? "zip" : "file"
+  const parent = /\.(eml|msg)$/i.test(name) ? "email" : /\.zip$/i.test(name) ? "zip" : "file"
   const child = parent === "email" ? "attachment" : "file"
   return {
     parent,
@@ -623,7 +623,7 @@ export function EmailRemoveConfirm({ name, removal, onRemove, onCancel }: {
 // format ingest cannot read is refused here, with the formats it can.
 export function newUpload(key: number, file: File): Upload {
   if (matterDocumentKind(file.name)) return { key, file, status: "queued" }
-  return { key, file, status: "failed", error: "Only Word (.docx), PDF, email (.eml), Excel (.xlsx) and zip (.zip) files can be added." }
+  return { key, file, status: "failed", error: "Only Word (.docx), PDF, email (.eml, .msg), Excel (.xlsx) and zip (.zip) files can be added." }
 }
 
 // A same-name clash asks the lawyer what to do with the existing document; any
@@ -725,6 +725,7 @@ const DOCUMENT_TYPE_LABEL: Record<DocumentGlyph, string> = {
   docx: "Word document",
   pdf: "PDF document",
   eml: "Email",
+  msg: "Outlook email",
   xlsx: "Excel spreadsheet",
   zip: "Zip file",
   file: "File",
@@ -734,7 +735,7 @@ function DocumentType({ name }: { name: string }) {
   const kind: DocumentGlyph = matterDocumentKind(name) ?? (/\.zip$/i.test(name.trim()) ? "zip" : "file")
   return (
     <span className={`doc-type is-${kind}`} title={DOCUMENT_TYPE_LABEL[kind]} aria-hidden>
-      {kind === "eml" ? <IconEmail /> : kind === "xlsx" ? <IconSheet /> : kind === "zip" ? <IconArchive /> : <IconFile />}
+      {kind === "eml" || kind === "msg" ? <IconEmail /> : kind === "xlsx" ? <IconSheet /> : kind === "zip" ? <IconArchive /> : <IconFile />}
     </span>
   )
 }

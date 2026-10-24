@@ -81,8 +81,8 @@ export type EmailRemoval = {
 // The source formats ingest reads (MATTER_DOCUMENT_EXTENSIONS in
 // services/ingest/src/ingest.ts). The upload picker, every drop target and the
 // citation link take this one list.
-export const MATTER_DOCUMENT_EXTENSIONS = [".docx", ".pdf", ".eml", ".xlsx", ".zip"] as const
-export type MatterDocumentKind = "docx" | "pdf" | "eml" | "xlsx" | "zip"
+export const MATTER_DOCUMENT_EXTENSIONS = [".docx", ".pdf", ".eml", ".msg", ".xlsx", ".zip"] as const
+export type MatterDocumentKind = "docx" | "pdf" | "eml" | "msg" | "xlsx" | "zip"
 
 // Read the extension as ingest does (path.extname of the trimmed name): from the
 // base name's last dot, and none when that dot leads the name (".pdf").
