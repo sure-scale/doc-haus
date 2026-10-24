@@ -212,6 +212,34 @@ export function numberedList(bytes: Uint8Array): { numId: string; styles: Map<nu
   return { numId: rows[0]!.member!.numId, styles, numbered: numbered.length, typed: body.filter(row => !row.member && row.literal).length }
 }
 
+/** A numbered list each of whose items opens with a typed number of its own
+ * ("1. (1) Alpha Limited", "1. 2.1 The term"), as a Markdown list the drafter
+ * also numbered by hand renders: Word would print its number before the typed
+ * one. Its items leave the list and keep their typed numbers, which then read
+ * as any typed number does (numberDocxClauses). A list with an item that types
+ * no number keeps all of its numbers, so none an item shows changes; bulleted
+ * lists, headings, table cells and paragraphs a style numbers are left alone.
+ * The package is untouched when nothing changes. */
+export function unlistTypedListItems(bytes: Uint8Array): Uint8Array {
+  const parts = unzipSync(bytes)
+  if (!parts[BODY] || !parts[STYLES] || !parts[NUMBERING]) return bytes
+  const document = parse(strFromU8(parts[BODY]))
+  const catalog = readStyles(parse(strFromU8(parts[STYLES])))
+  const lists = readNumbering(parse(strFromU8(parts[NUMBERING])), catalog)
+  const members = bodyParagraphs(document, catalog, lists).filter(row => row.member)
+  const typed = (row: Paragraph) => !row.heading && !row.table && Boolean(row.literal)
+    && value(child(child(child(row.node, "pPr"), "numPr"), "numId")) === row.member!.numId
+    && Boolean(lists.abstracts.get(row.member!.abstract)?.levels[row.member!.level]?.format)
+  const unlisted = [...Map.groupBy(members, row => row.member!.numId).values()].filter(items => items.every(typed)).flat()
+  if (!unlisted.length) return bytes
+  for (const { node, style } of unlisted) {
+    if (catalog.numPr(style)?.numId) setParagraphNumbering(node, 0, "0")
+    else clearParagraphNumbering(node)
+  }
+  parts[BODY] = strToU8(new XMLSerializer().serializeToString(document))
+  return zipSync(parts, { mtime: new Date(1980, 0, 1) })
+}
+
 function parse(xml: string) {
   const fail = (message: string) => { throw new Error(`docx_numbering_xml: ${message}`) }
   return new DOMParser({ errorHandler: { warning: () => {}, error: fail, fatalError: fail } }).parseFromString(xml, "application/xml")

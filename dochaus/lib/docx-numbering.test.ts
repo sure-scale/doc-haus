@@ -395,3 +395,58 @@ ${AGREEMENT.split("\n").slice(2).join("\n")}`)
     expect(shown).toEqual(["Agreement", "1. Supply", "1.1 Payment is due:", "(a) on delivery; or", "(b) on invoice.", "Interest runs daily.", "1.2 Late payment under clause 1.1 carries interest."])
   })
 })
+
+// A drafter writing a parties block as a Markdown list may also type each
+// party's own number: Word must print "(1) Alpha Limited", not "1. (1) Alpha
+// Limited". A list with any item that types no number keeps its numbers.
+describe("a Markdown list whose items type their own numbers", () => {
+  const LISTED = `# Agreement
+
+Parties
+
+1. (1) **Alpha Limited** of 1 High Street (**Alpha**).
+2. (2) **Beta Limited** of 2 High Street (**Beta**).
+
+Background
+
+1. (A) Alpha supplies services.
+2. (B) Beta wishes to buy them.
+
+## 1. Definitions
+
+1.1 In this agreement:
+
+1. **Goods** means the goods listed in the order.
+2. **Price** means the price in the order.
+
+1.2 The Supplier shall:
+
+1. (a) deliver the Goods; and
+2. invoice the Buyer.
+
+## 2. Term
+
+1. 2.1 This agreement lasts one year.
+2. 2.2 Either party may end it on notice.`
+
+  test("prints only the typed numbers, before and after clause numbering, and leaves other lists numbered", async () => {
+    const { literal, numbered } = await both(LISTED)
+    const row = (rows: typeof literal, start: string) => rows.find(item => item.text.startsWith(start))
+    for (const rows of [literal, numbered]) {
+      expect(row(rows, "(1) Alpha")).toMatchObject({ shown: "(1) Alpha Limited of 1 High Street (Alpha).", label: undefined })
+      expect(row(rows, "(2) Beta")).toMatchObject({ shown: "(2) Beta Limited of 2 High Street (Beta).", label: undefined })
+      expect(row(rows, "(A) Alpha")).toMatchObject({ shown: "(A) Alpha supplies services.", label: undefined })
+      expect(row(rows, "(B) Beta")).toMatchObject({ shown: "(B) Beta wishes to buy them.", label: undefined })
+      // A list without typed numbers, and one where an item types none, keep Word's.
+      expect(row(rows, "Goods")).toMatchObject({ shown: "1. Goods means the goods listed in the order.", label: "1." })
+      expect(row(rows, "Price")).toMatchObject({ shown: "2. Price means the price in the order.", label: "2." })
+      expect(row(rows, "(a) deliver")).toMatchObject({ shown: "1. (a) deliver the Goods; and", label: "1." })
+      expect(row(rows, "invoice")).toMatchObject({ shown: "2. invoice the Buyer.", label: "2." })
+    }
+    // Typed clause numbers listed this way read as clause numbers: typed until
+    // the document is numbered, then the clause list's.
+    expect(row(literal, "2.1 This")).toMatchObject({ shown: "2.1 This agreement lasts one year.", label: undefined })
+    expect(row(numbered, "This agreement")).toMatchObject({ shown: "2.1 This agreement lasts one year.", label: "2.1" })
+    expect(row(numbered, "Either party")).toMatchObject({ shown: "2.2 Either party may end it on notice.", label: "2.2" })
+  })
+})

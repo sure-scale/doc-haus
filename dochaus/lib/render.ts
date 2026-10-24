@@ -12,7 +12,7 @@ import { normalizePreferences } from "./drafting-preferences"
 import { prepareMarkdownRenderText } from "./markdown-render-text"
 import { withGeneratedDocxAttribution } from "./docx-attribution"
 import { addPageFurnitureLines, applyPageFurniture, type DocumentForm, type PageFurniture } from "./page-furniture"
-import { numberDocxClauses } from "./docx-numbering"
+import { numberDocxClauses, unlistTypedListItems } from "./docx-numbering"
 import { linkCrossReferences } from "./docx-crossrefs"
 import { advisoryForm } from "../workflows/lean/consistency"
 import { templateSeed, withTemplateStyleIds } from "./template-seed"
@@ -90,7 +90,9 @@ export async function renderMarkdownToDocx(content: string, previous?: Uint8Arra
     session.close()
   }
   // The house headings carry their spacing directly; a template's keep its own.
-  const composed = text.restore(polishMarkdownArtifactsInDocx(saved, { headingSpacing }))
+  // A Markdown list whose items type their own numbers ("1. (1) Alpha
+  // Limited") prints the typed numbers only, as typed paragraphs.
+  const composed = unlistTypedListItems(text.restore(polishMarkdownArtifactsInDocx(saved, { headingSpacing })))
   const accepted = dx.openDocxSession(composed, {})
   const projection = accepted.project()
   accepted.close()
