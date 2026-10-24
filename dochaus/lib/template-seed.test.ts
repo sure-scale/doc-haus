@@ -5,6 +5,7 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { docxodus } from "./docxodus"
+import { compareDocxWithPointers } from "./drafting-amendment"
 import { renderMarkdownToDocx } from "./render"
 
 // A synthetic firm template: its own body style, fonts and A4 page, and a
@@ -276,6 +277,30 @@ describe("rendering onto a template", () => {
     const templated = unzipSync((await renderMarkdownToDocx(BODY, undefined, firm, { styleTemplate: original })).bytes)
     expect(Object.keys(templated).filter(name => /header|footer|media/.test(name)).sort()).toEqual(["word/footer1.xml", "word/header1.xml"])
     expect(strFromU8(templated["word/header1.xml"]!)).toContain("Subject to contract")
+  })
+
+  test("revising a doc.haus draft repeats no header line and dates its draft line anew; the original's other header text stays", async () => {
+    const page = { format: "plain" as const, align: "center" as const }
+    const texts = (bytes: Uint8Array, name: string) => [...strFromU8(unzipSync(bytes)[name]!).matchAll(/<w:t(?:\s[^>]*)?>([^<]*)</g)].map(match => match[1])
+    const original = (await renderMarkdownToDocx("# Supply terms\n\n## 1. Term\n\n1.1 One year.", undefined, { header: ["Subject to contract", "Draft: 1 October 2026"], pageNumber: page }, { numbering: false })).bytes
+    // The redline changes only the draft line's date, or its firm and date.
+    for (const [line, deleted, inserted] of [["Draft: 20 October 2026", "1", "20"], ["Doe LLP draft: 20 October 2026", "Draft: 1", "Doe LLP draft: 20"]]) {
+      const revised = (await renderMarkdownToDocx("# Supply terms\n\n## 1. Term\n\n1.1 Two years.", undefined, { header: ["subject to  contract", line!], pageNumber: page }, { numbering: false, styleTemplate: original, revising: true })).bytes
+      expect(texts(revised, "word/header1.xml")).toEqual(["Subject to contract", line])
+      expect(texts(revised, "word/footer1.xml")).toEqual(["1"])
+      const redline = unzipSync(await compareDocxWithPointers(original, revised, { authorName: "Test" }))
+      const header = strFromU8(redline["word/header1.xml"]!)
+      expect([...header.matchAll(/<w:delText[^>]*>([^<]*)</g)].map(match => match[1]!.trim())).toEqual([deleted])
+      expect([...header.matchAll(/<w:ins\b[^>]*>[\s\S]*?<\/w:ins>/g)].flatMap(match => [...match[0].matchAll(/<w:t[^>]*>([^<]*)</g)].map(text => text[1]!.trim()))).toEqual([inserted])
+      expect(header).not.toMatch(/<w:(?:pPrChange|rPrChange)\b/)
+      expect(strFromU8(redline["word/footer1.xml"]!)).not.toMatch(/<w:(?:ins|del)\b/)
+    }
+    // A header line that only starts like a draft line is the original's own text.
+    for (const own of ["Draft: for discussion", "Draft: 1 October 2026 (for discussion)"]) {
+      const marked = (await renderMarkdownToDocx("# Supply terms", undefined, { header: [own] }, { numbering: false })).bytes
+      const kept = (await renderMarkdownToDocx("# Supply terms", undefined, { header: ["Draft: 20 October 2026"] }, { numbering: false, styleTemplate: marked, revising: true })).bytes
+      expect(texts(kept, "word/header1.xml")).toEqual(["Draft: 20 October 2026", own])
+    }
   })
 
   test("revising a document doc.haus rendered keeps its headings' spacing", async () => {

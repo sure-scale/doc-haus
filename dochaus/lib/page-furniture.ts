@@ -72,6 +72,10 @@ export const PAGE_NUMBER_AFFIXES = { plain: ["", ""], page: ["Page ", ""], dashe
 
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
 
+/** A draft line as pageFurniture writes it: "Draft: " or a firm's "<firm>
+ * draft: ", then a date in one of formatDraftDate's styles, and nothing else. */
+const DRAFT_LINE = new RegExp(String.raw`^(?:\S.* draft|Draft): (?:\d{4}-\d{2}-\d{2}|\d{1,2} (?:${MONTHS.join("|")}) \d{4}|(?:${MONTHS.join("|")}) \d{1,2}, \d{4})$`)
+
 /** The draft date in the firm's date style, read in the host's local time. */
 export function formatDraftDate(at: string, style: DraftingPreferences["dateFormat"]) {
   const date = new Date(at)
@@ -145,7 +149,10 @@ export function applyPageFurniture(docx: Uint8Array, furniture: PageFurniture): 
  * above the text of each header its last section shows (the default one, the
  * first page's when it has a distinct first page, even pages' when the
  * document sets them apart), and a header of the lines alone in place of one
- * it shows none for. Its footers and its own page numbering stay as they are:
+ * it shows none for. A line a header already shows (ignoring case and
+ * spacing) is not repeated, and a draft line takes the text of one the header
+ * shows in that same form (a revised doc.haus draft's), so only its date or
+ * firm changes. Its footers and its own page numbering stay as they are:
  * the firm's page numbers are not added. An original with no header or footer
  * at all takes applyPageFurniture's. Pure; fixed zip entry times. */
 export function addPageFurnitureLines(docx: Uint8Array, furniture: PageFurniture): Uint8Array {
@@ -175,9 +182,18 @@ export function addPageFurnitureLines(docx: Uint8Array, furniture: PageFurniture
     if (!name || !parts[name] || written.has(name)) continue
     written.add(name)
     const header = parseXml(parts[name])
+    const own = Array.from(header.getElementsByTagNameNS(W, "p"))
     const opening = header.documentElement.firstChild
-    for (const line of lines) header.documentElement.insertBefore(header.importNode(line, true), opening)
-    parts[name] = strToU8(new XMLSerializer().serializeToString(header).replaceAll("/>", " />"))
+    let changed = false
+    for (const line of lines) {
+      const text = shownText(line)
+      if (own.some(paragraph => sameLine(shownText(paragraph), text))) continue
+      const dated = DRAFT_LINE.test(text) ? own.find(paragraph => DRAFT_LINE.test(shownText(paragraph).trim())) : undefined
+      if (dated) withText(dated, text)
+      else header.documentElement.insertBefore(header.importNode(line, true), opening)
+      changed = true
+    }
+    if (changed) parts[name] = strToU8(new XMLSerializer().serializeToString(header).replaceAll("/>", " />"))
   }
   for (const reference of added) section.insertBefore(reference, section.firstChild)
   if (added.length) withRelationshipsPrefix(document)
@@ -185,6 +201,24 @@ export function addPageFurnitureLines(docx: Uint8Array, furniture: PageFurniture
 }
 
 const parseXml = (bytes: Uint8Array) => new DOMParser().parseFromString(strFromU8(bytes), "application/xml")
+
+function shownText(paragraph: Element) {
+  return Array.from(paragraph.getElementsByTagNameNS(W, "t")).map(node => node.textContent ?? "").join("")
+}
+
+function sameLine(a: string, b: string) {
+  const flat = (text: string) => text.replace(/\s+/g, " ").trim().toLowerCase()
+  return flat(a) === flat(b)
+}
+
+/** Gives a paragraph `text` in its first text run, keeping its runs' look. */
+function withText(paragraph: Element, text: string) {
+  const [first, ...rest] = Array.from(paragraph.getElementsByTagNameNS(W, "t"))
+  while (first!.firstChild) first!.removeChild(first!.firstChild)
+  first!.appendChild(paragraph.ownerDocument.createTextNode(text))
+  first!.setAttributeNS(XML, "xml:space", "preserve")
+  for (const node of rest) node.parentNode!.removeChild(node)
+}
 
 /** Declares the relationships prefix once on the root, not on every reference. */
 function withRelationshipsPrefix(document: Document) {
