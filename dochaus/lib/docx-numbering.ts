@@ -570,7 +570,7 @@ function opensSequence(literal: Literal, list: ClauseList) {
   return labelOf(list.levels, 0, level => list.overrides.get(list.numId)?.get(level) ?? list.levels[level]?.start ?? 1) === literal.text
 }
 
-type Sequence = { converts: Decision[]; settled: boolean; failed: boolean; saved: ReturnType<Counters["save"]>; numId?: string }
+type Sequence = { converts: Decision[]; settled: boolean; saved: ReturnType<Counters["save"]>; numId?: string }
 
 // The decisions numbering the document with `list`, sequence by sequence; the
 // score is the paragraphs the list would then number. `settledOnly` converts
@@ -582,10 +582,11 @@ function plan(list: ClauseList, paragraphs: Paragraph[], settledOnly: boolean, f
   let used = false
   let members = 0
   let sequence: Sequence | undefined
+  const open = (settled: boolean): Sequence => ({ converts: [], settled, saved: counters.save() })
   const close = () => {
     if (!sequence) return
     if (sequence.settled) decisions.push(...sequence.converts)
-    else if (!sequence.failed && !settledOnly) {
+    else if (!settledOnly) {
       // A sequence after one the list already numbers restarts it.
       const numId = used ? String(firstRestart + restarts.length) : list.numId
       if (used) restarts.push(numId)
@@ -597,13 +598,15 @@ function plan(list: ClauseList, paragraphs: Paragraph[], settledOnly: boolean, f
   for (const paragraph of paragraphs) {
     if (paragraph.table) continue
     const member = paragraph.member?.abstract === list.abstract ? paragraph.member : undefined
+    // A typed sequence ends before a paragraph of the list, which never joins
+    // it: the list paragraph counts on from what the list itself numbers.
+    if (member && !sequence?.settled) close()
     if (member && !paragraph.split) {
       counters.enter(member.numId)
       if (!sequence || (member.level === 0 && counters.next(0, member.numId) === counters.start(0, member.numId))) {
         close()
-        sequence = { converts: [], settled: true, failed: false, saved: counters.save() }
+        sequence = open(true)
       }
-      sequence.settled = true
       sequence.numId = member.numId
       used = true
       members++
@@ -625,18 +628,23 @@ function plan(list: ClauseList, paragraphs: Paragraph[], settledOnly: boolean, f
     if (paragraph.member || !paragraph.literal) continue
     if (paragraph.heading && opensSequence(paragraph.literal, list)) {
       close()
-      sequence = { converts: [], settled: false, failed: false, saved: counters.save() }
+      sequence = open(false)
       counters.values = []
       counters.enter(list.numId)
       counters.advance(0, list.numId)
       sequence.converts.push({ paragraph, level: 0, kind: "convert", numId: list.numId })
       continue
     }
-    if (!sequence || sequence.failed) continue
+    if (!sequence) continue
     const numId = sequence.numId ?? list.numId
     const level = literalLevel(paragraph.literal, list, counters, numId)
     if (level === undefined) {
-      if (!sequence.settled) sequence.failed = true
+      // A typed sequence the list cannot show stays typed: its counters and
+      // conversions go at once, so nothing after it counts on from them.
+      if (!sequence.settled) {
+        counters.restore(sequence.saved)
+        sequence = undefined
+      }
       continue
     }
     counters.advance(level, numId)

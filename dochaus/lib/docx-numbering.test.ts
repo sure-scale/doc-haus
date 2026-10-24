@@ -120,6 +120,21 @@ const AGREEMENT = `# Agreement
 
 2.1 The Supplier shall deliver the Goods.`
 
+// Sequences the list cannot show whole, which stay typed: a level Word would
+// number differently ("1.1.1" after "(a)" under 1.1 reads 1.1.2), a skipped
+// number, an undotted or bold run-in clause number, a number the list writes
+// differently.
+const TYPED = [
+  "# Agreement\n\n## 1. One\n\n1.1 The Supplier shall:\n\n(a) first; and\n\n(b) second.\n\n1.1.1 a deeper point.\n\n1.2 next.",
+  "# Agreement\n\n## 1. One\n\n1.1 a.\n\n## 2. Two\n\n2.1 b.\n\n## 4. Four\n\n4.1 c.",
+  "# Agreement\n\n## 1 One\n\n### 1.1 Sub heading\n\n1.2 text.\n\n## 2 Two\n\n2.1 text.",
+  "# Agreement\n\n**1. One**\n\n1.1 text one.\n\n1.2 text.\n\n**2. Two**\n\n2.1 text two.",
+  "# Agreement\n\n## 1. One\n\n1.01 A plain decimal level shows 1.1.\n\n## 2. Two\n\n2.1 text.",
+]
+
+// A typed main body (it skips clause 3) before a schedule the list numbers.
+const TYPED_BODY_SCHEDULE = "# Agreement\n\n## 1. One\n\n1.1 First.\n\n## 2. Two\n\n2.1 Second.\n\n## 4. Four\n\n4.1 Fourth.\n\n## Schedule 1\n\n### 1. Scope\n\n1.1 Help desk."
+
 describe("numberDocxClauses", () => {
   test("turns literal clause numbers into a Word list bound to the heading style, keeping what a reader sees", async () => {
     const { literal, numbered: after, bytes: numbered } = await both(BODY)
@@ -155,8 +170,16 @@ describe("numberDocxClauses", () => {
   })
 
   test("is idempotent and leaves a document without clause numbers untouched", async () => {
-    const numbered = (await renderMarkdownToDocx(BODY)).bytes
-    expect(numberDocxClauses(numbered)).toBe(numbered)
+    // The apply step numbers every applied body again (`house: false`): a
+    // drafted body, typed sequences and template lists included, stays as it is.
+    for (const [markdown, styleTemplate] of [BODY, AGREEMENT, TYPED_BODY_SCHEDULE, ...TYPED].map(text => [text, undefined] as const).concat([[AGREEMENT, clauseTemplate()], [TYPED_BODY_SCHEDULE, clauseTemplate()]])) {
+      const numbered = (await renderMarkdownToDocx(markdown, undefined, undefined, styleTemplate ? { styleTemplate } : {})).bytes
+      expect(numberDocxClauses(numbered)).toBe(numbered)
+      expect(numberDocxClauses(numbered, { house: false })).toBe(numbered)
+    }
+    // The typed body never takes the schedule's list: the schedule keeps its own numbers.
+    const shown = (await blocks((await renderMarkdownToDocx(TYPED_BODY_SCHEDULE)).bytes)).filter(row => row.label).map(row => row.shown)
+    expect(shown).toEqual(["1. Scope", "1.1 Help desk."])
     const plain = (await renderMarkdownToDocx("# Letter\n\nDear Sir,\n\n(a) a point; and\n\n## Next steps\n\nWe will write again.", undefined, undefined, { numbering: false })).bytes
     expect(numberDocxClauses(plain)).toBe(plain)
   })
@@ -200,16 +223,8 @@ ${AGREEMENT.split("\n").slice(2).join("\n")}`)
   })
 
   test("a numbered sequence converts whole or not at all", async () => {
-    // A level Word would number differently ("1.1.1" after "(a)" under 1.1
-    // reads 1.1.2), a skipped number, an undotted or bold run-in clause number:
-    // every number of the sequence stays as typed.
-    for (const markdown of [
-      "# Agreement\n\n## 1. One\n\n1.1 The Supplier shall:\n\n(a) first; and\n\n(b) second.\n\n1.1.1 a deeper point.\n\n1.2 next.",
-      "# Agreement\n\n## 1. One\n\n1.1 a.\n\n## 2. Two\n\n2.1 b.\n\n## 4. Four\n\n4.1 c.",
-      "# Agreement\n\n## 1 One\n\n### 1.1 Sub heading\n\n1.2 text.\n\n## 2 Two\n\n2.1 text.",
-      "# Agreement\n\n**1. One**\n\n1.1 text one.\n\n1.2 text.\n\n**2. Two**\n\n2.1 text two.",
-      "# Agreement\n\n## 1. One\n\n1.01 A plain decimal level shows 1.1.\n\n## 2. Two\n\n2.1 text.",
-    ]) {
+    // Every number of a sequence the list cannot show whole stays as typed.
+    for (const markdown of TYPED) {
       const { literal, numbered } = await both(markdown)
       expect(numbered.map(row => row.shown)).toEqual(literal.map(row => row.shown))
       expect(labelled(numbered)).toEqual([])
