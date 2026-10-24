@@ -18,7 +18,9 @@ import { shownText } from "./list-label"
 // trailing period, which is what `REF … \r` shows for the clause list's
 // labels; an attachment's number is typed in its heading, so the field shows
 // the bookmarked number itself. A document whose clause numbers are typed has
-// no clause list, and so no fields.
+// no clause list, and so no fields. A reference to the paragraph it is in
+// ("this clause 5.3" in clause 5.3) stays text: a REF field inside its own
+// bookmark is an error in Word.
 //
 // Each pass also refreshes the fields already in the body: a cached number
 // follows its target. A field whose bookmark is gone (its clause deleted, or
@@ -30,6 +32,15 @@ import { shownText } from "./list-label"
 // as any other reference. A reference unlinked so is not linked again in the
 // same pass to the clause that now carries its number. A clause split in parts
 // keeps its bookmark on its first part, the one that keeps its number.
+//
+// A pass may link only some paragraphs (`relink`), as after an edit: each is
+// read again as the text it shows, refreshed, and its references are linked as
+// a drafted paragraph's are. A refreshed field that shows a whole reference and
+// points at its clause stays; one showing part of a reference, or pointing at
+// another clause, is replaced by it, so a number the edit extended ("clause 6"
+// to "clause 6.2") points at the clause it now names. A field no reference
+// read from the text covers stays as refreshed. The other paragraphs are only
+// refreshed.
 
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 const XML = "http://www.w3.org/XML/1998/namespace"
@@ -44,6 +55,8 @@ export type CrossReferenceOptions = {
   titles?: string[]
   /** Refresh the fields already there without linking new ones. */
   refreshOnly?: true
+  /** Link only the paragraphs this selects, read again from their text; refresh the others. */
+  relink?: (paragraph: Element) => boolean
   /** Told the open-item marker written for each field whose bookmark is gone. */
   onRemovedTarget?: (marker: string) => void
 }
@@ -117,20 +130,28 @@ export async function linkCrossReferences(bytes: Uint8Array, options: CrossRefer
       if (changed && row.exact) row.text = runText(row.node)
     })
 
-    if (!options.refreshOnly) {
+    const relinked = new Set(options.relink && !options.refreshOnly ? rows.flatMap((row, at) => row.exact && options.relink!(row.node) ? [at] : []) : [])
+
+    if (!options.refreshOnly && (!options.relink || relinked.size)) {
       const paras = rows.map(row => ({ text: row.clause ? shownText(row) : row.text }))
       const title = options.title ?? rows.find(row => row.text.trim())?.text.trim() ?? ""
       const names = new Map<string, string>()
       const taken = new Set(marks.keys())
       let next = nextBookmarkId(opened.documents)
       for (const ref of resolvedReferences(title, paras, options.titles, options.form)) {
+        if ((options.relink && !relinked.has(ref.at)) || ref.target === ref.at) continue
         const source = rows[ref.at]!
         const target = rows[ref.target]!
         const start = ref.start - (source.clause ? source.label!.length + 1 : 0)
         const end = start + ref.length
         if (!source.exact || !target.exact || start < 0 || source.text.slice(start, end) !== ref.label) continue
         if ((unlinked.get(ref.at) ?? []).some(span => start <= span.end && span.start <= end)) continue
-        if (paragraphFields(source.node).some(field => start <= field.to && field.from <= end)) continue
+        // A paragraph to relink keeps a field that shows this whole reference
+        // and points at its clause; one showing part of it, or pointing at
+        // another clause, gives way to the reference its text now makes.
+        const overlapping = paragraphFields(source.node).filter(field => start <= field.to && field.from <= end)
+        if (overlapping.length && (!relinked.has(ref.at) || overlapping.some(field => !refInstruction(field)
+          || (field.from === start && field.to === end && marks.get(refInstruction(field)!.name)?.at === ref.target)))) continue
         const attachment = ref.number !== undefined
         const key = `${ref.target}\0${attachment}`
         let name = names.get(key)
@@ -160,6 +181,9 @@ export async function linkCrossReferences(bytes: Uint8Array, options: CrossRefer
           }
           names.set(key, name)
         }
+        // A field that gave way stays typed if the new one cannot be made.
+        for (const field of overlapping) unlink(field)
+        if (overlapping.length) changed = true
         const runs = isolate(source.node, start, end)
         if (!runs) continue
         wrapInField(doc, runs, attachment ? ` REF ${name} \\h ` : ` REF ${name} \\r \\h `)
