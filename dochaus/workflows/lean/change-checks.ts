@@ -142,7 +142,7 @@ function amendmentIssues(item: unknown, index: number, rows: Map<string, Paragra
     ...(/[\r\n]/.test(updated) ? [`${at}.updated must be one paragraph without line breaks; use operation split with an array of resulting paragraphs for a deliberate split.`] : []),
     ...(row && updated && normalizeParagraphText(withoutListLabel(updated, row.label)) === normalizeParagraphText(row.text) ? [`${at}.updated is identical to the current paragraph; drop it or change the text.${row.label ? ` Its number ${row.label} is Word list numbering, which renumbers itself.` : ""}`] : []),
     // Only a split's first part keeps the paragraph's number; later parts are new paragraphs.
-    ...(row && (updated || split) ? retypedLabelIssues(split ? `${at}.updated[0]` : `${at}.updated`, split ? String((item.updated as string[])[0]).trim() : updated, row.label) : []),
+    ...(row && (updated || split) ? retypedLabelIssues(split ? `${at}.updated[0]` : `${at}.updated`, split ? String((item.updated as string[])[0]).trim() : updated, row.label, row.text) : []),
     ...(typeof item.reason !== "string" || !item.reason.trim() ? [`${at}.reason must say why the paragraph changes.`] : []),
     ...(!sourceList ? [`${at}.sources must be a list of {source_id, quote}.`] : []),
     ...(sourceList ?? []).flatMap((source, sourceIndex) => {
