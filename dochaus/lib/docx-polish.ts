@@ -112,7 +112,8 @@ function readMarkdownTable(paragraphs: RegExpMatchArray[], start: number) {
     index++
   }
 
-  if (rows.length === 1) return undefined
+  // A table of its header row alone, or of one column, is a table when its
+  // separator row follows, as in GitHub-flavored Markdown.
   const last = paragraphs[index - 1]!
   return { rows, nextIndex: index, end: last.index! + last[0].length }
 }
@@ -147,7 +148,7 @@ function parseMarkdownRow(runs: TableInlineRun[]): TableRow | undefined {
   )
   const start = characters.findIndex((character) => character.text.trim())
   const end = characters.findLastIndex((character) => character.text.trim())
-  if (start < 0 || characters[start]?.text !== "|" || characters[end]?.text !== "|")
+  if (start < 0 || start === end || characters[start]?.text !== "|" || characters[end]?.text !== "|")
     return undefined
   const cells: TableInlineRun[][] = [[]]
   characters.slice(start + 1, end).forEach((character) => {
@@ -157,7 +158,6 @@ function parseMarkdownRow(runs: TableInlineRun[]): TableRow | undefined {
     }
     cells[cells.length - 1]!.push(character)
   })
-  if (cells.length < 2) return undefined
   return cells.map((cell) => tableCell(trimInlineWhitespace(cell)))
 }
 

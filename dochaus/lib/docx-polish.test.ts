@@ -206,6 +206,37 @@ describe("polishMarkdownArtifactsInDocx", () => {
       "cannot losslessly conserve unsupported Word paragraph properties",
     )
   })
+
+  test("converts a header-only table and a one-column table, but not a bar line without a separator", () => {
+    const docx = zipSync({
+      "word/document.xml": strToU8(
+        `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>` +
+          paragraph("| Signed for the Supplier | Signed for the Buyer |") +
+          paragraph("| --- | --- |") +
+          paragraph("Between the tables") +
+          paragraph("| Important notice |") +
+          paragraph("| --- |") +
+          paragraph("| This agreement limits liability. |") +
+          paragraph("After the notice") +
+          paragraph("| Not a table |") +
+          paragraph("|") +
+          `</w:body></w:document>`,
+      ),
+    })
+
+    const xml = strFromU8(unzipSync(polishMarkdownArtifactsInDocx(docx))["word/document.xml"]!)
+    const tables = xml.match(/<w:tbl>[\s\S]*?<\/w:tbl>/g) ?? []
+
+    expect(tables).toHaveLength(2)
+    expect(tables[0]!.match(/<w:tr>/g)).toHaveLength(1)
+    expect(tables[0]!.match(/<w:tc>/g)).toHaveLength(2)
+    expect(tables[1]!.match(/<w:tr>/g)).toHaveLength(2)
+    expect(tables[1]!.match(/<w:tc>/g)).toHaveLength(2)
+    expect(tables[1]).toContain(">This agreement limits liability.</w:t>")
+    expect(xml).not.toContain("| --- |")
+    expect(xml).toContain(">| Not a table |</w:t>")
+    expect(xml).toContain("<w:t>|</w:t>")
+  })
 })
 
 function paragraph(text: string) {
