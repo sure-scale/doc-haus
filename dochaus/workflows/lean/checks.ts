@@ -29,9 +29,10 @@ export type StageCheck = { issues: string[]; openItems: OpenItem[] }
 export type ParagraphRow = { pid: string; sha256: string; text: string; label?: string; clause?: true; draft_part?: number | null; draft_heading?: boolean }
 
 // A paragraph's list label is shown before its text (shownText). Amendment
-// text drops a leading copy of that label (withoutListLabel): the list
-// supplies the number. A different number typed in its place is not dropped;
-// retypedLabelIssues names it for a retry, as it would print beside the label.
+// text drops a leading copy of that label (withoutListLabel), also just inside
+// an opening bracket (change-checks.ts): the list supplies the number. A
+// different number typed in its place is not dropped; retypedLabelIssues
+// names it for a retry, as it would print beside the label.
 export { shownText, withoutListLabel } from "../../lib/list-label"
 
 /** Retry feedback for replacement text `text`, at `at`, that opens with a
