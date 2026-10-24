@@ -465,7 +465,7 @@ test("a paragraph is carried as the original's only when its words and emphasis 
   ].join("\n\n"))
   const { bytes, carry } = carryOriginalParagraphs(rendered, zipSync(parts))
   // The heading and the clause are the original's; emphasis, case, a placeholder and a tracked revision keep the others as drafted.
-  expect(carry).toEqual({ paragraphs: 6, carried: 2, breaks: 0 })
+  expect(carry).toEqual({ paragraphs: 6, carried: 2, breaks: 0, spaced: 0 })
   const document = new DOMParser().parseFromString(strFromU8(unzipSync(bytes)["word/document.xml"]!), "application/xml")
   const text = (paragraph: Element) => Array.from(paragraph.getElementsByTagNameNS(W, "t")).map(node => node.textContent).join("")
   expect(Array.from(document.getElementsByTagNameNS(W, "p")).map(text).filter(Boolean)).toEqual(["Supply terms",

@@ -158,8 +158,10 @@ export function carryOriginalTables(rendered: Uint8Array, original: Uint8Array):
 }
 
 /** Of the original's body paragraphs outside tables: how many have text, how
- * many of those were carried, and how many page breaks were carried with them. */
-export type ParagraphCarry = { paragraphs: number; carried: number; breaks: number }
+ * many of those were carried, and how many page breaks were carried with them;
+ * and how many drafted paragraphs took an original's spacing after their
+ * clause number. */
+export type ParagraphCarry = { paragraphs: number; carried: number; breaks: number; spaced: number }
 
 /** The rendered body, drafted on the original's own styles, with each of its
  * paragraphs outside tables that reads as an original one replaced by the
@@ -167,14 +169,19 @@ export type ParagraphCarry = { paragraphs: number; carried: number; breaks: numb
  * are paired in order (a longest common subsequence), so a moved paragraph is
  * not paired. A pair reads alike when its words do (wordsOf) and Markdown's
  * emphasis (bold, italics, strikethrough) falls on the same characters, a
- * leading clause number's aside. The carried paragraph keeps the drafted
- * paragraph's pointer bookmarks. An original paragraph with content that
- * cannot move between packages, list numbering included (refusal), or with
- * hidden text is not carried, nor is a drafted one with an open item or a
- * placeholder, a link or a field. An original paragraph holding only a page
- * break between two paired paragraphs is carried before the second. */
+ * leading clause number's aside and emphasis on all the rest of the paragraph
+ * aside (wholeAside). The carried paragraph keeps the drafted paragraph's
+ * pointer bookmarks. An original paragraph with content that cannot move
+ * between packages, list numbering included (refusal), or with hidden text is
+ * not carried, nor is a drafted one with an open item or a placeholder, a link
+ * or a field. An original paragraph holding only a page break is carried
+ * before the original paragraph after it where that one is carried, or where
+ * it falls between two paired paragraphs. Between two carried paragraphs, a
+ * drafted paragraph left as drafted and an original one not carried that open
+ * with the same clause number (paired in order) give the drafted one the
+ * original's spaces after its number, and nothing else of the original. */
 export function carryOriginalParagraphs(rendered: Uint8Array, original: Uint8Array): { bytes: Uint8Array; carry: ParagraphCarry } {
-  const none = { bytes: rendered, carry: { paragraphs: 0, carried: 0, breaks: 0 } }
+  const none = { bytes: rendered, carry: { paragraphs: 0, carried: 0, breaks: 0, spaced: 0 } }
   const originalParts = unzipSync(original)
   const parts = unzipSync(rendered)
   if (!originalParts[BODY] || !parts[BODY]) return none
@@ -191,6 +198,8 @@ export function carryOriginalParagraphs(rendered: Uint8Array, original: Uint8Arr
   const [left, right] = [worded(originals), worded(drafted)]
   const pairs = alignWords(left.map(row => row.words), right.map(row => row.words))
   const counterpart = new Map<number, Element>()
+  // Carried pairs, as positions in `left` and `right`.
+  const anchors: [number, number][] = []
   let carried = 0
   for (const [index, at] of pairs.entries()) {
     if (at === undefined) continue
@@ -200,8 +209,8 @@ export function carryOriginalParagraphs(rendered: Uint8Array, original: Uint8Arr
     if (DRAFTED_MARKERS.some(pattern => new RegExp(pattern.source, "i").test(now.words))
       || Array.from(now.node.getElementsByTagName("*")).some(node => UNCARRIED.has(node.localName) || node.localName === "hyperlink")) continue
     const number = CLAUSE_NUMBER.exec(now.words)?.[0].length ?? 0
-    const [before, after] = [emphasis(was.node, sourceStyles), emphasis(now.node, targetStyles)]
-    if (before.length !== after.length || before.some((mark, position) => position >= number && mark !== after[position])) continue
+    const [before, after] = [wholeAside(emphasis(was.node, sourceStyles), number), wholeAside(emphasis(now.node, targetStyles), number)]
+    if (before.length !== after.length || before.some((mark, position) => mark !== after[position])) continue
     const node = target.importNode(was.node, true) as Element
     clean(node)
     // The drafted paragraph's pointers open and close the carried one.
@@ -211,25 +220,112 @@ export function carryOriginalParagraphs(rendered: Uint8Array, original: Uint8Arr
     for (const end of marks("bookmarkEnd")) node.appendChild(end)
     now.node.parentNode!.replaceChild(node, now.node)
     counterpart.set(was.at, node)
+    anchors.push([index, at])
     carried++
   }
-  // A page break the original keeps between two paired paragraphs.
+  // A page break the original keeps between two paired paragraphs, or right
+  // before a carried one.
+  const carriedOriginals = new Set(anchors.map(([index]) => left[index]!.at))
   let breaks = 0
   for (const [at, node] of originals.entries()) {
     if (paragraphText(node, node).trim() || !Array.from(node.getElementsByTagNameNS(W, "br")).some(mark => mark.getAttributeNS(W, "type") === "page")) continue
     if (refusal(node, sourceStyles)) continue
     const previous = originals.slice(0, at).findLastIndex(row => paragraphText(row, row).trim())
     const next = originals.findIndex((row, index) => index > at && paragraphText(row, row).trim())
-    if (previous < 0 || next < 0 || !counterpart.has(previous) || !counterpart.has(next) || !adjacent(originals, previous, next)) continue
+    if (next < 0 || !(carriedOriginals.has(next) && adjacent(originals, at, next)
+      || previous >= 0 && counterpart.has(previous) && counterpart.has(next) && adjacent(originals, previous, next))) continue
     const copy = target.importNode(node, true) as Element
     clean(copy)
     counterpart.get(next)!.parentNode!.insertBefore(copy, counterpart.get(next)!)
     breaks++
   }
-  const carry = { paragraphs: left.length, carried, breaks }
-  if (!carried && !breaks) return { ...none, carry }
+  // A drafted paragraph left as drafted whose clause number is an uncarried
+  // original paragraph's, between the same carried paragraphs, keeps the
+  // original's spacing after that number; the rest of it stays as drafted.
+  let spaced = 0
+  const numbered = (rows: typeof left) => rows.flatMap(row => {
+    const label = CLAUSE_NUMBER.exec(row.words)?.[0]
+    return label ? [{ node: row.node, label }] : []
+  })
+  const bounds: [number, number][] = [[-1, -1], ...anchors, [left.length, right.length]]
+  for (const [gap, [fromLeft, fromRight]] of bounds.slice(0, -1).entries()) {
+    const [toLeft, toRight] = bounds[gap + 1]!
+    const [was, now] = [numbered(left.slice(fromLeft + 1, toLeft)), numbered(right.slice(fromRight + 1, toRight))]
+    for (const [index, at] of alignWords(was.map(row => row.label), now.map(row => row.label)).entries())
+      if (at !== undefined && respace(now[at]!.node, now[at]!.label, labelSpace(was[index]!.node, was[index]!.label))) spaced++
+  }
+  const carry = { paragraphs: left.length, carried, breaks, spaced }
+  if (!carried && !breaks && !spaced) return { ...none, carry }
   parts[BODY] = strToU8(new XMLSerializer().serializeToString(target))
   return { bytes: zipSync(parts, { mtime: new Date(1980, 0, 1) }), carry }
+}
+
+/** A paragraph's emphasis marks with a leading clause number's (its first
+ * `number` marks) aside, and with emphasis that falls on all the rest of it
+ * aside too: a heading drafted in bold, or set in a bold style, reads as plain. */
+function wholeAside(marks: string[], number: number) {
+  const rest = marks.slice(number)
+  return [...new Array<string>(Math.min(number, marks.length)).fill(""), ...(rest.every(mark => mark === rest[0]) ? rest.map(() => "") : rest)]
+}
+
+/** A paragraph's visible text pieces in order: each text element with its
+ * text, and every tab or break as a piece of its own. */
+function textPieces(paragraph: Element) {
+  const pieces: { node?: Element; text: string }[] = []
+  const visit = (node: Node) => {
+    if (node.nodeType !== 1) return
+    const element = node as Element
+    if (element.namespaceURI === W) {
+      if (["del", "moveFrom"].includes(element.localName) || element.localName === "p" && element !== paragraph) return
+      if (element.localName === "r" && hidden(element)) return
+      if (element.localName === "t") return void pieces.push({ node: element, text: element.textContent ?? "" })
+      if (["tab", "br", "cr", "noBreakHyphen"].includes(element.localName)) return void pieces.push({ text: element.localName === "noBreakHyphen" ? "-" : "\t" })
+    }
+    Array.from(element.childNodes).forEach(visit)
+  }
+  visit(paragraph)
+  return pieces
+}
+
+/** Where a paragraph opening with clause number `label` puts the spaces after
+ * it, in its text: the offsets they span. Undefined where a tab, a break or
+ * anything but spaces in the text follows the number. */
+function labelGap(pieces: { text: string }[], label: string) {
+  const text = pieces.map(piece => piece.text).join("")
+  const opening = /^[^\S\t]*/.exec(text)![0].length
+  if (!text.startsWith(label, opening)) return
+  const start = opening + label.length
+  const end = start + /^[^\S\t]*/.exec(text.slice(start))![0].length
+  return end > start ? { start, end } : undefined
+}
+
+/** The spaces an original paragraph opening with clause number `label` writes after it. */
+function labelSpace(paragraph: Element, label: string) {
+  const pieces = textPieces(paragraph)
+  const gap = labelGap(pieces, label)
+  return gap && pieces.map(piece => piece.text).join("").slice(gap.start, gap.end)
+}
+
+/** A drafted paragraph opening with clause number `label` made to write
+ * `space` after it, in the text element that holds the first of its own
+ * spaces. Whether it changed. */
+function respace(paragraph: Element, label: string, space: string | undefined) {
+  const pieces = textPieces(paragraph)
+  const gap = space ? labelGap(pieces, label) : undefined
+  if (!space || !gap || pieces.map(piece => piece.text).join("").slice(gap.start, gap.end) === space) return false
+  let offset = 0
+  let written = false
+  for (const piece of pieces) {
+    const [from, to] = [Math.max(gap.start, offset), Math.min(gap.end, offset + piece.text.length)]
+    if (from < to && piece.node) {
+      const text = piece.text.slice(0, from - offset) + (written ? "" : space) + piece.text.slice(to - offset)
+      piece.node.textContent = text
+      piece.node.setAttributeNS(XML_NS, "xml:space", "preserve")
+      written = true
+    }
+    offset += piece.text.length
+  }
+  return written
 }
 
 // A drafted paragraph with one of these is never carried: what it marks is the
