@@ -18,16 +18,20 @@ import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 // started), so the numbers a reader sees, and the references that cite them,
 // do not change. Numbers convert by sequence: a sequence opens at a heading
 // numbered with the list's first top-level label ("1.") and runs to the next
-// such heading (a schedule numbered afresh, which restarts the list). A
-// sequence converts whole or stays exactly as typed: one number the list cannot
-// show (a gap, an undotted or run-in number, a label the list writes
-// differently) keeps all of its numbers typed. Numbers before the first
-// sequence (parties, recitals) stay typed. Converting removes the literal from
-// the paragraph's text; Docxodus reports the list label instead
-// (BlockMetadata.list.generatedLabel). A paragraph that already belongs to the
-// clause list and repeats its own number as text (an amendment that copied the
-// visible number) loses the repeated literal. The pass is idempotent and leaves
-// the package untouched when it changes nothing.
+// such heading (a schedule numbered afresh, which restarts the list) or to an
+// unnumbered heading at or above its own level (a schedule or execution
+// heading; the numbers after it stay typed). A sequence converts whole or stays
+// exactly as typed: one number the list cannot show (a gap, an undotted or
+// run-in number, a label the list writes differently) keeps all of its numbers
+// typed. A number the list could never show there is text, not a clause
+// number: one below the current clause ("1.5 times" in clause 5) or in a form
+// no level has ("(1)" on a list without such a level). Numbers before the
+// first sequence (parties, recitals) stay typed.
+// Converting removes the literal from the paragraph's text; Docxodus reports
+// the list label instead (BlockMetadata.list.generatedLabel). A paragraph that
+// already belongs to the clause list and repeats its own number as text (an
+// amendment that copied the visible number) loses the repeated literal. The
+// pass is idempotent and leaves the package untouched when it changes nothing.
 
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 const BODY = "word/document.xml"
@@ -75,6 +79,10 @@ type Paragraph = {
   node: Element
   style: string
   heading: boolean
+  // A heading's outline level (0 for the top).
+  outline?: number
+  // Its text opens with something other than a digit ("Schedule 1", "Execution").
+  unnumbered: boolean
   table: boolean
   member?: { abstract: string; numId: string; level: number }
   // The paragraph's own numPr numId when it is 0 (numbering suppressed).
@@ -91,8 +99,8 @@ type Decision = { paragraph: Paragraph; level: number; kind: "convert" | "strip"
  * for a document whose numbering was settled when it was drafted: a literal
  * converts there only inside a sequence the list already numbers. `split`
  * names the later parts of paragraphs an amendment split: each leaves the
- * clause list, unless it opens with a number of a deeper level of the same
- * list, which it then takes. */
+ * clause list, unless it opens with the number the list would show next at
+ * the split paragraph's level or a deeper one, which it then takes. */
 export function numberDocxClauses(bytes: Uint8Array, options: { house?: false; split?: (paragraph: Element) => boolean } = {}): Uint8Array {
   const parts = unzipSync(bytes)
   if (!parts[BODY] || !parts[STYLES]) return bytes
@@ -117,7 +125,7 @@ export function numberDocxClauses(bytes: Uint8Array, options: { house?: false; s
   let target = numbering
   if (house) {
     target = numbering ?? addNumberingPart(parts)
-    const bound = houseBindings(decisions, paragraphs, catalog)
+    const bound = houseBindings(decisions, paragraphs, catalog, list.numId)
     writeHouseList(target, list, house.texts, bound)
     for (const [level, style] of bound) bindStyle(catalog.elements.get(style)!, level, list.numId)
     // A paragraph of a newly bound style that is not a clause keeps no number.
@@ -221,6 +229,7 @@ type Catalog = {
   defaultStyle: string
   outline: (style: string) => number | undefined
   numPr: (style: string) => { numId?: string; level?: number } | undefined
+  headingLevel: (style: string) => number | undefined
   headingLike: (style: string) => boolean
 }
 
@@ -256,10 +265,13 @@ function readStyles(styles: Document): Catalog {
     }
     return undefined
   }
-  const headingLike = (style: string) => outline(style) !== undefined
-    || /^heading [1-9]$/i.test(value(child(elements.get(style), "name")) ?? "")
-    || /^Heading[1-9]$/.test(style)
-  return { elements, defaultStyle, outline, numPr, headingLike }
+  // A heading style's outline level, from its own outline or its built-in name or id.
+  const headingLevel = (style: string) => {
+    const named = (value(child(elements.get(style), "name")) ?? "").match(/^heading ([1-9])$/i)?.[1] ?? style.match(/^Heading([1-9])$/)?.[1]
+    return outline(style) ?? (named === undefined ? undefined : Number(named) - 1)
+  }
+  const headingLike = (style: string) => headingLevel(style) !== undefined
+  return { elements, defaultStyle, outline, numPr, headingLevel, headingLike }
 }
 
 // ---- numbering
@@ -356,10 +368,12 @@ function bodyParagraphs(document: Document, catalog: Catalog, lists: Lists, spli
       const level = ownLevel !== undefined ? Number(ownLevel) : styled?.level ?? (bound >= 0 ? bound : 0)
       member = { abstract, numId, level }
     }
-    const outline = value(child(pPr, "outlineLvl"))
-    const heading = (outline !== undefined && Number(outline) < 9) || catalog.headingLike(style)
+    const ownOutline = value(child(pPr, "outlineLvl"))
+    const outline = ownOutline !== undefined && Number(ownOutline) < 9 ? Number(ownOutline) : catalog.headingLevel(style)
+    const heading = outline !== undefined
     const excluded = /^(Title|Subtitle|TOC\d*|TOCHeading)$/i.test(style)
-    return [{ node, style, heading, table, member, suppressed, split: Boolean(split?.(node)), literal: excluded ? undefined : readLiteral(paragraphText(node), heading) }]
+    const text = paragraphText(node)
+    return [{ node, style, heading, outline, unnumbered: /^\s*[^\s\d]/.test(text), table, member, suppressed, split: Boolean(split?.(node)), literal: excluded ? undefined : readLiteral(text, heading) }]
   })
 }
 
@@ -558,11 +572,51 @@ class Counters {
 }
 
 // The level of the list that would show `literal` next at this point; a level
-// whose count continues is preferred over one that would start afresh.
-function literalLevel(literal: Literal, list: ClauseList, counters: Counters, numId: string) {
+// whose count continues is preferred over one that would start afresh, unless
+// only the other shows the number after it (`next`): "(i)" after "(h)" is the
+// next letter, but the first roman sub-limb when "(ii)" follows.
+function literalLevel(literal: Literal, list: ClauseList, counters: Counters, numId: string, next?: () => Literal | undefined): number | undefined {
   const fits = list.levels.flatMap((_, level) =>
     labelOf(list.levels, level, at => at === level ? counters.next(level, numId) : counters.shown(at, numId)) === literal.text ? [level] : [])
-  return fits.find(level => counters.values[level] !== undefined) ?? fits[0]
+  const ranked = [...fits.filter(level => counters.values[level] !== undefined), ...fits.filter(level => counters.values[level] === undefined)]
+  const following = ranked.length > 1 ? next?.() : undefined
+  if (!following) return ranked[0]
+  return ranked.find(level => {
+    const saved = counters.save()
+    counters.advance(level, numId)
+    const shown = literalLevel(following, list, counters, numId) !== undefined
+    counters.restore(saved)
+    return shown
+  }) ?? ranked[0]
+}
+
+const FORM: Record<Format, string> = { decimal: "\\d+", decimalZero: "\\d+", lowerLetter: "[a-z]+", upperLetter: "[A-Z]+", lowerRoman: "[ivxlcdm]+", upperRoman: "[IVXLCDM]+" }
+
+// Each level's label as a pattern of the numbers it can show, without a
+// trailing dot: "%1.%2" on decimal levels is /^\d+\.\d+$/.
+function levelForms(list: ClauseList) {
+  return list.levels.flatMap(definition => {
+    if (!definition?.format) return []
+    const pattern = definition.text.trim().replace(/\.$/, "").split(/(%[1-9])/).map(part => {
+      const reference = part.match(/^%([1-9])$/)?.[1]
+      if (reference === undefined) return part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+      const format = definition.legal ? "decimal" : list.levels[Number(reference) - 1]?.format
+      return format ? FORM[format] : "(?!)"
+    }).join("")
+    return [new RegExp(`^${pattern}$`)]
+  })
+}
+
+// A number the list could never show at this point, which is text rather than
+// a clause number the list fails to show: a decimal number below the current
+// clause ("1.5 times" in clause 5), or one in a form no level has ("(1)" on a
+// list without such a level). A trailing dot is not a form of its own: "3.1."
+// is a "3.1" the list writes differently.
+function neverShown(literal: Literal, list: ClauseList, counters: Counters, forms: RegExp[]) {
+  const top = list.levels[0]?.format
+  if (/^\d/.test(literal.text) && (top === "decimal" || top === "decimalZero") && Number(literal.text.split(".")[0]) < (counters.values[0] ?? 0)) return true
+  const bare = literal.text.replace(/\.$/, "")
+  return !forms.some(form => form.test(bare))
 }
 
 // The label the list shows at `level` for a sequence opened afresh.
@@ -570,42 +624,56 @@ function opensSequence(literal: Literal, list: ClauseList) {
   return labelOf(list.levels, 0, level => list.overrides.get(list.numId)?.get(level) ?? list.levels[level]?.start ?? 1) === literal.text
 }
 
-type Sequence = { converts: Decision[]; settled: boolean; failed: boolean; saved: ReturnType<Counters["save"]>; numId?: string }
+// `outline` is the outline level of the heading that opened the sequence;
+// `first` marks the document's first sequence, its main body.
+type Sequence = { converts: Decision[]; settled: boolean; saved: ReturnType<Counters["save"]>; first: boolean; numId?: string; outline?: number }
 
 // The decisions numbering the document with `list`, sequence by sequence; the
 // score is the paragraphs the list would then number. `settledOnly` converts
 // only within sequences the list already numbers.
 function plan(list: ClauseList, paragraphs: Paragraph[], settledOnly: boolean, firstRestart: number) {
   const counters = new Counters(list.levels, list.overrides)
+  const forms = levelForms(list)
   const decisions: Decision[] = []
   const restarts: string[] = []
-  let used = false
+  let opened = false
   let members = 0
   let sequence: Sequence | undefined
-  const close = () => {
+  const open = (settled: boolean, outline: number | undefined): Sequence => {
+    const first = !opened
+    opened = true
+    return { converts: [], settled, saved: counters.save(), first, outline }
+  }
+  // A typed sequence closing before `at` with a paragraph of the list still to
+  // come stays typed: converted, its numbers would carry on into the list's
+  // count and change the numbers those paragraphs show.
+  const lastMember = paragraphs.findLastIndex(row => !row.table && row.member?.abstract === list.abstract)
+  const close = (at = paragraphs.length) => {
     if (!sequence) return
     if (sequence.settled) decisions.push(...sequence.converts)
-    else if (!sequence.failed && !settledOnly) {
-      // A sequence after one the list already numbers restarts it.
-      const numId = used ? String(firstRestart + restarts.length) : list.numId
-      if (used) restarts.push(numId)
-      used = true
+    else if (!settledOnly && at > lastMember) {
+      // The main body takes the list's own instance; a later sequence (a
+      // schedule) restarts the list, also after a main body left typed.
+      const numId = sequence.first ? list.numId : String(firstRestart + restarts.length)
+      if (!sequence.first) restarts.push(numId)
       decisions.push(...sequence.converts.map(row => ({ ...row, numId })))
     } else counters.restore(sequence.saved)
     sequence = undefined
   }
-  for (const paragraph of paragraphs) {
+  // The next typed number after paragraph `at`.
+  const nextLiteral = (at: number) => paragraphs.slice(at + 1).find(row => !row.table && !row.member && row.literal)?.literal
+  for (const [at, paragraph] of paragraphs.entries()) {
     if (paragraph.table) continue
     const member = paragraph.member?.abstract === list.abstract ? paragraph.member : undefined
+    // A typed sequence ends before a paragraph of the list, which never joins it.
+    if (member && sequence && !sequence.settled) close(at)
     if (member && !paragraph.split) {
       counters.enter(member.numId)
       if (!sequence || (member.level === 0 && counters.next(0, member.numId) === counters.start(0, member.numId))) {
         close()
-        sequence = { converts: [], settled: true, failed: false, saved: counters.save() }
+        sequence = open(true, member.level === 0 ? paragraph.outline : undefined)
       }
-      sequence.settled = true
       sequence.numId = member.numId
-      used = true
       members++
       counters.advance(member.level, member.numId)
       if (paragraph.literal && labelOf(list.levels, member.level, at => counters.shown(at, member.numId)) === paragraph.literal.text)
@@ -613,30 +681,43 @@ function plan(list: ClauseList, paragraphs: Paragraph[], settledOnly: boolean, f
       continue
     }
     if (member) {
-      // A later part of a split clause: a deeper level of its list, or out of it.
+      // A later part of a split clause: its own or a deeper level of the list
+      // (a new sibling "2.3" after "2.2"), or out of it.
       const numId = sequence?.numId ?? member.numId
       const level = paragraph.literal ? literalLevel(paragraph.literal, list, counters, numId) : undefined
-      if (level !== undefined && level > member.level) {
+      if (level !== undefined && level >= member.level) {
         counters.advance(level, numId)
         decisions.push({ paragraph, level, kind: "convert", numId })
       } else decisions.push({ paragraph, level: 0, kind: "detach", numId: "0" })
       continue
     }
-    if (paragraph.member || !paragraph.literal) continue
+    if (paragraph.member) continue
+    if (!paragraph.literal) {
+      // An unnumbered heading at or above the heading that opened the sequence
+      // (a schedule, the execution block) ends it; the numbers after it stay
+      // typed until a heading opens a sequence afresh.
+      if (sequence?.outline !== undefined && paragraph.outline !== undefined && paragraph.outline <= sequence.outline && paragraph.unnumbered) close(at)
+      continue
+    }
     if (paragraph.heading && opensSequence(paragraph.literal, list)) {
-      close()
-      sequence = { converts: [], settled: false, failed: false, saved: counters.save() }
+      close(at)
+      sequence = open(false, paragraph.outline)
       counters.values = []
       counters.enter(list.numId)
       counters.advance(0, list.numId)
       sequence.converts.push({ paragraph, level: 0, kind: "convert", numId: list.numId })
       continue
     }
-    if (!sequence || sequence.failed) continue
+    if (!sequence) continue
     const numId = sequence.numId ?? list.numId
-    const level = literalLevel(paragraph.literal, list, counters, numId)
+    const level = literalLevel(paragraph.literal, list, counters, numId, () => nextLiteral(at))
     if (level === undefined) {
-      if (!sequence.settled) sequence.failed = true
+      // A typed sequence the list cannot show stays typed: its counters and
+      // conversions go at once, so nothing after it counts on from them.
+      if (!sequence.settled && !neverShown(paragraph.literal, list, counters, forms)) {
+        counters.restore(sequence.saved)
+        sequence = undefined
+      }
       continue
     }
     counters.advance(level, numId)
@@ -648,23 +729,25 @@ function plan(list: ClauseList, paragraphs: Paragraph[], settledOnly: boolean, f
 
 // ---- writing the list
 
-// A house level is bound to a heading style when every clause at that level
-// uses it, it carries no other level, and after the first such clause most
-// paragraphs of that style are clauses, so a heading of that style added later
-// in Word is numbered too (headings before the clauses, such as the parties or
-// recitals, keep no number).
-function houseBindings(decisions: Decision[], paragraphs: Paragraph[], catalog: Catalog) {
+// A house level is bound to a heading style when every main-body clause (on
+// the list's own instance `numId`) at that level uses it, no clause at another
+// level does, and after the first such clause most paragraphs of that style
+// are clauses, so a heading of that style added later in Word is numbered too
+// (headings before the clauses, such as the parties or recitals, keep no
+// number). A schedule's clauses, numbered on restarts, bind nothing.
+function houseBindings(decisions: Decision[], paragraphs: Paragraph[], catalog: Catalog, numId: string) {
   const converted = decisions.filter(row => row.kind === "convert")
+  const main = converted.filter(row => row.numId === numId)
   const bound = new Map<number, string>()
-  for (const level of new Set(converted.map(row => row.level))) {
-    const styles = new Set(converted.filter(row => row.level === level).map(row => row.paragraph.style))
+  for (const level of new Set(main.map(row => row.level))) {
+    const styles = new Set(main.filter(row => row.level === level).map(row => row.paragraph.style))
     if (styles.size !== 1) continue
     const style = [...styles][0]!
     if (style === catalog.defaultStyle || !catalog.headingLike(style) || !catalog.elements.has(style)) continue
     if (converted.some(row => row.level !== level && row.paragraph.style === style)) continue
     if (catalog.numPr(style)) continue
-    const first = paragraphs.indexOf(converted.find(row => row.paragraph.style === style)!.paragraph)
-    const clauses = converted.filter(row => row.paragraph.style === style).length
+    const first = paragraphs.indexOf(main.find(row => row.paragraph.style === style)!.paragraph)
+    const clauses = main.filter(row => row.paragraph.style === style).length
     const others = paragraphs.filter((row, at) => at > first && row.style === style && !row.table && !converted.some(entry => entry.paragraph === row)).length
     if (clauses > others) bound.set(level, style)
   }

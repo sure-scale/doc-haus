@@ -1,8 +1,9 @@
 import { existsSync, readFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import path from "node:path"
+import { strFromU8, unzipSync } from "fflate"
 import { docxodus } from "./docxodus"
-import { hasParagraphPointers, withParagraphPointers } from "./drafting-amendment"
+import { withParagraphPointers } from "./drafting-amendment"
 import { polishMarkdownArtifactsInDocx } from "./docx-polish"
 import { lintDraftMarkdown, splitBlocks } from "./markdown"
 import { highlightOpenItemsInDocx } from "./open-items"
@@ -51,7 +52,8 @@ const ingestUrl = process.env.INGEST_URL ?? `http://127.0.0.1:${process.env.DOC_
 // and without that, or when the file is not a Word document, the house style;
 // `templated` says whether a template's styles were used. Headings take the
 // house spacing directly (`headingSpacing`) unless a template's own styles
-// space them; a document doc.haus rendered, revised from itself, keeps it.
+// space them; a template whose own headings carry spacing directly (a document
+// doc.haus rendered in the house style, revised from itself) keeps it.
 export async function renderMarkdownToDocx(content: string, previous?: Uint8Array, furniture?: PageFurniture, options: { numbering?: false; styleTemplate?: Uint8Array | false } = {}) {
   const text = prepareMarkdownRenderText(splitBlocks(content))
   const dx = await docxodus()
@@ -59,7 +61,7 @@ export async function renderMarkdownToDocx(content: string, previous?: Uint8Arra
   const styleTemplate = options.styleTemplate === false ? undefined : options.styleTemplate ?? firmStyleTemplate()
   const templated = styleTemplate && templateSeed(styleTemplate, house)
   if (styleTemplate && !templated) warnOnce("a style template that is not a Word document with styles of its own; the house style applies")
-  const headingSpacing = !templated || hasParagraphPointers(styleTemplate!)
+  const headingSpacing = !templated || headingsSpaced(styleTemplate!)
   const session = dx.openDocxSession(templated || house, {})
 
   // The seed's single empty paragraph is the insertion anchor; the whole markdown
@@ -98,11 +100,24 @@ export async function renderMarkdownToDocx(content: string, previous?: Uint8Arra
   // document.xml, and a header date would trip the lint's date-style rule.
   // Highlighting and paragraph pointers read document.xml only, so header and
   // footer text takes neither.
-  // Numbering follows the lint, which reads the literal numbers as Markdown.
-  const numbered = options.numbering === false ? composed : numberDocxClauses(templated ? withTemplateStyleIds(composed) : composed)
-  const furnished = furniture ? applyPageFurniture(numbered, furniture) : numbered
-  const bytes = withGeneratedDocxAttribution(withParagraphPointers(highlightOpenItemsInDocx(furnished), previous))
+  // Numbering follows the lint, which reads the literal numbers as Markdown,
+  // and the furniture, whose header and footer take the template's style ids too.
+  const furnished = furniture ? applyPageFurniture(composed, furniture) : composed
+  const numbered = options.numbering === false ? furnished : numberDocxClauses(templated ? withTemplateStyleIds(furnished) : furnished)
+  const bytes = withGeneratedDocxAttribution(withParagraphPointers(highlightOpenItemsInDocx(numbered), previous))
   return { bytes, lint, templated: Boolean(templated), headingSpacing }
+}
+
+// Whether the template's own Heading 1-3 paragraphs carry spacing of their own
+// rather than their style's, as the house headings do.
+function headingsSpaced(template: Uint8Array) {
+  try {
+    const body = unzipSync(template, { filter: file => file.name === "word/document.xml" })["word/document.xml"]
+    return Boolean(body) && [...strFromU8(body!).matchAll(/<w:pPr>((?:(?!<\/w:pPr>)[\s\S])*)<\/w:pPr>/g)]
+      .some(([, properties]) => /<w:pStyle\b[^>]*w:val="Heading[123]"[^>]*\/>/.test(properties!) && /<w:spacing\b/.test(properties!.replace(/<w:rPr>[\s\S]*?<\/w:rPr>/g, "")))
+  } catch {
+    return false
+  }
 }
 
 // The firm's style template: a file in the template library, read when a
