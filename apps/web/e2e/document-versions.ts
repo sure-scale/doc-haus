@@ -150,12 +150,14 @@ function restoreAt(state: Fixture, name: string, id: string) {
 
 async function open(state: Fixture, width: number, height: number) {
   const context = await browser.newContext({ viewport: { width, height }, hasTouch: width <= 768, reducedMotion: "reduce", timezoneId: "Europe/London" })
-  await context.addInitScript(() => { sessionStorage.setItem("dh.launch-notice.v1", "accepted"); localStorage.setItem("dh.sidebar", innerWidth > 960 ? "0" : "1") })
+  await context.addInitScript(() => { try { sessionStorage.setItem("dh.launch-notice.v1", "accepted"); localStorage.setItem("dh.sidebar", innerWidth > 960 ? "0" : "1") } catch { /* the browser's PDF viewer frame has no storage */ } })
   await context.route("**/*", async (route: Route) => {
     const request = route.request()
     const url = new URL(request.url())
     const pathname = url.pathname.replace(/^\/ingest(?=\/)/, "").replace(/^\/engine(?=\/api\/)/, "")
     const method = request.method()
+    // The browser's own PDF viewer loads chrome:// resources; blocking them leaves it blank.
+    if (/^chrome(-extension)?:/.test(request.url())) return route.continue()
     // The app and its Word runtime come from the preview; every API call goes
     // through the /ingest and /engine prefixes; nothing else may load.
     const api = url.origin === origin && (url.pathname.startsWith("/ingest/") || url.pathname.startsWith("/engine/"))
@@ -477,6 +479,8 @@ try {
         await expect(reader.locator("iframe.pdf-render")).toHaveAttribute("src", /^blob:/)
         await expect(reader.getByRole("button", { name: "Convert to DOCX" })).toBeDisabled()
         await expect(reader.getByRole("button", { name: "Back to current version" })).toBeFocused()
+        // Only the screenshot needs the browser's PDF plugin to have painted the page.
+        await page.waitForTimeout(2000)
         await capture(page, `pdf-version-view-${size}`)
         await reader.getByRole("button", { name: "Back to current version" }).press("Enter")
         await expect(reader.locator("iframe.pdf-render")).toHaveAttribute("src", /\/documents\/content\?/)
