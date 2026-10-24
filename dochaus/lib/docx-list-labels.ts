@@ -1,6 +1,7 @@
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
 import type { MarkdownAnchorTarget } from "docxodus"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
+import { diagnosticErrorMetadata } from "./diagnostic-metadata"
 import { docxodus } from "./docxodus"
 
 // Word draws a numbered paragraph's label ("1.", "1.1", "(a)") from the list
@@ -21,7 +22,9 @@ import { docxodus } from "./docxodus"
 // paragraphs (Docxodus numbers them apart from the body) and clauses a pending
 // change deletes or moves away (they do not count). A file without a
 // numbered list, or one Docxodus cannot read, is returned as the same buffer,
-// so its text and offsets do not change.
+// so its text and offsets do not change. A file read without its numbers for a
+// failure is logged, and `unread` is called, so a reader that keeps the text
+// can read it again.
 
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 const XML = "http://www.w3.org/XML/1998/namespace"
@@ -33,7 +36,7 @@ const NUM_PR = /<(?:[\w.-]+:)?numPr[\s/>]/
 // are containers (tables, rows, cells, columns, content controls, sections).
 const PARAGRAPHS = new Set(["p", "li", "h"])
 
-export async function writeListLabels(buffer: Buffer): Promise<Buffer> {
+export async function writeListLabels(buffer: Buffer, unread?: () => void): Promise<Buffer> {
   try {
     const head = unzipSync(buffer, { filter: file => [BODY, NUMBERING, STYLES].includes(file.name) })
     const body = head[BODY] && strFromU8(head[BODY])
@@ -50,7 +53,10 @@ export async function writeListLabels(buffer: Buffer): Promise<Buffer> {
     // the same text keep their own numbers. A paragraph the two read with
     // different text takes no label, and a file they count differently none.
     const paragraphs = Array.from(doc.getElementsByTagNameNS(W, "p"))
-    if (paragraphs.length !== anchors.length) return buffer
+    if (paragraphs.length !== anchors.length) {
+      console.warn("list labels not read", { reason: "paragraph_count_mismatch", docxodus_paragraphs: anchors.length, document_paragraphs: paragraphs.length })
+      return buffer
+    }
     let written = 0
     anchors.forEach(({ preview, label }, at) => {
       const node = paragraphs[at]!
@@ -65,7 +71,9 @@ export async function writeListLabels(buffer: Buffer): Promise<Buffer> {
     parts[BODY] = strToU8(new XMLSerializer().serializeToString(doc))
     // mammoth reads the copy once and discards it, so it is stored uncompressed.
     return Buffer.from(zipSync(parts, { level: 0 }))
-  } catch {
+  } catch (error) {
+    console.warn("list labels not read", diagnosticErrorMetadata(error))
+    unread?.()
     return buffer
   }
 }
