@@ -6,11 +6,11 @@ import { lintRenderedDraftMarkdown } from "../../lib/render"
 import { changePlanPrompt } from "./change-pipeline"
 import { finalGate } from "./gate"
 import { writeLeanPlan } from "./plan"
-import { stagePrompt } from "./prompts"
+import { REVISION_PREFERENCE_SCOPE, stagePrompt } from "./prompts"
 import { acceptStageReply, paragraphRows, stageOutputValid } from "./stages"
 import { leanFile, readLeanText, writeLeanText } from "./state"
-import { cleanupMatters, matter } from "./test-support"
-import { draftingStyleWarnings } from "./style-warnings"
+import { SOURCE, cleanupMatters, matter } from "./test-support"
+import { draftingStyleWarnings, styleScopedRows } from "./style-warnings"
 
 const workspace = mkdtempSync(path.join(tmpdir(), "lean-style-preferences-"))
 const previous = process.env.WORKSPACE_ROOT
@@ -92,4 +92,41 @@ test("style advisories reach wording review, planning and final notes without bl
   expect(retainedWordNote).toContain("Drafting notes: numbers must be plain numerals")
   expect((await acceptStageReply(directory, "finalize", "# Drafting notes\n\nThe delivery terms use the selected formats.")).issues).toEqual([])
   expect(readLeanText(directory, "drafting-notes.md")).not.toContain("## Drafting style advisories")
+})
+
+test("in a revision, a date in the original's unchanged wording raises no style warning; the same date in changed wording still does", async () => {
+  save({ dateFormat: "month-day-year" })
+  // The draft retypes the original's paragraph with plain quotes and single spacing.
+  const directory = matter("Supply terms\n\nThe \u201cTerm\u201d starts  on 1 January 2027.\n\nPayment is due on 1 January 2027.")
+  const plan = (mode: "new" | "revise") => writeLeanPlan(directory, [{ title: "Supply terms", purpose: "Revise the supply terms", parts: [{ heading: "Terms", scope: "Terms" }], mode, ...(mode === "revise" ? { comparison: SOURCE } : {}) }])
+  plan("revise")
+  const draft = '# Supply terms\n\n## Terms\n\nThe "Term" starts on 1 January 2027.\n\nPayment is due by 1 January 2027 at the latest.'
+  expect((await acceptStageReply(directory, "d1.draft", draft)).issues).toEqual([])
+  const rows = await paragraphRows(leanFile(directory, "d1/body.docx"))
+  const kept = rows.find(row => row.text.includes("starts on"))!
+  const changed = rows.find(row => row.text.startsWith("Payment"))!
+  const warned = () => draftingStyleWarnings(styleScopedRows(directory, "d1", rows)).map(row => row.pid)
+  const block = (prompt: string) => /<drafting_style_warnings>[\s\S]*<\/drafting_style_warnings>/.exec(prompt)?.[0] ?? ""
+  const prompts = () => [stagePrompt(directory, "d1.review-wording"), changePlanPrompt(directory, "d1")]
+  // The final body keeps the original's date and corrects the changed one.
+  writeLeanText(directory, "d1/paragraphs-applied.json", JSON.stringify(rows.map(row => row === changed ? { ...row, text: "Payment is due by January 1, 2027 at the latest." } : row)))
+  const advisories = async () => {
+    expect((await acceptStageReply(directory, "finalize", "# Drafting notes\n\nThe terms are revised.")).issues).toEqual([])
+    return readLeanText(directory, "drafting-notes.md")!.includes("## Drafting style advisories")
+  }
+
+  expect(warned()).toEqual([changed.pid])
+  for (const prompt of prompts()) {
+    expect(block(prompt)).toContain(changed.pid)
+    expect(block(prompt)).not.toContain(kept.pid)
+  }
+  for (const prompt of [...prompts(), stagePrompt(directory, "d1.changes")]) expect(prompt).toContain(REVISION_PREFERENCE_SCOPE)
+  expect(await advisories()).toBe(false)
+
+  // A new draft with the same words is checked in full, and is not told the revision's scope.
+  plan("new")
+  expect(warned()).toEqual([kept.pid, changed.pid])
+  for (const prompt of prompts()) expect(block(prompt)).toContain(kept.pid)
+  for (const prompt of [...prompts(), stagePrompt(directory, "d1.changes")]) expect(prompt).not.toContain(REVISION_PREFERENCE_SCOPE)
+  expect(await advisories()).toBe(true)
 })
