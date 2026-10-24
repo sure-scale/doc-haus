@@ -281,11 +281,18 @@ function touchedRanges(from: string, to: string) {
 // just before an open-item marker would be written in the marker's shaded run
 // and read as open. Such an insertion takes the character before the marker
 // instead, unless that character is in a marker too. Only a pure insertion's
-// text ends with the character it keeps.
+// text ends with the character it keeps. A replacement that runs from before a
+// marker into it would keep the marker's end (its closing bracket) in the
+// marker's run while writing what comes before it into another run, so the
+// marker that text ends would span two runs and go unshaded; it rewrites the
+// rest of the marker too.
 function hunkRange(from: string, to: string) {
   const range = changedRange(from, to)
   const { offset, replaced, changed } = range
   const markers = markerSpans(from)
+  const end = offset + replaced.length
+  const entered = markers.find(([start, stop]) => offset < start && start < end && end < stop)
+  if (entered) return { offset, replaced: from.slice(offset, entered[1]), changed: changed + from.slice(end, entered[1]) }
   if (!offset || changed === replaced || !changed.endsWith(replaced) || !markers.some(([start]) => start === offset)) return range
   const previous = Array.from(from.slice(0, offset)).at(-1)!
   const at = offset - previous.length
@@ -334,8 +341,10 @@ function preserveDeletedCellParagraphs(bytes: Uint8Array, opened: Opened, edits:
 }
 
 // Inserted text takes the formatting of the first run it touches, so resolving a
-// highlighted open item would leave the answer shaded as open. Clears open-item
-// shading from runs of edited paragraphs that no longer hold a marker.
+// highlighted open item would leave the answer shaded as open, and words written
+// beside a marker into its run would be shaded with it. Clears open-item shading
+// from runs of edited paragraphs that hold anything but markers; the apply step
+// shades each marker in them on its own, as drafting does.
 function clearResolvedHighlights(bytes: Uint8Array, pids: Set<string>) {
   const parts = unzipSync(bytes)
   const doc = new DOMParser().parseFromString(strFromU8(parts[BODY]!), "application/xml")
@@ -344,7 +353,8 @@ function clearResolvedHighlights(bytes: Uint8Array, pids: Set<string>) {
     if (run?.localName !== "r" || !HIGHLIGHT_FILLS.has((shd.getAttributeNS(W, "fill") ?? "").toUpperCase())) return false
     const paragraph = owningParagraph(run) as Element | null
     if (!paragraph || !paragraphPointers(paragraph).some(row => pids.has(row.pid))) return false
-    return !hasOpenItemMarker(Array.from(run.getElementsByTagNameNS(W, "t")).map(text => text.textContent ?? "").join(""))
+    const text = Array.from(run.getElementsByTagNameNS(W, "t")).map(text => text.textContent ?? "").join("")
+    return !hasOpenItemMarker(text) || text.replace(OPEN_ITEM_PATTERN, "") !== ""
   })
   if (!shading.length) return bytes
   for (const shd of shading) shd.parentNode!.removeChild(shd)
