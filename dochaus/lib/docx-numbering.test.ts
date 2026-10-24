@@ -262,6 +262,15 @@ ${AGREEMENT.split("\n").slice(2).join("\n")}`)
     }
   })
 
+  test("\"(i)\" after \"(h)\" is the next letter, or the first roman sub-limb when \"(ii)\" follows", async () => {
+    const limbs = (last: string) => `# Agreement\n\n## 1. One\n\n1.1 The Supplier shall:\n\n${["a", "b", "c", "d", "e", "f", "g"].map(letter => `(${letter}) item;`).join("\n\n")}\n\n${last}\n\n1.2 next.`
+    for (const markdown of [limbs("(h) item, including:\n\n(i) a sub-item; and\n\n(ii) another."), limbs("(h) item;\n\n(i) item; and\n\n(j) item.")]) {
+      const { literal, numbered } = await both(markdown)
+      expect(numbered.map(row => row.shown)).toEqual(literal.map(row => row.shown))
+      expect(labelled(numbered)).toEqual(literal.slice(1).map(row => row.shown))
+    }
+  })
+
   test("an ordered list inside a clause stays its own list, and the clause list numbers around it", async () => {
     const { literal, numbered, bytes } = await both("# Agreement\n\n## 1. Supply\n\n1.1 The Supplier shall:\n\n1. deliver the Goods;\n2. invoice the Buyer.\n\n1.2 Payment is due on delivery.\n\n## 2. Term\n\n2.1 One year.")
     expect(numbered.map(row => row.shown)).toEqual(literal.map(row => row.shown))

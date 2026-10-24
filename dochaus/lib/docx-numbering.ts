@@ -572,11 +572,22 @@ class Counters {
 }
 
 // The level of the list that would show `literal` next at this point; a level
-// whose count continues is preferred over one that would start afresh.
-function literalLevel(literal: Literal, list: ClauseList, counters: Counters, numId: string) {
+// whose count continues is preferred over one that would start afresh, unless
+// only the other shows the number after it (`next`): "(i)" after "(h)" is the
+// next letter, but the first roman sub-limb when "(ii)" follows.
+function literalLevel(literal: Literal, list: ClauseList, counters: Counters, numId: string, next?: () => Literal | undefined): number | undefined {
   const fits = list.levels.flatMap((_, level) =>
     labelOf(list.levels, level, at => at === level ? counters.next(level, numId) : counters.shown(at, numId)) === literal.text ? [level] : [])
-  return fits.find(level => counters.values[level] !== undefined) ?? fits[0]
+  const ranked = [...fits.filter(level => counters.values[level] !== undefined), ...fits.filter(level => counters.values[level] === undefined)]
+  const following = ranked.length > 1 ? next?.() : undefined
+  if (!following) return ranked[0]
+  return ranked.find(level => {
+    const saved = counters.save()
+    counters.advance(level, numId)
+    const shown = literalLevel(following, list, counters, numId) !== undefined
+    counters.restore(saved)
+    return shown
+  }) ?? ranked[0]
 }
 
 const FORM: Record<Format, string> = { decimal: "\\d+", decimalZero: "\\d+", lowerLetter: "[a-z]+", upperLetter: "[A-Z]+", lowerRoman: "[ivxlcdm]+", upperRoman: "[IVXLCDM]+" }
@@ -640,7 +651,9 @@ function plan(list: ClauseList, paragraphs: Paragraph[], settledOnly: boolean, f
     } else counters.restore(sequence.saved)
     sequence = undefined
   }
-  for (const paragraph of paragraphs) {
+  // The next typed number after paragraph `at`.
+  const nextLiteral = (at: number) => paragraphs.slice(at + 1).find(row => !row.table && !row.member && row.literal)?.literal
+  for (const [at, paragraph] of paragraphs.entries()) {
     if (paragraph.table) continue
     const member = paragraph.member?.abstract === list.abstract ? paragraph.member : undefined
     // A typed sequence ends before a paragraph of the list, which never joins
@@ -690,7 +703,7 @@ function plan(list: ClauseList, paragraphs: Paragraph[], settledOnly: boolean, f
     }
     if (!sequence) continue
     const numId = sequence.numId ?? list.numId
-    const level = literalLevel(paragraph.literal, list, counters, numId)
+    const level = literalLevel(paragraph.literal, list, counters, numId, () => nextLiteral(at))
     if (level === undefined) {
       // A typed sequence the list cannot show stays typed: its counters and
       // conversions go at once, so nothing after it counts on from them.
