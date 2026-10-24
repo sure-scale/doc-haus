@@ -350,7 +350,7 @@ describe("live cross-references", () => {
     .map(match => [match[1]!.replace(/_Ref\d+/, "_Ref#"), match[2]])
 
   test("an edit beside a REF field keeps it live; an edit of its number leaves that number as text", async () => {
-    const source = (await renderMarkdownToDocx(AGREEMENT)).bytes
+    const source = (await renderMarkdownToDocx(AGREEMENT, undefined, undefined, { form: "agreement" })).bytes
     expect(refs(source)).toEqual([[" REF _Ref# \\r \\h ", "2.1"], [" REF _Ref# \\h ", "1"], [" REF _Ref# \\r \\h ", "2.1"]])
     const revision = await createDocxRevision(source)
     const handle = (start: string) => revision.paragraphs.find(row => row.text.startsWith(start))!.paragraph_handle

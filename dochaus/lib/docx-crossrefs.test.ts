@@ -40,6 +40,9 @@ const AGREEMENT = `# Services Agreement
 
 The services listed here.`
 
+// An agreement: a document whose references to its own clauses are linked.
+const render = async (markdown: string) => (await renderMarkdownToDocx(markdown, undefined, undefined, { form: "agreement" })).bytes
+
 let workspace: string
 const saved = process.env.WORKSPACE_ROOT
 beforeAll(() => {
@@ -137,7 +140,7 @@ function insertClauseBefore(bytes: Uint8Array, before: string, text: string) {
 
 describe("linkCrossReferences", () => {
   test("render links each resolved reference to a bookmark on its target, its cached text the number shown", async () => {
-    const bytes = (await renderMarkdownToDocx(AGREEMENT)).bytes
+    const bytes = await render(AGREEMENT)
     const found = await references(bytes)
     expect(found.map(({ from, instr, cached, target, covers }) => ({ from: from.slice(0, 4), instr, cached, target, ...(instr.includes("\\r") ? {} : { covers }) }))).toEqual([
       { from: "1.1 ", instr: " REF _Ref# \\r \\h ", cached: "2.1", target: "2.1 The Supplier shall provide the Services." },
@@ -202,7 +205,7 @@ describe("linkCrossReferences", () => {
 1.1 Notice is given under clause 1.2 of this Schedule and clause 2.1.
 
 1.2 Notices are in writing.`
-    const found = await references((await renderMarkdownToDocx(deed)).bytes)
+    const found = await references(await render(deed))
     expect(found.map(row => [row.from.slice(0, 14), row.cached, row.target?.slice(0, 14)])).toEqual([
       ["1.1 \"Original ", "2.1", "2.1 The Origin"],
       ["2.1 The Origin", "2", "2. Variations"],
@@ -212,22 +215,29 @@ describe("linkCrossReferences", () => {
   }, 60_000)
 
   test("linking is idempotent and a re-render of the same text names the same bookmarks", async () => {
-    const first = (await renderMarkdownToDocx(AGREEMENT)).bytes
+    const first = await render(AGREEMENT)
     expect(await linkCrossReferences(first)).toEqual(first)
-    const again = (await renderMarkdownToDocx(AGREEMENT)).bytes
+    const again = await render(AGREEMENT)
     expect((await references(again)).map(row => row.name)).toEqual((await references(first)).map(row => row.name))
   }, 60_000)
 
-  test("a document whose numbers are typed, and advice, get no fields", async () => {
-    const typed = (await renderMarkdownToDocx(AGREEMENT, undefined, undefined, { numbering: false })).bytes
+  test("a document whose numbers are typed, advice, a letter and a document of no known form get no fields", async () => {
+    const typed = (await renderMarkdownToDocx(AGREEMENT, undefined, undefined, { numbering: false, form: "agreement" })).bytes
     expect(await linkCrossReferences(typed)).toBe(typed)
-    const numbered = (await renderMarkdownToDocx(AGREEMENT, undefined, undefined)).bytes
-    const plain = withBody(numbered, doc => unlinkAll(doc))
+    expect((await references(await render(AGREEMENT))).length).toBeGreaterThan(0)
+    // Advice and letters cite the clauses of the documents they discuss; a
+    // document of no known form may be either, so its references stay typed.
+    for (const form of ["advice", "letter", "advice letter", undefined] as const) {
+      const rendered = (await renderMarkdownToDocx(AGREEMENT, undefined, undefined, { form })).bytes
+      expect(elements(bodyXml(rendered), "numPr").length).toBeGreaterThan(0)
+      expect((await references(rendered)).map(row => `${form}: ${row.from.slice(0, 4)} ${row.cached}`)).toEqual([])
+    }
+    const plain = withBody(await render(AGREEMENT), doc => unlinkAll(doc))
     expect(await references(await linkCrossReferences(plain, { form: "advice" }))).toEqual([])
   }, 60_000)
 
   test("after a clause is inserted, linking again refreshes each cached number from its target", async () => {
-    const bytes = (await renderMarkdownToDocx(AGREEMENT)).bytes
+    const bytes = await render(AGREEMENT)
     const before = await references(bytes)
     const inserted = insertClauseBefore(bytes, "The Supplier shall provide", "The Supplier shall appoint a manager.")
     const refreshed = await references(await linkCrossReferences(inserted))
@@ -239,7 +249,7 @@ describe("linkCrossReferences", () => {
   }, 60_000)
 
   test("a reference whose target is gone becomes plain text and is not linked to the clause now under its number", async () => {
-    const bytes = (await renderMarkdownToDocx(AGREEMENT)).bytes
+    const bytes = await render(AGREEMENT)
     const removed = withBody(bytes, doc => {
       const target = paragraphStarting(doc, "Invoices are payable")
       target.parentNode!.removeChild(target)
@@ -258,7 +268,7 @@ describe("linkCrossReferences", () => {
 
   test("the reader gives each paragraph's fields by pointer: where the cached number is, and the paragraph or text it points at", async () => {
     const file = path.join(workspace, "read.docx")
-    writeFileSync(file, (await renderMarkdownToDocx(AGREEMENT)).bytes)
+    writeFileSync(file, await render(AGREEMENT))
     const rows = await ensureParagraphRows(file)
     const byPid = new Map(rows.map(row => [row.pid, row]))
     const read = [...referenceFields(readFileSync(file))].flatMap(([pid, links]) => links.map(link => ({
@@ -279,7 +289,7 @@ describe("linkCrossReferences", () => {
   test.skipIf(!Bun.which("soffice"))("LibreOffice shows the renumbered references after a clause and a heading are inserted", async () => {
     const dir = mkdtempSync(path.join(tmpdir(), "docx-crossrefs-lo-"))
     try {
-      const bytes = (await renderMarkdownToDocx(AGREEMENT)).bytes
+      const bytes = await render(AGREEMENT)
       const clause = insertClauseBefore(bytes, "The Supplier shall provide", "The Supplier shall appoint a manager.")
       const heading = insertClauseBefore(clause, "Payment", "Reporting")
       writeFileSync(path.join(dir, "edited.docx"), heading)

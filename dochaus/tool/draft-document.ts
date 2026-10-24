@@ -102,7 +102,8 @@ export default tool({
     // omit/fills/replaces machinery.
     if (!args.template && args.content) {
       // The tool knows no document form, so a from-scratch draft carries only
-      // the firm's page numbers.
+      // the firm's page numbers, and its clause references stay typed: it may
+      // be advice citing the clauses of another document.
       const rendered = await renderMarkdownToDocx(args.content, undefined, pageFurniture("other", normalizePreferences(readFirmPreferences())))
         .catch((err: Error) => err)
       if (rendered instanceof Error) return `Draft failed: ${rendered.message}`
@@ -210,8 +211,10 @@ export default tool({
     // The template's literal clause numbers become its own (or the house)
     // Word list numbering once the text is final. Headings the engine inserts
     // name built-in style ids, which a localized template keeps under its own.
-    // References to its own clauses then become live cross-references.
-    const bytes = withGeneratedDocxAttribution(withParagraphPointers(await linkCrossReferences(numberDocxClauses(withTemplateStyleIds(session.save())))))
+    // A library template has no document form either, so its typed clause
+    // references stay text; the cross-references it already has are
+    // refreshed.
+    const bytes = withGeneratedDocxAttribution(withParagraphPointers(await linkCrossReferences(numberDocxClauses(withTemplateStyleIds(session.save())), { refreshOnly: true })))
     session.close()
 
     // Upload through ingest rather than writing the file directly: its
