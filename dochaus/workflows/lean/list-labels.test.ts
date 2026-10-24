@@ -72,6 +72,29 @@ test("a change that retypes another number before a Word-numbered paragraph is r
   expect(own.changes?.amendments[0]?.updated).toBe("The Customer shall pay within ten days.")
 })
 
+// A reader shown "2.1 The Customer …" who brackets the whole clause as open
+// writes "[2.1 The Customer …]". Word still prints 2.1 before the paragraph,
+// so the bracket stays and the copied number goes; any other number there, a
+// number later in the text or one before an unnumbered paragraph is text.
+test("a change bracketing a Word-numbered paragraph as open drops its copied number inside the bracket", () => {
+  const directory = matter()
+  const rows = numbered(directory)
+  const admitted = (pid: string, updated: string, paragraphs = rows) => {
+    const checked = checkChanges(directory, JSON.stringify({ amendments: [{ pid, updated, reason: "Review finding.", sources: [{ source_id: REQUEST_SOURCE, quote: "Draft a short supply note" }] }], questions: [] }), paragraphs, { document: "d1" })
+    return checked.changes?.amendments[0]?.updated ?? checked.issues.join(" ")
+  }
+  const [heading, clause] = rows as [ParagraphRow, ParagraphRow]
+  expect(admitted(clause.pid, "[2.1 The Customer shall pay within ten days] [open item: confirm the payment period].")).toBe("[The Customer shall pay within ten days] [open item: confirm the payment period].")
+  expect(admitted(heading.pid, "[2. Payment and invoicing]")).toBe("[Payment and invoicing]")
+  expect(admitted(clause.pid, "[3.1 The Customer shall pay within ten days] [open item: confirm the payment period].")).toBe("[3.1 The Customer shall pay within ten days] [open item: confirm the payment period].")
+  expect(admitted(clause.pid, "The Customer shall pay [2.1 days after delivery] [open item: confirm the payment period].")).toBe("The Customer shall pay [2.1 days after delivery] [open item: confirm the payment period].")
+  const typed = [{ pid: "p000000000003", sha256: paragraphSha256("2.1 The Customer shall pay within thirty days."), text: "2.1 The Customer shall pay within thirty days." }]
+  expect(admitted(typed[0]!.pid, "[2.1 The Customer shall pay within ten days] [open item: confirm the payment period].", typed)).toBe("[2.1 The Customer shall pay within ten days] [open item: confirm the payment period].")
+  // The bracketed copy of the number is no change of wording either.
+  const bracketed = [{ ...clause, text: "[The Customer shall pay within thirty days]", sha256: paragraphSha256("[The Customer shall pay within thirty days]") }]
+  expect(admitted(clause.pid, "[2.1 The Customer shall pay within thirty days]", bracketed)).toContain("identical to the current paragraph")
+})
+
 // A paragraph's own text may open with a number written like its label; kept
 // in the replacement, that number is operative text, not typed numbering.
 test("a change keeping the number its paragraph's text opens with is not retried", () => {
