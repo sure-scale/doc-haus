@@ -664,41 +664,64 @@ describe("a planned document's form", () => {
     expect(await labels({ mode: "revise", template: "original.docx" })).toEqual(["1.", "1.1"])
   }, 60_000)
 
+  // `markdown` rendered with typed numbers, then `listed` paragraphs numbered
+  // as Word's numbering buttons leave them: a multilevel list no style binds,
+  // set on each List Paragraph (or Normal) paragraph, its top level a bold
+  // run-in heading.
+  const wordListed = async (markdown: string, listed: [level: number, text: string][], options: { style?: string; bullets?: boolean } = {}) => {
+    const parts = unzipSync((await renderMarkdownToDocx(markdown, undefined, undefined, { numbering: false })).bytes)
+    const level = (ilvl: number, text: string) => `<w:lvl w:ilvl="${ilvl}"><w:start w:val="1"/><w:numFmt w:val="${options.bullets ? "bullet" : "decimal"}"/><w:lvlText w:val="${text}"/><w:pPr><w:ind w:left="${720 * (ilvl + 1)}" w:hanging="720"/></w:pPr></w:lvl>`
+    parts["word/numbering.xml"] = strToU8(`<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:abstractNum w:abstractNumId="0"><w:multiLevelType w:val="multilevel"/>${level(0, options.bullets ? "•" : "%1.")}${level(1, options.bullets ? "o" : "%1.%2")}</w:abstractNum><w:num w:numId="5"><w:abstractNumId w:val="0"/></w:num></w:numbering>`)
+    parts["[Content_Types].xml"] = strToU8(strFromU8(parts["[Content_Types].xml"]!).replace("</Types>", '<Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/></Types>'))
+    parts["word/_rels/document.xml.rels"] = strToU8(strFromU8(parts["word/_rels/document.xml.rels"]!).replace("</Relationships>", '<Relationship Id="rIdNumbering" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/></Relationships>'))
+    const paragraph = ([ilvl, text]: [number, string]) => `<w:p><w:pPr>${options.style ? `<w:pStyle w:val="${options.style}"/>` : ""}<w:numPr><w:ilvl w:val="${ilvl}"/><w:numId w:val="5"/></w:numPr></w:pPr><w:r>${ilvl ? "" : "<w:rPr><w:b/></w:rPr>"}<w:t>${text}</w:t></w:r></w:p>`
+    parts["word/document.xml"] = strToU8(strFromU8(parts["word/document.xml"]!).replace(/(<w:sectPr)/, `${listed.map(paragraph).join("")}$1`))
+    return zipSync(parts)
+  }
+  /** Drafts `reply` as a revision compared against `original`, and redlines it as apply does. */
+  const reviseAgainst = async (original: Uint8Array, reply: string) => {
+    const { directory } = matter()
+    writeFileSync(path.join(directory, "original.docx"), original)
+    writeLeanPlan(directory, [{ title: "Supply terms", purpose: "", parts: [{ heading: "Terms", scope: "" }], mode: "revise", comparison: "original.docx" }])
+    expect((await acceptStageReply(directory, "d1.draft", reply)).issues).toEqual([])
+    const redline = strFromU8(unzipSync(await compareDocxWithPointers(original, readFileSync(leanFile(directory, "d1/body.docx")), { authorName: "Test" }))["word/document.xml"]!)
+    const text = (xml: string, tag: string) => [...xml.matchAll(new RegExp(`<w:${tag}\\b[^>]*>([^<]*)<`, "g"))].map(match => match[1]).join("")
+    return {
+      rows: readParagraphs(directory, "d1"),
+      inserted: [...redline.matchAll(/<w:ins\b[\s\S]*?<\/w:ins>/g)].map(match => text(match[0], "t")).filter(Boolean),
+      deleted: [...redline.matchAll(/<w:del\b[\s\S]*?<\/w:del>/g)].map(match => text(match[0], "delText")).filter(Boolean),
+      // The text of each paragraph whose properties the redline changes.
+      restyled: [...redline.matchAll(/<w:p\b[\s\S]*?<\/w:p>/g)].filter(match => match[0].includes("<w:pPrChange")).map(match => text(match[0], "t") + text(match[0], "delText")),
+    }
+  }
+
   test("a revision of an original Word's own numbering numbers is numbered into that list; a bulleted original keeps typed numbers", async () => {
-    // As Word's numbering buttons leave it: a multilevel list no style binds,
-    // set on each List Paragraph (or Normal) paragraph, its top level a bold
-    // run-in heading.
-    const original = async (style: string | undefined, bullets = false) => {
-      const parts = unzipSync((await renderMarkdownToDocx("# Supply terms", undefined, undefined, { numbering: false })).bytes)
-      const level = (ilvl: number, text: string) => `<w:lvl w:ilvl="${ilvl}"><w:start w:val="1"/><w:numFmt w:val="${bullets ? "bullet" : "decimal"}"/><w:lvlText w:val="${text}"/><w:pPr><w:ind w:left="${720 * (ilvl + 1)}" w:hanging="720"/></w:pPr></w:lvl>`
-      parts["word/numbering.xml"] = strToU8(`<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:abstractNum w:abstractNumId="0"><w:multiLevelType w:val="multilevel"/>${level(0, bullets ? "•" : "%1.")}${level(1, bullets ? "o" : "%1.%2")}</w:abstractNum><w:num w:numId="5"><w:abstractNumId w:val="0"/></w:num></w:numbering>`)
-      parts["[Content_Types].xml"] = strToU8(strFromU8(parts["[Content_Types].xml"]!).replace("</Types>", '<Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/></Types>'))
-      parts["word/_rels/document.xml.rels"] = strToU8(strFromU8(parts["word/_rels/document.xml.rels"]!).replace("</Relationships>", '<Relationship Id="rIdNumbering" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/></Relationships>'))
-      const paragraph = (ilvl: number, text: string, bold = false) => `<w:p><w:pPr>${style ? `<w:pStyle w:val="${style}"/>` : ""}<w:numPr><w:ilvl w:val="${ilvl}"/><w:numId w:val="5"/></w:numPr></w:pPr><w:r>${bold ? "<w:rPr><w:b/></w:rPr>" : ""}<w:t>${text}</w:t></w:r></w:p>`
-      const body = paragraph(0, "Term", true) + paragraph(1, "The term is one year.") + paragraph(1, "Either party may renew it.") + paragraph(0, "Supply", true) + paragraph(1, "The Supplier shall deliver the Goods.")
-      parts["word/document.xml"] = strToU8(strFromU8(parts["word/document.xml"]!).replace(/(<w:body>[\s\S]*?<\/w:p>)/, `$1${body}`))
-      return zipSync(parts)
-    }
-    const revise = async (bytes: Uint8Array) => {
-      const { directory } = matter()
-      writeFileSync(path.join(directory, "original.docx"), bytes)
-      writeLeanPlan(directory, [{ title: "Supply terms", purpose: "", parts: [{ heading: "Terms", scope: "" }], mode: "revise", comparison: "original.docx" }])
-      expect((await acceptStageReply(directory, "d1.draft", "# Supply terms\n\n## 1. Term\n\n1.1 The term is two years.\n\n1.2 Either party may renew it.\n\n## 2. Supply\n\n2.1 The Supplier shall deliver the Goods.\n")).issues).toEqual([])
-      return { body: readFileSync(leanFile(directory, "d1/body.docx")), rows: readParagraphs(directory, "d1") }
-    }
+    const listed: [number, string][] = [[0, "Term"], [1, "The term is one year."], [1, "Either party may renew it."], [0, "Supply"], [1, "The Supplier shall deliver the Goods."]]
+    const reply = "# Supply terms\n\n## 1. Term\n\n1.1 The term is two years.\n\n1.2 Either party may renew it.\n\n## 2. Supply\n\n2.1 The Supplier shall deliver the Goods.\n"
     for (const style of ["ListParagraph", undefined]) {
-      const bytes = await original(style)
-      const { body, rows } = await revise(bytes)
+      const { rows, inserted, restyled } = await reviseAgainst(await wordListed("# Supply terms", listed, { style }), reply)
       expect(rows.map(row => [row.label ?? "", row.text])).toEqual([["", "Supply terms"], ["1.", "Term"], ["1.1", "The term is two years."], ["1.2", "Either party may renew it."], ["2.", "Supply"], ["2.1", "The Supplier shall deliver the Goods."]])
       // The redline inserts no number, and no untouched clause changes its paragraph properties.
-      const redline = strFromU8(unzipSync(await compareDocxWithPointers(bytes, body, { authorName: "Test" }))["word/document.xml"]!)
-      const text = (xml: string, tag: string) => [...xml.matchAll(new RegExp(`<w:${tag}\\b[^>]*>([^<]*)<`, "g"))].map(match => match[1]).join("")
-      expect([...redline.matchAll(/<w:ins\b[\s\S]*?<\/w:ins>/g)].map(match => text(match[0], "t")).filter(Boolean)).toEqual(["two years"])
-      const changed = [...redline.matchAll(/<w:p\b[\s\S]*?<\/w:p>/g)].filter(match => match[0].includes("<w:pPrChange")).map(match => text(match[0], "t"))
-      expect(changed.filter(paragraph => /term is|renew|deliver/.test(paragraph))).toEqual([])
+      expect(inserted).toEqual(["two years"])
+      expect(restyled.filter(paragraph => /term is|renew|deliver/.test(paragraph))).toEqual([])
     }
     // Bullets number nothing: the clause numbers stay typed.
-    expect((await revise(await original("ListParagraph", true))).rows.filter(row => row.label)).toEqual([])
+    expect((await reviseAgainst(await wordListed("# Supply terms", listed, { style: "ListParagraph", bullets: true }), reply)).rows.filter(row => row.label)).toEqual([])
+  }, 60_000)
+
+  test("an original that types its clause numbers keeps them typed beside a Word list in its schedule that could show them", async () => {
+    const clauses = ["Term", "Supply", "Price", "Liability", "Termination"].map((heading, index) => [`## ${index + 1}. ${heading}`, `${index + 1}.1 The ${heading.toLowerCase()} clause applies for one year.`, `${index + 1}.2 The ${heading.toLowerCase()} clause binds both parties.`].join("\n\n"))
+    const typed = `# Supply terms\n\n${clauses.join("\n\n")}\n\n## Schedule\n`
+    // The schedule's list shows "1." and "1.1", as the clauses' typed numbers read.
+    const original = await wordListed(typed, [[0, "Delivery points"], [1, "The Buyer's site."], [1, "The Supplier's depot."]], { style: "ListParagraph" })
+    const reply = `${typed.replace("The term clause applies for one year.", "The term clause applies for two years.")}\nDelivery points\n\nThe Buyer's site.\n\nThe Supplier's depot.\n`
+    const { rows, inserted, deleted, restyled } = await reviseAgainst(original, reply)
+    expect(rows.filter(row => row.label)).toEqual([])
+    expect(rows.map(row => row.text)).toContain("1.1 The term clause applies for two years.")
+    // The redline deletes no typed number and changes no untouched clause.
+    expect(deleted).toEqual(["one year"])
+    expect(inserted).toEqual(["two years"])
+    expect(restyled.filter(paragraph => /clause|^\d/.test(paragraph))).toEqual([])
   }, 60_000)
 
   test("a saved plan reads with or without a form; an edited form must be one of the forms, and it keys the draft", () => {

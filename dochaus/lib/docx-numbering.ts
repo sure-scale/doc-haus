@@ -184,19 +184,21 @@ export function clauseNumbering(bytes: Uint8Array): { numIds: Set<string>; parag
 /** The list that numbers the most of a document's numbered (not bulleted)
  * body paragraphs outside tables, bound to a style or not: the w:num its first
  * such paragraph names and the style its first paragraph at each level takes.
+ * `numbered` counts the body paragraphs any list numbers so; `typed` the body
+ * paragraphs outside lists whose text opens with a typed clause number.
  * Undefined when no such paragraph is numbered. */
-export function numberedList(bytes: Uint8Array): { numId: string; styles: Map<number, string> } | undefined {
+export function numberedList(bytes: Uint8Array): { numId: string; styles: Map<number, string>; numbered: number; typed: number } | undefined {
   const parts = unzipSync(bytes)
   if (!parts[BODY] || !parts[STYLES]) return
   const catalog = readStyles(parse(strFromU8(parts[STYLES])))
   const lists = readNumbering(parts[NUMBERING] ? parse(strFromU8(parts[NUMBERING])) : undefined, catalog)
-  const numbered = bodyParagraphs(parse(strFromU8(parts[BODY])), catalog, lists)
-    .filter(row => !row.table && row.member && lists.abstracts.get(row.member.abstract)?.levels[row.member.level]?.format)
+  const body = bodyParagraphs(parse(strFromU8(parts[BODY])), catalog, lists).filter(row => !row.table)
+  const numbered = body.filter(row => row.member && lists.abstracts.get(row.member.abstract)?.levels[row.member.level]?.format)
   const rows = [...Map.groupBy(numbered, row => row.member!.abstract).values()].reduce<Paragraph[] | undefined>((top, group) => !top || group.length > top.length ? group : top, undefined)
   if (!rows) return
   const styles = new Map<number, string>()
   for (const row of rows) if (!styles.has(row.member!.level)) styles.set(row.member!.level, row.style)
-  return { numId: rows[0]!.member!.numId, styles }
+  return { numId: rows[0]!.member!.numId, styles, numbered: numbered.length, typed: body.filter(row => !row.member && row.literal).length }
 }
 
 function parse(xml: string) {

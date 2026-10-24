@@ -361,15 +361,16 @@ export async function acceptStageReply(directory: string, step: StepID, reply: s
     const furniture = renderedFurniture(directory, planned?.form ?? "other", requestedFurniture(planned?.furniture))
     // Clause numbering, and a template's own style ids, follow presentation,
     // which matches and reshapes the headings by their literal text and style.
-    // A document compared against an original that numbers none of its
-    // paragraphs keeps its clause numbers typed, so its redline
-    // (comparisonBaseline) shows no number changes. A draft rendered on that
-    // original's own styles is numbered into the original's list, a list no
-    // style binds (Word's default numbering) included.
+    // A document compared against an original that types its clause numbers
+    // (no paragraph a list numbers, or no more of them than typed numbers)
+    // keeps them typed, so its redline (comparisonBaseline) shows no number
+    // changes. A draft rendered on that original's own styles is otherwise
+    // numbered into the original's list, a list no style binds (Word's
+    // default numbering) included.
     const styleTemplate = plannedStyleTemplate(directory, planned)
     const original = matterWordFile(directory, planned?.comparison)
     const list = original && numberedList(original)
-    const typed = original !== undefined && !list
+    const typed = original !== undefined && (!list || list.typed >= list.numbered)
     const into = list && templateSource(planned) === planned?.comparison ? { list } : {}
     const rendered = await renderMarkdownToDocx(options.presentation?.source ?? reply, undefined, furniture, { numbering: false, styleTemplate })
       .then(result => ({ ...(options.presentation ? presentDraft(result.bytes, options.presentation.parts, options.presentation.title !== false, result.headingSpacing) : { bytes: result.bytes, attribution: undefined }), templated: result.templated }))
