@@ -422,12 +422,7 @@ Background
 1.2 The Supplier shall:
 
 1. (a) deliver the Goods; and
-2. invoice the Buyer.
-
-## 2. Term
-
-1. 2.1 This agreement lasts one year.
-2. 2.2 Either party may end it on notice.`
+2. invoice the Buyer.`
 
   test("prints only the typed numbers, before and after clause numbering, and leaves other lists numbered", async () => {
     const { literal, numbered } = await both(LISTED)
@@ -443,10 +438,15 @@ Background
       expect(row(rows, "(a) deliver")).toMatchObject({ shown: "1. (a) deliver the Goods; and", label: "1." })
       expect(row(rows, "invoice")).toMatchObject({ shown: "2. invoice the Buyer.", label: "2." })
     }
-    // Typed clause numbers listed this way read as clause numbers: typed until
-    // the document is numbered, then the clause list's.
-    expect(row(literal, "2.1 This")).toMatchObject({ shown: "2.1 This agreement lasts one year.", label: undefined })
-    expect(row(numbered, "This agreement")).toMatchObject({ shown: "2.1 This agreement lasts one year.", label: "2.1" })
-    expect(row(numbered, "Either party")).toMatchObject({ shown: "2.2 Either party may end it on notice.", label: "2.2" })
+  })
+
+  // A decimal opening an item is as often an amount as a clause number.
+  test("keeps the numbers of a list whose items open with decimal amounts", async () => {
+    const { literal, numbered } = await both("# Agreement\n\n## 1. Liability\n\n1.1 The caps are:\n\n1. 1.2 million pounds of liability.\n2. 2.5 million pounds of cover.\n\n1.2 Each cap applies per claim.")
+    for (const rows of [literal, numbered]) {
+      expect(rows.find(item => item.text.startsWith("1.2 million"))).toMatchObject({ shown: "1. 1.2 million pounds of liability.", label: "1." })
+      expect(rows.find(item => item.text.startsWith("2.5 million"))).toMatchObject({ shown: "2. 2.5 million pounds of cover.", label: "2." })
+    }
+    expect(numbered.find(item => item.text.startsWith("Each cap"))).toMatchObject({ shown: "1.2 Each cap applies per claim.", label: "1.2" })
   })
 })
