@@ -325,9 +325,12 @@ export function projectedChangeParagraphs(directory: string, document: DocID) {
  * apply, or the applied final body after it. */
 export function repairBodyText(directory: string, document: DocID, projected: boolean, actualWord = false) {
   if (actualWord) {
-    const file = currentDocumentArtifacts(directory, document).body
+    const current = currentDocumentArtifacts(directory, document)
+    const file = current.body
     if (!file) throw new Error(`Checklist repair requires a readable current Word body for ${document}.`)
     const rows = readDocxCommentParagraphs(readFileSync(leanFile(directory, file)))
+    // List numbers come from the lean rows recorded with this body, by paragraph PID.
+    const labels = new Map(readParagraphs(directory, document, current.applied ? "paragraphs-applied.json" : "paragraphs.json").flatMap(row => row.label ? [[row.pid, row.label] as const] : []))
     const repairs = documentRepairs(directory, document)?.items ?? []
     // Other semantic repair stages retain their existing full-body context.
     if (repairs.some(item => item.stage !== "checklist-check"))
@@ -343,7 +346,7 @@ export function repairBodyText(directory: string, document: DocID, projected: bo
     }
     return [
       `Focused actual current Word context from .dochaus/lean/${file}. This is not the whole body. For additional relevant text use read-document with document=${document}, view=current_body and bounded offset/count; search-document supports the same document/view. Current PIDs identify evidence only; amendments still target initial draft PIDs.`,
-      selected.size ? [...selected].sort((a, b) => a - b).map(index => `[${rows[index]!.pids.join(", ") || "native PID unavailable"}] ${rows[index]!.paragraph_text}`).join("\n\n")
+      selected.size ? [...selected].sort((a, b) => a - b).map(index => `[${rows[index]!.pids.join(", ") || "native PID unavailable"}] ${shownText({ text: rows[index]!.paragraph_text, label: rows[index]!.pids.map(pid => labels.get(pid)).find(Boolean) })}`).join("\n\n")
         : "No affected current paragraph was located uniquely. Retrieve the relevant current text before deciding; do not guess a paragraph or treat missing inspection as a body defect.",
     ].join("\n\n")
   }

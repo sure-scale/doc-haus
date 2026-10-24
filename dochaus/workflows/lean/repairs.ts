@@ -252,15 +252,18 @@ export function checklistRepairItems(directory: string, skip: (item_id: string, 
     let current: ReturnType<typeof readDocxCommentParagraphs>
     try { current = readDocxCommentParagraphs(readFileSync(leanFile(directory, file))) } catch { return [] }
     const originals = readParagraphs(directory, document.id)
+    // List numbers come from the lean rows recorded with this body, by paragraph PID.
+    const labels = new Map((file.endsWith("body-applied.docx") ? readParagraphs(directory, document.id, "paragraphs-applied.json") : originals).flatMap(row => row.label ? [[row.pid, row.label] as const] : []))
     const applied = (readLeanJson(directory, `${document.id}/apply.json`) as ApplyResult | undefined)?.applied ?? []
     let pid: string | undefined
-    const inspected: typeof current = []
+    const inspected: (typeof current[number] & { label?: string })[] = []
     for (const evidence of finding.evidence.filter(evidence => evidence.kind === "body" && [document.id, document.file].includes(evidence.document))) {
       const needle = normalize(evidence.text)
       const paragraphs = needle ? current.filter(paragraph => normalize(paragraph.paragraph_text).includes(needle)) : []
       if (paragraphs.length !== 1) continue
       const paragraph = paragraphs[0]!
-      if (!inspected.includes(paragraph)) inspected.push(paragraph)
+      const label = paragraph.pids.map(currentPID => labels.get(currentPID)).find(Boolean)
+      if (!inspected.some(row => row.paragraph_index === paragraph.paragraph_index)) inspected.push(label ? { ...paragraph, label } : paragraph)
       const initial = new Set(paragraph.pids.flatMap(currentPID => [
         ...originals.filter(row => row.pid === currentPID).map(row => row.pid),
         ...applied.filter(row => row.result_pids?.includes(currentPID) && originals.some(original => original.pid === row.pid)).map(row => row.pid),
