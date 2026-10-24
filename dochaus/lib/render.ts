@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import path from "node:path"
 import { docxodus } from "./docxodus"
-import { withParagraphPointers } from "./drafting-amendment"
+import { hasParagraphPointers, withParagraphPointers } from "./drafting-amendment"
 import { polishMarkdownArtifactsInDocx } from "./docx-polish"
 import { lintDraftMarkdown, splitBlocks } from "./markdown"
 import { highlightOpenItemsInDocx } from "./open-items"
@@ -12,7 +12,7 @@ import { prepareMarkdownRenderText } from "./markdown-render-text"
 import { withGeneratedDocxAttribution } from "./docx-attribution"
 import { applyPageFurniture, type PageFurniture } from "./page-furniture"
 import { numberDocxClauses } from "./docx-numbering"
-import { templateSeed } from "./template-seed"
+import { templateSeed, withTemplateStyleIds } from "./template-seed"
 
 // Shared markdown -> .docx -> deliverable render core for doc.haus drafting.
 // draft-document (from-scratch create) and the lean drafting stages compose a
@@ -44,16 +44,22 @@ const ingestUrl = process.env.INGEST_URL ?? `http://127.0.0.1:${process.env.DOC_
 // `furniture` (page-furniture.ts) adds the header and footer the document's
 // form carries. Literal clause numbers become Word list numbering
 // (docx-numbering.ts) unless `numbering` is false, for a caller that numbers
-// after reshaping the headings itself. `styleTemplate` is the .docx whose
-// styles the document takes; without one the firm's style template applies,
+// after reshaping the headings itself; that caller also points the headings at
+// a template's own style ids (withTemplateStyleIds), which the reshaping does
+// not read. `styleTemplate` is the .docx whose styles the document takes, or
+// false for the house style; without one the firm's style template applies,
 // and without that, or when the file is not a Word document, the house style;
-// `templated` says whether a template's styles were used.
-export async function renderMarkdownToDocx(content: string, previous?: Uint8Array, furniture?: PageFurniture, options: { numbering?: false; styleTemplate?: Uint8Array } = {}) {
+// `templated` says whether a template's styles were used. Headings take the
+// house spacing directly (`headingSpacing`) unless a template's own styles
+// space them; a document doc.haus rendered, revised from itself, keeps it.
+export async function renderMarkdownToDocx(content: string, previous?: Uint8Array, furniture?: PageFurniture, options: { numbering?: false; styleTemplate?: Uint8Array | false } = {}) {
   const text = prepareMarkdownRenderText(splitBlocks(content))
   const dx = await docxodus()
   const house = await Bun.file(baseSeed).bytes()
-  const styleTemplate = options.styleTemplate ?? firmStyleTemplate()
+  const styleTemplate = options.styleTemplate === false ? undefined : options.styleTemplate ?? firmStyleTemplate()
   const templated = styleTemplate && templateSeed(styleTemplate, house)
+  if (styleTemplate && !templated) warnOnce("a style template that is not a Word document with styles of its own; the house style applies")
+  const headingSpacing = !templated || hasParagraphPointers(styleTemplate!)
   const session = dx.openDocxSession(templated || house, {})
 
   // The seed's single empty paragraph is the insertion anchor; the whole markdown
@@ -70,7 +76,7 @@ export async function renderMarkdownToDocx(content: string, previous?: Uint8Arra
     session.close()
   }
   // The house headings carry their spacing directly; a template's keep its own.
-  const composed = text.restore(polishMarkdownArtifactsInDocx(saved, { headingSpacing: !templated }))
+  const composed = text.restore(polishMarkdownArtifactsInDocx(saved, { headingSpacing }))
   const accepted = dx.openDocxSession(composed, {})
   const projection = accepted.project()
   accepted.close()
@@ -93,10 +99,10 @@ export async function renderMarkdownToDocx(content: string, previous?: Uint8Arra
   // Highlighting and paragraph pointers read document.xml only, so header and
   // footer text takes neither.
   // Numbering follows the lint, which reads the literal numbers as Markdown.
-  const numbered = options.numbering === false ? composed : numberDocxClauses(composed)
+  const numbered = options.numbering === false ? composed : numberDocxClauses(templated ? withTemplateStyleIds(composed) : composed)
   const furnished = furniture ? applyPageFurniture(numbered, furniture) : numbered
   const bytes = withGeneratedDocxAttribution(withParagraphPointers(highlightOpenItemsInDocx(furnished), previous))
-  return { bytes, lint, templated: Boolean(templated) }
+  return { bytes, lint, templated: Boolean(templated), headingSpacing }
 }
 
 // The firm's style template: a file in the template library, read when a
@@ -106,7 +112,16 @@ function firmStyleTemplate() {
   const root = process.env.WORKSPACE_ROOT
   if (!name || !root) return
   const file = path.join(root, ".templates", path.basename(name))
-  return existsSync(file) ? readFileSync(file) : undefined
+  if (existsSync(file)) return readFileSync(file)
+  warnOnce(`the firm's style template "${path.basename(name)}", which is not in the template library; the house style applies`)
+}
+
+// A style template that cannot be used is reported once per process, not on every render.
+const warned = new Set<string>()
+function warnOnce(detail: string) {
+  if (warned.has(detail)) return
+  warned.add(detail)
+  console.warn(`[render] Rendering with ${detail}.`)
 }
 
 export function lintRenderedDraftMarkdown(markdown: string) {

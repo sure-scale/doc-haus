@@ -60,6 +60,16 @@ export function paragraphBookmarkName(pid: string) {
   return `${PREFIX}${pid}`
 }
 
+/** Whether a .docx body carries paragraph pointers: a document doc.haus rendered. */
+export function hasParagraphPointers(bytes: Uint8Array) {
+  try {
+    const body = unzipSync(bytes, { filter: file => file.name === BODY })[BODY]
+    return Boolean(body) && new RegExp(`w:name="${PREFIX}p[0-9a-f]{12}"`).test(strFromU8(body!))
+  } catch {
+    return false
+  }
+}
+
 // Pids of one opened body paragraph: hidden bookmarks whose start sits in this
 // paragraph (not in a nested text-box paragraph or deleted revision history).
 export function paragraphPointers(node: Element) {
