@@ -170,6 +170,47 @@ describe("linkCrossReferences", () => {
     expect(new Set(ids).size).toBe(ids.length)
   }, 60_000)
 
+  test("quoted text, a schedule's own paragraph numbers and lettered clause numbers are not linked", async () => {
+    // A neutral deed of variation: its quotations are clauses of the agreement
+    // it varies, one running on over two paragraphs.
+    const deed = `# Deed of Variation
+
+## 1. Definitions
+
+1.1 "Original Agreement" means the agreement varied as set out in clause 2.1.
+
+1.2 Words defined in the Original Agreement have the same meaning in this Deed.
+
+## 2. Variations
+
+2.1 The Original Agreement is varied as set out in this clause 2.
+
+2.2 Clause 7.1 of the Original Agreement is replaced with: "7.1 The Supplier shall deliver under clause 1.2."
+
+2.3 Clause 9 of the Original Agreement is replaced with:
+
+“9.1 Either party may terminate under clause 2.1.
+
+“9.2 Notice is given under clause 1.1.”
+
+2.4 A new clause 2A and a new clause 2.1A follow clause 2.2.
+
+## Schedule 1 – Procedure
+
+## 1. Notices
+
+1.1 Notice is given under clause 1.2 of this Schedule and clause 2.1.
+
+1.2 Notices are in writing.`
+    const found = await references((await renderMarkdownToDocx(deed)).bytes)
+    expect(found.map(row => [row.from.slice(0, 14), row.cached, row.target?.slice(0, 14)])).toEqual([
+      ["1.1 \"Original ", "2.1", "2.1 The Origin"],
+      ["2.1 The Origin", "2", "2. Variations"],
+      ["2.4 A new clau", "2.2", "2.2 Clause 7.1"],
+      ["1.1 Notice is ", "2.1", "2.1 The Origin"],
+    ])
+  }, 60_000)
+
   test("linking is idempotent and a re-render of the same text names the same bookmarks", async () => {
     const first = (await renderMarkdownToDocx(AGREEMENT)).bytes
     expect(await linkCrossReferences(first)).toEqual(first)
