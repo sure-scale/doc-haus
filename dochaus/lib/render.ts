@@ -11,8 +11,10 @@ import { readFirmPreferences } from "./preferences"
 import { normalizePreferences } from "./drafting-preferences"
 import { prepareMarkdownRenderText } from "./markdown-render-text"
 import { withGeneratedDocxAttribution } from "./docx-attribution"
-import { applyPageFurniture, type PageFurniture } from "./page-furniture"
+import { applyPageFurniture, type DocumentForm, type PageFurniture } from "./page-furniture"
 import { numberDocxClauses } from "./docx-numbering"
+import { linkCrossReferences } from "./docx-crossrefs"
+import { advisoryForm } from "../workflows/lean/consistency"
 import { templateSeed, withTemplateStyleIds } from "./template-seed"
 
 // Shared markdown -> .docx -> deliverable render core for doc.haus drafting.
@@ -54,7 +56,11 @@ const ingestUrl = process.env.INGEST_URL ?? `http://127.0.0.1:${process.env.DOC_
 // house spacing directly (`headingSpacing`) unless a template's own styles
 // space them; a template whose own headings carry spacing directly (a document
 // doc.haus rendered in the house style, revised from itself) keeps it.
-export async function renderMarkdownToDocx(content: string, previous?: Uint8Array, furniture?: PageFurniture, options: { numbering?: false; styleTemplate?: Uint8Array | false } = {}) {
+// A numbered document's references to its own clauses become live
+// cross-references (docx-crossrefs.ts) only when its `form` is known and is
+// not advice or a letter, which cite the clauses of the documents they discuss;
+// without a form they stay typed.
+export async function renderMarkdownToDocx(content: string, previous?: Uint8Array, furniture?: PageFurniture, options: { numbering?: false; form?: DocumentForm; styleTemplate?: Uint8Array | false } = {}) {
   const text = prepareMarkdownRenderText(splitBlocks(content))
   const dx = await docxodus()
   const house = await Bun.file(baseSeed).bytes()
@@ -102,9 +108,12 @@ export async function renderMarkdownToDocx(content: string, previous?: Uint8Arra
   // footer text takes neither.
   // Numbering follows the lint, which reads the literal numbers as Markdown,
   // and the furniture, whose header and footer take the template's style ids too.
+  // Cross-references follow the numbering.
   const furnished = furniture ? applyPageFurniture(composed, furniture) : composed
   const numbered = options.numbering === false ? furnished : numberDocxClauses(templated ? withTemplateStyleIds(furnished) : furnished)
-  const bytes = withGeneratedDocxAttribution(withParagraphPointers(highlightOpenItemsInDocx(numbered), previous))
+  const operative = options.form !== undefined && !advisoryForm(options.form)
+  const linked = options.numbering === false || !operative ? numbered : await linkCrossReferences(numbered, { form: options.form })
+  const bytes = withGeneratedDocxAttribution(withParagraphPointers(highlightOpenItemsInDocx(linked), previous))
   return { bytes, lint, templated: Boolean(templated), headingSpacing }
 }
 

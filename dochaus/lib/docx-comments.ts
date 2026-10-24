@@ -1,6 +1,7 @@
 import path from "node:path"
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
+import { paragraphFields, refInstruction } from "./docx-fields"
 
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 const R = "http://schemas.openxmlformats.org/package/2006/relationships"
@@ -135,12 +136,14 @@ export function preserveDocxComments(original: Uint8Array, compared: Uint8Array)
   // package. Equal text alone does not authorize transplanting those bindings.
   for (const index of restored) {
     const nodes = from[index].nodes.flatMap(paragraph => [paragraph, ...Array.from(paragraph.getElementsByTagName("*"))])
-    if (nodes.some(node => ["drawing", "pict", "object", "fldSimple", "fldChar", "instrText", "footnoteReference", "endnoteReference"].includes(node.localName)
+    // A live cross-reference (a REF field to a bookmark the output keeps)
+    // carries no package binding of its own.
+    const live = new Set(from[index].nodes.flatMap(paragraph => liveReferenceControls(paragraph, after)))
+    if (nodes.some(node => (["drawing", "pict", "object", "fldSimple", "fldChar", "instrText", "footnoteReference", "endnoteReference"].includes(node.localName) && !live.has(node))
       || (node.localName === "hyperlink" && node.hasAttributeNS(W, "anchor"))))
       throw new Error("unsupported_original_comment_paragraph_dependency")
     for (const [names, part] of [[["pStyle", "rStyle", "numPr"], "word/styles.xml"], [["numPr"], "word/numbering.xml"]] as const) {
-      if (nodes.some(node => (names as readonly string[]).includes(node.localName)) && (!source[part] || !output[part]
-        || source[part].length !== output[part].length || source[part].some((byte, index) => byte !== output[part][index])))
+      if (nodes.some(node => (names as readonly string[]).includes(node.localName)) && (!source[part] || !output[part] || !sameXml(source[part], output[part])))
         throw new Error("original_comment_paragraph_dependency_changed")
     }
     for (const node of nodes) for (const attribute of Array.from(node.attributes).filter(attribute => attribute.namespaceURI === O)) {
@@ -183,6 +186,23 @@ export function preserveDocxComments(original: Uint8Array, compared: Uint8Array)
     output[name] = strToU8(serializer.serializeToString(doc))
   output[part] = source[part]
   return zipSync(output, { mtime: new Date(1980, 0, 1) })
+}
+
+// The comparator re-serializes package parts; equal markup is the same binding.
+function sameXml(a: Uint8Array, b: Uint8Array) {
+  const serializer = new XMLSerializer()
+  return serializer.serializeToString(parse(strFromU8(a)).documentElement) === serializer.serializeToString(parse(strFromU8(b)).documentElement)
+}
+
+// The control elements of a paragraph's fields when every field in it is a REF
+// field whose bookmark the output body still has; none otherwise.
+function liveReferenceControls(paragraph: Element, output: Document) {
+  const fields = paragraphFields(paragraph)
+  const marks = new Set(elements(output, W, "bookmarkStart").map(node => node.getAttributeNS(W, "name")))
+  const controls = new Set(fields.flatMap(field => field.controls))
+  const live = fields.every(field => { const ref = refInstruction(field); return ref !== undefined && marks.has(ref.name) })
+    && Array.from(paragraph.getElementsByTagNameNS(W, "*")).every(node => !["fldChar", "instrText"].includes(node.localName) || controls.has(node))
+  return live ? [...controls] : []
 }
 
 // The comparator (Docxodus 13) carries native comments where it placed them.

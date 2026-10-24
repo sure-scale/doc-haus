@@ -73,6 +73,30 @@ describe("cross-references after changes", () => {
     ])
   })
 
+  test("a live cross-reference is read as pointing at its field's target: a stale cached number is reported, a current one is not checked again", () => {
+    const linked = "4.2 Late payment carries interest under clause 3.1 and clauses 2.1 and 2.2."
+    const final = ["Supply Agreement", PARTIES, ...DEFINITIONS, ...SUPPLY,
+      "3. Quality", "3.1 The Goods shall conform to Schedule 1.",
+      "4. Price and payment", "4.1 The Customer shall pay the Price within thirty days of invoice.", linked,
+      "5. Liability", "5.1 Subject to clause 5, the liability of each party is limited to the Price paid in the preceding year.",
+      "6. Termination", "6.1 Either party may terminate by notice if the other commits a material breach of clause 3 or clause 4.",
+      ...SCHEDULES]
+    // The field on "3.1" still points at the payment clause, now 4.1; Word
+    // shows 4.1 once its fields are updated.
+    const link = (label: string, to: string, from = 0) => ({ start: linked.indexOf(label, from), length: label.length, to })
+    const paras = doc(final).map(row => row.text === linked ? { ...row, links: [link("3.1", "4.1"), link("2.1", "2.1"), link("2.2", "2.2", linked.indexOf("2.1"))] } : row)
+    expect(details({ title: TITLE, final: paras, baselines: [doc(BASE)], others: [] })).toEqual([
+      "Clause 4.2 shows clause 3.1, but its cross-reference field points at what is now clause 4.1. Check which clause is meant; updating the document's fields (F9 in Word) shows 4.1.",
+      'Clause 5.1 refers to clause 5. Before the changes that reference was to "Termination", which is now clause 6; clause 5 is now "Liability". Check that the reference points where it should.',
+      'Clause 6.1 refers to clause 3. Before the changes that reference was to "Price and payment", which is now clause 4; clause 3 is now "Quality". Check that the reference points where it should.',
+      'Clause 6.1 refers to clause 4. Before the changes that reference was to "Liability", which is now clause 5; clause 4 is now "Price and payment". Check that the reference points where it should.',
+    ])
+    // A field on "clause 4" pointing at what is now clause 4 settles that reference.
+    const terminate = final.find(line => line.startsWith("6.1 "))!
+    const settled = paras.map(row => row.text === terminate ? { ...row, links: [{ start: terminate.lastIndexOf("4"), length: 1, to: "4" }] } : row)
+    expect(details({ title: TITLE, final: settled, baselines: [doc(BASE)], others: [] })).not.toContainEqual(expect.stringContaining("refers to clause 4."))
+  })
+
   test("a renumbered sub-clause is reported where the old number is gone, with its new number", () => {
     const final = BASE.map(line => line.startsWith("2.2 ") ? line.replace("2.2 ", "2.3 ") : line)
     const found = check({ title: TITLE, final: doc(final), baselines: [doc(BASE)], others: [] })
@@ -92,6 +116,17 @@ describe("cross-references after changes", () => {
     const longer = pack("Service Agreement", ["Service Agreement", "1. Services", "1.1 The services are listed in the order.", "7. Service levels", "7.1 Service levels are stated in the order.", "8. Fees"])
     const fixed = final.map(line => line.replace("Schedule 3", "Schedule 2"))
     expect(details({ title: TITLE, final: doc(fixed), baselines: [doc(BASE)], others: [longer] })).toEqual([])
+  })
+
+  test("a schedule's reference to its own paragraphs, and a reference to a lettered clause, are not checked as the agreement's clauses", () => {
+    // The agreement has five clauses: "clause 7 of this Schedule" is the
+    // schedule's own numbering and "clause 6A" an inserted clause, not clause 6.
+    // A schedule's plain "clause 8" is still the agreement's.
+    const final = [...BASE.slice(0, -4), "5.2 Clause 6A applies after termination.",
+      "Schedule 1 – Goods", "1. Specification", "1.1 Cartons meet clause 7 of this Schedule.", "1.2 Clause 8 applies.", ...SCHEDULES.slice(2)]
+    expect(details({ title: TITLE, final: doc(final), baselines: [doc(BASE)], others: [] })).toEqual([
+      "Schedule 1 refers to clause 8, but no clause in the final text is numbered 8.",
+    ])
   })
 
   test("a document whose clause numbers are not printed, and a letter, are not checked for internal references", () => {
@@ -258,9 +293,11 @@ describe("the check in a lean run", () => {
     // label does not print it twice.
     const final = finalBodyParagraphs(directory, "d1")
     expect(final.find(row => row.text === "Payment is due on delivery in full.")?.label).toBe("2.1")
-    expect(final.map(shownText)).toContain("3.1 Late payment under clause 2.2 carries interest.")
-    expect(readOpenItems(directory).filter(item => item.kind === "consistency").map(item => item.detail))
-      .toEqual([expect.stringContaining("Clause 3.1 refers to clause 2.2, but no clause in the final text is numbered 2.2.")])
+    // The live reference to the deleted clause names no clause now, and is reported.
+    const marker = "[open item: refers to 2.2, which was removed]"
+    expect(final.map(shownText)).toContain(`3.1 Late payment under clause ${marker} carries interest.`)
+    expect(readOpenItems(directory).filter(item => item.ref.placeholder === marker).map(item => item.kind)).toEqual(["placeholder"])
+    expect(readOpenItems(directory).filter(item => item.kind === "consistency")).toEqual([])
   }, 120_000)
 
   test("an ordered list inside a clause does not number clauses: a reference to a clause the list's numbers seem to give is still checked", async () => {

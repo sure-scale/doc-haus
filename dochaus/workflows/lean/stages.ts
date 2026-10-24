@@ -21,6 +21,7 @@ import path from "node:path"
 import { ensureParagraphRows, paragraphSha256 } from "../../lib/drafting-amendment"
 import { renderMarkdownToDocx } from "../../lib/render"
 import { numberDocxClauses, numberedList } from "../../lib/docx-numbering"
+import { linkCrossReferences } from "../../lib/docx-crossrefs"
 import { withTemplateStyleIds } from "../../lib/template-seed"
 import { presentDraft, type DraftPresentation } from "./draft-presentation"
 import { checkChanges, parseJsonObject } from "./change-checks"
@@ -366,17 +367,20 @@ export async function acceptStageReply(directory: string, step: StepID, reply: s
     // keeps them typed, so its redline (comparisonBaseline) shows no number
     // changes. A draft rendered on that original's own styles is otherwise
     // numbered into the original's list, a list no style binds (Word's
-    // default numbering) included.
+    // default numbering) included. Numbered references to the document's own
+    // clauses then become live cross-references; one placed after another pack
+    // document's title is that document's. A typed document gets no fields.
     const styleTemplate = plannedStyleTemplate(directory, planned)
     const original = matterWordFile(directory, planned?.comparison)
     const list = original && numberedList(original)
     const typed = original !== undefined && (!list || list.typed >= list.numbered)
     const into = list && templateSource(planned) === planned?.comparison ? { list } : {}
+    const titles = (readLeanPlan(directory)?.documents ?? []).filter(row => row.id !== document).map(row => row.title)
     const rendered = await renderMarkdownToDocx(options.presentation?.source ?? reply, undefined, furniture, { numbering: false, styleTemplate })
       .then(result => ({ ...(options.presentation ? presentDraft(result.bytes, options.presentation.parts, options.presentation.title !== false, result.headingSpacing) : { bytes: result.bytes, attribution: undefined }), templated: result.templated }))
-      .then(({ templated, ...result }) => {
+      .then(async ({ templated, ...result }) => {
         const styled = templated ? withTemplateStyleIds(result.bytes) : result.bytes
-        return { ...result, bytes: typed ? styled : numberDocxClauses(styled, templated ? into : {}) }
+        return { ...result, bytes: typed ? styled : await linkCrossReferences(numberDocxClauses(styled, templated ? into : {}), { title: planned?.title, form: planned?.form, titles }) }
       })
       .then(result => result, (error: unknown) => ({ error }))
     if ("error" in rendered)
@@ -461,7 +465,8 @@ export function notesFurniture(directory: string) {
 
 /** The drafting notes (or memo) as Word: always in the house style, whose
  * heading numbering a combined delivery can carry beside the document's own;
- * a firm template's list styles could not be. */
+ * a firm template's list styles could not be. Rendered with no form, its
+ * references to the documents' clauses stay text. */
 export async function renderNotes(directory: string, notes: string, previous?: Uint8Array) {
   return (await renderMarkdownToDocx(notes, previous, notesFurniture(directory), { styleTemplate: false })).bytes
 }
