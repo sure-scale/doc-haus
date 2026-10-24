@@ -100,6 +100,10 @@ test("a clause Word numbers is hinted with its list number beside, not inside, i
     const hint = hints(result.input).find(row => row.text === "The Supplier shall keep the violet inventory receipt.")
     expect(hint?.locator).toContain("Word list number 1.1")
     expect(result.artifacts[0]!.value.paragraphs.find(row => row.paragraph_text === hint?.text)?.label).toBe("1.1")
+    // A full-draft comparison unit shows the same number beside its assigned passage.
+    const passage = assignChecklistTargetContext(result, checklistTargetAssignments(directory, item()).assignments[0]!.assignment).input.current_evidence
+      .find(row => row.text === "The Supplier shall keep the violet inventory receipt.")
+    expect(passage?.locator).toStartWith("Word list number 1.1 (printed before the text, not part of it); native PIDs ")
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }

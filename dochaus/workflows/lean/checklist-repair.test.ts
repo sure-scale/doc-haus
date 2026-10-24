@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { renderMarkdownToDocx } from "../../lib/render"
 import { readDocxCommentParagraphs } from "../../lib/docx-comments"
+import { ensureParagraphRows, paragraphSha256 } from "../../lib/drafting-amendment"
 import { checklistRepairItems, readRepairRound, LEAN_MAX_SUBSTANTIVE_REPAIRS } from "./repairs"
 import { checklistRefinementSourceBasis } from "./checklist-flow"
 import { repairBodyText } from "./change-pipeline"
@@ -226,6 +227,24 @@ test("checklist adjudication receives affected actual Word paragraphs without an
   const sections = changesRepairSections(directory, "d2").join("\n")
   expect(sections).toContain("<checklist_findings>")
   expect(sections).not.toContain("Each item is a defect")
+})
+
+test("checklist repair views show a current paragraph's Word list number beside its text", async () => {
+  const { directory, finding, save } = await setup()
+  await writeLeanBytes(directory, "d2/body-applied.docx", (await renderMarkdownToDocx("# Advice\n\n## 1. Delivery\n\n1.1 Timing is missing.\n\n1.2 Immediate neighbor.")).bytes)
+  const rows = await ensureParagraphRows(leanFile(directory, "d2/body-applied.docx"))
+  writeLeanText(directory, "d2/paragraphs-applied.json", JSON.stringify(rows.map(row => ({ ...row, sha256: paragraphSha256(row.text) }))))
+  const state = readLeanState(directory)!
+  state.stages["d2.apply"] = { ...state.stages["d2.apply"]!, status: "done", input_sha: hashStageInputs("d2.apply", LEAN_PROMPT_VERSION, stageInputs(directory, "d2.apply")) }
+  writeLeanText(directory, "state.json", JSON.stringify(state))
+  const row = readDocxCommentParagraphs(readFileSync(leanFile(directory, "d2/body-applied.docx"))).find(row => row.paragraph_text === "Timing is missing.")!
+  save({ ...finding, evidence: [{ document: "d2", locator: row.pids.join(","), text: row.paragraph_text, kind: "body" }] })
+  const repairs = checklistRepairItems(directory)
+  expect(JSON.parse(repairs[0]!.detail.split("\n")[1]!).current_target_paragraphs).toEqual([{ ...row, label: "1.1" }])
+  startRepairRound(directory, repairs, true)
+  const context = repairBodyText(directory, "d2", false, true)
+  expect(context).toContain(`[${row.pids.join(", ")}] 1.1 Timing is missing.`)
+  expect(context).toContain("] 1.2 Immediate neighbor.")
 })
 
 
