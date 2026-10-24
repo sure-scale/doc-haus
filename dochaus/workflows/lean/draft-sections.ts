@@ -355,7 +355,7 @@ export async function runDraftStage(
   }
   const letter = isLetter(plan.form)
   const presentation = letter || plan.parts.some(part => part.display_heading !== undefined)
-    ? { source: assembleDraft(plan, drafted, false), parts: drafted.map((text, part) => ({ heading: headingText(text.split("\n")[0]!.replace(/^##\s+/, "")), display_heading: printedDisplayHeading(plan, part), part })), ...(letter ? { title: false as const } : {}) }
+    ? { source: assembleDraft(plan, drafted, false), parts: drafted.map((text, part) => ({ heading: headingText(text.split("\n")[0]!.replace(/^##\s+/, "")), display_heading: printedDisplayHeading(plan, part, text), part })), ...(letter ? { title: false as const } : {}) }
     : undefined
   const accepted = await acceptStageReply(directory, step, assembleDraft(plan, drafted), { presentation })
   if (accepted.issues.length) return failed("assembled document", accepted.issues)
@@ -493,15 +493,20 @@ function plainLine(line: string) {
   return visibleInlineText(line.trim().replace(/^#{1,6}\s+/, "")).replace(/[*_`]/g, "").replace(/[\s.:;,]+$/, "").replace(/\s+/g, " ").trim().toLowerCase()
 }
 
-/** The heading publication prints in place of part `index`'s label: its
- * display heading (undefined: the label itself). The title is printed once,
- * above the part that opens the document (not in a letter), so that part's
- * display heading repeating the title (markup, case, spacing and closing
- * punctuation aside) prints nothing; a later part's stands, as a title
- * restated after a cover sheet does. */
-function printedDisplayHeading(outline: DraftOutline, index: number) {
+/** The heading publication prints in place of part `index`'s label, whose
+ * drafted `text` ("## " label first) is given: its display heading
+ * (undefined: the label itself). A display heading prints nothing where it
+ * would repeat what is printed right below or above it (markup, case, spacing
+ * and closing punctuation aside): the heading that opens the part's text, its
+ * clause number aside, or, above the part that opens the document (not in a
+ * letter), the title, printed once; a later part's restating the title stands,
+ * as a title restated after a cover sheet does. */
+function printedDisplayHeading(outline: DraftOutline, index: number, text: string) {
   const display = outline.parts[index]?.display_heading
-  return display && index === 0 && !isLetter(outline.form) && plainLine(display) === plainLine(outline.title) ? "" : display
+  if (!display) return display
+  const opening = text.trim().split("\n").slice(1).find(line => line.trim())?.trim() ?? ""
+  const heading = /^#{3,6}\s/.test(opening) ? plainLine(opening).replace(/^\d{1,3}(?:\.\d{1,3})*\.?\s+/, "") : undefined
+  return plainLine(display) === heading || index === 0 && !isLetter(outline.form) && plainLine(display) === plainLine(outline.title) ? "" : display
 }
 
 /** The draft from its parts. With `presentation`, each part label gives way to
@@ -515,7 +520,7 @@ export function assembleDraft(outline: DraftOutline, parts: string[], presentati
     const text = part.trim()
     const label = headingText(text.split("\n")[0]!.replace(/^##\s+/, ""))
     const at = outline.parts.findIndex(row => normalizedHeading(row.heading) === normalizedHeading(label))
-    const display = at < 0 ? undefined : printedDisplayHeading(outline, at)
+    const display = at < 0 ? undefined : printedDisplayHeading(outline, at, text)
     if (!presentation || display === undefined) return text
     const body = text.split("\n").slice(1).join("\n").trim()
     if (display) return [`## ${display}`, body].filter(Boolean).join("\n\n")
