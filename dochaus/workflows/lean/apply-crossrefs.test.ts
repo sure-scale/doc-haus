@@ -112,16 +112,35 @@ test("an amendment beside a cross-reference keeps it live; one that rewrites its
   ])
 }, 60_000)
 
-test("deleting a clause shows the new numbers of the clauses after it; a reference to the deleted clause becomes text", async () => {
+test("deleting a clause shows the new numbers of the clauses after it; a reference to the deleted clause becomes an open item", async () => {
   const { directory, row } = await drafted()
   const removed = row("The Supplier shall provide")
-  const { rows, fields: after } = await apply(directory, [{ pid: removed.pid, existing_sha256: removed.sha256, operation: "delete", updated: "" }])
+  const { rows, openItems, fields: after } = await apply(directory, [{ pid: removed.pid, existing_sha256: removed.sha256, operation: "delete", updated: "" }])
   expect(rows.map(shownText)).not.toContain("2.1 The Supplier shall provide the Services.")
   expect(rows.map(shownText)).toContain("3.2 Late payment under clause 3.1 carries interest, subject to clause 2.1.")
   expect(after.map(field => [field.from, field.cached, field.target?.slice(0, 4)])).toEqual([
     ["1.1 ", "1", "Sche"], ["1.2 ", "3", "3. P"], ["2.1 ", "3.1", "3.1 "], ["2.1 ", "3.2", "3.2 "], ["3.2 ", "3.1", "3.1 "], ["3.2 ", "2.1", "2.1 "],
   ])
-  expect(rows.map(shownText)).toContain("1.1 In this Agreement the terms in clause 2.1 and Schedule 1 apply.")
+  // Its old number now names another clause, so it names nothing and is reported.
+  const marker = "[open item: refers to 2.1, which was removed]"
+  expect(rows.map(shownText)).toContain(`1.1 In this Agreement the terms in clause ${marker} and Schedule 1 apply.`)
+  expect(openItems.filter(item => item.ref.placeholder === marker).map(item => item.ref.pid)).toEqual([row("In this Agreement").pid])
+}, 60_000)
+
+test("deleting a sub-clause two clauses cite leaves no reference to the clause now under its number", async () => {
+  const { directory, row } = await drafted()
+  const removed = row("Invoices are payable")
+  const { rows, openItems, fields: after } = await apply(directory, [{ pid: removed.pid, existing_sha256: removed.sha256, operation: "delete", updated: "" }])
+  const marker = "[open item: refers to 3.1, which was removed]"
+  expect(rows.map(shownText)).toEqual(expect.arrayContaining([
+    `2.2 The Customer shall pay as set out in clauses ${marker} and 3.1.`,
+    `3.1 Late payment under clause ${marker} carries interest, subject to clause 2.2.`,
+  ]))
+  expect(after.map(field => [field.from, field.cached, field.target?.slice(0, 4)])).toEqual([
+    ["1.1 ", "2.1", "2.1 "], ["1.1 ", "1", "Sche"], ["1.2 ", "3", "3. P"], ["2.2 ", "3.1", "3.1 "], ["3.1 ", "2.2", "2.2 "],
+  ])
+  expect(openItems.filter(item => item.ref.placeholder === marker).map(item => item.ref.pid).toSorted())
+    .toEqual([row("The Customer shall pay").pid, row("Late payment").pid].toSorted())
 }, 60_000)
 
 test("a clause split in parts stays the target of its references, its bookmark on its first part only", async () => {

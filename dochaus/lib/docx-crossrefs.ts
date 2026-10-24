@@ -21,11 +21,15 @@ import { shownText } from "./list-label"
 // no clause list, and so no fields.
 //
 // Each pass also refreshes the fields already in the body: a cached number
-// follows its target, and a field whose bookmark is gone (its clause deleted)
-// becomes the plain text it showed, which the check then reads as any other
-// reference. A reference unlinked so is not linked again in the same pass to
-// the clause that now carries its number. A clause split in parts keeps its
-// bookmark on its first part, the one that keeps its number.
+// follows its target. A field whose bookmark is gone (its clause deleted, or
+// left out of a template) showed a number that may now be another clause's:
+// it becomes a visible open-item marker naming that number, "[open item:
+// refers to 2.1, which was removed]", which the body's open-item check
+// reports like any other. A field to a target that lost its list number
+// becomes the plain text it showed, which the cross-reference check then reads
+// as any other reference. A reference unlinked so is not linked again in the
+// same pass to the clause that now carries its number. A clause split in parts
+// keeps its bookmark on its first part, the one that keeps its number.
 
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 const XML = "http://www.w3.org/XML/1998/namespace"
@@ -40,6 +44,8 @@ export type CrossReferenceOptions = {
   titles?: string[]
   /** Refresh the fields already there without linking new ones. */
   refreshOnly?: true
+  /** Told the open-item marker written for each field whose bookmark is gone. */
+  onRemovedTarget?: (marker: string) => void
 }
 
 /** The body with its resolved cross-references as REF fields and its existing
@@ -80,11 +86,21 @@ export async function linkCrossReferences(bytes: Uint8Array, options: CrossRefer
     // Refresh. A number follows its target's label; bookmarked text follows the bookmark.
     const unlinked = new Map<number, { start: number; end: number }[]>()
     rows.forEach((row, at) => {
-      if (!row.exact) return
       for (const field of paragraphFields(row.node)) {
         const ref = refInstruction(field)
         if (!ref) continue
         const mark = marks.get(ref.name)
+        const showed = field.result.trim()
+        if (!mark && field.separate && showed) {
+          const marker = `[open item: refers to ${showed}, which was removed]`
+          setResult(doc, field, marker)
+          unlink(field)
+          unlinked.set(at, [...unlinked.get(at) ?? [], { start: field.from, end: field.from + marker.length }])
+          options.onRemovedTarget?.(marker)
+          changed = true
+          continue
+        }
+        if (!row.exact) continue
         const target = mark?.at === undefined ? undefined : rows[mark.at]
         if (!mark || (ref.number && target && !target.label)) {
           unlink(field)
@@ -98,7 +114,7 @@ export async function linkCrossReferences(bytes: Uint8Array, options: CrossRefer
         setResult(doc, field, shows)
         changed = true
       }
-      if (changed) row.text = runText(row.node)
+      if (changed && row.exact) row.text = runText(row.node)
     })
 
     if (!options.refreshOnly) {

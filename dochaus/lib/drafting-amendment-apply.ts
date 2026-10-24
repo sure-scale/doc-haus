@@ -219,14 +219,22 @@ function writeParagraph(opened: Opened, edit: Edit, live: (anchor: string) => Re
   } catch { return false }
 }
 
-// A REF field whose number an edit rewrites, one in a paragraph split or
-// deleted, and one whose bookmark a deletion removes become the text they
-// show, as before the edit; the cross-reference check then reads them like any
-// other reference. The text is unchanged, so the edits still apply. Undefined
-// when no field is unlinked.
+// A REF field whose number an edit rewrites, and one in a paragraph split or
+// deleted, become the text they show, as before the edit; the cross-reference
+// check then reads them like any other reference. The text is unchanged, so
+// the edits still apply. A deleted clause's bookmark that only body REF fields
+// cite goes first, so the engine may delete the clause; those fields stay as
+// they are, and the refresh after renumbering (linkCrossReferences) makes each
+// an open-item marker, since its number may by then be another clause's. A
+// bookmark anything else cites stays, and the engine refuses the deletion.
+// Undefined when nothing is changed.
 function unlinkEditedReferences(opened: Opened, edits: Edit[]) {
   let changed = false
-  const removed = new Set<string>()
+  const cited = (body: boolean) => new Set(opened.paragraphs.filter(paragraph => (paragraph.part === BODY) === body)
+    .flatMap(paragraph => paragraphFields(paragraph.node).map(field => refInstruction(field)?.name ?? "")))
+  const elsewhere = new Set([...cited(false), ...Object.values(opened.documents)
+    .flatMap(doc => Array.from(doc.getElementsByTagNameNS(W, "hyperlink")).map(node => node.getAttributeNS(W, "anchor") ?? ""))])
+  const body = edits.some(edit => !edit.final.length) ? cited(true) : new Set<string>()
   for (const edit of edits) {
     const paragraph = opened.paragraphs[edit.ordinal]!
     if (paragraph.part !== BODY) continue
@@ -236,12 +244,14 @@ function unlinkEditedReferences(opened: Opened, edits: Edit[]) {
       unlink(field)
       changed = true
     }
-    if (!edit.final.length) for (const mark of Array.from(paragraph.node.getElementsByTagNameNS(W, "bookmarkStart"))) removed.add(mark.getAttributeNS(W, "name") ?? "")
-  }
-  if (removed.size) for (const paragraph of opened.paragraphs) {
-    if (paragraph.part !== BODY) continue
-    for (const field of paragraphFields(paragraph.node)) if (removed.has(refInstruction(field)?.name ?? "\0")) {
-      unlink(field)
+    if (edit.final.length) continue
+    const ends = Array.from(paragraph.node.getElementsByTagNameNS(W, "bookmarkEnd"))
+    for (const start of Array.from(paragraph.node.getElementsByTagNameNS(W, "bookmarkStart"))) {
+      const name = start.getAttributeNS(W, "name") ?? ""
+      const end = ends.find(node => node.getAttributeNS(W, "id") === start.getAttributeNS(W, "id"))
+      if (!/^_Ref\d+$/.test(name) || !body.has(name) || elsewhere.has(name) || !end) continue
+      start.parentNode!.removeChild(start)
+      end.parentNode!.removeChild(end)
       changed = true
     }
   }

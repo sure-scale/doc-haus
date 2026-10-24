@@ -197,22 +197,31 @@ describe("linkCrossReferences", () => {
     expect(refreshed[0]!.from).toBe("1.1 In this Agreement the terms in clause 2.2 and Schedule 1 apply.")
   }, 60_000)
 
-  test("a reference whose target is gone becomes plain text and is not linked to the clause now under its number", async () => {
+  test("a reference whose target is gone becomes an open item naming the number it showed, and is not linked to the clause now under it", async () => {
     const bytes = (await renderMarkdownToDocx(AGREEMENT)).bytes
     const removed = withBody(bytes, doc => {
       const target = paragraphStarting(doc, "Invoices are payable")
       target.parentNode!.removeChild(target)
     })
-    const after = await references(await linkCrossReferences(removed))
+    const markers: string[] = []
+    const linked = await linkCrossReferences(removed, { onRemovedTarget: marker => markers.push(marker) })
+    const after = await references(linked)
     expect(after.map(row => [row.from.slice(0, 4), row.cached, row.target?.slice(0, 4)])).toEqual([
       ["1.1 ", "2.1", "2.1 "], ["1.1 ", "1", "Sche"], ["1.2 ", "3", "3. P"], ["2.2 ", "3.1", "3.1 "], ["3.1 ", "2.2", "2.2 "],
     ])
-    const opened = await openRevision(await linkCrossReferences(removed))
+    const marker = "[open item: refers to 3.1, which was removed]"
+    expect(markers).toEqual([marker, marker])
+    const opened = await openRevision(linked)
     try {
-      expect(opened.paragraphs.map(row => row.match.text)).toContain("The Customer shall pay as set out in clauses 3.1 and 3.1.")
+      expect(opened.paragraphs.map(row => row.match.text)).toEqual(expect.arrayContaining([
+        `The Customer shall pay as set out in clauses ${marker} and 3.1.`,
+        `Late payment under clause ${marker} carries interest, subject to clause 2.2.`,
+      ]))
     } finally {
       opened.session.close()
     }
+    // A second pass finds nothing to change.
+    expect(await linkCrossReferences(linked)).toBe(linked)
   }, 60_000)
 
   test("the reader gives each paragraph's fields by pointer: where the cached number is, and the paragraph or text it points at", async () => {

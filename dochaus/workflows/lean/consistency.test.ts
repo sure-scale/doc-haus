@@ -282,9 +282,11 @@ describe("the check in a lean run", () => {
     // label does not print it twice.
     const final = finalBodyParagraphs(directory, "d1")
     expect(final.find(row => row.text === "Payment is due on delivery in full.")?.label).toBe("2.1")
-    expect(final.map(shownText)).toContain("3.1 Late payment under clause 2.2 carries interest.")
-    expect(readOpenItems(directory).filter(item => item.kind === "consistency").map(item => item.detail))
-      .toEqual([expect.stringContaining("Clause 3.1 refers to clause 2.2, but no clause in the final text is numbered 2.2.")])
+    // The live reference to the deleted clause names no clause now, and is reported.
+    const marker = "[open item: refers to 2.2, which was removed]"
+    expect(final.map(shownText)).toContain(`3.1 Late payment under clause ${marker} carries interest.`)
+    expect(readOpenItems(directory).filter(item => item.ref.placeholder === marker).map(item => item.kind)).toEqual(["placeholder"])
+    expect(readOpenItems(directory).filter(item => item.kind === "consistency")).toEqual([])
   }, 120_000)
 
   test("an ordered list inside a clause does not number clauses: a reference to a clause the list's numbers seem to give is still checked", async () => {
