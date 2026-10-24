@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test"
 import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
-import { DocumentExistsError, MATTER_DOCUMENT_EXTENSIONS, matterDocumentKind, type AttachmentStatus, type Document, type IngestResult } from "../src/api/ingest/documents"
-import DocumentUpload, { attachmentsSummary, documentTree, failedUpload, newUpload, uploadedToast, UploadRow } from "../src/components/DocumentUpload"
+import { DocumentExistsError, MATTER_DOCUMENT_EXTENSIONS, matterDocumentKind, type AttachmentStatus, type Document, type EmailAttachment, type IngestResult } from "../src/api/ingest/documents"
+import DocumentUpload, { AttachmentEntryRow, attachmentsSummary, documentTree, failedUpload, newUpload, uploadedToast, UploadRow } from "../src/components/DocumentUpload"
 
 const file = new File(["theirs"], "Agreement.docx")
 const row = (upload: Parameters<typeof UploadRow>[0]["upload"]) => {
@@ -163,6 +163,18 @@ test("an email lists an attachment with no readable text, and one whose text is 
   // A status from a newer ingest still reads as not added.
   expect(attachmentsSummary({ attachments: [{ name: "Later.bin", type: "", size: 1, status: "from_a_newer_ingest" as unknown as "failed" }] }))
     .toBe(" Not added: Later.bin (not added).")
+})
+
+test("an Outlook attachment held as a link, or an embedded object, says why it was not added", () => {
+  const linked: EmailAttachment = { name: "Contract.docx", type: "", size: 1, status: "unsupported", note: "linked" }
+  const ole: EmailAttachment = { name: "Embedded chart.docx", type: "", size: 1, status: "unsupported", note: "ole" }
+  expect(attachmentsSummary({ attachments: [linked, ole] })).toBe(
+    " Not added: Contract.docx (not supported: a link to a file stored elsewhere), Embedded chart.docx (not supported: an embedded object, not a file).",
+  )
+  const status = (attachment: EmailAttachment) =>
+    renderToStaticMarkup(createElement(AttachmentEntryRow, { attachment, documents: [], onView: () => {} })).match(/<span class="doc-child-status">([^<]*)<\/span>/)?.[1]
+  expect(status(linked)).toBe("Not supported · a link to a file stored elsewhere")
+  expect(status(ole)).toBe("Not supported · an embedded object, not a file")
 })
 
 // Each extracted document is listed once, under the document it came from, by
