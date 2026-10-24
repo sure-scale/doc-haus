@@ -20,6 +20,7 @@ import { existsSync, readFileSync } from "node:fs"
 import { ensureParagraphPointers, paragraphSha256 } from "../../lib/drafting-amendment"
 import { renderMarkdownToDocx } from "../../lib/render"
 import { presentDraft, type DraftPresentation } from "./draft-presentation"
+import { carryRevisionTables } from "./original-tables"
 import { checkChanges, parseJsonObject } from "./change-checks"
 import {
   checkDraft,
@@ -356,8 +357,11 @@ export async function acceptStageReply(directory: string, step: StepID, reply: s
     // A plan without a form (a legacy plan, or an outline's last attempt) carries the plain page numbers.
     const planned = plannedDocument(directory, document)
     const furniture = renderedFurniture(directory, planned?.form ?? "other", requestedFurniture(planned?.furniture))
+    // A revised original's tables are carried over their drafted counterparts
+    // before the body's paragraphs are attributed to parts and listed.
     const rendered = await renderMarkdownToDocx(options.presentation?.source ?? reply, undefined, furniture)
-      .then(result => options.presentation ? presentDraft(result.bytes, options.presentation.parts, options.presentation.title !== false) : { bytes: result.bytes, attribution: undefined })
+      .then(result => carryRevisionTables(directory, document, result.bytes))
+      .then(bytes => options.presentation ? presentDraft(bytes, options.presentation.parts, options.presentation.title !== false) : { bytes, attribution: undefined })
       .then(result => result, (error: unknown) => ({ error }))
     if ("error" in rendered)
       return { issues: [`The document could not be rendered to Word (${message(rendered.error)}). Use plain Markdown headings, paragraphs, lists and tables.`], openItems: [], outputs: [] }

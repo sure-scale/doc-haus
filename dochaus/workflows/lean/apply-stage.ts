@@ -9,6 +9,7 @@ import { leanFile, matterRelative, readLeanJson, writeLeanBytes, writeLeanText, 
 import { draftStatusItems } from "./draft-status"
 import { templateItems } from "./template-coverage"
 import { consistencyItems } from "./consistency"
+import { tableItems } from "./original-tables"
 import { exportAppliedChangeComments } from "./review-evidence"
 import { draftingAttribution, withGeneratedDocxAttribution } from "../../lib/docx-attribution"
 
@@ -58,6 +59,7 @@ export async function runApply(directory: string, state: LeanState, document: Do
       ...settled.openItems, ...annotated.openItems, ...finalBodyItems(directory, rows), ...draftStatusItems(directory, document, rows, "apply"),
       ...templateItems(directory, document, readParagraphs(directory, document), rows, changes.amendments, new Set(settled.result.applied.map(row => row.id))),
       ...consistencyItems(directory, document, readParagraphs(directory, document), rows),
+      ...tableItems(directory, document, readFileSync(out)),
     ],
   }
 }

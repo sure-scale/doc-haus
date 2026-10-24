@@ -81,6 +81,8 @@ export type OpenItem = {
     question_id?: string
     /** The template part an omission or removal item is about, as its heading reads in the template. */
     template_part?: string
+    /** The original table an omission item is about: its 1-based position among the original's tables (original-tables.ts). */
+    table?: number
     /** The planned document whose body the item is about. */
     document?: DocID
     /** The review finding the item discloses (review-findings.ts). */
