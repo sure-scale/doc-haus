@@ -4,6 +4,7 @@ import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { z } from "zod"
 import { openRevision } from "./docx-amendments"
+import { clauseNumbering } from "./docx-numbering"
 import { writeDurableBytes } from "./durable-json"
 import { docxodus } from "./docxodus"
 
@@ -109,6 +110,8 @@ export async function ensureParagraphPointers(docxPath: string) {
 // The same pointers, with the list label Word shows before each numbered
 // paragraph ("1.1", "(a)"). The label is list numbering, not paragraph text:
 // `text` stays the paragraph's own text, which amendments are checked against.
+// `clause` marks a label of the document's clause list (the numbers clause
+// references cite), as against an ordinary numbered list inside a clause.
 export async function ensureParagraphRows(docxPath: string) {
   const source = new Uint8Array(await readFile(docxPath))
   const opened = await openRevision(source)
@@ -116,9 +119,11 @@ export async function ensureParagraphRows(docxPath: string) {
     const body = opened.paragraphs.filter(paragraph => paragraph.part === BODY)
     const result = addParagraphPointers(source, opened.parts, opened.documents[BODY]!, body.map(paragraph => ({ node: paragraph.node, text: paragraph.match.text })))
     if (result.bytes !== source) writeDurableBytes(docxPath, result.bytes)
+    const clauses = clauseNumbering(source).numIds
     return Object.entries(result.pointers).map(([pid, text], index) => {
-      const label = body[index]!.metadata.list?.generatedLabel?.trim()
-      return { pid, text, ...(label ? { label } : {}) }
+      const list = body[index]!.metadata.list
+      const label = list?.generatedLabel?.trim()
+      return { pid, text, ...(label ? { label } : {}), ...(label && clauses.has(String(list!.numId)) ? { clause: true as const } : {}) }
     })
   } finally {
     opened.session.close()
