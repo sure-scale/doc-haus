@@ -200,15 +200,18 @@ export function documentContentUrl(id: string, name: string): string {
 export type PdfPassagePage =
   | { status: "matched"; page: number }
   | { status: "ambiguous"; pages: number[] }
-  | { status: "unavailable"; reason?: string }
+  | { status: "unavailable"; reason: "no_text_layer" | "not_found" | "unreadable" }
 
 // The page of a matter PDF where a cited excerpt starts, found by ingest in the
 // PDF's own text layer, so the browser's PDF viewer can open at it (#page=N).
+// The viewer waits for this before loading the PDF, so a slow answer (a held
+// document lock, a busy ingest) is given up and the PDF opens at page 1.
 export async function locatePdfPassage(id: string, name: string, excerpt: string): Promise<PdfPassagePage> {
   const res = await fetch(`${INGEST_URL}/matters/${id}/documents/pdf-page`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name, excerpt }),
+    signal: AbortSignal.timeout(4000),
   })
   if (!res.ok) throw new Error(await ingestError(res, `Could not locate the cited passage in ${name}`))
   return res.json()
