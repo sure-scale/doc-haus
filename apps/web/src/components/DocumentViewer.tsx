@@ -16,7 +16,7 @@ import {
   type PreparedChanges,
   type Redline,
 } from "../api/ingest/redlines"
-import { convertPdfToDocx, documentContentUrl, fetchDocumentText, matterDocumentKind } from "../api/ingest/documents"
+import { convertPdfToDocx, documentContentUrl, fetchDocumentText, locatePdfPassage, matterDocumentKind, type PdfPassagePage } from "../api/ingest/documents"
 import { ModalClose } from "./ModalHeader"
 import { CompareIcon } from "./CompareDialog"
 import { citationPassage, focusCitationPassage, type CitationFocus } from "./citation-target"
@@ -110,6 +110,7 @@ function WordDocumentViewer({
   const closing = useContext(Closing)
   const documentRef = useRef<HTMLDivElement>(null)
   const [passage, setPassage] = useState<"matched" | "ambiguous" | "unavailable">()
+  const [pdfPage, setPdfPage] = useState<PdfPassagePage>()
   const moreRef = useRef<HTMLDetailsElement>(null)
   const [markers, setMarkers] = useState<MarkerCounts>()
   const toast = useToast()
@@ -164,6 +165,22 @@ function WordDocumentViewer({
       root.normalize()
     }
   }, [citation, html])
+
+  // The browser's PDF viewer can open at a page (#page=N) but cannot highlight
+  // text, so ingest finds the page the excerpt starts on in the PDF's text layer.
+  // The frame waits for that answer and loads the PDF once, at that page.
+  const citedExcerpt = citation?.excerpt
+  useEffect(() => {
+    setPdfPage(undefined)
+    if (!isPdf || citedExcerpt === undefined) return
+    let cancelled = false
+    locatePdfPassage(matterId, name, citedExcerpt)
+      .catch((): PdfPassagePage => ({ status: "unavailable" }))
+      .then((located) => !cancelled && setPdfPage(located))
+    return () => {
+      cancelled = true
+    }
+  }, [isPdf, matterId, name, citedExcerpt])
 
   // A <details> menu stays open until its summary is clicked again; also close it
   // on a press anywhere else in the viewer, as a menu is expected to.
@@ -243,7 +260,9 @@ function WordDocumentViewer({
     }
   }
 
-  if (isPdf)
+  if (isPdf) {
+    const pdfUrl = documentContentUrl(matterId, name)
+    const pdfSrc = pdfPage?.status === "matched" ? `${pdfUrl}#page=${pdfPage.page}` : pdfUrl
     return (
       <div className={`viewer-overlay${closing ? " is-closing" : ""}`} inert={closing} {...backdropClose(() => onClose())}>
         <div ref={modalRef} className="viewer-panel document-reader pdf-reader" role="dialog" aria-modal="true" aria-label={name} tabIndex={-1} onClick={(e) => e.stopPropagation()} onKeyDown={(e) => {
@@ -266,14 +285,17 @@ function WordDocumentViewer({
           </div>
           <div className="viewer-body">
             <div className="viewer-doc pdf-doc">
-              {citation && <p role="status">Source section {citation.section}. PDF passage navigation is unavailable; the source document is open.</p>}
+              {citation && <p role="status">{pdfCitationStatus(citation, pdfPage)}</p>}
               {error && <p className="muted">{error}</p>}
-              <iframe className="pdf-render" title={name} src={documentContentUrl(matterId, name)} />
+              {citation && !pdfPage
+                ? <div className="pdf-render" aria-hidden="true" />
+                : <iframe key={pdfSrc} className="pdf-render" title={name} src={pdfSrc} />}
             </div>
           </div>
         </div>
       </div>
     )
+  }
 
   // Escape closes only this viewer: consuming the key also stops a native
   // dialog it opened over (a review-grid cell detail) from cancelling too.
@@ -430,6 +452,36 @@ export function citationStatus(section: string, passage?: "matched" | "ambiguous
       : passage === "unavailable"
         ? "The cited excerpt could not be located in the current preview. The document is open; no exact passage was selected."
         : "Locating the cited excerpt…"}`
+}
+
+// The PDF viewer cannot mark the passage, so the line quotes the start of the
+// excerpt for the lawyer to spot on the page. Only a single page is opened at;
+// an excerpt found on several pages, or not at all, leaves the PDF at page 1.
+// The page comes before the quote, which the line clamps on a phone.
+function pdfCitationStatus(citation: CitationFocus, located?: PdfPassagePage) {
+  const prefix = `Source section ${citation.section}. `
+  if (!located) return `${prefix}Locating the cited passage…`
+  const quoted = <q>{shortExcerpt(citation.excerpt)}</q>
+  if (located.status === "matched") return <>{prefix}Cited passage on page {located.page}: {quoted}</>
+  const found = located.status === "ambiguous"
+    ? `The cited passage appears on ${pageList(located.pages)}`
+    : "The cited passage could not be located in the PDF's text"
+  return <>{prefix}{found}; the PDF is open at page 1: {quoted}</>
+}
+
+// Whitespace collapsed and cut at a word near 100 characters, so the line stays
+// short on a phone.
+function shortExcerpt(excerpt: string) {
+  const text = excerpt.replace(/\s+/g, " ").trim()
+  if (text.length <= 100) return text
+  const space = text.lastIndexOf(" ", 100)
+  return `${text.slice(0, space > 50 ? space : 100)}…`
+}
+
+function pageList(pages: number[]) {
+  const shown = pages.slice(0, 5)
+  const rest = pages.length - shown.length
+  return `pages ${rest ? `${shown.join(", ")} and ${rest} more` : `${shown.slice(0, -1).join(", ")} and ${shown.at(-1)}`}`
 }
 
 // An email or spreadsheet, read-only, as the text ingest extracted from it:

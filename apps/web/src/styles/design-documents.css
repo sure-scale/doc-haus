@@ -58,6 +58,8 @@
 .viewer-panel.pdf-reader { height: calc(var(--viewport-block) - 48px); }
 .pdf-reader .viewer-doc.pdf-doc { display: flex; flex-direction: column; gap: var(--space-3); overflow: hidden; padding: var(--space-4) var(--space-6); }
 .pdf-reader .pdf-doc > p { flex: none; margin: 0; }
+/* The citation line names the page first; its quoted excerpt is clipped past three lines. */
+.pdf-reader .pdf-doc > p[role="status"] { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
 .pdf-reader .pdf-doc .pdf-render { flex: 1 1 0; min-height: 0; height: auto; background: var(--md-sys-color-surface); }
 .document-reader .docx-render { background: var(--md-sys-color-surface); line-height: 1.85; border-color: var(--md-sys-color-outline-variant); }
 .document-reader .changes-panel { background: var(--panel); padding: 0 var(--space-5) var(--space-5); }

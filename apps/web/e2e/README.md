@@ -174,9 +174,14 @@ It serves a generated synthetic multi-page PDF through intercepted routes and,
 at 1440 px and 400 px wide, opens it from the Documents list and from a review
 table citation (which adds a status line). For each it asserts that the iframe
 fills the viewer body (within 80 px, 120 px with the status line), that the
-viewer fits the screen, and that the viewer body does not scroll. The layout
-assertions do not depend on the PDF plugin, so they also pass in the headless
-shell; only the screenshots need a full Chromium (the shell renders a blank frame).
-Set `DOCHAUS_MEASURE_ONLY=1` to print the heights without asserting,
-`DOCHAUS_ONLY=<desktop|narrow|citation-desktop|citation-narrow>` to run one
-scenario, and `PDF_FIXTURE=<file>` to use another synthetic PDF.
+viewer fits the screen, and that the viewer body does not scroll. A citation
+sends one page lookup with its excerpt; for the stubbed answer the iframe must
+end in `#page=5` and the line name page 5, or (ambiguous at 400 px, unavailable
+at 1440 px) stay at page 1 and say why. The assertions do not depend on the PDF
+plugin, so they also pass in the headless shell; only the screenshots need a
+full Chromium (the shell renders a blank frame), and only they show that the
+browser's viewer honours `#page=`. Set `DOCHAUS_MEASURE_ONLY=1` to print the
+heights without asserting them, `DOCHAUS_ONLY=<label>` to run one scenario
+(`desktop`, `narrow`, `citation-desktop`, `citation-narrow`,
+`citation-ambiguous-narrow` or `citation-unavailable-desktop`), and
+`PDF_FIXTURE=<file>` to use another synthetic PDF.

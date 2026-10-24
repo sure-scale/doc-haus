@@ -2,6 +2,8 @@
 // A multi-page synthetic PDF is served by an intercepted ingest route; every
 // other request is stubbed or refused. The iframe must fill the viewer body at
 // desktop and phone widths and the PDF must scroll inside it, not the page.
+// A citation opens the PDF at the page ingest's stubbed lookup names (#page=N),
+// or at page 1 with the reason when the lookup is ambiguous or unavailable.
 // Needs full Chromium (the headless shell has no PDF plugin and renders blank):
 // set PLAYWRIGHT_CHROMIUM_EXECUTABLE to a full Chromium binary.
 import { mkdir } from "node:fs/promises"
@@ -36,19 +38,25 @@ function syntheticPdf(pages: number) {
   return Buffer.from(body, "latin1")
 }
 // A review-grid cell whose source is the PDF: its citation opens the viewer with a status line.
+// The excerpt is five lines of page 5, long enough that the status line shortens it.
 const question = "What does the supplier deliver?"
 function hashQuestion(text: string) { let hash = 5381; for (let i = 0; i < text.length; i++) hash = (hash * 33) ^ text.charCodeAt(i); return (hash >>> 0).toString(36) }
-const grid = { columns: [{ id: "deliver", question }], cells: { [`${NAME}::deliver`]: { answer: "The supplier delivers the services.", status: "reviewed", questionHash: hashQuestion(question), citation: { documentName: NAME, docPath: documents[0]!.doc_path, section: "1. Delivery", excerpt: "the supplier shall deliver the services", charStart: 0, charEnd: 40 }, comments: [] } } }
+const excerpt = Array.from({ length: 5 }, (_, i) => `Synthetic page 5, line ${12 + i}: the supplier shall deliver the services.`).join("\n")
+const grid = { columns: [{ id: "deliver", question }], cells: { [`${NAME}::deliver`]: { answer: "The supplier delivers the services.", status: "reviewed", questionHash: hashQuestion(question), citation: { documentName: NAME, docPath: documents[0]!.doc_path, section: "1. Delivery", excerpt, charStart: 0, charEnd: excerpt.length }, comments: [] } } }
 const pdf = process.env.PDF_FIXTURE ? Buffer.from(await Bun.file(process.env.PDF_FIXTURE).arrayBuffer()) : syntheticPdf(8)
+// Ingest's answer to the viewer's page lookup, per citation scenario.
+type Located = "matched" | "ambiguous" | "unavailable"
+const located = { matched: { status: "matched", page: 5 }, ambiguous: { status: "ambiguous", pages: [2, 5] }, unavailable: { status: "unavailable", reason: "not_found" } }
 
 const browser = await chromium.launch({ headless: process.env.PLAYWRIGHT_HEADED !== "1", executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE })
 const unexpected: string[] = []
 const pageErrors: string[] = []
 const measurements: Record<string, unknown> = {}
 
-async function run(label: string, width: number, height: number, citation = false) {
+async function run(label: string, width: number, height: number, citation?: Located) {
   if (process.env.DOCHAUS_ONLY && process.env.DOCHAUS_ONLY !== label) return // run one scenario by label
   const context = await browser.newContext({ viewport: { width, height }, hasTouch: width <= 768, reducedMotion: "reduce", timezoneId: "Europe/London" })
+  const lookups: unknown[] = []
   await context.addInitScript(() => { try { sessionStorage.setItem("dh.launch-notice.v1", "accepted"); localStorage.setItem("dh.sidebar", innerWidth > 960 ? "0" : "1") } catch { /* the browser's PDF viewer frame has no storage */ } })
   await context.route("**/*", async (route: Route) => {
     const request = route.request()
@@ -67,6 +75,10 @@ async function run(label: string, width: number, height: number, citation = fals
     // The review grid saves itself and re-checks its sources when opened.
     if (method === "PUT" && pathname === `/matters/${matter.id}/grid`) return reply({ ok: true })
     if (method === "POST" && pathname === `/matters/${matter.id}/grid/sources`) return reply({ [`${NAME}::deliver`]: "verified" })
+    if (method === "POST" && pathname === `/matters/${matter.id}/documents/pdf-page` && citation) {
+      lookups.push(request.postDataJSON())
+      return reply(located[citation])
+    }
     if (method !== "GET") { unexpected.push(`${method} ${pathname}`); return route.abort() }
     if (pathname === `/matters/${matter.id}/documents/content`) return route.fulfill({ status: 200, headers: { ...headers, "content-disposition": "inline" }, contentType: "application/pdf", body: pdf })
     if (pathname === `/matters/${matter.id}/grid`) return reply(grid)
@@ -109,7 +121,26 @@ async function run(label: string, width: number, height: number, citation = fals
     if (await docs.getAttribute("aria-expanded") !== "true") await docs.click()
     await page.getByRole("button", { name: NAME, exact: true }).click()
   }
-  await expect(dialog.locator("iframe.pdf-render")).toBeVisible()
+  const frame = dialog.locator("iframe.pdf-render")
+  await expect(frame).toBeVisible()
+  if (citation) {
+    // One page lookup with the cited excerpt. A single page opens the PDF there
+    // and is named; otherwise the line says why the PDF stays at page 1. Either
+    // way it quotes the start of the excerpt, shortened.
+    const status = dialog.getByRole("status")
+    if (citation === "matched") {
+      await expect(frame).toHaveAttribute("src", /#page=5$/)
+      await expect(status).toContainText("Source section 1. Delivery. Cited passage on page 5:")
+    } else {
+      await expect(frame).not.toHaveAttribute("src", /#/)
+      await expect(status).toContainText(citation === "ambiguous"
+        ? "The cited passage appears on pages 2 and 5; the PDF is open at page 1:"
+        : "The cited passage could not be located in the PDF's text; the PDF is open at page 1:")
+    }
+    await expect(status).toContainText("Synthetic page 5, line 12: the supplier shall deliver the services.")
+    await expect(status).toContainText("…")
+    expect(lookups).toEqual([{ name: NAME, excerpt }])
+  }
   const measure = () => page.evaluate(() => {
     const box = (selector: string) => { const r = document.querySelector(selector)!.getBoundingClientRect(); return { top: r.top, height: r.height } }
     const scroller = document.querySelector<HTMLElement>(".document-reader .viewer-body")!
@@ -126,7 +157,7 @@ async function run(label: string, width: number, height: number, citation = fals
   }
   measurements[label] = m
   await page.waitForTimeout(1000) // the screenshot only: let the PDF plugin paint
-  await page.screenshot({ path: path.join(evidence, `pdf-${label}.png`) })
+  await page.screenshot({ path: path.join(evidence!, `pdf-${label}.png`) })
   console.log(label, JSON.stringify(m))
   if (process.env.DOCHAUS_MEASURE_ONLY === "1") return context.close() // report heights without asserting
   // The frame fills the viewer body (less its padding and, for a citation, the
@@ -141,8 +172,10 @@ async function run(label: string, width: number, height: number, citation = fals
 try {
   await run("desktop", 1440, 900)
   await run("narrow", 400, 800)
-  await run("citation-desktop", 1440, 900, true)
-  await run("citation-narrow", 400, 800, true)
+  await run("citation-desktop", 1440, 900, "matched")
+  await run("citation-narrow", 400, 800, "matched")
+  await run("citation-ambiguous-narrow", 400, 800, "ambiguous")
+  await run("citation-unavailable-desktop", 1440, 900, "unavailable")
   expect(pageErrors.slice(0, 5)).toEqual([])
   expect(unexpected.slice(0, 5)).toEqual([])
   console.log(JSON.stringify(measurements, null, 2))
