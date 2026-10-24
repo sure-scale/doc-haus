@@ -6,6 +6,7 @@ import { documentCopyRoutes } from "./document-copy"
 import { templateDraftRoutes } from "./template-drafts"
 import { registeredCombinedParts } from "./combined-output"
 import { documentLabelRoutes } from "./document-labels"
+import { pdfPassageRoutes } from "./pdf-page"
 import { answerDraftRoutes } from "./answer-drafts"
 import { readEngineSettings, patchEngineConfig, engineConfigFile } from "./engine-config"
 import { setupRoutes } from "./setup"
@@ -140,6 +141,8 @@ app.route("/", updateRoutes(new RepoUpdater(updateRoot, updateRuntime), async ()
 }, () => managedUpdateOwner(updateRoot, updateRuntime)))
 
 app.route("/", documentLabelRoutes(matterDir))
+// The page a PDF citation's excerpt starts on, for the web viewer's #page=N.
+app.route("/", pdfPassageRoutes(matterDir))
 app.route("/", answerDraftRoutes(matterDir))
 
 app.route("/", authReuseRoutes())
