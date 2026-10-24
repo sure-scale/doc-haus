@@ -7,6 +7,7 @@ import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { openRevision, verifyPreservation } from "./docx-amendments"
 import { applyAmendments } from "./drafting-amendment-apply"
 import { ensureParagraphPointers, paragraphPointers, paragraphSha256, type Amendment } from "./drafting-amendment"
+import { highlightOpenItemsInDocx } from "./open-items"
 import { renderMarkdownToDocx } from "./render"
 
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -290,6 +291,24 @@ describe("pointer-based paragraph amendments", () => {
     expect(result.applied.map(row => row.mode)).toEqual(["code"])
     expect((await texts(doc.out)).get(doc.pid)).toBe(updated)
     expect(await shaded(doc.out)).toEqual(["[open item: confirm the notice period and its start date]"])
+  })
+
+  // The apply step shades the open items an amendment wrote (highlightOpenItemsInDocx).
+  for (const [name, from, to, marker] of [
+    ["placeholder-before-open-item", "The Supplier's liability is limited to [open item: what is needed — no cap figure is instructed].",
+      "The Supplier's liability is limited to [£ (cap figure to be confirmed)] [open item: confirm the cap figure — no cap figure is instructed].",
+      "[open item: confirm the cap figure — no cap figure is instructed]"],
+    ["bracket-around-open-item", "Delivery is at [open item: confirm the address].",
+      "Delivery is at [the main warehouse [open item: confirm whether the warehouse is right]].",
+      "[open item: confirm whether the warehouse is right]"],
+  ]) test(`words an amendment writes in an open item's run around a new marker are not shaded as open (${name})`, async () => {
+    const doc = await single(name!, from!)
+    const before = (await texts(doc.file)).get(doc.pid)!
+    const result = await applyAmendments({ docxPath: doc.file, outPath: doc.out, amendments: [amend(name!, doc.pid, before, to!)] })
+    expect(result.applied.map(row => row.mode)).toEqual(["code"])
+    await writeFile(doc.out, highlightOpenItemsInDocx(new Uint8Array(await readFile(doc.out))))
+    expect((await texts(doc.out)).get(doc.pid)).toBe(to)
+    expect(await shaded(doc.out)).toEqual([marker])
   })
 
   test("words an open item held that an amendment makes clause text are not shaded as open", async () => {

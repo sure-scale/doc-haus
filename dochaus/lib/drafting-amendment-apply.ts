@@ -341,8 +341,10 @@ function preserveDeletedCellParagraphs(bytes: Uint8Array, opened: Opened, edits:
 }
 
 // Inserted text takes the formatting of the first run it touches, so resolving a
-// highlighted open item would leave the answer shaded as open. Clears open-item
-// shading from runs of edited paragraphs that no longer hold a marker.
+// highlighted open item would leave the answer shaded as open, and words written
+// beside a marker into its run would be shaded with it. Clears open-item shading
+// from runs of edited paragraphs that hold anything but markers; the apply step
+// shades each marker in them on its own, as drafting does.
 function clearResolvedHighlights(bytes: Uint8Array, pids: Set<string>) {
   const parts = unzipSync(bytes)
   const doc = new DOMParser().parseFromString(strFromU8(parts[BODY]!), "application/xml")
@@ -351,7 +353,8 @@ function clearResolvedHighlights(bytes: Uint8Array, pids: Set<string>) {
     if (run?.localName !== "r" || !HIGHLIGHT_FILLS.has((shd.getAttributeNS(W, "fill") ?? "").toUpperCase())) return false
     const paragraph = owningParagraph(run) as Element | null
     if (!paragraph || !paragraphPointers(paragraph).some(row => pids.has(row.pid))) return false
-    return !hasOpenItemMarker(Array.from(run.getElementsByTagNameNS(W, "t")).map(text => text.textContent ?? "").join(""))
+    const text = Array.from(run.getElementsByTagNameNS(W, "t")).map(text => text.textContent ?? "").join("")
+    return !hasOpenItemMarker(text) || text.replace(OPEN_ITEM_PATTERN, "") !== ""
   })
   if (!shading.length) return bytes
   for (const shd of shading) shd.parentNode!.removeChild(shd)
