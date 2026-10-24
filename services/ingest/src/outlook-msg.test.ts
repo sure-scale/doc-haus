@@ -287,6 +287,10 @@ test("a malformed .msg is refused with a clear message, and never indexed as an 
   for (const bytes of [notOutlook, cut]) await expect(parseMsg(bytes)).rejects.toBeInstanceOf(MsgFormatError)
   // A compound file with no Outlook item in it.
   await expect(parseMsg(msgFile({ props: [] }))).rejects.toThrow("not a readable Outlook email")
+  // A damaged file whose directory sectors or entries loop back on themselves
+  // is refused, not followed forever.
+  for (const bytes of [loopedDirectorySectors(good), loopedDirectoryEntries(good)])
+    await expect(parseMsg(bytes)).rejects.toBeInstanceOf(MsgFormatError)
 
   const directory = matter()
   await expect(ingestEmailDocument(directory, "Broken.msg", cut)).rejects.toBeInstanceOf(MsgFormatError)
@@ -301,3 +305,30 @@ test("a malformed .msg is refused with a clear message, and never indexed as an 
   const index = JSON.parse(readFileSync(path.join(directory, "source-index.json"), "utf8")) as { sources: { document: string }[] }
   expect(index.sources.map((source) => source.document)).toEqual(["Carrier.msg"])
 }, 120_000)
+
+// The compound file's own layout (MS-CFB 2.2, 2.6): 512-byte sectors after the
+// header, the first FAT sector named at 0x4C, the first directory sector at
+// 0x30, and 128-byte directory entries.
+function directoryLayout(file: Buffer) {
+  const sector = (index: number) => (index + 1) * 512
+  const fat = sector(file.readInt32LE(0x4c))
+  const start = file.readInt32LE(0x30)
+  return { fat, start, directory: sector(start) }
+}
+
+// The directory's first sector links to itself in the FAT.
+function loopedDirectorySectors(good: Buffer) {
+  const file = Buffer.from(good)
+  const { fat, start } = directoryLayout(file)
+  file.writeInt32LE(start, fat + 4 * start)
+  return file
+}
+
+// The root's first child names itself as its next sibling.
+function loopedDirectoryEntries(good: Buffer) {
+  const file = Buffer.from(good)
+  const { directory } = directoryLayout(file)
+  const child = file.readInt32LE(directory + 0x4c)
+  file.writeInt32LE(child, directory + 128 * child + 0x48)
+  return file
+}

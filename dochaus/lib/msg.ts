@@ -65,6 +65,7 @@ export async function msgToText(buffer: Buffer | Uint8Array) {
 // A file that is not an Outlook item (not a compound file, a compound file with
 // no message in it, or one cut short) is refused with MsgFormatError.
 function readMsg(buffer: Buffer | Uint8Array) {
+  if (!compoundFileEnds(buffer)) throw new MsgFormatError("The file is not a readable Outlook email.")
   // A copy of exactly the file's bytes: the reader views the whole buffer it is
   // given, and a Buffer can be a slice of a larger pool.
   const reader = new MsgReader(Uint8Array.from(buffer).buffer)
@@ -78,6 +79,140 @@ function readMsg(buffer: Buffer | Uint8Array) {
   // Every Outlook item states its class (IPM.Note for an email).
   if (fields.dataType !== "msg" || !fields.messageClass) throw new MsgFormatError("The file is not a readable Outlook email.")
   return { reader, fields }
+}
+
+// The reader follows the compound file's sector chains and directory tree with
+// no guard against a loop, so a damaged file whose chain or tree points back on
+// itself would hold the parse, and the ingest service, forever. This walks the
+// same chains and tree as the reader (its Reader.parse and readProperty, which
+// it mirrors) and refuses a file where one revisits a sector or an entry, runs
+// longer than the file allows or reads past its end (MS-CFB 2.3 to 2.6).
+const END_OF_CHAIN = -2
+const NO_ENTRY = -1
+const DIRECTORY = 1
+const DOCUMENT = 2
+const ROOT = 5
+const MINI_SECTOR = 64
+const MINI_STREAM_CUTOFF = 4096
+
+function compoundFileEnds(bytes: Uint8Array) {
+  try {
+    return chainsEnd(bytes)
+  } catch {
+    // A sector or entry the reader would read from outside the file.
+    return false
+  }
+}
+
+function chainsEnd(bytes: Uint8Array) {
+  if (bytes.length < 512) return false
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  // A read the reader would fail on is undefined here; the reader clamps the
+  // position to the file first.
+  const int = (offset: number) => {
+    const at = Math.max(0, Math.min(bytes.length, offset))
+    return at + 4 <= bytes.length ? view.getInt32(at, true) : undefined
+  }
+  const sectorSize = view.getInt8(30) === 12 ? 4096 : 512
+  const perSector = sectorSize / 4
+  const sectors = Math.ceil(bytes.length / sectorSize)
+  const at = (sector: number) => (sector + 1) * sectorSize
+  // A chain from `start` to its end through `next`, as the sectors it names.
+  const chain = (start: number | undefined, next: (sector: number) => number | undefined, limit: number) => {
+    const seen = new Set<number>()
+    for (let sector = start; sector !== END_OF_CHAIN; sector = next(sector)) {
+      if (sector === undefined || seen.has(sector) || seen.size >= limit) return
+      seen.add(sector)
+    }
+    return [...seen]
+  }
+  const nextIn = (table: number[]) => (sector: number) => {
+    const holder = table[Math.floor(sector / perSector)]
+    return holder === undefined ? END_OF_CHAIN : int(at(holder) + 4 * (sector % perSector))
+  }
+
+  // The FAT's sectors: up to 109 named in the header, then those in the DIFAT chain.
+  const fatCount = int(0x2c)!
+  if (fatCount < 0) return false
+  const fat = Array.from({ length: Math.min(fatCount, 109) }, (_, index) => int(0x4c + 4 * index)!)
+  let remaining = fatCount - fat.length
+  const difat = new Set<number>()
+  for (let index = 0, sector = int(0x44)!; index < int(0x48)!; index++) {
+    if (sector < 0 || sector >= sectors || difat.has(sector)) return false
+    difat.add(sector)
+    const count = Math.min(remaining, perSector - 1)
+    for (let entry = 0; entry < count; entry++) {
+      const holder = int(at(sector) + 4 * entry)
+      if (holder === undefined) return false
+      if (holder === NO_ENTRY || holder === END_OF_CHAIN) break
+      fat.push(holder)
+    }
+    remaining -= count
+    const next = int(at(sector) + 4 * (perSector - 1))
+    if (next === undefined) return false
+    if (next === NO_ENTRY || next === END_OF_CHAIN) break
+    sector = next
+  }
+  const nextSector = nextIn(fat)
+
+  // The mini FAT's sectors, as many as the header states (the reader also stops
+  // at sector 0).
+  const miniFat = new Set<number>()
+  const miniFatCount = int(0x40)!
+  for (let sector = int(0x3c); miniFat.size < miniFatCount && sector !== 0 && sector !== END_OF_CHAIN; sector = nextSector(sector)) {
+    if (sector === undefined || miniFat.has(sector) || miniFat.size >= sectors) return false
+    miniFat.add(sector)
+  }
+
+  // The directory's entries, from every sector of its chain.
+  const directory = chain(int(0x30), nextSector, sectors)
+  if (!directory) return false
+  type Entry = { type: number; previous: number; next: number; child: number; start: number; size: number }
+  const entries: Entry[] = []
+  for (const sector of directory) {
+    for (let offset = at(sector); offset < at(sector) + sectorSize && offset + 0x42 <= bytes.length; offset += 128) {
+      if (offset + 0x42 === bytes.length) return false
+      const type = view.getInt8(offset + 0x42)
+      if (type !== DIRECTORY && type !== DOCUMENT && type !== ROOT) {
+        entries.push({ type, previous: NO_ENTRY, next: NO_ENTRY, child: NO_ENTRY, start: 0, size: 0 })
+        continue
+      }
+      const [previous, next, child, start, size] = [0x44, 0x48, 0x4c, 0x74, 0x78].map((field) => int(offset + field))
+      if (previous === undefined || next === undefined || child === undefined || start === undefined || size === undefined) return false
+      entries.push({ type, previous, next, child, start, size })
+    }
+  }
+
+  // Every entry the tree reaches, each once: a storage's children are the
+  // siblings around its child, and a child storage holds its own.
+  const root = entries[0]
+  if (!root) return false
+  const reached = new Set<number>([0])
+  const pending = [root]
+  while (pending.length) {
+    const storage = pending.pop()!
+    const siblings = storage.child === NO_ENTRY ? [] : [storage.child]
+    while (siblings.length) {
+      const index = siblings.pop()!
+      const entry = entries[index]
+      if (!entry || reached.has(index)) return false
+      reached.add(index)
+      if (entry.type === DIRECTORY) pending.push(entry)
+      if (entry.next !== NO_ENTRY) siblings.push(entry.next)
+      if (entry.previous !== NO_ENTRY) siblings.push(entry.previous)
+    }
+  }
+
+  // The mini stream, and each stream: a small one through the mini FAT, a large
+  // one no longer than the file.
+  if (!chain(root.start, nextSector, sectors)) return false
+  const nextMini = nextIn([...miniFat])
+  for (const index of reached) {
+    const entry = entries[index]!
+    if (entry.type !== DOCUMENT || !entry.size) continue
+    if (entry.size < MINI_STREAM_CUTOFF ? !chain(entry.start, nextMini, MINI_STREAM_CUTOFF / MINI_SECTOR) : entry.size > bytes.length) return false
+  }
+  return true
 }
 
 // One attachment as the message states it, or undefined for an image the HTML
