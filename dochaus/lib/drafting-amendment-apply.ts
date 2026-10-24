@@ -2,11 +2,12 @@ import { readFile } from "node:fs/promises"
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { z } from "zod"
-import { changedDocxSpan, changedRange, openRevision } from "./docx-amendments"
+import { changedRange, openRevision } from "./docx-amendments"
 import { paragraphFields, refInstruction, runText, unlink } from "./docx-fields"
 import { amendmentSchema, amendmentParagraphs, amendmentText, ensureParagraphPointers, normalizeParagraphText, owningParagraph, paragraphPointers, paragraphSha256, type Amendment } from "./drafting-amendment"
 import { writeDurableBytes } from "./durable-json"
 import { FIELD_HIGHLIGHT_FILL, OPEN_ITEM_HIGHLIGHT_FILL, hasOpenItemMarker } from "./open-items"
+import { OPEN_ITEM_PATTERN } from "./marker-patterns"
 
 export type AppliedAmendment = { id: string; pid: string; mode: "code" | "already_applied"; result_pids?: string[] }
 // What a reviewer needs to act on an unapplied amendment. `original` is the text
@@ -202,9 +203,9 @@ function writeParagraph(opened: Opened, edit: Edit, live: (anchor: string) => Re
     for (const text of hunkTexts(live(anchor)?.text ?? "", final.join(""))) {
       const match = live(anchor)
       if (!match) return false
-      const change = changedDocxSpan(match, text)
-      if (!change.match.text && !change.replacement) continue
-      const result = opened.session.replaceMatch(change.match, change.replacement)
+      const { offset, replaced, changed } = hunkRange(match.text, text)
+      if (!replaced && !changed) continue
+      const result = opened.session.replaceMatch({ ...match, text: replaced, span: { start: match.span.start + offset, length: replaced.length } }, changed)
       refresh()
       if (!result.success) return false
     }
@@ -265,13 +266,31 @@ function touchedRanges(from: string, to: string) {
   let current = from
   let shift = 0
   for (const text of hunkTexts(from, to)) {
-    const { offset, replaced, changed } = changedRange(current, text)
+    const { offset, replaced, changed } = hunkRange(current, text)
     current = text
     if (!replaced && !changed) continue
     ranges.push([offset - shift, offset - shift + replaced.length])
     shift += changed.length - replaced.length
   }
   return ranges
+}
+
+// The part of `from` one hunk to `to` rewrites (changedRange). The engine
+// writes a replacement in the formatting of the first run its span touches,
+// and a pure insertion's span is the one character after it, so words inserted
+// just before an open-item marker would be written in the marker's shaded run
+// and read as open. Such an insertion takes the character before the marker
+// instead, unless that character is in a marker too. Only a pure insertion's
+// text ends with the character it keeps.
+function hunkRange(from: string, to: string) {
+  const range = changedRange(from, to)
+  const { offset, replaced, changed } = range
+  const markers = [...from.matchAll(OPEN_ITEM_PATTERN)].map(marker => [marker.index ?? 0, (marker.index ?? 0) + marker[0].length] as const)
+  if (!offset || changed === replaced || !changed.endsWith(replaced) || !markers.some(([start]) => start === offset)) return range
+  const previous = Array.from(from.slice(0, offset)).at(-1)!
+  const at = offset - previous.length
+  if (markers.some(([start, end]) => start <= at && at < end)) return range
+  return { offset: at, replaced: previous, changed: previous + changed.slice(0, -replaced.length) }
 }
 
 // Cardinality edits must not silently discard section breaks, fields, or ranges
