@@ -68,7 +68,9 @@ export type EmailAttachment = {
   size: number
   status: AttachmentStatus
   document?: string
-  note?: "may-contain-attachments"
+  // may-contain-attachments: Outlook's winmail.dat, not unpacked; linked or ole:
+  // an Outlook attachment held only as a link, or an OLE object, never read.
+  note?: "may-contain-attachments" | "linked" | "ole"
   flagged?: true
   // Its document's extracted text may be incomplete or garbled.
   degraded?: true

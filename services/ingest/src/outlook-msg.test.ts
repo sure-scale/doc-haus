@@ -1,16 +1,20 @@
-import { afterAll, expect, test } from "bun:test"
+import { afterAll, expect, spyOn, test } from "bun:test"
 import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { Document, Packer, Paragraph } from "docx"
+import iconv from "iconv-lite"
 import { findQuote, liveText } from "../../../dochaus/lib/extract"
-import { parseMsg, MsgFormatError } from "../../../dochaus/lib/msg"
+import * as msgReader from "../../../dochaus/lib/msg"
 import { verifyQuote } from "../../../dochaus/lib/quote-verify"
 import { openDb } from "./db"
-import { ingestEmailDocument, MAX_EMAIL_DEPTH, reingestLegacyEmails, withEmailLinks } from "./email-attachments"
+import { deleteMatterDocument } from "./document-delete"
+import { emailRemovalPlan, ingestEmailDocument, MAX_EMAIL_DEPTH, reingestLegacyEmails, withEmailLinks } from "./email-attachments"
 import { extractDocumentText, extractSourceText } from "./ingest"
 import { sourceArtifactsMatchRegistry } from "./source-artifacts"
-import { fileAttachment, messageAttachment, msgFile, outlookMessage, TAG, type MsgAttachment } from "./fixtures/synthetic-msg"
+import { fileAttachment, messageAttachment, msgFile, outlookMessage, TAG, type MsgAttachment, type MsgNode } from "./fixtures/synthetic-msg"
+
+const { MsgFormatError, parseMsg } = msgReader
 
 // Every email, name and attachment here is invented test content built in the
 // test (fixtures/synthetic-msg.ts writes the .msg files): example.test
@@ -30,6 +34,10 @@ const SENDER = { name: "Sender Example", address: "sender@example.test" }
 const RECIPIENT = { name: "Recipient Example", address: "recipient@example.test" }
 const COPY = { address: "copy@example.test" }
 const SENT = new Date("2024-03-04T09:30:00Z")
+// The size listed for an attached Outlook message that states none: the length
+// of the reader's own written-out copy. It is part of the parent email's text,
+// so a reader upgrade that changes it moves the parent's citation offsets.
+const REWRITTEN_MESSAGE_SIZE = 3072
 
 const docx = async (text: string) =>
   new Uint8Array(await Packer.toBuffer(new Document({ sections: [{ children: [new Paragraph(text)] }] })))
@@ -269,15 +277,21 @@ test("an OLE object and a linked file are listed as not supported, and an inline
   expect(parsed.body.replace(/\s+/g, " ").trim()).toBe("Logo below")
   const directory = matter()
   const result = await ingestEmailDocument(directory, "Mixed.msg", msg)
-  expect(result.attachments.map((entry) => [entry.name, entry.status])).toEqual([
-    ["Embedded chart.docx", "unsupported"],
-    ["Shared.pdf", "unsupported"],
+  expect(result.attachments.map((entry) => [entry.name, entry.status, entry.note])).toEqual([
+    ["Embedded chart.docx", "unsupported", "ole"],
+    ["Shared.pdf", "unsupported", "linked"],
   ])
   expect(result.injection).toBeNull()
   expect(registry(directory).map((row) => row.name)).toEqual(["Mixed.msg"])
-  // Their names are a document's, but they stay unread, so a restart does not
-  // take the email in again as one with an attachment it can now read.
-  expect(await reingestLegacyEmails(directory)).toBe(0)
+  // Their names are a document's, but they are noted as never read, so a
+  // restart neither takes the email in again nor parses it to find out.
+  const parses = spyOn(msgReader, "parseMsg")
+  try {
+    expect(await reingestLegacyEmails(directory)).toBe(0)
+    expect(parses).not.toHaveBeenCalled()
+  } finally {
+    parses.mockRestore()
+  }
 }, 120_000)
 
 test("a malformed .msg is refused with a clear message, and never indexed as an empty success", async () => {
@@ -304,6 +318,171 @@ test("a malformed .msg is refused with a clear message, and never indexed as an 
   expect(registry(directory).map((row) => row.name)).toEqual(["Carrier.msg"])
   const index = JSON.parse(readFileSync(path.join(directory, "source-index.json"), "utf8")) as { sources: { document: string }[] }
   expect(index.sources.map((source) => source.document)).toEqual(["Carrier.msg"])
+}, 120_000)
+
+test("an ANSI Outlook email reads in its own codepage, an RTF body in each font's, an HTML body in the one it states", async () => {
+  const encoded = (text: string, codepage: string) => new Uint8Array(iconv.encode(text, codepage))
+  // Strings stored as ANSI (type 001E) in the message's codepage.
+  const western = outlookMessage({})
+  western.props.push(
+    [0x0037001e, encoded("Fee €5m “final”", "cp1252")],
+    [0x0c1a001e, encoded("Renée Example", "cp1252")],
+    [TAG.senderSmtpAddress, "renee@example.test"],
+    [0x1000001e, encoded("The fee is €5m – “final”; it’s agreed.\r\n", "cp1252")],
+    [TAG.messageCodepage, 1252],
+  )
+  expect((await parseMsg(msgFile(western))).text).toBe(
+    "Subject: Fee €5m “final”\nFrom: Renée Example <renee@example.test>\n\nThe fee is €5m – “final”; it’s agreed.\r\n",
+  )
+  const central = outlookMessage({})
+  central.props.push([0x0037001e, encoded("Zażółć gęślą jaźń", "cp1250")], [0x1000001e, encoded("Łódź – umowa", "cp1250")], [TAG.messageCodepage, 1250])
+  expect((await parseMsg(msgFile(central))).text).toBe("Subject: Zażółć gęślą jaźń\n\nŁódź – umowa")
+
+  // An RTF font's character set decides its bytes, else the document's \ansicpg.
+  const rtf = String.raw`{\rtf1\ansi\ansicpg1252\deff0{\fonttbl{\f0 Arial;}{\f1\fcharset238 Arial CE;}}\pard\f0 Price \'80 5m\par\f1 Miasto \'b3\'f3d\'9f\par\plain Total \'80\par}`
+  expect((await parseMsg(msgFile(outlookMessage({ subject: "Synthetic RTF", rtf })))).body).toBe("Price € 5m\nMiasto łódź\nTotal €\n")
+
+  // HTML in a codepage iconv-lite lacks (ISO-2022-JP) or names otherwise (UTF-16).
+  const html = (bytes: Uint8Array, codepage: number) => {
+    const node = outlookMessage({ subject: "Synthetic HTML" })
+    node.props.push([TAG.html, bytes], [TAG.internetCodepage, codepage])
+    return msgFile(node)
+  }
+  const japanese = new Uint8Array([0x3c, 0x70, 0x3e, 0x1b, 0x24, 0x42, 0x46, 0x7c, 0x4b, 0x5c, 0x1b, 0x28, 0x42, 0x3c, 0x2f, 0x70, 0x3e])
+  expect((await parseMsg(html(japanese, 50220))).body.trim()).toBe("日本")
+  expect((await parseMsg(html(new Uint8Array(Buffer.from("<p>Fee €5m</p>", "utf16le")), 1200))).body.trim()).toBe("Fee €5m")
+})
+
+test("From, To and Date read as an .eml's: the person a delegate sent for, Exchange addresses, no date on a draft", async () => {
+  // Sent by an assistant on a partner's behalf: From is the partner.
+  const delegated = outlookMessage({ subject: "Synthetic delegated", body: "Body." })
+  delegated.props.push(
+    [TAG.senderName, "Assistant Example"],
+    [TAG.senderAddressType, "EX"],
+    [TAG.senderEmail, "/O=EXAMPLE/OU=EXCHANGE ADMINISTRATIVE GROUP/CN=RECIPIENTS/CN=ASSISTANT"],
+    [TAG.sentRepresentingName, "Partner Example"],
+    [TAG.sentRepresentingAddressType, "SMTP"],
+    [TAG.sentRepresentingEmail, "partner@example.test"],
+    [TAG.sentRepresentingSmtpAddress, "partner@example.test"],
+  )
+  expect((await parseMsg(msgFile(delegated))).text).toStartWith("Subject: Synthetic delegated\nFrom: Partner Example <partner@example.test>\n")
+
+  // Exchange addresses are directory paths: the transport headers give the
+  // address for the same name, else the name stands alone.
+  const exchange: MsgNode = outlookMessage({ subject: "Synthetic exchange", body: "Body." })
+  exchange.props.push(
+    [TAG.sentRepresentingName, "Partner Example"],
+    [TAG.sentRepresentingAddressType, "EX"],
+    [TAG.sentRepresentingEmail, "/O=EXAMPLE/CN=PARTNER"],
+    [TAG.transportHeaders, "From: Partner Example <partner@example.test>\r\nTo: Client Example <client@example.test>\r\nSubject: Synthetic exchange\r\n"],
+  )
+  const exchangeRecipient = (type: number, name: string): MsgNode => ({
+    props: [[TAG.recipientType, type], [TAG.displayName, name], [TAG.addressType, "EX"], [TAG.emailAddress, `/O=EXAMPLE/CN=${name.toUpperCase()}`]],
+  })
+  exchange.recipients = [exchangeRecipient(1, "Client Example"), exchangeRecipient(2, "Colleague Example")]
+  expect((await parseMsg(msgFile(exchange))).text).toStartWith(
+    "Subject: Synthetic exchange\nFrom: Partner Example <partner@example.test>\nTo: Client Example <client@example.test>\nCc: Colleague Example\n\n",
+  )
+
+  // A draft never sent has no Date; a received message dates from delivery.
+  const saved = (flags: number) => {
+    const node = outlookMessage({ subject: "Synthetic draft", body: "Draft." })
+    node.props.push([TAG.messageFlags, flags], [TAG.messageDeliveryTime, SENT])
+    return msgFile(node)
+  }
+  expect((await parseMsg(saved(8))).text).toBe("Subject: Synthetic draft\n\nDraft.")
+  expect((await parseMsg(saved(1))).text).toBe("Subject: Synthetic draft\nDate: 2024-03-04T09:30:00.000Z\n\nDraft.")
+})
+
+test("attachments are named and sized as the message states them, inline images are counted however marked, an unreadable one is failed", async () => {
+  const reply = messageAttachment("RE: 12/03 call", outlookMessage({ subject: "RE: 12/03 call", body: "Reply." }))
+  const sized = messageAttachment("Sized reply", outlookMessage({ subject: "Sized reply", body: "Sized." }))
+  sized.props.push([TAG.attachSize, 4321])
+  const image = (name: string, type: string | undefined, id: string, ...props: [number, number][]) => {
+    const part = fileAttachment(name, type, new Uint8Array(Buffer.from(`synthetic ${name}`)))
+    part.props.push([TAG.attachContentId, id], ...props)
+    return part
+  }
+  // Shown by the HTML, as its flags say or as the HTML names it; one it does
+  // not show is an attachment like any other.
+  const banner = image("banner.png", "image/png", "banner@example.test", [TAG.attachFlags, 4])
+  const signature = image("signature.gif", undefined, "signature@example.test")
+  const photo = image("photo.jpg", "image/jpeg", "photo@example.test")
+  // Held by value, but with no content to read.
+  const missing: MsgAttachment = { props: [[TAG.attachMethod, 1], [TAG.attachLongFilename, "Missing.docx"], [TAG.attachMimeTag, DOCX]] }
+  const msg = msgFile(outlookMessage({
+    subject: "Synthetic attachments",
+    from: SENDER,
+    html: '<p>See below.</p><img src="cid:signature@example.test">',
+    attachments: [reply, sized, banner, signature, photo, missing],
+  }))
+
+  const parsed = await parseMsg(msg)
+  expect(parsed.embedded).toBe(2)
+  expect(parsed.attachments.map(({ name, size }) => [name, size])).toEqual([
+    // A slash in a subject is not a folder.
+    ["RE: 12-03 call.msg", REWRITTEN_MESSAGE_SIZE],
+    ["Sized reply.msg", 4321],
+    ["photo.jpg", 19],
+    ["Missing.docx", 0],
+  ])
+  const directory = matter()
+  const result = await ingestEmailDocument(directory, "Attachments.msg", msg)
+  expect(result.attachments.map((entry) => [entry.name, entry.status, entry.document])).toEqual([
+    ["RE: 12/03 call", "indexed", "RE: 12-03 call.msg"],
+    ["Sized reply", "indexed", "Sized reply.msg"],
+    ["photo.jpg", "unsupported", undefined],
+    ["Missing.docx", "failed", undefined],
+  ])
+  // Listed as failed, not as a format it can now read: a restart leaves it.
+  expect(await reingestLegacyEmails(directory)).toBe(0)
+}, 120_000)
+
+test("each email is parsed once, and a restart that takes one in again keeps its parent", async () => {
+  // An Outlook email with an attached Outlook message: one parse each.
+  const parses = spyOn(msgReader, "parseMsg")
+  try {
+    const inner = outlookMessage({ subject: "Synthetic inner", from: SENDER, body: "Inner body." })
+    await ingestEmailDocument(matter(), "Outer.msg", msgFile(outlookMessage({ subject: "Synthetic outer", from: SENDER, body: "Outer body.", attachments: [messageAttachment("Synthetic inner", inner)] })))
+    expect(parses).toHaveBeenCalledTimes(2)
+  } finally {
+    parses.mockRestore()
+  }
+
+  // An .eml forwarded inside an .eml carries an Outlook message, recorded by a
+  // build that did not read .msg: a restart takes the inner .eml in again.
+  const directory = matter()
+  const mime = (lines: string[]) => Buffer.from(lines.join("\r\n"))
+  const outlook = msgFile(outlookMessage({ subject: "Synthetic outlook", from: SENDER, body: "Outlook body." }))
+  const child = mime([
+    "From: child@example.test", "Subject: Synthetic child", "MIME-Version: 1.0", 'Content-Type: multipart/mixed; boundary="C"', "",
+    "--C", "Content-Type: text/plain", "", "Child body.",
+    "--C", 'Content-Type: application/vnd.ms-outlook; name="Outlook.msg"', 'Content-Disposition: attachment; filename="Outlook.msg"',
+    "Content-Transfer-Encoding: base64", "", outlook.toString("base64"), "--C--", "",
+  ])
+  const outer = mime([
+    "From: outer@example.test", "Subject: Synthetic outer", "MIME-Version: 1.0", 'Content-Type: multipart/mixed; boundary="O"', "",
+    "--O", "Content-Type: text/plain", "", "Outer body.",
+    "--O", "Content-Type: message/rfc822", 'Content-Disposition: attachment; filename="Child.eml"', "", child.toString("latin1"), "--O--", "",
+  ])
+  await ingestEmailDocument(directory, "Outer.eml", outer)
+  await deleteMatterDocument(directory, "Outlook.msg")
+  const db = openDb(directory)
+  const childRecord = JSON.parse(registry(directory).find((row) => row.name === "Child.eml")!.attachments!)
+  childRecord.attachments = childRecord.attachments.map(({ name, type, size }: { name: string; type: string; size: number }) => ({ name, type, size, outcome: "unsupported" }))
+  db.query("UPDATE documents SET attachments = ? WHERE name = 'Child.eml'").run(JSON.stringify(childRecord))
+  db.close()
+
+  expect(await reingestLegacyEmails(directory)).toBe(1)
+  const parents = Object.fromEntries(registry(directory).map((row) => [row.name, row.parent_name]))
+  expect(parents).toEqual({ "Outer.eml": null, "Child.eml": "Outer.eml", "Outlook.msg": "Child.eml" })
+  const check = openDb(directory)
+  try {
+    expect(emailRemovalPlan(check, "Outer.eml").attachments.sort()).toEqual(["Child.eml", "Outlook.msg"])
+  } finally {
+    check.close()
+  }
+  expect(await reingestLegacyEmails(directory)).toBe(0)
 }, 120_000)
 
 // The compound file's own layout (MS-CFB 2.2, 2.6): 512-byte sectors after the

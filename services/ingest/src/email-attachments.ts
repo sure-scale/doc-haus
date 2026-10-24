@@ -1,14 +1,21 @@
 import type { Database } from "bun:sqlite"
 import { existsSync, readFileSync } from "node:fs"
-import { EMAIL_ATTACHMENT_EXTENSIONS, extension, parseEmail, safeAttachmentName } from "../../../dochaus/lib/email"
-import { parseMsg } from "../../../dochaus/lib/msg"
+import { EMAIL_ATTACHMENT_EXTENSIONS, extension, safeAttachmentName, type ParsedEmail } from "../../../dochaus/lib/email"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
 import { draftingTraceReference } from "../../../dochaus/lib/drafting-trace-identity"
 import { openDb } from "./db"
 import { deleteMatterDocument, DocumentMutationConflictError, RegisteredDocumentNotFoundError } from "./document-delete"
 import { documentRegistryIdentity } from "./document-identity"
 import { readExtractionQuality } from "./extraction-quality"
-import { extractSourceText, ingestDocument, sourceTextRevision, type ExistingSourceChoice, type ExtractedSourceText } from "./ingest"
+import {
+  extractedEmailText,
+  extractSourceText,
+  ingestDocument,
+  parseEmailFile,
+  sourceTextRevision,
+  type ExistingSourceChoice,
+  type ExtractedSourceText,
+} from "./ingest"
 import { detectInjection } from "./sanitize"
 import { archiveBudget, ingestZipDocument, ZipTooLargeError, type ArchiveBudget } from "./zip-archive"
 
@@ -48,7 +55,10 @@ export function isEmailName(name: string) {
 
 // One part of a container as this flow takes it: an email's attachment or a zip
 // file's entry. `refused`: a part that is listed but never read (a
-// password-protected zip entry, or one whose path climbs out of the archive).
+// password-protected zip entry, one whose path climbs out of the archive, or an
+// Outlook attachment whose content could not be read out of the message).
+// `note`: why an Outlook attachment is not read whatever its name (a link, an
+// OLE object).
 export type ContainerPart = {
   filename: string
   name: string
@@ -56,7 +66,8 @@ export type ContainerPart = {
   size: number
   supported: boolean
   tnef?: boolean
-  refused?: "encrypted" | "unsafe_path"
+  note?: "linked" | "ole"
+  refused?: "encrypted" | "unsafe_path" | "failed"
   content: () => Uint8Array
 }
 
@@ -91,8 +102,9 @@ export type AttachmentEntry = {
   document?: string
   // `document`'s rev when it was linked, to tell later whether the lawyer changed it.
   rev?: string
-  // Outlook's winmail.dat can carry attachments that are not unpacked.
-  note?: "may-contain-attachments"
+  // Outlook's winmail.dat can carry attachments that are not unpacked; an
+  // Outlook attachment held only as a link, or an OLE object, is never read.
+  note?: "may-contain-attachments" | "linked" | "ole"
   // The stated name matched the prompt-injection scan.
   flagged?: true
 }
@@ -118,14 +130,27 @@ export type ContainerOptions = {
   // What zip files may still expand to in this upload, shared by every zip in
   // it (zip-archive.ts).
   budget?: ArchiveBudget
+  // The container's text, when the caller already extracted it.
+  extracted?: ExtractedSourceText
 }
 
 // Ingest an uploaded email (.eml or .msg) and then its attachments. A .msg that
 // is not a readable Outlook email throws MsgFormatError before anything is added.
-export async function ingestEmailDocument(matterDir: string, fileName: string, buffer: Buffer, options: ContainerOptions = {}) {
-  const parsed = await (fileName.toLowerCase().endsWith(".msg") ? parseMsg(buffer) : parseEmail(buffer))
+// `parsed`: the email as the caller already parsed it; one parse serves its
+// text and its attachments.
+export async function ingestEmailDocument(
+  matterDir: string,
+  fileName: string,
+  buffer: Buffer,
+  options: ContainerOptions & { parsed?: ParsedEmail } = {},
+) {
+  const { parsed: given, ...container } = options
+  const parsed = given ?? await parseEmailFile(fileName, buffer)
   const parts = parsed.attachments.map(({ content, ...attachment }): ContainerPart => ({ ...attachment, content: () => content }))
-  return ingestContainerDocument(matterDir, fileName, buffer, parts, parsed.embedded, options)
+  return ingestContainerDocument(matterDir, fileName, buffer, parts, parsed.embedded, {
+    ...container,
+    extracted: container.extracted ?? extractedEmailText(parsed),
+  })
 }
 
 // Ingest a container, then each of its parts that a matter document can take.
@@ -140,7 +165,7 @@ export async function ingestContainerDocument(
   const depth = options.depth ?? 0
   // One budget for every zip in this upload, however deep.
   const budget = options.budget ?? archiveBudget()
-  const extraction = await extractSourceText(fileName, buffer)
+  const extraction = options.extracted ?? await extractSourceText(fileName, buffer)
   const extracted = { ...extraction, findings: [...extraction.findings, ...(options.findings ?? [])] }
   // Read before this email's own record is replaced, so an upload of the same
   // email again finds the documents its attachments went into.
@@ -187,6 +212,7 @@ function initialEntry(attachment: ContainerPart, depth: number): AttachmentEntry
           : "pending"),
   }
   if (attachment.tnef) entry.note = "may-contain-attachments"
+  else if (attachment.note) entry.note = attachment.note
   if (detectInjection(attachment.filename).length) entry.flagged = true
   return entry
 }
@@ -209,15 +235,24 @@ async function ingestAttachment(
   if (before) return before
   try {
     const bytes = Buffer.from(attachment.content())
+    const lower = attachment.name.toLowerCase()
+    // An attached email is parsed once, for its text and its own attachments.
+    const email = isEmailName(lower) ? await parseEmailFile(lower, bytes) : undefined
     // An attachment passes the same extraction quality gate as an upload: one
     // with no readable text is kept as a document, with nothing indexed.
-    const extraction = await extractSourceText(attachment.name, bytes)
+    const extraction = email ? extractedEmailText(email) : await extractSourceText(attachment.name, bytes)
     const same = sameSourceByText(matterDir, extraction)
     if (same) return { outcome: "indexed", ...same }
-    const container: ContainerOptions = { existing: "keep-both", parentName: emailName, depth: depth + 1, findings: nameFindings, budget }
-    const lower = attachment.name.toLowerCase()
-    const child = isEmailName(lower)
-      ? await ingestEmailDocument(matterDir, attachment.name, bytes, container)
+    const container: ContainerOptions = {
+      existing: "keep-both",
+      parentName: emailName,
+      depth: depth + 1,
+      findings: nameFindings,
+      budget,
+      extracted: extraction,
+    }
+    const child = email
+      ? await ingestEmailDocument(matterDir, attachment.name, bytes, { ...container, parsed: email })
       : lower.endsWith(".zip")
         ? await ingestZipDocument(matterDir, attachment.name, bytes, container)
         : await ingestDocument(matterDir, attachment.name, bytes, {
@@ -440,24 +475,38 @@ export async function removeMatterDocument(matterDir: string, name: string, keep
 // entries (an upload stopped before it recorded them); its attachments already
 // in the matter are reused, not copied. So is an email with an attachment once
 // listed as not supported that a matter document can now take (a zip file, an
-// Outlook email); an Outlook OLE object or link keeps a document's name but is
-// still not read, so the email is parsed to confirm. A zip file left with
-// pending entries is finished the same way. Runs in the background after
-// startup; one that fails is logged and retried at the next start.
+// Outlook email); an Outlook link or OLE object keeps a document's name but is
+// noted as never read. A zip file left with pending entries is finished the
+// same way. An attached email or zip keeps the container it came from and its
+// depth below the upload. Runs in the background after startup; one that fails
+// is logged and retried at the next start.
 export async function reingestLegacyEmails(matterDir: string) {
   const db = openDb(matterDir)
   const legacy = (() => {
     try {
       return db
-        .query("SELECT name, doc_path, attachments FROM documents WHERE role = 'source' AND (lower(name) LIKE '%.eml' OR lower(name) LIKE '%.msg' OR lower(name) LIKE '%.zip')")
-        .all() as { name: string; doc_path: string; attachments: string | null }[]
+        .query("SELECT name, doc_path, parent_name, attachments FROM documents WHERE role = 'source' AND (lower(name) LIKE '%.eml' OR lower(name) LIKE '%.msg' OR lower(name) LIKE '%.zip')")
+        .all() as { name: string; doc_path: string; parent_name: string | null; attachments: string | null }[]
     } finally {
       db.close()
     }
   })()
   const nowSupported = (entry: AttachmentEntry, index: number) =>
     entry.outcome === "unsupported" &&
+    entry.note !== "linked" &&
+    entry.note !== "ole" &&
     (EMAIL_ATTACHMENT_EXTENSIONS as readonly string[]).includes(extension(safeAttachmentName(entry.name, entry.type, index + 1)))
+  // A container's parent is a container too.
+  const parents = new Map(legacy.map((row) => [row.name, row.parent_name]))
+  const depthOf = (name: string) => {
+    const seen = new Set([name])
+    let depth = 0
+    for (let parent = parents.get(name); parent && !seen.has(parent); parent = parents.get(parent)) {
+      seen.add(parent)
+      depth++
+    }
+    return depth
+  }
   let count = 0
   for (const email of legacy) {
     const record = readRecord(email.attachments)
@@ -467,20 +516,12 @@ export async function reingestLegacyEmails(matterDir: string) {
     if (!existsSync(email.doc_path)) continue
     try {
       const bytes = readFileSync(email.doc_path)
-      if (record && !pending && !(await readsMoreNow(email.name, bytes, record))) continue
       const ingest = zip ? ingestZipDocument : ingestEmailDocument
-      await ingest(matterDir, email.name, bytes, { existing: "replace" })
+      await ingest(matterDir, email.name, bytes, { existing: "replace", parentName: email.parent_name, depth: depthOf(email.name) })
       count++
     } catch (error) {
       console.error("email re-ingest failed", { matter_ref: draftingTraceReference(matterDir), ...diagnosticErrorMetadata(error) })
     }
   }
   return count
-}
-
-// Whether the email's parser now reads an attachment its record lists as not
-// supported. Entries follow the parsed attachments in order.
-async function readsMoreNow(name: string, bytes: Buffer, record: EmailAttachmentsRecord) {
-  const parsed = await (name.toLowerCase().endsWith(".msg") ? parseMsg(bytes) : parseEmail(bytes))
-  return record.attachments.some((entry, index) => entry.outcome === "unsupported" && parsed.attachments[index]?.supported === true)
 }

@@ -14,7 +14,7 @@ import { chunkText } from "../../../dochaus/lib/chunk-text"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
 import { markTrackedChanges } from "../../../dochaus/lib/docx-tracked-text"
 import { draftingTraceReference } from "../../../dochaus/lib/drafting-trace-identity"
-import { parseEmail } from "../../../dochaus/lib/email"
+import { parseEmail, type ParsedEmail } from "../../../dochaus/lib/email"
 import { parseMsg } from "../../../dochaus/lib/msg"
 import { zipToText } from "../../../dochaus/lib/zip"
 import { commitDocumentWriteAsync } from "./atomic-document-write"
@@ -373,9 +373,28 @@ export type ExtractedSourceText = { text: string; findings: InjectionFinding[]; 
 // text's quality, as ingest indexes it.
 export async function extractSourceText(fileName: string, buffer: Buffer): Promise<ExtractedSourceText> {
   const raw = await extractRawText(fileName, buffer)
-  const { text, findings } = normalizeExtractedText(raw.text)
-  const facts = raw.facts.format === "email" ? { ...raw.facts, body: normalizeExtractedText(raw.facts.body).text } : raw.facts
+  return extractedText(raw.text, raw.facts)
+}
+
+// The same for an email already parsed, so one parse serves its text and its
+// attachments.
+export function extractedEmailText(email: ParsedEmail): ExtractedSourceText {
+  return extractedText(email.text, emailFacts(email))
+}
+
+// An email (.eml or .msg) parsed by its format's one extractor.
+export function parseEmailFile(fileName: string, buffer: Buffer) {
+  return fileName.toLowerCase().endsWith(".msg") ? parseMsg(buffer) : parseEmail(buffer)
+}
+
+function extractedText(rawText: string, rawFacts: ExtractionFacts): ExtractedSourceText {
+  const { text, findings } = normalizeExtractedText(rawText)
+  const facts = rawFacts.format === "email" ? { ...rawFacts, body: normalizeExtractedText(rawFacts.body).text } : rawFacts
   return { text, findings, quality: assessExtraction(text, facts) }
+}
+
+function emailFacts(email: ParsedEmail): ExtractionFacts {
+  return { format: "email", body: email.body, attachments: email.attachments.length, ...(email.bodyUnreadable ? { bodyUnreadable: true as const } : {}) }
 }
 
 // Pull plain text from a source document. DOCX goes through mammoth, with pending
@@ -395,8 +414,8 @@ async function extractRawText(fileName: string, buffer: Buffer): Promise<{ text:
     return { text, facts: { format: "pdf", pages } }
   }
   if (lower.endsWith(".eml") || lower.endsWith(".msg")) {
-    const email = await (lower.endsWith(".msg") ? parseMsg(buffer) : parseEmail(buffer))
-    return { text: email.text, facts: { format: "email", body: email.body, attachments: email.attachments.length } }
+    const email = await parseEmailFile(lower, buffer)
+    return { text: email.text, facts: emailFacts(email) }
   }
   if (lower.endsWith(".xlsx")) return xlsxToText(buffer)
   if (lower.endsWith(".zip")) return { text: zipToText(buffer), facts: { format: "archive" } }

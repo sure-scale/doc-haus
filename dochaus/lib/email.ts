@@ -53,6 +53,11 @@ export type EmailAttachment = {
   supported: boolean
   // Outlook's TNEF wrapper, which can carry attachments of its own.
   tnef: boolean
+  // An Outlook attachment held only as a link, or an OLE object: listed, never
+  // read, whatever its name.
+  note?: "linked" | "ole"
+  // An Outlook attachment whose content could not be read out of the message.
+  refused?: "failed"
 }
 
 export type ParsedEmail = {
@@ -64,6 +69,9 @@ export type ParsedEmail = {
   attachments: EmailAttachment[]
   // Images embedded in the HTML body (logos, signatures): counted, not listed.
   embedded: number
+  // The email has a body that could not be read (an Outlook RTF body that is
+  // damaged or past the reading limits); `body` is then "".
+  bodyUnreadable?: true
 }
 
 export type EmailAddress = { name?: string; address?: string }

@@ -6,29 +6,40 @@ import { TypeEnum } from "@kenjiuno/msgreader/lib/Reader"
 // (@kenjiuno/msgreader). Every value comes from the test that builds it: no
 // real email, person or organization. Nothing is read from outside the test.
 
-// MAPI property tags (MS-OXPROPS): the id in the high word, the type in the low.
+// MAPI property tags (MS-OXPROPS): the id in the high word, the type in the low
+// (001F a Unicode string, 001E an ANSI one, 0102 binary, 0003 an integer).
 export const TAG = {
   messageClass: 0x001a001f,
   subject: 0x0037001f,
   clientSubmitTime: 0x00390040,
+  sentRepresentingName: 0x0042001f,
+  sentRepresentingAddressType: 0x0064001f,
+  sentRepresentingEmail: 0x0065001f,
+  transportHeaders: 0x007d001f,
+  messageDeliveryTime: 0x0e060040,
+  messageFlags: 0x0e070003,
   senderName: 0x0c1a001f,
   senderAddressType: 0x0c1e001f,
   senderEmail: 0x0c1f001f,
   senderSmtpAddress: 0x5d01001f,
+  sentRepresentingSmtpAddress: 0x5d02001f,
   body: 0x1000001f,
   rtfCompressed: 0x10090102,
   html: 0x10130102,
   internetCodepage: 0x3fde0003,
+  messageCodepage: 0x3ffd0003,
   recipientType: 0x0c150003,
   displayName: 0x3001001f,
   addressType: 0x3002001f,
   emailAddress: 0x3003001f,
   smtpAddress: 0x39fe001f,
+  attachSize: 0x0e200003,
   attachMethod: 0x37050003,
   attachDataBinary: 0x37010102,
   attachLongFilename: 0x3707001f,
   attachMimeTag: 0x370e001f,
   attachContentId: 0x3712001f,
+  attachFlags: 0x37140003,
   attachmentHidden: 0x7ffe000b,
 } as const
 
@@ -119,6 +130,8 @@ function writeStorage(entries: Entry[], parent: number, node: MsgNode, kind: "me
   for (const [tag, value] of node.props) {
     const type = tag & 0xffff
     if (type === 0x001f) stream(`__substg1.0_${hex(tag)}`, new Uint8Array(Buffer.from(String(value), "utf16le")))
+    // An ANSI string: the bytes the test encoded in the message's codepage.
+    else if (type === 0x001e) stream(`__substg1.0_${hex(tag)}`, value instanceof Uint8Array ? value : new Uint8Array(Buffer.from(String(value), "latin1")))
     else if (type === 0x0102) stream(`__substg1.0_${hex(tag)}`, value as Uint8Array)
     else fixed.push(fixedProperty(tag, value))
   }
