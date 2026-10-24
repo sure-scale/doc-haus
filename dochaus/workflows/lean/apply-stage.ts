@@ -12,6 +12,7 @@ import { consistencyItems } from "./consistency"
 import { exportAppliedChangeComments } from "./review-evidence"
 import { draftingAttribution, withGeneratedDocxAttribution } from "../../lib/docx-attribution"
 import { numberDocxClauses } from "../../lib/docx-numbering"
+import { linkCrossReferences } from "../../lib/docx-crossrefs"
 
 // The apply step of one document. Applies the document's change list to its
 // drafted body, always from body.docx and never onto an earlier apply output,
@@ -45,9 +46,13 @@ export async function runApply(directory: string, state: LeanState, document: Do
   // A changed paragraph whose text now carries a clause number the body's list
   // supplies is numbered by the list, as at drafting. The later parts of a
   // split paragraph leave its list unless they open with a deeper number of it.
+  // Cross-references then show their targets' new numbers; one whose target
+  // the changes removed is text again, checked below like any other. A
+  // reference the changes wrote stays text: it is checked, not linked.
   const later = new Set(settled.result.applied.flatMap(row => row.result_pids?.slice(1) ?? []))
   const split = (paragraph: Element) => paragraphPointers(paragraph).some(pointer => later.has(pointer.pid))
-  writeLeanBytes(directory, `${document}/body-applied.docx`, withGeneratedDocxAttribution(numberDocxClauses(readFileSync(out), { house: false, split }), identity))
+  const renumbered = numberDocxClauses(readFileSync(out), { house: false, split })
+  writeLeanBytes(directory, `${document}/body-applied.docx`, withGeneratedDocxAttribution(await linkCrossReferences(renumbered, { refreshOnly: true }), identity))
   const rows = await paragraphRows(out)
   writeLeanText(directory, `${document}/paragraphs-applied.json`, `${JSON.stringify(rows, null, 2)}\n`)
   const annotated = await documentRedline(directory, document, readFileSync(out), changes, settled.result.applied, identity)

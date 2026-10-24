@@ -21,6 +21,7 @@ import path from "node:path"
 import { ensureParagraphRows, paragraphSha256 } from "../../lib/drafting-amendment"
 import { renderMarkdownToDocx } from "../../lib/render"
 import { clauseNumbering, numberDocxClauses } from "../../lib/docx-numbering"
+import { linkCrossReferences } from "../../lib/docx-crossrefs"
 import { withTemplateStyleIds } from "../../lib/template-seed"
 import { presentDraft, type DraftPresentation } from "./draft-presentation"
 import { checkChanges, parseJsonObject } from "./change-checks"
@@ -362,13 +363,17 @@ export async function acceptStageReply(directory: string, step: StepID, reply: s
     // Clause numbering, and a template's own style ids, follow presentation,
     // which matches and reshapes the headings by their literal text and style.
     // A revision of an original that types its clause numbers keeps them typed.
+    // Numbered references to the document's own clauses become live
+    // cross-references; one placed after another pack document's title is that
+    // document's.
     const styleTemplate = plannedStyleTemplate(directory, planned)
+    const titles = (readLeanPlan(directory)?.documents ?? []).filter(row => row.id !== document).map(row => row.title)
     const typed = planned?.mode === "revise" && styleTemplate !== undefined && !clauseNumbering(styleTemplate).paragraphs
     const rendered = await renderMarkdownToDocx(options.presentation?.source ?? reply, undefined, furniture, { numbering: false, styleTemplate })
       .then(result => ({ ...(options.presentation ? presentDraft(result.bytes, options.presentation.parts, options.presentation.title !== false, result.headingSpacing) : { bytes: result.bytes, attribution: undefined }), templated: result.templated }))
-      .then(({ templated, ...result }) => {
+      .then(async ({ templated, ...result }) => {
         const styled = templated ? withTemplateStyleIds(result.bytes) : result.bytes
-        return { ...result, bytes: typed ? styled : numberDocxClauses(styled) }
+        return { ...result, bytes: typed ? styled : await linkCrossReferences(numberDocxClauses(styled), { title: planned?.title, form: planned?.form, titles }) }
       })
       .then(result => result, (error: unknown) => ({ error }))
     if ("error" in rendered)
@@ -451,7 +456,7 @@ export function notesFurniture(directory: string) {
  * heading numbering a combined delivery can carry beside the document's own;
  * a firm template's list styles could not be. */
 export async function renderNotes(directory: string, notes: string, previous?: Uint8Array) {
-  return (await renderMarkdownToDocx(notes, previous, notesFurniture(directory), { styleTemplate: false })).bytes
+  return (await renderMarkdownToDocx(notes, previous, notesFurniture(directory), { styleTemplate: false, crossReferences: false })).bytes
 }
 
 /** Gives every body paragraph a pointer (rewriting the docx when one is added)

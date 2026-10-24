@@ -83,9 +83,14 @@ export function consistencyFindings(input: { title: string; form?: string; final
   // Advice and letters point at clauses of the documents they discuss and name
   // things without defining them; only references to a named pack document,
   // and definitions they do make, are theirs to check.
-  const advisory = input.form === "advice" || input.form === "letter" || input.form === "advice letter"
+  const advisory = advisoryForm(input.form)
   const findings = [...referenceFindings(input.title, final, baselines, pack, advisory), ...termFindings(input.title, final, baselines, pack, advisory)]
   return [...new Map(findings.map(finding => [`${finding.pid ?? ""}\0${finding.detail}`, finding])).values()]
+}
+
+/** Advice and letters: they cite the clauses of the documents they discuss. */
+export function advisoryForm(form: string | undefined) {
+  return form === "advice" || form === "letter" || form === "advice letter"
 }
 
 function sourceLines(text: string): Para[] {
@@ -182,7 +187,17 @@ function outline(paras: Para[]): Outline {
 }
 
 function visible(text: string) {
-  return text.replace(/\[[^\]]*\]/g, match => " ".repeat(match.length)).trim()
+  return blanked(text).trim()
+}
+
+function blanked(text: string) {
+  return text.replace(/\[[^\]]*\]/g, match => " ".repeat(match.length))
+}
+
+/** Where a paragraph's visible text starts in its text. */
+function leading(text: string) {
+  const blank = blanked(text)
+  return blank.length - blank.trimStart().length
 }
 
 function top(label: string) {
@@ -227,7 +242,8 @@ function key(text: string) {
 
 // --------------------------------------------------------------- references
 
-type Reference = { kind: Kind; labels: string[]; at: number; index: number; target?: string }
+/** `spans` holds where each label starts in the paragraph's visible text. */
+type Reference = { kind: Kind; labels: string[]; spans: number[]; at: number; index: number; target?: string }
 
 const REFERENCE_WORD = /\b(clauses?|sub-?clauses?|sections?|articles?|schedules?|annex(?:es)?|appendix|appendices|exhibits?|attachments?)\s+/gi
 const CLAUSE_NUMBER = /^(\d{1,3}(?:\.\d{1,3}){0,3})(?![\d])((?:\s?\([a-zA-Z0-9]{1,5}\))*)/
@@ -281,6 +297,7 @@ function references(document: Outline, title: string, titles: string[]): Referen
     const first = number.exec(rest)
     if (!first) return []
     const labels = [CLAUSE_KINDS.has(kind) ? first[1]! : first[1]!.toUpperCase()]
+    const spans = [match.index + match[0].length]
     rest = rest.slice(first[0].length)
     const bare = rest
     rest = caption(rest)
@@ -293,10 +310,11 @@ function references(document: Outline, title: string, titles: string[]): Referen
       const word = /^\s+([a-z]+)\b/.exec(after)?.[1]
       if (word && !LINKING_WORDS.has(word)) break
       labels.push(CLAUSE_KINDS.has(kind) ? next[1]! : next[1]!.toUpperCase())
+      spans.push(text.length - rest.length + link[0].length)
       rest = after
     }
     const before = text.slice(Math.max(0, match.index - 60), match.index)
-    const reference: Reference = { kind, labels, at, index: match.index }
+    const reference: Reference = { kind, labels, spans, at, index: match.index }
     if (AUTHORITY_BEFORE.test(before) || (labels.length === 1 && ACRONYM_AFTER.test(bare))) return [{ ...reference, external: true }]
     const lead = key(before).replace(/\s+(?:under|in|pursuant to|at|see)$/, "")
     const preceding = titles.find(name => words(key(name)) >= 2 && (lead === key(name) || lead.endsWith(` ${key(name)}`)))
@@ -308,8 +326,11 @@ function references(document: Outline, title: string, titles: string[]): Referen
   // A number cited as statute's, or as another instrument's, is not this
   // document's wherever it recurs.
   found.forEach(row => row.external && row.labels.forEach(label => external.add(`${row.kind} ${label}`)))
-  return found.filter(row => row.target || !row.external).map(({ external: _external, ...row }) => row.target ? row : { ...row, labels: row.labels.filter(label => !external.has(`${row.kind} ${label}`)) })
-    .filter(row => row.labels.length)
+  return found.filter(row => row.target || !row.external).map(({ external: _external, ...row }) => {
+    if (row.target) return row
+    const kept = row.labels.flatMap((label, n) => external.has(`${row.kind} ${label}`) ? [] : [n])
+    return { ...row, labels: kept.map(n => row.labels[n]!), spans: kept.map(n => row.spans[n]!) }
+  }).filter(row => row.labels.length)
 }
 
 type State = "present" | "missing" | "unknown"
@@ -351,12 +372,47 @@ function moved(before: Outline, after: Outline, label: string): string | undefin
   return guess && after.printed.has(guess) ? guess : undefined
 }
 
-function referenceFindings(title: string, final: Outline, baselines: Outline[], pack: (PackDocument & { outline: Outline })[], advisory: boolean): ConsistencyFinding[] {
-  const refs = references(final, title, pack.map(row => row.title))
+/** The words that cite this document's own clauses: "clause" always, and
+ * "section" or "article" where the document is written with them or cites no
+ * clause as "clause". */
+function clauseKinds(final: Outline, refs: Reference[]) {
   const kinds = new Set<Kind>(["clause"])
   for (const kind of ["section", "article"] as const)
     if (final.keywords.has(kind) || final.texts.some(text => new RegExp(`\\b(?:this|these) ${kind}s?\\b`, "i").test(text)) || !refs.some(row => row.kind === "clause"))
       kinds.add(kind)
+  return kinds
+}
+
+/** Each reference in a document to one of its own clauses (printed once) or
+ * attachments, where the text settles which paragraph it points at: the
+ * paragraph it is in (`at`) and where its number is in that paragraph's text,
+ * and the paragraph it points at (`target`), with where an attachment's number
+ * is in its heading. Advice and letters cite the clauses of the documents they
+ * discuss, so they have none. */
+export function resolvedReferences(title: string, paras: Para[], titles: string[] = [], form?: string): { kind: Kind; label: string; at: number; start: number; length: number; target: number; number?: number }[] {
+  if (advisoryForm(form)) return []
+  const document = outline(paras)
+  const refs = references(document, title, titles)
+  const kinds = clauseKinds(document, refs)
+  const twice = new Set(document.duplicates.map(row => row.label))
+  const lead = (at: number) => leading(paras[at]!.text)
+  return refs.flatMap(ref => ref.target ? [] : ref.labels.flatMap((label, n) => {
+    const start = lead(ref.at) + ref.spans[n]!
+    if (CLAUSE_KINDS.has(ref.kind)) {
+      const target = document.printed.get(label)
+      if (!kinds.has(ref.kind) || twice.has(label) || target === undefined || clauseState(document, label) !== "present") return []
+      return [{ kind: ref.kind, label, at: ref.at, start, length: label.length, target }]
+    }
+    const target = document.attachments.get(`${ref.kind} ${label}`)
+    if (target === undefined) return []
+    const number = lead(target) + /^\S+\s+/.exec(document.texts[target]!)![0].length
+    return [{ kind: ref.kind, label, at: ref.at, start, length: label.length, target, number }]
+  }))
+}
+
+function referenceFindings(title: string, final: Outline, baselines: Outline[], pack: (PackDocument & { outline: Outline })[], advisory: boolean): ConsistencyFinding[] {
+  const refs = references(final, title, pack.map(row => row.title))
+  const kinds = clauseKinds(final, refs)
   // A number printed twice matters where something refers to it, unless one of
   // the two is a heading and the other the text under it ("6.2 Seller's
   // obligations" over "6.2 At Completion …").

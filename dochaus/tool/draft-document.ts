@@ -7,6 +7,7 @@ import { renumberHeadings, splitBlocks } from "../lib/markdown"
 import { lintRenderedDraftMarkdown, renderMarkdownToDocx, uploadDeliverable } from "../lib/render"
 import { withGeneratedDocxAttribution } from "../lib/docx-attribution"
 import { numberDocxClauses } from "../lib/docx-numbering"
+import { linkCrossReferences } from "../lib/docx-crossrefs"
 import { withTemplateStyleIds } from "../lib/template-seed"
 import { normalizePreferences } from "../lib/drafting-preferences"
 import { pageFurniture } from "../lib/page-furniture"
@@ -209,7 +210,8 @@ export default tool({
     // The template's literal clause numbers become its own (or the house)
     // Word list numbering once the text is final. Headings the engine inserts
     // name built-in style ids, which a localized template keeps under its own.
-    const bytes = withGeneratedDocxAttribution(withParagraphPointers(numberDocxClauses(withTemplateStyleIds(session.save()))))
+    // References to its own clauses then become live cross-references.
+    const bytes = withGeneratedDocxAttribution(withParagraphPointers(await linkCrossReferences(numberDocxClauses(withTemplateStyleIds(session.save())))))
     session.close()
 
     // Upload through ingest rather than writing the file directly: its

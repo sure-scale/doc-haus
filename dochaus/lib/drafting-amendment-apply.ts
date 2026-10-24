@@ -2,7 +2,8 @@ import { readFile } from "node:fs/promises"
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { z } from "zod"
-import { changedDocxSpan, openRevision } from "./docx-amendments"
+import { changedDocxSpan, changedRange, openRevision } from "./docx-amendments"
+import { paragraphFields, refInstruction, runText, unlink } from "./docx-crossrefs"
 import { amendmentSchema, amendmentParagraphs, amendmentText, ensureParagraphPointers, normalizeParagraphText, owningParagraph, paragraphPointers, paragraphSha256, type Amendment } from "./drafting-amendment"
 import { writeDurableBytes } from "./durable-json"
 import { FIELD_HIGHLIGHT_FILL, OPEN_ITEM_HIGHLIGHT_FILL, hasOpenItemMarker } from "./open-items"
@@ -39,11 +40,13 @@ const HIGHLIGHT_FILLS = new Set([OPEN_ITEM_HIGHLIGHT_FILL, FIELD_HIGHLIGHT_FILL]
 // never merged. A missing or duplicated pointer is target_deleted; there is no
 // text fallback. Edits touch only the changed words, so run formatting outside
 // them is kept; a paragraph the engine cannot write or that reads back
-// differently is left as it was (apply_failed). outPath is written atomically.
+// differently is left as it was (apply_failed). A live cross-reference keeps
+// its field unless the amendment rewrites its number (unlinkEditedReferences).
+// outPath is written atomically.
 export async function applyAmendments(input: { docxPath: string; outPath: string; amendments: Amendment[] }) {
   const amendments = requireAmendments(input.amendments)
-  const source = new Uint8Array(await readFile(input.docxPath))
-  const opened = await openRevision(source)
+  let source = new Uint8Array(await readFile(input.docxPath))
+  let opened = await openRevision(source)
   try {
     const located = locatePointers(opened)
     const outcomes = new Map<string, Outcome>()
@@ -63,6 +66,13 @@ export async function applyAmendments(input: { docxPath: string; outPath: string
       const final = settleParagraph(initial, rows, outcomes)
       return final ? [{ ordinal, initial, final, rows }] : []
     })
+    const unlinked = unlinkEditedReferences(opened, edits)
+    if (unlinked) {
+      const reopened = await openRevision(unlinked)
+      opened.session.close()
+      opened = reopened
+      source = unlinked
+    }
     const written = edits.length ? await writeVerified(source, opened, edits.toSorted((a, b) => a.ordinal - b.ordinal)) : { bytes: source, failed: [] }
     for (const failure of written.failed) for (const row of failure.edit.rows) {
       const outcome = outcomes.get(row.id)!
@@ -208,6 +218,51 @@ function writeParagraph(opened: Opened, edit: Edit, live: (anchor: string) => Re
     }
     return true
   } catch { return false }
+}
+
+// A REF field whose number an edit rewrites, one in a paragraph split or
+// deleted, and one whose bookmark a deletion removes become the text they
+// show, as before the edit; the cross-reference check then reads them like any
+// other reference. The text is unchanged, so the edits still apply. Undefined
+// when no field is unlinked.
+function unlinkEditedReferences(opened: Opened, edits: Edit[]) {
+  let changed = false
+  const removed = new Set<string>()
+  for (const edit of edits) {
+    const paragraph = opened.paragraphs[edit.ordinal]!
+    if (paragraph.part !== BODY) continue
+    const fields = paragraphFields(paragraph.node).filter(field => refInstruction(field))
+    const touched = edit.final.length === 1 && runText(paragraph.node) === edit.initial ? touchedRanges(edit.initial, edit.final[0]!) : undefined
+    for (const field of fields) if (!touched || touched.some(([start, end]) => start < field.to && field.from < end)) {
+      unlink(field)
+      changed = true
+    }
+    if (!edit.final.length) for (const mark of Array.from(paragraph.node.getElementsByTagNameNS(W, "bookmarkStart"))) removed.add(mark.getAttributeNS(W, "name") ?? "")
+  }
+  if (removed.size) for (const paragraph of opened.paragraphs) {
+    if (paragraph.part !== BODY) continue
+    for (const field of paragraphFields(paragraph.node)) if (removed.has(refInstruction(field)?.name ?? "\0")) {
+      unlink(field)
+      changed = true
+    }
+  }
+  return changed ? zipSync({ ...opened.parts, [BODY]: strToU8(new XMLSerializer().serializeToString(opened.documents[BODY]!)) }, { mtime: new Date(1980, 0, 1) }) : undefined
+}
+
+// Where in `from` each word-level hunk to `to` writes, as writeParagraph
+// writes them: [start, end) offsets of the original text.
+function touchedRanges(from: string, to: string) {
+  const ranges: [number, number][] = []
+  let current = from
+  let shift = 0
+  for (const text of hunkTexts(from, to)) {
+    const { offset, replaced, changed } = changedRange(current, text)
+    current = text
+    if (!replaced && !changed) continue
+    ranges.push([offset - shift, offset - shift + replaced.length])
+    shift += changed.length - replaced.length
+  }
+  return ranges
 }
 
 // Cardinality edits must not silently discard section breaks, fields, or ranges

@@ -192,9 +192,19 @@ async function writeEdits(opened: Opened, edits: ReturnType<typeof admitted>[]) 
 }
 
 export function changedDocxSpan(match: Match, replacement: string) {
+  const { offset, replaced, changed } = changedRange(match.text, replacement)
+  const formatting = match.fragments.find((fragment, index) => match.fragments.slice(0, index + 1)
+    .reduce((length, row) => length + row.text.length, 0) > offset)?.formatting ?? match.fragments.at(-1)?.formatting
+  return { match: { ...match, text: replaced, span: { start: match.span.start + offset, length: replaced.length } },
+    replacement: changed, formatting }
+}
+
+/** The part of `text` a replacement by `replacement` rewrites: from `offset`
+ * (UTF-16 units), `replaced` becomes `changed`. */
+export function changedRange(text: string, replacement: string) {
   // Native offsets count UTF-16 units, but trim whole code points so a shared
   // surrogate never becomes an unchanged half of a changed character.
-  const before = Array.from(match.text)
+  const before = Array.from(text)
   const after = Array.from(replacement)
   let first = 0
   let lastBefore = before.length
@@ -204,18 +214,15 @@ export function changedDocxSpan(match: Match, replacement: string) {
     lastBefore--
     lastAfter--
   }
-  const text = before.slice(first, lastBefore).join("")
+  const removed = before.slice(first, lastBefore).join("")
   const inserted = after.slice(first, lastAfter).join("")
   // Native replacement needs a nonempty span. A pure insertion retains one
   // adjacent code point inside the authenticated quote as its formatting anchor.
-  const anchor = !text && inserted ? Math.min(first, before.length - 1) : first
+  const anchor = !removed && inserted ? Math.min(first, before.length - 1) : first
   const offset = before.slice(0, anchor).join("").length
-  const replaced = !text && inserted ? before[anchor]! : text
-  const changed = !text && inserted ? first < before.length ? inserted + replaced : replaced + inserted : inserted
-  const formatting = match.fragments.find((fragment, index) => match.fragments.slice(0, index + 1)
-    .reduce((length, row) => length + row.text.length, 0) > offset)?.formatting ?? match.fragments.at(-1)?.formatting
-  return { match: { ...match, text: replaced, span: { start: match.span.start + offset, length: replaced.length } },
-    replacement: changed, formatting }
+  const replaced = !removed && inserted ? before[anchor]! : removed
+  const changed = !removed && inserted ? first < before.length ? inserted + replaced : replaced + inserted : inserted
+  return { offset, replaced, changed }
 }
 
 function targetHandle(source_sha256: string, ordinal: number, match: Match) {
