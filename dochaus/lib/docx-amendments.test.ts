@@ -340,3 +340,26 @@ test("the revision view shows each Word list number before its heading or paragr
   expect([last.label, last.text, last.headings.map(heading => heading.text)])
     .toEqual(["2.1", "The Customer shall pay within thirty days.", ["Supply Agreement", "2. Payment"]])
 })
+
+describe("live cross-references", () => {
+  // A numbered agreement whose clause references render as REF fields.
+  const AGREEMENT = ["# Services Agreement", "## 1. Definitions", "1.1 In this Agreement the terms in clause 2.1 and Schedule 1 apply.",
+    "## 2. Services", "2.1 The Supplier shall provide the Services.", "2.2 The Customer shall pay as set out in clause 2.1.",
+    "## Schedule 1 – Services", "The services listed here."].join("\n\n")
+  const refs = (bytes: Uint8Array) => [...strFromU8(unzipSync(bytes)["word/document.xml"]!).matchAll(/<w:instrText[^>]*>([^<]*)<\/w:instrText>[\s\S]*?<w:t[^>]*>([^<]*)<\/w:t>/g)]
+    .map(match => [match[1]!.replace(/_Ref\d+/, "_Ref#"), match[2]])
+
+  test("an edit beside a REF field keeps it live; an edit of its number leaves that number as text", async () => {
+    const source = (await renderMarkdownToDocx(AGREEMENT)).bytes
+    expect(refs(source)).toEqual([[" REF _Ref# \\r \\h ", "2.1"], [" REF _Ref# \\h ", "1"], [" REF _Ref# \\r \\h ", "2.1"]])
+    const revision = await createDocxRevision(source)
+    const handle = (start: string) => revision.paragraphs.find(row => row.text.startsWith(start))!.paragraph_handle
+    const output = await applyDocxParagraphEdits(source, [
+      { id: "beside", paragraph_handle: handle("In this Agreement"), occurrence: 0, before_quote: "the terms", replacement: "the defined terms" },
+      { id: "number", paragraph_handle: handle("The Customer"), occurrence: 0, before_quote: "clause 2.1", replacement: "clause 2.2" },
+    ])
+    expect((await createDocxRevision(output.bytes)).paragraphs.map(row => row.text)).toContain("In this Agreement the defined terms in clause 2.1 and Schedule 1 apply.")
+    expect((await createDocxRevision(output.bytes)).paragraphs.map(row => row.text)).toContain("The Customer shall pay as set out in clause 2.2.")
+    expect(refs(output.bytes)).toEqual([[" REF _Ref# \\r \\h ", "2.1"], [" REF _Ref# \\h ", "1"]])
+  })
+})

@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto"
-import { DOMParser } from "@xmldom/xmldom"
-import { strFromU8, unzipSync } from "fflate"
+import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
+import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { z } from "zod"
+import { paragraphFields, refInstruction, runText, unlink } from "./docx-fields"
 import { docxodus } from "./docxodus"
 import { shownText } from "./list-label"
 
@@ -140,10 +141,38 @@ function admitted(opened: Opened, binding: Binding) {
   if (/[\r\n\t]/.test(amendment.replacement)) throw new Error("unsupported_structural_replacement")
   if (!amendment.replacement && match.text === opened.paragraphs[ordinal].match.text)
     throw new Error("unsupported_empty_paragraph_replacement")
+  const change = changedDocxSpan(match, amendment.replacement)
   const xml = parse(opened.session.raw.getXml(match.enclosingAnchor.id))
-  if (elements(xml, "fldChar").length || elements(xml, "instrText").length)
+  if (!elements(xml, "fldChar").length && !elements(xml, "instrText").length) return { ...binding, change, unlinks: [] as number[] }
+  // A live cross-reference (a REF field) is the only field an edit may stand
+  // beside. One the edit's changed text touches becomes the text it shows.
+  const paragraph = opened.paragraphs[ordinal]!
+  const fields = paragraphFields(paragraph.node)
+  const owned = new Set(fields.flatMap(field => field.controls))
+  if (runText(paragraph.node) !== paragraph.match.text || fields.some(field => !refInstruction(field))
+    || [...elements(paragraph.node, "fldChar"), ...elements(paragraph.node, "instrText")].some(node => !owned.has(node)))
     throw new Error("unsupported_field_replacement")
-  return { ...binding, change: changedDocxSpan(match, amendment.replacement) }
+  const start = change.match.span.start - paragraph.match.span.start
+  const end = start + change.match.text.length
+  return { ...binding, change, unlinks: fields.flatMap((field, index) => start < field.to && field.from < end ? [index] : []) }
+}
+
+// The source with the REF fields the edits touch unwrapped to their text, for
+// the edits to be written to; undefined when they touch none.
+function unlinkedSource(opened: Opened, edits: ReturnType<typeof admitted>[]) {
+  const touched = Map.groupBy(edits.filter(edit => edit.unlinks.length), edit => edit.ordinal)
+  if (!touched.size) return
+  const documents = new Map<string, Document>()
+  for (const [ordinal, rows] of touched) {
+    const { part, node } = opened.paragraphs[ordinal]!
+    const doc = documents.get(part) ?? parse(strFromU8(opened.parts[part]!))
+    documents.set(part, doc)
+    const fields = paragraphFields(elements(doc, "p")[elements(opened.documents[part]!, "p").indexOf(node)]!)
+    for (const index of new Set(rows.flatMap(row => row.unlinks))) unlink(fields[index]!)
+  }
+  const parts = { ...opened.parts }
+  for (const [part, doc] of documents) parts[part] = strToU8(new XMLSerializer().serializeToString(doc))
+  return zipSync(parts, { mtime: new Date(1980, 0, 1) })
 }
 
 async function writeEdits(opened: Opened, edits: ReturnType<typeof admitted>[]) {
@@ -152,17 +181,27 @@ async function writeEdits(opened: Opened, edits: ReturnType<typeof admitted>[]) 
     && b.match.span.start < a.match.span.start + a.match.span.length))) throw new Error("overlapping_docx_amendments")
   const expected = opened.paragraphs.map(p => p.match.text)
   const ordered = edits.toSorted((a, b) => a.ordinal - b.ordinal || b.match.span.start - a.match.span.start)
-  for (const edit of ordered) {
-    const text = expected[edit.ordinal]
-    expected[edit.ordinal] = text.slice(0, edit.match.span.start) + edit.amendment.replacement
-      + text.slice(edit.match.span.start + edit.match.span.length)
-    // The complete authenticated quote localizes the occurrence. Unchanged
-    // context keeps its own runs; only the changed text is mutated.
-    if (!edit.change.match.text && !edit.change.replacement) continue
-    const result = opened.session.replaceMatch(edit.change.match, edit.change.replacement)
-    if (!result.success) throw new Error(`docx_mutation_failed:${result.error?.code}`)
-  }
-  const output = opened.session.save()
+  // Edits touching a live cross-reference are written to the source with that
+  // field unwrapped: the same paragraphs and text, so the same spans.
+  const unlinked = unlinkedSource(opened, edits)
+  const target = unlinked ? await openRevision(unlinked) : opened
+  let output: Uint8Array
+  try {
+    for (const edit of ordered) {
+      const text = expected[edit.ordinal]
+      expected[edit.ordinal] = text.slice(0, edit.match.span.start) + edit.amendment.replacement
+        + text.slice(edit.match.span.start + edit.match.span.length)
+      // The complete authenticated quote localizes the occurrence. Unchanged
+      // context keeps its own runs; only the changed text is mutated.
+      const paragraph = target.paragraphs[edit.ordinal]!.match
+      const change = target === opened ? edit.change : changedDocxSpan(paragraphSpan(paragraph,
+        edit.match.span.start - opened.paragraphs[edit.ordinal]!.match.span.start, edit.match.text.length), edit.amendment.replacement)
+      if (!change.match.text && !change.replacement) continue
+      const result = target.session.replaceMatch(change.match, change.replacement)
+      if (!result.success) throw new Error(`docx_mutation_failed:${result.error?.code}`)
+    }
+    output = target.session.save()
+  } finally { if (target !== opened) target.session.close() }
   const reopened = await openRevision(output)
   try {
     if (JSON.stringify(reopened.paragraphs.map(p => p.match.text)) !== JSON.stringify(expected))
