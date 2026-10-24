@@ -1,4 +1,4 @@
-import { draftingStyleWarningsBlock } from "./style-warnings"
+import { draftingStyleWarningsBlock, styleScopedRows } from "./style-warnings"
 import { currentDocumentArtifacts } from "../../lib/current-document-artifacts"
 import { checklistProducerInputs } from "./checklist-source-context"
 import { existsSync, readFileSync } from "node:fs"
@@ -8,7 +8,7 @@ import { askedQuestions, checkChanges, parseJsonObject, questionIssues } from ".
 import { finalBodyParagraphs, readChangeList, readParagraphs, record, type ChangeList, shownText } from "./checks"
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { reviewStages, earlierDocuments, readLeanPlan, type DocID } from "./plan"
-import { packageCompositionBlock, stagePrompt, retryPrompt } from "./prompts"
+import { packageCompositionBlock, revisionPreferenceScope, stagePrompt, retryPrompt } from "./prompts"
 import { matterSourceIDs, openItem, quoteFound, quoteMissIssue } from "./quotes"
 import { changesRepairSections, documentRepairs } from "./repairs"
 import { drainLeanRequests } from "./requests"
@@ -48,7 +48,7 @@ export function changePlanPrompt(directory: string, document: DocID) {
   return [
     stagePrompt(directory, `${document}.change-plan`, { contextOnly: true }),
     `<draft_paragraphs>\n${readParagraphs(directory, document).map(row => `[${row.pid}] ${shownText(row)}`).join("\n\n")}\n</draft_paragraphs>`,
-    draftingStyleWarningsBlock(readParagraphs(directory, document)),
+    draftingStyleWarningsBlock(styleScopedRows(directory, document, readParagraphs(directory, document))),
     `<review_findings>\n${findingsText(findingsFor(directory, document), document)}\n</review_findings>`,
     "Each review finding above concerns this document; one with raised_by was found by the review of that earlier document. Adjudicate every one: name its id in the resolves of the group that amends for it, of the findings entry (disposition) that defers, recommends or rejects it, or of the question it needs. One entry may resolve several findings. A review finding that needs no change is a rejected entry with its reason; dismissed resolves nothing.",
     ...changesRepairSections(directory, document),
@@ -225,11 +225,13 @@ export function changePreparationPrompt(directory: string, document: DocID, plan
   const pids = new Set(group.pids)
   const prior = readChangeList(directory, document)
   const composition = packageCompositionBlock(directory, document)
+  const preferenceScope = revisionPreferenceScope(directory, document)
   return [
     ...(documentRepairs(directory, document)?.items.every(item => item.stage === "checklist-check") ? [
       "Prepare ONE accepted repair group using only its goals, source passages, listed initial paragraphs and related prior changes below. Original instructions and actual human answers determine scope; generated plans/research limits are not client waivers. Flagging, proposing and adopting are different actions. Preserve genuine uncertainty and do not invent approval or authority.",
       `<original_instructions_and_actual_answers>\n${JSON.stringify(checklistProducerInputs(directory).filter(row => row.key === "request").flatMap(row => [...row.input.passages, ...row.input.instructions]))}\n</original_instructions_and_actual_answers>`,
       ...(composition ? [composition] : []),
+      ...(preferenceScope ? [preferenceScope] : []),
       `Canonical uploaded originals: search-document/read-document view=source with exact source identity. Current generated documents: view=current_body with planned document ID; comments/deleted_text are separate views. Unavailable means no search occurred; lexical no hits is not absence. Read consecutive paragraphs around necessary definitions/exceptions, and related documents only when needed. Initial draft mapping: read-record .dochaus/lean/${document}/paragraphs.json. Current context records: .dochaus/lean/checklist-context/${document}.json. Prior amendments: .dochaus/lean/${document}/changes.json. Inspect only necessary records.`,
     ] : [stagePrompt(directory, `${document}.change-prepare`, { contextOnly: true })]),
     `<adjudicated_dependencies_not_independent_authority>\n${plan.shared_decisions.join("\n")}\n</adjudicated_dependencies_not_independent_authority>`,

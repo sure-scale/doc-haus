@@ -1,4 +1,4 @@
-import { draftingStyleAdvisoryNotes } from "./style-warnings"
+import { draftingStyleAdvisoryNotes, styleScopedRows } from "./style-warnings"
 import { checklistCheckResultSchema, readEffectiveChecklistItems, reconcileChecklistParentCoverage, type ChecklistCoverageIssue } from "./checklist-flow"
 import { leanClarifications, checklistRefinementSelections } from "./requests"
 import { z } from "zod"
@@ -69,7 +69,7 @@ import {
 // goes to the pointer applier as data, addressed by paragraph pointer. Steps of
 // one planned document keep their files under that document's id (d1/, d2/...).
 
-export const LEAN_PROMPT_VERSION = "lean-26-original-tables-list-labels"
+export const LEAN_PROMPT_VERSION = "lean-27-revise-preference-scope"
 const OUTLINE_CONTRACT = "document-form-unheaded-labels-9"
 const DELIVERY_REVIEW_CONTRACT = "grounded-delivery-selection-4"
 const STRUCTURAL_AMENDMENT_CONTRACT = "explicit-paragraph-cardinality-1"
@@ -415,7 +415,7 @@ export async function acceptStageReply(directory: string, step: StepID, reply: s
   const check = checkDraftingNotes(directory, reply, disclosableItems(directory), { final: options.final })
   if (check.issues.length) return { ...check, outputs: [] }
   const advisory = draftingStyleAdvisoryNotes([
-    ...(readLeanPlan(directory)?.documents ?? []).map(row => ({ title: row.title, rows: finalBodyParagraphs(directory, row.id) })),
+    ...(readLeanPlan(directory)?.documents ?? []).map(row => ({ title: row.title, rows: styleScopedRows(directory, row.id, finalBodyParagraphs(directory, row.id)) })),
     { title: "Drafting notes", rows: [{ pid: "drafting-notes", text: reply }] },
   ])
   // Code adds what the records show and the reply need not restate: the style

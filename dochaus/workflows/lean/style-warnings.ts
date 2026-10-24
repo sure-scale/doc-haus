@@ -1,6 +1,29 @@
 import { normalizePreferences } from "../../lib/drafting-preferences"
 import { lintDraftStyle } from "../../lib/markdown"
 import { readFirmPreferences } from "../../lib/preferences"
+import { plannedDocument, type DocID } from "./plan"
+import { matterSourceIDs } from "./quotes"
+import { templateSource } from "./template-contract"
+import { sourceText } from "./template-structure"
+
+/** The paragraphs of a document the firm's style preferences govern. In a
+ * revision they govern the text it writes or changes: a paragraph whose words
+ * are the original's own, read from its canonical source text, keeps the
+ * original's style and is not checked. Every paragraph of a new or template
+ * draft is. */
+export function styleScopedRows<Row extends { text: string }>(directory: string, document: DocID, rows: Row[]): Row[] {
+  const entry = plannedDocument(directory, document)
+  const source = entry?.mode === "revise" ? templateSource(entry) : undefined
+  if (!source || !matterSourceIDs(directory).includes(source)) return rows
+  const original = new Set(sourceText(directory, source).split(/\n\s*\n/).map(sameWords).filter(Boolean))
+  return rows.filter(row => !original.has(sameWords(row.text)))
+}
+
+/** Words as compared with the original: runs of whitespace and the style of
+ * quotation marks aside; case, digits and every other character count. */
+function sameWords(text: string) {
+  return text.replace(/[\u2018\u2019\u201A\u201B]/g, "'").replace(/[\u201C\u201D\u201E\u201F]/g, "\"").replace(/\s+/g, " ").trim()
+}
 
 // Derive advisory presentation feedback from the authoritative current paragraph
 // records; do not persist a second, potentially stale style ledger.
