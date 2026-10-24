@@ -647,6 +647,23 @@ describe("a planned document's form", () => {
     expect(rows.filter(row => row.label)).toEqual([])
   }, 60_000)
 
+  test("typed clause numbers follow the redline's original: a compared original without Mode: revise keeps them typed, a typed template alone does not", async () => {
+    const typed = (await renderMarkdownToDocx("# Supply terms\n\n## 1. Term\n\n1.1 The term is one year.", undefined, undefined, { numbering: false })).bytes
+    const reply = "# Supply terms\n\n## 1. Term\n\n1.1 The term is two years.\n"
+    const labels = async (plan: { mode?: "revise"; template?: string; comparison?: string }) => {
+      const { directory } = matter()
+      writeFileSync(path.join(directory, "original.docx"), typed)
+      writeLeanPlan(directory, [{ title: "Supply terms", purpose: "", parts: [{ heading: "Terms", scope: "" }], ...plan }])
+      expect((await acceptStageReply(directory, "d1.draft", reply)).issues).toEqual([])
+      expect(readParagraphs(directory, "d1").map(shownText)).toEqual(["Supply terms", "1. Term", "1.1 The term is two years."])
+      return readParagraphs(directory, "d1").flatMap(row => row.label ? [row.label] : [])
+    }
+    // The redline compares against the original, so its typed numbers stay text.
+    expect(await labels({ comparison: "original.docx" })).toEqual([])
+    // The redline compares against this run's own draft: the clauses are Word-numbered.
+    expect(await labels({ mode: "revise", template: "original.docx" })).toEqual(["1.", "1.1"])
+  }, 60_000)
+
   test("a saved plan reads with or without a form; an edited form must be one of the forms, and it keys the draft", () => {
     const { directory } = matter()
     writeLeanPlan(directory, [{ title: "Notice letter", purpose: "", parts: [{ heading: "Notice", scope: "" }] }])
