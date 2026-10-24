@@ -2,6 +2,7 @@
 import { describe, expect, test } from "bun:test"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { polishMarkdownArtifactsInDocx } from "./docx-polish"
+import { renderMarkdownToDocx } from "./render"
 
 describe("polishMarkdownArtifactsInDocx", () => {
   test("declares only missing inline-code styles and preserves existing style inheritance", () => {
@@ -191,20 +192,42 @@ describe("polishMarkdownArtifactsInDocx", () => {
     expect(xml).not.toContain("&amp;#38;")
   })
 
-  test("fails closed rather than dropping source table-row paragraph properties", () => {
+  test("ends a table before a bar-delimited line with paragraph properties, which stays as it was", () => {
+    const row = `<w:p><w:pPr><w:bidi/></w:pPr><w:r><w:t>| Status | Open |</w:t></w:r></w:p>`
     const docx = zipSync({
       "word/document.xml": strToU8(
         `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>` +
           paragraph("| Field | Value |") +
           paragraph("|---|---|") +
-          `<w:p><w:pPr><w:bidi/></w:pPr><w:r><w:t>| Status | Open |</w:t></w:r></w:p>` +
+          row +
           `</w:body></w:document>`,
       ),
     })
 
-    expect(() => polishMarkdownArtifactsInDocx(docx)).toThrow(
-      "cannot losslessly conserve unsupported Word paragraph properties",
-    )
+    const xml = strFromU8(unzipSync(polishMarkdownArtifactsInDocx(docx))["word/document.xml"]!)
+
+    expect(xml.match(/<w:tr>/g)).toHaveLength(1)
+    expect(xml).toContain(`${row}</w:body>`)
+  })
+
+  test("leaves bar-delimited list items, headings, quotations and code as text", async () => {
+    const { bytes } = await renderMarkdownToDocx([
+      "# Notice",
+      "> | Quoted | Note |\n> | --- | --- |",
+      "- | Listed | Note |\n- | --- | --- |",
+      "## | Heading | Note |\n\n| --- | --- |",
+      "```\n| Code | Note |\n| --- | --- |\n```",
+      "| Lead |\n\n- | Item |",
+      "| Field | Value |\n| --- | --- |\n| Status | Open |\n> | Quoted | Row |",
+    ].join("\n\n"))
+    const xml = strFromU8(unzipSync(bytes)["word/document.xml"]!)
+    const tables = xml.match(/<w:tbl>[\s\S]*?<\/w:tbl>/g) ?? []
+
+    expect(tables).toHaveLength(1)
+    expect(tables[0]).toContain(">Status</w:t>")
+    expect(tables[0]).not.toContain("Quoted")
+    for (const line of ["| Quoted | Note |", "| Listed | Note |", "| Heading | Note |", "| Code | Note |", "| Lead |", "| Item |", "| Quoted | Row |"])
+      expect(xml).toContain(line)
   })
 
   test("converts a header-only table and a one-column table, but not a bar line without a separator", () => {

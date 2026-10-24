@@ -90,23 +90,16 @@ type TableRow = TableCell[]
 type MarkdownTable = TableRow[]
 
 function readMarkdownTable(paragraphs: RegExpMatchArray[], start: number) {
-  const headerXml = paragraphs[start]![0]
-  if (!looksLikeMarkdownRow(headerXml)) return undefined
-  const header = parseMarkdownRow(paragraphInlineRuns(headerXml))
+  const header = markdownRow(paragraphs[start]![0])
   if (!header) return undefined
 
-  const separatorXml = paragraphs[start + 1]?.[0] ?? ""
-  if (!looksLikeMarkdownRow(separatorXml)) return undefined
-  const separator = parseMarkdownRow(
-    paragraphInlineRuns(separatorXml),
-  )
+  const separator = markdownRow(paragraphs[start + 1]?.[0] ?? "")
   if (!separator || !isSeparatorRow(separator) || separator.length !== header.length) return undefined
 
   const rows = [header]
   let index = start + 2
   while (index < paragraphs.length) {
-    if (!looksLikeMarkdownRow(paragraphs[index]![0])) break
-    const row = parseMarkdownRow(paragraphInlineRuns(paragraphs[index]![0]))
+    const row = markdownRow(paragraphs[index]![0])
     if (!row || row.length !== header.length) break
     rows.push(row)
     index++
@@ -118,9 +111,13 @@ function readMarkdownTable(paragraphs: RegExpMatchArray[], start: number) {
   return { rows, nextIndex: index, end: last.index! + last[0].length }
 }
 
-function looksLikeMarkdownRow(xml: string) {
+// A bar-delimited line rendered as a list item, a heading, a quotation or a
+// line of code has paragraph properties a table cell would lose. It is not a
+// table row, and it stays as text.
+function markdownRow(xml: string) {
   const text = paragraphText(xml).trim()
-  return text.startsWith("|") && text.endsWith("|")
+  if (!text.startsWith("|") || !text.endsWith("|") || /<w:pPr\b/.test(xml)) return undefined
+  return parseMarkdownRow(paragraphInlineRuns(xml))
 }
 
 /** Gives each heading paragraph the spacing of its style, as rendering does;
@@ -175,18 +172,9 @@ function paragraphText(xml: string) {
 
 function paragraphInlineRuns(xml: string) {
   const inlineElements = [...xml.matchAll(INLINE_RE)]
-  const paragraphProperties =
-    xml.match(/<w:pPr\b[^>]*>[\s\S]*?<\/w:pPr>/)?.[0] ??
-    xml.match(/<w:pPr\b[^>]*\/>/)?.[0] ??
-    ""
-  if (paragraphProperties)
-    throw new Error(
-      "Markdown table polish cannot losslessly conserve unsupported Word paragraph properties.",
-    )
   const paragraphPayload = xml
     .replace(/^<w:p\b[^>]*>/, "")
     .replace(/<\/w:p>$/, "")
-    .replace(paragraphProperties, "")
   const paragraphResidue = inlineElements.reduce(
     (content, element) => content.replace(element[0], ""),
     paragraphPayload,
