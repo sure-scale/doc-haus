@@ -139,12 +139,13 @@ function tbl(rows: string[][], colour = "000000") {
 }
 
 /** The fixture's package with another body, and optionally other styles. */
-function originalWith(body: string, styles: (xml: string) => string = xml => xml) {
+function originalWith(body: string, styles: (xml: string) => string = xml => xml, extra: Record<string, string> = {}) {
   const parts = unzipSync(revisionTablesOriginalDocx())
   return zipSync({
     ...parts,
     "word/document.xml": strToU8(strFromU8(parts["word/document.xml"]!).replace(/<w:body>[\s\S]*<w:sectPr>/, `<w:body>${body}<w:sectPr>`)),
     "word/styles.xml": strToU8(styles(strFromU8(parts["word/styles.xml"]!))),
+    ...Object.fromEntries(Object.entries(extra).map(([name, xml]) => [name, strToU8(xml)])),
   })
 }
 
@@ -182,6 +183,20 @@ test("a bar in a cell is a character reference, and a table kept as drafted show
   expect(readDocxTables(result.bytes)[0]!.rows).toEqual(drafted)
 })
 
+test("an edited cell and a table kept as drafted show the Markdown characters their drafted text holds", async () => {
+  const values = ["<Name> of the Buyer", "Written as <br>", "See [1](2)", "Cost &amp; fees"]
+  const rows = [["Item", "Value"], ...values.map((value, at) => [`Row ${at + 1}`, value])]
+  const original = originalWith(p("Intro") + tbl(rows) + p("End"))
+  const amended = rows.map(row => row.map(cell => values.includes(cell) ? `${cell}, as amended` : cell))
+  const edited = await carried(markdown("Intro", pipeTable(amended), "End"), original)
+  expect(edited.carries[0]).toMatchObject({ outcome: "edited", cells: ["row 2, column 2", "row 3, column 2", "row 4, column 2", "row 5, column 2"] })
+  expect(readDocxTables(edited.bytes)[0]!.rows).toEqual(amended)
+  const widened = amended.map(row => [...row, ""])
+  const drafted = await carried(markdown("Intro", pipeTable(widened), "End"), original)
+  expect(drafted.carries[0]!.outcome).toBe("drafted")
+  expect(readDocxTables(drafted.bytes)[0]!.rows).toEqual(widened)
+})
+
 test("a one-row signature block and a one-column notice are carried, with no Markdown left in the body", async () => {
   const notice = [["Important notice"], ["This agreement limits liability."]]
   const block = [["Signed for Alpha Limited\n\nName:\nTitle:", "Signed for Beta Limited\n\nName:\nTitle:"]]
@@ -210,6 +225,10 @@ test("identical grids are told apart by the passage each follows", async () => {
   const dropped = await carried(markdown("Signed for Beta Limited:", pipeTable(grid), "End"), original)
   expect(dropped.carries.map(row => row.outcome)).toEqual(["missing", "carried"])
   expect(colours(dropped.bytes)).toEqual(["0000FF"])
+  // So too when Beta's passage is reworded: it shares more of its words with Beta's than with Alpha's.
+  const reworded = await carried(markdown("Signed for and on behalf of Beta Limited:", pipeTable(grid), "End"), original)
+  expect(reworded.carries.map(row => row.outcome)).toEqual(["missing", "carried"])
+  expect(colours(reworded.bytes)).toEqual(["0000FF"])
   // A new grid between them stays as drafted; each party keeps its own.
   const between = await carried(markdown("Signed for Alpha Limited:", pipeTable(grid), "Signed for Gamma Guarantor Limited:", pipeTable(grid),
     "Signed for Beta Limited:", pipeTable(grid), "End"), original)
@@ -218,10 +237,11 @@ test("identical grids are told apart by the passage each follows", async () => {
 })
 
 test("a changed line in a cell of several paragraphs is rewritten alone, and a cell holding a nested table is not rewritten", async () => {
-  const details = p("Northwind Cartons Limited", "<w:rPr><w:b/></w:rPr>") + p("Company number 01234567", "<w:rPr><w:i/></w:rPr>")
+  const office = '<w:p><w:r><w:t xml:space="preserve">Registered office:</w:t></w:r><w:r><w:tab/></w:r><w:r><w:rPr><w:b/></w:rPr><w:t>1 Mill Lane</w:t></w:r></w:p>'
+  const details = p("Northwind Cartons Limited", "<w:rPr><w:b/></w:rPr>") + p("Company number 01234567", "<w:rPr><w:i/></w:rPr>") + office
   const parties = originalWith(p("Parties") + tbl([["Party", "Details"], ["Supplier", details]]) + p("End"))
   const read = readDocxTables(parties)[0]!.rows
-  expect(read[1]).toEqual(["Supplier", "Northwind Cartons Limited\nCompany number 01234567"])
+  expect(read[1]).toEqual(["Supplier", "Northwind Cartons Limited\nCompany number 01234567\nRegistered office: 1 Mill Lane"])
   const renumbered = await carried(markdown("Parties", pipeTable(read.map(row => row.map(text => text.replace("01234567", "07654321")))), "End"), parties)
   expect(renumbered.carries[0]).toMatchObject({ outcome: "edited", cells: ["row 2, column 2"] })
   expect(tableXml(renumbered.bytes)[0]).toContain(`<w:tc><w:tcPr><w:tcW w:w="3000" w:type="dxa"/></w:tcPr>${details.replace("01234567", "07654321")}</w:tc>`)
@@ -257,6 +277,13 @@ test("a table inside a content control is read and carried, and its row-level co
   expect(undated.carries[0]).toMatchObject({ outcome: "edited", removed: ["Date"] })
   expect(readDocxTables(undated.bytes)[0]!.rows).toEqual(grid.slice(0, 2))
   expect(tableXml(undated.bytes)[0]).not.toContain("<w:sdt>")
+  // So too a table and rows inside custom XML markup.
+  const marked = originalWith(p("Signed for Alpha Limited:") +
+    `<w:customXml w:uri="urn:example:signatures" w:element="block">${table.replace(/<w:sdt>[\s\S]*<\/w:sdt>/, `<w:customXml w:element="row">${rows[2]}</w:customXml>`)}</w:customXml>` + p("End"))
+  expect(readDocxTables(marked)).toEqual([{ rows: grid, follows: "Signed for Alpha Limited:" }])
+  const carriedMarked = await carried(markdown("Signed for Alpha Limited:", pipeTable(grid), "End"), marked)
+  expect(carriedMarked.carries[0]!.outcome).toBe("carried")
+  expect(readDocxTables(carriedMarked.bytes)[0]!.rows).toEqual(grid)
 })
 
 test("a table whose content refers to its own package is kept as drafted, and one that only looks so is carried", async () => {
@@ -283,6 +310,16 @@ test("a table whose content refers to its own package is kept as drafted, and on
   const marked = await outcome(`<w:p><w:bookmarkStart w:id="0" w:name="Price"/><w:r><w:t>Value</w:t></w:r><w:bookmarkEnd w:id="0"/></w:p>`)
   expect(marked.carries[0]!.outcome).toBe("carried")
   expect(tableXml(marked.bytes)[0]).not.toContain("bookmark")
+  // A character style linked to a numbered paragraph style brings that style without its numbering.
+  const linked = '<w:style w:type="character" w:styleId="NoteMark"><w:name w:val="Note Mark"/><w:link w:val="NoteList"/><w:rPr><w:i/></w:rPr></w:style>' +
+    '<w:style w:type="paragraph" w:styleId="NoteList"><w:name w:val="Note List"/><w:link w:val="NoteMark"/><w:pPr><w:numPr><w:numId w:val="3"/></w:numPr></w:pPr></w:style>'
+  const noted = originalWith(p("Intro") + tbl([["Item", "Detail"], ["Thing", p("Value", '<w:rPr><w:rStyle w:val="NoteMark"/></w:rPr>')]]) + p("End"),
+    styles => styles.replace("</w:styles>", `${linked}</w:styles>`))
+  const linking = await carried(markdown("Intro", pipeTable([["Item", "Detail"], ["Thing", "Value"]]), "End"), noted)
+  expect(linking.carries[0]!.outcome).toBe("carried")
+  const copied = strFromU8(unzipSync(linking.bytes)["word/styles.xml"]!)
+  expect(copied).toContain('w:styleId="NoteList"')
+  expect(copied).not.toContain("<w:numPr>")
 })
 
 test("a word processor's original keeps its tables and its rows' spacing", async () => {
@@ -300,6 +337,21 @@ test("a word processor's original keeps its tables and its rows' spacing", async
   expect(tableXml(edited.bytes)[0]).toBe(tableXml(result.bytes)[0]!.replace("<w:t>40,000 cartons</w:t>", '<w:t xml:space="preserve">45,000 cartons</w:t>'))
 })
 
+test("a carried table keeps the original's faces: its default font and a run's theme font", async () => {
+  const defaults = '<w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman"/><w:sz w:val="24"/></w:rPr></w:rPrDefault></w:docDefaults>'
+  const theme = '<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="Firm"><a:themeElements><a:fontScheme name="Firm">' +
+    '<a:majorFont><a:latin typeface="Georgia"/></a:majorFont><a:minorFont><a:latin typeface="Verdana"/></a:minorFont></a:fontScheme></a:themeElements></a:theme>'
+  const themed = p("10 GBP", '<w:rPr><w:rFonts w:asciiTheme="minorHAnsi" w:hAnsiTheme="minorHAnsi"/></w:rPr>')
+  const original = originalWith(p("Intro") + tbl([["Item", "Value"], ["Price", themed]]) + p("End"), styles => styles.replace(/(<w:styles\b[^>]*>)/, `$1${defaults}`),
+    { "word/theme/theme1.xml": theme })
+  const result = await carried(markdown("Intro", pipeTable([["Item", "Value"], ["Price", "10 GBP"]]), "End"), original)
+  expect(result.carries[0]!.outcome).toBe("carried")
+  const [table] = tableXml(result.bytes)
+  expect(table).toContain('<w:r><w:rPr><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman"/><w:sz w:val="24"/></w:rPr><w:t xml:space="preserve">Item</w:t>')
+  expect(table).toContain('<w:r><w:rPr><w:rFonts w:ascii="Verdana" w:hAnsi="Verdana"/><w:sz w:val="24"/></w:rPr><w:t xml:space="preserve">10 GBP</w:t>')
+  expect(table).not.toContain("Theme")
+})
+
 test("a row added after the header takes the form of a body row; a table whose rows all change in number and label stays as drafted", async () => {
   const added = [particulars[0]!, ["Minimum order", "5,000 cartons"], ...particulars.slice(1)]
   const result = await carried(draft({ particulars: added }))
@@ -308,6 +360,12 @@ test("a row added after the header takes the form of a body row; a table whose r
   expect(rows[1]).toContain("Minimum order")
   expect(rows[1]).not.toContain("<w:b/>")
   expect(rows[1]).toBe(rows[2]!.replace("Products", "Minimum order").replace("Printed folding cartons, 300 gsm board", "5,000 cartons"))
+  // Added after the second of two header rows, a row takes that row's form but does not repeat as a header.
+  const headed = tbl([["Item", "Value"], ["(units)", "(GBP)"], ["Price", "10"]]).replace(/<w:tr>(?=[\s\S]*<w:tr>)/g, "<w:tr><w:trPr><w:tblHeader/></w:trPr>")
+  const priced = await carried(markdown("Intro", pipeTable([["Item", "Value"], ["(units)", "(GBP)"], ["Fee", "5"], ["Price", "10"]]), "End"), originalWith(p("Intro") + headed + p("End")))
+  expect(priced.carries[0]).toMatchObject({ outcome: "edited", added: 1 })
+  const headedRows = tableXml(priced.bytes)[0]!.match(/<w:tr>[\s\S]*?<\/w:tr>/g)!
+  expect(headedRows.map(row => row.includes("<w:tblHeader/>"))).toEqual([true, true, false, false])
   const replaced = [["Field", "Amount"], ["X", "9"], ["Y", "8"], ["Z", "7"], ["W", "6"], ["V", "5"], ["U", "4"]]
   const rebuilt = await carried(draft({ particulars: replaced }))
   expect(rebuilt.carries[0]).toMatchObject({ outcome: "drafted", reason: "no row of the drafted table begins as a row of the original does" })
@@ -321,6 +379,9 @@ test("text drafted into a position a short row lacks keeps the table as drafted"
   const result = await carried(markdown("Intro", pipeTable([["Item", "Value"], ["Price", "10"], ["Note", "Excluding VAT"]]), "End"), original)
   expect(result.carries[0]).toMatchObject({ outcome: "drafted", reason: "the drafted table writes into a position row 3 does not have (column 2)" })
   expect(readDocxTables(result.bytes)[0]!.rows[2]).toEqual(["Note", "Excluding VAT"])
+  // A row added after the short row takes its form, which has no place for its second cell.
+  const added = await carried(markdown("Intro", pipeTable([["Item", "Value"], ["Price", "10"], ["Note", ""], ["Tax", "20%"]]), "End"), original)
+  expect(added.carries[0]).toMatchObject({ outcome: "drafted", reason: "a drafted row is added with text in a column the original's row 3 does not have" })
 })
 
 test("hidden text is not read as a cell's text, and stays hidden in a carried cell", async () => {

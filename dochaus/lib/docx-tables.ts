@@ -26,7 +26,9 @@ const BODY = "word/document.xml"
 const STYLES = "word/styles.xml"
 /** A drafted table is a counterpart of an original one from this share of shared cell text. */
 const MATCH = 0.5
-/** A counterpart that follows the same passage as the original table is preferred by this much. */
+/** A counterpart is preferred by up to this much for the passage it follows:
+ * all of it when its passage has the original table's words, else the share
+ * of those words the two passages have in common. */
 const PLACED = 0.25
 // Revision marks, notes, comments, fields, bound content controls and
 // embedded objects refer to parts or ids of their own package; a table holding
@@ -229,10 +231,10 @@ function alignRows(original: string[][], drafted: string[][]) {
 /** How well a drafted table stands for an original one; 0 when it does not. */
 function pairScore(original: DocxTable, drafted: DocxTable) {
   const content = shared(original.rows, drafted.rows)
-  const passage = plain(original.follows) !== "" && plain(original.follows) === plain(drafted.follows)
-  const placed = passage && (original.rows[0]?.length ?? 0) === (drafted.rows[0]?.length ?? 0)
+  const passage = wording(original.follows, drafted.follows)
+  const placed = passage === 1 && (original.rows[0]?.length ?? 0) === (drafted.rows[0]?.length ?? 0)
   if (content < MATCH && !placed) return 0
-  return Math.max(content, placed ? MATCH : 0) + (passage ? PLACED : 0)
+  return Math.max(content, placed ? MATCH : 0) + PLACED * passage
 }
 
 /** The share of non-empty cell text two tables have in common. */
@@ -242,6 +244,19 @@ function shared(a: string[][], b: string[][]) {
   const right = texts(b)
   if (!left.length || !right.length)
     return !left.length && !right.length && a.length === b.length && (a[0]?.length ?? 0) === (b[0]?.length ?? 0) ? 1 : 0
+  return inCommon(left, right)
+}
+
+/** The share of words two passages have in common; 0 when either has none. */
+function wording(a: string, b: string) {
+  const words = (text: string) => plain(text).match(/[\p{L}\p{N}]+/gu) ?? []
+  const left = words(a)
+  const right = words(b)
+  return left.length && right.length ? inCommon(left, right) : 0
+}
+
+/** The share of two lists' items both hold, counting repeats. */
+function inCommon(left: string[], right: string[]) {
   const counts = new Map<string, number>()
   left.forEach(text => counts.set(text, (counts.get(text) ?? 0) + 1))
   const common = right.filter(text => {
@@ -567,8 +582,13 @@ function formatting(styles: Document | undefined, theme: Document | undefined): 
 /** Each carried paragraph and run given, as direct formatting, the spacing,
  * size and font it had in the original where the rendered package would give
  * it other values and its own formatting does not set them; so a carried row
- * keeps its height and its text its face. Conditional table-style formatting
- * and the eastern and complex-script fonts are not compared. */
+ * keeps its height and its text its face. A run's own theme font is written as
+ * the face the original's theme names, since the rendered package has no
+ * theme of its own. Conditional table-style formatting and the eastern and
+ * complex-script fonts are not compared. Nor is any other formatting the
+ * original's default and paragraph styles give, such as alignment,
+ * indentation or colour: a carried paragraph takes it from the rendered
+ * package's style of the same name. */
 function keepOriginalDefaults(tables: Element[], from: Formatting, into: Formatting) {
   for (const carried of tables) for (const paragraph of Array.from(carried.getElementsByTagNameNS(W, "p"))) {
     let table = paragraph.parentNode as Element | null
@@ -615,7 +635,18 @@ function keepOriginalDefaults(tables: Element[], from: Formatting, into: Formatt
         if (was !== undefined && was !== size(name)(into)) property(ensure(), name, RUN_ORDER).setAttributeNS(W, "w:val", was)
       }
       const fonts = children(own, "rFonts")[0]
-      if (fonts?.getAttributeNS(W, "ascii") || fonts?.getAttributeNS(W, "asciiTheme")) continue
+      if (fonts?.getAttributeNS(W, "asciiTheme")) {
+        for (const slot of ["ascii", "hAnsi"]) {
+          const theme = fonts.getAttributeNS(W, `${slot}Theme`)
+          const named = theme ? from.fonts[theme.startsWith("major") ? "major" : "minor"] : undefined
+          if (!named) continue
+          // A theme font outranks a named one, so the theme attribute is removed.
+          fonts.removeAttributeNS(W, `${slot}Theme`)
+          fonts.setAttributeNS(W, `w:${slot}`, named)
+        }
+        continue
+      }
+      if (fonts?.getAttributeNS(W, "ascii")) continue
       const was = face(from)
       if (was && was !== face(into)) {
         const element = property(ensure(), "rFonts", RUN_ORDER)

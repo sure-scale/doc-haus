@@ -243,6 +243,7 @@ describe("polishMarkdownArtifactsInDocx", () => {
           paragraph("After the notice") +
           paragraph("| Not a table |") +
           paragraph("|") +
+          paragraph("|---|") +
           `</w:body></w:document>`,
       ),
     })
@@ -259,6 +260,7 @@ describe("polishMarkdownArtifactsInDocx", () => {
     expect(xml).not.toContain("| --- |")
     expect(xml).toContain(">| Not a table |</w:t>")
     expect(xml).toContain("<w:t>|</w:t>")
+    expect(xml).toContain("<w:t>|---|</w:t>")
   })
 })
 
