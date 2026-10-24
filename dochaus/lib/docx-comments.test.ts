@@ -137,6 +137,32 @@ describe("native Word comment export", () => {
     expect(new Set(tracked.map(text => text.match(/ w:date="([^"]*)"/)?.[1]))).toEqual(new Set(["2026-03-04T05:06:07Z"]))
   }, 120000)
 
+  test("an existing comment on a numbered clause holding a live cross-reference is restored after an edit elsewhere", async () => {
+    // Synthetic numbered agreement: clause 2.1 cites clause 1.1 through a REF field.
+    const rendered = (await renderMarkdownToDocx("# Supply terms\n\n## 1. Delivery\n\n1.1 The supplier delivers within twelve days.\n\n## 2. Inspection\n\n2.1 The buyer inspects each delivery under clause 1.1.\n\n2.2 The buyer keeps the records.")).bytes
+    const commented = unzipSync(exportDocxComments(withParagraphPointers(rendered),
+      [{ id: "existing", anchor: { paragraph_text: "The buyer inspects each delivery under clause 1.1." }, author: "Counterparty counsel", text: "Confirm the inspection window." }]).bytes)
+    const original = zipSync(commented)
+    const cited = (bytes: Uint8Array) => xml(bytes, "word/document.xml").split("</w:p>").find(part => part.includes("inspects each delivery"))!
+    // Premise: the commented clause is natively numbered and its reference is a field.
+    expect(cited(original)).toContain("<w:numPr>")
+    expect(cited(original)).toContain('w:fldCharType="begin"')
+    const edited = unzipSync(original)
+    edited["word/document.xml"] = strToU8(strFromU8(edited["word/document.xml"]).replace("twelve days", "nineteen days"))
+    const compared = await compareDocxWithPointers(original, zipSync(edited), { authorName: "doc.haus review" })
+    const preserved = preserveDocxComments(original, compared)
+    expect(readDocxComments(preserved).map(row => [row.comment_id, row.text])).toEqual([["0", "Confirm the inspection window."]])
+    expect(cited(preserved)).toBe(cited(original))
+    // Any other field in the commented clause still needs separate review.
+    const other = unzipSync(original)
+    other["word/document.xml"] = strToU8(strFromU8(other["word/document.xml"]).replace(/<w:instrText([^>]*)> REF _Ref\d+ \\r \\h <\/w:instrText>/, "<w:instrText$1> PAGE </w:instrText>"))
+    expect(strFromU8(other["word/document.xml"])).toContain("> PAGE </w:instrText>")
+    const otherEdited = unzipSync(zipSync(other))
+    otherEdited["word/document.xml"] = strToU8(strFromU8(otherEdited["word/document.xml"]).replace("twelve days", "nineteen days"))
+    const otherCompared = await compareDocxWithPointers(zipSync(other), zipSync(otherEdited), { authorName: "doc.haus review" })
+    expect(() => preserveDocxComments(zipSync(other), otherCompared)).toThrow("unsupported_original_comment_paragraph_dependency")
+  }, 120000)
+
   test("honors an existing comments relationship with a non-default part name", () => {
     const first = unzipSync(exportDocxComments(clean, [comment("first", { paragraph_text: UNCHANGED })]).bytes)
     first["word/reviewer-comments.xml"] = first["word/comments.xml"]
