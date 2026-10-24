@@ -91,8 +91,8 @@ type Decision = { paragraph: Paragraph; level: number; kind: "convert" | "strip"
  * for a document whose numbering was settled when it was drafted: a literal
  * converts there only inside a sequence the list already numbers. `split`
  * names the later parts of paragraphs an amendment split: each leaves the
- * clause list, unless it opens with a number of a deeper level of the same
- * list, which it then takes. */
+ * clause list, unless it opens with the number the list would show next at
+ * the split paragraph's level or a deeper one, which it then takes. */
 export function numberDocxClauses(bytes: Uint8Array, options: { house?: false; split?: (paragraph: Element) => boolean } = {}): Uint8Array {
   const parts = unzipSync(bytes)
   if (!parts[BODY] || !parts[STYLES]) return bytes
@@ -616,10 +616,11 @@ function plan(list: ClauseList, paragraphs: Paragraph[], settledOnly: boolean, f
       continue
     }
     if (member) {
-      // A later part of a split clause: a deeper level of its list, or out of it.
+      // A later part of a split clause: its own or a deeper level of the list
+      // (a new sibling "2.3" after "2.2"), or out of it.
       const numId = sequence?.numId ?? member.numId
       const level = paragraph.literal ? literalLevel(paragraph.literal, list, counters, numId) : undefined
-      if (level !== undefined && level > member.level) {
+      if (level !== undefined && level >= member.level) {
         counters.advance(level, numId)
         decisions.push({ paragraph, level, kind: "convert", numId })
       } else decisions.push({ paragraph, level: 0, kind: "detach", numId: "0" })

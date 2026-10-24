@@ -44,7 +44,8 @@ export async function runApply(directory: string, state: LeanState, document: Do
   const identity = draftingAttribution()
   // A changed paragraph whose text now carries a clause number the body's list
   // supplies is numbered by the list, as at drafting. The later parts of a
-  // split paragraph leave its list unless they open with a deeper number of it.
+  // split paragraph leave its list unless they open with its next number at
+  // the paragraph's own level or a deeper one.
   const later = new Set(settled.result.applied.flatMap(row => row.result_pids?.slice(1) ?? []))
   const split = (paragraph: Element) => paragraphPointers(paragraph).some(pointer => later.has(pointer.pid))
   writeLeanBytes(directory, `${document}/body-applied.docx`, withGeneratedDocxAttribution(numberDocxClauses(readFileSync(out), { house: false, split }), identity))
