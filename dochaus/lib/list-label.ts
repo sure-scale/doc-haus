@@ -30,16 +30,19 @@ export function quotedInParagraph(row: { text: string; label?: string }, quote: 
 
 /** A number opening `text` that is written like `label` but is not it ("3.2"
  * on a paragraph Word numbers 2.2, "Article 2" on Article 1): typed numbering,
- * which would print beside the label. */
-export function retypedListLabel(text: string, label: string | undefined) {
+ * which would print beside the label. Not when `current`, the paragraph's
+ * present text, opens with the same number ("1.5 times the Fees" under 2.1):
+ * that number is its text. */
+export function retypedListLabel(text: string, label: string | undefined, current?: string) {
   if (!label) return
   const shape = label.trim().replace(/\d+|\p{L}+|\s+|[^\d\p{L}\s]/gu, part =>
     /^\d/.test(part) ? "\\d{1,3}"
       : /^\s/.test(part) ? "\\s+"
         : /^\p{L}/u.test(part) ? part.length <= 2 || /^(?:[ivxlcdm]+|[IVXLCDM]+)$/.test(part) ? "\\p{L}{1,4}" : part
           : part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
-  const typed = new RegExp(`^\\s*(${shape})[ \\t\\u00a0]+(?=\\S)`, "iu").exec(text)?.[1]
-  return typed && typed !== label.trim() ? typed : undefined
+  const opening = (value: string) => new RegExp(`^\\s*(${shape})[ \\t\\u00a0]+(?=\\S)`, "iu").exec(value)?.[1]
+  const typed = opening(text)
+  return typed && typed !== label.trim() && (current === undefined || opening(current) !== typed) ? typed : undefined
 }
 
 /** Find text and replacement for an edit tool, with the paragraphs `find`

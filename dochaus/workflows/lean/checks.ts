@@ -36,9 +36,10 @@ export { shownText, withoutListLabel } from "../../lib/list-label"
 
 /** Retry feedback for replacement text `text`, at `at`, that opens with a
  * number written like its paragraph's list label but not it ("3.2 " on a
- * paragraph Word numbers 2.2). */
-export function retypedLabelIssues(at: string, text: string, label: string | undefined) {
-  const typed = retypedListLabel(text, label)
+ * paragraph Word numbers 2.2), unless `current`, the paragraph's present
+ * text, opens with that number. */
+export function retypedLabelIssues(at: string, text: string, label: string | undefined, current?: string) {
+  const typed = retypedListLabel(text, label, current)
   return typed ? [`${at} begins with "${typed}", but its paragraph's number ${label} is Word list numbering, which prints and renumbers itself. Leave the number out of the text.`] : []
 }
 

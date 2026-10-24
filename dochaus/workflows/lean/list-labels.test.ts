@@ -71,3 +71,21 @@ test("a change that retypes another number before a Word-numbered paragraph is r
   expect(own.issues).toEqual([])
   expect(own.changes?.amendments[0]?.updated).toBe("The Customer shall pay within ten days.")
 })
+
+// A paragraph's own text may open with a number written like its label; kept
+// in the replacement, that number is operative text, not typed numbering.
+test("a change keeping the number its paragraph's text opens with is not retried", () => {
+  const directory = matter()
+  for (const [label, text, updated] of [
+    ["2.1", "1.5 times the Fees is the cap on liability.", "1.5 times the Fees is the cap on all liability."],
+    ["2", "30 days' notice ends this Agreement.", "30 days' written notice ends this Agreement."],
+    ["(a)", "(i) and (ii) below apply to the Goods.", "(i) and (ii) below apply to all Goods."],
+  ]) {
+    const rows = [{ pid: "p000000000001", sha256: paragraphSha256(text!), label, text: text! }]
+    writeLeanText(directory, "d1/paragraphs.json", JSON.stringify(rows))
+    const body = JSON.stringify({ amendments: [{ pid: rows[0]!.pid, updated, reason: "Review finding.", sources: [{ source_id: REQUEST_SOURCE, quote: "Draft a short supply note" }] }], questions: [] })
+    const checked = checkChanges(directory, body, rows, { document: "d1" })
+    expect(checked.issues).toEqual([])
+    expect(checked.changes?.amendments[0]?.updated).toBe(updated)
+  }
+})
