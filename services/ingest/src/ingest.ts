@@ -12,6 +12,7 @@ import { stageSourceChange, writeSourceArtifacts } from "./source-artifacts"
 import { canonicalArtifactIdentity, withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
 import { chunkText } from "../../../dochaus/lib/chunk-text"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
+import { writeListLabels } from "../../../dochaus/lib/docx-list-labels"
 import { markTrackedChanges } from "../../../dochaus/lib/docx-tracked-text"
 import { draftingTraceReference } from "../../../dochaus/lib/drafting-trace-identity"
 import { parseEmail } from "../../../dochaus/lib/email"
@@ -378,7 +379,8 @@ export async function extractSourceText(fileName: string, buffer: Buffer): Promi
 }
 
 // Pull plain text from a source document. DOCX goes through mammoth, with pending
-// tracked changes labelled first (see dochaus/lib/docx-tracked-text.ts); PDF through
+// tracked changes labelled first (see dochaus/lib/docx-tracked-text.ts) and then
+// Word's list numbers written in (dochaus/lib/docx-list-labels.ts); PDF through
 // LiteParse/markitdown/unpdf with an OCR fallback for flat scans (see pdf.ts). Always
 // normalized (see sanitize.ts) so every consumer — indexing, the document/template
 // text routes, and through them the agents' read-document tool — sees the same
@@ -399,7 +401,7 @@ async function extractRawText(fileName: string, buffer: Buffer): Promise<{ text:
   }
   if (lower.endsWith(".xlsx")) return xlsxToText(buffer)
   if (lower.endsWith(".zip")) return { text: zipToText(buffer), facts: { format: "archive" } }
-  return { text: (await mammoth.extractRawText({ buffer: markTrackedChanges(buffer) })).value, facts: { format: "docx" } }
+  return { text: (await mammoth.extractRawText({ buffer: await writeListLabels(markTrackedChanges(buffer)) })).value, facts: { format: "docx" } }
 }
 
 // Spreadsheet sources (cap tables, waterfalls, payout models) are zip-based but

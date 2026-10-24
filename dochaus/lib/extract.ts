@@ -1,4 +1,5 @@
 import { statSync } from "node:fs"
+import { writeListLabels } from "./docx-list-labels"
 import { markTrackedChanges } from "./docx-tracked-text"
 import { normalizeExtractedText } from "./untrusted"
 
@@ -87,7 +88,7 @@ async function extract(docPath: string, buffer: Buffer) {
     return zipToText(buffer)
   }
   const { default: mammoth } = await import("mammoth")
-  return (await mammoth.extractRawText({ buffer: markTrackedChanges(buffer) })).value
+  return (await mammoth.extractRawText({ buffer: await writeListLabels(markTrackedChanges(buffer)) })).value
 }
 
 // Spreadsheet sources (.xlsx) — same tolerant reader as ingest, one labeled CSV
