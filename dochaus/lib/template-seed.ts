@@ -161,10 +161,11 @@ function sanitizedSettings(settings: Document) {
   return serialize(settings)
 }
 
-/** Points a rendered document's paragraphs at the template's own style where
- * the render wrote a built-in style id (Heading1, Title) that the template
- * keeps under a translated id of the same built-in name. Unchanged bytes when
- * nothing is renamed. */
+/** Points a rendered document's paragraphs, its body's and its headers' and
+ * footers', at the template's own style where the render wrote a built-in
+ * style id (Heading1, Title, Header) that the template keeps under a
+ * translated id of the same built-in name. Unchanged bytes when nothing is
+ * renamed. */
 export function withTemplateStyleIds(bytes: Uint8Array) {
   const parts = unzipSync(bytes)
   if (!parts["word/styles.xml"] || !parts[BODY]) return bytes
@@ -177,15 +178,14 @@ export function withTemplateStyleIds(bytes: Uint8Array) {
     if (own) renamed.set(id, own)
   }
   if (!renamed.size) return bytes
-  const document = parse(parts[BODY])
-  let changed = false
-  for (const style of elements(document, W, "pStyle")) {
-    const own = renamed.get(attribute(style) ?? "")
-    if (!own) continue
-    style.setAttributeNS(W, "w:val", own)
-    changed = true
+  const changed: Record<string, Uint8Array> = {}
+  for (const name of Object.keys(parts).filter(name => name === BODY || /^word\/(header|footer)\d*\.xml$/.test(name))) {
+    const document = parse(parts[name])
+    const styles = elements(document, W, "pStyle").filter(style => renamed.has(attribute(style) ?? ""))
+    for (const style of styles) style.setAttributeNS(W, "w:val", renamed.get(attribute(style)!)!)
+    if (styles.length) changed[name] = serialize(document)
   }
-  return changed ? zipSync({ ...parts, [BODY]: serialize(document) }, { mtime: new Date(1980, 0, 1) }) : bytes
+  return Object.keys(changed).length ? zipSync({ ...parts, ...changed }, { mtime: new Date(1980, 0, 1) }) : bytes
 }
 
 function contentTypes(types: Document, kept: Map<string, Uint8Array>) {

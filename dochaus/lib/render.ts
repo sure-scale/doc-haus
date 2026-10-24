@@ -100,10 +100,11 @@ export async function renderMarkdownToDocx(content: string, previous?: Uint8Arra
   // document.xml, and a header date would trip the lint's date-style rule.
   // Highlighting and paragraph pointers read document.xml only, so header and
   // footer text takes neither.
-  // Numbering follows the lint, which reads the literal numbers as Markdown.
-  const numbered = options.numbering === false ? composed : numberDocxClauses(templated ? withTemplateStyleIds(composed) : composed)
-  const furnished = furniture ? applyPageFurniture(numbered, furniture) : numbered
-  const bytes = withGeneratedDocxAttribution(withParagraphPointers(highlightOpenItemsInDocx(furnished), previous))
+  // Numbering follows the lint, which reads the literal numbers as Markdown,
+  // and the furniture, whose header and footer take the template's style ids too.
+  const furnished = furniture ? applyPageFurniture(composed, furniture) : composed
+  const numbered = options.numbering === false ? furnished : numberDocxClauses(templated ? withTemplateStyleIds(furnished) : furnished)
+  const bytes = withGeneratedDocxAttribution(withParagraphPointers(highlightOpenItemsInDocx(numbered), previous))
   return { bytes, lint, templated: Boolean(templated), headingSpacing }
 }
 

@@ -172,6 +172,17 @@ describe("rendering onto a template", () => {
     const shown = await blocks(zipSync(parts))
     expect(shown.find(row => row.shown === "1. Definitions")?.style).toBe("berschrift2")
     expect(shown.find(row => row.shown === "1.1 In this Agreement the following terms apply.")?.style).toBe("Level2")
+
+    // The page furniture's header and footer take the template's translated Header and Footer styles.
+    const furnished = template({
+      headings: heading(2, "berschrift2")
+        + '<w:style w:type="paragraph" w:styleId="Kopfzeile"><w:name w:val="header"/><w:basedOn w:val="BodyText"/></w:style>'
+        + '<w:style w:type="paragraph" w:styleId="Fuzeile"><w:name w:val="footer"/><w:basedOn w:val="BodyText"/></w:style>',
+    })
+    const stories = unzipSync((await renderMarkdownToDocx(BODY, undefined, { header: ["Subject to contract"], pageNumber: { format: "page", align: "center" } }, { styleTemplate: furnished })).bytes)
+    const storyStyles = Object.keys(stories).filter(name => /^word\/(header|footer)\d*\.xml$/.test(name)).sort()
+      .map(name => [name, [...strFromU8(stories[name]!).matchAll(/<w:pStyle w:val="([^"]+)"/g)].map(match => match[1])])
+    expect(storyStyles).toEqual([["word/footer1.xml", ["Fuzeile"]], ["word/header1.xml", ["Kopfzeile"]]])
   })
 
   test("the seed takes the main body's page and leaves out even-page headers, edit history and the printer", async () => {
