@@ -184,7 +184,7 @@ async function retentionEdit(bytes:Uint8Array,tracked:boolean) {
   } finally {session.close()}
 }
 
-test("a Word file with tracked changes is refused plainly at import and at Accept, changing nothing, while the same edit untracked imports", async () => {
+test("a Word file with tracked changes is saved as a version at import and refused plainly at Accept and Prepare, while the same edit untracked imports", async () => {
   const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-tracked-"))
   try {
     const review = await isolatedReview(temporary,[pendingChanges])
@@ -209,20 +209,27 @@ test("a Word file with tracked changes is refused plainly at import and at Accep
       const tracked = await retentionEdit(accepted,true)
       await expect(createDocxRevision(tracked)).rejects.toThrow("unsupported_existing_tracked_revisions")
 
-      // Import through the revisions route: refused before anything is written.
-      await refused(await review.post("/documents/revisions",{headers:{"x-document-prior-sha256":sha256(accepted)},body:wordForm(tracked)}),
-        "This Word file contains tracked changes. Accept or reject them in Word, then upload it again.")
-      expect(sha256(await review.current())).toBe(sha256(accepted))
-      expect(await review.pending()).toEqual(valid)
+      // Import through the revisions route: the lawyer's save is kept as the
+      // next version, with a notice, and the working record stays the last
+      // clean accepted revision (#268).
+      const saved = await review.post("/documents/revisions",{headers:{"x-document-prior-sha256":sha256(accepted)},body:wordForm(tracked)})
+      expect(saved.status).toBe(200)
+      expect(await saved.json()).toMatchObject({version:{origin:"revision",created:true},tracked_changes:{count:1,authors:["Reviewer"]},
+        notice:expect.stringMatching(/^Saved as version \d+, with 1 tracked change by Reviewer; resolve them in Word before doc\.haus edits it\.$/)})
+      expect(review.working()).toEqual(record)
+      expect(review.rows(ids)).toEqual(rows)
+      const stored = await review.current()
 
-      // A direct Word save left tracked changes in the stored file: every
-      // revision-bound proposal says so, and Accept and Accept all refuse.
+      // Every revision-bound proposal says so, and Accept, Accept all and
+      // Prepare refuse, changing nothing.
       const trackedAccept = "This Word file contains tracked changes. Accept or reject them in Word before changes can be applied."
-      await Bun.write(review.file,tracked)
       expect(await review.pending()).toEqual(ids.map((id) => [id,true,trackedAccept]))
       for (const id of [notice,header]) await refused(await review.post(`/redlines/${id}/accept`),trackedAccept)
       await refused(await review.post("/redlines/accept-all?name=working.docx"),trackedAccept)
-      expect(sha256(await review.current())).toBe(sha256(tracked))
+      const prepared = await review.post("/documents/amendments",{headers:{"content-type":"application/json"},body:JSON.stringify({name:"working.docx",instructions:"Update the retention period."})})
+      expect(prepared.status).toBe(409)
+      expect((await prepared.json() as {error:string}).error).toBe("This Word file contains tracked changes. Accept or reject them in Word before preparing changes.")
+      expect(sha256(await review.current())).toBe(sha256(stored))
 
       // Restored, the same edit without tracked changes imports and stales only its paragraph.
       await Bun.write(review.file,accepted)

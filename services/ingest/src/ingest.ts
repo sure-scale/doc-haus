@@ -1,4 +1,4 @@
-import { existsSync, readdirSync } from "node:fs"
+import { existsSync, readdirSync, readFileSync } from "node:fs"
 import path from "node:path"
 import mammoth from "mammoth"
 import { read, utils } from "xlsx"
@@ -18,6 +18,7 @@ import { parseEmail } from "../../../dochaus/lib/email"
 import { zipToText } from "../../../dochaus/lib/zip"
 import { commitDocumentWriteAsync } from "./atomic-document-write"
 import { MatterDocumentIdentityError, resolveMatterDocumentTarget } from "./document-identity"
+import { captureVersion, trackedChanges, trackedChangesNotice, type CapturedVersion, type VersionOrigin, type VersionWrite } from "./document-versions"
 import {
   beginDocumentMutation,
   completeDocumentMutation,
@@ -32,6 +33,8 @@ import {
 const MATTER_DOCUMENT_EXTENSIONS = new Set([".docx", ".pdf", ".xlsx", ".eml", ".zip"])
 
 export class SourceDocumentConflictError extends Error {}
+
+export type IngestVersion = Omit<VersionWrite, "origin"> & { origin?: VersionOrigin }
 
 // The upload names a source (or an unregistered file) already in the matter and
 // the caller chose neither replace nor keep both. `existing` is its stored name.
@@ -74,6 +77,11 @@ export async function ingestDocument(
     extracted?: ExtractedSourceText
     // The document's email links; a field left out keeps what it had.
     links?: DocumentLinks
+    // The version this write records (document-versions.ts). Without an
+    // origin the write is an upload: every caller that states none ingests a
+    // file the lawyer brought in (an upload, an email and its attachments, a
+    // zip's files), and a replace choice over an existing file makes it a replace.
+    version?: IngestVersion
   } = {},
 ) {
   const requested = matterDocumentName(fileName)
@@ -122,6 +130,7 @@ async function ingestDocumentLocked(
     updateRegistry?: (db: ReturnType<typeof openDb>) => void
     extracted?: ExtractedSourceText
     links?: DocumentLinks
+    version?: IngestVersion
   },
 ) {
   const recovery = await recoverDocumentMutations(matterDir)
@@ -137,6 +146,10 @@ async function ingestDocumentLocked(
     throw new SourceDocumentConflictError(`${fileName} is no longer a registered source document.`)
   if (options.existing === "refuse" && (role === "source" || existsSync(docPath)))
     throw new SourceDocumentExistsError(fileName)
+  const version: VersionWrite = {
+    ...options.version,
+    origin: options.version?.origin ?? (options.existing === "replace" && existsSync(docPath) ? "replace" : "upload"),
+  }
 
   // Untrusted-document defense (issue #17): normalize away invisible Unicode, then
   // scan the visible text and the raw DOCX for injected instructions. Findings are
@@ -169,6 +182,7 @@ async function ingestDocumentLocked(
     .join("; ")
   const correlation = `ingest-${Date.now().toString(36)}`
   const mutation = beginDocumentMutation(matterDir, fileName, "write", true)
+  let captured: CapturedVersion | undefined
   try {
     // Never mix vectors from two embedding models in one matter — re-embed any
     // stale chunks before this document's are written (no-op on current DBs).
@@ -219,9 +233,11 @@ async function ingestDocumentLocked(
       chunks: preparedChunks,
       updateRegistry: options.updateRegistry,
       links: options.links ?? {},
+      version,
     })
     finalizeDocumentMutationLineage(db, mutation, artifacts.files)
     completeDocumentMutation(db, mutation)
+    captured = artifacts.version
   } catch (error) {
     discardDocumentMutation(db, mutation)
     throw error
@@ -239,7 +255,18 @@ async function ingestDocumentLocked(
       ? { findings, flaggedChunks: preparedChunks.filter((chunk) => chunk.flagged).length }
       : null,
     quality,
+    // The version this ingest recorded; created is false when the file already
+    // held these bytes.
+    version: captured ?? null,
+    ...versionNotice(fileName, buffer, captured),
   }
+}
+
+/** A saved Word file's pending tracked changes, with the notice that doc.haus
+ * edits wait for them (document-versions.ts); nothing for a file without. */
+export function versionNotice(name: string, bytes: Uint8Array, version: CapturedVersion | undefined) {
+  const tracked = trackedChanges(name, bytes)
+  return tracked.count && version ? { tracked_changes: tracked, notice: trackedChangesNotice(version.number, tracked) } : {}
 }
 
 function sourceDocumentTarget(matterDir: string, fileName: string) {
@@ -275,6 +302,7 @@ async function commitIngestedDocument(
     }>
     updateRegistry?: (db: ReturnType<typeof openDb>) => void
     links: DocumentLinks
+    version: VersionWrite
   },
 ) {
   const links = effectiveDocumentLinks(db, input.fileName, input.links)
@@ -319,12 +347,21 @@ async function commitIngestedDocument(
       recordSections(db, input.docPath, input.fileName)
       extractStructure(db, input.docPath, input.fileName, input.text)
       input.updateRegistry?.(db)
+      // The bytes this write replaced are its backup until it settles.
+      const backup = input.mutation.documentBackup
+      const version = captureVersion(db, input.matterDir, {
+        name: input.fileName,
+        bytes: input.buffer,
+        prior: existsSync(backup) ? readFileSync(backup) : null,
+        version: input.version,
+      })
       recordDocumentMutationLineageIntent(
         input.mutation,
         (listSourceDocuments(db) as { name: string }[]).map((document) => document.name),
         input.correlation,
+        input.version.origin,
       )
-      return await writeSourceArtifacts(input.matterDir, input.correlation, {
+      const artifacts = await writeSourceArtifacts(input.matterDir, input.correlation, {
         db,
         stampLineage: false,
         staged,
@@ -334,6 +371,7 @@ async function commitIngestedDocument(
           settled = true
         },
       })
+      return { ...artifacts, version }
     } catch (error) {
       if (!settled) {
         try {

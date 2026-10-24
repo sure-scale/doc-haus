@@ -81,13 +81,16 @@ function artifactsOnDisk(matterDir: string): string[] {
 // Stamps a source upload or delete (or a recovery that restaged it) as an
 // ingest, legal.db included. A finalize retried after a stop, even one that
 // stopped mid-append, finds the rows it already wrote as the latest ones and
-// stamps only what is still unrecorded. Returns the number of artifacts stamped.
+// stamps only what is still unrecorded. `origin` is what made the change, as
+// its writer states it (an upload, an agent's edit, a delete). Returns the
+// number of artifacts stamped.
 export function stampIngestLineage(
   matterDir: string,
   documents: string[],
   correlation: string,
   mutationID?: string,
   files?: ReadonlyMap<string, ArtifactHash>,
+  origin = "upload",
 ): number {
   return withArtifactMutationLock(matterDir, ".dochaus/lineage.jsonl", () =>
     appendArtifactRows(matterDir, readLedger(matterDir), {
@@ -95,7 +98,7 @@ export function stampIngestLineage(
       op: "ingest",
       run: `ingest:${correlation}`,
       provenance: {
-        origin: "upload",
+        origin,
         documents,
         ...(mutationID ? { document_mutation_id: mutationID } : {}),
       },

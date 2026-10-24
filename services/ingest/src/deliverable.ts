@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite"
 import { createHash } from "node:crypto"
 import path from "node:path"
-import { existsSync, lstatSync } from "node:fs"
+import { existsSync, lstatSync, readFileSync } from "node:fs"
 import { withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
 import {
   getDocumentRole,
@@ -16,6 +16,7 @@ import { sha256File } from "../../../dochaus/lib/lineage"
 import { readWorkingDocx } from "../../../dochaus/lib/working-docx"
 import { forgetSystemDocx, recordSystemDocx, replaceableDeliverable } from "../../../dochaus/lib/system-docx"
 import { withParagraphPointers } from "../../../dochaus/lib/drafting-amendment"
+import { captureVersion, type VersionWrite } from "./document-versions"
 import {
   beginDocumentMutation,
   completeDocumentMutation,
@@ -42,7 +43,8 @@ export function deliverableDocumentName(fileName: string) {
 // written over again by the system. A replace with `owned` set also requires,
 // under this write's lock, that the file is still the system's to write over
 // (replaceableDeliverable), so a write or proposal made after the caller looked
-// is never overwritten.
+// is never overwritten. Each write records the next version of the file
+// (document-versions.ts), of origin "generated" unless `version` says otherwise.
 export async function writeDeliverable(
   matterDir: string,
   fileName: string,
@@ -52,6 +54,7 @@ export async function writeDeliverable(
       | { kind: "create" }
       | { kind: "replace"; prior_sha256: string; owned?: boolean }
     system?: boolean
+    version?: VersionWrite
   } = {},
 ) {
   const name = deliverableDocumentName(fileName)
@@ -82,7 +85,7 @@ export async function writeDeliverable(
           `Cannot replace ${target.name}: it changed since the system saved it or has changes pending review.`,
         )
       const bytes = name.toLowerCase().endsWith(".docx") ? Buffer.from(withParagraphPointers(buffer)) : buffer
-      return await persistDeliverable(db, matterDir, target, bytes, options.system)
+      return await persistDeliverable(db, matterDir, target, bytes, options.version ?? { origin: "generated" }, options.system)
     } finally {
       db.close()
     }
@@ -115,30 +118,33 @@ export async function copyWordDocument(matterDir: string, sourceName: string, fi
         throw new DeliverableConflictError(`Cannot create ${target.name}: that document already exists. Choose a different name.`)
       const bytes = Buffer.from(await Bun.file(original.docPath).bytes())
       const pendingProposalsExcluded = pendingRedlineCounts(db)[original.identity] ?? 0
-      return { ...await persistDeliverable(db, matterDir, target, bytes), source: original.name, pendingProposalsExcluded }
+      const version: VersionWrite = { origin: "copy", label: `Copy of ${original.name}`, derivedFrom: original.name }
+      return { ...await persistDeliverable(db, matterDir, target, bytes, version), source: original.name, pendingProposalsExcluded }
     } finally {
       db.close()
     }
   })
 }
 
-async function persistDeliverable(db: Database, matterDir: string, target: { name: string; docPath: string }, bytes: Buffer, system = false) {
+async function persistDeliverable(db: Database, matterDir: string, target: { name: string; docPath: string }, bytes: Buffer, version: VersionWrite, system = false) {
   const mutation = beginDocumentMutation(matterDir, target.name, "write", false)
   try {
-    await commitDocumentWriteAsync(target.docPath, bytes, async () => {
+    const captured = await commitDocumentWriteAsync(target.docPath, bytes, async () => {
       db.run("BEGIN IMMEDIATE")
       try {
         upsertDeliverable(db, target.docPath, target.name, Date.now())
         updateSystemDocx(db, matterDir, target.docPath, bytes, system)
+        const captured = captureVersion(db, matterDir, { name: target.name, bytes, prior: priorBytes(mutation.documentBackup), version })
         recordDocumentMutationCommit(db, mutation)
         db.run("COMMIT")
+        return captured
       } catch (error) {
         rollbackDocumentMutation(db)
         throw error
       }
     }, { backupPath: mutation.documentBackup })
     completeDocumentMutation(db, mutation)
-    return { name: target.name, docPath: target.docPath, role: "deliverable" as const }
+    return { name: target.name, docPath: target.docPath, role: "deliverable" as const, version: captured }
   } catch (error) {
     discardDocumentMutation(db, mutation)
     throw error
@@ -148,11 +154,24 @@ async function persistDeliverable(db: Database, matterDir: string, target: { nam
 // Persist an accepted edit to an existing deliverable without replacing its
 // registry row or touching retrieval/source state. Pending redline rows remain
 // available for the caller to mark accepted after the bytes are safely written.
+// `version`: the version the write records (document-versions.ts). With
+// `keepWorkingRecord`, a file under an accepted Word revision is saved without
+// a new projection (a version with pending tracked changes, which has none):
+// the record keeps the last clean accepted revision, and doc.haus edits on top
+// of the saved file are refused until its changes are resolved.
 export async function writeDeliverableRevision(
   matterDir: string,
   fileName: string,
   buffer: Buffer,
-  options: { updateRegistry?: (db: Database) => void; priorSha256?: string; updateWorkingRevision?: (db: Database) => void; system?: boolean } = {},
+  options: {
+    updateRegistry?: (db: Database) => void
+    priorSha256?: string
+    updateWorkingRevision?: (db: Database) => void
+    keepWorkingRecord?: boolean
+    system?: boolean
+    // The writer's provenance; a caller that states none records "unknown".
+    version?: VersionWrite
+  } = {},
 ) {
   const name = deliverableDocumentName(fileName)
   if (!name) throw new DeliverableConflictError(`Deliverables must use a supported document filename and extension.`)
@@ -163,28 +182,30 @@ export async function writeDeliverableRevision(
     try {
       if (getDocumentRole(db, target.docPath) !== "deliverable")
         throw new DeliverableConflictError(`${target.name} is not a generated deliverable.`)
-      if (readWorkingDocx(matterDir,target.docPath) && (!options.priorSha256 || !options.updateWorkingRevision))
+      if (readWorkingDocx(matterDir,target.docPath) && (!options.priorSha256 || !(options.updateWorkingRevision || options.keepWorkingRecord)))
         throw new DeliverableConflictError("An accepted Word revision requires its exact prior hash and matching projection update.")
       if (options.priorSha256 && sha256File(target.docPath)?.sha256 !== options.priorSha256)
         throw new DeliverableConflictError("The accepted Word revision changed before publication.")
       const mutation = beginDocumentMutation(matterDir, target.name, "write", false)
       try {
-        await commitDocumentWriteAsync(target.docPath, buffer, async () => {
+        const captured = await commitDocumentWriteAsync(target.docPath, buffer, async () => {
           db.run("BEGIN IMMEDIATE")
           try {
             refreshDeliverable(db, target.docPath, target.name, Date.now())
             updateSystemDocx(db, matterDir, target.docPath, buffer, options.system)
             options.updateRegistry?.(db)
             options.updateWorkingRevision?.(db)
+            const captured = captureVersion(db, matterDir, { name: target.name, bytes: buffer, prior: priorBytes(mutation.documentBackup), version: options.version ?? { origin: "unknown" } })
             recordDocumentMutationCommit(db, mutation)
             db.run("COMMIT")
+            return captured
           } catch (error) {
             rollbackDocumentMutation(db)
             throw error
           }
         }, { backupPath: mutation.documentBackup })
         completeDocumentMutation(db, mutation)
-        return { name: target.name, docPath: target.docPath, role: "deliverable" as const }
+        return { name: target.name, docPath: target.docPath, role: "deliverable" as const, version: captured }
       } catch (error) {
         discardDocumentMutation(db, mutation)
         throw error
@@ -209,6 +230,11 @@ function deliverableTarget(matterDir: string, fileName: string) {
     if (error instanceof MatterDocumentIdentityError) throw new DeliverableConflictError(error.message)
     throw error
   }
+}
+
+// The bytes a write replaced: its backup, until the write settles.
+function priorBytes(backup: string) {
+  return existsSync(backup) ? readFileSync(backup) : null
 }
 
 function rollbackDocumentMutation(db: Database) {

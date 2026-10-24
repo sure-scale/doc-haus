@@ -7,6 +7,7 @@ import { matterDocumentName } from "./ingest"
 import { stageSourceChange, writeSourceArtifacts } from "./source-artifacts"
 import { workingDocxKey } from "../../../dochaus/lib/working-docx"
 import { forgetSystemDocx } from "../../../dochaus/lib/system-docx"
+import { detachVersionedDocument } from "./document-versions"
 import {
   beginDocumentMutation,
   completeDocumentMutation,
@@ -41,6 +42,7 @@ export async function deleteMatterDocument(matterDir: string, requestedName: str
           db.run("BEGIN IMMEDIATE")
           try {
             deleteDocument(db, target.docPath)
+            detachVersionedDocument(db, matterDir, target.name)
             db.run("DELETE FROM meta WHERE key = ?",[workingDocxKey(matterDir,target.docPath)])
             forgetSystemDocx(db, matterDir, target.docPath)
             recordDocumentMutationCommit(db, mutation)
@@ -66,10 +68,12 @@ export async function deleteMatterDocument(matterDir: string, requestedName: str
         let settled = false
         try {
           deleteDocument(db, target.docPath)
+          detachVersionedDocument(db, matterDir, target.name)
           recordDocumentMutationLineageIntent(
             mutation,
             (listSourceDocuments(db) as { name: string }[]).map((document) => document.name),
             correlation,
+            "delete",
           )
           return await writeSourceArtifacts(matterDir, correlation, {
             db,

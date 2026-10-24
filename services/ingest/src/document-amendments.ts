@@ -9,6 +9,7 @@ import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadat
 import { existsSync } from "node:fs"
 import { MatterDocumentIdentityError, resolveMatterDocumentTarget } from "./document-identity"
 import { getDocumentRole, getMeta, getPreparedChanges, openDb, setMeta, setPreparedChanges, type PreparedChanges } from "./db"
+import { trackedChanges } from "./document-versions"
 import { draftingAttribution } from "../../../dochaus/lib/docx-attribution"
 
 export class DocumentAmendmentConflictError extends Error {}
@@ -97,6 +98,9 @@ async function prepare(directory:string,name:string,instructions:string,diagnost
       const bytes = await Bun.file(target.docPath).bytes()
       diagnostic.record("source_validation",{},hash(bytes))
       const prior = readWorkingDocx(directory,target.docPath)
+      // A version saved with pending tracked changes keeps the last clean
+      // accepted revision's record (#268): say what to resolve, not that it differs.
+      if (prior && prior.source_sha256 !== hash(bytes) && trackedChanges(target.name,bytes).count) throw new DocxTrackedRevisionsError()
       if (prior && prior.source_sha256 !== hash(bytes))
         throw new DocumentAmendmentConflictError("The working Word file differs from its accepted revision. Refresh it through the revision API.")
       return {target,bytes}
