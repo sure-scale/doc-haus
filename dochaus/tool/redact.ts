@@ -1,9 +1,9 @@
-import { tool } from "./legacy-definition"
+import { tool, type LegalToolContext } from "./legacy-definition"
 import { existsSync, lstatSync, realpathSync } from "node:fs"
 import path from "node:path"
 import { docxodus } from "../lib/docxodus"
 import { assertDirectWorkingDocxWriteAllowed } from "../lib/working-docx"
-import { recordRedaction, scrubDocxPackage, docxPackageResidue } from "../lib/redactions"
+import { listRedactions, recordRedaction, scrubDocxPackage, docxPackageResidue, type RedactionRow } from "../lib/redactions"
 import { supersedeMatchingRedlines, withRedlineDocumentLock } from "../lib/redlines"
 
 // doc.haus redact tool. TRUE redaction: removes the sensitive text from the
@@ -82,6 +82,10 @@ export default tool({
     )
     if (!matches.length && !allParts.length) {
       session.close()
+      // This redaction was made, but its save to doc.haus failed: the text is
+      // gone from the file and logged, so running it again sends that save.
+      const logged = attempt(() => listRedactions(ctx.directory).find((row) => row.doc_name === path.basename(file) && row.redacted_text === args.text))
+      if (logged && !(logged instanceof Error)) return await saveAgain(file, args.text, logged, ctx)
       return `Text not found in ${path.basename(file)} (content or metadata): ${JSON.stringify(args.text)}`
     }
     session.close()
@@ -174,21 +178,7 @@ export default tool({
     })
     if ("error" in redaction) return redaction.error
 
-    // Persist through the role-preserving revision route. Uploaded sources are
-    // re-indexed so removed text cannot be returned; generated deliverables stay
-    // outside source retrieval.
-    const reingest = await fetch(`${ingestUrl}/matters/${path.basename(ctx.directory)}/documents/revisions`, {
-      method: "POST",
-      headers: { "x-dochaus-origin": "redaction", "x-dochaus-actor": `agent:${ctx.agent}`, "x-dochaus-run": ctx.sessionID },
-      body: (() => {
-        const form = new FormData()
-        form.append("file", new File([redaction.scrub.bytes], path.basename(file)))
-        return form
-      })(),
-    }).catch(() => null)
-    // A redaction also deletes the document's earlier versions kept by doc.haus,
-    // which hold the removed text; the response says when that failed.
-    const saved = reingest?.ok ? await reingest.json().catch(() => ({})) as { purge_failed?: unknown } : undefined
+    const saved = await saveRedaction(file, redaction.scrub.bytes, ctx)
 
     const { id, stale } = redaction
     const warnings = [
@@ -196,9 +186,7 @@ export default tool({
         `WARNING: the redaction log entry was not recorded (${id.message}). The matter's redaction log has no entry for this removal; record it manually.`,
       stale instanceof Error &&
         `WARNING: pending redlines that reference the removed text were not retired (${stale.message}). Reject any that still propose or anchor to the removed text in the redline review.`,
-      !reingest?.ok &&
-        "WARNING: re-indexing failed — the matter's search index may still contain the removed text until the document is re-ingested, and doc.haus's earlier versions of the document still hold it.",
-      typeof saved?.purge_failed === "string" && `WARNING: ${saved.purge_failed}`,
+      ...saveWarnings(saved),
       redaction.residue.unread.length &&
         `NOTE: ${redaction.residue.unread.length} part(s) are not readable text (${redaction.residue.unread.join(", ")}). The scan searched them only for a literal copy of the text and found none; it cannot see compressed, encoded or image content, so review them manually if they could contain or depict it.`,
       !(stale instanceof Error) && stale.length && `Retired ${stale.length} pending redline(s) that referenced the removed text.`,
@@ -218,7 +206,7 @@ export default tool({
         redaction: id instanceof Error ? null : id,
         reason: args.reason,
         author,
-        reingested: reingest?.ok ?? false,
+        reingested: Boolean(saved),
         supersededRedlines: stale instanceof Error ? null : stale.map((row) => row.id),
       },
     }
@@ -243,5 +231,52 @@ function matterDocument(directory: string, file: string) {
     return !lstatSync(file).isSymbolicLink() && path.dirname(realpathSync(file)) === realpathSync(directory)
   } catch {
     return false
+  }
+}
+
+// The redaction's save through the role-preserving revision route, sent again
+// once when it fails. Uploaded sources are re-indexed so removed text cannot be
+// returned; generated deliverables stay outside source retrieval; doc.haus's
+// earlier versions of the document, which hold the removed text, are deleted
+// (the response says when that failed). Undefined when both sends failed.
+async function saveRedaction(file: string, bytes: Uint8Array<ArrayBuffer>, ctx: LegalToolContext) {
+  for (let send = 0; send < 2; send++) {
+    const response = await fetch(`${ingestUrl}/matters/${path.basename(ctx.directory)}/documents/revisions`, {
+      method: "POST",
+      headers: { "x-dochaus-origin": "redaction", "x-dochaus-actor": `agent:${ctx.agent}`, "x-dochaus-run": ctx.sessionID },
+      body: (() => {
+        const form = new FormData()
+        form.append("file", new File([bytes], path.basename(file)))
+        return form
+      })(),
+    }).catch(() => null)
+    if (response?.ok) return await response.json().catch(() => ({})) as { purge_failed?: unknown }
+  }
+}
+
+function saveWarnings(saved: Awaited<ReturnType<typeof saveRedaction>>) {
+  if (!saved)
+    return ["WARNING: re-indexing failed, also when sent again — the matter's search index may still contain the removed text, and doc.haus's earlier versions of the document may still hold it. Run this redaction again to finish: it saves the redacted document to doc.haus again."]
+  return typeof saved.purge_failed === "string" ? [`WARNING: ${saved.purge_failed}`] : []
+}
+
+// Running a logged redaction again, once the text is gone from the file: its
+// save is sent again, on the matter owner's approval as the redaction was,
+// since it deletes doc.haus's earlier versions of the document.
+async function saveAgain(file: string, text: string, logged: RedactionRow, ctx: LegalToolContext) {
+  await ctx.ask({
+    permission: "redact",
+    patterns: [file],
+    always: [file],
+    metadata: { document: path.basename(file), text, occurrences: 0, metadataParts: [], reason: logged.reason, label: logged.label, author: logged.author },
+  })
+  const saved = await saveRedaction(file, await Bun.file(file).bytes(), ctx)
+  return {
+    title: `Redacted ${path.basename(file)}`,
+    output: [
+      `${JSON.stringify(text)} was already removed from ${path.basename(file)} (redaction log entry #${logged.id}).${saved ? ` Saved the redacted document to doc.haus again${typeof saved.purge_failed === "string" ? "" : ", so its earlier versions, which held the text, are deleted"}.` : ""}`,
+      ...saveWarnings(saved),
+    ].join("\n"),
+    metadata: { document: file, occurrences: 0, redaction: logged.id, reason: logged.reason, author: logged.author, reingested: Boolean(saved) },
   }
 }

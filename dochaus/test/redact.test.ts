@@ -284,6 +284,62 @@ describe("redact tool", () => {
     expect(result.output).not.toContain("re-indexing failed")
   })
 
+  test("a save that fails is sent again once before any warning", async () => {
+    const { dir } = await matterWith(buildFixture())
+    const origins: (string | null)[] = []
+    const fetchSpy = spyOn(globalThis, "fetch").mockImplementation((async (_input: string | URL | Request, init?: RequestInit) => {
+      origins.push(new Headers(init?.headers).get("x-dochaus-origin"))
+      return origins.length === 1 ? new Response("unavailable", { status: 503 }) : Response.json({ ok: true })
+    }) as typeof fetch)
+    let result: Awaited<ReturnType<typeof redact.execute>>
+    try {
+      result = await redact.execute({ document: "personnel.docx", text: SSN, reason: "SSN — PII", author: "A. Lawyer", label: undefined }, ctxFor(dir))
+    } finally {
+      fetchSpy.mockRestore()
+    }
+    if (!result || typeof result === "string") throw new Error(String(result))
+    expect(origins).toEqual(["redaction", "redaction"])
+    expect(result.output).not.toContain("WARNING")
+    expect(result.metadata?.reingested).toBe(true)
+  })
+
+  test("a save that fails twice says so, and running the redaction again saves it", async () => {
+    const { dir, file } = await matterWith(buildFixture())
+    const run = () => redact.execute({ document: "personnel.docx", text: SSN, reason: "SSN — PII", author: "A. Lawyer", label: undefined }, ctxFor(dir))
+    const down = spyOn(globalThis, "fetch").mockImplementation((async () => new Response("unavailable", { status: 503 })) as typeof fetch)
+    let failed: Awaited<ReturnType<typeof redact.execute>>
+    try {
+      failed = await run()
+    } finally {
+      down.mockRestore()
+    }
+    if (!failed || typeof failed === "string") throw new Error(String(failed))
+    expect(failed.output).toContain("doc.haus's earlier versions of the document may still hold it. Run this redaction again")
+    // The text is gone from the file and logged: running it again sends the
+    // redaction save of the file as it is now.
+    const redacted = await Bun.file(file).bytes()
+    const sent: { origin: string | null; bytes: Uint8Array }[] = []
+    const up = spyOn(globalThis, "fetch").mockImplementation((async (_input: string | URL | Request, init?: RequestInit) => {
+      const upload = (init?.body as FormData).get("file") as File
+      sent.push({ origin: new Headers(init?.headers).get("x-dochaus-origin"), bytes: new Uint8Array(await upload.arrayBuffer()) })
+      return Response.json({ ok: true })
+    }) as typeof fetch)
+    let again: Awaited<ReturnType<typeof redact.execute>>
+    try {
+      again = await run()
+    } finally {
+      up.mockRestore()
+    }
+    expect(sent).toEqual([{ origin: "redaction", bytes: redacted }])
+    if (!again || typeof again === "string") throw new Error(String(again))
+    expect(again.output).toContain("already removed")
+    expect(again.output).not.toContain("WARNING")
+    expect(listRedactions(dir)).toHaveLength(1)
+    // Text never redacted from this document is still not found.
+    expect(await redact.execute({ document: "personnel.docx", text: "not in this document", reason: "test", author: undefined, label: undefined }, ctxFor(dir)))
+      .toContain("Text not found")
+  })
+
   test("doc.haus's own records are not a document it redacts", async () => {
     const { dir } = await matterWith(buildFixture())
     const kept = path.join(dir, ".dochaus", "revisions", "document", "kept.docx")
