@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { mkdirSync, mkdtempSync } from "node:fs"
+import { mkdirSync, mkdtempSync, realpathSync, symlinkSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { pendingRedlinesForDoc } from "../lib/redlines"
@@ -106,12 +106,26 @@ describe("redline review comments", () => {
     mkdirSync(path.dirname(kept), { recursive: true })
     await Bun.write(kept, fixtureBytes)
     const comment = "Aligns the defined term with the terminology used throughout the agreement."
-    for (const document of [kept, ".dochaus/revisions/document/kept.docx"]) {
-      expect(await trackedChanges.execute({ document, find: "Confidential Information", replace: "Protected Information", comment }, ctxFor(fixture.directory)))
-        .toBe(`Document not found in this matter: ${document}`)
-      expect(await redline.execute({ document, clause: "Entire Agreement", replacement: "Entire Agreement.", comment }, ctxFor(fixture.directory)))
-        .toBe(`Document not found in this matter: ${document}`)
-    }
+    // Links into the records, and the matter folder under another spelling of its path.
+    symlinkSync(path.join(fixture.directory, ".dochaus"), path.join(fixture.directory, "records"))
+    symlinkSync(kept, path.join(fixture.directory, "alias.docx"))
+    const spelled = `${fixture.directory}-spelled`
+    symlinkSync(fixture.directory, spelled)
+    const documents = [
+      kept, ".dochaus/revisions/document/kept.docx", ".DOCHAUS/revisions/document/kept.docx", ".dochau\u017f/revisions/document/kept.docx",
+      path.join(realpathSync(fixture.directory), ".dochaus", "revisions", "document", "kept.docx"), "records/revisions/document/kept.docx", "alias.docx",
+    ]
+    for (const directory of [fixture.directory, spelled])
+      for (const document of documents) {
+        expect(await trackedChanges.execute({ document, find: "Confidential Information", replace: "Protected Information", comment }, ctxFor(directory)))
+          .toBe(`Document not found in this matter: ${document}`)
+        expect(await redline.execute({ document, clause: "Entire Agreement", replacement: "Entire Agreement.", comment }, ctxFor(directory)))
+          .toBe(`Document not found in this matter: ${document}`)
+      }
     expect(pendingRedlinesForDoc(fixture.directory, kept)).toEqual([])
+    expect(pendingRedlinesForDoc(fixture.directory, path.join(fixture.directory, "alias.docx"))).toEqual([])
+    // A document saved in the matter is found under either spelling.
+    expect(await trackedChanges.execute({ document: path.join(realpathSync(fixture.directory), "agreement.docx"), find: "Confidential Information", replace: "Protected Information", comment }, ctxFor(spelled)))
+      .toBeObject()
   })
 })

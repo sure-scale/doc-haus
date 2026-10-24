@@ -7,7 +7,7 @@
 // test runner throws ("Cannot use describe outside of the test runner").
 import { describe, expect, spyOn, test } from "bun:test"
 import { Database } from "bun:sqlite"
-import { mkdirSync, mkdtempSync } from "node:fs"
+import { mkdirSync, mkdtempSync, realpathSync, symlinkSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
@@ -290,9 +290,19 @@ describe("redact tool", () => {
     mkdirSync(path.dirname(kept), { recursive: true })
     const bytes = buildFixture()
     await Bun.write(kept, bytes)
-    for (const document of [kept, ".dochaus/revisions/document/kept.docx", ".DOCHAUS/revisions/document/kept.docx"])
-      expect(await redact.execute({ document, text: SSN, reason: "SSN — PII", author: "A. Lawyer", label: undefined }, ctxFor(dir)))
-        .toBe(`Document not found in this matter: ${document}`)
+    // Links into the records, and the matter folder under another spelling of its path.
+    symlinkSync(path.join(dir, ".dochaus"), path.join(dir, "records"))
+    symlinkSync(kept, path.join(dir, "alias.docx"))
+    const spelled = `${dir}-spelled`
+    symlinkSync(dir, spelled)
+    const documents = [
+      kept, ".dochaus/revisions/document/kept.docx", ".DOCHAUS/revisions/document/kept.docx", ".dochau\u017f/revisions/document/kept.docx",
+      path.join(realpathSync(dir), ".dochaus", "revisions", "document", "kept.docx"), "records/revisions/document/kept.docx", "alias.docx",
+    ]
+    for (const directory of [dir, spelled])
+      for (const document of documents)
+        expect(await redact.execute({ document, text: SSN, reason: "SSN — PII", author: "A. Lawyer", label: undefined }, ctxFor(directory)))
+          .toBe(`Document not found in this matter: ${document}`)
     expect(await Bun.file(kept).bytes()).toEqual(bytes)
   })
 })

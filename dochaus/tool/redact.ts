@@ -1,5 +1,5 @@
 import { tool } from "./legacy-definition"
-import { existsSync } from "node:fs"
+import { existsSync, lstatSync, realpathSync } from "node:fs"
 import path from "node:path"
 import { docxodus } from "../lib/docxodus"
 import { assertDirectWorkingDocxWriteAllowed } from "../lib/working-docx"
@@ -44,8 +44,7 @@ export default tool({
   },
   async execute(args, ctx) {
     const file = path.isAbsolute(args.document) ? args.document : path.join(ctx.directory, args.document)
-    // doc.haus's own records (kept versions, the registry) are not matter documents.
-    if (insideDochausRecords(ctx.directory, file) || !existsSync(file)) return `Document not found in this matter: ${args.document}`
+    if (!matterDocument(ctx.directory, file)) return `Document not found in this matter: ${args.document}`
     const label = args.label ?? "[REDACTED]"
     if (label.includes(args.text)) return "The redaction label must not contain the text being redacted."
 
@@ -235,6 +234,14 @@ function attempt<T>(write: () => T): T | Error {
   }
 }
 
-function insideDochausRecords(directory: string, file: string) {
-  return path.relative(path.resolve(directory), path.resolve(file)).split(path.sep)[0]?.toLowerCase() === ".dochaus"
+// Ingest registers documents by name in the matter folder itself: only a file
+// saved directly there, by its real path and not through a link, is a matter
+// document. doc.haus's own records (.dochaus/: kept versions, the registry)
+// never are, under any spelling of their path.
+function matterDocument(directory: string, file: string) {
+  try {
+    return !lstatSync(file).isSymbolicLink() && path.dirname(realpathSync(file)) === realpathSync(directory)
+  } catch {
+    return false
+  }
 }
