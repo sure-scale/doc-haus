@@ -389,6 +389,25 @@ test("From, To and Date read as an .eml's: the person a delegate sent for, Excha
   namesakes.recipients = [exchangeRecipient(1, "Sam Example"), exchangeRecipient(2, "Sam Example")]
   expect((await parseMsg(msgFile(namesakes))).text).toStartWith("Subject: Synthetic namesakes\nTo: Sam Example\nCc: Sam Example\n\n")
 
+  // Exchange mail from its own sender states the sender twice, its SMTP
+  // address once: From has the address. A delegate's is never borrowed.
+  const internal = (name: string, directory: string) => {
+    const node = outlookMessage({ subject: "Synthetic internal", body: "Body." })
+    node.props.push(
+      [TAG.senderName, "Pat Example"],
+      [TAG.senderAddressType, "EX"],
+      [TAG.senderEmail, "/O=EXAMPLE/CN=PAT"],
+      [TAG.senderSmtpAddress, "pat@example.test"],
+      [TAG.sentRepresentingName, name],
+      [TAG.sentRepresentingAddressType, "EX"],
+      [TAG.sentRepresentingEmail, directory],
+    )
+    return msgFile(node)
+  }
+  expect((await parseMsg(internal("Pat Example", "/O=EXAMPLE/CN=PAT"))).text).toContain("\nFrom: Pat Example <pat@example.test>\n")
+  expect((await parseMsg(internal("Example, Pat", "/o=example/cn=pat"))).text).toContain("\nFrom: Example, Pat <pat@example.test>\n")
+  expect((await parseMsg(internal("Partner Example", "/O=EXAMPLE/CN=PARTNER"))).text).toContain("\nFrom: Partner Example\n")
+
   // A draft never sent has no Date; a received message dates from delivery.
   const saved = (flags: number) => {
     const node = outlookMessage({ subject: "Synthetic draft", body: "Draft." })

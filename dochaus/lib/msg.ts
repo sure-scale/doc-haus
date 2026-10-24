@@ -334,15 +334,17 @@ function readAttachment(reader: MsgReader, attachment: FieldsData) {
 
 // From: who the message is from (PidTagSentRepresenting*: the person a
 // delegate sent it for, as an .eml's From names them), else its sender.
+// Exchange states its own sender as the person sent for too, often with the
+// SMTP address on the sender only: the same name or directory path takes it.
 function sender(fields: FieldsData, known: KnownAddresses) {
-  const representing = address(
-    str(rawProp(fields, "0042")),
-    str(fields.sentRepresentingSmtpAddress),
-    str(rawProp(fields, "0065")),
-    str(rawProp(fields, "0064")),
-    known,
-  )
-  return representing ?? address(str(fields.senderName), str(fields.senderSmtpAddress), str(fields.senderEmail), str(fields.senderAddressType), known)
+  const name = str(rawProp(fields, "0042"))
+  const directory = str(rawProp(fields, "0065"))
+  const representing = address(name, str(fields.sentRepresentingSmtpAddress), directory, str(rawProp(fields, "0064")), known)
+  const from = address(str(fields.senderName), str(fields.senderSmtpAddress), str(fields.senderEmail), str(fields.senderAddressType), known)
+  const same = (one: string | undefined, other: string | undefined) => !!one?.trim() && one.trim().toLowerCase() === other?.trim().toLowerCase()
+  if (representing && !representing.address && from?.address && (same(name, str(fields.senderName)) || same(directory, str(fields.senderEmail))))
+    return address(name, from.address, undefined, undefined, known)
+  return representing ?? from
 }
 
 function recipients(fields: FieldsData, type: "to" | "cc", known: KnownAddresses) {
