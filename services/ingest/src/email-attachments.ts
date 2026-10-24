@@ -440,10 +440,10 @@ export async function removeMatterDocument(matterDir: string, name: string, keep
 // entries (an upload stopped before it recorded them); its attachments already
 // in the matter are reused, not copied. So is an email with an attachment once
 // listed as not supported that a matter document can now take (a zip file, an
-// Outlook email). A
-// zip file left with pending entries is finished the same way. Runs in the
-// background after startup; one that fails is logged and retried at the next
-// start.
+// Outlook email); an Outlook OLE object or link keeps a document's name but is
+// still not read, so the email is parsed to confirm. A zip file left with
+// pending entries is finished the same way. Runs in the background after
+// startup; one that fails is logged and retried at the next start.
 export async function reingestLegacyEmails(matterDir: string) {
   const db = openDb(matterDir)
   const legacy = (() => {
@@ -462,15 +462,25 @@ export async function reingestLegacyEmails(matterDir: string) {
   for (const email of legacy) {
     const record = readRecord(email.attachments)
     const zip = email.name.toLowerCase().endsWith(".zip")
-    if (record && !record.attachments.some((entry, index) => entry.outcome === "pending" || (!zip && nowSupported(entry, index)))) continue
+    const pending = record?.attachments.some((entry) => entry.outcome === "pending")
+    if (record && !pending && (zip || !record.attachments.some(nowSupported))) continue
     if (!existsSync(email.doc_path)) continue
     try {
+      const bytes = readFileSync(email.doc_path)
+      if (record && !pending && !(await readsMoreNow(email.name, bytes, record))) continue
       const ingest = zip ? ingestZipDocument : ingestEmailDocument
-      await ingest(matterDir, email.name, readFileSync(email.doc_path), { existing: "replace" })
+      await ingest(matterDir, email.name, bytes, { existing: "replace" })
       count++
     } catch (error) {
       console.error("email re-ingest failed", { matter_ref: draftingTraceReference(matterDir), ...diagnosticErrorMetadata(error) })
     }
   }
   return count
+}
+
+// Whether the email's parser now reads an attachment its record lists as not
+// supported. Entries follow the parsed attachments in order.
+async function readsMoreNow(name: string, bytes: Buffer, record: EmailAttachmentsRecord) {
+  const parsed = await (name.toLowerCase().endsWith(".msg") ? parseMsg(bytes) : parseEmail(bytes))
+  return record.attachments.some((entry, index) => entry.outcome === "unsupported" && parsed.attachments[index]?.supported === true)
 }

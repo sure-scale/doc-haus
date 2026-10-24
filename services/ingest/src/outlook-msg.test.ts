@@ -7,7 +7,7 @@ import { findQuote, liveText } from "../../../dochaus/lib/extract"
 import { parseMsg, MsgFormatError } from "../../../dochaus/lib/msg"
 import { verifyQuote } from "../../../dochaus/lib/quote-verify"
 import { openDb } from "./db"
-import { ingestEmailDocument, MAX_EMAIL_DEPTH, withEmailLinks } from "./email-attachments"
+import { ingestEmailDocument, MAX_EMAIL_DEPTH, reingestLegacyEmails, withEmailLinks } from "./email-attachments"
 import { extractDocumentText, extractSourceText } from "./ingest"
 import { sourceArtifactsMatchRegistry } from "./source-artifacts"
 import { fileAttachment, messageAttachment, msgFile, outlookMessage, TAG, type MsgAttachment } from "./fixtures/synthetic-msg"
@@ -275,6 +275,9 @@ test("an OLE object and a linked file are listed as not supported, and an inline
   ])
   expect(result.injection).toBeNull()
   expect(registry(directory).map((row) => row.name)).toEqual(["Mixed.msg"])
+  // Their names are a document's, but they stay unread, so a restart does not
+  // take the email in again as one with an attachment it can now read.
+  expect(await reingestLegacyEmails(directory)).toBe(0)
 }, 120_000)
 
 test("a malformed .msg is refused with a clear message, and never indexed as an empty success", async () => {
