@@ -5,7 +5,7 @@ import { consistencyFindings, type PackDocument, type Para } from "./consistency
 import { finalGate, type GateResult } from "./gate"
 import { runLean } from "./runner"
 import { leanFile, readLeanJson, readOpenItems } from "./state"
-import { AGENT, NO_FINDINGS, SOURCE, cleanupMatters, drafter, draftingNotes, matter, pidIn, sameSession, scriptedModel, type Reply } from "./test-support"
+import { AGENT, NO_FINDINGS, SOURCE, cleanupMatters, drafter, draftingNotes, matter, noChanges, pidIn, sameSession, scriptedModel, type Reply } from "./test-support"
 
 // Cross-references and defined terms of a final body, by code. The fixtures
 // are a neutral, invented supply agreement and pack; each case changes one
@@ -197,6 +197,15 @@ const removeListed: Reply = prompt => JSON.stringify({
   questions: [],
 })
 
+// An agreement whose clause 2 lists six charges as an ordered list, and a
+// clause that cites a clause 5 the agreement does not have.
+const ORDERED = [
+  "# Supply agreement", "", "## 1. Delivery", "", "1.1 The supplier shall deliver the goods within thirty days of the order date.", "",
+  "## 2. Payment", "", "2.1 The customer shall pay:", "",
+  "1. The price;", "2. The delivery charge;", "3. The insurance charge;", "4. The packaging charge;", "5. The storage charge; and", "6. Any duty.", "",
+  "2.2 Late payment under clause 5 carries interest.", "",
+].join("\n")
+
 // A definition the changes take out while "the Specification" stays in use, and a
 // clause referred to twice from one paragraph and then renumbered.
 const DEFINED = [
@@ -252,6 +261,18 @@ describe("the check in a lean run", () => {
     expect(final.map(shownText)).toContain("3.1 Late payment under clause 2.2 carries interest.")
     expect(readOpenItems(directory).filter(item => item.kind === "consistency").map(item => item.detail))
       .toEqual([expect.stringContaining("Clause 3.1 refers to clause 2.2, but no clause in the final text is numbered 2.2.")])
+  }, 120_000)
+
+  test("an ordered list inside a clause does not number clauses: a reference to a clause the list's numbers seem to give is still checked", async () => {
+    const directory = matter()
+    const model = scriptedModel({ [AGENT.draft]: drafter(ORDERED), [AGENT.review]: () => NO_FINDINGS, [AGENT.changes]: sameSession(noChanges), [AGENT.finalize]: draftingNotes })
+    const state = await runLean(directory, { sessions: model.port })
+
+    expect(state.status).toBe("completed")
+    const final = finalBodyParagraphs(directory, "d1")
+    expect(final.find(row => row.text === "The storage charge; and")?.label).toBe("5.")
+    expect(readOpenItems(directory).filter(item => item.kind === "consistency").map(item => item.detail))
+      .toEqual([expect.stringContaining("Clause 2.2 refers to clause 5, but no clause in the final text is numbered 5.")])
   }, 120_000)
 
   test("each underlying problem becomes exactly one open item", async () => {

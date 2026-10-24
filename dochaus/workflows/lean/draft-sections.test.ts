@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite"
 import { afterEach, describe, expect, test } from "bun:test"
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
@@ -616,6 +616,35 @@ describe("a planned document's form", () => {
     expect(strFromU8(parts["word/document.xml"]!)).toContain('<w:pgSz w:w="11906" w:h="16838"/>')
     expect(strFromU8(parts["word/numbering.xml"]!)).toBe(strFromU8(precedent["word/numbering.xml"]!))
     expect(readParagraphs(directory, "d1").map(shownText)).toEqual(["Supply terms", "Terms", "1. Definitions", "1.1 Terms have their defined meanings.", "2. Supply", "2.1 The Supplier shall deliver the Goods."])
+  }, 60_000)
+
+  test("a template linked from outside the matter is not drawn on", async () => {
+    const { directory } = matter()
+    const outside = mkdtempSync(path.join(tmpdir(), "outside-template-"))
+    try {
+      const precedent = unzipSync((await renderMarkdownToDocx("# Precedent terms\n\n## 1. Term\n\n1.1 The term is one year.")).bytes)
+      const a4 = strFromU8(precedent["word/document.xml"]!).replace(/<w:pgSz [^>]*\/>/, '<w:pgSz w:w="11906" w:h="16838"/>')
+      writeFileSync(path.join(outside, "precedent.docx"), zipSync({ ...precedent, "word/document.xml": strToU8(a4) }))
+      symlinkSync(path.join(outside, "precedent.docx"), path.join(directory, "precedent.docx"))
+      writeLeanPlan(directory, [{ title: "Supply terms", purpose: "", parts: [{ heading: "Terms", scope: "" }], form: "agreement", template: "precedent.docx" }])
+      expect((await acceptStageReply(directory, "d1.draft", "# Supply terms\n\n## Terms\n\nThe term is one year.\n")).issues).toEqual([])
+      expect(strFromU8(unzipSync(new Uint8Array(readFileSync(leanFile(directory, "d1/body.docx"))))["word/document.xml"]!)).not.toContain('<w:pgSz w:w="11906" w:h="16838"/>')
+    } finally {
+      rmSync(outside, { recursive: true, force: true })
+    }
+  }, 60_000)
+
+  test("a revision of an original whose clause numbers are typed keeps them typed", async () => {
+    const { directory } = matter()
+    // The original numbers its clauses as text, with no Word list of its own.
+    const original = (await renderMarkdownToDocx("# Supply terms\n\n## 1. Term\n\n1.1 The term is one year.", undefined, undefined, { numbering: false })).bytes
+    expect(strFromU8(unzipSync(original)["word/document.xml"]!)).not.toContain("<w:numPr>")
+    writeFileSync(path.join(directory, "original.docx"), original)
+    writeLeanPlan(directory, [{ title: "Supply terms", purpose: "", parts: [{ heading: "Terms", scope: "" }], mode: "revise", comparison: "original.docx" }])
+    expect((await acceptStageReply(directory, "d1.draft", "# Supply terms\n\n## 1. Term\n\n1.1 The term is two years.\n\n## 2. Supply\n\n2.1 The Supplier shall deliver the Goods.\n")).issues).toEqual([])
+    const rows = readParagraphs(directory, "d1")
+    expect(rows.map(row => row.text)).toEqual(["Supply terms", "1. Term", "1.1 The term is two years.", "2. Supply", "2.1 The Supplier shall deliver the Goods."])
+    expect(rows.filter(row => row.label)).toEqual([])
   }, 60_000)
 
   test("a saved plan reads with or without a form; an edited form must be one of the forms, and it keys the draft", () => {

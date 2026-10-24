@@ -25,13 +25,14 @@ import { sourceText } from "./template-structure"
 // pack document's title, is resolved in that pack document when one has that
 // title and is otherwise not this document's to check, nor is a statutory
 // citation. Text in square brackets (a placeholder or an open-item marker)
-// refers to nothing. A paragraph numbered by Word's list numbering is read with
-// the label the list gives it (its list membership), as a reader sees it. A
-// document with no clause numbers has its clause references left unchecked,
-// and so has advice or a letter, which cites the clauses of the documents it
-// discusses. An original read from its source text (ingest's extraction)
-// carries no list labels. A document planned without a known form is not
-// checked at all.
+// refers to nothing. A paragraph numbered by the document's clause list (Word
+// list numbering) is read with the label the list gives it, as a reader sees
+// it; an ordinary numbered list inside a clause numbers no clauses, so its
+// labels are not read. A document with no clause numbers has its clause
+// references left unchecked, and so has advice or a letter, which cites the
+// clauses of the documents it discusses. An original read from its source
+// text carries the list labels ingest's extraction writes into it as text. A
+// document planned without a known form is not checked at all.
 //
 // Defined terms. A term is defined by a quoted or "the"-introduced parenthetical
 // ("… Limited (the "Customer")", "(the Supplier)") or by a "means" definition.
@@ -61,7 +62,7 @@ export function consistencyItems(directory: string, document: DocID, draft: Para
   const entry = plan?.documents[position]
   if (!plan || !entry) return []
   const original = entry.comparison ? sourceLines(sourceText(directory, entry.comparison)) : []
-  const shown = (rows: ParagraphRow[]) => rows.map(row => ({ pid: row.pid, text: shownText(row) }))
+  const shown = (rows: (ParagraphRow & { clause?: true })[]) => rows.map(row => ({ pid: row.pid, text: row.clause ? shownText(row) : row.text }))
   const others = plan.documents.flatMap((row, at): PackDocument[] => {
     if (row.id === document) return []
     const paras = shown(finalBodyParagraphs(directory, row.id))

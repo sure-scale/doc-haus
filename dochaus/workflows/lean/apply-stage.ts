@@ -1,6 +1,6 @@
 import { copyFileSync, existsSync, readFileSync, rmSync } from "node:fs"
 import { comparisonBaseline } from "./comparison"
-import { compareDocxWithPointers, withStableRevisionDates } from "../../lib/drafting-amendment"
+import { compareDocxWithPointers, paragraphPointers, withStableRevisionDates } from "../../lib/drafting-amendment"
 import { applyAmendments } from "../../lib/drafting-amendment-apply"
 import { finalBodyItems, readChangeList, readParagraphs, settleApply, type ApplyResult, type ChangeList } from "./checks"
 import type { DocID } from "./plan"
@@ -43,8 +43,11 @@ export async function runApply(directory: string, state: LeanState, document: Do
   if (settled.bodyUnchanged) copyFileSync(body, out)
   const identity = draftingAttribution()
   // A changed paragraph whose text now carries a clause number the body's list
-  // supplies is numbered by the list, as at drafting.
-  writeLeanBytes(directory, `${document}/body-applied.docx`, withGeneratedDocxAttribution(numberDocxClauses(readFileSync(out), { house: false }), identity))
+  // supplies is numbered by the list, as at drafting. The later parts of a
+  // split paragraph leave its list unless they open with a deeper number of it.
+  const later = new Set(settled.result.applied.flatMap(row => row.result_pids?.slice(1) ?? []))
+  const split = (paragraph: Element) => paragraphPointers(paragraph).some(pointer => later.has(pointer.pid))
+  writeLeanBytes(directory, `${document}/body-applied.docx`, withGeneratedDocxAttribution(numberDocxClauses(readFileSync(out), { house: false, split }), identity))
   const rows = await paragraphRows(out)
   writeLeanText(directory, `${document}/paragraphs-applied.json`, `${JSON.stringify(rows, null, 2)}\n`)
   const annotated = await documentRedline(directory, document, readFileSync(out), changes, settled.result.applied, identity)
