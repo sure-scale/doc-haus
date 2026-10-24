@@ -45,8 +45,8 @@ const HIGHLIGHT_FILLS = new Set([OPEN_ITEM_HIGHLIGHT_FILL, FIELD_HIGHLIGHT_FILL]
 // outPath is written atomically.
 export async function applyAmendments(input: { docxPath: string; outPath: string; amendments: Amendment[] }) {
   const amendments = requireAmendments(input.amendments)
-  let source = new Uint8Array(await readFile(input.docxPath))
-  let opened = await openRevision(source)
+  const source = new Uint8Array(await readFile(input.docxPath))
+  const opened = await openRevision(source)
   try {
     const located = locatePointers(opened)
     const outcomes = new Map<string, Outcome>()
@@ -66,13 +66,6 @@ export async function applyAmendments(input: { docxPath: string; outPath: string
       const final = settleParagraph(initial, rows, outcomes)
       return final ? [{ ordinal, initial, final, rows }] : []
     })
-    const unlinked = unlinkEditedReferences(opened, edits)
-    if (unlinked) {
-      const reopened = await openRevision(unlinked)
-      opened.session.close()
-      opened = reopened
-      source = unlinked
-    }
     const written = edits.length ? await writeVerified(source, opened, edits.toSorted((a, b) => a.ordinal - b.ordinal)) : { bytes: source, failed: [] }
     for (const failure of written.failed) for (const row of failure.edit.rows) {
       const outcome = outcomes.get(row.id)!
@@ -155,13 +148,19 @@ function settleParagraph(initial: string, rows: Amendment[], outcomes: Map<strin
 // Writes the edits in one engine session and reads the saved file back. A
 // paragraph whose edit fails or reads back differently is left as it was and
 // the remaining edits are rewritten from the source; each round removes at
-// least one paragraph, so this ends.
+// least one paragraph, so this ends. Each round unlinks only the references
+// its own edits need unlinked, from the untouched source, so a paragraph left
+// as it was keeps its live cross-references and, when no edit is kept, the
+// source is returned unchanged.
 async function writeVerified(source: Uint8Array, opened: Opened, edits: Edit[]) {
   const failed: { edit: Edit; issue: string }[] = []
   for (let round = 0; ; round++) {
     const kept = edits.filter(edit => !failed.some(row => row.edit === edit))
     if (!kept.length) return { bytes: source, failed }
-    const revision = round ? await openRevision(source) : opened
+    const base = round ? await openRevision(source) : opened
+    const unlinked = unlinkEditedReferences(base, kept)
+    const revision = unlinked ? await openRevision(unlinked) : base
+    if (unlinked && base !== opened) base.session.close()
     try {
       const written = writeParagraphs(revision, kept)
       if (written.kind === "failed") {
@@ -173,7 +172,7 @@ async function writeVerified(source: Uint8Array, opened: Opened, edits: Edit[]) 
       if (!mismatched.length) return { bytes, failed }
       failed.push(...mismatched.map(edit => ({ edit, issue: "The saved paragraph did not read back as the amended text." })))
     } finally {
-      if (round) revision.session.close()
+      if (revision !== opened) revision.session.close()
     }
   }
 }
