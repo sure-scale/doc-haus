@@ -861,6 +861,33 @@ test("a quote copying one clause's number is offered to the locator only at the 
   } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
 })
 
+test("a replacement copying its clause's number is placed without it; a different number typed there is not proposed", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(),"dochaus-word-label-replacement-"))
+  const file = path.join(directory,"working.docx")
+  const engine = syntheticEngine(() => ({amendments:[
+    {before_quote:"The Supplier shall install",replacement:"2.1 The Supplier must install",target_context:"installation clause",reason:"Requested firm installation duty."},
+    {before_quote:"3.1 The Supplier shall insure",replacement:"2.1 The Supplier shall insure",target_context:"insurance clause",reason:"Renumbered by hand."},
+    {before_quote:"1.5 times the Fees",replacement:"1.5 times the annual Fees",target_context:"liability cap",reason:"Requested annual cap."},
+    {before_quote:"the Site",replacement:"1.2 metres inside the Site",target_context:"delivery point",reason:"Requested delivery point."},
+  ],open_items:[]}),firstCandidate)
+  try {
+    await writeDeliverable(directory,"working.docx",await sharedOpening())
+    const original = await Bun.file(file).bytes()
+    const body = await withPreparation(directory,engine,async (prepare) => {
+      const response = await prepare("Make installation firm and the cap annual.")
+      expect(response.status).toBe(200)
+      return await response.json() as {redline_ids:number[];open_items:string[]}
+    })
+    expect(body.open_items).toEqual([expect.stringContaining('its replacement begins with "2.1", but Word numbers that paragraph 3.1')])
+    const db = openDb(directory)
+    const rows = (() => {try {return body.redline_ids.map((id) => getRedline(db,id)!)} finally {db.close()}})()
+    expect(rows.map((row) => [row.find_text,row.new_text])).toEqual([["The Supplier shall install","The Supplier must install"],["1.5 times the Fees","1.5 times the annual Fees"],["the Site","1.2 metres inside the Site"]])
+    expect(await numberedText(await bake(original,rows,await redlineState(original,rows)))).toEqual([
+      "1.1 The Supplier shall deliver the Goods to 1.2 metres inside the Site.","2.1 The Supplier must install the Goods within ten days.",
+      "3.1 The Supplier shall insure the Goods until Acceptance. The Supplier shall produce the policy on request.","3.2 1.5 times the annual Fees is the cap."])
+  } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
+})
+
 test("a same-paragraph sibling goes stale and stays pending and visible while plain download and fresh tracked changes remain available", async () => {
   const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-stale-"))
   const workspace = path.join(temporary,"workspace")

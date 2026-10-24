@@ -138,8 +138,9 @@ test("a replacement starting a numbered clause prints its number once and cannot
   await trackedChanges.execute({ document: "supply.docx", find: "The Supplier shall insure", replace: "3.1 The Supplier must insure", comment }, context)
   await redline.execute({ document: "supply.docx", clause: "within ten days", replacement: "2.1 The Supplier shall install the Goods within five days.", comment }, context)
   await trackedChanges.execute({ document: "supply.docx", find: "1.5 times the Fees", replace: "1.5 times the annual Fees", comment }, context)
-  expect(pendingRedlinesForDoc(root, document).map(row => row.new_text)).toEqual(["The Supplier must insure", "The Supplier shall install the Goods within five days.", "1.5 times the annual Fees"])
-  expect(await accepted(root, document)).toEqual(["1.1 The Supplier shall deliver the Goods to the Site.", "2.1 The Supplier shall install the Goods within five days.", "3.1 The Supplier must insure the Goods until Acceptance."])
+  await trackedChanges.execute({ document: "supply.docx", find: "the Site", replace: "1.2 metres inside the Site", comment }, context)
+  expect(pendingRedlinesForDoc(root, document).map(row => row.new_text)).toEqual(["The Supplier must insure", "The Supplier shall install the Goods within five days.", "1.5 times the annual Fees", "1.2 metres inside the Site"])
+  expect(await accepted(root, document)).toEqual(["1.1 The Supplier shall deliver the Goods to 1.2 metres inside the Site.", "2.1 The Supplier shall install the Goods within five days.", "3.1 The Supplier must insure the Goods until Acceptance."])
 })
 
 test("a plain edit whose replacement copies its clause's number prints it once", async () => {

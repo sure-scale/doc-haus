@@ -10,7 +10,7 @@ import { existsSync } from "node:fs"
 import { MatterDocumentIdentityError, resolveMatterDocumentTarget } from "./document-identity"
 import { getDocumentRole, getMeta, getPreparedChanges, openDb, setMeta, setPreparedChanges, type PreparedChanges } from "./db"
 import { draftingAttribution } from "../../../dochaus/lib/docx-attribution"
-import { withoutListLabel } from "../../../dochaus/lib/list-label"
+import { retypedListLabel, withoutListLabel } from "../../../dochaus/lib/list-label"
 
 export class DocumentAmendmentConflictError extends Error {}
 
@@ -144,12 +144,24 @@ async function prepare(directory:string,name:string,instructions:string,diagnost
   })
   if (selections.length !== amendments.length || new Set(selections.map((row) => row.amendment_id)).size !== amendments.length)
     throw new DocumentAmendmentConflictError(unplaced)
+  const refused:string[] = []
   const resolved = legal.amendments.flatMap((row,index) => {
     const selection = selections.find((value) => value.amendment_id === amendments[index].id)!
     if (typeof selection.unresolved_reason === "string") return []
-    return [{row,amendment:amendments[index],selection}]
+    // Word prints the number of a paragraph the quote opens just before the
+    // replacement: a copy of that number goes, and another typed there is
+    // not proposed.
+    const chosen = offered.find((candidate) => candidate.amendment_id === selection.amendment_id && candidate.target_handle === selection.target_handle)!
+    const label = chosen.context_before ? undefined : chosen.paragraph.label
+    const typed = retypedListLabel(row.replacement,label,chosen.paragraph.text)
+    if (typed) {
+      refused.push(`The change to ${JSON.stringify(row.before_quote)} was not proposed: its replacement begins with "${typed}", but Word numbers that paragraph ${label} and prints the number itself. Try again.`)
+      return []
+    }
+    const replacement = withoutListLabel(row.replacement,label)
+    return [{row:{...row,replacement},amendment:{...amendments[index],replacement},selection}]
   })
-  const openItems = [...legal.open_items,...selections.flatMap((row) => typeof row.unresolved_reason === "string" ? [row.unresolved_reason] : [])]
+  const openItems = [...legal.open_items,...selections.flatMap((row) => typeof row.unresolved_reason === "string" ? [row.unresolved_reason] : []),...refused]
   if (!resolved.length) {
     await recordPrepared(directory,name,{redline_ids:[],open_items:openItems})
     return {proposed:0,open_items:openItems,passes:[pass(first),pass(second)]}
@@ -231,10 +243,9 @@ function parseLegal(text:string) {
   return {amendments,open_items:value.open_items as string[]}
 }
 // A quote that copies the list number the draft view prints before a paragraph
-// is that paragraph's text from its start, and the replacement's copy of the
-// same number goes too; the number stays Word's, kept as `label` to place the
-// quote only in a paragraph with that number. A quote found as written, or a
-// different number, is kept as written.
+// is that paragraph's text from its start; the number stays Word's, kept as
+// `label` to place the quote only in a paragraph with that number. A quote
+// found as written, or a different number, is kept as written.
 function withoutQuotedLabels(paragraphs:{text:string;label?:string}[],legal:ReturnType<typeof parseLegal>) {
   return {...legal,amendments:legal.amendments.map((row):typeof row & {label?:string} => {
     if (paragraphs.some((paragraph) => paragraph.text.includes(row.before_quote))) return row
@@ -242,7 +253,7 @@ function withoutQuotedLabels(paragraphs:{text:string;label?:string}[],legal:Retu
       const rest = withoutListLabel(row.before_quote,paragraph.label)
       return rest !== row.before_quote && paragraph.text.startsWith(rest)
     })
-    return owner ? {...row,before_quote:withoutListLabel(row.before_quote,owner.label),replacement:withoutListLabel(row.replacement,owner.label),label:owner.label} : row
+    return owner ? {...row,before_quote:withoutListLabel(row.before_quote,owner.label),label:owner.label} : row
   })}
 }
 function parseJSON(text:string):unknown {return JSON.parse(text.trim().replace(/^```(?:json)?\s*/i,"").replace(/\s*```$/, ""))}
