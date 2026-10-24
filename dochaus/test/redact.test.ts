@@ -32,7 +32,7 @@ const fixtureBytes = (await renderMarkdownToDocx([
 ].join("\n\n"))).bytes
 const dx = await docxodus()
 
-function ctxFor(directory: string, ask: () => Promise<void> = async () => {}) {
+function ctxFor(directory: string, ask: (request: { metadata: Record<string, unknown> }) => Promise<void> = async () => {}) {
   return {
     sessionID: "test",
     messageID: "test",
@@ -305,7 +305,8 @@ describe("redact tool", () => {
 
   test("a save that fails twice says so, and running the redaction again saves it", async () => {
     const { dir, file } = await matterWith(buildFixture())
-    const run = () => redact.execute({ document: "personnel.docx", text: SSN, reason: "SSN — PII", author: "A. Lawyer", label: undefined }, ctxFor(dir))
+    const asked: Record<string, unknown>[] = []
+    const run = () => redact.execute({ document: "personnel.docx", text: SSN, reason: "SSN — PII", author: "A. Lawyer", label: undefined }, ctxFor(dir, async request => { asked.push(request.metadata) }))
     const down = spyOn(globalThis, "fetch").mockImplementation((async () => new Response("unavailable", { status: 503 })) as typeof fetch)
     let failed: Awaited<ReturnType<typeof redact.execute>>
     try {
@@ -331,6 +332,8 @@ describe("redact tool", () => {
       up.mockRestore()
     }
     expect(sent).toEqual([{ origin: "redaction", bytes: redacted }])
+    // The approval card is told this run saves again rather than removes text.
+    expect(asked.map(metadata => metadata.resave ?? false)).toEqual([false, true])
     if (!again || typeof again === "string") throw new Error(String(again))
     expect(again.output).toContain("already removed")
     expect(again.output).not.toContain("WARNING")

@@ -34,11 +34,15 @@ export default function PermissionCard({
     request.always[0] === request.patterns[0] && typeof meta.document === "string" &&
     basename(request.always[0]) === basename(meta.document) && !/[?*\[\]{}]/.test(request.always[0])
   // Redaction is irreversible, so its card spells out the scope (occurrence
-  // count) and the reason that will go to the redaction log.
+  // count) and the reason that will go to the redaction log. A redaction run
+  // again after its save failed removes nothing more from the file: it saves
+  // the file again, which deletes doc.haus's earlier versions.
   const detail =
-    request.permission === "redact"
-      ? `Removes ${meta.occurrences ?? "all"} occurrence(s) and any metadata mentions — this cannot be undone. Reason: ${meta.reason}`
-      : undefined
+    request.permission !== "redact"
+      ? undefined
+      : meta.resave === true
+        ? `The text is already removed from the file. Saving it again deletes doc.haus's earlier versions of the document, which still hold the text — this cannot be undone. Reason: ${meta.reason}`
+        : `Removes ${meta.occurrences ?? "all"} occurrence(s) and any metadata mentions — this cannot be undone. Reason: ${meta.reason}`
   return (
     <section className="permission-card" aria-labelledby={titleId}>
       <p className="permission-eyebrow">Your approval is needed</p>

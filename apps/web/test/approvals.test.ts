@@ -123,3 +123,24 @@ test("Always describes a broader native save scope rather than promising one doc
   expect(html).toContain("/library/*.docx")
   expect(html).not.toContain("Always allow for this document")
 })
+
+function redactCard(metadata: Record<string, unknown>) {
+  const event = projectEvent({
+    type: "permission.asked", id: "event-redact", created: 1,
+    data: {
+      id: "permission-redact", sessionID: "session-owner", action: "redact",
+      resources: ["/matter/personnel.docx"], save: ["/matter/personnel.docx"], metadata: { document: "personnel.docx", text: "123-45-6789", label: "[REDACTED]", reason: "SSN — PII", ...metadata },
+    },
+  })[0]
+  if (event?.type !== "permission.asked") throw new Error("Native permission request was not projected")
+  return renderToStaticMarkup(createElement(PermissionCard, { request: event.properties, onReply: () => {} }))
+}
+
+// Running a redaction again after its save failed removes nothing from the
+// file; what it does irreversibly is delete doc.haus's earlier versions.
+test("a redaction card says what an approval removes, including a save sent again", () => {
+  expect(redactCard({ occurrences: 2 })).toContain("Removes 2 occurrence(s)")
+  const again = redactCard({ occurrences: 0, resave: true })
+  expect(again).not.toContain("Removes 0")
+  expect(again).toContain("deletes doc.haus&#x27;s earlier versions")
+})

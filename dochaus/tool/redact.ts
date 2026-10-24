@@ -268,7 +268,7 @@ async function saveAgain(file: string, text: string, logged: RedactionRow, ctx: 
     permission: "redact",
     patterns: [file],
     always: [file],
-    metadata: { document: path.basename(file), text, occurrences: 0, metadataParts: [], reason: logged.reason, label: logged.label, author: logged.author },
+    metadata: { document: path.basename(file), text, occurrences: 0, resave: true, metadataParts: [], reason: logged.reason, label: logged.label, author: logged.author },
   })
   const saved = await saveRedaction(file, await Bun.file(file).bytes(), ctx)
   return {
