@@ -10,7 +10,8 @@ import { readLeanPlan } from "../workflows/lean/plan"
 import { UNTRUSTED_DOCUMENT_NOTICE } from "./untrusted"
 
 export type CurrentDocumentView = "current_body" | "comments" | "deleted_text" | "proposed_body"
-export type CurrentDocumentEntry = { index: number; artifact: string; sha256: string; text: string; paragraph_index?: number; pids?: string[]; comment_id?: string; markers?: unknown; representation?: "generated_proposal"; initial_pid?: string; proposed_part_index?: number; basis?: string[] }
+/** `label` is the list number Word prints before a body paragraph ("2.1"); it is not part of `text`. */
+export type CurrentDocumentEntry = { index: number; artifact: string; sha256: string; label?: string; text: string; paragraph_index?: number; pids?: string[]; comment_id?: string; markers?: unknown; representation?: "generated_proposal"; initial_pid?: string; proposed_part_index?: number; basis?: string[] }
 type CurrentView = { status: "available"; document: string; view: CurrentDocumentView; entries: CurrentDocumentEntry[] } | { status: "unavailable"; document: string; view: CurrentDocumentView; reason: string }
 
 /** Actual Word and the explicitly requested pending projection remain distinct evidence views. */
@@ -39,7 +40,7 @@ export function currentDocumentView(directory: string, document: string, view: C
       const parts = new Map<string, number>()
       const entries = projectedChangeParagraphs(directory, doc).map((paragraph, index) => {
         const part = parts.get(paragraph.pid) ?? 0;parts.set(paragraph.pid, part + 1)
-        return { index, artifact, sha256, basis, representation: "generated_proposal" as const, initial_pid: paragraph.pid, proposed_part_index: part, text: paragraph.text }
+        return { index, artifact, sha256, basis, representation: "generated_proposal" as const, initial_pid: paragraph.pid, proposed_part_index: part, ...(paragraph.label ? { label: paragraph.label } : {}), text: paragraph.text }
       })
       return { status: "available", document, view, entries }
     }
@@ -52,11 +53,17 @@ export function currentDocumentView(directory: string, document: string, view: C
     }
     if (!body?.bytes) return { status: "unavailable", document, view, reason: "No readable current Word body exists for this planned document." }
     const artifacts = view === "current_body" || selected.id === "notes" ? [body] : [body, ...(current?.redline ? [{ artifact: `.dochaus/lean/${current.redline}`, bytes: read(`.dochaus/lean/${current.redline}`) }] : [])].filter(row => row.bytes)
+    // List numbers come from the lean rows recorded with this body, by paragraph PID.
+    const rows = current?.body ? readParagraphs(directory, selected.id as `d${number}`, current.applied ? "paragraphs-applied.json" : "paragraphs.json") : []
+    const labels = new Map(rows.flatMap(row => row.label ? [[row.pid, row.label] as const] : []))
     const entries: CurrentDocumentEntry[] = []
     for (const row of artifacts) {
       const bytes = row.bytes!
       const identity = { artifact: row.artifact, sha256: createHash("sha256").update(bytes).digest("hex") }
-      if (view === "current_body") for (const paragraph of readDocxCommentParagraphs(bytes)) entries.push({ index: entries.length, ...identity, paragraph_index: paragraph.paragraph_index, pids: paragraph.pids, text: paragraph.paragraph_text })
+      if (view === "current_body") for (const paragraph of readDocxCommentParagraphs(bytes)) {
+        const label = paragraph.pids.map(pid => labels.get(pid)).find(Boolean)
+        entries.push({ index: entries.length, ...identity, paragraph_index: paragraph.paragraph_index, pids: paragraph.pids, ...(label ? { label } : {}), text: paragraph.paragraph_text })
+      }
       if (view === "comments") for (const comment of readDocxComments(bytes)) entries.push({ index: entries.length, ...identity, comment_id: comment.comment_id, markers: comment.markers.map(marker => ({ kind: marker.kind, paragraph_index: marker.paragraph_index, xml_paragraph_index: marker.xml_paragraph_index, pids: marker.pids })), text: comment.text })
       if (view === "deleted_text") for (const text of readDocxRevisionText(bytes).deleted_text) entries.push({ index: entries.length, ...identity, text })
     }
@@ -102,7 +109,7 @@ export function searchCurrentDocument(directory: string, args: { document: strin
   const current = currentDocumentView(directory, args.document, args.view)
   if (current.status === "unavailable") return response(current)
   const terms = [...new Set(args.query.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [])]
-  const ranked = current.entries.map(entry => ({ entry, score: terms.filter(term => entry.text.toLowerCase().includes(term)).length })).filter(row => row.score > 0).sort((a, b) => b.score - a.score || a.entry.index - b.entry.index)
+  const ranked = current.entries.map(entry => ({ entry, score: terms.filter(term => `${entry.label ?? ""} ${entry.text}`.toLowerCase().includes(term)).length })).filter(row => row.score > 0).sort((a, b) => b.score - a.score || a.entry.index - b.entry.index)
   const hits = ranked.slice(0, args.k ?? 5).map(({ entry }) => ({ ...entry, text: Array.from(entry.text).slice(0, 180).join(""), text_complete: Array.from(entry.text).length <= 180, read_offset: entry.index }))
   while (JSON.stringify(hits).length > 4500) hits.pop()
   return response({ status: "searched", document: args.document, view: args.view, method: "lexical", total_entries: current.entries.length, matched_entries: ranked.length, hits, scope: "Lexical matches in this exact current view only. No hits does not prove absence. Read consecutive entries around a hit using read-document with the same view and offset; related documents require their own exact identity." })

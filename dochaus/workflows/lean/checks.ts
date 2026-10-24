@@ -4,6 +4,7 @@ import { amendmentText, type Amendment } from "../../lib/drafting-amendment"
 import type { AppliedAmendment, UnappliedAmendment } from "../../lib/drafting-amendment-apply"
 import { openItemMarkers } from "../../lib/open-items"
 import { draftingPlaceholders } from "../../lib/placeholder-resolution"
+import { retypedListLabel } from "../../lib/list-label"
 import { normalize } from "../../lib/quote-verify"
 import { changeListIDs, memoMode, mintedQuestionID, runItemIDs, withoutRefMarkers } from "./delivered-memo"
 import { notesForReader } from "./gate"
@@ -27,25 +28,18 @@ export type StageCheck = { issues: string[]; openItems: OpenItem[] }
  * before it ("1.1", "(a)"), which is not part of that text. */
 export type ParagraphRow = { pid: string; sha256: string; text: string; label?: string; draft_part?: number | null; draft_heading?: boolean }
 
-/** A paragraph as a reader sees it: its list label, then its text. */
-export function shownText(row: { text: string; label?: string }) {
-  return row.label ? `${row.label} ${row.text}` : row.text
-}
+// A paragraph's list label is shown before its text (shownText). Amendment
+// text drops a leading copy of that label (withoutListLabel): the list
+// supplies the number. A different number typed in its place is not dropped;
+// retypedLabelIssues names it for a retry, as it would print beside the label.
+export { shownText, withoutListLabel } from "../../lib/list-label"
 
-/** Amendment text without a leading number shaped like the list label its
- * paragraph prints ("2.3 " on a paragraph Word numbers 2.2): the list supplies
- * the number, a replacement may restate the one it was shown, and a paragraph
- * split from a numbered one is numbered by the same list level. Typing another
- * number cannot renumber a list paragraph; it would print both. */
-export function withoutListLabel(text: string, label: string | undefined) {
-  if (!label) return text
-  const shape = label.replace(/\d+|[a-z]+|[A-Z]+|[^\da-zA-Z]/g, part =>
-    /^\d/.test(part) ? "\\d{1,3}" : /^[a-z]/.test(part) ? "[a-z]{1,4}" : /^[A-Z]/.test(part) ? "[A-Z]{1,4}" : escapeRegExp(part))
-  return text.replace(new RegExp(`^\\s*${shape}[ \\t\\u00a0]+(?=\\S)`), "")
-}
-
-function escapeRegExp(text: string) {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+/** Retry feedback for replacement text `text`, at `at`, that opens with a
+ * number written like its paragraph's list label but not it ("3.2 " on a
+ * paragraph Word numbers 2.2). */
+export function retypedLabelIssues(at: string, text: string, label: string | undefined) {
+  const typed = retypedListLabel(text, label)
+  return typed ? [`${at} begins with "${typed}", but its paragraph's number ${label} is Word list numbering, which prints and renumbers itself. Leave the number out of the text.`] : []
 }
 
 export type CommentExport = {

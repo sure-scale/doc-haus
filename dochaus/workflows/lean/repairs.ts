@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs"
 import { readDocxCommentParagraphs } from "../../lib/docx-comments"
+import { quotedInParagraph } from "../../lib/list-label"
 import { checklistFindingSchema, checklistFindingRecovery, isDeliveryArtifactEvidence, type ChecklistItem } from "./checklist-contract"
 import { readChecklistAdjudicationCounterevidence, readEffectiveChecklistItems } from "./checklist-flow"
 import { checklistDeliveryEvidence } from "./checklist-document-context"
@@ -188,8 +189,9 @@ function pidLabel(item: OpenItem, paragraphs: ParagraphRow[]) {
   // The draft step's only omission is a template gap (draftTemplateItems): it names a part, not a paragraph.
   if (item.stage === "draft" && item.kind === "omission") return "(template part missing, cut short or without its heading in the draft)"
   if (item.ref.pid) return paragraphs.some(row => row.pid === item.ref.pid) ? `[${item.ref.pid}]` : "(not an initial draft paragraph; reassess the finding in the current draft)"
-  const needle = normalize(item.ref.quote ?? item.ref.citation ?? "")
-  const pid = needle ? paragraphs.find(row => normalize(row.text).includes(needle))?.pid : undefined
+  // A quote may open with the list number its reader was shown before the text.
+  const needle = item.ref.quote ?? item.ref.citation ?? ""
+  const pid = normalize(needle) ? paragraphs.find(row => quotedInParagraph(row, needle, normalize))?.pid : undefined
   return pid ? `[${pid}]` : "(paragraph not located)"
 }
 

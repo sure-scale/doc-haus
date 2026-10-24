@@ -773,6 +773,44 @@ test("accepting paragraph-bound amendments to a numbered list paragraph and a ta
     } finally {before.session.close();after.session.close()}
   } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
 })
+test("the draft view shows Word list numbers; a quote and replacement copying a paragraph's own number are placed without it", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(),"dochaus-word-labels-"))
+  const file = path.join(directory,"working.docx")
+  const engine = syntheticEngine(() => ({amendments:[
+    {before_quote:"2.1 The Customer shall pay",replacement:"2.1 The Customer shall pay promptly",target_context:"payment clause 2.1",reason:"Requested prompt payment."},
+  ],open_items:[]}),firstCandidate)
+  try {
+    // Natively numbered: "1.", "1.1", "2.", "2.1" are list labels, not run text.
+    await writeDeliverable(directory,"working.docx",await Packer.toBuffer(new Document({
+      numbering:{config:[{reference:"clauses",levels:[
+        {level:0,format:LevelFormat.DECIMAL,text:"%1.",alignment:AlignmentType.START},
+        {level:1,format:LevelFormat.DECIMAL,text:"%1.%2",alignment:AlignmentType.START}]}]},
+      sections:[{children:[
+        new Paragraph("Supply Agreement"),
+        new Paragraph({numbering:{reference:"clauses",level:0},text:"Delivery"}),
+        new Paragraph({numbering:{reference:"clauses",level:1},text:"The Supplier shall deliver the cartons."}),
+        new Paragraph({numbering:{reference:"clauses",level:0},text:"Payment"}),
+        new Paragraph({numbering:{reference:"clauses",level:1},text:"The Customer shall pay within thirty days."}),
+      ]}],
+    })))
+    const original = await Bun.file(file).bytes()
+    const ids = await withPreparation(directory,engine,async (prepare) => {
+      const response = await prepare("Require prompt payment in clause 2.1.")
+      expect(response.status).toBe(200)
+      return (await response.json() as {redline_ids:number[]}).redline_ids
+    })
+    expect(engine.prompts[0]).toContain("2.1 The Customer shall pay within thirty days.")
+    expect(ids).toHaveLength(1)
+    const db = openDb(directory)
+    const rows = (() => {try {return ids.map((id) => getRedline(db,id)!)} finally {db.close()}})()
+    expect(rows.map((row) => [row.find_text,row.new_text])).toEqual([["The Customer shall pay","The Customer shall pay promptly"]])
+    const after = await openRevision(await bake(original,rows,await redlineState(original,rows)))
+    try {
+      expect(after.revision.paragraphs.map((row) => [row.label ?? null,row.text]).at(-1)).toEqual(["2.1","The Customer shall pay promptly within thirty days."])
+    } finally {after.session.close()}
+  } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
+})
+
 test("a same-paragraph sibling goes stale and stays pending and visible while plain download and fresh tracked changes remain available", async () => {
   const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-stale-"))
   const workspace = path.join(temporary,"workspace")

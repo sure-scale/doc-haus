@@ -329,3 +329,14 @@ test("the revision view labels page header and footer text apart from the body; 
   await expect(applyDocxLocalization(source, page, [{ amendment_id: "page", target_handle: page.candidates[0]!.target_handle }]))
     .rejects.toThrow("unsupported_field_replacement")
 })
+
+test("the revision view shows each Word list number before its heading or paragraph, apart from the text quotes match", async () => {
+  // render numbers the clauses with a Word list, so "2." and "2.1" are list labels, not run text.
+  const bytes = (await renderMarkdownToDocx(["# Supply Agreement", "## 1. Delivery", "1.1 The Supplier shall deliver the cartons.",
+    "## 2. Payment", "2.1 The Customer shall pay within thirty days."].join("\n\n"))).bytes
+  const revision = await createDocxRevision(bytes)
+  expect(revision.markdown).toContain("## 2. Payment\n\n2.1 The Customer shall pay within thirty days.")
+  const last = revision.paragraphs.at(-1)!
+  expect([last.label, last.text, last.headings.map(heading => heading.text)])
+    .toEqual(["2.1", "The Customer shall pay within thirty days.", ["Supply Agreement", "2. Payment"]])
+})

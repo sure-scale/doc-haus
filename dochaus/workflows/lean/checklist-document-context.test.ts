@@ -10,6 +10,7 @@ import { combineMemoAndBody } from "../../lib/combined-docx"
 import { exportDocxComments, readDocxCommentParagraphs, readDocxComments, readDocxRevisionText } from "../../lib/docx-comments"
 import { docxodus } from "../../lib/docxodus"
 import { renderMarkdownToDocx } from "../../lib/render"
+import { ensureParagraphRows, paragraphSha256 } from "../../lib/drafting-amendment"
 import { buildChecklistDocumentContext } from "./checklist-document-context"
 import { assignChecklistTargetContext, checklistTargetAssignments } from "./checklist-target-context"
 import { buildChecklistCheckerPrompt, checklistCheckerInputSchema, checklistTextMeasuresMeaning, type ChecklistItem } from "./checklist-contract"
@@ -87,6 +88,21 @@ test("applied bytes take priority, item stays unchanged, only target hints go in
     expect(checklistCheckerInputSchema.safeParse(result.input).success).toBe(true)
     expect(readFileSync(leanFile(directory, "d1/body-applied.docx"))).toEqual(Buffer.from(current))
   } finally { rmSync(directory, { recursive: true, force: true }) }
+})
+
+test("a clause Word numbers is hinted with its list number beside, not inside, its text", async () => {
+  const directory = matter()
+  try {
+    await save(directory, "d1/body.docx", "# Record\n\n## 1. Receipts\n\n1.1 The Supplier shall keep the violet inventory receipt.\n\n1.2 Unrelated wording.")
+    const rows = await ensureParagraphRows(leanFile(directory, "d1/body.docx"))
+    writeLeanText(directory, "d1/paragraphs.json", JSON.stringify(rows.map(row => ({ ...row, sha256: paragraphSha256(row.text) }))))
+    const result = buildChecklistDocumentContext(directory, { item_id: "one", item: item() })
+    const hint = hints(result.input).find(row => row.text === "The Supplier shall keep the violet inventory receipt.")
+    expect(hint?.locator).toContain("Word list number 1.1")
+    expect(result.artifacts[0]!.value.paragraphs.find(row => row.paragraph_text === hint?.text)?.label).toBe("1.1")
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
 })
 
 test("zero lexical hits gives no default passages while exact plan ID resolves", async () => {

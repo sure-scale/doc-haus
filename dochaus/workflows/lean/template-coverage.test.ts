@@ -1,12 +1,17 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { readParagraphs } from "./checks"
-import { readFileSync, writeFileSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import path from "node:path"
+import { ensureParagraphRows } from "../../lib/drafting-amendment"
+import { renderMarkdownToDocx } from "../../lib/render"
 import { finalGate, type GateResult } from "./gate"
-import { readLeanPlan } from "./plan"
+import { readLeanPlan, type PlannedPart } from "./plan"
 import { runLean } from "./runner"
 import { leanFile, readLeanJson, readOpenItems } from "./state"
 import { plannedContract } from "./template-contract"
 import { contractGaps, rowsBody } from "./template-coverage"
+import { parseTemplateUnits } from "./template-structure"
 import { AGREEMENT, PARTS, PLAIN, TEMPLATE, TITLE, heading, templateMatter } from "./template-test-support"
 import { AGENT, NO_FINDINGS, cleanupMatters, drafter, draftingNotes, noChanges, pidIn, sameSession, scriptedModel, type Reply } from "./test-support"
 
@@ -221,6 +226,31 @@ describe("template coverage in a lean run", () => {
     expect([...kinds(directory, "omission"), ...kinds(directory, "template_removal")]).toEqual([])
     expect(readLeanJson(directory, "gate.json")).toMatchObject({ status: "pass", delivery: "execution_ready" })
   }, 120_000)
+})
+
+test("a clause Word numbers heads its template part by the list number it shows, so a cut-down clause is a gap", async () => {
+  const filler = (count: number, word: string) => Array.from({ length: count }, () => word).join(" ")
+  const units = parseTemplateUnits([`Services Agreement`, `1. Definitions`, `${filler(60, "defined")}.`, `2. Liability`, `${filler(60, "liable")}.`,
+    `3. Termination`, `${filler(60, "ends")}.`].join("\n\n"))
+  const top = units.filter(unit => !unit.title)
+  const contract = { source: "template.docx", units, top, unaccounted: [], strays: [], contradicted: [], places: new Map(top.map(unit => [unit.index, { kind: "parts" as const, parts: [0] }])) }
+  // Run-in clauses: render gives "1." to "3." to Word's list, so each row's label holds the number its text no longer has.
+  const directory = mkdtempSync(path.join(tmpdir(), "coverage-labels-"))
+  const workspace = process.env.WORKSPACE_ROOT
+  process.env.WORKSPACE_ROOT = directory
+  try {
+    const file = path.join(directory, "body.docx")
+    writeFileSync(file, (await renderMarkdownToDocx([`# Services Agreement`, `## Terms`, `1. Definitions. ${filler(50, "defined")}.`,
+      `2. Liability. ${filler(3, "liable")}.`, `3. Termination. ${filler(50, "ends")}.`].join("\n\n"))).bytes)
+    const rows = (await ensureParagraphRows(file)).map(row => ({ ...row, sha256: "" }))
+    expect(rows.find(row => row.text.startsWith("Liability"))?.label).toBe("2.")
+    const outline = { title: "Services Agreement", parts: [{ heading: "Terms" }] as PlannedPart[] }
+    expect(contractGaps(contract, rowsBody(outline, rows)).map(gap => gap.unit.label)).toEqual([top[1]!.label])
+  } finally {
+    if (workspace === undefined) delete process.env.WORKSPACE_ROOT
+    else process.env.WORKSPACE_ROOT = workspace
+    rmSync(directory, { recursive: true, force: true })
+  }
 })
 
 /** The scripted drafter with the outline and its "Template:" line set by the test. */

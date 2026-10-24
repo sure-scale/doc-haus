@@ -3,6 +3,7 @@ import { DOMParser } from "@xmldom/xmldom"
 import { strFromU8, unzipSync } from "fflate"
 import { z } from "zod"
 import { docxodus } from "./docxodus"
+import { shownText } from "./list-label"
 
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 const PT = "http://powertools.codeplex.com/2011"
@@ -300,10 +301,13 @@ export async function openRevision(source: Uint8Array) {
       const scope = paragraph.match.enclosingAnchor.scope
       const headingStack = headingsByScope.get(scope) ?? []
       headingsByScope.set(scope, headingStack)
+      // The number Word's list numbering prints before the paragraph: shown in
+      // the headings and the draft view, never part of `text`, which quotes match.
+      const label = paragraph.metadata.list?.generatedLabel?.trim() || undefined
       if (paragraph.match.enclosingAnchor.kind === "h") {
         const level = (paragraph.metadata.outlineLevel ?? 0) + 1
         while (headingStack.length && headingStack.at(-1)!.level >= level) headingStack.pop()
-        headingStack.push({ level, text: paragraph.match.text })
+        headingStack.push({ level, text: shownText({ text: paragraph.match.text, label }) })
       }
       const ancestors = [] as Element[]
       for (let node = paragraph.node.parentNode; node && node.nodeType === 1; node = node.parentNode) ancestors.unshift(node as Element)
@@ -319,6 +323,7 @@ export async function openRevision(source: Uint8Array) {
       return { paragraph_handle: `paragraph-${digest(JSON.stringify([source_sha256, ordinal])).slice(0, 24)}`,
         scope,
         text: paragraph.match.text,
+        ...(label ? { label } : {}),
         headings: headingStack.map(heading => ({ ...heading })),
         table: tableContext,
         style_id: paragraph.metadata.styleId ?? null,
@@ -333,8 +338,9 @@ export async function openRevision(source: Uint8Array) {
       const part = view.scope !== (views[ordinal - 1]?.scope ?? "body") ? `[${partLabel(view.scope)}]\n\n` : ""
       const prefix = paragraphs[ordinal].match.enclosingAnchor.kind === "h" ? `${"#".repeat(view.headings.at(-1)!.level)} ` : ""
       const context = view.table ? `> Table ${view.table.table}, row ${view.table.row}, column ${view.table.column}\n\n` : ""
-      return part + context + prefix + view.formatting.map(fragment => {
-        const text = fragment.text.replace(/[\\`*_{}[\]<>|]/g, "\\$&")
+      const escape = (text: string) => text.replace(/[\\`*_{}[\]<>|]/g, "\\$&")
+      return part + context + prefix + (view.label ? `${escape(view.label)} ` : "") + view.formatting.map(fragment => {
+        const text = escape(fragment.text)
         return fragment.formatting.bold && fragment.formatting.italic ? `***${text}***`
           : fragment.formatting.bold ? `**${text}**` : fragment.formatting.italic ? `*${text}*` : text
       }).join("")
