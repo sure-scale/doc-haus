@@ -811,6 +811,56 @@ test("the draft view shows Word list numbers; a quote and replacement copying a 
   } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
 })
 
+// Natively numbered clauses 1.1, 2.1 and 3.1 open with the same words, which
+// 3.1 repeats later on; 3.2's own text opens with a number.
+const sharedOpening = async () => Packer.toBuffer(new Document({
+  numbering:{config:[{reference:"clauses",levels:[
+    {level:0,format:LevelFormat.DECIMAL,text:"%1.",alignment:AlignmentType.START},
+    {level:1,format:LevelFormat.DECIMAL,text:"%1.%2",alignment:AlignmentType.START}]}]},
+  sections:[{children:[
+    new Paragraph("Supply Agreement"),
+    ...[["Delivery","The Supplier shall deliver the Goods to the Site."],["Installation","The Supplier shall install the Goods within ten days."],
+      ["Insurance","The Supplier shall insure the Goods until Acceptance. The Supplier shall produce the policy on request.","1.5 times the Fees is the cap."]].flatMap(([heading,...clauses]) => [
+      new Paragraph({numbering:{reference:"clauses",level:0},text:heading}),
+      ...clauses.map((text) => new Paragraph({numbering:{reference:"clauses",level:1},text})),
+    ]),
+  ]}],
+}))
+const numberedText = async (bytes:Uint8Array) => {
+  const opened = await openRevision(bytes)
+  try {return opened.revision.paragraphs.filter((row) => /^\d+\.\d+$/.test(row.label ?? "")).map((row) => `${row.label} ${row.text}`)} finally {opened.session.close()}
+}
+
+test("a quote copying one clause's number is offered to the locator only at the opening of that clause", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(),"dochaus-word-label-scope-"))
+  const file = path.join(directory,"working.docx")
+  let offered:Candidate[] = []
+  let choose = (candidates:Candidate[]):unknown => firstCandidate(candidates)
+  const engine = syntheticEngine(() => ({amendments:[
+    {before_quote:"3.1 The Supplier shall",replacement:"3.1 The Supplier must",target_context:"insurance clause",reason:"Requested firm insurance duty."},
+  ],open_items:[]}),(candidates) => {offered = candidates;return choose(candidates)})
+  try {
+    await writeDeliverable(directory,"working.docx",await sharedOpening())
+    const original = await Bun.file(file).bytes()
+    const redlines = () => {const db=openDb(directory);try {return db.query("SELECT * FROM redlines ORDER BY id").all() as Parameters<typeof bake>[1]} finally {db.close()}}
+    await withPreparation(directory,engine,async (prepare) => {
+      expect((await prepare("Make the insurance duty in clause 3.1 firm.")).status).toBe(200)
+      expect(offered.map((row) => row.target_handle)).toHaveLength(1)
+      const rows = redlines()
+      expect(await numberedText(await bake(original,rows,await redlineState(original,rows)))).toEqual([
+        "1.1 The Supplier shall deliver the Goods to the Site.","2.1 The Supplier shall install the Goods within ten days.",
+        "3.1 The Supplier must insure the Goods until Acceptance. The Supplier shall produce the policy on request.","3.2 1.5 times the Fees is the cap."])
+      // A handle the locator was not offered, here 1.1's, places nothing.
+      const elsewhere = (await createDocxLocalization(original,[{id:"amendment-1",before_quote:"The Supplier shall",replacement:"The Supplier must"}]))
+        .candidates.find((row) => row.paragraph.label === "1.1")!.target_handle
+      choose = () => [{amendment_id:"amendment-1",target_handle:elsewhere}]
+      const refused = await prepare("Make the insurance duty in clause 3.1 firm.")
+      expect(refused.status).toBe(409)
+      expect(redlines()).toHaveLength(1)
+    })
+  } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
+})
+
 test("a same-paragraph sibling goes stale and stays pending and visible while plain download and fresh tracked changes remain available", async () => {
   const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-stale-"))
   const workspace = path.join(temporary,"workspace")
