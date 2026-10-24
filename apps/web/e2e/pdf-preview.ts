@@ -98,6 +98,8 @@ async function run(label: string, width: number, height: number, citation?: Loca
     if (method !== "GET") { unexpected.push(`${method} ${pathname}`); return route.abort() }
     if (pathname === `/matters/${matter.id}/documents/content` && ++contentGets) return route.fulfill({ status: 200, headers: { ...headers, "content-disposition": "inline" }, contentType: "application/pdf", body: pdf })
     if (pathname === `/matters/${matter.id}/grid`) return reply(grid)
+    // The viewer lists kept versions; this PDF has none.
+    if (pathname === `/matters/${matter.id}/documents/versions`) return reply({ name: NAME, document: null, versions: [], events: [], working_version: null })
     if (pathname === "/auth/reuse") return reply({ sources: [] })
     if (pathname === "/api/dochaus/ready") return reply({ ready: true, consentState: "active" })
     if (pathname === "/setup") return reply({ version: 1, ready: true, completed: ["models", "research", "details"], skipped: [], next: "done" })
