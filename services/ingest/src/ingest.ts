@@ -1,8 +1,8 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs"
+import { existsSync, readdirSync } from "node:fs"
 import path from "node:path"
 import mammoth from "mammoth"
 import { read, utils } from "xlsx"
-import { effectiveDocumentLinks, getDocumentRole, getMeta, insertChunk, listDocuments, listSourceDocuments, openDb, setMeta, upsertDocument, type DocumentLinks } from "./db"
+import { effectiveDocumentLinks, getDocumentRole, insertChunk, listDocuments, listSourceDocuments, openDb, upsertDocument, type DocumentLinks } from "./db"
 import { embedChunk, migrateEmbeddings } from "./embed"
 import { extractStructure, extractParties, migrateSections, migrateStructure, buildSectionPaths, chunkSection, recordSections, revision, sectionize } from "./structure"
 import { readPdf } from "./pdf"
@@ -12,7 +12,7 @@ import { stageSourceChange, writeSourceArtifacts } from "./source-artifacts"
 import { canonicalArtifactIdentity, withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
 import { chunkText } from "../../../dochaus/lib/chunk-text"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
-import { hasNumberedList, writeListLabels } from "../../../dochaus/lib/docx-list-labels"
+import { writeListLabels } from "../../../dochaus/lib/docx-list-labels"
 import { markTrackedChanges } from "../../../dochaus/lib/docx-tracked-text"
 import { draftingTraceReference } from "../../../dochaus/lib/drafting-trace-identity"
 import { parseEmail } from "../../../dochaus/lib/email"
@@ -88,74 +88,6 @@ export async function ingestDocument(
     [name, ".dochaus/source-corpus"],
     () => ingestDocumentLocked(matterDir, name, buffer, { ...options, existing: existing === "keep-both" ? "refuse" : existing }),
   )
-}
-
-// Word's list numbers entered the extracted text with docx-list-labels.ts, so
-// a numbered Word source indexed before then holds chunks cut from its text
-// without them, and its citations no longer verify against the live text.
-// Each such source is re-indexed once from its working file through the usual
-// replace path, which writes the same bytes back. One without a numbered list
-// is not read past its parts, and one whose text comes out unchanged is left as
-// it is. A source whose working file is missing or unreadable is logged and
-// skipped. Runs in the background after startup; the matter records the pass
-// once no re-index failed, so one that fails is logged and retried at the next
-// start, where the sources already re-indexed come out unchanged.
-const LIST_LABELS_PASS = "docx_list_labels"
-export async function reindexNumberedSources(matterDir: string) {
-  const db = openDb(matterDir)
-  const sources = (() => {
-    try {
-      if (getMeta(db, LIST_LABELS_PASS)) return
-      return db.query("SELECT name FROM documents WHERE role = 'source' AND lower(name) LIKE '%.docx'").all() as { name: string }[]
-    } finally {
-      db.close()
-    }
-  })()
-  if (!sources) return 0
-  let count = 0
-  let failed = false
-  for (const { name } of sources) {
-    try {
-      // Under the document's lock, so the bytes written back are the working file's.
-      if (await withArtifactMutationLocksAsync(matterDir, [name, ".dochaus/source-corpus"], () => reindexNumberedSource(matterDir, name))) count++
-    } catch (error) {
-      failed = true
-      console.error("numbered document re-index failed", { matter_ref: draftingTraceReference(matterDir), ...diagnosticErrorMetadata(error) })
-    }
-  }
-  if (!failed) {
-    const done = openDb(matterDir)
-    try {
-      setMeta(done, LIST_LABELS_PASS, "1")
-    } finally {
-      done.close()
-    }
-  }
-  return count
-}
-
-async function reindexNumberedSource(matterDir: string, name: string) {
-  const db = openDb(matterDir)
-  const source = (() => {
-    try {
-      return db.query("SELECT doc_path, rev FROM documents WHERE role = 'source' AND name = ?").get(name) as { doc_path: string; rev: string | null } | null
-    } finally {
-      db.close()
-    }
-  })()
-  if (!source) return false
-  let buffer: Buffer
-  try {
-    buffer = readFileSync(source.doc_path)
-  } catch (error) {
-    console.warn("numbered document re-index skipped", { matter_ref: draftingTraceReference(matterDir), ...diagnosticErrorMetadata(error) })
-    return false
-  }
-  if (!hasNumberedList(buffer)) return false
-  const extracted = await extractSourceText(name, buffer)
-  if (extracted.quality.status === "no_readable_text" || sourceTextRevision(extracted.text) === source.rev) return false
-  await ingestDocument(matterDir, name, buffer, { existing: "replace", requireExistingSource: true, extracted })
-  return true
 }
 
 // The requested name, or the first `Stem (n).ext` from 2 up that no matter file
@@ -446,9 +378,9 @@ export async function extractSourceText(fileName: string, buffer: Buffer): Promi
   return { text, findings, quality: assessExtraction(text, facts) }
 }
 
-// Pull plain text from a source document. DOCX goes through mammoth, with pending
-// tracked changes labelled first (see dochaus/lib/docx-tracked-text.ts) and then
-// Word's list numbers written in (dochaus/lib/docx-list-labels.ts); PDF through
+// Pull plain text from a source document. DOCX goes through mammoth, with Word's
+// list numbers written in first (see dochaus/lib/docx-list-labels.ts) and then
+// pending tracked changes labelled (dochaus/lib/docx-tracked-text.ts); PDF through
 // LiteParse/markitdown/unpdf with an OCR fallback for flat scans (see pdf.ts). Always
 // normalized (see sanitize.ts) so every consumer — indexing, the document/template
 // text routes, and through them the agents' read-document tool — sees the same
@@ -469,7 +401,7 @@ async function extractRawText(fileName: string, buffer: Buffer): Promise<{ text:
   }
   if (lower.endsWith(".xlsx")) return xlsxToText(buffer)
   if (lower.endsWith(".zip")) return { text: zipToText(buffer), facts: { format: "archive" } }
-  return { text: (await mammoth.extractRawText({ buffer: await writeListLabels(markTrackedChanges(buffer)) })).value, facts: { format: "docx" } }
+  return { text: (await mammoth.extractRawText({ buffer: markTrackedChanges(await writeListLabels(buffer)) })).value, facts: { format: "docx" } }
 }
 
 // Spreadsheet sources (cap tables, waterfalls, payout models) are zip-based but

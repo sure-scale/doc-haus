@@ -1,16 +1,12 @@
-import { afterAll, expect, spyOn, test } from "bun:test"
-import { mkdtempSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync } from "node:fs"
+import { afterAll, expect, test } from "bun:test"
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { strToU8, zipSync } from "fflate"
-import mammoth from "mammoth"
 import { openDb } from "./db"
-import { assessExtraction } from "./extraction-quality"
-import { extractDocumentText, ingestDocument, reindexNumberedSources } from "./ingest"
-import { normalizeExtractedText } from "./sanitize"
+import { extractDocumentText, ingestDocument } from "./ingest"
 import { reconstructText } from "./structure"
 import { liveText } from "../../../dochaus/lib/extract"
-import { verifyCitation } from "../../../dochaus/plugin/legal/citations"
 import { verifyQuote } from "../../../dochaus/lib/quote-verify"
 
 // Every fixture is invented text: no actual party, transaction or reviewer.
@@ -20,17 +16,33 @@ const PART = "application/vnd.openxmlformats-officedocument.wordprocessingml"
 const REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 const lvl = (ilvl: number, format: string, text: string) => `<w:lvl w:ilvl="${ilvl}"><w:start w:val="1"/><w:numFmt w:val="${format}"/><w:lvlText w:val="${text}"/></w:lvl>`
 const NUMBERING = `<w:abstractNum w:abstractNumId="0">${lvl(0, "decimal", "%1.")}${lvl(1, "decimal", "%1.%2")}${lvl(2, "lowerLetter", "(%3)")}</w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num>`
-const docx = (body: string) => Buffer.from(zipSync({
+const NORMAL = `<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style>`
+const docx = (body: string, styles = NORMAL) => Buffer.from(zipSync({
   "[Content_Types].xml": strToU8(`<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="${PART}.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="${PART}.styles+xml"/><Override PartName="/word/numbering.xml" ContentType="${PART}.numbering+xml"/></Types>`),
   "_rels/.rels": strToU8(`<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${REL}/officeDocument" Target="word/document.xml"/></Relationships>`),
   "word/_rels/document.xml.rels": strToU8(`<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdS" Type="${REL}/styles" Target="styles.xml"/><Relationship Id="rIdN" Type="${REL}/numbering" Target="numbering.xml"/></Relationships>`),
   "word/document.xml": strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document ${NS}><w:body>${body}</w:body></w:document>`),
-  "word/styles.xml": strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles ${NS}><w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style></w:styles>`),
+  "word/styles.xml": strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles ${NS}>${styles}</w:styles>`),
   "word/numbering.xml": strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:numbering ${NS}>${NUMBERING}</w:numbering>`),
 }))
 const run = (text: string) => `<w:r><w:t xml:space="preserve">${text}</w:t></w:r>`
 const numbered = (ilvl: number, content: string) => `<w:p><w:pPr><w:numPr><w:ilvl w:val="${ilvl}"/><w:numId w:val="1"/></w:numPr></w:pPr>${content}</w:p>`
 const typed = (content: string) => `<w:p>${content}</w:p>`
+const CHANGE = 'w:author="Counterparty" w:date="2026-01-01T00:00:00Z"'
+const change = (kind: "ins" | "del" | "moveFrom" | "moveTo", id: number, content: string) => `<w:${kind} w:id="${id}" ${CHANGE}>${content}</w:${kind}>`
+// A whole clause under a pending change: its paragraph mark is tracked too.
+const changedClause = (kind: "ins" | "del" | "moveFrom" | "moveTo", id: number, content: string) =>
+  `<w:p><w:pPr><w:numPr><w:ilvl w:val="1"/><w:numId w:val="1"/></w:numPr><w:rPr><w:${kind} w:id="${id}" ${CHANGE}/></w:rPr></w:pPr>${change(kind, id + 1, content)}</w:p>`
+const moveRange = (kind: "moveFrom" | "moveTo", id: number, paragraph: string) =>
+  `<w:${kind}RangeStart w:id="${id}" ${CHANGE} w:name="move1"/>${paragraph}<w:${kind}RangeEnd w:id="${id}"/>`
+
+/** The text both lockstep readers give a file: ingest's, and the citation
+ * verifier's, which ends in one more newline. */
+async function readers(name: string, buffer: Buffer) {
+  const file = path.join(directory, name)
+  writeFileSync(file, buffer)
+  return { ingest: await extractDocumentText(name, buffer), live: await liveText(file) }
+}
 
 const CLAUSES: [number, string, string][] = [
   [0, "1.", "Delivery"],
@@ -68,53 +80,49 @@ test("a numbered markup keeps its tracked-changes summary first and numbers its 
   expect(text).toContain("1. Payment\n\n1.1 The Customer shall pay each invoice.\n\n1.2 [Tracked insertion by Counterparty: Interest accrues on late payments.]")
 })
 
-test("a numbered source indexed before its list numbers were read is re-indexed once at startup; an unnumbered one is left alone", async () => {
-  const matter = realpathSync(mkdtempSync(path.join(tmpdir(), "dochaus-list-labels-reindex-")))
-  const warn = spyOn(console, "warn").mockImplementation(() => {})
-  try {
-    const terms = docx(CLAUSES.map(([ilvl, , text]) => numbered(ilvl, run(text))).join(""))
-    // As ingest read a numbered file before: the same bytes, its text without the numbers.
-    const before = async (name: string, bytes: Buffer, stale = (text: string) => text) => {
-      const old = normalizeExtractedText(stale((await mammoth.extractRawText({ buffer: bytes })).value))
-      await ingestDocument(matter, name, bytes, { extracted: { text: old.text, findings: old.findings, quality: assessExtraction(old.text, { format: "docx" }) } })
-    }
-    await before("Numbered terms.docx", terms)
-    await before("Removed terms.docx", terms)
-    // Indexed from text that differs from today's, as an older reader's may: still not re-indexed, as it has no list.
-    await before("Plain terms.docx", docx(CLAUSES.map(([, , text]) => typed(run(text))).join("")), (text) => text.replace("thirty days", "30 days"))
-    unlinkSync(path.join(matter, "Removed terms.docx"))
-    const read = <T>(query: string, name: string) => {
-      const db = openDb(matter)
-      try {
-        return db.query(query).all(name) as T[]
-      } finally {
-        db.close()
-      }
-    }
-    const row = (name: string) => read("SELECT id, created_at, rev FROM documents WHERE name = ?", name)
-    const citations = () => Promise.all(
-      read<{ doc_path: string; section: string; text: string; char_start: number; char_end: number }>("SELECT doc_path, section, text, char_start, char_end FROM chunks WHERE doc_name = ? ORDER BY char_start", "Numbered terms.docx")
-        .map((chunk) => ({ multi: chunk.text.includes("\n"), verified: verifyCitation({ documentName: "Numbered terms.docx", docPath: chunk.doc_path, section: chunk.section, excerpt: chunk.text, charStart: chunk.char_start, charEnd: chunk.char_end }) }))
-        .map(async ({ multi, verified }) => ({ multi, verified: await verified })),
-    )
-    expect((await citations()).filter(({ multi, verified }) => multi && !verified)).not.toHaveLength(0)
-    const plain = { row: row("Plain terms.docx"), modified: statSync(path.join(matter, "Plain terms.docx")).mtimeMs }
-
-    expect(await reindexNumberedSources(matter)).toBe(1)
-    const after = await citations()
-    expect(after.some(({ multi }) => multi)).toBe(true)
-    expect(after.every(({ verified }) => verified && !verified.reanchored)).toBe(true)
-    expect(readFileSync(path.join(matter, "Numbered terms.docx")).equals(terms)).toBe(true)
-    expect(row("Plain terms.docx")).toEqual(plain.row)
-    expect(statSync(path.join(matter, "Plain terms.docx")).mtimeMs).toBe(plain.modified)
-    expect(warn.mock.calls.map(([message]) => message)).toEqual(["numbered document re-index skipped"])
-
-    const reindexed = row("Numbered terms.docx")
-    expect(await reindexNumberedSources(matter)).toBe(0)
-    expect(row("Numbered terms.docx")).toEqual(reindexed)
-    expect(warn).toHaveBeenCalledTimes(1)
-  } finally {
-    warn.mockRestore()
-    rmSync(matter, { recursive: true, force: true })
-  }
+test("a markup that deletes or moves a clause numbers the clauses as Word does, and both readers read it alike", async () => {
+  const inspect = "The Customer shall inspect the cartons."
+  const { ingest, live } = await readers("Moves.docx", docx([
+    numbered(0, run("Supply")),
+    numbered(1, run("The Supplier shall deliver the cartons.")),
+    changedClause("del", 1, `<w:r><w:delText xml:space="preserve">The Supplier shall insure the cartons.</w:delText></w:r>`),
+    numbered(1, run("The Customer shall collect the cartons.")),
+    moveRange("moveFrom", 3, changedClause("moveFrom", 4, run(inspect))),
+    numbered(1, run("The Customer shall store the cartons.")),
+    moveRange("moveTo", 6, changedClause("moveTo", 7, run(inspect))),
+    changedClause("ins", 8, run("The Customer shall return the pallets.")),
+  ].join("")))
+  expect(live).toBe(`${ingest}\n`)
+  // A clause deleted or moved away is out of the numbering; Word shows its number where it moves to.
+  expect(ingest).toEndWith([
+    "1. Supply",
+    "1.1 The Supplier shall deliver the cartons.",
+    "[Tracked deletion by Counterparty: The Supplier shall insure the cartons.]",
+    "1.2 The Customer shall collect the cartons.",
+    `[Tracked move from here by Counterparty: ${inspect}]`,
+    "1.3 The Customer shall store the cartons.",
+    `1.4 [Tracked move to here by Counterparty: ${inspect}]`,
+    "1.5 [Tracked insertion by Counterparty: The Customer shall return the pallets.]",
+    "",
+  ].join("\n\n"))
 }, 120_000)
+
+test("with a numbered default paragraph style, the tracked-changes summary takes no number", async () => {
+  const styles = `<w:style w:type="paragraph" w:default="1" w:styleId="Clause"><w:name w:val="Clause"/><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr></w:pPr></w:style>`
+  const { ingest, live } = await readers("Default numbered.docx", docx([
+    typed(run("Delivery")),
+    typed(run("Payment ") + change("ins", 1, run("on time"))),
+    typed(run("Term")),
+  ].join(""), styles))
+  expect(live).toBe(`${ingest}\n`)
+  expect(ingest).toStartWith("[This Word file contains 1 pending tracked change by Counterparty")
+  expect(ingest).toEndWith("]\n\n1. Delivery\n\n2. Payment [Tracked insertion by Counterparty: on time]\n\n3. Term\n\n")
+}, 120_000)
+
+test("a field result marked without its field start reads alike in both readers", async () => {
+  // Word can leave a field's separate and end marks after its start is deleted.
+  const field = (type: string) => `<w:r><w:fldChar w:fldCharType="${type}"/></w:r>`
+  const { ingest, live } = await readers("Stray field.docx", docx(typed(run("Payment within ") + field("separate") + run("thirty") + field("end") + run(" days.")) + typed(run("Term"))))
+  expect(live).toBe(`${ingest}\n`)
+  expect(ingest).toBe("Payment within thirty days.\n\nTerm\n\n")
+})

@@ -1,7 +1,11 @@
-import { expect, test } from "bun:test"
+import { expect, spyOn, test } from "bun:test"
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import path from "node:path"
 import mammoth from "mammoth"
 import { strToU8, unzipSync, zipSync } from "fflate"
 import { writeListLabels } from "./docx-list-labels"
+import { liveText } from "./extract"
 
 // Every fixture is invented text: no actual party or transaction.
 
@@ -84,14 +88,30 @@ test("a document without numbered lists is passed through as the same bytes", as
   expect(await writeListLabels(bulleted)).toBe(bulleted)
 })
 
-test("a file the numbering reader cannot open extracts exactly as before", async () => {
-  const terms = docx(para("Delivery", [1, 0]) + para("The Supplier shall deliver the cartons.", [1, 1]), NUMBERING)
-  // No content types part: mammoth reads it, Docxodus does not.
-  const parts = unzipSync(terms)
-  delete parts["[Content_Types].xml"]
-  const untyped = Buffer.from(zipSync(parts))
-  expect(await writeListLabels(untyped)).toBe(untyped)
-  expect(await raw(untyped)).toBe("Delivery\n\nThe Supplier shall deliver the cartons.\n\n")
-  const notZip = Buffer.from("not a word file")
-  expect(await writeListLabels(notZip)).toBe(notZip)
+test("a file the numbering reader cannot open extracts exactly as before, is logged, and is read again", async () => {
+  const warn = spyOn(console, "warn").mockImplementation(() => {})
+  const directory = realpathSync(mkdtempSync(path.join(tmpdir(), "dochaus-list-labels-")))
+  try {
+    const terms = docx(para("Delivery", [1, 0]) + para("The Supplier shall deliver the cartons.", [1, 1]), NUMBERING)
+    // No content types part: mammoth reads it, Docxodus does not.
+    const parts = unzipSync(terms)
+    delete parts["[Content_Types].xml"]
+    const untyped = Buffer.from(zipSync(parts))
+    expect(await writeListLabels(untyped)).toBe(untyped)
+    expect(await raw(untyped)).toBe("Delivery\n\nThe Supplier shall deliver the cartons.\n\n")
+    const notZip = Buffer.from("not a word file")
+    expect(await writeListLabels(notZip)).toBe(notZip)
+    expect(warn.mock.calls.map(([message]) => message)).toEqual(["list labels not read", "list labels not read"])
+    // The citation verifier keeps no text read without the numbers, so a
+    // failure in one process does not outlast it: the next read tries again.
+    warn.mockClear()
+    const file = path.join(directory, "Untyped.docx")
+    writeFileSync(file, untyped)
+    const text = await liveText(file)
+    expect(await liveText(file)).toBe(text)
+    expect(warn).toHaveBeenCalledTimes(2)
+  } finally {
+    warn.mockRestore()
+    rmSync(directory, { recursive: true, force: true })
+  }
 })

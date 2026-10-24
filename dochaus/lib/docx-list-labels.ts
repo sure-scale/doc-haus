@@ -1,6 +1,7 @@
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
 import type { MarkdownAnchorTarget } from "docxodus"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
+import { diagnosticErrorMetadata } from "./diagnostic-metadata"
 import { docxodus } from "./docxodus"
 
 // Word draws a numbered paragraph's label ("1.", "1.1", "(a)") from the list
@@ -8,17 +9,22 @@ import { docxodus } from "./docxodus"
 // drops it: a natively numbered clause reads without its number in search,
 // sections, citations and quote checks. Both lockstep readers (ingest's
 // extractDocumentText and dochaus/lib/extract.ts) pass a Word file through
-// writeListLabels after markTrackedChanges and before mammoth: each numbered
-// body paragraph (tables included) gets its label as literal text, followed by
-// one space. Labels come from Docxodus, the engine that numbers paragraph rows
-// and views elsewhere, so the text shows the numbers the other readers show.
+// writeListLabels before markTrackedChanges and mammoth: each numbered body
+// paragraph (tables included) gets its label as literal text, followed by one
+// space. Labels come from Docxodus, the engine that numbers paragraph rows and
+// views elsewhere, so the text shows the numbers the other readers show. They
+// are read from the file as saved: markTrackedChanges keeps a deleted clause as
+// a paragraph and adds a summary paragraph, which Docxodus would number too.
 //
 // Only document.xml is labelled: mammoth's plain text reads the body and its
 // tables, not headers, footers, footnotes or comments. Bullets take no label;
-// nor do empty paragraphs (they still count in the numbering) and text-box
-// paragraphs (Docxodus numbers them apart from the body). A file without a
+// nor do empty paragraphs (they still count in the numbering), text-box
+// paragraphs (Docxodus numbers them apart from the body) and clauses a pending
+// change deletes or moves away (they do not count). A file without a
 // numbered list, or one Docxodus cannot read, is returned as the same buffer,
-// so its text and offsets do not change.
+// so its text and offsets do not change. A file read without its numbers for a
+// failure is logged, and `unread` is called, so a reader that keeps the text
+// can read it again.
 
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 const XML = "http://www.w3.org/XML/1998/namespace"
@@ -30,24 +36,32 @@ const NUM_PR = /<(?:[\w.-]+:)?numPr[\s/>]/
 // are containers (tables, rows, cells, columns, content controls, sections).
 const PARAGRAPHS = new Set(["p", "li", "h"])
 
-export async function writeListLabels(buffer: Buffer): Promise<Buffer> {
+export async function writeListLabels(buffer: Buffer, unread?: () => void): Promise<Buffer> {
   try {
-    const numbered = numberedParts(buffer)
-    if (!numbered) return buffer
-    const anchors = await bodyParagraphs(buffer, numbered.bullets)
+    const head = unzipSync(buffer, { filter: file => [BODY, NUMBERING, STYLES].includes(file.name) })
+    const body = head[BODY] && strFromU8(head[BODY])
+    // Opening Docxodus costs more than mammoth itself, so a file whose body
+    // cannot be numbered skips it.
+    if (!body || !head[NUMBERING] || !usesNumbering(body, head[STYLES])) return buffer
+    const levels = listLevels(head[NUMBERING])
+    if (!levels.numbered) return buffer
+    const anchors = await bodyParagraphs(buffer, levels.bullets)
     if (!anchors.some(anchor => anchor.label)) return buffer
-    const doc = parse(numbered.body)
+    const doc = parse(body)
     // Docxodus lists every body paragraph in document order, as the DOM does,
     // so each label goes to the paragraph at its own position: two clauses of
     // the same text keep their own numbers. A paragraph the two read with
     // different text takes no label, and a file they count differently none.
     const paragraphs = Array.from(doc.getElementsByTagNameNS(W, "p"))
-    if (paragraphs.length !== anchors.length) return buffer
+    if (paragraphs.length !== anchors.length) {
+      console.warn("list labels not read", { reason: "paragraph_count_mismatch", docxodus_paragraphs: anchors.length, document_paragraphs: paragraphs.length })
+      return buffer
+    }
     let written = 0
     anchors.forEach(({ preview, label }, at) => {
       const node = paragraphs[at]!
       const text = flatText(node)
-      if (!label || !text || !sameText(preview, text) || inTextBox(node)) return
+      if (!label || !text || !sameText(preview, text) || within(node, "txbxContent") || movedAway(node)) return
       const pPr = Array.from(node.childNodes).find(child => (child as Element).namespaceURI === W && (child as Element).localName === "pPr")
       node.insertBefore(labelRun(doc, node, label), pPr ? pPr.nextSibling : node.firstChild)
       written++
@@ -57,30 +71,11 @@ export async function writeListLabels(buffer: Buffer): Promise<Buffer> {
     parts[BODY] = strToU8(new XMLSerializer().serializeToString(doc))
     // mammoth reads the copy once and discards it, so it is stored uncompressed.
     return Buffer.from(zipSync(parts, { level: 0 }))
-  } catch {
+  } catch (error) {
+    console.warn("list labels not read", diagnosticErrorMetadata(error))
+    unread?.()
     return buffer
   }
-}
-
-/** Whether a Word file may carry list numbers writeListLabels would write in,
- * read without opening Docxodus: a body paragraph takes numbering, and some
- * list level numbers rather than bullets. */
-export function hasNumberedList(buffer: Buffer) {
-  try {
-    return Boolean(numberedParts(buffer))
-  } catch {
-    return false
-  }
-}
-
-// Opening Docxodus costs more than mammoth itself, so a file whose body cannot
-// be numbered is passed by on its parts alone.
-function numberedParts(buffer: Buffer) {
-  const head = unzipSync(buffer, { filter: file => [BODY, NUMBERING, STYLES].includes(file.name) })
-  const body = head[BODY] && strFromU8(head[BODY])
-  if (!body || !head[NUMBERING] || !usesNumbering(body, head[STYLES])) return
-  const levels = listLevels(head[NUMBERING])
-  return levels.numbered ? { body, bullets: levels.bullets } : undefined
 }
 
 /** The body's paragraph anchors in document order, each with its text preview
@@ -169,10 +164,17 @@ function sameText(preview: string, text: string) {
   return cut !== undefined && text.length > cut.length && text.startsWith(cut)
 }
 
-function inTextBox(node: Element) {
+function within(node: Node, localName: string) {
   for (let parent = node.parentNode; parent && parent.nodeType === 1; parent = parent.parentNode)
-    if ((parent as Element).namespaceURI === W && (parent as Element).localName === "txbxContent") return true
+    if ((parent as Element).namespaceURI === W && (parent as Element).localName === localName) return true
   return false
+}
+
+/** A pending move of a whole clause: all its text is marked as moved away.
+ * Docxodus numbers it like the clause after it, as it does a deleted clause,
+ * whose text is gone from w:t; the number belongs where the clause moves to. */
+function movedAway(node: Element) {
+  return Array.from(node.getElementsByTagNameNS(W, "t")).every(text => !text.textContent || within(text, "moveFrom"))
 }
 
 function labelRun(doc: Document, like: Element, label: string) {

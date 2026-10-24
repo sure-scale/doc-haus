@@ -19,7 +19,7 @@
     "docxodus": "^13.0.0",
     "fflate": "0.8.3",
     "hono": "4.13.13",
-    "mammoth": "^1.8.0",
+    "mammoth": "1.12.3",
     "postal-mime": "2.7.4",
     "unpdf": "^1.6.2",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"

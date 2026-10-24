@@ -21,7 +21,11 @@ export async function liveText(docPath: string) {
   // Ingest computes offsets by accumulating `line + "\n"` over the normalized
   // extracted text, which equals the normalized raw extraction plus exactly one
   // trailing newline — mirror both steps here or every chunk fails verification.
-  const text = normalizeExtractedText(await extract(docPath, buffer)) + "\n"
+  let unlabelled = false
+  const text = normalizeExtractedText(await extract(docPath, buffer, () => { unlabelled = true })) + "\n"
+  // Text read without the list numbers Docxodus failed to give is not kept:
+  // ingest may have indexed it with them, and the next read tries again.
+  if (unlabelled) return text
   if (!textCache.has(docPath) && textCache.size >= CACHE_LIMIT) {
     const oldest = textCache.keys().next().value
     if (oldest !== undefined) textCache.delete(oldest)
@@ -67,7 +71,7 @@ function quoteRegExp(quote: string) {
 // so a missing branch (e.g. .eml routed to mammoth) throws "Can't find end of
 // central directory" inside the tool.execute.after hook and the whole
 // search-document call surfaces as failed to the model.
-async function extract(docPath: string, buffer: Buffer) {
+async function extract(docPath: string, buffer: Buffer, unlabelled: () => void) {
   const name = docPath.toLowerCase()
   if (name.endsWith(".pdf")) {
     // Citation verification must use the exact extractor chain used at ingest.
@@ -88,7 +92,7 @@ async function extract(docPath: string, buffer: Buffer) {
     return zipToText(buffer)
   }
   const { default: mammoth } = await import("mammoth")
-  return (await mammoth.extractRawText({ buffer: await writeListLabels(markTrackedChanges(buffer)) })).value
+  return (await mammoth.extractRawText({ buffer: markTrackedChanges(await writeListLabels(buffer, unlabelled)) })).value
 }
 
 // Spreadsheet sources (.xlsx) — same tolerant reader as ingest, one labeled CSV
