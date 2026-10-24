@@ -216,5 +216,9 @@ describe("rendering onto a template", () => {
     const revised = await renderMarkdownToDocx(BODY, original, undefined, { styleTemplate: original })
     expect(revised.templated).toBe(true)
     expect(spacing(revised.bytes)).toBe(spacing(original))
+    // A draft on a firm template, whose heading styles space the headings, gains no spacing when revised.
+    const firm = (await renderMarkdownToDocx(BODY, undefined, undefined, { styleTemplate: template() })).bytes
+    expect(spacing(firm)).toBe(0)
+    expect(spacing((await renderMarkdownToDocx(BODY, firm, undefined, { styleTemplate: firm })).bytes)).toBe(0)
   })
 })
