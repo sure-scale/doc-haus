@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useId, useRef, useState } from "react"
 import type { CompareParams } from "../api/ingest/compare"
 import { humanizeError } from "../api/ingest/errors"
 import {
@@ -12,7 +12,7 @@ import {
   type RestoreResult,
   type VersionEvent,
 } from "../api/ingest/versions"
-import { formatDate, formatDateTime } from "../lib/format"
+import { formatDateTime } from "../lib/format"
 import { CompareIcon } from "./CompareDialog"
 import { useToast } from "./Toast"
 
@@ -22,7 +22,8 @@ import { useToast } from "./Toast"
 // next one, so nothing in the history changes.
 
 // What made a version, in a lawyer's words. A writer this build does not know
-// still reads as a save.
+// still reads as a save. doc.haus's own first version of a file was added, not
+// updated; a file found changed between kept versions changed outside doc.haus.
 const ORIGIN: Record<string, string> = {
   upload: "Uploaded",
   replace: "Uploaded as a new version",
@@ -38,7 +39,9 @@ const ORIGIN: Record<string, string> = {
   unknown: "Earlier file, not recorded how it was made",
 }
 
-export function versionOrigin(version: Pick<DocumentVersion, "id" | "origin">, events: VersionEvent[] = []) {
+export function versionOrigin(version: Pick<DocumentVersion, "id" | "origin" | "parent">, events: VersionEvent[] = []) {
+  if (version.origin === "system" && !version.parent) return "Added by doc.haus"
+  if (version.origin === "unknown" && version.parent) return "Changed outside doc.haus"
   if (version.origin === "restore") {
     const restored = events.find((event) => event.kind === "restore" && event.version_id === version.id)?.detail?.restored_number
     return typeof restored === "number" ? `Restored from version ${restored}` : ORIGIN.restore!
@@ -99,32 +102,42 @@ export function previousVersion(data: Pick<DocumentVersions, "versions" | "worki
 // The route's own name for a version side, so labels read the same everywhere.
 export const versionSideLabel = (name: string, number: number) => `${name.replace(/\.[^.]+$/, "")} (version ${number})`
 
+// A picker option fits a phone's closed select: the day without the year, which
+// the option's title keeps with the time.
+const DAY = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short" })
 export function versionOption(version: DocumentVersion, events: VersionEvent[]) {
-  const parts = [`Version ${version.number}${version.current ? " (current)" : ""}`, versionOrigin(version, events), formatDate(version.created_at)]
-  return parts.filter(Boolean).join(" · ")
+  const head = [`Version ${version.number}${version.current ? " (current)" : ""}`, versionOrigin(version, events)]
+  const day = version.created_at ? DAY.format(new Date(version.created_at)) : ""
+  return { text: [...head, day].filter(Boolean).join(" · "), title: [...head, formatDateTime(version.created_at)].filter(Boolean).join(" · ") }
 }
 
-export function restoreConfirmText(number: number, next?: number) {
-  return `This saves a copy of version ${number} as ${next ? `version ${next}, the new current version` : "the new current version"}. Nothing is deleted: every version stays in the history.`
+// A file changed outside doc.haus is kept as a version first, so the restored
+// copy's number is not foretold.
+export function restoreConfirmText(number: number, next?: number, changed = false) {
+  const copy = `a copy of version ${number} as ${next && !changed ? `version ${next}, the new current version` : "the new current version"}`
+  return `${changed ? "This keeps the file's changes made outside doc.haus as a version, then saves" : "This saves"} ${copy}. Nothing is deleted: every version stays in the history.`
 }
 
 export function restoredMessage(number: number, result: RestoreResult, name?: string) {
   return `Restored version ${number}${name ? ` of ${name}` : ""}${result.version ? ` as version ${result.version.number}` : ""}.`
 }
 
-export function useDocumentVersions(matterId: string, name: string, reload: number) {
-  const [state, setState] = useState<{ data?: DocumentVersions; error?: string }>({})
+// The list as last loaded, and whether a newer one is on its way: until it
+// arrives, the rows' numbers may be out of date.
+export function useDocumentVersions(matterId: string, name: string, reload: number | string) {
+  const [state, setState] = useState<{ data?: DocumentVersions; error?: string; key?: string }>({})
+  const key = `${matterId}\n${name}\n${reload}`
   useEffect(() => {
     let cancelled = false
     fetchDocumentVersions(matterId, name).then(
-      (data) => !cancelled && setState({ data }),
-      (cause) => !cancelled && setState({ error: humanizeError(cause, `Could not load the versions of ${name}.`) }),
+      (data) => !cancelled && setState({ data, key }),
+      (cause) => !cancelled && setState({ error: humanizeError(cause, `Could not load the versions of ${name}.`), key }),
     )
     return () => {
       cancelled = true
     }
   }, [matterId, name, reload])
-  return state
+  return { data: state.data, error: state.error, loading: state.key !== key }
 }
 
 export function saveVersionFile(bytes: Uint8Array, name: string, number: number) {
@@ -143,26 +156,33 @@ export default function VersionsPanel({
   name,
   data,
   error,
+  loading = false,
   shown,
   unavailable,
   onShow,
   onCompare,
   onRestored,
   onUnavailable,
+  onRefresh,
 }: {
   matterId: string
   name: string
   data?: DocumentVersions
   error?: string
+  // A newer list is on its way; until then the rows' numbers may be stale.
+  loading?: boolean
   // The older version open in the viewer, if any.
   shown?: string
   // Versions found unavailable since the list loaded, with why.
   unavailable: Record<string, string>
-  // A version to view; undefined goes back to the working file.
-  onShow: (version: DocumentVersion | undefined) => void
+  // A version to view; undefined goes back to the working file. Omitted where
+  // an older version cannot be shown (an email, spreadsheet or zip file).
+  onShow?: (version: DocumentVersion | undefined) => void
   onCompare?: (params: CompareParams) => void
   onRestored: (result: RestoreResult) => void
   onUnavailable: (id: string, reason: string) => void
+  // The list is out of date (a restore found the version already current).
+  onRefresh?: () => void
 }) {
   const [confirming, setConfirming] = useState<string>()
   const [busy, setBusy] = useState<string>()
@@ -170,12 +190,16 @@ export default function VersionsPanel({
   // A cancelled confirmation hands focus back to its Restore button once that
   // button is rendered again.
   const refocus = useRef<string>(undefined)
+  // A confirmed restore's buttons go: focus stays in the list, on its heading.
+  const heading = useRef<HTMLHeadingElement>(null)
+  const confirmText = useId()
   const toast = useToast()
   const versions = data?.versions ?? []
   const events = data?.events ?? []
   // The working file holds no kept version: it changed outside doc.haus.
   const changed = Boolean(data && versions.length && !data.working_version)
   const next = versions.reduce((max, version) => Math.max(max, version.number), 0) + 1
+  const current = versions.find((version) => version.current)
 
   function cancel(id: string) {
     refocus.current = id
@@ -196,8 +220,11 @@ export default function VersionsPanel({
       if (reason) onUnavailable(version.id, reason)
       setConfirming(undefined)
       setRowError({ id: version.id, message: reason ?? humanizeError(cause, `Could not restore version ${version.number}.`) })
+      // Already current means the list missed a change made elsewhere.
+      if (cause instanceof RestoreRefusedError && cause.code === "already_current") onRefresh?.()
     } finally {
       setBusy(undefined)
+      heading.current?.focus()
     }
   }
 
@@ -215,10 +242,10 @@ export default function VersionsPanel({
   return (
     <aside id="document-versions" className="changes-panel versions-panel" aria-labelledby="document-versions-title">
       <div className="changes-head versions-head">
-        <h3 id="document-versions-title">
+        <h3 id="document-versions-title" ref={heading} tabIndex={-1}>
           Versions {versions.length > 0 && <span className="compare-count">{versions.length}</span>}
         </h3>
-        <p>doc.haus keeps every version of this document. Restoring one saves it again as the newest version.</p>
+        <p>doc.haus keeps every version of this document, except text removed by a redaction. Restoring one saves it again as the newest version.</p>
       </div>
       {error && <p className="muted">{error}</p>}
       {!error && !data && (
@@ -231,7 +258,7 @@ export default function VersionsPanel({
       )}
       {changed && <p className="version-changed">The file has changed outside doc.haus since the current version. It is kept as a version the next time doc.haus saves it.</p>}
       {versions.length > 0 && (
-        <ol className="versions-list" aria-label={`Versions of ${name}, newest first`}>
+        <ol className="versions-list" aria-label={`Versions of ${name}, newest first`} aria-busy={loading || undefined}>
           {versions.map((version) => {
             const origin = versionOrigin(version, events)
             const actor = versionActor(version.actor)
@@ -241,8 +268,9 @@ export default function VersionsPanel({
             const parent = version.parent ? versions.find((other) => other.id === version.parent) : undefined
             const parentGone = parent && (unavailable[parent.id] ?? versionUnavailable(parent))
             const viewing = shown ? shown === version.id : version.current && !changed
-            // The current version is what the viewer shows when no other is open.
-            const restorable = !version.current || changed
+            // The current version is what the viewer shows when no other is open;
+            // a version identical to it would restore nothing new.
+            const restorable = changed || (!version.current && version.sha256 !== current?.sha256)
             return (
               <li key={version.id} className={`version-row${viewing ? " is-shown" : ""}${gone ? " is-unavailable" : ""}`} aria-current={viewing ? "true" : undefined}>
                 <div className="version-title">
@@ -268,9 +296,9 @@ export default function VersionsPanel({
                     event.stopPropagation()
                     cancel(version.id)
                   }}>
-                    <p>{restoreConfirmText(version.number, next)}</p>
+                    <p id={confirmText}>{restoreConfirmText(version.number, next, changed)}</p>
                     <span className="upload-actions">
-                      <button type="button" className="icon-btn upload-choice-lead" autoFocus disabled={busy !== undefined} onClick={() => restore(version)}>
+                      <button type="button" className="icon-btn upload-choice-lead" autoFocus aria-describedby={confirmText} disabled={busy !== undefined} onClick={() => restore(version)}>
                         {busy === version.id ? "Restoring…" : `Restore version ${version.number}`}
                       </button>
                       <button type="button" className="icon-btn" disabled={busy !== undefined} onClick={() => cancel(version.id)}>
@@ -280,23 +308,25 @@ export default function VersionsPanel({
                   </div>
                 ) : (
                   <div className="version-actions">
-                    {!viewing && (
-                      <button type="button" className="icon-btn" onClick={() => onShow(version.current && !changed ? undefined : version)}>
+                    {onShow && !viewing && (
+                      <button type="button" className="icon-btn" disabled={loading} data-version-view={version.id}
+                        aria-label={version.current && !changed ? `View current version ${version.number}` : `View version ${version.number}`}
+                        onClick={() => onShow(version.current && !changed ? undefined : version)}>
                         {version.current && !changed ? "View current" : "View"}
                       </button>
                     )}
-                    <button type="button" className="icon-btn" onClick={() => download(version)} aria-label={`Download version ${version.number}`}>
+                    <button type="button" className="icon-btn" disabled={loading} onClick={() => download(version)} aria-label={`Download version ${version.number}`}>
                       Download
                     </button>
                     {onCompare && parent && !parentGone && (
-                      <button type="button" className="icon-btn" title={`Blackline version ${version.number} against version ${parent.number}`}
+                      <button type="button" className="icon-btn" disabled={loading} title={`Blackline version ${version.number} against version ${parent.number}`}
                         onClick={() => onCompare({ left: name, right: name, leftVersion: parent.id, rightVersion: version.id })}>
                         <CompareIcon size={14} />
                         Compare with version {parent.number}
                       </button>
                     )}
                     {restorable && (
-                      <button type="button" className="icon-btn" disabled={busy !== undefined}
+                      <button type="button" className="icon-btn" disabled={busy !== undefined || loading} aria-label={`Restore version ${version.number}`}
                         ref={(node) => {
                           if (!node || refocus.current !== version.id) return
                           refocus.current = undefined

@@ -1,7 +1,8 @@
 // Run from apps/web: PLAYWRIGHT_MODULE=<installed playwright module> bun test/document-text-viewer.browser.ts
 // Mounts the real DocumentViewer in Chromium with only ingest HTTP mocked. An email or spreadsheet opens as the
 // text ingest extracted, read-only, with a cited excerpt highlighted and focused; it never takes the Word path.
-// A Word file is the control: it still renders through Docxodus from the redlined bytes.
+// A Word file is the control: it still renders through Docxodus from the redlined bytes. An older kept version
+// of it open in the viewer carries no citation highlight or status: the citation is to the current text (#268).
 // Set PLAYWRIGHT_CHROMIUM_PATH=<chromium> when Playwright's own browser is missing, DOCXODUS_WASM_DIR=<wasm dir> to try another runtime build.
 import assert from "node:assert/strict"
 import { existsSync, statSync } from "node:fs"
@@ -43,11 +44,16 @@ const cases: Case[] = [
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 const CT = "application/vnd.openxmlformats-officedocument.wordprocessingml"
 const sentence = "The Supplier shall deliver the goods within fourteen days."
-const docx = zipSync(Object.fromEntries(Object.entries({
+const wordFile = (...paragraphs: string[]) => zipSync(Object.fromEntries(Object.entries({
   "[Content_Types].xml": `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="${CT}.document.main+xml"/></Types>`,
   "_rels/.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`,
-  "word/document.xml": `<w:document xmlns:w="${W}"><w:body><w:p><w:r><w:t>${sentence}</w:t></w:r></w:p></w:body></w:document>`,
+  "word/document.xml": `<w:document xmlns:w="${W}"><w:body>${paragraphs.map(text => `<w:p><w:r><w:t>${text}</w:t></w:r></w:p>`).join("")}</w:body></w:document>`,
 }).map(([name, xml]) => [name, strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>${xml}`)])))
+const docx = wordFile(sentence)
+// An older kept version that also holds the cited sentence.
+const earlier = wordFile("Earlier version of the terms.", sentence)
+const kept = (number: number, current: boolean) => ({ id: `v-${number}`, number, sha256: String(number).repeat(64), ext: ".docx", bytes: 1000, parent: number > 1 ? `v-${number - 1}` : null,
+  derived_from: null, origin: number > 1 ? "replace" : "upload", actor: "unknown", run: null, label: null, created_at: Date.UTC(2026, 9, 24, 9 + number), current, removed: null })
 
 const entry = path.join(directory, "harness.tsx")
 await Bun.write(entry, `
@@ -92,6 +98,11 @@ async function open(name: string, excerpt?: string) {
       return route.fulfill({ status: 200, contentType: `${CT}.document`, body: Buffer.from(docx) })
     if (url.pathname === "/matters/matter-viewer/redlines") return route.fulfill({ status: 200, contentType: "application/json", body: "[]" })
     if (url.pathname === "/matters/matter-viewer/documents/amendments") return route.fulfill({ status: 200, contentType: "application/json", body: "null" })
+    if (url.pathname === "/matters/matter-viewer/documents/versions") {
+      const versions = requested === "terms.docx" ? [kept(2, true), kept(1, false)] : []
+      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ name: requested, document: null, versions, events: [], working_version: versions.length ? "v-2" : null }) })
+    }
+    if (url.pathname === "/matters/matter-viewer/documents/versions/v-1/content") return route.fulfill({ status: 200, contentType: `${CT}.document`, body: Buffer.from(earlier) })
     return route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: `Unexpected ${url.pathname}` }) })
   })
   const query = new URLSearchParams({ name, ...(excerpt === undefined ? {} : { excerpt }) })
@@ -114,7 +125,7 @@ try {
     const problem = [
       ...(await error.allTextContents()).map(message => `error shown: ${message}`),
       ...shown.filter(line => !body.includes(line)).map(line => `missing text "${line}"`),
-      ...calls.filter(call => call !== "GET /matters/matter-viewer/documents/text").map(call => `unexpected request: ${call}`),
+      ...calls.filter(call => call !== "GET /matters/matter-viewer/documents/text" && call !== "GET /matters/matter-viewer/documents/versions").map(call => `unexpected request: ${call}`),
       ...((await page.getByRole("button", { name: /Request edits|Convert to DOCX|Download/ }).count()) ? ["Word or PDF actions offered"] : []),
     ]
     if (marked) {
@@ -144,6 +155,28 @@ try {
   if (problem.length) failures.push(`terms.docx: ${problem.join("; ")}`)
   console.log(`${problem.length ? "FAIL" : "PASS"} terms.docx (control): ${problem.length ? problem.join("; ") : `Word path unchanged (${calls.join(", ")})`}`)
   await page.close()
+
+  {
+    const { page } = await open("terms.docx", sentence)
+    const mark = page.locator(".docx-render mark.citation-passage")
+    const status = page.locator('.viewer-doc > p[role="status"]')
+    const problem: string[] = []
+    await mark.first().waitFor()
+    await page.getByRole("button", { name: /^Versions/ }).click()
+    await page.locator(".version-row").filter({ hasText: "Version 1" }).getByRole("button", { name: /^View/ }).click()
+    await page.locator(".docx-render:not(.docx-skeleton)").filter({ hasText: "Earlier version of the terms." }).waitFor()
+    // Let the citation pass run over the older text before judging.
+    await page.waitForTimeout(500)
+    if (await mark.count()) problem.push("cited excerpt highlighted in an older version")
+    const said = (await status.allTextContents()).join(" ")
+    if (said.includes("Source section")) problem.push(`citation status shown over an older version: ${JSON.stringify(said)}`)
+    await page.getByRole("button", { name: "Back to current version" }).click()
+    await page.locator(".docx-render:not(.docx-skeleton)").filter({ hasNotText: "Earlier version of the terms." }).waitFor()
+    if (!(await mark.count())) problem.push("cited excerpt not highlighted again in the current version")
+    if (problem.length) failures.push(`terms.docx (older version): ${problem.join("; ")}`)
+    console.log(`${problem.length ? "FAIL" : "PASS"} terms.docx (cited, older version): ${problem.length ? problem.join("; ") : "no citation over the older version; back on the current one it is highlighted"}`)
+    await page.close()
+  }
   assert.deepEqual(failures, [], "Emails and spreadsheets open as highlighted read-only text; Word files keep the Word viewer")
 } finally {
   await browser.close()

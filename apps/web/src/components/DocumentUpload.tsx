@@ -6,6 +6,7 @@ import {
   DuplicateUploadError,
   MATTER_DOCUMENT_EXTENSIONS,
   matterDocumentKind,
+  UploadFailedError,
   uploadDocument,
   type Document,
   type EmailAttachment,
@@ -89,6 +90,7 @@ export default function DocumentUpload({
   const watched = useRef(false)
   // Uploads run one at a time so a batch does not swamp the reader.
   const queue = useRef(Promise.resolve())
+  const body = useRef<HTMLDivElement>(null)
   const toast = useToast()
   // StrictMode re-runs effects on mount; the ref keeps one batch from uploading twice.
   const taken = useRef<File[]>(undefined)
@@ -138,6 +140,8 @@ export default function DocumentUpload({
     update(upload.key, { restoring: true })
     try {
       const result = await restoreVersion(matterId, match.version.id)
+      // The row goes with its buttons: focus moves to the documents list.
+      body.current?.focus()
       setUploads((prev) => prev.filter((u) => u.key !== upload.key))
       onUploaded()
       toast("success", restoredMessage(match.version.number, result, match.name))
@@ -408,7 +412,7 @@ export default function DocumentUpload({
           </button>
         )}
       </div>
-      <div className="docs-drawer-body" tabIndex={0} role="region" aria-label="Documents" onDragOver={(event) => event.preventDefault()} onDrop={(event) => {
+      <div ref={body} className="docs-drawer-body" tabIndex={0} role="region" aria-label="Documents" onDragOver={(event) => event.preventDefault()} onDrop={(event) => {
         event.preventDefault()
         const added = Array.from(event.dataTransfer.files)
         if (added.length) onFiles(added)
@@ -668,14 +672,16 @@ export function newUpload(key: number, file: File): Upload {
 }
 
 // A same-name clash asks the lawyer what to do with the existing document; an
-// identical file says which version it matches; any other failure can be retried.
+// identical file says which version it matches. A lost connection or a service
+// failure can be retried; a refusal for this file (4xx) would only repeat.
 export function failedUpload(error: unknown, file: File): Partial<Upload> {
   if (error instanceof DocumentExistsError) return { status: "exists", existing: { name: error.existing, role: error.role } }
   if (error instanceof DuplicateUploadError) {
     const earlier = error.version && !error.version.current ? { name: error.existing, version: { id: error.version.id, number: error.version.number } } : undefined
     return { status: "duplicate", error: duplicateMessage(error.existing, error.version), match: earlier }
   }
-  return { status: "failed", error: humanizeError(error, `Could not read ${file.name}.`), retryable: true }
+  const failed = { status: "failed" as const, error: humanizeError(error, `Could not read ${file.name}.`) }
+  return error instanceof UploadFailedError && error.status < 500 ? failed : { ...failed, retryable: true }
 }
 
 const UPLOAD_LABEL: Record<Upload["status"], string> = {
@@ -700,7 +706,15 @@ export function UploadRow({ upload, onRetry, onChoose, onDismiss, onRestore }: {
   const [confirming, setConfirming] = useState(false)
   // A cancelled confirmation hands focus back to the Restore button.
   const refocus = useRef(false)
+  const dismiss = useRef<HTMLButtonElement>(null)
   const match = upload.status === "duplicate" && onRestore ? upload.match : undefined
+  // A failed restore takes the confirmation with it: focus stays in the row,
+  // on Dismiss, beside the reason.
+  useEffect(() => {
+    if (!confirming || match) return
+    setConfirming(false)
+    dismiss.current?.focus()
+  }, [confirming, match])
   function cancel() {
     refocus.current = true
     setConfirming(false)
@@ -751,7 +765,7 @@ export function UploadRow({ upload, onRetry, onChoose, onDismiss, onRestore }: {
                 {`Restore version ${match.version.number}`}
               </button>
             )}
-            <button type="button" className="icon-btn" onClick={onDismiss}>
+            <button type="button" className="icon-btn" ref={dismiss} onClick={onDismiss}>
               Dismiss
             </button>
           </span>

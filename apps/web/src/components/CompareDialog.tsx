@@ -175,8 +175,12 @@ export default function CompareDialog({
         ].join("; ")}. The assistant will treat this content as untrusted.`)
     } catch (cause) {
       // Already in the matter: pick what it matched, when that can be compared.
+      // Only this file's versions are offered, so an earlier version of another
+      // file is named but not picked: picking that file would compare its current one.
       if (cause instanceof DuplicateUploadError) {
-        const match = cause.existing !== name ? cause.existing : cause.version && cause.version.id !== thisHeld ? VERSION + cause.version.id : undefined
+        const match = cause.existing !== name
+          ? !cause.version || cause.version.current ? cause.existing : undefined
+          : cause.version && cause.version.id !== thisHeld ? VERSION + cause.version.id : undefined
         if (match) pick(match)
         setNotice(`${duplicateMessage(cause.existing, cause.version)}${match ? " It is selected." : ""}`)
       } else setError(humanizeError(cause, `Could not add ${file.name}.`))
@@ -190,9 +194,10 @@ export default function CompareDialog({
   // Each kept version can be picked; one whose copy was removed is listed, not chosen.
   const versionOptions = (list: typeof versions) => list.map((version) => {
     const gone = versionUnavailable(version)
+    const option = versionOption(version, events)
     return (
-      <option key={version.id} value={VERSION + version.id} disabled={Boolean(gone)}>
-        {versionOption(version, events)}{gone ? " · not available" : ""}
+      <option key={version.id} value={VERSION + version.id} disabled={Boolean(gone)} title={option.title}>
+        {option.text}{gone ? " · not available" : ""}
       </option>
     )
   })
@@ -210,11 +215,14 @@ export default function CompareDialog({
       {versions.length > 1 && (
         <select aria-label="Version of this file" value={thisVersion} onChange={(event) => pickThis(event.target.value)} disabled={upload !== undefined}>
           <option value="">{kept?.working_version && current ? `Current file (version ${current.number})` : "Current file"}</option>
-          {versions.filter((version) => version.id !== kept?.working_version && !versionUnavailable(version)).map((version) => (
-            <option key={version.id} value={version.id}>
-              {versionOption(version, events)}
-            </option>
-          ))}
+          {versions.filter((version) => version.id !== kept?.working_version && !versionUnavailable(version)).map((version) => {
+            const option = versionOption(version, events)
+            return (
+              <option key={version.id} value={version.id} title={option.title}>
+                {option.text}
+              </option>
+            )
+          })}
         </select>
       )}
     </>

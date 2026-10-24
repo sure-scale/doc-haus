@@ -138,8 +138,8 @@
 .document-reader .version-status { max-width: 760px; margin: 0 auto var(--space-4); font-size: 0.8125rem; line-height: 1.5; color: var(--warn); }
 .compare-notice { color: var(--text-secondary); }
 @media (max-width: 720px) {
-  /* Above the page, so opening the list shows it. */
-  .document-reader .versions-panel { order: -1; border-top: 0; border-bottom: 1px solid var(--border); }
+  /* Above the page, and first in the markup so the tab order matches. */
+  .document-reader .versions-panel { border-top: 0; border-bottom: 1px solid var(--border); }
 }
 
 /* ---------- Documents drawer ---------- */

@@ -4,6 +4,7 @@ import { createMatter, deleteMatterSession, renameMatter } from "../src/api/inge
 import { dispatchMatterContinuation } from "../src/api/ingest/drafting-run"
 import { DocumentExistsError, DuplicateUploadError, uploadDocument } from "../src/api/ingest/documents"
 import { getDraftingStatus } from "../src/api/ingest/drafting-status"
+import { failedUpload } from "../src/components/DocumentUpload"
 import type { LeanDraftingStatus } from "../src/api/ingest/lean"
 
 const status = completed as LeanDraftingStatus
@@ -216,4 +217,24 @@ test("an identical upload is refused as a duplicate of the version that holds it
   // A file from before versions were kept has no version to name.
   scriptXhr(409, JSON.stringify({ error: "Old.docx is already in this matter as Old.docx. Nothing new was stored.", code: "duplicate", name: "Old.docx", document_id: null, version: null }))
   expect(await uploadDocument("matter", new File(["same"], "Old.docx")).catch((error: unknown) => error)).toMatchObject({ existing: "Old.docx", version: null })
+})
+
+// A refusal the service gives for this file (unsupported, unreadable, too large)
+// is the same on retry, so only a lost connection or a service failure offers Retry.
+test("a failed upload offers Retry only when trying again can succeed", async () => {
+  const file = new File(["x"], "source.docx")
+  const outcome = async () => failedUpload(await uploadDocument("matter", file).catch((error: unknown) => error), file)
+  scriptXhr(400, JSON.stringify({ error: "The source document filename or extension is not supported." }))
+  expect(await outcome()).toEqual({ status: "failed", error: "The source document filename or extension is not supported." })
+  scriptXhr(413, JSON.stringify({ error: "The zip file is too large to unpack.", code: "zip_too_large" }))
+  expect((await outcome()).retryable).toBeUndefined()
+  scriptXhr(503, JSON.stringify({ error: "The embedding model could not be loaded." }))
+  expect((await outcome()).retryable).toBe(true)
+  globalThis.XMLHttpRequest = class {
+    upload = {}
+    onerror?: () => void
+    open() {}
+    send() { queueMicrotask(() => this.onerror?.()) }
+  } as unknown as typeof XMLHttpRequest
+  expect((await outcome()).retryable).toBe(true)
 })

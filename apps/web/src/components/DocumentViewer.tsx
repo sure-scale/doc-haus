@@ -47,8 +47,38 @@ export const DOCX_RENDER_OPTIONS: ConversionOptions = {
 export default function DocumentViewer(props: Parameters<typeof WordDocumentViewer>[0]) {
   const kind = matterDocumentKind(props.name)
   if (kind === "eml" || kind === "xlsx" || kind === "zip")
-    return <DocumentTextViewer matterId={props.matterId} name={props.name} kind={kind} citation={props.citation} onClose={props.onClose} />
+    return <DocumentTextViewer matterId={props.matterId} name={props.name} kind={kind} citation={props.citation} onClose={props.onClose} onChanged={props.onChanged} />
   return <WordDocumentViewer {...props} />
+}
+
+// On a narrow screen the versions list sits above the page, so it comes first
+// in the markup too and the tab order follows what the lawyer sees.
+const NARROW = "(max-width: 720px)"
+function useNarrow() {
+  const [narrow, setNarrow] = useState(() => typeof window !== "undefined" && Boolean(window.matchMedia?.(NARROW).matches))
+  useEffect(() => {
+    const query = window.matchMedia?.(NARROW)
+    if (!query) return
+    const change = () => setNarrow(query.matches)
+    change()
+    query.addEventListener("change", change)
+    return () => query.removeEventListener("change", change)
+  }, [])
+  return narrow
+}
+
+// The versions list, opened and refreshed: opening it reads the list again, so
+// versions saved elsewhere since the viewer opened show up.
+function useVersionsList(matterId: string, name: string, reload: number, initiallyOpen = false) {
+  const [open, setOpen] = useState(initiallyOpen)
+  const [refreshed, setRefreshed] = useState(0)
+  const versions = useDocumentVersions(matterId, name, `${reload}.${refreshed}`)
+  const refresh = () => setRefreshed((value) => value + 1)
+  function toggle() {
+    if (!open) refresh()
+    setOpen(!open)
+  }
+  return { versions, open, toggle, refresh }
 }
 
 // In-browser redline viewer. Fetches the matter's document with every pending
@@ -126,9 +156,11 @@ function WordDocumentViewer({
   // Kept versions (#268): the list beside the document, the older version open
   // in place of the working file (read only), versions found unavailable since
   // the list loaded, and the last restore's or failed open's plain words.
-  const versions = useDocumentVersions(matterId, name, reload)
-  const [versionsOpen, setVersionsOpen] = useState(initialVersions)
+  const { versions, open: versionsOpen, toggle: toggleVersions, refresh: refreshVersions } = useVersionsList(matterId, name, reload, initialVersions)
+  const narrow = useNarrow()
   const [shown, setShown] = useState<DocumentVersion>()
+  // The version whose View button takes focus back once the working file shows again.
+  const returnFocus = useRef<string>(undefined)
   const [unavailable, setUnavailable] = useState<Record<string, string>>({})
   const [versionStatus, setVersionStatus] = useState<string>()
   const [pdfVersionUrl, setPdfVersionUrl] = useState<string>()
@@ -209,8 +241,23 @@ function WordDocumentViewer({
   function show(version: DocumentVersion | undefined) {
     setVersionStatus(undefined)
     setShown(version)
-    if (window.matchMedia?.("(max-width: 720px)").matches) documentRef.current?.closest(".viewer-doc")?.scrollIntoView({ block: "start" })
+    if (narrow) documentRef.current?.closest(".viewer-doc")?.scrollIntoView({ block: "start" })
   }
+
+  // Back to the working file: focus returns to the version's View button, or
+  // to the Versions toggle when the list is closed.
+  function back() {
+    returnFocus.current = shown?.id
+    show(undefined)
+  }
+  useEffect(() => {
+    const id = returnFocus.current
+    if (shown || !id) return
+    returnFocus.current = undefined
+    const root = modalRef.current
+    const target = root?.querySelector<HTMLElement>(`[data-version-view="${CSS.escape(id)}"]`) ?? root?.querySelector<HTMLElement>(".viewer-versions-toggle")
+    target?.focus()
+  }, [shown])
 
   // A restore makes a new current version: show it, and say what the save
   // noticed (pending tracked changes) until the next action.
@@ -227,19 +274,21 @@ function WordDocumentViewer({
       name={name}
       data={versions.data}
       error={versions.error}
+      loading={versions.loading}
       shown={shown?.id}
       unavailable={unavailable}
-      onShow={show}
+      onShow={(version) => (version ? show(version) : back())}
       onCompare={onCompareVersions && name.toLowerCase().endsWith(".docx") ? onCompareVersions : undefined}
       onRestored={restored}
       onUnavailable={markUnavailable}
+      onRefresh={refreshVersions}
     />
   )
   const versionsToggle = (
-    <VersionsToggle open={versionsOpen} count={versions.data?.versions.length} onToggle={() => setVersionsOpen((open) => !open)} />
+    <VersionsToggle open={versionsOpen} count={versions.data?.versions.length} onToggle={toggleVersions} />
   )
   const versionBanner = shown && (
-    <VersionBanner version={shown} origin={versionOrigin(shown, versions.data?.events)} onBack={() => show(undefined)} />
+    <VersionBanner key={shown.id} version={shown} origin={versionOrigin(shown, versions.data?.events)} onBack={back} />
   )
 
   // Once the change list has rendered, scroll the proposal the chat link pointed
@@ -257,14 +306,15 @@ function WordDocumentViewer({
 
   useEffect(() => {
     setPassage(undefined)
-    if (!citation || !html || !documentRef.current) return
+    // The citation is to the working file's text, never an older version's.
+    if (!citation || !html || !documentRef.current || shown) return
     const root = documentRef.current
     setPassage(focusCitationPassage(root, citation.excerpt))
     return () => {
       for (const mark of root.querySelectorAll("mark.citation-passage")) mark.replaceWith(...mark.childNodes)
       root.normalize()
     }
-  }, [citation, html])
+  }, [citation, html, shown])
 
   // A <details> menu stays open until its summary is clicked again; also close it
   // on a press anywhere else in the viewer, as a menu is expected to.
@@ -368,6 +418,7 @@ function WordDocumentViewer({
             </div>
           </div>
           <div className="viewer-body">
+            {narrow && versionsPanel}
             <div className="viewer-doc" ref={documentRef}>
               {versionBanner}
               {versionStatus && <p role="status" className="version-status">{versionStatus}</p>}
@@ -377,7 +428,7 @@ function WordDocumentViewer({
                 ? pdfVersionUrl && <iframe className="pdf-render" title={`${name}, version ${shown.number}`} src={pdfVersionUrl} />
                 : <iframe key={reload} className="pdf-render" title={name} src={documentContentUrl(matterId, name)} />}
             </div>
-            {versionsPanel}
+            {!narrow && versionsPanel}
           </div>
         </div>
       </div>
@@ -419,8 +470,9 @@ function WordDocumentViewer({
                   </svg>
                 </summary>
                 <div className="viewer-more-menu">
+                  {/* Both start from the working file, so neither is offered over an older version. */}
                   {onCompare && (
-                    <button onClick={onCompare}>
+                    <button onClick={onCompare} disabled={shown !== undefined} title={shown ? "Go back to the current version to compare it" : undefined}>
                       <CompareIcon size={16} />
                       <span>
                         Compare with…
@@ -429,7 +481,8 @@ function WordDocumentViewer({
                     </button>
                   )}
                   {onSaveTemplate && (
-                    <button onClick={onSaveTemplate} disabled={creatingTemplate}>
+                    <button onClick={onSaveTemplate} disabled={creatingTemplate || shown !== undefined}
+                      title={shown ? "Go back to the current version to make a template from it" : undefined}>
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                         <rect x="8" y="8" width="13" height="13" rx="2" />
                         <path d="M4 16V5a2 2 0 0 1 2-2h11" />
@@ -448,10 +501,11 @@ function WordDocumentViewer({
           </div>
         </div>
         <div className="viewer-body">
+          {narrow && versionsPanel}
           <div className="viewer-doc">
             {versionBanner}
             {versionStatus && <p role="status" className="version-status">{versionStatus}</p>}
-            {citation && <p role="status">{citationStatus(citation.section, passage)}</p>}
+            {citation && !shown && <p role="status">{citationStatus(citation.section, passage)}</p>}
             {editing && !shown && <div id="document-edit-request" className="change-card document-edit-request">
               <label htmlFor="document-edit-instructions">Describe the changes you want to review</label>
               <textarea id="document-edit-instructions" value={instructions} maxLength={24000} disabled={busy !== undefined}
@@ -473,7 +527,7 @@ function WordDocumentViewer({
             )}
             {documentPreview}
           </div>
-          {versionsPanel}
+          {!narrow && versionsPanel}
           {!versionsPanel && !shown && redlines.length > 0 && (
             <aside className="changes-panel">
               <div className="changes-head">
@@ -547,16 +601,25 @@ export function citationStatus(section: string, passage?: "matched" | "ambiguous
 
 // An email or spreadsheet, read-only, as the text ingest extracted from it:
 // the same text the assistant reads and cites, so a citation's excerpt is found
-// in it directly and highlighted. Nothing here edits, redlines or converts.
-function DocumentTextViewer({ matterId, name, kind, citation, onClose }: {
+// in it directly and highlighted. Nothing here edits, redlines or converts. Its
+// kept versions (#268) can be downloaded or restored; only the current text can
+// be shown here.
+function DocumentTextViewer({ matterId, name, kind, citation, onClose, onChanged }: {
   matterId: string
   name: string
   kind: "eml" | "xlsx" | "zip"
   citation?: CitationFocus
   onClose: () => void
+  onChanged?: () => void
 }) {
   const [text, setText] = useState<string>()
   const [error, setError] = useState<string>()
+  // Bumped after a restore, so the restored version's text is read.
+  const [reload, setReload] = useState(0)
+  const { versions, open: versionsOpen, toggle: toggleVersions, refresh: refreshVersions } = useVersionsList(matterId, name, reload)
+  const [unavailable, setUnavailable] = useState<Record<string, string>>({})
+  const [versionStatus, setVersionStatus] = useState<string>()
+  const narrow = useNarrow()
   const markRef = useRef<HTMLElement>(null)
   const modalRef = useRef<HTMLDivElement>(null)
   useModalFocus(modalRef)
@@ -572,7 +635,26 @@ function DocumentTextViewer({ matterId, name, kind, citation, onClose }: {
     return () => {
       cancelled = true
     }
-  }, [matterId, name])
+  }, [matterId, name, reload])
+
+  function restored(result: RestoreResult) {
+    setVersionStatus(result.notice)
+    setReload((value) => value + 1)
+    onChanged?.()
+  }
+  const versionsPanel = versionsOpen && (
+    <VersionsPanel
+      matterId={matterId}
+      name={name}
+      data={versions.data}
+      error={versions.error}
+      loading={versions.loading}
+      unavailable={unavailable}
+      onRestored={restored}
+      onUnavailable={(id, reason) => setUnavailable((current) => ({ ...current, [id]: reason }))}
+      onRefresh={refreshVersions}
+    />
+  )
 
   useEffect(() => {
     markRef.current?.scrollIntoView({ block: "center" })
@@ -587,11 +669,15 @@ function DocumentTextViewer({ matterId, name, kind, citation, onClose }: {
         <div className="viewer-bar">
           <ViewerTitle name={name} kind={kind === "zip" ? "Zip file · list of files, read-only" : `${kind === "eml" ? "Email" : "Excel spreadsheet"} · extracted text, read-only`} />
           <div className="viewer-bar-actions">
+            <VersionsToggle open={versionsOpen} count={versions.data?.versions.length} onToggle={toggleVersions} />
+            <span className="viewer-bar-divider" aria-hidden="true" />
             <ModalClose onClose={onClose} />
           </div>
         </div>
         <div className="viewer-body">
+          {narrow && versionsPanel}
           <div className="viewer-doc">
+            {versionStatus && <p role="status" className="version-status">{versionStatus}</p>}
             {citation && <p role="status">{citationStatus(citation.section, error ? "unavailable" : match?.status)}</p>}
             {error && <p className="muted">{error}</p>}
             {!error && text === undefined && (
@@ -601,6 +687,7 @@ function DocumentTextViewer({ matterId, name, kind, citation, onClose }: {
             )}
             {text !== undefined && <ExtractedText kind={kind} text={text} match={match} markRef={markRef} />}
           </div>
+          {!narrow && versionsPanel}
         </div>
       </div>
     </div>
@@ -751,7 +838,7 @@ export function combinedNotUpdatedNotice(result: AcceptResult | void) {
 // with the label, both read out; on a narrow screen the button is its icon.
 function VersionsToggle({ open, count, onToggle }: { open: boolean; count?: number; onToggle: () => void }) {
   return (
-    <button type="button" className="viewer-versions-toggle" aria-expanded={open} aria-controls="document-versions" onClick={onToggle}
+    <button type="button" className="viewer-versions-toggle" aria-expanded={open} aria-controls={open ? "document-versions" : undefined} onClick={onToggle}
       title={open ? "Hide the versions of this document" : "Show the versions of this document"}>
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
         <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
@@ -773,7 +860,8 @@ export function VersionBanner({ version, origin, onBack }: { version: DocumentVe
         <strong>Version {version.number}</strong> · {origin} · {formatDateTime(version.created_at)}
         <span>A kept copy, read only. Restore it from the list to make it current again.</span>
       </p>
-      <button type="button" className="icon-btn" onClick={onBack}>
+      {/* Opening a version moves focus here, the way back. */}
+      <button type="button" className="icon-btn" onClick={onBack} autoFocus>
         Back to current version
       </button>
     </div>

@@ -143,6 +143,14 @@ export class DuplicateUploadError extends Error {
   }
 }
 
+// The service refused the upload, with its HTTP status: a refusal for this file
+// (4xx) is the same on retry; a service failure (5xx) may not be.
+export class UploadFailedError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message)
+  }
+}
+
 // What an identical upload matched, said beside the file's name: plainly that
 // nothing was saved.
 export function duplicateMessage(name: string, version: DuplicateUploadError["version"]) {
@@ -173,7 +181,7 @@ export function uploadDocument(
       if (exists) return reject(exists)
       const duplicate = duplicateUpload(xhr.status, xhr.responseText)
       if (duplicate) return reject(duplicate)
-      if (!res.ok) return ingestError(res, `Could not read ${file.name}`).then((message) => reject(new Error(message)))
+      if (!res.ok) return ingestError(res, `Could not read ${file.name}`).then((message) => reject(new UploadFailedError(xhr.status, message)))
       return res.json().then(resolve, reject)
     }
     xhr.send(form)
