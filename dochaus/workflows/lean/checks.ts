@@ -26,7 +26,7 @@ export type StageCheck = { issues: string[]; openItems: OpenItem[] }
 /** One body paragraph: `text` is its own text, which `sha256` hashes and
  * amendments replace; `label` is the number Word's list numbering prints
  * before it ("1.1", "(a)"), which is not part of that text. */
-export type ParagraphRow = { pid: string; sha256: string; text: string; label?: string; draft_part?: number | null; draft_heading?: boolean }
+export type ParagraphRow = { pid: string; sha256: string; text: string; label?: string; clause?: true; draft_part?: number | null; draft_heading?: boolean }
 
 // A paragraph's list label is shown before its text (shownText). Amendment
 // text drops a leading copy of that label (withoutListLabel): the list
@@ -334,7 +334,7 @@ function documentShapeIssues(content: string, noun: "document" | "drafting notes
 
 function isParagraphRow(value: unknown): value is ParagraphRow {
   return record(value) && typeof value.pid === "string" && typeof value.sha256 === "string" && typeof value.text === "string"
-    && (value.label === undefined || typeof value.label === "string")
+    && (value.label === undefined || typeof value.label === "string") && (value.clause === undefined || value.clause === true)
 }
 
 export function record(value: unknown): value is Record<string, unknown> {

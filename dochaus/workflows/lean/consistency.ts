@@ -62,7 +62,7 @@ export function consistencyItems(directory: string, document: DocID, draft: Para
   const entry = plan?.documents[position]
   if (!plan || !entry) return []
   const original = entry.comparison ? sourceLines(sourceText(directory, entry.comparison)) : []
-  const shown = (rows: (ParagraphRow & { clause?: true })[]) => rows.map(row => ({ pid: row.pid, text: row.clause ? shownText(row) : row.text }))
+  const shown = (rows: ParagraphRow[]) => rows.map(row => ({ pid: row.pid, text: row.clause ? shownText(row) : row.text }))
   const others = plan.documents.flatMap((row, at): PackDocument[] => {
     if (row.id === document) return []
     const paras = shown(finalBodyParagraphs(directory, row.id))
