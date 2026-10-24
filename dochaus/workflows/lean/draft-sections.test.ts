@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
+import { referenceFields } from "../../lib/docx-crossrefs"
 import { compareDocxWithPointers, paragraphSha256 } from "../../lib/drafting-amendment"
 import { renderMarkdownToDocx } from "../../lib/render"
 import { readParagraphs, shownText } from "./checks"
@@ -739,16 +740,21 @@ describe("a planned document's form", () => {
     parts["word/document.xml"] = strToU8(strFromU8(parts["word/document.xml"]!).replace(/(<w:sectPr)/, `${listed.map(paragraph).join("")}$1`))
     return zipSync(parts)
   }
-  /** Drafts `reply` as a revision compared against `original`, and redlines it as apply does. */
+  /** Drafts `reply` as a revision compared against `original`, a matter
+   * source, and redlines it as apply does. */
   const reviseAgainst = async (original: Uint8Array, reply: string) => {
     const { directory } = matter()
     writeFileSync(path.join(directory, "original.docx"), original)
+    const db = new Database(path.join(directory, ".dochaus", "legal.db"))
+    db.query("INSERT INTO chunks VALUES (?, ?, ?, ?, ?)").run("original.docx", "1", "Supply terms", 0, 12)
+    db.close()
     writeLeanPlan(directory, [{ title: "Supply terms", purpose: "", parts: [{ heading: "Terms", scope: "" }], mode: "revise", comparison: "original.docx" }])
     expect((await acceptStageReply(directory, "d1.draft", reply)).issues).toEqual([])
     const redline = strFromU8(unzipSync(await compareDocxWithPointers(original, readFileSync(leanFile(directory, "d1/body.docx")), { authorName: "Test" }))["word/document.xml"]!)
     const text = (xml: string, tag: string) => [...xml.matchAll(new RegExp(`<w:${tag}\\b[^>]*>([^<]*)<`, "g"))].map(match => match[1]).join("")
     return {
       rows: readParagraphs(directory, "d1"),
+      body: new Uint8Array(readFileSync(leanFile(directory, "d1/body.docx"))),
       inserted: [...redline.matchAll(/<w:ins\b[\s\S]*?<\/w:ins>/g)].map(match => text(match[0], "t")).filter(Boolean),
       deleted: [...redline.matchAll(/<w:del\b[\s\S]*?<\/w:del>/g)].map(match => text(match[0], "delText")).filter(Boolean),
       // The text of each paragraph whose properties the redline changes.
@@ -768,6 +774,20 @@ describe("a planned document's form", () => {
     }
     // Bullets number nothing: the clause numbers stay typed.
     expect((await reviseAgainst(await wordListed("# Supply terms", listed, { style: "ListParagraph", bullets: true }), reply)).rows.filter(row => row.label)).toEqual([])
+  }, 60_000)
+
+  test("a revision of a Word-numbered original keeps its unnumbered paragraph as the original's, numbered and cross-referenced as a drafted one is", async () => {
+    // An original whose clauses a Word list numbers by their heading styles,
+    // its paragraph outside the list typing its spaces and quotes as Word does.
+    const original = (await renderMarkdownToDocx("# Supply terms\n\n## 1. Term\n\n1.1 The term is one year.\n\n1.2 Either party may renew it.\n\n## 2. Renewal\n\nThe Buyer’s  renewal is subject to clause 1.1.")).bytes
+    const reply = "# Supply terms\n\n## 1. Term\n\n1.1 The term is two years.\n\n1.2 Either party may renew it.\n\n## 2. Renewal\n\nThe Buyer's renewal is subject to clause 1.1.\n"
+    const { rows, body, restyled } = await reviseAgainst(original, reply)
+    // The list still numbers the clauses; the paragraph outside it reads as the original's.
+    expect(rows.map(row => [row.label ?? "", row.text])).toEqual([["", "Supply terms"], ["1.", "Term"], ["1.1", "The term is two years."],
+      ["1.2", "Either party may renew it."], ["2.", "Renewal"], ["", "The Buyer’s  renewal is subject to clause 1.1."]])
+    // Its reference is linked to the clause it names, and no paragraph changes its properties.
+    expect(referenceFields(body).get(rows[5]!.pid)?.map(link => link.target)).toEqual([rows[2]!.pid])
+    expect(restyled).toEqual([])
   }, 60_000)
 
   test("an original that types its clause numbers keeps them typed beside a Word list in its schedule that could show them", async () => {

@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs"
 import path from "node:path"
-import { carryOriginalTables, matchTables, pipeTable, plain, readDocxTables, type DocxTable, type TableCarry } from "../../lib/docx-tables"
+import { carryOriginalParagraphs, carryOriginalTables, matchTables, pipeTable, plain, readDocxTables, type DocxTable, type TableCarry } from "../../lib/docx-tables"
 import { withParagraphPointers } from "../../lib/drafting-amendment"
 import { visibleInlineText } from "../../lib/markdown-visible-text"
 import { highlightOpenItemsInDocx } from "../../lib/open-items"
@@ -188,6 +188,26 @@ export function carryRevisionTables(directory: string, document: DocID, rendered
     return bytes === rendered ? rendered : withParagraphPointers(highlightOpenItemsInDocx(bytes))
   } catch (error) {
     appendLeanEvent(directory, { stage: "draft", document, event: "tables", step: "tables", outcome: "failed", reason: error instanceof Error ? error.message : String(error) })
+    return rendered
+  }
+}
+
+/** The rendered draft, drafted on the original's own styles, with the
+ * original's body paragraphs carried over the drafted paragraphs that read as
+ * them (lib/docx-tables.ts), so the redline marks only what the drafter
+ * changed; how many were carried is recorded in the run's event log. It runs
+ * before the body's paragraphs are listed, so their text and hashes are the
+ * carried paragraphs'. */
+export function carryRevisionParagraphs(directory: string, document: DocID, rendered: Uint8Array) {
+  const original = revisionOriginal(directory, document)
+  if (!original) return rendered
+  try {
+    const { bytes, carry } = carryOriginalParagraphs(rendered, original.bytes)
+    if (carry.paragraphs) appendLeanEvent(directory, { stage: "draft", document, event: "paragraphs", step: "paragraphs",
+      outcome: `carried ${carry.carried} of ${carry.paragraphs}${carry.breaks ? `, page breaks ${carry.breaks}` : ""}` })
+    return bytes
+  } catch (error) {
+    appendLeanEvent(directory, { stage: "draft", document, event: "paragraphs", step: "paragraphs", outcome: "failed", reason: error instanceof Error ? error.message : String(error) })
     return rendered
   }
 }
