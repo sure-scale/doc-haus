@@ -125,7 +125,7 @@ export function numberDocxClauses(bytes: Uint8Array, options: { house?: false; s
   let target = numbering
   if (house) {
     target = numbering ?? addNumberingPart(parts)
-    const bound = houseBindings(decisions, paragraphs, catalog)
+    const bound = houseBindings(decisions, paragraphs, catalog, list.numId)
     writeHouseList(target, list, house.texts, bound)
     for (const [level, style] of bound) bindStyle(catalog.elements.get(style)!, level, list.numId)
     // A paragraph of a newly bound style that is not a clause keeps no number.
@@ -624,8 +624,9 @@ function opensSequence(literal: Literal, list: ClauseList) {
   return labelOf(list.levels, 0, level => list.overrides.get(list.numId)?.get(level) ?? list.levels[level]?.start ?? 1) === literal.text
 }
 
-// `outline` is the outline level of the heading that opened the sequence.
-type Sequence = { converts: Decision[]; settled: boolean; saved: ReturnType<Counters["save"]>; numId?: string; outline?: number }
+// `outline` is the outline level of the heading that opened the sequence;
+// `first` marks the document's first sequence, its main body.
+type Sequence = { converts: Decision[]; settled: boolean; saved: ReturnType<Counters["save"]>; first: boolean; numId?: string; outline?: number }
 
 // The decisions numbering the document with `list`, sequence by sequence; the
 // score is the paragraphs the list would then number. `settledOnly` converts
@@ -635,18 +636,22 @@ function plan(list: ClauseList, paragraphs: Paragraph[], settledOnly: boolean, f
   const forms = levelForms(list)
   const decisions: Decision[] = []
   const restarts: string[] = []
-  let used = false
+  let opened = false
   let members = 0
   let sequence: Sequence | undefined
-  const open = (settled: boolean, outline: number | undefined): Sequence => ({ converts: [], settled, saved: counters.save(), outline })
+  const open = (settled: boolean, outline: number | undefined): Sequence => {
+    const first = !opened
+    opened = true
+    return { converts: [], settled, saved: counters.save(), first, outline }
+  }
   const close = () => {
     if (!sequence) return
     if (sequence.settled) decisions.push(...sequence.converts)
     else if (!settledOnly) {
-      // A sequence after one the list already numbers restarts it.
-      const numId = used ? String(firstRestart + restarts.length) : list.numId
-      if (used) restarts.push(numId)
-      used = true
+      // The main body takes the list's own instance; a later sequence (a
+      // schedule) restarts the list, also after a main body left typed.
+      const numId = sequence.first ? list.numId : String(firstRestart + restarts.length)
+      if (!sequence.first) restarts.push(numId)
       decisions.push(...sequence.converts.map(row => ({ ...row, numId })))
     } else counters.restore(sequence.saved)
     sequence = undefined
@@ -666,7 +671,6 @@ function plan(list: ClauseList, paragraphs: Paragraph[], settledOnly: boolean, f
         sequence = open(true, member.level === 0 ? paragraph.outline : undefined)
       }
       sequence.numId = member.numId
-      used = true
       members++
       counters.advance(member.level, member.numId)
       if (paragraph.literal && labelOf(list.levels, member.level, at => counters.shown(at, member.numId)) === paragraph.literal.text)
@@ -722,23 +726,25 @@ function plan(list: ClauseList, paragraphs: Paragraph[], settledOnly: boolean, f
 
 // ---- writing the list
 
-// A house level is bound to a heading style when every clause at that level
-// uses it, it carries no other level, and after the first such clause most
-// paragraphs of that style are clauses, so a heading of that style added later
-// in Word is numbered too (headings before the clauses, such as the parties or
-// recitals, keep no number).
-function houseBindings(decisions: Decision[], paragraphs: Paragraph[], catalog: Catalog) {
+// A house level is bound to a heading style when every main-body clause (on
+// the list's own instance `numId`) at that level uses it, no clause at another
+// level does, and after the first such clause most paragraphs of that style
+// are clauses, so a heading of that style added later in Word is numbered too
+// (headings before the clauses, such as the parties or recitals, keep no
+// number). A schedule's clauses, numbered on restarts, bind nothing.
+function houseBindings(decisions: Decision[], paragraphs: Paragraph[], catalog: Catalog, numId: string) {
   const converted = decisions.filter(row => row.kind === "convert")
+  const main = converted.filter(row => row.numId === numId)
   const bound = new Map<number, string>()
-  for (const level of new Set(converted.map(row => row.level))) {
-    const styles = new Set(converted.filter(row => row.level === level).map(row => row.paragraph.style))
+  for (const level of new Set(main.map(row => row.level))) {
+    const styles = new Set(main.filter(row => row.level === level).map(row => row.paragraph.style))
     if (styles.size !== 1) continue
     const style = [...styles][0]!
     if (style === catalog.defaultStyle || !catalog.headingLike(style) || !catalog.elements.has(style)) continue
     if (converted.some(row => row.level !== level && row.paragraph.style === style)) continue
     if (catalog.numPr(style)) continue
-    const first = paragraphs.indexOf(converted.find(row => row.paragraph.style === style)!.paragraph)
-    const clauses = converted.filter(row => row.paragraph.style === style).length
+    const first = paragraphs.indexOf(main.find(row => row.paragraph.style === style)!.paragraph)
+    const clauses = main.filter(row => row.paragraph.style === style).length
     const others = paragraphs.filter((row, at) => at > first && row.style === style && !row.table && !converted.some(entry => entry.paragraph === row)).length
     if (clauses > others) bound.set(level, style)
   }

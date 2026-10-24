@@ -239,6 +239,18 @@ ${AGREEMENT.split("\n").slice(2).join("\n")}`)
     expect(numbered.find(row => row.shown === "1. Services")!.numId).not.toBe(one)
   })
 
+  test("the main body's clause headings carry the list, not a schedule's under another heading level", async () => {
+    const boundStyles = (bytes: Uint8Array) => [...strFromU8(unzipSync(bytes)["word/styles.xml"]!).matchAll(/<w:style\b[^>]*w:styleId="(Heading\d)"[\s\S]*?<\/w:style>/g)].filter(match => match[0].includes("<w:numPr>")).map(match => match[1])
+    const schedule = "## Schedule 1\n\n### 1. Scope\n\n1.1 Help desk.\n\n### 2. Levels\n\n2.1 Service levels."
+    const { literal, numbered, bytes } = await both(`# Agreement\n\n## 1. One\n\n1.1 a.\n\n## 2. Two\n\n2.1 b.\n\n${schedule}`)
+    expect(numbered.map(row => row.shown)).toEqual(literal.map(row => row.shown))
+    expect(boundStyles(bytes)).toEqual(["Heading2"])
+    // A main body left typed (it skips clause 3) binds no heading style to the schedule's list.
+    const typed = await both(`# Agreement\n\n## 1. One\n\n1.1 a.\n\n## 2. Two\n\n2.1 b.\n\n## 4. Four\n\n4.1 c.\n\n${schedule}`)
+    expect(labelled(typed.numbered)).toEqual(["1. Scope", "1.1 Help desk.", "2. Levels", "2.1 Service levels."])
+    expect(boundStyles(typed.bytes)).toEqual([])
+  })
+
   test("an unnumbered heading at the clause headings' level ends the sequence, and the numbers after it stay typed", async () => {
     // A schedule in parts numbered 1.1, 1.2, 2.1 without a "1." heading.
     const { literal, numbered } = await both("# Agreement\n\n## 1. Supply\n\n1.1 The Supplier shall supply the Goods.\n\n## 2. Price\n\n2.1 The price is fixed.\n\n## Schedule 1 – Services\n\n### Part A – Help desk\n\n1.1 The help desk is staffed.\n\n1.2 Calls are logged.\n\n### Part B – On site\n\n2.1 Engineers attend.\n\n## Execution\n\nSigned for the Supplier.")
