@@ -185,6 +185,21 @@ describe("numberDocxClauses", () => {
     expect(numberDocxClauses(plain)).toBe(plain)
   })
 
+  test("a typed body before paragraphs the list already numbers stays typed, so their numbers do not change", async () => {
+    // A schedule on the list's own instance after a typed body the list could
+    // show: converted, the body would carry the schedule on from clause 4.
+    const parts = unzipSync((await renderMarkdownToDocx(TYPED_BODY_SCHEDULE)).bytes)
+    const document = strFromU8(parts["word/document.xml"]!)
+    const own = strFromU8(parts["word/numbering.xml"]!).match(/<w:num w:numId="(\d+)"><w:abstractNumId w:val="\d+"\/><\/w:num>/)![1]
+    const fitting = document.replace(">4. Four<", ">3. Four<").replace(">4.1 Fourth.<", ">3.1 Fourth.<").replace(/<w:numId w:val="\d+"\/>/g, `<w:numId w:val="${own}"/>`)
+    expect(fitting).not.toBe(document)
+    const bytes = zipSync({ ...parts, "word/document.xml": strToU8(fitting) })
+    expect(labelled(await blocks(bytes))).toEqual(["1. Scope", "1.1 Help desk."])
+    expect(labelled(await blocks(numberDocxClauses(bytes)))).toEqual(["1. Scope", "1.1 Help desk."])
+    expect(numberDocxClauses(bytes)).toBe(bytes)
+    expect(numberDocxClauses(bytes, { house: false })).toBe(bytes)
+  })
+
   test("a numbered paragraph that repeats its own number as text loses the repeat", async () => {
     const numbered = (await renderMarkdownToDocx(BODY)).bytes
     const parts = unzipSync(numbered)

@@ -644,10 +644,14 @@ function plan(list: ClauseList, paragraphs: Paragraph[], settledOnly: boolean, f
     opened = true
     return { converts: [], settled, saved: counters.save(), first, outline }
   }
-  const close = () => {
+  // A typed sequence closing before `at` with a paragraph of the list still to
+  // come stays typed: converted, its numbers would carry on into the list's
+  // count and change the numbers those paragraphs show.
+  const lastMember = paragraphs.findLastIndex(row => !row.table && row.member?.abstract === list.abstract)
+  const close = (at = paragraphs.length) => {
     if (!sequence) return
     if (sequence.settled) decisions.push(...sequence.converts)
-    else if (!settledOnly) {
+    else if (!settledOnly && at > lastMember) {
       // The main body takes the list's own instance; a later sequence (a
       // schedule) restarts the list, also after a main body left typed.
       const numId = sequence.first ? list.numId : String(firstRestart + restarts.length)
@@ -661,9 +665,8 @@ function plan(list: ClauseList, paragraphs: Paragraph[], settledOnly: boolean, f
   for (const [at, paragraph] of paragraphs.entries()) {
     if (paragraph.table) continue
     const member = paragraph.member?.abstract === list.abstract ? paragraph.member : undefined
-    // A typed sequence ends before a paragraph of the list, which never joins
-    // it: the list paragraph counts on from what the list itself numbers.
-    if (member && !sequence?.settled) close()
+    // A typed sequence ends before a paragraph of the list, which never joins it.
+    if (member && sequence && !sequence.settled) close(at)
     if (member && !paragraph.split) {
       counters.enter(member.numId)
       if (!sequence || (member.level === 0 && counters.next(0, member.numId) === counters.start(0, member.numId))) {
@@ -693,11 +696,11 @@ function plan(list: ClauseList, paragraphs: Paragraph[], settledOnly: boolean, f
       // An unnumbered heading at or above the heading that opened the sequence
       // (a schedule, the execution block) ends it; the numbers after it stay
       // typed until a heading opens a sequence afresh.
-      if (sequence?.outline !== undefined && paragraph.outline !== undefined && paragraph.outline <= sequence.outline && paragraph.unnumbered) close()
+      if (sequence?.outline !== undefined && paragraph.outline !== undefined && paragraph.outline <= sequence.outline && paragraph.unnumbered) close(at)
       continue
     }
     if (paragraph.heading && opensSequence(paragraph.literal, list)) {
-      close()
+      close(at)
       sequence = open(false, paragraph.outline)
       counters.values = []
       counters.enter(list.numId)
