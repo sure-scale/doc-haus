@@ -20,7 +20,7 @@ import { existsSync, readFileSync } from "node:fs"
 import { ensureParagraphPointers, paragraphSha256 } from "../../lib/drafting-amendment"
 import { renderMarkdownToDocx } from "../../lib/render"
 import { presentDraft, type DraftPresentation } from "./draft-presentation"
-import { carryRevisionTables } from "./original-tables"
+import { carryRevisionTables, draftedTablesNotes } from "./original-tables"
 import { checkChanges, parseJsonObject } from "./change-checks"
 import {
   checkDraft,
@@ -65,7 +65,7 @@ import {
 // goes to the pointer applier as data, addressed by paragraph pointer. Steps of
 // one planned document keep their files under that document's id (d1/, d2/...).
 
-export const LEAN_PROMPT_VERSION = "lean-24-draft-status-home"
+export const LEAN_PROMPT_VERSION = "lean-25-original-tables"
 const OUTLINE_CONTRACT = "document-form-unheaded-labels-9"
 const DELIVERY_REVIEW_CONTRACT = "grounded-delivery-selection-4"
 const STRUCTURAL_AMENDMENT_CONTRACT = "explicit-paragraph-cardinality-1"
@@ -397,7 +397,10 @@ export async function acceptStageReply(directory: string, step: StepID, reply: s
     ...(readLeanPlan(directory)?.documents ?? []).map(row => ({ title: row.title, rows: finalBodyParagraphs(directory, row.id) })),
     { title: "Drafting notes", rows: [{ pid: "drafting-notes", text: reply }] },
   ])
-  const notes = advisory ? `${reply.trimEnd()}\n\n${advisory}\n` : reply
+  // Code adds what the records show and the reply need not restate: the style
+  // advisories, and the original tables kept as drafted.
+  const appended = [advisory, draftedTablesNotes(directory)].filter(Boolean)
+  const notes = appended.length ? `${[reply.trimEnd(), ...appended].join("\n\n")}\n` : reply
   writeLeanText(directory, "drafting-notes.md", ensureNewline(notes))
   const previous = leanFile(directory, "drafting-notes.docx")
   writeLeanBytes(directory, "drafting-notes.docx", (await renderMarkdownToDocx(notes, existsSync(previous) ? readFileSync(previous) : undefined, notesFurniture(directory))).bytes)

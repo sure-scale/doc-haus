@@ -45,7 +45,7 @@ export function readRepairRound(directory: string): RepairRound | undefined {
 
 export function startRepairRound(directory: string, blocking: OpenItem[], substantive = false): RepairRound {
   const previous = readRepairRound(directory)
-  const addressed = new Set(blocking.filter(item => item.ref.document || !["memo", "research"].includes(item.ref.repair_target ?? "body"))
+  const addressed = new Set(blocking.filter(item => !notesRepair(item) && (item.ref.document || !["memo", "research"].includes(item.ref.repair_target ?? "body")))
     .map(item => item.ref.document ?? FIRST_DOCUMENT))
   const contexts = { ...previous?.document_contexts }
   for (const document of Object.keys(contexts) as DocID[]) {
@@ -100,7 +100,14 @@ export function documentRepairs(directory: string, document: DocID) {
 }
 
 function bodyRepairItems(items: OpenItem[], document: DocID) {
-  return items.filter(item => ofDocument(item, document) && item.ref.repair_target !== "research" && item.ref.repair_target !== "memo" && (item.stage !== "package-review" || item.ref.document !== undefined))
+  return items.filter(item => ofDocument(item, document) && !notesRepair(item) && item.ref.repair_target !== "research" && item.ref.repair_target !== "memo" && (item.stage !== "package-review" || item.ref.document !== undefined))
+}
+
+/** An item only the drafting notes can settle: an original table missing from
+ * the final body or short of its rows (original-tables.ts), which no amendment
+ * to a paragraph restores. A repair round gives it to the notes, not the body. */
+export function notesRepair(item: OpenItem) {
+  return item.ref.table !== undefined
 }
 
 function documentRepairBasis(directory: string, document: DocID) {
@@ -129,7 +136,6 @@ export function changesRepairSections(directory: string, document: DocID) {
       "For a template part missing or cut short in the draft, which names no paragraph, add the missing wording from the template: split the paragraph the part belongs after, or replace a paragraph of the part with its full wording. " +
       "For one in the draft without its heading, split the part's first paragraph to put its heading before it: the template's, or the heading the instructions give it.",
       "For an unanswered question, repeat it with its \"id\" and the \"pid\" of the paragraph it affects, and put a visible [open item: ...] marker in that paragraph.",
-      ...(defects.some(item => item.ref.table !== undefined) ? ["For an original table missing from the text or short of its rows, which names no paragraph: an amendment cannot restore a table or a table row, so do not write its rows as paragraphs; the drafting notes name it."] : []),
       ...defects.map(item => `- ${item.id} ${pidLabel(item, paragraphs)}: ${item.detail}${quoteLabel(item)}`),
     ].join("\n")) : "",
     checklistFindings.length ? tagged("checklist_findings", [
@@ -186,7 +192,6 @@ function ofDocument(item: OpenItem, document: DocID) {
 }
 
 function pidLabel(item: OpenItem, paragraphs: ParagraphRow[]) {
-  if (item.ref.table !== undefined) return "(an original table, not a paragraph)"
   // The draft step's only omission is a template gap (draftTemplateItems): it names a part, not a paragraph.
   if (item.stage === "draft" && item.kind === "omission") return "(template part missing, cut short or without its heading in the draft)"
   if (item.ref.pid) return paragraphs.some(row => row.pid === item.ref.pid) ? `[${item.ref.pid}]` : "(not an initial draft paragraph; reassess the finding in the current draft)"

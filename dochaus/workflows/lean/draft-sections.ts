@@ -34,8 +34,7 @@ import { stageInputSha } from "./runner"
 import { outlineCoverageIssues, partCarries, plannedContract } from "./template-contract"
 import { draftStatusItems } from "./draft-status"
 import { draftTemplateItems } from "./template-coverage"
-import { originalTables, originalTablesBlock, partTableIssues } from "./original-tables"
-import type { DocxTable } from "../../lib/docx-tables"
+import { originalTables, originalTablesBlock, partTableIssues, tableParts } from "./original-tables"
 
 // Sectioned draft step. A long document can need more tokens than one model
 // reply may carry, so the draft agent writes one part per reply in the same
@@ -319,9 +318,9 @@ export async function runDraftStage(
   const key = stageInputSha(directory, step)
   const contract = plannedContract(directory, document)
   const carries = contract ? partCarries(contract, plan.parts.length) : []
-  // A revised original's tables: shown with the first part, as the session's
-  // history carries that prompt to the later parts.
+  // A revised original's tables: each part is shown those its scope holds.
   const original = originalTables(directory, document)
+  const scopes = original ? tableParts(directory, document, original.tables) : []
   const drafted: string[] = []
   for (const [index, part] of plan.parts.entries()) {
     const label = `part ${index + 1}/${plan.parts.length}`
@@ -330,18 +329,28 @@ export async function runDraftStage(
       ? { source: contract.source, parts: carried.carried.map(unit => unit.label), left: carried.left.map(unit => unit.label) }
       : undefined)
     const brief = sectionHandoff(directory, document)
+    const own = scopes.flatMap((parts, table) => parts.includes(index) ? [table] : [])
     // The outline's session saw the run context before the plan named a memo.
-    const text = [...(index > 0 ? [] : [...(outlined ? [actingForBlock(directory), packageCompositionBlock(directory, document)] : [stagePrompt(directory, step)]), originalTablesBlock(original)]), brief, section].filter(Boolean).join("\n\n")
-    // A part's first reply only is checked for an original table it leaves
-    // out, so a reply that keeps its version is accepted as it stands.
-    let first = true
+    const text = [...(index > 0 ? [] : outlined ? [actingForBlock(directory), packageCompositionBlock(directory, document)] : [stagePrompt(directory, step)]), originalTablesBlock(original, own), brief, section].filter(Boolean).join("\n\n")
+    // The first reply the section check passes is checked once for an
+    // original table it leaves out (partTableIssues); asked for it, the part
+    // keeps that reply when no later one passes, so the table check never
+    // costs a part the text it had.
+    let tables = original?.tables
+    let kept: string | undefined
     const written = await ask(label, text, (reply, final) => {
-      const checked = checkSection(reply, plan, index, final, first ? original?.tables : undefined)
-      first = false
-      return checked
+      const checked = checkSection(reply, plan, index, final)
+      if (!tables || checked.value === undefined) return checked
+      const issues = partTableIssues(checked.value, tables, own)
+      tables = undefined
+      if (!issues.length) return checked
+      if (final) return { issues, value: checked.value }
+      kept = checked.value
+      return { issues }
     })
-    if (!written.value) return failed(`${label} "${part.heading}"`, written.issues)
-    drafted.push(written.value)
+    const value = written.value ?? kept
+    if (!value) return failed(`${label} "${part.heading}"`, written.issues)
+    drafted.push(value)
     writeLeanText(directory, `${document}/draft-in-progress.md`, assembleDraft(plan, drafted, false))
   }
   const letter = isLetter(plan.form)
@@ -415,10 +424,8 @@ function sectionHandoff(directory: string, document: DocID) {
  * printed once, above the first part, and a part's display heading, or its
  * label where that is printed, from its first line: a part whose text opens
  * with a line repeating what is printed above it (openingRepeats) is retried,
- * and on the last attempt (`final`) kept without that line. A part that keeps
- * the passage one of `tables` (a revised original's) follows without a table
- * after it is retried in the same way (partTableIssues). */
-export function checkSection(reply: string, outline: DraftOutline, index: number, final = false, tables?: DocxTable[]): Checked<string> {
+ * and on the last attempt (`final`) kept without that line. */
+export function checkSection(reply: string, outline: DraftOutline, index: number, final = false): Checked<string> {
   const { heading, display_heading: display } = outline.parts[index]!
   if (!reply.trim()) return { issues: [`The reply was empty. Reply with the text of the part "${heading}".`] }
   if (printedToolCall(reply)) return { issues: [TOOL_SYNTAX_ISSUE] }
@@ -447,7 +454,7 @@ export function checkSection(reply: string, outline: DraftOutline, index: number
       : []),
     ...(!rest.some(line => line.trim() && !/^#{1,6}\s/.test(line.trim())) ? [`The part "${heading}" has no text under its heading.`] : []),
   ]
-  const repeated = [...opening.issues, ...partTableIssues(text, tables)]
+  const repeated = opening.issues
   if (issues.length) return { issues: [...repeated, ...issues] }
   return repeated.length && !final ? { issues: repeated } : { issues: repeated, value: text }
 }

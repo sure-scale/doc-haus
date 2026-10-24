@@ -59,7 +59,7 @@ export async function runApply(directory: string, state: LeanState, document: Do
       ...settled.openItems, ...annotated.openItems, ...finalBodyItems(directory, rows), ...draftStatusItems(directory, document, rows, "apply"),
       ...templateItems(directory, document, readParagraphs(directory, document), rows, changes.amendments, new Set(settled.result.applied.map(row => row.id))),
       ...consistencyItems(directory, document, readParagraphs(directory, document), rows),
-      ...tableItems(directory, document, readFileSync(out)),
+      ...tableItems(directory, document, readFileSync(out), rows),
     ],
   }
 }
