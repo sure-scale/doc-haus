@@ -346,8 +346,8 @@ describe("a marked judgment amendment through the run", () => {
 })
 
 describe("prompt version", () => {
-  test("the contract change is lean-27-numbered-clause-headings, and a run keyed under lean-26-original-tables-list-labels re-runs every model step", async () => {
-    expect(LEAN_PROMPT_VERSION).toBe("lean-27-numbered-clause-headings")
+  test("the contract change is lean-28-numbered-headings-revise-scope, and a run keyed under lean-26-original-tables-list-labels re-runs every model step", async () => {
+    expect(LEAN_PROMPT_VERSION).toBe("lean-28-numbered-headings-revise-scope")
     const directory = matter()
     expect((await runLean(directory, { sessions: scriptedModel(happyPath).port })).status).toBe("completed")
     const idle = scriptedModel({})

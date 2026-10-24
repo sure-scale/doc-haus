@@ -34,6 +34,11 @@ export type LeanEventName =
    * drafted or missing from the draft, as `outcome`, and each table's outcome
    * as `issues`; "failed", with the reason, when the carry could not run. */
   | "tables"
+  /** The draft step's carry of a revised original's body paragraphs
+   * (original-tables.ts): how many of the original's paragraphs with text were
+   * carried, and the page breaks carried with them, as `outcome`; "failed",
+   * with the reason, when the carry could not run. */
+  | "paragraphs"
 
 export type LeanEvent = {
   stage: StageID | "run"

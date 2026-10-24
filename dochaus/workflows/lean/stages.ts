@@ -1,4 +1,4 @@
-import { draftingStyleAdvisoryNotes } from "./style-warnings"
+import { draftingStyleAdvisoryNotes, styleScopedRows } from "./style-warnings"
 import { checklistCheckResultSchema, readEffectiveChecklistItems, reconcileChecklistParentCoverage, type ChecklistCoverageIssue } from "./checklist-flow"
 import { leanClarifications, checklistRefinementSelections } from "./requests"
 import { z } from "zod"
@@ -24,7 +24,7 @@ import { numberDocxClauses, numberedList } from "../../lib/docx-numbering"
 import { linkCrossReferences } from "../../lib/docx-crossrefs"
 import { withTemplateStyleIds } from "../../lib/template-seed"
 import { presentDraft, type DraftPresentation } from "./draft-presentation"
-import { carryRevisionTables, draftedTablesNotes } from "./original-tables"
+import { carryRevisionParagraphs, carryRevisionTables, draftedTablesNotes } from "./original-tables"
 import { checkChanges, parseJsonObject } from "./change-checks"
 import {
   checkDraft,
@@ -69,7 +69,7 @@ import {
 // goes to the pointer applier as data, addressed by paragraph pointer. Steps of
 // one planned document keep their files under that document's id (d1/, d2/...).
 
-export const LEAN_PROMPT_VERSION = "lean-27-numbered-clause-headings"
+export const LEAN_PROMPT_VERSION = "lean-28-numbered-headings-revise-scope"
 const OUTLINE_CONTRACT = "document-form-unheaded-labels-9"
 const DELIVERY_REVIEW_CONTRACT = "grounded-delivery-selection-4"
 const STRUCTURAL_AMENDMENT_CONTRACT = "explicit-paragraph-cardinality-1"
@@ -362,7 +362,9 @@ export async function acceptStageReply(directory: string, step: StepID, reply: s
     const planned = plannedDocument(directory, document)
     const furniture = renderedFurniture(directory, planned?.form ?? "other", requestedFurniture(planned?.furniture))
     // A revised original's tables are carried over their drafted counterparts
-    // before the body's paragraphs are attributed to parts and listed.
+    // before the body's paragraphs are attributed to parts and listed; its
+    // paragraphs, once attributed (their pointers stay), when the body is
+    // drafted on its styles, so headings keep the original's styles.
     // Clause numbering, and a template's own style ids, follow presentation,
     // which matches and reshapes the headings by their literal text and style.
     // A document compared against an original that types its clause numbers
@@ -373,12 +375,15 @@ export async function acceptStageReply(directory: string, step: StepID, reply: s
     // default numbering) included. Numbered references to the document's own
     // clauses then become live cross-references; one placed after another pack
     // document's title is that document's. A typed document gets no fields.
+    // A revised original keeps its own header and footer, the firm's header
+    // lines written above its own header text.
     const styleTemplate = plannedStyleTemplate(directory, planned)
     const { list, links } = draftedReferences(directory, document, planned)
     const into = list && templateSource(planned) === planned?.comparison ? { list } : {}
-    const rendered = await renderMarkdownToDocx(options.presentation?.source ?? reply, undefined, furniture, { numbering: false, styleTemplate })
+    const rendered = await renderMarkdownToDocx(options.presentation?.source ?? reply, undefined, furniture, { numbering: false, styleTemplate, ...(planned?.mode === "revise" ? { revising: true as const } : {}) })
       .then(result => ({ ...result, bytes: carryRevisionTables(directory, document, result.bytes) }))
       .then(result => ({ ...(options.presentation ? presentDraft(result.bytes, options.presentation.parts, options.presentation.title !== false, result.headingSpacing) : { bytes: result.bytes, attribution: undefined }), templated: result.templated }))
+      .then(result => ({ ...result, bytes: result.templated ? carryRevisionParagraphs(directory, document, result.bytes) : result.bytes }))
       .then(async ({ templated, ...result }) => {
         const styled = templated ? withTemplateStyleIds(result.bytes) : result.bytes
         return { ...result, bytes: links ? await linkCrossReferences(numberDocxClauses(styled, templated ? into : {}), links) : styled }
@@ -415,7 +420,7 @@ export async function acceptStageReply(directory: string, step: StepID, reply: s
   const check = checkDraftingNotes(directory, reply, disclosableItems(directory), { final: options.final })
   if (check.issues.length) return { ...check, outputs: [] }
   const advisory = draftingStyleAdvisoryNotes([
-    ...(readLeanPlan(directory)?.documents ?? []).map(row => ({ title: row.title, rows: finalBodyParagraphs(directory, row.id) })),
+    ...(readLeanPlan(directory)?.documents ?? []).map(row => ({ title: row.title, rows: styleScopedRows(directory, row.id, finalBodyParagraphs(directory, row.id)) })),
     { title: "Drafting notes", rows: [{ pid: "drafting-notes", text: reply }] },
   ])
   // Code adds what the records show and the reply need not restate: the style

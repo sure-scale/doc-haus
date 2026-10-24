@@ -17,7 +17,7 @@ import {
   FIRST_DOCUMENT, headingText, normalizedHeading, parsePlan, plannedDocument, readLeanPlan, runPosture, withDocumentIDs, writeLeanPlan,
   type ActingFor, type DocID, type LeanOutline, type PlannedDocument, type StepID,
 } from "./plan"
-import { actingForBlock, packageCompositionBlock, retryPrompt, stagePrompt } from "./prompts"
+import { REVISION_PREFERENCE_SCOPE, actingForBlock, packageCompositionBlock, retryPrompt, stagePrompt } from "./prompts"
 import {
   LEAN_CHILD_PERMISSIONS,
   LEAN_MAX_RETRIES,
@@ -414,7 +414,7 @@ function sectionHandoff(directory: string, document: DocID) {
   const answers = answeredQuestionsText(directory)
   const files = ["spine.json", "research.json", "research-review.json"].filter(name => readLeanText(directory, name))
   return [
-    ...(plannedDocument(directory, document)?.mode === "revise" ? ["Revision foundation: preserve unaffected source wording and operative clauses, including their qualifications. Read the full original part before editing it. A summary or recommendation does not replace operative wording. Explain substantive omissions against the supplied source."] : []),
+    ...(plannedDocument(directory, document)?.mode === "revise" ? [`Revision foundation: preserve unaffected source wording and operative clauses, including their qualifications. Read the full original part before editing it. A summary or recommendation does not replace operative wording. Explain substantive omissions against the supplied source. ${REVISION_PREFERENCE_SCOPE}`] : []),
     ...(readLeanText(directory, `${document}/draft-in-progress.md`)?.trim() ? [`Exact accepted parts of this stage attempt are available at .dochaus/lean/${document}/draft-in-progress.md. Read them when checking shared definitions, numbering or cross-references; a conversation summary does not replace their wording.`] : []),
     "Section handoff: use the current part's scope and provided source references to retrieve the passages it needs. Preserve shared definitions, settled decisions and cross-references from the preceding parts in this session; inspect their source dependencies when needed. The other outline scopes show where related provisions belong.",
     ...(files.length ? [`Working evidence records available with read: ${files.map(name => `.dochaus/lean/${name}`).join(", ")}. These are retrieval guides, not independent authority; verify underlying matter passages and use only research approved by research-review.`] : []),

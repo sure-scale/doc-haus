@@ -1,4 +1,4 @@
-import { draftingStyleWarningsBlock } from "./style-warnings"
+import { draftingStyleWarningsBlock, styleScopedRows } from "./style-warnings"
 import { boundPlaybookContext } from "../../lib/playbook-source"
 import { delegationSettles } from "../../lib/question-delegation"
 import { readChangePlan, repairBodyText, reviewDispositionText, writerPlan } from "./change-pipeline"
@@ -38,6 +38,16 @@ const SOURCE_RULES = [
   "- Information is a fact, a commercial or strategic decision for the lawyer or the party the lawyer acts for, or authority. Where it is missing or uncertain, write a visible [open item: what is needed] marker instead of guessing.",
   "- A preference is a drafting choice needed to fulfil the requested purpose, within the requested scope. For a new substantive choice not settled by instructions or answers, draft balanced wording and add a visible [open item: confirm ...] marker in the same paragraph saying what was chosen. Do not add confirmation markers to settled decisions or ordinary wording that creates no new substantive choice. A drafted choice is not an invented fact; the marker goes with the drafted wording, never in its place.",
 ]
+
+/** The scope of the firm's drafting preferences in a revision; the original's
+ * unchanged paragraphs are not style-checked either (styleScopedRows). */
+export const REVISION_PREFERENCE_SCOPE = "The drafting preferences apply to text this revision writes or changes; unchanged wording of the original keeps its own style."
+
+/** REVISION_PREFERENCE_SCOPE for a revised document; empty for a new or
+ * template draft, whose prompts stay as they were. */
+export function revisionPreferenceScope(directory: string, document: DocID) {
+  return plannedDocument(directory, document)?.mode === "revise" ? REVISION_PREFERENCE_SCOPE : ""
+}
 
 /** A quick draft the lawyer carried into this run: a starting point for the
  * outline and the drafting, never a source and never the lawyer's words. */
@@ -86,7 +96,8 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
   // What the scope guards say other output owns: another planned document, the memo.
   const assigned = [planned ? "another planned document" : "", composition ? "the accompanying memo" : ""].filter(Boolean).join(" or ")
   const outline = tagged("document_outline", JSON.stringify(operativeDocument(plannedDocument(directory, document))))
-  if (options.contextOnly) return [request, spineBlock, acting, answerBlock, sources, planned, composition, outline, finished].filter(Boolean).join("\n\n")
+  const preferenceScope = revisionPreferenceScope(directory, document)
+  if (options.contextOnly) return [request, spineBlock, acting, answerBlock, sources, planned, composition, outline, preferenceScope, finished].filter(Boolean).join("\n\n")
   const sections: Partial<Record<StageID, string[]>> = {
     draft: options.outline ? [
       "This is a lean drafting run. Plan the substantive document bodies to draft, then draft each in parts. The workflow generates delivery artifacts from those bodies.",
@@ -139,8 +150,8 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
     review: [
       `This is a lean drafting run. Independently review the draft${named} below against the lawyer's request and the matter's sources.`,
       tagged("review_focus", isReviewStage(stage) ? REVIEW_FOCUS[stage] : ""),
-      request, spineBlock, acting, answerBlock, sources, planned, composition, outline, finished, paragraphs,
-      ...(stage === "review-wording" ? [draftingStyleWarningsBlock(readParagraphs(directory, document))] : []),
+      request, spineBlock, acting, answerBlock, sources, planned, composition, outline, preferenceScope, finished, paragraphs,
+      ...(stage === "review-wording" ? [draftingStyleWarningsBlock(styleScopedRows(directory, document, readParagraphs(directory, document)))] : []),
       tagged("output_contract", [
         "- Check the draft against the request and the sources (search-document, read-document, verify-quote).",
         ...(planned ? ["- Where a problem concerns another planned document rather than this one, report it with that document's id as its document; the run carries it to that document. Content the request assigns to another planned document is not missing from this one."] : []),
@@ -173,7 +184,7 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
         const finding = reviewText(directory, document, stage)
         return finding ? `${stage}:\n${finding}` : ""
       }).filter(Boolean).join("\n\n"))]), ...changesRepairSections(directory, document),
-      spineBlock, acting, answerBlock, sources, planned, composition, outline, finished,
+      spineBlock, acting, answerBlock, sources, planned, composition, outline, preferenceScope, finished,
       tagged("output_contract", [
         "Reply with exactly one JSON object and nothing else:",
         '{"amendments":[{"pid":"<pid from the draft>","updated":"<full new text of that paragraph>","reason":"<why it changes>","sources":[{"source_id":"<exact document name, or request>","quote":"<words copied exactly from that source>"}]}],"questions":[{"id":"<id of an open question you are repeating; omit for a new one>","pid":"<pid of the paragraph whose text depends on the answer>","question":"<what only the lawyer can decide>","kind":"<fact|instruction|judgment>","context":"<why it matters>"}]}',
@@ -372,7 +383,7 @@ function documentSections(directory: string, document: DocID, items: OpenItem[])
     tagged("comparison_baseline", comparisonDescription(directory, document)),
     tagged("native_export", JSON.stringify(nativeExportEvidence(directory, document), null, 2)),
     tagged("final_body", finalBodyParagraphs(directory, document).map(row => `[${row.pid}] ${shownText(row)}`).join("\n\n")),
-    draftingStyleWarningsBlock(finalBodyParagraphs(directory, document), true),
+    draftingStyleWarningsBlock(styleScopedRows(directory, document, finalBodyParagraphs(directory, document)), true),
     tagged("applied_changes", JSON.stringify(appliedChangeEvidence(directory, document), null, 2)),
     tagged("review_dispositions", reviewDispositionText(directory, document)),
     tagged("unapplied_changes", [
