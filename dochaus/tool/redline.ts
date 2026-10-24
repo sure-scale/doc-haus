@@ -4,6 +4,7 @@ import path from "node:path"
 import { docxodus } from "../lib/docxodus"
 import { recordRedlineProposal, withRedlineDocumentLock } from "../lib/redlines"
 import { draftingAttribution } from "../lib/docx-attribution"
+import { findPastListLabel } from "../lib/list-label"
 
 // doc.haus redline tool. Proposes rewriting a whole clause — the paragraph a
 // search-document citation points at — as a tracked change a reviewer accepts or
@@ -24,7 +25,7 @@ import { draftingAttribution } from "../lib/docx-attribution"
 
 export default tool({
   description:
-    "Propose rewriting a whole clause as a tracked change, using a passage retrieved from search-document. Locates the paragraph containing `clause` and proposes replacing its entire text with `replacement`, attributed to an author. The change is recorded as a pending redline the user reviews and accepts or rejects in the doc.haus app — the document is not modified until they accept. Use this to redline a clause you found as a citation; use tracked-changes for a surgical word/phrase swap.",
+    "Propose rewriting a whole clause as a tracked change, using a passage retrieved from search-document. Locates the paragraph containing `clause` and proposes replacing its entire text with `replacement`, attributed to an author. The change is recorded as a pending redline the user reviews and accepts or rejects in the doc.haus app — the document is not modified until they accept. Use this to redline a clause you found as a citation; use tracked-changes for a surgical word/phrase swap. A list number Word prints before a paragraph (\"2.1\") is not text; leave it out of clause and replacement.",
   args: {
     document: tool.schema.string().describe("Document file name within the matter (the docPath from a citation)"),
     clause: tool.schema
@@ -47,16 +48,16 @@ export default tool({
     const dx = await docxodus()
     const session = dx.openDocxSession(await Bun.file(file).bytes(), {})
 
-    const target = session.findByText(args.clause, { ignoreWhitespace: true })
-    if (!target) {
-      session.close()
+    const located = locate(session, args.clause, args.replacement)
+    session.close()
+    if (!located.targets.length) {
       // Search and read show a Word file's pending revisions as labels; changes
       // to such a file wait until they are resolved, as at accept.
       if (/\[Tracked (insertion|deletion|move)/.test(args.clause))
         return `${path.basename(file)} contains tracked changes. Accept or reject them in Word before proposing changes to it.`
       return `Clause not found in ${path.basename(file)}: ${JSON.stringify(args.clause)}`
     }
-    session.close()
+    const { find: clause, replace: replacement } = located
 
     const author = args.author ?? draftingAttribution().author
     // Recording the proposal is gated on the matter owner's approval (permission
@@ -68,13 +69,14 @@ export default tool({
       permission: "redline",
       patterns: [file],
       always: [file],
-      metadata: { document: path.basename(file), clause: args.clause, replacement: args.replacement, comment: args.comment, author },
+      metadata: { document: path.basename(file), clause, replacement, comment: args.comment, author },
     })
 
     const proposal = await withRedlineDocumentLock(ctx.directory, file, async () => {
       if (!existsSync(file)) return { error: `Document not found in this matter: ${args.document}` }
       const current = dx.openDocxSession(await Bun.file(file).bytes(), {})
-      const anchored = current.findByText(args.clause, { ignoreWhitespace: true })
+      const again = locate(current, args.clause, args.replacement)
+      const anchored = again.find === clause ? again.targets[0] : undefined
       if (!anchored) {
         current.close()
         return { error: `Clause changed before approval and is no longer present in ${path.basename(file)}.` }
@@ -88,9 +90,9 @@ export default tool({
         docPath: file,
         docName: path.basename(file),
         scope: "clause",
-        findText: args.clause,
+        findText: clause,
         oldText,
-        newText: args.replacement,
+        newText: replacement,
         author,
         reviewComment: args.comment,
         anchorId: anchored.id,
@@ -104,8 +106,13 @@ export default tool({
       : ""
     return {
       title: `Proposed redline in ${path.basename(file)}`,
-      output: `Proposed rewriting the clause matching ${JSON.stringify(args.clause)} in ${path.basename(file)}, attributed to ${author}. Recorded as pending redline #${proposal.id} with its lawyer-facing review comment — the user reviews and accepts or rejects it in the doc.haus app.${superseded}`,
-      metadata: { document: file, clause: args.clause, oldText: proposal.oldText, replacement: args.replacement, comment: args.comment, anchor: proposal.anchor, author, redline: proposal.id, superseded: proposal.superseded.map((candidate) => candidate.id) },
+      output: `Proposed rewriting the clause matching ${JSON.stringify(clause)} in ${path.basename(file)}, attributed to ${author}. Recorded as pending redline #${proposal.id} with its lawyer-facing review comment — the user reviews and accepts or rejects it in the doc.haus app.${superseded}`,
+      metadata: { document: file, clause, oldText: proposal.oldText, replacement, comment: args.comment, anchor: proposal.anchor, author, redline: proposal.id, superseded: proposal.superseded.map((candidate) => candidate.id) },
     }
   },
 })
+
+/** The paragraph `clause` locates, past a copied list number (findPastListLabel). */
+function locate(session: ReturnType<Awaited<ReturnType<typeof docxodus>>["openDocxSession"]>, clause: string, replacement: string) {
+  return findPastListLabel(clause, replacement, text => session.findAllByText(text, { ignoreWhitespace: true }), id => session.getAnchorInfo(id)?.visibleText)
+}

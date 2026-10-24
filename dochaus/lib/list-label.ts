@@ -42,3 +42,25 @@ export function retypedListLabel(text: string, label: string | undefined) {
   return typed && typed !== label.trim() ? typed : undefined
 }
 
+/** Find text and replacement for an edit tool, with the paragraphs `find`
+ * names. `find` is kept when `search` finds it. Otherwise, when it opens with
+ * a paragraph's own list label and the rest opens that paragraph's shown text,
+ * the edit is to those paragraphs: both texts lose the label. `search` returns
+ * the paragraphs containing a text with their labels (Docxodus
+ * autoNumberPrefix); `shown` returns a paragraph's text with its label. */
+export function findPastListLabel<T extends { id: string; autoNumberPrefix?: string }>(
+  find: string, replace: string, search: (text: string) => T[], shown: (id: string) => string | undefined,
+) {
+  const targets = search(find)
+  if (targets.length) return { find, replace, targets }
+  // A label is one to three words ("2.1", "(a)", "Article 1").
+  const words = /^\s*(\S+)(?:[ \t\u00a0]+(\S+))?(?:[ \t\u00a0]+(\S+))?/.exec(find)?.slice(1).filter(Boolean) ?? []
+  for (let count = 1; count <= words.length; count++) {
+    const label = words.slice(0, count).join(" ")
+    const rest = withoutListLabel(find, label)
+    if (rest === find) continue
+    const labelled = search(rest).filter(target => target.autoNumberPrefix?.trim() === label && withoutListLabel(shown(target.id) ?? "", label).startsWith(rest))
+    if (labelled.length) return { find: rest, replace: withoutListLabel(replace, label), targets: labelled }
+  }
+  return { find, replace, targets }
+}
