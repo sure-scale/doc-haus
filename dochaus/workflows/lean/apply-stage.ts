@@ -17,7 +17,7 @@ import { draftingAttribution, withGeneratedDocxAttribution } from "../../lib/doc
 import { numberDocxClauses } from "../../lib/docx-numbering"
 import { linkCrossReferences, referenceFields } from "../../lib/docx-crossrefs"
 import { paragraphFields, refInstruction, unlink } from "../../lib/docx-fields"
-import { FIELD_HIGHLIGHT_FILL, OPEN_ITEM_HIGHLIGHT_FILL, hasOpenItemMarker, highlightOpenItemsInDocx } from "../../lib/open-items"
+import { FIELD_HIGHLIGHT_FILL, OPEN_ITEM_HIGHLIGHT_FILL, hasOpenItemMarker, highlightOpenItemsInDocx, highlightSplitOpenItemsInDocx } from "../../lib/open-items"
 
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 const BODY = "word/document.xml"
@@ -103,7 +103,10 @@ export async function documentRedline(directory: string, document: DocID, final:
   applied: ApplyResult["applied"] | undefined = recordedApplied(directory, document), identity = draftingAttribution()) {
   if (!changes || !applied) throw new Error(`${document}: the change list or the apply outcome is missing or unreadable.`)
   const [before, after] = comparableBodies(comparisonBaseline(directory, document).bytes, final)
-  const redline = withGeneratedDocxAttribution(highlightOpenItemsInDocx(await compareDocxWithPointers(before, after, { authorName: identity.author })), identity)
+  // The comparison splits an open item a change rewrote word by word into
+  // several runs; the redline shades it whole, as the body shows it.
+  const compared = await compareDocxWithPointers(before, after, { authorName: identity.author })
+  const redline = withGeneratedDocxAttribution(highlightSplitOpenItemsInDocx(highlightOpenItemsInDocx(compared)), identity)
   return exportAppliedChangeComments(redline, final, document, changes.amendments, applied, changes.explanations, readParagraphs(directory, document), identity.author)
 }
 
