@@ -70,6 +70,13 @@ test("table cells and style numbering take their labels; empty and text-box para
   expect(await labelled(styled)).toBe("1.1 The services are listed below.\n\n1.2 Cleaning is weekly.\n\n")
 })
 
+test("clauses of the same text keep their own numbers", async () => {
+  // The table's grid columns are anchors too, and are not paragraphs.
+  const table = `<w:tbl><w:tblGrid><w:gridCol w:w="4000"/><w:gridCol w:w="4000"/></w:tblGrid><w:tr><w:tc>${para("Rate")}</w:tc><w:tc>${para("Reserved", [1, 1])}</w:tc></w:tr></w:tbl>`
+  const reserved = docx([para("Reserved", [1, 0]), para("Reserved", [1, 0]), table, para("Reserved", [1, 1]), para("Fees", [1, 0])].join(""), NUMBERING)
+  expect(await labelled(reserved)).toBe("1. Reserved\n\n2. Reserved\n\nRate\n\n2.1 Reserved\n\n2.2 Reserved\n\n3. Fees\n\n")
+})
+
 test("a document without numbered lists is passed through as the same bytes", async () => {
   const plain = docx(para("The Supplier shall deliver the cartons.") + para("The Customer shall pay each invoice."))
   expect(await writeListLabels(plain)).toBe(plain)

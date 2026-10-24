@@ -26,39 +26,32 @@ const BODY = "word/document.xml"
 const NUMBERING = "word/numbering.xml"
 const STYLES = "word/styles.xml"
 const NUM_PR = /<(?:[\w.-]+:)?numPr[\s/>]/
-// Container anchors in the projection; every other body anchor is a paragraph.
-const CONTAINERS = new Set(["tbl", "tr", "tc", "sdt", "sec"])
+// Paragraph anchors in the projection (plain, list item, heading); the others
+// are containers (tables, rows, cells, columns, content controls, sections).
+const PARAGRAPHS = new Set(["p", "li", "h"])
 
 export async function writeListLabels(buffer: Buffer): Promise<Buffer> {
   try {
-    const head = unzipSync(buffer, { filter: file => [BODY, NUMBERING, STYLES].includes(file.name) })
-    const body = head[BODY] && strFromU8(head[BODY])
-    // Opening Docxodus costs more than mammoth itself, so a file whose body
-    // cannot be numbered skips it.
-    if (!body || !head[NUMBERING] || !usesNumbering(body, head[STYLES])) return buffer
-    const levels = listLevels(head[NUMBERING])
-    if (!levels.numbered) return buffer
-    const anchors = await bodyAnchors(buffer, levels.bullets)
+    const numbered = numberedParts(buffer)
+    if (!numbered) return buffer
+    const anchors = await bodyParagraphs(buffer, numbered.bullets)
     if (!anchors.some(anchor => anchor.label)) return buffer
-    const doc = parse(body)
-    // Docxodus lists the body's paragraphs in document order. Pair each with
-    // the next unpaired paragraph of the same text: a paragraph either reader
-    // skips loses only its own label, and a label lands only on its own text.
-    const paragraphs = Array.from(doc.getElementsByTagNameNS(W, "p")).map(node => ({ node, text: flatText(node) }))
-      .filter(paragraph => paragraph.text)
-    let next = 0
+    const doc = parse(numbered.body)
+    // Docxodus lists every body paragraph in document order, as the DOM does,
+    // so each label goes to the paragraph at its own position: two clauses of
+    // the same text keep their own numbers. A paragraph the two read with
+    // different text takes no label, and a file they count differently none.
+    const paragraphs = Array.from(doc.getElementsByTagNameNS(W, "p"))
+    if (paragraphs.length !== anchors.length) return buffer
     let written = 0
-    for (const anchor of anchors) {
-      let at = next
-      while (at < paragraphs.length && !sameText(anchor.preview, paragraphs[at]!.text)) at++
-      if (at === paragraphs.length) continue
-      next = at + 1
-      const { node } = paragraphs[at]!
-      if (!anchor.label || inTextBox(node)) continue
+    anchors.forEach(({ preview, label }, at) => {
+      const node = paragraphs[at]!
+      const text = flatText(node)
+      if (!label || !text || !sameText(preview, text) || inTextBox(node)) return
       const pPr = Array.from(node.childNodes).find(child => (child as Element).namespaceURI === W && (child as Element).localName === "pPr")
-      node.insertBefore(labelRun(doc, node, anchor.label), pPr ? pPr.nextSibling : node.firstChild)
+      node.insertBefore(labelRun(doc, node, label), pPr ? pPr.nextSibling : node.firstChild)
       written++
-    }
+    })
     if (!written) return buffer
     const parts = unzipSync(buffer)
     parts[BODY] = strToU8(new XMLSerializer().serializeToString(doc))
@@ -69,15 +62,36 @@ export async function writeListLabels(buffer: Buffer): Promise<Buffer> {
   }
 }
 
-/** The body's non-empty paragraph anchors in document order, each with its
- * text preview and, when numbered (not bulleted), its label. */
-async function bodyAnchors(buffer: Buffer, bullets: Set<string>) {
+/** Whether a Word file may carry list numbers writeListLabels would write in,
+ * read without opening Docxodus: a body paragraph takes numbering, and some
+ * list level numbers rather than bullets. */
+export function hasNumberedList(buffer: Buffer) {
+  try {
+    return Boolean(numberedParts(buffer))
+  } catch {
+    return false
+  }
+}
+
+// Opening Docxodus costs more than mammoth itself, so a file whose body cannot
+// be numbered is passed by on its parts alone.
+function numberedParts(buffer: Buffer) {
+  const head = unzipSync(buffer, { filter: file => [BODY, NUMBERING, STYLES].includes(file.name) })
+  const body = head[BODY] && strFromU8(head[BODY])
+  if (!body || !head[NUMBERING] || !usesNumbering(body, head[STYLES])) return
+  const levels = listLevels(head[NUMBERING])
+  return levels.numbered ? { body, bullets: levels.bullets } : undefined
+}
+
+/** The body's paragraph anchors in document order, each with its text preview
+ * and, when numbered (not bulleted), its label. */
+async function bodyParagraphs(buffer: Buffer, bullets: Set<string>) {
   const dx = await docxodus()
   const session = dx.openDocxSession(new Uint8Array(buffer), { smartQuotes: false, persistAnchorIds: false })
   try {
     // The session's projection type omits the prefix its anchors carry.
     return Object.entries(session.project().anchorIndex as Record<string, MarkdownAnchorTarget>)
-      .filter(([, anchor]) => anchor.partUri === `/${BODY}` && !CONTAINERS.has(anchor.kind) && anchor.textPreview)
+      .filter(([, anchor]) => anchor.partUri === `/${BODY}` && PARAGRAPHS.has(anchor.kind))
       .map(([id, anchor]) => {
         const label = anchor.autoNumberPrefix?.trim()
         // Docxodus labels a bullet whose glyph is a letter (Word's second-level

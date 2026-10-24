@@ -33,6 +33,7 @@ import {
   ingestDocument,
   extractDocumentText,
   matterDocumentName,
+  reindexNumberedSources,
   DeliverableDocumentExistsError,
   SourceDocumentConflictError,
   SourceDocumentExistsError,
@@ -1619,7 +1620,8 @@ for (const matter of listMatters()) {
   }
 }
 
-// Emails ingested before their attachments were read are re-ingested once,
+// Emails ingested before their attachments were read, and numbered Word
+// sources indexed before their list numbers were read, are re-ingested once,
 // after the service is listening, through the usual locked ingest.
 setTimeout(async () => {
   for (const matter of listMatters()) {
@@ -1628,6 +1630,10 @@ setTimeout(async () => {
       console.error("email re-ingest failed", { matter_ref: draftingTraceReference(matter.dir), ...diagnosticErrorMetadata(e) })
     })
     if (count) console.log("emails re-ingested", { count, matter_ref: draftingTraceReference(matter.dir) })
+    const reindexed = await reindexNumberedSources(matter.dir).catch((e) => {
+      console.error("numbered document re-index failed", { matter_ref: draftingTraceReference(matter.dir), ...diagnosticErrorMetadata(e) })
+    })
+    if (reindexed) console.log("numbered documents re-indexed", { count: reindexed, matter_ref: draftingTraceReference(matter.dir) })
   }
 }, 0)
 
