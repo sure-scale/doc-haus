@@ -17,8 +17,12 @@ import {
   type Redline,
 } from "../api/ingest/redlines"
 import { convertPdfToDocx, documentContentUrl, fetchDocumentText, matterDocumentKind } from "../api/ingest/documents"
+import type { CompareParams } from "../api/ingest/compare"
+import { fetchVersionBytes, type DocumentVersion, type RestoreResult } from "../api/ingest/versions"
+import { formatDateTime } from "../lib/format"
 import { ModalClose } from "./ModalHeader"
 import { CompareIcon } from "./CompareDialog"
+import VersionsPanel, { saveVersionFile, unavailableReason, useDocumentVersions, versionOrigin } from "./DocumentVersions"
 import { citationPassage, focusCitationPassage, type CitationFocus } from "./citation-target"
 import { decorateMarkers, markerSummary, type MarkerCounts } from "./document-markers"
 import { useToast } from "./Toast"
@@ -64,6 +68,8 @@ function WordDocumentViewer({
   onSaveTemplate,
   creatingTemplate = false,
   onCompare,
+  onCompareVersions,
+  initialVersions = false,
 }: {
   matterId: string
   name: string
@@ -85,6 +91,10 @@ function WordDocumentViewer({
   creatingTemplate?: boolean
   // Compare this Word file with another version of it. DOCX only.
   onCompare?: () => void
+  // Open the blackline of two kept versions, from the versions list.
+  onCompareVersions?: (params: CompareParams) => void
+  // Open with the versions list showing (returning from a version blackline).
+  initialVersions?: boolean
 }) {
   // PDFs render natively in an <iframe>; the docxodus WASM path and the redline
   // pipeline are DOCX-only. A PDF carries no redlines until it is converted.
@@ -113,6 +123,16 @@ function WordDocumentViewer({
   const moreRef = useRef<HTMLDetailsElement>(null)
   const [markers, setMarkers] = useState<MarkerCounts>()
   const toast = useToast()
+  // Kept versions (#268): the list beside the document, the older version open
+  // in place of the working file (read only), versions found unavailable since
+  // the list loaded, and the last restore's or failed open's plain words.
+  const versions = useDocumentVersions(matterId, name, reload)
+  const [versionsOpen, setVersionsOpen] = useState(initialVersions)
+  const [shown, setShown] = useState<DocumentVersion>()
+  const [unavailable, setUnavailable] = useState<Record<string, string>>({})
+  const [versionStatus, setVersionStatus] = useState<string>()
+  const [pdfVersionUrl, setPdfVersionUrl] = useState<string>()
+  const markUnavailable = (id: string, reason: string) => setUnavailable((current) => ({ ...current, [id]: reason }))
   // Keep React from resetting the HTML when passage status or viewer controls
   // re-render. The citation effect owns only its temporary text highlights.
   const documentPreview = useMemo(() => html && <div className="docx-render" ref={documentRef} dangerouslySetInnerHTML={{ __html: html }} />, [html])
@@ -122,6 +142,22 @@ function WordDocumentViewer({
     let cancelled = false
     setHtml(undefined)
     setError(undefined)
+    // An older version shows exactly as kept, with no proposals over it.
+    if (shown) {
+      fetchVersionBytes(matterId, shown.id)
+        .then((bytes) => convertToHtml(bytes, DOCX_RENDER_OPTIONS))
+        .then((out) => !cancelled && setHtml(out))
+        .catch((cause) => {
+          if (cancelled) return
+          const reason = unavailableReason(cause)
+          if (reason) markUnavailable(shown.id, reason)
+          setVersionStatus(`Version ${shown.number} could not be opened. ${reason ?? (cause instanceof Error ? cause.message : String(cause))}`)
+          setShown(undefined)
+        })
+      return () => {
+        cancelled = true
+      }
+    }
     Promise.all([fetchRedlinedBytes(matterId, name).catch(async (cause) => {
       if (!cancelled) setError(cause instanceof Error ? cause.message : String(cause))
       const current = await fetch(documentContentUrl(matterId,name))
@@ -139,7 +175,72 @@ function WordDocumentViewer({
     return () => {
       cancelled = true
     }
-  }, [isReady, matterId, name, reload])
+  }, [isReady, matterId, name, reload, shown])
+
+  // A PDF's older version is read once and shown from memory, so a copy that
+  // cannot be served is reported here rather than as an error page in the frame.
+  useEffect(() => {
+    setPdfVersionUrl(undefined)
+    if (!isPdf || !shown) return
+    let cancelled = false
+    let url: string | undefined
+    fetchVersionBytes(matterId, shown.id).then(
+      (bytes) => {
+        if (cancelled) return
+        url = URL.createObjectURL(new Blob([bytes as BlobPart], { type: "application/pdf" }))
+        setPdfVersionUrl(url)
+      },
+      (cause) => {
+        if (cancelled) return
+        const reason = unavailableReason(cause)
+        if (reason) markUnavailable(shown.id, reason)
+        setVersionStatus(`Version ${shown.number} could not be opened. ${reason ?? (cause instanceof Error ? cause.message : String(cause))}`)
+        setShown(undefined)
+      },
+    )
+    return () => {
+      cancelled = true
+      if (url) URL.revokeObjectURL(url)
+    }
+  }, [isPdf, matterId, shown])
+
+  // Showing a version from the list, which sits above the page on a narrow
+  // screen, brings the page into view.
+  function show(version: DocumentVersion | undefined) {
+    setVersionStatus(undefined)
+    setShown(version)
+    if (window.matchMedia?.("(max-width: 720px)").matches) documentRef.current?.closest(".viewer-doc")?.scrollIntoView({ block: "start" })
+  }
+
+  // A restore makes a new current version: show it, and say what the save
+  // noticed (pending tracked changes) until the next action.
+  function restored(result: RestoreResult) {
+    setShown(undefined)
+    setVersionStatus(result.notice)
+    setReload((value) => value + 1)
+    onChanged?.()
+  }
+
+  const versionsPanel = versionsOpen && (
+    <VersionsPanel
+      matterId={matterId}
+      name={name}
+      data={versions.data}
+      error={versions.error}
+      shown={shown?.id}
+      unavailable={unavailable}
+      onShow={show}
+      onCompare={onCompareVersions && name.toLowerCase().endsWith(".docx") ? onCompareVersions : undefined}
+      onRestored={restored}
+      onUnavailable={markUnavailable}
+    />
+  )
+  const versionsToggle = (
+    <VersionsToggle open={versionsOpen} count={versions.data?.versions.length} onToggle={() => setVersionsOpen((open) => !open)} />
+  )
+  const versionBanner = shown && (
+    <VersionBanner version={shown} origin={versionOrigin(shown, versions.data?.events)} onBack={() => show(undefined)} />
+  )
 
   // Once the change list has rendered, scroll the proposal the chat link pointed
   // at into view and highlight it, so the lawyer lands on that exact change rather
@@ -209,6 +310,7 @@ function WordDocumentViewer({
   async function download(tracked: boolean) {
     setError(undefined)
     try {
+    if (shown) return saveVersionFile(await fetchVersionBytes(matterId, shown.id), name, shown.number)
     const bytes = tracked ? await fetchRedlinedBytes(matterId, name) : await (async () => {
       const current = await fetch(documentContentUrl(matterId, name))
       if (!current.ok) throw new Error(`Could not download ${name} (${current.status})`)
@@ -250,12 +352,13 @@ function WordDocumentViewer({
           if (e.key === "Escape" && !e.defaultPrevented) { e.preventDefault(); e.stopPropagation(); onClose() }
         }}>
           <div className="viewer-bar">
-            <ViewerTitle name={name} kind="PDF document" />
+            <ViewerTitle name={name} kind={shown ? `PDF document · version ${shown.number}` : "PDF document"} />
             <div className="viewer-bar-actions">
+              {versionsToggle}
               <button
                 className="primary"
                 onClick={convert}
-                disabled={converting}
+                disabled={converting || shown !== undefined}
                 title="Convert this PDF to an editable Word document so it can be redlined"
               >
                 {converting ? "Converting..." : "Convert to DOCX"}
@@ -265,11 +368,16 @@ function WordDocumentViewer({
             </div>
           </div>
           <div className="viewer-body">
-            <div className="viewer-doc">
-              {citation && <p role="status">Source section {citation.section}. PDF passage navigation is unavailable; the source document is open.</p>}
+            <div className="viewer-doc" ref={documentRef}>
+              {versionBanner}
+              {versionStatus && <p role="status" className="version-status">{versionStatus}</p>}
+              {citation && !shown && <p role="status">Source section {citation.section}. PDF passage navigation is unavailable; the source document is open.</p>}
               {error && <p className="muted">{error}</p>}
-              <iframe className="pdf-render" title={name} src={documentContentUrl(matterId, name)} />
+              {shown
+                ? pdfVersionUrl && <iframe className="pdf-render" title={`${name}, version ${shown.number}`} src={pdfVersionUrl} />
+                : <iframe key={reload} className="pdf-render" title={name} src={documentContentUrl(matterId, name)} />}
             </div>
+            {versionsPanel}
           </div>
         </div>
       </div>
@@ -283,10 +391,12 @@ function WordDocumentViewer({
         if (e.key === "Escape" && !e.defaultPrevented) { e.preventDefault(); e.stopPropagation(); onClose() }
       }}>
         <div className="viewer-bar">
-          <ViewerTitle name={name} kind="Word document" pending={redlines.length} markers={markers && markerSummary(markers)} />
+          <ViewerTitle name={name} kind={shown ? `Word document · version ${shown.number}` : "Word document"} pending={shown ? 0 : redlines.length} markers={markers && markerSummary(markers)} />
           <div className="viewer-bar-actions">
-            <DownloadActions redlines={redlines} preview={Boolean(html)} onDownload={download} />
-            <button className="primary" onClick={() => setEditing((value) => !value)} disabled={busy !== undefined} aria-expanded={editing} aria-controls="document-edit-request">
+            <DownloadActions redlines={redlines} preview={Boolean(html)} onDownload={download} version={shown?.number} />
+            {versionsToggle}
+            <button className="primary" onClick={() => setEditing((value) => !value)} disabled={busy !== undefined || shown !== undefined} aria-expanded={editing} aria-controls="document-edit-request"
+              title={shown ? "Go back to the current version to request edits" : undefined}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <path d="M12 20h9" />
                 <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z" />
@@ -339,21 +449,23 @@ function WordDocumentViewer({
         </div>
         <div className="viewer-body">
           <div className="viewer-doc">
+            {versionBanner}
+            {versionStatus && <p role="status" className="version-status">{versionStatus}</p>}
             {citation && <p role="status">{citationStatus(citation.section, passage)}</p>}
-            {editing && <div id="document-edit-request" className="change-card document-edit-request">
+            {editing && !shown && <div id="document-edit-request" className="change-card document-edit-request">
               <label htmlFor="document-edit-instructions">Describe the changes you want to review</label>
               <textarea id="document-edit-instructions" value={instructions} maxLength={24000} disabled={busy !== undefined}
                 onChange={(event) => setInstructions(event.target.value)} rows={4} style={{width:"100%"}} />
               <button className="primary" onClick={prepare} disabled={busy !== undefined || !instructions.trim()}>{busy === "prepare" ? "Preparing changes…" : "Prepare changes"}</button>
               {prepared && <p role="status">{prepared}</p>}
             </div>}
-            {preparation && preparation.open_items.length > 0 && <div className="document-open-items">
+            {!shown && preparation && preparation.open_items.length > 0 && <div className="document-open-items">
               <strong id="document-open-items">Open items</strong>
               <ul aria-labelledby="document-open-items">{preparation.open_items.map((item, index) => <li key={index}>{item}</li>)}</ul>
             </div>}
             {wasmError && <p className="muted">Viewer failed to load: {wasmError.message}</p>}
             {error && <p className="muted">{error}</p>}
-            {staleNotice && <p role="status" className="muted">{staleNotice}</p>}
+            {staleNotice && !shown && <p role="status" className="muted">{staleNotice}</p>}
             {!wasmError && !error && !html && (
               <div className="docx-render docx-skeleton" aria-label="Rendering document">
                 {Array.from({ length: 14 }, (_, i) => <div key={i} className="sk-line" />)}
@@ -361,7 +473,8 @@ function WordDocumentViewer({
             )}
             {documentPreview}
           </div>
-          {redlines.length > 0 && (
+          {versionsPanel}
+          {!versionsPanel && !shown && redlines.length > 0 && (
             <aside className="changes-panel">
               <div className="changes-head">
                 <span className="changes-count">
@@ -514,10 +627,12 @@ export function ExtractedText({ kind, text, match, markRef }: {
 
 // The current accepted Word file is always downloadable. A redline download is
 // offered only while some pending proposal can still render as tracked changes.
-export function DownloadActions({ redlines, preview, onDownload }: {
+export function DownloadActions({ redlines, preview, onDownload, version }: {
   redlines: Redline[]
   preview: boolean
   onDownload: (tracked: boolean) => void
+  // An older version open in the viewer downloads exactly as kept.
+  version?: number
 }) {
   // Labels are visually hidden on narrow screens, so the two downloads need
   // distinct glyphs: a plain arrow, and a document with a pen for tracked changes.
@@ -529,11 +644,11 @@ export function DownloadActions({ redlines, preview, onDownload }: {
     </svg>
   )
   const downloadTitle = "Download the current accepted Word file without pending changes"
-  if (!redlines.some((row) => !row.stale)) {
+  if (version !== undefined || !redlines.some((row) => !row.stale)) {
     return (
-      <button onClick={() => onDownload(false)} title={downloadTitle}>
+      <button onClick={() => onDownload(false)} title={version !== undefined ? `Download version ${version} exactly as kept` : downloadTitle}>
         {download}
-        <span className="viewer-action-label">Download</span>
+        <span className="viewer-action-label">{version !== undefined ? `Download version ${version}` : "Download"}</span>
       </button>
     )
   }
@@ -630,6 +745,39 @@ export function combinedNotUpdatedNotice(result: AcceptResult | void) {
   if (result?.combined_updated !== false) return
   const reason = result.combined_skip_reason && combinedSkipReasons[result.combined_skip_reason]
   return `The combined file was not updated${reason ? `: ${reason}` : ""}.`
+}
+
+// Opens and closes the versions list beside the document. The count stays
+// with the label, both read out; on a narrow screen the button is its icon.
+function VersionsToggle({ open, count, onToggle }: { open: boolean; count?: number; onToggle: () => void }) {
+  return (
+    <button type="button" className="viewer-versions-toggle" aria-expanded={open} aria-controls="document-versions" onClick={onToggle}
+      title={open ? "Hide the versions of this document" : "Show the versions of this document"}>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
+        <path d="M3 3v5h5" />
+        <path d="M12 7v5l3 2" />
+      </svg>
+      <span className="viewer-action-label">
+        Versions{count ? <span className="viewer-versions-count"> {count}</span> : null}
+      </span>
+    </button>
+  )
+}
+
+// Above an older version open in the viewer: which one, and the way back.
+export function VersionBanner({ version, origin, onBack }: { version: DocumentVersion; origin: string; onBack: () => void }) {
+  return (
+    <div className="version-banner">
+      <p>
+        <strong>Version {version.number}</strong> · {origin} · {formatDateTime(version.created_at)}
+        <span>A kept copy, read only. Restore it from the list to make it current again.</span>
+      </p>
+      <button type="button" className="icon-btn" onClick={onBack}>
+        Back to current version
+      </button>
+    </div>
+  )
 }
 
 // File glyph, name and a quiet status line. The pending count stays visible on

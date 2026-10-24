@@ -160,3 +160,20 @@ skipped. Screenshots/results remain outside public source. Run focused native
 control regressions with `bun test/material-primitives.browser.ts` and
 `bun test/jurisdiction-select.browser.ts`; use `PLAYWRIGHT_CHROMIUM_PATH` if the
 installed Chromium differs from the package's default.
+
+Run the document versions regression with the same preview environment:
+
+```sh
+PLAYWRIGHT_BASE_URL=http://127.0.0.1:5189 \
+DOCHAUS_EVIDENCE_DIR=/tmp/doc-haus-versions-evidence \
+bun apps/web/e2e/document-versions.ts
+```
+
+It opens a synthetic Word document with four kept versions (one removed by a
+redaction) at 1440×1000 and 400×860: the versions list, viewing an older
+version, the restore confirmation (Escape cancels it, and the request body is
+checked), the restored list, a version blackline and the return to the list,
+the compare dialog's previous-version default, and the upload prompt's Save
+as new version, duplicate (with Restore) and tracked-changes messages. Version
+bytes, restore, compare and upload answers are fixtures; every other request is
+refused.

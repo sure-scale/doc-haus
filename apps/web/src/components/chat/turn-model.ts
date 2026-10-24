@@ -21,7 +21,8 @@ export type RedlineProposal = { id?: number; document: string; oldText: string; 
 // A comparison of two Word versions the compare-versions tool ran: what to send
 // back to the blackline route, the counts the turn's card reports, and the
 // changes its pages listed, so the answer can draw each one it names.
-export type VersionCompare = Required<CompareParams> & { changes: number; untracked: number; hunks: ListedChange[] }
+// The chat compare tool names two files; it never picks kept versions.
+export type VersionCompare = Required<Omit<CompareParams, "leftVersion" | "rightVersion">> & { changes: number; untracked: number; hunks: ListedChange[] }
 // A proposal (P-id) also carries its outcome and the untracked edit it names.
 export type ListedChange = Pick<ChangeHunk, "id" | "kind" | "before" | "after"> & Partial<Pick<ProposalOutcome, "outcome" | "untracked">>
 

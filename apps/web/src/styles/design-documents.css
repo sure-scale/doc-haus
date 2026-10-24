@@ -102,6 +102,46 @@
   .viewer-more-actions > summary { width: 44px; height: 44px; }
 }
 
+/* ---------- Document versions (#268) ---------- */
+/* The list sits where the change list does; a version open in place of the
+   working file carries a banner with the way back. */
+.document-reader .viewer-bar-actions > button.viewer-versions-toggle[aria-expanded="true"] { background: var(--accent-soft); border-color: var(--accent-border); color: var(--accent); }
+.document-reader .viewer-bar-actions > button.viewer-versions-toggle[aria-expanded="true"] svg { color: var(--accent); }
+.viewer-versions-count { font-variant-numeric: tabular-nums; color: var(--muted); }
+.versions-panel .changes-head { gap: var(--space-1); }
+.versions-head h3 { display: flex; align-items: center; gap: var(--space-2); margin: 0; font-family: var(--font-sans); font-size: 0.875rem; font-weight: 600; color: var(--text); }
+.versions-head p { margin: 0; font-size: 0.75rem; font-weight: 400; line-height: 1.5; color: var(--muted); }
+.versions-list { margin: 0; padding: 0; list-style: none; }
+.version-row { display: flex; flex-direction: column; gap: 2px; padding: var(--space-4) 0; border-bottom: 1px solid var(--border); }
+.version-row:last-child { border-bottom: 0; }
+.version-row.is-shown { padding-left: 14px; box-shadow: inset 3px 0 var(--accent); }
+.version-title { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); font-size: 0.875rem; color: var(--text); }
+.version-tag { padding: 0 7px; border-radius: var(--radius-pill); background: var(--accent-soft); color: var(--accent); font-size: 0.6875rem; font-weight: 500; line-height: 18px; }
+.version-tag.is-viewing { background: var(--bg-sunken); color: var(--text-secondary); }
+.version-meta { font-size: 0.8125rem; line-height: 1.45; color: var(--text); overflow-wrap: anywhere; }
+.version-time { font-size: 0.75rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.version-label, .version-branch { font-size: 0.75rem; line-height: 1.45; color: var(--text-secondary); overflow-wrap: anywhere; }
+.version-branch::before { content: "↳ "; color: var(--muted); }
+.version-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: var(--space-2); }
+.version-actions .icon-btn { display: inline-flex; align-items: center; gap: 6px; }
+.version-actions .icon-btn svg { flex: none; color: var(--muted); }
+.version-row.is-unavailable .version-title strong { color: var(--text-secondary); }
+.version-unavailable { margin: var(--space-1) 0 0; font-size: 0.75rem; line-height: 1.45; color: var(--muted); }
+.version-confirm { margin-top: var(--space-2); padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--md-sys-color-surface-container-low); }
+.version-confirm p { margin: 0 0 var(--space-3); font-size: 0.8125rem; line-height: 1.5; color: var(--text); }
+.version-confirm .upload-actions { flex-wrap: wrap; margin-left: 0; }
+.version-error { margin: var(--space-2) 0 0; font-size: 0.75rem; line-height: 1.45; color: var(--danger); }
+.version-changed { margin: 0 0 var(--space-2); font-size: 0.75rem; line-height: 1.5; color: var(--warn); }
+.document-reader .version-banner { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-3); max-width: 760px; margin: 0 auto var(--space-5); padding: var(--space-3) var(--space-4); background: var(--panel); border: 1px solid var(--accent-border); border-radius: var(--radius-md); }
+.version-banner p { margin: 0; font-size: 0.8125rem; line-height: 1.5; color: var(--text); }
+.version-banner p span { display: block; font-size: 0.75rem; color: var(--muted); }
+.document-reader .version-status { max-width: 760px; margin: 0 auto var(--space-4); font-size: 0.8125rem; line-height: 1.5; color: var(--warn); }
+.compare-notice { color: var(--text-secondary); }
+@media (max-width: 720px) {
+  /* Above the page, so opening the list shows it. */
+  .document-reader .versions-panel { order: -1; border-top: 0; border-bottom: 1px solid var(--border); }
+}
+
 /* ---------- Documents drawer ---------- */
 /* Slides out beside the rail: pushes the canvas on wide windows, lays over it
    with a scrim on narrower ones, takes the screen on phones. */

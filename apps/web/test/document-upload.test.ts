@@ -1,12 +1,12 @@
 import { expect, test } from "bun:test"
 import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
-import { DocumentExistsError, MATTER_DOCUMENT_EXTENSIONS, matterDocumentKind, type AttachmentStatus, type Document, type IngestResult } from "../src/api/ingest/documents"
+import { DocumentExistsError, DuplicateUploadError, MATTER_DOCUMENT_EXTENSIONS, matterDocumentKind, type AttachmentStatus, type Document, type IngestResult } from "../src/api/ingest/documents"
 import DocumentUpload, { attachmentsSummary, documentTree, failedUpload, newUpload, uploadedToast, UploadRow } from "../src/components/DocumentUpload"
 
 const file = new File(["theirs"], "Agreement.docx")
 const row = (upload: Parameters<typeof UploadRow>[0]["upload"]) => {
-  const html = renderToStaticMarkup(createElement(UploadRow, { upload, onRetry: () => {}, onChoose: () => {}, onDismiss: () => {} }))
+  const html = renderToStaticMarkup(createElement(UploadRow, { upload, onRetry: () => {}, onChoose: () => {}, onDismiss: () => {}, onRestore: () => {} }))
   return {
     status: html.match(/<span class="upload-status">([^<]*)<\/span>/)?.[1]?.trim(),
     buttons: [...html.matchAll(/<button[^>]*>([\s\S]*?)<\/button>/g)].map(([, label]) => label!.trim()),
@@ -14,17 +14,47 @@ const row = (upload: Parameters<typeof UploadRow>[0]["upload"]) => {
   }
 }
 
-test("a same-name upload asks the lawyer to keep both, replace the existing file or cancel, safest first", () => {
+test("a same-name upload offers to save it as a new version of the existing document, keep both or cancel", () => {
   const exists = failedUpload(new DocumentExistsError("Agreement.docx", "source", "Agreement.docx is already in this matter."), file)
   expect(exists).toEqual({ status: "exists", existing: { name: "Agreement.docx", role: "source" } })
   const rendered = row({ key: 1, file, status: "queued", ...exists })
   expect(rendered).toMatchObject({
-    status: "Already in this matter. Keep both or replace it?",
-    buttons: ["Keep both", "Replace", "Cancel"],
+    status: "Already in this matter. Save this as a new version of it, or keep both?",
+    buttons: ["Save as new version", "Keep both", "Cancel"],
   })
-  // Replace overwrites, so it is never the emphasised choice.
-  expect(rendered.html).toContain('class="icon-btn upload-keep-both"')
+  // Neither choice loses anything; a new version is the usual intent and leads.
+  expect(rendered.html).toContain('class="icon-btn upload-choice-lead"')
+  expect(rendered.html).toContain("Earlier versions stay in its history.")
+  expect(rendered.html).not.toContain("Replace")
   expect(rendered.html).not.toContain("danger")
+})
+
+test("an identical upload says which version it matches and that nothing was saved, and is never retried", () => {
+  const older = failedUpload(new DuplicateUploadError("Agreement.docx", { id: "v-2", number: 2, current: false }, "server words"), file)
+  expect(older).toEqual({
+    status: "duplicate",
+    error: "Identical to version 2 of Agreement.docx. Nothing was saved.",
+    match: { name: "Agreement.docx", version: { id: "v-2", number: 2 } },
+  })
+  // An earlier version can be made current again from the row.
+  expect(row({ key: 5, file, status: "queued", ...older })).toMatchObject({
+    status: "Identical to version 2 of Agreement.docx. Nothing was saved.",
+    buttons: ["Restore version 2", "Dismiss"],
+  })
+  const current = failedUpload(new DuplicateUploadError("Agreement.docx", { id: "v-4", number: 4, current: true }, ""), file)
+  expect(current.error).toBe("Identical to the current version (version 4) of Agreement.docx. Nothing was saved.")
+  expect(row({ key: 6, file, status: "queued", ...current }).buttons).toEqual(["Dismiss"])
+  expect(failedUpload(new DuplicateUploadError("Old.docx", null, ""), file).error).toBe("Identical to Old.docx, already in this matter. Nothing was saved.")
+})
+
+test("a save kept with tracked changes keeps its notice in the row and the toast", () => {
+  const notice = "Saved as version 3, with 2 tracked changes by Pat Reviewer; resolve them in Word before doc.haus edits it."
+  const result: IngestResult = { name: "Agreement.docx", docPath: "/m/Agreement.docx", sections: 4, chunks: 4, injection: null, version: { id: "v-3", number: 3, created: true }, notice }
+  expect(uploadedToast(result)).toEqual({ kind: "warning", message: `Agreement.docx is ready (4 sections). ${notice}` })
+  expect(row({ key: 6, file, status: "ready", notice })).toMatchObject({ status: notice, buttons: ["Dismiss"] })
+  // A first upload is not called a version; a new one is.
+  expect(uploadedToast({ ...result, notice: undefined, version: { id: "v-1", number: 1, created: true } }).message).toBe("Agreement.docx is ready (4 sections).")
+  expect(uploadedToast({ ...result, notice: undefined }).message).toBe("Agreement.docx is ready as version 3 (4 sections).")
 })
 
 test("a returned draft named like a generated document can only be kept beside it", () => {
