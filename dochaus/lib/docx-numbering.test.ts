@@ -123,13 +123,14 @@ const AGREEMENT = `# Agreement
 // Sequences the list cannot show whole, which stay typed: a level Word would
 // number differently ("1.1.1" after "(a)" under 1.1 reads 1.1.2), a skipped
 // number, an undotted or bold run-in clause number, a number the list writes
-// differently.
+// differently (a stray trailing dot, a zero-padded decimal).
 const TYPED = [
   "# Agreement\n\n## 1. One\n\n1.1 The Supplier shall:\n\n(a) first; and\n\n(b) second.\n\n1.1.1 a deeper point.\n\n1.2 next.",
   "# Agreement\n\n## 1. One\n\n1.1 a.\n\n## 2. Two\n\n2.1 b.\n\n## 4. Four\n\n4.1 c.",
   "# Agreement\n\n## 1 One\n\n### 1.1 Sub heading\n\n1.2 text.\n\n## 2 Two\n\n2.1 text.",
   "# Agreement\n\n**1. One**\n\n1.1 text one.\n\n1.2 text.\n\n**2. Two**\n\n2.1 text two.",
   "# Agreement\n\n## 1. One\n\n1.01 A plain decimal level shows 1.1.\n\n## 2. Two\n\n2.1 text.",
+  "# Agreement\n\n## 1. One\n\n1.1 text.\n\n1.2. text.\n\n## 2. Two\n\n2.1 text.",
 ]
 
 // A typed main body (it skips clause 3) before a schedule the list numbers.
@@ -247,6 +248,18 @@ ${AGREEMENT.split("\n").slice(2).join("\n")}`)
     const undotted = await both("# Agreement\n\n## 1. Supply\n\n1.1 Goods.\n\n## 2 Price\n\n2.1 Fixed.")
     expect(undotted.numbered.map(row => row.shown)).toEqual(undotted.literal.map(row => row.shown))
     expect(labelled(undotted.numbered)).toEqual([])
+  })
+
+  test("a number the list could never show at that point is text, and the sequence around it converts", async () => {
+    // One below the current clause, and one in a form no house level has.
+    for (const [markdown, text] of [
+      ["# Agreement\n\n## 1. One\n\n1.1 a.\n\n## 2. Two\n\n2.1 b.\n\n1.5 times the Charges is payable.\n\n2.2 c.", "1.5 times the Charges is payable."],
+      ["# Agreement\n\n## 1. One\n\n1.1 Section 1 provides:\n\n(1) A person commits an offence.\n\n1.2 c.", "(1) A person commits an offence."],
+    ]) {
+      const { literal, numbered } = await both(markdown!)
+      expect(numbered.map(row => row.shown)).toEqual(literal.map(row => row.shown))
+      expect(labelled(numbered)).toEqual(literal.slice(1).map(row => row.shown).filter(shown => shown !== text))
+    }
   })
 
   test("an ordered list inside a clause stays its own list, and the clause list numbers around it", async () => {

@@ -23,7 +23,10 @@ import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 // heading; the numbers after it stay typed). A sequence converts whole or stays
 // exactly as typed: one number the list cannot show (a gap, an undotted or
 // run-in number, a label the list writes differently) keeps all of its numbers
-// typed. Numbers before the first sequence (parties, recitals) stay typed.
+// typed. A number the list could never show there is text, not a clause
+// number: one below the current clause ("1.5 times" in clause 5) or in a form
+// no level has ("(1)" on a list without such a level). Numbers before the
+// first sequence (parties, recitals) stay typed.
 // Converting removes the literal from the paragraph's text; Docxodus reports
 // the list label instead (BlockMetadata.list.generatedLabel). A paragraph that
 // already belongs to the clause list and repeats its own number as text (an
@@ -576,6 +579,35 @@ function literalLevel(literal: Literal, list: ClauseList, counters: Counters, nu
   return fits.find(level => counters.values[level] !== undefined) ?? fits[0]
 }
 
+const FORM: Record<Format, string> = { decimal: "\\d+", decimalZero: "\\d+", lowerLetter: "[a-z]+", upperLetter: "[A-Z]+", lowerRoman: "[ivxlcdm]+", upperRoman: "[IVXLCDM]+" }
+
+// Each level's label as a pattern of the numbers it can show, without a
+// trailing dot: "%1.%2" on decimal levels is /^\d+\.\d+$/.
+function levelForms(list: ClauseList) {
+  return list.levels.flatMap(definition => {
+    if (!definition?.format) return []
+    const pattern = definition.text.trim().replace(/\.$/, "").split(/(%[1-9])/).map(part => {
+      const reference = part.match(/^%([1-9])$/)?.[1]
+      if (reference === undefined) return part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+      const format = definition.legal ? "decimal" : list.levels[Number(reference) - 1]?.format
+      return format ? FORM[format] : "(?!)"
+    }).join("")
+    return [new RegExp(`^${pattern}$`)]
+  })
+}
+
+// A number the list could never show at this point, which is text rather than
+// a clause number the list fails to show: a decimal number below the current
+// clause ("1.5 times" in clause 5), or one in a form no level has ("(1)" on a
+// list without such a level). A trailing dot is not a form of its own: "3.1."
+// is a "3.1" the list writes differently.
+function neverShown(literal: Literal, list: ClauseList, counters: Counters, forms: RegExp[]) {
+  const top = list.levels[0]?.format
+  if (/^\d/.test(literal.text) && (top === "decimal" || top === "decimalZero") && Number(literal.text.split(".")[0]) < (counters.values[0] ?? 0)) return true
+  const bare = literal.text.replace(/\.$/, "")
+  return !forms.some(form => form.test(bare))
+}
+
 // The label the list shows at `level` for a sequence opened afresh.
 function opensSequence(literal: Literal, list: ClauseList) {
   return labelOf(list.levels, 0, level => list.overrides.get(list.numId)?.get(level) ?? list.levels[level]?.start ?? 1) === literal.text
@@ -589,6 +621,7 @@ type Sequence = { converts: Decision[]; settled: boolean; saved: ReturnType<Coun
 // only within sequences the list already numbers.
 function plan(list: ClauseList, paragraphs: Paragraph[], settledOnly: boolean, firstRestart: number) {
   const counters = new Counters(list.levels, list.overrides)
+  const forms = levelForms(list)
   const decisions: Decision[] = []
   const restarts: string[] = []
   let used = false
@@ -661,7 +694,7 @@ function plan(list: ClauseList, paragraphs: Paragraph[], settledOnly: boolean, f
     if (level === undefined) {
       // A typed sequence the list cannot show stays typed: its counters and
       // conversions go at once, so nothing after it counts on from them.
-      if (!sequence.settled) {
+      if (!sequence.settled && !neverShown(paragraph.literal, list, counters, forms)) {
         counters.restore(sequence.saved)
         sequence = undefined
       }
