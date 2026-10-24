@@ -57,6 +57,7 @@ export default tool({
         return `${path.basename(file)} contains tracked changes. Accept or reject them in Word before proposing changes to it.`
       return `Clause not found in ${path.basename(file)}: ${JSON.stringify(args.clause)}`
     }
+    if (located.error) return located.error
     const { find: clause, replace: replacement } = located
 
     const author = args.author ?? draftingAttribution().author
@@ -76,10 +77,10 @@ export default tool({
       if (!existsSync(file)) return { error: `Document not found in this matter: ${args.document}` }
       const current = dx.openDocxSession(await Bun.file(file).bytes(), {})
       const again = locate(current, args.clause, args.replacement)
-      const anchored = again.find === clause ? again.targets[0] : undefined
+      const anchored = again.find === clause && !again.error ? again.targets[0] : undefined
       if (!anchored) {
         current.close()
-        return { error: `Clause changed before approval and is no longer present in ${path.basename(file)}.` }
+        return { error: again.error ?? `Clause changed before approval and is no longer present in ${path.basename(file)}.` }
       }
       // projectAnchor emits the block's addressing token (`{#p:body:UNID}`)
       // ahead of its text. Strip those internal markers from reviewer-facing
@@ -112,7 +113,8 @@ export default tool({
   },
 })
 
-/** The paragraph `clause` locates, past a copied list number (findPastListLabel). */
+/** The paragraph `clause` locates, past a copied list number (findPastListLabel).
+ * Accept rewrites the first paragraph holding the recorded clause text. */
 function locate(session: ReturnType<Awaited<ReturnType<typeof docxodus>>["openDocxSession"]>, clause: string, replacement: string) {
-  return findPastListLabel(clause, replacement, text => session.findAllByText(text, { ignoreWhitespace: true }), id => session.getAnchorInfo(id)?.visibleText)
+  return findPastListLabel(clause, replacement, text => session.findAllByText(text, { ignoreWhitespace: true }), id => session.getAnchorInfo(id)?.visibleText, { recorded: true })
 }

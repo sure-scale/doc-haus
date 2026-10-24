@@ -38,6 +38,7 @@ export default tool({
     const located = locate(session, args.find, args.replace)
     session.close()
     if (!located.targets.length) return `Text not found in ${path.basename(file)}: ${JSON.stringify(args.find)}`
+    if (located.error) return located.error
     const { find, replace } = located
 
     const author = args.author ?? draftingAttribution().author
@@ -60,6 +61,7 @@ export default tool({
       // Accepting the change replaces every occurrence of the recorded text.
       const matches = again.find === find ? current.findAllByText(find).length : 0
       current.close()
+      if (again.error) return { error: again.error }
       if (!again.targets.length || !matches) return { error: `Text changed before approval and is no longer present in ${path.basename(file)}.` }
       const anchor = again.targets[0]!.id
       const recorded = recordRedlineProposal(ctx.directory, {
@@ -88,7 +90,8 @@ export default tool({
   },
 })
 
-/** Where `find` is in the document, past a copied list number (findPastListLabel). */
+/** Where `find` is in the document, past a copied list number (findPastListLabel).
+ * Accept replaces the recorded text wherever it occurs. */
 function locate(session: ReturnType<Awaited<ReturnType<typeof docxodus>>["openDocxSession"]>, find: string, replace: string) {
-  return findPastListLabel(find, replace, text => session.findAllByText(text), id => session.getAnchorInfo(id)?.visibleText)
+  return findPastListLabel(find, replace, text => session.findAllByText(text), id => session.getAnchorInfo(id)?.visibleText, { recorded: true })
 }

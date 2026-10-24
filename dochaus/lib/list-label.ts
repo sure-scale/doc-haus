@@ -48,12 +48,16 @@ export function retypedListLabel(text: string, label: string | undefined, curren
 /** Find text and replacement for an edit tool, with the paragraphs `find`
  * names. `find` is kept when `search` finds it. Otherwise, when it opens with
  * a paragraph's own list label and the rest opens that paragraph's shown text,
- * the edit is to those paragraphs: both texts lose the label. `search` returns
- * the paragraphs containing a text with their labels (Docxodus
- * autoNumberPrefix); `shown` returns a paragraph's text with its label. */
+ * the edit is to those paragraphs: both texts lose the label. A tool that
+ * records the edit as text its accept finds again (`recorded`) gets `error`
+ * instead when the rest is also in other paragraphs, which accept would edit
+ * too. `search` returns the paragraphs containing a text with their labels
+ * (Docxodus autoNumberPrefix); `shown` returns a paragraph's text with its
+ * label. */
 export function findPastListLabel<T extends { id: string; autoNumberPrefix?: string }>(
   find: string, replace: string, search: (text: string) => T[], shown: (id: string) => string | undefined,
-) {
+  { recorded = false } = {},
+): { find: string; replace: string; targets: T[]; error?: string } {
   const targets = search(find)
   if (targets.length) return { find, replace, targets }
   // A label is one to three words ("2.1", "(a)", "Article 1").
@@ -62,8 +66,13 @@ export function findPastListLabel<T extends { id: string; autoNumberPrefix?: str
     const label = words.slice(0, count).join(" ")
     const rest = withoutListLabel(find, label)
     if (rest === find) continue
-    const labelled = search(rest).filter(target => target.autoNumberPrefix?.trim() === label && withoutListLabel(shown(target.id) ?? "", label).startsWith(rest))
-    if (labelled.length) return { find: rest, replace: withoutListLabel(replace, label), targets: labelled }
+    const found = search(rest)
+    const labelled = found.filter(target => target.autoNumberPrefix?.trim() === label && withoutListLabel(shown(target.id) ?? "", label).startsWith(rest))
+    if (!labelled.length) continue
+    const error = recorded && found.length > labelled.length
+      ? `${JSON.stringify(find)} begins with ${label}, the number Word prints before that paragraph, which is not text. Without it, ${JSON.stringify(rest)} is also in ${found.length - labelled.length} other paragraph(s), where accepting the change could apply it. Quote more of the text of ${label}, enough to be found only there, and leave the number out.`
+      : undefined
+    return { find: rest, replace: withoutListLabel(replace, label), targets: labelled, ...(error ? { error } : {}) }
   }
   return { find, replace, targets }
 }
