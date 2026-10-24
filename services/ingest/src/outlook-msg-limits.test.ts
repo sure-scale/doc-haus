@@ -24,14 +24,18 @@ const timed = async <T>(work: () => Promise<T>) => {
 }
 
 test("a file whose directory entries all name one stream is refused, not read once per entry", async () => {
-  // Many properties naming one 64 KB stream: a 70 KB file that read as 6.4 MB.
-  const message = outlookMessage({ subject: "Synthetic shared stream", from: SENDER, body: "Body." })
-  message.props.push([0x60000102, new Uint8Array(64 * 1024).fill(0x41)])
-  for (let index = 0; index < 100; index++) message.props.push([((0x6100 + index) << 16) | 0x0102, new Uint8Array([1])])
-  const props = msgFile(message)
-  const entries = directory(props)
-  const big = entries.find((entry) => entry.name === "__substg1.0_60000102")!
-  for (const entry of entries.filter((entry) => /^__substg1\.0_61/.test(entry.name))) share(props, entry, big)
+  // Many properties naming one stream: a 64 KB one (a 70 KB file that read as
+  // 6.4 MB), or one under 4096 bytes, held in the mini stream.
+  const aliased = (size: number) => {
+    const message = outlookMessage({ subject: "Synthetic shared stream", from: SENDER, body: "Body." })
+    message.props.push([0x60000102, new Uint8Array(size).fill(0x41)])
+    for (let index = 0; index < 100; index++) message.props.push([((0x6100 + index) << 16) | 0x0102, new Uint8Array([1])])
+    const file = msgFile(message)
+    const entries = directory(file)
+    const named = entries.find((entry) => entry.name === "__substg1.0_60000102")!
+    for (const entry of entries.filter((entry) => /^__substg1\.0_61/.test(entry.name))) share(file, entry, named)
+    return file
+  }
 
   // Many attachments naming one attachment's content.
   const attachments = [fileAttachment("Big.pdf", "application/pdf", new Uint8Array(64 * 1024).fill(0x42))]
@@ -41,7 +45,7 @@ test("a file whose directory entries all name one stream is refused, not read on
   const content = data.find((entry) => entry.size === 64 * 1024)!
   for (const entry of data) if (entry !== content) share(shared, entry, content)
 
-  for (const file of [props, shared]) await expect(parseMsg(file)).rejects.toBeInstanceOf(MsgFormatError)
+  for (const file of [aliased(64 * 1024), aliased(4000), shared]) await expect(parseMsg(file)).rejects.toBeInstanceOf(MsgFormatError)
 
   // A sound file with as many streams, large and small, still reads.
   const sound = Array.from({ length: 40 }, (_, index) =>
