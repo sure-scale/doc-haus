@@ -438,6 +438,48 @@ test("uploading an email again reuses an attachment the lawyer changed, leaving 
   expect(plan && "removal" in plan ? plan.removal : undefined).toEqual({ attachments: [], kept: [{ name: "Draft.docx", reason: "changed" }] })
 }, 120_000)
 
+for (const existing of ["replace", "keep-both"] as const) test(`a ${existing} email keeps changed attachment bytes even when its metadata is unchanged`, async () => {
+  const directory = matter()
+  const original = pdf("Synthetic price 100")
+  const revised = pdf("Synthetic price 900")
+  expect(original.length).toBe(revised.length)
+  const cover = (bytes: Buffer) => email("Synthetic terms", "Terms attached.", [part("Terms.pdf", "application/pdf", bytes)])
+  await ingestEmailDocument(directory, "Cover.eml", cover(original))
+  const result = await ingestEmailDocument(directory, "Cover.eml", cover(revised), { existing })
+  expect(result.attachments).toMatchObject([{ document: "Terms (2).pdf", status: "indexed" }])
+  expect(readFileSync(path.join(directory, "Terms.pdf"))).toEqual(original)
+  expect(readFileSync(path.join(directory, "Terms (2).pdf"))).toEqual(revised)
+  expect(verifyQuote({ directory, quote: "Synthetic price 900" }).hits.map((hit) => hit.doc)).toEqual(["Terms (2).pdf"])
+}, 120_000)
+
+test("legacy attachment links require matching bytes, and never overwrite an edited child", async () => {
+  const directory = matter()
+  const original = pdf("Synthetic price 100")
+  const changed = pdf("Synthetic price 900")
+  const message = email("Synthetic legacy identity", "Terms.", [part("Terms.pdf", "application/pdf", original)])
+  await ingestEmailDocument(directory, "Legacy.eml", message)
+  const forgetIdentity = () => {
+    const db = openDb(directory)
+    try {
+      const row = db.query("SELECT attachments FROM documents WHERE name = 'Legacy.eml'").get() as { attachments: string }
+      const record = JSON.parse(row.attachments)
+      for (const entry of record.attachments) delete entry.contentHash
+      db.run("UPDATE documents SET attachments = ? WHERE name = 'Legacy.eml'", [JSON.stringify(record)])
+    } finally { db.close() }
+  }
+  forgetIdentity()
+  const unchanged = await ingestEmailDocument(directory, "Legacy.eml", message, { existing: "replace" })
+  expect(unchanged.attachments).toMatchObject([{ document: "Terms.pdf" }])
+  forgetIdentity()
+  await ingestDocument(directory, "Terms.pdf", changed, { existing: "replace" })
+  // Old records cannot prove what bytes an edited child originally held. Keep
+  // the edit and add the incoming source rather than silently dropping it.
+  const again = await ingestEmailDocument(directory, "Legacy.eml", message, { existing: "replace" })
+  expect(again.attachments).toMatchObject([{ document: "Terms (2).pdf" }])
+  expect(readFileSync(path.join(directory, "Terms.pdf"))).toEqual(changed)
+  expect(readFileSync(path.join(directory, "Terms (2).pdf"))).toEqual(original)
+}, 120_000)
+
 test("uploading an email again adds no second copy of an attachment with no readable text", async () => {
   const directory = matter()
   const message = email("Synthetic scan", "Signed copy.", [part("Signed.pdf", "application/pdf", pdf(""))])

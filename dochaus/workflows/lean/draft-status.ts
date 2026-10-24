@@ -21,7 +21,7 @@ import { sourceText } from "./template-structure"
 //
 // Found only in a sentence about this text itself: a marking line (a short
 // sentence that opens with the status wording: "Consultation draft — not for
-// signature") or a sentence that names this text as a draft, document or
+// signature") or an assertion that names this text as a draft, document or
 // version ("This draft is circulated for discussion only", "This is a working
 // draft"). In such a sentence the status wording is: calling the text a draft
 // for discussion or negotiation, not approved, ready or final for signature,
@@ -81,8 +81,25 @@ const SENTENCE = wording([...STATE_WORDING, ...SELF_WORDING])
 const MARKER = wording(STATE_WORDING)
 const MARKING_WORDS = 14
 
-/** A sentence that names this text itself as a draft, document or version. */
-const ABOUT_THIS_TEXT = new RegExp(String.raw`\b(?:this|the${S}present)${S}(?:${STATE}(?:${HYPHEN}only)?${S})*(?:draft|document|version)\b|^(?:it|this)${S}(?:is|remains)${S}(?:(?:a|an|the|only)${S})*(?:[\p{L}-]+${S}){0,3}?(?:draft|version)\b`, "iu")
+const THIS_TEXT = String.raw`(?:this|the${S}present)${S}(?:${STATE}(?:${HYPHEN}only)?${S})*(?:draft|document|version)\b`
+
+/** This text as the subject of a clause, not a reference such as "under this
+ * document" modifying another subject. A status can also label the subject
+ * itself ("this working draft"). A pronoun needs an explicit draft/version
+ * classification: after sentence splitting, "it is not approved" could still
+ * refer to another document mentioned in the previous clause. */
+const CLASSIFIED_PRONOUN = String.raw`(?:it|this)(?=${S}(?:is|remains)${S}(?:(?:a|an|the|only)${S})*(?:[\p{L}-]+${S}){0,3}?(?:draft|version)\b)`
+const OWN_SUBJECT = new RegExp(String.raw`(?:^|[,:(–—]\s*|\b(?:and|but|while|that)${S})(${THIS_TEXT}|${CLASSIFIED_PRONOUN})`, "giu")
+
+/** Only linking words may connect the subject to a status. An intervening
+ * object or operative predicate ("requires delivery of a ...") breaks that
+ * relationship. Contents verbs apply only to unfinished-wording assertions. */
+const LINK_WORD = "(?:is|are|was|remains|remain|will|shall|be|has|have|been|being|a|an|the|only|solely|purely|still|currently|yet|not|explicit|intended|as|issued|circulated|provided|prepared|sent|supplied|produced)"
+const STATUS_LINK = new RegExp(String.raw`^\s*(?:${LINK_WORD}${S})*$`, "iu")
+const CONTENT_LINK = new RegExp(String.raw`^\s*(?:(?:${LINK_WORD}|contains|includes|uses|retains)${S})*$`, "iu")
+const COORDINATED_LINK = new RegExp(String.raw`(?:^|\b(?:and|or|but)${S})\s*(?:${LINK_WORD}${S})*$`, "iu")
+const SELF_STATUS = new RegExp(SELF_WORDING.join("|"), "iu")
+const OWN_CONTENT = new RegExp(String.raw`^(?:${S}(?:in|within|throughout|of)${S}${THIS_TEXT}|[^.;!?]*\b(?:as${S}(?:set${S}out|shown|marked)|appearing|contained)${S}in${S}${THIS_TEXT})`, "iu")
 
 /** Markers, citations and quoted words carry no statement of the text's own. */
 const NOT_STATEMENT = /\[[^\]\n]*\]|\(open item:[^)\n]*\)|"[^"\n]*"|“[^”\n]*”/giu
@@ -108,13 +125,23 @@ export function draftStatusStatements(text: string, kept: string[] = []): DraftS
   const statements = (raw: string, rules: typeof SENTENCE) => {
     const sentence = raw.replace(LEAD, "").trim()
     const marking = rules.marking.test(sentence) && wordsOf(sentence).length <= MARKING_WORDS
-    if (!sentence || !(marking || ABOUT_THIS_TEXT.test(sentence))) return []
+    if (!sentence) return []
     const spans = [...sentence.matchAll(rules.status)].map(match => ({ start: match.index, end: match.index + match[0].length, statement: match[0] }))
     if (marking && !spans.length) spans.push({ start: 0, end: sentence.length, statement: sentence })
+    const subjects = [...sentence.matchAll(OWN_SUBJECT)].map(match => ({ start: match.index + match[0].length - match[1]!.length, end: match.index + match[0].length }))
+    const own: typeof spans = []
+    for (const span of spans) {
+      const self = SELF_STATUS.test(span.statement)
+      const linked = subjects.some(subject => span.start >= subject.start && (span.start < subject.end
+        || (self ? CONTENT_LINK : STATUS_LINK).test(sentence.slice(subject.end, span.start))))
+      const previous = own.at(-1)
+      const coordinated = previous && COORDINATED_LINK.test(sentence.slice(previous.end, span.start))
+      if (marking || linked || coordinated || (self && OWN_CONTENT.test(sentence.slice(span.end)))) own.push(span)
+    }
     const words = wordsOf(sentence)
     const taken = (statement: string) => keep.some(paragraph => paragraph.includes(flat(statement))
       && words.filter(word => paragraph.includes(` ${word} `)).length >= TAKEN_FROM * words.length)
-    return spans.filter(span => !taken(span.statement)).map(span => span.statement.replace(/\s+/g, " "))
+    return own.filter(span => !taken(span.statement)).map(span => span.statement.replace(/\s+/g, " "))
   }
   const found = [
     ...text.replace(NOT_STATEMENT, " ").split(/\n+|(?<=[.;!?])\s+/)

@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite"
+import { createHash } from "node:crypto"
 import { existsSync, readFileSync } from "node:fs"
 import { EMAIL_ATTACHMENT_EXTENSIONS, extension, parseEmail, safeAttachmentName } from "../../../dochaus/lib/email"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
@@ -83,6 +84,8 @@ export type AttachmentEntry = {
   document?: string
   // `document`'s rev when it was linked, to tell later whether the lawyer changed it.
   rev?: string
+  // The incoming attachment's bytes, independent of later edits to `document`.
+  contentHash?: string
   // Outlook's winmail.dat can carry attachments that are not unpacked.
   note?: "may-contain-attachments"
   // The stated name matched the prompt-injection scan.
@@ -98,7 +101,7 @@ export type EmailAttachmentsRecord = { attachments: AttachmentEntry[]; embedded:
 // `degraded` is set on an attachment whose document's extracted text may be
 // incomplete or garbled (extraction-quality.ts).
 export type AttachmentStatus = "indexed" | "same" | "removed" | Exclude<AttachmentOutcome, "indexed">
-export type AttachmentView = Omit<AttachmentEntry, "outcome" | "rev"> & { status: AttachmentStatus; degraded?: true }
+export type AttachmentView = Omit<AttachmentEntry, "outcome" | "rev" | "contentHash"> & { status: AttachmentStatus; degraded?: true }
 
 // `parentName` and `depth` are set when the container is itself an attachment
 // or a zip entry.
@@ -196,15 +199,16 @@ async function ingestAttachment(
     ...finding,
     detail: `Attachment name: ${finding.detail}`,
   }))
-  const before = takeEarlier(earlier, attachment)
-  if (before) return before
   try {
     const bytes = Buffer.from(attachment.content())
+    const contentHash = createHash("sha256").update(bytes).digest("hex")
+    const before = takeEarlier(matterDir, earlier, attachment, bytes, contentHash)
+    if (before) return { ...before, contentHash }
     // An attachment passes the same extraction quality gate as an upload: one
     // with no readable text is kept as a document, with nothing indexed.
     const extraction = await extractSourceText(attachment.name, bytes)
-    const same = sameSourceByText(matterDir, extraction)
-    if (same) return { outcome: "indexed", ...same }
+    const same = sameSourceByText(matterDir, extraction, isContainerName(attachment.name) ? bytes : undefined)
+    if (same) return { outcome: "indexed", ...same, contentHash }
     const container: ContainerOptions = { existing: "keep-both", parentName: emailName, depth: depth + 1, findings: nameFindings, budget }
     const lower = attachment.name.toLowerCase()
     const child = lower.endsWith(".eml")
@@ -216,7 +220,7 @@ async function ingestAttachment(
           extracted: { ...extraction, findings: [...extraction.findings, ...nameFindings] },
           links: { parentName: emailName },
         })
-    return { outcome: child.quality.status === "no_readable_text" ? "no_readable_text" : "indexed", document: child.name, rev: child.rev }
+    return { outcome: child.quality.status === "no_readable_text" ? "no_readable_text" : "indexed", document: child.name, rev: child.rev, contentHash }
   } catch (error) {
     if (error instanceof ZipTooLargeError) return { outcome: "too_large" }
     // Stated names are client data: log the failure without them.
@@ -227,14 +231,16 @@ async function ingestAttachment(
 
 // A source already in the matter with this text, by documents.rev. Text that
 // is empty or unreadable says nothing about identity, so it never matches.
-function sameSourceByText(matterDir: string, { text, quality }: ExtractedSourceText) {
+// A container's body/listing omits its descendants: its bytes must match too.
+function sameSourceByText(matterDir: string, { text, quality }: ExtractedSourceText, containerBytes?: Buffer) {
   if (!text.trim() || quality.status === "no_readable_text") return
   const rev = sourceTextRevision(text)
   const db = openDb(matterDir)
   try {
-    const row = db
-      .query("SELECT name FROM documents WHERE role = 'source' AND rev = ? ORDER BY created_at, id LIMIT 1")
-      .get(rev) as { name: string } | null
+    const rows = db
+      .query("SELECT name, doc_path FROM documents WHERE role = 'source' AND rev = ? ORDER BY created_at, id")
+      .all(rev) as { name: string; doc_path: string }[]
+    const row = rows.find((row) => !containerBytes || sameFileBytes(row.doc_path, containerBytes))
     if (row) return { document: row.name, rev }
   } finally {
     db.close()
@@ -243,8 +249,8 @@ function sameSourceByText(matterDir: string, { text, quality }: ExtractedSourceT
 
 // The attachments already recorded for this email, under its name or as an
 // earlier upload of the same message, whose documents are still in the matter.
-// Uploading the email again reuses them, matched by stated name, type and size,
-// whatever their text: one the lawyer changed keeps their version, and one with
+// Uploading the same attachment again reuses it by its original bytes,
+// whatever its current text: one the lawyer changed keeps their version, and one with
 // no readable text gains no copy. The entry keeps its extraction-time rev, so
 // a change still shows.
 function earlierAttachments(matterDir: string, fileName: string, emailRev: string) {
@@ -261,13 +267,34 @@ function earlierAttachments(matterDir: string, fileName: string, emailRev: strin
   }
 }
 
-function takeEarlier(earlier: AttachmentEntry[], attachment: ContainerPart): Partial<AttachmentEntry> | undefined {
+function takeEarlier(matterDir: string, earlier: AttachmentEntry[], attachment: ContainerPart, bytes: Buffer, contentHash: string): Partial<AttachmentEntry> | undefined {
   const index = earlier.findIndex(
-    (entry) => entry.name === attachment.filename && entry.type === attachment.mimeType && entry.size === attachment.size,
+    (entry) => entry.name === attachment.filename && entry.type === attachment.mimeType && entry.size === attachment.size
+      && (entry.contentHash ? entry.contentHash === contentHash : sameLegacyAttachmentBytes(matterDir, entry, bytes)),
   )
   if (index < 0) return
   const [{ outcome, document, rev }] = earlier.splice(index, 1) as [AttachmentEntry]
   return { outcome, document, ...(rev ? { rev } : {}) }
+}
+
+// Legacy records have no original-byte identity. Reuse only when the linked
+// file still matches; otherwise keep it and ingest the incoming source beside it.
+function sameLegacyAttachmentBytes(matterDir: string, entry: AttachmentEntry, bytes: Buffer) {
+  const db = openDb(matterDir)
+  try {
+    const row = db.query("SELECT doc_path FROM documents WHERE role = 'source' AND name = ?").get(entry.document!) as { doc_path: string } | null
+    return !!row && sameFileBytes(row.doc_path, bytes)
+  } finally {
+    db.close()
+  }
+}
+
+function sameFileBytes(file: string, bytes: Buffer) {
+  try {
+    return readFileSync(file).equals(bytes)
+  } catch {
+    return false
+  }
 }
 
 type LinkRow = {
@@ -290,7 +317,7 @@ function linkRows(db: Database) {
 }
 
 function attachmentView(entry: AttachmentEntry, emailName: string, rows: ReadonlyMap<string, LinkRow>): AttachmentView {
-  const { outcome, rev: _rev, ...rest } = entry
+  const { outcome, rev: _rev, contentHash: _contentHash, ...rest } = entry
   if (outcome !== "indexed" && outcome !== "no_readable_text") return { ...rest, status: outcome }
   const document = entry.document ? rows.get(entry.document) : undefined
   if (!document) return { ...rest, status: "removed" }

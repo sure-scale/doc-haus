@@ -212,6 +212,41 @@ test("a zip upload adds its files, and one over the limits is refused whole", as
   })
 }, 120_000)
 
+test("email and zip uploads keep revised same-sized attachments and distinct nested containers", async () => {
+  await withMatter("Attachment byte identity", async ({ upload, stored }) => {
+    const original = pdf("Synthetic price 100")
+    const revised = pdf("Synthetic price 900")
+    expect(original.length).toBe(revised.length)
+    const mail = (name: string, bytes: Uint8Array) => new Uint8Array(Buffer.from([
+      "From: sender@example.test", "To: recipient@example.test", "Subject: Synthetic terms",
+      'Content-Type: multipart/mixed; boundary="BOUNDARY"', "", "--BOUNDARY",
+      "Content-Type: text/plain", "", "Terms attached.", "--BOUNDARY",
+      `Content-Type: application/pdf; name="${name}"`,
+      `Content-Disposition: attachment; filename="${name}"`, "Content-Transfer-Encoding: base64", "",
+      Buffer.from(bytes).toString("base64"), "--BOUNDARY--", "",
+    ].join("\r\n")))
+    for (const kind of ["eml", "zip"] as const) {
+      const name = `${kind}-terms.pdf`
+      const wrap = (bytes: Uint8Array) => kind === "eml" ? mail(name, bytes) : zipSync({ [name]: [bytes, { level: 0 }] })
+      expect((await upload(`Cover.${kind}`, wrap(original))).status).toBe(200)
+      const changed = await upload(`Cover.${kind}`, wrap(revised), "replace")
+      expect(changed.status).toBe(200)
+      const body = await changed.json() as { attachments: { document: string }[] }
+      // Leaf text dedup may link to the other format's already-indexed source.
+      const linked = body.attachments[0]!.document
+      expect(await stored(linked)).toEqual(revised)
+      expect(await stored("eml-terms.pdf")).toEqual(original)
+    }
+    const nested = await upload("Nested.zip", zipSync({
+      "First.zip": zipSync({ "Nested.pdf": [original, { level: 0 }] }),
+      "Second.zip": zipSync({ "Nested.pdf": [revised, { level: 0 }] }),
+    }))
+    expect(nested.status).toBe(200)
+    expect(await nested.json()).toMatchObject({ attachments: [{ document: "First.zip" }, { document: "Second.zip" }] })
+    expect(await stored("First.zip")).not.toEqual(await stored("Second.zip"))
+  })
+}, 120_000)
+
 const docx = async (marker: string) => new Uint8Array(await Packer.toBuffer(new Document({ sections: [{ children: [
   new Paragraph("1. Scope"), new Paragraph(`${marker} describes the invented scope.`),
 ] }] })))

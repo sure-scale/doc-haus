@@ -80,6 +80,54 @@ describe("draft-status statements in an agreement", () => {
     for (const text of OPERATIVE) expect(draftStatusStatements(text), text).toEqual([])
   })
 
+  test("a reference to this document does not turn another document's status into its own", () => {
+    for (const text of [
+      "Nothing in this document requires a party to disclose a working draft or privileged legal advice.",
+      "This document requires the Consultant to deliver a working draft of the report.",
+      "The report required by this document is not approved for circulation until the Customer accepts it.",
+      "This document contains a requirement to settle bracketed wording in the Specification.",
+      "This version incorporates the final report, while the Specification remains a working draft.",
+      "The Guarantee must be reviewed separately; it is not approved for signature until the Bank confirms the amount.",
+      "The report must be reviewed separately. It is provided for discussion only until the Customer accepts it.",
+      "[open item: confirm whether this document requires delivery of a working draft]",
+    ]) expect(draftStatusStatements(text), text).toEqual([])
+
+    expect(draftStatusStatements("This document is a working draft and requires delivery of a consultation draft of the report.").map(row => row.statement)).toEqual(["working draft"])
+    expect(draftStatusStatements("This document is a working draft and is not approved for signature.").map(row => row.statement)).toEqual(["working draft", "not approved for signature"])
+    expect(draftStatusStatements("This document contains placeholders for the missing dates.").map(row => row.statement)).toEqual(["placeholders"])
+  })
+
+  test("direct future status and explicit draft classification remain status assertions", () => {
+    expect(draftStatusStatements("This document will remain a working draft.").map(row => row.statement)).toEqual(["working draft"])
+    expect(draftStatusStatements("This version shall be provided for discussion only.").map(row => row.statement)).toEqual(["provided for discussion"])
+    expect(draftStatusStatements("It is a working draft and is not approved for signature.").map(row => row.statement)).toEqual(["working draft", "not approved for signature"])
+  })
+
+  test("a source-backed operative reference to a working draft is admitted without a removal repair, while an own-status assertion is withheld", () => {
+    const directory = matter()
+    agreement(directory)
+    const draft = rows(["The parties shall provide all documents requested by the other party."])
+    const control = "Nothing in this document requires a party to disclose a draft or privileged legal advice."
+    const operative = control.replace("a draft", "a working draft")
+    const status = `${operative} This document is a working draft.`
+    writeLeanText(directory, "request.md", [control, operative, status].join("\n\n"))
+    for (const updated of [control, operative, status]) {
+      const ownStatus = updated === status
+      const content = JSON.stringify({ amendments: [{ pid: draft[0]!.pid, updated, reason: "Add the requested disclosure exclusion.", sources: [{ source_id: "request", quote: updated }] }], questions: [] })
+      const initial = checkChanges(directory, content, draft, { document: "d1" })
+      const last = checkChanges(directory, content, draft, { document: "d1", withholdUnverified: true })
+      expect(initial.issues.length, updated).toBe(ownStatus ? 1 : 0)
+      expect(last.changes?.amendments.length, updated).toBe(ownStatus ? 0 : 1)
+      expect(last.changes?.withheld?.length ?? 0, updated).toBe(ownStatus ? 1 : 0)
+      const body = rows([updated])
+      const items = draftStatusItems(directory, "d1", body, "draft")
+      expect(items.length, updated).toBe(ownStatus ? 1 : 0)
+      writeLeanText(directory, "d1/paragraphs.json", JSON.stringify(body))
+      replaceStageOpenItems(directory, "draft", "d1", items)
+      expect(changesRepairSections(directory, "d1").join("\n").includes("Remove the statement"), updated).toBe(ownStatus)
+    }
+  })
+
   test("the firm's legend applied by code and the lawyer's own marking in the original being revised are kept", () => {
     firmLegend("For discussion purposes only")
     const directory = matter("Draft for discussion | 1 March 2026\n\nThe Provider shall deliver the Services.")

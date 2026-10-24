@@ -89,11 +89,17 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
   // it was made for; a checked cell without a verdict could not be checked.
   // `sourceRound` re-checks after the document viewer changes a document (an
   // accepted or rejected redline).
-  const [sourceChecks, setSourceChecks] = useState<Record<string, { signature: string; check?: SourceCheck }>>({})
-  const [sourceCheckFailed, setSourceCheckFailed] = useState(false)
+  const [sourceChecks, setSourceChecks] = useState<{ key: string; checks: Record<string, { signature: string; check?: SourceCheck }>; failed?: boolean }>()
   const [sourceRound, setSourceRound] = useState(0)
+  const sources = useMemo(() => Object.entries(grid.cells).flatMap(([key, cell]) => cell.citation
+    ? [{ key, signature: sourceSignature(cell.citation), documentName: cell.citation.documentName, excerpt: cell.citation.excerpt, charStart: cell.citation.charStart, charEnd: cell.citation.charEnd }]
+    : []), [grid.cells])
+  // An edit invalidates the verdict in the same render, before the next effect
+  // starts. Late replies remain tied to the document round they actually checked.
+  const sourcesKey = JSON.stringify([matterId, sourceRound, sources])
+  const sourceCheckFailed = sourceChecks?.key === sourcesKey && sourceChecks.failed
   const sourceEntry = (key: string, cell: GridCellData | undefined) => {
-    const entry = sourceChecks[key]
+    const entry = sourceChecks?.key === sourcesKey ? sourceChecks.checks[key] : undefined
     return cell?.citation && entry?.signature === sourceSignature(cell.citation) ? entry : undefined
   }
   const sourceCheck = (key: string, cell: GridCellData | undefined) => sourceEntry(key, cell)?.check
@@ -142,18 +148,13 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
 
   // Check each cited cell's excerpt against its document's current text
   // whenever the set of citations changes. Read-only: a verdict never edits a cell.
-  const sources = useMemo(() => Object.entries(grid.cells).flatMap(([key, cell]) => cell.citation
-    ? [{ key, signature: sourceSignature(cell.citation), documentName: cell.citation.documentName, excerpt: cell.citation.excerpt, charStart: cell.citation.charStart, charEnd: cell.citation.charEnd }]
-    : []), [grid.cells])
-  const sourcesKey = JSON.stringify(sources)
   useEffect(() => {
     if (!sources.length) return
     let cancelled = false
     checkCellSources(matterId, sources.map(({ signature: _, ...cell }) => cell)).then((checks) => {
       if (cancelled) return
-      setSourceCheckFailed(false)
-      setSourceChecks(Object.fromEntries(sources.map(({ key, signature }) => [key, { signature, check: checks[key] }])))
-    }, () => !cancelled && setSourceCheckFailed(true))
+      setSourceChecks({ key: sourcesKey, checks: Object.fromEntries(sources.map(({ key, signature }) => [key, { signature, check: checks[key] }])) })
+    }, () => !cancelled && setSourceChecks({ key: sourcesKey, checks: {}, failed: true }))
     return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [matterId, sourcesKey, sourceRound])

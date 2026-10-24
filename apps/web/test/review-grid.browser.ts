@@ -91,6 +91,10 @@ try {
   const page = await browser.newPage()
   page.setDefaultTimeout(5000)
   const checked: string[][] = []
+  const pendingChecks: import("@playwright/test").Route[] = []
+  let holdChecks = false
+  let pendingEdit = false
+  let acceptedEdits = 0
   await page.route("http://grid.invalid/**", route => {
     const request = route.request()
     const url = new URL(request.url())
@@ -99,11 +103,21 @@ try {
     if (url.pathname === "/matters/matter-grid/grid/sources") {
       const cells = (request.postDataJSON() as { cells: { key: string }[] }).cells
       checked.push(cells.map(cell => cell.key))
+      if (holdChecks) { pendingChecks.push(route); return }
       return json(Object.fromEntries(cells.map(cell => [cell.key, sourceChecks[cell.key]])))
     }
     if (url.searchParams.get("name") === "Supply terms.docx" && /^\/matters\/matter-grid\/documents\/(redlined|content)$/.test(url.pathname))
       return route.fulfill({ status: 200, contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", body: Buffer.from(supplyTerms) })
-    if (url.pathname === "/matters/matter-grid/redlines") return json([])
+    if (url.pathname === "/matters/matter-grid/redlines") return json(pendingEdit ? [{
+      id: 1, doc_name: "Supply terms.docx", scope: "phrase", find_text: "Notices must be in writing.",
+      old_text: "Notices must be in writing.", new_text: "Notices must be delivered in writing.",
+      author: "Reviewer", review_comment: "Clarify delivery.", created_at: 0,
+    }] : [])
+    if (url.pathname === "/matters/matter-grid/redlines/1/accept") {
+      pendingEdit = false
+      acceptedEdits++
+      return json({})
+    }
     if (url.pathname === "/matters/matter-grid/documents/amendments") return json(null)
     return route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: `Unexpected ${url.pathname}` }) })
   })
@@ -203,6 +217,67 @@ try {
   for (const part of ["Question: What is the governing law?", "Answer: The law of England and Wales.", "Cited source: Supply terms.docx § 12 (Supply terms › §12 Governing law)", `Excerpt: "${excerpt}"`, "Source check: Verified."])
     assert.ok(asked.includes(part), `the chat question should carry "${part}"`)
   console.log("PASS asking about a cell hands chat its question, answer and citation")
+
+  // Accept through the real viewer. Keep source-check HTTP replies pending so
+  // the old verdict cannot be hidden by a fast replacement response.
+  holdChecks = true
+  async function editSource() {
+    pendingEdit = true
+    const nextCheck = page.waitForRequest(request => request.url().endsWith("/grid/sources"))
+    await source.click()
+    await viewer.getByRole("button", { name: "Accept", exact: true }).click({ timeout: 60_000 })
+    await nextCheck
+    await viewer.getByRole("button", { name: "Close", exact: true }).click()
+    await viewer.waitFor({ state: "detached" })
+    assert.equal(await detail.locator(".review-source-badge").count(), 0, "a source edit must immediately invalidate the previous verdict")
+    assert.equal(await detail.locator(".review-source-check").textContent(), "Checking the excerpt against the document…")
+    await askWithoutVerdict()
+  }
+  async function askWithoutVerdict() {
+    await detail.getByRole("button", { name: "Ask about this answer in chat", exact: true }).click()
+    const prompt = await page.evaluate(() => (window as unknown as { asked?: string }).asked ?? "")
+    assert.ok(prompt.includes(`Excerpt: "${excerpt}"`), "the recorded citation is still available")
+    assert.doesNotMatch(prompt, /Source check:/, "chat must not receive an obsolete source verdict")
+  }
+  async function finishCheck(index: number, check: string | undefined) {
+    const route = pendingChecks[index]
+    assert.ok(route, `source check ${index} should be pending`)
+    // Wait for delivery and rendering before checking an obsolete reply's effect.
+    const received = page.waitForResponse(response => response.request() === route.request())
+    await route.fulfill(check
+      ? { status: 200, contentType: "application/json", body: JSON.stringify({ "Supply terms.docx::c1": check }) }
+      : { status: 500, contentType: "application/json", body: JSON.stringify({ error: "Source unavailable" }) })
+    await (await received).finished()
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))))
+  }
+  await editSource()
+  await finishCheck(0, undefined)
+  await detail.getByText("The excerpt could not be checked against the document.", { exact: true }).waitFor()
+  assert.equal(await detail.locator(".review-source-badge").count(), 0)
+  await askWithoutVerdict()
+  console.log("PASS accepting a document edit invalidates Verified while pending and after a failed recheck, including chat")
+
+  await editSource()
+  await finishCheck(1, "reanchored")
+  await detail.getByText("Re-anchored", { exact: true }).waitFor()
+  await detail.getByRole("button", { name: "Ask about this answer in chat", exact: true }).click()
+  assert.match(await page.evaluate(() => (window as unknown as { asked?: string }).asked ?? ""), /Source check: Re-anchored\./)
+  console.log("PASS a fresh successful recheck restores its current verdict and chat context")
+
+  // Two newer edits supersede checks still in flight. Neither an obsolete
+  // success nor an obsolete failure may overwrite the newest result.
+  await editSource()
+  await editSource()
+  await editSource()
+  await finishCheck(4, "not_found")
+  await detail.getByText("Not found", { exact: true }).waitFor()
+  await finishCheck(2, "verified")
+  await finishCheck(3, undefined)
+  assert.equal(await detail.locator(".review-source-badge").textContent(), "Not found")
+  await detail.getByRole("button", { name: "Ask about this answer in chat", exact: true }).click()
+  assert.match(await page.evaluate(() => (window as unknown as { asked?: string }).asked ?? ""), /Source check: Not found\./)
+  assert.equal(acceptedEdits, 5)
+  console.log("PASS late success and failure responses cannot replace the latest source verdict")
 
   await page.keyboard.press("Escape")
   await detail.waitFor({ state: "detached" })

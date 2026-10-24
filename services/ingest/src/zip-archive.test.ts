@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from "bun:test"
-import { mkdtempSync, readdirSync, realpathSync, rmSync } from "node:fs"
+import { mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { Document, Packer, Paragraph } from "docx"
@@ -221,6 +221,27 @@ test("zips nested past the shared depth limit are listed, not unpacked", async (
   expect(names(directory)).toEqual(["Outer.zip", ...levels].toSorted())
   const last = listed(directory).find((row) => row.name === levels.at(-1)) as { attachments?: { name: string; status: string }[] }
   expect(last.attachments).toEqual([expect.objectContaining({ name: `Level ${MAX_EMAIL_DEPTH + 1}.zip`, status: "nested" })])
+})
+
+for (const kind of ["zip", "eml"] as const) test(`nested ${kind} containers with identical listings retain different descendants`, async () => {
+  const directory = matter()
+  const original = pdf("Synthetic price 100")
+  const revised = pdf("Synthetic price 900")
+  const wrap = (bytes: Buffer) => kind === "zip"
+    ? zip({ "Terms.pdf": [bytes, { level: 0 }] })
+    : email("Synthetic nested terms", [{ name: "Terms.pdf", type: "application/pdf", bytes }])
+  const first = wrap(original)
+  const second = wrap(revised)
+  const archive = zip({ [`First.${kind}`]: first, [`Second.${kind}`]: second, [`Copy.${kind}`]: first })
+  const result = await ingestZipDocument(directory, "Bundle.zip", archive)
+  expect(result.attachments.map((entry) => entry.document)).toEqual([`First.${kind}`, `Second.${kind}`, `First.${kind}`])
+  expect(readFileSync(path.join(directory, "Terms.pdf"))).toEqual(original)
+  expect(readFileSync(path.join(directory, "Terms (2).pdf"))).toEqual(revised)
+  expect(await liveText(path.join(directory, `First.${kind}`))).toBe(await liveText(path.join(directory, `Second.${kind}`)))
+  expect(names(directory)).toEqual(["Bundle.zip", `First.${kind}`, `Second.${kind}`, "Terms.pdf", "Terms (2).pdf"].toSorted())
+  const again = await ingestZipDocument(directory, "Bundle.zip", archive, { existing: "replace" })
+  expect(again.attachments).toEqual(result.attachments)
+  expect(names(directory)).toHaveLength(5)
 })
 
 test("a file whose path leaves the archive, or that is password-protected, is listed and not added", async () => {
