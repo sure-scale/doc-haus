@@ -20,13 +20,16 @@ import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 // numbered with the list's first top-level label ("1.") and runs to the next
 // such heading (a schedule numbered afresh, which restarts the list) or to an
 // unnumbered heading at or above its own level (a schedule or execution
-// heading; the numbers after it stay typed). A sequence converts whole or stays
-// exactly as typed: one number the list cannot show (a gap, an undotted or
-// run-in number, a label the list writes differently) keeps all of its numbers
-// typed. A number the list could never show there is text, not a clause
-// number: one below the current clause ("1.5 times" in clause 5) or in a form
-// no level has ("(1)" on a list without such a level). Numbers before the
-// first sequence (parties, recitals) stay typed.
+// heading; the numbers after it stay typed). An unnumbered heading the clauses
+// go on after (a part or group heading: the next number is a heading at the
+// opening heading's level with the top-level label the list shows next, "2."
+// after clause 1) does not end it, and takes no number. A sequence converts
+// whole or stays exactly as typed: one number the list cannot show (a gap, an
+// undotted or run-in number, a label the list writes differently) keeps all of
+// its numbers typed. A number the list could never show there is text, not a
+// clause number: one below the current clause ("1.5 times" in clause 5) or in
+// a form no level has ("(1)" on a list without such a level). Numbers before
+// the first sequence (parties, recitals) stay typed.
 // Converting removes the literal from the paragraph's text; Docxodus reports
 // the list label instead (BlockMetadata.list.generatedLabel). A paragraph that
 // already belongs to the clause list and repeats its own number as text (an
@@ -689,9 +692,23 @@ function plan(list: ClauseList, paragraphs: Paragraph[], settledOnly: boolean, f
   }
   // The next typed number after paragraph `at`.
   const nextLiteral = (at: number) => paragraphs.slice(at + 1).find(row => !row.table && !row.member && row.literal)?.literal
+  // Where an unnumbered heading at or above the sequence's opening heading
+  // paused it, until the next clause number shows whether it goes on.
+  let paused: number | undefined
   for (const [at, paragraph] of paragraphs.entries()) {
     if (paragraph.table) continue
     const member = paragraph.member?.abstract === list.abstract ? paragraph.member : undefined
+    if (paused !== undefined && (member || (!paragraph.member && paragraph.literal))) {
+      // The clauses go on after a part or group heading: the next number is a
+      // heading at the opening heading's level with the top-level label the
+      // list shows next ("2." after clause 1). Otherwise (a schedule, the
+      // execution block) the sequence ended at that heading.
+      const numId = sequence?.numId ?? list.numId
+      const goesOn = !member && paragraph.heading && paragraph.outline === sequence?.outline
+        && labelOf(list.levels, 0, level => level === 0 ? counters.next(0, numId) : counters.shown(level, numId)) === paragraph.literal!.text
+      if (!goesOn) close(paused)
+      paused = undefined
+    }
     // A typed sequence ends before a paragraph of the list, which never joins it.
     if (member && sequence && !sequence.settled) close(at)
     if (member && !paragraph.split) {
@@ -721,9 +738,10 @@ function plan(list: ClauseList, paragraphs: Paragraph[], settledOnly: boolean, f
     if (paragraph.member) continue
     if (!paragraph.literal) {
       // An unnumbered heading at or above the heading that opened the sequence
-      // (a schedule, the execution block) ends it; the numbers after it stay
-      // typed until a heading opens a sequence afresh.
-      if (sequence?.outline !== undefined && paragraph.outline !== undefined && paragraph.outline <= sequence.outline && paragraph.unnumbered) close(at)
+      // (a part heading, a schedule, the execution block) ends it unless the
+      // clauses go on after it; the numbers after an end stay typed until a
+      // heading opens a sequence afresh.
+      if (sequence?.outline !== undefined && paragraph.outline !== undefined && paragraph.outline <= sequence.outline && paragraph.unnumbered) paused ??= at
       continue
     }
     if (paragraph.heading && opensSequence(paragraph.literal, list)) {
@@ -750,7 +768,7 @@ function plan(list: ClauseList, paragraphs: Paragraph[], settledOnly: boolean, f
     counters.advance(level, numId)
     sequence.converts.push({ paragraph, level, kind: "convert", numId })
   }
-  close()
+  close(paused)
   return { decisions, restarts, score: members + decisions.filter(row => row.kind === "convert").length }
 }
 

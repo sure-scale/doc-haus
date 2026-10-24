@@ -277,6 +277,22 @@ ${AGREEMENT.split("\n").slice(2).join("\n")}`)
     expect(labelled(undotted.numbered)).toEqual([])
   })
 
+  test("a part heading above the clause headings does not end the sequence when the next clause carries it on", async () => {
+    const parts = (second: string, third = "2.1") => `# Agreement\n\n## Parties\n\n### Date and parties\n\nThis Agreement is made between the parties.\n\n## Definitions\n\n### 1. Definitions\n\n1.1 Terms have their defined meanings.\n\n(a) the first limb.\n\n## Supply\n\n### ${second} Supply\n\n${third} The Supplier shall deliver the Goods.\n\n## Schedules and Signing\n\n### Schedules\n\nSchedule 1 — Goods list.`
+    const { literal, numbered, bytes } = await both(parts("2."))
+    expect(numbered.map(row => row.shown)).toEqual(literal.map(row => row.shown))
+    expect(labelled(numbered)).toEqual(["1. Definitions", "1.1 Terms have their defined meanings.", "(a) the first limb.", "2. Supply", "2.1 The Supplier shall deliver the Goods."])
+    // The part headings take no number; the clause headings' style carries the list.
+    for (const shown of ["Parties", "Definitions", "Supply", "Schedules and Signing", "Date and parties", "Schedules"]) expect(numbered.find(row => row.shown === shown)?.label).toBeUndefined()
+    expect(strFromU8(unzipSync(bytes)["word/styles.xml"]!).match(/<w:style\b[^>]*w:styleId="Heading3"[\s\S]*?<\/w:style>/)![0]).toContain("<w:numPr>")
+    expect(numberDocxClauses(bytes)).toBe(bytes)
+    expect(numberDocxClauses(bytes, { house: false })).toBe(bytes)
+    // A heading that does not carry on the count after a part heading still ends the sequence there.
+    expect(labelled((await both(parts("3.", "3.1"))).numbered)).toEqual(["1. Definitions", "1.1 Terms have their defined meanings.", "(a) the first limb."])
+    // The clauses across part headings are one sequence: a gap keeps all of them typed.
+    expect(labelled((await both(parts("2.", "2.2"))).numbered)).toEqual([])
+  })
+
   test("a number the list could never show at that point is text, and the sequence around it converts", async () => {
     // One below the current clause, and one in a form no house level has.
     for (const [markdown, text] of [
