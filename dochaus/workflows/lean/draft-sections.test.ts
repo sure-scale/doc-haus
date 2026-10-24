@@ -505,6 +505,19 @@ describe("sectioned draft stage", () => {
     expect(letter).not.toContain("Write the headings")
   })
 
+  test("only a new agreement drafted without a template or original is asked for numbered clause headings, whether or not its part headings print", () => {
+    const agreement = { title: "Services agreement", form: "agreement" as const, parts: [
+      { heading: "Scope", scope: "", display_heading: "" }, { heading: "Fees", scope: "", display_heading: "Fees and payment" }, { heading: "Duration", scope: "" }] }
+    const numbers = (prompt: string) => prompt.includes("numbered heading")
+    expect([0, 1, 2].map(part => numbers(sectionPrompt(agreement, part)))).toEqual([true, true, true])
+    // An original or a template keeps its own numbering, including a templated document's part that carries nothing from it.
+    expect(numbers(sectionPrompt({ ...agreement, mode: "revise" }, 0))).toBe(false)
+    expect(numbers(sectionPrompt({ ...agreement, template: "template.docx" }, 0))).toBe(false)
+    expect(numbers(sectionPrompt(agreement, 0, { source: "template.docx", parts: ["1 Scope"] }))).toBe(false)
+    for (const form of ["letter", "advice letter", "advice", "other", undefined] as const)
+      expect(numbers(sectionPrompt({ ...agreement, form }, 0))).toBe(false)
+  })
+
   test("assembly prints a part label only where the plan keeps it; a part without a printed heading moves its own headings up to the second level", () => {
     const parts = ["## One\n\n### 1. One\n\nText.\n\n#### 1.1 Detail\n\nMore.", "## Two\n\n### Sub\n\nMore."]
     const outline = { title: "T", parts: [{ heading: "One", scope: "" }, { heading: "Two", scope: "", display_heading: "Second" }] }
