@@ -30,6 +30,12 @@ import { shownText } from "./list-label"
 // as any other reference. A reference unlinked so is not linked again in the
 // same pass to the clause that now carries its number. A clause split in parts
 // keeps its bookmark on its first part, the one that keeps its number.
+//
+// A pass may link only some paragraphs (`relink`), as after an edit: each is
+// read again as the text it shows, its refreshed fields unwrapped, and its
+// references are then linked as a drafted paragraph's are, so a number the edit
+// extended ("clause 6" to "clause 6.2") points at the clause it now names. The
+// other paragraphs are only refreshed.
 
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 const XML = "http://www.w3.org/XML/1998/namespace"
@@ -44,6 +50,8 @@ export type CrossReferenceOptions = {
   titles?: string[]
   /** Refresh the fields already there without linking new ones. */
   refreshOnly?: true
+  /** Link only the paragraphs this selects, read again from their text; refresh the others. */
+  relink?: (paragraph: Element) => boolean
   /** Told the open-item marker written for each field whose bookmark is gone. */
   onRemovedTarget?: (marker: string) => void
 }
@@ -117,13 +125,22 @@ export async function linkCrossReferences(bytes: Uint8Array, options: CrossRefer
       if (changed && row.exact) row.text = runText(row.node)
     })
 
-    if (!options.refreshOnly) {
+    // A paragraph to relink shows the same text with its fields unwrapped.
+    const relinked = new Set(options.relink && !options.refreshOnly ? rows.flatMap((row, at) => row.exact && options.relink!(row.node) ? [at] : []) : [])
+    for (const at of relinked) for (const field of paragraphFields(rows[at]!.node)) {
+      if (!refInstruction(field)) continue
+      unlink(field)
+      changed = true
+    }
+
+    if (!options.refreshOnly && (!options.relink || relinked.size)) {
       const paras = rows.map(row => ({ text: row.clause ? shownText(row) : row.text }))
       const title = options.title ?? rows.find(row => row.text.trim())?.text.trim() ?? ""
       const names = new Map<string, string>()
       const taken = new Set(marks.keys())
       let next = nextBookmarkId(opened.documents)
       for (const ref of resolvedReferences(title, paras, options.titles, options.form)) {
+        if (options.relink && !relinked.has(ref.at)) continue
         const source = rows[ref.at]!
         const target = rows[ref.target]!
         const start = ref.start - (source.clause ? source.label!.length + 1 : 0)

@@ -6,7 +6,7 @@ import { compareDocxWithPointers, paragraphPointers, withStableRevisionDates } f
 import { applyAmendments } from "../../lib/drafting-amendment-apply"
 import { finalBodyItems, readChangeList, readParagraphs, settleApply, type ApplyResult, type ChangeList } from "./checks"
 import type { DocID } from "./plan"
-import { paragraphRows, stepOutputs } from "./stages"
+import { draftedReferences, paragraphRows, stepOutputs } from "./stages"
 import { leanFile, matterRelative, readLeanJson, writeLeanBytes, writeLeanText, type LeanState, type OpenItem } from "./state"
 import { draftStatusItems } from "./draft-status"
 import { templateItems } from "./template-coverage"
@@ -55,12 +55,18 @@ export async function runApply(directory: string, state: LeanState, document: Do
   // split paragraph leave its list unless they open with its next number at
   // the paragraph's own level or a deeper one. Cross-references then show
   // their targets' new numbers; one whose target the changes removed becomes
-  // an open-item marker, checked below like any other. A reference the changes
-  // wrote stays text: it is checked, not linked.
+  // an open-item marker, checked below like any other. A paragraph the changes
+  // rewrote is linked again from its new text, as drafting links a document's
+  // references (none in a document kept to typed numbers, advice or a letter),
+  // so a number a change wrote or extended points at the clause it names; the
+  // other paragraphs are only refreshed.
   const later = new Set(settled.result.applied.flatMap(row => row.result_pids?.slice(1) ?? []))
   const split = (paragraph: Element) => paragraphPointers(paragraph).some(pointer => later.has(pointer.pid))
   const renumbered = numberDocxClauses(readFileSync(out), { house: false, split })
-  writeLeanBytes(directory, `${document}/body-applied.docx`, withGeneratedDocxAttribution(await linkCrossReferences(renumbered, { refreshOnly: true }), identity))
+  const rewritten = new Set(settled.result.applied.flatMap(row => row.mode === "code" ? row.result_pids ?? [row.pid] : []))
+  const relink = (paragraph: Element) => paragraphPointers(paragraph).some(pointer => rewritten.has(pointer.pid))
+  const links = draftedReferences(directory, document).links
+  writeLeanBytes(directory, `${document}/body-applied.docx`, withGeneratedDocxAttribution(await linkCrossReferences(renumbered, links ? { ...links, relink } : { refreshOnly: true }), identity))
   const rows = await paragraphRows(out)
   writeLeanText(directory, `${document}/paragraphs-applied.json`, `${JSON.stringify(rows, null, 2)}\n`)
   const annotated = await documentRedline(directory, document, readFileSync(out), changes, settled.result.applied, identity)

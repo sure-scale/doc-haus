@@ -1,7 +1,8 @@
 // Run from dochaus/: bun test workflows/lean/apply-crossrefs.test.ts
 import { afterEach, expect, test } from "bun:test"
-import { readFileSync } from "node:fs"
-import { DOMParser } from "@xmldom/xmldom"
+import { readFileSync, writeFileSync } from "node:fs"
+import path from "node:path"
+import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
 import { strFromU8, unzipSync } from "fflate"
 import { renderMarkdownToDocx } from "../../lib/render"
 import { runApply } from "./apply-stage"
@@ -9,7 +10,7 @@ import { shownText, type ParagraphRow } from "./checks"
 import { writeLeanPlan } from "./plan"
 import { paragraphRows } from "./stages"
 import { leanFile, readLeanJson, readLeanState, writeLeanBytes, writeLeanText, type OpenItem } from "./state"
-import { cleanupMatters, matter } from "./test-support"
+import { cleanupMatters, matter, SOURCE } from "./test-support"
 
 afterEach(cleanupMatters)
 
@@ -120,7 +121,7 @@ test("the redline marks only the words that changed where a change turns a cross
   })
 }, 60_000)
 
-test("an amendment beside a cross-reference keeps it live; one that rewrites its number leaves that number as text", async () => {
+test("an amendment beside a cross-reference keeps it live; one that rewrites its number links the new number", async () => {
   const { directory, row } = await drafted()
   const beside = row("In this Agreement")
   const rewrite = row("The Customer shall pay")
@@ -131,13 +132,81 @@ test("an amendment beside a cross-reference keeps it live; one that rewrites its
   expect(rows.map(shownText)).toContain("1.1 In this Agreement the defined terms in clause 2.1 and Schedule 1 apply.")
   expect(rows.map(shownText)).toContain("2.2 The Customer shall pay as set out in clauses 3.1 and 1.2.")
   expect(after.map(field => [field.from, field.cached, field.target?.slice(0, 4)])).toEqual([
-    ["1.1 ", "2.1", "2.1 "], ["1.1 ", "1", "Sche"], ["1.2 ", "3", "3. P"], ["2.2 ", "3.1", "3.1 "], ["3.2 ", "3.1", "3.1 "], ["3.2 ", "2.2", "2.2 "],
+    ["1.1 ", "2.1", "2.1 "], ["1.1 ", "1", "Sche"], ["1.2 ", "3", "3. P"], ["2.2 ", "3.1", "3.1 "], ["2.2 ", "1.2", "1.2 "], ["3.2 ", "3.1", "3.1 "], ["3.2 ", "2.2", "2.2 "],
   ])
-  // The reference left as text is checked like any other; the one to a clause
-  // the agreement does not have is reported.
+  // The one to a clause the agreement does not have stays text and is reported.
   expect(openItems.filter(item => item.kind === "consistency").map(item => item.detail)).toEqual([
     "Clause 1.2 refers to clause 9, but no clause in the final text is numbered 9.",
   ])
+}, 60_000)
+
+test("a reference an amendment extends or writes points at the clause it names; the paragraphs no amendment changed keep their XML", async () => {
+  const { directory, row } = await drafted()
+  const extended = row("Clause 3 governs")
+  const written = row("Invoices are payable")
+  const stale = row("The Customer shall pay")
+  const { rows, fields: after } = await apply(directory, [
+    { pid: extended.pid, existing_sha256: extended.sha256, updated: "Clause 3.2 governs payment; nothing in clause 9 limits it." },
+    { pid: written.pid, existing_sha256: written.sha256, updated: "Invoices are payable within thirty days of delivery under clause 2.1." },
+    // Written against other text, it is not applied: its paragraph stays as drafted.
+    { pid: stale.pid, existing_sha256: "0".repeat(64), updated: "The Customer shall pay as set out in clause 1.2." },
+  ])
+  expect(rows.map(shownText)).toEqual(expect.arrayContaining([
+    "1.2 Clause 3.2 governs payment; nothing in clause 9 limits it.",
+    "3.1 Invoices are payable within thirty days of delivery under clause 2.1.",
+  ]))
+  // "3" and the ".2" the amendment typed after it are one reference, to 3.2.
+  expect(after.map(field => [field.from, field.cached, field.target?.slice(0, 4)])).toEqual([
+    ["1.1 ", "2.1", "2.1 "], ["1.1 ", "1", "Sche"], ["1.2 ", "3.2", "3.2 "], ["2.2 ", "3.1", "3.1 "], ["2.2 ", "3.2", "3.2 "], ["3.1 ", "2.1", "2.1 "], ["3.2 ", "3.1", "3.1 "], ["3.2 ", "2.2", "2.2 "],
+  ])
+  const xml = (file: string) => {
+    const doc = new DOMParser().parseFromString(strFromU8(unzipSync(readFileSync(leanFile(directory, file)))["word/document.xml"]!), "application/xml")
+    const pid = (paragraph: Element) => Array.from(paragraph.getElementsByTagNameNS(W, "bookmarkStart")).map(node => node.getAttributeNS(W, "name") ?? "").find(name => name.startsWith("_dh_"))?.slice(4)
+    return new Map(Array.from(doc.getElementsByTagNameNS(W, "p")).map(paragraph => [pid(paragraph), new XMLSerializer().serializeToString(paragraph)]))
+  }
+  const drafted_ = xml("d1/body.docx")
+  const applied = xml("d1/body-applied.docx")
+  const unchanged = [...drafted_.keys()].filter(pid => pid && pid !== extended.pid && pid !== written.pid)
+  expect(unchanged).toContain(stale.pid)
+  for (const pid of unchanged) expect(applied.get(pid)).toBe(drafted_.get(pid)!)
+  // The redline shows the words the amendments changed, not their paragraphs replaced.
+  expect(revisions(directory)).toEqual({
+    changes: [
+      ["Clause 3.2 g", "ins", "3"], ["Clause 3.2 g", "ins", ".2"], ["Clause 3.2 g", "del", "3"],
+      ["Invoices are", "ins", " of delivery under clause "], ["Invoices are", "ins", "2.1"],
+    ],
+    fields: 0,
+  })
+}, 60_000)
+
+test("a reference an amendment writes stays text in a document kept to typed numbers and in advice", async () => {
+  for (const kept of ["typed", "advice"] as const) {
+    const directory = matter()
+    // The original the document revises types its clause numbers.
+    if (kept === "typed") writeFileSync(path.join(directory, SOURCE), (await renderMarkdownToDocx(AGREEMENT, undefined, undefined, { numbering: false, form: "agreement" })).bytes)
+    writeLeanPlan(directory, [{ title: "Services Agreement", form: kept === "advice" ? "advice" : "agreement", purpose: "", parts: [{ heading: "Services", scope: "" }], ...(kept === "typed" ? { comparison: SOURCE } : {}) }])
+    writeLeanBytes(directory, "d1/body.docx", (await renderMarkdownToDocx(AGREEMENT, undefined, undefined, { form: kept === "advice" ? "advice" : undefined })).bytes)
+    const drafted = await paragraphRows(leanFile(directory, "d1/body.docx"))
+    writeLeanText(directory, "d1/paragraphs.json", `${JSON.stringify(drafted, null, 2)}\n`)
+    const written = drafted.find(row => row.text.startsWith("Invoices are payable"))!
+    const { rows, fields: after } = await apply(directory, [{ pid: written.pid, existing_sha256: written.sha256, updated: "Invoices are payable within thirty days of delivery under clause 2.1." }])
+    expect(rows.map(shownText)).toContain("3.1 Invoices are payable within thirty days of delivery under clause 2.1.")
+    expect([kept, after]).toEqual([kept, []])
+  }
+}, 60_000)
+
+test("a changed paragraph citing a clause the changes removed keeps the open item, not a reference to the clause now under that number", async () => {
+  const { directory, row } = await drafted()
+  const removed = row("The Supplier shall provide")
+  const citing = row("In this Agreement")
+  const { rows, openItems, fields: after } = await apply(directory, [
+    { pid: removed.pid, existing_sha256: removed.sha256, operation: "delete", updated: "" },
+    { pid: citing.pid, existing_sha256: citing.sha256, updated: "In this Agreement the defined terms in clause 2.1 and Schedule 1 apply." },
+  ])
+  const marker = "[open item: refers to 2.1, which was removed]"
+  expect(rows.map(shownText)).toContain(`1.1 In this Agreement the defined terms in clause ${marker} and Schedule 1 apply.`)
+  expect(after.filter(field => field.from === "1.1 ").map(field => [field.cached, field.target?.slice(0, 4)])).toEqual([["1", "Sche"]])
+  expect(openItems.filter(item => item.ref.placeholder === marker).map(item => item.ref.pid)).toEqual([citing.pid])
 }, 60_000)
 
 test("deleting a clause shows the new numbers of the clauses after it; a reference to the deleted clause becomes an open item", async () => {

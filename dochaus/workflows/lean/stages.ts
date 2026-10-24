@@ -36,7 +36,7 @@ import {
   type ParagraphRow,
   type StageCheck,
 } from "./checks"
-import { reviewStages, FIRST_DOCUMENT, planActingFor, operativeDocument, operativePlan, plannedDocument, readLeanPlan, runPosture, stepDocument, stepStage, type PlannedDocument, type StepID } from "./plan"
+import { reviewStages, FIRST_DOCUMENT, planActingFor, operativeDocument, operativePlan, plannedDocument, readLeanPlan, runPosture, stepDocument, stepStage, type DocID, type PlannedDocument, type StepID } from "./plan"
 import { acceptReviewReply, forwardedFindings, readReviewRecord } from "./review-findings"
 import { templateSource } from "./template-contract"
 import { completedDocumentsText, delegatedDecisionsText, packageCompositionBlock } from "./prompts"
@@ -374,17 +374,14 @@ export async function acceptStageReply(directory: string, step: StepID, reply: s
     // clauses then become live cross-references; one placed after another pack
     // document's title is that document's. A typed document gets no fields.
     const styleTemplate = plannedStyleTemplate(directory, planned)
-    const original = matterWordFile(directory, planned?.comparison)
-    const list = original && numberedList(original)
-    const typed = original !== undefined && (!list || list.typed >= list.numbered)
+    const { list, links } = draftedReferences(directory, document, planned)
     const into = list && templateSource(planned) === planned?.comparison ? { list } : {}
-    const titles = (readLeanPlan(directory)?.documents ?? []).filter(row => row.id !== document).map(row => row.title)
     const rendered = await renderMarkdownToDocx(options.presentation?.source ?? reply, undefined, furniture, { numbering: false, styleTemplate })
       .then(result => ({ ...result, bytes: carryRevisionTables(directory, document, result.bytes) }))
       .then(result => ({ ...(options.presentation ? presentDraft(result.bytes, options.presentation.parts, options.presentation.title !== false, result.headingSpacing) : { bytes: result.bytes, attribution: undefined }), templated: result.templated }))
       .then(async ({ templated, ...result }) => {
         const styled = templated ? withTemplateStyleIds(result.bytes) : result.bytes
-        return { ...result, bytes: typed ? styled : await linkCrossReferences(numberDocxClauses(styled, templated ? into : {}), { title: planned?.title, form: planned?.form, titles }) }
+        return { ...result, bytes: links ? await linkCrossReferences(numberDocxClauses(styled, templated ? into : {}), links) : styled }
       })
       .then(result => result, (error: unknown) => ({ error }))
     if ("error" in rendered)
@@ -437,6 +434,19 @@ export async function acceptStageReply(directory: string, step: StepID, reply: s
  * every file and render in the run reads the same date. */
 export function renderedFurniture(directory: string, kind: FurnitureKind, requested?: RequestedFurniture) {
   return pageFurniture(kind, normalizePreferences(readFirmPreferences()), readLeanState(directory)?.created_at, requested)
+}
+
+/** The clause list of the original a planned document is compared against, and
+ * how the draft links its cross-references: not at all when that original
+ * types its clause numbers (no paragraph a list numbers, or no more of them
+ * than typed numbers), which the draft then keeps. The apply step links the
+ * paragraphs its changes rewrote by the same rule. */
+export function draftedReferences(directory: string, document: DocID, planned = plannedDocument(directory, document)) {
+  const original = matterWordFile(directory, planned?.comparison)
+  const list = original && numberedList(original)
+  const typed = original !== undefined && (!list || list.typed >= list.numbered)
+  const titles = (readLeanPlan(directory)?.documents ?? []).filter(row => row.id !== document).map(row => row.title)
+  return { list, links: typed ? undefined : { title: planned?.title, form: planned?.form, titles } }
 }
 
 /** The Word file a planned document is drafted from (its template, or the
