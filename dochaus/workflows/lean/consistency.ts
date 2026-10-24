@@ -24,7 +24,8 @@ import { sourceText } from "./template-structure"
 // refers to. A reference "of" another named instrument, or placed after a
 // pack document's title, is resolved in that pack document when one has that
 // title and is otherwise not this document's to check, nor is a statutory
-// citation. Text in square brackets (a placeholder or an open-item marker)
+// citation or a reference "of this Schedule" (annex, part …), which cites the
+// attachment's own numbering. Text in square brackets (a placeholder or an open-item marker)
 // refers to nothing. A paragraph numbered by the document's clause list (Word
 // list numbering) is read with the label the list gives it, as a reader sees
 // it; an ordinary numbered list inside a clause numbers no clauses, so its
@@ -267,11 +268,14 @@ function key(text: string) {
 type Reference = { kind: Kind; labels: string[]; spans: number[]; at: number; index: number; target?: string }
 
 const REFERENCE_WORD = /\b(clauses?|sub-?clauses?|sections?|articles?|schedules?|annex(?:es)?|appendix|appendices|exhibits?|attachments?)\s+/gi
-const CLAUSE_NUMBER = /^(\d{1,3}(?:\.\d{1,3}){0,3})(?![\d])((?:\s?\([a-zA-Z0-9]{1,5}\))*)/
+/** A clause number, whole: "2A", "2.1A" and "2.1.1.1.1" are not clause 2, 2.1 or 2.1.1.1. */
+const CLAUSE_NUMBER = /^(\d{1,3}(?:\.\d{1,3}){0,3})(?![\d\p{L}]|\.[\d\p{L}])((?:\s?\([a-zA-Z0-9]{1,5}\))*)/u
 const ATTACHMENT_NUMBER = /^(\d{1,3}|[A-Z]|[IVX]{1,5})(?![\w])/
 const CHAIN = /^(?:\s*,\s*(?:and\s+|or\s+)?|\s+(?:and|or|to|through|until)\s+|\s*[-–—]\s*)((?:clauses?|sub-?clauses?|sections?|articles?|schedules?|annex(?:es)?|appendix|appendices|exhibits?|attachments?)\s+)?/i
 const LINKING_WORDS = new Set(["and", "or", "to", "through", "until", "inclusive", "above", "below", "of", "shall", "will", "apply", "applies", "is", "are", "has", "have", "may", "must", "which", "that", "as", "in", "on", "for", "by", "with", "where", "if", "does", "do", "respectively", "nor", "but", "not", "unless", "hereof", "hereto", "herein"])
 const OTHER_INSTRUMENT = /^\s*(of|to|in|under)\s+(?:the\s+)?(\p{Lu}[\p{L}\p{N}’'&.-]*(?:\s+(?:(?:of|and|for|the|on|in|to|&)\s+)?(?:\p{Lu}[\p{L}\p{N}’'&.-]*|\d{4}))*)/u
+/** "… of this Schedule": the attachment's own numbering, not the document's clauses. */
+const THIS_ATTACHMENT = /^\s*(?:of|to|in|under)\s+this\s+(?:schedule|annex|appendix|exhibit|attachment|part)\b/i
 /** A caption after a cited number: "clause 4 (Payment)". */
 const CAPTION = /^\s*\([^()]{2,60}\)/
 /** An abbreviated statute right after the number: "section 5 CA 2006", "Article 6 GDPR". */
@@ -334,6 +338,7 @@ function references(document: Outline, title: string, titles: string[]): Referen
       spans.push(text.length - rest.length + link[0].length)
       rest = after
     }
+    if (THIS_ATTACHMENT.test(rest)) return []
     const before = text.slice(Math.max(0, match.index - 60), match.index)
     const reference: Reference = { kind, labels, spans, at, index: match.index }
     if (AUTHORITY_BEFORE.test(before) || (labels.length === 1 && ACRONYM_AFTER.test(bare))) return [{ ...reference, external: true }]
@@ -409,7 +414,8 @@ function clauseKinds(final: Outline, refs: Reference[]) {
  * paragraph it is in (`at`) and where its number is in that paragraph's text,
  * and the paragraph it points at (`target`), with where an attachment's number
  * is in its heading. Advice and letters cite the clauses of the documents they
- * discuss, so they have none. */
+ * discuss, so they have none, and quoted text (a clause a deed of variation
+ * inserts into another agreement) is that other document's. */
 export function resolvedReferences(title: string, paras: Para[], titles: string[] = [], form?: string): { kind: Kind; label: string; at: number; start: number; length: number; target: number; number?: number }[] {
   if (advisoryForm(form)) return []
   const document = outline(paras)
@@ -418,6 +424,7 @@ export function resolvedReferences(title: string, paras: Para[], titles: string[
   const twice = new Set(document.duplicates.map(row => row.label))
   const lead = (at: number) => leading(paras[at]!.text)
   return refs.flatMap(ref => ref.target ? [] : ref.labels.flatMap((label, n) => {
+    if (quoted(document.texts[ref.at]!, ref.spans[n]!)) return []
     const start = lead(ref.at) + ref.spans[n]!
     if (CLAUSE_KINDS.has(ref.kind)) {
       const target = document.printed.get(label)
@@ -429,6 +436,19 @@ export function resolvedReferences(title: string, paras: Para[], titles: string[
     const number = lead(target) + /^\S+\s+/.exec(document.texts[target]!)![0].length
     return [{ kind: ref.kind, label, at: ref.at, start, length: label.length, target, number }]
   }))
+}
+
+/** Whether `index` of a paragraph's text is inside a quotation in double
+ * marks ("…" or “…”), or after a mark the paragraph does not close: a
+ * quotation running on into the next paragraph opens each of its paragraphs. */
+function quoted(text: string, index: number) {
+  let open = false
+  for (const char of text.slice(0, index)) {
+    if (char === "“") open = true
+    else if (char === "”") open = false
+    else if (char === "\"") open = !open
+  }
+  return open
 }
 
 function referenceFindings(title: string, final: Outline, baselines: Outline[], pack: (PackDocument & { outline: Outline })[], advisory: boolean): ConsistencyFinding[] {

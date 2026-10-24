@@ -46,7 +46,7 @@ type Amendment = { pid: string; existing_sha256: string; operation?: "delete" | 
 async function drafted() {
   const directory = matter()
   writeLeanPlan(directory, [{ title: "Services Agreement", form: "agreement", purpose: "", parts: [{ heading: "Services", scope: "" }] }])
-  writeLeanBytes(directory, "d1/body.docx", (await renderMarkdownToDocx(AGREEMENT)).bytes)
+  writeLeanBytes(directory, "d1/body.docx", (await renderMarkdownToDocx(AGREEMENT, undefined, undefined, { form: "agreement" })).bytes)
   const rows = await paragraphRows(leanFile(directory, "d1/body.docx"))
   writeLeanText(directory, "d1/paragraphs.json", `${JSON.stringify(rows, null, 2)}\n`)
   const row = (start: string) => rows.find(row => row.text.startsWith(start))!

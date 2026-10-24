@@ -352,7 +352,7 @@ describe("amendments beside live cross-references", () => {
 
   async function drafted(name: string) {
     const file = path.join(root, `${name}.docx`)
-    await writeFile(file, (await renderMarkdownToDocx(AGREEMENT)).bytes)
+    await writeFile(file, (await renderMarkdownToDocx(AGREEMENT, undefined, undefined, { form: "agreement" })).bytes)
     const pointers = await ensureParagraphPointers(file)
     const pid = (start: string) => Object.entries(pointers).find(([, text]) => text.startsWith(start))![0]
     return { file, out: path.join(root, `${name}.out.docx`), pid, text: (start: string) => pointers[pid(start)]! }

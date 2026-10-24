@@ -13,7 +13,7 @@ const TEMPLATE = ["# Services Agreement", "## 1. Definitions", "1.1 In this Agre
   "2.2 The Customer shall pay as set out in clause 2.1.", "## Schedule 1 – Services", "The services listed here."].join("\n\n")
 
 test("a template reference to an omitted component becomes an open item, reported in the result", async () => {
-  const template = (await renderMarkdownToDocx(TEMPLATE)).bytes
+  const template = (await renderMarkdownToDocx(TEMPLATE, undefined, undefined, { form: "agreement" })).bytes
   expect(strFromU8(unzipSync(template)["word/document.xml"]!).match(/ REF _Ref\d+ \\r \\h /g)).toHaveLength(2)
   const root = mkdtempSync(path.join(tmpdir(), "dh-template-crossrefs-"))
   mkdirSync(path.join(root, ".preferences"))

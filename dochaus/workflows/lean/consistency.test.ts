@@ -118,6 +118,17 @@ describe("cross-references after changes", () => {
     expect(details({ title: TITLE, final: doc(fixed), baselines: [doc(BASE)], others: [longer] })).toEqual([])
   })
 
+  test("a schedule's reference to its own paragraphs, and a reference to a lettered clause, are not checked as the agreement's clauses", () => {
+    // The agreement has five clauses: "clause 7 of this Schedule" is the
+    // schedule's own numbering and "clause 6A" an inserted clause, not clause 6.
+    // A schedule's plain "clause 8" is still the agreement's.
+    const final = [...BASE.slice(0, -4), "5.2 Clause 6A applies after termination.",
+      "Schedule 1 – Goods", "1. Specification", "1.1 Cartons meet clause 7 of this Schedule.", "1.2 Clause 8 applies.", ...SCHEDULES.slice(2)]
+    expect(details({ title: TITLE, final: doc(final), baselines: [doc(BASE)], others: [] })).toEqual([
+      "Schedule 1 refers to clause 8, but no clause in the final text is numbered 8.",
+    ])
+  })
+
   test("a document whose clause numbers are not printed, and a letter, are not checked for internal references", () => {
     const unnumbered = BASE.map(line => line.replace(/^\d+(?:\.\d+)?\.?\s+/, ""))
     expect(details({ title: TITLE, final: doc(unnumbered), baselines: [], others: [] })).toEqual([])

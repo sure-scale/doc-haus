@@ -454,9 +454,10 @@ export function notesFurniture(directory: string) {
 
 /** The drafting notes (or memo) as Word: always in the house style, whose
  * heading numbering a combined delivery can carry beside the document's own;
- * a firm template's list styles could not be. */
+ * a firm template's list styles could not be. Rendered with no form, its
+ * references to the documents' clauses stay text. */
 export async function renderNotes(directory: string, notes: string, previous?: Uint8Array) {
-  return (await renderMarkdownToDocx(notes, previous, notesFurniture(directory), { styleTemplate: false, crossReferences: false })).bytes
+  return (await renderMarkdownToDocx(notes, previous, notesFurniture(directory), { styleTemplate: false })).bytes
 }
 
 /** Gives every body paragraph a pointer (rewriting the docx when one is added)

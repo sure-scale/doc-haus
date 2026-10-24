@@ -139,7 +139,7 @@ describe("native Word comment export", () => {
 
   test("an existing comment on a numbered clause holding a live cross-reference is restored after an edit elsewhere", async () => {
     // Synthetic numbered agreement: clause 2.1 cites clause 1.1 through a REF field.
-    const rendered = (await renderMarkdownToDocx("# Supply terms\n\n## 1. Delivery\n\n1.1 The supplier delivers within twelve days.\n\n## 2. Inspection\n\n2.1 The buyer inspects each delivery under clause 1.1.\n\n2.2 The buyer keeps the records.")).bytes
+    const rendered = (await renderMarkdownToDocx("# Supply terms\n\n## 1. Delivery\n\n1.1 The supplier delivers within twelve days.\n\n## 2. Inspection\n\n2.1 The buyer inspects each delivery under clause 1.1.\n\n2.2 The buyer keeps the records.", undefined, undefined, { form: "agreement" })).bytes
     const commented = unzipSync(exportDocxComments(withParagraphPointers(rendered),
       [{ id: "existing", anchor: { paragraph_text: "The buyer inspects each delivery under clause 1.1." }, author: "Counterparty counsel", text: "Confirm the inspection window." }]).bytes)
     const original = zipSync(commented)
