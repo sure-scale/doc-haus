@@ -617,7 +617,6 @@ function WordDocumentViewer({
               >
                 {converting ? "Converting..." : "Convert to DOCX"}
               </button>
-              <span className="viewer-bar-divider" aria-hidden="true" />
               <ModalClose onClose={onClose} />
             </div>
           </div>
@@ -704,7 +703,6 @@ function WordDocumentViewer({
                 </div>
               </details>
             )}
-            <span className="viewer-bar-divider" aria-hidden="true" />
             <ModalClose onClose={onClose} />
           </div>
         </div>
@@ -926,7 +924,6 @@ function DocumentTextViewer({ matterId, name, kind, citation, onClose, onChanged
           <ViewerTitle name={name} kind={kind === "zip" ? "Zip file · list of files, read-only" : `${kind === "eml" || kind === "msg" ? "Email" : "Excel spreadsheet"} · extracted text, read-only`} />
           <div className="viewer-bar-actions">
             <VersionsToggle open={versionsOpen} count={versions.data?.versions.length} onToggle={toggleVersions} />
-            <span className="viewer-bar-divider" aria-hidden="true" />
             <ModalClose onClose={onClose} />
           </div>
         </div>
@@ -1119,8 +1116,9 @@ export function combinedNotUpdatedNotice(result: AcceptResult | void) {
   return `The combined file was not updated${reason ? `: ${reason}` : ""}.`
 }
 
-// Opens and closes the versions list beside the document. The count stays
-// with the label, both read out; on a narrow screen the button is its icon.
+// Opens and closes the versions list beside the document. Two or more
+// versions are counted with the label, both read out; a single version is not.
+// On a narrow screen the button is its icon.
 function VersionsToggle({ open, count, onToggle }: { open: boolean; count?: number; onToggle: () => void }) {
   return (
     <button type="button" className="viewer-versions-toggle" aria-expanded={open} aria-controls={open ? "document-versions" : undefined} onClick={onToggle}
@@ -1131,7 +1129,7 @@ function VersionsToggle({ open, count, onToggle }: { open: boolean; count?: numb
         <path d="M12 7v5l3 2" />
       </svg>
       <span className="viewer-action-label">
-        Versions{count ? <span className="viewer-versions-count"> {count}</span> : null}
+        Versions{count && count > 1 ? <>{" "}<span className="viewer-versions-count">{count}</span></> : null}
       </span>
     </button>
   )
@@ -1139,9 +1137,9 @@ function VersionsToggle({ open, count, onToggle }: { open: boolean; count?: numb
 
 // Opens and closes the file's tracked changes and comments beside the
 // document, counted the way the panel lists them: one per change and one per
-// comment thread. On a phone the label is hidden and the count stays as a badge
-// on the icon (the label still names the button), so it reads as tracked
-// changes, not "add".
+// comment thread. The count shows as a small badge beside the label, and on a
+// phone, where the label is hidden, on the icon, so it reads as tracked
+// changes, not "add". The label carries it in brackets for screen readers.
 function MarkupToggle({ open, count, onToggle }: { open: boolean; count: number; onToggle: () => void }) {
   return (
     <button type="button" className="viewer-markup-toggle" aria-expanded={open} aria-controls={open ? "document-markup" : undefined} onClick={onToggle}
@@ -1151,7 +1149,7 @@ function MarkupToggle({ open, count, onToggle }: { open: boolean; count: number;
         <path d="M8 8h8M8 12h5" />
       </svg>
       <span className="viewer-action-label">
-        Tracked changes<span className="viewer-versions-count"> ({count})</span>
+        Tracked changes<span className="sr-only"> ({count})</span>
       </span>
       <span className="viewer-markup-badge" aria-hidden="true">{count}</span>
     </button>

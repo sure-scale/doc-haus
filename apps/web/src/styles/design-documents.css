@@ -48,8 +48,18 @@
 .document-reader .viewer-bar-actions > button { display: inline-flex; align-items: center; gap: 7px; min-height: 40px; padding: 0 var(--space-4); font-size: 0.8125rem; white-space: nowrap; }
 .document-reader .viewer-bar-actions > button svg { flex: none; }
 .document-reader .viewer-bar-actions > button:not(.primary) svg { color: var(--muted); }
+/* One filled action (Request edits, Convert to DOCX); the rest are quiet ghost
+   buttons, icon and label with no border. An open panel's toggle takes a tint;
+   contrast.css adds an edge and an underline for forced colours. */
+.document-reader .viewer-bar-actions > button:not(.primary, .modal-close),
+.document-reader .viewer-bar-actions > .split-button > button:not(.primary) { color: var(--text-secondary); background: transparent; border-color: transparent; }
+.document-reader .viewer-bar-actions > button:not(.primary, .modal-close):hover:not(:disabled),
+.document-reader .viewer-bar-actions > .split-button > button:not(.primary):hover:not(:disabled) { color: var(--text); background: var(--panel-hover); border-color: transparent; }
+.document-reader .viewer-bar-actions > button:not(.primary, .modal-close)[aria-expanded="true"],
+.document-reader .viewer-bar-actions > button:not(.primary, .modal-close)[aria-expanded="true"]:hover:not(:disabled) { color: var(--accent); background: var(--accent-soft); }
+.document-reader .viewer-bar-actions > button[aria-expanded="true"]:not(.primary) svg { color: var(--accent); }
 .document-reader .viewer-bar-actions > button.primary[aria-expanded="true"] { background: var(--accent-soft); border-color: var(--accent-border); color: var(--accent); }
-.document-reader .viewer-bar-actions > .modal-close { width: 40px; height: 40px; flex: 0 0 40px; padding: var(--space-2); }
+.document-reader .viewer-bar-actions > .modal-close { width: 40px; height: 40px; flex: 0 0 40px; margin-left: var(--space-1); padding: var(--space-2); }
 .document-reader .modal-close svg { flex-shrink: 0; }
 .viewer-bar-divider { width: 1px; height: 22px; margin: 0 var(--space-1); background: var(--border); }
 .document-reader .viewer-doc { padding: 36px var(--space-8) 64px; background: var(--md-sys-color-surface-container-low); }
@@ -77,12 +87,12 @@
 .document-edit-request label { display: block; font-weight: 500; font-size: 0.875rem; margin-bottom: var(--space-3); }
 .document-edit-request textarea { margin-bottom: var(--space-3); }
 .document-open-items ul { margin: var(--space-2) 0 0; padding-left: var(--space-5); }
-/* Overflow menu: a square icon control matching the buttons beside it. */
+/* Overflow menu: a round ghost icon control, like the close button. */
 .viewer-more-actions { position: relative; }
-.viewer-more-actions > summary { display: flex; align-items: center; justify-content: center; width: 40px; height: 40px; list-style: none; cursor: pointer; color: var(--text-secondary); background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-md); transition: background var(--duration-fast) var(--ease-out), border-color var(--duration-fast) var(--ease-out); }
+.viewer-more-actions > summary { display: flex; align-items: center; justify-content: center; width: 40px; height: 40px; list-style: none; cursor: pointer; color: var(--text-secondary); background: transparent; border: 1px solid transparent; border-radius: var(--radius-pill); transition: background var(--duration-fast) var(--ease-out), border-color var(--duration-fast) var(--ease-out); }
 .viewer-more-actions > summary::-webkit-details-marker { display: none; }
 .viewer-more-actions > summary:hover,
-.viewer-more-actions[open] > summary { background: var(--panel-hover); border-color: var(--border-strong); color: var(--text); }
+.viewer-more-actions[open] > summary { background: var(--panel-hover); color: var(--text); }
 .viewer-more-actions > summary:focus-visible { outline: 2px solid var(--md-sys-state-focus); outline-offset: 2px; border-color: var(--accent); }
 .viewer-more-menu { position: absolute; right: 0; top: calc(100% + 6px); width: max-content; min-width: min(240px, calc(var(--viewport-inline) - 48px)); max-width: calc(var(--viewport-inline) - 48px); z-index: var(--z-popover); padding: 6px; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-md); box-shadow: var(--shadow-md); animation: panel-in 140ms var(--ease-out); }
 .viewer-more-menu button { display: flex; align-items: flex-start; gap: 10px; width: 100%; min-height: 40px; padding: 10px var(--space-3); text-align: left; font-size: 0.8125rem; border-color: transparent; border-radius: calc(var(--radius-md) - 6px); }
@@ -122,9 +132,10 @@
 /* ---------- Document versions (#268) ---------- */
 /* The list sits where the change list does; a version open in place of the
    working file carries a banner with the way back. */
-.document-reader .viewer-bar-actions > button.viewer-versions-toggle[aria-expanded="true"] { background: var(--accent-soft); border-color: var(--accent-border); color: var(--accent); }
-.document-reader .viewer-bar-actions > button.viewer-versions-toggle[aria-expanded="true"] svg { color: var(--accent); }
-.viewer-versions-count { font-variant-numeric: tabular-nums; color: var(--muted); }
+/* A toolbar count (two or more versions, the tracked changes) is a small pill,
+   as on the Tracked changes tabs; filled while its panel is open. */
+.viewer-versions-count, .viewer-markup-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 20px; height: 20px; padding: 0 6px; border-radius: var(--radius-pill); background: var(--bg-sunken); color: var(--text); font-size: 0.6875rem; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; white-space: nowrap; }
+[aria-expanded="true"] :is(.viewer-versions-count, .viewer-markup-badge) { background: var(--accent); color: var(--text-on-accent); }
 .versions-panel .changes-head { gap: var(--space-1); }
 .versions-head h3 { display: flex; align-items: center; gap: var(--space-2); margin: 0; font-family: var(--font-sans); font-size: 0.875rem; font-weight: 600; color: var(--text); }
 .versions-head p { margin: 0; font-size: 0.75rem; font-weight: 400; line-height: 1.5; color: var(--muted); }
@@ -166,10 +177,6 @@
    order; the progress, tally and Save pinned at the foot. A card that still
    needs the lawyer carries an amber edge and chip; a decided one takes its
    decision's colour. Colour always repeats a word or an icon. */
-.document-reader .viewer-bar-actions > button.viewer-markup-toggle[aria-expanded="true"] { background: var(--accent-soft); border-color: var(--accent-border); color: var(--accent); }
-.document-reader .viewer-bar-actions > button.viewer-markup-toggle[aria-expanded="true"] svg { color: var(--accent); }
-/* The count on the icon, shown only where the label is hidden. */
-.viewer-markup-badge { display: none; }
 /* A failed reading, with Retry, where the toggle or the panel would be. */
 .document-reader .markup-read-status { max-width: 760px; margin: 0 auto var(--space-4); font-size: 0.8125rem; line-height: 1.5; color: var(--warn); }
 .markup-read-status .linklike { min-height: 0; font-size: inherit; line-height: inherit; }

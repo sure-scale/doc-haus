@@ -39,6 +39,13 @@
   button.primary { border: 2px solid Highlight; }
   .split-button > button { border: 1px solid ButtonBorder; }
   .split-button-menu { border: 1px solid CanvasText; }
+  /* Document viewer toolbar: the toggle of an open panel takes a Highlight
+     edge and an underlined label, not the tint alone; counts keep their pill. */
+  .document-reader .viewer-bar-actions > button:not(.primary)[aria-expanded="true"],
+  .document-reader .viewer-bar-actions > button:not(.primary)[aria-expanded="true"]:hover:not(:disabled) { border: 2px solid Highlight; color: Highlight; }
+  .document-reader .viewer-bar-actions > button:not(.primary)[aria-expanded="true"] svg { color: Highlight; }
+  .document-reader .viewer-bar-actions > button:not(.primary)[aria-expanded="true"] .viewer-action-label { text-decoration: underline 2px; text-underline-offset: 4px; }
+  .viewer-versions-count, .viewer-markup-badge { border: 1px solid CanvasText; }
 
   :root .dropzone.dragover { outline: 2px solid Highlight; outline-offset: -3px; border-color: Highlight; background: Canvas; color: CanvasText; }
 
