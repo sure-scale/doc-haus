@@ -84,10 +84,11 @@ const css = (await Promise.all([
   "styles/design-documents.css", "styles/design-conversation.css", "styles/design-library.css", "styles/design-review.css",
 ].map(file => Bun.file(path.resolve(import.meta.dir, "../src", file)).text()))).join("\n")
 const requests: string[] = []
+const versionReads: string[] = []
 const server = Bun.serve({
   port: 0, hostname: "127.0.0.1",
   fetch(request) {
-    const { pathname } = new URL(request.url)
+    const url = new URL(request.url), { pathname } = url
     if (pathname === "/harness.js") return new Response(script, { headers: { "content-type": "text/javascript" } })
     if (pathname === "/") return new Response(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><style>${css}
       body { margin: 0; padding: 24px; }
@@ -97,6 +98,11 @@ const server = Bun.serve({
       .picker-body input { width: 100%; }
       .picker-body [hidden] { display: none; }
     </style><div id="root"></div><script type="module" src="/harness.js"></script></html>`, { headers: { "content-type": "text/html" } })
+    // The viewer also lists the kept versions of the open file; this matter keeps none.
+    if (request.method === "GET" && pathname === "/ingest/matters/material/documents/versions") {
+      versionReads.push(url.searchParams.get("name") ?? "")
+      return Response.json({ name: url.searchParams.get("name"), document: null, versions: [], events: [], working_version: null })
+    }
     requests.push(`${request.method} ${pathname}`)
     if (request.method === "GET" && pathname === "/ingest/matters/material/documents/text")
       return Response.json({ text: "Subject: Synthetic instructions\n\nPlease review the supplied agreement.", injection: null })
@@ -262,13 +268,20 @@ try {
   const bounds = await viewer.boundingBox()
   assert.ok(bounds && bounds.x >= 0 && bounds.y >= 0 && bounds.x + bounds.width <= 375 && bounds.y + bounds.height <= 812,
     `mobile document reader stays inside 375x812: ${JSON.stringify(bounds)}`)
+  // Focus opens on the first control, the Versions toggle; Tab reaches Close, then wraps back inside the dialog.
+  const versionsToggle = viewer.getByRole("button", { name: /^Versions/ })
+  await expect(versionsToggle).toBeFocused()
+  await page.keyboard.press("Tab")
   await expect(viewer.getByRole("button", { name: "Close", exact: true })).toBeFocused()
   await page.keyboard.press("Tab")
+  await expect(versionsToggle).toBeFocused()
+  await page.keyboard.press("Shift+Tab")
   await expect(viewer.getByRole("button", { name: "Close", exact: true })).toBeFocused()
   await page.keyboard.press("Escape")
   await expect(viewer).toHaveCount(0)
   await expect(page.getByRole("button", { name: "Read source email" })).toBeFocused()
   assert.deepEqual(requests, ["GET /ingest/matters/material/documents/text"], "text view uses only the mocked read endpoint")
+  assert.deepEqual(versionReads, ["Source instructions.eml"], "versions are read only for the open file")
   assert.deepEqual(errors, [])
   console.log("PASS The source-email viewer traps focus, closes with Escape and restores its opener; no engine or model calls.")
 } finally {

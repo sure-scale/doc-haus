@@ -1,0 +1,81 @@
+/* The change history card (#297). ChangeTimeline.tsx places it beside the line
+   it points at; it stays hidden until placed, so it never paints in the wrong
+   place first, and its list scrolls when the card's height is capped. Rules are
+   scoped under the card because the rendered document's own stylesheet sets
+   bare elements (span white-space, p margins) for the whole page. */
+.change-timeline {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: var(--z-popover);
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  width: min(360px, calc(var(--viewport-inline) - 32px));
+  overflow: hidden;
+  visibility: hidden;
+  font-family: var(--font-sans);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  white-space: normal;
+  text-align: left;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  animation: change-timeline-in var(--spring-effects-fast-ms) var(--spring-effects-fast);
+}
+
+@keyframes change-timeline-in {
+  from { opacity: 0; }
+}
+
+.change-timeline span { white-space: normal; }
+.change-timeline-head { display: flex; align-items: flex-start; gap: var(--space-3); padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--border); }
+.change-timeline-head > div { flex: 1; min-width: 0; }
+.change-timeline .change-timeline-title { margin: 0; font-family: inherit; font-size: 0.875rem; font-weight: 600; line-height: 1.4; letter-spacing: normal; color: var(--text); }
+.change-timeline .change-timeline-place { margin: 2px 0 0; font-size: 0.75rem; color: var(--muted); overflow-wrap: anywhere; }
+/* Shown only for a card opened by a tap: a 44px target. */
+.change-timeline .change-timeline-close { flex: none; min-width: 44px; min-height: 44px; margin: calc(-1 * var(--space-2)) calc(-1 * var(--space-2)) 0 0; padding: 0 var(--space-3); font-size: 0.8125rem; }
+
+.change-timeline-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: var(--space-3) var(--space-4) var(--space-4); scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+.change-timeline-body:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* The timeline: a rule down the left with a dot for each author and time. */
+.change-timeline .change-timeline-list { margin: 0; padding: 0; list-style: none; }
+.change-timeline .change-timeline-node { position: relative; margin: 0 0 0 5px; padding: 0 0 var(--space-4) var(--space-4); border-left: 2px solid var(--border); }
+.change-timeline .change-timeline-node:last-child,
+.change-timeline .change-timeline-node:has(+ .change-timeline-undated) { padding-bottom: var(--space-1); border-left-color: transparent; }
+.change-timeline .change-timeline-node::before { content: ""; position: absolute; top: 5px; left: -7px; box-sizing: border-box; width: 12px; height: 12px; border: 2px solid var(--accent); border-radius: 50%; background: var(--panel); }
+.change-timeline .change-timeline-undated { margin: var(--space-2) 0 var(--space-2); font-size: 0.6875rem; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.change-timeline .change-timeline-node + .change-timeline-undated { margin-top: var(--space-3); padding-top: var(--space-3); border-top: 1px solid var(--border); }
+.change-timeline .change-timeline-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 var(--space-2); }
+.change-timeline .change-timeline-author { font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
+.change-timeline time { font-size: 0.6875rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.change-timeline .change-timeline-node > ul { display: flex; flex-direction: column; gap: var(--space-3); margin: var(--space-2) 0 0; padding: 0; list-style: none; }
+.change-timeline .change-timeline-kind { font-size: 0.75rem; font-weight: 600; color: var(--text-secondary); }
+.change-timeline .change-timeline-tag { margin-left: var(--space-2); }
+.change-timeline :is(.change-old, .change-new, .change-timeline-text) { margin: var(--space-1) 0 0; font-size: 0.8125rem; overflow-wrap: anywhere; }
+.change-timeline .change-timeline-text { padding: 4px var(--space-2); white-space: pre-wrap; color: var(--text); border-left: 2px solid var(--border-strong); }
+.change-timeline .change-timeline-quote { margin: var(--space-1) 0 0; padding: 2px var(--space-2); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-secondary); border-left: 2px solid var(--border-strong); }
+.change-timeline .change-timeline-comment { margin: var(--space-1) 0 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); }
+.change-timeline .change-timeline-note { margin: var(--space-1) 0 0; font-size: 0.75rem; color: var(--muted); }
+.change-timeline .change-timeline-flag { margin: var(--space-1) 0 0; padding: 4px var(--space-2); font-size: 0.75rem; color: var(--text); background: var(--warn-soft); border: 1px solid var(--warn-border); border-radius: var(--radius-sm); }
+
+/* On the page: each clause's one Tab stop, and the open clause's marks tinted
+   (outline and background only, so nothing shifts). */
+.docx-render .is-timeline-active { background-color: var(--accent-soft); outline: 1px solid var(--border-strong); outline-offset: 1px; }
+.docx-render .change-timeline-mark:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+@media (forced-colors: active) {
+  .change-timeline { border: 1px solid CanvasText; }
+  .change-timeline .change-timeline-node::before { border-color: CanvasText; }
+  .change-timeline-body:focus-visible { outline-color: Highlight; }
+  .docx-render .is-timeline-active { outline-color: Highlight; }
+  .docx-render .change-timeline-mark:focus-visible { outline: 2px solid Highlight; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .change-timeline { animation: none; }
+}

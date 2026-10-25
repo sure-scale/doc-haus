@@ -2,6 +2,11 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <!-- Images, fonts, media and stylesheets load only from this app or inline
+         data, so nothing a document or chat reply carries can fetch from another
+         site. In the page itself, so every way of serving it (vite dev, preview,
+         a built copy) applies it. Scripts and API connections keep the defaults. -->
+    <meta http-equiv="Content-Security-Policy" content="img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' data: blob:; style-src 'self' 'unsafe-inline'" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="light" />
     <meta name="theme-color" content="#ffffff" />
