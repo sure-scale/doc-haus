@@ -8,6 +8,7 @@ import {
   type MarkupComment,
   type MarkupDecision,
   type MarkupFinding,
+  type MarkupLocation,
   type MarkupRevision,
 } from "../api/ingest/markup"
 import { getPreferences, savePreferences } from "../api/ingest/preferences"
@@ -26,8 +27,8 @@ import { useToast } from "./Toast"
 
 type Thread = { root: MarkupComment; replies: MarkupComment[] }
 type Item =
-  | { type: "change"; revision: MarkupRevision; order: [number, number, number, number] }
-  | { type: "thread"; thread: Thread; order: [number, number, number, number] }
+  | { type: "change"; revision: MarkupRevision; order: number[] }
+  | { type: "thread"; thread: Thread; order: number[] }
 type Kind = "changes" | "formatting" | "comments"
 type Drafts = Record<string, Exclude<MarkupDecision, "hold">>
 // A refused Apply: the message, the service's code and the listed changes it
@@ -46,8 +47,16 @@ const DECISIONS: { value: MarkupDecision; label: string }[] = [
   { value: "reject", label: "Reject" },
   { value: "hold", label: "Hold" },
 ]
-const SCOPES = ["body", "header", "footer", "footnote", "endnote"] as const
-const PART: Record<MarkupRevision["scope"], string> = { body: "Paragraph", header: "Header, paragraph", footer: "Footer, paragraph", footnote: "Footnote, paragraph", endnote: "Endnote, paragraph" }
+const SCOPES = ["body", "header", "footer", "footnote", "endnote", "comment"] as const
+// What a place outside the body is prefixed with.
+const PART: Record<MarkupRevision["scope"], string> = { body: "", header: "header, ", footer: "footer, ", footnote: "footnote, ", endnote: "endnote, ", comment: "comment, " }
+// A table's, row's, cell's or section's own formatting, which has no paragraph.
+const CONTAINER: Record<NonNullable<MarkupLocation["container"]>, string> = {
+  table: "Table formatting changed",
+  row: "Table row formatting changed",
+  cell: "Table cell formatting changed",
+  section: "Page setup changed",
+}
 const STRUCTURE: Record<string, string> = {
   row_insert: "Table row inserted",
   row_delete: "Table row deleted",
@@ -91,16 +100,26 @@ export function markupCount(markup: Pick<DocumentMarkup, "revisions" | "comments
 }
 
 // Cards in document order: by part, then paragraph (unknown places last), a
-// paragraph's changes before its comments, then as listed.
+// paragraph's changes before its comments, then as listed. An edit inside a
+// comment's own text follows that comment's thread.
 function documentOrder(markup: DocumentMarkup): Item[] {
   const last = Number.MAX_SAFE_INTEGER
+  const threads = commentThreads(markup.comments).map((thread, index) => ({
+    type: "thread" as const,
+    thread,
+    order: [SCOPES.indexOf(thread.root.scope ?? "body"), thread.root.paragraph ?? last, 1, index, 0],
+  }))
   const items: Item[] = [
-    ...markup.revisions.map((revision, index): Item => ({
-      type: "change",
-      revision,
-      order: [SCOPES.indexOf(revision.scope), revision.locations.find((place) => place.paragraph !== null)?.paragraph ?? last, 0, index],
-    })),
-    ...commentThreads(markup.comments).map((thread, index): Item => ({ type: "thread", thread, order: [0, thread.root.paragraph ?? last, 1, index] })),
+    ...markup.revisions.map((revision, index): Item => {
+      const id = revision.scope === "comment" ? revision.locations.find((place) => place.comment !== undefined)?.comment : undefined
+      const owner = id === undefined ? undefined : threads.find(({ thread }) => thread.root.id === id || thread.replies.some((reply) => reply.id === id))
+      return {
+        type: "change",
+        revision,
+        order: owner ? [...owner.order.slice(0, 4), 1 + index] : [SCOPES.indexOf(revision.scope), revision.locations.find((place) => place.paragraph !== null)?.paragraph ?? last, 0, 0, index],
+      }
+    }),
+    ...threads,
   ]
   return items.sort((a, b) => {
     const at = a.order.findIndex((value, index) => value !== b.order[index])
@@ -121,7 +140,10 @@ function wholeParagraph(revision: MarkupRevision) {
 
 export function changeLabel(revision: MarkupRevision) {
   if (revision.kind === "move") return wholeParagraph(revision) ? "Moved paragraph" : "Moved"
-  if (revision.kind === "format") return "Formatting changed"
+  if (revision.kind === "format") {
+    const container = revision.locations.find((place) => place.container)?.container
+    return container ? CONTAINER[container] : "Formatting changed"
+  }
   if (revision.family === "paragraph_mark") return revision.kind === "insert" ? "Paragraph break inserted" : "Paragraph break deleted"
   if (STRUCTURE[revision.family]) return STRUCTURE[revision.family]!
   if (revision.kind === "insert") return wholeParagraph(revision) ? "Inserted paragraph" : "Inserted"
@@ -135,6 +157,29 @@ function changeText(revision: MarkupRevision) {
 }
 
 const clip = (text: string, max = 48) => (text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text)
+const capital = (text: string) => text.charAt(0).toUpperCase() + text.slice(1)
+// The list number Word prints before a paragraph, when it names one (a bullet does not).
+const listLabel = (place: Pick<MarkupLocation, "label">) => (place.label && /[\p{L}\p{N}]/u.test(place.label) ? place.label : undefined)
+
+// Where a place is, as the lawyer sees it in Word: by its list number
+// ("clause 5", "Article 2"), else by its paragraph's ordinal. A table's, row's,
+// cell's or section's change runs from its first paragraph.
+function placeName(scope: MarkupRevision["scope"], place: Pick<MarkupLocation, "paragraph" | "label" | "container">) {
+  const label = listLabel(place)
+  const at = label ? (/^\p{L}{2,}\s/u.test(label) ? label : `clause ${label.replace(/\.$/, "")}`) : place.paragraph !== null ? `paragraph ${place.paragraph}` : undefined
+  return at && `${PART[scope]}${place.container ? "from " : ""}${at}`
+}
+
+// An edit inside a comment's own text names that comment: who wrote it and,
+// unless its first paragraph is quoted below, how it opens.
+function commentPlace(place: MarkupLocation, comments: MarkupComment[], quoted: boolean) {
+  const comment = comments.find((entry) => entry.id === place.comment)
+  if (!comment) return placeName("comment", place) ?? "in a comment"
+  const author = comment.author.trim()
+  const opening = place.paragraph === 1 && quoted ? "" : clip(comment.text.trim().split("\n")[0]!.trim())
+  const within = listLabel(place) || (place.paragraph ?? 0) > 1 ? `, ${placeName("body", place)}` : ""
+  return `in a comment ${author ? `by ${author}` : "with no author named"}${opening ? `: “${opening}”` : ""}${within}`
+}
 
 // The name of a change's decision group, told apart from every other card's:
 // what changed, who changed it and a short excerpt (its paragraph's when the
@@ -506,7 +551,7 @@ export default function MarkupPanel({
         <ol className="markup-list" aria-label={`Changes and comments in ${name}, in document order`} aria-busy={loading || undefined}>
           {shown.map((item) =>
             item.type === "change" ? (
-              <ChangeCard key={item.revision.id} revision={item.revision} decision={drafts[item.revision.id] ?? "hold"} disabled={busy}
+              <ChangeCard key={item.revision.id} revision={item.revision} comments={markup.comments} decision={drafts[item.revision.id] ?? "hold"} disabled={busy}
                 carried={carried.includes(item.revision.id)}
                 failure={refusal?.ids.includes(item.revision.id) ? refusal.message : undefined}
                 cardRef={(node) => { if (node) cards.current.set(item.revision.id, node); else cards.current.delete(item.revision.id) }}
@@ -589,7 +634,7 @@ function Flags({ findings }: { findings: MarkupFinding[] }) {
   )
 }
 
-function Places({ revision }: { revision: MarkupRevision }) {
+function Places({ revision, comments }: { revision: MarkupRevision; comments: MarkupComment[] }) {
   const text = changeText(revision)
   const places = revision.locations.filter((place) => place.paragraph !== null || place.context)
   if (!places.length) return null
@@ -603,16 +648,19 @@ function Places({ revision }: { revision: MarkupRevision }) {
   // A move's places come in document order, which does not say which one it
   // left; the document shows that.
   if (revision.kind === "move" && places.length > 1 && places.every((place) => place.paragraph !== null && !preview(place.context))) {
-    const numbers = places.map((place) => place.paragraph!)
-    return <p className="markup-place">Old and new places: {PART[revision.scope].toLowerCase()}s {numbers.slice(0, -1).join(", ")} and {numbers.at(-1)}</p>
+    const labelled = places.some(listLabel)
+    const names = places.map((place) => (labelled ? placeName(revision.scope, place)! : place.paragraph!))
+    const where = `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`
+    return <p className="markup-place">Old and new places: {labelled ? where : `${PART[revision.scope]}paragraphs ${where}`}</p>
   }
   return (
     <>
       {places.map((place, index) => {
         const context = preview(place.context)
+        const where = revision.scope === "comment" ? commentPlace(place, comments, !!context) : placeName(revision.scope, place)
         return (
           <p className="markup-place" key={index}>
-            {place.paragraph !== null && <span>{PART[revision.scope]} {place.paragraph}</span>}
+            {where && <span>{capital(where)}</span>}
             {context && <q>{context}</q>}
           </p>
         )
@@ -624,8 +672,9 @@ function Places({ revision }: { revision: MarkupRevision }) {
 // One change: Accept, Reject and Hold are one radio group, a single Tab stop
 // whose arrow keys move and choose. A refused change carries the refusal and a
 // one-click Hold.
-function ChangeCard({ revision, decision, disabled, carried, failure, cardRef, onDecide, onHold }: {
+function ChangeCard({ revision, comments, decision, disabled, carried, failure, cardRef, onDecide, onHold }: {
   revision: MarkupRevision
+  comments: MarkupComment[]
   decision: MarkupDecision
   disabled: boolean
   carried: boolean
@@ -659,7 +708,7 @@ function ChangeCard({ revision, decision, disabled, carried, failure, cardRef, o
       {text && <div className={removes ? "change-old" : revision.kind === "insert" ? "change-new" : "markup-text"}>{text}</div>}
       {revision.family === "paragraph_mark" && revision.kind === "delete" && <p className="markup-hint">Accepting joins this paragraph with the next one.</p>}
       {revision.kind === "format" && decidable(revision) && <p className="markup-hint">Accept keeps the new formatting; Reject restores the old.</p>}
-      <Places revision={revision} />
+      <Places revision={revision} comments={comments} />
       <Flags findings={revision.findings} />
       {decidable(revision) ? (
         <div className="markup-decision" role="radiogroup" aria-label={decisionLabel(revision)} aria-describedby={failure ? `${id}-refused` : undefined}>
@@ -720,7 +769,7 @@ function ThreadCard({ thread }: { thread: Thread }) {
           ))}
         </ol>
       )}
-      {root.paragraph !== null && <p className="markup-place"><span>Paragraph {root.paragraph}</span></p>}
+      {root.paragraph !== null && <p className="markup-place"><span>{capital(placeName(root.scope ?? "body", { paragraph: root.paragraph })!)}</span></p>}
     </li>
   )
 }

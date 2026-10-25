@@ -9,8 +9,18 @@ import { INGEST_URL } from "../../config"
 export type MarkupFinding = { field: "text" | "author" | "quote" | "initials"; rule: string; detail: string; snippet?: string }
 
 // One affected paragraph: its 1-based place among its part's paragraphs as
-// marked up, null when unknown, and a short preview of it.
-export type MarkupLocation = { paragraph: number | null; context: string }
+// marked up (in scope `comment`, among that comment's own), null when unknown,
+// and a short preview of it. `label` is the list number Word prints before it
+// ("5.", "(a)"), not part of `context`; `container` is set for a table's,
+// row's, cell's or section's own formatting, placed at its first paragraph;
+// `comment` is the id of the comment whose text the paragraph is.
+export type MarkupLocation = {
+  paragraph: number | null
+  context: string
+  label?: string
+  container?: "table" | "row" | "cell" | "section"
+  comment?: number
+}
 
 // One change, decided as a whole: a move with both its places, an inserted
 // paragraph with its mark, adjacent insertions by one author together. `id` is
@@ -23,7 +33,8 @@ export type MarkupRevision = {
   author: string
   date: string | null
   text: string
-  scope: "body" | "header" | "footer" | "footnote" | "endnote"
+  // `comment`: an edit inside a comment's own text, not the document's.
+  scope: "body" | "header" | "footer" | "footnote" | "endnote" | "comment"
   locations: MarkupLocation[]
   // Only supported changes can be decided here; the rest are resolved in Word.
   status: "supported" | "unsupported" | "malformed" | "ambiguous"
@@ -32,7 +43,8 @@ export type MarkupRevision = {
 }
 
 // One comment; `parent` is the id of the comment it replies to and `resolved`
-// is null when the file does not say.
+// is null when the file does not say. `paragraph` counts its part's paragraphs;
+// `scope` names that part when it is not the body.
 export type MarkupComment = {
   id: number
   author: string
@@ -43,6 +55,7 @@ export type MarkupComment = {
   resolved: boolean | null
   quote: string
   paragraph: number | null
+  scope?: "footnote" | "endnote"
   findings: MarkupFinding[]
 }
 

@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test"
 import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
-import { applyMarkupDecisions, MarkupRefusedError, type DocumentMarkup, type MarkupRevision } from "../src/api/ingest/markup"
+import { applyMarkupDecisions, MarkupRefusedError, type DocumentMarkup, type MarkupComment, type MarkupRevision } from "../src/api/ingest/markup"
 import MarkupPanel, { carryDrafts, decisionLabel } from "../src/components/MarkupPanel"
 
 const originalFetch = globalThis.fetch
@@ -55,4 +55,26 @@ test("each decision group names its change, author and an excerpt, and is one Ta
   // A paragraph break has no text of its own; its card quotes the paragraph.
   expect(html).toContain("<q>7. Assignment. Neither party may assign</q>")
   expect(html).toContain("Accept keeps the new formatting; Reject restores the old.")
+})
+
+test("an edit inside a comment is placed in that comment's thread, and a list number is preferred to the paragraph's ordinal", () => {
+  const comment: MarkupComment = {
+    id: 4, author: "Morgan Okafor", initials: "MO", date: null, text: "Agreed only if the Buyer pays on time.", parent: null, resolved: null,
+    quote: "Governing law", paragraph: 7, findings: [],
+  }
+  const inComment = revision("rev2-comment", { author: "Morgan Okafor", text: "only ", scope: "comment", locations: [{ paragraph: 1, context: "Agreed only if the Buyer pays on time.", comment: 4 }] })
+  const term = revision("rev2-term", { text: "two", locations: [{ paragraph: 6, context: "Term. This Agreement continues for two years.", label: "5." }] })
+  const html = renderToStaticMarkup(createElement(MarkupPanel, {
+    matterId: "m-1", name: "Supply agreement.docx", markup: { ...markup("a", [inComment, revision("rev2-a"), term]), comments: [comment] }, onApplied: () => {}, onRefetch: () => {},
+  }))
+  expect(html).not.toContain("undefined")
+  expect(html).toContain("<span>In a comment by Morgan Okafor</span>")
+  // Word prints "5." before the clause; its paragraph ordinal is not shown.
+  expect(html).toContain("<span>Clause 5</span>")
+  expect(html).not.toContain("Paragraph 6")
+  // Document order: the body's changes, then the comment's thread, then the edit inside it.
+  const at = (text: string) => html.indexOf(text)
+  expect(at("forty-five")).toBeLessThan(at("Clause 5"))
+  expect(at("Clause 5")).toBeLessThan(at("markup-thread"))
+  expect(at("markup-thread")).toBeLessThan(at("In a comment by Morgan Okafor"))
 })
