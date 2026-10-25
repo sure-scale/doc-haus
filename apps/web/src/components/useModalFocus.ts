@@ -8,7 +8,9 @@ const layers: HTMLElement[] = []
 const targets = 'button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), summary, iframe, [tabindex]:not([tabindex="-1"])'
 // `sheet`: a panel that turns modal when the window narrows (the documents
 // drawer). It sits beneath the overlays already open, and leaves focus where
-// it is when that is in the sheet or in an overlay above it.
+// it is when that is in the sheet or in an overlay above it. When it stops
+// being modal it may still be open (the window widened), so it leaves focus
+// where it is then too; its owner returns focus when it closes.
 export default function useModalFocus(ref: RefObject<HTMLElement | null>, open = true, sheet = false) {
   const closing = useContext(Closing)
   const active = open && !closing
@@ -65,7 +67,7 @@ export default function useModalFocus(ref: RefObject<HTMLElement | null>, open =
       document.removeEventListener("focusin", focusin)
       endGuard.remove()
       if (previousTabIndex === null) panel.removeAttribute("tabindex")
-      if (!settled && opener?.isConnected) opener.focus({ preventScroll: true })
+      if (!sheet && opener?.isConnected) opener.focus({ preventScroll: true })
     }
   }, [ref, active, sheet])
 }

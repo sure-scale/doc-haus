@@ -41,7 +41,7 @@ function EmbeddedViewer({ onClose }) {
 }
 
 // Turns modal when the window narrows, as the documents drawer does.
-function Sheet() {
+function Sheet({ onRead }) {
   const panel = useRef(null)
   const [compact, setCompact] = useState(() => matchMedia("(max-width: 700px)").matches)
   useEffect(() => {
@@ -53,7 +53,8 @@ function Sheet() {
   useModalFocus(panel, compact, true)
   return h("section", { ref: panel, "aria-label": "Documents sheet" },
     h("button", { type: "button" }, "Sheet first"),
-    h("button", { type: "button" }, "Sheet second"))
+    h("button", { type: "button" }, "Sheet second"),
+    h("button", { type: "button", onClick: onRead }, "Read from sheet"))
 }
 
 function Harness() {
@@ -67,7 +68,7 @@ function Harness() {
     h("button", { type: "button", onClick: () => setViewer(true) }, "Read source email"),
     h("button", { type: "button", onClick: () => setEmbedded(true) }, "Open embedded viewer"),
     h("button", { type: "button", onClick: () => setSheet(value => !value) }, "Toggle sheet"),
-    sheet && h(Sheet),
+    sheet && h(Sheet, { onRead: () => setEmbedded(true) }),
     h("p", { id: "existing-description" }, "Existing help for this action."),
     h("div", { className: "tooltip-hover" },
       h(Tooltip, { label: "Additional context remains readable while you move the pointer onto this help." },
@@ -304,7 +305,45 @@ try {
   await expect(page.getByRole("button", { name: "Sheet first" })).toBeFocused()
   await page.setViewportSize({ width: 1440, height: 900 })
   await page.getByRole("button", { name: "Toggle sheet" }).click()
-  console.log("PASS A sheet that turns modal on a narrower window keeps the focus it has, stays beneath an open viewer and takes focus when the viewer closes.")
+  // Widening, the sheet stays open but stops being modal: focus stays where it
+  // is, in the sheet or in a viewer opened from it, never passing through the
+  // control that opened the sheet (the move fires blur and focus handlers, which
+  // close menus), and returns to the sheet's control when that viewer closes.
+  await page.evaluate(() => {
+    const record = window as typeof window & { away?: string[] }
+    record.away = []
+    document.addEventListener("focusin", event => {
+      const target = event.target as HTMLElement
+      if (!target.closest('[aria-label="Documents sheet"], [role="dialog"]')) record.away!.push(target.textContent ?? "")
+    }, true)
+  })
+  const away = () => page.evaluate(() => (window as typeof window & { away: string[] }).away.splice(0))
+  for (const viewer of [false, true]) {
+    await page.setViewportSize({ width: 600, height: 740 })
+    await page.getByRole("button", { name: "Toggle sheet" }).focus()
+    await page.keyboard.press("Enter")
+    await expect(page.getByRole("button", { name: "Sheet first" })).toBeFocused()
+    let focused = page.getByRole("button", { name: "Sheet second" })
+    if (viewer) {
+      await page.getByRole("button", { name: "Read from sheet" }).click()
+      await expect(page.getByRole("dialog", { name: "Embedded document" }).getByRole("button", { name: "Close", exact: true })).toBeFocused()
+      focused = page.frameLocator('iframe[title="Embedded source"]').getByRole("button", { name: "Read next section" })
+    }
+    await page.keyboard.press("Tab")
+    await expect(focused).toBeFocused()
+    await away()
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await expect(focused).toBeFocused()
+    expect(await away()).toEqual([])
+    if (viewer) {
+      await page.keyboard.press("Tab")
+      await page.keyboard.press("Escape")
+      await expect(page.getByRole("dialog", { name: "Embedded document" })).toHaveCount(0)
+      await expect(page.getByRole("button", { name: "Read from sheet" })).toBeFocused()
+    }
+    await page.getByRole("button", { name: "Toggle sheet" }).click()
+  }
+  console.log("PASS A sheet that turns modal on a narrower window keeps the focus it has, stays beneath an open viewer and takes focus when the viewer closes; widening leaves focus where it is.")
 
   await page.setViewportSize({ width: 375, height: 812 })
   await page.getByRole("button", { name: "Read source email" }).click()
