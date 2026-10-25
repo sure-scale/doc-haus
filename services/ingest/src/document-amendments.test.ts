@@ -540,6 +540,34 @@ test("a pointerless copied deliverable keeps whole-revision proposals until its 
   }
 },120000)
 
+// A Word file copied into a deliverable has no pointers yet, but Word's own
+// paragraph ids: the first batch binds per paragraph, as on a source.
+test("a pointerless copied deliverable with Word paragraph ids binds its first batch per paragraph, so accepting one leaves the other valid", async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-copied-para-ids-"))
+  const engine = syntheticEngine(() => ({amendments:periods.slice(0,2),open_items:[]}),firstCandidate)
+  const ingest = await isolatedIngest(temporary,engine.server)
+  try {
+    await ingest.start("only")
+    const matter = await ingest.matter("Copied Word file with paragraph ids")
+    const word = withParaIds(await Packer.toBuffer(new Document({sections:[{children:periodParagraphs.slice(0,2).map((text) => new Paragraph(text))}]})))
+    await Bun.write(path.join(matter.dir,"original.docx"),word)
+    const db = openDb(matter.dir)
+    try {upsertDocument(db,path.join(matter.dir,"original.docx"),"original.docx",Date.now(),null)} finally {db.close()}
+    expect((await ingest.request(`${matter.route}/documents/copy`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({source:"original.docx",name:"working.docx"})})).status).toBe(200)
+    const targets = await paragraphTargets(await Bun.file(matter.file).bytes())
+    expect(targets.map((row) => [row.pid,row.para_id])).toEqual([[null,"3A000000"],[null,"3A000001"]])
+    const [first,second] = (await (await matter.prepare("Update the stated periods.")).json() as {redline_ids:number[]}).redline_ids
+    expect(matter.bindings([first,second]).map((row) => row.para_id)).toEqual(["3A000000","3A000001"])
+    expect(await matter.accept(first)).toBe(200)
+    expect(await matter.pending()).toEqual([[second,undefined,undefined]])
+    expect(await matter.accept(second)).toBe(200)
+    expect((await createDocxRevision(await Bun.file(matter.file).bytes())).paragraphs.map((row) => row.text))
+      .toEqual(["Notice must arrive within seven days.","Retain records for six months."])
+  } finally {
+    await ingest.stop();engine.server.stop(true);await rm(temporary,{recursive:true,force:true})
+  }
+},120000)
+
 test("header and footer targets keep whole-revision binding; a body target binds its selected occurrence in its paragraph", async () => {
   const directory = await mkdtemp(path.join(tmpdir(),"dochaus-word-parts-"))
   const file = path.join(directory,"working.docx")
