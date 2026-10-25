@@ -20,17 +20,30 @@ import { detectInjection, normalizeUntrustedText } from "./untrusted-text"
 //   insertions together. `id` is Docxodus's opaque `rev2-…` id for these bytes;
 //   resolving a nested revision changes the enclosing one's id.
 // - MarkupLocation.paragraph is the 1-based ordinal among its part's paragraphs
-//   as marked up (deleted, moved-from, empty and table-cell paragraphs count);
-//   null when the anchor is unknown. Every revision has at least one location.
+//   as marked up (deleted, moved-from, empty and table-cell paragraphs count;
+//   separator notes do not); in scope `comment`, among its comment's own
+//   paragraphs. Null when the anchor is unknown. Every revision has at least one
+//   location. A change with no paragraph of its own (a table's, row's, cell's or
+//   section's properties) is placed at its container's first paragraph.
 // - MarkupComment.id is the native w:id (the rendered data-comment-id); `parent`
 //   is the id of the comment it replies to; `resolved` is null when the file has
 //   no commentsExtended entry for it. `quote` is the commented text as marked up,
-//   deleted text included, capped; `paragraph` counts body paragraphs as above.
+//   deleted text included, capped; `paragraph` counts its part's paragraphs as
+//   above, and `scope` names that part when it is a footnote or endnote.
 // - authors: each name with its counts, in order of first appearance; "" is a
 //   change or comment that names no author.
 export type MarkupField = "text" | "author" | "quote" | "initials"
 export type MarkupFinding = { field: MarkupField; rule: string; detail: string; snippet?: string }
-export type MarkupLocation = { paragraph: number | null; context: string }
+export type MarkupLocation = {
+  paragraph: number | null
+  context: string
+  /** The list number Word prints before the paragraph ("5.", "(a)"), when it has one; not part of `context`. */
+  label?: string
+  /** What a change with no paragraph of its own changed; `paragraph` is that container's first. */
+  container?: "table" | "row" | "cell" | "section"
+  /** Scope `comment`: the w:id of the comment whose own text this paragraph is. */
+  comment?: number
+}
 export type MarkupRevision = {
   id: string
   kind: "insert" | "delete" | "move" | "format" | "structure"
@@ -39,7 +52,8 @@ export type MarkupRevision = {
   author: string
   date: string | null
   text: string
-  scope: "body" | "header" | "footer" | "footnote" | "endnote"
+  /** `comment`: an edit inside a comment's own text, not the document's. */
+  scope: "body" | "header" | "footer" | "footnote" | "endnote" | "comment"
   locations: MarkupLocation[]
   /** Only `supported` units can be accepted or rejected here; the rest are resolved in Word. */
   status: "supported" | "unsupported" | "malformed" | "ambiguous"
@@ -56,6 +70,8 @@ export type MarkupComment = {
   resolved: boolean | null
   quote: string
   paragraph: number | null
+  /** Absent for a comment in the body. */
+  scope?: "footnote" | "endnote"
   findings: MarkupFinding[]
 }
 export type MarkupAuthor = { name: string; revisions: number; comments: number }
@@ -64,6 +80,10 @@ export type DocxMarkup = { revisions: MarkupRevision[]; comments: MarkupComment[
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 // Anchor kinds that are paragraphs (h: heading, li: numbered list item).
 const PARAGRAPHS = new Set(["p", "h", "li"])
+const CONTAINERS: Record<string, MarkupLocation["container"]> = { tbl: "table", tr: "row", tc: "cell", sec: "section" }
+// Where comments other than the body's can be anchored.
+const NOTES = [["word/footnotes.xml", "footnote"], ["word/endnotes.xml", "endnote"]] as const
+const MARKERS = ["commentRangeStart", "commentReference", "commentRangeEnd"]
 // Property subtrees hold formatting, never text.
 const PROPERTIES = new Set(["pPr", "rPr", "tblPr", "tcPr", "trPr", "sectPr"])
 const QUOTE_CAP = 200
@@ -87,19 +107,48 @@ async function readMarkupRevisions(bytes: Uint8Array): Promise<MarkupRevision[]>
   try {
     const rows = session.listRevisions()
     if (!rows.length) return []
+    // The session projection carries Word's resolved list number (its declared
+    // type omits the field). Ordinals count per part, and per comment in the
+    // comments part, where each comment's anchor precedes its paragraphs. So
+    // does a table's, row's or cell's; a section's follows its paragraphs, so a
+    // section starts at the first paragraph after the previous one's anchor.
+    const index = session.project().anchorIndex as Record<string, { kind: string; scope: string; textPreview: string; autoNumberPrefix?: string }>
+    const comments = new Map(rows.some(row => scopeOf(row.scope) === "comment") ? session.listComments().map(row => [row.anchorId, row.id] as const) : [])
     const ordinals = new Map<string, number>(), located = new Map<string, MarkupLocation>()
-    for (const [id, anchor] of Object.entries(session.project().anchorIndex)) {
-      if (!PARAGRAPHS.has(anchor.kind)) continue
-      const paragraph = (ordinals.get(anchor.scope) ?? 0) + 1
-      ordinals.set(anchor.scope, paragraph)
-      located.set(id, { paragraph, context: normalizeUntrustedText(anchor.textPreview).text })
+    const waiting = new Map<string, string[]>(), sections = new Map<string, MarkupLocation>()
+    let comment: string | undefined
+    for (const [id, anchor] of Object.entries(index)) {
+      if (anchor.kind === "cmt") comment = id
+      const part = anchor.scope === "cmt" && comment ? comment : anchor.scope
+      if (anchor.kind === "sec") {
+        const start = sections.get(part)
+        if (start) located.set(id, { ...start, container: "section" })
+        sections.delete(part)
+        continue
+      }
+      if (!PARAGRAPHS.has(anchor.kind)) {
+        (waiting.get(part) ?? waiting.set(part, []).get(part)!).push(id)
+        continue
+      }
+      const paragraph = (ordinals.get(part) ?? 0) + 1
+      ordinals.set(part, paragraph)
+      const label = normalizeUntrustedText(anchor.autoNumberPrefix ?? "").text.trim(), owner = comments.get(part)
+      const location: MarkupLocation = { paragraph, context: normalizeUntrustedText(anchor.textPreview).text, ...label ? { label } : {}, ...owner === undefined ? {} : { comment: owner } }
+      located.set(id, location)
+      if (!sections.has(part)) sections.set(part, location)
+      // A container's own preview runs its cells' text together; its first paragraph's reads.
+      for (const container of waiting.get(part) ?? []) {
+        const kind = CONTAINERS[index[container]!.kind]
+        located.set(container, kind ? { ...location, container: kind } : location)
+      }
+      waiting.delete(part)
     }
     return rows.map(row => {
-      // A table, row or cell revision also lists its paragraphs; the container
-      // itself has no paragraph ordinal.
+      // A table, row or cell revision also lists its paragraphs; a property
+      // change with none of its own is placed by its container.
       const anchors = row.affectedAnchors.length ? row.affectedAnchors : row.anchorId ? [{ id: row.anchorId, kind: row.anchorId.split(":")[0]! }] : []
-      const locations = [...new Set(anchors.filter(anchor => PARAGRAPHS.has(anchor.kind)).map(anchor => anchor.id))]
-        .map(id => located.get(id) ?? { paragraph: null, context: "" })
+      const own = anchors.filter(anchor => PARAGRAPHS.has(anchor.kind)).map(anchor => anchor.id), container = row.anchorId ?? anchors[0]?.id
+      const locations = [...new Set(own.length ? own : container ? [container] : [])].map(id => located.get(id) ?? { paragraph: null, context: "" })
       const findings: MarkupFinding[] = []
       return {
         id: row.id, kind: row.type, family: row.family,
@@ -123,14 +172,15 @@ export async function readMarkupComments(bytes: Uint8Array, native = readDocxCom
   const listed = await (await docxodus()).getComments(bytes)
   if (!listed.length) return []
   const ids = new Map(listed.map(row => [row.anchorId, row.id]))
-  const quotes = commentQuotes(bytes, new Set(listed.map(row => String(row.id))))
+  const { quotes, places } = commentRanges(bytes, new Set(listed.map(row => String(row.id))))
   // The first native comment with each id, as a lookup.
   const natives = new Map(native.map(comment => [comment.comment_id, comment] as const).reverse())
   return listed.map(row => {
     const own = natives.get(String(row.id))
     // The range start places a comment; a reply often has only a reference.
-    const marker = ["commentRangeStart", "commentReference", "commentRangeEnd"]
-      .map(kind => own?.markers.find(marker => marker.kind === kind && marker.xml_paragraph_index !== null)).find(Boolean)
+    // The native markers are the body's; a note's come from the scan.
+    const marker = MARKERS.map(kind => own?.markers.find(marker => marker.kind === kind && marker.xml_paragraph_index !== null)).find(Boolean)
+    const place = marker ? undefined : places.get(String(row.id))
     const findings: MarkupFinding[] = []
     return {
       id: row.id,
@@ -143,7 +193,8 @@ export async function readMarkupComments(bytes: Uint8Array, native = readDocxCom
       resolved: row.resolved ?? null,
       // Scanned as collected; only the shown quote is capped.
       quote: capped(screened(findings, "quote", quotes.get(String(row.id)) ?? "")),
-      paragraph: marker ? marker.xml_paragraph_index! + 1 : null,
+      paragraph: marker ? marker.xml_paragraph_index! + 1 : place?.paragraph ?? null,
+      ...place ? { scope: place.scope } : {},
       findings,
     }
   })
@@ -168,40 +219,53 @@ function capped(text: string) {
 }
 
 function scopeOf(scope: string): MarkupRevision["scope"] {
-  return scope.startsWith("hdr") ? "header" : scope.startsWith("ftr") ? "footer" : scope.startsWith("fn") ? "footnote" : scope.startsWith("en") ? "endnote" : "body"
+  return scope.startsWith("hdr") ? "header" : scope.startsWith("ftr") ? "footer" : scope.startsWith("fn") ? "footnote" : scope.startsWith("en") ? "endnote" : scope.startsWith("cmt") ? "comment" : "body"
 }
 
-// The body text inside each listed comment's range, in document order: inserted
-// and deleted text alike, paragraphs joined by newlines. Ranges naming no listed
-// comment are skipped, and a range closes once its quote is collected.
-function commentQuotes(bytes: Uint8Array, listed: Set<string>) {
-  const part = unzipSync(bytes)["word/document.xml"]
-  if (!part) throw new Error("invalid_docx_package")
+// The text inside each listed comment's range, in document order: inserted and
+// deleted text alike, paragraphs joined by newlines. Ranges naming no listed
+// comment are skipped, and a range closes once its quote is collected. A comment
+// in a footnote or endnote is also placed: that part, and the paragraph holding
+// its first marker by kind, counted as revision locations count them.
+function commentRanges(bytes: Uint8Array, listed: Set<string>) {
+  const parts = unzipSync(bytes)
+  if (!parts["word/document.xml"]) throw new Error("invalid_docx_package")
   const fail = () => { throw new Error("invalid_docx_xml") }
-  const doc = new DOMParser({ errorHandler: { warning: fail, error: fail, fatalError: fail } }).parseFromString(strFromU8(part), "application/xml")
-  const open = new Set<string>(), quotes = new Map<string, string>()
-  const add = (text: string) => {
-    if (text) for (const id of open) {
-      const quote = quotes.get(id)!
-      quotes.set(id, quote + text.slice(0, QUOTE_COLLECTED - quote.length))
-      if (quote.length + text.length >= QUOTE_COLLECTED) open.delete(id)
+  const quotes = new Map<string, string>(), places = new Map<string, { scope: (typeof NOTES)[number][1]; paragraph: number; rank: number }>()
+  for (const [file, scope] of [["word/document.xml", "body"], ...NOTES] as const) {
+    if (!parts[file]) continue
+    const doc = new DOMParser({ errorHandler: { warning: fail, error: fail, fatalError: fail } }).parseFromString(strFromU8(parts[file]), "application/xml")
+    const open = new Set<string>()
+    let paragraphs = 0, paragraph = 0
+    const add = (text: string) => {
+      if (text) for (const id of open) {
+        const quote = quotes.get(id)!
+        quotes.set(id, quote + text.slice(0, QUOTE_COLLECTED - quote.length))
+        if (quote.length + text.length >= QUOTE_COLLECTED) open.delete(id)
+      }
     }
-  }
-  const visit = (node: Element) => {
-    const name = node.namespaceURI === W ? node.localName : ""
-    if (PROPERTIES.has(name)) return
-    if (name === "commentRangeStart" || name === "commentRangeEnd") {
-      const id = node.getAttributeNS(W, "id") ?? ""
-      if (name === "commentRangeEnd") open.delete(id)
-      else if (listed.has(id) && (quotes.get(id) ?? "").length < QUOTE_COLLECTED) { open.add(id);quotes.set(id, quotes.get(id) ?? "") }
-      return
+    const visit = (node: Element) => {
+      const name = node.namespaceURI === W ? node.localName : ""
+      if (PROPERTIES.has(name)) return
+      // Separator and continuation notes have no paragraph a reader sees.
+      if ((name === "footnote" || name === "endnote") && (node.getAttributeNS(W, "type") || "normal") !== "normal") return
+      const rank = MARKERS.indexOf(name)
+      if (rank >= 0) {
+        const id = node.getAttributeNS(W, "id") ?? ""
+        if (scope !== "body" && paragraph && listed.has(id) && rank < (places.get(id)?.rank ?? MARKERS.length)) places.set(id, { scope, paragraph, rank })
+        if (name === "commentRangeEnd") open.delete(id)
+        else if (name === "commentRangeStart" && listed.has(id) && (quotes.get(id) ?? "").length < QUOTE_COLLECTED) { open.add(id);quotes.set(id, quotes.get(id) ?? "") }
+        return
+      }
+      if (name === "t" || name === "delText") return add(node.textContent ?? "")
+      if (name === "tab") return add("\t")
+      if (name === "br" || name === "cr") return add("\n")
+      const outer = paragraph
+      if (name === "p") paragraph = ++paragraphs
+      for (const child of Array.from(node.childNodes)) if (child.nodeType === 1) visit(child as Element)
+      if (name === "p") { add("\n");paragraph = outer }
     }
-    if (name === "t" || name === "delText") return add(node.textContent ?? "")
-    if (name === "tab") return add("\t")
-    if (name === "br" || name === "cr") return add("\n")
-    for (const child of Array.from(node.childNodes)) if (child.nodeType === 1) visit(child as Element)
-    if (name === "p") add("\n")
+    visit(doc.documentElement)
   }
-  visit(doc.documentElement)
-  return new Map([...quotes].map(([id, text]) => [id, text.replace(/^\n+|\n+$/g, "")]))
+  return { quotes: new Map([...quotes].map(([id, text]) => [id, text.replace(/^\n+|\n+$/g, "")])), places }
 }

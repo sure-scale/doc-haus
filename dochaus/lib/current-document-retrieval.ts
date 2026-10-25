@@ -10,13 +10,13 @@ import { readChangeList, readParagraphs } from "../workflows/lean/checks"
 import { readLeanPlan } from "../workflows/lean/plan"
 import { UNTRUSTED_DOCUMENT_NOTICE } from "./untrusted"
 import { readDocxBodyView } from "./docx-revision-views"
-import { readDocxMarkup, readMarkupComments, type MarkupRevision } from "./docx-markup"
+import { readDocxMarkup, readMarkupComments, type MarkupLocation, type MarkupRevision } from "./docx-markup"
 import { detectInjection, normalizeUntrustedText } from "./untrusted-text"
 
 export type CurrentDocumentView = "current_body" | "baseline_body" | "marked_up_body" | "comments" | "deleted_text" | "proposed_body" | "revisions"
 /** `label` is the list number Word prints before a body paragraph ("2.1"); it is not part of `text`. */
 /** `flagged` names the injection rules an untrusted entry matched; its text is normalized (invisible characters removed). */
-export type CurrentDocumentEntry = { index: number; artifact: string; sha256: string; label?: string; text: string; flagged?: string[]; paragraph_index?: number; pids?: string[]; comment_id?: string; author?: string; date?: string | null; parent?: string | null; resolved?: boolean | null; markers?: unknown; representation?: "generated_proposal"; initial_pid?: string; proposed_part_index?: number; basis?: string[]; kind?: MarkupRevision["kind"]; family?: string; part?: MarkupRevision["scope"]; locations?: { paragraph: number | null; context?: string }[]; locations_total?: number; status?: MarkupRevision["status"] }
+export type CurrentDocumentEntry = { index: number; artifact: string; sha256: string; label?: string; text: string; flagged?: string[]; paragraph_index?: number; pids?: string[]; comment_id?: string; author?: string; date?: string | null; parent?: string | null; resolved?: boolean | null; markers?: unknown; representation?: "generated_proposal"; initial_pid?: string; proposed_part_index?: number; basis?: string[]; kind?: MarkupRevision["kind"]; family?: string; part?: MarkupRevision["scope"]; locations?: (Omit<MarkupLocation, "context"> & { context?: string })[]; locations_total?: number; status?: MarkupRevision["status"] }
 // A table or row change lists every cell paragraph; the first few place it.
 const LOCATION_CAP = 5
 type CurrentView = { status: "available"; document: string; view: CurrentDocumentView; entries: CurrentDocumentEntry[] } | { status: "unavailable"; document: string; view: CurrentDocumentView; reason: string }
@@ -97,7 +97,7 @@ export async function currentDocumentView(directory: string, document: string, v
       // Every part's changes, formatting included: the list the lawyer's markup panel shows.
       if (view === "revisions") for (const revision of (await readDocxMarkup(bytes)).revisions) {
         // A context the change's own text already starts with (a whole moved or inserted paragraph) is left out.
-        const places = revision.locations.map(({ paragraph, context }) => ({ paragraph, ...(context && !revision.text.startsWith(context.replace(/…$/, "")) ? { context } : {}) }))
+        const places = revision.locations.map(({ paragraph, context, ...place }) => ({ paragraph, ...place, ...(context && !revision.text.startsWith(context.replace(/…$/, "")) ? { context } : {}) }))
         const shown = places.slice(0, LOCATION_CAP)
         // Text and author are screened in readDocxMarkup; a header or note context reaches agents only here.
         const rules = [...new Set([...revision.findings.map(finding => finding.rule), ...shown.flatMap(place => detectInjection(place.context ?? "").map(finding => finding.rule))])]
@@ -135,7 +135,7 @@ function response(value: Record<string, unknown>, truncated = false) {
     : value.view === "marked_up_body" ? "Marked-up text projection: inline insert/delete/move markers name their recorded authors. Includes proposed and deleted text; no accept/reject decision is implied. Paragraph positions refer to this projection, never current amendment targets. Main body only; formatting changes are not marked. view=revisions lists every tracked change, including headers, footers, footnotes, endnotes and formatting."
     : value.view === "comments" ? "Native Word comments, separate from body text. parent is the comment_id a reply answers; resolved is null when the file records no thread state."
     : value.view === "deleted_text" ? "Deleted and moved-from wording in the main body only. view=revisions lists every tracked change in all parts with author, date and location."
-    : value.view === "revisions" ? "Every pending tracked change in the named Word artifact, from the body, headers, footers, footnotes and endnotes, with formatting, table and paragraph-break changes: the list the lawyer reviews. text is the inserted, deleted or moved wording (for a formatting change, the text reformatted; ¶ is a paragraph break). Each location is the part's 1-based paragraph as marked up, with context, the paragraph's opening without deleted wording, unless text already shows it. status appears only when the change must be resolved in Word. No accept/reject decision is implied; paragraph numbers are never amendment targets." : undefined
+    : value.view === "revisions" ? "Every pending tracked change in the named Word artifact, from the body, headers, footers, footnotes and endnotes, with formatting, table and paragraph-break changes: the list the lawyer reviews. text is the inserted, deleted or moved wording (for a formatting change, the text reformatted; ¶ is a paragraph break). Each location is the part's 1-based paragraph as marked up, with context, the paragraph's opening without deleted wording, unless text already shows it; label is the list number Word prints there, container names a table, row, cell or section change, and comment is the comment_id whose text a part=comment change edits. status appears only when the change must be resolved in Word. No accept/reject decision is implied; paragraph numbers are never amendment targets." : undefined
   return { title: "Current document evidence", output: JSON.stringify({ ...value, notice: UNTRUSTED_DOCUMENT_NOTICE, ...(representation ? { representation } : {}) }), metadata: { truncated } }
 }
 
