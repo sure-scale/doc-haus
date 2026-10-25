@@ -11,6 +11,12 @@ describe("normalizeExtractedText", () => {
     expect(result.findings.map((f) => f.rule).sort()).toEqual(["bidi-control", "invisible-tag", "zero-width"])
   })
 
+  test("the Arabic letter mark is screened as a bidi control", () => {
+    const result = normalizeExtractedText("Pay\u061C the fee")
+    expect(result.text).toBe("Pay the fee")
+    expect(result.findings.map((f) => f.rule)).toEqual(["bidi-control"])
+  })
+
   test("strips soft hyphens and C0 controls silently", () => {
     const result = normalizeExtractedText("ter­mination clause")
     expect(result.text).toBe("termination clause")

@@ -16,7 +16,7 @@ const INVISIBLE_CATEGORIES = [
   {
     rule: "bidi-control",
     detail: "Unicode bidirectional controls that can visually reorder or mask text",
-    re: /[\u200E\u200F\u202A-\u202E\u2066-\u2069]/gu,
+    re: /[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/gu,
   },
   {
     rule: "invisible-tag",
@@ -34,7 +34,7 @@ const INVISIBLE_CATEGORIES = [
 // (kept out of the report — they occur in honest documents) but never \t, \n or \r,
 // which line-ending normalization handles.
 const STRIP_RE =
-  /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\u00AD\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF\u{E0000}-\u{E007F}]/gu
+  /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\u00AD\u061C\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF\u{E0000}-\u{E007F}]/gu
 
 // Normalize text straight off the extractor: report invisible characters that can
 // hide instructions from a reviewer, then strip them (and normalize line endings)
