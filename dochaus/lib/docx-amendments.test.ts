@@ -578,8 +578,9 @@ describe("layered edits on a counterparty markup", () => {
     }
   })
 
-  // Word's selection often takes a heading's or term's trailing space with it.
-  test("a tracked insertion before text takes that text's formatting, and one after text the formatting before it", async () => {
+  // Word's selection often takes a heading's trailing space with it. An
+  // inserted word is typed where it stands, so it is not a defined term's.
+  test("a tracked sentence inserted before text takes that text's formatting, and other insertions the formatting before them", async () => {
     const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
     const author = "Jordan Example"
     const CLAUSE = '<w:r><w:t xml:space="preserve">9. Governing law. This Agreement is governed by the law of the Province.</w:t></w:r>'
@@ -592,13 +593,15 @@ describe("layered edits on a counterparty markup", () => {
     }
     const run = (style: string, text: string) => `<w:r>${style ? `<w:rPr>${style}</w:rPr>` : ""}<w:t xml:space="preserve">${text}</w:t></w:r>`
     const heading = restyled(run("<w:b/>", "9. Governing law. ") + run("", "This Agreement is governed by the law of the Province."))
-    const term = restyled(run("", "9. Governing law. This Agreement is governed by the ") + run("<w:b/>", "law ") + run("", "of the Province."))
+    const term = restyled(run("", "9. Governing law. This Agreement is governed by the law of the ") + run("<w:b/>", "Province") + run("", "."))
+    const act = restyled(run("", "9. Governing law. This Agreement is governed by the ") + run("<w:i/>", "Sale of Goods Act") + run("", " and the law of the Province."))
     const italic = restyled(run("<w:i/>", "9. Governing law. This Agreement is governed by the law of the Province."))
     const whole = "9. Governing law. This Agreement is governed by the law of the Province."
     for (const [bytes, before_quote, replacement, inserted, style] of [
       [heading, whole, "9. Governing law. Each party submits. This Agreement is governed by the law of the Province.", "Each party submits. ", ""],
       [heading, "This Agreement", "Each party submits. This Agreement", "Each party submits. ", ""],
-      [term, "the law of the Province", "the law and custom of the Province", "and custom ", ""],
+      [term, "the law of the Province", "the law of the said Province", "said ", ""],
+      [act, "governed by the Sale of Goods Act", "governed by the amended Sale of Goods Act", "amended ", ""],
       [italic, whole, `${whole} Each party submits.`, " Each party submits.", "<w:i/>"],
     ] as const) {
       const packet = await createDocxLocalization(bytes, [{ id: "law", before_quote, replacement }], {}, layer)

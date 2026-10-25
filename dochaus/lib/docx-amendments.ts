@@ -320,10 +320,10 @@ async function writeEdits(opened: Opened, edits: ReturnType<typeof admitted>[]) 
 
 export function changedDocxSpan(match: Match, replacement: string, words = false) {
   const { offset, replaced, changed } = changedRange(match.text, replacement, words)
-  // A pure insertion joins the text it is written beside: one ending with a
-  // space before more text takes the formatting of that text, otherwise the
-  // formatting of the text before it.
-  const joinsAfter = !replaced && /\s$/.test(changed) && offset < match.text.length
+  // A pure insertion takes the formatting of the text before it, as typing
+  // there would; a sentence inserted before more text joins that text and
+  // takes its formatting instead.
+  const joinsAfter = !replaced && /[.!?]\s+$/.test(changed) && offset < match.text.length
   const at = !replaced && changed && offset && !joinsAfter ? offset - 1 : offset
   const formatting = match.fragments.find((fragment, index) => match.fragments.slice(0, index + 1)
     .reduce((length, row) => length + row.text.length, 0) > at)?.formatting ?? match.fragments.at(-1)?.formatting
@@ -333,8 +333,8 @@ export function changedDocxSpan(match: Match, replacement: string, words = false
 
 // Docxodus writes a tracked insertion in the run properties of the character
 // before it, so a sentence inserted after a bold heading's trailing space
-// would be bold. One that joins the text after it is given that text's run
-// properties instead.
+// would be bold. A sentence that joins the text after it is given that text's
+// run properties instead.
 function insertBefore(session: Session, match: Match, text: string) {
   const anchor = match.enclosingAnchor.id
   const existing = new Set(elements(parse(session.raw.getXml(anchor)), "ins").map(node => node.getAttributeNS(PT, "Unid")))
