@@ -130,6 +130,19 @@ export function openQuestions(status: LeanDraftingStatus) {
   return status.questions.filter((question) => question.status === "open" && !queued.has(question.id))
 }
 
+/** Keep related decisions together in first-seen topic order; never combine their answers. */
+export function questionGroups(questions: LeanQuestion[]) {
+  const groups: { id: string; label: string; questions: LeanQuestion[] }[] = []
+  for (const question of questions) {
+    const label = question.group?.trim()
+    const id = label ? `topic:${label}` : `question:${question.id}`
+    const group = groups.find(row => row.id === id)
+    if (group) group.questions.push(question)
+    else groups.push({ id, label: label || question.question, questions: [question] })
+  }
+  return groups
+}
+
 /** The options a question offers: its own, else its advice's, in that order. */
 export function questionOptions(question: LeanQuestion) {
   return question.options ?? question.advice?.options ?? []
