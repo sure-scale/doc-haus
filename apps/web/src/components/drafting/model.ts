@@ -135,7 +135,7 @@ export function questionGroups(questions: LeanQuestion[]) {
   const groups: { id: string; label: string; questions: LeanQuestion[] }[] = []
   for (const question of questions) {
     const label = question.group?.trim()
-    const id = label ? `topic:${label}` : `question:${question.id}`
+    const id = label ? `topic:${label.normalize("NFKC").replace(/\s+/gu, " ").toLowerCase()}` : `question:${question.id}`
     const group = groups.find(row => row.id === id)
     if (group) group.questions.push(question)
     else groups.push({ id, label: label || question.question, questions: [question] })
