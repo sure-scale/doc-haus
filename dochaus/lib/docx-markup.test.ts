@@ -136,6 +136,29 @@ test("our own changes and threads are not theirs to answer; a thread they answer
   expect(counterpartyItems(source, markup, [AVERY, MORGAN])).toEqual([])
 })
 
+test("once an attorney is saved, what doc.haus signed before is still ours; the other side's changes are not", async () => {
+  // Before the attorney was saved, an accepted edit was signed "doc.haus".
+  const signed = `<w:ins w:id="91" w:author="doc.haus" w:date="2026-10-22T09:00:00Z">${run(" Revised.")}</w:ins>`
+  const bytes = edited("word/document.xml", xml => xml.replace("the law of the Province.</w:t></w:r>", `$&${signed}`))
+  const source = { name: COUNTERPARTY_MARKUP.name, sha256: createHash("sha256").update(bytes).digest("hex") }
+  const markup = await readDocxMarkup(bytes)
+  expect(markup.revisions.filter(row => row.author === "doc.haus").map(row => row.text)).toEqual([" Revised."])
+  const previous = process.env.WORKSPACE_ROOT
+  const root = mkdtempSync(path.join(tmpdir(), "markup-ours-"));roots.push(root)
+  mkdirSync(path.join(root, ".preferences"), { recursive: true })
+  writeFileSync(path.join(root, ".preferences", "preferences.json"), JSON.stringify({ attorney: "Riley Chen", firm: "Synthetic Firm" }))
+  process.env.WORKSPACE_ROOT = root
+  try {
+    const items = counterpartyItems(source, markup)
+    expect(items.some(item => item.author === "doc.haus")).toBe(false)
+    expect(items.filter(item => item.change !== "comment").map(item => item.author)).toEqual(
+      markup.revisions.filter(row => row.kind !== "format" && row.author !== "doc.haus").map(row => row.author))
+  } finally {
+    if (previous === undefined) delete process.env.WORKSPACE_ROOT
+    else process.env.WORKSPACE_ROOT = previous
+  }
+})
+
 test("a zero-width character in a comment is stripped and reported, and cannot hide an instruction from the scan", async () => {
   const hidden = plantedComment.replace("AI assistant", `AI assis${ZWSP}tant`)
   // Unnormalized, the split word escapes the AI-directive rule.

@@ -2,7 +2,7 @@ import { DOMParser } from "@xmldom/xmldom"
 import type { RevisionListEntry } from "docxodus"
 import { strFromU8, unzipSync } from "fflate"
 import { docxodus } from "./docxodus"
-import { draftingAttribution } from "./docx-attribution"
+import { ourAuthors } from "./docx-attribution"
 import { readDocxComments } from "./docx-comments"
 import { detectInjection, normalizeUntrustedText } from "./untrusted-text"
 
@@ -140,12 +140,12 @@ export async function readDocxMarkup(bytes: Uint8Array): Promise<DocxMarkup> {
 // with its replies folded in. Format and structure changes and resolved threads
 // are left out. A reply joins the thread of a comment listed before it (Word
 // lists replies after their parent); any other comment starts its own thread.
-// `ours` names our own side (by default the drafting author, whose name signs
-// doc.haus's redlines and comments and the lawyer's accepted edits and
-// replies), matched trimmed and case-insensitively. A change, or a thread, all
+// `ours` names our own side (by default every name doc.haus signs its redlines
+// and comments and the lawyer's accepted edits and replies with: the attorney,
+// the firm and doc.haus), matched trimmed and case-insensitively. A change, or a thread, all
 // of whose authors are ours is not the other side's and is left out; a thread
 // they answered keeps our root or replies, each marked `ours`.
-export function counterpartyItems(source: { name: string; sha256: string }, markup: DocxMarkup, ours: readonly string[] = [draftingAttribution().author]): CounterpartyItem[] {
+export function counterpartyItems(source: { name: string; sha256: string }, markup: DocxMarkup, ours: readonly string[] = ourAuthors()): CounterpartyItem[] {
   // Initials are not carried, so their findings are not either.
   const flagged = (findings: MarkupFinding[]) => {
     const rules = [...new Set(findings.filter(finding => finding.field !== "initials").map(finding => finding.rule))]

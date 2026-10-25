@@ -640,11 +640,13 @@ export default function MarkupPanel({
   const threadList = items.flatMap((item) => (item.type === "thread" ? [item.thread] : []))
   const savedName = attorney?.trim()
   const actor = savedName || nameDraft.trim()
-  // The name doc.haus's accepted edits carry in the file, as ingest records
-  // it: the saved attorney, else the firm, else doc.haus. Until the settings
-  // are read, no change is taken for the lawyer's own.
-  const reviser = attorney === undefined ? undefined : savedName || firm || "doc.haus"
-  const isYou = (author: string) => reviser !== undefined && nameKey(author) === nameKey(reviser)
+  // Every name doc.haus signs the lawyer's accepted edits with, as ingest reads
+  // them: the saved attorney, the firm and doc.haus, so what it signed before a
+  // name was saved stays the lawyer's. Until the settings are read, no change
+  // is taken for the lawyer's own.
+  const ours = attorney === undefined ? undefined
+    : new Set([savedName, firm, "doc.haus"].filter((entry): entry is string => Boolean(entry)).map(nameKey))
+  const isYou = (author: string) => Boolean(ours?.has(nameKey(author)))
   const yours = (revision: MarkupRevision) => isYou(revision.author)
   // The lawyer's own edit stays tracked until the lawyer decides otherwise.
   const decisionOf = (revision: MarkupRevision): MarkupDecision | undefined => drafts[revision.id] ?? (yours(revision) ? "hold" : undefined)
