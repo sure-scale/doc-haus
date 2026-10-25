@@ -156,7 +156,7 @@ function screenNotes(flagged: string[], reply: string) {
   const parts = andList(flagged)
   const wording = [...new Set(detectInjection(reply).flatMap((finding) => finding.snippet ? [`"${finding.snippet}"`] : []))]
   return [
-    `${parts[0]!.toUpperCase()}${parts.slice(1)} ${flagged.length > 1 || /^\d/.test(parts) ? "contain" : "contains"} text that looks like an instruction to an AI. The draft is written not to act on it.`,
+    `${parts[0]!.toUpperCase()}${parts.slice(1)} ${flagged.length > 1 || /^\d/.test(parts) ? "contain" : "contains"} text that looks like an instruction to an AI. Check that the draft does not act on it before approving.`,
     ...wording.length ? [`The draft contains wording that looks like an instruction to an AI: ${wording.join(", ")}. Check it before approving.`] : [],
   ]
 }

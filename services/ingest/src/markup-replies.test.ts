@@ -60,7 +60,7 @@ async function variant(name: string, edits: [part: string, from: string, to: str
 const SCREENING = ["flagged", "injection", "ai-directive", "concealment", "role-reassignment", "screen"]
 /** doc.haus's own open item for the parts screening flagged. */
 const named = (where: string, many = false) =>
-  `${where[0]!.toUpperCase()}${where.slice(1)} ${many ? "contain" : "contains"} text that looks like an instruction to an AI. The draft is written not to act on it.`
+  `${where[0]!.toUpperCase()}${where.slice(1)} ${many ? "contain" : "contains"} text that looks like an instruction to an AI. Check that the draft does not act on it before approving.`
 const PLAIN = "Forty-five days works for us if [[stock report cadence]] is agreed."
 
 beforeAll(async () => {
